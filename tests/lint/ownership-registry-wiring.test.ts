@@ -200,9 +200,14 @@ describe('FR-R3-003 — ownership arbitration is wired to the authoritative stor
   });
 
   it('gates the synchronous mirror readers on holding a fence', () => {
-    // `isHeld` is read from projection paths that cannot await, so it stays
-    // synchronous — but a superseded window must read `false` from its own
-    // mirror rather than the stale `true` the mirror alone would give.
+    // The mirror readers are synchronous because projection paths cannot
+    // await — but a superseded window must read `false` from its own mirror
+    // rather than the stale `true` the mirror alone would give.
+    //
+    // FR-R3-024 — `WorkspaceLockManager.isHeld` has no host callers now; every
+    // decision moved to `hasPrimacy()`. The fence gate is still asserted
+    // because the mirror is still read, by `isForeignLockHeld()`, and because
+    // `isHeld` is the shape the ordering invariant is stated in.
     expect(methodBody(LOCK_SOURCE, 'public isHeld()')).toContain('this.fence');
     expect(methodBody(LEASE_SOURCE, 'public isHeld(queueId: string)')).toContain('this.fences');
   });

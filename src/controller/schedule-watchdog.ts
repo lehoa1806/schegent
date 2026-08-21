@@ -24,7 +24,30 @@ export interface QueueScheduleWatchdogDeps {
    * the watchdog is not a second idle-pending enforcement site.
    */
   readonly promote: (queueId: string) => Promise<void> | void;
-  readonly isPrimary: () => boolean;
+  /**
+   * Whether this window may promote a due schedule.
+   *
+   * FR-R3-024 (FR-013, FR-016a) — widened to admit a promise, because the host
+   * now wires `lock.hasPrimacy()` here rather than `lock.isHeld()`.
+   * `WorkspaceLockManager` splits its two predicates by purpose: `isHeld()` is
+   * synchronous and *advisory*, reading the `Memento` mirror of the ownership
+   * record for projection; `hasPrimacy()` awaits `verifyClaim()` and is
+   * *authoritative*, carrying the fencing token issued at acquisition.
+   * Promoting a schedule is a decision, not a projection.
+   *
+   * The rationale lives on this dep rather than at the wiring line because
+   * `src/extension.ts` is under a line budget whose own rule puts the decision
+   * in the module that owns it. Today's mirror read happens to be safe — the
+   * mirror can never be fresher than the record it mirrors — but that is a
+   * property of statement order in `lock.ts` and `ownership-registry.ts`, not
+   * of the rule those two modules state.
+   *
+   * A refusal is a *deferral*: `tick()` returns `[]` and the queue's
+   * `scheduledStartAt` stays persisted, so the next tick retries. That also
+   * makes the fail-closed answer `hasPrimacy()` gives when the storage layer
+   * cannot answer cost nothing but one tick.
+   */
+  readonly isPrimary: () => boolean | Promise<boolean>;
   /**
    * Whether the active Process catalog holds no Pipeline. Feature 098 (FR-031a)
    * made an empty catalog a refusal at fire time:
@@ -135,7 +158,10 @@ export class QueueScheduleWatchdog {
    * minute for as long as the deadline stands is noise, not information.
    */
   public async tick(): Promise<readonly string[]> {
-    if (this.disposed || !this.deps.isPrimary()) return [];
+    if (this.disposed) return [];
+    // One ownership read per tick, not one per due queue: the sweep below is
+    // synchronous over the states this read already authorized.
+    if (!(await this.deps.isPrimary())) return [];
     if (this.deps.isCatalogEmpty?.() === true) return [];
     const now = this.now();
     const due = Object.entries(this.deps.getQueueStates())

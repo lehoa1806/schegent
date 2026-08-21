@@ -3,6 +3,7 @@ import { MUTATING_COMMAND_TYPES } from '../../contracts/sidebar-command-metadata
 import { HANDLERS } from './commands';
 import { SECONDARY_REJECT, UNTRUSTED_REJECT } from './commands/constants';
 import { ack } from './commands/handler-helpers';
+import { isWindowPrimary } from './commands/primacy-gate';
 import type { AckPoster, RouterDeps } from './commands/router-types';
 import { MutationCommandExecutor } from './mutation-command-executor';
 
@@ -115,18 +116,18 @@ export class MessageRouter {
 
   /**
    * Feature FR-R3-003 (T300) — awaited, because the answer is now a read of the
-   * fenced ownership record rather than of the `Memento` mirror. Fail-closed on
-   * both a throw and a rejection: a window that cannot prove it holds primacy is
-   * treated as not holding it, which is the same posture the acquisition path
-   * takes.
+   * fenced ownership record rather than of the `Memento` mirror.
+   *
+   * FR-R3-024 (FR-001, FR-004) — delegates to the one primacy predicate, in
+   * `commands/primacy-gate.ts`. The docblock previously claimed a fail-closed
+   * posture the body did not implement: an absent callback returned `true`, so
+   * this gate admitted every mutating command while `checkTrusted` below
+   * rejected on the identical wiring mistake. All three failure paths —
+   * absent callback, throw, non-`true` return — now refuse, and the predicate
+   * names each one.
    */
   private async checkPrimary(): Promise<boolean> {
-    if (!this.deps.isPrimary) return true;
-    try {
-      return await this.deps.isPrimary();
-    } catch {
-      return false;
-    }
+    return isWindowPrimary(this.deps);
   }
 
   /**

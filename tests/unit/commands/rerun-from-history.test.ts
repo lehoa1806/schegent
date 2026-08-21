@@ -37,8 +37,9 @@ function makeGuarded(outcome: ScheduleOrEnqueueResult['outcome'] = 'enqueued') {
   };
 }
 
+// FR-R3-024 (FR-013) — awaited authoritative predicate, not the advisory mirror.
 function makeLock(held = true) {
-  return { isHeld: vi.fn(() => held) };
+  return { hasPrimacy: vi.fn(async () => held) };
 }
 
 function makeHistoryStore(entries: HistoryEntry[]) {

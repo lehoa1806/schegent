@@ -7,7 +7,7 @@ import type { GuardedRunService } from '../services/guarded-run-service';
 export interface RerunCtx {
   guarded: Pick<GuardedRunService, 'scheduleOrEnqueue'>;
   history: Pick<HistoryStore, 'list'>;
-  lock: Pick<WorkspaceLockManager, 'isHeld'>;
+  lock: Pick<WorkspaceLockManager, 'hasPrimacy'>;
   notifier: Notifier;
   logger: SanitizedLogger;
 }
@@ -25,7 +25,7 @@ function parseArgs(arg: unknown): RerunArgs | null {
 }
 
 export async function runRerunFromHistory(arg: unknown, ctx: RerunCtx): Promise<void> {
-  if (!ctx.lock.isHeld()) {
+  if (!(await ctx.lock.hasPrimacy())) {
     ctx.notifier.warn('Schegent: another window holds the workspace lock; ignoring rerun.');
     return;
   }

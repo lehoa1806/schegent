@@ -856,7 +856,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     getQueueStates: () => store.getQueueStates(),
     hasArmedTimer: (queueId) => scheduledStartCoordinator.hasActiveTimer(queueId),
     promote: promoteScheduledQueue,
-    isPrimary: () => lock.isHeld(),
+    isPrimary: () => lock.hasPrimacy(),
     // Feature 098 (FR-031a) — the same gate the coordinator's `emptyCatalogGate`
     // reads, for the same reason. `refuseOnEmptyCatalog` leaves the queue
     // `idle-pending` with its deadline persisted and its timer dropped, which is

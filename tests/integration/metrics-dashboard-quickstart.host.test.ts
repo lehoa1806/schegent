@@ -54,7 +54,10 @@ function makeTestContext(workspaceRoot: string): {
         read: (req: Parameters<typeof readMetrics>[1]) => readMetrics(workspaceRoot, req, logger)
       },
       sessionId,
-      metricsViewOpenedState: { emitted: false }
+      metricsViewOpenedState: { emitted: false },
+      // FR-R3-024 (FR-008a) — the handler's gate fails closed on an absent
+      // callback; this host fixture stands in for the primary window.
+      isPrimary: () => true
     } as unknown as RouterDeps,
     postAck: async (msg) => {
       acks.push(msg);
