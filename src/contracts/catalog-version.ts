@@ -10,7 +10,7 @@
 // `tests/lint/contracts-module-reachability.test.ts` excludes from the corpus
 // precisely so a barrel entry cannot stand in for a real consumer.
 
-import type { CatalogKind } from './catalog-store';
+import { CATALOG_KINDS, type CatalogKind } from './catalog-store';
 
 /**
  * The published version a run resolved and froze.
@@ -48,4 +48,28 @@ export interface CatalogVersionRef {
    * straight back at the host.
    */
   readonly versionId: string;
+}
+
+/**
+ * Feature 103 — whether a value read back from durable state is a version
+ * reference.
+ *
+ * Needed because a `HistoryEntry` now carries one and comes back off a memento,
+ * where the type system's guarantees end. The rule is reject, never repair: a
+ * reference missing its `versionId`, or carrying an empty one, names no version,
+ * and a repaired one would tell an operator a run froze something it did not.
+ * Absent is a state the surface already renders honestly (FR-012), so dropping
+ * the malformed value lands somewhere true.
+ */
+export function isCatalogVersionRef(value: unknown): value is CatalogVersionRef {
+  if (!value || typeof value !== 'object') return false;
+  const ref = value as Record<string, unknown>;
+  return (
+    typeof ref.kind === 'string'
+    && (CATALOG_KINDS as readonly string[]).includes(ref.kind)
+    && typeof ref.id === 'string'
+    && ref.id.length > 0
+    && typeof ref.versionId === 'string'
+    && ref.versionId.length > 0
+  );
 }

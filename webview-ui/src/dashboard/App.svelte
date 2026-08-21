@@ -23,10 +23,11 @@
   // Pipeline Builder` pair under `Dashboard.svelte` is gone (T033).
   let route = $state<DashboardRoute>(DEFAULT_DASHBOARD_ROUTE);
   type LazyRoute = Exclude<DashboardRoute, 'operations'>;
+  // Feature 103 (T017) dropped `history` and `isPrimary` from here: the History
+  // route was their only consumer and it now takes the whole snapshot like the
+  // other multi-field routes.
   type LazyRouteProps = {
     active?: boolean;
-    history?: WorkflowSnapshot['history'];
-    isPrimary?: boolean;
     snapshot?: WorkflowSnapshot;
   };
   type LazyRouteComponent = Component<LazyRouteProps>;
@@ -143,9 +144,11 @@
       {:else if ActiveRouteComponent}
         {#if route === 'metrics'}
           <ActiveRouteComponent active={true} />
-        {:else if route === 'history'}
-          <ActiveRouteComponent history={snapshot.history} isPrimary={snapshot.isPrimary} />
-        {:else if route === 'builder' || route === 'settings' || route === 'runs'}
+        {:else if route === 'builder' || route === 'settings' || route === 'runs' || route === 'history'}
+          <!-- Feature 103 (T017) — History moved from `history` + `isPrimary`
+               to the whole snapshot. It composes its list from `history` and
+               `queues` together, and a route that hand-picks fields has to be
+               edited every time the surface reads one more. -->
           <ActiveRouteComponent {snapshot} />
         {:else}
           <ActiveRouteComponent />

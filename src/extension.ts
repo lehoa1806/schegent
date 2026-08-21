@@ -82,13 +82,14 @@ import {
   createHostCatalogStore,
   nodeDigest
 } from './activation/catalog-store-wiring';
-import { liveRunPlans } from './activation/run-provenance-enumeration';
+import { liveRunPlans, retainedHistoryPlans } from './activation/run-provenance-enumeration';
 import { GuardedRunService } from './services/guarded-run-service';
 import { ScheduledStartCoordinator } from './services/scheduled-start-coordinator';
 import { readMetrics } from './metrics/metrics-service';
 import { AuditPointerResolver } from './services/history/audit-pointer-resolver';
 import { HistoryEvidenceService } from './services/history/history-evidence-service';
 import { createPhaseLogService } from './services/phase-log';
+import { resolveRunOrigin } from './services/run-origin-resolver';
 import { createPhaseLogTailWiring } from './activation/phase-log-tail-wiring';
 
 interface Stage2Wiring {
@@ -336,11 +337,13 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   // Feature 099 (T493b, FR-051, FR-052) — `null` in an untrusted workspace, where
   // no catalog activates at all. The snapshot still has to exist for the resolvers,
   // so the two facts stay apart: no store, and the empty catalog it resolves to.
-  // Feature 102 (T051, FR-037) — the store is built here and `queue` below it, so
-  // the enumerator closes over both rather than receiving them, and re-reads per
-  // question. Same late binding as the Workflow-reference reader further down.
-  const catalogStore = createHostCatalogStore(() =>
-    liveRunPlans(queue.listAll(), Object.values(store.getRunMap()))
+  // Feature 102 (T051, FR-037) and 103 (T078, FR-040, FR-042) — the store is built
+  // here, `queue` below it and `historyStore` further down still, so both enumerators
+  // close over their sources and re-read per question; `createHostCatalogStore`
+  // documents why each `list()` has to stay inside its thunk.
+  const catalogStore = createHostCatalogStore(
+    () => liveRunPlans(queue.listAll(), Object.values(store.getRunMap())),
+    () => retainedHistoryPlans(historyStore.list())
   );
   // Feature 099 (T493b, T496f, FR-027a, FR-042) — the store is read once, here,
   // before anything is composed, and the session owns that snapshot together with
@@ -916,7 +919,9 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     getAvailableModels: () => backendCapabilities.getAvailableModels(),
     getAvailableBackends: () => backendCapabilities.getAvailableBackends(),
     getBackendPingState: () => backendPing.getState(),
-    getConnectedRuns: () => connectedRuns.listProjections()
+    getConnectedRuns: () => connectedRuns.listProjections(),
+    // Feature 103 (T031, FR-003) — both callers and both cadences: see `resolveRunOrigin`.
+    getRunOrigin: (taskId) => resolveRunOrigin(store.getConnectedRuns(), taskId)
   });
   capabilityProjector = projector;
   projector.start();

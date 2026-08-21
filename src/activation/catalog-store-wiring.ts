@@ -70,16 +70,24 @@ export function isCatalogActivationTrusted(): boolean {
  *                       retention exempts nothing, which is the correct answer for
  *                       a host that runs nothing. `liveRunPlans` in
  *                       `run-provenance-enumeration.ts` is what activation passes.
+ * @param enumerateRetained Feature 103 (T078, FR-040) — the versions recorded by
+ *                       runs that have finished and are still in history, on the
+ *                       same terms. Late-bound and defaulted for the same reason:
+ *                       the store is built before the history store. Activation
+ *                       passes `retainedHistoryPlans(historyStore.list())`, and
+ *                       the `list()` belongs inside the thunk — hoisting it out
+ *                       is the smallest cache there is, and FR-042 forbids it.
  */
 export function createHostCatalogStore(
-  enumeratePlans: () => Iterable<RunVersionCarrier> = () => []
+  enumeratePlans: () => Iterable<RunVersionCarrier> = () => [],
+  enumerateRetained: () => Iterable<RunVersionCarrier> = () => []
 ): CatalogStore | null {
   if (!isCatalogActivationTrusted()) return null;
   return createCatalogStore({
     fs: createCatalogFsAdapter(catalogStoreRoot()),
     clock: systemClock,
     digest: nodeDigest,
-    provenance: createQueueRunProvenance(enumeratePlans)
+    provenance: createQueueRunProvenance(enumeratePlans, enumerateRetained)
   });
 }
 

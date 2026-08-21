@@ -18,7 +18,12 @@
 // (`metrics-rollup-writer.ts`) and reader (`metrics-rollup-reader.ts`) own the
 // I/O; the composition is here so it can be tested without either.
 
-import type { CumulativeTotals, MetricsCoverage, TaskRecord } from '../contracts/sidebar-ipc';
+import type {
+  CumulativeTotals,
+  MetricsCoverage,
+  MetricsRunSummary,
+  TaskRecord
+} from '../contracts/sidebar-ipc';
 
 /**
  * Rollup record schema version.
@@ -41,20 +46,28 @@ export type RollupTerminalStatus = 'completed' | 'failed' | 'canceled';
  * "nothing was reported" and "the run was free" are different facts, and
  * collapsing them would silently understate a total that later gains cost
  * reporting.
+ *
+ * Feature 103 (T092) — the stored record is the wire summary plus the schema
+ * marker. Declared as an extension rather than restated so the two shapes
+ * cannot drift: a field added to one is a field on the other, and the marker
+ * stays the single difference.
  */
-export interface MetricsRollupRecord {
+export interface MetricsRollupRecord extends MetricsRunSummary {
   /** Schema version marker. See `METRICS_ROLLUP_SCHEMA_VERSION`. */
   readonly v: number;
-  readonly runId: string;
   readonly terminalStatus: RollupTerminalStatus;
-  readonly startedAt: string;
-  readonly endedAt: string;
-  readonly durationMs: number;
-  readonly phasesTotal: number;
-  readonly phasesCompleted: number;
-  readonly phasesSkipped: number;
-  readonly backendInvocations: number;
-  readonly costUsd?: number;
+}
+
+/**
+ * Feature 103 (T093) — the wire projection: everything but the schema marker.
+ *
+ * The marker describes how to read a line off disk. Sending it would give the
+ * webview a second version number to reason about and a reason to branch on
+ * storage decisions that are not its business.
+ */
+export function toRunSummary(record: MetricsRollupRecord): MetricsRunSummary {
+  const { v: _schemaVersion, ...summary } = record;
+  return summary;
 }
 
 /**

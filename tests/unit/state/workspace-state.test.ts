@@ -1,5 +1,8 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
+  HISTORY_CAP_PER_QUEUE,
   KEYS,
   QueueMutationRejected,
   WorkspaceStateStore,
@@ -540,5 +543,100 @@ describe('Persistence migration (T065 / SC-013)', () => {
     expect(typeof e.descriptionPreview).toBe('string');
     expect(e.durationMs).toBe(200);
     expect(e.auditLogPointer).toBe('runId:run-legacy');
+  });
+});
+
+// Feature 103 (T075, US6) — history retention is still one rule at one cap.
+//
+// FR-044 and FR-045 are negative requirements, and negative requirements only
+// hold if something asserts the absence. US6 gave the catalog a reason to care
+// how long a history row lives, and the tempting follow-on is to give history a
+// second rule to make that reason cheaper: an age sweep so old rows stop pinning
+// versions, or a per-definition limit so one busy Pipeline cannot hold fifty.
+//
+// Either would be a second retention policy free to disagree with the first, and
+// the disagreement is silent — a row visible on the surface whose version has
+// been pruned, which is the exact failure FR-040 exists to prevent. The cap is
+// the only rule, it is applied at one site, and eviction is the only way out.
+describe('history retention is the per-queue cap and nothing else (FR-044, FR-045)', () => {
+  const HISTORY_SRC = readFileSync(
+    resolve(__dirname, '../../../src/state/workspace-state.ts'),
+    'utf8'
+  );
+
+  function historyEntry(seq: number, completedMs: number, versionId: string) {
+    return {
+      runId: `run-${seq}`,
+      featureId: `feat-${seq}`,
+      descriptionPreview: `desc ${seq}`,
+      terminalStatus: 'completed' as const,
+      startedAt: new Date(completedMs - 500).toISOString(),
+      completedAt: new Date(completedMs).toISOString(),
+      durationMs: 500,
+      lastErrorSummary: null,
+      auditLogPointer: `runId:run-${seq}`,
+      catalogVersion: { kind: 'pipeline' as const, id: 'analysis', versionId }
+    };
+  }
+
+  it('applies the cap at exactly one site', () => {
+    // Twice in the file: the constant, and the single overflow calculation in
+    // `appendHistory`. A third occurrence is a second place the depth is decided.
+    expect(HISTORY_SRC.match(/HISTORY_CAP_PER_QUEUE/g) ?? []).toHaveLength(2);
+    expect(HISTORY_CAP_PER_QUEUE).toBe(50);
+  });
+
+  it('keeps an entry regardless of how old it is, while it is under the cap', async () => {
+    // Ten years apart, in reverse chronological order of arrival. Nothing here
+    // reads a clock, so nothing here can age anything out.
+    const decadeMs = 10 * 365 * 24 * 60 * 60 * 1_000;
+    const history = new HistoryStore(store);
+    await history.append('alpha', historyEntry(0, 1_700_000_000_000 - decadeMs, 'v1'));
+    await history.append('alpha', historyEntry(1, 1_700_000_000_000, 'v2'));
+
+    expect(history.listForQueue('alpha')).toHaveLength(2);
+    expect(history.listForQueue('alpha').some((row) => row.runId === 'run-0')).toBe(true);
+  });
+
+  it('imposes no per-definition limit inside a partition', async () => {
+    // Fifty runs of one Pipeline at one version. A per-definition cap — the
+    // obvious way to bound how much any single definition can pin — would trim
+    // this and release the pin while rows the operator can still see remain.
+    const history = new HistoryStore(store);
+    for (let seq = 0; seq < HISTORY_CAP_PER_QUEUE; seq += 1) {
+      await history.append('alpha', historyEntry(seq, 1_700_000_000_000 + seq * 1_000, 'v1'));
+    }
+
+    const rows = history.listForQueue('alpha');
+    expect(rows).toHaveLength(HISTORY_CAP_PER_QUEUE);
+    expect(rows.every((row) => row.catalogVersion?.versionId === 'v1')).toBe(true);
+  });
+
+  it('evicts exactly one entry per append once the cap is reached, and reports it', async () => {
+    const history = new HistoryStore(store);
+    for (let seq = 0; seq < HISTORY_CAP_PER_QUEUE; seq += 1) {
+      expect(
+        await history.append('alpha', historyEntry(seq, 1_700_000_000_000 + seq * 1_000, 'v1'))
+      ).toEqual([]);
+    }
+
+    const evicted = await history.append('alpha', historyEntry(50, 1_700_000_050_000, 'v2'));
+
+    // Returned synchronously from the append, not discovered later by a sweep.
+    // That synchrony is what FR-042 rests on: the pin is gone by the time the
+    // append resolves, so the very next prune sees the release.
+    expect(evicted).toHaveLength(1);
+    expect(history.listForQueue('alpha')).toHaveLength(HISTORY_CAP_PER_QUEUE);
+  });
+
+  it('counts each partition on its own, so one busy queue evicts nothing elsewhere', async () => {
+    const history = new HistoryStore(store);
+    await history.append('beta', historyEntry(0, 1_700_000_000_000, 'v1'));
+    for (let seq = 1; seq <= HISTORY_CAP_PER_QUEUE + 10; seq += 1) {
+      await history.append('alpha', historyEntry(seq, 1_700_000_000_000 + seq * 1_000, 'v2'));
+    }
+
+    expect(history.listForQueue('alpha')).toHaveLength(HISTORY_CAP_PER_QUEUE);
+    expect(history.listForQueue('beta')).toHaveLength(1);
   });
 });

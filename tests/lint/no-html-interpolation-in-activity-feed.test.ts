@@ -19,6 +19,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { execSync } from 'node:child_process';
+import { readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
@@ -51,18 +52,57 @@ const SCAN_ROOTS: readonly string[] = [
   resolve(REPO_ROOT, 'webview-ui', 'src', 'components', 'Runs')
 ];
 
+// Feature 103 (T079, FR-046) — the History surface's components are flat
+// `History*.svelte` files in `components/` rather than a directory of their
+// own, so a scan root cannot reach them without dragging in every unrelated
+// component beside them. They are enumerated by prefix instead.
+//
+// Enumerated rather than listed one by one on purpose: a rule that names only
+// the files that existed when it was written stops covering the surface the
+// moment an eighth component lands, and it would stop silently. The text at
+// stake is the same class as the Builder's — run descriptions typed into the
+// queue form, operator-named queues, definition and Workflow names read out of
+// a process document, and event fields the CLI wrote into the audit log.
+const SCAN_FILE_GROUPS: readonly { readonly dir: string; readonly prefix: string }[] = [
+  { dir: resolve(REPO_ROOT, 'webview-ui', 'src', 'components'), prefix: 'History' }
+];
+
 // Empty allowlist — every existing scanned component renders text via
 // Svelte's auto-escaping path. Add an entry here ONLY if you have a
 // typed, host-rendered, trusted-HTML body to interpolate.
 const ALLOWED_FILES: ReadonlySet<string> = new Set<string>();
 
+/** Files under `dir` whose name starts with `prefix`, absolute, non-recursive. */
+function svelteFilesWithPrefix(dir: string, prefix: string): readonly string[] {
+  let names: readonly string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    // Same tolerance the `status === 2` arm below extends to a missing scan
+    // root: a partial worktree may not have the directory yet.
+    return [];
+  }
+  return names
+    .filter((name) => name.startsWith(prefix) && name.endsWith('.svelte'))
+    .map((name) => resolve(dir, name));
+}
+
 function listMatchingFilesIn(scanRoot: string, pattern: string): readonly string[] {
+  return grepFor(`-rlnE --include="*.svelte" "${pattern}" "${scanRoot}"`);
+}
+
+/** The same prohibition applied to an explicit file list rather than a tree. */
+function listMatchingFilesAmong(files: readonly string[], pattern: string): readonly string[] {
+  // `grep` with no file operand reads stdin and never returns, so an empty
+  // group has to short-circuit here rather than in the shell.
+  if (files.length === 0) return [];
+  return grepFor(`-lE "${pattern}" ${files.map((file) => `"${file}"`).join(' ')}`);
+}
+
+function grepFor(args: string): readonly string[] {
   let out: string;
   try {
-    out = execSync(
-      `grep -rlnE --include="*.svelte" "${pattern}" "${scanRoot}"`,
-      { encoding: 'utf8' }
-    );
+    out = execSync(`grep ${args}`, { encoding: 'utf8' });
   } catch (err: unknown) {
     const e = err as { status?: number; stdout?: string };
     if (e.status === 1 && (!e.stdout || e.stdout.trim() === '')) return [];
@@ -88,6 +128,12 @@ function listMatchingFiles(pattern: string): readonly string[] {
   const collected: string[] = [];
   for (const root of SCAN_ROOTS) {
     for (const file of listMatchingFilesIn(root, pattern)) {
+      collected.push(file);
+    }
+  }
+  for (const group of SCAN_FILE_GROUPS) {
+    const files = svelteFilesWithPrefix(group.dir, group.prefix);
+    for (const file of listMatchingFilesAmong(files, pattern)) {
       collected.push(file);
     }
   }
