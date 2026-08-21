@@ -130,7 +130,6 @@ function buildHarness(
       return true;
     },
     correlationId: 'workflow-preflight-1'
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
   return {

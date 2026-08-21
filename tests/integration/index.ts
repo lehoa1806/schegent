@@ -14,7 +14,7 @@ export async function run(): Promise<void> {
   let executed = 0;
   for (const f of files) {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      // eslint-disable-next-line @typescript-eslint/no-require-imports -- the VS Code integration runner loads suites by path at runtime; `import()` here would resolve against the compiled bundle rather than `testsRoot`.
       const mod = require(path.join(testsRoot, f));
       if (typeof mod.run === 'function') {
         executed += 1;

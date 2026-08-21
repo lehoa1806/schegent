@@ -68,7 +68,6 @@ let phaseRunner: PhaseRunner;
 let lockManager: WorkspaceLockManager & { release: ReturnType<typeof vi.fn> };
 let logger: SanitizedLogger;
 // vi.spyOn(logger, 'warn') — `MockInstance<...>` from vitest.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let warnSpy: any;
 
 beforeEach(async () => {

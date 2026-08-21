@@ -60,7 +60,9 @@
   });
 
   $effect(() => {
-    description;
+    // Read for its dependency only: the textarea is resized when the description
+    // changes, and nothing below reads the value. `void` states the discard.
+    void description;
     if (!textareaEl) return;
     const lineHeightPx = parseFloat(getComputedStyle(textareaEl).lineHeight) || 18;
     textareaEl.style.height = 'auto';

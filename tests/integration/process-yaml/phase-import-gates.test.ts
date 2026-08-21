@@ -160,7 +160,6 @@ async function planFor(text: string, store: FakeCatalogStore): Promise<ImportPla
       return true;
     },
     correlationId: 'gates-1'
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
   const command: PreflightProcessYamlCommand = {
     type: CMD_PREFLIGHT_PROCESS_YAML,
@@ -254,7 +253,6 @@ async function commit(command: PublishPackageCommand, store: FakeCatalogStore): 
       return true;
     },
     correlationId: 'gates-1'
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
   await publishDefinitionPackage(ctx, command);
   expect(acks).toHaveLength(1);

@@ -92,7 +92,6 @@ function buildCtx(
       return true;
     },
     correlationId: 'test-read-metrics-1'
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
   return { ctx, acks, readSpy, auditAppendSpy, warnings };
 }
@@ -201,7 +200,6 @@ describe('cmd-read-metrics handler (Feature 073, T003)', () => {
         return true;
       },
       correlationId: 'test-read-metrics-audit-fail'
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any;
     await readMetricsHandler(ctx, makeCmd());
     expect(acks).toHaveLength(1);

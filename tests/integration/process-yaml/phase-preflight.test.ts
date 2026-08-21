@@ -99,7 +99,6 @@ function buildHarness(
       return true;
     },
     correlationId: 'preflight-test-1'
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
   return {

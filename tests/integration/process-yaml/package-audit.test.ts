@@ -416,7 +416,6 @@ async function exportPipeline(
       return true;
     },
     correlationId: CORRELATION
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
   const command: ExportProcessYamlCommand = {
@@ -460,7 +459,6 @@ async function preflight(
       return true;
     },
     correlationId: CORRELATION
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
   const command: PreflightProcessYamlCommand = {
@@ -583,7 +581,6 @@ function packageCommand(
 interface Driven {
   // Structurally faked: these suites supply the deps a handler reads, and nothing
   // else — the router's own shape is asserted by the transport suites.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   readonly ctx: any;
   readonly acks: CommandAckMessage[];
   readonly audits: AuditEntry[];
@@ -614,7 +611,6 @@ function driver(inst: Installation): Driven {
       return true;
     },
     correlationId: CORRELATION
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
   return { ctx, acks, audits };
 }

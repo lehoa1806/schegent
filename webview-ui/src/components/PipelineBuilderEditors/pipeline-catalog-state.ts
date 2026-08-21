@@ -462,7 +462,7 @@ export interface BoundedFieldErrors {
  */
 function boundMessage(message: string): string {
   const collapsed = message
-    // eslint-disable-next-line no-control-regex
+    // eslint-disable-next-line no-control-regex -- control characters are what this replacement strips out of an untrusted message.
     .replace(/[\x00-\x1f\x7f-\x9f]+/gu, ' ')
     .replace(/\s{2,}/gu, ' ')
     .trim();

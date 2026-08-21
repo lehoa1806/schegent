@@ -1,6 +1,4 @@
 #!/usr/bin/env node
-/* eslint-env node */
-/* eslint-disable no-console, @typescript-eslint/no-var-requires */
 /*
  * Feature 034 Item 055 — deterministic Claude CLI stub for the Speckit
  * pipeline E2E test. Reads the operator prompt from one of the three

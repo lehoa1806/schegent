@@ -120,7 +120,9 @@
     disabledReason?: string | null;
   }
 
-  const { disabledReason = null }: Props = $props();
+  // `layers` is destructured into a discarded binding so its documented non-read
+  // above is checked by svelte/no-unused-props rather than only asserted there.
+  const { disabledReason = null, layers: _layers }: Props = $props();
 
   type PreflightSurface =
     | { readonly kind: 'idle' }

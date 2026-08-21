@@ -60,7 +60,6 @@ async function preflight(documentBytes: Uint8Array): Promise<CommandAckMessage> 
       return true;
     },
     correlationId: 'refusal-test-1'
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
   await preflightHandler(ctx, COMMAND);

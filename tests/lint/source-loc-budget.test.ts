@@ -644,7 +644,6 @@ describe('large source file LOC budgets', () => {
     const sizes = waived
       .map((entry) => `${entry.path} ${lineCount(entry.path)} lines`)
       .join('; ');
-    // eslint-disable-next-line no-console -- FR-R3-027: a waived file's size is
     // reported on every run, since no assertion enforces a ceiling on it.
     console.log(`LOC waivers (no ceiling enforced, size reported): ${sizes}`);
   });

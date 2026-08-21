@@ -137,16 +137,18 @@ describe('Task Lifecycle Events Integration (072 T025)', () => {
     // Wait for the pipeline to finish and the ended event to be logged
     let content = '';
     await new Promise<void>((resolve) => {
-      const interval = setInterval(async () => {
-        try {
-          content = await fs.readFile(auditLogPath, 'utf8');
-          if (content.includes('task-execution-ended')) {
-            clearInterval(interval);
-            resolve();
+      const interval = setInterval(() => {
+        void (async () => {
+          try {
+            content = await fs.readFile(auditLogPath, 'utf8');
+            if (content.includes('task-execution-ended')) {
+              clearInterval(interval);
+              resolve();
+            }
+          } catch (e) {
+            // file might not exist yet
           }
-        } catch (e) {
-          // file might not exist yet
-        }
+        })();
       }, 50);
     });
 

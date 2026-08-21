@@ -59,7 +59,7 @@ function makeFolder(fsPath: string, name: string, index: number): MockFolder {
 
 async function fireChange(): Promise<void> {
   const handlers = Array.from(mocks.state.listeners);
-  await Promise.all(handlers.map((fn) => fn({ added: [], removed: [] })));
+  await Promise.all(handlers.map(async (fn) => fn({ added: [], removed: [] })));
 }
 
 beforeEach(() => {
