@@ -9,7 +9,7 @@ import { projectAuditPayload } from '../audit/audit-payload';
 import type { AuditEntry } from '../audit/audit-entry';
 import type { RawTranscriptWriter } from '../audit/raw-transcript-writer';
 import type { SanitizedLogger } from '../lib/logger';
-import { parseAuditLogBlock, AUDIT_LOG_CLOSE_MARKER } from '../parser/audit-log-parser';
+import { parseAuditLogBlock } from '../parser/audit-log-parser';
 import { parseInvocation, type InvocationResult } from '../parser/stdout-parser';
 import { extractInvocationUsageMetrics } from '../parser/invocation-usage';
 import { unwrapStreamJson } from '../parser/stream-json-unwrapper';
@@ -441,7 +441,6 @@ export class PhaseRunner {
         runId: inputs.runId,
         prompt,
         timeoutMs: inputs.timeoutMs,
-        completionMarker: AUDIT_LOG_CLOSE_MARKER,
         cliPath: inputs.cliPath,
         cwd: inputs.cwd,
         env,
@@ -504,6 +503,7 @@ export class PhaseRunner {
       rateLimit,
       auditEntry: audit.entry,
       auditWarnings: audit.warnings,
+      region: audit.region, // FR-003 — bounds where a token may be read; see T25
       effectiveFatalSignatures,
       apiError: unwrappedStream.apiError,
       ...(raw.streamFatalMatch ? { streamFatalMatch: raw.streamFatalMatch } : {})
@@ -636,7 +636,7 @@ export class PhaseRunner {
       stderrSummary: this.logger.sanitize(summarize(typeof raw.stderrBuffer === 'string' ? raw.stderrBuffer : raw.stderrBuffer.getTrailingLines(100))),
       exitCode: raw.exitCode,
       auditEntryId: auditEntry.id,
-      warnings: 'warnings' in result ? result.warnings : [],
+      warnings: ('warnings' in result ? result.warnings : []) ?? [],
       phaseMessage,
       cliSessionId: raw.cliSessionId
     };

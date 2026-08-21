@@ -24,8 +24,12 @@ import { PhaseRunner } from '../../../src/controller/phase-runner';
 
 // A complete, successful phase transcript: the clean-status token plus a
 // well-formed SCHEGENT AUDIT LOG block carrying every required field.
+// Feature 107 (T623) — the token trails the audit block, as the constitution's
+// Output Formatting contract has always required ("the **last non-empty line**
+// of stdout for terminal phases"). This fixture put it first, a shape no
+// compliant run emits; the host only began enforcing the rule when the trailing
+// region landed.
 const CLEAN_STDOUT = [
-  '[SCHEGENT_STATUS: DONE]',
   '=== SCHEGENT AUDIT LOG ===',
   'phase: speckit-implement',
   'files_created: []',
@@ -35,7 +39,8 @@ const CLEAN_STDOUT = [
   'network_calls: []',
   'ruleset_switches: []',
   'notes: completed before the process exited',
-  '=== END AUDIT LOG ==='
+  '=== END AUDIT LOG ===',
+  '[SCHEGENT_STATUS: DONE]'
 ].join('\n');
 
 

@@ -45,8 +45,12 @@ function makeLock(): WorkspaceLockManager {
   } as unknown as WorkspaceLockManager;
 }
 
+// Feature 107 (FR-R3-023, T623) — the token trails the audit block, where
+// `.specify/memory/constitution.md` § Output Formatting & Loop Termination has
+// always required it ("the **last non-empty line** of stdout for terminal
+// phases"). It sat on the line *before* the block until the host began
+// enforcing that rule; nothing about this fixture's intent changed.
 const CLEAN_STDOUT = [
-  '[SCHEGENT_STATUS: CLEAR]',
   '=== SCHEGENT AUDIT LOG ===',
   'phase: speckit-specify',
   'files_created: ["specs/001-mock/spec.md"]',
@@ -56,7 +60,8 @@ const CLEAN_STDOUT = [
   'network_calls: ["none"]',
   'ruleset_switches: ["none"]',
   'notes: ok',
-  '=== END AUDIT LOG ==='
+  '=== END AUDIT LOG ===',
+  '[SCHEGENT_STATUS: CLEAR]'
 ].join('\n');
 
 const VERBOSE_STDOUT_PAYLOAD = '{"event":"verbose-data","stream":"stream-json"}\n';
