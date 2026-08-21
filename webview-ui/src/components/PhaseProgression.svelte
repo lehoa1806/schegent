@@ -34,7 +34,7 @@
   // backward compatibility but is no longer read — feature 016 sources
   // the header parenthetical from `activeTaskId` (queue.inFlight?.id).
   const {
-    phases,
+    phases, activeFeature: _activeFeature = null, // discarded; see note above
     activePipeline = null,
     activeTaskId = null,
     activeRunId = null,

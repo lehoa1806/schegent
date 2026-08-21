@@ -76,7 +76,6 @@ async function planFor(inst: Installation, text: string): Promise<ImportPlan> {
       return true;
     },
     correlationId: 'model-catalog-import-commit-1'
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
   const command: PreflightProcessYamlCommand = {
@@ -172,7 +171,6 @@ async function commit(
       return true;
     },
     correlationId: 'model-catalog-import-commit-1'
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
   await saveHandler(ctx, command);

@@ -125,7 +125,11 @@ export function extractInvocationUsageMetrics(
           const metrics = metricsFromResultRecord(record);
           if (metrics) latest = metrics;
         }
-      } catch {}
+      } catch {
+        // A half-written tail is the normal case, not an error: this is the last line
+        // of a stream that may still be open, so an unparseable one means there are no
+        // metrics here yet. The loop above discards the same failure with `continue`.
+      }
     }
   }
 

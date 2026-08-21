@@ -88,7 +88,6 @@
     } else if (action === 'pause') {
       postCommand(CMD_PAUSE_QUEUE);
     } else if (action === 'resume') {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       postCommand(CMD_RESUME_QUEUE, { prompt: resumePromptStr.trim() || undefined } as any);
       resumePromptStr = '';
     }

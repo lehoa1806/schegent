@@ -43,7 +43,6 @@
       value !== null &&
       typeof value === 'object' &&
       !Array.isArray(value) &&
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (value as any).__elided === true
     ) {
       return 'elided';
@@ -52,7 +51,6 @@
       value !== null &&
       typeof value === 'object' &&
       !Array.isArray(value) &&
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (value as any).__truncated === true
     ) {
       return 'truncated';

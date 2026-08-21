@@ -232,7 +232,6 @@ async function preflight(
       return true;
     },
     correlationId: 'audit-test-1'
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
   const command: PreflightProcessYamlCommand = {
@@ -290,7 +289,6 @@ async function exportPhase(resourceId: string, rows: readonly unknown[]): Promis
       return true;
     },
     correlationId: 'audit-test-1'
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
   const command: ExportProcessYamlCommand = {
@@ -376,7 +374,6 @@ async function commit(command: PublishPackageCommand, store: FakeCatalogStore): 
       return true;
     },
     correlationId: 'audit-test-1'
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
   await publishDefinitionPackage(ctx, command);

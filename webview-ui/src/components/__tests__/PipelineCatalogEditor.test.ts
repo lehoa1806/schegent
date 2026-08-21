@@ -1077,7 +1077,7 @@ describe('Pipeline Builder accessibility audit (FR-038, SC-007)', () => {
     // browser's own key handling.
     down.focus();
     expect(container.ownerDocument.activeElement).toBe(down);
-    fireEvent.click(down);
+    void fireEvent.click(down);
     expect(onmovephasedown).toHaveBeenCalledWith(0);
   });
 

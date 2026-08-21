@@ -78,7 +78,6 @@ function buildProjector(): {
   const projector = new StateProjector({
     ownerId: 'trust-integ-owner',
     debounceMs: 0,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     logger: logger as any
   });
   const flush = async (): Promise<void> => {

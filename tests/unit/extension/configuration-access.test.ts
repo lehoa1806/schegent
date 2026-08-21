@@ -232,14 +232,14 @@ describe('configuration access — BUG-003 FR-039 (resource-scoped reads)', () =
     mocks.state.workspaceFolders = undefined;
     let handlers = Array.from(mocks.state.listeners);
     expect(handlers.length).toBeGreaterThan(0);
-    await Promise.all(handlers.map((fn) => fn({ added: [], removed: [] })));
+    await Promise.all(handlers.map(async (fn) => fn({ added: [], removed: [] })));
 
     // New workspace opens at a different path — Stage 2 must wire fresh.
     mocks.state.getConfiguration.mockClear();
     mocks.state.workspaceFolders = [{ uri: { fsPath: '/tmp/ws-second', scheme: 'file' } }];
     handlers = Array.from(mocks.state.listeners);
     expect(handlers.length).toBeGreaterThan(0);
-    await Promise.all(handlers.map((fn) => fn({ added: [], removed: [] })));
+    await Promise.all(handlers.map(async (fn) => fn({ added: [], removed: [] })));
 
     const secondSchegentCall = mocks.state.getConfiguration.mock.calls.find((c) => c[0] === 'schegent');
     expect(

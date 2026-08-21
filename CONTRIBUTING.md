@@ -176,7 +176,7 @@ npm install        # also installs webview-ui dependencies via postinstall
 |---|---|
 | `npm run build` | Build host + webview bundles. |
 | `npm run typecheck` / `npm run typecheck:webview` | TypeScript no-emit. |
-| `npm run lint` / `npm run lint:webview` | ESLint. |
+| `npm run lint` / `npm run lint:webview` | ESLint, host tree and webview tree. Both enforce the baseline ratchet. |
 | `npm run test` | Vitest unit suites (host + webview). |
 | `npm run test:host` | Host suite only. |
 | `npm run test:webview` | Webview suite only. |
@@ -289,6 +289,62 @@ exceeds ~400 lines of substantive change, consider splitting it.
 - All operator-visible strings that may contain secrets pass
   through the central sanitizer. Do not add a second redaction set.
 - Validate operator input at system boundaries.
+
+### Lint baselines and suppressions
+
+`npm run lint` and `npm run lint:webview` lint two separate
+trees through one configuration
+([`scripts/lint-config.mjs`](scripts/lint-config.mjs)) and one
+runner ([`scripts/lint.mjs`](scripts/lint.mjs)). Background and
+the toolchain decisions are in
+[`docs/development/lint-and-type-aware-rules.md`](docs/development/lint-and-type-aware-rules.md).
+
+Six rules are not yet at `error`. Their finding counts are
+recorded per tree in
+[`tests/lint/eslint-baseline.json`](tests/lint/eslint-baseline.json),
+and the runner fails **in both directions**: a higher count is a
+regression, and a lower one is a stale record. So a change that
+happens to remove findings is not free — lower the number in the
+same commit.
+
+**To promote a baselined rule to `error`:**
+
+1. Drive its count to zero in every tree it records. Use
+   `node scripts/lint.mjs <host|webview> --sites` to list the
+   sites; fix them, do not suppress them.
+2. Set the rule to `error` in `scripts/lint-config.mjs`. Put it
+   with the tree-wide rules, not inside a `files:`-scoped block —
+   one rule at two severities in one tree is the split this
+   configuration exists to avoid.
+3. Delete the rule's entry from `eslint-baseline.json`. Leaving a
+   zero behind is a record of nothing, and
+   [`tests/lint/eslint-baseline.test.ts`](tests/lint/eslint-baseline.test.ts)
+   rejects an entry for a rule that sits at `error`.
+4. Run both lint commands plus `npx vitest run tests/lint`.
+
+Raising a recorded count is allowed, and is a decision you have
+to write down: extend that entry's `reductionNote` with why the
+new sites are deliberate. "The gate went red" is not a reason.
+
+**Suppressions.** `reportUnusedDisableDirectives` is `error`, so
+a directive that suppresses nothing fails the build — 66 of this
+repository's 70 `eslint-disable` comments were exactly that, and
+they were deleted rather than kept. What is permitted:
+
+- `// eslint-disable-next-line <rule> -- <reason>`, naming one
+  rule, on the line it applies to, with the reason after `--`.
+- Nothing else. No file-scope `/* eslint-disable */` header, no
+  `/* eslint-disable <rule> */` block form, and no directive
+  without a rule name — each of those turns off a rule for code
+  nobody has read yet, including code added later.
+
+Four directives survive repo-wide; they are the pattern to copy:
+[`tests/integration/cascaded-pause.test.ts:110`](tests/integration/cascaded-pause.test.ts#L110),
+[`tests/integration/index.ts:17`](tests/integration/index.ts#L17),
+[`webview-ui/src/lib/ansi.ts:5`](webview-ui/src/lib/ansi.ts#L5) and
+[`webview-ui/src/components/PipelineBuilderEditors/pipeline-catalog-state.ts:465`](webview-ui/src/components/PipelineBuilderEditors/pipeline-catalog-state.ts#L465).
+If your case does not look like one of those, it is a code
+change, not a suppression.
 
 ## Testing
 
