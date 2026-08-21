@@ -1,13 +1,8 @@
 <script lang="ts">
-  import type { Component } from 'svelte';
-  // Feature 092 (T112, FR-061) — the `operations` route now mounts the
-  // drill-down's location owner rather than `Dashboard` directly. Feature 097
-  // retires the `Dashboard` embed tier 2 used to reuse for its chrome — see
-  // `QueueDetailTier.svelte`'s own header — so this route no longer touches
-  // `Dashboard` at any depth.
-  import OperationsSurface from '../components/OperationsSurface.svelte';
-  import type { WorkflowSnapshot } from '../lib/snapshot-types';
   import { snapshotStore } from '../lib/snapshot-store.svelte';
+
+  import { createRouteLoader } from './route-loader';
+  import RouteOutlet from './RouteOutlet.svelte';
   import {
     DASHBOARD_ROUTES,
     DASHBOARD_ROUTE_LABELS,
@@ -22,67 +17,19 @@
   // `'operations' | 'settings'` shape; the inner two-tier `Operations |
   // Pipeline Builder` pair under `Dashboard.svelte` is gone (T033).
   let route = $state<DashboardRoute>(DEFAULT_DASHBOARD_ROUTE);
-  type LazyRoute = Exclude<DashboardRoute, 'operations'>;
-  // Feature 103 (T017) dropped `history` and `isPrimary` from here: the History
-  // route was their only consumer and it now takes the whole snapshot like the
-  // other multi-field routes.
-  type LazyRouteProps = {
-    active?: boolean;
-    snapshot?: WorkflowSnapshot;
-  };
-  type LazyRouteComponent = Component<LazyRouteProps>;
 
-  const routeLoaders: Record<LazyRoute, () => Promise<unknown>> = {
-    // Feature 091 T020 (FR-014, FR-017, FR-022) — the mount for the connected-run
-    // view and the Run composer. Loaded on demand like every other non-default
-    // route, which also makes the reachability walker's dynamic-import support
-    // exercised by production code rather than only by a fixture.
-    runs: () => import('../components/RunsSurface.svelte'),
-    history: () => import('../components/HistoryDashboard.svelte'),
-    metrics: () => import('../components/MetricsDashboard/MetricsDashboard.svelte'),
-    system: () => import('../components/SystemTab.svelte'),
-    builder: () => import('../components/PipelineBuilder.svelte'),
-    settings: () => import('../components/SettingsSurface.svelte')
-  };
-  const routeCache = new Map<LazyRoute, Promise<LazyRouteComponent>>();
-  let ActiveRouteComponent = $state<LazyRouteComponent | null>(null);
-  let routeLoadError = $state<string | null>(null);
-
-  function isLazyRoute(next: DashboardRoute): next is LazyRoute {
-    return next !== 'operations';
-  }
-
-  function loadRoute(next: LazyRoute): Promise<LazyRouteComponent> {
-    const cached = routeCache.get(next);
-    if (cached) return cached;
-    const pending = routeLoaders[next]().then((module) => {
-      const loaded = module as { default: LazyRouteComponent };
-      return loaded.default;
-    });
-    routeCache.set(next, pending);
-    return pending;
-  }
+  // Feature 105 (T588h) — the loader is created here and handed down because both
+  // sides of the split need the same cache: the nav warms it on hover, the outlet
+  // consumes it on navigation. A module-level cache would have made the sharing
+  // implicit and the tests order-dependent — see `route-loader.ts`.
+  const loader = createRouteLoader();
 
   function preloadRoute(next: DashboardRoute): void {
-    if (!isLazyRoute(next)) return;
-    void loadRoute(next).catch(() => {
-      routeCache.delete(next);
-    });
+    loader.preload(next);
   }
 
   function navigate(next: DashboardRoute): void {
     route = next;
-    routeLoadError = null;
-    ActiveRouteComponent = null;
-    if (!isLazyRoute(next)) return;
-    void loadRoute(next)
-      .then((component) => {
-        if (route === next) ActiveRouteComponent = component;
-      })
-      .catch(() => {
-        routeCache.delete(next);
-        if (route === next) routeLoadError = `Could not load ${DASHBOARD_ROUTE_LABELS[next]}.`;
-      });
   }
 </script>
 
@@ -139,30 +86,7 @@
       </div>
     </header>
     <div id="dashboard-content" class="dashboard-route" data-testid="dashboard-route">
-      {#if route === 'operations'}
-        <OperationsSurface {snapshot} />
-      {:else if ActiveRouteComponent}
-        {#if route === 'metrics'}
-          <ActiveRouteComponent active={true} />
-        {:else if route === 'builder' || route === 'settings' || route === 'runs' || route === 'history'}
-          <!-- Feature 103 (T017) — History moved from `history` + `isPrimary`
-               to the whole snapshot. It composes its list from `history` and
-               `queues` together, and a route that hand-picks fields has to be
-               edited every time the surface reads one more. -->
-          <ActiveRouteComponent {snapshot} />
-        {:else}
-          <ActiveRouteComponent />
-        {/if}
-      {:else if routeLoadError}
-        <main class="route-status" data-testid="dashboard-route-error" role="alert">
-          <strong>{routeLoadError}</strong>
-          <button type="button" onclick={() => navigate(route)}>Retry</button>
-        </main>
-      {:else}
-        <main class="route-status" data-testid="dashboard-route-loading" aria-busy="true">
-          <span>Loading {DASHBOARD_ROUTE_LABELS[route]}…</span>
-        </main>
-      {/if}
+      <RouteOutlet {route} {snapshot} {loader} />
     </div>
   {:else}
     <main class="dashboard-loading" data-testid="dashboard-empty-state" role="status">
@@ -201,26 +125,6 @@
   }
   .skip-link:focus {
     transform: translateY(0);
-  }
-  .route-status {
-    display: grid;
-    flex: 1;
-    min-height: 160px;
-    place-content: center;
-    justify-items: center;
-    gap: 12px;
-    padding: 24px;
-    color: var(--schegent-muted-fg);
-    text-align: center;
-  }
-  .route-status button {
-    min-height: 32px;
-    border: 1px solid var(--schegent-border);
-    border-radius: var(--schegent-radius);
-    background: var(--schegent-button-bg);
-    color: var(--schegent-button-fg);
-    padding: 0 12px;
-    cursor: pointer;
   }
   .dashboard-topbar {
     position: relative;
