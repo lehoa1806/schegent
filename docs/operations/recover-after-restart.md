@@ -53,6 +53,42 @@ If hydration aborts on a hard error (state from a future runtime version, or unr
 | Audit log appears truncated | Rotation just fired | Look for `.schegent/audit.log.<stamp>` archives. Active log is always `.schegent/audit.log`. |
 | Sidebar status row shows `paused` with no obvious reason | Watchdog detected rate-limit | See [handle-rate-limits.md](handle-rate-limits.md). |
 
+## What wakes the extension
+
+Nothing above happens until VS Code activates the extension, and VS Code
+activates it on two triggers:
+
+| Trigger | Why |
+|---|---|
+| `workspaceContains:.specify/` | The workspace is a Spec-Kit tree. |
+| `workspaceContains:.schegent/` | The workspace has been used by Schegent — the audit log lives there, and arming a schedule creates it. |
+
+The second trigger is what lets a **scheduled start** fire without you
+opening the sidebar first. Invoking a Schegent command or revealing the
+sidebar also activates the extension; VS Code infers those, so they are
+not listed in the manifest.
+
+### The residual: a schedule is not a file
+
+No activation event can observe a `Memento`, and an armed schedule lives
+in `workspaceState` — so `.schegent/` is a *proxy* for "this workspace has
+an armed schedule", not a detector of one. Two consequences follow:
+
+- A schedule armed in a workspace where nothing was ever written to
+  `.schegent/` still needs one manual activation before it can fire. In
+  practice arming writes an audit entry, so this is the
+  pre-existing-state case rather than the ordinary one.
+- Deleting `.schegent/` removes the trigger while leaving the schedule
+  armed. The schedule is still there and still correct; nothing will wake
+  the window to run it. If you clear `.schegent/` for space or privacy,
+  open the workspace once before the next scheduled start is due.
+
+To see whether a schedule is armed without relying on the directory:
+
+```bash
+grep -E 'scheduled-start-armed|scheduled-start-canceled' .schegent/audit.log | tail -n 5
+```
+
 ## Pending-retry restart resilience (feature 011)
 
 If a run was waiting on a delayed retry at restart time (a

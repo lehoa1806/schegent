@@ -8,6 +8,7 @@ import {
   validate as validateRetryCondition,
   evaluate as evaluateRetryCondition
 } from '../lib/retry-condition';
+import { PHASE_RETRY_CONDITION_MAX_LEN } from '../contracts/process-definitions';
 
 export interface PhaseRetryEvaluatorInputs {
   readonly phase: Phase;
@@ -89,7 +90,7 @@ export class PhaseRetryEvaluator {
       metrics: inputs.metrics
     };
 
-    const parsed = this.validate(expression);
+    const parsed = this.validate(expression, PHASE_RETRY_CONDITION_MAX_LEN);
     if (!parsed.ok) {
       const errorMessage = parsed.error;
       this.logger.warn(`retryCondition parse error on ${phaseDefId}: ${errorMessage}`);

@@ -11,7 +11,10 @@
 // bounded to its declared cap. The projection is derived state only: never
 // persisted, never written to `WorkflowRun`, never audited.
 
-import type { PhaseDefinition } from '../../contracts/process-definitions';
+import {
+  PHASE_RETRY_CONDITION_MAX_LEN,
+  type PhaseDefinition
+} from '../../contracts/process-definitions';
 import type { BackendRunnerKind } from '../../runner/backend-runner-factory';
 import type { ResolvedPhaseCatalog } from '../../config/process-catalog';
 import { NO_BUILDER_LIFECYCLE, type BuilderLifecycleLookup } from './builder-lifecycle';
@@ -67,8 +70,15 @@ function projectPhaseDefinition(
     ...(definition.loopable !== undefined ? { loopable: definition.loopable } : {}),
     // Inert text on this path: the retry-condition grammar is owned by the
     // sandboxed DSL evaluator, and this projection neither parses nor inspects it.
+    // Bounding it is not inspecting it — a length is not a parse (feature 111).
     ...(definition.retryCondition !== undefined
-      ? { retryCondition: catalogText(definition.retryCondition, sanitize, INSTRUCTION_MAX) }
+      ? {
+          retryCondition: catalogText(
+            definition.retryCondition,
+            sanitize,
+            PHASE_RETRY_CONDITION_MAX_LEN
+          )
+        }
       : {}),
     ...(definition.isRequired !== undefined ? { isRequired: definition.isRequired } : {}),
     ...(definition.runner !== undefined ? { runner: definition.runner } : {})
@@ -87,13 +97,15 @@ function projectDisplay(
   const projected: Record<string, unknown> = {};
   for (const [field, value] of Object.entries(display)) {
     if (typeof value === 'string') {
-      const max = field === 'instruction' || field === 'retryCondition'
+      const max = field === 'instruction'
         ? INSTRUCTION_MAX
-        : field === 'description'
-          ? DESCRIPTION_MAX
-          : field === 'skill'
-            ? SKILL_MAX
-            : MODEL_MAX;
+        : field === 'retryCondition'
+          ? PHASE_RETRY_CONDITION_MAX_LEN
+          : field === 'description'
+            ? DESCRIPTION_MAX
+            : field === 'skill'
+              ? SKILL_MAX
+              : MODEL_MAX;
       projected[field] = catalogText(value, sanitize, max);
     } else if (typeof value === 'number' || typeof value === 'boolean' || value === null) {
       projected[field] = value;

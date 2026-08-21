@@ -1,4 +1,5 @@
 import { validate as parseRetryCondition, evaluate as evalRetryCondition } from '../lib/retry-condition';
+import { PHASE_RETRY_CONDITION_MAX_LEN } from '../contracts/process-definitions';
 
 /**
  * Prefix on the system-log line emitted when a phase is forced past its
@@ -285,7 +286,7 @@ function evaluateRetryCondition(
   metrics: Readonly<Record<string, number>>,
   warnings: string[]
 ): boolean {
-  const parsed = parseRetryCondition(source);
+  const parsed = parseRetryCondition(source, PHASE_RETRY_CONDITION_MAX_LEN);
   if (!parsed.ok) {
     warnings.push(`retryCondition parse error: ${parsed.error}`);
     return false; // FR-013 — runtime error treated as falsy (advance).
