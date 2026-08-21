@@ -278,7 +278,6 @@ function composeEpochInZone(
 
 function isValidIana(tzText: string): boolean {
   try {
-    // eslint-disable-next-line no-new
     new Intl.DateTimeFormat('en-US', { timeZone: tzText });
     return true;
   } catch {

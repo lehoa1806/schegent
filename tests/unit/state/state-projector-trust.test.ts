@@ -81,7 +81,6 @@ function makeProjector(logger: ReturnType<typeof buildLogger>['logger']): StateP
   return new StateProjector({
     ownerId: 'trust-test-owner',
     debounceMs: 0,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     logger: logger as any
   });
 }

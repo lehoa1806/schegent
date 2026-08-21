@@ -73,7 +73,6 @@ function buildProjector(workspaceRoot: string): {
     audit,
     ownerId: 'coldstart-integ',
     debounceMs: 0,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     logger: logger as any
   });
   return {

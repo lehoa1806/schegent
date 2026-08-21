@@ -154,7 +154,6 @@ async function preflight(store: FakeCatalogStore, text: string): Promise<Preflig
       return true;
     },
     correlationId: 'import-commit-1'
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
   const command: PreflightProcessYamlCommand = {
@@ -250,7 +249,6 @@ async function commit(store: FakeCatalogStore, command: PublishPackageCommand): 
       return true;
     },
     correlationId: 'import-commit-1'
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
   await publishDefinitionPackage(ctx, command);

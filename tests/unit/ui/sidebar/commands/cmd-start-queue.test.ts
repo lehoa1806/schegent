@@ -44,7 +44,6 @@ function buildCtx(opts: {
       return true;
     },
     correlationId: 'test-start-queue-1'
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
   return { ctx, acks, executeCommandSpy, warnings };
 }
@@ -53,7 +52,6 @@ function makeCmd(): StartQueueCommand {
   return {
     type: CMD_START_QUEUE,
     correlationId: 'test-start-queue-1'
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 }
 
@@ -113,7 +111,6 @@ describe('cmd-start-queue handler (BUG-002, FR-012a, T082)', () => {
         return true;
       },
       correlationId: 'test-ordering'
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any;
     await startQueueHandler(ctx, makeCmd());
     expect(acks).toHaveLength(1);
@@ -137,7 +134,6 @@ describe('cmd-start-queue handler (BUG-002, FR-012a, T082)', () => {
       type: CMD_START_QUEUE,
       correlationId: 'test-start-queue-1',
       payload: { queueId: 'queue-b' }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
     expect(executeCommandSpy.mock.calls[0]).toEqual([
       'schegent.startQueue',
@@ -152,7 +148,6 @@ describe('cmd-start-queue handler (BUG-002, FR-012a, T082)', () => {
       type: CMD_START_QUEUE,
       correlationId: 'test-start-queue-1',
       payload: { queueId: 'queue-b', startIntent }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
     expect(executeCommandSpy.mock.calls[0]).toEqual([
       'schegent.startQueue',

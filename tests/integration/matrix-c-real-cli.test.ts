@@ -140,7 +140,6 @@ async function invokeOnce(
 
 function report(label: string, captured: Captured): void {
   // A runbook row is evidence only with its inputs on record.
-  // eslint-disable-next-line no-console
   console.log(
     `[matrix-c] ${label} elapsedMs=${captured.elapsedMs} ` +
       `stdoutLines=${captured.lines.length} stdoutBytes=${captured.stdoutBytes} ` +

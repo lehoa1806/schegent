@@ -95,7 +95,6 @@ async function preflightExample(name: string): Promise<PreflightProcessYamlResul
       return true;
     },
     correlationId: 'shipped-examples-1'
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
   await preflightHandler(ctx, COMMAND);

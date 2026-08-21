@@ -317,7 +317,6 @@ async function planFor(inst: Installation, text: string): Promise<ImportPlan> {
       return true;
     },
     correlationId: CORRELATION
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
   const command: PreflightProcessYamlCommand = {
@@ -463,7 +462,6 @@ async function commitPackage(
       return true;
     },
     correlationId: CORRELATION
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
   // Feature 099 (T496f, FR-029) — `failOn` made the settings writer throw. The
@@ -1107,7 +1105,6 @@ describe('Feature 085 T058 — an import is not a catalog source (FR-045)', () =
         return true;
       },
       correlationId: CORRELATION
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any;
 
     await preflightHandler(ctx, {

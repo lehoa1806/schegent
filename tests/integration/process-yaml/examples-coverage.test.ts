@@ -141,7 +141,6 @@ async function planFor(inst: Installation, text: string): Promise<ImportPlan> {
       return true;
     },
     correlationId: CORRELATION
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
   const command: PreflightProcessYamlCommand = {
@@ -207,7 +206,6 @@ async function commit(inst: Installation, plan: ImportPlan): Promise<readonly st
       return true;
     },
     correlationId: CORRELATION
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
   const layers: PublishPackageCommand['payload']['layers'][number][] = [];
