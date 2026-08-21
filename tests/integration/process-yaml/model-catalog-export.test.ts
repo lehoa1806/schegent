@@ -76,7 +76,6 @@ function buildHarness(
       return true;
     },
     correlationId: 'model-catalog-export-test-1'
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
   return { ctx, acks, audits, saved };

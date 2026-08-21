@@ -68,7 +68,6 @@ let audit: AuditLogWriter;
 beforeEach(async () => {
   tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-delete-cleanup-int-'));
   logger = new SanitizedLogger();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   warnSpy = vi.spyOn(logger, 'warn') as any;
   memento = new FakeMemento();
   store = new WorkspaceStateStore(memento);

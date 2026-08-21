@@ -40,7 +40,6 @@ const SEEDED_PHASE_REVISION = 'rev-phase-import-skip';
 const SEEDED_PIPELINE_REVISION = 'rev-pipeline-import-skip';
 
 interface Harness {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   readonly ctx: any;
   readonly acks: CommandAckMessage[];
   readonly audits: unknown[];

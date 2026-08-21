@@ -79,7 +79,6 @@ function buildCtx(opts: StoreOpts = {}): {
       return true;
     },
     correlationId: CORRELATION_ID
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
   return { ctx, acks, readSpy, listSpy, warnings };
 }
@@ -268,7 +267,6 @@ describe('cmd-read-definition-version — the read writes nothing (US4, T045, SC
         return true;
       },
       correlationId: CORRELATION_ID
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any;
     await readDefinitionVersion(ctx, makeCmd());
     expect(acks[0].status).toBe('accepted');

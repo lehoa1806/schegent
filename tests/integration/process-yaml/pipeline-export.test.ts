@@ -106,7 +106,6 @@ function buildHarness(opts: HarnessOptions = {}): Harness {
       return true;
     },
     correlationId: 'pipeline-export-1'
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
   return { ctx, acks, audits, saved, warnings, updateConfig, executeCommand };

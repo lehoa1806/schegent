@@ -194,7 +194,6 @@ async function preflight(opts: PreflightOptions): Promise<PreflightRun> {
       return true;
     },
     correlationId: CORRELATION
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
   const command: PreflightProcessYamlCommand = {
@@ -953,7 +952,6 @@ describe('Feature 086 T070 — a Workflow document carries the definition and no
         return true;
       },
       correlationId: CORRELATION
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any;
 
     const command: ExportProcessYamlCommand = {

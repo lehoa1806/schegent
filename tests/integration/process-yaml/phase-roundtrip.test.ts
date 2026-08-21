@@ -124,7 +124,6 @@ async function exportDocument(store: FakeCatalogStore, resourceId: string): Prom
       return true;
     },
     correlationId: 'roundtrip-export'
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
   const command: ExportProcessYamlCommand = {
@@ -170,7 +169,6 @@ async function preflight(store: FakeCatalogStore, file: SourceFile) {
       return true;
     },
     correlationId: 'roundtrip-preflight'
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
   const command: PreflightProcessYamlCommand = {
@@ -224,7 +222,6 @@ async function commit(
       return true;
     },
     correlationId: 'roundtrip-commit'
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 
   // Feature 100 (T514) — one layer holding one definition, rather than the whole

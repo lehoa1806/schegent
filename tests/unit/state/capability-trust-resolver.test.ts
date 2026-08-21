@@ -194,7 +194,6 @@ describe('capability-trust-resolver — listener wiring & disposal', () => {
   it('subscribes to onDidGrantWorkspaceTrust and onDidChangeConfiguration; pushes disposables', () => {
     const ctx = makeContext();
     const onInvalidate = vi.fn();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     initCapabilityTrustResolver(ctx as any, onInvalidate);
     expect(mocks.state.trustListeners.size).toBe(1);
     expect(mocks.state.configListeners.size).toBe(1);
@@ -204,7 +203,6 @@ describe('capability-trust-resolver — listener wiring & disposal', () => {
   it('onDidGrantWorkspaceTrust firing calls onInvalidate', () => {
     const ctx = makeContext();
     const onInvalidate = vi.fn();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     initCapabilityTrustResolver(ctx as any, onInvalidate);
     for (const listener of mocks.state.trustListeners) listener();
     expect(onInvalidate).toHaveBeenCalledTimes(1);
@@ -213,7 +211,6 @@ describe('capability-trust-resolver — listener wiring & disposal', () => {
   it('config change for any trust key calls onInvalidate exactly once', () => {
     const ctx = makeContext();
     const onInvalidate = vi.fn();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     initCapabilityTrustResolver(ctx as any, onInvalidate);
     for (const listener of mocks.state.configListeners) {
       listener({
@@ -226,7 +223,6 @@ describe('capability-trust-resolver — listener wiring & disposal', () => {
   it('config change for unrelated key does NOT call onInvalidate', () => {
     const ctx = makeContext();
     const onInvalidate = vi.fn();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     initCapabilityTrustResolver(ctx as any, onInvalidate);
     for (const listener of mocks.state.configListeners) {
       listener({
@@ -239,7 +235,6 @@ describe('capability-trust-resolver — listener wiring & disposal', () => {
   it('config change for each remaining trust key (separately) fires once each', () => {
     const ctx = makeContext();
     const onInvalidate = vi.fn();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     initCapabilityTrustResolver(ctx as any, onInvalidate);
     const trustKeys = Object.values(KEYS);
     for (const targetKey of trustKeys) {
@@ -260,7 +255,6 @@ describe('capability-trust-resolver — listener wiring & disposal', () => {
     // cannot churn the projection.
     const ctx = makeContext();
     const onInvalidate = vi.fn();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     initCapabilityTrustResolver(ctx as any, onInvalidate);
     for (const removed of DELETED_TRUST_KEYS) {
       for (const listener of mocks.state.configListeners) {
@@ -344,7 +338,6 @@ describe('capability-trust-resolver — each capability reads only its own key',
   it('invalidates the projection when its own key changes', () => {
     const ctx = makeContext();
     const onInvalidate = vi.fn();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     initCapabilityTrustResolver(ctx as any, onInvalidate);
     for (const listener of mocks.state.configListeners) {
       listener({
