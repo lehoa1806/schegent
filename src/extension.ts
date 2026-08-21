@@ -781,7 +781,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     // the one the gate sees.
     emptyCatalogGate: {
       isCatalogEmpty: () => catalogSession.catalog.pipelinesById.size === 0,
-      onRefused: (refusal) => notifier.warn(refusal.message)
+      onRefused: (refusal) => void notifier.warn(refusal.message) // advisory
     }
   });
   try {
@@ -1035,7 +1035,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     // is not trusted, blocking malicious workspaces from triggering
     // `CMD_SAVE_*` even if the operator clicks through the sidebar.
     isTrusted: () => vscode.workspace.isTrusted,
-    notifyWarning: (message) => notifier.warn(`Schegent: ${message}.`),
+    notifyWarning: (message) => void notifier.warn(`Schegent: ${message}.`), // advisory
     logger,
     audit: auditWriter,
     // Feature 099 (T494, FR-056) — the Model Catalog is the only

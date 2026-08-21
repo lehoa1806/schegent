@@ -239,7 +239,7 @@ describe('activate() — BUG-001 activation invariant', () => {
     mocks.state.workspaceFolders = [{ uri: { fsPath: '/tmp/ws' } }];
     const handlers = Array.from(mocks.state.listeners);
     expect(handlers.length).toBeGreaterThan(0);
-    await Promise.all(handlers.map((fn) => fn({ added: [], removed: [] })));
+    await Promise.all(handlers.map(async (fn) => fn({ added: [], removed: [] })));
 
     expect(mocks.state.registerWebviewViewProvider).toHaveBeenCalledTimes(1);
     expect(mocks.state.registerCommand.mock.calls.map((c) => c[0])).toEqual(
@@ -268,7 +268,7 @@ describe('activate() — BUG-001 activation invariant', () => {
     mocks.state.workspaceFolders = undefined;
     const handlers = Array.from(mocks.state.listeners);
     expect(handlers.length).toBeGreaterThan(0);
-    await Promise.all(handlers.map((fn) => fn({ added: [], removed: [] })));
+    await Promise.all(handlers.map(async (fn) => fn({ added: [], removed: [] })));
 
     expect(mocks.state.registerWebviewViewProvider).toHaveBeenCalledTimes(1);
     expect(mocks.state.createStatusBarItemDispose.mock.calls.length).toBeGreaterThan(

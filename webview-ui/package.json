@@ -9,7 +9,6 @@
     "typecheck": "svelte-check --tsconfig ./tsconfig.json",
     "test:mocks:check": "node tests/tooling/update-queue-projection-mocks.mjs --check",
     "test": "npm run test:mocks:check && vitest run",
-    "lint": "svelte-check --tsconfig ./tsconfig.json",
     "test:coverage": "npm run test:mocks:check && vitest run --coverage"
   },
   "devDependencies": {

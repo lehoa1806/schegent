@@ -108,7 +108,7 @@ describe('ModelCatalogEditor regression — per-backend grouping and removal (fe
     // The component holds no state of its own — the parent applies the
     // removal and passes down the new `models`, exactly as `onremove`'s
     // (backend, index) pair would drive it.
-    rerender({
+    void rerender({
       ...twoBackendProps,
       models: { claude: ['claude-model-b'], codex: ['codex-model-a'] }
     });

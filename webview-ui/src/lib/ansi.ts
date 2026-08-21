@@ -2,7 +2,7 @@
 // from a string so the rendered CLI command block is readable. Pure helper;
 // no DOM access, no exceptions.
 
-// eslint-disable-next-line no-control-regex
+// eslint-disable-next-line no-control-regex -- matching the ESC that starts an SGR sequence is the point of this module.
 const ANSI_SGR = /\x1b\[[0-9;]*m/g;
 
 export function stripAnsi(input: string): string {
