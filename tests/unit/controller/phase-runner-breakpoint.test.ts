@@ -21,8 +21,12 @@ import type { RawInvocationOutput, InvocationRequest } from '../../../src/runner
 import type { AuditEntry } from '../../../src/audit/audit-entry';
 import type { PhaseBreakpointAccessor } from '../../../src/controller/breakpoint-accessor';
 
+// Feature 107 (T623) — the token trails the audit block, as the constitution's
+// Output Formatting contract has always required ("the **last non-empty line**
+// of stdout for terminal phases"). This fixture put it first, a shape no
+// compliant run emits; the host only began enforcing the rule when the trailing
+// region landed.
 const cleanStdout = [
-  '[SCHEGENT_STATUS: CLEAR]',
   '=== SCHEGENT AUDIT LOG ===',
   'phase: speckit-clarify',
   'files_created: []',
@@ -32,7 +36,8 @@ const cleanStdout = [
   'network_calls: ["none"]',
   'ruleset_switches: ["none"]',
   'notes: ok',
-  '=== END AUDIT LOG ==='
+  '=== END AUDIT LOG ===',
+  '[SCHEGENT_STATUS: CLEAR]'
 ].join('\n');
 
 type MockRawOutput = Omit<Partial<RawInvocationOutput>, 'stdoutBuffer' | 'stderrBuffer'> & { stdout?: string; stderr?: string };

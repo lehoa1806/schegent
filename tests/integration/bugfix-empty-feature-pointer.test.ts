@@ -61,9 +61,13 @@ class FakeMemento implements Memento {
   }
 }
 
+// Feature 107 (FR-R3-023, T623) — the token trails the audit block, where
+// `.specify/memory/constitution.md` § Output Formatting & Loop Termination has
+// always required it ("the **last non-empty line** of stdout for terminal
+// phases"). It sat on the line *before* the block until the host began
+// enforcing that rule; nothing about this fixture's intent changed.
 const cleanStdout = (phase: string): string =>
   [
-    '[SCHEGENT_STATUS: CLEAR]',
     '=== SCHEGENT AUDIT LOG ===',
     `phase: ${phase}`,
     'files_created: []',
@@ -73,7 +77,8 @@ const cleanStdout = (phase: string): string =>
     'network_calls: ["none"]',
     'ruleset_switches: ["none"]',
     'notes: ok',
-    '=== END AUDIT LOG ==='
+    '=== END AUDIT LOG ===',
+    '[SCHEGENT_STATUS: CLEAR]'
   ].join('\n');
 
 // The first invocation of `bugfix-report` simulates the empty/missing
