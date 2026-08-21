@@ -994,6 +994,21 @@ export interface WorkflowSnapshot {
     readonly version: 1;
     readonly suppressedActionKeys: readonly string[];
   };
+  /**
+   * Feature 063 — the master confirmation switch, read by `use-confirm.ts`,
+   * which treats absence as `true` (confirm). Optional on the same
+   * legacy-tolerance grounds as `confirmSuppression` above.
+   *
+   * FR-R3-021 — declared here because `snapshot-composer.ts` has emitted it
+   * since feature 063 and this interface never said so. A conditional spread
+   * (`...(confirmationsEnabled !== undefined ? { confirmationsEnabled } : {})`)
+   * is not a fresh object literal, so excess-property checking does not reach
+   * it: the producer could publish a field its own published type omitted, and
+   * did. Found by typing the visual fixture against this interface — the
+   * fixture carried the field, the webview mirror declared it, and this was the
+   * only one of the three that did not.
+   */
+  readonly confirmationsEnabled?: boolean;
 }
 
 export interface SessionArtifactsProjection {
