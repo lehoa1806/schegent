@@ -112,6 +112,22 @@ dependency-refresh sprint.
    verify it against `SHA256SUMS`, and publish the `.vsix` with
    `vsce publish --packagePath <file>`. There is no automated publish job.
 
+## Artifact provenance
+
+A distributable `.vsix` comes from a tagged `release.yml` run and from
+nowhere else. Local packaging exists only to check the archive: `npm run
+package:smoke` writes into a temporary directory and deletes it, and a
+`.vsix` sitting in the working tree is a leftover, not a candidate — it is
+gitignored, it carries no record of the commit or the toolchain that
+produced it, and nothing distinguishes it from one built with uncommitted
+changes. Delete it rather than shipping it.
+
+Today this is a convention: the only thing separating a hand-built package
+from a release one is where the file came from, which a reader cannot
+check after the fact. FR-R3-029 is the item that makes the statement
+enforceable, by attaching an attestation to the workflow-built artifact so
+provenance becomes a property of the file instead of a claim about it.
+
 ## Rollback
 
 A release tag is a marker, not a deployment. The VS Code marketplace
