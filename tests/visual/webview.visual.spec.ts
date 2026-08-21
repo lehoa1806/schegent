@@ -1,7 +1,14 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import metricsJson from './fixtures/metrics-response.json';
 import phaseLogJson from './fixtures/phase-log-response.json';
-import snapshotJson from './fixtures/workflow-snapshot.json';
+import { workflowSnapshot } from './fixtures/workflow-snapshot';
+// The webview's route union, imported across the CJS/ESM line that was thought
+// to block it. `tests/` is type-checked as Node16/CJS and `webview-ui` is
+// `"type": "module"`, which raises TS1541 for a bare type-only import — but
+// `resolution-mode` resolves it, and the `.js` extension is not optional (drop
+// it and the diagnostic is TS2835, which is what made this look unreachable).
+// Type-only, so nothing survives to runtime and Playwright's transform erases it.
+import type { DashboardRoute } from '../../webview-ui/src/dashboard/routes.js' with { 'resolution-mode': 'import' };
 
 type ThemeName = 'light' | 'dark' | 'high-contrast';
 type SurfaceName =
@@ -11,7 +18,7 @@ type SurfaceName =
   | 'metrics'
   | 'activity-feed';
 
-/** The one queue `fixtures/workflow-snapshot.json` registers. */
+/** The one queue `fixtures/workflow-snapshot.ts` registers. */
 const FIXTURE_QUEUE_ID = 'default';
 
 interface SurfaceContract {
@@ -109,6 +116,134 @@ async function assertSurfaceContract(page: Page, surface: SurfaceName): Promise<
   }
 }
 
+/**
+ * Every dashboard route and the landmark that proves it mounted.
+ *
+ * The single source for the browser suite. It replaces a hand-maintained literal
+ * that was missing `runs` — uncovered since Feature 091 introduced the route
+ * (FR-R3-018) — and nothing in the suite could say so, because a route the walk
+ * never names is a route the walk cannot fail on.
+ *
+ * The `Record<DashboardRoute, string>` annotation is the gate, not documentation.
+ * It makes both drift directions compiler errors that name the route: a route
+ * with no target is `TS2741: Property 'runs' is missing`, and a target for a
+ * retired route is `TS2353: '"pipeline-builder"' does not exist`. Both observed.
+ * `tests/lint/visual-route-coverage.test.ts` carries what a type cannot say —
+ * that no two routes share a target — and stands as a second formulation that
+ * does not depend on this import surviving a tooling change.
+ *
+ * Keys are route ids; values are testids already present in the components. The
+ * `runs` value is the `<main>` landmark `RunsSurface.svelte` already carries, so
+ * closing this gap needed no new testid.
+ */
+const ROUTE_MOUNT_TARGETS: Readonly<Record<DashboardRoute, string>> = {
+  // The operations route lands on the Queues tier since Feature 092; the pane
+  // that used to be here is a click deeper and is covered by the `queues`
+  // surface below.
+  operations: 'queues-tier',
+  runs: 'runs-surface',
+  history: 'history-dashboard',
+  metrics: 'metrics-section',
+  system: 'system-tab',
+  builder: 'pipeline-builder-root',
+  settings: 'settings-surface-root'
+} as const;
+
+interface CapturedError {
+  readonly kind: 'pageerror' | 'console.error';
+  readonly text: string;
+}
+
+/**
+ * What the page reported, per page, drained at each checkpoint.
+ *
+ * Both channels are guarded and neither is redundant. FR-R3-021's defect was an
+ * uncaught `TypeError` thrown while a route mounted: nothing caught it, so it
+ * arrived as `pageerror` — and the only thing this suite noticed was a locator
+ * timing out on a testid the crashed surface never got far enough to render.
+ * Now that a `<svelte:boundary>` catches that throw, the same defect arrives as
+ * a `console.error` and never reaches `pageerror` at all. A guard on either
+ * channel alone would catch the defect only in one of those two eras.
+ */
+const capturedErrors = new WeakMap<Page, CapturedError[]>();
+
+function installErrorCapture(page: Page): void {
+  const captured: CapturedError[] = [];
+  capturedErrors.set(page, captured);
+  page.on('pageerror', (error) => {
+    captured.push({ kind: 'pageerror', text: `${error.name}: ${error.message}` });
+  });
+  page.on('console', (message) => {
+    if (message.type() === 'error') captured.push({ kind: 'console.error', text: message.text() });
+  });
+}
+
+/**
+ * A checkpoint-scoped opt-out. Both fields are required: an allowance with no
+ * stated reason is how a suite-wide relaxation arrives one test at a time, and
+ * a `match` narrower than "everything" is what keeps an expected error from
+ * excusing an unexpected one alongside it.
+ */
+interface ErrorAllowance {
+  readonly reason: string;
+  readonly match: RegExp;
+}
+
+/**
+ * Fail if the page reported an error since the last checkpoint, naming `step`.
+ *
+ * `step` is the identity a failure has to carry to be actionable: the surface
+ * name for a screenshot test, the route id inside a route walk. It has to
+ * resolve for every caller — a route walk has no "surface under test" — so it
+ * is a plain string the caller supplies rather than a `SurfaceName`.
+ *
+ * Draining is deliberate. Inside a walk, each route is its own checkpoint, so
+ * one route's allowed error cannot excuse the next route's real one.
+ */
+function assertNoPageErrors(page: Page, step: string, allowance?: ErrorAllowance): void {
+  const captured = capturedErrors.get(page);
+  if (captured === undefined) {
+    throw new Error(`${step}: error capture was never installed on this page`);
+  }
+  const drained = captured.splice(0, captured.length);
+  const unexpected = allowance ? drained.filter((e) => !allowance.match.test(e.text)) : drained;
+  expect(
+    unexpected.map((e) => `${e.kind}: ${e.text}`),
+    allowance
+      ? `${step}: the page reported an error outside the allowance "${allowance.reason}"`
+      : `${step}: the page reported an error`
+  ).toEqual([]);
+}
+
+const MOUNT_TIMEOUT_MS = 10_000;
+const MOUNT_POLL_MS = 50;
+
+/**
+ * Wait for a route's mount target, surrendering to a page error the moment one
+ * arrives rather than running the locator's clock down.
+ *
+ * This is the entire difference between the report that left FR-R3-021's defect
+ * unexplained for a round and one that names it. `toBeVisible()` on a surface
+ * that threw during mount reports "testid never became visible" after its
+ * timeout: true, useless, and indistinguishable from a chunk that never loaded.
+ * Checking the error channel first reports the `TypeError`.
+ */
+async function assertRouteMounted(page: Page, route: string, target: string): Promise<void> {
+  const locator = page.getByTestId(target);
+  const deadline = Date.now() + MOUNT_TIMEOUT_MS;
+  for (;;) {
+    assertNoPageErrors(page, route);
+    if (await locator.isVisible()) return;
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `${route}: mount target '${target}' never became visible within ` +
+          `${MOUNT_TIMEOUT_MS} ms, and the page reported no error explaining why`
+      );
+    }
+    await page.waitForTimeout(MOUNT_POLL_MS);
+  }
+}
+
 interface ThemePalette {
   readonly foreground: string;
   readonly background: string;
@@ -125,7 +260,6 @@ interface ThemePalette {
   readonly purple: string;
 }
 
-const workflowSnapshot: unknown = snapshotJson;
 const metricsResponse: unknown = metricsJson;
 const phaseLogResponse: unknown = phaseLogJson;
 
@@ -245,6 +379,9 @@ function themeCss(theme: ThemeName): string {
 }
 
 async function installDeterministicHost(page: Page): Promise<void> {
+  // Installed here rather than per test so no test can forget it: every test in
+  // this file reaches the page through this function.
+  installErrorCapture(page);
   await page.route('**/*', async (route) => {
     const requestUrl = new URL(route.request().url());
     if (requestUrl.origin === 'http://127.0.0.1:4173') {
@@ -300,6 +437,61 @@ async function publishSnapshot(page: Page): Promise<void> {
   await page.evaluate(
     `window.dispatchEvent(new MessageEvent('message', { data: { type: 'STATE_SNAPSHOT', payload: ${snapshot} } }))`
   );
+}
+
+/**
+ * The original defect, re-created on purpose: `history[0]` without `queueId`.
+ *
+ * `docs/operations/built-artifact-route-diagnosis.md` records this as the one
+ * omission that crashes the History route — `labelFor` returns `undefined`, the
+ * queue facet stores an entry with an undefined label, and `byLabel` reads
+ * `.localeCompare` off it. Reproducing it here is what gives T587d a real mount
+ * failure to recover from, rather than a stub that throws on cue.
+ *
+ * Built with a rest destructure and passed through `inlineJson`'s `unknown`
+ * parameter, so no cast is involved: this is the payload a broken producer would
+ * emit, and asserting on it must not require suppressing the type system that
+ * makes such a producer impossible in the first place (SC-007).
+ */
+async function publishSnapshotMissingHistoryQueueId(page: Page): Promise<void> {
+  const [firstEntry, ...restHistory] = workflowSnapshot.history;
+  const { queueId: _queueId, ...entryWithoutQueueId } = firstEntry;
+  const snapshot = inlineJson({
+    ...workflowSnapshot,
+    history: [entryWithoutQueueId, ...restHistory]
+  });
+  await page.evaluate(
+    `window.dispatchEvent(new MessageEvent('message', { data: { type: 'STATE_SNAPSHOT', payload: ${snapshot} } }))`
+  );
+}
+
+/** The chunk the History route is code-split into (`chunkFileNames: 'chunks/[name].js'`). */
+const HISTORY_CHUNK_PATH = '/chunks/HistoryDashboard.js';
+
+/**
+ * How long to let a Retry settle before counting what it did.
+ *
+ * A fixed wait, not a poll, because the assertion is about something that does
+ * *not* happen — `expect.poll` on an absence returns immediately on the first
+ * look and proves nothing about the interval after it.
+ */
+const RETRY_SETTLE_MS = 2_000;
+
+/**
+ * Count every chunk request the page makes, by path.
+ *
+ * The counter exists because the unit suite cannot hold this observation:
+ * vitest serves a mocked module out of its own registry, so a re-import and a
+ * cache hit are indistinguishable from inside a jsdom test. A chunk request is
+ * only a real, countable event in a real browser.
+ */
+function countChunkRequests(page: Page): () => readonly string[] {
+  const requested: string[] = [];
+  page.on('request', (request) => {
+    const path = new URL(request.url()).pathname;
+    if (path.startsWith('/chunks/')) requested.push(path);
+  });
+  return () => requested;
 }
 
 function inlineJson(value: unknown): string {
@@ -411,6 +603,11 @@ for (const theme of ['light', 'dark', 'high-contrast'] as const) {
       // own content, so a green screenshot cannot mean "photographed a
       // fallback" or "photographed a baseline nobody re-generated".
       await assertSurfaceContract(page, surface);
+      // Before the pixel gate, not after: a surface that reported an error on
+      // the way to a stable-looking screenshot is the failure mode
+      // `SURFACE_CONTRACTS` was written for, arriving through a channel it
+      // cannot see.
+      assertNoPageErrors(page, surface);
       await expect(target).toHaveScreenshot(`${surface}-${theme}.png`, {
         mask: [...volatileMasks(page)],
         maskColor: theme === 'light' ? '#e5e7eb' : '#334155'
@@ -418,6 +615,153 @@ for (const theme of ['light', 'dark', 'high-contrast'] as const) {
     });
   }
 }
+
+/**
+ * T587d — the half of SC-009b the unit suite cannot hold.
+ *
+ * `App.route-loading.test.ts` covers the *mechanism* of recovery: a mount
+ * failure recovers without the loading branch reappearing, a load rejection
+ * recovers with it. What it cannot cover is the consequence that distinguishes
+ * the two — whether a second chunk request goes out — because in jsdom there is
+ * no chunk and no request. Both tests live here, in the runtime where a chunk
+ * request is a real event, and count them.
+ */
+test.describe('route load failure recovery', () => {
+  test.use({ viewport: { width: 1440, height: 960 } });
+
+  test('Retry after a mount failure re-mounts from the loaded chunk', async ({ page }) => {
+    await installDeterministicHost(page);
+    const chunkRequests = countChunkRequests(page);
+    const mountDiagnostics: string[] = [];
+    page.on('console', (message) => {
+      if (message.type() === 'error' && message.text().includes('route mount failed')) {
+        mountDiagnostics.push(message.text());
+      }
+    });
+
+    await page.goto('/dashboard.html');
+    await page.addStyleTag({ content: themeCss('dark') });
+    await publishSnapshotMissingHistoryQueueId(page);
+    // Stated as a precondition rather than assumed: the omission is documented as
+    // crashing the History route alone, and if it ever crashes the landing route
+    // too, this is where that says so instead of surfacing as a stray click
+    // timeout below.
+    await expect(page.getByTestId('queues-tier')).toBeVisible();
+
+    await page.getByTestId('dashboard-route-history').click();
+    const errorBranch = page.getByTestId('dashboard-route-error');
+    await expect(errorBranch).toBeVisible();
+    await expect(errorBranch).toHaveAttribute('role', 'alert');
+
+    const afterFirstFailure = [...chunkRequests()];
+    expect(
+      afterFirstFailure.filter((path) => path === HISTORY_CHUNK_PATH),
+      'the chunk must have loaded — otherwise this is a load rejection, not a mount failure'
+    ).toHaveLength(1);
+    expect(mountDiagnostics).toHaveLength(1);
+    assertNoPageErrors(page, 'history mount failure', {
+      reason: 'the boundary reports every caught mount failure by design (FR-004b)',
+      match: /route mount failed route=history/
+    });
+
+    await errorBranch.getByRole('button', { name: 'Retry' }).click();
+
+    // The same broken snapshot is still published, so the re-mount throws again
+    // and lands back on the error branch. That is the point: a second diagnostic
+    // proves the retry re-mounted, and the unchanged chunk count proves it did so
+    // from the module already in memory.
+    await expect.poll(() => mountDiagnostics.length).toBe(2);
+    await expect(errorBranch).toBeVisible();
+    expect(
+      chunkRequests().filter((path) => path === HISTORY_CHUNK_PATH),
+      'Retry after a mount failure must not re-request the chunk'
+    ).toHaveLength(1);
+    assertNoPageErrors(page, 'history mount failure retry', {
+      reason: 'the boundary reports every caught mount failure by design (FR-004b)',
+      match: /route mount failed route=history/
+    });
+  });
+
+  /**
+   * The finding this test exists to hold: **a chunk whose fetch failed cannot be
+   * re-requested by retrying the import.** SC-009b was written expecting Retry to
+   * issue a second request on the rejection path; in a real browser it issues
+   * none. Two caches sit between `loadRoute` and the network, and application
+   * code owns neither — the ES module map records the failed fetch and rejects
+   * subsequent `import()` of the same specifier without going out again, and
+   * Vite's `__vitePreload` helper keeps its own `seen` set of handled deps. The
+   * only escape is a fresh specifier (a cache-busting query), which forfeits the
+   * static analysis Vite splits chunks by, and so trades FR-013/SC-012 away for
+   * a recovery path that matters least: a chunk served from the extension's own
+   * `dist/` fails when it is missing, corrupt, or CSP-blocked, and none of those
+   * clear on a retry.
+   *
+   * So the assertion is the outcome, not the wish. That Retry *runs* is
+   * established in `App.route-loading.test.ts`, where the loader is mocked and
+   * the loading branch reappears; what this test adds is that the network is not
+   * re-hit and the surface does not come back. The control at the end keeps the
+   * finding narrow: a different lazy route still loads, so what is poisoned is
+   * one module, not the loader.
+   */
+  test('Retry after a load rejection cannot re-fetch a chunk the browser failed', async ({ page }) => {
+    await installDeterministicHost(page);
+    // Registered after the deterministic host so it wins: Playwright runs the
+    // most recently registered matching handler first.
+    let blockChunk = true;
+    await page.route(`**${HISTORY_CHUNK_PATH}`, async (route) => {
+      if (blockChunk) {
+        await route.abort();
+        return;
+      }
+      await route.continue();
+    });
+    const chunkRequests = countChunkRequests(page);
+
+    await page.goto('/dashboard.html');
+    await page.addStyleTag({ content: themeCss('dark') });
+    await publishSnapshot(page);
+    await expect(page.getByTestId('queues-tier')).toBeVisible();
+
+    await page.getByTestId('dashboard-route-history').click();
+    const errorBranch = page.getByTestId('dashboard-route-error');
+    await expect(errorBranch).toBeVisible();
+    expect(chunkRequests().filter((path) => path === HISTORY_CHUNK_PATH)).toHaveLength(1);
+    // The browser's own wording, which names no resource — so the allowance
+    // cannot pin which fetch failed. The route handler above does: it aborts one
+    // path and nothing else, and the request assertion just above confirms that
+    // path was requested exactly once. Identity comes from those, not from this
+    // regex, and the checkpoint scope keeps it from excusing a later error.
+    assertNoPageErrors(page, 'history load rejection', {
+      reason: 'the chunk fetch aborted by this test is the failure under test',
+      match: /net::ERR_FAILED/
+    });
+
+    // Unblocked, so the network would serve the chunk if it were asked. It is not.
+    blockChunk = false;
+    await errorBranch.getByRole('button', { name: 'Retry' }).click();
+    await page.waitForTimeout(RETRY_SETTLE_MS);
+
+    expect(
+      chunkRequests().filter((path) => path === HISTORY_CHUNK_PATH),
+      'no second request goes out: the module map already holds the failure'
+    ).toHaveLength(1);
+    await expect(
+      page.getByTestId(ROUTE_MOUNT_TARGETS.history),
+      'the surface cannot mount from a module the browser refuses to re-fetch'
+    ).toHaveCount(0);
+    await expect(errorBranch, 'Retry lands back on the error branch').toBeVisible();
+    assertNoPageErrors(page, 'history load rejection retry');
+
+    // The control. Without it this test would pass just as well against a loader
+    // that had stopped loading anything at all.
+    await page.getByTestId('dashboard-route-metrics').click();
+    await assertRouteMounted(page, 'metrics', ROUTE_MOUNT_TARGETS.metrics);
+    expect(
+      chunkRequests().filter((path) => path === '/chunks/MetricsDashboard.js'),
+      'an unpoisoned route still loads, so the loader itself is intact'
+    ).toHaveLength(1);
+  });
+});
 
 test.describe('responsive accessibility hardening', () => {
   test.use({ hasTouch: true, viewport: { width: 390, height: 844 } });
@@ -430,21 +774,13 @@ test.describe('responsive accessibility hardening', () => {
     await expect(page.getByTestId('queues-tier')).toBeVisible();
     await expect.poll(() => page.evaluate("matchMedia('(pointer: coarse)').matches")).toBe(true);
 
-    const routeTargets = {
-      // The operations route lands on the Queues tier since feature 092; the
-      // pane that used to be here is a click deeper and is covered by the
-      // `dashboard` surface above.
-      operations: 'queues-tier',
-      history: 'history-dashboard',
-      metrics: 'metrics-section',
-      system: 'system-tab',
-      builder: 'pipeline-builder-root',
-      settings: 'settings-surface-root'
-    } as const;
-
-    for (const [route, target] of Object.entries(routeTargets)) {
+    for (const [route, target] of Object.entries(ROUTE_MOUNT_TARGETS)) {
       await page.getByTestId(`dashboard-route-${route}`).click();
-      await expect(page.getByTestId(target)).toBeVisible();
+      await assertRouteMounted(page, route, target);
+      await expect(
+        page.getByTestId('dashboard-route-error'),
+        `${route} rendered the route error branch instead of its surface`
+      ).toHaveCount(0);
       await expect(page.locator('main')).toHaveCount(1);
       if (route === 'builder') {
         await page.getByRole('tab', { name: 'Models' }).click();
@@ -497,6 +833,11 @@ test.describe('responsive accessibility hardening', () => {
         })
       );
       expect(unnamedForms, `${route} has unnamed form controls`).toEqual([]);
+
+      // Per route, not once at the end: the walk visits seven surfaces, and a
+      // single end-of-test drain would let the last route's silence stand in for
+      // all seven.
+      assertNoPageErrors(page, route);
     }
   });
 });

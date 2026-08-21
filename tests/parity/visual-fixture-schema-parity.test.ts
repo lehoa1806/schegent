@@ -2,7 +2,7 @@
  * Visual-fixture snapshot-schema parity.
  *
  * The Playwright visual suite publishes one hand-written snapshot,
- * `tests/visual/fixtures/workflow-snapshot.json`, straight into the webview via
+ * `tests/visual/fixtures/workflow-snapshot.ts`, straight into the webview via
  * a `STATE_SNAPSHOT` message. The store drops any snapshot whose
  * `schemaVersion` it does not recognise, and a dropped snapshot leaves the
  * dashboard on "Connecting to workspace" — so every route-scoped
@@ -22,15 +22,25 @@
  *
  * This runs under `npm run test`, so the next reshape fails in seconds rather
  * than as a 30 s-per-test Playwright timeout in `npm run test:visual`.
+ *
+ * FR-R3-021 — the fixture became a TypeScript module checked against the host
+ * producer's `WorkflowSnapshot` with `satisfies`, so the compiler now rejects
+ * most of what the shape checks below look for, and rejects it by name. These
+ * stay for two reasons. They are a second formulation that does not depend on
+ * the producer type being right — the typecheck can only be as good as the
+ * interface, and typing the fixture is what exposed a field the interface had
+ * omitted for four features. And they answer questions the type cannot phrase:
+ * a `Record<string, unknown>` can be asked whether a key the contract does not
+ * declare is nonetheless present, which is the shape a stale fixture takes.
  */
 
 import { describe, expect, it } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import { SCHEMA_VERSION } from '../../src/ui/sidebar/snapshot';
+import { workflowSnapshot } from '../visual/fixtures/workflow-snapshot';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
-const FIXTURE_PATH = path.join(REPO_ROOT, 'tests', 'visual', 'fixtures', 'workflow-snapshot.json');
 const STORE_PATH = path.join(
   REPO_ROOT,
   'webview-ui',
@@ -51,10 +61,13 @@ const V3_ROOT_RUN_FIELDS = [
   'delayedRetry'
 ] as const;
 
+/**
+ * The fixture as an open record, so the checks below can ask about keys the
+ * contract does not declare. A spread rather than a cast: the contract has been
+ * wrong before, and a cast here would inherit whatever the next one gets wrong.
+ */
 function readFixture(): Record<string, unknown> {
-  const parsed: unknown = JSON.parse(fs.readFileSync(FIXTURE_PATH, 'utf8'));
-  expect(typeof parsed).toBe('object');
-  return parsed as Record<string, unknown>;
+  return { ...workflowSnapshot };
 }
 
 /**

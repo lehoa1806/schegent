@@ -264,6 +264,11 @@
           "name": "confirmSuppression",
           "optional": true,
           "type": "{ readonly version: 1; readonly suppressedActionKeys: readonly string[]; }"
+        },
+        {
+          "name": "confirmationsEnabled",
+          "optional": true,
+          "type": "boolean"
         }
       ]
     }
