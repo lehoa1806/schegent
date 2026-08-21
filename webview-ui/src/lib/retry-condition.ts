@@ -342,9 +342,29 @@ class Parser {
   }
 }
 
-export function validate(source: string): ParseResult {
+/**
+ * Parse a `retryCondition` source string into an expression tree.
+ *
+ * `maxLength`, when supplied, is refused before tokenization. A length is not a
+ * parse: the check is one property read, on input the tokenizer would otherwise
+ * walk character by character. Omitting the parameter preserves the behaviour this
+ * function had before feature 111, exactly.
+ *
+ * The bound itself lives in `contracts/process-definitions.ts`
+ * (`PHASE_RETRY_CONDITION_MAX_LEN`) and arrives here as an argument rather than an
+ * import, because this module imports nothing: it is byte-mirrored into
+ * `webview-ui/src/lib/` and `tests/lint/retry-condition-stays-inert.test.ts` pins
+ * its importer list at exactly three.
+ */
+export function validate(source: string, maxLength?: number): ParseResult {
   if (typeof source !== 'string' || source.trim() === '') {
     return { ok: false, error: 'retryCondition source is empty' };
+  }
+  if (maxLength !== undefined && source.length > maxLength) {
+    return {
+      ok: false,
+      error: `retryCondition is ${source.length} characters; the maximum is ${maxLength}`
+    };
   }
   let tokens: Token[];
   try {

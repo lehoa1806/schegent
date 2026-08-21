@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { PHASE_RETRY_CONDITION_MAX_LEN } from '../../../src/contracts/process-definitions';
 import { validatePhaseDefinition } from '../../../src/config/process-definition-validator';
 
 const valid = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
@@ -104,5 +105,47 @@ describe('validatePhaseDefinition', () => {
     const legacy = valid();
     delete legacy.version;
     expect(validatePhaseDefinition(legacy, { defaultVersion: 1 }).definition?.version).toBe(1);
+  });
+
+  // --- Feature 111 (T691) — the retryCondition length bound ---
+
+  /** A `retryCondition` of exactly `n` characters that parses. */
+  const conditionOfLength = (n: number): string => {
+    const source = `a > 0 or ${'b'.repeat(n - 13)} > 0`;
+    expect(source.length, 'fixture builder is wrong').toBe(n);
+    return source;
+  };
+
+  it('accepts a retryCondition of exactly the bound', () => {
+    const result = validatePhaseDefinition(
+      valid({ retryCondition: conditionOfLength(PHASE_RETRY_CONDITION_MAX_LEN) })
+    );
+    expect(result.errors.filter((e) => e.field === 'retryCondition')).toEqual([]);
+  });
+
+  it('refuses one character past the bound as a length, not as a bad expression', () => {
+    const over = PHASE_RETRY_CONDITION_MAX_LEN + 1;
+    const result = validatePhaseDefinition(valid({ retryCondition: conditionOfLength(over) }));
+    const errors = result.errors.filter((e) => e.field === 'retryCondition');
+    expect(errors).toHaveLength(1);
+    // The code is the load-bearing half: `invalid-expression` would send an
+    // operator looking for a syntax error in a condition that has none.
+    expect(errors[0].code).toBe('invalid-length');
+    // Both numbers, per FR-012: the limit alone leaves an operator with a
+    // 4 KiB condition guessing whether they are 1 character over or 3,500.
+    // Asserted as the whole sentence because the three routes are required to
+    // emit the same one, and a `toContain` on either number alone would pass
+    // while they drifted apart.
+    expect(errors[0].message).toBe(`retryCondition is ${over} characters; the maximum is 512`);
+  });
+
+  it('still reports invalid-expression for a short but unparseable condition', () => {
+    // The length branch must not swallow the parse branch — a vacuity guard on the
+    // assertion above.
+    const errors = validatePhaseDefinition(
+      valid({ retryCondition: 'process.exit()' })
+    ).errors.filter((e) => e.field === 'retryCondition');
+    expect(errors).toHaveLength(1);
+    expect(errors[0].code).toBe('invalid-expression');
   });
 });

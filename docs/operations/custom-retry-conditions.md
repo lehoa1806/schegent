@@ -12,6 +12,54 @@ literals, comparisons (`> >= < <= == !=`), logical combinators
 function calls, member access, or chained comparisons. See
 [docs/security/threat-model.md](../security/threat-model.md) T11.
 
+## Length limit
+
+A `retryCondition` may be at most **512 characters**. The limit is on the
+character count of the expression as you wrote it, not on its byte length,
+and it is checked before the expression is tokenized — an over-long
+condition is refused without being parsed at all.
+
+512 is generous for what the grammar admits. The longest condition
+shipped with the product is 77 characters, and the longest identifier the
+grammar accepts is 24, so an eight-clause condition still lands around
+236. If you are near the limit, the condition is almost certainly doing
+work that belongs in the prompt: have the phase emit one summary metric
+and compare against that.
+
+All three routes that can refuse the condition say the same sentence, so
+you only have to learn it once:
+
+> retryCondition is 613 characters; the maximum is 512
+
+(with the real count in place of 613 — the message names how far over you
+are, not just the limit). What differs between the routes is what happens
+to the condition:
+
+| Route | What happens |
+|---|---|
+| Importing a `.pipeline.yaml` / phase YAML | The import is refused, with `retryCondition` reported as `invalid-length`. Nothing is written. |
+| Editing a phase in the catalog | The phase is saved, but resolves as **invalid** with the same `invalid-length` code and is excluded from the effective catalog until you shorten it. The body you typed is kept exactly as you typed it — nothing truncates it for you. |
+| A condition already stored, reached at run time | The evaluation is refused, so the phase advances rather than looping. The `phase.retry_evaluated` event records `decision: false`, `evaluationError: true`, and the message in `errorMessage`. |
+
+Note that the refusal is reported as a **length**, not as an invalid
+expression. A 600-character condition with perfect syntax is still
+refused, and the message says so rather than sending you looking for a
+syntax error that is not there.
+
+One surface deliberately does **not** report it: the inline editor's
+live valid/invalid verdict as you type is a syntax check only, so a
+600-character condition with good syntax still reads as valid there. The
+length is enforced when the phase is resolved, which is the boundary that
+decides whether the catalog accepts it. If the editor says valid and the
+saved phase comes back `invalid-length`, that is this, not a
+contradiction.
+
+Two things the bound deliberately does not do. It does not rewrite
+anything: an over-long condition already in your catalog stays byte for
+byte as you wrote it, so you can read it, shorten it, and keep the part
+you wanted. And it does not change the sandbox — the same grammar applies
+at 1 character as at 512.
+
 ## Minimal worked example
 
 ```yaml
@@ -52,6 +100,7 @@ the recorded expression against the recorded metrics.
 | One-shot warning about reserved key | A reserved field name (`status`, `model`, `effort`, `pipelineId`, …) collided with a metric. Rename your metric. |
 | One-shot warning about non-finite / non-numeric value | Model emitted `NaN`, `Infinity`, or text like `many`. Update your prompt to emit a finite number. |
 | Workspace activation logs a single retry-condition warning at load time | Syntactically invalid expression. The phase remains loadable with default loop semantics. Fix the expression and reload. |
+| Import refused, or a catalog phase shows `invalid-length` on `retryCondition` | Over 512 characters. See [Length limit](#length-limit) — the condition is not parsed, so this is not a syntax error. |
 
 ## Forcing a run past an exhausted cap
 

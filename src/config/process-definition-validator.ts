@@ -2,6 +2,7 @@ import {
   PHASE_EFFORT_LEVELS,
   PHASE_EVIDENCE_POLICIES,
   PHASE_ID_MAX_LEN,
+  PHASE_RETRY_CONDITION_MAX_LEN,
   PHASE_SIDE_EFFECTS,
   type PhaseDefinition,
   type PhaseEvidencePolicy,
@@ -365,6 +366,29 @@ export function validatePhaseDefinition(
           'retryCondition',
           'non-empty-required',
           'Phase retryCondition must be non-empty'
+        )
+      );
+    } else if (value.retryCondition.length > PHASE_RETRY_CONDITION_MAX_LEN) {
+      // Refused before the evaluator is entered, and reported as a length rather
+      // than as an invalid expression — an over-long condition is not a syntax
+      // error, and an operator reading `invalid-expression` would go looking for
+      // one (feature 111, FR-009, FR-029).
+      //
+      // The message names the actual length as well as the limit, which is the one
+      // way it departs from the four sibling bounds above ("Phase name must
+      // contain 1 to 64 characters"). FR-012 asks for both numbers on all three
+      // routes, in the same words, because this is the only one of the five
+      // bounded fields an operator meets on three of them — the import, this
+      // resolver, and the runner — and "how far over" is the actionable half.
+      // The runner's copy lives in `lib/retry-condition.ts` and cannot carry a
+      // `Phase` prefix (it validates a bare source, and is byte-mirrored into the
+      // webview), so the shared wording is the one without it.
+      errors.push(
+        fieldError(
+          phaseId,
+          'retryCondition',
+          'invalid-length',
+          `retryCondition is ${value.retryCondition.length} characters; the maximum is ${PHASE_RETRY_CONDITION_MAX_LEN}`
         )
       );
     } else {
