@@ -204,9 +204,30 @@ produces `schegent-<version>.vsix` at the repo root.
 
 ### Branches
 
-Branch from the project's default branch. Use short, descriptive
-names (`fix/cli-detection-windows`, `feat/codex-continue-flag`,
+`develop` is the integration branch and the default in **both**
+repositories — the planning envelope and this execution repository.
+There is no `main`. Branch from `develop`, and target `develop` in
+every pull request. Use short, descriptive names
+(`fix/cli-detection-windows`, `feat/codex-continue-flag`,
 `docs/retry-troubleshooting`).
+
+This matters beyond convention: CI workflows filter on branch name,
+and a filter naming a branch that does not exist produces neither a
+failing check nor a skipped-run notice — it is indistinguishable from
+a check that passed. Four merge-blocking workflows were scoped to
+`main` for 38 merges before anyone noticed. `tests/lint/`
+[`workflow-trigger-branches.test.ts`](tests/lint/workflow-trigger-branches.test.ts)
+now fails the build when any trigger names a branch that resolves to
+no ref, so the next branch-model change is caught at edit time rather
+than by absence. See
+[docs/operations/merge-gate-observation.md](docs/operations/merge-gate-observation.md).
+
+The recorded alternative — **Option B** — is to create `main` as a
+release branch and move the tag-driven release flow onto it, leaving
+`develop` as the integration target. It is a deliberate branching-model
+decision, not a repair: taking it means updating the trigger filters,
+this section, and the repository default together. Do not create `main`
+incidentally, and do not repoint a trigger at it without that change.
 
 ### Commits
 
