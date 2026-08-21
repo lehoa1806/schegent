@@ -1,77 +1,50 @@
 /**
- * Grounds the pinned VSIX chunk list in the webview source tree.
+ * Grounds the webview half of the VSIX policy in the source tree, without a build.
  *
- * `vsix-content-policy.test.ts` feeds `ALLOWED_VSIX_ENTRIES` to its own
- * validator, so it passes by construction however stale the pin becomes. The
- * only check that compares the pin against reality is `package:smoke`, which
- * sits at the very end of `npm run ci` behind `test:visual` — so when the
- * visual suite broke, the pin drifted through features 081-095 unnoticed and
- * surfaced as nine unpinned chunks and seven unpinned stylesheets at once.
+ * Feature 106 (T592a, FR-013a) rewrote what there is to ground here, because the
+ * derivation removed this file's own subject.
  *
- * These checks need no build, so they run in `npm run test`:
+ * Two of the three original chunk directions are gone:
  *
- *   1. every pinned chunk names a module that exists under `webview-ui/src/`
- *      — catches a pin left behind by a deleted surface;
- *   2. every dynamically imported surface has a pinned chunk — catches the
- *      case that actually happened, a new lazily-loaded route (092's
- *      `QueueDetailTier` / `RunDetailTier`) shipped without re-pinning;
- *   3. the pinned `examples/` entries and the `examples/` directory agree,
- *      both ways — catches the case that happened next, feature 096's
- *      `model-catalog.yaml` shipped without re-pinning.
+ *   1. "every pinned chunk names a module that exists under `webview-ui/src/`" is
+ *      **removed**, not moved. After the derivation nothing under `chunks/` is
+ *      pinned, so its subject is an empty list and it passed over nothing — the
+ *      exact vacuity this file was written to close, one level up. It was also
+ *      the rule that made the pin unrepairable: `chunks/empty-catalog-guidance.js`
+ *      is emitted, is required by the archive check, and matches no source module,
+ *      so the two gates could not both be green. It must not come back;
+ *      `docs/operations/vsix-allowlist-derivation.md` records why.
+ *   2. "every dynamically imported surface has a pinned chunk" moved into
+ *      `check-vsix-smoke.mjs`, where it is asserted against the *emitted* set
+ *      rather than the pinned one, so `package:smoke` is the thing that fails.
  *
- * Direction 3 is exact rather than front-loading, and that is the difference
- * from the chunk directions: `.vscodeignore` excludes no part of `examples/`,
- * so what vsce packages from it is exactly what is on disk. No build is needed
- * to know that, which is why the drift never had to reach `package:smoke` at
- * all.
+ * What is left here is the part that still needs no build, and the part a second
+ * implementation is the only way to check:
  *
- * This does not replace `package:smoke`. Vite also emits shared chunks it
- * extracts on its own (`format.js`, `WorkflowRun.js`, the `indexN.css`
- * stylesheets), and those are not derivable from source without building, so
- * only the archive check sees them. The point is to front-load the directions
- * that drift in practice, not to claim the pin is fully verified here.
+ *   1. the script's scan for authored boundaries agrees with this file's;
+ *   2. the route map parse resolves to boundaries the scan also found — the
+ *      correspondence names routes from it, and a regex that stopped matching
+ *      would silently downgrade every route failure to an anonymous one;
+ *   3. the pinned `examples/` entries and the `examples/` directory agree, both
+ *      ways — unchanged, and still exact rather than front-loading, because
+ *      `.vscodeignore` excludes no part of `examples/` so what vsce takes from it
+ *      is exactly what is on disk.
+ *
+ * This does not replace `package:smoke`. Vite emits shared chunks it extracts on
+ * its own — `format.js`, `WorkflowRun.js`, `empty-catalog-guidance.js`, the
+ * `indexN.css` stylesheets — and those are not derivable from source without
+ * building, so only the archive check sees them. The point is to front-load the
+ * directions that drift in practice, not to claim the policy is fully verified
+ * here.
  */
 
 import { describe, expect, it } from 'vitest';
-import * as fs from 'fs';
 import * as path from 'path';
 
-const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
-const WEBVIEW_SRC = path.join(REPO_ROOT, 'webview-ui', 'src');
-const CHUNK_PREFIX = 'extension/dist/webview/chunks/';
+import { REPO_ROOT, dynamicallyImportedComponents, walk } from './authored-boundaries';
+
 const EXAMPLES_PREFIX = 'extension/examples/';
 const EXAMPLES_DIR = path.join(REPO_ROOT, 'examples');
-
-/** A chunk may be emitted from a component, a module, or a stylesheet. */
-const SOURCE_EXTENSIONS = ['.svelte', '.ts', '.css'] as const;
-
-function walk(dir: string, out: string[] = []): string[] {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      if (entry.name === '__tests__' || entry.name === 'node_modules') continue;
-      walk(full, out);
-      continue;
-    }
-    out.push(full);
-  }
-  return out;
-}
-
-const SOURCE_FILES = walk(WEBVIEW_SRC);
-
-function sourceExistsFor(basename: string): boolean {
-  return SOURCE_FILES.some((file) =>
-    SOURCE_EXTENSIONS.some((ext) => path.basename(file) === `${basename}${ext}`)
-  );
-}
-
-async function pinnedChunkBasenames(): Promise<readonly string[]> {
-  const { ALLOWED_VSIX_ENTRIES } = await import('../../../scripts/check-vsix-smoke.mjs');
-  return ALLOWED_VSIX_ENTRIES.filter((name) => name.startsWith(CHUNK_PREFIX)).map((name) =>
-    path.basename(name, '.js')
-  );
-}
 
 /**
  * Every file the packager would take from `examples/`, named as the entry it
@@ -95,47 +68,41 @@ async function pinnedExampleEntries(): Promise<readonly string[]> {
   return ALLOWED_VSIX_ENTRIES.filter((name) => name.startsWith(EXAMPLES_PREFIX)).sort();
 }
 
-/**
- * Runtime `import('./Thing.svelte')` only. A `typeof import(...)` is a type
- * position and emits no chunk, so counting it would demand a pin for something
- * the build never produces.
- */
-function dynamicallyImportedComponents(): readonly string[] {
-  const found = new Set<string>();
-  for (const file of SOURCE_FILES) {
-    if (!file.endsWith('.svelte') && !file.endsWith('.ts')) continue;
-    const source = fs.readFileSync(file, 'utf8');
-    for (const match of source.matchAll(/(typeof\s+)?import\(\s*['"]([^'"]+\.svelte)['"]\s*\)/g)) {
-      if (match[1] !== undefined) continue;
-      found.add(path.basename(match[2], '.svelte'));
-    }
-  }
-  return [...found].sort();
-}
-
-describe('the pinned VSIX chunk list is grounded in the webview source tree', () => {
-  it('every pinned chunk names a module that exists', async () => {
-    const orphaned = (await pinnedChunkBasenames()).filter((name) => !sourceExistsFor(name));
+describe('the authored code-split boundaries are grounded in the webview source tree', () => {
+  it('the script finds the same boundaries this file does', async () => {
+    const { readAuthoredBoundaries } = await import('../../../scripts/check-vsix-smoke.mjs');
+    const scanned = readAuthoredBoundaries()
+      .boundaries.map((boundary) => boundary.component)
+      .sort();
     expect(
-      orphaned,
-      'these chunks are pinned but have no source module; the surface was removed without unpinning it'
-    ).toEqual([]);
+      scanned,
+      'check-vsix-smoke.mjs disagrees with this file about which components are ' +
+        'code-split boundaries; the correspondence it asserts is only as good as ' +
+        'this scan, and a scan that quietly stops matching passes over nothing'
+    ).toEqual([...dynamicallyImportedComponents()]);
   });
 
-  it('every lazily-loaded surface is pinned', async () => {
-    const pinned = new Set(await pinnedChunkBasenames());
-    const unpinned = dynamicallyImportedComponents().filter((name) => !pinned.has(name));
+  it('every route in the map resolves to a boundary the scan found', async () => {
+    const { readAuthoredBoundaries } = await import('../../../scripts/check-vsix-smoke.mjs');
+    const { boundaries, routes } = readAuthoredBoundaries();
+    const named = boundaries
+      .filter((boundary) => boundary.route !== null)
+      .map((boundary) => boundary.route);
     expect(
-      unpinned,
-      `these components are dynamically imported but absent from ALLOWED_VSIX_ENTRIES; ` +
-        `add extension/dist/webview/chunks/<name>.js for each`
-    ).toEqual([]);
+      [...named].sort(),
+      'the route map parse and the boundary scan disagree; every route loader is a ' +
+        'dynamic import, so a route that resolves to nothing means one of the two ' +
+        'regexes drifted and route failures would be reported anonymously'
+    ).toEqual(routes.map((entry) => entry.route).sort());
   });
 
-  it('finds the dynamic imports it claims to check', () => {
-    // A regex that stops matching would make the check above vacuously green,
-    // which is the same failure mode this file exists to close.
+  it('finds the dynamic imports and the routes it claims to check', async () => {
+    // Both regexes could stop matching and leave every check above vacuously
+    // green — an empty scan agrees with an empty scan. This is the same failure
+    // mode the file exists to close, so it is asserted rather than assumed.
+    const { readAuthoredBoundaries } = await import('../../../scripts/check-vsix-smoke.mjs');
     expect(dynamicallyImportedComponents().length).toBeGreaterThan(0);
+    expect(readAuthoredBoundaries().routes.length).toBeGreaterThan(0);
   });
 });
 
