@@ -18,13 +18,18 @@
 //     exempted the draft pointer and reported it as `active`, which was harmless
 //     while the pointer was inert and is wrong now that FR-021 makes the reported
 //     reason observable. Only the label moves; the pruning logic is untouched.
-//   - **run-referenced** (FR-037) is a port call, so it is asked only about versions
-//     that are otherwise about to be pruned. Asking about all 50 would make every
-//     save pay for a question about versions nothing was going to touch.
+//   - **run-referenced** and **history-referenced** (FR-037, feature 103 FR-040) are
+//     a port call, so they are asked only about versions that are otherwise about to
+//     be pruned. Asking about all 50 would make every save pay for a question about
+//     versions nothing was going to touch. The port names which of the two it found,
+//     and this walk reports that name rather than choosing one: the difference is
+//     when the version is released — a live run ends, a history row is evicted — and
+//     only the port knows which happened.
 
 import { CATALOG_RETENTION_BOUND, type CatalogManifestEntry } from '../contracts/catalog-store';
+import type { ReferenceExemption } from './ports';
 
-export type RetentionExemption = 'active' | 'draft' | 'run-referenced';
+export type RetentionExemption = 'active' | 'draft' | ReferenceExemption;
 
 export interface RetentionPlan {
   /** Version ids to remove, oldest first. Empty when nothing is over the bound or all is exempt. */
@@ -38,11 +43,12 @@ export interface RetentionPlan {
  *
  * `isReferenced` is the `RunProvenance` port narrowed to this definition, so the
  * plan is a pure function of the entry plus one predicate — testable with a stub
- * that names the exempt ids directly.
+ * that names the exempt ids directly. It answers with the reason rather than a
+ * bare `true`, and that reason is copied into the plan unexamined.
  */
 export async function planRetention(
   entry: CatalogManifestEntry,
-  isReferenced: (versionId: string) => Promise<boolean>,
+  isReferenced: (versionId: string) => Promise<ReferenceExemption | false>,
   bound: number = CATALOG_RETENTION_BOUND
 ): Promise<RetentionPlan> {
   const total = entry.versions.length;
@@ -69,8 +75,9 @@ export async function planRetention(
       exempt.push({ versionId: version.versionId, why: 'draft' });
       continue;
     }
-    if (await isReferenced(version.versionId)) {
-      exempt.push({ versionId: version.versionId, why: 'run-referenced' });
+    const referenced = await isReferenced(version.versionId);
+    if (referenced) {
+      exempt.push({ versionId: version.versionId, why: referenced });
       continue;
     }
 

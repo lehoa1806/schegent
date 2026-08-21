@@ -169,11 +169,44 @@ describe('gate 2 — envelope validation at the transport boundary', () => {
   });
 
   it('rejects undeclared payload keys alongside `request`', () => {
+    // Feature 103 (T068) — this case used to use `queueId` as its example of an
+    // undeclared key. That key is now declared (see the three cases below), so
+    // the example moved rather than the rule: a payload key the contract does
+    // not name is still refused at the boundary, and `runId` is one the webview
+    // has never been allowed to assign.
     expect(
       validateInboundMessage({
         type: CMD_LAUNCH_PIPELINE,
         correlationId: 'launch-1',
-        payload: { request: runRequest(), queueId: 'not-the-webviews-to-choose' }
+        payload: { request: runRequest(), runId: 'not-the-webviews-to-assign' }
+      })
+    ).toMatchObject({ ok: false, reason: 'invalid-payload' });
+  });
+
+  // Feature 103 (T068, FR-059) — `queueId` is optional, bounded, and forwarded
+  // verbatim. Asserted at this gate rather than at the handler because the bound
+  // is the transport's: `CMD_LAUNCH_WORKFLOW` has applied the same one since
+  // feature 092, and `launchPipelineRun`'s `checkQueueId` applies it headlessly.
+  // Three entrances to one seam, one rule.
+  it('accepts a payload naming a queue', () => {
+    const valid = {
+      type: CMD_LAUNCH_PIPELINE,
+      correlationId: 'launch-1',
+      payload: { request: runRequest(), queueId: 'nightly' }
+    };
+    expect(validateInboundMessage(valid)).toMatchObject({ ok: true, command: valid });
+  });
+
+  it('accepts a payload naming no queue, exactly as before', () => {
+    expect(validateInboundMessage(envelope(runRequest()))).toMatchObject({ ok: true });
+  });
+
+  it.each([[''], [null], [42], ['q'.repeat(257)]])('rejects a malformed queueId %p', (queueId) => {
+    expect(
+      validateInboundMessage({
+        type: CMD_LAUNCH_PIPELINE,
+        correlationId: 'launch-1',
+        payload: { request: runRequest(), queueId }
       })
     ).toMatchObject({ ok: false, reason: 'invalid-payload' });
   });

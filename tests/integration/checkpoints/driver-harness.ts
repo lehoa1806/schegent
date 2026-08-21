@@ -302,6 +302,8 @@ export async function makeDriveHarness(): Promise<CheckpointDriveHarness> {
         // inert. A real store here would put files in the checkpoint fixtures'
         // worktree and change what the diff under test contains.
         queueIdForTask: () => DEFAULT_QUEUE_ID,
+        // Feature 103 — no connected Workflow drives this harness either.
+        originForTask: () => ({ kind: 'standalone' }),
         descriptions: { write: async () => null, remove: async () => undefined }
       }),
       emitRunEndedBreakpointAudit: vi.fn(),

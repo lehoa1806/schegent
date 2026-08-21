@@ -29,9 +29,12 @@ import {
   withDescriptionRef,
   HISTORY_UNATTRIBUTED_QUEUE_ID
 } from '../state/history-entry';
-import type { HistoryDescriptionStore } from './history/history-description-store';
+import { HistoryDescriptionStore } from './history/history-description-store';
+import { historyErrorCode } from './history/error-code';
+import { resolveRunOrigin } from './run-origin-resolver';
 import type { SanitizedLogger } from '../lib/logger';
 import type { WorkflowRun } from '../state/workflow-run';
+import type { RunOriginRef } from '../contracts/run-origin';
 
 export interface HistoryRecorderDeps {
   readonly historyStore: Pick<HistoryStore, 'append'> | null;
@@ -48,19 +51,79 @@ export interface HistoryRecorderDeps {
    * partition instead.
    */
   readonly queueIdForTask: (taskId: string) => string | null;
+  /**
+   * Feature 103 (FR-013) — how the Run was started, from its Task id.
+   *
+   * Shaped like `queueIdForTask` and for the same reason: the lookup walks the
+   * connected-run map, which this layer has no business holding. `null` means
+   * "could not tell", and the recorder leaves the field absent rather than
+   * guessing `'standalone'` — absence is a state the surface states plainly,
+   * and a guess would assert on a row that a Workflow member ran alone.
+   *
+   * Read once here, at completion, because the aggregate that answers it is
+   * deletable and the record it lands in is not.
+   */
+  readonly originForTask: (taskId: string) => RunOriginRef | null;
   readonly descriptions: Pick<HistoryDescriptionStore, 'write' | 'remove'>;
+}
+
+/**
+ * The collaborators a composition root has to hand when it builds the recorder.
+ *
+ * Structural rather than the concrete `QueueManager` and `WorkspaceStateStore`:
+ * the factory needs one method from each, and naming the classes would make
+ * this module depend on two subsystems it otherwise knows nothing about.
+ */
+export interface HistoryRecorderWiring {
+  readonly historyStore: Pick<HistoryStore, 'append'> | null;
+  readonly logger: SanitizedLogger;
+  readonly queue: { queueIdForExistingTask(taskId: string): string | null };
+  readonly store: { getConnectedRuns(): Parameters<typeof resolveRunOrigin>[0] };
+  readonly workspaceRoot: string;
+}
+
+/**
+ * The recorder as every host wires it.
+ *
+ * Both composition roots — `SchegentWorkflowController` and
+ * `createRunSafetyWiring` — built the same deps literal, and the three choices
+ * in it are each the kind that is only wrong once: `queueIdForExistingTask`
+ * rather than `queueIdForTask`, because the strict resolver returns `null` where
+ * the other guesses `'default'` and the recorder cannot tell a resolved queue
+ * from a guessed one (FR-R3-010); the origin read from the *live* map at
+ * completion, because the aggregate answering it is deletable and the record it
+ * lands in is not (FR-013); and the description store rooted at the workspace.
+ * A second copy of that literal is a second chance to get one of them wrong, so
+ * the copies are gone and the reasons live here.
+ *
+ * The class constructor stays public and takes ports directly — that is what
+ * lets a test substitute all four without a workspace.
+ */
+export function createHistoryRecorder(wiring: HistoryRecorderWiring): HistoryRecorder {
+  return new HistoryRecorder({
+    historyStore: wiring.historyStore,
+    logger: wiring.logger,
+    queueIdForTask: (taskId) => wiring.queue.queueIdForExistingTask(taskId),
+    originForTask: (taskId) => resolveRunOrigin(wiring.store.getConnectedRuns(), taskId),
+    descriptions: new HistoryDescriptionStore({
+      workspaceRoot: wiring.workspaceRoot,
+      logger: wiring.logger
+    })
+  });
 }
 
 export class HistoryRecorder {
   private readonly historyStore: Pick<HistoryStore, 'append'> | null;
   private readonly logger: SanitizedLogger;
   private readonly queueIdForTask: (taskId: string) => string | null;
+  private readonly originForTask: (taskId: string) => RunOriginRef | null;
   private readonly descriptions: Pick<HistoryDescriptionStore, 'write' | 'remove'>;
 
   constructor(deps: HistoryRecorderDeps) {
     this.historyStore = deps.historyStore;
     this.logger = deps.logger;
     this.queueIdForTask = deps.queueIdForTask;
+    this.originForTask = deps.originForTask;
     this.descriptions = deps.descriptions;
   }
 
@@ -71,6 +134,14 @@ export class HistoryRecorder {
   ): Promise<void> {
     if (!this.historyStore) return;
     try {
+      // Feature 103 (T030, FR-015) — resolved before the build and each behind
+      // its own guard, so an unanswerable provenance costs the field and not the
+      // run. This is the posture the queue lookup above already has: a
+      // completion that happened is recorded, and what could not be determined
+      // about it is recorded as absent.
+      const plan = this.planOf(run);
+      const catalogVersion = plan?.catalogVersion;
+      const origin = this.originOf(run);
       const built = buildHistoryEntry({
         runId: run.id,
         featureId: run.featureId,
@@ -80,11 +151,13 @@ export class HistoryRecorder {
         completedAt: run.lastTransitionAt,
         lastErrorSummary: run.lastError?.message ?? null,
         logger: this.logger,
-        pipelineId: run.pipeline?.id ?? null,
+        pipelineId: plan?.id ?? null,
         // Feature 091 (T013, FR-010) — the recorder is the only writer of a
         // history entry, so it is the only route by which what a Run recorded
         // outlives the Run itself.
-        runOutputs: run.runOutputs
+        runOutputs: run.runOutputs,
+        ...(catalogVersion !== undefined ? { catalogVersion } : {}),
+        ...(origin !== undefined ? { origin } : {})
       });
       // The Task row outlives the Run: `QueueManager.finish()` marks it rather
       // than removing it, so the lookup resolves for every ordinary completion
@@ -98,7 +171,41 @@ export class HistoryRecorder {
       );
       await this.discardEvictedDescriptions(evicted);
     } catch (err) {
-      this.logger.warn(`history append failed: ${(err as Error).message}`);
+      this.logger.warn(`history append failed: ${historyErrorCode(err)}`);
+    }
+  }
+
+  /**
+   * The Run's frozen plan, or `undefined` if reading it throws.
+   *
+   * One guarded read rather than one per field. Both `pipelineId` and
+   * `catalogVersion` come off this object, and a second `run.pipeline` in the
+   * argument list would be an unguarded read of the same throwing getter — which
+   * is exactly the shape that took the whole entry down: FR-015 says an
+   * unresolvable provenance field costs the field, and losing the run to it
+   * costs the operator the completion itself.
+   *
+   * The version is copied off the plan and never re-resolved from the catalog,
+   * which has moved on and would answer about today rather than about this run
+   * (FR-010). A plan supplied ready-made carries none, and so does every run
+   * recorded before feature 102; both are honest absences.
+   */
+  private planOf(run: WorkflowRun): WorkflowRun['pipeline'] | undefined {
+    try {
+      return run.pipeline;
+    } catch (err) {
+      this.logger.warn(`history provenance: plan unreadable: ${historyErrorCode(err)}`);
+      return undefined;
+    }
+  }
+
+  /** How the Run was started, or `undefined` when the port cannot say (FR-015). */
+  private originOf(run: WorkflowRun): RunOriginRef | undefined {
+    try {
+      return this.originForTask(run.featureId) ?? undefined;
+    } catch (err) {
+      this.logger.warn(`history provenance: origin unresolved: ${historyErrorCode(err)}`);
+      return undefined;
     }
   }
 

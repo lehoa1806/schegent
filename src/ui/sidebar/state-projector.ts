@@ -12,6 +12,9 @@ import type { HistoryStore } from '../../state/history-store';
 import type { TelemetrySnapshot } from '../../telemetry/telemetry-snapshot';
 import type { WorkflowCatalogResolution } from '../../contracts/workflow-definitions';
 import type { ConnectedRunProjection } from '../../contracts/sidebar-ipc';
+// Feature 103 — by path, not through the contracts barrel; see the note on the
+// same import in `snapshot.ts`.
+import type { RunOriginRef } from '../../contracts/run-origin';
 import type { WorkflowPipelineReference } from './commands/router-types';
 import type { BuilderLifecycleByKind } from './builder-lifecycle';
 import { StateProjectorRuntime } from './state-projector-runtime';
@@ -97,6 +100,20 @@ export interface StateProjectorDeps {
    * wiring; the snapshot then omits the field entirely.
    */
   readonly getConnectedRuns?: () => readonly ConnectedRunProjection[];
+  /**
+   * Feature 103 (T031, FR-003) — how the Run holding this Task was started.
+   *
+   * A separate port from `getConnectedRuns` on purpose. That one hands over a
+   * fold of node states, which cannot answer this: `ConnectedNodeProjection`
+   * keeps only the *latest* attempt's queue item, so a Run from an earlier
+   * attempt would read as standalone. This port runs the same `resolveRunOrigin`
+   * the history recorder uses, so a Run in flight and the same Run once recorded
+   * cannot disagree about where it came from.
+   *
+   * Absent on a host with no connected-run wiring; the projection then omits
+   * `origin` rather than asserting `'standalone'` on a question it cannot ask.
+   */
+  readonly getRunOrigin?: (taskId: string) => RunOriginRef;
   readonly getConfirmationsEnabled?: () => boolean;
   readonly getDebugLogTail?: () => readonly DebugLogEntry[];
   readonly getAvailableModels?: () => Record<BackendRunnerKind, readonly string[]>;

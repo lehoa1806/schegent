@@ -13,6 +13,7 @@
 
 import {
   CMD_READ_METRICS,
+  type MetricsRunSummary,
   type ReadMetricsRequest,
   type ReadMetricsResponse
 } from './messages';
@@ -40,6 +41,30 @@ export function readMetrics(req: ReadMetricsRequest = {}): Promise<ReadMetricsRe
     },
     { outcome: 'failure', reason: 'internal-error' }
   );
+}
+
+// Feature 103 (T094, FR-026) — the run detail's read. Three outcomes, not
+// two: `read` with a summary (the run reported), `read` with `null` (the read
+// landed and the run has no rollup record), and `unavailable` (nobody looked).
+// Collapsing the last two would tell an operator a run was free when the truth
+// is that the host never answered.
+export type RunSummaryResult =
+  | { readonly outcome: 'read'; readonly summary: MetricsRunSummary | null }
+  | { readonly outcome: 'unavailable' };
+
+// Read one run's rollup figures. Scoped at the request, not filtered from a
+// corpus-wide read: FR-023 rules out the second store a whole-history read
+// would need to stay affordable.
+export async function readRunSummary(runId: string): Promise<RunSummaryResult> {
+  const result = await readMetrics({ runIds: [runId] });
+  // An absent `runSummaries` is not an empty one. The field is only present
+  // when the host honoured the scope, so its absence means the answer never
+  // came back — indistinguishable, from here, from a refusal.
+  if (result.outcome !== 'success' || result.runSummaries === undefined) {
+    return { outcome: 'unavailable' };
+  }
+  const summary = result.runSummaries.find((entry) => entry.runId === runId);
+  return { outcome: 'read', summary: summary ?? null };
 }
 
 // Shared ack-correlation primitive: post a command, register a one-shot

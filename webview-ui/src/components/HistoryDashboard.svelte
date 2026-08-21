@@ -1,39 +1,191 @@
 <script lang="ts">
-  import type { HistoryEntry } from '../lib/snapshot-types';
+  // Feature 103 (T017, T018, T019) — History as one cross-queue list.
+  //
+  // The surface used to render `snapshot.history` directly, which is only half
+  // of what a run history is: it held every queue's finished runs and none of
+  // the runs currently going. Composition now happens here, from two parts of
+  // the snapshot this component already receives, and writes nothing (FR-004).
+  //
+  // It takes the whole snapshot rather than two hand-picked fields because it
+  // needs three and User Story 2 adds more, and because `builder`, `settings`
+  // and `runs` already take the snapshot for the same reason.
+
+  import type { WorkflowSnapshot } from '../lib/snapshot-types';
+  import {
+    applyRenderBound,
+    catalogNamesFrom,
+    composeHistoryRows,
+    HISTORY_RENDER_BOUND
+  } from '../lib/history-rows';
+  import {
+    applyFilters,
+    buildFilterOptions,
+    EMPTY_HISTORY_FILTERS,
+    HISTORY_HOME,
+    isFiltered,
+    type HistoryLocation
+  } from '../lib/history-filters';
+  import { resolveRerunTarget } from '../lib/history-rerun';
+  import HistoryFilterBar from './HistoryFilterBar.svelte';
   import HistorySection from './HistorySection.svelte';
+  import HistoryRunDetail from './HistoryRunDetail.svelte';
+  import HistoryRerunPanel from './HistoryRerunPanel.svelte';
 
   interface Props {
-    history: readonly HistoryEntry[];
-    isPrimary: boolean;
+    snapshot: WorkflowSnapshot;
   }
 
-  const { history, isPrimary }: Props = $props();
+  const { snapshot }: Props = $props();
+
+  const isPrimary = $derived(snapshot.isPrimary);
+  const allRows = $derived(composeHistoryRows(snapshot.history, snapshot.queues));
+
+  // FR-021 (T033) — display names, resolved here because this is where the whole
+  // snapshot is. Both catalogs are optional and absent while they load, which is
+  // the case the id fallback exists for; a row is nameable before either arrives.
+  const catalogNames = $derived(catalogNamesFrom(snapshot));
 
   let query = $state('');
-  let outcome = $state<'all' | HistoryEntry['terminalStatus']>('all');
 
-  const visibleHistory = $derived.by(() => {
+  // FR-020, FR-057 (T042) — the surface's location: what it is narrowed to, and
+  // which run is open. Component state, so it survives a drill-down and back
+  // within this mount and nothing more; a reload opens on `HISTORY_HOME`, which
+  // is the whole list.
+  let location = $state<HistoryLocation>(HISTORY_HOME);
+
+  const filters = $derived(location.filters);
+  const filtered = $derived(applyFilters(allRows, filters, Date.now()));
+
+  // Built from every row rather than the filtered ones: options derived from the
+  // narrowed list would remove every queue but the selected one the moment a
+  // queue was picked, leaving no way back other than clearing.
+  const filterOptions = $derived(buildFilterOptions(allRows, filters, catalogNames));
+
+  const matchingRows = $derived.by(() => {
     const needle = query.trim().toLocaleLowerCase();
-    return history.filter((entry) => {
-      if (outcome !== 'all' && entry.terminalStatus !== outcome) return false;
-      if (needle.length === 0) return true;
-      return [entry.descriptionPreview, entry.runId, entry.featureId]
-        .some((value) => value.toLocaleLowerCase().includes(needle));
-    });
+    if (needle.length === 0) return filtered;
+    return filtered.filter((row) =>
+      [row.descriptionPreview, row.runId, row.queueName]
+        .some((value) => value.toLocaleLowerCase().includes(needle))
+    );
   });
+
+  const narrowed = $derived(isFiltered(filters) || query.trim().length > 0);
+
+  function clearFilters(): void {
+    location = { ...location, filters: EMPTY_HISTORY_FILTERS };
+    query = '';
+  }
+
+  // FR-052 — bound the render and say so. `matched` is the honest total, and it
+  // is stated even when nothing was cut: a count that only appears once the
+  // list is truncated makes truncation look like a rendering glitch.
+  const bounded = $derived(applyRenderBound(matchingRows));
+  const truncated = $derived(bounded.shown < bounded.matched);
+
+  // FR-020, FR-024 (T052) — the open run, resolved against the full set rather
+  // than the filtered one. A detail that vanished because the operator's own
+  // filters exclude the run they just opened would be the surface arguing with
+  // itself. `null` when the row is gone — retention can remove it while the
+  // detail is open — and the list is what shows instead.
+  const selectedRow = $derived(
+    location.selectedRunId === null
+      ? null
+      : (allRows.find((row) => row.runId === location.selectedRunId) ?? null)
+  );
+
+  function openDetail(runId: string): void {
+    location = { ...location, selectedRunId: runId };
+  }
+
+  // The filters are untouched on the way back, which is the whole reason the
+  // selection lives in `HistoryLocation` beside them (SC-005).
+  function closeDetail(): void {
+    location = { ...location, selectedRunId: null };
+  }
+
+  // FR-033 (T065) — which run the trigger form is open for, held apart from
+  // `location` rather than added to it. `HistoryLocation` is what a reopened
+  // surface should be restored to; a half-composed run form is not, and folding
+  // it in would put an unsubmitted composition on the same footing as a filter.
+  // Closing the panel therefore lands back on whatever the location already
+  // says — the detail it was opened from, or the list with its filters intact.
+  let rerunRunId = $state<string | null>(null);
+
+  // Resolved against the full set for the same reason `selectedRow` is, and
+  // `null` when the row is gone: retention can evict a run while its form is
+  // open, and a form for a run that no longer exists should close, not submit.
+  const rerunRow = $derived(
+    rerunRunId === null ? null : (allRows.find((row) => row.runId === rerunRunId) ?? null)
+  );
+
+  // FR-034 — recomputed on every snapshot rather than captured when the panel
+  // opened. Publishing or retiring a version while the form sits open changes
+  // the answer, and a remembered target would offer a version that is no longer
+  // Active. Deriving it costs one `find` per push and cannot go stale.
+  const rerunTarget = $derived(
+    rerunRow === null ? null : resolveRerunTarget(rerunRow, snapshot.launchables, snapshot.queues)
+  );
+
+  // The projection names what is published; the effective catalog carries the
+  // definition the form composes against. Both come from the same snapshot but
+  // are separate fields, so the panel takes `undefined` as a state rather than
+  // as an error — see its `pipeline` prop.
+  const rerunPipeline = $derived(
+    rerunTarget === null || rerunTarget.state !== 'ready'
+      ? undefined
+      : (snapshot.availablePipelines ?? []).find((p) => p.id === rerunTarget.launchable.id)
+  );
+
+  function openRerun(runId: string): void {
+    rerunRunId = runId;
+  }
+
+  function closeRerun(): void {
+    rerunRunId = null;
+  }
 </script>
 
 <main class="history-dashboard" data-testid="history-dashboard">
   <header class="history-header">
     <div>
       <h1>Run History</h1>
-      <p>A workspace-wide ledger of completed pipeline runs and their outcomes.</p>
+      <p>Every queue's runs in one place — the ones still going and the ones already finished.</p>
     </div>
-    <span class="history-count" aria-label={`${visibleHistory.length} matching runs`}>
-      {visibleHistory.length} {visibleHistory.length === 1 ? 'run' : 'runs'}
+    <span
+      class="history-count"
+      data-testid="history-render-count"
+      aria-label={`Showing ${bounded.shown} of ${bounded.matched} matching runs`}
+    >
+      {bounded.shown} of {bounded.matched} {bounded.matched === 1 ? 'run' : 'runs'}
     </span>
   </header>
 
+  {#if rerunRow && rerunTarget}
+    <!-- FR-033 — ahead of the detail, because it was opened from it. Closing
+         the panel does not clear `location`, so the detail is still underneath
+         and comes back. -->
+    <section class="history-ledger" aria-label="Repeat a run">
+      <HistoryRerunPanel
+        row={rerunRow}
+        target={rerunTarget}
+        pipeline={rerunPipeline}
+        onClose={closeRerun}
+      />
+    </section>
+  {:else if selectedRow}
+    <!-- FR-024 — the detail replaces the list rather than sitting beside it.
+         The surface is one column wide in the sidebar, and a run understood in
+         full is the whole answer to the question the operator just asked. -->
+    <section class="history-ledger" aria-label="Run detail">
+      <HistoryRunDetail
+        row={selectedRow}
+        {catalogNames}
+        onBack={closeDetail}
+        onRerun={isPrimary ? () => openRerun(selectedRow.runId) : undefined}
+      />
+    </section>
+  {:else}
   <section class="history-ledger" aria-label="History filters and results">
     <div class="history-filters">
       <label class="search-field">
@@ -42,28 +194,56 @@
           <circle cx="11" cy="11" r="7"></circle>
           <path d="m20 20-3.5-3.5"></path>
         </svg>
-        <input bind:value={query} type="search" placeholder="Search by run ID, feature, or description" />
+        <input bind:value={query} type="search" placeholder="Search by run ID, queue, or description" />
       </label>
-      <label class="outcome-field">
-        <span>Outcome</span>
-        <select bind:value={outcome}>
-          <option value="all">All outcomes</option>
-          <option value="completed">Completed</option>
-          <option value="failed">Failed</option>
-          <option value="canceled">Canceled</option>
-        </select>
-      </label>
+      <!-- FR-016 — the six filters, in the one component that owns them. The
+           search box above is not one of them: it is a free-text sweep over what
+           is already listed, and it composes with the six the same way. -->
+      <HistoryFilterBar
+        {filters}
+        options={filterOptions}
+        onChange={(next) => (location = { ...location, filters: next })}
+      />
     </div>
 
-    {#if visibleHistory.length === 0 && history.length > 0}
-      <div class="filtered-empty" role="status">
+    {#if truncated}
+      <p class="truncation-note" data-testid="history-truncation-note" role="status">
+        Showing the {HISTORY_RENDER_BOUND} newest of {bounded.matched} matching runs. Narrow the
+        filters to reach the rest.
+      </p>
+    {/if}
+
+    {#if bounded.matched === 0 && allRows.length > 0}
+      <!-- FR-007, FR-022 — distinct from the "nothing recorded" state inside
+           HistorySection. Same blank list, two different causes, and telling an
+           operator with a filter applied that their workspace has no runs sends
+           them looking for a data-loss bug. The way out is offered here as well
+           as on the bar, because this is where an operator lands on it. -->
+      <div class="filtered-empty" data-testid="history-filtered-empty" role="status">
         <strong>No matching runs</strong>
-        <span>Adjust the search or outcome filter.</span>
+        <span>
+          {narrowed
+            ? 'No run matches every active filter.'
+            : 'Adjust the search or the filters.'}
+        </span>
+        {#if narrowed}
+          <button type="button" data-testid="history-filtered-empty-clear" onclick={clearFilters}>
+            Clear filters
+          </button>
+        {/if}
       </div>
     {:else}
-      <HistorySection history={visibleHistory} {isPrimary} variant="ledger" />
+      <HistorySection
+        rows={bounded.rows}
+        {isPrimary}
+        {catalogNames}
+        variant="ledger"
+        onOpenDetail={openDetail}
+        onRerunRow={openRerun}
+      />
     {/if}
   </section>
+  {/if}
 </main>
 
 <style>
@@ -111,8 +291,7 @@
   }
   .history-filters {
     display: flex;
-    align-items: end;
-    justify-content: space-between;
+    flex-direction: column;
     gap: 12px;
     padding: var(--schegent-space-3);
     border-bottom: 1px solid var(--schegent-divider);
@@ -137,21 +316,6 @@
     border-radius: var(--schegent-radius-sm);
     background: var(--schegent-input-bg);
   }
-  .outcome-field {
-    display: flex;
-    flex: 0 0 auto;
-    flex-direction: column;
-    gap: 4px;
-    color: var(--schegent-muted-fg);
-    font-size: 0.76rem;
-  }
-  .outcome-field select {
-    min-width: 148px;
-    min-height: var(--schegent-control-height);
-    padding: 5px 28px 5px 9px;
-    border: 1px solid var(--schegent-input-border);
-    border-radius: var(--schegent-radius-sm);
-  }
   .filtered-empty {
     display: flex;
     min-height: 190px;
@@ -163,6 +327,24 @@
   }
   .filtered-empty strong {
     color: var(--schegent-fg);
+  }
+  .filtered-empty button {
+    margin-top: 6px;
+    min-height: var(--schegent-control-height);
+    padding: 5px 12px;
+    border: 1px solid var(--schegent-input-border);
+    border-radius: var(--schegent-radius-sm);
+    background: transparent;
+    color: var(--schegent-fg);
+    cursor: pointer;
+  }
+  .truncation-note {
+    margin: 0;
+    padding: 8px var(--schegent-space-3);
+    border-bottom: 1px solid var(--schegent-divider);
+    color: var(--schegent-muted-fg);
+    font-size: var(--schegent-text-caption);
+    line-height: 1.45;
   }
   .visually-hidden {
     position: absolute;
@@ -182,9 +364,6 @@
     .history-filters {
       align-items: stretch;
       flex-direction: column;
-    }
-    .outcome-field select {
-      width: 100%;
     }
   }
 </style>

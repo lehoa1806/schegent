@@ -117,6 +117,7 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     const status: WorkflowStatus = mapRunStatus(run);
     const phases = buildPhasesFromRun(run);
     bookkeeping.decoratePhases(phases, run);
+    const origin = deps.getRunOrigin?.(run.featureId);
     return {
       run,
       status,
@@ -139,7 +140,14 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
       elapsedMs: bookkeeping.workflowElapsedMs(status),
       delayedRetry: projectDelayedRetry(run),
       outputs: projectRunOutputs(run, sanitize).runOutputs ?? [],
-      activeFeature: buildActiveFeature(run)
+      activeFeature: buildActiveFeature(run),
+      // Feature 103 (T031, FR-003) — the same two provenance readings the
+      // finished rows carry, so a Run reads identically in flight and once
+      // recorded. Copied off the frozen plan, never re-resolved (FR-010).
+      ...(run.pipeline?.catalogVersion !== undefined
+        ? { catalogVersion: run.pipeline.catalogVersion }
+        : {}),
+      ...(origin !== undefined ? { origin } : {})
     };
   };
   // Memoized because two callers ask the same queue: the per-queue runtime list

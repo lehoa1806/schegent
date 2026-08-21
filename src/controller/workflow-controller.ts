@@ -15,8 +15,7 @@ import type { FeatureRequest } from '../queue/feature-request';
 import { DEFAULT_QUEUE_ID } from '../queue/queue-registry';
 import type { ClaudeCliMonitor } from '../monitor/claude-cli-monitor';
 import type { HistoryStore } from '../state/history-store';
-import { HistoryRecorder } from '../services/history-recorder';
-import { HistoryDescriptionStore } from '../services/history/history-description-store';
+import { createHistoryRecorder, type HistoryRecorder } from '../services/history-recorder';
 import { AutoDrainCoordinator } from '../services/auto-drain-coordinator';
 import type { ExecutionLeasePort } from '../services/auto-drain-coordinator';
 import { releaseExecutionLeaseForTerminalRun } from '../services/execution-lease-release';
@@ -187,18 +186,15 @@ export class SchegentWorkflowController {
       getIterationCap: () => options.iterationCap,
       logger
     });
-    this.historyRecorder = new HistoryRecorder({
+    // Feature 103 (T031) — the deps literal this site and
+    // `createRunSafetyWiring` both spelled out now lives with the class, in
+    // `createHistoryRecorder`; the three choices inside it are documented there.
+    this.historyRecorder = createHistoryRecorder({
       historyStore: deps.historyStore ?? null,
       logger,
-      // FR-R3-010 (T405) — the strict resolver, not `queueIdForTask`. See the
-      // pair's documentation in `queue-manager.ts`: a record files under the
-      // queue that produced it or under the unattributed partition, never under
-      // a guess.
-      queueIdForTask: (taskId) => queue.queueIdForExistingTask(taskId),
-      descriptions: new HistoryDescriptionStore({
-        workspaceRoot: options.cwd,
-        logger
-      })
+      queue,
+      store,
+      workspaceRoot: options.cwd
     });
     // Feature 092 (T132, FR-033a) — one manager, addressed by both ends of the
     // tenure: the drain claims at step 6, the terminal transition releases.
