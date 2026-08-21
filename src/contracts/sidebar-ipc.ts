@@ -243,6 +243,7 @@ import type {
   StopPhaseLogTailCommand
 } from './sidebar-ipc/phase-log';
 import type { ReadMetricsCommand } from './sidebar-ipc/metrics';
+import { isReadMetricsRequest } from './sidebar-ipc/metrics';
 import type { ResolveAuditPointerCommand } from './sidebar-ipc/history-evidence';
 export type { HistoryEvidenceEntry, ResolveAuditPointerRequest, ResolveAuditPointerCommand,
   ResolveAuditPointerResponse } from './sidebar-ipc/history-evidence';
@@ -294,10 +295,12 @@ export type {
   CostTimelinePoint,
   CumulativeTotals,
   MetricsCoverage,
+  MetricsRunSummary,
   ReadMetricsRequest,
   ReadMetricsCommand,
   ReadMetricsResponse
 } from './sidebar-ipc/metrics';
+export { READ_METRICS_RUN_IDS_MAX, isReadMetricsRunIdList } from './sidebar-ipc/metrics';
 export type {
   ProcessYamlResourceKind,
   PipelineExportInclusion,
@@ -874,16 +877,14 @@ export function isCmdDismissMigrationNotice(
   return isObjectWithType(value, CMD_DISMISS_MIGRATION_NOTICE);
 }
 
-// Feature 073 — read-only metrics scan guard. Payload is required (an empty
-// object `{}` satisfies it — see ReadMetricsCommand's field comment) to
-// match validateReadMetrics's actual runtime gate; `includeArchives` must be
-// a boolean if provided.
+// Feature 073 — read-only metrics scan guard. The payload rule itself is
+// `isReadMetricsRequest`, extracted beside the shape it describes for the
+// reason the 087 entry in this file's LOC budget gives: a predicate needing
+// none of this module's runtime values belongs there, and what stays here is
+// the discriminator check, which cannot leave without creating a cycle.
 export function isCmdReadMetrics(value: unknown): value is ReadMetricsCommand {
   if (!isObjectWithType(value, CMD_READ_METRICS)) return false;
-  const payload = (value as { payload?: unknown }).payload;
-  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return false;
-  const { includeArchives } = payload as { includeArchives?: unknown };
-  return includeArchives === undefined || typeof includeArchives === 'boolean';
+  return isReadMetricsRequest((value as { payload?: unknown }).payload);
 }
 
 export function isCmdPingBackend(value: unknown): value is PingBackendCommand {

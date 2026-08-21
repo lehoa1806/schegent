@@ -121,16 +121,36 @@ export interface Digest {
   sha256(canonical: string): string;
 }
 
+/**
+ * Which kind of run holds a version open, when one does.
+ *
+ * Feature 103 (T076, FR-040) — two sources answer this question and they release
+ * at different moments: a live run lets go when it reaches a terminal status, a
+ * retained history row when the per-queue cap evicts it. A bare `true` collapsed
+ * them, which was harmless while there was only one, and is not now that the
+ * reason is reported to the operator on the surface that says why a version
+ * survived a prune.
+ */
+export type ReferenceExemption = 'run-referenced' | 'history-referenced';
+
 export interface RunProvenance {
   /**
-   * Is this version referenced by a run the history has not yet removed?
+   * Is this version referenced by a run the history has not yet removed, and by
+   * which kind of run?
    *
-   * Retention never prunes a version this reports as referenced (FR-037). The
-   * store never reads run state itself — this feature ships an implementation
-   * that answers `false` for everything and FR-R3-018 supplies the real one, so
-   * the exemption exists and is testable before the data behind it does.
+   * Retention never prunes a version this names a reason for (FR-037, FR-040),
+   * and reports that reason verbatim — `false` is the only negative answer.
+   *
+   * The store never reads run state itself. `createQueueRunProvenance` supplies
+   * the implementation and activation supplies the two enumerations behind it,
+   * which is what keeps queue and history lifecycle out of `src/catalog/`
+   * (FR-057).
    */
-  isReferenced(kind: CatalogKind, id: string, versionId: string): Promise<boolean>;
+  isReferenced(
+    kind: CatalogKind,
+    id: string,
+    versionId: string
+  ): Promise<ReferenceExemption | false>;
 }
 
 /** Everything the store is constructed with. */

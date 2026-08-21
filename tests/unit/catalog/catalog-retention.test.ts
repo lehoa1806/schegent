@@ -22,6 +22,8 @@
 // the SAVE path as well as the publish path, which is what the store-level cases
 // below exercise — 51 draft saves prune, with no publication anywhere in them.
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { planRetention, withVersionsRemoved } from '../../../src/catalog';
@@ -58,13 +60,20 @@ function entryOf(
   };
 }
 
-/** Nothing is run-referenced — the implementation this feature actually ships. */
-const referencesNothing = async () => false;
+/** Nothing is referenced by any run. Annotated so it stays `false`, not `boolean`. */
+const referencesNothing = async (): Promise<false> => false;
 
-/** Exactly these version ids are run-referenced. */
+/**
+ * Exactly these version ids are run-referenced.
+ *
+ * Feature 103 (T074, T076) widened the port's answer from `true` to the reason a
+ * version is held open, so the stub names one. `planRetention` copies whatever it
+ * is given into the plan without inspecting it, which is why the arithmetic below
+ * is unchanged by that widening — the walk never branched on the reason.
+ */
 function references(...versionIds: readonly string[]) {
   const set = new Set(versionIds);
-  return async (versionId: string) => set.has(versionId);
+  return async (versionId: string) => (set.has(versionId) ? ('run-referenced' as const) : false);
 }
 
 /** The draft token the store currently holds for one definition (FR-012). */
@@ -217,7 +226,7 @@ describe('planRetention: exemptions advance past rather than stop', () => {
   it('asks about provenance only for versions otherwise about to be pruned', async () => {
     // A port call per version would make every save pay for a question about
     // versions nothing was going to touch. With a surplus of one, exactly one
-    // question is asked — and a second only if the first answered `true`.
+    // question is asked — and a second only if the first named a reason.
     const asked: string[] = [];
     await planRetention(
       entryOf(51),
@@ -316,5 +325,100 @@ describe('catalog store: retention at the shipped bound', () => {
       activeVersionId: 'v52',
       body: { n: 52 }
     });
+  });
+});
+
+// Feature 103 (T074, US6) — what US6 did NOT change.
+//
+// FR-040 needed one more thing to be exempt, and there were two ways to get it:
+// teach the walk about history, or widen the answer the walk already asks for.
+// The second is what shipped, and this block is the guard on that choice — the
+// bound, the oldest-first order, the advance-past behaviour and the four call
+// sites are all supposed to read exactly as they did before, with the only
+// difference being what `isReferenced` returns.
+//
+// Worth stating as a defect: a walk that learned to read history itself would
+// duplicate the pin set at a layer that cannot see the history store, which is
+// the coupling the port exists to prevent (FR-057), and it would give the catalog
+// a second opinion about retention alongside the per-queue cap (FR-044).
+describe('the walk is unchanged; only the answer it is given is wider (FR-044)', () => {
+  it('keeps the shipped bound at 50', () => {
+    expect(CATALOG_RETENTION_BOUND).toBe(50);
+  });
+
+  it('copies the reason the port names, without inspecting it', async () => {
+    const plan = await planRetention(
+      entryOf(6),
+      async (versionId) => (versionId === 'v1' ? 'history-referenced' : false),
+      5
+    );
+
+    expect(plan.exempt).toEqual([{ versionId: 'v1', why: 'history-referenced' }]);
+  });
+
+  it('prunes identically whichever reason the port names', async () => {
+    // Same shape, same surplus, same exempt version — two different reasons. If
+    // the walk branched on the reason at all, these would diverge.
+    const asRun = await planRetention(
+      entryOf(10, { active: 'v1' }),
+      async (versionId) => (['v2', 'v3'].includes(versionId) ? 'run-referenced' : false),
+      7
+    );
+    const asHistory = await planRetention(
+      entryOf(10, { active: 'v1' }),
+      async (versionId) => (['v2', 'v3'].includes(versionId) ? 'history-referenced' : false),
+      7
+    );
+
+    expect(asRun.remove).toEqual(asHistory.remove);
+    expect(asRun.retained).toEqual(asHistory.retained);
+    expect(asRun.exempt.map((row) => row.versionId)).toEqual(
+      asHistory.exempt.map((row) => row.versionId)
+    );
+  });
+
+  it('still asks the port once per candidate, and never about the cheap exemptions', async () => {
+    // The cost rule from feature 099 matters more now that the port consults two
+    // sources per question and one of them re-reads history. Two halves:
+    //
+    // The pointer exemptions are decided from the manifest and are checked first,
+    // so the port is never asked about the active version or the draft — and this
+    // is the pathological case for it, because every answer is positive and the
+    // walk therefore has to run to the end (FR-035a) rather than stopping early.
+    //
+    // And no version is asked about twice. A retry, or a second pass over the
+    // exempt list, would double the history reads at exactly the moment the answer
+    // says history is large.
+    const asked: string[] = [];
+    await planRetention(
+      entryOf(51, { active: 'v51', draft: 'v50' }),
+      async (versionId) => {
+        asked.push(versionId);
+        return 'history-referenced';
+      },
+      50
+    );
+
+    expect(asked).not.toContain('v51');
+    expect(asked).not.toContain('v50');
+    expect(new Set(asked).size).toBe(asked.length);
+  });
+
+  it('leaves the four store call sites handing the port straight through', () => {
+    // Structural, because the failure it guards has no behaviour of its own: a
+    // call site that wrapped the port — to filter a reason, to cache an answer, to
+    // supply a default — would keep every case above green while breaking FR-042
+    // at exactly one of the four paths that prune.
+    const source = readFileSync(
+      resolve(__dirname, '../../../src/catalog/catalog-store.ts'),
+      'utf8'
+    );
+
+    expect(source.match(/planRetention\(/g) ?? []).toHaveLength(4);
+    expect(
+      source.match(/planRetention\(\s*\w+,\s*\(candidate\) =>\s*provenance\.isReferenced\(/g) ?? []
+    ).toHaveLength(4);
+    // No third argument at any of them: every prune runs at the shipped bound.
+    expect(source).not.toMatch(/planRetention\([^)]*CATALOG_RETENTION_BOUND/);
   });
 });

@@ -49,9 +49,21 @@ async function respond(ctx: HandlerContext, result: LaunchPipelineResult): Promi
 }
 
 export const handler: CommandHandler<LaunchPipelineCommand> = async (ctx, command) => {
+  // Feature 103 (T069, FR-059) — `queueId` forwarded verbatim into the seam's
+  // existing parameter, which carries it to `scheduleOrEnqueue` and defaults it
+  // there. Spread rather than assigned so an absent one stays absent: this path
+  // has no opinion about which queue is the default, and writing an explicit
+  // `undefined` would make the seam's "not named" and "named nothing" the same
+  // value. Identical to what `cmd-launch-workflow.ts` does with its own.
+  //
+  // Nothing else about the four gates changes. A re-run reaches them in the same
+  // order with the same refusal families (FR-038); the only difference between
+  // it and a launch from Runs is which queue is named, and that is the point.
+  const queueId = command.payload.queueId;
   const started = await startPipelineRun(ctx.deps, {
     request: command.payload.request,
-    workspaceRoot: getCanonicalWorkspaceRoot()?.uri.fsPath ?? null
+    workspaceRoot: getCanonicalWorkspaceRoot()?.uri.fsPath ?? null,
+    ...(queueId !== undefined ? { queueId } : {})
   });
 
   // Feature 098 (T058, FR-031) — the empty catalog is the one refusal whose

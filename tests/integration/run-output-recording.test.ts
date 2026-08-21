@@ -184,6 +184,8 @@ async function completeRun(plan: FrozenRunPlan, runId: string) {
       // partition is fixed and the description store is inert so nothing here
       // touches the filesystem.
       queueIdForTask: () => DEFAULT_QUEUE_ID,
+      // Feature 103 — no connected Workflow drives these cases.
+      originForTask: () => ({ kind: 'standalone' }),
       descriptions: { write: async () => null, remove: async () => undefined }
     }),
     emitRunEndedBreakpointAudit: vi.fn(),

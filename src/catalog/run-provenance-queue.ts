@@ -20,9 +20,22 @@
 // about queue lifecycle inside the catalog, which is the coupling the port was
 // built to avoid.
 
+// **Two sources since feature 103 (T078, FR-040).** A version is held open by a
+// live run *or* by a run that finished and is still in history, and the module
+// name has not moved with the meaning — it still says "queue". Renaming it here
+// would be a drive-by refactor inside another story's phase; the name is recorded
+// as a deviation instead, and what the module actually is is stated in this
+// paragraph.
+//
+// **No cache, deliberately.** Both enumerations are called on every question, and
+// the second one re-reads durable history each time. That is the entire
+// enforcement of FR-042: a version must stop being exempt on the very next prune
+// after its row is evicted, and any memo — per pass, per definition, per
+// housekeeping run — puts a step in between.
+
 import type { CatalogKind } from '../contracts/catalog-store';
 import type { CatalogVersionRef } from '../contracts/catalog-version';
-import type { RunProvenance } from './ports';
+import type { ReferenceExemption, RunProvenance } from './ports';
 
 /**
  * One live run, reduced to the only thing provenance reads off it.
@@ -42,32 +55,59 @@ export interface RunVersionCarrier {
 }
 
 /**
- * The reader retention consults before pruning a version (FR-037).
+ * The reader retention consults before pruning a version (FR-037, FR-040).
  *
- * @param enumeratePlans Yields the versions live runs froze. **Called on every
- *                       question, never snapshotted**: housekeeping asks once per
- *                       candidate and the queue drains while it walks, so a
- *                       remembered enumeration answers from a world that has
- *                       already moved.
+ * @param enumeratePlans    Yields the versions live runs froze. **Called on every
+ *                          question, never snapshotted**: housekeeping asks once
+ *                          per candidate and the queue drains while it walks, so a
+ *                          remembered enumeration answers from a world that has
+ *                          already moved.
+ * @param enumerateRetained Yields the versions recorded by runs that have finished
+ *                          and are still in history, under the same rule. Optional
+ *                          and defaulted to nothing, because the store is built
+ *                          before the history store exists and a caller with no
+ *                          history yet should get the same reader with one source
+ *                          rather than a different reader.
  */
 export function createQueueRunProvenance(
-  enumeratePlans: () => Iterable<RunVersionCarrier>
+  enumeratePlans: () => Iterable<RunVersionCarrier>,
+  enumerateRetained: () => Iterable<RunVersionCarrier> = () => []
 ): RunProvenance {
   return {
-    async isReferenced(kind: CatalogKind, id: string, versionId: string): Promise<boolean> {
-      for (const plan of enumeratePlans()) {
-        const frozen = plan.catalogVersion;
-        // Absence is "not recorded" (FR-027), never a wildcard: one legacy plan
-        // matching everything would switch retention off for the whole catalog.
-        if (frozen === undefined) continue;
-        // All three parts, because the store permits a Pipeline and a Workflow to
-        // share an id — `(pipeline, X, v4)` and `(workflow, X, v4)` are two
-        // versions and an exemption earned by one does not cover the other.
-        if (frozen.kind === kind && frozen.id === id && frozen.versionId === versionId) {
-          return true;
-        }
-      }
+    async isReferenced(
+      kind: CatalogKind,
+      id: string,
+      versionId: string
+    ): Promise<ReferenceExemption | false> {
+      // Live first. When both hold the version the live run is the truer answer:
+      // it releases sooner, and it is the event an operator waiting to prune would
+      // watch for. History takes over at that moment without the version ever
+      // becoming prunable in between, which is FR-040's handover.
+      if (matches(enumeratePlans(), kind, id, versionId)) return 'run-referenced';
+      if (matches(enumerateRetained(), kind, id, versionId)) return 'history-referenced';
       return false;
     }
   };
+}
+
+/** Does any carrier in `carriers` name exactly this version? */
+function matches(
+  carriers: Iterable<RunVersionCarrier>,
+  kind: CatalogKind,
+  id: string,
+  versionId: string
+): boolean {
+  for (const carrier of carriers) {
+    const frozen = carrier.catalogVersion;
+    // Absence is "not recorded" (FR-027), never a wildcard: one legacy plan
+    // matching everything would switch retention off for the whole catalog.
+    if (frozen === undefined) continue;
+    // All three parts, because the store permits a Pipeline and a Workflow to
+    // share an id — `(pipeline, X, v4)` and `(workflow, X, v4)` are two versions
+    // and an exemption earned by one does not cover the other.
+    if (frozen.kind === kind && frozen.id === id && frozen.versionId === versionId) {
+      return true;
+    }
+  }
+  return false;
 }

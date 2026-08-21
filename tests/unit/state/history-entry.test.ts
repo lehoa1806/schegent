@@ -18,9 +18,15 @@ import {
   parseAuditLogPointer,
   withDescriptionRef,
   DESCRIPTION_PREVIEW_MAX,
+  type BuildHistoryEntryArgs,
   type HistoryEntry
 } from '../../../src/state/history-entry';
 import type { RunOutputRecord } from '../../../src/contracts/run-results';
+// Feature 103 (T021) — imported by path, not through the contracts barrel: the
+// barrel is `export *`, which `tests/lint/contracts-module-reachability` excludes
+// from its corpus, so a barrel import would leave both modules looking unused.
+import type { CatalogVersionRef } from '../../../src/contracts/catalog-version';
+import type { RunOriginRef } from '../../../src/contracts/run-origin';
 import { SanitizedLogger } from '../../../src/lib/logger';
 
 const logger = new SanitizedLogger();
@@ -348,5 +354,127 @@ describe('runOutputs survives the history round trip (Feature 091, FR-010)', () 
     }, QUEUE);
     expect(entry).not.toBeNull();
     expect(entry!.runOutputs).toBeUndefined();
+  });
+});
+
+// Feature 103 (T021, US2) — FR-009, FR-012, FR-013.
+//
+// Provenance is *recorded*, never derived. `buildHistoryEntry` is the only
+// place the two fields enter the record and `ensureHistoryEntry` is the only
+// place they come back out, so both halves are asserted here: a normaliser that
+// silently drops either field passes every write-side assertion in the suite
+// and still empties the record on the next read.
+//
+// Absent is a value, not a default. A run that froze no catalog version must
+// read back with no `catalogVersion` key at all, because FR-012 renders "not
+// recorded" as a stated absence and must never render it as a version.
+
+describe('recorded provenance survives the history round trip (Feature 103, FR-009/FR-012/FR-013)', () => {
+  const FROZEN: CatalogVersionRef = { kind: 'pipeline', id: 'pipe-ship-it', versionId: 'ver-7' };
+  const MEMBER: RunOriginRef = { kind: 'workflow-member', workflowId: 'wf-release-train' };
+
+  function built(
+    provenance: Pick<BuildHistoryEntryArgs, 'catalogVersion' | 'origin'>
+  ): HistoryEntry {
+    return buildHistoryEntry({
+      runId: 'run-prov-1',
+      featureId: 'feat-prov-1',
+      description: 'a run with a known provenance',
+      terminalStatus: 'completed',
+      startedAt: 1_700_000_000_000,
+      completedAt: 1_700_000_001_000,
+      logger,
+      ...provenance
+    }).entry;
+  }
+
+  function roundTripped(entry: HistoryEntry): HistoryEntry {
+    const read = ensureHistoryEntry(JSON.parse(JSON.stringify(entry)), QUEUE);
+    expect(read).not.toBeNull();
+    return read!;
+  }
+
+  it('copies the frozen catalog version onto the entry verbatim', () => {
+    expect(built({ catalogVersion: FROZEN }).catalogVersion).toEqual(FROZEN);
+  });
+
+  it('omits catalogVersion entirely when the plan froze none', () => {
+    const entry = built({});
+    expect(entry.catalogVersion).toBeUndefined();
+    expect(Object.prototype.hasOwnProperty.call(entry, 'catalogVersion')).toBe(false);
+  });
+
+  it('carries both origin shapes onto the entry verbatim', () => {
+    expect(built({ origin: { kind: 'standalone' } }).origin).toEqual({ kind: 'standalone' });
+    expect(built({ origin: MEMBER }).origin).toEqual(MEMBER);
+  });
+
+  it('omits origin entirely when how the run started was not resolved', () => {
+    const entry = built({});
+    expect(entry.origin).toBeUndefined();
+    expect(Object.prototype.hasOwnProperty.call(entry, 'origin')).toBe(false);
+  });
+
+  it('records the two independently', () => {
+    // A single guard covering both would make one unresolvable field erase the
+    // other, and the two answer different questions from different sources.
+    const versionOnly = built({ catalogVersion: FROZEN });
+    expect(versionOnly.catalogVersion).toEqual(FROZEN);
+    expect(versionOnly.origin).toBeUndefined();
+
+    const originOnly = built({ origin: MEMBER });
+    expect(originOnly.origin).toEqual(MEMBER);
+    expect(originOnly.catalogVersion).toBeUndefined();
+  });
+
+  it('preserves both across a read cycle', () => {
+    const read = roundTripped(built({ catalogVersion: FROZEN, origin: MEMBER }));
+    expect(read.catalogVersion).toEqual(FROZEN);
+    expect(read.origin).toEqual(MEMBER);
+  });
+
+  it('keeps an unrecorded provenance unrecorded across a read cycle', () => {
+    const read = roundTripped(built({}));
+    expect(Object.prototype.hasOwnProperty.call(read, 'catalogVersion')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(read, 'origin')).toBe(false);
+  });
+
+  it('treats a half-formed stored catalogVersion as absent rather than repairing it', () => {
+    // A version reference missing its `versionId` names no version. Rendering a
+    // repaired one would tell the operator a run froze something it did not,
+    // which is the one thing FR-009 exists to prevent.
+    for (const bad of [
+      'pipe-ship-it',
+      { kind: 'pipeline', id: 'pipe-ship-it' },
+      { kind: 'pipeline', id: 'pipe-ship-it', versionId: '' },
+      { kind: 'pipeline', id: '', versionId: 'ver-7' },
+      { kind: 'not-a-kind', id: 'pipe-ship-it', versionId: 'ver-7' }
+    ]) {
+      const read = ensureHistoryEntry(
+        { ...JSON.parse(JSON.stringify(built({}))), catalogVersion: bad },
+        QUEUE
+      );
+      expect(read).not.toBeNull();
+      expect(read!.catalogVersion).toBeUndefined();
+    }
+  });
+
+  it('treats a half-formed stored origin as absent rather than repairing it', () => {
+    // Notably `{kind:'workflow-member'}` with no id: defaulting it to
+    // `'standalone'` would state, on a row, that a Workflow member ran alone.
+    for (const bad of [
+      'standalone',
+      { kind: 'workflow-member' },
+      { kind: 'workflow-member', workflowId: '' },
+      { kind: 'workflow' },
+      {}
+    ]) {
+      const read = ensureHistoryEntry(
+        { ...JSON.parse(JSON.stringify(built({}))), origin: bad },
+        QUEUE
+      );
+      expect(read).not.toBeNull();
+      expect(read!.origin).toBeUndefined();
+    }
   });
 });

@@ -120,6 +120,16 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'webview-ui/src/components/MonitorPill.svelte',
   'webview-ui/src/components/StatusBar.svelte',
   'webview-ui/src/components/StatusHeader.svelte',
+  // Feature 103 — one CSS selector, `.status-running .status-badge`, one of the
+  // six that colour a row's status badge from the `status-{row.status}` class
+  // the row already carries. Character-identical in kind to the
+  // `.status-running .dot` rules the three entries above are listed for, and
+  // reached for the same reason: FR-003 folds runs that are still going into
+  // history, so a history row now renders the live statuses as well as the
+  // terminal ones. No TypeScript in this file names the literal — the status
+  // reaches it as data, and the outcome filter that does name it lives in
+  // `webview-ui/src/lib/format.ts`, with the rest of the status vocabulary.
+  'webview-ui/src/components/HistoryRunRow.svelte',
   'webview-ui/src/lib/format.ts',
   // Feature 063 — UI copy strings ("currently running and will be
   // terminated.", "abort the running task") and template variable name

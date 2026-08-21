@@ -36,6 +36,7 @@ export type {
   FsRemoveOutcome,
   FsWriteIfAbsentOutcome,
   FsWriteOutcome,
+  ReferenceExemption,
   RunProvenance,
   StoreSegments,
   StoreWritability

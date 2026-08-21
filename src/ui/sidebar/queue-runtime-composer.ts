@@ -19,6 +19,10 @@
 import type { FeatureRequest } from '../../queue/feature-request';
 import type { WorkflowRun } from '../../state/workflow-run';
 import type { RunOutputRecord } from '../../contracts/run-results';
+// Feature 103 — by path, not through the contracts barrel; see the note on the
+// same import in `snapshot.ts`.
+import type { CatalogVersionRef } from '../../contracts/catalog-version';
+import type { RunOriginRef } from '../../contracts/run-origin';
 import type {
   ActiveFeatureSummary,
   ActivePipelineSummary,
@@ -64,6 +68,17 @@ export interface QueueRunProjection {
   readonly delayedRetry: DelayedRetryState;
   readonly outputs: readonly RunOutputRecord[];
   readonly activeFeature: ActiveFeatureSummary | null;
+  /**
+   * Feature 103 (T031, FR-003) — the two provenance readings, handed in like
+   * every other one above and for the same reason: this module recomputes
+   * nothing. `origin` in particular needs the connected-run map, which belongs
+   * to the host, not to a composer that only knows about queues.
+   *
+   * Both optional. Absent means not recorded and not knowable respectively, and
+   * the surface states either plainly rather than filling it in.
+   */
+  readonly catalogVersion?: CatalogVersionRef;
+  readonly origin?: RunOriginRef;
 }
 
 export interface QueueRuntimeComposerContext {
@@ -122,7 +137,14 @@ function projectInFlightRun(projection: QueueRunProjection): InFlightRunProjecti
     progress: projection.progress,
     delayedRetry: projection.delayedRetry,
     resumeTargetPhaseId: projection.run.resumeTargetPhaseId ?? null,
-    outputs: Object.freeze(projection.outputs.slice())
+    outputs: Object.freeze(projection.outputs.slice()),
+    // Feature 103 (T031, FR-003) — spread rather than assigned, so an unknown
+    // provenance is an absent key on the wire and never `undefined` as a value.
+    // The webview distinguishes the two: absent renders as a stated absence.
+    ...(projection.catalogVersion !== undefined
+      ? { catalogVersion: projection.catalogVersion }
+      : {}),
+    ...(projection.origin !== undefined ? { origin: projection.origin } : {})
   });
 }
 

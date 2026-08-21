@@ -171,7 +171,21 @@ const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number 
   // is in src/catalog/run-provenance-queue.ts. Neither could live here: the
   // second is inside the purity boundary `tests/lint/catalog-purity.test.ts`
   // guards. Set to exactly what the file measures.
-  { path: 'src/extension.ts', maxLines: 1_329 },
+  // Feature 103 (T031) — 1,329 → 1,335 for the run-origin port, against a
+  // ceiling the entry above left with nothing to give. Five of the six lines
+  // are the projector dep and the reason for its shape; the sixth is an import.
+  // Extraction is what the shape already is: the rule that turns a queue item
+  // into a `RunOriginRef` lives in src/services/run-origin-resolver.ts, and the
+  // recorder's half of the same wiring moved into `createHistoryRecorder` in
+  // src/services/history-recorder.ts as part of this task — which is the
+  // consolidation the `workflow-controller.ts` entry below had recorded as
+  // worth making on its own terms. It could not absorb this site too: the
+  // factory builds a recorder, and this is a projector dep.
+  // What cannot move is the closure, and it is in this file by definition —
+  // `store` is a local of `activate()`, so the binding has to be written where
+  // the projector is constructed, which is the trade the run-plan enumerator
+  // entry above declines by name. Set to exactly what the file measures.
+  { path: 'src/extension.ts', maxLines: 1_335 },
   // P4 phase-control and lifecycle-auditor extraction ratchet: 1,200 → 730.
   // This file owns only the workflow facade, run dispatch, deletion, retry
   // entry, and persistence.
@@ -372,6 +386,16 @@ const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number 
   // own terms, not a budget manoeuvre, and doing it here would mean a raise and
   // a refactor instead of one or the other.
   // Set to exactly what the file measures.
+  //
+  // Feature 103 (T031) — the consolidation above was taken, and the ceiling
+  // holds at 973 rather than rising again. FR-013 added an eleventh line to
+  // both copies of the literal, which is the second time one feature has had to
+  // edit the same wiring twice; `createHistoryRecorder` in
+  // src/services/history-recorder.ts now owns it, and both roots pass their
+  // collaborators instead. It buys 9 here (977 → 968) and the same shape at the
+  // other site. Not a budget manoeuvre: it is the move this entry named, and it
+  // is taken now because this feature is what made the duplication cost
+  // something. No ceiling change — a ratchet that only ever loosens is not one.
   { path: 'src/controller/workflow-controller.ts', maxLines: 973 },
   // P4 domain-validator extraction ratchet: 1,200 → 775. The registry owns
   // command coverage; phase-log and metrics validators own shape rules.

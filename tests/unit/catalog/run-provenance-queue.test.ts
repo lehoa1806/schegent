@@ -55,7 +55,7 @@ function asks(...plans: readonly RunVersionCarrier[]) {
 describe('createQueueRunProvenance — a live run holds its frozen version open (T048, FR-037)', () => {
   it('exempts the version a queued run froze', async () => {
     const provenance = asks(frozen(PIPELINE_V4));
-    expect(await provenance.isReferenced('pipeline', 'analysis', 'v4')).toBe(true);
+    expect(await provenance.isReferenced('pipeline', 'analysis', 'v4')).toBe('run-referenced');
   });
 
   it('exempts the version an executing run froze', async () => {
@@ -65,7 +65,7 @@ describe('createQueueRunProvenance — a live run holds its frozen version open 
     const provenance = createQueueRunProvenance(() =>
       liveRunPlans([], [{ status: 'running', pipeline: { catalogVersion: PIPELINE_V4 } }])
     );
-    expect(await provenance.isReferenced('pipeline', 'analysis', 'v4')).toBe(true);
+    expect(await provenance.isReferenced('pipeline', 'analysis', 'v4')).toBe('run-referenced');
   });
 
   it('exempts nothing once no live run records it (FR-034)', async () => {
@@ -86,7 +86,7 @@ describe('createQueueRunProvenance — a live run holds its frozen version open 
 
     expect(await provenance.isReferenced('pipeline', 'analysis', 'v4')).toBe(false);
     plans.push(frozen(PIPELINE_V4));
-    expect(await provenance.isReferenced('pipeline', 'analysis', 'v4')).toBe(true);
+    expect(await provenance.isReferenced('pipeline', 'analysis', 'v4')).toBe('run-referenced');
     plans.length = 0;
     expect(await provenance.isReferenced('pipeline', 'analysis', 'v4')).toBe(false);
   });
@@ -107,14 +107,14 @@ describe('createQueueRunProvenance — what an exemption does not stretch to (T0
   it('does not let a Pipeline exemption cover a Workflow of the same id and version', async () => {
     const provenance = asks(frozen(PIPELINE_V4));
 
-    expect(await provenance.isReferenced('pipeline', 'analysis', 'v4')).toBe(true);
+    expect(await provenance.isReferenced('pipeline', 'analysis', 'v4')).toBe('run-referenced');
     expect(await provenance.isReferenced('workflow', 'analysis', 'v4')).toBe(false);
   });
 
   it('does not let a Workflow exemption cover a Pipeline of the same id and version', async () => {
     const provenance = asks(frozen(WORKFLOW_V4));
 
-    expect(await provenance.isReferenced('workflow', 'analysis', 'v4')).toBe(true);
+    expect(await provenance.isReferenced('workflow', 'analysis', 'v4')).toBe('run-referenced');
     expect(await provenance.isReferenced('pipeline', 'analysis', 'v4')).toBe(false);
   });
 
@@ -141,8 +141,8 @@ describe('liveRunPlans — "live" is not terminal, not currently draining (T048,
       )
     );
 
-    expect(await provenance.isReferenced('pipeline', 'analysis', 'v4')).toBe(true);
-    expect(await provenance.isReferenced('pipeline', 'analysis', 'v5')).toBe(true);
+    expect(await provenance.isReferenced('pipeline', 'analysis', 'v4')).toBe('run-referenced');
+    expect(await provenance.isReferenced('pipeline', 'analysis', 'v5')).toBe('run-referenced');
   });
 
   it('exempts the in-flight item too', async () => {
@@ -150,7 +150,7 @@ describe('liveRunPlans — "live" is not terminal, not currently draining (T048,
       liveRunPlans([{ status: 'in-flight', runPlan: { catalogVersion: PIPELINE_V4 } }], [])
     );
 
-    expect(await provenance.isReferenced('pipeline', 'analysis', 'v4')).toBe(true);
+    expect(await provenance.isReferenced('pipeline', 'analysis', 'v4')).toBe('run-referenced');
   });
 
   it('stops exempting once the item reaches a terminal status', async () => {
@@ -183,7 +183,7 @@ describe('liveRunPlans — "live" is not terminal, not currently draining (T048,
       liveRunPlans([], [{ status: 'paused', pipeline: { catalogVersion: PIPELINE_V4 } }])
     );
 
-    expect(await provenance.isReferenced('pipeline', 'analysis', 'v4')).toBe(true);
+    expect(await provenance.isReferenced('pipeline', 'analysis', 'v4')).toBe('run-referenced');
   });
 
   it('skips a queue item and a Run that recorded no version', async () => {

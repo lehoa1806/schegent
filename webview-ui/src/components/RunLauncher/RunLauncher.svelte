@@ -21,6 +21,7 @@
   // even a helper that never settles cannot strand the operator in a form they
   // cannot edit. On either bound the composition is left exactly as typed.
 
+  import { untrack } from 'svelte';
   import RunInputFields from './RunInputFields.svelte';
   import SupplementalInputs from './SupplementalInputs.svelte';
   import RunOutputTargets from './RunOutputTargets.svelte';
@@ -45,12 +46,38 @@
   interface Props {
     readonly pipeline: PipelineDefinition;
     readonly onClose?: () => void;
+    /**
+     * Feature 103 (T066, FR-033) — what a caller already knows the operator
+     * meant, seeded into the supplemental controls.
+     *
+     * Read once, at mount, and never again: it is a starting value, not a bound
+     * one. A caller that pushed a new object into an open form would overwrite
+     * what the operator has since typed, and History's re-run remounts the panel
+     * per run anyway. Nothing else about the composition changes — the values are
+     * ordinary typed values from here on, and the submit path is unchanged.
+     */
+    readonly initialSupplemental?: Record<string, string>;
+    /**
+     * Feature 103 (T068, FR-059) — which queue admits the run.
+     *
+     * Absent for a launch from Runs, which is how it has always been: the host
+     * defaults it inside `scheduleOrEnqueue`, and this form has no opinion about
+     * which queue is the default one. Only History's re-run names one, because
+     * only it has a queue to be faithful to.
+     */
+    readonly queueId?: string;
   }
 
-  const { pipeline, onClose }: Props = $props();
+  const { pipeline, onClose, initialSupplemental, queueId }: Props = $props();
 
   let inputValues = $state<Record<string, string>>({});
-  let supplementalValues = $state<Record<string, string>>({});
+  // `untrack` states the intent the compiler otherwise warns about: this reads
+  // the prop once, deliberately, and must not become a subscription. A form that
+  // re-seeded whenever its caller re-rendered would discard what the operator
+  // had typed on every host snapshot push.
+  let supplementalValues = $state<Record<string, string>>(
+    untrack(() => ({ ...initialSupplemental }))
+  );
   let outputTargets = $state<Record<string, string>>({});
   let sideEffectConfirmed = $state<Record<string, boolean>>({});
   let overwriteConfirmed = $state<Record<string, boolean>>({});
@@ -130,7 +157,7 @@
     }, SUBMIT_TIMEOUT_MS);
 
     try {
-      const result = await launchPipeline(request);
+      const result = await launchPipeline(request, queueId);
       // The outer bound already restored the form and said so; a late answer must
       // not overwrite that with a verdict the operator can no longer act on.
       if (timedOut) return;

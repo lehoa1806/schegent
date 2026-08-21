@@ -48,6 +48,10 @@ function makeDeps(overrides: Partial<HistoryRecorderDeps> = {}): HistoryRecorder
     historyStore: { append: vi.fn().mockResolvedValue([]) } as never,
     logger: new SanitizedLogger(),
     queueIdForTask: () => 'queue-a',
+    // Feature 103 (T022) — shaped like `queueIdForTask` and answering the same
+    // kind of question: `null` means "could not tell", which the recorder must
+    // leave as an absence rather than a guess.
+    originForTask: () => ({ kind: 'standalone' }),
     descriptions: {
       write: vi.fn().mockResolvedValue('.schegent/history/run-1.txt'),
       remove: vi.fn().mockResolvedValue(undefined)
@@ -111,16 +115,28 @@ describe('HistoryRecorder (T098 / T102)', () => {
     await expect(recorder.record(makeRun(), 'desc', 'completed')).resolves.toBeUndefined();
   });
 
-  it('swallows store.append errors and logs a sanitized warning', async () => {
+  // Feature 103 (T080, FR-047) — the code, never the caught message. This case
+  // used to assert the message reached the log, which is the shape the
+  // requirement now rules out: a filesystem error's message quotes the absolute
+  // path it was addressing, and a writer catching one cannot tell an innocuous
+  // message from one carrying the workspace root. The code is the actionable
+  // half and carries nothing about where the workspace lives.
+  it('swallows store.append errors and logs the error code, not its message', async () => {
     const logger = new SanitizedLogger();
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
-    const append = vi.fn().mockRejectedValue(new Error('disk-full'));
+    const append = vi.fn().mockRejectedValue(
+      Object.assign(
+        new Error("ENOSPC: no space left on device, write '/Users/someone/work/.schegent'"),
+        { code: 'ENOSPC' }
+      )
+    );
     const recorder = new HistoryRecorder(
       makeDeps({ historyStore: { append } as never, logger })
     );
     await expect(recorder.record(makeRun(), 'desc', 'failed')).resolves.toBeUndefined();
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('history append failed'));
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('disk-full'));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('ENOSPC'));
+    expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('/Users/someone/work'));
   });
 });
 
@@ -172,5 +188,123 @@ describe('the recorder carries what the Run recorded (Feature 091, FR-010)', () 
     const { runOutputs, ...rest } = append.mock.calls[0][1];
     expect(runOutputs).toBeDefined();
     expect(JSON.stringify(rest)).not.toContain('out/report.md');
+  });
+});
+
+// Feature 103 (T022, T023, US2) — FR-013, FR-014, FR-015.
+//
+// The recorder is the only writer of a history entry, so it is the only place
+// provenance can be stamped. Two facts, two sources, two guards:
+//
+//   `catalogVersion` comes off the plan the run already froze (`run.pipeline`).
+//   `origin` comes off a port, because the answer lives on a `ConnectedWorkflowRun`
+//   that is deletable — so it is read once, at completion, and never again.
+//
+// R2 is the trap these cases exist to catch. A Workflow member's frozen body is
+// a *Pipeline*, so its `catalogVersion.kind` reads `'pipeline'` while its
+// `origin.kind` reads `'workflow-member'`. Both are true at once. Deriving
+// either from the other silently mislabels every member run.
+
+describe('the recorder stamps provenance (Feature 103, FR-013/FR-014/FR-015)', () => {
+  const MEMBER_PLAN = {
+    id: 'pipe-deploy',
+    name: 'Deploy',
+    phases: [],
+    catalogVersion: { kind: 'pipeline' as const, id: 'pipe-deploy', versionId: 'ver-12' }
+  };
+
+  async function appendedEntry(
+    run: WorkflowRun,
+    deps: Partial<HistoryRecorderDeps> = {}
+  ): Promise<Record<string, unknown>> {
+    const append = vi.fn().mockResolvedValue([]);
+    const recorder = new HistoryRecorder(
+      makeDeps({ historyStore: { append } as never, ...deps })
+    );
+    await recorder.record(run, 'a run with a provenance', 'completed');
+    expect(append).toHaveBeenCalledTimes(1);
+    return append.mock.calls[0][1];
+  }
+
+  it('records a standalone run as standalone', async () => {
+    const entry = await appendedEntry(makeRun(), {
+      originForTask: () => ({ kind: 'standalone' })
+    });
+    expect(entry.origin).toEqual({ kind: 'standalone' });
+  });
+
+  it('records a Workflow member as a member, and its frozen body as a Pipeline', async () => {
+    const entry = await appendedEntry(makeRun({ pipeline: MEMBER_PLAN }), {
+      originForTask: () => ({ kind: 'workflow-member', workflowId: 'wf-release' })
+    });
+
+    expect(entry.origin).toEqual({ kind: 'workflow-member', workflowId: 'wf-release' });
+    // Both, on the same entry, disagreeing about the word "workflow" — which is
+    // correct, and is exactly what a derived implementation cannot produce.
+    expect(entry.catalogVersion).toEqual(MEMBER_PLAN.catalogVersion);
+    expect((entry.catalogVersion as { kind: string }).kind).toBe('pipeline');
+  });
+
+  it('asks the port about the run’s queue item, not about the run id', async () => {
+    // The link the port resolves is `HistoryEntry.featureId === ChildRunRef.queueItemId`.
+    // Handing it `run.id` would miss every member.
+    const originForTask = vi.fn(() => ({ kind: 'standalone' as const }));
+    await appendedEntry(makeRun({ id: 'run-9', featureId: 'feat-9' }), { originForTask });
+    expect(originForTask).toHaveBeenCalledWith('feat-9');
+  });
+
+  it('copies the frozen version off the plan rather than re-resolving it', async () => {
+    const entry = await appendedEntry(makeRun({ pipeline: MEMBER_PLAN }));
+    expect(entry.catalogVersion).toEqual(MEMBER_PLAN.catalogVersion);
+  });
+
+  it('omits catalogVersion when the run froze no version', async () => {
+    // A plan supplied ready-made rather than frozen from the catalog, and every
+    // run that predates the catalog. Absent, not a placeholder.
+    const entry = await appendedEntry(
+      makeRun({ pipeline: { id: 'pipe-adhoc', name: 'Ad hoc', phases: [] } })
+    );
+    expect(entry.catalogVersion).toBeUndefined();
+    expect(Object.prototype.hasOwnProperty.call(entry, 'catalogVersion')).toBe(false);
+  });
+
+  it('omits origin when the port cannot tell, and still records the run', async () => {
+    const entry = await appendedEntry(makeRun({ pipeline: MEMBER_PLAN }), {
+      originForTask: () => null
+    });
+    expect(entry.origin).toBeUndefined();
+    expect(Object.prototype.hasOwnProperty.call(entry, 'origin')).toBe(false);
+    // FR-015 — the run is recorded regardless. Losing the whole entry because
+    // one descriptive field could not be resolved loses the operator the run.
+    expect(entry.runId).toBe('run-1');
+    expect(entry.catalogVersion).toEqual(MEMBER_PLAN.catalogVersion);
+  });
+
+  it('omits origin when the port throws, and still records the run', async () => {
+    const entry = await appendedEntry(makeRun({ pipeline: MEMBER_PLAN }), {
+      originForTask: () => {
+        throw new Error('connected run vanished mid-lookup');
+      }
+    });
+    expect(entry.origin).toBeUndefined();
+    expect(entry.runId).toBe('run-1');
+    expect(entry.catalogVersion).toEqual(MEMBER_PLAN.catalogVersion);
+  });
+
+  it('omits catalogVersion when reading the plan throws, and still records the run', async () => {
+    const run = makeRun();
+    Object.defineProperty(run, 'pipeline', {
+      get() {
+        throw new Error('plan snapshot unreadable');
+      }
+    });
+
+    const entry = await appendedEntry(run, {
+      originForTask: () => ({ kind: 'workflow-member', workflowId: 'wf-release' })
+    });
+    expect(entry.catalogVersion).toBeUndefined();
+    expect(entry.runId).toBe('run-1');
+    // Independent guards: the readable half still lands.
+    expect(entry.origin).toEqual({ kind: 'workflow-member', workflowId: 'wf-release' });
   });
 });
