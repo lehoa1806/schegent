@@ -50,6 +50,8 @@ function buildCtx(
     withAudit?: boolean;
     withSessionId?: boolean;
     metricsViewOpenedState?: { emitted: boolean };
+    isPrimary?: (() => boolean | Promise<boolean>) | undefined;
+    omitIsPrimary?: boolean;
   } = {}
 ): {
   ctx: Parameters<typeof readMetricsHandler>[0];
@@ -80,6 +82,9 @@ function buildCtx(
       audit: opts.withAudit === false ? undefined : { append: auditAppendSpy },
       sessionId: opts.withSessionId === false ? undefined : 'test-session-id',
       metricsViewOpenedState: opts.metricsViewOpenedState ?? { emitted: false },
+      // FR-R3-024 (FR-008a) — the handler's primacy gate fails closed on an
+      // absent callback, so a test that omits this is refused before it reads.
+      isPrimary: opts.omitIsPrimary === true ? undefined : (opts.isPrimary ?? (() => true)),
       logger
     },
     postAck: async (msg: CommandAckMessage) => {
@@ -188,6 +193,7 @@ describe('cmd-read-metrics handler (Feature 073, T003)', () => {
         audit: { append: auditAppendSpy },
         sessionId: 'test-session-id',
         metricsViewOpenedState: { emitted: false },
+        isPrimary: () => true,
         logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), sanitize: (s: string) => s }
       },
       postAck: async (msg: CommandAckMessage) => {
@@ -277,5 +283,78 @@ describe('cmd-read-metrics handler — includeArchives / coverage-window pass-th
       totalBackendInvocations: records.reduce((acc, t) => acc + t.totalBackendInvocations, 0)
     });
     expect(sum(resultTasks)).toEqual(sum(tasks));
+  });
+});
+
+// FR-R3-024 (FR-009, FR-010, SC-008) — Feature 073 T010 put a primacy gate in
+// this handler and the handler dropped its verdict, so a secondary window
+// scanned the archive corpus anyway. These cover both sides of the gate that
+// now cannot be dropped.
+describe('cmd-read-metrics handler — primacy gate (FR-R3-024)', () => {
+  it('rejects a secondary window without reading the metrics service', async () => {
+    const { ctx, acks, readSpy } = buildCtx({ isPrimary: () => false });
+    await readMetricsHandler(ctx, makeCmd({ includeArchives: true }));
+
+    expect(acks).toHaveLength(1);
+    expect(acks[0].status).toBe('rejected');
+    expect(acks[0].reason).toBe('secondary-window-readonly');
+    expect(readSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects fail-closed when no primacy callback is wired', async () => {
+    const { ctx, acks, readSpy } = buildCtx({ omitIsPrimary: true });
+    await readMetricsHandler(ctx, makeCmd());
+
+    expect(acks[0].status).toBe('rejected');
+    expect(acks[0].reason).toBe('secondary-window-readonly');
+    expect(readSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects fail-closed when the ownership read throws', async () => {
+    const { ctx, acks, readSpy } = buildCtx({
+      isPrimary: () => {
+        throw new Error('storage unavailable');
+      }
+    });
+    await readMetricsHandler(ctx, makeCmd());
+
+    expect(acks[0].status).toBe('rejected');
+    expect(acks[0].reason).toBe('secondary-window-readonly');
+    expect(readSpy).not.toHaveBeenCalled();
+  });
+
+  // A refused read must not spend the session's one `metrics-view-opened`
+  // event: the primary window's first real open is the one the contract means.
+  it('leaves the view-opened tracker unspent on a refusal', async () => {
+    const tracker = { emitted: false };
+    const { ctx, auditAppendSpy } = buildCtx({
+      isPrimary: () => false,
+      metricsViewOpenedState: tracker
+    });
+    await readMetricsHandler(ctx, makeCmd());
+
+    expect(tracker.emitted).toBe(false);
+    expect(auditAppendSpy).not.toHaveBeenCalled();
+  });
+
+  it('serves the primary window unchanged, includeArchives included', async () => {
+    const { ctx, acks, readSpy } = buildCtx({ isPrimary: () => true });
+    await readMetricsHandler(ctx, makeCmd({ includeArchives: true }));
+
+    expect(readSpy).toHaveBeenCalledTimes(1);
+    expect(acks).toHaveLength(1);
+    expect(acks[0].status).toBe('accepted');
+    expect(acks[0].result).toEqual(SAMPLE_RESPONSE);
+  });
+
+  // The gate is the handler's own, not the router's: `CMD_READ_METRICS` is a
+  // read command and stays out of MUTATING_COMMANDS (FR-011). The lint gate in
+  // tests/lint/primacy-predicate-split.test.ts holds the pair together.
+  it('awaits a promised primacy verdict rather than treating it as truthy', async () => {
+    const { ctx, acks, readSpy } = buildCtx({ isPrimary: async () => false });
+    await readMetricsHandler(ctx, makeCmd());
+
+    expect(readSpy).not.toHaveBeenCalled();
+    expect(acks[0].reason).toBe('secondary-window-readonly');
   });
 });

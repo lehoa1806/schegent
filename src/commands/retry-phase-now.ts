@@ -32,7 +32,7 @@ export async function runRetryPhaseNow(
   arg: unknown,
   ctx: RetryPhaseNowCtx
 ): Promise<void> {
-  if (!ctx.lock.isHeld()) {
+  if (!(await ctx.lock.hasPrimacy())) {
     ctx.notifier.warn('Schegent: another window holds the workspace lock; ignoring retry.');
     return;
   }

@@ -59,11 +59,36 @@ export const systemScheduler: Scheduler = {
  * under `.schegent/ownership/` — and the generation number it returns is a
  * fencing token this manager carries and re-checks at the point of effect.
  *
- * `KEYS.lock` survives as an advisory **mirror**, because `isHeld()`,
- * `isForeignLockHeld()` and `ownerOfRecord()` are synchronous and are read from
- * projection paths that cannot await. Every one of them is additionally gated on
- * this window holding a fence, so a superseded window reads `false` from its own
- * mirror rather than the stale `true` the mirror alone would give.
+ * `KEYS.lock` survives as an advisory **mirror**, because `isForeignLockHeld()`
+ * and `ownerOfRecord()` are synchronous and are read from projection paths that
+ * cannot await. Every mirror read is additionally gated on this window holding a
+ * fence, so a superseded window reads `false` from its own mirror rather than
+ * the stale `true` the mirror alone would give.
+ *
+ * ## FR-R3-024 — which predicate a caller is entitled to
+ *
+ * The rule this class states is advisory-for-projection,
+ * authoritative-for-decisions. It was stated and not enforced: six decision
+ * sites read `isHeld()` — Clean All, the seven palette queue mutations, rerun
+ * from history, retry active run, retry phase now, and the schedule watchdog's
+ * promote. All six now read {@link WorkspaceLockManager.hasPrimacy}, and
+ * `tests/lint/primacy-predicate-split.test.ts` holds that end state.
+ *
+ * `isHeld()` is retained, with **no host callers by design**. It is the mirror's
+ * own accessor and the shape the invariant below is stated in; deleting it would
+ * move that statement into a comment. A new caller is a decision to justify, not
+ * a default to inherit.
+ *
+ * Why reading the mirror is safe at all: `heartbeat()` writes it through
+ * `writeGuarded`, which refreshes the ownership record *before* the mirror write
+ * and returns *before* it on a refused or unanswerable refresh, and
+ * `tryAcquire()` writes it only after `acquire` returned. So the mirror can
+ * never be fresher than the record, and because the reclaim rule in
+ * `ownership-registry.ts` and `isHeld()`'s freshness check share one
+ * `STALENESS_THRESHOLD_MS`, the mirror is already stale whenever a rival may
+ * reclaim. `isHeld()` is therefore conservative: falsely negative is possible,
+ * falsely positive is not. That ordering is an invariant, not an accident —
+ * `tests/unit/state/mirror-write-ordering.test.ts` fails if it is reordered.
  */
 export class WorkspaceLockManager {
   private readonly store: WorkspaceStateStore;

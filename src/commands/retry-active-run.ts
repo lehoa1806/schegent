@@ -16,7 +16,7 @@ export interface RetryActiveRunCtx {
   readonly controller?: Pick<SchegentWorkflowController, 'resumeExisting'>;
   readonly queue: Pick<QueueManager, 'hasInFlight' | 'list' | 'retry'>;
   readonly history: Pick<HistoryStore, 'list'>;
-  readonly lock: Pick<WorkspaceLockManager, 'isHeld'>;
+  readonly lock: Pick<WorkspaceLockManager, 'hasPrimacy'>;
   readonly guarded: Pick<GuardedRunService, 'scheduleOrEnqueue'>;
   readonly notifier: Notifier;
   readonly logger: SanitizedLogger;
@@ -26,7 +26,7 @@ export async function runRetryActiveRun(
   _arg: unknown,
   ctx: RetryActiveRunCtx
 ): Promise<void> {
-  if (!ctx.lock.isHeld()) {
+  if (!(await ctx.lock.hasPrimacy())) {
     ctx.notifier.warn('Schegent: another window holds the workspace lock; ignoring retry.');
     return;
   }

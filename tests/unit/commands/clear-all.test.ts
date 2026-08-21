@@ -83,15 +83,18 @@ function fakeNotifier(): Notifier & {
   };
 }
 
-function fakeLock(isHeldValue = true): WorkspaceLockManager & {
-  isHeld: ReturnType<typeof vi.fn>;
+// FR-R3-024 (FR-013) — `runClearAll` gates on `hasPrimacy()`, the authoritative
+// predicate, rather than the advisory `isHeld()` mirror read. The stub answers a
+// promise for the same reason the production call awaits one.
+function fakeLock(hasPrimacyValue = true): WorkspaceLockManager & {
+  hasPrimacy: ReturnType<typeof vi.fn>;
   release: ReturnType<typeof vi.fn>;
 } {
   return {
-    isHeld: vi.fn(() => isHeldValue),
+    hasPrimacy: vi.fn(async () => hasPrimacyValue),
     release: vi.fn(async () => undefined)
   } as unknown as WorkspaceLockManager & {
-    isHeld: ReturnType<typeof vi.fn>;
+    hasPrimacy: ReturnType<typeof vi.fn>;
     release: ReturnType<typeof vi.fn>;
   };
 }
@@ -207,7 +210,7 @@ describe('runClearAll — failure-mode translation (T020)', () => {
   // Clean All is neither. The old release stopped the heartbeat and nulled the
   // record, and only `tryAcquire()` restores either, so one Clean All left the
   // window non-primary for the rest of the session — including for its own
-  // `isHeld()` guard on the next Clean All. The ack still matters, and is still
+  // primacy guard on the next Clean All. The ack still matters, and is still
   // asserted: it decides the toast and the audited `runnerState`.
   it('runner acks: keeps primacy and does not emit the runner-pending toast', async () => {
     // Controller flips `running` to false promptly — the probe resolves true.
