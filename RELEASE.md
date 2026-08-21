@@ -26,21 +26,25 @@ dispatch.
 
 Before tagging a release, verify each item:
 
-0. **Local consolidated gate.** Run `npm run verify:all`; contract and
-   documentation freshness, version parity, secret/license/action-pin checks, typechecks,
-   lint, and host/webview tests must all pass.
+0. **Local consolidated gate.** Run `npm run ci:fast`. It runs
+   `npm run verify:all` — contract and documentation freshness, version parity,
+   secret/license/action-pin checks, typechecks, lint, and host/webview tests —
+   and adds the eval and visual suites, the host build, and
+   `npm run package:smoke`. Reach for the whole chain rather than `verify:all`
+   alone: `verify:all` does not run the packaging policy, so it is not the chain
+   to release on.
 
 1. **Full gate ≤ 7 days old.** The most recent successful `full-gate.yml`
-   run against `main` (or the release branch) must be within seven days.
+   run against `develop` (or the release branch) must be within seven days.
    If older, dispatch a fresh run:
    ```bash
-   gh workflow run full-gate.yml --ref main
+   gh workflow run full-gate.yml --ref develop
    gh run watch
    ```
 2. **All ten full-gate jobs green** on the run you are releasing from.
    Spot-check with:
    ```bash
-   gh run list --workflow=full-gate.yml --branch=main --limit=3
+   gh run list --workflow=full-gate.yml --branch=develop --limit=3
    ```
 3. **`npm audit` cadence.** Run at the repo root and the webview tree:
    ```bash
@@ -105,11 +109,18 @@ dependency-refresh sprint.
 3. Append a release-notes entry to
    [`docs/operations/release-notes.md`](docs/operations/release-notes.md)
    summarizing operator-visible changes.
-4. Tag the release: `git tag -a vX.Y.Z -m "Release vX.Y.Z"`.
+4. Commit the bump, then tag the release:
+   `git tag -a vX.Y.Z -m "Release vX.Y.Z"`. The release job compares the tag to
+   `package.json`'s `version` before it installs anything and refuses a
+   mismatch, naming both values — so step 2 has to be committed on the commit
+   the tag points at, not after it.
 5. Push the tag: `git push origin vX.Y.Z`.
-6. The marketplace publish step is manual: download the tagged
-   `schegent-release-artifacts` bundle from the release workflow run,
-   verify it against `SHA256SUMS`, and publish the `.vsix` with
+6. The marketplace publish step is manual. Download the artifacts from the
+   tag's GitHub Release, which the workflow publishes and which does not
+   expire; the `schegent-release-artifacts` bundle on the workflow run holds the
+   same files and is kept for 90 days. Then, in order: verify provenance with
+   the command under [Artifact provenance](#artifact-provenance), verify the
+   bundle against `SHA256SUMS`, and publish the `.vsix` with
    `vsce publish --packagePath <file>`. There is no automated publish job.
 
 ## Artifact provenance
@@ -122,11 +133,51 @@ gitignored, it carries no record of the commit or the toolchain that
 produced it, and nothing distinguishes it from one built with uncommitted
 changes. Delete it rather than shipping it.
 
-Today this is a convention: the only thing separating a hand-built package
-from a release one is where the file came from, which a reader cannot
-check after the fact. FR-R3-029 is the item that makes the statement
-enforceable, by attaching an attestation to the workflow-built artifact so
-provenance becomes a property of the file instead of a claim about it.
+That is now checkable rather than conventional. A tagged run attaches a
+GitHub build-provenance attestation to the `.vsix` and to
+`schegent-sbom.cdx.json`, binding each file's digest to this repository,
+this workflow file, and the commit it was built from. Verify a download
+before installing or publishing it:
+
+```bash
+gh attestation verify schegent-<version>.vsix \
+  --repo lehoa1806/schegent \
+  --signer-workflow lehoa1806/schegent/.github/workflows/release.yml
+```
+
+Read the result this way. A success prints a line per verified attestation
+naming the predicate type (`https://slsa.dev/provenance/v1`) and the signing
+workflow. The `--signer-workflow` constraint is what makes that line mean
+anything: without it, an attestation from any workflow in any repository
+would satisfy the check. The commit the artifact was built from lives in
+the attestation's build definition, which `--format json` prints in full if
+you need to match it against the tag.
+
+What the command needs: the `gh` CLI authenticated as any GitHub account
+(`gh auth login`), because attestation lookup is an API call. No repository
+write access, and no local checkout. It also needs a `gh` build that has the
+`attestation` subcommand, which arrived in 2.49.0 — confirm with
+`gh attestation verify --help` before reading a failure as a verdict on the
+artifact. A missing subcommand or a missing login is not a failed provenance
+check.
+
+**A locally built `.vsix` is expected to fail this command, and that is the
+point.** `npm run package` produces a file with no attestation, so
+verification reports that none was found. A local build is not a release: it
+is an archive you can inspect, never one you can attribute.
+
+`SHA256SUMS` is still generated and still worth checking — it catches a
+corrupted download — but it is produced and uploaded by the same unsigned job
+as the artifact, so on its own it establishes transfer integrity rather than
+origin. It is deliberately not an attestation subject: its content is the
+digests of the two files that *are* attested, so verifying those directly is
+strictly stronger than verifying a manifest of them.
+
+The one thing this cannot establish from a working tree is itself. The real
+tagged run, the attestation it produces, and the verification output are
+recorded as outstanding in
+[docs/operations/release-provenance-observation.md](docs/operations/release-provenance-observation.md),
+together with the commands that close them.
 
 ## Rollback
 
