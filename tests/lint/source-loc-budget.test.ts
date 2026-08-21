@@ -1,10 +1,58 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
+const ENVELOPE_ROOT = resolve(REPO_ROOT, '..');
 
-const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number }> = [
+/**
+ * A ceiling somebody chose, or a waiver somebody decided. FR-R3-027 made these
+ * two different types because they were previously the same one: a waiver was
+ * expressed as the number `10_000`, which is indistinguishable — to every reader
+ * and every tool — from a budget. A waived entry carries no `maxLines` at all, so
+ * "a waiver with a ceiling" is unrepresentable rather than merely discouraged,
+ * and `typecheck:tests` is what enforces it.
+ */
+interface CeilingEntry {
+  readonly path: string;
+  readonly maxLines: number;
+}
+
+interface WaivedEntry {
+  readonly path: string;
+  readonly waiver: {
+    /** What was decided, in the decision's own words. */
+    readonly decision: string;
+    /** ISO date the operator took it. */
+    readonly decidedOn: string;
+    /**
+     * Where it is written down — a path, never a line number. The previous
+     * comment here cited "plan.md lines 26 and 66"; the decision now sits at
+     * lines 31 and 71 of that file. A reference that rots is not a reference,
+     * so the gate below resolves this path on disk and the quoted `decision`
+     * is what a reader greps for.
+     */
+    readonly reference: string;
+  };
+}
+
+type BudgetEntry = CeilingEntry | WaivedEntry;
+
+function isWaived(entry: BudgetEntry): entry is WaivedEntry {
+  return 'waiver' in entry;
+}
+
+/**
+ * The factor at which a budget stops being a ceiling and starts being a waiver
+ * in disguise. Measured 2026-08-22 across all twelve entries: ten sat at or below
+ * 2.10x their file's size (the highest being pipeline-config.ts at 900/428) and
+ * two sat at 4.00x and 5.49x. Three is the gap between those two groups, so the
+ * gate catches the waiver shape without forcing a judgement call on any existing
+ * entry. Tighten it against a re-measured distribution, not against taste.
+ */
+const WAIVER_FACTOR = 3;
+
+const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // P4 activation extraction ratchet: 1,500 → 1,305. Backend/evidence
   // composition and Stage-2 dashboard/command lifecycle now have focused
   // owners under src/activation.
@@ -452,12 +500,23 @@ const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number 
   // keeps compiling unmodified. Joining them would misstate the module for a
   // command that does not fit its shape.
   { path: 'src/contracts/sidebar-ipc.ts', maxLines: 1024 },
-  // Feature 063 (operator decision 2026-05-22, plan.md "Constitution-style
-  // invariants"): per-file caps for queue-manager.ts and workspace-state.ts
-  // raised to 10_000 lines. Helpers may be extracted for cohesion, but the
-  // budget is no longer the forcing function. See
-  // specs/063-clean-all-confirmations/plan.md lines 26 and 66.
-  { path: 'src/state/workspace-state.ts', maxLines: 10_000 },
+  // Waived, not budgeted. Feature 063's operator decision retired the ceiling
+  // on this file and on queue-manager.ts below; it did not set a large one. The
+  // entries used to say `maxLines: 10_000` against files of 2,500 and 1,821,
+  // which reads as a budget somebody chose and let either file more than triple
+  // while the gate reported success. The decision stands — neither file is
+  // forced to extract helpers and neither gains a ceiling here — and FR-R3-027
+  // only makes it legible.
+  {
+    path: 'src/state/workspace-state.ts',
+    waiver: {
+      decision:
+        'per-file caps for queue-manager.ts and workspace-state.ts raised to 10,000 lines; ' +
+        'helpers may be extracted for cohesion, but the budget is no longer the forcing function',
+      decidedOn: '2026-05-22',
+      reference: 'specs/063-clean-all-confirmations/plan.md'
+    }
+  },
   // Feature 077 — public facade and every state-projection collaborator have
   // hard physical-LOC ceilings. Composition, lifecycle, and timing are split.
   { path: 'src/ui/sidebar/state-projector.ts', maxLines: 250 },
@@ -498,7 +557,17 @@ const BUDGETS: ReadonlyArray<{ readonly path: string; readonly maxLines: number 
   // explanation, which is the opposite of what the entries above are for. Set
   // to exactly what the file measures.
   { path: 'src/ui/sidebar/snapshot-composer.ts', maxLines: 308 },
-  { path: 'src/queue/queue-manager.ts', maxLines: 10_000 },
+  // The second file of the same 2026-05-22 decision; see the waiver above.
+  {
+    path: 'src/queue/queue-manager.ts',
+    waiver: {
+      decision:
+        'per-file caps for queue-manager.ts and workspace-state.ts raised to 10,000 lines; ' +
+        'helpers may be extracted for cohesion, but the budget is no longer the forcing function',
+      decidedOn: '2026-05-22',
+      reference: 'specs/063-clean-all-confirmations/plan.md'
+    }
+  },
   // Speckit-auto alignment (2026-07-30) — bumped 700 → 800 to absorb two new
   // built-in phases (speckit-checklist, speckit-review) and enriched
   // skill-aligned instruction text for clarify, analyze, review, and finalize.
@@ -524,6 +593,7 @@ function lineCount(path: string): number {
 
 describe('large source file LOC budgets', () => {
   for (const budget of BUDGETS) {
+    if (isWaived(budget)) continue;
     it(`${budget.path} stays at or below ${budget.maxLines} lines`, () => {
       const actual = lineCount(budget.path);
       expect(
@@ -532,6 +602,52 @@ describe('large source file LOC budgets', () => {
       ).toBeLessThanOrEqual(budget.maxLines);
     });
   }
+
+  // The guard the notation change exists for: an entry whose ceiling is a large
+  // multiple of its file is a waiver, and a waiver has to say so. Without this,
+  // a third entry can quietly acquire the shape the two waived ones had.
+  it(`every ceiling within ${WAIVER_FACTOR}x its file, or declared a waiver`, () => {
+    const offenders = BUDGETS.filter((entry): entry is CeilingEntry => !isWaived(entry))
+      .map((entry) => ({ ...entry, actual: lineCount(entry.path) }))
+      .filter((entry) => entry.maxLines > entry.actual * WAIVER_FACTOR)
+      .map(
+        (entry) =>
+          `${entry.path}: budget ${entry.maxLines} against ${entry.actual} measured lines ` +
+          `(${(entry.maxLines / entry.actual).toFixed(2)}x). Either tighten the ceiling to ` +
+          `what the file measures, or replace maxLines with a waiver naming the decision ` +
+          `that retired it — a ceiling this far above the file has stopped being a forcing function`
+      );
+    expect(offenders).toEqual([]);
+  });
+
+  // A waiver is a decision on the record, so the record has to be reachable.
+  // Growth on a waived file is reported rather than gated: the decision retired
+  // the ceiling, and hiding the size would be a second silence on top of it.
+  it('every waiver names a resolvable decision, and its file size is reported', () => {
+    const waived = BUDGETS.filter(isWaived);
+    expect(waived.length, 'the waiver path must stay exercised').toBeGreaterThan(0);
+
+    const malformed = waived
+      .filter(
+        (entry) =>
+          entry.waiver.decision.trim().length < 20 ||
+          !/^\d{4}-\d{2}-\d{2}$/.test(entry.waiver.decidedOn) ||
+          !existsSync(resolve(ENVELOPE_ROOT, entry.waiver.reference))
+      )
+      .map(
+        (entry) =>
+          `${entry.path}: waiver needs a quoted decision, an ISO date, and a reference that ` +
+          `resolves on disk (got "${entry.waiver.reference}")`
+      );
+    expect(malformed).toEqual([]);
+
+    const sizes = waived
+      .map((entry) => `${entry.path} ${lineCount(entry.path)} lines`)
+      .join('; ');
+    // eslint-disable-next-line no-console -- FR-R3-027: a waived file's size is
+    // reported on every run, since no assertion enforces a ceiling on it.
+    console.log(`LOC waivers (no ceiling enforced, size reported): ${sizes}`);
+  });
 
   it('every sidebar projector module stays at or below 300 lines', () => {
     const directory = resolve(REPO_ROOT, 'src/ui/sidebar');

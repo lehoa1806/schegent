@@ -385,14 +385,15 @@ Useful targets:
 | `npm run typecheck:tests` | TypeScript no-emit check over every test source. |
 | `npm run lint` | ESLint over `src/` and `tests/`. |
 | `npm run test` | Vitest unit suites (host + webview). |
-| `npm run test:coverage` | Unit suites with coverage. |
+| `npm run test:coverage` | Host unit suite with coverage, against the thresholds in `vitest.config.ts`. |
+| `npm run test:webview:coverage` | Webview suite with coverage, against the thresholds in `webview-ui/vitest.config.ts`. Runs in `verify:all` and `ci` in place of the plain webview leg. |
 | `npm run test:evals` | Deterministic backend-outcome evaluation corpus. |
 | `npm run test:visual` | Production-webview screenshot matrix (five surfaces × three themes). |
 | `npm run test:perf` | Blocking performance and sustained-evidence budgets. |
 | `npm run test:e2e` | End-to-end VS Code suite. |
 | `npm run test:integration` | Integration suite (boots a real VS Code instance). |
-| `npm run verify:all` | Contract, docs, secret, workflow, and licence checks + every typecheck + both lint passes + unit tests. Covers no e2e, visual, perf, eval, or integration suite — run those separately. |
-| `npm run ci` | Full pre-merge gate (all typechecks + lint + unit/eval/visual/perf/E2E + build + exact package + isolated integration). |
+| `npm run verify:all` | Contract, docs, secret, workflow, and licence checks + every typecheck + both lint passes + the host unit suite + the webview suite under its coverage thresholds. Covers no e2e, visual, perf, eval, or integration suite — run those separately. |
+| `npm run ci` | Full pre-merge gate (all typechecks + lint + unit/eval/visual/perf/E2E + build + exact package + isolated integration). The webview leg runs under coverage, as in `verify:all`. |
 | `npm run package` | `vsce package --no-dependencies`. |
 | `npm run package:smoke` | Build a temporary VSIX and enforce its exact content and size policy. |
 

@@ -84,14 +84,22 @@ describe('release-gate scripts (US6 / T048 / FR-033)', () => {
     const scripts = readScripts();
     const ci = scripts.ci;
     // The documented chain is typecheck → typecheck:webview → typecheck:tests →
-    // lint → build:webview → test → … → build → package:smoke →
-    // test:integration. We assert presence and ordering of the load-bearing
-    // steps, not exact whitespace.
+    // lint → build:webview → test:host → test:webview:coverage → … → build →
+    // package:smoke → test:integration. We assert presence and ordering of the
+    // load-bearing steps, not exact whitespace.
+    //
+    // FR-R3-027 split the single `test` step into its two legs, because the
+    // webview leg now runs under coverage thresholds and `verify:all` must not
+    // run that suite twice. Both legs are asserted present, and both keep the
+    // position `test` held: after `build:webview`, before `build`.
     const idxTypecheck = stepIndex(ci, 'typecheck');
     const idxTestTypecheck = stepIndex(ci, 'typecheck:tests');
     const idxLint = stepIndex(ci, 'lint');
     const idxBuildWebview = stepIndex(ci, 'build:webview');
-    const idxTest = stepIndex(ci, 'test');
+    const idxHostSuite = stepIndex(ci, 'test:host');
+    const idxWebviewSuite = stepIndex(ci, 'test:webview:coverage');
+    const idxTestFirst = Math.min(idxHostSuite, idxWebviewSuite);
+    const idxTestLast = Math.max(idxHostSuite, idxWebviewSuite);
     const idxBuild = stepIndex(ci, 'build');
     const idxPackage = stepIndex(ci, 'package:smoke');
     const idxIntegration = stepIndex(ci, 'test:integration');
@@ -105,8 +113,10 @@ describe('release-gate scripts (US6 / T048 / FR-033)', () => {
     // checkout — which is how a 35% overrun of the dashboard JS cap went
     // unreported until feature 089's T048.
     expect(idxBuildWebview).toBeGreaterThan(idxLint);
-    expect(idxTest).toBeGreaterThan(idxBuildWebview);
-    expect(idxBuild).toBeGreaterThan(idxTest);
+    expect(idxHostSuite).toBeGreaterThanOrEqual(0);
+    expect(idxWebviewSuite).toBeGreaterThanOrEqual(0);
+    expect(idxTestFirst).toBeGreaterThan(idxBuildWebview);
+    expect(idxBuild).toBeGreaterThan(idxTestLast);
     expect(idxPackage).toBeGreaterThan(idxBuild);
     expect(idxIntegration).toBeGreaterThan(idxPackage);
   });
