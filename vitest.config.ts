@@ -39,19 +39,45 @@ export default defineConfig({
       reporter: ['text', 'json', 'html', 'lcov'],
       reportsDirectory: 'coverage',
       include: ['src/**/*.ts'],
-      // `src/extension.ts` is the activation entry whose seams are
-      // exercised end-to-end via integration tests, not unit tests.
-      // The `*.d.ts` and contracts shim files contain no executable
-      // statements worth measuring.
-      exclude: [
-        'src/extension.ts',
-        'src/**/*.d.ts',
-        'src/ui/sidebar/messages.ts'
-      ],
-      // Floor pinned slightly below current measured coverage (Linux
-      // run as of branch 056: ~88.7% statements / ~84.1% branches /
-      // ~88.2% functions / ~88.7% lines). The 80% line matches the
-      // service-level target in CLAUDE.md. CI fails on regression.
+      // One exclusion, and it is a measured one.
+      //
+      // `src/ui/sidebar/messages.ts` is a nine-line shim (`wc -l`, so ten
+      // by the newline-split convention the LOC budget uses) holding
+      // message literals and no executable statement worth measuring.
+      // Check the claim rather than trusting the adjective.
+      //
+      // FR-R3-027 removed the other two. `src/extension.ts` was excluded
+      // as an activation entry "exercised end-to-end via integration
+      // tests, not unit tests" — and measurement showed that premise named
+      // the wrong suite: the file is 74.64% statement-covered by the suite
+      // that runs on every `npm run test`, while the `*.host.test.ts` files
+      // the comment referred to are excluded at line 28 below and are
+      // reached in CI only after the visual-regression step. Including it
+      // costs 0.30 points of line coverage. `src/**/*.d.ts` was deleted
+      // because it matched zero files under `src/`; an exclusion that
+      // excludes nothing is a comment pretending to be a decision.
+      exclude: ['src/ui/sidebar/messages.ts'],
+      // Floors pinned below measured coverage, and deliberately not raised
+      // to meet it: a floor set to what today's tree happens to hit makes
+      // the next legitimate refactor red for nothing.
+      //
+      // Measured 2026-08-22 on darwin, branch
+      // 110-coverage-and-budget-gate-completeness, with `src/extension.ts`
+      // in the measured set (411 files): 89.64% statements (38720/43192) /
+      // 88.11% branches (13088/14854) / 91.65% functions (2437/2659) /
+      // 89.64% lines. Statements and functions reproduced exactly across
+      // runs; branches moved 0.02 points (13081/14848 in one run), because
+      // v8 attributes branch ranges from what actually executed. A floor
+      // pinned to a measured number would be pinned to that noise too.
+      //
+      // The previous comment recorded a Linux branch-056 run (~88.7 /
+      // ~84.1 / ~88.2 / ~88.7); its branches figure had drifted four points
+      // from actual, which is why the platform and branch are named here
+      // and the full run is recorded in
+      // docs/development/coverage-measurements.md.
+      //
+      // The 80% line matches the service-level target in CLAUDE.md. CI
+      // fails on regression.
       thresholds: {
         statements: 80,
         branches: 75,
