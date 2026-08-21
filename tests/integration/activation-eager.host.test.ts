@@ -15,6 +15,32 @@ import * as vscode from 'vscode';
 // This test MUST fail when `package.json` `activationEvents` lacks
 // `workspaceContains:.specify/` and pass once the trigger is added.
 // See specs/006-sidebar-compact-status-bar/bugs/BUG-002.md.
+//
+// Feature 111 (T701, FR-024) — this file makes two claims, and only one of them
+// can gate.
+//
+//   The manifest claim — `activationEvents` declares the workspace-content
+//   trigger — is now also asserted by
+//   `tests/lint/activation-events-declared.test.ts`, which reads `package.json`
+//   as data, imports no `vscode`, and therefore runs in the default `npm run
+//   test` suite. That file is also where the second trigger,
+//   `workspaceContains:.schegent/`, and the reason there is no `onCommand:` or
+//   `onView:` entry are recorded.
+//
+//   The runtime claim — VS Code really did call `activate()` on workspace load,
+//   without the sidebar being revealed and without anyone calling
+//   `ext.activate()` — cannot move. `vscode.extensions.getExtension` and
+//   `ext.isActive` have no meaning under `environment: 'node'`; the stub at
+//   `tests/__stubs__/vscode.ts` can return whatever a test wants it to, so an
+//   assertion against it would be an assertion about the stub. Only a real
+//   extension host can answer "did activation happen on its own", which is why
+//   `vitest.config.ts:28` excludes `*.host.test.ts` and why that exclusion is
+//   structural rather than a gap to close.
+//
+// The manifest assertion below is kept rather than deleted as now-redundant: in
+// the host run it reads the *loaded* extension's `packageJSON`, which is the
+// manifest VS Code actually resolved, not the file on disk. The two assertions
+// agree today and are not the same assertion.
 const EXTENSION_ID = 'schegent.schegent';
 const REQUIRED_ACTIVATION_EVENT = 'workspaceContains:.specify/';
 const ACTIVATION_BUDGET_MS = 5_000;
