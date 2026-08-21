@@ -15,7 +15,7 @@ name: Dependency review
 
 on:
   pull_request:
-    branches: [main]
+    branches: [develop]
     types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
