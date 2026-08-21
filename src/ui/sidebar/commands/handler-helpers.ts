@@ -93,14 +93,12 @@ export function requireOps(ctx: HandlerContext): QueueOps | null {
   return null;
 }
 
-export async function checkPrimary(ctx: HandlerContext): Promise<boolean> {
-  if (!ctx.deps.isPrimary) return true;
-  try {
-    return await ctx.deps.isPrimary();
-  } catch {
-    return false;
-  }
-}
+// FR-R3-024 (FR-008) — `checkPrimary` is gone. It returned a verdict a caller
+// could await and drop, and `cmd-read-metrics` did exactly that. Its one
+// replacement is `withPrimary` in `./primacy-gate`, which takes the gated work
+// as an argument so there is no verdict to drop; the predicate underneath it is
+// `isWindowPrimary`. Re-adding a verdict-returning primacy helper here would
+// leave the original mistake available under a new name.
 
 export async function appendQueueAudit(
   ctx: HandlerContext,

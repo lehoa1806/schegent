@@ -1,15 +1,33 @@
 import type { ReadMetricsCommand, ReadMetricsResponse } from '../messages';
 import type { CommandHandler, HandlerContext } from './handler-contract';
-import { ack, checkPrimary } from './handler-helpers';
+import { ack } from './handler-helpers';
+import { withPrimary } from './primacy-gate';
 import { buildMetricsCoverage, EMPTY_CUMULATIVE_TOTALS } from '../../../metrics/metrics-rollup';
 
-// Feature 073 T010 — handler MUST gate on isPrimaryHost() to prevent multi-window
-// races during archive scans.
+// Feature 073 T010 — this handler gates on primacy to prevent multi-window races
+// during archive scans. `CMD_READ_METRICS` is not in `MUTATING_COMMANDS`, so the
+// router's gate never runs for it and the gate has to be here.
+//
+// FR-R3-024 (FR-009) — it was here, and it did nothing: the handler awaited
+// `checkPrimary(ctx)` and discarded the verdict, so a secondary window scanned
+// the archives anyway. `withPrimary` takes the gated work as an argument, so
+// there is no verdict to discard.
+//
+// The gate wraps `emitViewOpenedOnce` too, deliberately: `metrics-view-opened`
+// fires at most once per session, and letting a refused read spend it would mean
+// the primary window's first real open never emitted the event.
+//
 // Workspace root reaches this handler only via ctx.deps.metricsService,
 // which wireStage2() constructs once at activation with a resolved
 // workspaceRoot — this file never reads workspaceFolders directly.
 export const handler: CommandHandler<ReadMetricsCommand> = async (ctx, command) => {
-  await checkPrimary(ctx);
+  await withPrimary(ctx, command, () => readMetrics(ctx, command));
+};
+
+async function readMetrics(
+  ctx: HandlerContext,
+  command: ReadMetricsCommand
+): Promise<void> {
   await emitViewOpenedOnce(ctx);
 
   const req = command.payload ?? {};
@@ -53,7 +71,7 @@ export const handler: CommandHandler<ReadMetricsCommand> = async (ctx, command) 
   }
 
   await ack(ctx, 'accepted', undefined, response);
-};
+}
 
 // contracts/metrics-view-opened-event.md — emitted at most once per
 // session (first CMD_READ_METRICS dispatch this activation). The tracker

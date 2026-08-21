@@ -1,7 +1,8 @@
 // Feature 063 — `runClearAll` orchestrator for the Clean All button.
 //
 // Wires together:
-//   1. Workspace-lock primary check (`lock.isHeld()`) — same pattern as
+//   1. Workspace-lock primary check (`lock.hasPrimacy()`, FR-R3-024 FR-013) —
+//      same pattern as
 //      `runClearCompleted` / `runClearFailed` in `queue-ops.ts`. Non-primary
 //      windows surface a toast and exit without mutating state.
 //   2. A bounded runner-ack probe (FR-007) that fires `controller.cancelActive()`
@@ -63,7 +64,7 @@ export interface ClearAllCtx {
 }
 
 export async function runClearAll(ctx: ClearAllCtx): Promise<ClearAllResult> {
-  if (!ctx.lock.isHeld()) {
+  if (!(await ctx.lock.hasPrimacy())) {
     ctx.notifier.warn(CLEAN_ALL_LOCK_CONTENTION_TOAST);
     return { ok: false, reason: 'not-primary' };
   }

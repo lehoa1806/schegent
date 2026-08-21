@@ -35,11 +35,24 @@ function listMessageRouterTests(): readonly string[] {
     }
     throw err;
   }
-  return out
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .map(rel);
+  return (
+    out
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .map(rel)
+      // The lint tests themselves match on the constructor name appearing as a
+      // `grep` argument, not on a construction, so they are not router tests and
+      // have no trust posture to state. Excluded by directory rather than by an
+      // allowlist entry, which would read as tolerating a violation.
+      //
+      // Until FR-R3-024 this file was the only `tests/lint/` match and it
+      // happened to satisfy itself, because a gate that asserts on `isTrusted`
+      // necessarily contains the word. Its sibling
+      // `message-router-primacy-wiring.test.ts` does not, which is what made the
+      // missing exclusion visible.
+      .filter((file) => !file.startsWith('tests/lint/'))
+  );
 }
 
 describe('MessageRouter workspace-trust wiring', () => {

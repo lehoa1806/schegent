@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { MessageRouter, type RouterDeps } from '../../../../src/ui/sidebar/message-router';
+import {
+  MessageRouter,
+  MUTATING_COMMANDS,
+  type RouterDeps
+} from '../../../../src/ui/sidebar/message-router';
 import { SanitizedLogger } from '../../../../src/lib/logger';
 import type { CommandAckMessage, SidebarCommand } from '../../../../src/ui/sidebar/messages';
 import {
@@ -116,10 +120,11 @@ class FakeQueueOps {
 
 function makeRouter(opts: {
   queueOps?: FakeQueueOps;
-  isPrimary?: () => boolean;
+  isPrimary?: () => boolean | Promise<boolean>;
   notifyWarning?: (m: string) => void;
   isTrusted?: () => boolean;
   omitIsTrusted?: boolean;
+  omitIsPrimary?: boolean;
 } = {}): {
   router: MessageRouter;
   executeCommand: ReturnType<typeof vi.fn>;
@@ -143,7 +148,9 @@ function makeRouter(opts: {
       disablePhase: vi.fn(async () => ({ ok: true })),
       enablePhase: vi.fn(async () => ({ ok: true }))
     },
-    isPrimary: opts.isPrimary ?? (() => true),
+    ...(opts.omitIsPrimary
+      ? {}
+      : { isPrimary: opts.isPrimary ?? (() => true) }),
     ...(opts.omitIsTrusted
       ? {}
       : { isTrusted: opts.isTrusted ?? (() => true) }),
@@ -709,6 +716,53 @@ describe('MessageRouter.dispatch', () => {
       await dispatch(built.router, { type: CMD_OPEN_AUDIT_LOG, correlationId: 'ro1' }, localAcks);
       expect(localAcks[0].msg.status).toBe('accepted');
     });
+
+    // FR-R3-024 (FR-001, FR-006) — the absent-callback posture. This gate used
+    // to return `true` when no `isPrimary` was wired, so a deps-wiring
+    // regression on the host read exactly like a granted claim and every
+    // mutating command went through. The workspace-trust gate beside it has
+    // always refused on the same mistake; these two now agree.
+    it('rejects mutating commands fail-closed when the primacy callback is missing', async () => {
+      const built = makeRouter({ omitIsPrimary: true });
+      const localAcks: CapturedAck[] = [];
+      await dispatch(
+        built.router,
+        {
+          type: CMD_START,
+          correlationId: 'primacy-missing',
+          payload: { description: 'queued task', queueId: 'default', position: 0 }
+        },
+        localAcks
+      );
+
+      expect(localAcks[0].msg.status).toBe('rejected');
+      expect(localAcks[0].msg.reason).toBe('secondary-window-readonly');
+      expect(built.executeCommand).not.toHaveBeenCalled();
+    });
+
+    // FR-R3-024 (FR-006, SC-002) — the whole set, not three representatives.
+    // The gate runs in `dispatchValidated` before any handler lookup, so the
+    // payload never reaches a handler on this path and a bare `{type,
+    // correlationId}` is the honest shape of the rejected command.
+    it.each([...MUTATING_COMMANDS].map((type) => [type]))(
+      'rejects %s when the window is not primary',
+      async (type: string) => {
+        for (const built of [
+          makeRouter({ isPrimary: () => false }),
+          makeRouter({ omitIsPrimary: true })
+        ]) {
+          const localAcks: CapturedAck[] = [];
+          await dispatch(
+            built.router,
+            { type, correlationId: `all-${type}` } as unknown as SidebarCommand,
+            localAcks
+          );
+          expect(localAcks.map((a) => a.msg.status)).toEqual(['rejected']);
+          expect(localAcks[0].msg.reason).toBe('secondary-window-readonly');
+          expect(built.executeCommand).not.toHaveBeenCalled();
+        }
+      }
+    );
   });
 
   describe('No thrown exceptions on illegal state (T042 / FR-032)', () => {

@@ -17,8 +17,15 @@ const ILLEGAL_STATE_MESSAGES: Record<string, string> = {
   'at-edge': 'Already at the edge of the pending list'
 };
 
-function ensurePrimary(ctx: QueueOpsCtx): boolean {
-  if (ctx.lock.isHeld()) return true;
+/**
+ * FR-R3-024 (FR-013) — awaits the authoritative predicate. `isHeld()` reads the
+ * `Memento` mirror and is advisory by `lock.ts`'s own split; every caller below
+ * mutates the queue, so every caller below is making a decision. Fails closed
+ * when the ownership record cannot be read, which is the posture the same
+ * mutations already had coming from the sidebar.
+ */
+async function ensurePrimary(ctx: QueueOpsCtx): Promise<boolean> {
+  if (await ctx.lock.hasPrimacy()) return true;
   ctx.notifier.warn('Schegent: another window holds the workspace lock; ignoring request.');
   return false;
 }
@@ -39,7 +46,7 @@ function expectId(input: unknown): string | null {
 }
 
 export async function runRetryQueuedItem(arg: unknown, ctx: QueueOpsCtx): Promise<void> {
-  if (!ensurePrimary(ctx)) return;
+  if (!(await ensurePrimary(ctx))) return;
   const id = expectId(arg);
   if (!id) {
     ctx.notifier.warn('Schegent: retry requires a queue item id.');
@@ -55,7 +62,7 @@ export async function runRetryQueuedItem(arg: unknown, ctx: QueueOpsCtx): Promis
 }
 
 export async function runMoveQueuedItemUp(arg: unknown, ctx: QueueOpsCtx): Promise<void> {
-  if (!ensurePrimary(ctx)) return;
+  if (!(await ensurePrimary(ctx))) return;
   const id = expectId(arg);
   if (!id) {
     ctx.notifier.warn('Schegent: move requires a queue item id.');
@@ -71,7 +78,7 @@ export async function runMoveQueuedItemUp(arg: unknown, ctx: QueueOpsCtx): Promi
 }
 
 export async function runMoveQueuedItemDown(arg: unknown, ctx: QueueOpsCtx): Promise<void> {
-  if (!ensurePrimary(ctx)) return;
+  if (!(await ensurePrimary(ctx))) return;
   const id = expectId(arg);
   if (!id) {
     ctx.notifier.warn('Schegent: move requires a queue item id.');
@@ -87,7 +94,7 @@ export async function runMoveQueuedItemDown(arg: unknown, ctx: QueueOpsCtx): Pro
 }
 
 export async function runClearCompleted(ctx: QueueOpsCtx): Promise<void> {
-  if (!ensurePrimary(ctx)) return;
+  if (!(await ensurePrimary(ctx))) return;
   try {
     const result = await ctx.queue.clearCompleted();
     if (result.removed === 0) {
@@ -102,7 +109,7 @@ export async function runClearCompleted(ctx: QueueOpsCtx): Promise<void> {
 }
 
 export async function runClearFailed(ctx: QueueOpsCtx): Promise<void> {
-  if (!ensurePrimary(ctx)) return;
+  if (!(await ensurePrimary(ctx))) return;
   try {
     const result = await ctx.queue.clearFailed();
     if (result.removed === 0) {
@@ -117,7 +124,7 @@ export async function runClearFailed(ctx: QueueOpsCtx): Promise<void> {
 }
 
 export async function runPauseQueue(arg: unknown, ctx: QueueOpsCtx): Promise<void> {
-  if (!ensurePrimary(ctx)) return;
+  if (!(await ensurePrimary(ctx))) return;
   const reason =
     arg && typeof arg === 'object' && 'reason' in arg && typeof (arg as { reason: unknown }).reason === 'string'
       ? ((arg as { reason: string }).reason as string)
@@ -132,7 +139,7 @@ export async function runPauseQueue(arg: unknown, ctx: QueueOpsCtx): Promise<voi
 }
 
 export async function runResumeQueue(ctx: QueueOpsCtx): Promise<void> {
-  if (!ensurePrimary(ctx)) return;
+  if (!(await ensurePrimary(ctx))) return;
   try {
     await ctx.queue.setQueuePausedState(false, undefined, null, 'operator');
     ctx.notifier.info('Schegent: queue resumed.');
