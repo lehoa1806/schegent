@@ -214,17 +214,19 @@ export function provenanceKey(kind: CatalogKind, id: string, versionId: string):
 }
 
 /**
- * A {@link RunProvenance} that answers `true` for exactly the named versions.
+ * A {@link RunProvenance} that reports exactly the named versions as referenced.
  *
- * This feature ships an implementation answering `false` for everything and
- * FR-R3-018 supplies the real one, so the run-referenced exemption (FR-037) is
- * only reachable in a test through a stub like this. That is the point: the
- * exemption is provable before the data behind it exists.
+ * Answers `'run-referenced'`, which is the reason a store-level test is about:
+ * whether the walk skipped the version, not which of the two sources named it.
+ * Feature 103 (T076) widened the port from a bare boolean to the reason, and the
+ * two reasons are told apart where that distinction is the subject —
+ * `run-provenance-enumeration.test.ts` and `retention-ordering.test.ts`.
  */
 export function provenanceReferencing(referenced: Iterable<string>): RunProvenance {
   const keys = new Set(referenced);
   return {
-    isReferenced: async (kind, id, versionId) => keys.has(provenanceKey(kind, id, versionId))
+    isReferenced: async (kind, id, versionId) =>
+      keys.has(provenanceKey(kind, id, versionId)) ? 'run-referenced' : false
   };
 }
 

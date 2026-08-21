@@ -9,9 +9,9 @@ import HistorySection from '../HistorySection.svelte';
 import QueueDetailRows from '../drilldown/QueueDetailRows.svelte';
 import { buildQueueRuntime } from '../../lib/__tests__/queue-runtime-fixture';
 import { IDLE_GENERAL_SETTINGS } from '../../lib/snapshot-types';
+import type { HistoryRow } from '../../lib/history-rows';
 import type {
   CliMonitorState,
-  HistoryEntry,
   QueueItem,
   QueueSummary,
   WorkflowSnapshot
@@ -101,17 +101,25 @@ function buildRowsSnapshot(tasks: readonly QueueItem[]): WorkflowSnapshot {
   }) as unknown as WorkflowSnapshot;
 }
 
-function buildHistoryEntry(overrides: Partial<HistoryEntry> = {}): HistoryEntry {
+// Feature 103 (T017) — HistorySection renders composed `HistoryRow`s now, not
+// durable `HistoryEntry`s, because the list holds runs still going as well as
+// finished ones. The a11y property under test is unchanged.
+function buildHistoryRow(overrides: Partial<HistoryRow> = {}): HistoryRow {
   return Object.freeze({
     runId: 'rh-1',
-    featureId: 'fh-1',
+    queueId: 'default',
+    queueName: 'Default',
+    source: 'recorded',
+    status: 'completed',
+    definitionId: null,
+    catalogVersion: null,
+    origin: null,
     descriptionPreview: 'history feature one',
-    terminalStatus: 'completed',
+    descriptionLength: null,
+    orderingKey: '2026-05-09T10:01:00.000Z',
     startedAt: '2026-05-09T10:00:00.000Z',
     completedAt: '2026-05-09T10:01:00.000Z',
     durationMs: 60_000,
-    lastErrorSummary: null,
-    auditLogPointer: 'runId:rh-1',
     ...overrides
   });
 }
@@ -157,10 +165,10 @@ describe('Accessibility verification (T070 / FR-022)', () => {
     const onTaskSelect = vi.fn();
     const { container } = render(HistorySection, {
       props: {
-        history: [
-          buildHistoryEntry({ terminalStatus: 'completed' }),
-          buildHistoryEntry({ runId: 'rh-2', featureId: 'fh-2', terminalStatus: 'failed' })
-        ] as readonly HistoryEntry[],
+        rows: [
+          buildHistoryRow({ status: 'completed' }),
+          buildHistoryRow({ runId: 'rh-2', status: 'failed' })
+        ] as readonly HistoryRow[],
         isPrimary: true,
         onTaskSelect
       }

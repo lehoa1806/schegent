@@ -15,11 +15,15 @@
 
 import { CMD_LAUNCH_PIPELINE, type SidebarCommand } from '../sidebar-ipc';
 import { validRunRequest } from './run-request-shape';
-import { fail, hasUnexpectedKeys, ok, type IpcValidationResult } from './shared';
+import { fail, hasUnexpectedKeys, ok, QUEUE_ID_MAX, type IpcValidationResult } from './shared';
 
 function record(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
+}
+
+function boundedId(value: unknown, max: number): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= max;
 }
 
 // Feature 102 (T039) — `validRunRequest` and its element helpers moved to
@@ -37,12 +41,26 @@ export function validateLaunchPipeline(
   if (payload === null) {
     return fail('missing-payload', { type: CMD_LAUNCH_PIPELINE, correlationId });
   }
-  if (hasUnexpectedKeys(payload, ['request']) || !validRunRequest(payload.request)) {
+  // Feature 103 (T068, FR-059) — `queueId` joins the allowlist under the same
+  // `QUEUE_ID_MAX` bound `validateLaunchWorkflow` applies to its own, and stays
+  // optional so a launch that names no queue is still shaped correctly. It has
+  // to be reconstructed below as well as allowlisted here: this gate rebuilds
+  // the payload key by key rather than passing it through, so a field admitted
+  // and not copied would be silently dropped one line later.
+  const queueId = payload.queueId;
+  if (
+    hasUnexpectedKeys(payload, ['request', 'queueId']) ||
+    (queueId !== undefined && !boundedId(queueId, QUEUE_ID_MAX)) ||
+    !validRunRequest(payload.request)
+  ) {
     return fail('invalid-payload', { type: CMD_LAUNCH_PIPELINE, correlationId });
   }
   return ok({
     type: CMD_LAUNCH_PIPELINE,
     correlationId,
-    payload: { request: payload.request }
+    payload: {
+      request: payload.request,
+      ...(queueId !== undefined ? { queueId } : {})
+    }
   } as SidebarCommand);
 }

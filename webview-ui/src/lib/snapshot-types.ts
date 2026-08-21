@@ -261,6 +261,48 @@ export interface CliMonitorState {
   readonly msSinceLastStderr: number | null;
 }
 
+/**
+ * Feature 103 (FR-009, FR-011) — the published version a run's plan froze,
+ * mirroring the host's `contracts/catalog-version.ts`.
+ *
+ * Mirrored rather than imported, as every other host shape in this file is: the
+ * module has no imports, which is what keeps the webview bundle from reaching
+ * into host code that was never compiled for it.
+ *
+ * `kind` is part of the identity because the catalog lets a Pipeline and a
+ * Workflow share an id. On a *recorded run* it is always `'pipeline'`, including
+ * for a Workflow member — the member executes a frozen Pipeline snapshot. Which
+ * makes it useless as an answer to "was this a Workflow run?"; that is `origin`.
+ */
+export interface CatalogVersionRef {
+  /**
+   * The host's full `CatalogKind`, `'phase'` included, even though a recorded
+   * run's frozen body is never a phase. A mirror that narrowed the union would
+   * make the host's own `HistoryEntry` unassignable to this one, which is what
+   * `tests/integration/history/in-flight-not-persisted.test.ts` does when it
+   * feeds the real projector into the real fold.
+   */
+  readonly kind: 'phase' | 'pipeline' | 'workflow';
+  readonly id: string;
+  /** Never `''`. Absence of the whole record means "not recorded". */
+  readonly versionId: string;
+}
+
+/**
+ * Feature 103 (FR-013, FR-014) — how a run was started, mirroring the host's
+ * `contracts/run-origin.ts`.
+ *
+ * A second question from `CatalogVersionRef`, and neither derives the other:
+ * a Workflow member reads `origin.kind === 'workflow-member'` and
+ * `catalogVersion.kind === 'pipeline'` on the same row, and both are true.
+ *
+ * Absent is a third state, distinct from `'standalone'`: a run recorded before
+ * this field existed has no origin, and no reader may fill one in.
+ */
+export type RunOriginRef =
+  | { readonly kind: 'standalone' }
+  | { readonly kind: 'workflow-member'; readonly workflowId: string };
+
 export interface HistoryEntry {
   readonly runId: string;
   readonly featureId: string;
@@ -271,6 +313,35 @@ export interface HistoryEntry {
   readonly durationMs: number;
   readonly lastErrorSummary: string | null;
   readonly auditLogPointer: string;
+  // Feature 103 (FR-002) — the queue partition this entry was filed under.
+  // `HISTORY_UNATTRIBUTED_QUEUE_ID` ('__unattributed__') is a real value here,
+  // not a tombstone: a row whose queue can no longer be attributed is listed
+  // under that partition rather than omitted (FR-006).
+  readonly queueId: string;
+  /**
+   * Feature 103 (FR-009, FR-012) — the published version this run's plan froze.
+   *
+   * Absent means "not recorded", and the surface says so (FR-012). No reader
+   * fills it from the catalog: the catalog answers about now, this row is about
+   * this run, and a filled-in gap would claim the run froze something it did not.
+   */
+  readonly catalogVersion?: CatalogVersionRef;
+  /**
+   * Feature 103 (FR-013) — whether this run was started on its own or as a
+   * member of a Workflow, stamped when the run was recorded.
+   *
+   * Not `catalogVersion.kind`, which reads `'pipeline'` on a Workflow member.
+   */
+  readonly origin?: RunOriginRef;
+  /**
+   * Feature 103 (FR-053) — the length of the operator's original description.
+   *
+   * The number, not the text: `descriptionPreview` is bounded and is the only
+   * description content on the wire, so the detail needs this to say how much
+   * of the original it is showing. Absent for a row recorded before the store
+   * kept it, which is why no reader may treat it as zero.
+   */
+  readonly descriptionLength?: number;
 }
 
 export interface ActivePipelineSummary {
@@ -1107,6 +1178,17 @@ export interface InFlightRunProjection {
   readonly delayedRetry: DelayedRetryState;
   readonly resumeTargetPhaseId: string | null;
   readonly outputs: readonly RunOutputRecord[];
+  /**
+   * Feature 103 (FR-003) — the same two provenance readings the recorded rows
+   * carry, so a run reads identically in flight and once recorded.
+   *
+   * Read live off the Run here because there is no record yet. `catalogVersion`
+   * comes off the frozen plan, which is immutable for the Run's life; `origin`
+   * comes from the host's connected-run map. Absent on a host that cannot answer
+   * either question, which is not the same as `'standalone'`.
+   */
+  readonly catalogVersion?: CatalogVersionRef;
+  readonly origin?: RunOriginRef;
 }
 
 /**

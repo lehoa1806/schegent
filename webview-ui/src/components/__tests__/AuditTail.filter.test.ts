@@ -75,7 +75,8 @@ function buildHistory(runId: string): HistoryEntry {
     completedAt: '2026-05-20T01:00:00.000Z',
     durationMs: 3_600_000,
     lastErrorSummary: null,
-    auditLogPointer: ''
+    auditLogPointer: '',
+    queueId: 'default'
   });
 }
 

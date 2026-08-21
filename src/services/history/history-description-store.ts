@@ -22,6 +22,7 @@
 import * as path from 'node:path';
 import { promises as fs } from 'node:fs';
 import type { SanitizedLogger } from '../../lib/logger';
+import { historyErrorCode } from './error-code';
 import {
   resolveContainedForWrite,
   resolveContainedLink,
@@ -95,7 +96,14 @@ export class HistoryDescriptionStore {
       await fs.writeFile(absolute, text, { encoding: 'utf8', mode: 0o600 });
       return ref;
     } catch (err) {
-      this.logger.warn(`history-description: write failed (${(err as Error).message})`);
+      // The code and the workspace-relative reference, never the caught
+      // message: an fs failure here reports the absolute path it was addressing,
+      // and FR-047 rules out the workspace root in a log line as firmly as in a
+      // rendered one. Nothing diagnostic is lost — `ref` names the same file
+      // relative to a root the reader already knows.
+      this.logger.warn(
+        `history-description: write failed (${historyErrorCode(err)}) ref=${ref}`
+      );
       return null;
     }
   }

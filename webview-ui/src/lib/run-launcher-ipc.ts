@@ -75,8 +75,18 @@ function asLaunchResult(value: unknown): LaunchPipelineResult | null {
  *
  * The post-and-correlate sequence runs synchronously inside the Promise executor
  * so two submissions cannot cross-resolve, per the established idiom.
+ *
+ * Feature 103 (T069, FR-059) — `queueId` names which queue admits the enqueue.
+ * Optional and omitted from the payload when absent, so a launch from Runs puts
+ * exactly the bytes on the wire it always did and the host's one defaulting site
+ * inside `scheduleOrEnqueue` still decides what "no queue named" means. This
+ * mirrors `LaunchWorkflowPayload.queueId`, which has carried the same field on
+ * the same terms since feature 092.
  */
-export function launchPipeline(request: RunRequest): Promise<LaunchPipelineResult> {
+export function launchPipeline(
+  request: RunRequest,
+  queueId?: string
+): Promise<LaunchPipelineResult> {
   return new Promise<LaunchPipelineResult>((resolve) => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -100,7 +110,13 @@ export function launchPipeline(request: RunRequest): Promise<LaunchPipelineResul
       resolve(result);
     };
 
-    const { correlationId } = postCommand(CMD_LAUNCH_PIPELINE, { request });
+    const { correlationId } = postCommand(CMD_LAUNCH_PIPELINE, {
+      request,
+      // Spread rather than `queueId` so an absent one is an absent key. The
+      // ingress guard allowlists the two names and rejects anything else; an
+      // explicit `undefined` survives `Object.keys` and would be refused.
+      ...(queueId === undefined ? {} : { queueId })
+    });
 
     snapshotStore.markPending(correlationId);
     unsubscribe = snapshotStore.onceAck(correlationId, (ack) => {

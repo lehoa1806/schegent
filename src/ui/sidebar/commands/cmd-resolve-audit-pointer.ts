@@ -4,6 +4,7 @@ import type {
   ResolveAuditPointerResponse
 } from '../messages';
 import type { HistoryEvidenceResolution } from '../../../services/history/history-evidence-service';
+import { historyErrorCode } from '../../../services/history/error-code';
 import type { CommandHandler } from './handler-contract';
 import { ack } from './handler-helpers';
 
@@ -28,10 +29,13 @@ export const handler: CommandHandler<ResolveAuditPointerCommand> = async (ctx, c
   try {
     resolution = await ctx.deps.historyEvidenceService.resolve(command.payload.runId);
   } catch (err) {
+    // Feature 103 (T080, FR-047) — the code, not the message. `sanitize`
+    // redacts secret patterns and nothing else, so it left the absolute path an
+    // fs error quotes intact; the resolver reads the audit corpus off disk, so
+    // that path starts at the workspace root. The run id is already ack'd back
+    // to the caller, which is the half of the message worth keeping.
     ctx.deps.logger.warn(
-      `sidebar router: audit pointer resolution failed: ${ctx.deps.logger.sanitize(
-        (err as Error).message ?? 'unknown error'
-      )}`
+      `sidebar router: audit pointer resolution failed: ${historyErrorCode(err)}`
     );
     await ack(ctx, 'rejected', 'internal-error', {
       outcome: 'failure',

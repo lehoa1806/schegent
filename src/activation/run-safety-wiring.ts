@@ -8,8 +8,7 @@ import type { HistoryStore } from '../state/history-store';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import { isTerminalRunStatus } from '../state/workflow-run';
 import { createGitApprovalRequester } from './git-approval';
-import { HistoryRecorder } from '../services/history-recorder';
-import { HistoryDescriptionStore } from '../services/history/history-description-store';
+import { createHistoryRecorder } from '../services/history-recorder';
 import { MetricsRollupWriter } from '../metrics/metrics-rollup-writer';
 import { TerminalRunRollupRecorder } from '../metrics/terminal-run-rollup-recorder';
 import type { EvidenceHealthReporter } from '../services/evidence-health/evidence-health-monitor';
@@ -42,14 +41,12 @@ export async function createRunSafetyWiring(input: {
   const terminalTransitions = new TerminalTransitionCoordinator(
     input.store,
     input.queue,
-    new HistoryRecorder({
+    createHistoryRecorder({
       historyStore: input.historyStore,
       logger: input.logger,
-      queueIdForTask: (taskId) => input.queue.queueIdForExistingTask(taskId),
-      descriptions: new HistoryDescriptionStore({
-        workspaceRoot: input.workspaceRoot,
-        logger: input.logger
-      })
+      queue: input.queue,
+      store: input.store,
+      workspaceRoot: input.workspaceRoot
     }),
     input.logger,
     new TerminalRunRollupRecorder({

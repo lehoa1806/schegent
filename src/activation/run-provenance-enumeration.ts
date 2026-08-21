@@ -25,12 +25,20 @@
 // enumerated here and does have a status, which is the same information with an
 // end to it.
 //
-// Completed history is out of scope until the run-history surface adds durable
-// history (FR-034). A finished Task's version becomes an ordinary retention
-// candidate, which is what makes the bound reachable on a workspace that has run
-// anything.
+// **Completed history is the second source** (feature 103, T077, FR-040). Feature
+// 102 left it out because there was no durable history to read, and said so here.
+// There is now, and the gap that comment described turned out to be visible: a
+// finished run's version became an ordinary retention candidate the instant the
+// run ended, while the row recording it stayed on the surface for another fifty
+// runs — long enough for an operator to open a row and find the definition behind
+// it already pruned. `retainedHistoryPlans` closes that, and the per-queue history
+// cap is what keeps it bounded: the pin lasts exactly as long as the row does.
+//
+// Both functions take what they read rather than reaching for it, so neither
+// caches and the caller cannot accidentally hoist the read out of the thunk.
 
 import type { RunVersionCarrier } from '../catalog/run-provenance-queue';
+import type { CatalogVersionRef } from '../contracts/catalog-version';
 import { isTerminalRequestStatus } from '../queue/feature-request';
 import { isTerminalRunStatus } from '../state/workflow-run';
 
@@ -44,6 +52,18 @@ interface EnumerableRequest {
 interface EnumerableRun {
   readonly status: string;
   readonly pipeline?: RunVersionCarrier;
+}
+
+/**
+ * A completed run in history, reduced to the one field the pin set reads.
+ *
+ * No status here, and that is the difference between the two sources. Liveness is
+ * a question you ask a queue item; a history row has already answered it, and the
+ * only thing that ends its pin is leaving the store. `HistoryRecord` satisfies
+ * this structurally, so the caller passes `HistoryStore.list()` unchanged.
+ */
+interface EnumerableHistoryEntry {
+  readonly catalogVersion?: CatalogVersionRef;
 }
 
 /**
@@ -67,4 +87,30 @@ export function liveRunPlans(
     if (run.pipeline !== undefined) live.push(run.pipeline);
   }
   return live;
+}
+
+/**
+ * Every version a retained history row recorded (FR-040).
+ *
+ * No filtering by status, by age, or by queue. A row that is still in the store
+ * is still on the surface, and every one of those is a row whose definition an
+ * operator can open — which is the whole claim FR-040 makes. Adding a second rule
+ * here would be a second retention policy free to disagree with the per-queue cap
+ * that is already the only one (FR-044, FR-045).
+ *
+ * @param entries `HistoryStore.list()`, read fresh by the caller on every
+ *                question. Passing the rows rather than the store is what makes
+ *                that the caller's visible responsibility instead of a detail
+ *                buried in here (FR-042).
+ */
+export function retainedHistoryPlans(
+  entries: Iterable<EnumerableHistoryEntry>
+): readonly RunVersionCarrier[] {
+  const pinned: RunVersionCarrier[] = [];
+  for (const entry of entries) {
+    // Rows written before provenance existed record nothing, and "nothing" pins
+    // nothing — dropping them here keeps the matcher from having to decide.
+    if (entry.catalogVersion !== undefined) pinned.push({ catalogVersion: entry.catalogVersion });
+  }
+  return pinned;
 }

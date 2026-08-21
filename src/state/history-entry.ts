@@ -1,5 +1,10 @@
 import type { SanitizedLogger } from '../lib/logger';
 import { isRunOutputStatus, type RunOutputRecord } from '../contracts/run-results';
+// Feature 103 — imported by path rather than through the contracts barrel. The
+// barrel is `export *`, which the module-reachability lint excludes from its
+// corpus, so a barrel import would leave both modules looking unreferenced.
+import { isCatalogVersionRef, type CatalogVersionRef } from '../contracts/catalog-version';
+import { isRunOriginRef, type RunOriginRef } from '../contracts/run-origin';
 
 export type HistoryTerminalStatus = 'completed' | 'failed' | 'canceled';
 
@@ -111,6 +116,33 @@ export interface HistoryEntry {
   // storing `[]` for the second would be indistinguishable from the first for
   // every entry written before this field existed.
   readonly runOutputs?: readonly RunOutputRecord[];
+  /**
+   * Feature 103 (FR-009 to FR-012, FR-014) — the published version this run
+   * froze.
+   *
+   * Copied verbatim from `WorkflowRunPipeline.catalogVersion` at completion.
+   * Never re-resolved, never back-filled. Absent means "not recorded" — either
+   * the run predates this feature, or it ran a plan supplied ready-made rather
+   * than frozen from the catalog. Absent is a value the surface renders
+   * honestly (FR-012); it is never rendered as a version, and no reader fills
+   * it from today's catalog, because the catalog moves and the run does not.
+   */
+  readonly catalogVersion?: CatalogVersionRef;
+  /**
+   * Feature 103 (FR-013, FR-051, FR-055) — whether this run was started on its
+   * own or as a member of a Workflow.
+   *
+   * **Not** the same question as `catalogVersion.kind`. A Workflow member's
+   * frozen body is a Pipeline, so `catalogVersion.kind` reads `'pipeline'` for
+   * it while `origin.kind` reads `'workflow-member'`. Both are true and the row
+   * shows both (FR-014); deriving either from the other mislabels every member
+   * run.
+   *
+   * Stamped at completion, never derived at read time, because the
+   * `ConnectedWorkflowRun` that would answer it later is deletable and a
+   * historical fact must not change.
+   */
+  readonly origin?: RunOriginRef;
 }
 
 /**
@@ -147,6 +179,12 @@ export interface BuildHistoryEntryArgs {
   // Nothing is re-resolved here: the Run already answered what it produced, and
   // asking the filesystem again at history-write time could answer differently.
   readonly runOutputs?: readonly RunOutputRecord[];
+  // Feature 103 (T028, FR-009, FR-013) — the two provenance facts, each carried
+  // verbatim from the caller and each optional on its own. They come from
+  // different sources and fail independently, so a caller that can answer one
+  // and not the other still records the one it has.
+  readonly catalogVersion?: CatalogVersionRef;
+  readonly origin?: RunOriginRef;
 }
 
 /**
@@ -220,7 +258,9 @@ export function buildHistoryEntry(args: BuildHistoryEntryArgs): BuiltHistoryEntr
       ...(pipelineId !== undefined ? { pipelineId } : {}),
       ...(args.runOutputs !== undefined && args.runOutputs.length > 0
         ? { runOutputs: args.runOutputs }
-        : {})
+        : {}),
+      ...(args.catalogVersion !== undefined ? { catalogVersion: args.catalogVersion } : {}),
+      ...(args.origin !== undefined ? { origin: args.origin } : {})
     },
     fullDescription: sanitized
   };
@@ -274,6 +314,11 @@ export function ensureHistoryEntry(raw: unknown, queueId: string): HistoryRecord
       ? r.pipelineId
       : undefined;
   const runOutputs = normalizeRunOutputs(r.runOutputs);
+  // Feature 103 — a stored provenance is trusted only when it is well formed.
+  // Both guards reject rather than repair; see the guards' own comments for why
+  // a half-formed value is worse here than an absent one.
+  const catalogVersion = isCatalogVersionRef(r.catalogVersion) ? r.catalogVersion : undefined;
+  const origin = isRunOriginRef(r.origin) ? r.origin : undefined;
   const descriptionRef =
     typeof r.descriptionRef === 'string' && r.descriptionRef.length > 0
       ? r.descriptionRef
@@ -308,7 +353,9 @@ export function ensureHistoryEntry(raw: unknown, queueId: string): HistoryRecord
     ...(descriptionLength !== undefined ? { descriptionLength } : {}),
     ...(originalDescription !== undefined ? { originalDescription } : {}),
     ...(pipelineId !== undefined ? { pipelineId } : {}),
-    ...(runOutputs !== undefined ? { runOutputs } : {})
+    ...(runOutputs !== undefined ? { runOutputs } : {}),
+    ...(catalogVersion !== undefined ? { catalogVersion } : {}),
+    ...(origin !== undefined ? { origin } : {})
   };
 }
 

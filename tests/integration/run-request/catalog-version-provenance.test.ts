@@ -349,19 +349,44 @@ describe('publishing past an accepted run leaves it where it was (invariant 2, F
   it('is written at exactly one site and rewritten at none', () => {
     // Behaviour can only show the record standing still on the paths a test
     // happens to drive. FR-025 is a claim about every path, and the way to hold
-    // it is that nothing in `src/` assigns the field after the freeze. The
-    // permitted set is small and each entry is one of: the shape that declares
-    // it, the freeze that writes it, the resolution that feeds the freeze, the
-    // carriage that survives a connected run, or the housekeeping that reads it.
-    const permitted = new Set([
+    // it is that nothing in `src/` assigns the field after the freeze.
+    //
+    // Two sets rather than one, because two different permissions are being
+    // granted and a single list conflates them. A file on the freeze path may
+    // *mint* a version ref — resolve one from the catalog and write it onto a
+    // plan. A carrier may only copy a ref that already exists onto some other
+    // shape entirely: a history entry, a wire row, a snapshot projection, a
+    // retention pin. Both need to name the field, and only one of them may
+    // decide what it says.
+    //
+    // Feature 103 is why the distinction now earns its keep. Reading provenance
+    // back is the whole point of a history surface, so the carrier set is where
+    // that surface lands, and it will keep growing as more of the product looks
+    // at what a run froze. Growing one undifferentiated list would have quietly
+    // handed each of those readers a licence to write the field for real.
+    const FREEZE_PATH = new Set([
       'contracts/run-request.ts',
       'services/run-request/run-request-validator.ts',
       'services/workflow-execution/node-run-starter.ts',
       'services/workflow-execution/connected-run-factory.ts',
       'state/workflow-run.ts',
       'activation/catalog-loading.ts',
-      'extension.ts',
-      'catalog/run-provenance-queue.ts'
+      'extension.ts'
+    ]);
+
+    const CARRIERS = new Set([
+      // Feature 102 — retention housekeeping, reading what runs still reference.
+      'catalog/run-provenance-queue.ts',
+      // Feature 103 (FR-009, FR-010) — the completion record and its shape.
+      'services/history-recorder.ts',
+      'state/history-entry.ts',
+      // Feature 103 (FR-002, FR-003) — what the History surface is shown.
+      'ui/sidebar/history-projector.ts',
+      'ui/sidebar/queue-runtime-composer.ts',
+      'ui/sidebar/snapshot-composer.ts',
+      'ui/sidebar/snapshot.ts',
+      // Feature 103 (FR-040) — pinning versions a retained run still names.
+      'activation/run-provenance-enumeration.ts'
     ]);
 
     // Comments are stripped first. The claim is about what the code does, and a
@@ -375,14 +400,33 @@ describe('publishing past an accepted run leaves it where it was (invariant 2, F
       .map((path) => relative(SRC_DIR, path).split('\\').join('/'))
       .sort();
 
-    expect(mentions.filter((path) => !permitted.has(path))).toEqual([]);
-    // Non-vacuity, in both directions: the scan reaches a real tree, and the
+    expect(mentions.filter((path) => !FREEZE_PATH.has(path) && !CARRIERS.has(path))).toEqual([]);
+
+    // The teeth the split restores. A ref is minted by resolving one, and the
+    // only way to reach the oracle is to name it, so a carrier that never names
+    // `resolveCatalogVersion` cannot invent provenance — it can only pass along
+    // what the freeze already decided. This is the assertion that keeps the
+    // carrier set from being an ordinary allowlist: entries may be added to it
+    // freely, and none of them buys the ability to write a version.
+    const minters = sourcesUnder(SRC_DIR)
+      .filter((path) =>
+        withoutComments(readFileSync(path, 'utf8')).includes('resolveCatalogVersion')
+      )
+      .map((path) => relative(SRC_DIR, path).split('\\').join('/'))
+      .sort();
+
+    expect(minters.filter((path) => CARRIERS.has(path))).toEqual([]);
+
+    // Non-vacuity, in three directions: the scan reaches a real tree, the
     // producers actually name the field, so an implementation that spelled it
-    // some other way cannot pass this by mentioning it nowhere.
+    // some other way cannot pass this by mentioning it nowhere, and the mint
+    // scan finds the freeze path it is meant to be excluding carriers from.
     expect(sourcesUnder(SRC_DIR).length).toBeGreaterThan(50);
     expect(mentions).toContain('contracts/run-request.ts');
     expect(mentions).toContain('services/run-request/run-request-validator.ts');
     expect(mentions).toContain('services/workflow-execution/node-run-starter.ts');
+    expect(minters).toContain('services/workflow-execution/node-run-starter.ts');
+    expect(minters).toContain('services/workflow-execution/connected-run-factory.ts');
   });
 });
 

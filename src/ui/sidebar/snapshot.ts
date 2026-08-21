@@ -23,6 +23,12 @@ export type { EvidenceHealthSnapshot };
 export { IDLE_EVIDENCE_HEALTH };
 
 import type { CatalogVersionId } from '../../contracts/catalog-store';
+// Feature 103 — imported by path, not through the contracts barrel. The barrel
+// is almost entirely `export *`, which
+// `tests/lint/contracts-module-reachability.test.ts` excludes from its corpus so
+// a barrel entry cannot stand in for a real consumer.
+import type { CatalogVersionRef } from '../../contracts/catalog-version';
+import type { RunOriginRef } from '../../contracts/run-origin';
 import type { DefinitionState, ExpectedDraftVersion } from '../../contracts/catalog-lifecycle';
 import type {
   ChangedCollectionField,
@@ -547,12 +553,70 @@ export interface HistoryEntry {
   readonly runId: string;
   readonly featureId: string;
   readonly descriptionPreview: string;
+  /**
+   * The outcome the run reached.
+   *
+   * Stays **required** through feature 103. History gained a cross-queue list
+   * that includes runs still in flight (FR-003), but an unfinished run is never
+   * written to the store and never enters this array (FR-004) — the surface
+   * folds it in from `queues[].inFlightRun` at render time. Widening this to
+   * carry a non-terminal arm would make all three existing consumers reason
+   * about a row that cannot occur.
+   */
   readonly terminalStatus: 'completed' | 'failed' | 'canceled';
   readonly startedAt: string;
   readonly completedAt: string;
   readonly durationMs: number;
   readonly lastErrorSummary: string | null;
   readonly auditLogPointer: string;
+  /**
+   * Feature 103 (FR-002) — the queue partition this entry was filed under.
+   *
+   * Present at runtime long before it was declared here: `KEYS.history` is a
+   * `Record<queueId, HistoryEntry[]>`, so `HistoryStore.list()` returns
+   * `HistoryRecord`s carrying the partition key, and `projectHistory` used to
+   * `slice()` that array straight onto the wire. Undeclared meant unusable —
+   * a cross-queue list could not name a row's queue without reading a field its
+   * own type said did not exist.
+   *
+   * `HISTORY_UNATTRIBUTED_QUEUE_ID` is a real value here, not a tombstone
+   * (FR-006). A row whose originating queue can no longer be attributed is
+   * listed under that partition rather than omitted.
+   */
+  readonly queueId: string;
+  /**
+   * Feature 103 (FR-009, FR-012) — the published version this run froze, copied
+   * off the record.
+   *
+   * Optional on the wire because it is optional in the record: a run recorded
+   * before feature 102 froze nothing, and a plan supplied ready-made carries
+   * nothing. Absent means **not recorded**, and the surface says so in those
+   * words rather than blanking the cell or guessing today's Active version — the
+   * catalog has moved on and would answer about now rather than about this run.
+   */
+  readonly catalogVersion?: CatalogVersionRef;
+  /**
+   * Feature 103 (FR-013, FR-014) — how the run was started.
+   *
+   * A separate question from `catalogVersion.kind`, which names what was
+   * executed. A Workflow member executes a frozen Pipeline, so the two read
+   * `'workflow-member'` and `'pipeline'` on the same row and neither is
+   * derivable from the other.
+   */
+  readonly origin?: RunOriginRef;
+  /**
+   * Feature 103 (FR-053) — how long the operator's original description was,
+   * so the detail can say "80 of 4,182 characters" without a filesystem read.
+   *
+   * The number and not the text. `descriptionPreview` is bounded and stays the
+   * only description content on the wire; the full text lives behind
+   * `descriptionRef` and is deliberately not projected. Without this length the
+   * preview reads as the whole description, and a truncation that does not say
+   * it is one is indistinguishable from a complete record.
+   *
+   * Absent for a row recorded before the store kept it.
+   */
+  readonly descriptionLength?: number;
 }
 
 export interface ActivePipelineSummary {
@@ -686,6 +750,23 @@ export interface InFlightRunProjection {
    * `unresolved` carries no reference and is shown alongside the rest (FR-042).
    */
   readonly outputs: readonly RunOutputRecord[];
+  /**
+   * Feature 103 (FR-003) — the same two provenance readings the finished rows
+   * carry, so a run in flight and the same run once recorded read identically on
+   * the cross-queue list.
+   *
+   * Read live off the Run here rather than off a record, because there is no
+   * record yet. `catalogVersion` comes from the frozen plan, which is immutable
+   * for the run's life (FR-025), so the value the row shows in flight is the
+   * value the entry will carry at completion.
+   *
+   * Deliberately **no `queueId`**: this projection hangs off `QueueRuntime`,
+   * whose key already is the association, and a second copy would be a field
+   * that can disagree with its own parent.
+   */
+  readonly catalogVersion?: CatalogVersionRef;
+  /** Feature 103 (FR-003) — see `catalogVersion` above; the same reading, live. */
+  readonly origin?: RunOriginRef;
 }
 
 /**

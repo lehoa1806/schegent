@@ -1,7 +1,27 @@
 <script lang="ts">
-  import type { HistoryEntry } from '../lib/snapshot-types';
-  import { formatDuration } from '../lib/format-duration';
-  import { formatRelativeTime } from '../lib/format';
+  // Feature 103 (T017) — the list container for the cross-queue history list.
+  //
+  // What changed: this took `readonly HistoryEntry[]` and now takes
+  // `readonly HistoryRow[]`. The two are not the same set. A `HistoryEntry` is
+  // a durable record, so every entry had finished and every entry's status was
+  // one of three terminal outcomes; a `HistoryRow` is either that or a run
+  // still going, folded in for display only (FR-003 with FR-004). Keeping the
+  // old prop type would have meant either dropping the live runs or writing
+  // provisional records to invent them.
+  //
+  // The per-row markup moved to `HistoryRunRow.svelte` (see its header). What
+  // stays here is what is genuinely per-list: the column header, the two empty
+  // states, and the evidence state, which is keyed by run id across all rows
+  // because only one Audit request should be in flight per run no matter how
+  // the list is re-composed around it.
+
+  import {
+    NO_CATALOG_NAMES,
+    type CatalogNames,
+    type EvidenceState,
+    type HistoryRow
+  } from '../lib/history-rows';
+  import HistoryRunRow from './HistoryRunRow.svelte';
   import { postCommand } from '../lib/vscode-api';
   import {
     CMD_RERUN_FROM_HISTORY,
@@ -12,37 +32,75 @@
   import { resolveAuditPointer } from '../lib/history-evidence-ipc';
 
   interface Props {
-    history: readonly HistoryEntry[];
+    rows: readonly HistoryRow[];
     isPrimary: boolean;
     selectedTaskId?: string | null;
     onTaskSelect?: (taskId: string) => void;
     variant?: 'compact' | 'ledger';
+    /**
+     * FR-021 — display names for the definition and Workflow ids a row carries.
+     * Defaulted rather than required: the compact variant is mounted from places
+     * that hold no catalog, and every label falls back to the id.
+     */
+    catalogNames?: CatalogNames;
+    /**
+     * Feature 103 (T052, FR-024) — where "Details" goes when the caller has a
+     * detail view of its own.
+     *
+     * Optional, and the host command stays the default. The compact variant is
+     * mounted from surfaces with nothing to drill into, and those must keep
+     * posting `CMD_OPEN_HISTORY_ITEM_DETAILS`; only the History dashboard, which
+     * renders the detail as a sub-view, overrides it.
+     */
+    onOpenDetail?: (runId: string) => void;
+    /**
+     * Feature 103 (T065, FR-033, FR-039) — where "Rerun" goes when the caller
+     * has somewhere to put a trigger form.
+     *
+     * Optional on the same terms as `onOpenDetail`, and for a sharper reason:
+     * the two paths are not the same action. The default posts
+     * `CMD_RERUN_FROM_HISTORY`, which submits the run immediately — feature
+     * 013's one-click repeat, and exactly what FR-039 rules out for the History
+     * dashboard, which must open a pre-filled form and submit nothing until the
+     * operator does. Surfaces with nowhere to render a form keep the one click.
+     */
+    onRerunRow?: (runId: string) => void;
   }
 
   const {
-    history,
+    rows,
     isPrimary,
     selectedTaskId = null,
     onTaskSelect,
-    variant = 'compact'
+    variant = 'compact',
+    catalogNames = NO_CATALOG_NAMES,
+    onOpenDetail,
+    onRerunRow
   }: Props = $props();
 
-  const empty = $derived(history.length === 0);
+  const empty = $derived(rows.length === 0);
   const rerunDisabled = $derived(!isPrimary);
-  const ariaRerun = $derived<'true' | 'false'>(rerunDisabled ? 'true' : 'false');
-  const readOnlyAria: 'false' = 'false';
 
-  async function onRerun(event: MouseEvent, runId: string, taskTitle: string): Promise<void> {
+  async function onRerun(event: MouseEvent, row: HistoryRow): Promise<void> {
     if (rerunDisabled) return;
+    if (onRerunRow) {
+      // No confirmation on this path, and that is not an omission. The
+      // confirmation below exists because the default action enqueues a run on
+      // the click; this one opens an editable form that starts nothing, and the
+      // operator confirms by submitting it. A modal in front of a form is a
+      // question asked twice.
+      onRerunRow(row.runId);
+      return;
+    }
     // Feature 063 (T036) — gate rerun-from-history through the universal
     // confirmation. The task title surfaces in the modal body so the
     // operator can confirm they're re-enqueuing the right run.
     const ok = await useConfirm('history.rerun', {
       originatingElement: event.currentTarget as HTMLElement | null,
-      context: { taskTitle }
+      context: { taskTitle: row.descriptionPreview }
     });
     if (!ok) return;
-    postCommand(CMD_RERUN_FROM_HISTORY, { runId });
+    postCommand(CMD_RERUN_FROM_HISTORY, { runId: row.runId });
   }
 
   // FR-R3-010 (T411) — per-row evidence state for the Audit action.
@@ -53,7 +111,6 @@
   // the three "no evidence" answers render as `info` and only a genuine
   // resolution failure renders as `error`. The host already keeps them apart on
   // the wire — collapsing them here would throw that away at the last step.
-  type EvidenceState = { readonly tone: 'info' | 'error'; readonly message: string };
   let evidence = $state<Record<string, EvidenceState | undefined>>({});
   let pending = $state<Record<string, boolean>>({});
 
@@ -110,6 +167,10 @@
   }
 
   function onOpenDetails(id: string): void {
+    if (onOpenDetail) {
+      onOpenDetail(id);
+      return;
+    }
     postCommand(CMD_OPEN_HISTORY_ITEM_DETAILS, { id });
   }
 </script>
@@ -121,105 +182,41 @@
   data-testid="history-section"
 >
   {#if empty}
+    <!-- FR-007 — the empty history states that nothing has been recorded. The
+         other empty state, for filters that exclude everything, is a different
+         sentence rendered by the caller: an operator who has filtered the list
+         down to nothing must not be told their workspace has no runs. -->
     <div class="empty" data-testid="history-empty">
-      <strong>No completed runs yet</strong>
-      <span>Finished, failed, and canceled runs will appear here.</span>
+      <strong>No runs recorded yet</strong>
+      <span>Runs appear here as soon as they start, and stay once they finish.</span>
     </div>
   {:else}
     {#if variant === 'ledger'}
       <div class="ledger-columns" aria-hidden="true">
         <span>Run / feature</span>
-        <span>Outcome</span>
+        <span>Definition / version</span>
+        <span>Queue</span>
+        <span>Status</span>
         <span>Duration</span>
-        <span>Completed</span>
+        <span>Updated</span>
         <span>Actions</span>
       </div>
     {/if}
     <ul>
-      {#each history as entry (entry.runId)}
-        <li
-          class="entry status-{entry.terminalStatus}"
-          class:selected={selectedTaskId === entry.runId}
-          data-testid="history-entry-{entry.runId}"
-          data-history-row="{entry.runId}"
-        >
-          {#if onTaskSelect}
-            <button
-              type="button"
-              class="label entry-select"
-              aria-label={`Select run '${entry.descriptionPreview}'`}
-              aria-pressed={selectedTaskId === entry.runId}
-              data-testid="history-item-select-{entry.runId}"
-              title={entry.descriptionPreview}
-              onclick={() => onTaskSelect(entry.runId)}
-            >{entry.descriptionPreview}</button>
-          {:else}
-            <span class="label" title={entry.descriptionPreview}>
-              {entry.descriptionPreview}
-            </span>
-          {/if}
-          <span class="meta">
-            <span
-              class="badge status-badge"
-              data-testid="history-item-{entry.runId}-status"
-              aria-label={`Status: ${entry.terminalStatus}`}
-            >{entry.terminalStatus}</span>
-            <span
-              class="time duration"
-              data-testid="history-item-{entry.runId}-duration"
-              title="Duration"
-            >{formatDuration(entry.durationMs)}</span>
-            <span
-              class="time completed-at"
-              data-testid="history-item-{entry.runId}-completed-at"
-              title="Completed"
-            >{formatRelativeTime(entry.completedAt)}</span>
-          </span>
-          <span class="actions">
-            <button
-              type="button"
-              class="action"
-              data-testid="history-item-rerun-{entry.runId}"
-              aria-label={`Rerun '${entry.descriptionPreview}'`}
-              aria-disabled={ariaRerun}
-              onclick={(event) => onRerun(event, entry.runId, entry.descriptionPreview)}
-            >Rerun</button>
-            <button
-              type="button"
-              class="action"
-              data-testid="history-item-open-audit-{entry.runId}"
-              aria-label="Open audit log"
-              aria-disabled={pending[entry.runId] ? 'true' : readOnlyAria}
-              onclick={() => onOpenAudit(entry.runId)}
-            >Audit</button>
-            <button
-              type="button"
-              class="action"
-              data-testid="history-item-open-details-{entry.runId}"
-              aria-label={`Open details for '${entry.descriptionPreview}'`}
-              aria-disabled={readOnlyAria}
-              onclick={() => onOpenDetails(entry.runId)}
-            >Details</button>
-          </span>
-          {#if evidence[entry.runId]}
-            {@const state = evidence[entry.runId]}
-            {#if state?.tone === 'error'}
-              <span
-                class="evidence tone-error"
-                data-testid="history-item-evidence-{entry.runId}"
-                data-evidence-tone="error"
-                role="alert"
-              >{state.message}</span>
-            {:else}
-              <span
-                class="evidence tone-info"
-                data-testid="history-item-evidence-{entry.runId}"
-                data-evidence-tone="info"
-                role="status"
-              >{state?.message}</span>
-            {/if}
-          {/if}
-        </li>
+      {#each rows as row (row.runId)}
+        <HistoryRunRow
+          {row}
+          {variant}
+          {catalogNames}
+          {rerunDisabled}
+          selected={selectedTaskId === row.runId}
+          onSelect={onTaskSelect}
+          evidence={evidence[row.runId]}
+          auditPending={pending[row.runId] ?? false}
+          {onRerun}
+          {onOpenAudit}
+          {onOpenDetails}
+        />
       {/each}
     </ul>
   {/if}
@@ -258,136 +255,17 @@
     flex-direction: column;
     gap: 2px;
   }
-  .entry {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    grid-template-rows: auto auto;
-    column-gap: var(--schegent-gap);
-    align-items: center;
-    padding: 4px var(--schegent-pad);
-    border-radius: var(--schegent-radius);
-  }
-  .entry:hover {
-    background: var(--schegent-list-hover);
-  }
-  .entry.selected {
-    background: var(--vscode-list-activeSelectionBackground);
-    color: var(--vscode-list-activeSelectionForeground);
-  }
-  .entry.selected .label {
-    color: inherit;
-  }
-  .entry.selected .meta {
-    color: inherit;
-    opacity: 0.8;
-  }
-  .entry.selected .action {
-    color: inherit;
-    border-color: currentColor;
-    opacity: 0.8;
-  }
-  .entry.selected .action:hover:not([aria-disabled='true']) {
-    opacity: 1;
-  }
-  .label {
-    grid-column: 1;
-    grid-row: 1;
-    overflow: hidden;
-    display: -webkit-box;
-    line-clamp: 2;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    line-height: 1.35;
-    word-break: break-word;
-  }
-  .entry-select {
-    width: 100%;
-    border: 0;
-    background: transparent;
-    color: inherit;
-    font: inherit;
-    padding: 0;
-    text-align: left;
-    cursor: pointer;
-  }
-  .entry-select:hover {
-    text-decoration: underline;
-  }
-  .entry-select:focus-visible {
-    border-radius: var(--schegent-radius-sm);
-    outline: 1px solid var(--schegent-focus-border);
-    outline-offset: 2px;
-  }
-  .meta {
-    grid-column: 1;
-    grid-row: 2;
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--schegent-gap);
-    align-items: center;
-    color: var(--schegent-muted-fg);
-    font-size: 0.85em;
-  }
-  .badge {
-    border: 1px solid var(--schegent-border);
-    border-radius: var(--schegent-radius-sm);
-    padding: 0 6px;
-  }
-  .status-completed .status-badge {
-    color: var(--schegent-color-completed);
-    border-color: currentColor;
-  }
-  .status-failed .status-badge {
-    color: var(--schegent-error-text);
-    border-color: currentColor;
-  }
-  .status-canceled .status-badge {
-    color: var(--schegent-muted-fg);
-    border-color: currentColor;
-  }
-  .actions {
-    grid-column: 2;
-    grid-row: 1 / span 2;
-    display: inline-flex;
-    gap: 4px;
-    align-items: center;
-  }
-  /* FR-R3-010 (T411) — the two tones are visually distinct on purpose. An
-     expired pointer is an ordinary fact about retention, so it reads muted;
-     only a failure borrows the error colour. */
-  .evidence {
-    grid-column: 1 / -1;
-    grid-row: 3;
-    padding-top: 3px;
-    font-size: 0.82em;
-    line-height: 1.4;
-  }
-  .evidence.tone-info {
-    color: var(--schegent-muted-fg);
-  }
-  .evidence.tone-error {
-    color: var(--schegent-error-text);
-  }
-  .action {
-    background: transparent;
-    color: var(--schegent-muted-fg);
-    border: 1px solid var(--schegent-border);
-    border-radius: var(--schegent-radius-sm);
-    padding: 0 6px;
-    font: inherit;
-    cursor: pointer;
-  }
-  .action[aria-disabled='true'] {
-    opacity: 0.55;
-    cursor: not-allowed;
-  }
-  .action:hover:not([aria-disabled='true']) {
-    color: var(--schegent-fg);
+  .ledger ul {
+    gap: 0;
   }
 
   .ledger-columns {
     display: grid;
-    grid-template-columns: minmax(240px, 1fr) 110px 100px 120px 190px;
+    /* Character-identical to `.entry.ledger` in `HistoryRunRow.svelte`, and to
+       that file's breakpoint below. Two declarations because Svelte scopes CSS
+       per component and the header lives here while the rows live there. */
+    grid-template-columns:
+      minmax(200px, 1fr) minmax(150px, 1.2fr) 120px 104px 96px 116px 180px;
     gap: 12px;
     padding: 9px 14px;
     border-bottom: 1px solid var(--schegent-divider);
@@ -397,88 +275,10 @@
     letter-spacing: 0.04em;
     text-transform: uppercase;
   }
-  .ledger ul {
-    gap: 0;
-  }
-  .ledger .entry {
-    grid-template-columns: minmax(240px, 1fr) 110px 100px 120px 190px;
-    grid-template-rows: auto;
-    gap: 12px;
-    min-height: 54px;
-    padding: 9px 14px;
-    border-bottom: 1px solid var(--schegent-divider);
-    border-radius: 0;
-  }
-  .ledger .entry:last-child {
-    border-bottom: 0;
-  }
-  .ledger .label {
-    grid-column: 1;
-    grid-row: 1;
-    line-clamp: 1;
-    -webkit-line-clamp: 1;
-  }
-  .ledger .meta {
-    display: contents;
-  }
-  .ledger .status-badge {
-    grid-column: 2;
-    align-self: center;
-    justify-self: start;
-  }
-  .ledger .time {
-    align-self: center;
-    font-variant-numeric: tabular-nums;
-  }
-  .ledger .duration {
-    grid-column: 3;
-  }
-  .ledger .completed-at {
-    grid-column: 4;
-  }
-  .ledger .actions {
-    grid-column: 5;
-    grid-row: 1;
-    justify-self: end;
-  }
-  .ledger .action {
-    min-height: 28px;
-    padding: 0 8px;
-  }
 
-  @media (max-width: 900px) {
+  @media (max-width: 1000px) {
     .ledger-columns {
       display: none;
-    }
-    .ledger .entry {
-      grid-template-columns: minmax(0, 1fr) auto;
-      grid-template-rows: auto auto;
-    }
-    .ledger .label {
-      grid-column: 1;
-      grid-row: 1;
-      line-clamp: 2;
-      -webkit-line-clamp: 2;
-    }
-    .ledger .meta {
-      grid-column: 1;
-      grid-row: 2;
-      display: flex;
-    }
-    .ledger .actions {
-      grid-column: 2;
-      grid-row: 1 / span 2;
-    }
-  }
-
-  @media (max-width: 620px) {
-    .ledger .entry {
-      grid-template-columns: 1fr;
-    }
-    .ledger .actions {
-      grid-column: 1;
-      grid-row: 3;
-      justify-self: start;
     }
   }
 </style>

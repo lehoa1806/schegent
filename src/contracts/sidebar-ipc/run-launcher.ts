@@ -12,12 +12,28 @@
 import type { CMD_LAUNCH_PIPELINE, CommandBase } from '../sidebar-ipc';
 import type { RunRequest, RunRequestFieldError } from '../run-request';
 import { validRunRequest } from '../validators/run-request-shape';
-import { hasUnexpectedKeys } from '../validators/shared';
+import { hasUnexpectedKeys, QUEUE_ID_MAX } from '../validators/shared';
 
 export type { RunRequest, RunRequestFieldError };
 
 export interface LaunchPipelineRequest {
   readonly request: RunRequest;
+  /**
+   * Feature 103 (T068, FR-059) — which queue admits the run.
+   *
+   * Additive and optional: absent means the default queue, decided by
+   * `scheduleOrEnqueue` as it always has been, so a launch from Runs puts
+   * exactly the bytes on the wire it did before. It exists because History's
+   * re-run has a queue to be faithful to — the one the historical run used —
+   * and `LaunchWorkflowPayload.queueId` has carried the same field on the same
+   * terms since feature 092. The two ingresses for one concept agree.
+   *
+   * Not checked against the registry here. Whether a named queue exists is a
+   * question about live state, answered once by the enqueue path; a second
+   * answer at the boundary would be a second oracle, and only one of the two
+   * Pipeline/Workflow ingresses would hold it.
+   */
+  readonly queueId?: string;
 }
 
 export interface LaunchPipelineCommand extends CommandBase<typeof CMD_LAUNCH_PIPELINE> {
@@ -75,6 +91,16 @@ export type LaunchPipelineOutcome = LaunchPipelineResult['outcome'];
  */
 export function isLaunchPipelinePayload(payload: unknown): payload is LaunchPipelineRequest {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
-  if (hasUnexpectedKeys(payload as Record<string, unknown>, ['request'])) return false;
+  if (hasUnexpectedKeys(payload as Record<string, unknown>, ['request', 'queueId'])) return false;
+  const queueId = (payload as { queueId?: unknown }).queueId;
+  // Feature 103 (T068) — same bound and same optionality as the Workflow
+  // ingress applies. `undefined` passes because the key may be absent; a
+  // present-but-empty or over-long id does not.
+  if (
+    queueId !== undefined &&
+    (typeof queueId !== 'string' || queueId.length === 0 || queueId.length > QUEUE_ID_MAX)
+  ) {
+    return false;
+  }
   return validRunRequest((payload as { request?: unknown }).request);
 }

@@ -34,6 +34,41 @@ export function formatStatus(status: WorkflowStatus): string {
   return STATUS_LABELS[status];
 }
 
+/** A status the run-history outcome filter can be set to. */
+export type RunStatusFilterValue = Exclude<WorkflowStatus, 'idle'>;
+
+export interface RunStatusFilter {
+  readonly value: RunStatusFilterValue;
+  readonly label: string;
+}
+
+/**
+ * Feature 103 (FR-004) — the statuses the run-history outcome filter offers.
+ *
+ * Here, beside `STATUS_LABELS`, because this module is where the status
+ * vocabulary is written down; the filter used to spell each member out in its
+ * own markup, which is a second copy of the union that nothing keeps in step.
+ * `Record<RunStatusFilterValue, string>` does keep it in step: a status added
+ * to `WorkflowStatus` fails to compile here until the filter names it.
+ *
+ * Not `STATUS_LABELS` itself, for two reasons. `idle` is a member of the union
+ * that no history row ever holds — a recorded run finished, and a live one is
+ * running or paused — so offering it would be an option that always matches
+ * nothing. And its `paused` label names one cause of a pause ("waiting for
+ * credits") where a filter has to match every paused run whatever paused it.
+ */
+const RUN_STATUS_FILTER_LABELS: Record<RunStatusFilterValue, string> = {
+  running: 'Running',
+  paused: 'Paused',
+  completed: 'Completed',
+  failed: 'Failed',
+  canceled: 'Canceled'
+};
+
+export const RUN_STATUS_FILTERS: readonly RunStatusFilter[] = (
+  Object.keys(RUN_STATUS_FILTER_LABELS) as RunStatusFilterValue[]
+).map((value) => ({ value, label: RUN_STATUS_FILTER_LABELS[value] }));
+
 export function formatIteration(n: number): string {
   if (!Number.isFinite(n) || n <= 0) return '';
   return `iteration ${Math.floor(n)}`;

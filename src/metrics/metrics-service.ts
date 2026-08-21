@@ -18,17 +18,27 @@ import type { AuditEntry } from '../audit/audit-entry';
 import { parseAuditLogLineDetailed } from '../parser/audit-log-parser';
 import type {
   CostTimelinePoint,
+  MetricsRunSummary,
   PhaseRecord,
   PhaseTypeAggregate,
   ReadMetricsResponse,
   TaskRecord
 } from '../contracts/sidebar-ipc';
 import type { SanitizedLogger } from '../lib/logger';
-import { buildMetricsCoverage, composeCumulativeTotals } from './metrics-rollup';
+import type { MetricsRollupRecord } from './metrics-rollup';
+import { buildMetricsCoverage, composeCumulativeTotals, toRunSummary } from './metrics-rollup';
 import { readMetricsRollup } from './metrics-rollup-reader';
 
 export interface ReadMetricsOptions {
   readonly includeArchives?: boolean;
+  /**
+   * Feature 103 (T093, FR-023, FR-025) — scope `runSummaries` to these runs.
+   *
+   * Omitted means the response is shaped exactly as it was before this feature
+   * and carries no `runSummaries` at all. Bounded at the IPC boundary; nothing
+   * here re-derives the bound, and nothing here writes.
+   */
+  readonly runIds?: readonly string[];
 }
 
 const ARCHIVE_PREFIX = 'audit.log.';
@@ -122,6 +132,18 @@ export async function readMetrics(
   const rollup = await readMetricsRollup(workspaceRoot, logger);
   const composed = composeCumulativeTotals(rollup.records, tasks);
 
+  // Feature 103 (T093, FR-025) — the run detail's cost and phase counts come
+  // from the rollup and not from `tasks`. `tasks` is a fold over the retained
+  // corpus, which rotates on a schedule of its own while History does not: a
+  // run History still lists can have no `TaskRecord` at all, and joining there
+  // would report "not reported" for a run whose cost was recorded perfectly
+  // well. The records are already in hand for the totals above, so scoping
+  // costs no additional read.
+  const runSummaries =
+    options.runIds === undefined
+      ? undefined
+      : projectRunSummaries(rollup.records, options.runIds);
+
   return {
     tasks,
     phaseTypeAggregates: buildPhaseTypeAggregates(allPhases),
@@ -137,6 +159,10 @@ export async function readMetrics(
       logLatest: state.newestTimestamp?.raw,
       includesArchives: archivedScanSucceeded
     }),
+    // Spread rather than assigned, so a request that asked for nothing gets a
+    // response with no such key — not a key holding `undefined`, which
+    // `Object.hasOwn` and structured-clone both treat as present.
+    ...(runSummaries === undefined ? {} : { runSummaries }),
     meta: {
       includesArchives: archivedScanSucceeded,
       totalScannedEntries: state.totalScannedEntries,
@@ -146,6 +172,27 @@ export async function readMetrics(
       parseWarnings: state.parseWarnings
     }
   };
+}
+
+/**
+ * Feature 103 (T093) — the asked-for runs' rollup records, projected to the
+ * wire shape.
+ *
+ * Deduplicated by run id, last write winning. The file is append-only and
+ * nothing rewrites it, so a run id appearing twice means a second record was
+ * appended for it; returning both would put two costs on one detail with no
+ * way for the reader to choose.
+ */
+function projectRunSummaries(
+  records: readonly MetricsRollupRecord[],
+  runIds: readonly string[]
+): readonly MetricsRunSummary[] {
+  const wanted = new Set(runIds);
+  const byRunId = new Map<string, MetricsRunSummary>();
+  for (const record of records) {
+    if (wanted.has(record.runId)) byRunId.set(record.runId, toRunSummary(record));
+  }
+  return [...byRunId.values()];
 }
 
 interface AuditFileListing {
