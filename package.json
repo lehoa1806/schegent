@@ -147,7 +147,7 @@
           ],
           "default": "allowlist",
           "scope": "application",
-          "markdownDescription": "Controls ambient environment forwarding to backend CLIs. `inherit` preserves the extension-host environment for compatibility; `minimal` forwards only Schegent-controlled variables; `allowlist` forwards required bootstrap variables plus the names in `schegent.cli.environmentAllowlist`. The legacy `schegent.cli.inheritEnvironment: false` always forces `minimal`. Defaults to `allowlist` with an empty list, so backend CLIs receive PATH/home/temp/locale bootstrap variables and nothing else — ambient cloud, registry, and signing credentials in the extension-host environment are not forwarded. If your setup needs `HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS`, `ANTHROPIC_API_KEY`, or similar, add those **names** to `schegent.cli.environmentAllowlist`; set `inherit` to restore the previous behaviour."
+          "markdownDescription": "Controls ambient environment forwarding to backend CLIs. `inherit` preserves the extension-host environment for compatibility; `minimal` forwards only Schegent-controlled variables; `allowlist` forwards required bootstrap variables plus the names in `schegent.cli.environmentAllowlist`. The legacy `schegent.cli.inheritEnvironment: false` always forces `minimal`. Defaults to `allowlist` with an empty list, so backend CLIs receive PATH/home/temp/locale bootstrap variables and nothing else \u2014 ambient cloud, registry, and signing credentials in the extension-host environment are not forwarded. If your setup needs `HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS`, `ANTHROPIC_API_KEY`, or similar, add those **names** to `schegent.cli.environmentAllowlist`; set `inherit` to restore the previous behaviour."
         },
         "schegent.cli.environmentAllowlist": {
           "type": "array",
@@ -168,7 +168,7 @@
           ],
           "default": "claude",
           "scope": "application",
-          "description": "Backend runner used to drive each phase invocation. **Permission posture differs by runner and this is the largest privilege choice in the product.** `claude` (default) spawns the Claude CLI (`schegent.cli.path`) with `--dangerously-skip-permissions`: its approval prompts are off and it acts without asking. `agy` spawns the Agy CLI the same way, adding `--output-format stream-json`. `codex` is the exception — it spawns the Codex CLI in non-interactive `exec --json` mode with `--sandbox workspace-write`, an OS-enforced bound that keeps `.git` read-only, which is also why a phase declaring `sideEffects: git` is refused on it. The prompt is piped over stdin for all backends. Per-phase overrides are part of a Phase definition in the catalog. See docs/concepts/unprompted-agent-not-contained.md for the permission decision and docs/operations/backends.md for the contract any backend must honor."
+          "description": "Backend runner used to drive each phase invocation. **Permission posture differs by runner and this is the largest privilege choice in the product.** `claude` (default) spawns the Claude CLI (`schegent.cli.path`) with `--dangerously-skip-permissions`: its approval prompts are off and it acts without asking. `agy` spawns the Agy CLI the same way, adding `--output-format stream-json`. `codex` is the exception \u2014 it spawns the Codex CLI in non-interactive `exec --json` mode with `--sandbox workspace-write`, an OS-enforced bound that keeps `.git` read-only, which is also why a phase declaring `sideEffects: git` is refused on it. The prompt is piped over stdin for all backends. Per-phase overrides are part of a Phase definition in the catalog. See docs/concepts/unprompted-agent-not-contained.md for the permission decision and docs/operations/backends.md for the contract any backend must honor."
         },
         "schegent.backend.probeTimeoutSeconds": {
           "type": "integer",
@@ -255,13 +255,13 @@
           "minimum": 1,
           "maximum": 5,
           "scope": "resource",
-          "markdownDescription": "Maximum delayed-retry attempts per run before pausing the queue. When a phase encounters a transient error or rate limit, it schedules a delayed retry. After this many consecutive failures without a clean recovery, the run and queue are paused. Range: 1–5. Feature 056 reduced the advertised max from 20 to match the effective implementation cap (`DELAYED_RETRY_CAP = 5`)."
+          "markdownDescription": "Maximum delayed-retry attempts per run before pausing the queue. When a phase encounters a transient error or rate limit, it schedules a delayed retry. After this many consecutive failures without a clean recovery, the run and queue are paused. Range: 1\u20135. Feature 056 reduced the advertised max from 20 to match the effective implementation cap (`DELAYED_RETRY_CAP = 5`)."
         },
         "schegent.retry.forceContinueOnCap": {
           "type": "boolean",
           "default": false,
           "scope": "resource",
-          "markdownDescription": "Default for a phase's `forceContinueOnRetryCap`. When a phase's `retryCondition` is **still truthy** after its last permitted iteration, advance to the next phase instead of failing the run, and write a `[notify] forced-continue` line to the runtime log. Use this for a phase gated on something an autonomous run cannot satisfy — a manual verification step, for example — where the alternative is a loop that burns every iteration and then fails. **Whatever the condition gates is left unverified**, so the log line is the record that it was skipped. A phase's own `forceContinueOnRetryCap` overrides this. Does not apply to `failed` or `timeout` outcomes, which are terminal and never consult `retryCondition`."
+          "markdownDescription": "Default for a phase's `forceContinueOnRetryCap`. When a phase's `retryCondition` is **still truthy** after its last permitted iteration, advance to the next phase instead of failing the run, and write a `[notify] forced-continue` line to the runtime log. Use this for a phase gated on something an autonomous run cannot satisfy \u2014 a manual verification step, for example \u2014 where the alternative is a loop that burns every iteration and then fails. **Whatever the condition gates is left unverified**, so the log line is the record that it was skipped. A phase's own `forceContinueOnRetryCap` overrides this. Does not apply to `failed` or `timeout` outcomes, which are terminal and never consult `retryCondition`."
         },
         "schegent.queue.globalConcurrencyCap": {
           "type": "integer",
@@ -269,13 +269,13 @@
           "minimum": 1,
           "maximum": 20,
           "scope": "resource",
-          "markdownDescription": "Maximum number of workflow runs that may be in-flight across the whole workspace at the same time. Each queue still runs at most one Task, so this is the ceiling on how many queues may be busy at once. A value outside the range is refused, not clamped. Range: 1–20. Concurrent local runs are authorised for a single local operator on one host process by the architecture record `docs/architecture/local-queue-parallelism-ratification.md`; concurrent runs share one working tree."
+          "markdownDescription": "Maximum number of workflow runs that may be in-flight across the whole workspace at the same time. Each queue still runs at most one Task, so this is the ceiling on how many queues may be busy at once. A value outside the range is refused, not clamped. Range: 1\u201320. Concurrent local runs are authorised for a single local operator on one host process by the architecture record `docs/architecture/local-queue-parallelism-ratification.md`; concurrent runs share one working tree."
         },
         "schegent.logging.verbose": {
           "type": "boolean",
           "default": false,
           "scope": "resource",
-          "markdownDescription": "When enabled, every Claude CLI invocation is spawned with `--debug-file`, `--output-format stream-json`, and `--verbose` flags. CLI streams are captured under `<workspaceRoot>/.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/` (`debug.json`, `stream.jsonl`, `verbose.log`). Diagnostic files are **unredacted** and gitignored. Toggle off to return to standard headless mode. Toggling mid-run applies to the next phase invocation only — prior invocations are not re-captured. Setting changes are read at every phase invocation, so no extension reload is required."
+          "markdownDescription": "When enabled, every Claude CLI invocation is spawned with `--debug-file`, `--output-format stream-json`, and `--verbose` flags. CLI streams are captured under `<workspaceRoot>/.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/` (`debug.json`, `stream.jsonl`, `verbose.log`). Diagnostic files are **unredacted** and gitignored. Toggle off to return to standard headless mode. Toggling mid-run applies to the next phase invocation only \u2014 prior invocations are not re-captured. Setting changes are read at every phase invocation, so no extension reload is required."
         },
         "schegent.logging.rawTranscriptMode": {
           "type": "string",
@@ -314,8 +314,8 @@
           ],
           "default": "INFO",
           "scope": "resource",
-          "description": "Runtime debug log severity filter. Records at or above the configured level are appended to the runtime log file; lower-severity records are dropped. Independent of `schegent.logging.verbose` (which controls the unredacted diagnostic sink). Re-read on every emit — mid-run changes apply at the next event boundary.",
-          "markdownDescription": "Runtime debug log severity filter. Records at or above the configured level are appended to the runtime log file; lower-severity records are dropped. Independent of `schegent.logging.verbose` (which controls the unredacted diagnostic sink). Re-read on every emit — mid-run changes apply at the next event boundary."
+          "description": "Runtime debug log severity filter. Records at or above the configured level are appended to the runtime log file; lower-severity records are dropped. Independent of `schegent.logging.verbose` (which controls the unredacted diagnostic sink). Re-read on every emit \u2014 mid-run changes apply at the next event boundary.",
+          "markdownDescription": "Runtime debug log severity filter. Records at or above the configured level are appended to the runtime log file; lower-severity records are dropped. Independent of `schegent.logging.verbose` (which controls the unredacted diagnostic sink). Re-read on every emit \u2014 mid-run changes apply at the next event boundary."
         },
         "schegent.logging.runtimeLogFilePath": {
           "type": "string",
@@ -330,7 +330,7 @@
           "minimum": 65536,
           "maximum": 1073741824,
           "scope": "resource",
-          "markdownDescription": "Maximum size in bytes of the active runtime log file before rotation. When the next write would push the file past this size, the current file is rotated to `<path>.1` and existing generations shift by one (`.1` → `.2`, ...). Range: 64 KiB–1 GiB. Default: 5 MiB. Setting changes are read on every log emit, so no extension reload is required."
+          "markdownDescription": "Maximum size in bytes of the active runtime log file before rotation. When the next write would push the file past this size, the current file is rotated to `<path>.1` and existing generations shift by one (`.1` \u2192 `.2`, ...). Range: 64 KiB\u20131 GiB. Default: 5 MiB. Setting changes are read on every log emit, so no extension reload is required."
         },
         "schegent.logging.runtimeLogMaxGenerations": {
           "type": "integer",
@@ -338,7 +338,7 @@
           "minimum": 0,
           "maximum": 20,
           "scope": "resource",
-          "markdownDescription": "Number of rotated runtime log generations to keep (`<path>.1` ... `<path>.N`). Older generations are deleted on the next rotation. Range: 0–20. Default: 3. Setting changes are read on every log emit."
+          "markdownDescription": "Number of rotated runtime log generations to keep (`<path>.1` ... `<path>.N`). Older generations are deleted on the next rotation. Range: 0\u201320. Default: 3. Setting changes are read on every log emit."
         },
         "schegent.fatalSignatures": {
           "type": "array",
@@ -381,7 +381,7 @@
           ],
           "default": null,
           "scope": "window",
-          "markdownDescription": "Per-capability trust scope (feature 059). When `null` (default), the capability follows the workspace's Workspace Trust state. When `true`, saving non-default phase definitions is allowed even on an untrusted workspace _only if_ the workspace itself is trusted (the Workspace Trust ceiling is never widened). When `false`, saving non-default phase definitions is denied at the IPC layer and a `trust.capability-denied` audit event is recorded. The four-step resolution ladder is: workspace-trust ceiling → workspace-scope → user-scope → default-allow. See `repo/docs/operations/trust-scopes.md`."
+          "markdownDescription": "Per-capability trust scope (feature 059). When `null` (default), the capability follows the workspace's Workspace Trust state. When `true`, saving non-default phase definitions is allowed even on an untrusted workspace _only if_ the workspace itself is trusted (the Workspace Trust ceiling is never widened). When `false`, saving non-default phase definitions is denied at the IPC layer and a `trust.capability-denied` audit event is recorded. The four-step resolution ladder is: workspace-trust ceiling \u2192 workspace-scope \u2192 user-scope \u2192 default-allow. See `repo/docs/operations/trust-scopes.md`."
         },
         "schegent.trust.allowCustomRetryConditions": {
           "type": [
@@ -416,7 +416,7 @@
     "test:coverage": "vitest run --coverage",
     "test:webview": "npm --prefix webview-ui run test",
     "test:webview:coverage": "npm --prefix webview-ui run test:coverage",
-    "test:perf": "vitest run tests/perf/",
+    "test:perf": "vitest run --config vitest.perf.config.ts",
     "test:soak": "vitest run tests/perf/sustained-evidence-path.test.ts --reporter=verbose",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "test:evals": "vitest run --config vitest.evals.config.ts --reporter=verbose",
@@ -424,7 +424,7 @@
     "test:integration:compile": "tsc -p tsconfig.integration.json",
     "test:integration": "npm run build && npm run test:integration:compile && node ./out/tests/integration/runTest.js",
     "verify:all": "npm run contracts:check && npm run docs:check && npm run security:secrets && npm run security:actions && npm run license:check && npm run typecheck && npm run typecheck:webview && npm run typecheck:tests && npm run lint && npm run lint:webview && npm run test:host && npm run test:webview:coverage",
-    "ci:fast": "npm run typecheck:tests && npm run lint && npm run verify:all && npm run test:evals && npm run test:visual && npm run build:host && npm run package:smoke",
+    "ci:fast": "npm run typecheck:tests && npm run lint && npm run verify:all && npm run test:evals && npm run test:visual && npm run test:perf && npm run build:host && npm run package:smoke",
     "ci": "npm run typecheck && npm run typecheck:webview && npm run typecheck:tests && npm run lint && npm run lint:webview && npm run build:webview && npm run test:host && npm run test:webview:coverage && npm run test:evals && npm run test:visual && npm run test:perf && npm run test:e2e && npm run build && npm run package:smoke && npm run test:integration",
     "package": "vsce package --no-dependencies",
     "package:smoke": "node scripts/package-vsix-smoke.mjs",
