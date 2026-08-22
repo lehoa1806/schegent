@@ -35,4 +35,24 @@ describe('traceability governance — skipped-suite discipline', () => {
       `Unconditional skipped suites create false coverage. Use a documented conditional release-only gate or remove the obsolete suite:\n${offenders.join('\n')}`
     ).toEqual([]);
   });
+
+  // Vacuity control. The assertion above filters a file list and expects nothing
+  // left, which an empty file list also produces. `sourceFiles()` walks with
+  // readdirSync and would throw on a missing root — but a root that resolves to
+  // a real directory containing no matching extensions returns [] in silence,
+  // and so does an extension set that stops matching the tree.
+  it('scans the test tree and recognises the pattern it forbids', () => {
+    const scanned = ROOTS.flatMap(sourceFiles);
+    expect(
+      scanned.length,
+      'The scan roots yielded no source files. The assertion above is passing over ' +
+        'an empty set.'
+    ).toBeGreaterThan(200);
+    // The predicate itself. `describe.skip(` must match, and the conditional
+    // form this gate deliberately permits must not be mistaken for it by a
+    // future pattern edit.
+    expect(/\bdescribe\.skip\s*\(/.test('describe.skip("legacy", () => {')).toBe(true);
+    expect(/\bdescribe\.skip\s*\(/.test('describe.skip ("spaced", () => {')).toBe(true);
+    expect(/\bdescribe\.skip\s*\(/.test('const runner = isRelease ? describe : describe.skip;')).toBe(false);
+  });
 });
