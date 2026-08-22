@@ -2,14 +2,18 @@
 // site. Mirrors the existing per-family inline-IPC lint tests; the hard rule is
 // "never add inline postCommand(...) calls for IPC families that have a shared
 // helper", and this is that rule for this family.
+//
+// FR-R3-033 replaced the ripgrep spawn this file used with the shared
+// `node:fs` scan in `webview-source-scan.ts`. The allowed set and the
+// `toContain(HELPER)` vacuity control are unchanged; see that module for why
+// the fail-closed contract moved rather than being dropped.
 
-import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { filesReferencing } from './webview-source-scan';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
-const SCAN_ROOT = resolve(REPO_ROOT, 'webview-ui', 'src');
 const HELPER = 'webview-ui/src/lib/process-yaml-ipc.ts';
 const ALLOWED = new Set([
   // Declaration site (re-export shim).
@@ -22,24 +26,6 @@ const ALLOWED = new Set([
   'webview-ui/src/lib/__tests__/process-yaml-ipc.test.ts'
 ]);
 const COMMANDS = ['CMD_EXPORT_PROCESS_YAML', 'CMD_PREFLIGHT_PROCESS_YAML'] as const;
-
-function filesReferencing(literal: string): readonly string[] {
-  let output = '';
-  try {
-    output = execFileSync('rg', ['-l', literal, SCAN_ROOT], { encoding: 'utf8' });
-  } catch (error) {
-    // rg exits 1 for "no matches", which is not a failure of this scan.
-    const status = (error as { status?: number }).status;
-    if (status !== 1) throw error;
-  }
-  return output
-    .trim()
-    .split('\n')
-    .filter(Boolean)
-    .map((absolute) =>
-      absolute.startsWith(`${REPO_ROOT}/`) ? absolute.slice(REPO_ROOT.length + 1) : absolute
-    );
-}
 
 describe('Phase exchange single webview call site', () => {
   for (const literal of COMMANDS) {
