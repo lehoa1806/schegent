@@ -69,4 +69,26 @@ describe('Feature 058 (US2, T006) — no direct first-workspace-folder reads out
       ).toEqual([]);
     });
   }
+
+  // Vacuity control. Each assertion above filters the scan against the allowlist
+  // and expects nothing left, so it passes identically when the scan found
+  // nothing at all — a moved SCAN_ROOT, or fixed-string patterns that stopped
+  // matching, both look exactly like "nobody reads first-folder directly".
+  //
+  // The picker is the anchor. It is allowlisted precisely because it DOES read
+  // first-folder, so at least one forbidden form must be found in it. Aggregate
+  // rather than per-pattern: the picker uses one spelling, and which one is not
+  // this gate's business.
+  it('finds the allowlisted picker, so a broken scan cannot read as a clean tree', () => {
+    const everyMatch = new Set(FORBIDDEN_PATTERNS.flatMap((p) => [...listMatchingFiles(p)]));
+    for (const allowed of ALLOWED_FILES) {
+      expect(
+        [...everyMatch],
+        `${allowed} is allowlisted as the one module permitted to read first-folder, ` +
+          `but no forbidden form was found in it. Either it now routes through ` +
+          `getCanonicalWorkspaceRoot() — in which case the allowlist entry is stale and ` +
+          `should go — or the scan is broken and every assertion above is vacuous.`
+      ).toContain(allowed);
+    }
+  });
 });
