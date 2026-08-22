@@ -25,7 +25,6 @@ const SCAN_ROOT = resolve(REPO_ROOT, 'webview-ui', 'src');
 
 const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // Declaration site.
-  'webview-ui/src/lib/messages.ts',
   // The shared helper (only call site of postCommand(CMD_SAVE_GENERAL_SETTINGS, ...)).
   'webview-ui/src/lib/save-general-settings.ts',
   // The helper's unit test.
