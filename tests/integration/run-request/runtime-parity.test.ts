@@ -100,6 +100,7 @@ import type { SchegentStatusBar } from '../../../src/ui/status-bar';
 import type { Notifier } from '../../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../../src/state/lock';
 import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { removeTempRoot } from '../../temp-root-cleanup';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -468,7 +469,7 @@ beforeAll(async () => {
 afterAll(async () => {
   // The transcript writer's spool cleanup can still be settling when the last
   // assertion returns, so the removal retries rather than racing it.
-  await fs.rm(tmpRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  await removeTempRoot(tmpRoot);
 });
 
 /** Everything one run leaves behind that the two paths must agree on. */

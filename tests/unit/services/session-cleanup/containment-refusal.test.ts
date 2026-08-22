@@ -25,6 +25,7 @@ import {
   cleanupSessionArtifacts,
   type SessionCleanupFsRm
 } from '../../../../src/services/session-cleanup/session-cleanup-service';
+import { removeTempRoot } from '../../../temp-root-cleanup';
 
 const runId = 'run-escaping-1';
 
@@ -49,8 +50,8 @@ describe('FR-R3-005 (T332) refused task-deletion cleanup', () => {
   });
 
   afterEach(async () => {
-    await fs.rm(workspaceRoot, { recursive: true, force: true }).catch(() => undefined);
-    await fs.rm(outside, { recursive: true, force: true }).catch(() => undefined);
+    await removeTempRoot(workspaceRoot);
+    await removeTempRoot(outside);
   });
 
   it('removes nothing when .schegent is a symlink out of the workspace', async () => {

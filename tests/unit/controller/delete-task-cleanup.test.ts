@@ -26,6 +26,7 @@ import type { WorkflowRun } from '../../../src/state/workflow-run';
 import type { SessionCleanupRunner } from '../../../src/controller/workflow-controller';
 import type { SessionCleanupOutcome } from '../../../src/services/session-cleanup/session-cleanup-service';
 import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { removeTempRoot } from '../../temp-root-cleanup';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -83,7 +84,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await fs.rm(tmpRoot, { recursive: true, force: true }).catch(() => undefined);
+  await removeTempRoot(tmpRoot);
 });
 
 function makeController(

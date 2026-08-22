@@ -22,6 +22,7 @@ import type { PhaseRunner } from '../../src/controller/phase-runner';
 import type { SchegentStatusBar } from '../../src/ui/status-bar';
 import type { Notifier } from '../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../src/state/lock';
+import { removeTempRoot } from '../temp-root-cleanup';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -88,7 +89,7 @@ afterEach(async () => {
   } catch {
     // Best-effort.
   }
-  await fs.rm(tmpRoot, { recursive: true, force: true }).catch(() => undefined);
+  await removeTempRoot(tmpRoot);
 });
 
 function makeController(): SchegentWorkflowController {

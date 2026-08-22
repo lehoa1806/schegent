@@ -27,6 +27,7 @@ import {
   driveEnvelopeRun,
   rewriteQueuedPlan
 } from './envelope-harness';
+import { removeTempRoot } from '../../temp-root-cleanup';
 
 const DECOY_TARGET = 'out/decoy.md';
 
@@ -67,7 +68,7 @@ beforeAll(async () => {
 }, 30_000);
 
 afterAll(async () => {
-  await fs.rm(workspaceRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  await removeTempRoot(workspaceRoot);
 });
 
 describe('declared outputs are stated before they are probed (FR-R3-001)', () => {

@@ -37,6 +37,7 @@ import { WorkspaceStateStore, type Memento } from '../../../src/state/workspace-
 import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
 import { isTerminalRunStatus, type WorkflowRun } from '../../../src/state/workflow-run';
 import type { PhaseRunOutput } from '../../../src/controller/phase-runner';
+import { removeTempRoot } from '../../temp-root-cleanup';
 
 export const git = promisify(execFile);
 
@@ -471,8 +472,8 @@ export async function makeDriveHarness(): Promise<CheckpointDriveHarness> {
       await Promise.allSettled(started);
       history.dispose();
       vi.restoreAllMocks();
-      await fs.rm(workspaceRoot, { recursive: true, force: true, maxRetries: 10 });
-      await fs.rm(storageRoot, { recursive: true, force: true, maxRetries: 10 });
+      await removeTempRoot(workspaceRoot);
+      await removeTempRoot(storageRoot);
     }
   };
 }

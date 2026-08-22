@@ -35,6 +35,7 @@ import {
   driveEnvelopeRun,
   type EnvelopeHarness
 } from './envelope-harness';
+import { removeTempRoot } from '../../temp-root-cleanup';
 
 let workspaceRoot: string;
 let harness: EnvelopeHarness;
@@ -45,7 +46,7 @@ beforeAll(async () => {
 }, 30_000);
 
 afterAll(async () => {
-  await fs.rm(workspaceRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  await removeTempRoot(workspaceRoot);
 });
 
 /** The envelope-derived tail of a prompt, from the first section header on. */
