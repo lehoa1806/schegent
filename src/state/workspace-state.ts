@@ -598,6 +598,33 @@ function validateRunInvariants(run: WorkflowRun): void {
   }
 }
 
+/**
+ * The audit events the forward migration ladder produces.
+ *
+ * Derived from `InitializeResult` by omitting the fields the ladder does not
+ * own, so adding a migration step means adding one field in one place. Declaring
+ * a parallel interface would reintroduce, at the type level, exactly the
+ * duplication `runForwardMigrations` removes at the call level.
+ */
+export type ForwardMigrationEvents = Omit<
+  InitializeResult,
+  'migrated' | 'runRepairEvents'
+>;
+
+/**
+ * Did any step of the forward ladder actually produce events?
+ *
+ * Reads every field of the ladder's result rather than naming six of them, so a
+ * seventh step is counted without editing this predicate. The version that stood
+ * here spelled out six `.length > 0` checks; a step added without a seventh line
+ * would have reported `migrated: false` on a workspace that had just been
+ * migrated.
+ */
+function anyForwardMigrationRan(events: ForwardMigrationEvents): boolean {
+  return Object.values(events).some((list) => list.length > 0);
+}
+
+
 export interface InitializeResult {
   migrated: boolean;
   // Feature 030 — emitted by the v5 → v6 migrator when it ran. Caller
@@ -802,22 +829,11 @@ export class WorkspaceStateStore {
       const runRepairEvents = await this.normalizeRunForInitialize(
         WorkspaceStateStore.needsLegacyRunMigration(persistedNumeric)
       );
-      await this.migrateQueueRegistryIfNeeded();
-      const v6Events = await this.migrateV5ToV6IfNeeded(persistedNumeric);
-      const v7Events = await this.migrateV6ToV7IfNeeded(persistedNumeric);
-      const v10Events = await this.migrateV9ToV10IfNeeded();
-      const v11Events = await this.migrateV10ToV11IfNeeded();
-      const v12Events = await this.migrateV11ToV12IfNeeded();
-      const v13Events = await this.migrateV12ToV13IfNeeded();
+      const migrationEvents = await this.runForwardMigrations(persistedNumeric);
       await this.stampVersion(true);
       return {
         migrated: true,
-        v6MigrationEvents: v6Events,
-        v7MigrationEvents: v7Events,
-        v10MigrationEvents: v10Events,
-        v11MigrationEvents: v11Events,
-        v12MigrationEvents: v12Events,
-        v13MigrationEvents: v13Events,
+        ...migrationEvents,
         runRepairEvents
       };
     }
@@ -828,48 +844,19 @@ export class WorkspaceStateStore {
         const runRepairEvents = await this.normalizeRunForInitialize(
           WorkspaceStateStore.needsLegacyRunMigration(persistedNumeric)
         );
-        await this.migrateQueueRegistryIfNeeded();
-        const v6Events = await this.migrateV5ToV6IfNeeded(persistedNumeric);
-        const v7Events = await this.migrateV6ToV7IfNeeded(persistedNumeric);
-        const v10Events = await this.migrateV9ToV10IfNeeded();
-        const v11Events = await this.migrateV10ToV11IfNeeded();
-        const v12Events = await this.migrateV11ToV12IfNeeded();
-        const v13Events = await this.migrateV12ToV13IfNeeded();
+        const migrationEvents = await this.runForwardMigrations(persistedNumeric);
         await this.stampVersion(false);
         return {
           migrated: true,
-          v6MigrationEvents: v6Events,
-          v7MigrationEvents: v7Events,
-          v10MigrationEvents: v10Events,
-          v11MigrationEvents: v11Events,
-          v12MigrationEvents: v12Events,
-          v13MigrationEvents: v13Events,
+          ...migrationEvents,
           runRepairEvents
         };
       }
       const runRepairEvents = await this.normalizeRunForInitialize(false);
-      await this.migrateQueueRegistryIfNeeded();
-      const v6Events = await this.migrateV5ToV6IfNeeded(persistedNumeric);
-      const v7Events = await this.migrateV6ToV7IfNeeded(persistedNumeric);
-      const v10Events = await this.migrateV9ToV10IfNeeded();
-      const v11Events = await this.migrateV10ToV11IfNeeded();
-      const v12Events = await this.migrateV11ToV12IfNeeded();
-      const v13Events = await this.migrateV12ToV13IfNeeded();
+      const migrationEvents = await this.runForwardMigrations(persistedNumeric);
       return {
-        migrated:
-          v6Events.length > 0
-          || v7Events.length > 0
-          || v10Events.length > 0
-          || v11Events.length > 0
-          || v12Events.length > 0
-          || v13Events.length > 0
-          || runRepairEvents.length > 0,
-        v6MigrationEvents: v6Events,
-        v7MigrationEvents: v7Events,
-        v10MigrationEvents: v10Events,
-        v11MigrationEvents: v11Events,
-        v12MigrationEvents: v12Events,
-        v13MigrationEvents: v13Events,
+        migrated: anyForwardMigrationRan(migrationEvents) || runRepairEvents.length > 0,
+        ...migrationEvents,
         runRepairEvents
       };
     }
@@ -879,22 +866,11 @@ export class WorkspaceStateStore {
       const runRepairEvents = await this.normalizeRunForInitialize(
         WorkspaceStateStore.needsLegacyRunMigration(persistedNumeric)
       );
-      await this.migrateQueueRegistryIfNeeded();
-      const v6Events = await this.migrateV5ToV6IfNeeded(persistedNumeric);
-      const v7Events = await this.migrateV6ToV7IfNeeded(persistedNumeric);
-      const v10Events = await this.migrateV9ToV10IfNeeded();
-      const v11Events = await this.migrateV10ToV11IfNeeded();
-      const v12Events = await this.migrateV11ToV12IfNeeded();
-      const v13Events = await this.migrateV12ToV13IfNeeded();
+      const migrationEvents = await this.runForwardMigrations(persistedNumeric);
       await this.stampVersion(true);
       return {
         migrated: true,
-        v6MigrationEvents: v6Events,
-        v7MigrationEvents: v7Events,
-        v10MigrationEvents: v10Events,
-        v11MigrationEvents: v11Events,
-        v12MigrationEvents: v12Events,
-        v13MigrationEvents: v13Events,
+        ...migrationEvents,
         runRepairEvents
       };
     }
@@ -971,6 +947,44 @@ export class WorkspaceStateStore {
    * shape returns no events and is written back only if a per-entry lockstep
    * repair was needed.
    */
+  /**
+   * FR-R3-039 — the forward migration ladder, in one place.
+   *
+   * These seven steps were written out in full at four separate points in
+   * `initialize()`, once per version branch: the same calls, in the same order,
+   * four times. That is the maintainability defect the round-3 review was
+   * pointing at, though not where it looked — it described eight
+   * `migrateVnToVn+1` methods living in this class, and those were extracted
+   * into `queue-state-migrator.ts`, `run-state-migrator.ts`,
+   * `history-state-migrator.ts` and their siblings some time ago. What was left
+   * here is the orchestration, and the orchestration was duplicated.
+   *
+   * Duplicated in a way with teeth: adding a v13 → v14 step meant editing four
+   * places, and missing one left a branch that silently skipped a migration for
+   * whichever workspaces took it. Order is load-bearing here — each step's
+   * doc comment explains what it must run after and why — and an order stated
+   * four times is an order that can disagree with itself.
+   *
+   * The steps themselves are unchanged and still run against `this.memento`.
+   * This is a single definition of the sequence, not a new abstraction over it.
+   */
+  private async runForwardMigrations(
+    persistedNumeric: number | undefined
+  ): Promise<ForwardMigrationEvents> {
+    // Derived from InitializeResult rather than declared beside it: a parallel
+    // shape would be a second thing to update when a step is added, which is the
+    // duplication this method exists to remove.
+    await this.migrateQueueRegistryIfNeeded();
+    return {
+      v6MigrationEvents: await this.migrateV5ToV6IfNeeded(persistedNumeric),
+      v7MigrationEvents: await this.migrateV6ToV7IfNeeded(persistedNumeric),
+      v10MigrationEvents: await this.migrateV9ToV10IfNeeded(),
+      v11MigrationEvents: await this.migrateV10ToV11IfNeeded(),
+      v12MigrationEvents: await this.migrateV11ToV12IfNeeded(),
+      v13MigrationEvents: await this.migrateV12ToV13IfNeeded()
+    };
+  }
+
   private async migrateV9ToV10IfNeeded(): Promise<readonly StateMigratedV9ToV10AuditEvent[]> {
     const raw = this.memento.get<unknown>(KEYS.queue);
     if (raw === undefined || raw === null) return [];
