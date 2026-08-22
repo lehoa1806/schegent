@@ -24,7 +24,7 @@ after the Linux-only visual-regression step. So the exclusion needed either a
 premise that holds or removal, and the deciding fact was the size of the coverage
 drop nobody had measured.
 
-**Environment.** darwin, node per `.nvmrc`, branch
+**Environment.** darwin, Node 20.18.0 (the `.nvmrc` pin at the time), branch
 `110-coverage-and-budget-gate-completeness`, workspace `3abb100` / `repo/`
 `a60e462`. Both runs taken before any configuration change.
 

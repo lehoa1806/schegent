@@ -142,7 +142,9 @@ tracker. Follow the disclosure process in
 
 ### Prerequisites
 
-- Node.js `>= 20` (the repo includes a `.nvmrc`).
+- Node.js `^22 || ^24`. The checked-in `.nvmrc` pins `24.19.0`, the active
+  LTS; CI runs every gate on it and one extra Linux job on the `22.23.2`
+  floor, so both majors are exercised.
 - VS Code `^1.85.0` for the integration suite.
 - Claude CLI installed and authenticated (for backend smoke tests).
 - Optional: Codex CLI for backend-parity coverage.
