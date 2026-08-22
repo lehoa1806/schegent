@@ -5,7 +5,6 @@
     type GeneralSettingsControlId
   } from '../GeneralSettingsTab.descriptions';
   import type { PipelineDefinition } from '../../../lib/snapshot-types';
-  import { t } from '../../../lib/i18n';
 
   type ScalarKey =
     | 'cliPath'
@@ -228,9 +227,9 @@
           description: GENERAL_SETTINGS_DESCRIPTIONS[spec.key]
         }}
       >
-        <option value="always">{t('settings.rawTranscript.always')}</option>
-        <option value="errors-only">{t('settings.rawTranscript.errorsOnly')}</option>
-        <option value="off">{t('settings.rawTranscript.off')}</option>
+        <option value="always">Always retain</option>
+        <option value="errors-only">Errors only</option>
+        <option value="off">Off</option>
       </select>
     {:else}
       <input

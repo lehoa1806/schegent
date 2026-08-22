@@ -31,3 +31,9 @@ semantics, redaction, lock handling, state migrations,
 runtime/logging sinks, or the Phase / Pipeline / Workflow definition catalogs
 and their save gates. Keep this file as a short summary so it cannot drift
 into a parallel rule set.
+
+Before adding a user-facing string anywhere — a command title, a setting
+description, a dialog message, a webview label — read
+[`docs/concepts/english-only-not-localizable.md`](docs/concepts/english-only-not-localizable.md).
+Schegent is English-only by decision, not by omission: write the literal where it
+renders and do not introduce a localization boundary.
