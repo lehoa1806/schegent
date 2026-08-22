@@ -39,7 +39,6 @@ const LIFECYCLE_ALLOWLIST: ReadonlySet<string> = new Set([
   // The test below pins that: one occurrence, and no reconciler.
   'src/state/workspace-state.ts',
   'src/ui/sidebar/snapshot.ts',
-  'src/ui/sidebar/state-projector.ts',
   'src/extension.ts',
   // Feature 092 — derives the next lifecycle for the *resumed queue* from that
   // queue's own contents (`hasInFlight ? 'running' : …`). Feature 065 could read
@@ -49,10 +48,8 @@ const LIFECYCLE_ALLOWLIST: ReadonlySet<string> = new Set([
   // Feature 092 — composes one `QueueRuntime` per registry entry, so a queue's
   // lifecycle crosses to the webview attached to the queue that owns it rather
   // than as a workspace-wide singular (FR-048, FR-051).
-  'src/ui/sidebar/queue-runtime-composer.ts',
   // Feature 092 — reads each queue's own `queueLifecycle` through `lifecycleOf`
   // while composing the v4 snapshot.
-  'src/ui/sidebar/snapshot-composer.ts',
   // Feature 092 — the webview's `QueueLifecycle` label map, the one place the
   // discriminator is turned into operator-facing text. Distinct from the pinned
   // per-task status projection, which spells its live value differently.
