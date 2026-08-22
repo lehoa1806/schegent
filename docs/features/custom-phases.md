@@ -44,7 +44,7 @@ Field requirements:
 - `name` — display name (1–80 chars).
 - `instruction` or `skill` — exactly one non-empty directive is required on every definition. A definition is complete in itself; nothing is inherited.
 - `loopable` — optional deprecated compatibility boolean.
-- `sideEffects` — optional containment class: `none`, `workspace`, `git`, or `unrestricted`. **Omitted, it is `workspace`.** Declare it honestly — this is what the phase is permitted to write, and nothing infers it from the phase's name.
+- `sideEffects` — optional declared side effects: `none`, `workspace`, `git`, or `unrestricted`. **Omitted, it is `workspace`.** Declare it accurately, and know what the declaration buys: `git` and `unrestricted` get a consent prompt before the run and a rollback checkpoint, `none` and `workspace` get neither, and `git` additionally pins the phase to a Git-capable runner. **It is not a sandbox** — it does not restrict what the spawned subprocess may write, run, or send, because the backend runs with its approval prompts disabled regardless of what you declare (see [unprompted-agent-not-contained.md](../concepts/unprompted-agent-not-contained.md)). Nothing infers it from the phase's name.
 - `evidencePolicy` — optional: `required`, `best-effort`, or `none`. **Omitted, it is `required`.**
 
 Optional fields (`model`, `effort`, `timeoutSeconds`, `retryCondition`) follow the same semantics as overrides; see [Phase Overrides](phase-overrides.md).

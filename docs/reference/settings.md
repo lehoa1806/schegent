@@ -245,7 +245,7 @@ happens on the way in.
 | `isRequired` | boolean | no | Whether terminal failure stops the workflow; defaults to `true`. |
 | `forceContinueOnRetryCap` | boolean | no | Advance instead of halting when `retryCondition` is still truthy at the iteration cap. An explicit `false` wins over a workspace-wide `schegent.retry.forceContinueOnCap` of `true`. |
 | `runner` | string | no | Phase runner override: `claude`, `codex`, or `agy`. |
-| `sideEffects` | string | no | Containment class: `none`, `workspace`, `git`, or `unrestricted`. Omitted, it is `workspace`. Declaring `git` requires a Git-capable `runner` (`claude` or `agy`) or the save is refused. |
+| `sideEffects` | string | no | Declared side effects: `none`, `workspace`, `git`, or `unrestricted`. Omitted, it is `workspace`. The declaration selects a consent prompt and a rollback checkpoint (`git` and `unrestricted` get both; `none` and `workspace` get neither), and declaring `git` requires a Git-capable `runner` (`claude` or `agy`) or the save is refused. **It does not restrict what the spawned subprocess may do** — the backend runs with its approval prompts disabled either way. See [unprompted-agent-not-contained.md](../concepts/unprompted-agent-not-contained.md). |
 | `evidencePolicy` | string | no | Evidence strictness: `required`, `best-effort`, or `none`. Omitted, it is `required`. |
 
 Both defaults are the narrow end of their range and both apply because the

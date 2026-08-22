@@ -24,19 +24,23 @@ review cadence and the dependent-artifact manifest.
 
 ## 1. Executive summary
 
-**What Schegent is.** Schegent is a VS Code extension that drives the
-Claude Code CLI as an autonomous backend through the Spec Driven Development workflow
+**What Schegent is.** Schegent is a VS Code extension that drives a
+backend CLI as an autonomous agent through the Spec Driven Development workflow
 spec-driven development pipeline (`specify → clarify → plan → tasks →
-analyze → implement → finalize`). The operator installs the CLI, links
-it to an Anthropic account, opens a workspace, and explicitly trusts
-that workspace before any phase runs. Every phase invocation spawns the
+analyze → implement → finalize`). Three backends ship in-tree — `claude`
+(the default), `codex`, and `agy` — and which one runs is the largest
+privilege choice available, because `claude` and `agy` are spawned with
+their approval prompts disabled while `codex` runs under an OS-enforced
+filesystem bound. The operator installs the CLI, links it to that
+backend's account, opens a workspace, and explicitly trusts that
+workspace before any phase runs. Every phase invocation spawns the
 CLI subprocess, captures its stdout/stderr, writes a redacted structured
 audit event, and updates per-workspace state in the VS Code memento.
 
 **What Schegent is not.** Schegent is not a SaaS product, not a cloud
 service, and not a compliance-attested platform. The extension host
 makes zero outbound network calls; every API request is made by the
-Claude CLI subprocess the operator configured. Schegent does not analyze
+backend CLI subprocess the operator configured. Schegent does not analyze
 prompt content for adversarial inputs — operator-authored specs, plans,
 and task files are the trust boundary on what the CLI ingests.
 
@@ -53,9 +57,16 @@ and task files are the trust boundary on what the CLI ingests.
   structured payload (the paths-free audit discipline) so the log can be
   shipped off-machine without leaking workspace topology.
 - **Network boundary.** The extension host makes no outbound network
-  calls, the webview's Content Security Policy pins `connect-src 'none'`
-  verbatim, and the Claude CLI subprocess is the only network egress
-  point — operator-controlled at install time via `schegent.cli.path`.
+  calls and the webview's Content Security Policy pins `connect-src 'none'`
+  verbatim. The **backend CLI subprocess is the only network egress
+  point** — operator-controlled at install time via `schegent.cli.path`.
+  That subprocess is whichever backend is selected: `claude` (the
+  default) or `agy`, both spawned with `--dangerously-skip-permissions`
+  so they reach the network without asking, or `codex`, spawned with
+  `--sandbox workspace-write`. Schegent neither configures nor verifies
+  what that sandbox does about network egress; the bound it relies on and
+  documents is the filesystem one. See
+  [`../concepts/unprompted-agent-not-contained.md`](../concepts/unprompted-agent-not-contained.md).
 
 ---
 
@@ -63,13 +74,15 @@ and task files are the trust boundary on what the CLI ingests.
 
 Schegent reads from five surfaces and only those five.
 
-**1. Workspace files.** Through the Claude CLI's tool calls (`Read`,
+**1. Workspace files.** Through the backend CLI's tool calls (`Read`,
 `Bash`, `Edit`, `Write`, …) inside a trusted workspace. The CLI's tool
 surface is the operator's chosen capability set, not Schegent's;
 Schegent does not narrow what the CLI reads beyond what VS Code's
-Workspace Trust allows.
+Workspace Trust allows — and for `claude` and `agy` it actively widens
+what the CLI will do *without asking*, by disabling that CLI's own
+approval prompts.
 
-**2. Claude CLI process output.** Per-phase stdout, stderr, and exit
+**2. Backend CLI process output.** Per-phase stdout, stderr, and exit
 code. Stdout JSON lines are parsed for `assistant-message`, `tool-use`,
 `tool-result`, and `audit` events; unknown event types are preserved
 with a warning per the audit-event parser invariant (CLAUDE.md hard
@@ -99,9 +112,10 @@ on the next invocation. CLAUDE.md hard rules pin this discipline for
 Outside these five sources, Schegent does **not** see:
 
 - **CLI network traffic.** The host extension never inspects,
-  intercepts, or replays the CLI's HTTPS calls to Anthropic's APIs. The
-  CLI subprocess is opaque to Schegent at the network layer; the host
-  reads only the CLI's stdout/stderr.
+  intercepts, or replays the backend CLI's outbound calls — to
+  Anthropic, to OpenAI, or to whatever endpoint the selected backend
+  uses. The CLI subprocess is opaque to Schegent at the network layer;
+  the host reads only its stdout/stderr.
 - **Other workspaces.** State is per-workspace. A run in workspace A
   cannot observe or affect workspace B. Multi-root workspaces are folded
   to first-folder canonical per spec 058 (see [§4(e)](#e-multi-root-canonicalization-spec-058)).
@@ -122,7 +136,7 @@ webview / runner topology and the canonical workspace-folder rule.
 
 Three write/transmit destinations exist.
 
-**1. Claude CLI invocation.** Schegent spawns the CLI per phase with
+**1. Backend CLI invocation.** Schegent spawns the CLI per phase with
 argv (model, effort, optional `--continue` flag, system prompt argv),
 stdin (the composed phase prompt), and an environment derived from VS
 Code's environment plus the operator-configured settings. Every
@@ -251,7 +265,7 @@ registry](./threat-model.md#the-mutating-commands-registry).
 
 ### (c) Sidecar containment — the canonical-path guard (spec 056, T21)
 
-The Claude CLI streams stdout that includes audit events naming local
+The backend CLI streams stdout that includes audit events naming local
 diagnostic file paths (`phase-message.env`). An attacker who can steer
 the CLI's stdout — via prompt injection in spec/plan content, a
 compromised CLI binary, or upstream model behavior — could try to name
@@ -341,7 +355,7 @@ Seven scenarios. For each: **what happens**, **what mitigates it**, and
 
 ### 5.1 Malicious CLI output
 
-**What happens.** The Claude CLI emits stdout the operator did not
+**What happens.** The backend CLI emits stdout the operator did not
 author — because of prompt injection in workspace spec/plan/task files,
 a compromised CLI binary, or upstream model behavior. The output may
 contain (a) audit-event JSON naming a path outside the run's
@@ -477,7 +491,7 @@ paste into PR descriptions to surface the sync state at review time.
 
 ### 5.7 CLI hangs (watchdog, cancellation)
 
-**What happens.** The spawned Claude CLI subprocess stops emitting
+**What happens.** The spawned backend CLI subprocess stops emitting
 stdout and stops exiting — because the upstream model is rate-limited
 beyond the configured timeout, the network is partitioned, the binary
 is wedged, or an in-flight tool call is itself hung.
