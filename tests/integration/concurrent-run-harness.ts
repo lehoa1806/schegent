@@ -171,18 +171,49 @@ export const rateLimitedOutput = (resetsAtSec: number): RawInvocationOutput => (
  * hanging the suite. `what` may be a closure so the message can report the state
  * as it stood when the wait gave up rather than when it started.
  */
+/**
+ * How long a drain may take before it is treated as a hang.
+ *
+ * This used to be a budget of 800 ROUNDS of `setImmediate` + `setTimeout(0)`,
+ * and that is the wrong unit. A round is not a fixed amount of progress: under
+ * contention each one yields less, so the same cascade needs more rounds on a
+ * busy machine than on an idle one. The bound therefore measured machine load as
+ * much as it measured whether the cascade settled.
+ *
+ * It cost four observed failures of
+ * `tests/integration/concurrency-cap.test.ts > holds the slot while paused`
+ * between 2026-08-22 and 2026-08-23, every one of them under full-chain load and
+ * two of them immediately after a real-VS-Code integration run left the machine
+ * busy. The same test passed 3-for-3 and 5-for-5 in isolation and across three
+ * consecutive full `test:host` runs, which is the signature of a bound that is
+ * about the environment rather than the code.
+ *
+ * Elapsed time is the unit that means the same thing on both machines. Ten
+ * seconds is far above any real drain here — they settle in tens of rounds — and
+ * far below a suite timeout, so a genuine hang still fails as a hang, with the
+ * round count reported alongside so a future reader can see how much progress
+ * was actually made.
+ */
+const DRAIN_TIMEOUT_MS = 10_000;
+
 export async function drainUntil(
   settled: () => boolean,
   what: string | (() => string),
-  maxRounds = 800
+  timeoutMs = DRAIN_TIMEOUT_MS
 ): Promise<void> {
-  for (let i = 0; i < maxRounds; i++) {
+  const deadline = Date.now() + timeoutMs;
+  let rounds = 0;
+  while (Date.now() < deadline) {
     if (settled()) return;
+    rounds += 1;
     await new Promise((r) => setImmediate(r));
     await new Promise((r) => setTimeout(r, 0));
   }
   if (!settled()) {
-    throw new Error(`drainUntil timed out waiting for: ${typeof what === 'function' ? what() : what}`);
+    throw new Error(
+      `drainUntil gave up after ${timeoutMs}ms and ${rounds} round(s) waiting for: ` +
+        `${typeof what === 'function' ? what() : what}`
+    );
   }
 }
 
