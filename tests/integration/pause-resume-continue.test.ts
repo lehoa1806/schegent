@@ -1,4 +1,5 @@
 import { ZippedStreamBuffer } from '../../src/runner/zipped-stream-buffer';
+import { drainUntil as sharedDrainUntil } from './concurrent-run-harness';
 // Feature 033 T010 — Integration: pause-then-resume preserves -c continuation.
 //
 // Drives the real WorkflowController + PhaseRunner + AuditLogWriter stack
@@ -126,13 +127,11 @@ async function drain(rounds: number): Promise<void> {
  * Only for waits with an observable condition. The settle-before-cleanup
  * drain at the end of the US4 test has none and stays a fixed `drain()`.
  */
-async function drainUntil(settled: () => boolean, what: string, maxRounds = 500): Promise<void> {
-  for (let i = 0; i < maxRounds; i++) {
-    if (settled()) return;
-    await new Promise((r) => setImmediate(r));
-    await new Promise((r) => setTimeout(r, 0));
-  }
-  if (!settled()) throw new Error(`drainUntil timed out waiting for: ${what}`);
+// FR-R3-046 — delegated rather than repeated. This was a third copy of the same
+// loop, bounded in rounds rather than elapsed time; see the shared helper for why
+// that unit was wrong and what it cost.
+async function drainUntil(settled: () => boolean, what: string): Promise<void> {
+  return sharedDrainUntil(settled, what);
 }
 
 /**
