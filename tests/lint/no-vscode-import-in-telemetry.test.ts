@@ -16,37 +16,40 @@
 
 import { describe, it, expect } from 'vitest';
 import { resolve } from 'node:path';
-import { filesMatching } from './source-scan';
+import { linesMatching } from './source-scan';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const SCAN_ROOT = resolve(REPO_ROOT, 'src', 'telemetry');
 
+/**
+ * Matching lines under the telemetry tree, as `path:line:text`.
+ *
+ * This used to shell out to `grep -rnE`, and the patterns below were anchored
+ * `^[^:]+:[0-9]+:` because that is the shape of grep's OUTPUT — the `path:line:`
+ * prefix it prints — not the shape of the source line it matches against.
+ *
+ * When the shell-out was replaced with a `node:fs` scan, this file was migrated
+ * to whole-file matching, which returns bare paths. The anchor then matched
+ * nothing, and two of the three assertions became vacuous: a real
+ * `import * as vscode from 'vscode'` in `src/telemetry/` passed all three tests.
+ * The suite stayed at 655 passing, which is why counting tests did not catch it.
+ *
+ * The sibling gate `no-vscode-import-in-headless.test.ts` records this exact
+ * defect from feature 089 T015, discovered the same way — "measured by adding a
+ * real import and watching all three tests stay green". The lesson was in this
+ * directory and was not applied here. It is now: the scan is per-line, and the
+ * prefix is reconstructed rather than matched against.
+ */
 function grepLines(pattern: string): readonly string[] {
-  let out: string;
-  try {
-    out = filesMatching(SCAN_ROOT, pattern).join('\n');
-  } catch (err: unknown) {
-    const e = err as { status?: number; stdout?: string };
-    // grep exit code 1 = "no matches found", which is the success case here.
-    if (e.status === 1 && (!e.stdout || e.stdout.trim() === '')) {
-      return [];
-    }
-    // Exit code 2 = scan-root does not exist; treat as empty (no offenders).
-    if (e.status === 2) {
-      return [];
-    }
-    throw err;
-  }
-  return out
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
+  return linesMatching(SCAN_ROOT, pattern).map(
+    ({ file, line, text }) => `${file}:${line}:${text}`
+  );
 }
 
 describe('Feature 033 T003 — no vscode import in src/telemetry/', () => {
   it('no file under src/telemetry/ contains `import … from \'vscode\'`', () => {
     const offenders = grepLines(
-      `^[^:]+:[0-9]+:[[:space:]]*import[[:space:]].*from[[:space:]]+['\\"]vscode['\\"]`
+      `^[[:space:]]*import[[:space:]].*from[[:space:]]+['\\"]vscode['\\"]`
     );
     expect(
       offenders,
@@ -64,7 +67,7 @@ describe('Feature 033 T003 — no vscode import in src/telemetry/', () => {
 
   it('no file under src/telemetry/ contains a side-effect `import \'vscode\'`', () => {
     const offenders = grepLines(
-      `^[^:]+:[0-9]+:[[:space:]]*import[[:space:]]+['\\"]vscode['\\"]`
+      `^[[:space:]]*import[[:space:]]+['\\"]vscode['\\"]`
     );
     expect(
       offenders,
