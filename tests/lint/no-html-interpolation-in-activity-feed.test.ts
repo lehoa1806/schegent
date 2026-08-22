@@ -20,7 +20,9 @@
 import { describe, expect, it } from 'vitest';
 import { readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { filesMatching } from './source-scan';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
@@ -115,6 +117,22 @@ function listMatchingFilesAmong(files: readonly string[], pattern: string): read
     .map(toRelative);
 }
 
+/** Every `.svelte` file under the scanned roots, matched or not. */
+function allScannedFiles(): readonly string[] {
+  const collected: string[] = [];
+  for (const root of SCAN_ROOTS) {
+    for (const file of filesMatching(root, '', { extensions: ['.svelte'] })) {
+      collected.push(toRelative(file));
+    }
+  }
+  for (const group of SCAN_FILE_GROUPS) {
+    for (const file of svelteFilesWithPrefix(group.dir, group.prefix)) {
+      collected.push(toRelative(file));
+    }
+  }
+  return collected;
+}
+
 function listMatchingFiles(pattern: string): readonly string[] {
   const collected: string[] = [];
   for (const root of SCAN_ROOTS) {
@@ -143,5 +161,45 @@ describe('Feature 029 T044 — no {@html} in Activity Feed components (FR-017)',
       offenders,
       `Offending Svelte files using {@html}:\n${offenders.join('\n')}`
     ).toEqual([]);
+  });
+
+  // Vacuity controls. The assertion above passes when the scan finds nothing,
+  // and this file's own header already names that risk — "until a root is
+  // scanned this lint passes while proving nothing about the render sites". It
+  // was a comment; these make it a check.
+  //
+  // Two things can empty the scan independently, so both are checked: the roots
+  // can stop resolving to files, and the pattern can stop matching. This gate
+  // guards against untrusted operator- and file-authored text reaching Svelte's
+  // raw-HTML escape hatch, so a silent pass is an unnoticed XSS surface rather
+  // than a tidy-up.
+  it('scans a non-empty set of Svelte files', () => {
+    // Aggregate rather than per-root on purpose: the header records that a root
+    // may be listed BEFORE the components under it exist, which is a deliberate
+    // pattern here and must keep working.
+    expect(
+      allScannedFiles().length,
+      'The scan roots resolved to no .svelte files at all. Every assertion in this ' +
+        'file is passing vacuously.'
+    ).toBeGreaterThanOrEqual(15);
+  });
+
+  it('the {@html} pattern matches a real offender and spares the documentation form', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'html-interp-lint-'));
+    try {
+      writeFileSync(join(dir, 'offender.svelte'), '<div>{@html untrusted}</div>\n', 'utf8');
+      writeFileSync(
+        join(dir, 'clean.svelte'),
+        // The documentation form, closing brace attached, which the pattern is
+        // written to spare. If a pattern edit starts matching this, the gate
+        // begins failing on its own prose.
+        '<!-- never use `{@html}` here -->\n<div>{escaped}</div>\n',
+        'utf8'
+      );
+      const matched = listMatchingFilesIn(dir, '\\{@html[[:space:]]+[^}]+\\}');
+      expect(matched.map((f) => f.split('/').pop())).toEqual(['offender.svelte']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
