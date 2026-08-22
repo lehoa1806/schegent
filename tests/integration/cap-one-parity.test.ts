@@ -40,6 +40,7 @@
 // untouched, which is the half of the feature that can only regress.
 
 import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest';
+import { drainUntil as sharedDrainUntil } from './concurrent-run-harness';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
@@ -159,13 +160,11 @@ interface CapturedInvocation {
  * full-suite CPU contention. The bound stays so a dispatch that genuinely never
  * happens fails here, naming what it waited for, instead of hanging.
  */
-async function drainUntil(settled: () => boolean, what: string, maxRounds = 500): Promise<void> {
-  for (let i = 0; i < maxRounds; i++) {
-    if (settled()) return;
-    await new Promise((r) => setImmediate(r));
-    await new Promise((r) => setTimeout(r, 0));
-  }
-  if (!settled()) throw new Error(`drainUntil timed out waiting for: ${what}`);
+// FR-R3-046 — delegated rather than repeated. This was a third copy of the same
+// loop, bounded in rounds rather than elapsed time; see the shared helper for why
+// that unit was wrong and what it cost.
+async function drainUntil(settled: () => boolean, what: string): Promise<void> {
+  return sharedDrainUntil(settled, what);
 }
 
 function makeLock(): WorkspaceLockManager {
