@@ -74,7 +74,7 @@ queue.
 ## Requirements
 
 - **Visual Studio Code** `^1.85.0` (April 2024 or newer).
-- **Node.js** `>= 20` (for building from source; not required to run
+- **Node.js** `^22 || ^24` (for building from source; not required to run
   the published extension).
 - At least one supported backend CLI installed and authenticated: **Claude
   Code** (`schegent.cli.path`), **Codex** (`schegent.codex.path`), or **Agy**
@@ -172,7 +172,7 @@ For a full walkthrough see [docs/getting-started/first-pipeline.md](docs/getting
 | **Versioned catalog** | Every save of a phase, pipeline, or workflow writes an immutable version record under `.schegent/catalog/`. History is bounded at 50 versions per definition, any past version can be read back, and saving unchanged content writes nothing. |
 | **Phase overrides** | Per-phase model, effort, timeout, retry condition, loopability — declared on the definition itself. |
 | **Custom phases & pipelines** | Define your own phases and pipelines in the Builder, or import them from YAML. Every phase runs through the same audit path; no id is reserved and none is privileged. |
-| **Declared containment** | A phase declares what it may write (`sideEffects`) and how strictly evidence is enforced (`evidencePolicy`). Omitted, they are `workspace` and `required`; nothing is inferred from the phase's name. |
+| **Declared side effects** | A phase declares `sideEffects` and `evidencePolicy` on the definition itself; nothing is inferred from the phase's name. `sideEffects` selects a consent prompt and a rollback checkpoint, and pins a Git-writing phase to a Git-capable runner — it does not restrict what the spawned subprocess can do. Omitted, they are `workspace` and `required`. |
 | **Phase breakpoints** | Pause a run before a named phase to review state and intervene; consumed on fire. |
 | **Aggressive pause** | SIGTERM at click time with a 2s SIGKILL escalation; state is updated before the kill so the audit record never lies. |
 | **Rate-limit handling** | Parses Anthropic reset hints and schedules a dynamic backoff (5-attempt cap, 60-minute fallback). |
@@ -319,6 +319,19 @@ reviewable artifact, and it is the one with a stable format.
 Schegent assumes a trusted local operator on a trusted workstation.
 The defenses below reduce risk; they are not absolute guarantees.
 
+**Read this first: the agent runs without approval prompts.** The `claude`
+backend — the default — and the `agy` backend are spawned with
+`--dangerously-skip-permissions`, which switches off the CLI's own approval
+gate. Neither is conditional, and no setting turns it back on. Within a trusted
+workspace the agent will commit, delete, install, or make an outbound request
+without asking. The `codex` backend is the exception: it runs under an
+OS-enforced `workspace-write` sandbox that keeps `.git` read-only, and it is not
+the default. A phase's `sideEffects` declaration does **not** restrict any of
+this — see
+[`docs/concepts/unprompted-agent-not-contained.md`](docs/concepts/unprompted-agent-not-contained.md)
+for the decision, what the declaration actually selects, and the condition that
+would reopen it.
+
 - **Workspace-trust gating** — the extension is inert in untrusted
   workspaces.
 - **Primary-host gating** — only the first VS Code window opened
@@ -397,8 +410,10 @@ Useful targets:
 | `npm run package` | `vsce package --no-dependencies`. |
 | `npm run package:smoke` | Build a temporary VSIX and enforce its exact content and size policy. |
 
-The repository targets Node `>= 20` and VS Code `^1.85.0`. Use the
-checked-in `.nvmrc` if you use `nvm` or `fnm`.
+The repository targets Node `^22 || ^24` and VS Code `^1.85.0`. The
+checked-in `.nvmrc` pins `24.19.0`, the active LTS. Use it if you have `nvm`
+or `fnm`. The `^22` floor is not left untested: one Linux CI job builds on
+`22.23.2`, because code written on 24 is what would quietly reach past it.
 
 ## Reporting bugs
 

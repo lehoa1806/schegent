@@ -20,7 +20,7 @@ One document, `examples/speckit-new-feature.pipeline.yaml`, supplying one pipeli
 | 8 | `speckit-review` | Spec-kit Review | Finishes any incomplete task, then loops code review and security review to zero findings. Repeats while any of the three counts is non-zero. |
 | 9 | `finalize` | Finalize | Re-reads the implemented feature, regenerates any derived documentation, verifies the build and tests pass. |
 
-The example declares none of `sideEffects`, `evidencePolicy`, or `loopable`, so all nine phases take the defaults described under [The phase definition](#the-phase-definition): `workspace` containment and `required` evidence. Repetition is driven by each phase's `retryCondition`, which the host consults whether or not `loopable` is set; `loopable` affects only the planned-total estimate the progress bar divides by.
+The example declares none of `sideEffects`, `evidencePolicy`, or `loopable`, so all nine phases take the defaults described under [The phase definition](#the-phase-definition): `workspace` side effects and `required` evidence. Repetition is driven by each phase's `retryCondition`, which the host consults whether or not `loopable` is set; `loopable` affects only the planned-total estimate the progress bar divides by.
 
 The example ends at `finalize` and declares no `done` phase. `done` remains a terminal sentinel the host understands, but a pipeline is not obliged to name one.
 
@@ -43,21 +43,26 @@ Each phase is a versioned JSON record. Every phase has these fields:
 - **`isRequired`** — optional completion policy. Missing or `true` means a
   terminal failure stops the task. `false` allows the sequencer to continue
   after retry policy is exhausted and the phase ends as failed or timed out.
-- **`sideEffects`** — optional containment class: one of `none`, `workspace`,
-  `git`, `unrestricted`. It declares what the phase is permitted to write.
-  **Omitted, it is `workspace`.** A phase declaring `git` must also declare a
+- **`sideEffects`** — optional declared side effects: one of `none`,
+  `workspace`, `git`, `unrestricted`. **Omitted, it is `workspace`.** The
+  declaration selects two things and refuses one. `git` and `unrestricted` get a
+  consent prompt before the run and a rollback checkpoint; `none` and
+  `workspace` get neither. And a phase declaring `git` must also declare a
   Git-capable runner (`claude` or `agy`), or the save is refused — Codex's
   workspace-write sandbox keeps `.git` read-only. That rule reads the
   declaration, never the id: a phase named `finalize` that declares no Git side
   effects is not treated as a Git phase, and a phase named anything at all that
-  declares `git` is.
+  declares `git` is. What the declaration does **not** do is restrict the
+  spawned subprocess: the backend runs with its approval prompts disabled
+  whatever you declare, so this is consent bookkeeping rather than a sandbox
+  (see [unprompted-agent-not-contained.md](unprompted-agent-not-contained.md)).
 - **`evidencePolicy`** — optional: one of `required`, `best-effort`, `none`.
   **Omitted, it is `required`.**
 
 Both defaults are the narrow end of their range, and both are chosen because the
 phase said nothing rather than because the host recognised it. Earlier releases
-derived the containment class from whether the id was one the extension shipped;
-since no id is now, the class is declared or it is `workspace`.
+derived the side-effects value from whether the id was one the extension
+shipped; since no id is now, the value is declared or it is `workspace`.
 
 ### Optional phases
 
