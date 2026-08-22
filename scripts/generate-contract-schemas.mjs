@@ -238,6 +238,162 @@ function settingsPropertyFromPackage(key, property) {
   };
 }
 
+
+/**
+ * FR-R3-035 — the webview copies of the expression sandbox and the fatal-signature
+ * registry are emitted from their host originals rather than maintained beside them.
+ *
+ * Threat T11 names `src/lib/retry-condition.ts` as the sole entry point for
+ * evaluating operator expressions. It existed twice, and parity was inferred from
+ * byte equality by a test whose own header recorded that it could not import the
+ * webview source across the CJS/ESM line. The host copy is authoritative at run
+ * time, so webview-only drift is a UX defect; the dangerous direction is the
+ * reverse — a fix applied to the mirror, or an edit made to whichever copy the
+ * editor opened first. Generation makes that impossible rather than discouraged.
+ *
+ * The two files do NOT have the same relationship, and treating them alike would
+ * be a regression:
+ *
+ *   * `retry-condition.ts` is a genuine full-file mirror. It imports nothing, so
+ *     the host source is emitted verbatim under a generated banner.
+ *   * `fatal-signature-registry.ts` is a deliberate PROJECTION. The host is 253
+ *     lines; the webview carries the shared type declarations and the
+ *     `SIGNATURE_STREAMS` literal and none of the matching or classification
+ *     logic. Emitting the whole host file would drag host-only logic into the
+ *     webview bundle.
+ *
+ * The banner is produced here rather than hand-maintained. A hand-written banner
+ * is exactly the kind of delta that makes byte equality brittle — it was the
+ * four-line difference the previous parity test had to special-case.
+ */
+function generatedBanner(sourcePath) {
+  return [
+    '// GENERATED FILE — do not edit.',
+    `//`,
+    `// Emitted from ${sourcePath} by scripts/generate-contract-schemas.mjs.`,
+    '// Edit the source and run: npm run contracts:generate',
+    '//',
+    '// `npm run contracts:check` (the first target of verify:all) fails when this',
+    '// file and its source disagree, so a fix applied here alone cannot ship.',
+    ''
+  ].join('\n');
+}
+
+/** The host file verbatim, under a generated banner. */
+function mirrorWholeFile(sourcePath) {
+  const source = readText(sourcePath).replace(/\r\n/g, '\n');
+  return `${generatedBanner(sourcePath)}\n${source.replace(/\n+$/, '')}\n`;
+}
+
+/**
+ * The shared slice of the fatal-signature registry, selected from the AST by
+ * declaration name rather than by scanning the text for punctuation.
+ *
+ * The first version located the end of the `FATAL_SIGNATURES` statement with
+ * `indexOf(';', indexOf(')', anchor))`. An ordinary refactor breaks that: give
+ * the `.map()` callback a block body and the first `)` belongs to the arrow's
+ * parameter list while the first `;` belongs to a statement inside it, so the
+ * slice ends mid-declaration and the generator writes syntactically invalid
+ * TypeScript while reporting success.
+ *
+ * `contracts:check` does not catch that, and the reason is worth stating because
+ * it applies to every generated artifact here: the check compares a file to a
+ * fresh regeneration of itself. Corruption that is deterministic is therefore
+ * *stable*, and stable output is exactly what the check calls correct. Staleness
+ * and validity are different properties, and only the first was ever being
+ * verified. `assertParses` below closes that gap.
+ *
+ * Selecting whole top-level statements by name also fixes a second problem the
+ * text slice had: anything a future edit inserts between the two anchors — a
+ * host-only helper, an import — was swept into the projection by position.
+ * Nothing between them is copied now, only what is named.
+ */
+const FATAL_SIGNATURE_PROJECTION = Object.freeze([
+  'FatalSignature',
+  'FatalStream',
+  'BOTH_STREAMS',
+  'STDERR_ONLY',
+  'FatalSignatureSpec',
+  'SIGNATURE_STREAMS',
+  'FATAL_SIGNATURES'
+]);
+
+/** The declared name of a top-level statement, or null if it has none. */
+function declaredName(statement) {
+  if (ts.isTypeAliasDeclaration(statement) || ts.isInterfaceDeclaration(statement)) {
+    return statement.name.text;
+  }
+  if (ts.isVariableStatement(statement)) {
+    const declaration = statement.declarationList.declarations[0];
+    return declaration && ts.isIdentifier(declaration.name) ? declaration.name.text : null;
+  }
+  return null;
+}
+
+function projectFatalSignatures(sourcePath) {
+  const text = readText(sourcePath).replace(/\r\n/g, '\n');
+  const source = ts.createSourceFile(sourcePath, text, ts.ScriptTarget.Latest, true);
+
+  const byName = new Map();
+  for (const statement of source.statements) {
+    const name = declaredName(statement);
+    if (name !== null) byName.set(name, statement);
+  }
+
+  const missing = FATAL_SIGNATURE_PROJECTION.filter((name) => !byName.has(name));
+  if (missing.length > 0) {
+    throw new Error(
+      `${sourcePath}: cannot project ${missing.join(', ')} — no top-level declaration with that ` +
+        `name. The projection names what it copies; if a declaration was renamed, rename it in ` +
+        `FATAL_SIGNATURE_PROJECTION rather than widening the selection.`
+    );
+  }
+
+  // Emitted in source order, each statement with its leading comments, so the
+  // projection reads like the region it comes from.
+  const chosen = FATAL_SIGNATURE_PROJECTION.map((name) => byName.get(name)).sort(
+    (a, b) => a.getStart(source, true) - b.getStart(source, true)
+  );
+  const shared = chosen
+    .map((statement) => text.slice(statement.getStart(source, true), statement.getEnd()))
+    .join('\n\n');
+
+  const note = [
+    '// This is a PROJECTION, not a whole-file mirror: the host module also owns',
+    '// the matching and classification surface (FatalSource, EffectiveSignature,',
+    '// FatalMatch, and the classifier), which the webview does not need and must',
+    '// not carry. Only the declarations named in FATAL_SIGNATURE_PROJECTION appear',
+    '// here, selected from the AST by name — not sliced out of a text range.',
+    ''
+  ].join('\n');
+  return `${generatedBanner(sourcePath)}${note}\n${shared}\n`;
+}
+
+/**
+ * Refuse to write TypeScript that does not parse.
+ *
+ * `contracts:check` verifies that a generated file matches what the generator
+ * would emit today. It cannot verify that what the generator emits is *valid*,
+ * because deterministic corruption matches itself. This is where that is caught,
+ * at the point of generation, rather than several targets later in a typecheck
+ * that names a file the author was told never to edit.
+ */
+function assertParses(relativePath, content) {
+  const parsed = ts.createSourceFile(relativePath, content, ts.ScriptTarget.Latest, true);
+  const diagnostics = parsed.parseDiagnostics ?? [];
+  if (diagnostics.length > 0) {
+    const first = diagnostics[0];
+    const { line } = parsed.getLineAndCharacterOfPosition(first.start ?? 0);
+    throw new Error(
+      `refusing to write ${relativePath}: the generated TypeScript does not parse ` +
+        `(line ${line + 1}: ${ts.flattenDiagnosticMessageText(first.messageText, ' ')}). ` +
+        `This is a generator defect, not a source defect — contracts:check cannot catch it, ` +
+        `because deterministic corruption matches a regeneration of itself.`
+    );
+  }
+  return content;
+}
+
 function writeOrCheck(relativePath, content) {
   const absolutePath = repoPath(relativePath);
   if (CHECK_ONLY) {
@@ -454,7 +610,21 @@ const generated = new Map([
     generatedSchemaVersion: GENERATED_SCHEMA_VERSION,
     families: contractFamilies
   })],
-  ...Object.entries(schemas).map(([relativePath, schema]) => [relativePath, json(schema)])
+  ...Object.entries(schemas).map(([relativePath, schema]) => [relativePath, json(schema)]),
+  [
+    'webview-ui/src/lib/retry-condition.ts',
+    assertParses(
+      'webview-ui/src/lib/retry-condition.ts',
+      mirrorWholeFile('src/lib/retry-condition.ts')
+    )
+  ],
+  [
+    'webview-ui/src/lib/fatal-signature-registry.ts',
+    assertParses(
+      'webview-ui/src/lib/fatal-signature-registry.ts',
+      projectFatalSignatures('src/lib/fatal-signature-registry.ts')
+    )
+  ]
 ]);
 
 const failures = [];

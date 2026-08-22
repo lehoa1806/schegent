@@ -12,8 +12,6 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import * as fs from 'fs';
-import * as path from 'path';
 import { validate as hostValidate } from '../../src/lib/retry-condition';
 
 // Note: importing the webview's TS source directly across the
@@ -24,9 +22,6 @@ import { validate as hostValidate } from '../../src/lib/retry-condition';
 // as a sanity check that the chosen fixtures match their declared
 // expectations.
 
-const REPO_ROOT = path.resolve(__dirname, '..', '..');
-const HOST_PATH = path.join(REPO_ROOT, 'src', 'lib', 'retry-condition.ts');
-const WEBVIEW_PATH = path.join(REPO_ROOT, 'webview-ui', 'src', 'lib', 'retry-condition.ts');
 
 interface Fixture {
   readonly source: string;
@@ -74,26 +69,23 @@ const FIXTURES: readonly Fixture[] = [
 ];
 
 describe('Feature 011 T052 — retry-condition host/webview parity (SC-011)', () => {
-  it('host and webview mirrors share identical body source (modulo top-of-file banner)', () => {
-    // Strip the leading // comment block at the top of each file; the
-    // mirror banner on the webview file legitimately differs from the
-    // host's. Everything after the first blank line MUST be byte-equal.
-    const stripBanner = (src: string): string => {
-      const lines = src.split('\n');
-      let start = 0;
-      while (start < lines.length && lines[start].startsWith('//')) {
-        start++;
-      }
-      // skip the trailing blank line that follows the banner
-      while (start < lines.length && lines[start].trim() === '') {
-        start++;
-      }
-      return lines.slice(start).join('\n');
-    };
-    const host = stripBanner(fs.readFileSync(HOST_PATH, 'utf8'));
-    const webview = stripBanner(fs.readFileSync(WEBVIEW_PATH, 'utf8'));
-    expect(host).toBe(webview);
-  });
+  // FR-R3-035 — the byte-equality assertion that stood here is gone, and this
+  // note records why rather than leaving a silent deletion.
+  //
+  // It compared the two files modulo a hand-written banner, because parity was a
+  // convention nobody could execute: importing the webview source across the
+  // CJS/ESM line fails under the root tsconfig, so behavioural parity was
+  // *inferred* from bytes. That inference is now unnecessary. The webview copy is
+  // emitted from the host by `scripts/generate-contract-schemas.mjs`, and
+  // `contracts:check` — the first target of `verify:all` — fails when the two
+  // disagree. A structure replaced the convention, so the test that stood in for
+  // the structure is redundant with it.
+  //
+  // What has NOT changed is the limitation that made the old note necessary: this
+  // file still cannot import the webview module, so the sweep below still
+  // exercises the host validator only. That is now sufficient rather than
+  // regrettable, because the webview module is no longer a separately-authored
+  // artifact that could disagree — it is output.
 
   it('every fixture matches its declared expectation on the host (sanity check)', () => {
     const drift: string[] = [];

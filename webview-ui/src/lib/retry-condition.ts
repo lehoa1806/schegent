@@ -1,7 +1,11 @@
-// Mirror of src/lib/retry-condition.ts — parity verified by
-// tests/parity/retry-condition-parity.test.ts (Feature 011 SC-011).
-// Do not modify without updating both files in lockstep.
+// GENERATED FILE — do not edit.
 //
+// Emitted from src/lib/retry-condition.ts by scripts/generate-contract-schemas.mjs.
+// Edit the source and run: npm run contracts:generate
+//
+// `npm run contracts:check` (the first target of verify:all) fails when this
+// file and its source disagree, so a fix applied here alone cannot ship.
+
 // Retry-Condition DSL — feature 010-pipeline-resilience.
 //
 // Hand-rolled lexer + recursive-descent parser + tree-walking evaluator for
