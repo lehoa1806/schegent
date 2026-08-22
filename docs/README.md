@@ -33,6 +33,7 @@ The pages are organized by *what you are trying to do*, not by the order the ext
 The conceptual model you need to use Schegent effectively. None of these pages contain source code — they explain the rules of the system.
 
 - [Architecture Overview](concepts/architecture-overview.md) — extension host, CLI subprocess, webviews, trust boundaries.
+- [English-only, Not Localizable](concepts/english-only-not-localizable.md) — why the extension ships one language by decision, the measured string surface that covers, and what reversing it would cost.
 - [Local-first, Not Offline](concepts/local-first-not-offline.md) — what stays local, what provider connectivity is still required, and the queue-only degraded-mode boundary.
 - [Pipelines & Phases](concepts/pipeline-and-phases.md) — the Spec Driven Development workflow pipeline, the built-in phases, and how phase overrides work.
 - [The Queue, Tasks, and Runs](concepts/queue-and-runs.md) — how work is ordered, what an in-flight task is, and the difference between a task and a run.

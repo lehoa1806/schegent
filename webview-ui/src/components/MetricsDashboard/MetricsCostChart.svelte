@@ -1,6 +1,5 @@
 <script lang="ts">
   import type { CostTimelinePoint } from '../../lib/messages';
-  import { t } from '../../lib/i18n';
 
   interface Props {
     timeline: readonly CostTimelinePoint[];
@@ -146,7 +145,7 @@
       {#if activePoint}
         {activePoint.date}: daily {formatCost(activePoint.dailyCostUsd)}, cumulative {formatCost(activePoint.cumulativeCostUsd)}
       {:else}
-        {t('metrics.chart.hint')}
+        Hover or focus a point on the chart for exact values.
         {#if timelineSampled} Showing {renderedTimeline.length} evenly sampled dates from {timeline.length}.{/if}
       {/if}
     </p>
