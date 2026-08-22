@@ -9,11 +9,19 @@ use and cancels every cached adapter during extension deactivation.
 
 ## Available backends
 
-| `schegent.backend.runner` | Adapter | Notes |
-|---|---|---|
-| `claude` *(default)* | [src/runner/claude-cli.ts](../../src/runner/claude-cli.ts) | Spawns the Claude CLI with prompt-transport probing (`--prompt-file` → `--prompt-stdin` → `-p` fallback). Supports `-c` (continue) for context-preserving retries. |
-| `codex` | [src/runner/codex-cli.ts](../../src/runner/codex-cli.ts) | Spawns `codex exec --json --sandbox workspace-write`. Prompt is piped over stdin (never appears in argv). Model uses `--model`; effort uses `--config model_reasoning_effort=<level>`. Session continuation is not supported. |
-| `agy` | [src/runner/agy-cli.ts](../../src/runner/agy-cli.ts) | Spawns the Agy CLI via `--output-format stream-json`. Uses `--conversation` for context-preserving retries. Maps `xhigh`/`max` effort levels down to `high` (with a log warning). |
+| `schegent.backend.runner` | Adapter | Permission posture | Notes |
+|---|---|---|---|
+| `claude` *(default)* | [src/runner/claude-cli.ts](../../src/runner/claude-cli.ts) | **None.** Spawned with `--dangerously-skip-permissions`, unconditionally — the CLI's own approval prompts are off. | Prompt-transport probing (`--prompt-file` → `--prompt-stdin` → `-p` fallback). Supports `-c` (continue) for context-preserving retries. |
+| `codex` | [src/runner/codex-cli.ts](../../src/runner/codex-cli.ts) | **OS-enforced filesystem bound.** `--sandbox workspace-write`: the workspace is writable, `.git` is read-only. A bound, not a safety guarantee — and a bound on writes, not on network egress, which Schegent neither configures nor verifies. | Spawns `codex exec --json --sandbox workspace-write`. Prompt is piped over stdin (never appears in argv). Model uses `--model`; effort uses `--config model_reasoning_effort=<level>`. Session continuation is not supported. |
+| `agy` | [src/runner/agy-cli.ts](../../src/runner/agy-cli.ts) | **None.** Spawned with `--dangerously-skip-permissions`, unconditionally. | Spawns the Agy CLI via `--output-format stream-json`. Uses `--conversation` for context-preserving retries. Maps `xhigh`/`max` effort levels down to `high` (with a log warning). |
+
+**The only runner with a bound is not the default.** Choosing a backend is
+therefore a privilege decision, not a preference. The `.git` read-only property
+that makes `codex` the contained option is also why a phase declaring
+`sideEffects: git` is refused on it — so the contained runner is unavailable to
+exactly the phases that mutate the repository. The decision to run without
+prompts, and the condition that would reopen it, are recorded in
+[unprompted-agent-not-contained.md](../concepts/unprompted-agent-not-contained.md).
 
 ## Supported CLI versions
 

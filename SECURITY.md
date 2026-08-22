@@ -162,6 +162,25 @@ absolute guarantees. The threat model page
 ([`docs/security/threat-model.md`](docs/security/threat-model.md))
 catalogs the threats and the mitigations for each one.
 
+**The backend runs with its approval prompts disabled.** This is the most
+consequential capability fact about the product and it belongs at the top of
+this section rather than inside a mitigation list. The `claude` backend — the
+default — and the `agy` backend are spawned with
+`--dangerously-skip-permissions`, unconditionally; there is no setting that
+restores the prompts. Inside a trusted workspace the spawned CLI will write
+files, run shell commands, commit, install packages, and make network requests
+without asking. The `codex` backend is the only one with an OS-enforced bound
+(`--sandbox workspace-write`, which keeps `.git` read-only), and it is not the
+default.
+
+A phase's `sideEffects` declaration does not change any of that: it selects a
+consent prompt and a rollback checkpoint, and it refuses a Git-writing phase on
+the sandboxed runner. It is consent bookkeeping, not a sandbox. The decision,
+the full per-runner table, and the condition that would reopen it are in
+[`docs/concepts/unprompted-agent-not-contained.md`](docs/concepts/unprompted-agent-not-contained.md).
+
+The practical consequence: point Schegent at a repository you can restore.
+
 - **Workspace-trust gating** — the extension is inert in untrusted
   workspaces and refuses to spawn any subprocess.
 - **Primary-host gating** — only the first VS Code window opened
