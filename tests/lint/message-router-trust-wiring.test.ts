@@ -73,4 +73,31 @@ describe('MessageRouter workspace-trust wiring', () => {
       `MessageRouter tests must wire isTrusted explicitly:\n${offenders.join('\n')}`
     ).toEqual([]);
   });
+
+  // Vacuity control. The assertion above iterates the scan and pushes offenders;
+  // an empty scan produces an empty offender list and a green test. `new
+  // MessageRouter` no longer matching, or TEST_ROOT moving, both look exactly
+  // like "every router test wires trust correctly".
+  //
+  // The read-only allowlist is the anchor. It names a file that constructs a
+  // MessageRouter, so the scan must find it — and if that file is ever deleted
+  // or renamed, this fails and points at the stale allowlist entry, which is the
+  // other thing worth knowing.
+  it('finds the router tests it filters, including the allowlisted one', () => {
+    const found = listMessageRouterTests();
+    expect(
+      found.length,
+      'The scan found no `new MessageRouter` sites under tests/. Either the ' +
+        'constructor was renamed or TEST_ROOT has moved — in both cases the ' +
+        'trust-wiring assertion above is passing over an empty set.'
+    ).toBeGreaterThan(1);
+    for (const allowed of READ_ONLY_ROUTER_TEST_ALLOWLIST) {
+      expect(
+        found,
+        `${allowed} is allowlisted as a read-only router test but the scan did not ` +
+          `find it. Either it no longer constructs a MessageRouter — in which case ` +
+          `remove the stale allowlist entry — or the scan is broken.`
+      ).toContain(allowed);
+    }
+  });
 });

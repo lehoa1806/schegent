@@ -92,7 +92,6 @@ const PROVES_NON_EMPTY =
  */
 const WITHOUT_A_CONTROL: ReadonlySet<string> = new Set([
   'catalog-lifecycle-dispatch.test.ts',
-  'message-router-trust-wiring.test.ts',
   'no-as-queue-projection-cast.test.ts',
   'no-direct-first-workspace-folder.test.ts',
   'no-direct-queue-setter.test.ts',
