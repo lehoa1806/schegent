@@ -51,34 +51,22 @@ interface CastMatch {
 }
 
 function scanForCasts(): readonly CastMatch[] {
-  let out: string;
-  try {
-    out = linesMatching(SCAN_ROOT, 'as QueueProjection', {
-      fixed: true,
-      extensions: ['.ts']
-    })
-      .map(({ file, line, text }) => `${file}:${line}:${text}`)
-      .join('\n');
-  } catch (err: unknown) {
-    const e = err as { status?: number; stdout?: string };
-    if (e.status === 1 && (!e.stdout || e.stdout.trim() === '')) {
-      return [];
-    }
-    throw err;
-  }
-  return out
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .map((line) => {
-      const firstColon = line.indexOf(':');
-      const secondColon = line.indexOf(':', firstColon + 1);
-      const file = line.slice(0, firstColon);
-      const lineNumber = Number.parseInt(line.slice(firstColon + 1, secondColon), 10);
-      const text = line.slice(secondColon + 1);
-      return { file, line: lineNumber, text };
-    })
-    .filter((match) => isCastInCode(match.text));
+  // Iterated structurally rather than flattened to `file:line:text` and split
+  // back apart. `source-scan.ts` returns `{ file, line, text }` precisely because
+  // every `-n` caller used to round-trip through a colon-joined string, and a
+  // Windows absolute path has a colon after the drive letter: `C:\repo\x.ts`
+  // re-parsed that way yields file `C`, line `NaN`, and a text field with a
+  // stray `\d+:` glued on. The pass/fail verdict survived that; the failure
+  // message a contributor reads on the Windows leg did not — and the Windows leg
+  // is what the move off `grep` was for.
+  return linesMatching(SCAN_ROOT, 'as QueueProjection', {
+    fixed: true,
+    extensions: ['.ts']
+  }).map(({ file, line, text }) => ({
+    file: file.startsWith(`${REPO_ROOT}/`) ? file.slice(REPO_ROOT.length + 1) : file,
+    line,
+    text: text.trim()
+  }));
 }
 
 // A grep hit only counts as a real cast when `as QueueProjection` appears

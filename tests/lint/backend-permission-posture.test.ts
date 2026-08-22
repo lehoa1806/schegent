@@ -586,11 +586,22 @@ function textUnits(source: string): string[] {
 }
 
 describe('sideEffects is not described as containment', () => {
-  const surfaces = [
-    'README.md',
-    'SECURITY.md',
-    ...markdownFiles('docs')
-  ].filter((path) => !HISTORICAL_RECORDS.includes(path));
+  // Every markdown document at the repo root, not a hand-picked two.
+  //
+  // This listed `README.md` and `SECURITY.md` explicitly and then swept `docs/`,
+  // which left `ARCHITECTURE.md`, `CONTRIBUTING.md`, `PRODUCT.md`, `DESIGN.md`
+  // and `RELEASE.md` unscanned — and `ARCHITECTURE.md` was carrying an eighth
+  // instance of the containment vocabulary the whole time. The sweep that found
+  // "seven places" found seven because it only looked in six of them.
+  //
+  // A gate whose scope is narrower than its claim is the defect this round kept
+  // producing. Deriving the root set rather than naming two of it is the fix.
+  const rootMarkdown = readdirSync(ROOT)
+    .filter((entry) => entry.endsWith('.md'))
+    .sort();
+  const surfaces = [...rootMarkdown, ...markdownFiles('docs')].filter(
+    (path) => !HISTORICAL_RECORDS.includes(path)
+  );
 
   it('finds no containment vocabulary in the same unit of text as a sideEffects reference', () => {
     const offenders: string[] = [];

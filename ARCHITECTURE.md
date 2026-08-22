@@ -310,7 +310,7 @@ easy to mistake for state resolved somewhere else. They are not.
   validation and freezes them into `envelope.pipeline.phases`. Nothing
   downstream re-resolves them; `run.defaultRunnerKind` is a run-level fallback
   for partially migrated snapshots, not the authority for a phase that has one.
-  Since feature 098 the containment class and evidence policy are **declared by
+  Since feature 098 the declared side effects and evidence policy are **declared by
   the Phase, never derived from its id**: `sideEffects` defaults to `workspace`
   and `evidencePolicy` to `required` when the definition omits them (FR-005),
   and both defaults are literals in that one function. The derivation they
