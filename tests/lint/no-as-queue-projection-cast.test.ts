@@ -183,4 +183,43 @@ describe('Feature 065 BUG-010 T086 — no `as QueueProjection` cast in repo/src/
           .join('\n')
     ).toEqual([]);
   });
+
+  // Vacuity control. Every assertion above expects an empty result, and the
+  // baseline test says so explicitly: the codebase SHOULD have zero casts. That
+  // is the correct invariant and it leaves nothing in-tree to anchor on — there
+  // is no legitimate cast for the scan to find, so "the scan works" and "the
+  // scan is broken" produce byte-identical output.
+  //
+  // So the two halves are checked separately: that the scan reaches source at
+  // all, and that the comment-aware predicate still tells a cast from prose. The
+  // second matters more than it looks — `isCastInCode` exists because this lint
+  // once flagged its own documentation, and a predicate tuned to stop doing that
+  // is a predicate one edit away from recognising nothing.
+  it('reaches the source tree', () => {
+    // A pattern guaranteed to appear in TypeScript source. If this finds
+    // nothing, SCAN_ROOT or the extension filter has drifted and every
+    // assertion above is passing over an empty scan.
+    const anyImport = linesMatching(SCAN_ROOT, 'import', { fixed: true, extensions: ['.ts'] });
+    expect(
+      anyImport.length,
+      `No .ts line under ${SCAN_ROOT} matched even the word "import". The scan root ` +
+        `or the extension filter has drifted.`
+    ).toBeGreaterThan(100);
+  });
+
+  it('the comment-aware predicate recognises a cast and spares prose', () => {
+    // Real casts, in the forms the preceding-character rule is written for.
+    expect(isCastInCode('const p = raw as QueueProjection;')).toBe(true);
+    expect(isCastInCode('return (state.queue) as QueueProjection;')).toBe(true);
+    expect(isCastInCode('const p = items[0] as QueueProjection;')).toBe(true);
+    expect(isCastInCode('const p = { ...base } as QueueProjection;')).toBe(true);
+    // Prose. Each of these is a form that actually appeared in this repo and
+    // caused the predicate to be written; if a future edit starts matching them,
+    // the gate begins failing on its own explanatory comments.
+    expect(isCastInCode('// BUG-010: no `as QueueProjection` cast here.')).toBe(false);
+    expect(isCastInCode(' * BUG-010 (2026-05-24): the as QueueProjection cast was removed.')).toBe(false);
+    expect(isCastInCode('const doc = `as QueueProjection`;')).toBe(false);
+    // A line with no occurrence at all.
+    expect(isCastInCode('const p = buildProjection(state);')).toBe(false);
+  });
 });
