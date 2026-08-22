@@ -134,6 +134,8 @@ The sidebar is read-only, but there is no second window to blame. Check whether 
 
 One caveat if your workspace lives on a network filesystem: the exclusive-create step the leases rely on is not reliable on NFSv2 or on some SMB configurations. Schegent is designed for a local working tree, and a workspace on such a share is outside what the lease model can arbitrate.
 
+Remote development is the common way to end up there without meaning to. A workspace reached through WSL2 at `/mnt/c`, inside a devcontainer or Docker bind mount, in a Codespace, or under a network home directory is on a mount whose exclusive-create behaviour may differ from the local disk — the last especially, because nobody thinks of their home directory as a share. If no window becomes primary in one of those setups, check the runtime log: an arbitration failure records the filesystem's own error code, and `ENOTSUP` or `ENOSYS` points at the mount rather than at permissions or a full disk.
+
 ### 4. The reset command
 
 In the worst case — for example, after a hard crash that left state in a genuinely inconsistent shape — the **Reset Workspace State** command (`schegent.reset`) clears the persisted runtime state for the workspace. This is a destructive operation, and it runs as a sequenced transaction rather than as a single wipe.

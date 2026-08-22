@@ -79,7 +79,29 @@ export interface OwnershipRecord {
 export type AcquireOutcome =
   | { readonly outcome: 'acquired'; readonly fence: number; readonly acquiredAt: number }
   | { readonly outcome: 'held'; readonly ownerId: string }
-  | { readonly outcome: 'unavailable'; readonly reason: 'io-error' | 'contended' };
+  | {
+      readonly outcome: 'unavailable';
+      readonly reason: 'io-error' | 'contended';
+      /**
+       * FR-R3-040 — the errno the filesystem gave, when there was one.
+       *
+       * The whole mechanism rests on one platform property: `open(2)` with
+       * `O_CREAT|O_EXCL` either creates or fails `EEXIST`, and cannot do both.
+       * That property is the filesystem's, not Node's, and the documents say
+       * where it is not guaranteed — NFSv2, some SMB, and the 9p, virtiofs and
+       * network-home mounts that ordinary remote development puts a workspace on.
+       *
+       * When arbitration fails on such a mount, the operator's symptom is "no
+       * window is primary" and the diagnosis is nothing. Flattening every failure
+       * to `io-error` discarded the one datum that distinguishes a full disk from
+       * a permissions problem from a mount that does not implement the primitive.
+       * `ENOTSUP`, `EPERM`, `EROFS` and `ENOSYS` each point somewhere different.
+       *
+       * Follows `terminal-run-rollup-recorder.ts`, which preserves the errno the
+       * same way for the same reason. Undefined when the failure carried no code.
+       */
+      readonly cause?: string;
+    };
 
 /**
  * The verdict on a guarded operation (T302). `rejected` is the interesting arm:
@@ -143,8 +165,14 @@ export class OwnershipRegistry {
   ): Promise<AcquireOutcome> {
     try {
       return await this.acquireOrReport(resource, ownerId, now, stalenessMs);
-    } catch {
-      return { outcome: 'unavailable', reason: 'io-error' };
+    } catch (err) {
+      // Keep the errno. A bare `io-error` is the same answer for a full disk, a
+      // permissions problem, and a mount that does not implement exclusive
+      // create — and the third is the one the fence's stated limit is about.
+      const code = (err as NodeJS.ErrnoException | undefined)?.code;
+      return code === undefined
+        ? { outcome: 'unavailable', reason: 'io-error' }
+        : { outcome: 'unavailable', reason: 'io-error', cause: code };
     }
   }
 
