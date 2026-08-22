@@ -77,28 +77,38 @@ const PROVES_NON_EMPTY =
   );
 
 /**
- * Scanning gates that assert emptiness and prove nothing about their own scan,
- * as of 2026-08-23.
+ * Scanning gates that assert emptiness and prove nothing about their own scan.
  *
- * This started at 24 entries. Eight came straight back off: they carry a real
- * control spelled `toContain('src/lib/runtime-log/runtime-log-sink.ts')` rather
- * than `toContain(HELPER)`, and the first version of the detector above matched
- * only the second spelling. The staleness check below is what caught that — on
- * its first run, against its own list.
+ * **This list is empty, and that is the point.** It began at 24 entries on
+ * 2026-08-23 and was paid down to zero the same day. It stays here because the
+ * mechanism is the deliverable, not the list: a new scanning gate added without
+ * a control fails the assertion below, and the only way to land it is to add an
+ * entry here — in a diff a reviewer reads, with a reason.
  *
- * This is a paydown list, not an exemption list, and it follows the same pattern
- * as `eslint-baseline.json`: record what exists, forbid growth, pay it down
- * deliberately. Several of these were probed by hand and do bite today — they
- * work because their scan roots happen to exist and their patterns happen to
- * match. That is a property of the current tree rather than of the gate, which
- * is exactly what a control would fix.
+ * How the 24 cleared, because the proportions are the useful part:
  *
- * Removing an entry is the goal. Adding one requires explaining, in review, why
- * a new gate should be unable to tell a clean tree from a broken scan.
+ *   - **9 were never uncontrolled.** The detector above had blind spots. It
+ *     matched `toContain(HELPER)` but not `toContain('path/to/file.ts')`, and
+ *     not `toContain(DISPATCH_MODULE)` — the same control, spelled three ways.
+ *     Both misses were caught by the staleness check below rather than by
+ *     reading the files, which is the argument for asserting a list in both
+ *     directions.
+ *   - **15 genuinely had none** and were given one: an anchor file the scan must
+ *     contain, an allowlist entry that must still match, a floor on the file
+ *     count, or a planted offender proving the pattern still recognises what it
+ *     forbids. Each was verified by mutation — break the scan root, rename the
+ *     constant, break the pattern — not by the suite staying green.
+ *
+ * Four stale exemptions fell out of that work: `no-running-state-literal`
+ * allowlisted four files that no longer contained the literal they were excused
+ * for. An allowlist used as an anchor becomes a staleness check for free, which
+ * is the strongest argument for that shape over a bare file count.
+ *
+ * Adding an entry here is not forbidden — a gate may legitimately have nothing
+ * to anchor on. It requires saying so.
  */
-const WITHOUT_A_CONTROL: ReadonlySet<string> = new Set([
-  'no-as-queue-projection-cast.test.ts',
-  'spec-traceability-governance.test.ts'
+const WITHOUT_A_CONTROL: ReadonlySet<string> = new Set<string>([
+  // Empty by design. See above before adding to it.
 ]);
 
 const SELF = 'scanning-gates-prove-they-scanned.test.ts';
