@@ -14,6 +14,7 @@ You can also invoke any of these via the command palette: `Cmd/Ctrl + Shift + P`
 | `schegent.cancel` | Schegent: Cancel In-Flight Workflow |
 | `schegent.reset` | Schegent: Reset Workspace State |
 | `schegent.showAuditLog` | Schegent: Show Audit Log |
+| `schegent.exportAuditLog` | Export Metadata-Only Audit |
 | `schegent.pauseQueue` | Schegent: Pause Queue |
 | `schegent.resumeQueue` | Schegent: Resume Queue |
 | `schegent.retryQueuedItem` | Schegent: Retry Queued Item |
@@ -136,6 +137,29 @@ Re-enqueues a terminal task (completed or failed) with the same description and 
 **Title:** Schegent: Show Audit Log
 
 Opens `<workspaceRoot>/.schegent/audit.log` in a VS Code editor tab. Read-only friendly: the file is append-only JSONL and rotates on size/age.
+
+### `schegent.exportAuditLog`
+
+**Title:** Schegent: Export Metadata-Only Audit
+
+Writes a redacted copy of `<workspaceRoot>/.schegent/audit.log` to a location you
+choose, defaulting to `schegent-audit-v3.jsonl` at the workspace root. The point
+is a file that is safe to attach to a bug report.
+
+**What "metadata-only" excludes.** Each exported row keeps its `id`, `timestamp`,
+`eventType`, `phase`, `iteration`, `outcome` and `schemaVersion`. From the payload
+it keeps only counts and verdicts — `exitCode`, `outcome`, `terminationReason`,
+`metrics`, `fileChangeCounts`, `toolCategoryCounts`, and the two omitted-evidence
+counts. **Every other payload field is dropped**, not redacted in place: paths,
+identifiers, messages and anything else a payload carries do not appear in the
+output at all.
+
+Only `schemaVersion: 3` entries are exported. Older rows are skipped rather than
+downgraded, because a v3 filter applied to a v2 shape would keep fields it had
+never been reasoned about.
+
+If there is no audit log yet, the command says so and writes nothing. Cancelling
+the save dialog writes nothing.
 
 ### `schegent.showActiveRun`
 
