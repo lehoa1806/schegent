@@ -59,7 +59,13 @@ const PROVES_NON_EMPTY =
       // detector recognised only the first and reported four gates as
       // uncontrolled that were not — a detector with a false negative is the
       // same defect it exists to find, one level up.
-      'toContain\\(\\s*(HELPER|ANCHOR)',
+      // An ALL_CAPS module constant passed to toContain is this suite's idiom for
+      // "the scan must find this anchor": HELPER, ANCHOR, DISPATCH_MODULE. The
+      // detector has now missed this spelling twice — first the path literal,
+      // then the named constant — which is worth stating plainly: each miss
+      // reported a controlled gate as uncontrolled, and each was caught by the
+      // staleness check below rather than by reading the files.
+      'toContain\\(\\s*[A-Z][A-Z0-9_]{2,}',
       "toContain\\(\\s*['\"`][\\w./-]+\\.(ts|svelte|md|json)",
       'ANCHORS',
       'MIN_SITES',
@@ -91,7 +97,6 @@ const PROVES_NON_EMPTY =
  * a new gate should be unable to tell a clean tree from a broken scan.
  */
 const WITHOUT_A_CONTROL: ReadonlySet<string> = new Set([
-  'catalog-lifecycle-dispatch.test.ts',
   'no-as-queue-projection-cast.test.ts',
   'no-direct-first-workspace-folder.test.ts',
   'no-direct-queue-setter.test.ts',
