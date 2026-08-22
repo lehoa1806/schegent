@@ -15,7 +15,6 @@ import * as path from 'path';
 import { FATAL_SIGNATURES } from '../../src/lib/fatal-signature-registry';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
-const HOST_PATH = path.join(REPO_ROOT, 'src', 'lib', 'fatal-signature-registry.ts');
 const WEBVIEW_PATH = path.join(
   REPO_ROOT,
   'webview-ui',
@@ -29,25 +28,15 @@ describe('Feature 011 T062 — fatal-signature-registry host/webview parity (SC-
     expect(fs.existsSync(WEBVIEW_PATH)).toBe(true);
   });
 
-  it('FATAL_SIGNATURES literal in the webview mirror is byte-equal to the host', () => {
-    const hostText = fs.readFileSync(HOST_PATH, 'utf8');
-    const webviewText = fs.readFileSync(WEBVIEW_PATH, 'utf8');
-
-    // Extract the FATAL_SIGNATURES literal body (everything between
-    // `Object.freeze([` and the matching `])`) from both files. This
-    // is the smallest unit that absolutely MUST match — banners,
-    // imports, and surrounding helpers may legitimately differ between
-    // host CommonJS and webview ESM module layouts.
-    const re = /Object\.freeze\(\s*\[([\s\S]*?)\]\s*\)/;
-    const hostMatch = hostText.match(re);
-    const webviewMatch = webviewText.match(re);
-
-    expect(hostMatch, 'host FATAL_SIGNATURES literal not found').toBeTruthy();
-    expect(webviewMatch, 'webview FATAL_SIGNATURES literal not found').toBeTruthy();
-    if (hostMatch && webviewMatch) {
-      expect(webviewMatch[1].trim()).toBe(hostMatch[1].trim());
-    }
-  });
+  // FR-R3-035 — the byte-equality assertion is gone; the projection is generated
+  // from the host literal and `contracts:check` fails on divergence.
+  //
+  // It could not have survived this change in any case: the webview file is a
+  // deliberate PROJECTION, not a whole-file mirror, and a byte comparison only
+  // ever worked because the shared slice happened to be the whole of it. The
+  // count assertion below is kept, because it is the one that still says
+  // something generation does not: that the projection carries every signature,
+  // not merely a syntactically-valid subset.
 
   it('the webview mirror exports the same number of signatures as the host', () => {
     const webviewText = fs.readFileSync(WEBVIEW_PATH, 'utf8');
@@ -63,8 +52,24 @@ describe('Feature 011 T062 — fatal-signature-registry host/webview parity (SC-
     expect(matches.length).toBe(FATAL_SIGNATURES.length);
   });
 
-  it('the webview mirror carries the required parity banner', () => {
-    const text = fs.readFileSync(WEBVIEW_PATH, 'utf8');
-    expect(text).toMatch(/Mirror of\s+src\/lib\/fatal-signature-registry\.ts/);
+  it('the generated projection announces itself and names its source', () => {
+    const webview = fs.readFileSync(WEBVIEW_PATH, 'utf8');
+    expect(webview).toContain('GENERATED FILE');
+    expect(webview).toContain('src/lib/fatal-signature-registry.ts');
+    expect(webview).toContain('npm run contracts:generate');
+  });
+
+  it('carries none of the host-only matching surface', () => {
+    // The projection exists so the webview does not carry the classifier. A
+    // generator that emitted the whole host file would be a regression wearing
+    // the shape of a fix.
+    const webview = fs.readFileSync(WEBVIEW_PATH, 'utf8');
+    for (const hostOnly of [
+      'export type FatalSource',
+      'export interface EffectiveSignature',
+      'export interface FatalMatch'
+    ]) {
+      expect(webview).not.toContain(hostOnly);
+    }
   });
 });
