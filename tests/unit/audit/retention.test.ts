@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { AuditLogWriter } from '../../../src/audit/audit-log-writer';
 import { SanitizedLogger } from '../../../src/lib/logger';
+import { removeTempRoot } from '../../temp-root-cleanup';
 
 describe('AuditLogWriter retention pruning', () => {
   let workspaceRoot: string;
@@ -15,7 +16,7 @@ describe('AuditLogWriter retention pruning', () => {
   });
 
   afterEach(async () => {
-    await fs.rm(workspaceRoot, { recursive: true, force: true }).catch(() => undefined);
+    await removeTempRoot(workspaceRoot);
   });
 
   it('prunes archives beyond the retentionMaxArchives count', async () => {

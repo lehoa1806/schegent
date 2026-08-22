@@ -35,6 +35,7 @@ import {
   SUPPLEMENTAL_URL,
   driveEnvelopeRun
 } from './envelope-harness';
+import { removeTempRoot } from '../../temp-root-cleanup';
 
 /** Every literal the envelope carries, by the name of the arm it came from. */
 const ENVELOPE_CONTENT: readonly (readonly [string, string])[] = [
@@ -64,7 +65,7 @@ beforeAll(async () => {
 }, 30_000);
 
 afterAll(async () => {
-  await fs.rm(workspaceRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  await removeTempRoot(workspaceRoot);
 });
 
 describe('the envelope does not widen the audit payload (FR-R3-001)', () => {

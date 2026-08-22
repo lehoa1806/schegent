@@ -19,7 +19,6 @@
 // waited for* rather than hanging.
 
 import { vi, type Mock } from 'vitest';
-import * as fs from 'fs/promises';
 import * as path from 'path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -53,6 +52,7 @@ import type {
   DelayedRetryWatchdog,
   WorkflowControllerDeps
 } from '../../src/controller/workflow-controller';
+import { removeTempRoot } from '../temp-root-cleanup';
 
 /** Registry ids need a real v4 shape — `isValidQueueId` enforces it. */
 export const QUEUE_A = DEFAULT_QUEUE_ID;
@@ -533,5 +533,5 @@ export async function initGitRepo(root: string): Promise<void> {
  * delete only widens the window it has to lose in, so callers quiesce first.
  */
 export async function removeWorkspace(root: string): Promise<void> {
-  await fs.rm(root, { recursive: true, force: true });
+  await removeTempRoot(root);
 }

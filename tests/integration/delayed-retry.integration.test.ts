@@ -44,6 +44,7 @@ import {
   TRANSIENT_BACKOFF_MS
 } from '../../src/controller/retry-constants';
 import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { removeTempRoot } from '../temp-root-cleanup';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -169,7 +170,7 @@ afterEach(async () => {
   // use, rather than quiescing the controller here — the run continuing past the
   // assertion IS the behaviour under test, and stopping it in `afterEach` would
   // be tidying away the thing SC-003 exists to observe.
-  await fs.rm(tmpRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  await removeTempRoot(tmpRoot);
 });
 
 describe('Feature 011 — delayed retry end-to-end', () => {

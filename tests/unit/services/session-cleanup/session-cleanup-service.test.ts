@@ -26,6 +26,7 @@ import {
   type SessionCleanupOutcome
 } from '../../../../src/services/session-cleanup/session-cleanup-service';
 import { SanitizedLogger } from '../../../../src/lib/logger';
+import { removeTempRoot } from '../../../temp-root-cleanup';
 
 function makeLogger() {
   const logger = new SanitizedLogger([]);
@@ -42,7 +43,7 @@ describe('Feature 034 T003 — cleanupSessionArtifacts', () => {
   });
 
   afterEach(async () => {
-    await fs.rm(tmpRoot, { recursive: true, force: true }).catch(() => undefined);
+    await removeTempRoot(tmpRoot);
   });
 
   it('present targets — removes both, resolves cleaned: true, no warn', async () => {

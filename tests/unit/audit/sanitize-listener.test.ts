@@ -5,6 +5,7 @@ import * as path from 'path';
 import { AuditLogWriter } from '../../../src/audit/audit-log-writer';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import type { AuditEntry } from '../../../src/audit/audit-entry';
+import { removeTempRoot } from '../../temp-root-cleanup';
 
 describe('AuditLogWriter sanitizes the payload sent to listeners (US3 / T047)', () => {
   let workspaceRoot: string;
@@ -18,7 +19,7 @@ describe('AuditLogWriter sanitizes the payload sent to listeners (US3 / T047)', 
   });
 
   afterEach(async () => {
-    await fs.rm(workspaceRoot, { recursive: true, force: true }).catch(() => undefined);
+    await removeTempRoot(workspaceRoot);
   });
 
   it('omits command detail from the entry passed to listeners', async () => {

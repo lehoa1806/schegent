@@ -74,6 +74,7 @@ import type {
   DelayedRetryWatchdog,
   WorkflowControllerDeps
 } from '../../src/controller/workflow-controller';
+import { removeTempRoot } from '../temp-root-cleanup';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -278,17 +279,7 @@ beforeEach(async () => {
 afterEach(async () => {
   // Best-effort cleanup: an in-flight async audit write can race a
   // first rm and produce ENOTEMPTY. Retry once after a microtask drain.
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      await fs.rm(tmpRoot, { recursive: true, force: true });
-      return;
-    } catch (err) {
-      const code = (err as { code?: string }).code;
-      if (code !== 'ENOTEMPTY' && code !== 'EBUSY') throw err;
-      await new Promise((r) => setTimeout(r, 25));
-    }
-  }
-  await fs.rm(tmpRoot, { recursive: true, force: true });
+  await removeTempRoot(tmpRoot);
 });
 
 async function readPhaseStartIsContinue(workspaceRoot: string): Promise<boolean[]> {

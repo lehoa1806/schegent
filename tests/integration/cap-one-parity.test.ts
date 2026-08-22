@@ -68,6 +68,7 @@ import type {
   DelayedRetryWatchdog,
   WorkflowControllerDeps
 } from '../../src/controller/workflow-controller';
+import { removeTempRoot } from '../temp-root-cleanup';
 
 /**
  * The single-queue operator's queue is the default one — feature 030 collapsed
@@ -298,17 +299,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   // An in-flight audit write can race the rm and produce ENOTEMPTY; retry.
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      await fs.rm(tmpRoot, { recursive: true, force: true });
-      return;
-    } catch (err) {
-      const code = (err as { code?: string }).code;
-      if (code !== 'ENOTEMPTY' && code !== 'EBUSY') throw err;
-      await new Promise((r) => setTimeout(r, 25));
-    }
-  }
-  await fs.rm(tmpRoot, { recursive: true, force: true });
+  await removeTempRoot(tmpRoot);
 });
 
 describe('Feature 093 (T029, SC-010) — cap 1: the record stays a single slot', () => {
