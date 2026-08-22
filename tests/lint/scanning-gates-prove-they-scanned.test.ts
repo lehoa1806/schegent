@@ -99,8 +99,6 @@ const PROVES_NON_EMPTY =
 const WITHOUT_A_CONTROL: ReadonlySet<string> = new Set([
   'no-as-queue-projection-cast.test.ts',
   'no-direct-first-workspace-folder.test.ts',
-  'no-direct-queue-setter.test.ts',
-  'no-identity-less-cancel.test.ts',
   'no-legacy-setpaused.test.ts',
   'no-running-state-literal.test.ts',
   'no-tryAutoDrain-doc-references.test.ts',

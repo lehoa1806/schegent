@@ -57,4 +57,18 @@ describe('Feature 017 BUG-001 — every CMD_CANCEL dispatch carries a taskId', (
         .join('\n')}`
     ).toEqual([]);
   });
+
+  // Vacuity control. `allOffenders` is built by flat-mapping over the scan, so
+  // an empty scan yields an empty offender list and a green test — identical to
+  // "every cancel dispatch carries a taskId". The webview does dispatch cancels;
+  // if the scan stops finding them, the pattern or the scan root has drifted,
+  // not the code.
+  it('finds the cancel dispatch sites it inspects', () => {
+    expect(
+      listFilesReferencingCancel().length,
+      'No file under webview-ui/src/ was found referencing postCommand(CMD_CANCEL. ' +
+        'Either the dispatch was renamed or SCAN_ROOT has moved — in both cases the ' +
+        'assertion above is passing over an empty set.'
+    ).toBeGreaterThan(0);
+  });
 });
