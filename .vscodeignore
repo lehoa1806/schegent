@@ -36,6 +36,22 @@ fix_ts*.js
 out/**
 node_modules/**
 coverage/**
+# Test scratch roots. `.tmp/` is where `tests/global-temp-root.ts` puts each
+# run's workspace, and `.vitest-*` is vitest's own. Both are gitignored, which
+# is NOT the same as unpackaged: vsce reads this file, not .gitignore.
+#
+# A normally-exiting run cleans up after itself, so this only matters when one
+# does not — a crash, a SIGINT, a killed CI job. Observed 2026-08-23: a vitest
+# process took SIGSEGV mid-run, left `.tmp/vitest-50939/` behind, and the next
+# `npm run package:smoke` packaged 71 files instead of 51 — audit logs, raw
+# session transcripts and a stray .gitignore from the abandoned fixture.
+#
+# The VSIX allowlist in scripts/check-vsix-smoke.mjs caught it, which is why
+# this was a confusing packaging failure and never a shipped artifact. Excluding
+# the directory fixes the cause; the allowlist stays as the thing that would
+# catch the next cause nobody predicted.
+.tmp/**
+.vitest-*/**
 **/.DS_Store
 *.vsix
 CHANGELOG.md
