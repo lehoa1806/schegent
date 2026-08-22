@@ -27,7 +27,6 @@
 // byte-identical — the union exists inside `defectsOf` and nowhere the caller can
 // observe it.
 
-import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -38,6 +37,7 @@ import type { CandidateDefinition } from '../../src/catalog';
 import { createDefinitionSemantics } from '../../src/config/definition-semantics';
 import { phaseBody, pipelineBody } from '../fixtures/catalog-lifecycle-harness';
 import { snapshotOf } from '../fixtures/catalog-snapshot-fixture';
+import { filesUnder } from './source-scan';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const SCAN_ROOTS = [resolve(REPO_ROOT, 'src'), resolve(REPO_ROOT, 'webview-ui', 'src')];
@@ -74,9 +74,11 @@ function relativize(abs: string): string {
 
 function listFiles(): readonly string[] {
   const roots = SCAN_ROOTS.map((root) => `"${root}"`).join(' ');
-  const out = execSync(`find ${roots} \\( -name '*.svelte' -o -name '*.ts' \\)`, {
-    encoding: 'utf8'
-  });
+  const out = roots
+    .split(' ')
+    .map((root) => root.replace(/^"|"$/g, ''))
+    .flatMap((root) => filesUnder(root, { extensions: ['.svelte', '.ts'] }))
+    .join('\n');
   return out
     .split('\n')
     .map((line) => line.trim())

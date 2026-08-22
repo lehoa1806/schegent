@@ -15,8 +15,8 @@
 // `src/telemetry/`.
 
 import { describe, it, expect } from 'vitest';
-import { execSync } from 'node:child_process';
 import { resolve } from 'node:path';
+import { filesMatching } from './source-scan';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const SCAN_ROOT = resolve(REPO_ROOT, 'src', 'telemetry');
@@ -24,10 +24,7 @@ const SCAN_ROOT = resolve(REPO_ROOT, 'src', 'telemetry');
 function grepLines(pattern: string): readonly string[] {
   let out: string;
   try {
-    out = execSync(
-      `grep -rnE "${pattern}" "${SCAN_ROOT}"`,
-      { encoding: 'utf8' }
-    );
+    out = filesMatching(SCAN_ROOT, pattern).join('\n');
   } catch (err: unknown) {
     const e = err as { status?: number; stdout?: string };
     // grep exit code 1 = "no matches found", which is the success case here.

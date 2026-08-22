@@ -30,8 +30,8 @@
 
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { execSync } from 'node:child_process';
 import { resolve } from 'node:path';
+import { filesUnder } from './source-scan';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const SCAN_ROOT = resolve(REPO_ROOT, 'webview-ui', 'src');
@@ -62,9 +62,7 @@ function relativize(abs: string): string {
 }
 
 function listFiles(): readonly string[] {
-  const out = execSync(`find "${SCAN_ROOT}" \\( -name '*.svelte' -o -name '*.ts' \\)`, {
-    encoding: 'utf8'
-  });
+  const out = filesUnder(SCAN_ROOT, { extensions: ['.svelte', '.ts'] }).join('\n');
   return out
     .split('\n')
     .map((line) => line.trim())

@@ -13,8 +13,8 @@
 // Mirrors `tests/lint/no-inline-read-metrics-ipc.test.ts`.
 
 import { describe, it, expect } from 'vitest';
-import { execSync } from 'node:child_process';
 import { resolve } from 'node:path';
+import { filesMatching } from './source-scan';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const SCAN_ROOT = resolve(REPO_ROOT, 'webview-ui', 'src');
@@ -32,7 +32,7 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
 function listMatchingFiles(pattern: string): readonly string[] {
   let out: string;
   try {
-    out = execSync(`grep -rln "${pattern}" "${SCAN_ROOT}"`, { encoding: 'utf8' });
+    out = filesMatching(SCAN_ROOT, pattern, { fixed: true }).join('\n');
   } catch (err: unknown) {
     const e = err as { status?: number; stdout?: string };
     if (e.status === 1 && (!e.stdout || e.stdout.trim() === '')) {

@@ -28,11 +28,11 @@
 // this class schedule timers and never persist. `scheduled-start-activation-proxy`
 // pins the guarantee; this pins the posture that makes the guarantee indirect.
 
-import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
+import { filesUnder as scanFilesUnder } from './source-scan';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 
@@ -44,7 +44,7 @@ const SCANNED_ROOTS: readonly string[] = ['src', 'webview-ui/src'];
 
 function filesUnder(relative: string): readonly string[] {
   const abs = resolve(REPO_ROOT, relative);
-  const out = execSync(`find "${abs}" -name '*.ts' -o -name '*.svelte'`, { encoding: 'utf8' });
+  const out = scanFilesUnder(abs, { extensions: ['.ts', '.svelte'] }).join('\n');
   return out
     .split('\n')
     .map((line) => line.trim())
