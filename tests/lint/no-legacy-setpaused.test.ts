@@ -113,4 +113,29 @@ describe('Feature 030 BUG-001 T056 (SC-008) — no legacy setPaused', () => {
       `Files combining setQueue( + paused: write outside queue-manager.ts:\n${offenders.join('\n')}`
     ).toEqual([]);
   });
+
+  // Vacuity control. All three assertions above expect an empty result, which is
+  // what a scan that reaches nothing also produces. Two roots feed it and the
+  // `status === 1` arm swallows a miss on either.
+  //
+  // The persistence allowlist is the anchor: both entries are listed because
+  // they DO write `paused:`, so both must be found. That doubles as a staleness
+  // check on an allowlist whose whole purpose is to name the only legitimate
+  // writers.
+  it('finds the sanctioned persistence writers, so a broken scan cannot read as clean', () => {
+    const writers = scanAll('paused:');
+    expect(
+      writers.length,
+      'No file in either scan root writes `paused:`. The assertions above are ' +
+        'passing over an empty set.'
+    ).toBeGreaterThan(0);
+    for (const allowed of PERSISTENCE_ALLOWLIST) {
+      expect(
+        writers,
+        `${allowed} is allowlisted as a legitimate persistence writer of ` +
+          `QueueState.paused, but the scan did not find it writing one. Either it ` +
+          `stopped — remove the stale entry — or the scan no longer reaches it.`
+      ).toContain(allowed);
+    }
+  });
 });

@@ -40,6 +40,30 @@ function readArtifacts(): readonly SpecArtifact[] {
 describe('spec traceability governance', () => {
   const artifacts = readArtifacts();
 
+  // Vacuity control. Every assertion below filters `artifacts` and expects
+  // nothing left, so an empty list passes all of them. This gate is unusual in
+  // scanning OUTSIDE the execution repo — SPECS_ROOT resolves through
+  // `../specs`, into the planning envelope — which makes an empty scan the
+  // likely state rather than the unlikely one: a checkout of repo/ alone, or a
+  // renamed envelope directory, yields zero artifacts and a fully green suite.
+  it('reads the spec artifacts it governs', () => {
+    expect(
+      artifacts.length,
+      `No NNN-prefixed spec directory was found under ${SPECS_ROOT}. Every assertion ` +
+        `below is passing over an empty list — the planning envelope is not where ` +
+        `this gate expects it.`
+    ).toBeGreaterThan(20);
+    // A status line must actually parse out of at least most of them. The regex
+    // is anchored and multiline; a template change to the Status heading would
+    // leave every status as '' and silently empty the vocabulary check.
+    const withStatus = artifacts.filter((artifact) => artifact.status.length > 0);
+    expect(
+      withStatus.length,
+      'No spec yielded a parsed **Status**: line. The status regex no longer matches ' +
+        'the template, so the vocabulary assertion is comparing empty strings.'
+    ).toBeGreaterThan(artifacts.length / 2);
+  });
+
   it('uses only the authoritative status vocabulary', () => {
     const invalid = artifacts
       .filter((artifact) => !ALLOWED_STATUSES.has(artifact.status))

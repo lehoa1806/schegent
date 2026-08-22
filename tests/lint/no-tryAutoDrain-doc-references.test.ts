@@ -76,6 +76,40 @@ function collectDocTargets(): string[] {
 
 describe('Feature 056 Track 5 — operator docs are free of removed symbols', () => {
   const targets = collectDocTargets();
+
+  // Vacuity control. Every assertion below iterates `targets`; an empty or
+  // shrunken list yields no offenders and passes. Two things silently shrink it
+  // and neither raises: `walk()` returns [] for a directory that does not exist,
+  // and `collectDocTargets()` ends in `.filter(existsSync)` which drops named
+  // files that have moved. A restructure that relocates operator docs therefore
+  // reads as "the docs are clean" rather than "the docs are no longer read".
+  it('collects the operator docs it claims to scan', () => {
+    expect(
+      targets.length,
+      'collectDocTargets() returned nothing. Every assertion below is passing over ' +
+        'an empty file list.'
+    ).toBeGreaterThan(5);
+    // The named single files, as opposed to the walked directories. These are
+    // the ones `.filter(existsSync)` can drop without trace.
+    for (const named of [
+      path.join(REPO_ROOT, 'README.md'),
+      path.join(REPO_ROOT, 'ARCHITECTURE.md')
+    ]) {
+      expect(
+        targets,
+        `${named} is named as a scan target but was dropped by the existsSync ` +
+          `filter — it has moved or been renamed, and is no longer checked.`
+      ).toContain(named);
+    }
+  });
+
+  it('the symbol match recognises a real reference', () => {
+    // Guards the `line.includes(symbol)` predicate, which is the other way these
+    // assertions could stop meaning anything.
+    const [{ symbol }] = REMOVED_SYMBOLS;
+    expect(`call \`${symbol}()\` to drain`.includes(symbol)).toBe(true);
+    expect('unrelated prose about draining'.includes(symbol)).toBe(false);
+  });
   for (const { symbol, removedIn, replacement } of REMOVED_SYMBOLS) {
     const label = replacement
       ? `${symbol} (removed in ${removedIn}; use ${replacement})`
