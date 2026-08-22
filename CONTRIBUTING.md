@@ -150,6 +150,11 @@ tracker. Follow the disclosure process in
   chromium`. `npm run ci:fast` runs `test:visual`, which launches it; without
   it every visual test fails with `Executable doesn't exist` and the preflight
   is red for a reason that has nothing to do with your change.
+- For `npm run test:integration` only: a VS Code build, which the runner
+  downloads on first use and caches. `ci:fast` does not run it, so this is not
+  a prerequisite for the preflight — but a first `test:integration` on a clean
+  machine spends its time downloading rather than testing, which is worth
+  knowing before you conclude it has hung.
 - Claude CLI installed and authenticated (for backend smoke tests).
 - Optional: Codex CLI for backend-parity coverage.
 
@@ -189,7 +194,7 @@ npm install        # also installs webview-ui dependencies via postinstall
 | `npm run test:coverage` | Unit suites with coverage. |
 | `npm run test:e2e` | End-to-end suite (Vitest). |
 | `npm run test:perf` | Performance suite. |
-| `npm run test:integration` | Boots a real VS Code instance. |
+| `npm run test:integration` | Boots a real VS Code instance for the **host leg** — the 12 `*.host.test.ts` modules that need a live extension host. About 20 seconds once VS Code is cached; the first run downloads it. Set `SCHEGENT_INTEGRATION_FILTER=<substring>` to run a subset; the run prints what it selected and what it skipped, and a filter matching nothing fails rather than passing over an empty set. |
 | `npm run ci:fast` | Local pre-flight, in order: `typecheck:tests`, `lint`, `verify:all`, `test:evals`, `test:visual`, `test:perf`, `build:host`, `package:smoke`. Downloads nothing, but `test:visual` needs the pinned browser and `package:smoke` builds a VSIX, so it is not as quick as its name suggests. |
 | `npm run ci` | Full pre-merge gate. |
 | `npm run package` | Package a `.vsix` artifact. |
