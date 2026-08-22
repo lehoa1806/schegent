@@ -75,6 +75,30 @@ optimistic. Schegent is a local-first tool and a network-mounted workspace is
 outside its supported shape; see
 [local-first-not-offline.md](../concepts/local-first-not-offline.md).
 
+**Remote development is where this is most likely to be met, and it is ordinary
+rather than exotic for a VS Code extension.** The mount families worth naming,
+beyond the NFS and SMB shares above:
+
+| Deployment | What the workspace sits on |
+|---|---|
+| WSL2 reaching `/mnt/c` | 9p, whose `O_EXCL` semantics differ from the Linux filesystem beside it |
+| Devcontainers and Docker bind mounts | virtiofs or gRPC-FUSE on macOS and Windows hosts |
+| GitHub Codespaces | an overlay whose backing store is not the local disk |
+| Network home directories | NFS or SMB, reached without the operator thinking of it as a share |
+
+The last is the one that catches people: a workspace under a network home
+directory is on a share whether or not anyone chose one.
+
+**What this project does about it is disclose, not detect.** Whether the
+primitive actually degrades on any specific one of those mounts has not been
+measured here, and building a warning on an unmeasured risk would either cry wolf
+on working setups or miss the ones that matter. What the fence does instead is
+keep the *reason* a failure happened: an arbitration failure carries the errno
+the filesystem gave — `ENOTSUP`, `EPERM`, `EROFS`, `ENOSYS` each point somewhere
+different — rather than flattening every cause to `io-error`. That turns "no
+window is primary" from a symptom into evidence, at the moment the problem is
+actually in front of someone.
+
 ## The mechanism
 
 ```text
