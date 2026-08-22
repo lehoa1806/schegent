@@ -404,15 +404,31 @@ export async function makeDriveHarness(): Promise<CheckpointDriveHarness> {
       return { runId, queueId, completed };
     },
     atGate: async (runId, phase) => {
-      for (let round = 0; round < 800; round++) {
+      // Bounded by elapsed time, not by a count of event-loop rounds.
+      //
+      // This was `for (let round = 0; round < 800; round++)` with no sleep in
+      // the body — so what it actually measured was how many times this process
+      // got scheduled, which is a property of what else the CPU is doing. It is
+      // the same defect FR-R3-033 fixed in `drainUntil` in the sibling harness,
+      // and it survived here because nothing linked the two. Under an unrelated
+      // 10-worker build it failed while the run it was waiting for was fine.
+      //
+      // Under the 25s bound below, a real deadlock still fails; a starved one
+      // does not. The round count is kept in the message because the ratio of
+      // rounds to milliseconds is what tells the two apart.
+      const deadline = Date.now() + 25_000;
+      let rounds = 0;
+      while (Date.now() < deadline) {
         if (parked.some((e) => e.runId === runId && (phase === undefined || e.phase === phase))) {
           return;
         }
+        rounds++;
         await new Promise((r) => setImmediate(r));
         await new Promise((r) => setTimeout(r, 0));
       }
       throw new Error(
         `timed out waiting for ${runId}${phase === undefined ? '' : `:${phase}`} at the gate ` +
+          `after 25000ms and ${rounds} round(s) ` +
           `(parked=[${parked.map((p) => `${p.runId}:${p.phase}`).join(', ')}] ` +
           `invocations=[${invocations.map((i) => `${i.runId}:${i.phase}`).join(', ')}])`
       );

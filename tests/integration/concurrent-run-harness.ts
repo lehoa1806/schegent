@@ -194,7 +194,16 @@ export const rateLimitedOutput = (resetsAtSec: number): RawInvocationOutput => (
  * round count reported alongside so a future reader can see how much progress
  * was actually made.
  */
-const DRAIN_TIMEOUT_MS = 10_000;
+// Kept deliberately BELOW the 30s `testTimeout` in vitest.config.ts. When a
+// drain genuinely stalls, the useful failure is this harness naming the run and
+// queue it was waiting on — not vitest reporting a bare "Test timed out". If
+// this ever exceeds the test timeout, that diagnostic is lost.
+//
+// Raised from 10s when the test timeout moved: under an unrelated 10-worker
+// build on this 10-core machine, a drain that takes well under a second idle
+// needed more than 10s, and reported "gave up after 10000ms and 7644 round(s)"
+// — 7644 event-loop rounds is not a stalled run, it is a starved one.
+const DRAIN_TIMEOUT_MS = 25_000;
 
 export async function drainUntil(
   settled: () => boolean,
