@@ -16,7 +16,19 @@ export default defineConfig({
   test: {
     include: [
       'tests/unit/**/*.test.ts',
-      'tests/perf/**/*.test.ts',
+      // FR-R3-042 — `tests/perf/**` is deliberately absent.
+      //
+      // It used to be here AND invoked separately as `test:perf` in the `ci`
+      // chain, so every wall-clock budget was asserted twice per gate for one
+      // signal: double the flake exposure, no extra information. It is now run
+      // once, by `test:perf`, which both `ci` and `ci:fast` name explicitly.
+      //
+      // Excluding it here rather than dropping `test:perf` from the chain is the
+      // choice that keeps timing assertions out of `test:host`. That suite is
+      // the one FR-R3-033 made hermetic, and a wall-clock assertion inside it is
+      // an environment-dependent failure in a suite whose whole value is that it
+      // is not. Naming perf explicitly also makes it visible in the chain rather
+      // than an invisible passenger of the default include.
       'tests/integration/**/*.test.ts',
       'tests/parity/**/*.test.ts',
       'tests/lint/**/*.test.ts',
