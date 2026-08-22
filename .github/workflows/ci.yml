@@ -96,3 +96,37 @@ jobs:
       - name: Integration tests (macOS / Windows)
         if: runner.os != 'Linux'
         run: npm run test:integration
+
+  # `engines.node` declares `^22 || ^24`, but every job above installs the
+  # single version `.nvmrc` pins (24.19.0). This job is what keeps the `^22`
+  # floor from being a claim no gate ever checks — and the floor is the half
+  # more likely to break, because code written on 24 is what quietly reaches
+  # for an API 22 does not have. It runs `verify:all` only, the cheap and
+  # platform-independent leg, because what is in question is the language
+  # runtime and not the OS matrix the jobs above already cover. Keep this
+  # pinned to the low end of `engines.node` and `.nvmrc` to the high end, so
+  # the two always name different majors.
+  cross-major:
+    name: cross-major (node 22 floor, ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22.23.2'
+          cache: 'npm'
+
+      - name: Install root dependencies (no scripts)
+        run: npm ci --ignore-scripts
+
+      - name: Install webview-ui dependencies (no scripts)
+        run: npm --prefix webview-ui ci --ignore-scripts
+
+      - name: Explicit test typecheck gate
+        run: npm run typecheck:tests
+
+      - name: Consolidated verification
+        run: npm run verify:all

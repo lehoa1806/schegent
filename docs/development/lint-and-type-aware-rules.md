@@ -17,18 +17,23 @@ findings across twenty-five components were sitting behind a passing gate.
 
 ## The route: ESLint 9 flat config
 
-**The deciding constraint is the Node floor, not a preference.**
-[.nvmrc](../../.nvmrc) pins `20.18.0`. ESLint 10 (10.9.0 at the time of writing)
-declares:
+**The deciding constraint was the Node floor, and it has since moved.**
+When this route was chosen, [.nvmrc](../../.nvmrc) pinned `20.18.0` and ESLint 10
+(10.9.0 at the time of writing) declared:
 
 ```
 engines = { node: '^20.19.0 || ^22.13.0 || >=24' }
 ```
 
-`20.18.0` satisfies none of those three ranges — it is two patch releases under
-the first. So ESLint 10 is not available to this repository until the Node floor
-moves, and moving the Node floor is a change to what every contributor and every
-CI runner installs.
+`20.18.0` satisfied none of those three ranges — it was two patch releases under
+the first. That is why ESLint 9 was chosen, and the paragraphs below record the
+reasoning as it stood.
+
+The floor has now moved: `engines.node` is `^22 || ^24` and `.nvmrc` pins
+`24.19.0`, which satisfies the `>=24` range — as does the `22.23.2` floor CI
+also builds on, via `^22.13.0`. **ESLint 10 is therefore
+available and still not adopted.** The reason is no longer a constraint but a
+choice about diff shape, recorded under `TOOLCHAIN-1` below.
 
 **Rejected — staying on ESLint 8 with `.eslintrc`.** The item that opened this
 work offered it as the low-risk option, on the grounds that the existing
@@ -67,12 +72,23 @@ against the compiler that builds, and
 [tests/lint/svelte-version-parity.test.ts](../../tests/lint/svelte-version-parity.test.ts)
 fails if the two ever diverge.
 
-**Residual — ESLint 10, behind a `.nvmrc` bump.** Named `TOOLCHAIN-1` below. It is
-a different item because its work is not lint work: the deciding change is the
+**Residual — ESLint 10, now unblocked.** Named `TOOLCHAIN-1` below. It was a
+different item because its work is not lint work: the deciding change was the
 Node floor, which touches `.nvmrc`, the CI setup steps, the `engines` field, and
 the expectations of everyone with a local `nvm`. Folding it into a lint migration
 would mean a diff where a broken CI runner and a new lint finding are
 indistinguishable causes of the same red.
+
+**That floor bump has since landed, on its own, for exactly that reason.**
+`engines.node` is `^22 || ^24`; `.nvmrc` pins the active LTS `24.19.0`; every CI job
+installs from `.nvmrc`, and one extra Linux job in
+[ci.yml](../../.github/workflows/ci.yml) runs `verify:all` on the `22.23.2`
+floor so the `^22` half of the declared range is not an unchecked claim. The bump deliberately
+carried no ESLint change, so its red could only mean "the new runtime broke
+something". `TOOLCHAIN-1` is now a plain dependency upgrade with no blocker in
+front of it: bump `eslint` and `@eslint/js` to 10, re-measure the six
+[eslint-baseline.json](../../tests/lint/eslint-baseline.json) counts in the same
+change, and expect the ratchet to fail in the *falling* direction first.
 
 ---
 
@@ -107,7 +123,8 @@ root is a second thing to keep in step.
 
 ## Runtime cost
 
-Measured on darwin, node per `.nvmrc`, warm `node_modules`, before and after the
+Measured on darwin, Node 20.18.0 (the `.nvmrc` pin at the time; the floor has
+since moved to 24.19.0), warm `node_modules`, before and after the
 change. Wall is `real`; CPU is `user + sys`.
 
 | Command | Before | After |

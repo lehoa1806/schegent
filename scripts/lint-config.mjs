@@ -2,9 +2,10 @@
 // tooling, and the webview.
 //
 // Route (FR-034, recorded in full in docs/development/lint-and-type-aware-rules.md):
-// ESLint 9 + flat config. ESLint 10 requires Node ^20.19.0 || ^22.13.0 || >=24 and
-// .nvmrc pins 20.18.0, so it cannot run here; ESLint 8 is end-of-life. The .nvmrc
-// bump that would unblock ESLint 10 is a separate item.
+// ESLint 9 + flat config. ESLint 10 requires Node ^20.19.0 || ^22.13.0 || >=24; the
+// Node floor moved to ^22 || ^24 and .nvmrc now pins 24.19.0, so that constraint no
+// longer binds. ESLint 10 is available and not yet adopted — the upgrade is its own
+// item (TOOLCHAIN-1), deliberately not folded into the floor bump.
 //
 // Placement (plan D16): the configuration lives here, as two named exports, rather
 // than at a root `eslint.config.mjs`. scripts/lint.mjs is the only thing that
