@@ -90,9 +90,9 @@ File at <https://github.com/lehoa1806/schegent/issues> using the
    ship off-machine. You always have the final call on what to
    share.
 
-5. **Minimal repro** — if the failure depends on a specific
-   `schegent.phases` / `schegent.pipelines` entry, or on a specific
-   model/effort combination, include the smallest configuration that
+5. **Minimal repro** — if the failure depends on a specific Phase or
+   Pipeline definition in the versioned catalog, or on a specific
+   model/effort combination, include the smallest definition that
    triggers it.
 
 Use [`docs/operations/troubleshooting.md`](docs/operations/troubleshooting.md)

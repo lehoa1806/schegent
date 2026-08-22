@@ -74,7 +74,7 @@ unknown schegent.backend.runner ...`) so a typo never breaks activation.
 
 ## Per-phase runner selection and probing
 
-Since feature 074, runners can be selected dynamically **per-phase** using the `runner` field on the `PhaseDef` object in `pipeline-config.json` (or via the UI Pipeline Builder).
+Since feature 074, runners can be selected dynamically **per-phase** using the `runner` field on a Phase definition — authored in the Pipeline Builder, or imported from YAML, and stored in the versioned catalog under `.schegent/catalog/`. Feature 098 retired the settings-based form this sentence used to describe: no configuration file holds phase definitions, and `schegent.phases` / `schegent.pipelines` were deleted with no replacement.
 
 Precedence for runner selection per phase:
 
