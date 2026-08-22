@@ -189,6 +189,70 @@ When `missingKeys` is non-empty, the expression evaluates as if those identifier
 
 An invalid expression invalidates that definition. The catalog keeps it visible with a field error so you can repair it. There is nothing to fall back to — one layer means an invalid definition costs only itself, and every other definition still resolves. The previous version of that definition is still in its history, so you can see what the expression was before you broke it.
 
+## Writing a verification phase
+
+**The host does not verify your phase.** It reads the phase's own audit block and
+classifies the outcome from what the model wrote there; a phase resolving `clean`
+advances the pipeline. Nothing runs your test suite, checks that the build still
+compiles, or confirms that a declared output is correct — `resolveRunOutputs`
+probes whether a declared output *exists*, which is a different question.
+
+That is unavoidable in a design where the model is the worker, and it is stated
+plainly here rather than left to be discovered: in an unattended pipeline, **the
+only verification is the verification you author**. The same honesty appears in
+`schegent.forceContinueOnRetryCap`, whose description says of a forced advance
+that "whatever the condition gates is left unverified".
+
+A verification phase is an ordinary phase whose instruction is to run the checks
+and report what they said. What makes it useful is that its `retryCondition`
+consults its own result, so a failing check keeps the pipeline on that phase
+instead of advancing past it:
+
+```yaml
+metadata:
+  phaseId: verify-build
+  name: Verify Build
+  version: 1
+spec:
+  instruction: |
+    Run the project's full check chain. Do not fix anything and do not edit any
+    file. Report, in the audit block, the exact command you ran, its exit code,
+    and the failing output verbatim if it is non-zero.
+  sideEffects: none
+  evidencePolicy: required
+  retryCondition: "exitCode != 0"
+```
+
+Three things make this a check rather than a formality:
+
+- **`sideEffects: none`** — a verification phase that repairs what it finds is not a verification phase. Keep the phase that reports separate from the phase that fixes, or a green report may only mean the reporter fixed it quietly.
+- **`evidencePolicy: required`** — the audit record is the only trace. A phase permitted to report without evidence can report anything.
+- **A `retryCondition` that reads the result** — without one, a failing verification phase resolves and the pipeline advances past the failure it just recorded. See [Retry condition DSL](#retry-condition-dsl).
+
+Place it after the phase whose work it checks, and remember what it cannot do: it
+is still a model reporting on a command it ran. It narrows the gap between "said
+it was done" and "was done"; it does not close it.
+
+### Two things deliberately not built
+
+**No Builder hint.** The Pipeline Builder does not warn that a pipeline contains
+no verification phase. It was considered and declined: the Builder has no way to
+tell a verification phase from any other, since "runs the checks" is a property
+of an instruction rather than of a field, and a heuristic that guessed would
+either nag correct pipelines or miss the ones that matter. A hint that is wrong
+half the time trains an operator to dismiss it. The guidance lives here, where a
+phase is authored, instead.
+
+**No `[notify]` record for a self-certified advance.** `forceContinueOnRetryCap`
+writes `[notify] forced-continue` to the runtime log when a phase advances with
+its condition unsatisfied, and the same trace for "advanced on the model's own
+verdict" was considered. It was not built, because *every* phase advance is
+self-certified: a line written on all of them records nothing that distinguishes
+one run from another, and a log line that always fires is noise with a timestamp.
+The forced-continue case is different precisely because it is the exception. If
+the host ever gains an independent oracle, the line becomes meaningful and worth
+adding then.
+
 ## Audit trail
 
 Every phase flows through the same audit + redaction + transcript path; there is exactly one, and nothing is exempt from it. The audit payload for a `phase-start` event includes the `pipelineId`, `phaseId`, and (when set) `model` / `effort` / `timeoutMs`. There is no separate audit channel for phases you authored, because there is no privileged channel for anything else to use.
