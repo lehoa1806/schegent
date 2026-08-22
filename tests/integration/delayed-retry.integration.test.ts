@@ -151,7 +151,25 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await fs.rm(tmpRoot, { recursive: true, force: true });
+  // `maxRetries` is load-bearing, not defensive boilerplate.
+  //
+  // SC-003 asserts that `retryPhaseNow` STARTS a resume within 1s. It does not
+  // wait for that resume to finish, because that is not what the criterion is
+  // about — so when the test body returns, a real run is still executing and
+  // still writing into `tmpRoot`. Node's recursive `rm` lists a directory,
+  // unlinks what it found, then `rmdir`s; a file created between the listing and
+  // the rmdir makes that final step fail with ENOTEMPTY. `force: true` does not
+  // help — it suppresses "already gone", not "something arrived".
+  //
+  // Observed as a genuine intermittent: `npm run ci` failed here with
+  // `ENOTEMPTY: directory not empty` while the test itself passed, which is the
+  // signature of a teardown race rather than a defect in what was tested.
+  //
+  // Retrying is the right response to a directory that is legitimately still in
+  // use, rather than quiescing the controller here — the run continuing past the
+  // assertion IS the behaviour under test, and stopping it in `afterEach` would
+  // be tidying away the thing SC-003 exists to observe.
+  await fs.rm(tmpRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 });
 
 describe('Feature 011 — delayed retry end-to-end', () => {
