@@ -647,3 +647,237 @@ describe('sideEffects is not described as containment', () => {
     }
   });
 });
+
+/**
+ * FR-R3-032 — the documented posture must equal the spawned one.
+ *
+ * FR-R3-031 made the documents say the right thing. These checks make them stay
+ * that way per runner: a capability row claiming a bound the adapter does not
+ * establish, or denying one it does, fails. The earlier checks cannot catch
+ * that — they assert each runner is *named* and that posture words appear
+ * *somewhere in the file*, which a stale or copied-and-wrong cell satisfies.
+ */
+const CAPABILITY_TABLE_DOC = 'docs/operations/backends.md';
+const POSTURE_COLUMN = 'Permission posture';
+
+interface CapabilityRow {
+  readonly runner: string;
+  readonly posture: string;
+}
+
+/**
+ * Reads the capability table by *header name*, never by column index. Adding a
+ * column shifts every index, and a check comparing the wrong cells passes
+ * silently — the vacuous-pass failure this file has already been bitten by three
+ * times. An unlocatable header or an empty row set fails rather than iterating
+ * nothing.
+ */
+function capabilityRows(): CapabilityRow[] {
+  const lines = read(CAPABILITY_TABLE_DOC).split('\n');
+  const headerLines = lines
+    .map((line, index) => ({ line, index }))
+    .filter(({ line }) => line.trimStart().startsWith('|') && line.includes(POSTURE_COLUMN));
+  // Exactly one, not the first of several. A second table with a same-named
+  // column would otherwise anchor this silently on the wrong one — the ambiguity
+  // failure mode the rest of this file is written to avoid.
+  expect(
+    headerLines.length,
+    seeDoc(
+      `expected exactly one capability table with a \`${POSTURE_COLUMN}\` column in ` +
+        `${CAPABILITY_TABLE_DOC}, found ${headerLines.length}. Anchoring on the first of several ` +
+        `would compare the wrong rows without failing`
+    )
+  ).toBe(1);
+  const headerIndex = headerLines.length === 1 ? headerLines[0].index : -1;
+  expect(
+    headerIndex,
+    seeDoc(
+      `could not locate a capability table with a \`${POSTURE_COLUMN}\` column in ` +
+        `${CAPABILITY_TABLE_DOC}. This check reads that column by name; if the table was ` +
+        `restructured, teach it the new shape rather than deleting the assertion`
+    )
+  ).toBeGreaterThanOrEqual(0);
+
+  // `\|` inside a cell is an escaped pipe, not a column separator. None exist
+  // today; splitting naively would misalign every column after the first one
+  // that gained one, and misaligned columns compare the wrong values silently.
+  const cells = (line: string): string[] =>
+    line
+      .trim()
+      .replace(/^\||\|$/g, '')
+      .split(/(?<!\\)\|/)
+      .map((cell) => cell.replace(/\\\|/g, '|').trim());
+  const postureColumn = cells(lines[headerIndex]).indexOf(POSTURE_COLUMN);
+  expect(
+    postureColumn,
+    seeDoc(`the \`${POSTURE_COLUMN}\` header is present but not resolvable as a column`)
+  ).toBeGreaterThanOrEqual(0);
+
+  const rows: CapabilityRow[] = [];
+  for (const line of lines.slice(headerIndex + 1)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('|')) break;
+    if (/^\|[\s|:-]+\|$/.test(trimmed)) continue; // separator
+    const parts = cells(line);
+    const runner = /`([a-z][a-z0-9-]*)`/.exec(parts[0] ?? '')?.[1];
+    if (!runner) continue;
+    rows.push({ runner, posture: parts[postureColumn] ?? '' });
+  }
+  expect(
+    rows.length,
+    seeDoc(
+      `the capability table in ${CAPABILITY_TABLE_DOC} resolved no runner rows. A table this ` +
+        `check cannot read must fail, not pass over an empty set`
+    )
+  ).toBeGreaterThan(0);
+  return rows;
+}
+
+/**
+ * The sandbox argument a runner actually spawns, with its mode — or null.
+ *
+ * Recognizes the adjacent-literal form (`'--sandbox', 'workspace-write'`), which
+ * is what the only current user spawns. A future adapter using `--sandbox=mode`,
+ * a variable holding the mode, or a spread would not match — and the consequence
+ * is a loud failure, not a silent gap: this would report "unsandboxed" while the
+ * capability row says otherwise, and the correspondence check fails. That is the
+ * right direction, and it is stated rather than left to be rediscovered.
+ */
+function observedSandbox(kind: string): string | null {
+  const source = runnerSource(kind);
+  const match = /'--sandbox',\s*'([^']+)'/.exec(source);
+  return match ? `--sandbox ${match[1]}` : null;
+}
+
+describe('documented containment matches the spawned argv', () => {
+  it('gives every supported runner a row in the capability table', () => {
+    // Being named in prose is not having a row. The FR-R3-031 checks assert the
+    // former; only this one asserts the latter.
+    const documented = new Set(capabilityRows().map((row) => row.runner));
+    for (const kind of SUPPORTED_BACKENDS) {
+      expect(
+        documented.has(kind),
+        seeDoc(
+          `runner \`${kind}\` has no row in the ${CAPABILITY_TABLE_DOC} capability table. ` +
+            `It may be mentioned in the prose — that is not the same thing, and a reader ` +
+            `comparing rows would conclude it does not exist`
+        )
+      ).toBe(true);
+    }
+  });
+
+  it('agrees with each runner about whether it is sandboxed, and in which mode', () => {
+    for (const row of capabilityRows()) {
+      if (!(SUPPORTED_BACKENDS as ReadonlyArray<string>).includes(row.runner)) continue;
+      const observed = observedSandbox(row.runner);
+      const claimsSandbox = /--sandbox/.test(row.posture);
+
+      expect(
+        claimsSandbox,
+        seeDoc(
+          observed === null
+            ? `${CAPABILITY_TABLE_DOC} documents runner \`${row.runner}\` as sandboxed ` +
+              `("${row.posture.slice(0, 70)}"), but its adapter spawns no sandbox argument. ` +
+              `One of the two is wrong and the document is the one a reader trusts`
+            : `${CAPABILITY_TABLE_DOC} documents runner \`${row.runner}\` as unsandboxed ` +
+              `("${row.posture.slice(0, 70)}"), but its adapter spawns \`${observed}\`. ` +
+              `An understated bound is still a wrong bound`
+        )
+      ).toBe(observed !== null);
+
+      if (observed !== null) {
+        // The mode, not merely the presence. A change from workspace-write to a
+        // weaker mode would otherwise pass while the row still promised
+        // `.git` read-only.
+        expect(
+          row.posture,
+          seeDoc(
+            `${CAPABILITY_TABLE_DOC} documents runner \`${row.runner}\` without naming the ` +
+              `sandbox mode it actually spawns (\`${observed}\`). The mode is the bound; ` +
+              `naming the flag alone promises less than it appears to`
+          )
+        ).toContain(observed);
+      }
+    }
+  });
+
+  it('does not let the backend-equivalence claim return', () => {
+    // Matched by shape, not by one sentence: the removed claim generalised from
+    // "the backends share these properties" to "the trust boundary is the same",
+    // and a reworded version would defeat a literal match.
+    const offenders: string[] = [];
+    for (const surface of ['docs/security/threat-model.md', 'docs/security/whitepaper.md', CAPABILITY_TABLE_DOC]) {
+      for (const unit of textUnits(read(surface))) {
+        if (!unit.includes('trust boundar')) continue;
+
+        // Detect broadly; exempt narrowly. This is the third design, and the
+        // first two failed the same way in opposite directions.
+        //
+        // A ±120-character proximity window was too narrow: an ordinary sentence
+        // can put its backend qualifier further than that from the claim. An
+        // enumerated set of subject phrasings was unbounded in the other
+        // direction: it recognized "switching backends" and "across backends"
+        // and missed "either backend", "any backend", "whichever backend" — and
+        // would have missed the next one too, because the set of ways to say
+        // "the backends are the same" is not enumerable.
+        //
+        // So the rule is now: any unit that mentions a backend AND asserts
+        // boundary sameness is an offender, unless it is on a short, commented
+        // list of statements known to be true. New claims are caught by default;
+        // a new exemption is one line in a diff with a reason attached, which is
+        // reviewable in a way an absent match is not.
+        if (!/\b(backend|runner|adapter|cli)s?\b/.test(unit)) continue;
+
+        // Affirmative equivalence only. These shapes cannot match a negated
+        // form — `is not the same` does not satisfy `is\s+the same` — so the
+        // true statement, that the boundary is NOT the same while three named
+        // properties are, stays sayable without an escape hatch. An earlier
+        // draft had one: it exempted any window containing "not" alongside a
+        // posture word, which let `Sandbox posture is not the reason: the trust
+        // boundary is the same across backends` through.
+        const asserts =
+          /(introduces?|adds?|creates?)\s+no\s+new\s+trust boundar/.test(unit) ||
+          /\bno\s+new\s+trust boundar/.test(unit) ||
+          /trust boundar\w*\s+(is|are|remains?|stays?)\s+(the same|identical|unchanged|equivalent)/.test(unit) ||
+          /(same|identical|unchanged|equivalent)\s+trust boundar/.test(unit) ||
+          /trust boundar\w*\s+(does not|do not|doesn't|don't)\s+(change|differ|vary)/.test(unit) ||
+          /trust boundar\w*\s+coincide/.test(unit);
+        if (!asserts) continue;
+
+        // Statements that are true, with the reason each one is true. Matched as
+        // substrings of the collapsed unit so ordinary rewrapping does not
+        // dislodge them.
+        const KNOWN_TRUE: ReadonlyArray<{ fragment: string; why: string }> = [
+          {
+            fragment: 'task-execution lifecycle events',
+            why: 'feature 072 events flow through the same appendAudit path; this is about IPC event families, not backend selection'
+          },
+          {
+            fragment: 'read-only ipc commands',
+            why: 'about the IPC command registry, not about which backend is spawned'
+          }
+        ];
+        const exempt = KNOWN_TRUE.find((entry) => unit.includes(entry.fragment));
+        if (exempt) continue;
+
+        offenders.push(`${surface}: "${unit.slice(0, 150)}"`);
+      }
+    }
+    expect(
+      offenders,
+      seeDoc(
+        `a backend trust-boundary equivalence claim has returned. The three shared properties ` +
+          `(shell: false, the monitor sidecar, output-cap truncation) are genuinely identical and ` +
+          `may be said so; the boundary is not, because two runners disable the CLI's approval ` +
+          `prompts and one does not. Found:\n  ${offenders.join('\n  ')}`
+      )
+    ).toEqual([]);
+  });
+
+  it('still permits the true statement about the three shared properties', () => {
+    // False-positive control, asserted against the tree rather than assumed.
+    expect(collapse(read('docs/security/threat-model.md'))).toContain(
+      'shell: false'
+    );
+  });
+});
