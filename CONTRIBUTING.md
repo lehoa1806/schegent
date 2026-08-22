@@ -190,7 +190,7 @@ npm install        # also installs webview-ui dependencies via postinstall
 | `npm run test:e2e` | End-to-end suite (Vitest). |
 | `npm run test:perf` | Performance suite. |
 | `npm run test:integration` | Boots a real VS Code instance. |
-| `npm run ci:fast` | Local pre-flight, in order: `typecheck:tests`, `lint`, `verify:all`, `test:evals`, `test:visual`, `build:host`, `package:smoke`. Downloads nothing, but `test:visual` needs the pinned browser and `package:smoke` builds a VSIX, so it is not as quick as its name suggests. |
+| `npm run ci:fast` | Local pre-flight, in order: `typecheck:tests`, `lint`, `verify:all`, `test:evals`, `test:visual`, `test:perf`, `build:host`, `package:smoke`. Downloads nothing, but `test:visual` needs the pinned browser and `package:smoke` builds a VSIX, so it is not as quick as its name suggests. |
 | `npm run ci` | Full pre-merge gate. |
 | `npm run package` | Package a `.vsix` artifact. |
 
