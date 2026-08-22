@@ -181,7 +181,14 @@ describe('Feature 028 — Walkthrough 1 (cascaded active-phase pause)', () => {
     // to complete naturally (it will drive clarify → plan → tasks →
     // analyze → implement → finalize → done).
     await controller.resumeActivePhase();
-    for (let i = 0; i < 200; i++) {
+    // Bounded by elapsed time rather than by a round count. Each round
+    // sleeps 10ms, so the old cap was ~2000ms of sleep plus however long the
+    // scheduler took to come back — which under load is the larger term.
+    // On exhaustion this used to `break` and fall through to an assertion
+    // that reported the wrong thing: the run's status, rather than the fact
+    // that nobody had waited long enough to see it.
+    const settleBy = Date.now() + 25_000;
+    while (Date.now() < settleBy) {
       const r = store.getRun(DEFAULT_QUEUE_ID);
       if (r && (r.status === 'completed' || r.status === 'failed' || r.status === 'canceled')) {
         break;

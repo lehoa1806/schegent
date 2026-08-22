@@ -162,7 +162,14 @@ describe('Feature 028 — Walkthrough 2 (future-phase breakpoint)', () => {
 
     // Wait for clarify (phase A) to complete so the controller has an
     // in-flight run id to attach the breakpoint to.
-    for (let i = 0; i < 200; i++) {
+    // Bounded by elapsed time rather than by a round count. Each round
+    // sleeps 10ms, so the old cap was ~2000ms of sleep plus however long the
+    // scheduler took to come back — which under load is the larger term.
+    // On exhaustion this used to `break` and fall through to an assertion
+    // that reported the wrong thing: the run's status, rather than the fact
+    // that nobody had waited long enough to see it.
+    const phaseADoneBy = Date.now() + 25_000;
+    while (Date.now() < phaseADoneBy) {
       const r = store.getRun(DEFAULT_QUEUE_ID);
       if (
         r &&
@@ -207,7 +214,14 @@ describe('Feature 028 — Walkthrough 2 (future-phase breakpoint)', () => {
 
     // Resume: invokes the marked phase and completes the pipeline.
     await controller.resumeActivePhase();
-    for (let i = 0; i < 500; i++) {
+    // Bounded by elapsed time rather than by a round count. Each round
+    // sleeps 10ms, so the old cap was ~5000ms of sleep plus however long the
+    // scheduler took to come back — which under load is the larger term.
+    // On exhaustion this used to `break` and fall through to an assertion
+    // that reported the wrong thing: the run's status, rather than the fact
+    // that nobody had waited long enough to see it.
+    const resumedDoneBy = Date.now() + 25_000;
+    while (Date.now() < resumedDoneBy) {
       const r = store.getRun(DEFAULT_QUEUE_ID);
       if (r && (r.status === 'completed' || r.status === 'failed' || r.status === 'canceled')) {
         break;
