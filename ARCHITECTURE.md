@@ -32,7 +32,7 @@ see the status update at the end of the gate record.
 │ Operator Workstation (trusted)                                   │
 │                                                                  │
 │ ┌──────────────────────────────────────────────────────────────┐ │
-│ │ VS Code Extension Host (Node 20, TypeScript 5.x)             │ │
+│ │ VS Code Extension Host (Node 22+, TypeScript 5.x)            │ │
 │ │   • workspace state, IPC validation, audit, runtime log      │ │
 │ │   • controller, queue, scheduler, backend-runner factory     │ │
 │ └──┬────────────────────────────┬──────────────────────────────┘ │
