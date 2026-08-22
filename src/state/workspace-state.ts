@@ -624,7 +624,6 @@ function anyForwardMigrationRan(events: ForwardMigrationEvents): boolean {
   return Object.values(events).some((list) => list.length > 0);
 }
 
-
 export interface InitializeResult {
   migrated: boolean;
   // Feature 030 — emitted by the v5 → v6 migrator when it ran. Caller
