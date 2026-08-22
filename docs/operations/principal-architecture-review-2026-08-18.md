@@ -340,6 +340,18 @@ Fourteen blocking performance tests passed. Budgets cover regex behavior, catalo
 
 The product targets WCAG 2.2 AA and component tests cover roles, focus, keyboard behavior, and themes. No automated axe/browser accessibility-tree gate or documented manual screen-reader audit was found. Internationalization remains minimal. Three-OS CI is a strong portability control, while remote workspaces, virtual filesystems, Windows junctions, case-insensitive paths, and provider CLI parity remain insufficiently evidenced.
 
+> **Reading note (2026-08-22).** "Internationalization remains minimal" is
+> accurate and stays as written, but it should not be read as a migration in
+> progress. Minimal is now the recorded position:
+> [`docs/concepts/english-only-not-localizable.md`](../concepts/english-only-not-localizable.md)
+> states English-only as an accepted product-boundary decision, publishes the
+> measured string surface with the command that produces each figure, names the
+> condition that would reopen the decision, and prices what localizing would
+> cost. `webview-ui/src/lib/i18n.ts` — the fifteen-line module that made the
+> state look half-migrated — is deleted, and
+> `tests/lint/localization-posture.test.ts` fails if a localization mechanism
+> reappears against the declared posture.
+
 ### Additional edge cases
 
 - Active execution can repopulate state during reset.
