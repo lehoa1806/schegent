@@ -42,6 +42,34 @@ export default defineConfig({
       'tests/integration/index.ts'
     ],
     environment: 'node',
+    // Vitest's default is 5s for both, and 5s was never a number anyone chose
+    // for this suite — it is what you get by not setting it.
+    //
+    // What this suite actually contains: `tests/integration/**` spawns real
+    // processes, writes real files and drains real queues. On an IDLE machine
+    // `concurrent-run-execution.test.ts` runs 21 tests in 22.1s and
+    // `concurrency-cap.test.ts` runs 5 in 7.4s. Those averages sit against a 5s
+    // per-test ceiling, so the margin is near zero before anything goes wrong.
+    //
+    // Measured 2026-08-23: with an unrelated 10-worker build running on this
+    // 10-core machine, `npm run test:host` failed 14-17 tests, every one of them
+    // `Test timed out in 5000ms`, and always from the same six integration
+    // files. The identical commit had passed `npm run ci` end to end 40 minutes
+    // earlier on an idle machine. Nothing about the code changed between the
+    // two runs; only what else the CPU was doing.
+    //
+    // That is not a flaky suite, it is a suite measuring the machine — the same
+    // defect FR-R3-033 fixed in `drainUntil`, which bounded a wait in
+    // event-loop rounds rather than elapsed time and so failed under load for
+    // exactly this reason. A timeout that a passing test approaches on an idle
+    // box reports load, not correctness.
+    //
+    // 30s is chosen as roughly 4x the slowest observed single-file average, not
+    // to paper over a hang: a genuine deadlock still fails, 25s later. The
+    // wall-clock cost of the raise is zero on a green run, because a passing
+    // test never reaches its timeout.
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
     // Gives the run its own temp root rather than the shared system one, so a
     // saturated `$TMPDIR` cannot turn filesystem-heavy suites into timeouts.
     // Reasoning in the file.
