@@ -96,7 +96,6 @@ const WITHOUT_A_CONTROL: ReadonlySet<string> = new Set([
   'no-as-queue-projection-cast.test.ts',
   'no-direct-first-workspace-folder.test.ts',
   'no-direct-queue-setter.test.ts',
-  'no-direct-vscode-webview-api.test.ts',
   'no-html-interpolation-in-activity-feed.test.ts',
   'no-identity-less-cancel.test.ts',
   'no-inline-phase-breakpoint-ipc.test.ts',

@@ -33,12 +33,15 @@ function listSourceFiles(dir: string): readonly string[] {
   return files;
 }
 
-function findOffenders(pattern: RegExp): readonly string[] {
+function matchingFiles(pattern: RegExp): readonly string[] {
   return listSourceFiles(SCAN_ROOT)
     .filter((abs) => pattern.test(readFileSync(abs, 'utf8')))
     .map(toRepoRelative)
-    .filter((rel) => !ALLOWED_FILES.has(rel))
     .sort();
+}
+
+function findOffenders(pattern: RegExp): readonly string[] {
+  return matchingFiles(pattern).filter((rel) => !ALLOWED_FILES.has(rel));
 }
 
 describe('Feature 065 — no direct VS Code webview API outside adapter', () => {
@@ -56,5 +59,23 @@ describe('Feature 065 — no direct VS Code webview API outside adapter', () => 
       offenders,
       `Offending files registering message listeners directly:\n${offenders.join('\n')}`
     ).toEqual([]);
+  });
+
+  // Vacuity control. Every assertion above passes when the scan finds nothing —
+  // which is what a moved scan root, a renamed extension, or a pattern that
+  // stopped matching all look like. The allowlisted adapter is the anchor: it
+  // must appear, or the scan is broken rather than the tree clean.
+  it('finds the transport adapter, so a broken scan cannot read as a clean tree', () => {
+    expect(
+      listSourceFiles(SCAN_ROOT).length,
+      `No source files under ${SCAN_ROOT}. The scan root has moved or the extension ` +
+        `filter no longer matches this tree.`
+    ).toBeGreaterThan(50);
+    expect(
+      matchingFiles(/\bacquireVsCodeApi\b/),
+      'The allowlisted adapter no longer matches acquireVsCodeApi. Either the adapter ' +
+        'moved (update ALLOWED_FILES) or the pattern has stopped matching — in which ' +
+        'case every assertion above is passing vacuously.'
+    ).toContain('webview-ui/src/lib/vscode-transport.ts');
   });
 });
