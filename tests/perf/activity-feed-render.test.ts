@@ -155,6 +155,40 @@ function bytesOf(lines: unknown[]): number {
   return total;
 }
 
+const SAMPLES = 3;
+
+/**
+ * Elapsed time of the fastest of several samples, after a warmup call.
+ *
+ * FR-R3-042 — this assertion was a single cold measurement against a 150 ms
+ * budget, and a single cold sample measures machine load as much as it measures
+ * the render path: it pays V8 JIT warmup and, until this item, ran inside
+ * `test:host` alongside eight thousand other tests competing for the same cores.
+ *
+ * The minimum is the standard robust statistic for "how fast can this go" —
+ * scheduler preemption and GC can only ever make a sample slower, never faster.
+ * It does not weaken what is being asserted: the property under test is that the
+ * parse-project-truncate path is linear in input size, and a regression there is
+ * a change in complexity rather than a few milliseconds. Such a regression cannot
+ * hide behind the minimum of three samples.
+ *
+ * The same helper and the same reasoning are in `rate-limit-extractor.test.ts`,
+ * which is the house pattern for a defensible timing statistic. The budget is
+ * unchanged: this item changes the statistic, never the bound — a budget found
+ * too tight is a separate decision with its own evidence, not something to
+ * absorb into a de-duplication.
+ */
+function bestElapsedMs(work: () => void, samples = SAMPLES): number {
+  work();
+  let best = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < samples; i++) {
+    const start = performance.now();
+    work();
+    best = Math.min(best, performance.now() - start);
+  }
+  return best;
+}
+
 describe('Feature 029 T032 — Activity Feed render-path perf budget', () => {
   it(`processes ${ENTRY_COUNT}-entry / ~100KB manifest in <${BUDGET_MS}ms`, () => {
     const rawLines = buildSyntheticLines(ENTRY_COUNT);
@@ -166,23 +200,25 @@ describe('Feature 029 T032 — Activity Feed render-path perf budget', () => {
     // real work.
     const wire = rawLines.map((l) => JSON.stringify(l)).join('\n') + '\n';
 
-    const start = performance.now();
+    // The whole render path, as one unit of work, so it can be sampled.
+    let entries: PhaseLogDisplayEntry[] = [];
+    const render = (): void => {
+      const { parsedLines } = parseStreamJsonlBytes(wire, '');
+      const built: PhaseLogDisplayEntry[] = [];
+      for (const line of parsedLines) {
+        const projected = projectStreamJsonlLine(line);
+        if (projected === null) continue;
+        built.push(truncateDisplayEntryBody(projected, { perFieldBytes: 4096 }));
+      }
+      entries = built;
+    };
 
-    const { parsedLines } = parseStreamJsonlBytes(wire, '');
-
-    const entries: PhaseLogDisplayEntry[] = [];
-    for (const line of parsedLines) {
-      const projected = projectStreamJsonlLine(line);
-      if (projected === null) continue;
-      const truncated = truncateDisplayEntryBody(projected, {
-        perFieldBytes: 4096
-      });
-      entries.push(truncated);
-    }
-
-    const elapsed = performance.now() - start;
+    const elapsed = bestElapsedMs(render);
 
     expect(entries.length).toBeGreaterThan(0);
-    expect(elapsed).toBeLessThan(BUDGET_MS);
+    expect(
+      elapsed,
+      `best of ${SAMPLES} samples was ${elapsed.toFixed(2)} ms against a ${BUDGET_MS} ms budget`
+    ).toBeLessThan(BUDGET_MS);
   });
 });
