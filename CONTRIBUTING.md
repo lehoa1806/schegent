@@ -146,6 +146,10 @@ tracker. Follow the disclosure process in
   LTS; CI runs every gate on it and one extra Linux job on the `22.23.2`
   floor, so both majors are exercised.
 - VS Code `^1.85.0` for the integration suite.
+- The pinned Playwright browser, installed with `npx playwright install
+  chromium`. `npm run ci:fast` runs `test:visual`, which launches it; without
+  it every visual test fails with `Executable doesn't exist` and the preflight
+  is red for a reason that has nothing to do with your change.
 - Claude CLI installed and authenticated (for backend smoke tests).
 - Optional: Codex CLI for backend-parity coverage.
 
@@ -186,7 +190,7 @@ npm install        # also installs webview-ui dependencies via postinstall
 | `npm run test:e2e` | End-to-end suite (Vitest). |
 | `npm run test:perf` | Performance suite. |
 | `npm run test:integration` | Boots a real VS Code instance. |
-| `npm run ci:fast` | Quick local pre-flight: typecheck + lint + unit. |
+| `npm run ci:fast` | Local pre-flight, in order: `typecheck:tests`, `lint`, `verify:all`, `test:evals`, `test:visual`, `build:host`, `package:smoke`. Downloads nothing, but `test:visual` needs the pinned browser and `package:smoke` builds a VSIX, so it is not as quick as its name suggests. |
 | `npm run ci` | Full pre-merge gate. |
 | `npm run package` | Package a `.vsix` artifact. |
 
