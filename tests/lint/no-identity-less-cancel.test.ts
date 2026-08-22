@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { filesMatching } from './source-scan';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const SCAN_ROOT = resolve(REPO_ROOT, 'webview-ui', 'src');
@@ -15,9 +15,7 @@ interface Offender {
 function listFilesReferencingCancel(): readonly string[] {
   let out: string;
   try {
-    out = execSync(`grep -rln "postCommand(CMD_CANCEL" "${SCAN_ROOT}"`, {
-      encoding: 'utf8'
-    });
+    out = filesMatching(SCAN_ROOT, "postCommand(CMD_CANCEL", { fixed: true }).join('\n');
   } catch (err: unknown) {
     const e = err as { status?: number; stdout?: string };
     if (e.status === 1 && (!e.stdout || e.stdout.trim() === '')) return [];

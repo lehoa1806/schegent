@@ -18,9 +18,10 @@
 // provenance of the trusted bytes.
 
 import { describe, expect, it } from 'vitest';
-import { execSync } from 'node:child_process';
 import { readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { filesMatching } from './source-scan';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 
@@ -87,41 +88,31 @@ function svelteFilesWithPrefix(dir: string, prefix: string): readonly string[] {
     .map((name) => resolve(dir, name));
 }
 
+/** Absolute scan results reported the way the assertions expect them. */
+function toRelative(file: string): string {
+  return file.startsWith(`${REPO_ROOT}/`) ? file.slice(REPO_ROOT.length + 1) : file;
+}
+
 function listMatchingFilesIn(scanRoot: string, pattern: string): readonly string[] {
-  return grepFor(`-rlnE --include="*.svelte" "${pattern}" "${scanRoot}"`);
+  // `-E` in the original: these patterns are extended regexes, not literals.
+  return filesMatching(scanRoot, pattern, { extensions: ['.svelte'] }).map(toRelative);
 }
 
 /** The same prohibition applied to an explicit file list rather than a tree. */
 function listMatchingFilesAmong(files: readonly string[], pattern: string): readonly string[] {
-  // `grep` with no file operand reads stdin and never returns, so an empty
-  // group has to short-circuit here rather than in the shell.
-  if (files.length === 0) return [];
-  return grepFor(`-lE "${pattern}" ${files.map((file) => `"${file}"`).join(' ')}`);
-}
-
-function grepFor(args: string): readonly string[] {
-  let out: string;
-  try {
-    out = execSync(`grep ${args}`, { encoding: 'utf8' });
-  } catch (err: unknown) {
-    const e = err as { status?: number; stdout?: string };
-    if (e.status === 1 && (!e.stdout || e.stdout.trim() === '')) return [];
-    if (e.status === 2) {
-      // `grep` returns 2 when the directory does not exist. Treat as
-      // "no offenders" — a scan root may legitimately be absent in
-      // partial worktrees (e.g. before the panel directory exists
-      // pre-feature-031-implementation).
-      return [];
-    }
-    throw err;
-  }
-  return out
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .map((abs) =>
-      abs.startsWith(REPO_ROOT + '/') ? abs.slice(REPO_ROOT.length + 1) : abs
-    );
+  const regex = new RegExp(pattern);
+  return files
+    .filter((file) => {
+      try {
+        return regex.test(readFileSync(file, 'utf8'));
+      } catch {
+        // A named file that is absent is not a match. The `grep` this replaced
+        // treated a missing scan root the same way, deliberately: a root may
+        // legitimately not exist yet in a partial worktree.
+        return false;
+      }
+    })
+    .map(toRelative);
 }
 
 function listMatchingFiles(pattern: string): readonly string[] {

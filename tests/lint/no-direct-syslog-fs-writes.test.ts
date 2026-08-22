@@ -15,8 +15,8 @@
 //   tests/lint/no-inline-save-general-settings.test.ts
 
 import { describe, it, expect } from 'vitest';
-import { execSync } from 'node:child_process';
 import { resolve } from 'node:path';
+import { filesMatching, linesMatching } from './source-scan';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const SCAN_ROOT = resolve(REPO_ROOT, 'src');
@@ -71,10 +71,7 @@ const ALLOWED_APPENDFILE_FILES: ReadonlySet<string> = new Set([
 function execGrep(pattern: string, extraFlags: string = ''): readonly string[] {
   let out: string;
   try {
-    out = execSync(
-      `grep -rln ${extraFlags} -- "${pattern}" "${SCAN_ROOT}"`,
-      { encoding: 'utf8' }
-    );
+    out = filesMatching(SCAN_ROOT, pattern, { fixed: extraFlags.includes('F'), extensions: ['.ts'] }).join('\n');
   } catch (err: unknown) {
     const e = err as { status?: number; stdout?: string };
     if (e.status === 1 && (!e.stdout || e.stdout.trim() === '')) {
@@ -93,10 +90,7 @@ function execGrep(pattern: string, extraFlags: string = ''): readonly string[] {
 function execGrepLines(pattern: string, extraFlags: string = ''): readonly string[] {
   let out: string;
   try {
-    out = execSync(
-      `grep -rn ${extraFlags} -- "${pattern}" "${SCAN_ROOT}"`,
-      { encoding: 'utf8' }
-    );
+    out = linesMatching(SCAN_ROOT, pattern, { fixed: extraFlags.includes('F'), extensions: ['.ts'] }).map(({ file, line, text }) => `${file}:${line}:${text}`).join('\n');
   } catch (err: unknown) {
     const e = err as { status?: number; stdout?: string };
     if (e.status === 1 && (!e.stdout || e.stdout.trim() === '')) {

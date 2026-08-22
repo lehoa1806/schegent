@@ -7,9 +7,9 @@
 // explicit.
 
 import { describe, expect, it } from 'vitest';
-import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { filesMatching } from './source-scan';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 
@@ -72,9 +72,7 @@ function lifecycleLiteralReferences(): readonly string[] {
       // are not part of the assertion because the test is a smoke check
       // (lifecycleLiteralReferences must be non-empty). Mirrors the sibling
       // grep call in `no-running-state-literal.test.ts`.
-      out += execSync(`grep -El "running" "${abs}" || true`, {
-        encoding: 'utf8'
-      });
+      out += `${filesMatching(abs, 'running').join('\n')}\n`;
     } catch {
       // Ignore non-existent files (deferred-creation cases).
     }

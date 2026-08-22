@@ -24,10 +24,10 @@
 // pattern edit that silently stops matching fails here instead of shipping.
 
 import { describe, it, expect } from 'vitest';
-import { execSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { linesMatching } from './source-scan';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const SCAN_ROOT = resolve(REPO_ROOT, 'src', 'headless');
@@ -43,10 +43,9 @@ const SIDE_EFFECT_IMPORT = `^[[:space:]]*import[[:space:]]+['\\"]vscode['\\"]`;
 function grepLines(pattern: string, scanRoot: string = SCAN_ROOT): readonly string[] {
   let out: string;
   try {
-    out = execSync(
-      `grep -rnE "${pattern}" "${scanRoot}"`,
-      { encoding: 'utf8' }
-    );
+    out = linesMatching(scanRoot, pattern)
+      .map(({ file, line, text }) => `${file}:${line}:${text}`)
+      .join('\n');
   } catch (err: unknown) {
     const e = err as { status?: number; stdout?: string };
     // grep exit code 1 = "no matches found", which is the success case here.

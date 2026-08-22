@@ -30,12 +30,12 @@
 
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { execSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { declaresRetryCondition } from '../../src/ui/sidebar/commands/cmd-catalog-lifecycle';
 import { validate as parseRetryCondition } from '../../src/lib/retry-condition';
 import { parseDocumentText } from '../../src/services/process-yaml/yaml-parser';
 import { validatePhaseDocument } from '../../src/services/process-yaml/phase-yaml-validator';
+import { filesUnder as scanFilesUnder } from './source-scan';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 
@@ -167,7 +167,7 @@ describe('T511a — nothing on the import, publish, or restore path imports the 
 
   function filesUnder(relative: string): readonly string[] {
     const abs = resolve(REPO_ROOT, relative);
-    const out = execSync(`find "${abs}" -name '*.ts'`, { encoding: 'utf8' });
+    const out = scanFilesUnder(abs, { extensions: ['.ts'] }).join('\n');
     return out
       .split('\n')
       .map((line) => line.trim())

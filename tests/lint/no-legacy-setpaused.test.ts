@@ -13,8 +13,8 @@
 // but the lint policy targets production code, not test scaffolding).
 
 import { describe, it, expect } from 'vitest';
-import { execSync } from 'node:child_process';
 import { resolve } from 'node:path';
+import { filesMatching } from './source-scan';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const SCAN_ROOTS = [
@@ -39,7 +39,7 @@ const PERSISTENCE_ALLOWLIST: ReadonlySet<string> = new Set([
 function listMatchingFiles(pattern: string, root: string): readonly string[] {
   let out: string;
   try {
-    out = execSync(`grep -rln "${pattern}" "${root}"`, { encoding: 'utf8' });
+    out = filesMatching(root, pattern, { fixed: true }).join('\n');
   } catch (err: unknown) {
     const e = err as { status?: number; stdout?: string };
     if (e.status === 1 && (!e.stdout || e.stdout.trim() === '')) {
@@ -102,10 +102,7 @@ describe('Feature 030 BUG-001 T056 (SC-008) — no legacy setPaused', () => {
         // match this combined pattern.
         let out: string;
         try {
-          out = execSync(
-            `grep -l "setQueue(" "${resolve(REPO_ROOT, rel)}"`,
-            { encoding: 'utf8' }
-          );
+          out = filesMatching(resolve(REPO_ROOT, rel), "setQueue(", { fixed: true }).join('\n');
         } catch {
           return false;
         }

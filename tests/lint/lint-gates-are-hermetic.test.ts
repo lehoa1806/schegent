@@ -33,20 +33,30 @@ const read = (path: string): string => readFileSync(resolve(REPO_ROOT, path), 'u
  * expectation for review.
  */
 const AVAILABLE_TOOLS: ReadonlyArray<{ tool: string; why: string }> = [
-  { tool: 'grep', why: 'POSIX; 22 existing gates depend on it' },
-  { tool: 'find', why: 'POSIX; 4 existing gates depend on it' },
   { tool: 'git', why: 'this is a git repository; a checkout implies it' },
   { tool: 'node', why: 'the runtime the suite already runs in' },
   { tool: 'npm', why: 'declared by the project and required to run the suite at all' }
 ];
 
 /**
- * Recorded, not fixed here: `grep` and `find` are POSIX and present on the
- * darwin and linux legs, but `ci.yml` declares a three-OS matrix. On the Windows
- * leg these 22 gates depend on tools that are not guaranteed. That is a real
- * portability question and a much larger change than this item scoped, so it is
- * written down rather than silently widened into this rule. Grandfathering them
- * here is a deliberate, visible decision.
+ * `grep` and `find` were on this list and are not any more, and their removal is
+ * the point rather than a tidy-up.
+ *
+ * They were grandfathered when this gate was written, with a note that 22 gates
+ * depended on them and that `ci.yml` declares a three-OS matrix including
+ * Windows — where `grep` does not exist and `FIND.exe` is a string search over
+ * files rather than a file finder, so `find <root> -name '*.ts'` is not a slower
+ * version of the same thing but a different program answering a different
+ * question. The note called that a real portability problem and a larger change
+ * than the item scoped. Both halves were true.
+ *
+ * It has since been scoped and done: all 22 resolve their file sets through
+ * `source-scan.ts`, and no gate in this directory invokes an external tool at
+ * all. The rule is therefore absolute rather than allowlisted — the three
+ * entries above are what a gate *could* justify, not what any gate uses.
+ *
+ * The Windows leg has still never run against this tree. When it does, it will
+ * not fail on twenty-two gates that were never going to work there.
  */
 
 /**

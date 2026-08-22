@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { execSync } from 'node:child_process';
 import { resolve } from 'node:path';
+import { filesMatching } from './source-scan';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const SCAN_ROOTS = [
@@ -157,9 +157,7 @@ function filesWithRunningLiteral(): readonly string[] {
   let out = '';
   for (const root of SCAN_ROOTS) {
     try {
-      out += execSync(`grep -rEl --exclude-dir=__tests__ "running" "${root}"`, {
-        encoding: 'utf8'
-      });
+      out += filesMatching(root, "running", { skipDirectories: ['__tests__'] }).join('\n') + '\n';
     } catch (err: unknown) {
       const e = err as { status?: number; stdout?: string };
       if (e.status === 1 && (!e.stdout || e.stdout.trim() === '')) continue;

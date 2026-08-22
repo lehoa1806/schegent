@@ -21,8 +21,8 @@
 // seven members, which is strictly stronger than an absence scan.
 
 import { describe, it, expect } from 'vitest';
-import { execSync } from 'node:child_process';
 import { resolve } from 'node:path';
+import { filesMatching } from './source-scan';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 
@@ -39,7 +39,7 @@ function scan(pattern: string): readonly string[] {
   for (const root of SCAN_ROOTS) {
     let out: string;
     try {
-      out = execSync(`grep -rin "${pattern}" "${root}"`, { encoding: 'utf8' });
+      out = filesMatching(root, pattern, { fixed: true, ignoreCase: true }).join('\n');
     } catch (err: unknown) {
       // grep exits 1 for "no matches", which is the passing case here.
       const failure = err as { status?: number; stdout?: string };

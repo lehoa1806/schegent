@@ -6,9 +6,9 @@
 // dedicated read-only command tests.
 
 import { describe, expect, it } from 'vitest';
-import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { filesMatching } from './source-scan';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const EXTENSION_PATH = resolve(REPO_ROOT, 'src', 'extension.ts');
@@ -25,9 +25,7 @@ function rel(abs: string): string {
 function listMessageRouterTests(): readonly string[] {
   let out: string;
   try {
-    out = execSync(`grep -rln "new MessageRouter" "${TEST_ROOT}"`, {
-      encoding: 'utf8'
-    });
+    out = filesMatching(TEST_ROOT, "new MessageRouter", { fixed: true }).join('\n');
   } catch (err: unknown) {
     const e = err as { status?: number; stdout?: string };
     if (e.status === 1 && (!e.stdout || e.stdout.trim() === '')) {
