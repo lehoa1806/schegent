@@ -109,8 +109,6 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'src/ui/sidebar/phase-projector.ts',
   'src/ui/sidebar/run-projector.ts',
   'src/ui/sidebar/snapshot.ts',
-  'src/ui/sidebar/state-projector.ts',
-  'src/ui/sidebar/state-projector-runtime.ts',
   'src/ui/sidebar/projector-bookkeeping.ts',
   'src/ui/status-bar.ts',
   'webview-ui/src/components/ControlPanel.svelte',
@@ -136,10 +134,8 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // (`runningSuffix`). No pinned status discriminator literal.
   'webview-ui/src/lib/action-copy.ts',
   'webview-ui/src/lib/snapshot-types.ts',
-  'src/contracts/sidebar-ipc.ts',
   // Metrics wire entities own the in-flight `isRunning` projection field.
   'src/contracts/sidebar-ipc/metrics.ts',
-  'webview-ui/src/components/MetricsDashboard/MetricsDashboard.svelte',
   'webview-ui/src/components/MetricsDashboard/MetricsTaskTable.svelte',
   'webview-ui/src/components/settings/BackendHealthSection.svelte',
   'src/metrics/metrics-service.ts',
@@ -179,5 +175,31 @@ describe('Feature 017 — no stray running state literal', () => {
   it('keeps running literals confined to workflow/monitor state files', () => {
     const offenders = filesWithRunningLiteral().filter((rel) => !ALLOWED_FILES.has(rel));
     expect(offenders, `Unexpected running literals:\n${offenders.join('\n')}`).toEqual([]);
+  });
+
+  // Vacuity control. The assertion above subtracts the allowlist from the scan
+  // and expects nothing left — which is what an empty scan produces too. Two
+  // scan roots feed it, and either going missing is silently tolerated by the
+  // `status === 1` arm above.
+  //
+  // Every allowlisted file is an anchor: each is listed because it DOES contain
+  // the literal, so each must be found. That makes this a staleness check in the
+  // same motion — an entry that stops matching is an exemption outliving its
+  // reason.
+  it('finds every allowlisted file, so a broken scan cannot read as a clean tree', () => {
+    const matched = filesWithRunningLiteral();
+    expect(
+      matched.length,
+      'Neither scan root yielded a file containing the literal. The assertion above ' +
+        'is passing over an empty set.'
+    ).toBeGreaterThan(0);
+    for (const allowed of ALLOWED_FILES) {
+      expect(
+        matched,
+        `${allowed} is allowlisted for containing the "running" literal but the scan ` +
+          `did not find it. Either the literal is gone — remove the stale entry — or ` +
+          `the scan no longer reaches that root.`
+      ).toContain(allowed);
+    }
   });
 });
