@@ -262,6 +262,13 @@ See [Execution Evidence Health](../operations/evidence-health.md).
 - **A malicious extension.** Other VS Code extensions running in the same workspace have whatever capabilities VS Code grants them. Schegent does not sandbox other extensions.
 - **An operator who exfiltrates the unredacted sinks.** The raw transcript and verbose diagnostics are local but readable by the operator. If the operator's machine is compromised, the attacker has access to them.
 - **A prompt-injection attack via spec/plan/task content.** If the spec file contains injection instructions, the CLI may follow them. The host does not analyze prompt content for adversarial inputs.
+- **A phase that reports itself finished when it is not.** The phase verdict is the model's own account of its work. Two layers must be told apart here, because one of them *is* bounded and the other is not.
+
+  The **control sentinel** — whether a phase terminated — is not forgeable. Since feature 107 the termination token is read only from a positional trailing region computed by `parseAuditLogBlock` in [src/parser/audit-log-parser.ts](../../src/parser/audit-log-parser.ts), which takes the *last* complete open/close pair; grace-termination arms on the harness-emitted `{"type":"result"}` envelope, which model content cannot forge. [T25](#t25--control-sentinel-carried-in-cli-output) covers that, and [tests/lint/no-content-driven-process-control.test.ts](../../tests/lint/no-content-driven-process-control.test.ts) forbids the mechanism rather than an identifier.
+
+  The **outcome classification** is a different layer and it reads the model's own words. The body of that same audit block decides `clean` / `remaining_issues` / `open_questions` in [src/parser/stdout-parser.ts](../../src/parser/stdout-parser.ts), and a phase resolving `clean` advances the pipeline. **Nothing in the host runs a test suite, checks a build, or verifies that a declared output is correct.** `resolveRunOutputs` in [src/services/run-output/run-output-resolver.ts](../../src/services/run-output/run-output-resolver.ts) probes whether a declared output *exists* — not whether it is right, and not whether the work it represents was done.
+
+  This is structural in a design where the model is the worker, and it is not presented as a defect. It is listed here because an operator composing an unattended pipeline needs to know that **a verification phase is theirs to author** — the host will not supply one. See [custom-phases.md](../features/custom-phases.md#writing-a-verification-phase).
 
 These are not Schegent's threat model to mitigate — they are upstream of the extension. But they shape what Schegent does and does not promise.
 
