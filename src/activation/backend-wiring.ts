@@ -9,7 +9,7 @@ import {
   createRuntimeLogAccessor
 } from '../lib/runtime-log';
 import { WebviewLogSink } from '../lib/webview-log-sink';
-import { buildSpawnEnv, type ProcessEnvironmentPolicy } from '../runner/spawn-env';
+import { buildSpawnEnv, policyRequestFields, type ProcessEnvironmentPolicy } from '../runner/spawn-env';
 import {
   BackendCapabilityService,
   normalizeBackendProbeTimeoutSeconds
@@ -51,10 +51,15 @@ export function createBackendDiagnosticsWiring(input: {
       kind, input.workspaceRoot, input.claudePath
     ),
     readTimeoutSeconds: readTimeout,
+    // FR-R3-049 — through the shared helper like every other policy consumer.
+    // This site mapped the two fields by hand, which meant the helper was not
+    // actually "the one place" the policy reaches a request; and because this is
+    // a probe rather than an `.invoke` call, the lint gate could not see it
+    // either. Passing `inheritProcessEnv` unconditionally also differed subtly
+    // from the helper, which omits it unless it is `false`.
     buildEnv: () => buildSpawnEnv({
       env: { SCHEGENT_PHASE: 'runner-probe', SCHEGENT_ITERATION: '0' },
-      inheritProcessEnv: input.environmentPolicy.inheritProcessEnv,
-      processEnvAllowlist: input.environmentPolicy.processEnvAllowlist
+      ...policyRequestFields(input.environmentPolicy)
     }),
     logger: input.logger,
     onDidChange: input.onDidChange

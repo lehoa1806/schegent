@@ -15,10 +15,16 @@ export interface WatchdogOptions {
    * ambient environment -- the credentials an operator's allowlist exists to
    * withhold, handed to the one subprocess nobody triggers.
    *
-   * Making it required means the next internal invoker cannot repeat that by
-   * forgetting. The requirement sits here rather than on `InvocationRequest`
-   * because 69 test files construct request-shaped objects and 2 construct this,
-   * and the guarantee is identical either way.
+   * Making it required means THIS invoker cannot repeat that by forgetting -- and
+   * only this one. A future invoker declares its own options type, which no
+   * required field here reaches; what covers that case is
+   * `tests/lint/invocations-forward-env-policy.test.ts`, which fails on any
+   * production `.invoke(` that forwards no policy. The pair is the guarantee, not
+   * this field alone.
+   *
+   * The requirement sits here rather than on `InvocationRequest` because 69 test
+   * files construct request-shaped objects and one constructs this, and for this
+   * invoker the guarantee is identical either way.
    */
   environmentPolicy: ProcessEnvironmentPolicy;
   pollIntervalMs: number;

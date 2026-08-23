@@ -5,6 +5,7 @@ import {
   type ProcessEnvironmentPolicy
 } from '../../../src/runner/spawn-env';
 import type { InvocationRequest } from '../../../src/runner/invocation-result';
+import { ENV_POLICY_CALL_SITES } from '../../fixtures/env-policy-call-sites';
 
 /**
  * FR-R3-049 / M-11 — the operator's environment policy must reach every spawn.
@@ -67,7 +68,7 @@ const RESTRICTIVE: ProcessEnvironmentPolicy = {
 /** What each production call site forwards, modelled. See the header note. */
 const CALL_SITES: ReadonlyArray<{ name: string; request: (p: ProcessEnvironmentPolicy) => PolicyFields }> = [
   {
-    name: 'phase runner',
+    name: ENV_POLICY_CALL_SITES[0],
     request: (p) => ({
       env: { SCHEGENT_PHASE: 'implement' },
       // The same helper production calls, so this model cannot drift from it.
@@ -75,24 +76,30 @@ const CALL_SITES: ReadonlyArray<{ name: string; request: (p: ProcessEnvironmentP
     })
   },
   {
-    name: 'session compactor',
+    name: ENV_POLICY_CALL_SITES[1],
     request: (p) => ({
       env: { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '1' },
       ...policyRequestFields(p)
     })
   },
   {
-    name: 'credit watchdog poll',
+    name: ENV_POLICY_CALL_SITES[2],
     request: (p) => ({
       ...policyRequestFields(p)
     })
   }
 ];
 
-/** The parity test's own count, cross-checked by the lint guard so neither can shrink silently. */
-export const PARITY_CALL_SITE_COUNT = CALL_SITES.length;
-
 describe('every production call site obeys the policy (SC-002)', () => {
+  it('models every call site the lint guard enumerates', () => {
+    // The shared list is what the two gates cross-check through, so a site added
+    // to one and not the other fails here rather than shrinking coverage quietly.
+    // It lives in `tests/fixtures/` and not in either test file: importing a
+    // `*.test.ts` from another test file re-registers its suites in the importer,
+    // which ran this file's fourteen cases twice.
+    expect(CALL_SITES.map((site) => site.name)).toEqual([...ENV_POLICY_CALL_SITES]);
+  });
+
   for (const site of CALL_SITES) {
     it(`leaks no unlisted sentinel: ${site.name}`, () => {
       expect(sentinelsIn(buildSpawnEnv(site.request(RESTRICTIVE)))).toBe(0);
@@ -115,10 +122,16 @@ describe('the fix restricts to the policy, it does not ignore it (SC-003)', () =
     expect(sentinelsIn(env)).toBe(0);
   });
 
-  it('inherit-nothing yields the overlay and nothing ambient', () => {
+  it('inherit-nothing yields the overlay and nothing ambient — bootstrap included', () => {
     const env = buildSpawnEnv({ env: { ONLY: 'this' }, inheritProcessEnv: false });
     expect(sentinelsIn(env)).toBe(0);
     expect(env.ONLY).toBe('this');
+    // Pinned deliberately: inherit-nothing drops the bootstrap names too, so a
+    // bare `cli.path` cannot be resolved under it at any call site. That is the
+    // shipped meaning of the mode, and threading the policy into the poll brings
+    // the poll under it. Asserting it here is what stops the spec's "bootstrap
+    // names survive every mode" reading from re-appearing as an untested claim.
+    for (const name of BOOTSTRAP) expect(name in env).toBe(false);
   });
 
   it('no configured policy inherits — the documented default is unchanged (FR-005)', () => {
@@ -160,4 +173,39 @@ describe('the live environment is never handed to a spawn (SC-007)', () => {
     expect(env.PATH).toBe(process.env.PATH);
     expect(Object.keys(env).length).toBe(Object.keys(process.env).length);
   });
+});
+
+describe('the change is strictly narrowing (security)', () => {
+  /**
+   * The security property the whole feature rests on: threading a policy must
+   * never let a spawn read MORE than it read before. This is the direction that
+   * would turn a privacy fix into a privacy regression, and it is not obvious by
+   * inspection — the watchdog's environment changes shape entirely, so "smaller"
+   * has to be demonstrated rather than assumed.
+   *
+   * The complementary risk — a restriction so tight the CLI cannot start — is
+   * covered by the bootstrap-name cases above and, for inherit-nothing mode, is a
+   * pre-existing defect on all three paths that is filed as its own item.
+   */
+  const MODES: ReadonlyArray<readonly [string, ProcessEnvironmentPolicy]> = [
+    ['allowlist excluding the sentinels', { mode: 'allowlist', inheritProcessEnv: false, processEnvAllowlist: ['ANTHROPIC_API_KEY'] }],
+    ['allowlist including one sentinel', { mode: 'allowlist', inheritProcessEnv: false, processEnvAllowlist: ['NPM_TOKEN'] }],
+    ['inherit-nothing', { mode: 'minimal', inheritProcessEnv: false }],
+    ['inherit (the documented default)', { mode: 'inherit', inheritProcessEnv: true }]
+  ];
+
+  for (const [modeName, policy] of MODES) {
+    it(`no call site reads more than it did before: ${modeName}`, () => {
+      for (const site of CALL_SITES) {
+        // "Before" for the watchdog was forwarding nothing at all; for the other
+        // two it was the same hand-rolled spread the helper now produces.
+        const beforeKeys = new Set(
+          Object.keys(buildSpawnEnv(site.name === 'credit watchdog poll' ? {} : site.request(policy)))
+        );
+        const afterKeys = Object.keys(buildSpawnEnv(site.request(policy)));
+        const widened = afterKeys.filter((key) => !beforeKeys.has(key));
+        expect(widened).toEqual([]);
+      }
+    });
+  }
 });
