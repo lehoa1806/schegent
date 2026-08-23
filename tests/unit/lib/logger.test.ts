@@ -107,6 +107,11 @@ describe('SanitizedLogger.sanitize', () => {
     );
     expect(out).toContain('[REDACTED]');
     expect(out).not.toContain('-----BEGIN RSA PRIVATE KEY-----');
+    // FR-R3-048 — the body and the footer, for the same reason as the two cases
+    // below: the header assertion above passes against output still holding the
+    // whole key, which is how H-07 survived this file.
+    expect(out).not.toContain('MIIEowIBAAKCAQEA…');
+    expect(out).not.toContain('-----END');
   });
 
   it('redacts PEM OPENSSH private key headers', () => {
@@ -115,6 +120,9 @@ describe('SanitizedLogger.sanitize', () => {
     );
     expect(out).toContain('[REDACTED]');
     expect(out).not.toContain('-----BEGIN OPENSSH PRIVATE KEY-----');
+    // FR-R3-048 — the assertion that would have caught H-07. The line above
+    // passes against output still containing every byte of the key.
+    expect(out).not.toContain('-----END');
   });
 
   it('redacts PEM PGP private key headers', () => {
@@ -123,6 +131,28 @@ describe('SanitizedLogger.sanitize', () => {
     );
     expect(out).toContain('[REDACTED]');
     expect(out).not.toContain('-----BEGIN PGP PRIVATE KEY-----');
+    // FR-R3-048 — added, not substituted. The assertions above are kept because
+    // this spelling is what the pre-change pattern matched and the hard rule
+    // forbids weakening the set; these two are the ones that would have caught
+    // H-07, and they check the body and the footer rather than the header.
+    expect(out).not.toContain('lQHYBGZ…');
+    expect(out).not.toContain('-----END');
+  });
+
+  it('redacts the standard PGP armor GnuPG actually writes', () => {
+    // FR-R3-048 (H-07), research finding 1. The case above uses `PGP PRIVATE KEY`
+    // — a nonstandard label — so it exercised the one PGP spelling the old
+    // pattern happened to match and never touched this one, which it missed
+    // entirely: `-----BEGIN PGP PRIVATE KEY BLOCK-----` did not match at all, so
+    // an exported GPG private key passed through untouched, header included. A
+    // test that picks the one input its subject handles is worse than no test,
+    // because it is counted as coverage.
+    const out = logger.sanitize(
+      '-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQHYBGZstandardArmorBody\n-----END PGP PRIVATE KEY BLOCK-----'
+    );
+    expect(out).toContain('[REDACTED]');
+    expect(out.includes('lQHYBGZstandardArmorBody')).toBe(false);
+    expect(out.includes('-----END')).toBe(false);
   });
 
   it('preserves PUBLIC key headers (not secrets)', () => {

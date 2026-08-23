@@ -59,6 +59,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 
+import { KeyBlockLineRedactor } from '../lib/logger';
 import type { SanitizedLogger } from '../lib/logger';
 import {
   resolveContainedForWrite,
@@ -179,6 +180,26 @@ export interface CliTransportSinkDeps {
    * sink calls it on every line.
    */
   readonly sanitize: (line: string) => string;
+  /**
+   * FR-R3-048 (H-07) — optional stateful line sanitizer, used in preference to
+   * `sanitize` when present.
+   *
+   * This sink is line-oriented: it sanitizes one CLI output line per call, so a
+   * multiline `BEGIN…END` expression can never match here and a private key
+   * spread over forty lines became forty records each holding a fragment.
+   * Suppressing from a BEGIN marker to its matching END needs state, and state
+   * needs to know which run and which stream a line belongs to — `stdout` is not
+   * one stream once the concurrency cap rises above 1.
+   *
+   * Optional so every existing construction site and test double keeps compiling
+   * and behaving exactly as before; the production factory supplies it.
+   */
+  readonly sanitizeStreamLine?: (
+    line: string,
+    runId: string,
+    phase: string,
+    stream: CliTransportStream
+  ) => string;
   readonly logger: Pick<SanitizedLogger, 'warn'>;
   readonly now?: () => Date;
   /** Injection points, each defaulting to the matching `fs.promises` call. */
@@ -260,6 +281,12 @@ export function createCliTransportSettingsAccessor(
 export class CliTransportSink implements CliTransportRecorder {
   private readonly settings: CliTransportSettingsAccessor;
   private readonly sanitizeLine: (line: string) => string;
+  private readonly sanitizeStreamLine?: (
+    line: string,
+    runId: string,
+    phase: string,
+    stream: CliTransportStream
+  ) => string;
   private readonly logger: Pick<SanitizedLogger, 'warn'>;
   private readonly now: () => Date;
   private readonly appendFile: AppendFn;
@@ -313,6 +340,7 @@ export class CliTransportSink implements CliTransportRecorder {
   constructor(deps: CliTransportSinkDeps) {
     this.settings = deps.settings;
     this.sanitizeLine = deps.sanitize;
+    this.sanitizeStreamLine = deps.sanitizeStreamLine;
     this.logger = deps.logger;
     this.now = deps.now ?? ((): Date => new Date());
     this.appendFile = deps.appendFile ?? fs.appendFile;
@@ -336,18 +364,29 @@ export class CliTransportSink implements CliTransportRecorder {
     // Per emit, never a field. The destination and the bounds are re-derived
     // on every line so a workspace change is observed at the next one.
     const settings = this.settings.read();
-    if (!settings) return;
-    if (this.refused.has(settings.path)) return;
     let data: string;
     try {
-      data = this.format(entry);
-    } catch {
+      // FR-R3-048 — formatting runs BEFORE the destination checks, and the order
+      // is load-bearing now that the injected sanitizer is stateful. Skipping
+      // the format for a line we are not going to write would hide that line
+      // from the key-block state machine: a run that emits its BEGIN marker
+      // while there is no workspace root (or while the destination is refused)
+      // and then resumes writing would find the redactor CLOSED, and every body
+      // line of the key would be written verbatim. Every line the sink is handed
+      // must reach the redactor, whether or not it reaches the file.
+      //
       // Formatting is the only work this method does on the phase's own stack:
       // the injected sanitizer runs here, and a stream-json line can be
       // megabytes. A regex or allocation failure costs one line, not a phase.
-      this.warn(settings.path, 'format-failed');
+      data = this.format(entry);
+    } catch {
+      // No destination means no `refused`/warn key to attribute this to; the
+      // line is dropped either way.
+      if (settings) this.warn(settings.path, 'format-failed');
       return;
     }
+    if (!settings) return;
+    if (this.refused.has(settings.path)) return;
     const previous = this.chains.get(settings.path) ?? Promise.resolve();
     const next = previous.then(() => this.writeAbsorbing(settings, data));
     this.chains.set(settings.path, next);
@@ -369,7 +408,13 @@ export class CliTransportSink implements CliTransportRecorder {
 
   private format(entry: CliTransportRecord): string {
     const stamp = this.now().toISOString();
-    const sanitized = this.sanitizeLine(entry.line);
+    // FR-R3-048 — the stateful sanitizer when the caller supplied one, so a key
+    // block spanning lines is suppressed rather than written a fragment at a
+    // time. Falls back to the stateless one, which keeps every existing test
+    // double and construction site behaving as before.
+    const sanitized = this.sanitizeStreamLine
+      ? this.sanitizeStreamLine(entry.line, entry.runId, entry.phase, entry.stream)
+      : this.sanitizeLine(entry.line);
     return `${stamp}\t${field(entry.runId)}\t${field(entry.phase)}\t${entry.stream}\t${sanitized}\n`;
   }
 
@@ -673,13 +718,92 @@ export class CliTransportSink implements CliTransportRecorder {
  * Production construction: the workspace-rooted destination plus the host's
  * one sanitizing logger.
  */
+/**
+ * How many (run, stream) key-block redactors the production factory tracks.
+ *
+ * A cap rather than a release point: the sink has no per-run terminal callback,
+ * so the map self-bounds by eviction. Each entry is two primitives, so 256 is
+ * O(1) memory and far above the 40 live pairs the documented maximum concurrency
+ * of 20 can produce -- eviction is reached only by a long-lived host, never by a
+ * busy one.
+ */
+export const CLI_TRANSPORT_MAX_TRACKED_STREAMS = 256;
+
 export function createCliTransportSink(
   workspaceRoot: () => string | null,
   logger: Pick<SanitizedLogger, 'sanitize' | 'warn'>
 ): CliTransportSink {
+  // FR-R3-048 (H-07) — the injected sanitizer is STATEFUL here, because this sink
+  // is line-oriented. `format()` sanitizes one CLI output line per call, so a
+  // multiline `BEGIN…END` expression can never match: by the time the sanitizer
+  // runs, a key block has already been split across calls. Fixing only the
+  // pattern in `SECRET_PATTERNS` leaves this log holding the key while the whole
+  // suite goes green.
+  //
+  // Keyed by run AND stream, not by stream alone. `stdout` is not one stream: the
+  // concurrency cap can be raised to 20, and with a shared key a block opened by
+  // one Run's stdout would suppress every other Run's stdout until it closed.
+  // Both parts come off the record the caller already supplies.
+  //
+  // The map is not a leak: each entry is a boolean and a counter (no lines), so
+  // the whole map is O(1) memory. Entries are NOT released when a Run's streams
+  // end — this sink has no per-run terminal callback, and inventing a caller for
+  // one means reaching into the controller, scope this item does not own — so the
+  // map self-bounds by eviction instead.
+  //
+  // Eviction prefers a CLOSED entry, scanning insertion order for the oldest one.
+  // The tempting version — evict the oldest-inserted, full stop — is wrong, and
+  // the arithmetic that seems to excuse it (default concurrency 1, documented max
+  // 20, so at most 40 live pairs against `CLI_TRANSPORT_MAX_TRACKED_STREAMS`) does
+  // not: the oldest INSERTED entry is the oldest Run's, and a Run that streams for
+  // hours while a capful of short Runs come and go is both the oldest and still
+  // live. Dropping it
+  // mid-block resets the state machine to CLOSED and writes the rest of the key
+  // verbatim, which is the one case where discarding state releases a tail.
+  //
+  // If every tracked entry is open — a pathological run of blocks that never
+  // close — the oldest is evicted anyway, because an unbounded map is the worse
+  // failure and the cap has to be a cap.
+  const redactors = new Map<string, KeyBlockLineRedactor>();
+  // Keyed by run, PHASE and stream.
+  //
+  // Phase was added after review, deliberately, because omitting it turned a
+  // bounded over-redaction into an unbounded one: an unterminated block in one
+  // phase suppressed every LATER phase's stdout for the rest of the run, so a
+  // single truncated key header cost the operator their whole transport log.
+  //
+  // A block cannot legitimately span phases -- each phase is a separate CLI
+  // process whose stdout ends when it exits -- so resetting at the boundary
+  // abandons state that is necessarily unterminated rather than losing a live
+  // block. The race that would make that unsafe (phase N's lines arriving after
+  // phase N+1 starts) is closed upstream by FR-R3-047: the runner now always
+  // waits for stdio close before a phase finalizes, so a phase's output is fully
+  // drained before the next one spawns. Spec FR-007 is amended to match.
+  const keyFor = (runId: string, phase: string, stream: string): string =>
+    `${runId}\u0000${phase}\u0000${stream}`;
+  const evictOne = (): void => {
+    for (const [candidate, tracked] of redactors) {
+      if (!tracked.isOpen) {
+        redactors.delete(candidate);
+        return;
+      }
+    }
+    const oldest = redactors.keys().next().value;
+    if (oldest !== undefined) redactors.delete(oldest);
+  };
   return new CliTransportSink({
     settings: createCliTransportSettingsAccessor(workspaceRoot),
     sanitize: (line) => logger.sanitize(line),
+    sanitizeStreamLine: (line, runId, phase, stream) => {
+      const key = keyFor(runId, phase, stream);
+      let redactor = redactors.get(key);
+      if (!redactor) {
+        if (redactors.size >= CLI_TRANSPORT_MAX_TRACKED_STREAMS) evictOne();
+        redactor = new KeyBlockLineRedactor((input) => logger.sanitize(input));
+        redactors.set(key, redactor);
+      }
+      return redactor.sanitizeLine(line);
+    },
     logger
   });
 }
