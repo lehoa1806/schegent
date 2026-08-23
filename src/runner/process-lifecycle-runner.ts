@@ -6,6 +6,14 @@ import { awaitStdinDelivery, writePromptToStdin } from './child-stdin';
 import type { InvocationOutputSink, InvocationRequest, RawInvocationOutput } from './invocation-result';
 import { OutputSinkBackpressure } from './output-sink-backpressure';
 import { ZippedStreamBuffer } from './zipped-stream-buffer';
+import { processTreeSpawnOptions, signalProcessTree, processTreeIsGone } from './process-tree';
+
+/**
+ * FR-R3-054 — how long after SIGKILL to check whether the group really went.
+ * Short: SIGKILL is not catchable, so a group that survives it is a group we do
+ * not own, and waiting longer does not change that.
+ */
+const TREE_CONFIRM_DELAY_MS = 500;
 
 const SIGKILL_DELAY_MS = 2_000;
 export type ProcessSpawnFn = (
@@ -54,7 +62,11 @@ export class ProcessLifecycleRunner {
     const start = Date.now();
     const { request, outputSink } = input;
     const child = this.spawnFn(request.cliPath, input.args, {
-      stdio: ['pipe', 'pipe', 'pipe'], shell: false, cwd: request.cwd, env: input.env
+      stdio: ['pipe', 'pipe', 'pipe'], shell: false, cwd: request.cwd, env: input.env,
+      // FR-R3-054 (H-05) — its own process group, so the ladder below can reach
+      // descendants. Without this a CLI that forks a helper survived cancel and
+      // kept mutating the workspace after a terminal state was recorded.
+      ...processTreeSpawnOptions()
     });
     const invocationToken = this.nextInvocationToken++;
     this.active.set(invocationToken, child);
@@ -182,13 +194,37 @@ export class ProcessLifecycleRunner {
     try { this.monitorHook?.(event); } catch { /* sidecar is observational */ }
   }
 
+  /**
+   * FR-R3-054 (H-05) — the same escalation ladder, applied to the TREE.
+   *
+   * `child.exitCode`/`signalCode` describe the direct child only, so they are
+   * still the right trigger for escalating, but they are no longer the whole
+   * question: `processTreeIsGone` is what decides whether the phase can finalize
+   * honestly. Where the tree cannot be proven gone within the grace window, the
+   * caller is told so rather than the terminal state quietly claiming otherwise.
+   */
   private terminate(child: ChildProcess): void {
     if (child.exitCode !== null || child.signalCode !== null) return;
-    try { child.kill('SIGTERM'); } catch { return; }
+    void signalProcessTree(child, 'SIGTERM');
     setTimeout(() => {
+      // The original trigger, unchanged: the direct child's own status decides
+      // whether to escalate. The tree check below is additive -- it decides
+      // whether the terminal state may claim the work has stopped, which is a
+      // different question and was previously not asked at all.
       if (child.exitCode === null && child.signalCode === null) {
-        try { child.kill('SIGKILL'); } catch { /* already exited */ }
+        void signalProcessTree(child, 'SIGKILL').then(() => {
+          setTimeout(() => {
+            if (processTreeIsGone(child)) return;
+            // No silent lie. The phase is ending with descendants possibly alive,
+            // and that is a fact an operator needs when a later phase behaves as
+            // though something else is writing to the workspace.
+            this.logger.warn(
+              `${this.label}: process tree not confirmed gone after SIGKILL; ` +
+                'descendants may still be running'
+            );
+          }, TREE_CONFIRM_DELAY_MS).unref();
+        });
       }
-    }, SIGKILL_DELAY_MS).unref?.();
+    }, SIGKILL_DELAY_MS).unref();
   }
 }
