@@ -51,8 +51,34 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
 // shape. No responsibility was added — the coordinator shell still forwards a
 // verdict it does not compute — so, as with FR-R3-001 T260 above, the budget buys
 // the note rather than new work.
+// FR-R3-047 (H-04) — bumped phase-runner.ts +30 for the stdin-delivery arm.
+// Unlike the T260 and 098 bumps above, this one buys real work rather than a
+// note: a new classification arm, checked above the existing chain. It is not a
+// split, and the reason is coherence — every sibling arm (timeout, cancellation,
+// clean-with-nonzero-exit) is decided here, and extracting one of five would put
+// a decision somewhere no reader would look for it while leaving the other four
+// in place. The rationale that would have cost another sixteen lines lives in
+// specs/132-child-stdin-completion/contracts/stdin-delivery.md instead, which is
+// why the arm costs 30 and not 46.
+//
+// Bumped again +10 during the same feature's review: the arm's guard narrowed
+// from `raw.stdinDeliveryFailed` to `... && result.kind === 'clean'`, and the
+// note records why, because the wrong version is the plausible one. A backend
+// that refuses before reading — stale --resume id, bad flag, auth or credit
+// refusal — exits fast and EPIPEs an undrained prompt, and the unnarrowed arm
+// swallowed `rate_limited` (losing its reset-scheduled retry) and dropped
+// fatal-signature classification. This is the budget buying a note again.
+//
+// Bumped again +20 during the same feature's code review, for audit evidence the
+// early-return arms were dropping: the stdin arm now records the parsed audit
+// block's file/command evidence (the parse is clean there, so that evidence
+// exists and `fileChangeCounts: {0,0,0}` was a false record), and the timeout arm
+// now carries `exitCode` and the runner's `diagnosticWarnings` — without the
+// former the projection defaulted an absent code to 0 and recorded a clean exit
+// for a SIGTERMed child, and without the latter a `stdin-delivery-failed` on a
+// timed-out run reached no durable record at all.
 const BUDGETS = [
-  { path: 'src/controller/phase-runner.ts', max: 815 },
+  { path: 'src/controller/phase-runner.ts', max: 875 },
   { path: 'src/controller/phase-sidecar-reader.ts', max: 400 },
   { path: 'src/controller/phase-retry-evaluator.ts', max: 180 },
   // Raised from 100 on 2026-08-16. The truncation arm of `mapOutcome` stopped

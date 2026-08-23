@@ -59,7 +59,7 @@ describe('AgyCliRunner.invoke', () => {
       seen.command = command;
       seen.args = args;
       seen.options = options;
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new AgyCliRunner(spawnFn, null, silentLogger());
@@ -85,7 +85,7 @@ describe('AgyCliRunner.invoke', () => {
   it('rejects effort xhigh with an Error', async () => {
     const child = makeFakeChild();
     const spawnFn: SpawnFn = (_cmd, _args, _opts) => {
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new AgyCliRunner(spawnFn, null, silentLogger());
@@ -103,7 +103,7 @@ describe('AgyCliRunner.invoke', () => {
   it('rejects effort max with an Error', async () => {
     const child = makeFakeChild();
     const spawnFn: SpawnFn = (_cmd, _args, _opts) => {
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new AgyCliRunner(spawnFn, null, silentLogger());
@@ -124,7 +124,7 @@ describe('AgyCliRunner.invoke', () => {
       const seen: { args: ReadonlyArray<string> } = { args: [] };
       const spawnFn: SpawnFn = (_cmd, args, _opts) => {
         seen.args = args;
-        setImmediate(() => child.emit('exit', 0, null));
+        setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
         return child as unknown as ChildProcess;
       };
       const logger = silentLogger();
@@ -150,7 +150,7 @@ describe('AgyCliRunner.invoke', () => {
     const seen: { args: ReadonlyArray<string> } = { args: [] };
     const spawnFn: SpawnFn = (_cmd, args, _opts) => {
       seen.args = args;
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new AgyCliRunner(spawnFn, null, silentLogger());
@@ -173,7 +173,7 @@ describe('AgyCliRunner.invoke', () => {
     const seen: { args: ReadonlyArray<string> } = { args: [] };
     const spawnFn: SpawnFn = (_cmd, args, _opts) => {
       seen.args = args;
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new AgyCliRunner(spawnFn, null, silentLogger());
@@ -197,7 +197,7 @@ describe('AgyCliRunner.invoke', () => {
     const seen: { args: ReadonlyArray<string> } = { args: [] };
     const spawnFn: SpawnFn = (_cmd, args, _opts) => {
       seen.args = args;
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new AgyCliRunner(spawnFn, null, silentLogger());
@@ -221,7 +221,7 @@ describe('AgyCliRunner.invoke', () => {
     const seen: { args: ReadonlyArray<string> } = { args: [] };
     const spawnFn: SpawnFn = (_cmd, args, _opts) => {
       seen.args = args;
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new AgyCliRunner(spawnFn, null, silentLogger());
@@ -240,7 +240,7 @@ describe('AgyCliRunner.invoke', () => {
   it('emits started/exited monitor events', async () => {
     const child = makeFakeChild();
     const spawnFn: SpawnFn = (_cmd, _args, _opts) => {
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const events: Array<{ kind: string }> = [];
@@ -307,6 +307,7 @@ describe('AgyCliRunner.invoke', () => {
       setImmediate(() => {
         child.stdout.emit('data', 'x'.repeat(MAX_STREAM_BUFFER_BYTES + 1024));
         child.emit('exit', 0, null);
+        child.emit('close', 0, null);
       });
       return child as unknown as ChildProcess;
     };
@@ -347,6 +348,7 @@ describe('AgyCliRunner.invoke', () => {
       await vi.advanceTimersByTimeAsync(1_001);
       expect(child.kill).toHaveBeenCalledWith('SIGTERM');
       child.emit('exit', null, 'SIGTERM');
+      child.emit('close', null, 'SIGTERM');
 
       const result = await invocation;
       expect(result.timedOut).toBe(true);
@@ -365,7 +367,7 @@ describe('AgyCliRunner.invoke', () => {
     const seen: { options: SpawnOptions } = { options: {} };
     const capturingSpawnFn: SpawnFn = (_cmd, _args, options) => {
       seen.options = options;
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new AgyCliRunner(capturingSpawnFn, null, silentLogger());
@@ -403,6 +405,7 @@ describe('AgyCliRunner.invoke', () => {
     child.exitCode = null;
     child.signalCode = 'SIGTERM';
     child.emit('exit', null, 'SIGTERM');
+    child.emit('close', null, 'SIGTERM');
     const result = await invokePromise;
     expect(result.killed).toBe(true);
   });

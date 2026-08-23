@@ -21,6 +21,7 @@ import {
 } from '../lib/incremental-fatal-scanner';
 import { OutputSinkBackpressure } from './output-sink-backpressure';
 import { waitForChildCompletion } from './child-completion';
+import { awaitStdinDelivery, writePromptToStdin } from './child-stdin';
 
 const SIGKILL_DELAY_MS = 2_000;
 // Feature 030 BUG-002 — after the invocation's terminal stream-json result line
@@ -295,18 +296,18 @@ export class ClaudeCliRunner implements BackendRunner {
       this.active.set(invocationToken, child);
       this.emitHook({ kind: 'started', runId: request.runId ?? null, pid: child.pid ?? null });
 
-      if (child.stdin) {
-        try {
-          this._logger.info(`[ClaudeCliRunner] Writing to CLI stdin`);
-          child.stdin.write(request.prompt);
-          this._logger.info(`[ClaudeCliRunner] Ending CLI stdin`);
-          child.stdin.end();
-        } catch (err) {
-          this._logger.info(`[ClaudeCliRunner] Stdin write failed: ${(err as Error).message}`);
-          // stdin already closed; the CLI will fail and that surfaces via
-          // the existing exit-code / classification path.
-        }
-      }
+      // FR-R3-047 — attach-then-write through the shared helper. The previous
+      // shape caught synchronously around the write, and the comment claiming the
+      // failure "surfaces via the existing exit-code / classification path" was
+      // the defect in one sentence: an asynchronous 'error' with no listener is an
+      // uncaught exception, fatal to the extension host rather than to this
+      // invocation. Only the errno is logged; the prompt is operator content.
+      // Started, not awaited: see the note in process-lifecycle-runner.ts. The
+      // `'error'` listener is attached synchronously inside the helper, so the
+      // host is protected from this point on; awaiting here would delay the
+      // stream and lifecycle listeners below and lose a fast child's `'exit'`.
+      this._logger.info(`[ClaudeCliRunner] Writing to CLI stdin`);
+      const deliveryPromise = writePromptToStdin(child, request.prompt);
 
       const stdoutBuffer = new ZippedStreamBuffer();
       const stderrBuffer = new ZippedStreamBuffer();
@@ -475,7 +476,42 @@ export class ClaudeCliRunner implements BackendRunner {
         else request.cancellationSignal.addEventListener('abort', onAbort);
       }
 
-      const completion = await waitForChildCompletion(child, outputSink !== undefined);
+      // FR-R3-047 (M-01) — no second argument; see child-completion.ts.
+      const completion = await waitForChildCompletion(child);
+      // Disarm the idle timer BEFORE reading the delivery result. The child has
+      // completed, so from here the timer can only mislabel: a delivery result
+      // that settles slowly used to be awaited inside the still-armed window,
+      // and an expiry landing in that gap flips `timedOut` /
+      // `completedAwaitingExit` on a run that had already exited.
+      idleTimerActive = false;
+      clearTimeout(timer);
+      // Detach the cancellation listener here too, and for the same reason: the
+      // bounded delivery read below is a NEW await after the child has already
+      // completed, and an abort landing inside it would flip `killed` on an
+      // invocation that had finished — reported on the result and on the
+      // `exited` sidecar event. Before this await existed there was no such
+      // window; closing it keeps that.
+      if (onAbort !== null) {
+        request.cancellationSignal?.removeEventListener?.('abort', onAbort);
+      }
+      // FR-R3-047 — a child that never started (ENOENT on `cliPath`) breaks the
+      // stdin pipe as well: the write fails EPIPE with nothing on the far end.
+      // That is not a delivery defect, and reporting it as one would name the
+      // wrong cause for the commonest misconfiguration there is — while the
+      // condition outranks every other arm of the phase-runner chain. The
+      // child's `'error'` is observed before the write's fate is known, so this
+      // is decided rather than raced. The read is skipped entirely in that case:
+      // `processError` already decides the classification, so the up-to-2s grace
+      // would be paid for a result discarded by construction.
+      const delivery = completion.processError === true
+        ? { delivered: true as const }
+        : await awaitStdinDelivery(deliveryPromise);
+      const stdinDeliveryFailed = !delivery.delivered;
+      if (stdinDeliveryFailed) {
+        this._logger.warn(
+          `[ClaudeCliRunner] Prompt delivery failed: ${delivery.errorCode ?? 'unknown'}`
+        );
+      }
       const exitCode = completion.exitCode;
       // Feature 030 BUG-002 — a grace-terminate after the completion marker
       // is NOT an operator cancellation, so do not flag it `killed` even
@@ -489,11 +525,6 @@ export class ClaudeCliRunner implements BackendRunner {
         );
       }
 
-      if (onAbort !== null) {
-        request.cancellationSignal?.removeEventListener?.('abort', onAbort);
-      }
-      idleTimerActive = false;
-      clearTimeout(timer);
       const exitSignal = completion.signal ??
         (child as { signalCode?: NodeJS.Signals | null }).signalCode ?? null;
       this.emitHook({
@@ -510,6 +541,18 @@ export class ClaudeCliRunner implements BackendRunner {
         await Promise.allSettled(diagnosticWrites);
         const result = diagnosticWriter.result();
         diagnosticWarnings = result.warnings.length > 0 ? result.warnings : undefined;
+      }
+      // FR-R3-047 — a truncated prompt is recorded even when it does not decide
+      // the outcome. Narrowing the phase-runner arm to a clean parse was right,
+      // but it left a delivery failure on a NON-clean invocation living only in
+      // the transient runtime log — and a cause that exists only there is the
+      // exact shape that made a real 2026-08-16 failure undiagnosable from the
+      // audit alone. This code is allowlisted in RECORDABLE_PHASE_END_WARNINGS,
+      // so it is recorded rather than counted and dropped. It rides
+      // `diagnosticWarnings`, which already reaches the audit payload, so the
+      // evidence gap closes without touching the decision chain at all.
+      if (stdinDeliveryFailed) {
+        diagnosticWarnings = [...(diagnosticWarnings ?? []), 'stdin-delivery-failed'];
       }
 
       // Session ID capture — extract the CLI session ID from stream-json
@@ -534,6 +577,9 @@ export class ClaudeCliRunner implements BackendRunner {
         diagnosticWarnings,
         command,
         cliSessionId,
+        ...(stdinDeliveryFailed
+          ? { stdinDeliveryFailed: true, stdinErrorCode: delivery.errorCode }
+          : {}),
         ...(stdoutScanner && stderrScanner
           ? { streamFatalMatch: combineStreamScans(stdoutScanner, stderrScanner) }
           : {})

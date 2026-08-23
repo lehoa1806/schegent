@@ -127,7 +127,9 @@ describe('phase-end warning vocabulary', () => {
       '[constitution] missing audit log on clean response',
       '[constitution] multiple contract blocks',
       '[constitution] unterminated audit log',
-      'output-truncated-unclassifiable'
+      'output-truncated-unclassifiable',
+      // FR-R3-047 (H-04). A code-resident literal, like every member here.
+      'stdin-delivery-failed'
     ]);
   });
 

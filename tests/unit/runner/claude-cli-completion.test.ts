@@ -49,7 +49,13 @@ function makeFakeChild(emitExitOnKill: boolean): FakeChild {
     child.killed = true;
     // Simulate the OS delivering the signal: the process exits with a null
     // exit code and the signal name.
-    if (emitExitOnKill) child.emit('exit', null, 'SIGTERM');
+    // A real ChildProcess always emits 'close' after 'exit'. Emitting only
+    // 'exit' encoded the removed `waitForStdioClose=false` semantics, under
+    // which the runner stopped listening at exit; it now waits for close.
+    if (emitExitOnKill) {
+      child.emit('exit', null, 'SIGTERM');
+      child.emit('close', null, 'SIGTERM');
+    }
     return true;
   });
   return child;
@@ -217,6 +223,7 @@ describe('ClaudeCliRunner — BUG-002 completion-marker grace-terminate', () => 
       setTimeout(() => {
         child.stdout.emit('data', COMPLETE_OUTPUT + '\n{"type":"result"}\n');
         child.emit('exit', 0, null);
+        child.emit('close', 0, null);
       }, 6000);
       return child as unknown as ChildProcess;
     };

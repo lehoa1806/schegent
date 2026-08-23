@@ -6,6 +6,20 @@ export interface ChildCompletion {
   readonly exitCode: number | null;
   readonly signal: NodeJS.Signals | null;
   readonly stdioCloseTimedOut: boolean;
+  /**
+   * FR-R3-047 — the child emitted a process-level `'error'`: most often a spawn
+   * that never produced a process at all (ENOENT on a mistyped CLI path).
+   * Absent means a process ran.
+   *
+   * Callers need this beside the prompt-delivery result because a child that
+   * never started breaks the stdin pipe too — measured on Node v24.19.0, the
+   * write fails `EPIPE` — and calling that a prompt-delivery failure names a
+   * cause that is not the cause for the commonest misconfiguration there is.
+   * The child's `'error'` is emitted before the write's fate is known, so a
+   * caller reading this alongside the delivery result sees it set rather than
+   * racing it.
+   */
+  readonly processError?: boolean;
 }
 
 /**
@@ -20,7 +34,23 @@ export interface ChildCompletion {
  */
 export function waitForChildCompletion(
   child: ChildProcess,
-  waitForStdioClose: boolean,
+  /**
+   * FR-R3-047 (M-01) — defaults to waiting, and every production call site now
+   * omits it. Both runners used to pass `outputSink !== undefined`, so whether a
+   * transcript sink existed decided whether this helper settled on `exit` or
+   * waited for `close`: with capture off it stopped at `exit` and lost anything
+   * buffered before `close`, which can include the terminal `{"type":"result"}`
+   * line and the session id. The comment below already said that waiting only for
+   * `exit` "loses buffered output"; the callers then did exactly that whenever an
+   * operator turned capture off. A privacy setting must not select correctness.
+   *
+   * The parameter survives rather than being removed because this helper's own
+   * tests in `tests/unit/runner/child-completion.test.ts` pass it explicitly and
+   * exercise both settling boundaries. What makes the regression unrepresentable
+   * is the lint guard forbidding a production call site from passing `false`, not
+   * the shape of this signature.
+   */
+  waitForStdioClose = true,
   closeGraceMs = STDIO_CLOSE_GRACE_MS
 ): Promise<ChildCompletion> {
   return new Promise((resolve) => {
@@ -39,12 +69,19 @@ export function waitForChildCompletion(
     const settle = (
       code: number | null,
       signal: NodeJS.Signals | null,
-      stdioCloseTimedOut: boolean
+      stdioCloseTimedOut: boolean,
+      processError = false
     ): void => {
       if (settled) return;
       settled = true;
       cleanup();
-      resolve({ exitCode: code, signal, stdioCloseTimedOut });
+      resolve({
+        exitCode: code,
+        signal,
+        stdioCloseTimedOut,
+        // Set only on the failing path, so the healthy shape is unchanged.
+        ...(processError ? { processError: true } : {})
+      });
     };
     const onExit = (code: number | null, signal: NodeJS.Signals | null): void => {
       exitObserved = true;
@@ -71,7 +108,26 @@ export function waitForChildCompletion(
         false
       );
     };
-    const onError = (): void => settle(null, null, false);
+    // A ChildProcess `'error'` is NOT synonymous with "no process ran". Node
+    // emits it for a failed spawn, but also for a `kill()` that fails on a LIVE
+    // child — which `terminate()` performs on every idle expiry and every
+    // cancellation. `processError` is consumed as "there was no child" and is
+    // used to suppress the prompt-delivery condition, so widening it to any
+    // `'error'` would silently discard a real EPIPE truncation on a live
+    // backend. `pid` is the exact discriminator: it is assigned only after the
+    // spawn succeeded, so `undefined` means no process was ever created.
+    //
+    // The observed exit state is preserved for the same reason. An `'error'`
+    // arriving inside the stdio-close grace, after `'exit'` already reported a
+    // code, must not replace that code with `null` — the projection and the
+    // `killed` checks both read `exitCode === null` as "terminated by signal".
+    const onError = (): void =>
+      settle(
+        exitObserved ? exitCode : null,
+        exitObserved ? exitSignal : null,
+        false,
+        child.pid === undefined
+      );
 
     child.once('exit', onExit);
     child.once('close', onClose);
