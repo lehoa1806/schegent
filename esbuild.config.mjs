@@ -9,7 +9,13 @@ const extensionConfig = {
   outfile: 'dist/extension.js',
   format: 'cjs',
   platform: 'node',
-  target: 'node20',
+  // FR-R3-059 (V-06 residual). Was `node20` while `engines.node` declares
+  // `^22 || ^24`. A LOWER downlevel target is conservative, not risky -- the
+  // 2026-08-23 review corrected an earlier draft that offered this as evidence
+  // of an unqualified floor, and it is not. It is simply a mismatch: the bundle
+  // was downlevelled for a runtime the package refuses to run on. Aligned to the
+  // declared floor so the two numbers say the same thing.
+  target: 'node22',
   external: ['vscode'],
   sourcemap: !isProduction,
   minify: isProduction,

@@ -26,6 +26,9 @@ jobs:
       contents: write
       id-token: write
       attestations: write
+      # FR-R3-060 — reading this commit's `full-gate.yml` runs. Read-only, and
+      # the narrowest scope that can answer "did the full gate pass here".
+      actions: read
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -33,6 +36,25 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
+
+      # FR-R3-060 (M-09 / R-13) — the full gate must have run green on THIS
+      # commit. Before this step, `verify:all` + build + smoke + integration ran
+      # at the tag while the eval / e2e / perf / visual / full-coverage gate was a
+      # sentence in RELEASE.md, so a tag could publish with signed provenance over
+      # an artifact whose full gate ran on a different commit or not at all.
+      #
+      # Tag runs only. A `workflow_dispatch` deliberately creates no release, so
+      # requiring release evidence from it would block the dry-run this file
+      # documents as the way to check a commit before tagging.
+      #
+      # Placed before `npm ci` so a missing gate costs seconds, matching the
+      # tag/version parity check below.
+      - name: Require a green full gate at this exact commit
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: node scripts/require-full-gate.mjs
 
       # Feature 113 (FR-011 to FR-017). The trigger is `tags: ['v*']` and nothing
       # compared the tag to the manifest, so a `v0.3.0` tag on a commit declaring
