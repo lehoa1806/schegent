@@ -1,4 +1,5 @@
 import type { RawTranscriptWriter } from '../audit/raw-transcript-writer';
+import { policyRequestFields } from '../runner/spawn-env';
 import type { BackendRunner } from '../contracts/backend-runner';
 import type { SanitizedLogger } from '../lib/logger';
 import type { RawTranscriptMode } from '../state/workflow-run';
@@ -57,10 +58,8 @@ export async function compactClaudeSession(inputs: SessionCompactionInputs): Pro
       cliPath: inputs.cliPath,
       cwd: inputs.cwd,
       env: { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '1' },
-      ...(inputs.inheritProcessEnv === false ? { inheritProcessEnv: false } : {}),
-      ...(inputs.processEnvAllowlist !== undefined
-        ? { processEnvAllowlist: inputs.processEnvAllowlist }
-        : {}),
+      // FR-R3-049 — via the shared helper.
+      ...policyRequestFields(inputs),
       cancellationSignal: inputs.cancellationSignal,
       sessionReuse: true,
       resumeSessionId: inputs.resumeSessionId,

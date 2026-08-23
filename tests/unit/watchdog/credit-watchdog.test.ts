@@ -1,12 +1,24 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ZippedStreamBuffer } from '../../../src/runner/zipped-stream-buffer';
-import { CREDIT_POLL_PHASE_LABEL, CreditWatchdog } from '../../../src/watchdog/credit-watchdog';
+import {
+  CREDIT_POLL_PHASE_LABEL,
+  CreditWatchdog,
+  type WatchdogOptions
+} from '../../../src/watchdog/credit-watchdog';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import type { Memento } from '../../../src/state/workspace-state';
 import type { ClaudeCliRunner } from '../../../src/runner/claude-cli';
 import type { SchegentStatusBar } from '../../../src/ui/status-bar';
 import type { RawInvocationOutput } from '../../../src/runner/invocation-result';
+
+/**
+ * FR-R3-049 — the watchdog now requires an environment policy, so every
+ * construction site supplies one. Added as a field only: no assertion in this
+ * file changes, because the poll's cadence, pause/resume and status detection
+ * are untouched by this feature.
+ */
+const TEST_ENV_POLICY = { mode: 'inherit', inheritProcessEnv: true } as const;
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -59,7 +71,8 @@ const watchdogOpts = {
   pollIntervalMs: 30 * 60 * 1000,
   cliPath: 'claude',
   cwd: '/repo',
-  timeoutMs: 60_000
+  timeoutMs: 60_000,
+  environmentPolicy: TEST_ENV_POLICY
 };
 
 let memento: FakeMemento;
@@ -153,6 +166,67 @@ describe('CreditWatchdog poll behavior', () => {
     );
     expect(CREDIT_POLL_PHASE_LABEL).not.toBe('finalize');
     watchdog.dispose();
+  });
+
+  /**
+   * FR-R3-049 — the poll's forwarded policy is OBSERVED here, not modelled.
+   *
+   * Neither of the feature's two new gates covers this. The parity test models
+   * each call site's request by calling `policyRequestFields` itself, so it
+   * passes whatever the watchdog does; the `tests/lint` guard reads the call's
+   * argument text and only asks that the helper's *name* appear in it. Measured:
+   * rewriting the poll as `...policyRequestFields({})` keeps `tsc --noEmit`, the
+   * guard, the parity test and this file all green while the poll is back to
+   * inheriting the complete ambient environment — the original defect, exactly.
+   *
+   * `tests/unit/controller/phase-runner.test.ts` already asserts the forwarded
+   * allowlist on the real request for the two call sites that were correct. The
+   * one site that was wrong was the one with no such assertion.
+   */
+  const RESTRICTIVE_POLICY = {
+    mode: 'allowlist',
+    inheritProcessEnv: false,
+    // A synthetic name: this file asserts which names are forwarded, never a value.
+    processEnvAllowlist: ['SCHEGENT_ALLOWED_FIXTURE_NAME']
+  } as const;
+
+  async function pollOnce(runner: ClaudeCliRunner, opts: WatchdogOptions): Promise<void> {
+    const watchdog = new CreditWatchdog(
+      runner, store, makeStatusBar(), new SanitizedLogger(), opts, async () => {}
+    );
+    await watchdog.pauseAndPoll('rate-limit');
+    await vi.advanceTimersByTimeAsync(opts.pollIntervalMs + 100);
+    await Promise.resolve();
+    await Promise.resolve();
+    watchdog.dispose();
+  }
+
+  it('forwards a configured environment policy on the poll (FR-001)', async () => {
+    const runner = makeRunner(async () => makeRawOutput({ stdout: 'status: ok' }));
+    await pollOnce(runner, { ...watchdogOpts, environmentPolicy: RESTRICTIVE_POLICY });
+
+    expect(runner.invoke).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: '/status',
+        inheritProcessEnv: false,
+        processEnvAllowlist: ['SCHEGENT_ALLOWED_FIXTURE_NAME']
+      })
+    );
+  });
+
+  it('forwards an inherit policy as the absence of both fields (FR-005)', async () => {
+    // The other direction: the default must not arrive as `inheritProcessEnv:
+    // false`, or threading the policy would turn every unconfigured host's poll
+    // into an overlay-only spawn that cannot resolve a bare `cli.path`.
+    const runner = makeRunner(async () => makeRawOutput({ stdout: 'status: ok' }));
+    await pollOnce(runner, watchdogOpts);
+
+    const request = (runner.invoke as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<
+      string,
+      unknown
+    >;
+    expect('inheritProcessEnv' in request).toBe(false);
+    expect('processEnvAllowlist' in request).toBe(false);
   });
 
   it('clears the window-level pause before resuming (T050)', async () => {

@@ -1,4 +1,5 @@
 import type { Phase, PhaseOutcome } from './phase';
+import { policyRequestFields } from '../runner/spawn-env';
 import type { BackendRunner } from '../contracts/backend-runner';
 import type { BackendRunnerRegistry } from '../runner/backend-runner-registry';
 import { DEFAULT_BACKEND } from '../runner/backend-runner-factory';
@@ -444,10 +445,8 @@ export class PhaseRunner {
         cliPath: inputs.cliPath,
         cwd: inputs.cwd,
         env,
-        ...(inputs.inheritProcessEnv === false ? { inheritProcessEnv: false } : {}),
-        ...(inputs.processEnvAllowlist !== undefined
-          ? { processEnvAllowlist: inputs.processEnvAllowlist }
-          : {}),
+        // FR-R3-049 — via the shared helper; see its docstring for why.
+        ...policyRequestFields(inputs),
         cancellationSignal: inputs.cancellationSignal,
         ...(inputs.phaseDef?.model ? { model: inputs.phaseDef.model } : {}),
         ...(inputs.phaseDef?.effort ? { effort: inputs.phaseDef.effort } : {}),
