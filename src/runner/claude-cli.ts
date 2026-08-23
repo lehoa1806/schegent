@@ -22,6 +22,7 @@ import {
 import { OutputSinkBackpressure } from './output-sink-backpressure';
 import { waitForChildCompletion } from './child-completion';
 import { awaitStdinDelivery, writePromptToStdin } from './child-stdin';
+import { LineFramer, DEFAULT_MAX_LINE_UNITS } from '../lib/line-framer';
 
 const SIGKILL_DELAY_MS = 2_000;
 // Feature 030 BUG-002 — after the invocation's terminal stream-json result line
@@ -337,7 +338,8 @@ export class ClaudeCliRunner implements BackendRunner {
       // is classified on its merits rather than discarded as a timeout failure.
       let sawCompletionMarker = false;
       let completedAwaitingExit = false;
-      let stdoutLineBuffer = '';
+      const stdoutFramer = new LineFramer();
+      let reportedFramingLoss = false;
       const invocationStartedAt = Date.now();
       // BUG-004 (FR-029) — replay suppression is now decided from the stream,
       // not the clock. `sawCurrentTurnBoundary` latches on this invocation's
@@ -399,17 +401,26 @@ export class ClaudeCliRunner implements BackendRunner {
         // A parsed terminal result starts the short settle window. Resumed
         // startup history is ignored even when it contains non-result events
         // before the replayed result; fresh invocations accept fast results.
-        for (const char of chunk) {
-          if (char === '\n') {
-            // FR-029 — the boundary is checked before the result on the same
-            // chunk is judged, so an `init` and the turn's own result arriving
-            // together resolve as live. This is the whole of BUG-004: the
-            // wall-clock guard could only decide *when* to suppress, never
-            // *what*, so it discarded a resumed invocation's genuine result as
-            // readily as a replayed one and disabled FR-025's grace-terminate
-            // for the window's full duration.
-            if (isSessionInitLine(stdoutLineBuffer)) sawCurrentTurnBoundary = true;
-            if (isTerminalResultLine(stdoutLineBuffer)) {
+        // FR-R3-052 (H-03) — the same bounded framer the monitor uses. This
+        // was `stdoutLineBuffer += char`, reset only on a newline, so a stream
+        // that never emitted one retained every byte the CLI produced for the
+        // life of the invocation. The judgements below are unchanged: each
+        // `line` is exactly what the character loop would have accumulated.
+        const framed = stdoutFramer.append(chunk);
+        if (framed.truncatedLines > 0 && !reportedFramingLoss) {
+          reportedFramingLoss = true;
+          // No silent caps. Fixed fields only, per this logger's discipline.
+          this._logger.warn(
+            '[ClaudeCliRunner] stdout line exceeded the framing bound ' +
+              `limitUnits=${DEFAULT_MAX_LINE_UNITS} ` +
+              `truncatedLines=${stdoutFramer.totals.truncatedLines} ` +
+              `droppedUnits=${stdoutFramer.totals.droppedUnits} ` +
+              `phase=${request.phase} iteration=${request.iteration}`
+          );
+        }
+        for (const line of framed.lines) {
+            if (isSessionInitLine(line)) sawCurrentTurnBoundary = true;
+            if (isTerminalResultLine(line)) {
               const replayingHistory =
                 shouldResume &&
                 !sawCurrentTurnBoundary &&
@@ -435,13 +446,9 @@ export class ClaudeCliRunner implements BackendRunner {
               } else {
                 sawCompletionMarker = true;
               }
-            } else if (isStreamJsonEventLine(stdoutLineBuffer)) {
+            } else if (isStreamJsonEventLine(line)) {
               sawCompletionMarker = false;
             }
-            stdoutLineBuffer = '';
-          } else {
-            stdoutLineBuffer += char;
-          }
         }
         if (!outputBackpressure.isBlocked) resetIdleTimer();
         this.emitHook({ kind: 'stdout-chunk', runId: request.runId ?? null, chunk });
