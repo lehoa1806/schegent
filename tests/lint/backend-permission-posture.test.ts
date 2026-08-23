@@ -486,7 +486,7 @@ describe('backend permission posture', () => {
  * date. Enumerated deliberately: a directory-wide exclusion would let the next
  * drift land in a file nobody re-reads.
  *
- * Honest note: on today's tree this list excludes nothing — neither review
+ * Honest note: on today's tree this list excludes nothing — the listed review
  * currently pairs the vocabulary with a `sideEffects` reference, so removing the
  * list would not turn the suite red. It is here because a dated review that
  * quotes the old wording is a normal thing to write, and the mechanism was
@@ -495,8 +495,7 @@ describe('backend permission posture', () => {
  * seen fire is one nobody should trust.
  */
 const HISTORICAL_RECORDS = Object.freeze([
-  'docs/operations/principal-architecture-review-2026-05-18.md',
-  'docs/operations/superseded-architecture-review.md'
+  'docs/operations/principal-architecture-review-2026-05-18.md'
 ]);
 
 /** Phrases that describe `sideEffects` as bounding the subprocess. */

@@ -79,10 +79,6 @@ const HISTORICAL: ReadonlyArray<{ path: string; why: string }> = Object.freeze([
     why: 'a dated review; its accuracy is a property of its date'
   },
   {
-    path: 'docs/operations/superseded-architecture-review.md',
-    why: 'a dated review; its accuracy is a property of its date'
-  },
-  {
     path: 'tests/lint/retired-identifiers.test.ts',
     why: 'this file names every retired identifier by definition'
   }
