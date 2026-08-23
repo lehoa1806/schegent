@@ -44,13 +44,49 @@ const DEFAULT_MAX_ARCHIVE_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 const RETENTION_MAX_ARCHIVE_AGE_FLOOR_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
- * Per-append fs.appendFile timeout. A wedged disk (NFS mount under
- * load, full filesystem with delayed-allocation backpressure) could
- * otherwise stall the entire audit pipeline. On timeout the chained
- * promise resolves so subsequent appends can make progress; the
- * failure is logged via the fallback logger.
+ * The CALLER's latency bound on one append. A wedged disk (NFS mount under
+ * load, full filesystem with delayed-allocation backpressure) must not stall
+ * the phase that is waiting on this entry, so on expiry the caller's promise
+ * rejects and the failure is logged via the fallback logger.
+ *
+ * It bounds the CALLER ONLY. It does not release the write chain, and it does
+ * not cancel the append -- Node offers no way to abort an in-flight
+ * `fs.appendFile`, so the write is still live after this fires.
+ * `ORDERING_BARRIER_TIMEOUT_MS` is what governs the chain.
  */
 const APPEND_TIMEOUT_MS = 5000;
+
+/**
+ * The CHAIN's ordering barrier: how long append N+1 waits for append N to
+ * really settle before giving up on ordering.
+ *
+ * These were once the same timer, and that was the defect (FR-R3-050, M-02).
+ * `Promise.race` reports whichever side settles first; it cannot cancel the
+ * loser. So when the 5s bound fired, the caller was told the append failed AND
+ * the chain advanced -- while the abandoned write was still in flight. The next
+ * link may rotate the log or append its own line, so that write could land in a
+ * generation it does not belong to, or after a line that was written later.
+ * Silent, and indistinguishable from success on inspection.
+ *
+ * Deliberately far above the caller's bound: it exists for a permanently wedged
+ * device, not for a slow one. Unbounded was the first answer and is wrong --
+ * it stops the audit pipeline forever and loses every subsequent entry, whereas
+ * a recorded reorder is still evidence. On expiry ordering really is lost, so
+ * the writer says so (`ORDERING_UNGUARANTEED_CODE`) rather than letting the log
+ * imply a sequence it no longer has.
+ */
+const ORDERING_BARRIER_TIMEOUT_MS = 60_000;
+
+/**
+ * Logged when the barrier above expires. Code-resident and stable so an
+ * operator can grep one string to learn that audit ordering is not guaranteed
+ * from that point in the run.
+ *
+ * NOT added to `RECORDABLE_PHASE_END_WARNINGS`: nothing routes a writer-level
+ * code into `diagnosticWarnings` (only the runner layer produces those), so an
+ * entry there would be allowlist surface no producer can reach.
+ */
+const ORDERING_UNGUARANTEED_CODE = 'audit-append-ordering-unguaranteed';
 
 /**
  * Strict matcher for current and legacy timestamped archive names so the
@@ -178,11 +214,18 @@ export class AuditLogWriter {
     // alone — the prior generic "audit append failed: <message>" left
     // operators correlating timestamps by hand. Keep the message free of
     // path/body bytes (paths-free audit discipline, see hard rule 014).
-    const next = this.writeChain.then(
+    // `settled` resolves when the append REALLY settles -- no timeout on it.
+    // The chain barrier and the caller's bound then hang off it separately,
+    // because they are two different guarantees that one timer used to serve.
+    const settled = this.writeChain.then(
       () => this.doWrite(line),
       () => this.doWrite(line)
     );
-    this.writeChain = next.catch((err) => {
+    // The barrier keeps its own link, so a caller-bound expiry cannot release
+    // the chain and let an abandoned write interleave with the next append.
+    this.writeChain = this.holdOrdering(settled);
+    const next = this.boundForCaller(settled);
+    next.catch((err) => {
       const code = (err as NodeJS.ErrnoException).code;
       const shouldWarn = this.evidenceHealth?.reportFailure(
         'audit',
@@ -218,10 +261,21 @@ export class AuditLogWriter {
     await fs.mkdir(dir, { recursive: true });
     await this.ensureRuntimeGitignore();
     await this.maybeRotate();
+    // No timeout here. Whoever needs a bound wraps this; the chain needs the
+    // real settlement, and racing it away in here is what lost the ordering.
+    await fs.appendFile(this.logPath, line, 'utf8');
+  }
+
+  /**
+   * The caller's view: reject on `APPEND_TIMEOUT_MS` so a wedged disk cannot
+   * stall a phase. Observably unchanged from the previous behaviour -- same
+   * bound, same rejection, same message.
+   */
+  private async boundForCaller(settled: Promise<void>): Promise<void> {
     let timer: NodeJS.Timeout | undefined;
     try {
       await Promise.race([
-        fs.appendFile(this.logPath, line, 'utf8'),
+        settled,
         new Promise<never>((_, reject) => {
           timer = setTimeout(
             () => reject(new Error(`audit append timed out after ${APPEND_TIMEOUT_MS}ms`)),
@@ -232,6 +286,40 @@ export class AuditLogWriter {
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
+  }
+
+  /**
+   * The chain's view: hold the next append until this one has really settled,
+   * so nothing can interleave with a write the caller already gave up on.
+   *
+   * Bounded by `ORDERING_BARRIER_TIMEOUT_MS` rather than unbounded, and the
+   * expiry is recorded: past that point ordering genuinely is not guaranteed,
+   * and a log that stays silent about it reads as an ordered log.
+   *
+   * Never rejects -- it is the chain, and a rejected chain link would surface
+   * as an unhandled rejection with no caller to receive it.
+   */
+  private holdOrdering(settled: Promise<void>): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    const expired = new Promise<'expired'>((resolve) => {
+      timer = setTimeout(() => resolve('expired'), ORDERING_BARRIER_TIMEOUT_MS);
+      timer.unref();
+    });
+    return Promise.race([
+      settled.then(() => 'settled' as const, () => 'settled' as const),
+      expired
+    ])
+      .then((outcome) => {
+        if (outcome !== 'expired') return;
+        this.logger.warn(
+          'audit append ordering is no longer guaranteed; an append stayed ' +
+            'in flight past the ordering barrier',
+          { code: ORDERING_UNGUARANTEED_CODE, barrierMs: ORDERING_BARRIER_TIMEOUT_MS }
+        );
+      })
+      .finally(() => {
+        if (timer !== undefined) clearTimeout(timer);
+      });
   }
 
   private ensureRuntimeGitignore(): Promise<void> {
