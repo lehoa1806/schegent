@@ -22,7 +22,7 @@ The Memento-backed adapter is only the stage-one default and a test-double fallb
 
 Each resource is represented by generation-numbered JSON files. Acquisition reads the highest generation and attempts to create the next generation with the filesystem's exclusive-create primitive. Exactly one contender can create a given filename; a loser observes `EEXIST`, rereads, and either reports the winner or contests a later generation. Acquisition retries are bounded at eight attempts and exhaustion is an unavailable/refusal result.
 
-The generation number is the fence. Every holder carries its issued fence into authoritative verification, heartbeat, guarded writes, and release. If a stalled generation is reclaimed, the revived predecessor still presents its older fence and is rejected as stale. An incomplete generation file left by a crash is skipped; later acquisition advances beyond it rather than treating it as a permanent holder.
+The generation number is the fence. Every holder carries its issued fence into authoritative verification, heartbeat, guarded writes, and release — **and into the point of effect of a heartbeat's own write** (FR-R3-055, see the residuals below). If a stalled generation is reclaimed, the revived predecessor still presents its older fence and is rejected as stale. An incomplete generation file left by a crash is skipped; later acquisition advances beyond it rather than treating it as a permanent holder.
 
 <!-- Source: src/state/ownership-registry.ts -->
 <!-- Source: src/state/lock.ts -->
@@ -54,3 +54,32 @@ The integration suite exercises simultaneous two-host and eight-host primacy ele
 
 <!-- Source: tests/integration/multi-window/ownership-election.test.ts -->
 <!-- Source: tests/lint/ownership-registry-wiring.test.ts -->
+
+## What is guaranteed, and what is not
+
+The review of 2026-08-23 (H-06) found this document overstating propagation. This section states the
+residuals, so that a reader who needs a guarantee can tell which ones exist.
+
+**Guaranteed.** Acquisition is compare-and-swap against the registry, so exactly one holder is
+elected per resource. A revived predecessor presents an older fence and is rejected at verification,
+at heartbeat, and at release. A heartbeat that overlaps a release cannot restore a released holder:
+the fence map is a local closing epoch, checked immediately before the heartbeat's write
+(FR-R3-055), and `release` drains a beat already in flight so a caller returning from it can rely on
+no further write arriving.
+
+**Not guaranteed, and outstanding.**
+
+1. **`writeGuarded` is two operations, not one transaction.** It verifies (or heartbeats) and then
+   separately awaits the callback. A lease reclaimed between those two steps does not stop the write.
+   Closing it needs either a compare-and-swap-capable commit, or fence-stamped snapshots that readers
+   reject by generation at read time. Neither is implemented.
+
+2. **Ordinary queue and Run mutations do not carry a fence to their commit point.** Admission-time
+   ownership is their only check. A Run that loses its lease mid-work will still commit its next state
+   mutation.
+
+3. **`writeGuarded`'s single production caller guards only the advisory `KEYS.lock` mirror**, so the
+   protection it provides is narrower than the function's name suggests.
+
+Items 1–3 are filed as the remainder of FR-R3-055. Until they ship, treat the fence as authoritative
+for *election and heartbeat*, and as advisory for *the content of a write*.

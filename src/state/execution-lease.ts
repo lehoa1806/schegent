@@ -63,6 +63,8 @@ export class ExecutionLeaseManager {
   private readonly clock: Clock;
   private readonly scheduler: Scheduler;
   private heartbeatHandle: SchedulerHandle | null = null;
+  /** FR-R3-055 — the beat currently in flight, so a release can drain it. */
+  private inFlightBeat: Promise<void> | null = null;
   /** Queue id → the generation this window's claim on it was issued at. */
   private readonly fences = new Map<string, number>();
 
@@ -187,6 +189,16 @@ export class ExecutionLeaseManager {
    * the drain's step 6 is the one place allowed to decide to contend for it.
    */
   public async heartbeat(): Promise<void> {
+    const beat = this.runHeartbeat();
+    this.inFlightBeat = beat;
+    try {
+      await beat;
+    } finally {
+      if (this.inFlightBeat === beat) this.inFlightBeat = null;
+    }
+  }
+
+  private async runHeartbeat(): Promise<void> {
     const now = this.clock.now();
     for (const [queueId, fence] of [...this.fences]) {
       const verdict = await this.ownership.heartbeat(
@@ -204,6 +216,15 @@ export class ExecutionLeaseManager {
         }
         continue;
       }
+      // FR-R3-055 (H-06) — the closing epoch, checked at the point of effect.
+      //
+      // A release can run to completion while this beat is parked on the await
+      // above. Writing here would restore this window as the holder of a queue it
+      // has given back -- a resurrected holder, which the next window then has to
+      // wait out as a stale lease. The fence map IS the epoch: `releaseOne`
+      // deletes the entry, so a beat whose fence is no longer the live one has
+      // nothing left to refresh.
+      if (this.fences.get(queueId) !== fence) continue;
       const lease = this.store.getExecutionLeases()[queueId];
       await this.store.setExecutionLease(queueId, {
         queueId,
@@ -218,6 +239,7 @@ export class ExecutionLeaseManager {
   public async release(queueId: string): Promise<void> {
     await this.releaseOne(queueId);
     this.stopHeartbeatIfIdle();
+    await this.drainHeartbeat();
   }
 
   public async releaseAll(): Promise<void> {
@@ -240,6 +262,7 @@ export class ExecutionLeaseManager {
       await this.releaseOne(queueId);
     }
     this.stopHeartbeatIfIdle();
+    await this.drainHeartbeat();
   }
 
   /**
@@ -299,6 +322,26 @@ export class ExecutionLeaseManager {
 
   private isStale(lease: ExecutionLease, now: number): boolean {
     return now - lease.heartbeatAt > STALENESS_THRESHOLD_MS;
+  }
+
+  /**
+   * FR-R3-055 (H-06) — wait out a beat already in flight, so a caller returning
+   * from `release` can rely on no further write arriving for that queue.
+   *
+   * The epoch check above is what makes the outcome CORRECT; this makes it
+   * OBSERVABLE. Without it, `release` returned while a beat was still parked and
+   * a test -- or a caller reading the record immediately afterwards -- saw
+   * whatever the interleaving produced.
+   *
+   * Unbounded on purpose. The beat awaits the same storage calls `release` itself
+   * performs, so wedged storage was already going to block `release` at
+   * `setExecutionLease`; waiting here introduces no new unbounded wait, and a
+   * bound would only restore the window the epoch check exists to close.
+   */
+  private async drainHeartbeat(): Promise<void> {
+    const beat = this.inFlightBeat;
+    if (!beat) return;
+    await beat.catch(() => undefined);
   }
 
   private startHeartbeat(): void {
