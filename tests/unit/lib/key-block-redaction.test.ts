@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest';
 import {
   KeyBlockLineRedactor,
   MAX_KEY_BLOCK_LINES,
+  REDACTION_SENTINEL,
   SanitizedLogger
 } from '../../../src/lib/logger';
 import {
   ADJACENT_BLOCKS,
   BODY_SENTINEL,
+  CONCATENATED_KEYS_SHARED_LINE,
   FAKE_MARKER_IN_BODY,
   FOOTER_MARK,
   PRIVATE_KEY_CASES,
@@ -75,6 +77,22 @@ describe('whole-string sinks redact the complete block (SC-001)', () => {
   it('is not fooled by a body line shaped like a marker (SC-009)', () => {
     const out = logger.sanitize(FAKE_MARKER_IN_BODY);
     expect(out.includes(BODY_SENTINEL)).toBe(false);
+  });
+
+  it('redacts the block even when another pattern starts earlier on the line', () => {
+    // Review finding. Alternation is LEFTMOST-match, not array-order match: an
+    // entry that starts earlier in the input wins whatever its position in
+    // `SECRET_PATTERNS`. The env-style `KEY=VALUE` entry and the `sk-…` entry
+    // both accept `-` in their value class, so each consumed the BEGIN marker's
+    // leading dash run; with the marker gone neither key-block alternative could
+    // fire and the whole body and footer survived — H-07 again, by another route.
+    const prefixes = ['SECRET_KEY=', 'TOKEN=', 'PASSWORD=', 'ACCESS_KEY=', 'API_KEY='];
+    for (const prefix of prefixes) {
+      const out = logger.sanitize(`${prefix}${PRIVATE_KEY_CASES[1]!.text}`);
+      for (const secret of PRIVATE_KEY_CASES[1]!.mustNotSurvive) {
+        expect(out.includes(secret), prefix).toBe(false);
+      }
+    }
   });
 
   it('keeps surrounding prose on both sides of a block (FR-003)', () => {
@@ -210,6 +228,27 @@ describe('the line redactor is bounded and conservative (SC-004)', () => {
     expect(redactor.isOpen).toBe(true);
   });
 
+  it('stops honouring END past the line cap, so no crafted marker releases a tail', () => {
+    // The lenient close (any private-key END, not the label that opened) accepts
+    // one pathological shape: a crafted body line spelling a well-formed END
+    // marker. The spec accepts it BECAUSE the line cap bounds it, so the cap has
+    // to be load-bearing — a counter that is incremented and never read leaves
+    // that mitigation on paper only.
+    const redactor = lineRedactor();
+    redactor.sanitizeLine('-----BEGIN RSA PRIVATE KEY-----');
+    for (let i = 0; i < MAX_KEY_BLOCK_LINES; i += 1) redactor.sanitizeLine(`body-${i}`);
+    expect(redactor.sanitizeLine('-----END RSA PRIVATE KEY-----')).toBe('[REDACTED]');
+    expect(redactor.isOpen).toBe(true);
+    expect(redactor.sanitizeLine(BODY_SENTINEL).includes(BODY_SENTINEL)).toBe(false);
+  });
+
+  it('still closes on a well-formed END within the cap (control for the case above)', () => {
+    const redactor = lineRedactor();
+    redactor.sanitizeLine('-----BEGIN RSA PRIVATE KEY-----');
+    redactor.sanitizeLine('-----END EC PRIVATE KEY-----');
+    expect(redactor.isOpen).toBe(false);
+  });
+
   it('does not nest on a second BEGIN (FR-014)', () => {
     const redactor = lineRedactor();
     redactor.sanitizeLine('-----BEGIN RSA PRIVATE KEY-----');
@@ -232,5 +271,102 @@ describe('the line redactor is bounded and conservative (SC-004)', () => {
     redactor.sanitizeLine('-----BEGIN PUBLIC KEY-----');
     expect(redactor.isOpen).toBe(true);
     expect(redactor.sanitizeLine(BODY_SENTINEL).includes(BODY_SENTINEL)).toBe(false);
+  });
+});
+
+describe('same-line markers are positional, not merely present (FR-006, FR-009)', () => {
+  const lineRedactor = (): KeyBlockLineRedactor =>
+    new KeyBlockLineRedactor((s) => logger.sanitize(s));
+
+  it('suppresses the second of two keys concatenated on a shared line', () => {
+    // Review finding. `cat key1 key2` with no trailing newline on the first file
+    // puts `-----END RSA PRIVATE KEY----------BEGIN RSA PRIVATE KEY-----` on one
+    // line. Testing only whether an END is PRESENT reads that as opened-and-closed,
+    // so the state stayed closed and the second key's body and footer were written
+    // verbatim, one record at a time. Only an END that FOLLOWS the last BEGIN closes
+    // the block that BEGIN opened.
+    const redactor = lineRedactor();
+    const written = CONCATENATED_KEYS_SHARED_LINE.map((l) => redactor.sanitizeLine(l));
+    expect(written.some((l) => l.includes(BODY_SENTINEL))).toBe(false);
+    expect(written.some((l) => l.includes(FOOTER_MARK))).toBe(false);
+  });
+
+  it('still does not open on a line holding one entire block (FR-009 unchanged)', () => {
+    const redactor = lineRedactor();
+    expect(redactor.sanitizeLine(SINGLE_LINE_BLOCK).includes(BODY_SENTINEL)).toBe(false);
+    expect(redactor.isOpen).toBe(false);
+  });
+
+  it('opens fail-closed when the whole-string sanitizer throws on the BEGIN line', () => {
+    // Review finding. `CliTransportSink.record()` catches a throw from the injected
+    // sanitizer and drops the line -- "a regex or allocation failure costs one line".
+    // With the state opened only AFTER that call, the throw dropped the BEGIN line
+    // and left the redactor CLOSED, so every body line of the key was then written
+    // verbatim: exactly the leak the sink's "every line must reach the redactor"
+    // ordering exists to prevent.
+    let failNext = true;
+    const redactor = new KeyBlockLineRedactor((input) => {
+      if (failNext) {
+        failNext = false;
+        throw new RangeError('sanitizer failed on an oversized line');
+      }
+      return logger.sanitize(input);
+    });
+    expect(() => redactor.sanitizeLine('-----BEGIN RSA PRIVATE KEY-----')).toThrow(RangeError);
+    expect(redactor.isOpen).toBe(true);
+    expect(redactor.sanitizeLine(BODY_SENTINEL).includes(BODY_SENTINEL)).toBe(false);
+  });
+});
+
+describe('evasion resistance (security review)', () => {
+  const mk = (): KeyBlockLineRedactor => new KeyBlockLineRedactor((s) => logger.sanitize(s));
+  const EVASION = 'EVASION_BODY_MUST_NOT_LEAK';
+
+  /**
+   * These were adversarial probes during review. A probe that is not a test does
+   * not hold, so they live here now. Each one is a shape a hostile or merely
+   * sloppy CLI can produce.
+   */
+  it('trailing content on the header line still opens suppression', () => {
+    const redactor = mk();
+    const written = [
+      '-----BEGIN RSA PRIVATE KEY-----   trailing junk',
+      EVASION,
+      '-----END RSA PRIVATE KEY-----'
+    ].map((l) => redactor.sanitizeLine(l));
+    expect(written.some((l) => l.includes(EVASION))).toBe(false);
+  });
+
+  it('CRLF line endings do not defeat the line path', () => {
+    const redactor = mk();
+    const written = [
+      '-----BEGIN RSA PRIVATE KEY-----\r',
+      `${EVASION}\r`,
+      '-----END RSA PRIVATE KEY-----\r'
+    ].map((l) => redactor.sanitizeLine(l));
+    expect(written.some((l) => l.includes(EVASION))).toBe(false);
+  });
+
+  it('an empty line while a block is open stays suppressed', () => {
+    const redactor = mk();
+    redactor.sanitizeLine('-----BEGIN RSA PRIVATE KEY-----');
+    expect(redactor.sanitizeLine('')).toBe(REDACTION_SENTINEL);
+    expect(redactor.sanitizeLine(EVASION).includes(EVASION)).toBe(false);
+  });
+
+  it('a marker-dense giant line is one linear pass, not a ReDoS', () => {
+    // The unterminated alternative fires at the first marker, so a line packed
+    // with markers cannot drive backtracking.
+    const giant = '-----BEGIN RSA PRIVATE KEY-----'.repeat(20_000);
+    const started = Date.now();
+    logger.sanitize(giant);
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it('the sentinel carries no part of what it replaced', () => {
+    const out = logger.sanitize(
+      `-----BEGIN RSA PRIVATE KEY-----\n${EVASION}\n-----END RSA PRIVATE KEY-----`
+    );
+    expect(out.trim()).toBe(REDACTION_SENTINEL);
   });
 });

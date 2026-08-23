@@ -107,6 +107,11 @@ describe('SanitizedLogger.sanitize', () => {
     );
     expect(out).toContain('[REDACTED]');
     expect(out).not.toContain('-----BEGIN RSA PRIVATE KEY-----');
+    // FR-R3-048 — the body and the footer, for the same reason as the two cases
+    // below: the header assertion above passes against output still holding the
+    // whole key, which is how H-07 survived this file.
+    expect(out).not.toContain('MIIEowIBAAKCAQEA…');
+    expect(out).not.toContain('-----END');
   });
 
   it('redacts PEM OPENSSH private key headers', () => {

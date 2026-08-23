@@ -22,7 +22,10 @@ export interface KeyBlockCase {
   readonly mustNotSurvive: ReadonlyArray<string>;
 }
 
-/** The three armor shapes a real backend emits, plus the legacy PGP spelling. */
+/**
+ * The armor shapes a real backend emits: OpenSSH, RSA, standard PGP, the legacy
+ * PGP spelling, and unlabeled PKCS#8.
+ */
 export const PRIVATE_KEY_CASES: ReadonlyArray<KeyBlockCase> = [
   {
     name: 'OpenSSH, complete',
@@ -62,7 +65,22 @@ export const PRIVATE_KEY_CASES: ReadonlyArray<KeyBlockCase> = [
       BODY_SENTINEL,
       '-----END PGP PRIVATE KEY-----'
     ].join('\n'),
-    mustNotSurvive: [BODY_SENTINEL, FOOTER_MARK]
+    mustNotSurvive: [BODY_SENTINEL, 'lQHYBGZlegacyspellingBODYfiller0123456789', FOOTER_MARK]
+  },
+  {
+    // No algorithm label at all. `openssl genpkey`, `openssl pkcs8` and
+    // `ssh-keygen -m PKCS8` all write this, and it is the default private-key
+    // encoding of most current tooling. A label-REQUIRED armor alternation
+    // misses it entirely, which is why the label is optional in the pattern
+    // rather than another entry in the label list.
+    name: 'PKCS#8, unlabeled — what openssl genpkey writes',
+    text: [
+      '-----BEGIN PRIVATE KEY-----',
+      'MIIJKQIBAAKCAgEAunlabeledPkcs8Filler0123456789',
+      BODY_SENTINEL,
+      '-----END PRIVATE KEY-----'
+    ].join('\n'),
+    mustNotSurvive: [BODY_SENTINEL, 'MIIJKQIBAAKCAgEAunlabeledPkcs8Filler0123456789', FOOTER_MARK]
   }
 ];
 
@@ -102,3 +120,18 @@ export const FAKE_MARKER_IN_BODY = [
 /** An entire block on one line, as a JSON payload or escaped log line delivers it. */
 export const SINGLE_LINE_BLOCK =
   `-----BEGIN RSA PRIVATE KEY-----oneLineBodyFiller${BODY_SENTINEL}-----END RSA PRIVATE KEY-----`;
+
+/**
+ * Two keys concatenated with no trailing newline on the first, so a well-formed
+ * END and the next BEGIN share ONE line — what `cat key1 key2` produces, and the
+ * shape the spec names as occurring in practice. A presence-only same-line close
+ * test reads the shared line as "opened and closed here" and lets the second
+ * key's body through.
+ */
+export const CONCATENATED_KEYS_SHARED_LINE: ReadonlyArray<string> = Object.freeze([
+  '-----BEGIN RSA PRIVATE KEY-----',
+  'firstBodyFiller',
+  '-----END RSA PRIVATE KEY----------BEGIN RSA PRIVATE KEY-----',
+  BODY_SENTINEL,
+  '-----END RSA PRIVATE KEY-----'
+]);

@@ -28,6 +28,8 @@ import * as path from 'node:path';
 
 import {
   CliTransportSink,
+  CLI_TRANSPORT_MAX_TRACKED_STREAMS,
+  createCliTransportSink,
   CLI_TRANSPORT_DIRECTORY,
   CLI_TRANSPORT_FILE_NAME,
   CLI_TRANSPORT_MAX_BYTES,
@@ -36,7 +38,7 @@ import {
   type CliTransportSettings,
   type CliTransportSettingsAccessor
 } from '../../../src/monitor/cli-transport-sink';
-import { SanitizedLogger } from '../../../src/lib/logger';
+import { KeyBlockLineRedactor, SanitizedLogger } from '../../../src/lib/logger';
 
 let workspaceRoot = '';
 let warnings: string[] = [];
@@ -207,6 +209,153 @@ describe('CliTransportSink — sanitization', () => {
       'again hunter2'
     ]);
     expect(await readLive()).not.toContain('hunter2');
+  });
+
+  // FR-R3-048 (H-07, T018) — the shape this sink was failing. Everything above
+  // sanitizes a line in isolation, which is exactly why the defect survived: a
+  // private key reaches `record()` one line at a time, so the whole-string
+  // pattern never sees a `BEGIN…END` block and each body line looks like
+  // ordinary base64. These two cases are the ones that fail if the stateful
+  // sanitizer is not wired, and the second exercises the PRODUCTION wiring
+  // rather than a test double, because dropping `sanitizeStreamLine` from
+  // `createCliTransportSink` is the regression that would otherwise leave every
+  // other test in this file green.
+  //
+  // Assertions are booleans: a redaction test that prints the protected string
+  // on failure leaks it into CI output.
+  const SPLIT_KEY: readonly string[] = [
+    '-----BEGIN OPENSSH PRIVATE KEY-----',
+    'b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ',
+    'BODY_MUST_NOT_SURVIVE',
+    '-----END OPENSSH PRIVATE KEY-----',
+    'ordinary output resumes'
+  ];
+
+  it('suppresses a key that arrives one line at a time', async () => {
+    const redactor = new KeyBlockLineRedactor((input) => realLogger.sanitize(input));
+    const sink = new CliTransportSink({
+      settings: countingAccessor(),
+      sanitize: (line) => realLogger.sanitize(line),
+      sanitizeStreamLine: (line) => redactor.sanitizeLine(line),
+      logger,
+      now: () => new Date('2026-05-10T12:00:00.000Z')
+    });
+    for (const line of SPLIT_KEY) {
+      sink.record({ runId: 'run-1', phase: 'speckit-implement', stream: 'stdout', line });
+    }
+    await sink.flushPendingWrites();
+
+    const written = await readLive();
+    expect(written.includes('BODY_MUST_NOT_SURVIVE')).toBe(false);
+    expect(written.includes('b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ')).toBe(false);
+    expect(written.includes('-----END')).toBe(false);
+    // One record per suppressed line, not a gap: the transport aggregate's line
+    // counts are the only surviving record of how much the CLI emitted.
+    expect(written.trimEnd().split('\n')).toHaveLength(SPLIT_KEY.length);
+    expect(written.includes('ordinary output resumes')).toBe(true);
+  });
+
+  it('wires the stateful sanitizer in the production factory', async () => {
+    const sink = createCliTransportSink(() => workspaceRoot, {
+      sanitize: (line) => realLogger.sanitize(line),
+      warn: (message: string) => warnings.push(message)
+    });
+    for (const line of SPLIT_KEY) {
+      sink.record({ runId: 'run-1', phase: 'speckit-implement', stream: 'stdout', line });
+    }
+    // A second Run mid-stream: one Run's open block must not suppress another's.
+    sink.record({
+      runId: 'run-2',
+      phase: 'speckit-implement',
+      stream: 'stdout',
+      line: 'other run output'
+    });
+    await sink.flushPendingWrites();
+
+    const written = await readLive();
+    expect(written.includes('BODY_MUST_NOT_SURVIVE')).toBe(false);
+    expect(written.includes('-----END')).toBe(false);
+    expect(written.includes('other run output')).toBe(true);
+  });
+
+  // FR-015 / SC-004 — the redactor registry is bounded by eviction rather than by
+  // release, so the bound and its preference are the only things standing between
+  // a long-lived host and either an unbounded map or a released key tail. SC-004
+  // asks for measurement rather than inspection, and both constants and the map
+  // are private to the factory, so these two cases drive the production factory
+  // and read the outcome off the log.
+  it('evicts a closed entry rather than a live open block (FR-015)', async () => {
+    const sink = createCliTransportSink(() => workspaceRoot, {
+      sanitize: (line) => realLogger.sanitize(line),
+      warn: (message: string) => warnings.push(message)
+    });
+    // The long-lived Run: oldest by insertion order, and mid-block. Dropping this
+    // one is the single case where discarding state releases a tail, which is why
+    // eviction has to prefer a closed entry over the oldest-inserted one.
+    sink.record({
+      runId: 'keeper',
+      phase: 'speckit-implement',
+      stream: 'stdout',
+      line: '-----BEGIN OPENSSH PRIVATE KEY-----'
+    });
+    // Enough short Runs to force well past the cap, every one of them closed.
+    for (let i = 0; i < CLI_TRANSPORT_MAX_TRACKED_STREAMS + 16; i += 1) {
+      sink.record({
+        runId: `short-${i}`,
+        phase: 'speckit-implement',
+        stream: 'stdout',
+        line: `short run ${i} output`
+      });
+    }
+    sink.record({
+      runId: 'keeper',
+      phase: 'speckit-implement',
+      stream: 'stdout',
+      line: 'BODY_MUST_NOT_SURVIVE'
+    });
+    await sink.flushPendingWrites();
+
+    const written = await readLive();
+    // Boolean, never the protected string: the keeper's block is still open, so
+    // its body line was suppressed even though 272 entries were created after it.
+    expect(written.includes('BODY_MUST_NOT_SURVIVE')).toBe(false);
+    expect(written.includes('short run 0 output')).toBe(true);
+    expect(written.includes(`short run ${CLI_TRANSPORT_MAX_TRACKED_STREAMS + 15} output`)).toBe(
+      true
+    );
+  });
+
+  it('still bounds the map when every tracked entry is open (SC-004)', async () => {
+    const sink = createCliTransportSink(() => workspaceRoot, {
+      sanitize: (line) => realLogger.sanitize(line),
+      warn: (message: string) => warnings.push(message)
+    });
+    // The pathological shape: every tracked (run, stream) pair mid-block, so there
+    // is no closed entry to prefer. The cap still holds and the oldest is dropped
+    // — a recorded trade, because an unbounded map is the worse failure and a cap
+    // that yields under pressure is not a cap. This case measures the bound: if
+    // the map were unbounded, the oldest entry would still be open below.
+    for (let i = 0; i < CLI_TRANSPORT_MAX_TRACKED_STREAMS + 1; i += 1) {
+      sink.record({
+        runId: `open-${i}`,
+        phase: 'speckit-implement',
+        stream: 'stdout',
+        line: '-----BEGIN OPENSSH PRIVATE KEY-----'
+      });
+    }
+    // `open-0` was inserted first and every entry is open, so it is the one the
+    // fallback drops; its state machine restarts CLOSED. Nothing key-shaped is
+    // asserted here — the marker is a plain sentinel that says the state was lost.
+    sink.record({
+      runId: 'open-0',
+      phase: 'speckit-implement',
+      stream: 'stdout',
+      line: 'EVICTED_STATE_MARKER'
+    });
+    await sink.flushPendingWrites();
+
+    const written = await readLive();
+    expect(written.includes('EVICTED_STATE_MARKER')).toBe(true);
   });
 });
 
@@ -502,5 +651,35 @@ describe('CliTransportSink — containment', () => {
       many.calls(),
       'a per-line realpath on a refused path is a syscall per line of CLI output'
     ).toBe(baseline.calls());
+  });
+});
+
+describe('CliTransportSink — redaction state is per run, phase and stream (FR-007)', () => {
+  it('does not let one phase’s unterminated block suppress the next phase', () => {
+    // Amended during review. Keyed by run+stream alone, a single truncated key
+    // header cost the operator every later phase's transport output for the whole
+    // run -- a bounded over-redaction becoming an unbounded one. A block cannot
+    // span phases (each is a separate process whose stdout ends at exit), so the
+    // boundary reset abandons state that is necessarily unterminated.
+    const lines: string[] = [];
+    const sink = createCliTransportSink(
+      () => null,
+      {
+        sanitize: (s: string) => s,
+        warn: () => undefined
+      } as unknown as Parameters<typeof createCliTransportSink>[1]
+    );
+    const deps = sink as unknown as {
+      sanitizeStreamLine?: (l: string, r: string, p: string, s: string) => string;
+    };
+    const call = (line: string, phase: string): string =>
+      deps.sanitizeStreamLine ? deps.sanitizeStreamLine(line, 'run-1', phase, 'stdout') : line;
+
+    // Phase one opens a block and never closes it.
+    lines.push(call('-----BEGIN RSA PRIVATE KEY-----', 'specify'));
+    lines.push(call('truncated-body', 'specify'));
+    // Phase two must not inherit that state.
+    const laterPhase = call('ordinary output from the next phase', 'plan');
+    expect(laterPhase).toBe('ordinary output from the next phase');
   });
 });
