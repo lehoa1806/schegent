@@ -2,7 +2,8 @@
 //
 // `resolveRuntimeLogPath` accepts:
 //   - Empty string → resolves to `<workspaceRoot>/.schegent/syslog`.
-//   - Absolute path (POSIX or Windows) → returned as-is.
+//   - Absolute path (POSIX or Windows) → normalized, then optionally checked
+//     against the caller's allowed roots.
 //   - Workspace-relative path → resolved against workspace folder 0.
 //     Relative paths containing `..` are rejected to block path
 //     traversal out of the workspace (FR-016).
@@ -46,10 +47,10 @@ export function isAbsoluteCrossPlatform(p: string): boolean {
 }
 
 /**
- * Returns true when `candidate` resolves to a path under one of the
- * `allowedRoots` after normalization. Uses `path.relative` so symlinks
- * and `..` segments in `candidate` cannot escape — `path.relative`
- * computes a lexical hop count, not a filesystem walk.
+ * Returns true when `candidate` is lexically under one of the `allowedRoots`
+ * after normalization. `path.relative` rejects a normalized path that climbs
+ * out with `..`, but it does not resolve symlinks; the runtime-log sink applies
+ * the filesystem-aware containment check at the point of effect.
  */
 function isUnderAllowedRoot(
   candidate: string,
@@ -81,10 +82,10 @@ function isUnderAllowedRoot(
  * Defense-in-depth against a malicious workspace settings file that
  * pre-sets `runtimeLogFilePath = '/etc/passwd.log'` and waits for the
  * sink to truncate-and-write under the operator's UID. The legitimate
- * roots are `workspaceRoot`, the extension's `globalStorage`, the OS
- * tmpdir, and the operator's home directory — wired by the extension
- * at activation. When `allowedAbsoluteRoots` is undefined or empty the
- * historical "absolute paths are operator-trusted" behavior is
+ * roots are `workspaceRoot`, the extension's `globalStorage`, and the OS
+ * tmpdir — wired by the extension at activation. The operator's home directory
+ * is deliberately excluded. When `allowedAbsoluteRoots` is undefined or empty,
+ * the historical "absolute paths are operator-trusted" behavior is
  * preserved (kept for unit-test simplicity; production always supplies
  * the list).
  */

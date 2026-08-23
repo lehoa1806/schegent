@@ -1,287 +1,76 @@
-# Security Policy
-
-This document explains how to report security issues in Schegent,
-which versions receive fixes, and the security posture the extension
-assumes when it runs on an operator's workstation.
-
-The full operator threat model — including the threat catalog,
-mitigations, and explicit non-defenses — lives at
-[`docs/security/threat-model.md`](docs/security/threat-model.md).
-This file is the public reporting channel and the high-level
-overview.
-
----
-
-## Table of contents
-
-1. [Reporting a vulnerability](#reporting-a-vulnerability)
-2. [What to include in a report](#what-to-include-in-a-report)
-3. [What we will do](#what-we-will-do)
-4. [Disclosure timeline](#disclosure-timeline)
-5. [Supported versions](#supported-versions)
-6. [Scope](#scope)
-7. [Security posture summary](#security-posture-summary)
-8. [Safe harbor](#safe-harbor)
-9. [Out of scope](#out-of-scope)
-
----
-
-## Reporting a vulnerability
-
-**Do not file security-sensitive reports on the public issue
-tracker.** Public disclosure before a fix is available puts
-operators at risk.
-
-Use one of these channels instead:
-
-1. **GitHub private vulnerability reporting** — open a private
-   advisory at
-   <https://github.com/lehoa1806/schegent/security/advisories/new>.
-   This is the preferred channel; it is end-to-end with the
-   maintainers and produces a CVE ID if one is warranted.
-
-2. **Email** — for reporters who cannot use the GitHub flow, contact
-   the maintainers privately through the contact listed on the
-   repository profile at <https://github.com/lehoa1806>. State up
-   front that the report is security-sensitive so the message can be
-   routed appropriately.
-
-Please do not include exploit code or live secrets in the initial
-message. We will reply with a secure channel for follow-up artifacts
-if the report warrants them.
-
-## What to include in a report
-
-A useful report contains:
-
-1. **Affected component** — extension host, webview, sidebar UI,
-   backend runner, IPC contract, audit pipeline, or another
-   subsystem. If unsure, describe what you observed and we
-   will route it.
-2. **Affected versions** — the Schegent version that exhibits the
-   issue, plus Claude CLI / Codex CLI versions if relevant.
-3. **Environment** — operating system, VS Code version, whether the
-   workspace was trusted, primary vs. secondary host status,
-   workspace-scope vs. user-scope settings that are relevant.
-4. **Reproduction** — the smallest sequence of operator actions or
-   inputs that triggers the issue. A repro is the single most useful
-   thing to include.
-5. **Observed behavior** — what happened.
-6. **Expected behavior** — what should have happened.
-7. **Impact assessment** — your view of the worst-case outcome
-   (e.g., information disclosure, local code execution, denial of
-   service). We will reassess independently.
-8. **Suggested mitigation** — optional. If you already have one in
-   mind, please share it.
-
-If you have screenshots, log excerpts, or a proof-of-concept
-artifact, hold them until we have replied with a secure intake
-channel.
-
-## What we will do
-
-When a report arrives, we will:
-
-1. **Acknowledge receipt** within five business days.
-2. **Triage** — confirm the issue, classify severity, and identify
-   the affected versions.
-3. **Coordinate a fix** — assign an owner, prepare a patch in a
-   private branch, and prepare release notes.
-4. **Notify you** when a fix is available and ready for release.
-5. **Credit you** in the security advisory unless you prefer to
-   remain anonymous.
-
-We will keep the reporter in the loop with regular status updates.
-If we determine that the report does not describe a security issue
-(for example, a behavior that is documented and intentional), we
-will explain our reasoning and, where appropriate, redirect to a
-public issue.
-
-## Disclosure timeline
-
-Default targets:
-
-| Severity | First response | Fix released | Public disclosure |
-|---|---|---|---|
-| Critical | within 5 business days | within 30 days | when the fix ships |
-| High | within 5 business days | within 60 days | when the fix ships |
-| Medium / Low | within 5 business days | next regular release | when the fix ships |
-
-Severity is assessed using CVSS v3.1 plus operator-impact judgement.
-If a fix is going to take materially longer than the targets above,
-we will share the reason and a revised target with the reporter.
-
-We coordinate public disclosure with the reporter. Please give us a
-reasonable opportunity to ship a fix before publishing details.
+# Security policy
 
 ## Supported versions
 
-We support the most recent minor release line of Schegent for
-security fixes. Older versions may receive a fix on a case-by-case
-basis if the issue is severe and the upgrade path for affected
-operators is non-trivial.
+This repository does not declare a supported-version window, long-term-support line, or backport policy. `package.json` identifies the current source version as `0.2.0`, but neither the disclosure policy nor the release workflow promises that this version—or any older line—receives security fixes. Do not infer support from a tag or version number; report the affected version or commit so the maintainers can triage it.
 
-The current version is recorded in [`CHANGELOG.md`](CHANGELOG.md)
-and in `package.json`. Treat the latest tagged release as the
-supported baseline.
+<!-- Source: package.json -->
+<!-- Source: .github/SECURITY.md -->
+<!-- Source: .github/workflows/release.yml -->
+
+## Report a vulnerability
+
+Do not publish suspected vulnerabilities in an issue, discussion, or pull request. Use one of the two private channels:
+
+1. Submit a [private GitHub Security Advisory](https://github.com/lehoa1806/schegent/security/advisories/new). This is the preferred channel.
+2. If GitHub private reporting is unavailable to you, email [hoalee1806@gmail.com](mailto:hoalee1806@gmail.com).
+
+Include a description, reproduction steps, and the affected version or commit. The maintainers target acknowledgement within 7 calendar days and resolution within 90 calendar days. Resolution may be a shipped patch, a documented mitigation, or an explained close-as-won't-fix; a complex or coordinated case may receive an agreed extension before day 90.
+
+<!-- Source: .github/SECURITY.md -->
+<!-- Source: .github/ISSUE_TEMPLATE/security.yml -->
+<!-- Source: .github/ISSUE_TEMPLATE/config.yml -->
 
 ## Scope
 
-In scope:
+Reports about the code shipped by this repository are in scope, including the extension host, webviews, host/webview IPC, local state and ownership gates, audit and log handling, central redaction, process-definition import/export, and the Claude, Codex, and Agy runner adapters. Documentation that materially misstates a security-sensitive behavior is also useful to report privately.
 
-- The Schegent extension host and webview UI shipped from this
-  repository.
-- The IPC contract between host and webview.
-- The audit-log pipeline, runtime-log writer, and the central
-  sanitization surface.
-- Backend runners shipped from this repository (`claude`, `codex`)
-  and the `BackendRunner` contract.
-- Documentation that misrepresents security-relevant behavior.
+<!-- Source: src/extension.ts -->
+<!-- Source: src/ui/sidebar/message-router.ts -->
+<!-- Source: src/lib/logger.ts -->
+<!-- Source: src/audit/audit-log-writer.ts -->
+<!-- Source: src/services/process-yaml/import-planner.ts -->
+<!-- Source: src/runner/backend-runner-factory.ts -->
 
-Out of scope (please report upstream):
+The upstream Claude, Codex, and Agy CLIs are outside this repository's implementation scope. So are VS Code itself, unrelated extensions, and a workstation compromise that already grants the attacker the operator's local permissions. Reports about those components should go to their maintainers; when uncertain, report privately here and the maintainers can redirect it.
 
-- The Claude Code CLI itself — report at
-  <https://docs.claude.com/claude-code> or via Anthropic's
-  responsible-disclosure channel.
-- The Codex CLI itself — report via that project's disclosure
-  channel.
-- Visual Studio Code itself — report at
-  <https://github.com/microsoft/vscode>.
-- Anthropic's API, model behavior, or any service-side concern.
-- Operator workstation compromises that pre-date or operate
-  independently of the extension (e.g., malware that already has
-  shell access on the workstation can already read anything the
-  operator can read; Schegent does not defend against this and
-  does not claim to).
+<!-- Source: .github/SECURITY.md -->
+<!-- Source: src/runner/claude-cli.ts -->
+<!-- Source: src/runner/codex-cli.ts -->
+<!-- Source: src/runner/agy-cli.ts -->
 
-## Security posture summary
+## Permission posture
 
-Schegent assumes a **trusted local operator on a trusted
-workstation**. The mitigations below reduce risk; none of them are
-absolute guarantees. The threat model page
-([`docs/security/threat-model.md`](docs/security/threat-model.md))
-catalogs the threats and the mitigations for each one.
+Claude is the default backend. Claude and Agy are launched with their CLI approval prompts off, so the agent acts without asking; their adapters unconditionally include `--dangerously-skip-permissions`. Codex is the exception: it runs with the OS-enforced `--sandbox workspace-write` bound, which leaves `.git` read-only. A Phase's `sideEffects` declaration selects consent and rollback behavior and causes a Git-writing Phase to be refused on a runner that is not Git-capable; it does not restrict the spawned subprocess. Point Schegent at a repository you can restore.
 
-**The backend runs with its approval prompts disabled.** This is the most
-consequential capability fact about the product and it belongs at the top of
-this section rather than inside a mitigation list. The `claude` backend — the
-default — and the `agy` backend are spawned with
-`--dangerously-skip-permissions`, unconditionally; there is no setting that
-restores the prompts. Inside a trusted workspace the spawned CLI will write
-files, run shell commands, commit, install packages, and make network requests
-without asking. The `codex` backend is the only one with an OS-enforced bound
-(`--sandbox workspace-write`, which keeps `.git` read-only), and it is not the
-default.
+<!-- Source: package.json -->
+<!-- Source: src/runner/backend-runner-factory.ts -->
+<!-- Source: src/runner/claude-cli.ts -->
+<!-- Source: src/runner/codex-cli.ts -->
+<!-- Source: src/runner/agy-cli.ts -->
+<!-- Source: src/config/phase-runner-policy.ts -->
+<!-- Source: src/activation/git-approval.ts -->
 
-A phase's `sideEffects` declaration does not change any of that: it selects a
-consent prompt and a rollback checkpoint, and it refuses a Git-writing phase on
-the sandboxed runner. It is consent bookkeeping, not a sandbox. The decision,
-the full per-runner table, and the condition that would reopen it are in
-[`docs/concepts/unprompted-agent-not-contained.md`](docs/concepts/unprompted-agent-not-contained.md).
+The detailed operator threat catalog covers T1–T25 in [the threat model](docs/security/threat-model.md). It records mitigations and residual risk; it is not a claim that local autonomous execution is safe against every input.
 
-The practical consequence: point Schegent at a repository you can restore.
+<!-- Source: tests/lint/threat-id-anchor-parity.test.ts -->
+<!-- Source: src/runner/prompt-builder.ts -->
 
-- **Workspace-trust gating** — the extension is inert in untrusted
-  workspaces and refuses to spawn any subprocess.
-- **Primary-host gating** — only the first VS Code window opened
-  against a workspace mutates state. Secondary windows are
-  read-only; mutation attempts are rejected as `not-primary-host`.
-- **Single sanitization surface** — every operator-visible sink
-  (audit log, runtime log, Output channel, phase log feed) routes
-  through a single redaction set defined once
-  in the codebase. A secret stripped from one sink is stripped
-  from all of them.
-- **Metadata-only audit by default** — the structured audit log
-  records counts, IDs, and selection tuples rather than file paths
-  or raw payloads. The list of workspace roots appears only as
-  `rootCount`; the phase log feed selection appears as a tuple,
-  not as a path.
-- **TTL-bound context fragments** — verbose diagnostics and raw
-  transcripts are workspace-scoped and tied to the run that
-  produced them. The optional task-deletion flow removes the
-  per-run session tree on demand. The structured audit log is
-  never modified by task deletion; `task-removed` is itself an
-  audit event.
-- **Sandboxed retry-condition DSL** — operator-supplied retry
-  expressions are evaluated by a restricted parser that accepts
-  identifiers, signed numerics, comparison operators, and boolean
-  combinators. Arithmetic, function calls, member access, and I/O
-  are rejected at parse time.
-- **Local transactional sync** — operations that span multiple
-  files use compensating rollback so a partial failure restores
-  the prior state.
-- **No MCP boundary tool** — Schegent does not expose its internal
-  state through an MCP boundary tool. All operator interaction is
-  mediated by VS Code commands and the sidebar UI.
+## Automated security checks
 
-### Local diagnostic sinks — design and trade-offs
+| Control | Coverage and trigger | Enforcement |
+|---|---|---|
+| Dependabot | Root and `webview-ui` npm manifests; weekly Monday minor/patch updates; major updates ignored | Opens grouped dependency pull requests, up to 10 per manifest. <!-- Source: .github/dependabot.yml --> |
+| CodeQL | JavaScript/TypeScript on pushes and pull requests targeting `develop`, plus Tuesday 04:00 UTC | Uploads `security-extended` findings; the workflow states findings do not fail the build by default. <!-- Source: .github/workflows/codeql.yml --> |
+| Dependency review | Lockfile changes in pull requests targeting `develop` | Fails on newly introduced vulnerabilities of high severity or above. <!-- Source: .github/workflows/dependency-review.yml --> |
+| npm audit | Root and `webview-ui` lockfiles, Monday 03:00 UTC or manual dispatch | Runs `npm audit --audit-level=low`; it does not auto-fix or commit. <!-- Source: .github/workflows/security-audit.yml --> |
+| Secret scan | Git-tracked files except `tests/**` and `package-lock.json`, checked for four code-resident private-key/token signatures in `verify:all` | `scripts/scan-secrets.mjs` is run by `npm run security:secrets`; it is a narrow signature check, not a general secret scanner. <!-- Source: package.json --><!-- Source: scripts/scan-secrets.mjs --> |
+| Workflow pin check | GitHub Actions references in `verify:all` | `scripts/check-workflow-pins.mjs` requires immutable action pins. <!-- Source: package.json --><!-- Source: scripts/check-workflow-pins.mjs --> |
+| License check | Root manifest and license operations record in `verify:all` | `scripts/check-licenses.mjs` checks that `LICENSE.md` and `docs/operations/licenses.md` exist and that the manifest has a truthy `license` field; it does not inspect dependency licenses. <!-- Source: package.json --><!-- Source: scripts/check-licenses.mjs --> |
+| Release provenance | Tagged or manually dispatched release builds | Builds the VSIX, emits a CycloneDX SBOM and checksums, attests the VSIX and SBOM, and publishes a GitHub Release only for tags. <!-- Source: .github/workflows/release.yml --> |
 
-Schegent intentionally writes two unredacted local sinks:
+No Snyk or Semgrep configuration or invocation exists in the repository.
 
-1. The **raw transcript** (always written, local-only, gitignored).
-2. The **verbose diagnostic files** (opt-in via
-   `schegent.logging.verbose`, local-only, gitignored).
-
-Both are unredacted by design.
-Architectural mitigations — never serializing local artifact paths
-into audit events and gitignoring workspace-local sinks — keep these
-artifacts from accidentally leaving the operator's machine.
-
-If the trade-off does not match your environment, you can:
-
-- Leave `schegent.logging.verbose` at its default (`false`).
-- Add `.schegent/sessions/raw-*.log` to your workspace `.gitignore`
-  (Schegent writes a best-effort `.schegent/.gitignore` on first
-  use; layering a project-wide rule is good defense in depth).
-- Treat the entire `.schegent/` directory as you would your shell
-  history — useful, locally sensitive, not for sharing.
-
-For the full trade-off discussion see
-[`docs/concepts/sessions-and-logs.md`](docs/concepts/sessions-and-logs.md)
-and [`docs/security/threat-model.md`](docs/security/threat-model.md).
-
-## Safe harbor
-
-We will not pursue legal action against, or ask law enforcement to
-investigate, security researchers who:
-
-- Act in good faith to identify and report vulnerabilities through
-  one of the channels above.
-- Make a reasonable effort to avoid privacy violations, service
-  degradation, and destruction of data during their research.
-- Give us a reasonable opportunity to fix the issue before public
-  disclosure.
-- Do not exploit the vulnerability beyond the minimum required to
-  demonstrate it.
-
-If your research follows these principles, you can treat this
-statement as authorization for the testing described.
-
-## Out of scope
-
-The following report categories are **not** security issues for
-Schegent:
-
-- The extension does not prevent an operator who already has shell
-  access on the workstation from reading workspace files, audit
-  logs, or session artifacts. Schegent inherits the workstation's
-  trust boundary.
-- The extension does not prevent the Claude or Codex CLI from
-  taking any action that the operator could take in a terminal.
-  Workspace-trust gating is a coarse permission check; it is not a
-  sandbox.
-- The audit log is intentionally paths-free for sensitive
-  locations. Reports that the audit log "does not record enough
-  detail" should be filed as feature requests, not security
-  issues — the absence is by design.
-- The raw transcript and verbose diagnostics are unredacted by
-  design. Reports that they "contain sensitive content" should be
-  treated as a reminder to gitignore them and not share them
-  publicly, not as a vulnerability.
-
-When in doubt, open a private advisory. We will route it
-appropriately.
-
----
-
-Thank you for helping keep Schegent and its operators safe.
+<!-- Source: package.json -->
+<!-- Source: .github/workflows/codeql.yml -->
+<!-- Source: .github/workflows/security-audit.yml -->

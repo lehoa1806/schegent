@@ -1,700 +1,157 @@
-# Schegent Security White-Paper
-
-**Audience**: enterprise IT security reviewers and operators evaluating
-Schegent for installation in a sensitive environment. Schegent
-contributors should read [`threat-model.md`](./threat-model.md) instead;
-this white-paper is the non-contributor projection of that document.
-
-**Scope**: shipped behavior at the document's review SHA. The
-white-paper is a thin projection over existing artifacts; every concrete
-claim links to its backing artifact (code, test, or doc). The white-paper
-is risk-reduction guidance, not a formal attestation. SOC 2, ISO 27001,
-and FedRAMP language designed for hosted services does not apply —
-Schegent is a local VS Code extension.
-
-**Last reviewed**: 2026-05-20. See [Maintenance](#maintenance) for the
-review cadence and the dependent-artifact manifest.
-
-> **Reading time**: ~45 minutes end-to-end. A reviewer who only needs
-> the trust ceiling can stop after [§1 Executive
-> summary](#1-executive-summary); a reviewer who needs the worst-case
-> scenarios can stop after [§5 Failure modes](#5-failure-modes).
-
----
-
-## 1. Executive summary
-
-**What Schegent is.** Schegent is a VS Code extension that drives a
-backend CLI as an autonomous agent through the Spec Driven Development workflow
-spec-driven development pipeline (`specify → clarify → plan → tasks →
-analyze → implement → finalize`). Three backends ship in-tree — `claude`
-(the default), `codex`, and `agy` — and which one runs is the largest
-privilege choice available, because `claude` and `agy` are spawned with
-their approval prompts disabled while `codex` runs under an OS-enforced
-filesystem bound. The operator installs the CLI, links it to that
-backend's account, opens a workspace, and explicitly trusts that
-workspace before any phase runs. Every phase invocation spawns the
-CLI subprocess, captures its stdout/stderr, writes a redacted structured
-audit event, and updates per-workspace state in the VS Code memento.
-
-**What Schegent is not.** Schegent is not a SaaS product, not a cloud
-service, and not a compliance-attested platform. The extension host
-makes zero outbound network calls; every API request is made by the
-backend CLI subprocess the operator configured. Schegent does not analyze
-prompt content for adversarial inputs — operator-authored specs, plans,
-and task files are the trust boundary on what the CLI ingests.
-
-**Three boundary statements (each one sentence):**
-
-- **Trust ceiling.** Schegent's capability surface is gated by VS Code's
-  binary Workspace Trust, narrowed by two per-capability scopes
-  (`schegent.trust.allowCustomPhases`,
-  `schegent.trust.allowCustomRetryConditions`), and bound by 36 mutating
-  IPC commands enforced primary-host-only.
-- **Audit boundary.** Every phase invocation writes a redacted,
-  append-only structured event to `.schegent/audit.log` through a single
-  writer; paths and operator-controlled bytes are excluded from the
-  structured payload (the paths-free audit discipline) so the log can be
-  shipped off-machine without leaking workspace topology.
-- **Network boundary.** The extension host makes no outbound network
-  calls and the webview's Content Security Policy pins `connect-src 'none'`
-  verbatim. The **backend CLI subprocess is the only network egress
-  point** — operator-controlled at install time via `schegent.cli.path`.
-  That subprocess is whichever backend is selected: `claude` (the
-  default) or `agy`, both spawned with `--dangerously-skip-permissions`
-  so they reach the network without asking, or `codex`, spawned with
-  `--sandbox workspace-write`. Schegent neither configures nor verifies
-  what that sandbox does about network egress; the bound it relies on and
-  documents is the filesystem one. See
-  [`../concepts/unprompted-agent-not-contained.md`](../concepts/unprompted-agent-not-contained.md).
-
----
-
-## 2. What Schegent sees
-
-Schegent reads from five surfaces and only those five.
-
-**1. Workspace files.** Through the backend CLI's tool calls (`Read`,
-`Bash`, `Edit`, `Write`, …) inside a trusted workspace. The CLI's tool
-surface is the operator's chosen capability set, not Schegent's;
-Schegent does not narrow what the CLI reads beyond what VS Code's
-Workspace Trust allows — and for `claude` and `agy` it actively widens
-what the CLI will do *without asking*, by disabling that CLI's own
-approval prompts.
-
-**2. Backend CLI process output.** Per-phase stdout, stderr, and exit
-code. Stdout JSON lines are parsed for `assistant-message`, `tool-use`,
-`tool-result`, and `audit` events; unknown event types are preserved
-with a warning per the audit-event parser invariant (CLAUDE.md hard
-rule: "Never drop unknown audit event types from the parser; warn and
-preserve").
-
-**3. The VS Code `workspaceState` memento.** Persistent per-workspace
-state: the single queue, in-flight `WorkflowRun` records, pending
-retry/manual-pause pairs, phase-breakpoint registrations, schema-version
-markers, and the v6 forward-only-migration cursor.
-
-**4. The `.schegent/` directory.** Under the workspace root: the
-structured audit log (`audit.log` + rotated generations), raw
-transcripts (`sessions/raw-<runId>.log`), per-iteration verbose
-diagnostics under `sessions/<runId>/diagnostics/...` (when verbose is
-on), the workspace lock file (`lock`), and the runtime log (`syslog`).
-Schegent reads from this directory to populate the dashboard and the
-phase-log IPC pipeline.
-
-**5. Operator configuration.** The full `schegent.*` settings namespace
-(workspace + user scope). Settings are read at phase boundaries — not
-cached on long-lived runner objects — so an operator edit takes effect
-on the next invocation. CLAUDE.md hard rules pin this discipline for
-`schegent.logging.verbose`, `schegent.fatalSignatures`, and
-`schegent.claude.autoCompactPctOverride`.
-
-Outside these five sources, Schegent does **not** see:
-
-- **CLI network traffic.** The host extension never inspects,
-  intercepts, or replays the backend CLI's outbound calls — to
-  Anthropic, to OpenAI, or to whatever endpoint the selected backend
-  uses. The CLI subprocess is opaque to Schegent at the network layer;
-  the host reads only its stdout/stderr.
-- **Other workspaces.** State is per-workspace. A run in workspace A
-  cannot observe or affect workspace B. Multi-root workspaces are folded
-  to first-folder canonical per spec 058 (see [§4(e)](#e-multi-root-canonicalization-spec-058)).
-- **Other VS Code windows.** Two windows opened on the same workspace
-  coordinate via the workspace lock plus the primary-host gate; the
-  non-primary window is read-only by IPC convention. Mutating IPC
-  commands from a non-primary window are rejected with `not-primary-host`.
-
-For the contributor-facing enumeration of these surfaces and the lint
-regressions that prevent them from drifting, see [`threat-model.md` §
-What Schegent has access to](./threat-model.md#what-schegent-has-access-to)
-and [`ARCHITECTURE.md`](../../ARCHITECTURE.md) for the host /
-webview / runner topology and the canonical workspace-folder rule.
-
----
-
-## 3. What Schegent sends
-
-Three write/transmit destinations exist.
-
-**1. Backend CLI invocation.** Schegent spawns the CLI per phase with
-argv (model, effort, optional `--continue` flag, system prompt argv),
-stdin (the composed phase prompt), and an environment derived from VS
-Code's environment plus the operator-configured settings. Every
-invocation happens inside the extension host, under the workspace-trust
-ceiling; there is no out-of-host execution path.
-The `-c` flag is appended only when `request.isContinue === true` is set
-by the runner gate (CLAUDE.md hard rule).
-
-**2. Local disk writes.** Four sinks, each with a documented redaction
-posture:
-
-- **Audit log** at `.schegent/audit.log`. Append-only, written via the
-  single `appendAudit` boundary. Every operator-influenced string passes
-  through the `SECRET_PATTERNS` redaction set in
-  [`src/lib/logger.ts`](../../src/lib/logger.ts) before reaching the
-  writer. Paths are excluded from structured payloads (the paths-free
-  audit discipline; see [`threat-model.md` § The paths-free audit
-  discipline](./threat-model.md#the-paths-free-audit-discipline)).
-- **Raw transcript** at `.schegent/sessions/raw-<runId>.log`. Captures
-  CLI stdout/stderr verbatim. Local-only; never referenced by path from
-  the audit log. Backpressured mode-`0600` OS-temporary spools preserve bytes
-  outside the bounded parsing buffers and are removed after finalization;
-  abandoned owner-PID spools are scavenged. Used by
-  operators when reconstructing a failed run.
-- **Verbose diagnostic files** under
-  `.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/`.
-  Opt-in via `schegent.logging.verbose` (default off). Gitignored. Same
-  paths-free audit discipline: the audit log records that verbose was
-  on, not where the bytes landed. For the sink details and how to grep
-  / tail the sanitized output channel, see
-  [`operations/runtime-log.md`](../operations/runtime-log.md).
-- **CLI transport capture** at `.schegent/cli-transport.log`. The lines the
-  CLI emitted, one per record, through the same `SECRET_PATTERNS` set as the
-  audit log. This is the one sanitized sink that does **not** apply the
-  paths-free discipline — CLI output routinely names files, and stripping
-  those names would leave the record useless — so it is sanitized but
-  path-bearing. Bounded in code at 5 MiB plus three rotated generations,
-  and best-effort: a write failure warns once and never affects a phase.
-  It exists because this content used to be written as one audit event per
-  line, which spent the audit log's retention budget on CLI transport; see
-  [`reference/file-layout.md`](../reference/file-layout.md#cli-transportlog).
-
-**3. No network.** The extension host makes no outbound network calls.
-The webview's Content Security Policy pins `connect-src 'none'`
-verbatim at [`src/ui/sidebar/csp.ts:20`](../../src/ui/sidebar/csp.ts#L20).
-There is no telemetry collector, no remote logging endpoint, and no
-crash reporter. The `telemetry-projection` feature is a local-only UI
-surface, not an outbound channel; see
-[`features/telemetry-projection.md`](../features/telemetry-projection.md).
-This statement applies to the Schegent control plane, not to backend CLI
-execution: configured providers may require network access. See
-[`Local-first does not mean offline execution`](../concepts/local-first-not-offline.md).
-
-The redaction surface is **centralized**: `SECRET_PATTERNS` is the
-single source of truth for every disk-bound sink. CLAUDE.md hard rules
-forbid forking the set or introducing parallel sanitizers; see
-[`threat-model.md` § Sanitization is centralized](./threat-model.md#sanitization-is-centralized).
-The set covers Anthropic and OpenAI API keys (`sk-`, `sk-ant-`,
-`sk-proj-`, `sk-svcacct-`), GitHub personal access tokens (`ghp_`,
-`github_pat_`), Slack tokens (`xox[baprs]-`), AWS IAM and STS access
-keys (`AKIA`, `ASIA`), Google Cloud API keys (`AIza`), Google OAuth
-tokens (`ya29.`), Stripe live/test secret keys, PEM private-key headers,
-bearer / authorization headers, `api_key` / `x-api-key` patterns, JSON
-Web Tokens, and generic env-style `SECRET=` / `TOKEN=` / `PASSWORD=`
-strings.
-
----
-
-## 4. Trust boundaries
-
-Five layers compose Schegent's trust surface. Each layer adds a gate;
-loosening a downstream layer cannot widen an upstream layer.
-
-### (a) VS Code Workspace Trust — the binary platform gate
-
-VS Code's built-in Workspace Trust is the first gate. Schegent registers
-as an `untrusted-restricted` consumer. In an untrusted workspace:
-
-- Every mutating IPC command rejects with `untrusted-workspace`.
-- The sidebar shows a banner; no run is ever started.
-
-Until the operator trusts the workspace, Schegent's capability surface
-is zero. See [`threat-model.md` § Workspace-trust
-gating](./threat-model.md#workspace-trust-gating).
-
-### (b) The `MUTATING_COMMANDS` primary-host gate — 38 commands
-
-Every mutating IPC command (queue mutation, run control, phase control,
-save commands, composed-run launches, breakpoints) must be a member of the
-`MUTATING_COMMAND_REASONS` registry in
-[`src/contracts/sidebar-command-metadata.ts:41`](../../src/contracts/sidebar-command-metadata.ts#L41),
-which is re-exported as the `MUTATING_COMMANDS` set in
-[`src/ui/sidebar/message-router.ts:16`](../../src/ui/sidebar/message-router.ts#L16)
-and enforced by `MessageRouter.dispatch()`. The set currently has
-**38 entries**, pinned name-by-name (with a complement assertion that
-fails on an unpinned mutating command) by
-`tests/unit/ui/sidebar/mutating-commands-pinned-list.test.ts`:
-
-- 17 queue + run-control commands (incl. `CMD_START_QUEUE` per BUG-002
-  and `CMD_CLEAR_ALL` per spec 063).
-- 7 phase-control commands (`CMD_PAUSE_PHASE`, `CMD_RESUME_PHASE`,
-  `CMD_RESTART_PHASE`, `CMD_SKIP_PHASE`, `CMD_DISABLE_PHASE`,
-  `CMD_ENABLE_PHASE`, `CMD_REMOVE_TASK_PHASE`).
-- 5 catalog / save commands (`CMD_SAVE_GENERAL_SETTINGS`,
-  `CMD_SAVE_MODELS`, `CMD_SAVE_PHASES`, `CMD_SAVE_PIPELINES`,
-  `CMD_SAVE_WORKFLOWS`).
-- 3 composed-run launch commands (`CMD_LAUNCH_PIPELINE`,
-  `CMD_LAUNCH_WORKFLOW`, `CMD_CONTINUE_WORKFLOW`).
-- 3 task-mutation commands (`CMD_MODIFY_TASK`, `CMD_REORDER_TASK`,
-  `CMD_RESTART_CANCELED_TASK`).
-- 2 phase-breakpoint commands (`CMD_SET_PHASE_BREAKPOINT`,
-  `CMD_CLEAR_PHASE_BREAKPOINT`).
-- 1 confirmation-suppression preference command
-  (`CMD_SET_CONFIRM_SUPPRESSION`, spec 063).
-
-When the same workspace is open in multiple VS Code windows, only the
-primary host accepts these commands; secondary windows receive
-`not-primary-host` rejections. The set is also pinned by a
-lint regression at `tests/lint/mutating-command-name-gate.test.ts`,
-which fails the build if a mutating command is added without registry
-membership. CLAUDE.md hard rule: "Never register a new mutating IPC
-command without adding it to `MUTATING_COMMANDS`." See
-[`threat-model.md` § T5](./threat-model.md#t5--concurrent-state-mutation-across-multiple-vs-code-windows)
-and [`threat-model.md` § The mutating-commands
-registry](./threat-model.md#the-mutating-commands-registry).
-
-### (c) Sidecar containment — the canonical-path guard (spec 056, T21)
-
-The backend CLI streams stdout that includes audit events naming local
-diagnostic file paths (`phase-message.env`). An attacker who can steer
-the CLI's stdout — via prompt injection in spec/plan content, a
-compromised CLI binary, or upstream model behavior — could try to name
-a path outside the run's diagnostics tree and steer the host into
-reading attacker-named files.
-
-The mitigation is **canonical-path containment** in
-`src/controller/phase-sidecar-reader.ts`: the host computes the
-expected path from `(workspaceRoot, runId, pipelineId, phaseId,
-iterationN)`; an audit-reported path is accepted only when it
-canonicalizes byte-equal to the host's computed path, and ignored
-entirely when the canonical file already exists. The CLI cannot
-redirect the host into reading attacker-named files.
-
-See [spec 056](../../../specs/056-principal-arch-hardening/spec.md) and
-[`threat-model.md` §
-T21](./threat-model.md#t21--untrusted-stdout-names-local-files).
-
-### (d) Per-capability trust scopes (spec 059)
-
-VS Code's Workspace Trust is binary; Schegent layers two
-independently-configurable scopes on top, giving enterprise IT a
-narrower gate than "trust everything or trust nothing":
-
-- **`schegent.trust.allowCustomPhases`** — gates saving a phase
-  definition into the catalog store. When `false`, the save emits a
-  `trust.capability-denied` audit event and is rejected.
-- **`schegent.trust.allowCustomRetryConditions`** — gates saving a
-  `retryCondition` expression on any phase. The gate keys on the field
-  being present, never on what the expression says.
-
-Both key on what a document **says**, which is why they survived the
-move to a single-layer catalog store in feature 099 and two others did
-not. `allowPipelineOverrides` and `allowWorkflowOverrides` gated which
-settings layer could redefine what another layer declared; with one
-catalog there is no second layer to redefine anything, so editing
-pipelines and workflows is gated by Workspace Trust alone — a gate an
-untrusted workspace already applies wholesale, by activating no catalog
-at all.
-
-Each setting is `boolean | null`, defaults to `null` (follow Workspace
-Trust), and resolves against a four-step ladder: **workspace-trust
-ceiling → workspace-scope → user-scope → default-allow**. The
-Workspace Trust check runs first; a workspace that is not trusted
-returns `false` for every capability regardless of any user- or
-workspace-scope value. The ceiling is never widened. Per-capability
-scopes can only *narrow* the trust surface.
-
-Denied save attempts emit a `trust.capability-denied` audit event with
-a closed-enum payload (capability, resolved scope, fixed reason
-template) plus `workspaceBasename` (basename only, never the full
-path). No operator-controlled string flows into the payload, so
-redaction is unchanged.
-
-See [`operations/trust-scopes.md`](../operations/trust-scopes.md) for
-the operator-facing guide and 18-row truth table,
-[spec 059](../../../specs/059-fine-grained-trust-scopes/spec.md) for
-the implementation, and [`threat-model.md` § Per-capability trust
-scopes](./threat-model.md#per-capability-trust-scopes).
-
-### (e) Multi-root canonicalization (spec 058)
-
-A VS Code multi-root workspace has multiple folder roots (a
-`.code-workspace` file, or "Add Folder to Workspace" from a
-single-folder window). Schegent's state model is per-workspace, not
-per-root. Spec 058 shipped Option B (first-folder canonical): every
-first-folder read routes through `getCanonicalWorkspaceRoot()` in
-`repo/src/state/workspace-folder-picker.ts`; the CLAUDE.md hard rule
-pins the discipline: "Never read `workspaceFolders[0]` or
-`workspaceFolders?.[0]` outside `repo/src/state/workspace-folder-picker.ts`."
-
-In a multi-root workspace, the dashboard shows a multi-root warning
-chip naming the canonical folder. Adding or removing non-canonical
-folders does not move the canonical anchor mid-run; the other roots
-are visible to the operator's other extensions and workflows but do
-not flow into Schegent's audit log, queue, or run state.
-
-See [spec 058](../../../specs/058-multi-root-workspace/spec.md) and
-the [workspace-isolation rationale](../../../docs/plans/workspace-isolation-strategy.md).
-
----
-
-## 5. Failure modes
-
-Seven scenarios. For each: **what happens**, **what mitigates it**, and
-**what the operator sees**.
-
-### 5.1 Malicious CLI output
-
-**What happens.** The backend CLI emits stdout the operator did not
-author — because of prompt injection in workspace spec/plan/task files,
-a compromised CLI binary, or upstream model behavior. The output may
-contain (a) audit-event JSON naming a path outside the run's
-diagnostics tree, (b) a secret in plaintext (e.g., an API key the CLI
-surfaces from a tool call), or (c) prose attempting to steer Schegent
-or the operator into further actions.
-
-**What mitigates it.** The canonical-path containment guard rejects
-audit-reported paths that do not byte-equal the host-computed expected
-path
-([`threat-model.md` § T21](./threat-model.md#t21--untrusted-stdout-names-local-files)).
-The `SECRET_PATTERNS` redaction set strips API keys, tokens, and
-credentials before the bytes reach any sink
-([`threat-model.md` § T1](./threat-model.md#t1--secret-leakage-to-operator-visible-sinks)).
-Prompt injection itself is upstream of the extension's threat model and
-is named explicitly out-of-band
-([`threat-model.md` § T8](./threat-model.md#t8--prompt-injection-via-specplantask-content));
-the operator decides whether to ingest untrusted content.
-
-**What the operator sees.** A redacted audit event with the unknown-path
-entry dropped (silently if the canonical file exists; with a warning
-otherwise), `[REDACTED]` markers in the audit log and phase log feed
-wherever the redaction set fired, and the run proceeding to the next
-phase boundary or stopping at the phase-message-empty failure check.
-
-### 5.2 Secondary VS Code window attempts to mutate state
-
-**What happens.** Two VS Code windows have the same workspace open. The
-operator (or an extension running in either window) attempts a mutating
-IPC command from the non-primary window.
-
-**What mitigates it.** The `MUTATING_COMMANDS` primary-host gate rejects
-every command in the registry from non-primary hosts with a
-`not-primary-host` rejection. The workspace lock at `.schegent/lock`
-prevents two runners from spawning concurrently even if the gate
-misfired. See [`threat-model.md` §
-T5](./threat-model.md#t5--concurrent-state-mutation-across-multiple-vs-code-windows).
-
-**What the operator sees.** A rejection toast in the non-primary
-window: "Schegent is the primary host in another window." The audit log
-records the rejection cause. The primary window is unaffected.
-
-### 5.3 Workspace opened in multi-root mode
-
-**What happens.** The operator opens a workspace with two or more folder
-roots — either a `.code-workspace` file or by adding a folder to an
-existing single-folder window.
-
-**What mitigates it.** Spec 058 ships first-folder canonicalization;
-every read of the first folder goes through `getCanonicalWorkspaceRoot()`
-and the CLAUDE.md hard rule pins this. State and audit logs anchor to
-the canonical folder only; the non-canonical roots are visible to the
-operator's other extensions but do not participate in Schegent.
-
-**What the operator sees.** The dashboard shows a multi-root warning
-chip naming the canonical folder. Operations targeting non-canonical
-folders are surfaced as no-ops, not silently re-routed. Adding or
-removing non-canonical folders mid-session does not change the canonical
-anchor.
-
-### 5.4 Audit log fills the disk
-
-**What happens.** A long-running fleet workstation accumulates audit log
-entries until the host's free disk space is exhausted.
-
-**What mitigates it.** The audit log rotates by size; rotated
-generations are preserved on rename, never erased in-line
-([`threat-model.md` § T3](./threat-model.md#t3--audit-log-tampering-or-non-append-writes)).
-The rotation policy is intentionally conservative — history is
-preserved across rotations so the operator's evidence trail survives a
-disk-full event. Operational mitigation is the operator's: monitor
-`.schegent/audit.log*` size on fleet hosts, ship old generations to
-cold storage, or apply a per-host retention policy. CLAUDE.md hard rule:
-"Never implement task or phase deletion by erasing `.schegent/audit.log`."
-
-**What the operator sees.** A best-effort warning if the writer
-surfaces an `ENOSPC` error during a phase boundary. The run pauses; the
-audit history is intact through the last successful rotation. See
-[`operations/inspect-audit-logs.md`](../operations/inspect-audit-logs.md)
-for the rotation layout and inspection workflow.
-
-### 5.5 Operator pastes a secret into a setting
-
-**What happens.** An operator pastes an API key, bearer token, or
-password into a setting value (e.g., into a custom phase prompt, a
-retry-condition DSL expression, or `schegent.cli.args`). The secret
-reaches a sink (audit log, runtime log, phase log feed) through normal
-phase execution.
-
-**What mitigates it.** `SECRET_PATTERNS` is the single redaction
-source-of-truth. Every operator-influenced string passes through a
-registered `LogSink` and is sanitized at the boundary; no sink has its
-own private sanitizer. The lint regression
-`tests/lint/no-direct-syslog-fs-writes.test.ts` pins the writer
-allowlist. See
-[`threat-model.md` § T1](./threat-model.md#t1--secret-leakage-to-operator-visible-sinks)
-and [`threat-model.md` § Sanitization is
-centralized](./threat-model.md#sanitization-is-centralized). New writes
-land redacted; **historical** entries written before the operator
-noticed must be cleaned manually via the rotation procedure (see
-[§6.3](#63-rotate-a-secret-that-ended-up-in-the-audit-log)).
-
-**What the operator sees.** `[REDACTED]` markers wherever the redaction
-set fires on subsequent writes. The audit log, runtime log, Output
-channel, and phase log feed all show `[REDACTED]` rather than the raw
-secret on subsequent writes. Historical entries are
-unaffected; the operator must rotate the credential at the issuing
-service and delete the historical entries manually.
-
-### 5.6 Workspace and `repo/` diverge on the `Repo-head:` trailer
-
-**What happens.** The workspace envelope and the implementation `repo/`
-are independent git repositories treated as one logical state machine.
-A workspace commit was made without the corresponding `repo/` HEAD
-being recorded as a git commit trailer, or the recorded hash no longer
-matches `repo/`'s actual HEAD because of a separate `repo/` operation.
-
-**What mitigates it.** [`CLAUDE.md` § Nested Repository
-Sync](../../../CLAUDE.md#nested-repository-sync) is the convention:
-every workspace commit for implementation work records `repo/`'s HEAD
-as a `Repo-head:` git commit trailer. The
-[`scripts/sync-status.sh --verify`](../../../scripts/sync-status.sh)
-command exits 1 when the trailer is missing or mismatched. This is
-local transactional sync with compensating rollback — two git repos
-cannot perform a true atomic two-phase commit, so the convention is:
-detect drift early, surface it before push, and roll back the workspace
-commit rather than force-pushing.
-
-**What the operator sees.** `sync-status.sh --verify` prints the
-recorded trailer vs. actual `repo/` HEAD and exits non-zero on
-divergence. The `--pr-block` mode prints a PR-body block reviewers can
-paste into PR descriptions to surface the sync state at review time.
-
-### 5.7 CLI hangs (watchdog, cancellation)
-
-**What happens.** The spawned backend CLI subprocess stops emitting
-stdout and stops exiting — because the upstream model is rate-limited
-beyond the configured timeout, the network is partitioned, the binary
-is wedged, or an in-flight tool call is itself hung.
-
-**What mitigates it.** Each phase has a per-phase timeout (the
-definition's own `timeoutSeconds`, or the per-run override). The
-runner watchdog kills the subprocess on timeout and records a
-`phase-timeout` audit event. The operator can also cancel via the
-sidebar (`schegent.cancel`); cancellation kills the subprocess after
-state has been updated (aggressive-pause semantics) so a partial run
-never leaves the queue in an unresumable state.
-
-**What the operator sees.** A timeout toast or cancel acknowledgment;
-the run in the dashboard moves to `failed` or `canceled`; the audit log
-records the cause. See
-[`features/aggressive-pause.md`](../features/aggressive-pause.md) for
-the cancellation discipline and
-[`features/rate-limit-handling.md`](../features/rate-limit-handling.md)
-for how rate limits interact with the watchdog.
-
----
-
-## 6. Escape hatches
-
-Five operator actions, each with one concrete next-step.
-
-### 6.1 Disable Schegent on a workspace
-
-**What.** Leave the workspace untrusted. VS Code's Workspace Trust is
-the binary platform gate; in an untrusted workspace, every mutating IPC
-command rejects and no run starts.
-
-**How.** Open VS Code's command palette → `Workspaces: Manage Workspace
-Trust` → mark the workspace as untrusted (or never trust it in the
-first place). Schegent surfaces a banner in the sidebar; no further
-configuration is required.
-
-### 6.2 Disable a specific capability
-
-**What.** Narrow Schegent's capability surface without revoking the
-whole Workspace Trust gate. Per-capability scopes from spec 059 let the
-operator deny one of three capabilities while leaving the rest of
-Schegent operational.
-
-**How.** Set the relevant `schegent.trust.*` key at workspace or user
-scope (workspace scope takes precedence over user scope, which takes
-precedence over default-allow; the workspace-trust ceiling is enforced
-first):
-
-- `"schegent.trust.allowCustomPhases": false` — denies saving a phase
-  definition.
-- `"schegent.trust.allowCustomRetryConditions": false` — denies saving a
-  `retryCondition` expression on any phase.
-
-Denying both leaves the workspace able to *run* what its catalog already
-holds while authoring nothing new into it. To deny pipeline and workflow
-edits as well, deny Workspace Trust for the folder — that is now the
-gate for those, and it denies the whole catalog rather than one
-capability.
-
-For the full 18-row resolution truth table and the four worked
-resolution examples, see
-[`operations/trust-scopes.md`](../operations/trust-scopes.md).
-
-### 6.3 Rotate a secret that ended up in the audit log
-
-**What.** Remove historical entries containing a leaked secret. The
-`SECRET_PATTERNS` set is defense-in-depth that guards new writes;
-historical entries written before the rotation must be deleted manually
-by the operator.
-
-**How.** Stop any in-flight run (sidebar `Cancel`). Delete the
-historical entries on disk:
-
-- `.schegent/audit.log` and any rotated generations (`audit.log.1`,
-  `audit.log.2`, …).
-- `.schegent/sessions/raw-<runId>.log` for every affected run.
-- `.schegent/sessions/<runId>/diagnostics/...` if verbose was on.
-
-Then rotate the leaked credential at the issuing service — the
-redaction set is a containment mechanism, not credential rotation. For
-the audit log's structure and the recommended inspection workflow, see
-[`operations/inspect-audit-logs.md`](../operations/inspect-audit-logs.md).
-
-### 6.4 Verify the workspace ↔ `repo/` sync invariant
-
-**What.** Confirm the workspace envelope's latest commit records
-`repo/`'s HEAD as a `Repo-head:` trailer that matches `repo/`'s actual
-HEAD.
-
-**How.** Run `scripts/sync-status.sh --verify` from the workspace root:
-
-```bash
-scripts/sync-status.sh --verify
-```
-
-Exit codes: `0` matched, `1` missing or mismatched trailer, `2`
-precondition failed (not a repo, `repo/` missing, etc.). The
-`--pr-block` mode prints a PR-body block reviewers can paste into PR
-descriptions. See [`CLAUDE.md` § Nested Repository
-Sync](../../../CLAUDE.md#nested-repository-sync) for the convention and
-[`scripts/sync-status.sh`](../../../scripts/sync-status.sh) for the
-script.
-
-### 6.5 Diagnose a workflow regression
-
-**What.** Reproduce a failed run with full per-iteration diagnostic
-capture (unredacted stream files, raw event log, verbose process log).
-
-**How.** Enable verbose diagnostics, reproduce, attach:
-
-- Set `"schegent.logging.verbose": true` at workspace scope. The
-  setting is read at every phase boundary — not cached on long-lived
-  runners — so it takes effect on the next phase.
-- Reproduce the failure. Diagnostics land under
-  `.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/`.
-  Files are gitignored, opt-in, and never referenced by path in the
-  structured audit log.
-- Review the relevant `debug.json`, `stream.jsonl`, and `verbose.log`
-  for secrets before sharing off-machine — these files are
-  intentionally unredacted so operators can see the bytes the sanitizer
-  would have masked.
-
-See
-[`operations/verbose-diagnostic-logging.md`](../operations/verbose-diagnostic-logging.md)
-and [`features/verbose-diagnostics.md`](../features/verbose-diagnostics.md).
-
----
-
-## 7. References
-
-Every artifact this white-paper depends on:
-
-- [`CLAUDE.md`](../../../CLAUDE.md) — workspace hard rules,
-  documentation-language conventions, nested-repository-sync model.
-- [`threat-model.md`](./threat-model.md) — contributor-facing threat
-  catalog T1–T21 with mitigation-to-test anchors.
-- [`src/lib/logger.ts`](../../src/lib/logger.ts) — `SECRET_PATTERNS`
-  source-of-truth (substituted for the brief's planned `redaction.md`,
-  which does not yet exist as a standalone file).
-- [`src/ui/sidebar/csp.ts`](../../src/ui/sidebar/csp.ts) — webview CSP
-  literal (`connect-src 'none'` at line 20).
-- [`src/contracts/sidebar-command-metadata.ts`](../../src/contracts/sidebar-command-metadata.ts) —
-  `MUTATING_COMMAND_REASONS` registry (36 entries; the source of truth
-  re-exported as `MUTATING_COMMANDS` by
-  [`src/ui/sidebar/message-router.ts:16`](../../src/ui/sidebar/message-router.ts#L16)).
-- [`operations/runtime-log.md`](../operations/runtime-log.md) — the
-  runtime-log file sink that mirrors the sanitized Output channel.
-- [`operations/verbose-diagnostic-logging.md`](../operations/verbose-diagnostic-logging.md)
-  — operator-facing verbose-diagnostic workflow.
-- [`operations/inspect-audit-logs.md`](../operations/inspect-audit-logs.md)
-  — audit log layout, rotation policy, and inspection workflow.
-- [`operations/trust-scopes.md`](../operations/trust-scopes.md) —
-  per-capability trust scopes operator guide and 18-row truth table.
-- [`features/telemetry-projection.md`](../features/telemetry-projection.md)
-  — the ephemeral PID / status display (local-only UI surface).
-- [`features/verbose-diagnostics.md`](../features/verbose-diagnostics.md)
-  — verbose-diagnostic feature reference.
-- [`docs/plans/trust-model-strategy.md`](../../../docs/plans/trust-model-strategy.md)
-  — trust-model rationale (Option A status-quo + Option B shipped in
-  059).
-- [`docs/plans/workspace-isolation-strategy.md`](../../../docs/plans/workspace-isolation-strategy.md)
-  — workspace-isolation rationale (Option B first-folder canonical
-  shipped in 058).
-- [`docs/plans/backend-strategy.md`](../../../docs/plans/backend-strategy.md)
-  — Claude-only-for-v1 backend rationale.
-- [`ARCHITECTURE.md`](../../ARCHITECTURE.md) — host / webview / runner
-  topology and IPC contracts.
-- [`scripts/sync-status.sh`](../../../scripts/sync-status.sh) — sync
-  invariant verification script.
-- [spec 056](../../../specs/056-principal-arch-hardening/spec.md) —
-  sidecar canonical-path containment (T21 mitigation).
-- [spec 058](../../../specs/058-multi-root-workspace/spec.md) —
-  first-folder canonicalization for multi-root workspaces.
-- [spec 059](../../../specs/059-fine-grained-trust-scopes/spec.md) —
-  per-capability trust scopes.
-
----
-
-## Maintenance
-
-**Review cadence.** Quarterly maintainer walk-through. The maintainer
-opens every link in [§7 References](#7-references), confirms each
-target resolves at `HEAD`, and updates this white-paper in the same PR
-as any rename, removal, or signature change of a dependent artifact.
-
-**PR-time edits required.** When a PR modifies `SECRET_PATTERNS`,
-`MUTATING_COMMANDS`, the CSP literal at
-[`src/ui/sidebar/csp.ts:20`](../../src/ui/sidebar/csp.ts#L20), the
-audit-log writer, the workspace-trust posture, the per-capability
-trust-scope ladder, the `getCanonicalWorkspaceRoot()` discipline, the
-sync-status script, or any artifact listed in [§7
-References](#7-references), the same PR updates this white-paper. The
-maintainer enforces this in review.
-
-**Dependent artifacts.** [§7 References](#7-references) is the
-dependency manifest. A CI doc-drift lint that automatically resolves
-every quoted path in this file and fails the build on a dead link is a
-named future automated mitigation; it is out-of-scope for this revision.
-
-**External-reader verification.** A non-Schegent-contributor reader
-(an enterprise IT reviewer or operator not involved in extension
-development) is invited to read this white-paper end-to-end and
-confirm it answers "what does Schegent see, send, and risk?". That
-verification is a post-merge follow-up; this revision lands on
-maintainer review.
+# Schegent security white paper
+
+## Executive summary
+
+Schegent coordinates autonomous local CLI processes from a VS Code extension. Claude is the default runner; Claude and Agy disable CLI approval prompts and act without asking, while Codex uses the `workspace-write` sandbox and leaves `.git` read-only. The extension adds input validation, workspace-trust and ownership gates, bounded process lifecycle handling, centralized redaction, and local evidence, but it does not verify model intent or promise that a backend cannot reach beyond the workspace.
+
+<!-- Source: package.json -->
+<!-- Source: src/runner/claude-cli.ts -->
+<!-- Source: src/runner/codex-cli.ts -->
+<!-- Source: src/runner/agy-cli.ts -->
+<!-- Source: src/ui/sidebar/message-router.ts -->
+
+## Security boundary
+
+The deployed product is local: one extension-host bundle, two local webviews, VS Code `workspaceState`, workspace files under `.schegent/`, and child CLI processes. There is no production HTTP, WebSocket, REST, GraphQL, or remote multi-user service. Both webview content-security policies set `connect-src 'none'`.
+
+<!-- Source: package.json -->
+<!-- Source: esbuild.config.mjs -->
+<!-- Source: src/extension.ts -->
+<!-- Source: src/ui/sidebar/csp.ts -->
+
+The host itself has no application network client in the request path described here. Backend CLIs can make their own network requests under their own implementation and environment; local-first is therefore not an offline-execution promise.
+
+<!-- Source: src/runner/claude-cli.ts -->
+<!-- Source: src/runner/codex-cli.ts -->
+<!-- Source: src/runner/agy-cli.ts -->
+
+## Authority controls
+
+### Workspace trust
+
+Mutating webview commands fail closed unless VS Code reports the workspace trusted. A missing callback, exception, or non-`true` result rejects the request. Restricted activation keeps the placeholder UI and reset surface separate from workspace-bound runtime construction.
+
+<!-- Source: src/ui/sidebar/message-router.ts -->
+<!-- Source: src/extension.ts -->
+
+### Window primacy and mutation serialization
+
+Every command classified in `MUTATING_COMMAND_REASONS` also requires the current window to hold authoritative filesystem-backed ownership. Accepted mutations execute serially, and correlation IDs support bounded acknowledgement replay. `CMD_READ_METRICS` is the sole primary-gated read because it scans shared archives.
+
+<!-- Source: src/contracts/sidebar-command-metadata.ts -->
+<!-- Source: src/state/ownership-registry.ts -->
+<!-- Source: src/ui/sidebar/message-router.ts -->
+<!-- Source: src/ui/sidebar/mutation-command-executor.ts -->
+<!-- Source: src/ui/sidebar/commands/primacy-gate.ts -->
+
+### Catalog capability gates
+
+Phase authoring requires the `phases` capability, and a newly supplied Phase body declaring `retryCondition` additionally requires `retryConditions`. These checks supplement workspace trust and primacy; removal operations do not add a content capability.
+
+<!-- Source: src/ui/sidebar/commands/cmd-catalog-lifecycle.ts -->
+<!-- Source: src/state/capability-trust-resolver.ts -->
+
+### Run approval
+
+Runs containing a Phase that declares `git` or `unrestricted` effects require the operator's modal approval for the exact mutation-plan fingerprint. The receipt is checked again at dispatch. The declaration controls consent and rollback planning; it does not restrict what Claude or Agy can attempt. Git-writing work is refused on Codex because its sandbox leaves `.git` read-only.
+
+<!-- Source: src/activation/git-approval.ts -->
+<!-- Source: src/services/mutation-plan.ts -->
+<!-- Source: src/services/workflow-run-factory.ts -->
+<!-- Source: src/services/run-driver.ts -->
+<!-- Source: src/config/phase-runner-policy.ts -->
+
+## Input handling
+
+Webview traffic passes through a closed 61-command runtime validator before routing. Invalid input is logged and dropped without a handler acknowledgement. Process YAML uses a size-bounded, closed scanner/parser rather than a general YAML loader; preflight writes nothing and publication rechecks revision and capability gates.
+
+<!-- Source: src/contracts/runtime-validators.ts -->
+<!-- Source: src/ui/sidebar/sidebar-view-provider.ts -->
+<!-- Source: src/services/process-yaml/yaml-scanner.ts -->
+<!-- Source: src/services/process-yaml/yaml-parser.ts -->
+<!-- Source: src/services/process-yaml/preflight-service.ts -->
+
+Local file requests use workspace-relative lexical checks. A Phase sidecar receives a stronger canonical-path containment check: the host derives the expected `phase-message.env` location from run identity and refuses an audit-reported fallback path that does not canonicalize to it.
+
+<!-- Source: src/services/run-request/workspace-containment.ts -->
+<!-- Source: src/services/run-request/local-input-validator.ts -->
+<!-- Source: src/controller/phase-sidecar-reader.ts -->
+
+CLI stdout remains untrusted model output. Phase outcome classification considers the trailing region at or after the last complete audit block, while Claude process-control termination arms only on the parsed stream-json result envelope rather than a content substring.
+
+<!-- Source: src/parser/audit-log-parser.ts -->
+<!-- Source: src/parser/stdout-parser.ts -->
+<!-- Source: src/runner/claude-cli.ts -->
+
+## Process boundary
+
+All adapters spawn with `shell: false`, prompts on stdin, an explicit `cwd`, bounded stdout/stderr buffers, idle timeout, abort-signal cancellation, and TERM-to-KILL escalation. Monitor hooks are observational and cannot throw into process control. Retry policy stays outside the adapters.
+
+<!-- Source: src/contracts/backend-runner.ts -->
+<!-- Source: src/runner/process-lifecycle-runner.ts -->
+<!-- Source: src/runner/claude-cli.ts -->
+
+Environment forwarding defaults to `allowlist`, which includes bootstrap variables plus explicitly named entries. `minimal` narrows further; `inherit` restores the ambient extension-host environment. The credit watchdog's internal status invocation currently supplies no policy and therefore inherits, an explicit exception recorded in the command reference.
+
+<!-- Source: package.json -->
+<!-- Source: src/runner/spawn-env.ts -->
+<!-- Source: src/watchdog/credit-watchdog.ts -->
+
+## Evidence boundary
+
+`SanitizedLogger` owns one `SECRET_PATTERNS` set for operator-visible logs. The structured audit writer emits schema-v3 JSONL, and host code appends through one writer and rotates by configured size/age. That is a write-path convention, not tamper evidence: there is no signature or hash chain, an operator or backend process can alter the workspace file, and the live append path is not passed through the canonical-path oracle before `fs.appendFile`.
+
+<!-- Source: src/lib/logger.ts -->
+<!-- Source: src/audit/audit-log-writer.ts -->
+<!-- Source: src/contracts/audit-events.ts -->
+<!-- Source: src/lib/runtime-log/runtime-log-sink.ts -->
+<!-- Source: src/services/phase-log/phase-log-sanitizer.ts -->
+
+Raw transcripts and verbose diagnostics are different: they can contain unredacted prompts, source, model output, and environment-derived diagnostics. Raw-transcript mode defaults to `errors-only`; verbose diagnostics default off and apply only to Claude. Age/byte retention can remove inactive session artifacts, but neither control edits the structured audit log.
+
+<!-- Source: package.json -->
+<!-- Source: src/audit/raw-transcript-writer.ts -->
+<!-- Source: src/audit/verbose-diagnostic-writer.ts -->
+<!-- Source: src/services/session-retention/session-artifact-retention-service.ts -->
+
+Recovery checkpoints are another sensitive surface outside session retention. They live under extension `globalStorage/checkpoints`; a checkpoint can contain `git diff --binary --no-ext-diff HEAD` plus Run metadata. Directories and files are requested as `0700` and `0600`. A separate fixed policy removes artifacts older than 14 days and enforces 256 MiB total while protecting the ten most recent Run directories from the size bound. Session retention settings do not govern these files.
+
+<!-- Source: src/services/run-checkpoint-service.ts -->
+<!-- Source: src/services/run-checkpoint-retention.ts -->
+
+Two workspace-local stores also deserve separate treatment. `.schegent/cli-transport.log` passes through the shared sanitizer but deliberately retains paths from backend output. `.schegent/history/<runId>.txt` stores a full sanitized Task description at mode `0600`; pattern redaction does not make arbitrary operator prose non-sensitive.
+
+<!-- Source: src/monitor/cli-transport-sink.ts -->
+<!-- Source: src/services/history/history-description-store.ts -->
+<!-- Source: src/lib/logger.ts -->
+
+## Failure modes and residual risk
+
+| Failure | Code behavior | Residual risk | Source |
+|---|---|---|---|
+| Backend hangs | Idle timeout terminates the child; cancellation is separately observable. | Output can keep resetting the idle timer, so a noisy process can run until another bound intervenes. | <!-- Source: src/runner/process-lifecycle-runner.ts --> |
+| Secondary window mutates | Trust and primacy gates reject before handler work. | Direct VS Code commands have their own guard profiles; they are not all routed through webview mutation metadata. | <!-- Source: src/ui/sidebar/message-router.ts --><!-- Source: src/activation/ui-wiring.ts --> |
+| Audit persistence is altered | Host code appends and rotates through one writer. | There is no tamper detector; other local processes can modify/delete the file, and a planted live-file symlink can redirect an ordinary append. | <!-- Source: src/audit/audit-log-writer.ts --> |
+| Raw local evidence is shared | Generated ignore rules reduce accidental commits. | Ignore files do not encrypt or revoke already copied content. | <!-- Source: src/audit/schegent-gitignore.ts --><!-- Source: src/audit/raw-transcript-writer.ts --> |
+| Model reports success falsely | The parser classifies the model's structured report. | The host checks report shape and declared-output existence, not correctness. | <!-- Source: src/parser/stdout-parser.ts --><!-- Source: src/services/run-output/run-output-resolver.ts --> |
+| Concurrent Runs edit one checkout | Queue/run attribution and separate execution leases preserve identity. | File edits may interleave; the operator resolves conflicts. | <!-- Source: src/services/auto-drain-coordinator.ts --><!-- Source: src/state/execution-lease.ts --> |
+| Persisted state is incompatible | Forward migrations handle known older schemas; a future schema is refused. | A faulty migrator is itself a one-time state mutation. | <!-- Source: src/state/workspace-state.ts --><!-- Source: src/state/queue-state-migrator.ts --> |
+
+## Operator controls
+
+- Leave a workspace untrusted to keep workspace-bound execution inactive. <!-- Source: src/extension.ts -->
+- Choose Codex when its `workspace-write` filesystem bound fits the Phase; Git-writing Phases cannot use it. <!-- Source: src/runner/codex-cli.ts --><!-- Source: src/config/phase-runner-policy.ts -->
+- Keep `schegent.cli.environmentMode` at `allowlist` or select `minimal`; add only required variable names. <!-- Source: package.json -->
+- Keep raw transcript mode at `errors-only` or set `off`; leave verbose diagnostics disabled unless actively diagnosing. <!-- Source: package.json -->
+- Set the global queue concurrency cap to `1` to avoid simultaneous Runs in one checkout. <!-- Source: package.json --><!-- Source: src/services/auto-drain-coordinator.ts -->
+- Export metadata-only audit evidence with `schegent.exportAuditLog`; do not share raw sessions. <!-- Source: package.json --><!-- Source: src/commands/export-audit.ts -->
+
+## References
+
+- [Operator threat catalog](threat-model.md)
+- [Permission-posture decision](../concepts/unprompted-agent-not-contained.md)
+- [Backend operational contract](../operations/backends.md)
+- [Security reporting policy](../../SECURITY.md)
+
+<!-- Source: tests/lint/backend-permission-posture.test.ts -->
+<!-- Source: tests/lint/threat-id-anchor-parity.test.ts -->

@@ -1,23 +1,9 @@
-// Feature 056 Track 5 (FR-028, T040) — Doc-drift guard.
-// FR-R3-041 — extended to the file README calls the complete contract, and to
-// the reverse direction.
+// Command-reference drift guard. The historical filename is retained because
+// planning-envelope evidence links to this gate by path.
 //
-// The original guard read `README.md` alone. That is the weaker of two
-// documents: a README table is a summary, while `README.md` line 232 points at
-// `docs/reference/commands.md` as "the complete contract". The enforcement was
-// aimed at the summary, which is why the contract is the one that drifted — it
-// documented 18 of 19 commands, missing `schegent.exportAuditLog`, for as long as
-// nobody counted.
-//
-// Three things this now does that it did not:
-//
-//   * checks the contract file as well as the README;
-//   * checks BOTH directions. A documented command that no longer exists sends a
-//     reader to something that is not there, and that is the failure mode that
-//     wastes their time most;
-//   * compares TITLES, not only identifiers. A contract listing a command under
-//     a name the palette does not show is documentation that fails at the moment
-//     of use.
+// The root README is the project overview, not a second command index. Detailed
+// command coverage belongs to `docs/reference/commands.md`, where this guard
+// checks both directions and compares manifest titles as well as identifiers.
 import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -43,7 +29,6 @@ const INTERNAL_COMMAND_ALLOWLIST = new Set<string>([
  * command set is a second thing to go stale, which is the defect this guards.
  */
 const INDEXES = [
-  { path: 'README.md', claim: 'the README reference table' },
   { path: 'docs/reference/commands.md', claim: 'the complete command contract' }
 ] as const;
 
@@ -89,7 +74,7 @@ describe('command indexes cover every contributed command', () => {
       // The reverse direction. A reader following a documented command into
       // nothing is worse served than one who cannot find it at all.
       //
-      // Settings share the `schegent.` prefix, and both documents legitimately
+      // Settings share the `schegent.` prefix, and the reference may legitimately
       // name them — including `schegent.phases` and `schegent.pipelines`, which
       // are named precisely to record that feature 098 deleted them. A reverse
       // check that could not tell a setting from a command reported six false
@@ -116,9 +101,8 @@ describe('command indexes cover every contributed command', () => {
         `${index.path} indexes no command at all. This check reads table rows and headings; if the ` +
           `document changed shape it must be taught the new one rather than passing over nothing.`
       ).toBeGreaterThan(0);
-      // Settings share the prefix and live in tables of their own — README
-      // documents `schegent.defaultPipelineId` and `schegent.fatalSignatures` in
-      // a settings table whose rows look exactly like command rows. Both filters
+      // Settings share the prefix and can live in tables whose rows look exactly
+      // like command rows. Both filters
       // are needed: structure alone lets the settings table through, and the
       // settings set alone lets retired names in prose through.
       const settings = new Set(Object.keys(configuredSettings()));

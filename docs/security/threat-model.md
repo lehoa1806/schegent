@@ -1,524 +1,264 @@
-# Operator Threat Model
+# Operator threat model
 
-Schegent runs an autonomous local CLI backend (Claude, Codex, or Agy) with broad capabilities inside your workspace. This page is the operator-facing summary of what Schegent can and cannot do, what risks exist, and what mitigations are in place. It is not exhaustive — it is the model you need to make informed decisions about whether and how to use the extension.
+Schegent is a local VS Code extension that launches an autonomous CLI backend. Claude is the default runner; Claude and Agy include `--dangerously-skip-permissions`, so their approval prompts are off and the agent acts without asking. Codex instead includes `--sandbox workspace-write`, an OS-enforced filesystem bound that leaves `.git` read-only. Every adapter uses `shell: false`, but their permission postures differ.
 
-> For a non-contributor-facing projection of this threat model — trust ceiling, audit boundary, network boundary, seven failure modes, and five escape hatches in ≤15 pages — see [Security White-Paper](whitepaper.md).
+<!-- Source: package.json -->
+<!-- Source: src/runner/backend-runner-factory.ts -->
+<!-- Source: src/runner/claude-cli.ts -->
+<!-- Source: src/runner/codex-cli.ts -->
+<!-- Source: src/runner/agy-cli.ts -->
 
-## Threat catalog (T1–T25)
+This catalog describes code-resident mitigations and residual risk. It does not promise isolation from an operator-authorized backend process, from a hostile prompt, or from an already compromised workstation.
 
-The catalog below enumerates each in-scope threat, the primary mitigation, and the prose section that elaborates. CLAUDE.md hard rules and `SECURITY.md` cite these identifiers directly; every cited `Tn` resolves to an anchor here. The `tests/lint/threat-id-anchor-parity.test.ts` regression fails the build on any drift.
+<!-- Source: docs/concepts/unprompted-agent-not-contained.md -->
+<!-- Source: src/runner/prompt-builder.ts -->
 
-| Id | Threat | Primary mitigation | Elaborated under |
+## Threat catalog
+
+| Id | Threat | Primary mitigation | Source |
 |---|---|---|---|
-| [T1](#t1--secret-leakage-to-operator-visible-sinks) | Secret leakage to operator-visible sinks (audit log, runtime log, Output channel, phase-log IPC). | Single `SECRET_PATTERNS` redaction set in [src/lib/logger.ts](../../src/lib/logger.ts) feeds every `SanitizedLogger` sink. | [Sanitization is centralized](#sanitization-is-centralized) |
-| [T2](#t2--untrusted-webview-mutating-host-state) | The untrusted webview (Svelte sidebar) mutating host state via crafted IPC payloads. | Strict CSP + `MUTATING_COMMANDS` primary-host gate + host-side re-validation of every command payload. | [The CSP and webview integrity](#the-csp-and-webview-integrity), [The mutating-commands registry](#the-mutating-commands-registry) |
-| [T3](#t3--audit-log-tampering-or-non-append-writes) | Audit log tampering, truncation, or non-append writes that destroy operator evidence. | `appendAudit` is the single writer; deletion paths never erase `.schegent/audit.log`; rotation preserves history. | [The append-only audit log](#the-append-only-audit-log) |
-| [T4](#t4--workspace-path-leakage-into-the-structured-audit-log) | Workspace path leakage into the structured audit log (e.g. workspace roots, phase-log file paths). | Paths-free audit discipline — count and selection-tuple fields only, never raw paths. | [The paths-free audit discipline](#the-paths-free-audit-discipline) |
-| [T5](#t5--concurrent-state-mutation-across-multiple-vs-code-windows) | Concurrent state mutation across two VS Code windows opened on the same workspace. | Primary-host gating + a single-holder `WorkspaceLockManager` lease claimed at activation + lock-file stale recovery. | [Primary-host gating (multi-window)](#primary-host-gating-multi-window) |
-| [T6](#t6--lease-leak-fail-deadly) | Lease leak (fail-deadly): a code path claims a queue and never gives it back, stalling that queue's subsequent runs. | Three execution-lease releases (terminal run transition, drain start-failure, window shutdown) behind a 15-second staleness reclaim; window primacy has no per-run scope to leak from. | [The hard rules](#the-hard-rules) |
-| [T7](#t7--untrusted-workspace-executing-extension-capabilities) | An untrusted workspace causing Schegent to spawn the CLI or write audit data. | `workspaceTrust: untrusted-restricted` posture; every mutating command rejects in an untrusted workspace. | [Workspace-trust gating](#workspace-trust-gating) |
-| [T8](#t8--prompt-injection-via-specplantask-content) | Prompt-injection via spec / plan / task / phase-instruction content the operator (or an upstream model) authored. | Out-of-band trust boundary; the host does not analyze prompt content. Operator decides whether to ingest untrusted text. | [A note on prompt-injection](#a-note-on-prompt-injection) |
-| [T9](#t9--custom-phase-bypassing-audit-or-redaction) | A phase invocation bypassing the audit + redaction + raw-transcript path. | `appendAudit` + raw transcript writer is the single, mandatory invocation path, and nothing is exempt from it. Phase audit payloads carry `pipelineId`, `phaseId`, and (when set) `model` / `effort` / `timeoutMs`. | [Sanitization is centralized](#sanitization-is-centralized) |
-| [T10](#t10--verbose-diagnostic-unredacted-leak) | The verbose-diagnostic sink (`debug.json`, `stream.jsonl`, `verbose.log`) leaking unredacted bytes off-machine. | Operator-opt-in via `schegent.logging.verbose` (default off); gitignored; paths-free audit; intentionally local-only. | [What requires local-only handling](#what-requires-local-only-handling) |
-| [T11](#t11--retrycondition-dsl-escape) | The operator-authored `retryCondition` DSL expression escaping the sandboxed evaluator. | Evaluator at `src/lib/retry-condition.ts` is the sole entry point: no arbitrary code, no function calls, no member access, no I/O. | [The hard rules](#the-hard-rules) |
-| [T12](#t12--fatal-signature-floor-weakening) | Operator workspace settings weakening or re-ordering the code-resident fatal-signature floor. | `FATAL_SIGNATURES` in [src/lib/fatal-signature-registry.ts](../../src/lib/fatal-signature-registry.ts) is immutable at runtime; operator-additive surface extends but never removes built-ins; built-ins-first scan order preserved. | [The hard rules](#the-hard-rules) |
-| [T13](#t13--state-schema-invariant-violation) | Persisting a `WorkflowRun` with a one-sided pair (`pendingRetryAt`/`pendingRetryCause` or `manualPauseAt`/`manualPauseCause`) that leaves the scheduler in an unresumable state. | `WorkspaceStateStore.setRun()` rejects mismatched pairs; forward-only migrators backfill legacy records. | [The hard rules](#the-hard-rules) |
-| [T14](#t14--multi-queue-registry-races) | Racing on the reopened multi-queue registry: two windows promoting one queue, a queue promoted past its own in-flight slot, a claim stranded by a crash. | Per-queue execution lease with 15 s staleness reclaim; `hasQueueCapacity` / `hasWorkspaceCapacity` as distinct predicates; one idle-pending enforcement site; forward-only v9→v10 migrator with the per-entry lockstep assertion. | [The hard rules](#the-hard-rules) |
-| [T14a](#t14a--concurrent-runs-against-one-working-tree) | Runs from different queues editing the same files in one shared checkout. | Risk reduction only: per-queue audit attribution and per-run session trees make authorship recoverable. Since feature 093 the engine drives up to `globalConcurrencyCap` Runs at once, so interleaving is now within a pair of simultaneous runs; set the cap to `1` for the narrower window. Conflict resolution is the operator's. | [Multiple queues and concurrency](../operations/multi-queue-concurrency.md) |
-| [T15](#t15--phase-message-env-injection) | A `phase-message.env` value reaching the UI or audit projection without passing through the sanitizer used at prompt composition time. | Phase-message values pass through `SanitizedLogger.sanitize` before downstream consumption; audit + UI surface metadata only, never raw env values. | [Sanitization is centralized](#sanitization-is-centralized) |
-| [T16](#t16--operator-additive-fatal-signatures-stale-cache) | A cached `schegent.fatalSignatures` value masking an operator update mid-run. | `FatalSignaturesAccessor` is read at the top of every `PhaseRunner.run()`; never cached on the runner. | [The hard rules](#the-hard-rules) |
-| [T17](#t17--wake-up-runner-workspace-contamination) | **Retired.** The OS-scheduled wake-up runner spawning the CLI inside a workspace root, or with workspace-specific environment variables leaking through. | Retired with the capability: no code installs, schedules, or spawns an out-of-host runner. The id is retained so existing citations still resolve. | [T17 anchor](#t17--wake-up-runner-workspace-contamination) |
-| [T18](#t18--vs-code-namespace-leakage-into-headless-or-telemetry-code) | A `vscode` import reaching `src/headless/` or `src/telemetry/` and either blowing up a host-free caller or re-enabling a capability surface those trees must not have. | Lint regressions in `tests/lint/no-vscode-import-in-{headless,telemetry}.test.ts` fail the build on drift. | [The hard rules](#the-hard-rules) |
-| [T19](#t19--runtime-log-sink-forking-the-redaction-set) | The runtime log sink forking or doubling the redaction set, breaking the "single SECRET_PATTERNS source of truth" guarantee. | Sink at `src/lib/runtime-log/runtime-log-sink.ts` is a `LogSink` registered on `SanitizedLogger`; no second sanitizer; `tests/lint/no-direct-syslog-fs-writes.test.ts` pins the writer allowlist. | [Sanitization is centralized](#sanitization-is-centralized) |
-| [T20](#t20--phase-log-ipc-double-or-skipped-sanitization) | The phase-log IPC pipeline (manifest read + live tail) double-sanitizing, skipping sanitization, or routing operator-influenced strings to the webview via `{@html}` interpolation. | Fixed order project → truncate → sanitize at the IPC boundary; one injected `SanitizedLogger.sanitize`; webview never re-sanitizes; `tests/lint/no-html-interpolation-in-activity-feed.test.ts` pins the rule. | [Sanitization is centralized](#sanitization-is-centralized) |
-| [T21](#t21--untrusted-stdout-names-local-files) | A CLI audit-event JSON line names a `phase-message.env` path outside the run's diagnostics tree (attacker-influenced absolute path or `..`-traversal), and the host reads through the steered path. | Canonical-path containment in `src/controller/phase-sidecar-reader.ts`: the host computes the expected path from `(workspaceRoot, runId, pipelineId, phaseId, iterationN)`; audit-reported paths are accepted only when they canonicalize byte-equal, and ignored entirely when the canonical file exists. | [T21 anchor](#t21--untrusted-stdout-names-local-files) |
-| [T22](#t22--workflow-condition-acquiring-an-evaluator) | A Workflow connection condition acquiring a string form — and therefore a parser, evaluator, template engine, or sandbox — reopening the T11 surface on a second operator-authored input without T11's sandbox invariants. | A condition is structured data (`{ left, operator, right? }`) compared field-wise against closed enums; there is no expression text to evaluate. Pinned by the CLAUDE.md hard rule and by a source scan over both condition modules in `tests/unit/config/workflow-graph-validator.test.ts`. | [T22 anchor](#t22--workflow-condition-acquiring-an-evaluator) |
-| [T23](#t23--operator-authored-identifier-or-expression-escaping-its-declared-bound) | An operator-authored identifier (phase / pipeline / workflow / port id) or a phase `retryCondition` expression reaching a bounded sink unbounded, or bounded against a limit its own catalog does not enforce. | One declared bound per value in the `contracts/` leaf module that owns the definition; validators reject an over-long id or expression before persistence, and an over-long expression before it is tokenized; every reporting site truncates against that same constant. | [T23 anchor](#t23--operator-authored-identifier-or-expression-escaping-its-declared-bound) |
-| [T24](#t24--legacy-persisted-state-re-entering-the-runtime) | State persisted by an earlier extension version re-entering the current runtime in a shape today's invariants forbid — or a newer version's state being best-effort read by an older runtime. | Forward-only migrators at `initialize()`; a persisted version above the runtime's is refused outright; the audit parser warns and preserves unknown event types rather than dropping them. | [T24 anchor](#t24--legacy-persisted-state-re-entering-the-runtime) |
-
-## What Schegent has access to
-
-Schegent runs as a VS Code extension. When a workspace is trusted, the extension can:
-
-- **Spawn the CLI subprocess** (Claude, Codex, or Agy) with the configured argv composition.
-- **Read and write files** in the workspace root (via the CLI's tool calls).
-- **Read and write `.schegent/`** for audit, transcripts, runtime log, diagnostics.
-- **Read and write the VS Code `workspaceState`** for queue, run, pause state.
-
-The CLI itself, once spawned, has whatever capabilities its argv and the operator's environment grant it. The CLI's tool calls (`Bash`, `Write`, `Edit`, etc.) are not sandboxed beyond what the CLI itself implements — **and for two of the three runners, what the CLI itself implements is switched off.** `claude` (the default) and `agy` are spawned with `--dangerously-skip-permissions`, unconditionally and with no setting to restore the prompts, so within a trusted workspace those two write files, run shell commands, commit, install packages, and make network requests **without asking**; `codex` is spawned with `--sandbox workspace-write`, an OS-enforced bound that keeps `.git` read-only. The permission decision, its grounds, and the condition that would reopen it are recorded in [`docs/concepts/unprompted-agent-not-contained.md`](../concepts/unprompted-agent-not-contained.md).
-
-All three runners do use the identical `shell: false`, monitor sidecar, and output-cap truncation patterns. Those three properties are genuinely the same across backends; the permission posture is not, and the difference is the largest privilege lever available in the product.
-
-Backend capability discovery is a separate host-only subprocess path; it never
-constructs an invocation runner or executes a model-authored prompt. Discovery
-uses `shell: false`, the same cwd/environment policy as invocations, a 1–30
-second bounded timeout (default 5), 64 KiB output retention, and TERM→KILL
-cleanup. Only backend identifiers and bounded model identifiers reach the
-webview; configured executable paths, stderr, environment values, and raw
-errors do not cross that boundary.
-
-## What Schegent does **not** have access to
-
-- **Other workspaces.** Schegent's state is per-workspace. A run in workspace A cannot see or affect workspace B.
-- **The network, except via the CLI.** The host extension itself does not make outbound network calls. Backend CLIs may do so; this local-first boundary is not an [offline-execution promise](../concepts/local-first-not-offline.md).
-- **Your shell environment beyond the selected policy.** The compatibility
-  default forwards the VS Code extension-host environment. Hardened operators
-  can select `minimal` or a names-only `allowlist`; the policy applies to
-  backend probes, phase calls, and pre-compaction calls. Allowlist values are
-  read only at spawn time and never stored in Schegent settings.
-- **The audit log content of *other* users on the same machine.** `.schegent/` lives in the workspace; shared multi-user operation is outside the supported boundary and is blocked by the [remote/multi-user expansion gate](../architecture/remote-multi-user-expansion-gate.md).
-
-## Trust boundaries
-
-The trust model has three layers:
-
-1. **The operator** trusts the host extension. (You installed it.)
-2. **The host extension** trusts the configured CLI binary. (You configured `schegent.cli.path`.)
-3. **The CLI** trusts the prompt and tool-call inputs Schegent composes. (Schegent generates the prompts from the spec/plan/task files and operator settings.)
-
-The webview (the sidebar Svelte UI) is **untrusted with respect to mutating host state**. Every operator-action IPC message is sanitized at the host boundary; the host re-validates every input. The webview is the messenger, not the source of truth.
-
-### An imported process document is not a fourth trust layer
-
-The YAML exchange ([features/phase-yaml-exchange.md](../features/phase-yaml-exchange.md)) reads a file the operator did not necessarily write, which makes it worth stating plainly where it sits: it adds **no** trust boundary, and the third document kind (`Workflow`, feature 086) adds none either. It is a transport into the same three catalogs, gated by the same capabilities, that an operator could already have typed by hand.
-
-Four properties are what make that true rather than merely intended:
-
-- **No new authority.** An imported Phase is gated by `allowCustomPhases`, and additionally by `allowCustomRetryConditions` when it declares one; an imported Pipeline or Workflow is gated by Workspace Trust and nothing further, because the capabilities that once gated them (`allowPipelineOverrides`, `allowWorkflowOverrides`) named a layer tier that feature 099 deleted. Those are the same two scopes above, resolved by the same ladder, each re-read at commit rather than inherited from the preflight. A document cannot grant itself a capability or raise a scope, and there is no longer a scope for it to choose: there is one catalog.
-- **No new parser.** The exchange reads a closed YAML subset with its own scanner, not a general library. Anchors, aliases, and merge keys — a general parser's amplification and aliasing surface on a file you did not write — cannot be expressed, so they cannot be expanded. The size bound is checked before the scanner is entered, so an oversized file is never parsed at all. The scanner, parser, and scalar-style modules are pinned by digest, so a refactor that widens the accepted language fails the build rather than shipping.
-- **No new evaluator.** This is the property most at risk from the third kind, because a Workflow's connections are conditional. A condition is structured data (`{ left, operator, right? }`) over closed enums, never an expression string, so T22's mitigation covers the imported case with nothing added. A Phase's `retryCondition` is the one expression the format carries, and to the exchange it is inert text: validated for presence **and length**, carried verbatim, never parsed — T11's sandboxed evaluator remains the only thing that ever reads it, at run time. A length is not a parse, which is what lets the import path refuse a 4 KiB condition without acquiring an opinion about what it means. The capability gate keys on the field's presence, never on its contents, so the import path has no reason to look inside it.
-- **No path across the IPC boundary.** The open and save dialogs run host-side; no plan row, audit payload, or error message carries a filesystem path in either direction. An export write failure reports a generic sentence precisely because an adapter's own error text can name the location it tried to write. This is the T4 paths-free discipline applied to a second surface, not an exception to it.
-
-What the exchange *does* add is a decision the operator has to make, which is why the preflight writes nothing: a document is inspected first, resource by resource, and an import never overwrites anything the catalog already holds at any status. See [Decisions you make as an operator](#decisions-you-make-as-an-operator).
+| [T1](#t1--secret-leakage-to-operator-visible-sinks) | Secret leakage to operator-visible sinks | One `SECRET_PATTERNS` set feeds `SanitizedLogger` sinks. | <!-- Source: src/lib/logger.ts --> |
+| [T2](#t2--untrusted-webview-mutating-host-state) | Crafted webview IPC mutates host state | CSP, runtime payload validation, workspace trust, and primary-window gating. | <!-- Source: src/ui/sidebar/csp.ts --><!-- Source: src/contracts/runtime-validators.ts --><!-- Source: src/ui/sidebar/message-router.ts --> |
+| [T3](#t3--audit-log-tampering-or-non-append-writes) | Audit evidence is truncated or rewritten | The host has one append/rotation writer, but no hash chain or tamper detector. | <!-- Source: src/audit/audit-log-writer.ts --> |
+| [T4](#t4--workspace-path-leakage-into-the-structured-audit-log) | Local paths leak through structured evidence | Audit contracts use bounded identifiers, counts, and selection tuples instead of artifact paths. | <!-- Source: src/contracts/audit-events.ts --><!-- Source: src/contracts/sidebar-ipc/history-evidence.ts --> |
+| [T5](#t5--concurrent-state-mutation-across-multiple-vs-code-windows) | Multiple VS Code windows mutate one workspace | Filesystem-backed fenced ownership plus primary-host gates. | <!-- Source: src/state/ownership-registry.ts --><!-- Source: src/ui/sidebar/message-router.ts --> |
+| [T6](#t6--lease-leak-fail-deadly) | A stranded execution lease stalls a queue | Explicit releases and 15-second stale-lease reclamation. | <!-- Source: src/state/execution-lease.ts --><!-- Source: src/state/lock.ts --> |
+| [T7](#t7--untrusted-workspace-executing-extension-capabilities) | An untrusted workspace triggers mutations or subprocess work | Mutating IPC fails closed on `workspace.isTrusted`; restricted activation avoids workspace-bound services. | <!-- Source: src/ui/sidebar/message-router.ts --><!-- Source: src/extension.ts --> |
+| [T8](#t8--prompt-injection-via-spec-plan-task-or-instruction-content) | Repository or operator text instructs the model to act maliciously | No content analyzer is claimed; the operator controls what enters a run and grants run approval for declared high-impact effects. | <!-- Source: src/runner/prompt-builder.ts --><!-- Source: src/activation/git-approval.ts --> |
+| [T9](#t9--phase-invocation-bypasses-evidence-or-redaction) | A Phase bypasses the common evidence path | `PhaseRunner` owns invocation, transcript, sanitization, and lifecycle audit hooks. | <!-- Source: src/controller/phase-runner.ts --><!-- Source: src/audit/raw-transcript-writer.ts --> |
+| [T10](#t10--unredacted-local-diagnostics-leave-the-workspace) | Local evidence and diagnostics expose source, paths, or operator text | Private file modes, local placement, generated ignore rules, and separate bounded-retention policies reduce accidental exposure. | <!-- Source: src/audit/raw-transcript-writer.ts --><!-- Source: src/audit/verbose-diagnostic-writer.ts --><!-- Source: src/services/run-checkpoint-service.ts --><!-- Source: src/services/run-checkpoint-retention.ts --><!-- Source: src/audit/schegent-gitignore.ts --> |
+| [T11](#t11--retrycondition-dsl-escape) | `retryCondition` becomes arbitrary code | A dedicated parser/evaluator accepts a closed expression language without `eval`, calls, member access, or I/O. | <!-- Source: src/lib/retry-condition.ts --> |
+| [T12](#t12--fatal-signature-floor-weakening) | Settings remove or reorder built-in fatal signatures | The frozen built-in registry is scanned before additive operator patterns. | <!-- Source: src/lib/fatal-signature-registry.ts --><!-- Source: src/lib/incremental-fatal-scanner.ts --> |
+| [T13](#t13--state-schema-invariant-violation) | Persisted run fields form an impossible state | `WorkspaceStateStore` validates pair invariants and initializes through forward migrators. | <!-- Source: src/state/workspace-state.ts --><!-- Source: src/state/workflow-run-migrator.ts --> |
+| [T14](#t14--multi-queue-registry-races) | Queue capacity, promotion, or claims race | Separate workspace/queue capacity predicates and per-queue execution leases. | <!-- Source: src/services/auto-drain-coordinator.ts --><!-- Source: src/state/execution-lease.ts --> |
+| [T15](#t15--phase-message-env-injection) | Phase sidecar values reach UI, prompt, or evidence unsanitized | Sidecar parsing applies size/path rules and sanitization before downstream use. | <!-- Source: src/controller/phase-sidecar-reader.ts --><!-- Source: src/lib/logger.ts --> |
+| [T16](#t16--operator-fatal-signature-update-is-stale) | A cached operator signature misses a mid-run update | The effective signature set is resolved for each Phase invocation. | <!-- Source: src/controller/phase-runner.ts --><!-- Source: src/lib/fatal-signature-registry.ts --> |
+| [T17](#t17--retired-out-of-host-wake-up-runner-returns) | A retired OS-scheduled runner regains workspace authority | Scheduling remains inside the extension host through queue schedule coordination and watchdog ticks. | <!-- Source: src/services/scheduled-start-coordinator.ts --><!-- Source: src/controller/schedule-watchdog.ts --> |
+| [T18](#t18--vscode-namespace-leaks-into-headless-or-telemetry-code) | Host-only `vscode` imports contaminate host-free modules | Lint gates scan both namespaces. | <!-- Source: tests/lint/no-vscode-import-in-headless.test.ts --><!-- Source: tests/lint/no-vscode-import-in-telemetry.test.ts --> |
+| [T19](#t19--runtime-log-forks-the-redaction-set) | Runtime logging adds a second sanitizer or raw filesystem writer | The runtime sink is a `SanitizedLogger` sink; direct syslog writers are lint-gated. | <!-- Source: src/lib/runtime-log/runtime-log-sink.ts --><!-- Source: tests/lint/no-direct-syslog-fs-writes.test.ts --> |
+| [T20](#t20--phase-log-ipc-double-or-skipped-sanitization) | Live or historical Phase logs are double-sanitized or not sanitized | Reader and tail session project, bound, then sanitize at the host boundary; raw HTML interpolation is lint-gated. | <!-- Source: src/services/phase-log/phase-log-reader.ts --><!-- Source: src/services/phase-log/phase-log-tail-session.ts --><!-- Source: tests/lint/no-html-interpolation-in-activity-feed.test.ts --> |
+| [T21](#t21--untrusted-stdout-names-local-files) | CLI output steers a read outside the run diagnostics tree | The host derives the expected sidecar and applies canonical-path containment before reading. | <!-- Source: src/controller/phase-sidecar-reader.ts --> |
+| [T22](#t22--workflow-condition-acquires-an-evaluator) | Workflow branching grows a second expression engine | Conditions are structured operands plus closed operators, compared field-wise. | <!-- Source: src/contracts/workflow-definitions.ts --><!-- Source: src/services/workflow-execution/condition-evaluator.ts --> |
+| [T23](#t23--operator-authored-value-escapes-its-declared-bound) | Identifiers or retry expressions reach bounded sinks without their owning bound | Each definition contract owns its maximum and validators/reporting sites reuse it. | <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/contracts/pipeline-definitions.ts --><!-- Source: src/contracts/workflow-definitions.ts --> |
+| [T24](#t24--legacy-persisted-state-re-enters-the-runtime) | Old or newer persisted state violates current invariants | Forward-only initialization migrates old state and refuses a schema newer than the runtime. | <!-- Source: src/state/workspace-state.ts --><!-- Source: src/state/queue-state-migrator.ts --> |
+| [T25](#t25--control-sentinel-carried-in-cli-output) | Model-controlled stdout carries apparent host control signals | Outcome parsing uses the trailing audit region; process termination uses the CLI harness result envelope. | <!-- Source: src/parser/audit-log-parser.ts --><!-- Source: src/parser/stdout-parser.ts --><!-- Source: src/runner/claude-cli.ts --> |
 
 ## The untrusted input classes
 
-"Untrusted" here does not mean "hostile operator". It means **the host did not author this value and must not assume its shape** — so it is validated at the boundary it crosses rather than at the point where it is finally used. Six classes qualify. Each has a named mitigation, not a convention:
+Six classes qualify as untrusted input. The controls common to all six are host-side validation, bounded values, centralized sanitization before operator-visible sinks, and explicit refusal rather than guessed repair.
 
-| Input class | Where it enters | What the host refuses to assume | Mitigation |
-|---|---|---|---|
-| **Operator-authored document** | A YAML file opened through the process-exchange import dialog (Phase, Pipeline, or Workflow package). | That it parses, that it is small, that the resources it names exist, or that the operator wrote it. | A closed-subset scanner rather than a general YAML parser — no anchors, aliases, merge keys, or tags to expand; the 1 MiB bound is checked *before* the scanner is entered; a preflight that writes nothing and reports resource by resource; the same capability gates an equivalent hand-edit would face, re-read at commit rather than inherited from the preflight. See [An imported process document is not a fourth trust layer](#an-imported-process-document-is-not-a-fourth-trust-layer). |
-| **Operator-authored condition** | A phase `retryCondition` expression, and a Workflow connection condition. | That the expression is benign, that it is bounded, or that evaluating it "just to check" is free. | `retryCondition` has exactly one evaluator, sandboxed, at [src/lib/retry-condition.ts](../../src/lib/retry-condition.ts) — [T11](#t11--retrycondition-dsl-escape) — and is bounded at 512 characters before tokenization, against one constant declared in `contracts/` — [T23](#t23--operator-authored-identifier-or-expression-escaping-its-declared-bound). Every other reader, the import path included, treats the field as inert text and never looks inside it; a length check is not a look inside. A Workflow condition has no string form at all, so there is nothing to parse and no sandbox to escape — [T22](#t22--workflow-condition-acquiring-an-evaluator). |
-| **Operator-authored identifier** | A phase / pipeline / workflow id, a port id, or a node id — from a builder, an imported document, or a hand-edited file in the catalog store. | That it is bounded, that it is unique within its catalog, or that it is safe to interpolate whole into an audit payload, an error string, or an IPC projection. | Each catalog declares its own bound once, in its `contracts/` leaf module (`PHASE_ID_MAX_LEN`, `PIPELINE_ID_MAX_LEN`, `WORKFLOW_ID_MAX_LEN`); validators reject an over-long or duplicate id before it is persisted; every reporting site truncates against that same constant — [T23](#t23--operator-authored-identifier-or-expression-escaping-its-declared-bound). |
-| **IPC payload** | Every message the Svelte sidebar posts to the host. | That the webview validated anything, that the sender is the primary host, or that the payload's fields have the declared types. | Strict CSP; membership in `MUTATING_COMMANDS` gates every mutating command behind the primary host; the host re-validates each payload against its own validator, and the catalogs are re-resolved host-side rather than trusted from the message — [T2](#t2--untrusted-webview-mutating-host-state). No filesystem path crosses this boundary in either direction. |
-| **Legacy persisted state** | `workspaceState`, VS Code global storage, and `.schegent/audit.log` rows written by an earlier extension version. | That it matches the current schema, or that the invariants in force today were in force when it was written. | Forward-only migrators run at `initialize()`; a persisted schema version *above* the runtime's is refused outright instead of best-effort read; `setRun()` rejects the one-sided pause/retry pairs an older record may carry — [T13](#t13--state-schema-invariant-violation); the audit parser warns and preserves unknown event types rather than dropping them — [T24](#t24--legacy-persisted-state-re-entering-the-runtime). |
-| **CLI stdout** | Every byte the backend CLI — `claude`, `codex`, or `agy` — writes on stdout during a phase — model prose, file contents it echoed, diffs it produced, and tool output it relayed, interleaved with the stream-json envelopes the harness emits. | That a control signal found in it was produced *by the run* rather than printed *by the model*. The host reads two control signals out of this stream: the termination token `[SCHEGENT_STATUS: …]`, which decides whether a phase resolved clean, and the `=== SCHEGENT AUDIT LOG ===` block, which becomes the phase's evidence record. | **Position, not shape.** The token is read only from the *trailing region* — the text at and after the close marker of the **last** complete audit block — computed in [src/parser/audit-log-parser.ts](../../src/parser/audit-log-parser.ts) and consumed in [src/parser/stdout-parser.ts](../../src/parser/stdout-parser.ts). A token found anywhere else is reported by position and count and never acted on. A stream with no complete block falls back to the whole-stdout scan, and that acceptance is labeled `[constitution] token accepted without audit block` so a degraded read is never indistinguishable from a bounded one. Process control uses a strictly stronger boundary: grace-termination arms on the stream-json `{"type":"result"}` envelope, which the harness emits around the model's content and content therefore cannot forge — [T25](#t25--control-sentinel-carried-in-cli-output). |
+| Input class | Boundary and handling |
+|---|---|
+| **Task, repository, and instruction text** | It becomes model prompt material. The host bounds structural request fields but does not claim to detect prompt injection. <!-- Source: src/services/run-request/run-request-validator.ts --><!-- Source: src/runner/prompt-builder.ts --> |
+| **Process YAML** | A size-bounded closed YAML subset is scanned and parsed host-side; anchors, aliases, merge keys, and unknown document shapes are refused before catalog publication. <!-- Source: src/services/process-yaml/yaml-scanner.ts --><!-- Source: src/services/process-yaml/yaml-parser.ts --><!-- Source: src/services/process-yaml/preflight-service.ts --> |
+| **Webview IPC** | `validateInboundMessage` checks the envelope and command payload before routing; invalid messages are dropped without handler dispatch. <!-- Source: src/contracts/runtime-validators.ts --><!-- Source: src/ui/sidebar/sidebar-view-provider.ts --> |
+| **Persisted local state** | `initialize()` migrates supported old schemas and refuses a numeric schema newer than the runtime. <!-- Source: src/state/workspace-state.ts --><!-- Source: src/state/queue-state-migrator.ts --> |
+| **CLI stdout** | [T25](#t25--control-sentinel-carried-in-cli-output): `src/parser/audit-log-parser.ts` computes the trailing region and `src/parser/stdout-parser.ts` consumes it. A degraded read is labelled `[constitution] token accepted without audit block`; an out-of-region token is reported and never acted on. Process control arms only on the harness envelope `{"type":"result"}` in `src/runner/claude-cli.ts`. <!-- Source: src/parser/audit-log-parser.ts --><!-- Source: src/parser/stdout-parser.ts --><!-- Source: src/runner/claude-cli.ts --> |
+| **Local path claims** | Workspace-relative requests and derived artifact paths pass lexical or canonical path checks before host filesystem access. <!-- Source: src/services/run-request/run-request-validator.ts --><!-- Source: src/controller/phase-sidecar-reader.ts --> |
 
-Two properties are common to all six. **None of them can widen a capability**: a document, a condition, an identifier, a message, a migrated record, and a stdout stream all resolve through the same two trust scopes under the same workspace-trust ceiling, so the worst an untrusted input can do is be refused. And **each is bounded before it is interpreted**, not after — the size check precedes the scanner, the validator precedes the write, the migrator precedes the read, and the region is computed before the token is looked for. Five of the six are bounded by *size or shape*; stdout is the one bounded by **position**, because its shape is whatever the model printed and no pattern an attacker cannot also print will separate a verdict from a quotation of one. An input that fails its boundary check produces a refusal with a closed-enum reason; it does not produce a partially-applied change.
-
-## Sanitization is centralized
-
-Every operator-controllable string that flows to disk passes through one redaction set defined at `src/lib/logger.ts`. The same `SECRET_PATTERNS` redacts:
-
-- The structured audit log (`.schegent/audit.log`).
-- The runtime log (`.schegent/syslog`).
-- The Output channel.
-- The phase log feed shown in the sidebar.
-
-A central set has two consequences:
-
-1. **Extending the set** automatically extends every sink.
-2. **Bypassing the set** would be detectable — any code path that writes operator-influenced text outside `SanitizedLogger` is a violation visible in code review.
-
-The extension's CLAUDE.md hard rules forbid forking the redaction set or introducing parallel sanitizers.
-
-## What requires local-only handling
-
-Two local diagnostic sinks require special handling:
-
-- The **raw transcript** (`.schegent/sessions/raw-<runId>.log`). Captures CLI
-  stdout/stderr verbatim. Always written through mode-`0600`, backpressured
-  OS-temporary spools that are removed after finalization; abandoned spools
-  are scavenged after their owner process is no longer alive.
-- The **verbose diagnostic files** (`.schegent/sessions/<runId>/diagnostics/...`). Captured only when `schegent.logging.verbose` is true. Opt-in.
-
-Both exist because the sanitizer is conservative; when debugging a real failure, operators sometimes need the bytes the sanitizer would have masked. The trade-off is:
-
-- These files **never leave the operator's machine through the IPC pipeline.** The webview cannot request them. The audit log never references them by path.
-- They are **gitignored.** Schegent writes a best-effort `.schegent/.gitignore`
-  on first runtime-directory use, and project repositories should also ignore
-  `.schegent/` at the workspace root.
-- They **have bounded retention.** Diagnostic files do not rotate individually,
-  but complete inactive-run groups are pruned to the configured session-artifact
-  age and byte limits. Running and paused runs are protected.
-
-If you cannot tolerate unredacted bytes on disk, the mitigations are:
-
-- Leave `schegent.logging.verbose` off (default).
-- Add `**/.schegent/sessions/raw-*.log` to a global git ignore.
-- Treat `.schegent/` like your shell history — useful, may contain sensitive context.
-
-## The paths-free audit discipline
-
-The structured audit log **does not contain filesystem paths to sensitive locations**. By design:
-
-- The list of workspace roots is never in the audit log — only `rootCount`.
-- The phase log feed's file path is never in the audit log — only the selection tuple (queueId, taskId, pipelineId, phaseId, iterationN).
-- The Metrics dashboard's adoption event carries only bounded structural metadata; session and conversation identifiers are omitted from v3 payloads.
-- Executable paths, argv, commands, endpoints, model-output notes/errors, and repository filenames are omitted from v3 payloads.
-- Operator credentials, environment variables, and tokens cause the unsafe payload append to fail closed.
-
-Legacy v1/v2 rows remain readable and are not rewritten. Use the v3 counts-only export path before sharing evidence off-machine. The local diagnostic sinks (raw transcript, verbose diagnostics) are local-only by design and must not be shipped without review.
-
-## The CSP and webview integrity
-
-The webview enforces a strict Content Security Policy:
-
-- No remote `script-src`. All script sources are bundled with the extension.
-- No `unsafe-inline` beyond what is necessary for the Svelte runtime.
-- No `iframe` embedding from external origins.
-
-The webview cannot fetch from arbitrary URLs. It communicates with the host only via the typed IPC channel.
-
-## Workspace-trust gating
-
-Schegent registers as a `workspaceTrust` consumer with **untrusted-restricted** posture. In an untrusted workspace:
-
-- The extension is loaded but every mutating command rejects.
-- The sidebar shows a notice; no run is ever started.
-
-You must explicitly trust the workspace before Schegent does anything. This is the same trust gate VS Code applies for "can run code from this workspace".
-
-## Per-capability trust scopes
-
-VS Code's Workspace Trust is binary; Schegent layers two
-independently-configurable trust scopes on top to give enterprise IT a
-narrower gate than "trust everything or trust nothing":
-
-- `schegent.trust.allowCustomPhases` — gates saving a phase definition.
-- `schegent.trust.allowCustomRetryConditions` — gates saving a `retryCondition` expression on any phase.
-
-Both key on what a document **says**. That is why they survived feature
-099 and the other two did not: `allowPipelineOverrides` and
-`allowWorkflowOverrides` gated *which settings layer could redefine what
-another layer declared*, and with definitions moved into a single-layer
-catalog store there is no second layer to redefine anything. Editing
-pipelines and workflows is now gated by Workspace Trust itself, which an
-untrusted workspace already denies wholesale: it activates no catalog at
-all.
-
-The two that remain resolve independently through the same ladder, and
-neither is a reuse of the other — a retry-condition expression is the one
-piece of operator-authored text that an evaluator will read, which is a
-narrower and sharper authority than authoring a prompt. Like every
-capability, each returns `false` on an untrusted workspace regardless of
-any explicit `true` at user or workspace scope; the ceiling is not
-widened by the number of scopes beneath it.
-
-Each setting is `boolean | null`, defaults to `null` (follow Workspace
-Trust), and is resolved against a four-step ladder:
-**workspace-trust ceiling → workspace-scope → user-scope → default-allow**.
-
-The Workspace Trust check runs first. A workspace that is not trusted
-returns `false` for every capability regardless of any user- or
-workspace-scope value — the **ceiling is never widened**. This is the
-core invariant: per-capability scopes can only *narrow* the trust
-surface, never broaden it past what VS Code's workspace-trust gate
-allows.
-
-Denied save attempts emit a `trust.capability-denied` audit event whose
-payload is bounded to a closed enum (capability, resolved scope, fixed
-reason template) plus `workspaceBasename` (basename only, never the
-full path). No operator-controlled string flows into the payload, so
-`SECRET_PATTERNS` redaction is unchanged.
-
-See [operations/trust-scopes.md](../operations/trust-scopes.md) for the
-operator-facing guide, the full 16-row truth table, and the four worked
-resolution examples.
-
-## Primary-host gating (multi-window)
-
-When the same workspace is open in multiple VS Code windows, only the **primary host** can mutate state. Secondary hosts receive `not-primary-host` rejections on every mutating IPC command.
-
-This prevents two windows from racing on the same workspace. The primary host owns the window-primacy lease; the secondary host is read-only.
-
-The lock split matters here. `WorkspaceLockManager` arbitrates **primacy only** and its semantics are unchanged — one holder per workspace, same staleness reclaim, and it is still what `WorkflowSnapshot.isPrimary` and therefore every mutating IPC gate reads. Execution exclusion moved to the per-queue lease in `src/state/execution-lease.ts`, which permits one holder per queue and several across queues. The separation is the control: if one lease did both jobs, a window would become primary — and so gain every mutating command — merely by draining a queue.
-
-## The mutating-commands registry
-
-Every mutating IPC command must be a member of `MUTATING_COMMANDS` in `src/ui/sidebar/message-router.ts`. Adding a new mutating command requires adding it to the registry; the primary-only gate is enforced based on registry membership.
-
-This is the single line of defense against accidentally adding a mutating command without primary-host gating. Forgetting to register is a code-review-catchable mistake.
-
-Read-only IPC commands are intentionally excluded from this registry — e.g. `CMD_READ_PHASE_LOG` (020) and `CMD_READ_METRICS` (073). None of these write workspace state, so the primary-only gate does not apply and secondary VS Code hosts may dispatch them too. `CMD_READ_METRICS` derives its response entirely from the existing (already paths-free, already redacted) audit log and writes nothing new except the one-shot `metrics-view-opened` adoption event described above — no new trust boundary is introduced.
-
-## The append-only audit log
-
-`.schegent/audit.log` is append-only. Schegent never modifies past entries. Task deletion records a `task-removed` event; it does not delete prior events. Reset Workspace State clears workspace state but does **not** touch the audit log.
-
-The audit log is your evidence trail. If you have it, you can reconstruct every run, every phase, every tool call.
-
-Audit durability is also an execution gate. A durable append failure projects
-`evidence unavailable`, fails the active run with the sanitized
-`audit-evidence-unavailable` code, and suppresses automatic queue drain. Raw
-transcript and runtime-log failures instead project `evidence degraded` and
-permit execution to continue. Health payloads contain normalized causes only;
-they never contain exception messages, paths, prompts, or environment values.
-See [Execution Evidence Health](../operations/evidence-health.md).
+The controls common to all six reduce malformed-input and confused-deputy risk; they do not turn model-authored content into trusted content.
 
 ## What Schegent cannot prevent
 
-- **A malicious CLI binary.** If `schegent.cli.path` points to a compromised binary, Schegent will run it. Verify the binary's provenance.
-- **A malicious extension.** Other VS Code extensions running in the same workspace have whatever capabilities VS Code grants them. Schegent does not sandbox other extensions.
-- **An operator who exfiltrates the unredacted sinks.** The raw transcript and verbose diagnostics are local but readable by the operator. If the operator's machine is compromised, the attacker has access to them.
-- **A prompt-injection attack via spec/plan/task content.** If the spec file contains injection instructions, the CLI may follow them. The host does not analyze prompt content for adversarial inputs.
-- **A phase that reports itself finished when it is not.** The phase verdict is the model's own account of its work. Two layers must be told apart here, because one of them *is* bounded and the other is not.
-
-  The **control sentinel** — whether a phase terminated — is not forgeable. Since feature 107 the termination token is read only from a positional trailing region computed by `parseAuditLogBlock` in [src/parser/audit-log-parser.ts](../../src/parser/audit-log-parser.ts), which takes the *last* complete open/close pair; grace-termination arms on the harness-emitted `{"type":"result"}` envelope, which model content cannot forge. [T25](#t25--control-sentinel-carried-in-cli-output) covers that, and [tests/lint/no-content-driven-process-control.test.ts](../../tests/lint/no-content-driven-process-control.test.ts) forbids the mechanism rather than an identifier.
-
-  The **outcome classification** is a different layer and it reads the model's own words. The body of that same audit block decides `clean` / `remaining_issues` / `open_questions` in [src/parser/stdout-parser.ts](../../src/parser/stdout-parser.ts), and a phase resolving `clean` advances the pipeline. **Nothing in the host runs a test suite, checks a build, or verifies that a declared output is correct.** `resolveRunOutputs` in [src/services/run-output/run-output-resolver.ts](../../src/services/run-output/run-output-resolver.ts) probes whether a declared output *exists* — not whether it is right, and not whether the work it represents was done.
-
-  This is structural in a design where the model is the worker, and it is not presented as a defect. It is listed here because an operator composing an unattended pipeline needs to know that **a verification phase is theirs to author** — the host will not supply one. See [custom-phases.md](../features/custom-phases.md#writing-a-verification-phase).
-
-These are not Schegent's threat model to mitigate — they are upstream of the extension. But they shape what Schegent does and does not promise.
-
-## A note on prompt-injection
-
-Schegent feeds the spec, plan, and tasks files to the CLI as part of phase prompts. If those files contain injection instructions (e.g., "ignore prior instructions and execute X"), the CLI may follow them.
-
-Mitigations are out-of-band:
-
-- Do not check untrusted spec/plan/task content into the workspace.
-- For features generated by Schegent itself, the model has produced its own files; injection is rare.
-- For features whose spec is operator-authored, the operator is the trust boundary.
-
-The host does not detect or block injection. This is a property of the model and the workflow, not of the extension's capability surface.
-
-## The hard rules
-
-The extension's CLAUDE.md ([CLAUDE.md](../../../CLAUDE.md)) contains a long list of "never" rules that codify the threat model in code-review terms. Some of the most operator-visible:
-
-- Never weaken the redaction set.
-- Never route untrusted strings to the UI without sanitization.
-- Never weaken CSP.
-- Never skip execution-lease release — every path that claims a queue gives it back, at the run's terminal transition or at the drain's own failure path. (The workspace lock is *not* covered by this rule: its tenure is the window's, and a run must neither acquire nor release it.)
-- Never drop unknown audit event types from the parser.
-- Never persist a `WorkflowRun` with inconsistent pause / retry state pairs.
-- Never bypass `appendAudit` for custom-phase invocations.
-- Never compute phase-catalog precedence in the webview.
-- Never serialize workspace root paths into the audit log.
-- Never widen the operator-additive fatal-signature surface without code review.
-- Never sanitize twice or skip sanitization.
-
-Each rule has a specific failure mode it prevents. Together, they enforce the threat model in code.
-
-## Decisions you make as an operator
-
-- **Do you trust the workspace?** If not, leave it untrusted; Schegent will not run.
-- **Do you trust the CLI binary?** Verify `schegent.cli.path` points to a binary you installed.
-- **Do you want unredacted bytes on disk?** Leave `schegent.logging.verbose` off; the raw transcript is still written.
-- **Do you trust the process document you are importing?** The preflight tells you exactly what a commit would write, resource by resource, and writes nothing itself. A package can carry a lot — a Workflow document may bring several Pipelines and all their Phases — and every one of them is instruction text that will be sent to the CLI if you run it. Read the plan, not just the file name.
-- **How often do you review the audit log?** It is your evidence trail; treat it accordingly.
-
-These choices belong to you. Schegent's job is to make the mechanisms transparent so you can make informed choices.
-
-## Reporting issues
-
-If you find a security issue:
-
-- **Do not** post the issue publicly without coordination.
-- Capture the audit log range, the relevant settings, and (if reproducible) a minimal repro.
-- Report through the extension's security channel (see the repository README).
-
-For non-security operational issues, file a regular bug report. See [Troubleshooting](../operations/troubleshooting.md) for what to include.
-
-This page is a summary. For the underlying invariants and the long list of code-review rules, the extension's CLAUDE.md is the authoritative reference.
+- Claude and Agy run with approval prompts disabled, so they can act without asking under the operator's local permissions. Codex's `workspace-write` sandbox is the only adapter-level filesystem bound documented by its argv. None of these facts make generated actions correct. <!-- Source: src/runner/claude-cli.ts --><!-- Source: src/runner/codex-cli.ts --><!-- Source: src/runner/agy-cli.ts -->
+- Prompt injection in repository files, task text, imported instructions, or prior output is not classified by the host. <!-- Source: src/runner/prompt-builder.ts -->
+- A Phase outcome is self-certification: classification uses the model's own account of its work. The bounded control sentinel prevents arbitrary content from becoming process control, but a well-formed model report can still be false. `resolveRunOutputs` checks whether a declared output exists; it does not prove correctness. Authors must write an independent verification Phase as described in [Custom Phases](../features/custom-phases.md). <!-- Source: src/parser/stdout-parser.ts --><!-- Source: src/services/run-driver.ts --><!-- Source: tests/lint/no-content-driven-process-control.test.ts -->
+- Concurrent Runs share one checkout and can interleave edits. Lowering `schegent.queue.globalConcurrencyCap` to `1` narrows simultaneous execution but is not rollback or file locking. <!-- Source: src/services/auto-drain-coordinator.ts --><!-- Source: package.json -->
+- Local raw transcripts are intentionally unredacted, and Claude verbose diagnostics are unredacted when enabled. Recovery checkpoints can contain an unredacted binary Git diff. These artifacts must remain local and unshared. <!-- Source: src/audit/raw-transcript-writer.ts --><!-- Source: src/audit/verbose-diagnostic-writer.ts --><!-- Source: src/services/run-checkpoint-service.ts -->
+- The sanitized CLI transport log can still contain local paths, and a saved full Task description can retain sensitive operator text that does not match the sanitizer's secret patterns. <!-- Source: src/monitor/cli-transport-sink.ts --><!-- Source: src/services/history/history-description-store.ts --><!-- Source: src/lib/logger.ts -->
+- Workspace-local audit evidence can be modified or deleted by an operator or backend process. Schegent neither hashes the log as a chain nor detects post-write tampering. <!-- Source: src/audit/audit-log-writer.ts -->
+- The host does not implement an offline network guarantee for backend CLIs. <!-- Source: src/runner/claude-cli.ts --><!-- Source: src/runner/codex-cli.ts --><!-- Source: src/runner/agy-cli.ts -->
 
 ## Threat anchors
 
-The headings below are the canonical anchor targets for the [Threat catalog (T1–T24)](#threat-catalog-t1t24) table. Each entry restates the threat, names the load-bearing defenses, and points to the elaborating prose.
-
 ### T1 — Secret leakage to operator-visible sinks
 
-API keys, bearer tokens, JWTs, AWS access key ids, GitHub tokens, Slack tokens, GCP service-account material, and any matching env-style `KEY=VALUE` strings that reach an operator-visible sink. Mitigated by the single `SECRET_PATTERNS` set in [src/lib/logger.ts](../../src/lib/logger.ts); every `SanitizedLogger` sink (audit, runtime log, Output channel, phase-log IPC) re-uses the same regex set. See [Sanitization is centralized](#sanitization-is-centralized).
+All operator-visible logger sinks receive text after the single code-resident redaction set. A new sink that bypasses `SanitizedLogger`, or a secret pattern duplicated elsewhere, breaks the mitigation.
+
+<!-- Source: src/lib/logger.ts -->
 
 ### T2 — Untrusted webview mutating host state
 
-The Svelte sidebar is the messenger, not the source of truth. A crafted IPC message that bypasses primary-host gating, registry validation, or host-side re-validation would let a non-primary VS Code host mutate workspace state. Mitigated by the strict CSP, the `MUTATING_COMMANDS` registry, and host-side re-validation of every command payload. See [The CSP and webview integrity](#the-csp-and-webview-integrity) and [The mutating-commands registry](#the-mutating-commands-registry).
+The webview is not authoritative. Runtime validation precedes routing; the 46 metadata-classified mutations then require workspace trust and authoritative window primacy.
 
-### T3 — Audit log tampering or non-append writes
+<!-- Source: src/contracts/runtime-validators.ts -->
+<!-- Source: src/contracts/sidebar-command-metadata.ts -->
+<!-- Source: src/ui/sidebar/message-router.ts -->
 
-The structured audit log at `<workspaceRoot>/.schegent/audit.log` is the operator's evidence trail. Any code path that truncates, overwrites, or deletes prior entries would destroy that evidence. Mitigated by the append-only invariant — `appendAudit` is the single writer; task deletion records `task-removed` and never erases history; rotation preserves the rotated generations. See [The append-only audit log](#the-append-only-audit-log).
+### T3 — Audit-log tampering or non-append writes
+
+The host's audit writer appends JSONL records and owns rotation; Task deletion records an event rather than asking that writer to erase earlier entries. This is an implementation write discipline, not an integrity guarantee. An operator or backend process with workspace access can modify or delete the file, and Schegent has no hash chain, signature, or post-write tamper detection. Ordinary appends also call `fs.appendFile` directly after directory creation; unlike rotation targets, that live-file append is not first passed through the canonical-path oracle, so a planted audit-log symlink remains a redirect risk.
+
+<!-- Source: src/audit/audit-log-writer.ts -->
+<!-- Source: src/contracts/audit-events.ts -->
 
 ### T4 — Workspace path leakage into the structured audit log
 
-A workspace path serialized into an audit payload would leak the operator's directory structure when evidence is shared. Mitigated by the v3 metadata projection: sensitive keys are omitted, residual path/endpoint strings fail closed, and payloads are bounded to 32 KiB. Legacy v1/v2 records require review or counts-only export before sharing. See [The paths-free audit discipline](#the-paths-free-audit-discipline).
+Audit and evidence contracts favor identifiers, counts, hashes, and bounded tuples. Local artifact resolution stays host-side.
+
+<!-- Source: src/contracts/audit-events.ts -->
+<!-- Source: src/services/history/history-evidence-service.ts -->
 
 ### T5 — Concurrent state mutation across multiple VS Code windows
 
-Opening the same workspace in two VS Code windows would otherwise race on shared mutable state (queue, run, pause). Mitigated by primary-host gating — only the primary host accepts mutating commands; secondary hosts receive `not-primary-host` rejections. The `MUTATING_COMMANDS` registry is the single source of truth for which commands are gated. See [Primary-host gating (multi-window)](#primary-host-gating-multi-window).
+The ownership registry persists a fenced record under `.schegent/ownership`; the router independently refuses guarded work from a secondary window.
 
-### T6 — Lease leak (fail-deadly)
+<!-- Source: src/state/ownership-registry.ts -->
+<!-- Source: src/ui/sidebar/commands/primacy-gate.ts -->
 
-A lease acquired and never released would stall subsequent runs (fail-deadly). The two leases answer this differently, because they have different tenures.
+### T6 — Lease leak fail-deadly
 
-The **window-primacy lease** is not exposed to this failure mode in the shape the threat was originally written for. Its tenure is the window's: acquired once at activation, released once at `dispose()`. There is no per-run scope to leak out of. This is a change — primacy used to be wrapped around each run by `WorkspaceLockManager.withLock`, which acquires idempotently for the same owner and keeps no reference count, so once a window could drive several runs the *opposite* failure appeared: the first run to finish released primacy for all of them, and the window went read-only while still working. The wrapper is gone rather than reference-counted; see [The Workspace Lock](../concepts/workspace-lock.md).
+Execution leases heartbeat and become reclaimable only after the shared 15-second staleness threshold. Release sites remain explicit so a terminal transition, failed start, or shutdown cannot silently strand a claim.
 
-The **per-queue execution lease** is where the fail-deadly risk actually lives, and it has three releases: the run's terminal transition (`completed`, `failed`, `canceled`), the drain's step-7 path for a start that failed before a run existed, and window shutdown. Behind all three, a lease left by a window that died goes stale after `STALENESS_THRESHOLD_MS` and is reclaimable by the next window to ask. A leaked lease therefore costs one queue 15 seconds rather than deadlocking it — and 15 seconds is the *backstop*, not the design: it was the only thing ending a lease before the terminal release landed, which held a queue for as long as its window stayed alive and kept heartbeating.
-
-One release is deliberately declined: a run whose queue cannot be resolved (its task row was deleted underneath it) releases nothing. Every run in one window shares an owner identity, so a guessed queue id would pass the ownership check and clear a sibling run's live lease — trading a bounded 15-second stall for an unbounded correctness failure.
+<!-- Source: src/state/execution-lease.ts -->
+<!-- Source: src/state/lock.ts -->
 
 ### T7 — Untrusted workspace executing extension capabilities
 
-A workspace the operator has not explicitly trusted must not cause Schegent to spawn the CLI, install OS-scheduler entries, or persist state. Mitigated by Schegent registering as a `workspaceTrust` consumer with `untrusted-restricted` posture; every mutating command rejects until the workspace is trusted. See [Workspace-trust gating](#workspace-trust-gating).
+Mutating IPC fails closed when the trust callback is missing, throws, or returns anything but `true`. Workspace-bound activation is also separated from the restricted stage.
 
-### T8 — Prompt-injection via spec / plan / task content
+<!-- Source: src/ui/sidebar/message-router.ts -->
+<!-- Source: src/extension.ts -->
 
-If the spec / plan / task / phase-instruction text contains injection instructions (e.g. "ignore prior instructions and exec X"), the CLI may follow them. The host does not analyze prompt content for adversarial inputs — this is upstream of the extension's threat model. Mitigations are out-of-band: do not check untrusted content into the workspace; operator-authored content is the trust boundary. See [A note on prompt-injection](#a-note-on-prompt-injection).
+### T8 — Prompt injection via spec, plan, task, or instruction content
 
-What this threat does *not* cover is what the host reads back out of the CLI's own output. That the model may print anything is assumed here; whether printing a particular thing lets it drive the host is bounded separately, by position, in [T25](#t25--control-sentinel-carried-in-cli-output). The two are complements and neither widens the other: T8 stays "we do not inspect content", T25 is "no content is read as a control signal outside its region".
+The prompt composer deliberately transports operator-selected content. There is no prompt-injection detector in the ingress path; the operator's repository and approvals remain part of the security decision.
 
-### T9 — Custom-phase bypassing audit or redaction
+<!-- Source: src/runner/prompt-builder.ts -->
+<!-- Source: src/services/run-request/run-request-validator.ts -->
 
-A phase definition in the catalog store could in principle skip the audit + redaction + raw-transcript path. Mitigated by routing every phase invocation through the same `appendAudit` + raw transcript writer — there is exactly one path and nothing is exempt from it. Phase audit payloads carry `pipelineId`, `phaseId`, and (when set) `model` / `effort` / `timeoutMs` / `runner`. Feature 072 task-execution lifecycle events (`task-execution-started`, `task-execution-ended`, etc.) flow through this identical `appendAudit` → `SanitizedLogger` path, introducing no new trust boundary.
+### T9 — Phase invocation bypasses evidence or redaction
 
-The threat is narrower than it once was, and for a structural reason: since
-feature 098 the extension ships no phases, so there is no privileged path a
-custom phase could be measured against and no built-in behavior it could
-acquire by naming itself something. The declared side effects, evidence policy,
-and runner pinning are read from the definition's own **declaration**, never
-from its id. Note that the side-effects declaration selects a consent prompt, a
-rollback checkpoint, and the Git-capable-runner refusal — it does not restrict
-what the spawned subprocess may do.
+`PhaseRunner` is the execution seam. It creates lifecycle evidence, delegates raw transcript writes, and sanitizes projected diagnostics rather than asking adapters to do so.
 
-Feature 081 keeps catalog mutation inside the same primary-host, workspace-trust,
-and fine-grained capability gates as the existing save command. Payloads are
-exact-key validated, revision checked, whole-catalog validated, and persisted
-once. A `skill` directive is converted to declarative Agent CLI prompt text;
-the extension never resolves a skill path, imports code, or adds runner argv.
-Removal uses the shared confirmation helper and cannot delete the last
-effective definition referenced by a pipeline.
+<!-- Source: src/controller/phase-runner.ts -->
+<!-- Source: src/audit/raw-transcript-writer.ts -->
 
-### T10 — Verbose-diagnostic unredacted leak
+### T10 — Unredacted local diagnostics leave the workspace
 
-The verbose-diagnostic files (`debug.json`, `stream.jsonl`, `verbose.log` under `.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/`) are intentionally unredacted. The risk is that an operator ships them off-machine. Mitigated by making the sink operator-opt-in (`schegent.logging.verbose`, default off), gitignored, and excluded from the structured audit log. See [What requires local-only handling](#what-requires-local-only-handling).
+Schegent has several distinct local sensitive-data surfaces:
+
+- Raw session transcripts are local and unredacted. Claude verbose diagnostics are optional and unredacted. Generated ignore rules reduce accidental commits but are not encryption or access control.
+- Recovery checkpoints live under extension `globalStorage/checkpoints`. A checkpoint patch is `git diff --binary --no-ext-diff HEAD`, so it may contain source and secrets that were present in uncommitted changes. Run directories use mode `0700` and files use `0600`. Their separate retention policy is 14 days and 256 MiB, while protecting the ten most recent Run directories from the size bound; session-retention settings do not govern them.
+- `.schegent/cli-transport.log` is sanitized through the shared secret patterns but deliberately retains paths found in backend output. `.schegent/history/<runId>.txt` stores the full sanitized Task description with mode `0600`; sanitization is pattern-based and is not a general data-classification guarantee.
+
+<!-- Source: src/audit/raw-transcript-writer.ts -->
+<!-- Source: src/audit/verbose-diagnostic-writer.ts -->
+<!-- Source: src/audit/schegent-gitignore.ts -->
+<!-- Source: src/services/run-checkpoint-service.ts -->
+<!-- Source: src/services/run-checkpoint-retention.ts -->
+<!-- Source: src/monitor/cli-transport-sink.ts -->
+<!-- Source: src/services/history/history-description-store.ts -->
+<!-- Source: src/lib/logger.ts -->
 
 ### T11 — retryCondition DSL escape
 
-The operator-authored `retryCondition` DSL must not execute arbitrary code, perform I/O, or access object members. Mitigated by sandboxing the evaluator in `src/lib/retry-condition.ts`: identifiers + numeric literals + comparison/boolean operators + parentheses only, and a **length guard applied before tokenization** — an expression longer than `PHASE_RETRY_CONDITION_MAX_LEN` (512) is refused without being scanned, so the amount of work an unbounded input can ask of the tokenizer is bounded too. Any new evaluator must preserve all of those invariants. The bound arrives as an argument rather than an import, because this module imports nothing and is byte-mirrored into the webview; it is declared once, in `contracts/process-definitions.ts` — [T23](#t23--operator-authored-identifier-or-expression-escaping-its-declared-bound).
+The retry evaluator tokenizes and evaluates a closed grammar without arbitrary JavaScript evaluation, function calls, member access, or I/O.
+
+<!-- Source: src/lib/retry-condition.ts -->
 
 ### T12 — Fatal-signature floor weakening
 
-The code-resident `FATAL_SIGNATURES` floor in [src/lib/fatal-signature-registry.ts](../../src/lib/fatal-signature-registry.ts) classifies CLI exit signatures that always escalate to operator intervention. The risk is that operator workspace settings (`schegent.fatalSignatures`) remove, re-order, or shadow built-ins. Mitigated by making the operator-additive surface strictly extension-only — operator entries can extend the registry but cannot remove, modify, or re-order built-ins; the built-ins-first scan order is preserved so a built-in that matches the same text wins attribution. The `fatal-signature-matched` audit event carries `source: 'built-in' | 'operator-defined'`.
+Built-ins are frozen code data. Operator patterns are additive and cannot delete or move the built-in scan floor.
 
-### T13 — State schema invariant violation
+<!-- Source: src/lib/fatal-signature-registry.ts -->
+<!-- Source: src/lib/incremental-fatal-scanner.ts -->
 
-`WorkflowRun.pendingRetryAt` / `pendingRetryCause` and `WorkflowRun.manualPauseAt` / `manualPauseCause` are both-null-or-both-non-null pairs. A persisted run with a one-sided pair would leave the scheduler in an unresumable state. Mitigated by rejection in `WorkspaceStateStore.setRun()`; forward-only migrators backfill legacy records on activation.
+### T13 — State-schema invariant violation
+
+Workspace state validates coupled pause/retry fields before persistence and uses forward-only normalizers for legacy Runs.
+
+<!-- Source: src/state/workspace-state.ts -->
+<!-- Source: src/state/workflow-run-migrator.ts -->
 
 ### T14 — Multi-queue registry races
 
-The registry admits up to `MAX_QUEUES === 20` entries again, so the surface the v6 collapse retired is reopened deliberately, with the migration and scheduler design v6 required as the price of reopening it. What remains a threat is the race surface itself: two windows promoting the same queue, a queue promoted past its own in-flight slot, a stranded claim after a crash, and orphaned tasks left addressable by nothing.
+Queue capacity and workspace capacity are distinct decisions. A per-queue execution lease identifies the current claimant and stale recovery window.
 
-Mitigations, each a distinct control:
-
-- **Per-queue execution lease** (`src/state/execution-lease.ts`) — one holder per queue, reclaimable on the same 15 s staleness terms as the workspace lock, so a crashed window cannot strand a queue permanently.
-- **Two capacity predicates** — `hasQueueCapacity(queueId)` bounds a queue to one in-flight task; `hasWorkspaceCapacity()` bounds the workspace to the configured ceiling. Conflating them would let a queue promote past its own slot.
-- **A single idle-pending enforcement site** — `AutoDrainCoordinator.drainIfIdle(queueId)`. A second gate elsewhere is what would let a scheduled queue auto-promote.
-- **Forward-only v9 → v10 migrator** with the per-entry `scheduledStartAt` / `idle-pending` lockstep assertion, refusing any persisted version above 10.
-- **Queue ids, never operator-authored names, in audit payloads** — a queue name is operator-supplied text and does not belong in the structured log.
-
-The `tests/lint/no-multi-queue-commands.test.ts` guard is retired; the seven queue IPC commands it forbade are back and each is a member of `MUTATING_COMMANDS`, so each is primary-host gated.
-
-### T14a — Concurrent Runs against one working tree
-
-Queues are independent for scheduling, pausing, projection and audit attribution. They are **not** isolated on the filesystem: every queue runs against the same checkout, the same branch and the same `.schegent/` directory, and Schegent does not create, switch or merge branches on an operator's behalf.
-
-Two tasks that touch the same files will interleave their edits. This is a risk *reduction* boundary, not a guarantee of isolation: per-queue attribution in the audit log and per-run session trees make it possible to determine after the fact which run wrote what, which is a different property from preventing the write. Operators partitioning work across queues own the conflict resolution; this is stated in [Multiple queues and concurrency](../operations/multi-queue-concurrency.md).
-
-Feature 093 removed the narrowing that used to apply here. The run engine drove one `WorkflowRun` at a time and the drainer gated on it, so the interleaving window was between successive runs; it now holds one Run per queue, and up to `schegent.queue.globalConcurrencyCap` Runs edit the shared tree at the same time. The exposure is unchanged in kind and wider in window: interleaving is now *within* a pair of simultaneous runs, and the cap is the only thing bounding how many can contend. Operators who need the narrower window set the cap to `1`.
-
-One consequence is mitigated in-product rather than left to the operator: a recovery checkpoint is a `git diff HEAD` of the shared tree, so under concurrency the raw diff captures a sibling Run's uncommitted work, and presenting that as restorable would let an operator recovering one Run silently revert another's. The mitigation is delivered at the **write** side, because there is no in-product restore path — a checkpoint is applied by hand, so the only way an unattributable one is never applied is for it never to be written.
-
-FR-R3-004 made that mitigation attribution-based rather than a blanket refusal. Each phase's audit record names the files it created, modified and deleted; those declared paths, canonicalised against the workspace root and dropped if they resolve outside it, are what a Run claims, and the patch is scoped to the diff sections it claimed. The whole-tree diff is re-read at every phase boundary as the completeness check: a section present that no Run claims and no baseline explains means a write escaped its declaration, so a scoped patch would be incomplete. `RunCheckpointService` then declines — a `.declined.json` marker with `restorable: false`, a bounded `reason`, and **no** `.patch`. The four reasons are `attribution-evidence-incomplete`, `unattributed-worktree-change`, `path-mutated-by-multiple-runs` and `no-attributable-changes-observed`; `concurrent-runs-share-one-worktree` is the pre-FR-R3-004 reason and is no longer emitted. A decline is recorded, not silent, and does not block the phase.
-
-Two properties of that design are security-relevant. Declared paths are **untrusted input** — they arrive on CLI stdout, the input class at [The untrusted input classes](#the-untrusted-input-classes) and [T25](#t25--control-sentinel-carried-in-cli-output) — so canonicalisation is lexical only, with no `realpath` or `lstat`: a syscall at an operator-influenced location performed to make a string comparison succeed is the pattern the run-output resolver's ordering rule already forbids, and a path that does not canonicalise inside the root produces a refusal rather than a misattribution. And the mechanism reduces *misattribution* risk, not the underlying sharing: a Run whose sibling overwrote its file still receives a patch of its own declared paths reflecting the tree as it ended up. A `.patch` remains unredacted source and stays `0600` under a `0700` directory in global storage.
+<!-- Source: src/services/auto-drain-coordinator.ts -->
+<!-- Source: src/state/execution-lease.ts -->
 
 ### T15 — Phase-message env injection
 
-A `phase-message.env` value could otherwise reach the UI or audit projection without passing through the sanitizer used at prompt composition time. Mitigated by routing phase-message values through `SanitizedLogger.sanitize` before downstream consumption; the audit + UI surfaces expose metadata only, never raw env values.
+The host derives and checks the Phase sidecar location, bounds the read, parses the allowed records, and sanitizes values before prompt or UI projection.
 
-### T16 — Operator-additive fatal-signatures stale cache
+<!-- Source: src/controller/phase-sidecar-reader.ts -->
 
-Caching the `schegent.fatalSignatures` value on the runner would mask an operator update mid-run. Mitigated by reading the `FatalSignaturesAccessor` at the top of every `PhaseRunner.run()` (mirrors the `VerboseDiagnosticsAccessor` and `AutoCompactOverrideAccessor` patterns) so a toggle applies to the next phase boundary.
+### T16 — Operator fatal-signature update is stale
 
-### T17 — Wake-up runner workspace contamination
+Effective signatures are resolved at invocation time instead of being frozen on a long-lived runner instance.
 
-**Retired.** This threat described the OS-scheduled wake-up runner: a process detached from the VS Code host, running with direct UID access to the operator's filesystem, that could spawn the CLI inside a workspace root or carry workspace-specific environment variables through. The Wake-up scheduler and its runner were withdrawn; no code installs an OS-native scheduled entry, and every CLI spawn now happens inside the extension host under the workspace-trust ceiling. There is no out-of-host execution surface left to mitigate.
+<!-- Source: src/controller/phase-runner.ts -->
+<!-- Source: src/lib/fatal-signature-registry.ts -->
 
-The id is retained rather than reused so existing citations in source comments, `SECURITY.md`, and CLAUDE.md still resolve, and so the catalog does not renumber under anyone's feet. One operational residue survives the code: a machine that enabled Wake-up under an earlier release keeps whatever OS scheduled entry that release installed, and the current release has no way to remove it. See [Scheduled entries left by earlier releases](../reference/file-layout.md#scheduled-entries-left-by-earlier-releases) for manual removal.
+### T17 — Retired out-of-host wake-up runner returns
 
-### T18 — VS Code namespace leakage into headless or telemetry code
+Current scheduled-start recovery remains extension-host code: the coordinator persists queue intent and the watchdog asks the drain coordinator to retry. No external scheduler installer or daemon entry point exists in the production tree.
 
-Any `vscode` import reaching `src/headless/` or `src/telemetry/` would either blow up a host-free caller at runtime (`Cannot find module 'vscode'`) or re-enable a capability surface those trees must not have. Mitigated by the lint regressions `tests/lint/no-vscode-import-in-{headless,telemetry}.test.ts`.
+<!-- Source: src/services/scheduled-start-coordinator.ts -->
+<!-- Source: src/controller/schedule-watchdog.ts -->
 
-### T19 — Runtime log sink forking the redaction set
+### T18 — vscode namespace leaks into headless or telemetry code
 
-A second sanitizer in the runtime log sink would break the "single `SECRET_PATTERNS` source of truth" guarantee — extending the set in one place would no longer extend every sink. Mitigated by registering the runtime log sink as a `LogSink` on `SanitizedLogger`, which writes lines that have already been sanitized once. Direct `fs.appendFile` calls against a path containing `syslog` are blocked by the `tests/lint/no-direct-syslog-fs-writes.test.ts` regression.
+Host-free APIs must stay importable without VS Code. Dedicated lint tests reject direct or transitive namespace leakage in both source trees.
+
+<!-- Source: tests/lint/no-vscode-import-in-headless.test.ts -->
+<!-- Source: tests/lint/no-vscode-import-in-telemetry.test.ts -->
+
+### T19 — Runtime log forks the redaction set
+
+The runtime log implements the logger sink interface and receives already-sanitized entries. A source scan restricts direct syslog filesystem writes.
+
+<!-- Source: src/lib/runtime-log/runtime-log-sink.ts -->
+<!-- Source: tests/lint/no-direct-syslog-fs-writes.test.ts -->
 
 ### T20 — Phase-log IPC double or skipped sanitization
 
-The phase-log IPC pipeline (manifest read + live tail) must sanitize exactly once at the host → webview boundary, in the fixed order project → truncate → sanitize. The risks are (a) double-sanitization corrupting the projected JSON, (b) skipping sanitization on a new field, or (c) the webview re-stringifying / re-sanitizing a host-sanitized field via `{@html …}` interpolation. Mitigated by a single injected `SanitizedLogger.sanitize` at the IPC boundary in `src/services/phase-log/phase-log-reader.ts` (manifest reads) and `src/services/phase-log/phase-log-tail-session.ts` (live tail pushes); the webview consumes the field as a typed JSON value only; `tests/lint/no-html-interpolation-in-activity-feed.test.ts` pins the rule.
+Historical reads and live tails share bounded projections and an injected sanitizer before data crosses to the webview. The activity feed cannot render operator data through Svelte raw-HTML interpolation.
+
+<!-- Source: src/services/phase-log/phase-log-reader.ts -->
+<!-- Source: src/services/phase-log/phase-log-tail-session.ts -->
+<!-- Source: tests/lint/no-html-interpolation-in-activity-feed.test.ts -->
 
 ### T21 — Untrusted stdout names local files
 
-**Source**: backend CLI stdout (`claude`, `codex`, or `agy`), operator-influenced phase prompts, repo files.
-**Vector**: A CLI audit-event JSON line includes a `phaseMessagePath` field. A malicious phase prompt could induce the CLI to emit an audit entry naming `/etc/passwd` (or any operator-readable file) so the next phase reads its contents as prompt context. The 4 KiB byte cap limits exfiltration via the next prompt but does not prevent reading sensitive small files.
-**Pre-feature mitigation**: basename filter (`path.basename === 'phase-message.env'`). Defeated by any attacker-named symlink or any operator-influenced file already named `phase-message.env`.
-**Post-feature mitigation (feature 056, T1-T20 floor preserved)**: canonical-path containment in [src/controller/phase-sidecar-reader.ts](../../src/controller/phase-sidecar-reader.ts) `parsePhaseMessage()`. The host computes the expected sidecar path from `(workspaceRoot, runId, pipelineId, phaseId, iterationN)`. When the canonical file exists, the audit-reported path is IGNORED entirely; when it does not, audit-reported paths are accepted only if they canonicalize byte-equal to the canonical path (via `fs.realpathSync.native`). Otherwise the runner emits `phase-message-invalid` with `reason: 'path-outside-run-dir'` or `'missing-canonical-sidecar'` and proceeds with `sidecar: null, suspicious: true`.
-**Residual risk**: If the operator places a malicious symlink AT the canonical path before the run starts, the host reads through it. This is operator-on-operator (the symlink had to be authored by the operator) and outside the trust boundary.
+The host computes the canonical expected `phase-message.env` path from run identity. An audit-reported path is not general file-read authority and must resolve to that location before fallback use.
 
-### T22 — Workflow condition acquiring an evaluator
+<!-- Source: src/controller/phase-sidecar-reader.ts -->
 
-**Source**: operator-authored Workflow definitions in the catalog store, reaching the host either through the Workflow Builder (`CMD_SAVE_WORKFLOWS`), an imported YAML document, or a hand-edited version record under `.schegent/catalog/workflows/`.
+### T22 — Workflow condition acquires an evaluator
 
-**Vector**: A Workflow connection may carry a condition that decides whether the branch is offered. The obvious design — an expression string — is the design Schegent already has once, in the phase `retryCondition` DSL ([T11](#t11--retrycondition-dsl-escape)). Repeating it here would put a second operator-authored expression language on a surface that also names pipelines and reads prior node output, and it would arrive without T11's sandbox invariants unless someone rebuilt them.
+Workflow conditions remain structured operands and a closed operator union. The comparison service reads fields; it does not execute expression text.
 
-**Mitigation (by construction, not by blocklist)**: a `WorkflowCondition` is structured data — `{ left, operator, right? }`. `left` and `right` are `{ source: 'node-output', nodeId, field }` or `{ source: 'node-status', nodeId }`; `operator` is one of the eight members of `WORKFLOW_CONDITION_OPERATORS`; a `node-status` operand compares only against `WORKFLOW_NODE_TERMINAL_STATUSES`. Everything is a closed enum or an identifier resolved against the graph, so there is **no expression text, no parser, no evaluator, no template engine, and no sandbox** — there is nothing to evaluate. The host compares fields.
+<!-- Source: src/contracts/workflow-definitions.ts -->
+<!-- Source: src/services/workflow-execution/condition-evaluator.ts -->
 
-Because "we did not add an evaluator" is invisible to behavioral tests (every one of them would keep passing the day someone adds an expression escape hatch), the property is pinned against the module source: the `Feature 083 T046` block in [tests/unit/config/workflow-graph-validator.test.ts](../../tests/unit/config/workflow-graph-validator.test.ts) asserts that both condition modules — [src/config/workflow-graph-validator.ts](../../src/config/workflow-graph-validator.ts) and [src/config/workflow-definition-validator.ts](../../src/config/workflow-definition-validator.ts), which owns `readCondition` and runs first — import nothing but relative project modules, and contain no `eval`, `Function` constructor, `.constructor` access, dynamic `import(`, `require(`, or `node:vm`. The rule is stricter than a forbidden-package list on purpose: a blocklist would have to be maintained forever and would still miss the next engine published. The corresponding CLAUDE.md hard rule states the invariant for reviewers.
+### T23 — Operator-authored value escapes its declared bound
 
-**Trust boundary**: authoring a Workflow graph is gated by Workspace Trust. The capability that once gated it separately, `allowWorkflowOverrides`, was retired in feature 099 with the layer tier it named — it decided which settings layer could redefine another's declaration, and a single-layer catalog store has no second layer. The ceiling it was subject to is now the whole gate, and it is not a weaker one: an untrusted workspace activates no catalog at all, so a `.schegent/catalog/workflows/` directory arriving with a cloned repository is inert until the operator trusts the workspace. See [Per-capability trust scopes](#per-capability-trust-scopes).
+Phase, Pipeline, Workflow, port, and retry-expression bounds belong to their contract modules. Ingress and reporting must import those constants rather than declare private look-alike maxima.
 
-**Residual risk**: An operator who is permitted to author workflow graphs can route between any pipelines they are permitted to author. Conditions bound *which* branch is offered, never *whether* the operator is asked — a Workflow never starts a follow-up run on its own, so a mis-authored condition mis-suggests rather than mis-executes.
+<!-- Source: src/contracts/process-definitions.ts -->
+<!-- Source: src/contracts/pipeline-definitions.ts -->
+<!-- Source: src/contracts/workflow-definitions.ts -->
+<!-- Source: tests/lint/retry-condition-bound-declared-once.test.ts -->
 
-### T23 — Operator-authored identifier or expression escaping its declared bound
+### T24 — Legacy persisted state re-enters the runtime
 
-**Source**: a phase, pipeline, workflow, port, or node id, or a phase's `retryCondition` expression — authored in a builder, hand-edited into a catalog version record, or carried in an imported document.
+Initialization migrates known older schemas in order. A numeric schema above the running implementation is rejected with an update instruction instead of being guessed at; audit parsing preserves unknown evidence with warnings.
 
-**Vector**: an identifier is the one operator-authored string that is *supposed* to flow onward: into an audit payload, a validation error the webview renders, and a catalog key. An unbounded id therefore reaches a sink that is bounded everywhere else, and a very long one is a cheap way to push the fields that matter out of a truncated record. A `retryCondition` is the same shape of value: it reaches the `phase.retry_evaluated` payload as `payload.expression`, a validation error the webview renders, and the sidebar's catalog projection. The subtler failure is a **second** bound for the same class of value: a module that declares its own `= 64` agrees with the catalog only by coincidence, and the day that catalog widens its id length, the private copy starts truncating identifiers the catalog itself accepts — silently, in exactly the reporting paths an operator would use to diagnose the problem.
-
-`retryCondition` shipped the worst version of that failure, which is why this threat now names it. The field had no bound on any of its three authoring routes — YAML import, the catalog definition validator, the run-time evaluator — while the sidebar projection truncated it at `INSTRUCTION_MAX`, a constant belonging to a different field. So the only number anywhere near the value was a foreign one, applied at the one surface that is derived state; the three surfaces that decide whether a condition is *accepted* applied none. That is a private second bound in its purest form: not a copy that might drift, but a copy of the wrong constant.
-
-**Mitigation**: each catalog declares its bound exactly once, in the `contracts/` leaf module that owns the definition — `PHASE_ID_MAX_LEN` and `PHASE_RETRY_CONDITION_MAX_LEN` ([src/contracts/process-definitions.ts](../../src/contracts/process-definitions.ts)), `PIPELINE_ID_MAX_LEN` ([src/contracts/pipeline-definitions.ts](../../src/contracts/pipeline-definitions.ts)), `WORKFLOW_ID_MAX_LEN` ([src/contracts/workflow-definitions.ts](../../src/contracts/workflow-definitions.ts)). The three id bounds are 64 today, but they are three bounds and not one shared maximum, so a catalog that widens its own does not widen the others. The exchange boundary reads the id bounds through the `RESOURCE_ID_MAX_LEN` map in [src/contracts/sidebar-ipc/process-yaml.ts](../../src/contracts/sidebar-ipc/process-yaml.ts); the definition validators reject an over-long or duplicate id before anything is persisted; and every site that reports an id — audit payload, save-command error, catalog diagnostic — truncates against the same constant rather than a local literal. `tests/integration/process-platform/audit-boundary.test.ts` scans the exchange-boundary sources for a re-declaration, so a fourth private copy fails the build.
-
-`PHASE_RETRY_CONDITION_MAX_LEN` (512) is enforced the same way and in one respect differently. It does **not** travel through `RESOURCE_ID_MAX_LEN`: that map is keyed by resource *kind*, and `retryCondition` is a field on one kind rather than a kind of its own, so the exchange boundary reads the constant directly. All three authoring routes now refuse an over-long expression before it is tokenized, reported as a length rather than as an invalid expression; the projection truncates against this constant instead of `INSTRUCTION_MAX`; and the resolver carries an over-long stored body verbatim while excluding the row from the effective catalog, so nothing rewrites an operator's text to make it fit. The evaluator receives the bound as an argument rather than importing it, because `src/lib/retry-condition.ts` imports nothing and is byte-mirrored into the webview. `tests/lint/retry-condition-bound-declared-once.test.ts` scans both trees for a second numeric bound on the field — a re-declaration, a foreign constant, or a literal — so the shape this threat describes fails the build.
-
-**Residual risk**: an id within its bound is still operator-authored text. It is sanitized like any other string before it reaches a sink, but its *content* is the operator's — this threat bounds length and uniqueness, not meaning. A `retryCondition` within its bound is still an expression, and bounding its length says nothing about what it evaluates: that is [T11](#t11--retrycondition-dsl-escape)'s sandbox, and a length check is not a parse.
-
-### T24 — Legacy persisted state re-entering the runtime
-
-**Source**: VS Code `workspaceState` and `.schegent/audit.log` rows — both written by an earlier extension version, on a machine the current version has just been installed on.
-
-**Vector**: persisted state is an input the running code did not write, and its shape is whatever some earlier release persisted — including shapes the invariants in force today forbid. A record predating an invariant does not announce itself. Reading one optimistically means a run resumes into a state the scheduler cannot advance (the one-sided pause/retry pair of [T13](#t13--state-schema-invariant-violation)), or a queue shape removed in v6 reappears behind the single-queue invariants ([T14](#t14--multi-queue-reintroduction)). The mirror-image case is a **downgrade**: state written by a newer version, read best-effort by an older one, which is the same problem with the arrow reversed and no migrator that could possibly exist for it.
-
-**Mitigation**: migration is forward-only and runs at `WorkspaceStateStore.initialize()` before any consumer reads state — the numeric-version chain (v5→v6 queue registry, v6→v7, v7→v8, and feature 088's v8→v9 `migrateConnectedRuns` in [src/state/connected-run-migrator.ts](../../src/state/connected-run-migrator.ts)) plus the legacy `WorkflowRun` normalizer, each gated on the *persisted* version so a step never re-runs against records it already migrated. The downgrade case is refused rather than guessed at: a persisted `schemaVersion` above the runtime's throws at `initialize()` with an "update the extension" message instead of being partially read. `setRun()` re-asserts the pair invariants on every write, so a migrated record that is still one-sided cannot be persisted. For the audit log the discipline is the opposite and deliberate — legacy v1/v2 rows stay readable and are never rewritten in place, and the parser **warns and preserves** an event type it does not recognize rather than dropping it, because the log is evidence and a dropped row is destroyed evidence.
-
-A withdrawn capability leaves both halves of that discipline visible. Retiring the Wake-up scheduler removed `'wake-up-runner'` from the legal `scheduledStartSource` values, so a queue record persisted by an earlier release is normalized on read to `'programmatic-scheduled'` — the thing it always meant — without disarming the schedule it carries. The `wakeup-daemon-*` and `wakeup-runner-invocation` rows already in an audit log are left exactly as written and read back through the warn-and-preserve path, because nothing about withdrawing a feature makes the record of what it did less true.
-
-**Residual risk**: a migrator is code, and a migrator with a bug writes a wrong record once, forward-only, with no rollback. That is why each migration step emits audit events and why the migrators are covered by per-version fixtures rather than by a single end-to-end case.
+<!-- Source: src/state/workspace-state.ts -->
+<!-- Source: src/state/queue-state-migrator.ts -->
+<!-- Source: src/parser/audit-log-parser.ts -->
 
 ### T25 — Control sentinel carried in CLI output
 
-**Source**: backend CLI stdout (`claude`, `codex`, or `agy`) during a phase — the same stream that carries model prose, file contents the model echoed, diffs it produced, and tool output it relayed.
+Outcome classification accepts a termination token only in the trailing region at or after the last complete audit block. An out-of-region token is logged and never acted on; if there is no complete block, acceptance is explicitly labelled `[constitution] token accepted without audit block`.
 
-**Vector**: the host reads its own control signals out of that stream. The termination token `[SCHEGENT_STATUS: CLEAR|DONE|RESOLVED]` decides whether a phase resolved clean, and the `=== SCHEGENT AUDIT LOG ===` block becomes the phase's evidence record. Neither is a channel the host controls — both are bytes the model chose to print. So the token can arrive by paths that have nothing to do with a phase finishing: a `cat` of a file that documents the protocol, a diff hunk touching this very document, a phase that quotes its own instructions back, or the prior phase's transcript replayed as context. Read as a verdict, any of those resolves a phase that did no work, and a token printed on a run that exited non-zero masks the failure — the token is checked before the exit code has had its say. The same shape of bug had already shipped once on the *process*-control path: feature 030 BUG-002 armed a grace-terminate on a substring scan of accumulated stdout for the audit-log close marker, so a model quoting a prior phase's block mid-turn could arm a SIGTERM against itself.
+Process control is stronger: Claude grace termination arms on the parsed stream-json `{"type":"result"}` harness record, not on model-content substrings. The mechanism is pinned by `tests/lint/no-content-driven-process-control.test.ts`.
 
-**Mitigation — position, not shape.** The token is read only from the **trailing region**: the text at and after the close marker of the *last complete* audit block. `parseAuditLogBlock` in [src/parser/audit-log-parser.ts](../../src/parser/audit-log-parser.ts) owns the region because it owns the markers that define it, and returns it alongside the entry; [src/parser/stdout-parser.ts](../../src/parser/stdout-parser.ts) is the only consumer, and `detectTermination` is the single place an outcome is decided. Anything the host declines to act on is still *reported*, because a silent refusal and a clean run look identical from the outside — a token outside the region is warned by count and line number, a second token inside it by count, a token inside a code fence by count, and multiple audit blocks by which one was used.
+This does not make the model's evidence truthful. It separates a bounded control sentinel from the Phase's self-reported outcome, which remains subject to the limit documented above.
 
-**The position rule is not new; the enforcement is.** `.specify/memory/constitution.md` § *Output Formatting & Loop Termination* has required the token to be "the **last non-empty line** of stdout for terminal phases" since the stdout contract was written — a requirement strictly stronger than the region boundary, which accepts a token anywhere at or after the close marker. So this mitigation does not narrow the protocol; it starts checking a clause that was stated, relied on, and never verified. The evidence that it was never verified is in the suite: **eleven** fixtures across nine test files were hand-authored with the token on the line *before* the audit block — a shape no compliant run emits — and every one of them passed for as long as it existed, including six at the integration level that drive the real controller end to end. The prompt's own `TOKEN_INSTRUCTION` in [src/runner/prompt-builder.ts](../../src/runner/prompt-builder.ts) omitted the clause too, and now states it — a host that enforces a rule its prompt does not state has only moved the drift.
-
-Why not tighten the token's own pattern instead: `TERMINATION_REGEX` is deliberately permissive about decoration — bold, bullets, trailing punctuation — and three tests pin that tolerance, because a model that reports the right verdict in the wrong markup has still done the work. Shape-based validation would break those real outputs while stopping no attacker, since any shape a validator accepts is a shape content can print. Position is different in kind: the region is defined by the *last* complete block, so content cannot place itself after it without also emitting a complete block of its own, and having emitted one it has produced the evidence record the token was always meant to accompany.
-
-**Process control is held to a strictly stronger boundary** than outcome parsing, because the cost of being wrong is a killed process rather than a misclassified result. Grace-termination arms on the stream-json `{"type":"result"}` envelope — a line the CLI harness emits *around* the model's content, which content therefore cannot forge at any position. `e2bf9ad` (2026-08-01) made that the trigger, but shipped without a test, and the field, contract entry, comments, and 14 test arguments went on describing the retired substring scan as live for five months. Both halves are now pinned: [tests/unit/runner/claude-cli-arming-boundary.test.ts](../../tests/unit/runner/claude-cli-arming-boundary.test.ts) proves content carrying the close marker never arms a kill and the envelope does, and [tests/lint/no-content-driven-process-control.test.ts](../../tests/lint/no-content-driven-process-control.test.ts) forbids the *mechanism* rather than the identifier — no substring search over an accumulated buffer anywhere in the runner, the sole arming assignment reachable only from the parsed-envelope predicate, and no marker or sentinel field on `InvocationRequest` for a caller to re-supply. A rename could not evade it.
-
-**Residual risk**, three ways, all deliberate. A stream containing **no complete audit block** falls back to scanning the whole of stdout, because a run that crashed mid-block would otherwise become a hard failure on the strength of missing punctuation; the acceptance is labeled `[constitution] token accepted without audit block`, so a degraded read is never indistinguishable from a bounded one, but it is an acceptance. A model that emits a **well-formed audit block and then a token** is treated as a finished phase — that is not a bypass, it is the protocol: producing the evidence record is the assertion, and the host verifies the record's shape, not its truthfulness. And a warning is an **operator-facing** signal, not a gate: nothing in the host escalates a warned run to a failure on its own, so the invariant these tests protect is that the host never *acts* on an out-of-region token, not that a run carrying one is refused.
+<!-- Source: src/parser/audit-log-parser.ts -->
+<!-- Source: src/parser/stdout-parser.ts -->
+<!-- Source: src/runner/claude-cli.ts -->
+<!-- Source: tests/lint/no-content-driven-process-control.test.ts -->

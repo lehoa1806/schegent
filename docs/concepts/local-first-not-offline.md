@@ -1,62 +1,97 @@
 # Local-first does not mean offline execution
 
-Status: Accepted product-boundary decision (2026-08-01)
+Status: Accepted product-boundary decision
 
-Schegent is local-first: the extension host, webviews, queue state, audit log,
-runtime log, raw transcripts, and session evidence run or remain on the
-operator's workstation. That boundary does **not** make AI execution offline.
-Claude Code, Codex, and Agy may require provider network access and valid
-credentials whenever Schegent starts a phase.
+Schegent keeps its extension host, queue state, catalog, audit records, runtime
+log, session evidence, and UI projections on the operator's machine. That local
+ownership boundary does not imply that an AI backend can execute without a
+provider connection or credentials.
+
+<!-- Source: src/extension.ts -->
+<!-- Source: src/state/workspace-state.ts -->
+<!-- Source: src/audit/audit-log-writer.ts -->
+<!-- Source: src/audit/raw-transcript-writer.ts -->
 
 ## Product decision
 
-Offline AI execution is not a supported promise for the current release.
-Schegent supports local queue management and local evidence access while the
-network is unavailable, but it does not claim that a configured backend can
-execute without a provider connection. A future local-model adapter may add
-that capability; it must advertise and prove it explicitly.
+Offline AI execution is not a supported promise for the current product.
+Claude, Codex, and Agy are external CLI programs selected by configuration, and
+their provider communication is outside Schegent's local-state contract. A
+binary being present and executable does not prove that authentication, DNS,
+TLS, proxy configuration, quota, or a provider API will be available during a
+Run.
 
-The Dashboard queue composer states this boundary before submission:
-"Local-first, not offline: running this queue may contact configured backend
-providers."
+The Dashboard states this boundary beside the queue composer before submission:
+“Local-first, not offline: running this queue may contact configured backend
+providers.”
 
-## What works without provider connectivity
+<!-- Source: src/runner/backend-runner-factory.ts -->
+<!-- Source: src/services/backend-capability-service.ts -->
+<!-- Source: webview-ui/src/components/QueueInputForm.svelte -->
+<!-- Source: tests/lint/product-boundary-decisions.test.ts -->
 
-| Capability | Current behavior without provider connectivity |
-|---|---|
-| Open the sidebar or Dashboard | Works from local projected state. |
-| Inspect queue, history, settings, audit, and existing session evidence | Works while local storage is readable. |
-| Enqueue or edit pending work | Persists locally. Leave the queue `idle-pending` or operator-paused to prevent an execution attempt. |
-| Start or resume a phase | Not guaranteed. The configured backend may fail authentication, reachability, or provider requests. |
-| Automatic retry or rate-limit recovery | Remains stateful locally, but the next backend attempt still needs whatever connectivity that backend requires. |
+## What remains local
 
-There is no automatic "offline mode" and no network reachability detector.
-Queue-only/no-execution behavior is explicit operator intent: keep an
-`idle-pending` queue unstarted, or pause the queue before connectivity is
-removed. Schegent never silently substitutes a different model or backend.
+When the relevant files are readable, an operator can open Schegent, inspect
+queues and Run history, read retained audit or transcript evidence, review the
+catalog, and edit pending work without asking Schegent to contact a remote
+service. These actions operate on local extension state and workspace files.
 
-## Preflight and failure behavior
+Starting or resuming a Phase is different. The selected backend is spawned as a
+local child process, but that process may require network access. Normal runner
+exit, timeout, rate-limit, credit, and authentication failures flow through the
+controller's failure and retry policy; Schegent does not silently switch to a
+different backend or model.
 
-The guarded start path probes every effective runner in the selected pipeline.
-That probe verifies the configured executable and its supported command
-surface; it is not a provider health check and does not prove that credentials,
-DNS, TLS, proxy configuration, quota, or the remote API will remain available.
+<!-- Source: src/runner/claude-cli.ts -->
+<!-- Source: src/runner/codex-cli.ts -->
+<!-- Source: src/runner/agy-cli.ts -->
+<!-- Source: src/controller/workflow-controller.ts -->
+<!-- Source: src/controller/retry-handler.ts -->
+<!-- Source: src/parser/credit-error-detector.ts -->
 
-Once execution begins, the runner's bounded stdout/stderr and exit status drive
-normal error classification. Rate limits use the delayed-retry path. Fatal or
-unclassifiable failures stop or pause according to controller policy, and local
-state/evidence remains available for diagnosis. Schegent does not label a
-binary-only probe as "offline ready."
+## Queue-only/no-execution behavior
+
+Queue-only/no-execution behavior is an explicit operator choice, not an
+automatic offline mode. Leave new work in `idle-pending`, or pause the target
+queue before connectivity is removed. An armed scheduled start remains durable
+and may attempt execution when due, so cancel the schedule or pause the queue if
+no attempt should occur.
+
+Enqueue admission still validates the description, target Pipeline, workspace
+ownership, queue pause state, and seven-day schedule horizon. Those local checks
+do not certify backend network readiness. When connectivity returns, the
+operator may start or resume through the normal guarded path.
+
+<!-- Source: src/queue/feature-request.ts -->
+<!-- Source: src/services/guarded-run-service.ts -->
+<!-- Source: src/services/scheduled-start-coordinator.ts -->
+<!-- Source: src/services/auto-drain-coordinator.ts -->
+
+## Current probes are not an offline certificate
+
+Backend capability discovery runs a bounded `--help` probe for each registered
+runner. It reports executable availability and, where supported, model discovery
+results. The operator Ping action reuses that probe. Neither path sends a sample
+workspace request to a provider, and neither promises future network or account
+availability.
+
+Probe failures are deliberately structural and paths-free: not found, not
+executable, nonzero exit, timeout, or unknown. Success means that the local CLI
+accepted the bounded command. It does not mean “offline capable.”
+
+<!-- Source: src/services/backend-capability-service.ts -->
+<!-- Source: src/services/backend-ping-service.ts -->
+<!-- Source: src/activation/backend-wiring.ts -->
 
 ## Capability-discovery prototype
 
-If an offline-capable backend is proposed, discovery must be a separate
-preflight service keyed by `BackendRunnerKind`; it must not widen or overload
-the invocation-only `BackendRunner` contract. The minimum projected result is:
+A future offline-capable adapter should advertise that capability explicitly
+instead of overloading binary availability. A prototype projection could be:
 
 ```ts
 interface BackendExecutionCapability {
-  runner: 'claude' | 'codex' | 'agy' | string;
+  runner: string;
   binary: 'available' | 'unavailable';
   execution: 'network-required' | 'offline-capable' | 'unknown';
   readiness: 'ready' | 'not-ready' | 'unknown';
@@ -65,25 +100,23 @@ interface BackendExecutionCapability {
 }
 ```
 
-Rules for a production implementation:
+For an `offline-capable` result to become a product promise, discovery must be
+bounded and cancelable, must not transmit workspace content merely to probe,
+must distinguish a local engine from a cached credential, and must identify
+which models and tools remain functional without network access. The execution
+path must then consume the same capability result or revalidate it at admission;
+a decorative UI badge alone is insufficient.
 
-- Discovery is bounded, cancelable, and never sends workspace content.
-- `unknown` fails closed for an "offline execution" badge; it must not be
-  presented as ready.
-- Provider reachability is time-scoped evidence, not a durable guarantee.
-- The result may guide UX but cannot bypass the normal run-start probe.
-- Raw credential, proxy, path, or provider error text is never projected;
-  reason codes pass through the existing sanitization and audit boundaries.
+<!-- Source: src/services/backend-capability-service.ts -->
+<!-- Source: src/contracts/backend-runner.ts -->
 
-This prototype intentionally remains documentation-only because none of the
-currently supported adapters claims offline execution. Adding runtime probing
-without such a backend would create a misleading health signal.
+## Reconsideration trigger
 
-## Revisit criteria
+Reopen this decision when Schegent ships a backend whose supported execution
+contract is demonstrably local, or when the product introduces a first-class
+offline mode with admission, UI, retry, and scheduled-start behavior designed
+around loss of connectivity. Until then, “local-first” describes ownership of
+state and orchestration, not the network behavior of the configured AI CLI.
 
-Reconsider the decision only when a concrete adapter can execute the full
-phase contract without provider connectivity and has deterministic tests for
-output bounds, cancellation, session ownership, fail-closed classification,
-and offline startup. Until then, issues caused solely by unavailable provider
-connectivity are supported degraded operation, not violations of an offline
-product promise.
+<!-- Source: src/runner/backend-runner-factory.ts -->
+<!-- Source: webview-ui/src/components/QueueInputForm.svelte -->

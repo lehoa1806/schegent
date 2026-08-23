@@ -1,286 +1,276 @@
-# Remote, multi-user, and parallel execution expansion gate
+# Remote and multi-user expansion gate
 
-Status: Accepted architecture decision (2026-08-01)
+Status: Accepted product-boundary decision
 
-Decision: Schegent's current local, single-operator architecture must not be
-expanded into remote control, shared multi-user operation, or parallel agents
-in one workspace by increasing `schegent.queue.globalConcurrencyCap`, adding a
-network endpoint, or weakening the workspace lock. Such work is blocked until
-a separate implementation RFC satisfies every exit criterion in this record.
+Schegent's implemented authority model is local: one operator, one canonical
+workspace, and one VS Code extension-host process holding authoritative window
+primacy. The extension exposes no listening API and has no tenant, account, or
+service-scheduler layer. A proposal for remote control, multiple operators, or
+multiple coordinating host processes must pass this gate before implementation.
 
-One carve-out, taken 2026-08-15: the `schegent.queue.globalConcurrencyCap`
-half of that prohibition is narrowed for local queue parallelism under one
-local operator, one host process, and one filesystem owner, per
-[local-queue-parallelism-ratification.md](./local-queue-parallelism-ratification.md).
-The network-endpoint and workspace-lock halves are untouched, and every
-expansion beyond that narrow shape still requires the RFC and all seven exit
-criteria.
+Same-workspace parallel Runs inside one authoritative local host are a narrow
+exception ratified separately. They do not authorize a network surface, a
+second mutating principal, or service ownership of the working tree.
 
-This is an expansion blocker, not a defect in the supported local product.
+<!-- Source: src/extension.ts -->
+<!-- Source: src/state/lock.ts -->
+<!-- Source: src/state/workspace-folder-picker.ts -->
+<!-- Source: src/queue/queue-manager.ts -->
 
-## Scope that triggers this gate
+## Original decision and its local narrowing
 
-The gate applies if a proposal introduces any of the following:
+The concurrency cap remains pinned at one. This sentence records the original
+decision and is superseded only for the single-local-operator shape described
+in the status update below. It remains the default posture and remains current
+for remote, multi-user, multi-host, and service-owned execution.
 
-- commands or state access from outside the local VS Code host;
-- more than one mutating operator or service identity;
-- parallel workers or agents targeting the same canonical workspace
-  — [narrowed 2026-08-15 for one shape only: N local queues under one operator,
-  one host process, one filesystem owner, no network surface, per
-  [local-queue-parallelism-ratification.md](./local-queue-parallelism-ratification.md).
-  Any other parallelism, including a worker that outlives the host process,
-  still triggers the gate];
-- a shared scheduler, queue, evidence store, secret store, or control plane;
-- cross-tenant storage, dashboards, logs, metrics, or administration.
+The original constraint was conservative because one process, one owner, one
+queue, and one working tree made state transition ownership inspectable. Merely
+raising a number could not answer who authenticated a request, which tenant
+owned the files, how a crashed scheduler recovered, or how two writers avoided
+duplicating effects.
 
-Separate local VS Code windows remain covered by the existing primary-host
-read-only/mutating split. Separate workspaces remain independent local trust
-domains.
+<!-- Source: src/state/workspace-state.ts -->
+<!-- Source: package.json -->
+<!-- Source: src/state/lock.ts -->
 
-## Why the current architecture cannot be widened incrementally
+## Status update — feature 092
 
-| Current assumption | Expansion failure mode |
-|---|---|
-| VS Code Workspace Trust represents the operator trust decision. | It cannot authenticate a remote human or workload identity. |
-| `workspaceState` and local `.schegent/` files are the state/evidence stores. | They provide no tenant isolation, transactional scheduler, or distributed consistency. |
-| One primary host and one workspace lock serialize mutation/execution. | A second machine or stale worker can ignore or outlive the local lock. |
-| The configured CLI receives local filesystem and environment capabilities. | Remote workers require explicit workspace sandboxing and secret brokering. |
-| Local audit and retention policy have one operator and one filesystem owner. | Shared evidence requires tenant-scoped policy, access control, integrity, and deletion semantics. |
-| Prompt content is trusted at the local operator boundary. | Shared ingestion creates cross-user prompt-injection and confused-deputy paths. |
+Feature 092 implemented concurrent Runs across separate queues in one local
+workspace. It added per-queue state maps, per-queue execution leases, addressed
+scheduling, and a workspace-wide concurrency setting while retaining one
+authoritative window and one Task per queue. The shipped default is one and the
+upper bound derives from the queue-count ceiling.
 
-The concurrency cap remains pinned at one. [Superseded 2026-08-15 for the
-local single-operator shape only: the cap's range is `[1, 20]` with a default
-of 3. This sentence is retained unedited as the record of the position before
-that change; the current position is in
-[local-queue-parallelism-ratification.md](./local-queue-parallelism-ratification.md).]
-A cap change is not an architecture for coordination, identity, isolation, or
-recovery.
+This narrowing did not go through the implementation RFC and exit criteria in
+this record before the implementation landed. The later local-parallelism
+ratification evaluates that shipped shape against the criteria and authorizes
+only these premises:
 
-## Required implementation RFC
+- one local human principal;
+- one extension-host process with one authoritative-window lease;
+- one canonical workspace and one operator-owned working tree;
+- no remote command or state endpoint;
+- one executing Task per queue, with a per-queue lease; and
+- an opt-in global cap whose default remains one.
 
-The future RFC must define one end-to-end design, including the following
-mandatory sections and test evidence.
+If any premise changes, the exception expires and this gate applies in full.
+
+<!-- Source: src/contracts/state-schema.ts -->
+<!-- Source: src/state/queue-state-migrator.ts -->
+<!-- Source: src/state/run-state-migrator.ts -->
+<!-- Source: src/state/execution-lease.ts -->
+<!-- Source: src/state/workspace-state.ts -->
+<!-- Source: docs/architecture/local-queue-parallelism-ratification.md -->
+
+## Required design areas
+
+The following areas are mandatory parts of a remote or multi-user design. A
+proposal is incomplete if it treats one as a follow-up.
 
 ### Authentication and authorization
 
-- Use explicit human and workload identities with short-lived credentials;
-  no identity may be inferred from a workspace path, hostname, or bearer token
-  stored in repository files.
-- Define authorization for every resource/action pair: tenant, workspace,
-  queue, task, run, phase control, settings, evidence, secrets, and admin
-  operations.
-- Re-authorize mutating operations at the authoritative service, not only in a
-  browser or client. Include revocation, session expiry, replay defense, and
-  break-glass audit behavior.
+Workspace Trust is a local VS Code signal, not user authentication. Window
+primacy identifies one local host owner, not a human or service identity. A
+remote design must define authenticated principals, credential lifecycle,
+revocation, session expiry, service identities, and authorization for every
+read and mutation. Queue start, cancel, retry, catalog publication, settings
+changes, evidence reads, and destructive cleanup need explicit permissions.
+
+Authorization must be enforced at the authoritative host boundary, not only by
+hiding a webview control. Audit events must identify a stable principal without
+including secrets or bearer credentials.
+
+<!-- Source: src/ui/sidebar/message-router.ts -->
+<!-- Source: src/state/capability-trust-resolver.ts -->
+<!-- Source: src/state/lock.ts -->
+<!-- Source: src/audit/audit-payload.ts -->
 
 ### Tenant and workspace isolation
 
-- Namespace state, evidence, caches, metrics, and encryption keys by tenant and
-  workspace using server-derived identity, never client-supplied paths.
-- Specify worker filesystem isolation, egress policy, resource limits, cleanup,
-  and protection against symlink/path traversal and cross-workspace mounts.
-- Prove negative cross-tenant tests for every read, mutation, log, artifact,
-  backup, restore, and administrative path.
+Today one canonical local folder supplies the state and filesystem scope. A
+remote service must define tenant and workspace identifiers independently of a
+client-provided path. Every database row, object-store key, queue, Run, catalog
+version, log, checkpoint, secret, cache, and metric needs tenant-qualified
+ownership.
+
+Filesystem access must be mediated by service-owned workspace roots and safe
+path resolution. A request from one tenant must be unable to select another
+tenant's root, follow a link into it, infer its existence through timing or
+errors, or receive its identifiers in a projection.
+
+<!-- Source: src/state/workspace-folder-picker.ts -->
+<!-- Source: src/lib/path-containment.ts -->
+<!-- Source: src/contracts/run-request.ts -->
 
 ### Durable scheduling and execution
 
-- Replace local memento scheduling with a transactional durable queue and an
-  explicit at-least-once delivery model.
-- Define leases, heartbeats, retry/backoff caps, poison-task handling,
-  cancellation, priority/fairness, clock-skew tolerance, and recovery after
-  scheduler or worker restarts.
-- Preserve a frozen, versioned pipeline snapshot per run and make compatibility
-  behavior explicit during rolling deployments.
+The local scheduler uses in-process timers plus persisted queue intent and
+activation-time reattachment. That is appropriate for one host, but a remote
+service needs durable jobs whose ownership survives process and machine loss.
+The design must specify admission transactions, visibility timeouts or leases,
+retry state, cancellation, backpressure, fairness, capacity, and recovery from
+a worker dying at every transition.
+
+At-least-once delivery is not the same as at-most-once effect. The design must
+state which operations can repeat, which require an idempotency key, which are
+transactional, and how an operator observes an ambiguous outcome.
+
+<!-- Source: src/services/scheduled-start-coordinator.ts -->
+<!-- Source: src/controller/schedule-watchdog.ts -->
+<!-- Source: src/services/auto-drain-coordinator.ts -->
+<!-- Source: src/services/terminal-transition-coordinator.ts -->
 
 ### Distributed locking and idempotency
 
-- Use lease epochs or fencing tokens so a stale worker cannot write state or
-  evidence after ownership moves.
-- Assign idempotency keys to every externally retried mutation and execution
-  attempt. Specify deduplication scope and retention.
-- Make state transitions conditional on the expected version and prove that
-  duplicate delivery cannot start two backend subprocesses or emit conflicting
-  terminal outcomes.
+The current ownership registry uses exclusive local filesystem creation and a
+generation fence. The window lease has one holder per workspace; execution
+leases have one holder per queue. These mechanisms do not coordinate separate
+machines or a replicated control plane.
+
+A distributed design must choose a consistency model and lease authority,
+carry fencing tokens to every state-changing effect, define clock and expiry
+assumptions, and prove that a stale worker cannot commit after replacement.
+Every externally retried mutation needs a stable idempotency key and a durable
+result record so a timeout does not become a duplicate Run.
+
+<!-- Source: src/state/ownership-registry.ts -->
+<!-- Source: src/state/lock.ts -->
+<!-- Source: src/state/execution-lease.ts -->
 
 ### Secret brokering
 
-- Store provider and repository credentials outside task payloads, prompts,
-  workspace state, logs, and evidence.
-- Issue least-privilege, short-lived worker credentials bound to tenant,
-  workspace, run, backend, and expiry; define revocation and rotation.
-- Prohibit ambient host-environment inheritance for shared workers. Audit
-  metadata without recording secret values or recoverable error text.
+Local runners inherit a configured subset of the extension-host environment.
+A hosted worker cannot rely on ambient operator credentials. It needs an
+explicit broker that authorizes secret access by tenant, workspace, backend,
+and Run; delivers only the minimum material for the minimum time; records access
+without recording values; and supports rotation and revocation.
+
+Secrets must not enter queue payloads, catalog definitions, structured audit,
+logs, metrics, crash reports, or client-visible errors. Worker teardown must
+remove temporary credentials and account for subprocess descendants.
+
+<!-- Source: src/runner/spawn-env.ts -->
+<!-- Source: src/lib/logger.ts -->
+<!-- Source: src/audit/audit-payload.ts -->
 
 ### Evidence, retention, and privacy
 
-- Define tenant-scoped schemas, encryption, integrity/tamper evidence, access
-  logging, legal/deletion holds, export, retention quotas, and backup/restore.
-- Separate redacted operational evidence from explicitly authorized raw
-  artifacts. A raw artifact must never become a default remote diagnostic.
-- Specify behavior when authoritative evidence is unavailable; execution must
-  retain the current fail-closed safety property.
+The local product distinguishes metadata-only audit, sanitized runtime logs,
+unredacted transcripts, verbose diagnostics, and recovery checkpoints. A remote
+service must preserve those distinctions and add data residency, encryption,
+access logging, export, deletion, legal retention, backup, restore, and incident
+response policies.
+
+Retention must be enforceable per tenant and evidence class. Checkpoints and
+transcripts can contain source code and secrets, so access to a queue or Run
+summary must not imply access to those artifacts. A deletion workflow needs a
+documented result for partial failure and immutable compliance records that do
+not recreate deleted content.
+
+<!-- Source: src/audit/audit-log-writer.ts -->
+<!-- Source: src/audit/raw-transcript-writer.ts -->
+<!-- Source: src/lib/runtime-log/runtime-log-sink.ts -->
+<!-- Source: src/services/run-checkpoint-service.ts -->
+<!-- Source: src/services/run-checkpoint-retention.ts -->
 
 ### Prompt-injection and tool policy
 
-- Label content provenance and trust level across user input, repository files,
-  generated artifacts, retrieved content, and inter-agent messages.
-- Define tool allowlists, network/egress controls, human approval points, and
-  defenses against one tenant or agent influencing another's execution.
-- Treat model output as untrusted data at every control-plane boundary. No
-  model-emitted command may bypass authorization, idempotency, or sandboxing.
+A remote or shared service combines content from users, repositories, prior
+outputs, catalog instructions, and backend models. It must treat all of that as
+untrusted input. The design must define permitted tools and destinations,
+network egress, file and Git authority, approval policy, content provenance,
+cross-tenant retrieval controls, and behavior when instructions conflict.
+
+Catalog declarations can select consent and rollback behavior, but they do not
+confine a backend process. Enforcement must live at the worker and operating
+system boundary, with a policy that cannot be weakened by repository content.
+
+<!-- Source: src/contracts/run-request.ts -->
+<!-- Source: src/services/mutation-plan.ts -->
+<!-- Source: src/runner/claude-cli.ts -->
+<!-- Source: src/runner/codex-cli.ts -->
+<!-- Source: src/runner/agy-cli.ts -->
 
 ### Rollout and rollback
 
-- Provide schema/version compatibility, feature flags, canary cohorts, drain
-  behavior, rollback ordering, and recovery for mixed-version workers.
-- Demonstrate rollback without duplicate execution, lost cancellation,
-  orphaned leases, inaccessible evidence, or authorization widening.
-- Keep the existing local execution path independently releasable until the
-  remote path meets the full evidence gate.
+Remote execution needs a staged rollout with tenant allowlists, observable
+capacity and error budgets, compatibility checks for clients and workers, and a
+kill switch that prevents new admission without abandoning already-owned work.
+Schema changes require forward and backward application compatibility during a
+mixed-version deploy, even if durable data migrations themselves remain
+forward-only.
+
+Rollback must explain what happens to leased work, scheduled starts, terminal
+transitions, catalog revisions, evidence uploads, and secret grants. “Deploy the
+old binary” is not a rollback plan when the old binary cannot understand newly
+written state.
+
+<!-- Source: src/contracts/state-schema.ts -->
+<!-- Source: src/state/workspace-state.ts -->
+<!-- Source: src/services/terminal-transition-coordinator.ts -->
 
 ## Required threat model
 
-The RFC must replace the local-only threat assumptions with a reviewed network
-threat model covering at least: credential theft, authorization bypass,
-cross-tenant data access, replay, CSRF, SSRF, request smuggling, malicious
-workers, stale leases, supply-chain compromise, prompt injection, artifact
-poisoning, denial of service, quota abuse, audit tampering, backup leakage, and
-incident response. Abuse cases and negative tests are required; a diagram
-alone is insufficient.
+Before implementation, the proposal must publish a threat model that names:
+
+1. assets, principals, trust boundaries, entry points, and data flows;
+2. tenant-crossing and workspace-crossing attack paths;
+3. stolen credentials, revoked users, compromised workers, and malicious
+   repository content;
+4. replay, duplicate delivery, stale leases, split brain, and confused-deputy
+   scenarios;
+5. backend process escape, unsafe tool calls, network egress, and dependency
+   compromise;
+6. evidence disclosure, deletion failure, backup exposure, and operator abuse;
+7. detection, containment, recovery, and responsible owners for each material
+   risk; and
+8. verification evidence showing the controls at the actual authority boundary.
+
+The model must distinguish product controls from deployment assumptions. A
+statement such as “the network is private” or “workers are trusted” is an
+assumption to test and monitor, not a substitute for authorization.
+
+<!-- Source: docs/security/threat-model.md -->
+<!-- Source: src/ui/sidebar/message-router.ts -->
+<!-- Source: src/state/ownership-registry.ts -->
+<!-- Source: src/runner/backend-runner-factory.ts -->
 
 ## Exit criteria
 
-Expansion is eligible for implementation approval only when all of these are
-true:
+A remote or multi-user implementation may begin only after an architecture RFC
+and threat model satisfy all of these criteria:
 
-1. Architecture and security reviewers approve the implementation RFC and its
-   updated threat model.
-2. Authentication/authorization and tenant-isolation contracts have automated
-   negative tests.
-3. Scheduler, lease/fencing, idempotency, cancellation, crash recovery, and
-   rolling rollback pass deterministic fault-injection tests.
-4. Secret brokering and evidence retention have an operational owner,
-   documented rotation/deletion procedures, and no secret-bearing default
-   diagnostic path.
-5. Prompt/tool policy is enforced outside the model and has adversarial tests.
-6. A staged rollout has measurable stop conditions and a tested return to the
-   local path.
-7. The local single-run gate remains green; expansion does not silently change
-   local trust, audit, redaction, or package guarantees.
+1. Every command and data read maps to authenticated principal and explicit
+   authorization policy.
+2. Tenant-qualified storage and execution roots have negative isolation tests.
+3. Durable scheduling specifies delivery, lease, fencing, idempotency, crash
+   recovery, and ambiguous-outcome behavior.
+4. Secret brokering has a concrete provider, scoping model, rotation procedure,
+   and audit story that never records values.
+5. Evidence classes have encryption, access, retention, export, deletion,
+   backup, restore, residency, and privacy owners.
+6. Worker tool, filesystem, Git, and egress policies are enforced outside
+   operator-controlled content and tested against injection attempts.
+7. Rollout, compatibility, rollback, incident response, observability, capacity,
+   and cost controls have named owners and rehearsed procedures.
 
-Until all seven are evidenced, F-025 remains an accepted expansion boundary:
-local releases may proceed, but remote/multi-user/parallel execution may not.
-One exception, and only one: the narrow local-parallelism shape — N queues
-under one operator, one host process, and one filesystem owner, with no network
-surface — is separately dispositioned against all seven criteria in
-[local-queue-parallelism-ratification.md](./local-queue-parallelism-ratification.md)
-and was ratified on 2026-08-15. Everything outside that shape, including every
-remote and multi-user case, still requires all seven.
+The RFC must include an incremental implementation plan and evidence for each
+criterion. Passing this gate is a review decision recorded in the repository;
+the absence of an objection or the presence of a prototype is not approval.
 
-## Status update — feature 092 (2026-08-12)
+<!-- Source: tests/lint/product-boundary-decisions.test.ts -->
+<!-- Source: ARCHITECTURE.md -->
 
-Feature 092 (FR-R2-011, multi-queue concurrent execution) ships
-same-workspace parallel execution for a **single local operator**:
-`MAX_QUEUES` is 20, `schegent.queue.globalConcurrencyCap` defaults to 3 with
-range `[1, 20]`, and up to N queues drain concurrently in one canonical
-workspace, each holding its own per-queue execution lease.
+## Re-evaluation triggers
 
-That directly narrows one clause of this gate — "parallel workers or agents
-targeting the same canonical workspace" — and it invalidates the sentence
-"The concurrency cap remains pinned at one." above, which is retained as the
-record of the position before this change rather than edited in place.
+The local exception must be re-evaluated if any of these become true: more than
+one mutating human principal, more than one coordinating host process, a network
+endpoint for command or state access, service-owned workspaces, remote workers,
+tenant-shared storage, brokered credentials, or a concurrency ceiling beyond the
+queue registry's declared maximum. Each change invalidates a premise rather
+than merely requesting a documentation refresh.
 
-**This narrowing did not go through the implementation RFC and exit criteria
-in this document.** It was decided by the FR-R2-011 specification and plan
-([specs/092-multi-queue-concurrency/](../../../specs/092-multi-queue-concurrency/)),
-which neither cite nor reconcile this record. Ratifying or reversing that is
-an open decision for the architecture owner; this note exists so the gap is
-visible rather than implied by silence. [Decided 2026-08-15: ratified, for the
-local single-operator shape only, in
-[local-queue-parallelism-ratification.md](./local-queue-parallelism-ratification.md),
-which dispositions all seven exit criteria individually and records criterion 1
-as `not-satisfied`. This sentence is retained unedited; the decision it
-describes as open is no longer open.]
-
-Everything else in this gate remains fully in force and untouched by feature
-092:
-
-- no command or state access from outside the local VS Code host;
-- one mutating operator identity — the window-primacy lease is unchanged, and
-  a second VS Code window on the same workspace stays read-only however many
-  queues are running;
-- no shared or networked scheduler, evidence store, secret store, or control
-  plane;
-- no cross-tenant storage, dashboards, logs, metrics, or administration.
-
-The parallelism added is N local queues under one operator, one host process,
-and one filesystem owner. It supplies none of the identity, isolation,
-brokering, or distributed-consistency machinery this document requires for
-remote or multi-user operation, and MUST NOT be cited as precedent for them.
-Concurrent runs share one working tree; see
-[docs/operations/](../operations/) for what that means for the operator.
-
-## Status update — feature 093 (2026-08-15)
-
-This section supersedes one claim in the 092 note above and records the
-decision that note left open. The 092 note is retained unedited; nothing below
-replaces it in place.
-
-**Correction to attribution.** The 092 note states that feature 092 "ships
-same-workspace parallel execution". It did not. Feature 092 made every layer
-*above* the Run engine per-queue — persistence, drain, scheduler, execution
-lease, snapshot, and UI — and introduced
-`schegent.queue.globalConcurrencyCap` with a default of 3 and a range of
-`[1, 20]`. The Run engine itself was unchanged: one controller per window owned
-one driver and a single record held one `WorkflowRun`, so two queues could
-*drain* concurrently but two Runs could not *execute* concurrently. The drain
-refused the second start rather than corrupting the first, so the cap
-advertised a concurrency the engine could not honour.
-
-**Feature 093 delivered the execution.** It replaced the single Run record with
-a per-queue record under a forward-only v10 → v11 state-schema migration, gave
-the controller a session per queue, made the cap bound concurrently executing
-Runs rather than accounted slots, and removed the drain step that refused the
-second start.
-
-**The open decision is taken.** The 092 note recorded that ratifying or
-reversing the narrowing was an open decision for the architecture owner. It was
-ratified on 2026-08-15 in
-[local-queue-parallelism-ratification.md](./local-queue-parallelism-ratification.md),
-which dispositions each of the seven exit criteria individually rather than
-waiving them as a set, records criterion 1 (reviewer approval of an
-implementation RFC) as `not-satisfied`, bounds the authorised shape, refuses
-precedent beyond it, and enumerates the premises whose change would return the
-question here.
-
-What is ratified is the capability as it exists after 093 — not the
-092 description of it, and not anything wider. Every clause of this gate other
-than the concurrency-cap carve-out remains fully in force.
-
-## Status update — feature 098 (2026-08-18)
-
-**The shipped default is now 1.** The 092 and 093 notes above both state a
-default of 3 for `schegent.queue.globalConcurrencyCap`. They are retained as
-written, on the same principle as the rest of this file: each is the record of
-what was true when it was written. As of 2026-08-18 the shipped default is
-**1**, changed under the principal architecture review's REL-02 finding.
-
-**This narrows nothing and widens nothing in this gate.** The range remains
-`[1, 20]`, the ratified shape is unchanged, and concurrent local execution
-remains supported. What changed is which value an operator gets without
-choosing one. The reason is a local trade rather than a boundary question:
-concurrent Runs share one working tree, and a recovery checkpoint taken above
-one in-flight Run cannot be attributed to a single Run, so the previous default
-put a fresh install into the configuration where checkpoints are declined. The
-reasoning and what was deliberately not done are recorded in
-[local-queue-parallelism-ratification.md](./local-queue-parallelism-ratification.md#the-default-moved-to-1-2026-08-18).
-
-The checkpoint half of that reason lapsed the same day: FR-R3-004 scoped each
-patch to the paths its Run's audit records declare, so a checkpoint above one
-in-flight Run is attributable and the blanket decline is gone. The default stays
-**1** on the shared-tree contention argument alone. This changes nothing in this
-gate either — attribution is a local mechanism inside one host's working tree,
-and it neither reaches nor relaxes any boundary clause below.
-
-Every clause of this gate other than the concurrency-cap carve-out remains
-fully in force.
+<!-- Source: docs/architecture/local-queue-parallelism-ratification.md -->
+<!-- Source: src/queue/queue-registry.ts -->
+<!-- Source: src/state/workspace-state.ts -->

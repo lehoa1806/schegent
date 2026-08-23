@@ -1,114 +1,189 @@
-# Merge-gate observation record
+# Observe the merge gates
 
-**Status**: procedure recorded, observation **outstanding**
-**Opened**: 2026-08-21
-**Source finding**: `OPS-N1` (High likelihood / High impact)
+This runbook separates three questions that are easy to collapse into one:
 
-## What happened
+1. Does the checked-in workflow declare a trigger for the integration branch?
+2. Did GitHub actually run that workflow for the commit or pull request?
+3. Does the remote repository require the resulting check before merge?
 
-Four merge-blocking workflows filtered their `push` and `pull_request`
-triggers on `branches: [main]`. Neither repository has a `main` branch —
-`develop` is the integration branch and the default in both.
+The source tree can establish the first question and provides local equivalents
+for much of the work. Only evidence from the remote repository can establish
+the second and third.
+<!-- Source: .github/workflows/pr.yml -->
+<!-- Source: .github/workflows/ci.yml -->
+<!-- Source: CONTRIBUTING.md -->
 
-A GitHub workflow whose branch filter matches nothing does not fail and
-does not report a skipped run. It produces no check at all, which on a
-pull request is visually indistinguishable from a check that passed. The
-four affected workflows were:
+## Current trigger surface
 
-| Workflow | What it gates |
-|---|---|
-| `ci.yml` | full CI across the three-OS matrix |
-| `pr.yml` | the PR validation matrix |
-| `codeql.yml` | CodeQL static analysis (PR and push paths) |
-| `dependency-review.yml` | dependency diff review on pull requests |
+The integration target named by every branch-filtered workflow is `develop`.
+The four workflows relevant to pull-request observation are:
 
-Thirty-eight merges landed on `develop` with none of the four running on
-any of them. Two defects reached `develop` through the gap, and one was
-itself a recurrence of an earlier finding that the gate would have caught
-the second time.
-
-`codeql.yml`'s weekly `schedule` trigger carries no branch filter and did
-continue to run. `full-gate.yml` and `security-audit.yml` (cron) and
-`release.yml` (tag push) were never affected.
-
-## What was changed
-
-Six `branches:` entries across the four files now name `develop`. No
-`uses:`, `permissions:`, `concurrency:`, job, or step line changed, and no
-npm script or dependency was added.
-
-The durable half is
-[`tests/lint/workflow-trigger-branches.test.ts`](../../tests/lint/workflow-trigger-branches.test.ts).
-It resolves every branch entry in every workflow against the repository's
-refs and fails the build when one resolves to nothing, and it fails when a
-workflow is reachable by no event that can fire on its own. It runs inside
-`npm run test:host`, so it is already in `npm run test`, `verify:all`, and
-`ci:fast` — there is no separate command to remember.
-
-The gate asserts a weaker property than GitHub's filter evaluation: that
-every branch a trigger *names* exists. That is deliberate. It cannot admit
-a name that exists nowhere in the repository, which is the failure mode
-above, and it cannot produce a false alarm for a name that does exist.
-
-## Observation procedure — outstanding
-
-The fix cannot be confirmed from the tree. A workflow trigger is only
-observed working when GitHub runs it, which requires the retarget to reach
-the remote. That is an outward action outside the authority of the cycle
-that made the change, so the conclusions below are recorded as
-**outstanding by decision** rather than left implied or filled in on
-assumption.
-
-Once the retarget is on the remote `develop`, an operator should confirm
-each cell and fill in the run identifiers:
-
-| Workflow | Event to exercise | Run observed | Conclusion |
+| Workflow | Pull-request trigger | Other trigger | Reported job names |
 |---|---|---|---|
-| `ci.yml` | push to `develop` | _(unfilled)_ | _(unfilled)_ |
-| `ci.yml` | pull request targeting `develop` | _(unfilled)_ | _(unfilled)_ |
-| `pr.yml` | pull request targeting `develop` | _(unfilled)_ | _(unfilled)_ |
-| `codeql.yml` | push to `develop` | _(unfilled)_ | _(unfilled)_ |
-| `codeql.yml` | pull request targeting `develop` | _(unfilled)_ | _(unfilled)_ |
-| `dependency-review.yml` | pull request targeting `develop` | _(unfilled)_ | _(unfilled)_ |
+| `PR` | opened, synchronized, reopened, or made ready for review against `develop` | none | `validate (ubuntu-latest)`, `validate (macos-latest)`, `validate (windows-latest)` |
+| `CI` | pull request against `develop` | push to `develop`; manual dispatch | `full CI (<os>)` on three operating systems and `cross-major (node 22 floor, ubuntu)` |
+| `CodeQL` | pull request against `develop` | push to `develop`; weekly schedule; manual dispatch | `analyze (javascript-typescript)` |
+| `Dependency review` | opened, synchronized, reopened, or made ready for review against `develop` | none | `dependency-review` |
 
-Two events, four workflows, six trigger paths — the same six entries the
-gate reported before the retarget.
+<!-- Source: .github/workflows/pr.yml -->
+<!-- Source: .github/workflows/ci.yml -->
+<!-- Source: .github/workflows/codeql.yml -->
+<!-- Source: .github/workflows/dependency-review.yml -->
 
-Expect the first real runs to surface failures. Four gates that have not
-executed for 38 merges are measuring a tree they have never seen. A
-failure there is a **new finding**, not a regression of this change: the
-gate reporting is the outcome being sought.
+The `PR` matrix installs both dependency trees without lifecycle scripts, then
+runs the test typecheck, `verify:all`, deterministic evaluations, the build,
+Linux-only visual regression, and VSIX package smoke. The `CI` matrix adds
+Linux coverage, E2E, performance, and extension-host integration; it also has a
+separate Ubuntu/Node 22 job that runs the test typecheck and `verify:all`.
+<!-- Source: .github/workflows/pr.yml -->
+<!-- Source: .github/workflows/ci.yml -->
 
-## One consequence worth knowing before the first run
+Dependency review evaluates pull-request dependency changes at a `high`
+severity floor and comments on failure. CodeQL runs the
+`javascript-typescript` language pack with `security-extended` queries. Its
+workflow records that findings surface for triage and do not fail the build by
+default, so a completed CodeQL job is not evidence that every finding was
+resolved.
+<!-- Source: .github/workflows/dependency-review.yml -->
+<!-- Source: .github/workflows/codeql.yml -->
 
-The four workflows were inert. They are now live, and three of them fire on
-`pull_request` — including pull requests from forks. That was always their
-declared intent, and nothing about the permission posture changed: all four
-keep `permissions: contents: read`, none uses `pull_request_target`, and none
-references a secret in its trigger block. But "these workflows have never
-executed against an outside contribution" is true today and stops being true
-with the first fork PR. Review the first one rather than merging on a green
-check alone.
+`Full gate` and `Security audit` are scheduled/manual workflows, not
+pull-request triggers. The release workflow is tag/manual driven. Their absence
+from a pull request is therefore not a missing merge-trigger observation.
+<!-- Source: .github/workflows/full-gate.yml -->
+<!-- Source: .github/workflows/security-audit.yml -->
+<!-- Source: .github/workflows/release.yml -->
 
-## Follow-up that does not live in this tree
+## Verify the checked-in definitions locally
 
-Retargeting makes the four workflows *run*. It does not make them
-*required*. Branch protection and required-status-check configuration are
-repository settings, not file contents, and no test in this repository can
-assert them. An operator must:
+Run the focused workflow-trigger test first:
 
-1. Confirm branch protection on `develop` (there is no `main` to protect).
-2. Add the four workflows' check names to the required set, so a red check
-   blocks the merge rather than merely reporting.
-3. Re-check the required set after any workflow rename — a required check
-   whose name no longer exists blocks every merge, the opposite failure of
-   the one recorded here.
+```bash
+npx vitest run tests/lint/workflow-trigger-branches.test.ts
+```
 
-Until step 2 is done, the gates report but do not block, and the honest
-description of the state is "observed, not enforced".
+It enumerates every workflow file, expects the exact current number of branch
+filters per file, resolves positive `branches:` entries against local Git refs,
+and requires every workflow to have an event that can fire without manual
+dispatch. It deliberately does not interpret tag filters, `branches-ignore`,
+or remote branch-protection settings.
+<!-- Source: tests/lint/workflow-trigger-branches.test.ts -->
 
-## Related
+If Git metadata or workflow files are unavailable, the ref-resolution cases
+skip with a stated reason. Treat that outcome as “not observed,” not as a green
+trigger check. In a normal checkout, failures name the workflow, trigger,
+branch or unmatched pattern, and source line.
+<!-- Source: tests/lint/workflow-trigger-branches.test.ts -->
 
-- [CONTRIBUTING.md](../../CONTRIBUTING.md) — the branch model and the
-  recorded Option B alternative.
-- [workflow-runs.md](workflow-runs.md) — reading workflow run state.
+For a review-sized local preflight, run:
+
+```bash
+npm run ci:fast
+```
+
+The manifest currently composes this from test typechecking, lint,
+`verify:all`, evaluations, visual and performance tests, a host build, and
+package smoke. A unit guard compares the recursive `ci` and `ci:fast` script
+graphs so a normal CI gate cannot silently become unreachable from the local
+preflight without an explicit tested exclusion.
+<!-- Source: package.json -->
+<!-- Source: tests/unit/build/preflight-coverage.test.ts -->
+
+For the broad local path, run both commands below. `verify:all` includes policy,
+type, lint, host-test, and covered-webview checks; `ci` exercises the broader
+build, test, package, E2E, performance, and extension-host path. The two scripts
+are composed differently, so neither command is a substitute for the other on
+a release-sized change.
+
+```bash
+npm run verify:all
+npm run ci
+```
+
+<!-- Source: package.json -->
+<!-- Source: tests/integration/ci-gate.host.test.ts -->
+
+Local success establishes only that the checked-out code passes those commands.
+It does not demonstrate that GitHub received an event, selected the intended
+workflow revision, ran every matrix leg, or enforced any result at merge time.
+<!-- Source: .github/workflows/pr.yml -->
+<!-- Source: .github/workflows/ci.yml -->
+<!-- Source: CONTRIBUTING.md -->
+
+## Observe one pull request
+
+Use a pull request whose base branch is `develop` and record its head commit
+SHA. After an `opened`, `synchronize`, `reopened`, or `ready_for_review` event,
+inspect the remote run list for that exact SHA and record, for each workflow:
+
+| Evidence to record | Acceptance condition |
+|---|---|
+| `PR` run URL or identifier | One run for the pull-request event; all three `validate` operating-system legs reached a terminal result. |
+| `CI` run URL or identifier | One pull-request run; all three `full CI` legs and the Node 22 `cross-major` leg reached a terminal result. |
+| `CodeQL` run URL or identifier | One pull-request run with the `javascript-typescript` analysis leg accounted for. |
+| `Dependency review` run URL or identifier | One pull-request run with the `dependency-review` job accounted for. |
+
+<!-- Source: .github/workflows/pr.yml -->
+<!-- Source: .github/workflows/ci.yml -->
+<!-- Source: .github/workflows/codeql.yml -->
+<!-- Source: .github/workflows/dependency-review.yml -->
+
+Match by commit SHA and event, not merely by workflow display name. Both `CI`
+and `CodeQL` also run on pushes to `develop`, and CodeQL has scheduled/manual
+runs; a nearby successful run from another event does not observe the pull
+request path.
+<!-- Source: .github/workflows/ci.yml -->
+<!-- Source: .github/workflows/codeql.yml -->
+
+The workflows cancel superseded pull-request work through their concurrency
+settings. A canceled older SHA is expected after a new synchronization, but it
+does not qualify the new head SHA; wait for and record the replacement runs.
+<!-- Source: .github/workflows/pr.yml -->
+<!-- Source: .github/workflows/ci.yml -->
+<!-- Source: .github/workflows/codeql.yml -->
+<!-- Source: .github/workflows/dependency-review.yml -->
+
+After merge, separately observe the merge commit on `develop`. `CI` and
+`CodeQL` declare push triggers for that branch; `PR` and `Dependency review` do
+not. Record the push-run identifiers and the merge SHA rather than carrying the
+pull-request run forward as push evidence.
+<!-- Source: .github/workflows/ci.yml -->
+<!-- Source: .github/workflows/codeql.yml -->
+<!-- Source: .github/workflows/pr.yml -->
+<!-- Source: .github/workflows/dependency-review.yml -->
+
+## Confirm enforcement separately
+
+The repository contains workflow definitions but no checked-in
+branch-protection or repository-ruleset file. Consequently, a green workflow
+run proves that a check reported; it does not prove that the remote blocks a
+merge when that check is missing, pending, canceled, or failed.
+<!-- Source: CONTRIBUTING.md -->
+
+Inspect the remote protection or ruleset applying to `develop` and record:
+
+- the rule or ruleset identifier;
+- whether pull requests and status checks are required;
+- the exact required check contexts;
+- whether the rule applies to administrators or has bypass actors;
+- the time and commit SHA against which the observation was made.
+
+Compare the required contexts with the actual job/check names from the current
+workflow runs. Workflow and job renames can change those contexts even when the
+underlying commands are unchanged.
+<!-- Source: .github/workflows/pr.yml -->
+<!-- Source: .github/workflows/ci.yml -->
+<!-- Source: .github/workflows/codeql.yml -->
+<!-- Source: .github/workflows/dependency-review.yml -->
+
+Use precise conclusions in the observation record:
+
+- **declared** — the checked-in trigger names `develop`;
+- **observed** — a remote run for the intended event and SHA is recorded;
+- **passing** — every expected job reached a successful result;
+- **enforced** — a remote protection/ruleset observation proves the check is
+  required for merge.
+
+Do not promote one conclusion into another without its corresponding evidence.
+<!-- Source: tests/lint/workflow-trigger-branches.test.ts -->
+<!-- Source: CONTRIBUTING.md -->

@@ -1,191 +1,143 @@
-# Release Process
+# Releasing Schegent
 
-This document captures the release-gate guardrails for the Schegent VS
-Code extension. The release process is intentionally manual — the gate
-is automation-verifiable but a human owns the cut.
+Schegent uses a hybrid release process. A maintainer chooses the version, commits it, and pushes an exact matching `v<version>` tag. GitHub Actions then verifies and packages the extension, generates integrity material, attests the build, and creates the GitHub Release. No checked-in job publishes to the Visual Studio Marketplace.
+<!-- Source: .github/workflows/release.yml -->
+<!-- Source: package.json -->
 
-Feature 056 (principal architecture hardening, Track 6) introduced the
-two-tier CI shape this document codifies.
+## Release boundary
 
-## CI shape
+The durable release workflow runs on tags matching `v*`; it can also be started manually with `workflow_dispatch`. A tag run creates a GitHub Release. A manual dispatch runs the build and uploads a 90-day workflow artifact but skips tag/version parity and skips the GitHub Release because its ref is not a tag.
+<!-- Source: .github/workflows/release.yml -->
 
-Three validation workflows live under [.github/workflows/](.github/workflows/):
+The tag must be exactly `v` followed by the root `package.json` version. The workflow removes the leading `v` and compares the rest byte-for-byte; a mismatch fails before dependency installation.
+<!-- Source: .github/workflows/release.yml -->
 
-| Workflow | Trigger | Jobs | Purpose |
-|---|---|---|---|
-| [`pr.yml`](.github/workflows/pr.yml) | `pull_request` | host/webview/test-source typechecks, `lint`, unit/eval tests, production build, Linux visual matrix, exact package smoke | Fast PR gate. Required on every PR. |
-| [`ci.yml`](.github/workflows/ci.yml) | `push`, `pull_request`, or manual dispatch | full cross-platform validation; Linux additionally runs coverage, visual regression, and isolated integration | Main-branch and PR redundancy for the release-critical path. |
-| [`full-gate.yml`](.github/workflows/full-gate.yml) | `schedule: '0 6 * * 1'` (Mondays 06:00 UTC) + `workflow_dispatch` | ten jobs: `typecheck-host`, `typecheck-webview`, `typecheck-tests`, `lint`, `test`, `build`, `visual`, `e2e`, `integration`, `evidence-soak` | Heavier deterministic E2E, isolated extension-host integration, screenshot regression, and high-volume evidence coverage. Required green before cutting a release. |
+## 1. Choose and record the version
 
-The PR gate is fast enough to run inline with normal code review. The
-full gate is the release-readiness signal; the weekly cron exists so a
-release cut on a quiet Monday is never blocked waiting for a manual
-dispatch.
+Keep these four files aligned:
 
-## Pre-release checklist
+- `package.json`
+- `package-lock.json`
+- `webview-ui/package.json`
+- `webview-ui/package-lock.json`
 
-Before tagging a release, verify each item:
-
-0. **Local consolidated gate.** Run `npm run ci:fast`. It runs
-   `npm run verify:all` — contract and documentation freshness, version parity,
-   secret/license/action-pin checks, typechecks, lint, and host/webview tests —
-   and adds the eval and visual suites, the host build, and
-   `npm run package:smoke`. Reach for the whole chain rather than `verify:all`
-   alone: `verify:all` does not run the packaging policy, so it is not the chain
-   to release on.
-
-1. **Full gate ≤ 7 days old.** The most recent successful `full-gate.yml`
-   run against `develop` (or the release branch) must be within seven days.
-   If older, dispatch a fresh run:
-   ```bash
-   gh workflow run full-gate.yml --ref develop
-   gh run watch
-   ```
-2. **All ten full-gate jobs green** on the run you are releasing from.
-   Spot-check with:
-   ```bash
-   gh run list --workflow=full-gate.yml --branch=develop --limit=3
-   ```
-3. **`npm audit` cadence.** Run at the repo root and the webview tree:
-   ```bash
-   npm audit --audit-level=low
-   ( cd webview-ui && npm audit --audit-level=low )
-   ```
-   Zero advisories is the target. Advisories with no compatible fix
-   available are acceptable IF each is documented under
-   [Known advisories](#known-advisories) below with the rationale and a
-   tracking link.
-4. **Never `npm audit fix --force`.** The `--force` flag is allowed to
-   downgrade dependencies across major versions or pull in incompatible
-   patches; either consequence can break the build in ways that won't
-   surface until runtime. The only acceptable remediations are:
-   - `npm audit fix` (compatibility-safe minor/patch only), OR
-   - hand-edit `package.json` to bump a single dependency to a known-good
-     version and re-run `npm ci`, OR
-   - accept the advisory and document it under
-     [Known advisories](#known-advisories).
-5. **Conventional-commit history.** The release-tag commit range should
-   contain only `feat`, `fix`, `refactor`, `perf`, `docs`, `test`,
-   `build`, `ci`, `chore`, `style`, or `revert`. No drive-by reformatting
-   commits.
-6. **Spec / docs / code in sync.** See the workspace `CLAUDE.md` PR
-   expectations — both Master Workspace and Execution Repository hashes
-   must be recorded and match.
-7. **Exact package policy green.** `npm run package:smoke` must report exactly
-   the audited entry allowlist within its compressed and uncompressed size
-   budgets. The command packages into a private temporary directory and removes
-   the artifact after inspection; an unexpected or missing entry fails the
-   command.
-
-## Dependency hygiene
-
-- **Dev/build dependencies** may be bumped on patch/minor cadence
-  between releases. Each bump is a separate commit (`build(deps): bump
-  X from Y to Z`); the diff must fit in a single small PR.
-- **Production dependencies** require justification: what changed in
-  the upstream changelog, why we want it, what it costs.
-- The Dependabot configuration at
-  [`.github/dependabot.yml`](.github/dependabot.yml) opens grouped PRs
-  on a weekly cadence; treat those as the default mechanism.
-
-## Known advisories
-
-Advisories with no compatible fix available, with rationale:
-
-| Advisory | Affected package | Severity | Rationale | Tracking |
-|---|---|---|---|---|
-| _(none recorded as of 2026-08-01)_ | | | | |
-
-Add a row here when an `npm audit` advisory cannot be resolved without
-a `--force` or a major-version dependency bump. The expectation is that
-this table stays short; if it grows past three entries, schedule a
-dependency-refresh sprint.
-
-## Cutting a release
-
-1. Verify the pre-release checklist (above).
-2. Bump the version in `package.json` and `webview-ui/package.json`
-   (semver matching the change set).
-3. Append a release-notes entry to
-   [`docs/operations/release-notes.md`](docs/operations/release-notes.md)
-   summarizing operator-visible changes.
-4. Commit the bump, then tag the release:
-   `git tag -a vX.Y.Z -m "Release vX.Y.Z"`. The release job compares the tag to
-   `package.json`'s `version` before it installs anything and refuses a
-   mismatch, naming both values — so step 2 has to be committed on the commit
-   the tag points at, not after it.
-5. Push the tag: `git push origin vX.Y.Z`.
-6. The marketplace publish step is manual. Download the artifacts from the
-   tag's GitHub Release, which the workflow publishes and which does not
-   expire; the `schegent-release-artifacts` bundle on the workflow run holds the
-   same files and is kept for 90 days. Then, in order: verify provenance with
-   the command under [Artifact provenance](#artifact-provenance), verify the
-   bundle against `SHA256SUMS`, and publish the `.vsix` with
-   `vsce publish --packagePath <file>`. There is no automated publish job.
-
-## Artifact provenance
-
-A distributable `.vsix` comes from a tagged `release.yml` run and from
-nowhere else. Local packaging exists only to check the archive: `npm run
-package:smoke` writes into a temporary directory and deletes it, and a
-`.vsix` sitting in the working tree is a leftover, not a candidate — it is
-gitignored, it carries no record of the commit or the toolchain that
-produced it, and nothing distinguishes it from one built with uncommitted
-changes. Delete it rather than shipping it.
-
-That is now checkable rather than conventional. A tagged run attaches a
-GitHub build-provenance attestation to the `.vsix` and to
-`schegent-sbom.cdx.json`, binding each file's digest to this repository,
-this workflow file, and the commit it was built from. Verify a download
-before installing or publishing it:
+The documentation gate compares the two manifest versions, and both lockfiles record their package tree's version. One non-tagging way to update each manifest and lockfile pair is:
 
 ```bash
-gh attestation verify schegent-<version>.vsix \
-  --repo lehoa1806/schegent \
-  --signer-workflow lehoa1806/schegent/.github/workflows/release.yml
+npm version <version> --no-git-tag-version
+npm --prefix webview-ui version <version> --no-git-tag-version
 ```
 
-Read the result this way. A success prints a line per verified attestation
-naming the predicate type (`https://slsa.dev/provenance/v1`) and the signing
-workflow. The `--signer-workflow` constraint is what makes that line mean
-anything: without it, an attestation from any workflow in any repository
-would satisfy the check. The commit the artifact was built from lives in
-the attestation's build definition, which `--format json` prints in full if
-you need to match it against the tag.
+Replace `<version>` with the exact version string without a leading `v`. Review all four resulting diffs. The release workflow itself checks only the root manifest against the tag, so local review must catch lockfile or webview drift before the tag exists.
+<!-- Source: package.json -->
+<!-- Source: package-lock.json -->
+<!-- Source: webview-ui/package.json -->
+<!-- Source: webview-ui/package-lock.json -->
+<!-- Source: scripts/check-docs.mjs -->
+<!-- Source: .github/workflows/release.yml -->
 
-What the command needs: the `gh` CLI authenticated as any GitHub account
-(`gh auth login`), because attestation lookup is an API call. No repository
-write access, and no local checkout. It also needs a `gh` build that has the
-`attestation` subcommand, which arrived in 2.49.0 — confirm with
-`gh attestation verify --help` before reading a failure as a verdict on the
-artifact. A missing subcommand or a missing login is not a failed provenance
-check.
+Update [operator-visible release notes](docs/operations/release-notes.md) without inferring changes from a version number. The release workflow links that path from every generated GitHub Release body but does not generate the document.
+<!-- Source: .github/workflows/release.yml -->
 
-**A locally built `.vsix` is expected to fail this command, and that is the
-point.** `npm run package` produces a file with no attestation, so
-verification reports that none was found. A local build is not a release: it
-is an archive you can inspect, never one you can attribute.
+Commit the version and release-note changes before creating the tag. The repository has no release-preparation script and no automated version bump.
+<!-- Source: package.json -->
+<!-- Source: .github/workflows/release.yml -->
 
-`SHA256SUMS` is still generated and still worth checking — it catches a
-corrupted download — but it is produced and uploaded by the same unsigned job
-as the artifact, so on its own it establishes transfer integrity rather than
-origin. It is deliberately not an attestation subject: its content is the
-digests of the two files that *are* attested, so verifying those directly is
-strictly stronger than verifying a manifest of them.
+## 2. Run the pre-tag gates
 
-The one thing this cannot establish from a working tree is itself. The real
-tagged run, the attestation it produces, and the verification output are
-recorded as outstanding in
-[docs/operations/release-provenance-observation.md](docs/operations/release-provenance-observation.md),
-together with the commands that close them.
+Run both aggregate local gates from the repository root:
 
-## Rollback
+```bash
+npm run verify:all
+npm run ci
+```
 
-A release tag is a marker, not a deployment. The VS Code marketplace
-serves whatever version the operator's extension host fetches; a
-rollback is a forward-fix: bump the version, fix the regression, cut a
-new release. Do not retag.
+`verify:all` covers contract and documentation freshness, secrets, action pins, licenses, types, lint, host tests, and covered webview tests. `ci` adds the broader build, visual, evaluation, performance, E2E, package-smoke, and Extension Development Host paths but does not call `verify:all`.
+<!-- Source: package.json -->
 
-If a regression is severe enough to block all operators, post an
-advisory under [`docs/operations/`](docs/operations/) and the
-extension's GitHub Discussions or Issues thread.
+The checked-in **Full gate** workflow runs weekly and on manual dispatch; its header records a green run as required before cutting a release. It separately exercises host/webview/test typechecking, host lint, tests/evals, build/package smoke, visual regression, E2E, Extension Development Host integration, and a sustained 20,000-record evidence soak. The release workflow does not query that workflow's status, so confirming it is a maintainer action.
+<!-- Source: .github/workflows/full-gate.yml -->
+<!-- Source: .github/workflows/release.yml -->
+
+## 3. Optionally dry-run the release job
+
+Use the **Release package** workflow's manual-dispatch control on the commit you intend to tag. A dispatch performs the same dependency installation, `verify:all`, build, package smoke, Extension Development Host integration, VSIX packaging and policy check, SBOM/checksum generation, provenance attestation, and 90-day artifact upload. It deliberately creates no GitHub Release.
+<!-- Source: .github/workflows/release.yml -->
+
+The packaging policy requires exactly one VSIX, a closed entry allowlist, safe archive paths, at most 2 MiB compressed, and at most 5 MiB uncompressed. It includes the extension manifest, license, root README/RELEASE/SECURITY documents, branding assets, built host/webview files, and every file in `examples/`; `.vscodeignore` excludes source, tests, implementation docs, maps, and local state.
+<!-- Source: scripts/check-vsix-smoke.mjs -->
+<!-- Source: .vscodeignore -->
+
+The current workflow does not set `NODE_ENV=production`. Consequently `esbuild.config.mjs` takes its non-production branch for the host bundle; source maps are emitted by the build and then excluded from the VSIX. Do not describe the current tagged artifact as minified unless the workflow changes to set that environment value.
+<!-- Source: .github/workflows/release.yml -->
+<!-- Source: esbuild.config.mjs -->
+<!-- Source: .vscodeignore -->
+
+## 4. Create and push the release tag
+
+After the version commit is on the intended release branch, create an annotated tag and push that one tag:
+
+```bash
+git tag -a v<version> -m "v<version>"
+git push origin v<version>
+```
+
+Both occurrences of `<version>` must equal `package.json`'s version without the `v` prefix. Pushing the tag is the deployment trigger.
+<!-- Source: .github/workflows/release.yml -->
+
+The repository does not encode a signing requirement for Git tags. If maintainers require signed tags operationally, that policy exists outside the checked-in release automation.
+<!-- Source: .github/workflows/release.yml -->
+
+## 5. What the tag workflow does
+
+On Ubuntu with the Node version from `.nvmrc`, the job performs this sequence:
+
+1. Check out the tagged commit and verify tag/manifest parity.
+2. Run `npm ci --ignore-scripts` in the root and `webview-ui`.
+3. Run `npm run verify:all` and `npm run build`.
+4. Run `npm run package:smoke`.
+5. Run `xvfb-run -a npm run test:integration` against a real VS Code host.
+6. Run `npm run package` and require exactly one root-level `.vsix`.
+7. Re-run the archive policy against that exact released VSIX.
+8. Generate `schegent-sbom.cdx.json` with `npm sbom --sbom-format cyclonedx`.
+9. Generate `SHA256SUMS` over the VSIX and SBOM with `sha256sum`.
+10. Attest the VSIX and SBOM with GitHub OIDC build provenance.
+11. Upload the VSIX, SBOM, and checksums as `schegent-release-artifacts` for 90 days.
+12. Create a durable GitHub Release containing the same three files.
+
+All `v0.*` tags are marked as prereleases by the workflow. Other tags are not, even if their version string contains a prerelease suffix.
+<!-- Source: .github/workflows/release.yml -->
+
+## 6. Verify the published artifacts
+
+Download the VSIX, `schegent-sbom.cdx.json`, and `SHA256SUMS` from the GitHub Release. The generated release body provides this provenance-verification shape:
+
+```bash
+gh attestation verify <vsix-file> \
+  --repo <owner>/<repository> \
+  --signer-workflow <owner>/<repository>/.github/workflows/release.yml
+```
+
+Use the actual downloaded filename and repository identity. An independently built VSIX is expected to fail this workflow-identity verification. `SHA256SUMS` establishes transfer integrity for the VSIX and SBOM; provenance verification binds the attested subjects to this repository and workflow.
+<!-- Source: .github/workflows/release.yml -->
+
+Install or smoke-test the downloaded VSIX according to the consumer environment before announcing it. The workflow's automated integration test exercises the build before packaging; it does not reinstall the final released archive into a second VS Code host.
+<!-- Source: .github/workflows/release.yml -->
+<!-- Source: scripts/package-vsix-smoke.mjs -->
+
+## 7. Marketplace publication is manual and unspecified
+
+No workflow or npm script runs `vsce publish`, `ovsx publish`, or another Marketplace deployment command. No Marketplace token name or credential procedure is checked in. `npm run package` creates a VSIX only.
+
+Therefore the repository supports an automated, attested GitHub Release but only records that Marketplace publication is manual. A maintainer must use the externally governed publisher account and procedure; this document cannot supply an exact publish command or credential name from repository evidence.
+<!-- Source: .github/workflows/release.yml -->
+<!-- Source: package.json -->
+
+## Failure and rerun policy
+
+- A tag/version mismatch means the version bump was not committed before tagging. Do not publish the mismatched artifact.
+- The GitHub Release is created last, after verification, policy checks, checksums, and attestation. An earlier failure leaves no durable Release from this job.
+- If a GitHub Release already exists for the tag, the workflow fails instead of updating it. Do not silently retag. Cut a new version, or coordinate a deliberate release cleanup outside this workflow.
+- A manually dispatched artifact expires after 90 days; only a tag run creates the durable GitHub Release.
+
+<!-- Source: .github/workflows/release.yml -->

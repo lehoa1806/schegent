@@ -1,225 +1,102 @@
-# Backend Runners
+# Backend operations
 
-Schegent drives every phase invocation through a single abstraction:
-`BackendRunner` ([src/contracts/backend-runner.ts](../../src/contracts/backend-runner.ts)).
-The controller, audit pipeline, monitor, telemetry sampler, and live-activity
-projector are all backend-agnostic — they consume the `BackendRunner`
-interface only. A lazy `BackendRunnerRegistry` constructs adapters on first
-use and cancels every cached adapter during extension deactivation.
+Schegent supports three local CLI adapters. Claude is the default backend. Claude and Agy run with approval prompts disabled and therefore act without asking; Codex is the only adapter with a Schegent-selected sandbox mode.
 
-## Available backends
+<!-- Source: src/runner/backend-runner-factory.ts -->
+<!-- Source: package.json -->
 
-| `schegent.backend.runner` | Adapter | Permission posture | Notes |
-|---|---|---|---|
-| `claude` *(default)* | [src/runner/claude-cli.ts](../../src/runner/claude-cli.ts) | **None.** Spawned with `--dangerously-skip-permissions`, unconditionally — the CLI's own approval prompts are off. | Prompt-transport probing (`--prompt-file` → `--prompt-stdin` → `-p` fallback). Supports `-c` (continue) for context-preserving retries. |
-| `codex` | [src/runner/codex-cli.ts](../../src/runner/codex-cli.ts) | **OS-enforced filesystem bound.** `--sandbox workspace-write`: the workspace is writable, `.git` is read-only. A bound, not a safety guarantee — and a bound on writes, not on network egress, which Schegent neither configures nor verifies. | Spawns `codex exec --json --sandbox workspace-write`. Prompt is piped over stdin (never appears in argv). Model uses `--model`; effort uses `--config model_reasoning_effort=<level>`. Session continuation is not supported. |
-| `agy` | [src/runner/agy-cli.ts](../../src/runner/agy-cli.ts) | **None.** Spawned with `--dangerously-skip-permissions`, unconditionally. | Spawns the Agy CLI via `--output-format stream-json`. Uses `--conversation` for context-preserving retries. Maps `xhigh`/`max` effort levels down to `high` (with a log warning). |
+## Capability table
 
-**The only runner with a bound is not the default.** Choosing a backend is
-therefore a privilege decision, not a preference. The `.git` read-only property
-that makes `codex` the contained option is also why a phase declaring
-`sideEffects: git` is refused on it — so the contained runner is unavailable to
-exactly the phases that mutate the repository. The decision to run without
-prompts, and the condition that would reopen it, are recorded in
-[unprompted-agent-not-contained.md](../concepts/unprompted-agent-not-contained.md).
+| Runner | Executable setting | Invocation prefix | Permission posture | Continuation |
+|---|---|---|---|---|
+| `claude` *(default)* | `schegent.cli.path` (`claude`) | `--dangerously-skip-permissions [--resume <id> \| -c] -p [--model <model>] [--effort <effort>] --output-format stream-json --verbose [--debug-file <path>]` | CLI approval prompts are off; Schegent supplies no OS-enforced bound. | `--resume <id>` for a known session; `-c` only for continuation without an ID. <!-- Source: src/runner/claude-cli.ts --><!-- Source: src/config/cli-path-accessor.ts --> |
+| `codex` | `schegent.codex.path` (`codex`) | `exec --json --sandbox workspace-write` | OS-enforced `--sandbox workspace-write`; the workspace is writable and `.git` remains read-only. | Request continuation fields are ignored. <!-- Source: src/runner/codex-cli.ts --><!-- Source: src/config/cli-path-accessor.ts --> |
+| `agy` | `schegent.agy.path` (`agy`) | `--dangerously-skip-permissions [--conversation <id>] -p - [--model <model>] [--effort <effort>] --output-format stream-json` | CLI approval prompts are off; Schegent supplies no OS-enforced bound. | `--conversation <id>` when reuse/continuation has an ID; no flag-only fallback. <!-- Source: src/runner/agy-cli.ts --><!-- Source: src/config/cli-path-accessor.ts --> |
 
-## Supported CLI versions
+Model arguments are `--model <id>` for all three adapters. Claude and Agy use `--effort <level>`; Codex uses `--config model_reasoning_effort=<level>`. Agy rejects unsupported `xhigh` and `max` effort values before spawn.
 
-The blocking gate qualifies adapter argv, parsing, outcome precedence, session
-ownership, truncation, and safety invariants against deterministic fixtures.
-The installed CLI version is recorded separately so operators can compare a
-failure report with the latest qualified band.
+<!-- Source: src/runner/claude-cli.ts -->
+<!-- Source: src/runner/codex-cli.ts -->
+<!-- Source: src/runner/agy-cli.ts -->
 
-| Backend | Supported version band | Last qualified | Qualification baseline |
-|---|---|---|---|
-| Claude Code | `>=2.1.220 <2.2.0` | 2026-08-01 | Installed `2.1.220`; adapter/unit/eval/full-CI gate |
-| Codex CLI | `>=0.142.5 <0.143.0` | 2026-08-01 | Installed `0.142.5`; adapter/unit/eval/full-CI gate |
-| Agy CLI | `>=1.1.9 <1.2.0` | 2026-08-01 | Installed `1.1.9`; adapter/unit/eval/full-CI gate |
+## Select and configure a runner
 
-Schegent does not currently reject an unqualified version at runtime. Versions
-outside these bands are best-effort: run `<cli> --version`, attach that output
-to any report, and complete the deterministic adapter/evaluation gate before
-expanding a supported band. Authenticated live-provider calls remain opt-in;
-they are never part of a pull-request gate and must use isolated credentials.
+Set `schegent.backend.runner` to `claude`, `codex`, or `agy`. The default is `claude`. A blank, missing, or non-string value silently selects that default; an unknown nonblank string selects the default and emits a warning. The runner choice is cached when the workspace-bound Extension Host activates, so reload that host after changing it. Binary paths are read dynamically, so changing `schegent.cli.path`, `schegent.codex.path`, or `schegent.agy.path` does not require a reload.
 
-Backend executable probes do not prove provider reachability. Cloud-backed
-phase execution may still require network access, valid credentials, quota,
-and working proxy/DNS/TLS configuration. Schegent is local-first rather than
-an offline-execution promise; see
-[Local-first does not mean offline execution](../concepts/local-first-not-offline.md)
-for the queue-only degraded-mode boundary and future capability-discovery
-requirements.
+<!-- Source: package.json -->
+<!-- Source: src/runner/backend-runner-factory.ts -->
+<!-- Source: src/config/cli-path-accessor.ts -->
+<!-- Source: src/extension.ts -->
 
-Switch backends from the VS Code settings UI (`Schegent: Backend: Runner`)
-or by editing `package.json` / `.vscode/settings.json`:
+There is no repository-declared supported-version band for any backend CLI and no runtime version rejection. Availability probing establishes only that the configured executable can complete `--help`; it is not compatibility certification.
 
-```json
-{
-  "schegent.backend.runner": "codex",
-  "schegent.codex.path": "/usr/local/bin/codex",
-  "schegent.agy.path": "/usr/local/bin/agy"
-}
-```
+<!-- Source: src/services/backend-capability-service.ts -->
+<!-- Source: package.json -->
 
-The global backend selection takes effect at the next extension activation;
-the three CLI path settings are read again for every probe and invocation.
-`schegent.backend.probeTimeoutSeconds` bounds availability and model-discovery
-commands to an integer from 1–30 seconds (default 5). Changing that setting or
-any backend path triggers a new background capability scan without blocking
-extension activation.
-The factory at
-[src/runner/backend-runner-factory.ts](../../src/runner/backend-runner-factory.ts)
-resolves unknown values to `'claude'` and logs a `WARN` (`backend-runner-factory:
-unknown schegent.backend.runner ...`) so a typo never breaks activation.
+## Environment forwarding
 
-## Per-phase runner selection and probing
+`schegent.cli.environmentMode` defaults to `allowlist`. In that mode, the process receives required path/home/temp/locale bootstrap variables plus the names in `schegent.cli.environmentAllowlist`; values are read from the extension-host environment at spawn time and are not stored in settings. `minimal` sends only Schegent-controlled variables. `inherit` preserves the ambient extension-host environment. The legacy `schegent.cli.inheritEnvironment: false` forces `minimal`.
 
-Since feature 074, runners can be selected dynamically **per-phase** using the `runner` field on a Phase definition — authored in the Pipeline Builder, or imported from YAML, and stored in the versioned catalog under `.schegent/catalog/`. Feature 098 retired the settings-based form this sentence used to describe: no configuration file holds phase definitions, and `schegent.phases` / `schegent.pipelines` were deleted with no replacement.
+<!-- Source: package.json -->
+<!-- Source: src/runner/spawn-env.ts -->
 
-Precedence for runner selection per phase:
+The effective environment policy is also cached during workspace-bound activation. Reload the Extension Host after changing `schegent.cli.environmentMode`, `schegent.cli.environmentAllowlist`, or `schegent.cli.inheritEnvironment`.
 
-1. Per-phase `runner` explicitly defined
-2. Global `schegent.backend.runner` setting
-3. Fallback to `'claude'`
+<!-- Source: src/extension.ts -->
 
-A phase that declares `sideEffects: git` is an intentional exception to
-inheritance: it is pinned to a Git-capable runner. Codex runs under
-`workspace-write`, which protects `.git` from modification, so such a phase
-must set `runner` explicitly to `claude` or `agy`. The Pipeline Builder
-disables Codex/Inherit for it, and the host rejects incompatible configuration
-or legacy run snapshots before invoking a CLI.
+Ordinary Phase invocations, probes, and pre-compaction calls receive an explicit environment policy. The credit watchdog currently supplies none, so `buildSpawnEnv` inherits the full extension-host environment for that internal `/status` call.
 
-The rule reads the **declaration**, never the id. Until feature 098 the host
-carried a list of five phase ids — `speckit-specify`, `specify-brainstorm`,
-`superpowers-implement`, `finalize`, `superpowers-review-close` — and inferred
-Git access from membership in it. That list is deleted with no replacement: the
-extension now ships no phases at all, so there is no id it could recognise, and
-a phase named `finalize` that declares nothing is an ordinary `workspace` phase.
-If a phase you import or author commits, tags, or otherwise writes `.git`, it
-must say `sideEffects: git` — naming it after one of the old five grants it
-nothing.
+<!-- Source: src/controller/session-compactor.ts -->
+<!-- Source: src/services/backend-capability-service.ts -->
+<!-- Source: src/watchdog/credit-watchdog.ts -->
+<!-- Source: src/runner/spawn-env.ts -->
 
-When a run starts, every inherited runner choice is resolved and persisted in
-the immutable pipeline snapshot, together with the run's effective global
-backend. Changing the global backend later affects new runs only. Partially
-migrated snapshots use their persisted run-level backend; records old enough to
-lack both phase and run-level runner data conservatively use Claude.
+## Availability and model discovery
 
-A session context reset occurs across runner transitions (e.g., if Phase 1
-uses `claude` and Phase 2 uses `agy`, the conversation history is not shared
-across the boundary). Legacy session records without an owning runner kind
-fail closed and are not resumed.
+Every availability probe runs the dynamically resolved executable with `--help`, `shell: false`, the canonical workspace root as `cwd`, hidden Windows process mode, a 64 KiB retained-output cap, and a normalized 1–30-second timeout that defaults to 5 seconds. Timeout cleanup sends TERM and escalates to KILL after 2 seconds.
 
-Before the first phase, Schegent probes every effective backend kind used by
-the pipeline with that backend's current CLI path. A failed
-probe terminates the run, emits `runner-probe-failed`, updates queue/history
-state, and surfaces the blocking error to the operator.
+<!-- Source: src/services/backend-capability-service.ts -->
+<!-- Source: package.json -->
 
-The host-only `BackendCapabilityService` owns these probes. It does not
-construct invocation runners, preserving lazy runner creation. Every probe uses
-`shell: false`, the same cwd/environment policy as phase invocations, a 64 KiB
-capture cap, and TERM→KILL timeout cleanup. Overlapping refreshes use generation
-tokens, so a late older scan cannot replace a newer result.
+Claude and Codex report no discovered models because their adapters expose no listing command. Agy additionally runs `models` and parses its bounded stdout. The operator's `schegent.models` catalog is separate configuration, not probe output.
 
-The sidebar snapshot projects live `availableBackends` and per-backend
-`availableModels`. Unavailable backends always have an empty model list. Agy
-models come from bounded `agy models` output, preserving first-seen CLI order,
-deduplicating entries, rejecting identifiers over 128 characters, and limiting
-the result to 200 models. Claude and Codex use code-resident fallback registries
-because their qualified CLI surfaces do not expose an equivalent model-list
-command.
+<!-- Source: src/services/backend-capability-service.ts -->
+<!-- Source: package.json -->
 
-## Operator Ping
+Probe failure causes exposed to the host are `not-found`, `not-executable`, `non-zero-exit`, `timed-out`, and `unknown`. Configured paths, stderr, environment values, and raw errors do not enter the webview result.
 
-The Settings view includes a **Backend Health** section with one Ping action
-for Claude, Codex, and Agy. Ping is a local executable health check; it does not
-prove provider authentication, quota, or network reachability. An active
-workspace is required because each attempt is written to that workspace's
-canonical structured audit log.
+<!-- Source: src/services/backend-capability-service.ts -->
 
-Only one Ping can run in an extension host at a time. Its timeout uses
-`schegent.backend.probeTimeoutSeconds` (1–30 seconds, default 5). Results expose
-only a generic status, timing/latency, and a numeric exit code when applicable.
-Failure causes are `not-found`, `not-executable`, `non-zero-exit`, `timed-out`,
-or `unknown`; configured paths, environment values, stdout/stderr, and stack
-traces are never returned to the webview or written to the `backend-ping`
-audit payload.
+## Contract every adapter must honor
 
-## Contract every backend MUST honor
+1. One `invoke()` represents one non-interactive subprocess and resolves when it exits or is terminated.
+2. The prompt travels over stdin; it is not appended to argv.
+3. `shell: false` is mandatory, with `cwd` set to the workspace root and an explicitly built environment for ordinary Phase execution.
+4. Stdout and stderr use bounded `ZippedStreamBuffer` instances with observable truncation.
+5. The timeout is idle-based: output resets it unless sink backpressure has paused the stream.
+6. Cancellation observes the request's abort signal. Timeout or cancellation sends SIGTERM and escalates to SIGKILL after 2 seconds.
+7. Monitor events identify the Run and report start, chunks, and exit. Hook errors do not control the child.
+8. Retry and rate-limit policy remain in the controller; adapters return raw invocation outcomes.
+9. Adapters do not own operator-visible sanitization or structured audit writes; those occur at the Phase runner/logger boundary.
 
-A backend adapter MUST satisfy every clause in the
-[BackendRunner contract](../../src/contracts/backend-runner.ts). The
-controller assumes these invariants and will *not* tolerate divergence.
+<!-- Source: src/contracts/backend-runner.ts -->
+<!-- Source: src/runner/process-lifecycle-runner.ts -->
+<!-- Source: src/runner/zipped-stream-buffer.ts -->
+<!-- Source: src/controller/phase-runner.ts -->
 
-1. **Single-shot, non-interactive.** Each `invoke()` spawns the backend
-   once, waits for termination, and resolves with a single
-   `RawInvocationOutput`. No long-running daemons, no REPLs, no
-   conversational state held outside the runner.
-2. **No `shell: true`.** Every adapter MUST refuse `shell: true` in its
-   `safeSpawn` guard. Shell expansion of a prompt body is a remote-code
-   execution surface. The grep regression in `tests/lint/` enforces this
-   for the existing adapters; new adapters MUST mirror the pattern.
-3. **Output cap with truncation observability.** Stdout and stderr are
-   each capped at the runner's buffer limit (currently 64 MiB).
-   `stdoutTruncated` / `stderrTruncated` MUST flip `true` the first time
-   the cumulative byte counter exceeds the cap and stay sticky for the
-   remainder of the invocation (feature 042).
-4. **Timeout discipline.** When `request.timeoutMs` elapses, the runner
-   MUST terminate the subprocess via SIGTERM, escalate to SIGKILL after
-   `SIGKILL_DELAY_MS` (2s today), and set `timedOut: true` on the result.
-5. **Cancellation discipline.** When `request.cancellationSignal` fires,
-   the runner MUST terminate the subprocess the same way and set
-   `killed: true`. The signal is observed both at registration (in case it
-   is already aborted) and via `addEventListener('abort', ...)`.
-6. **Monitor sidecar.** The runner MUST emit `started` (with `pid`),
-   `stdout-chunk` / `stderr-chunk` (one event per chunk), and `exited`
-   (with `exitCode`, `signal`, `killed`, `timedOut`) to the
-   `MonitorSidecarHook`. Hook errors MUST NOT propagate into runner
-   control flow.
-7. **No retry policy.** Retry, backoff, and rate-limit handling all live
-   in the controller. The runner reports raw termination outcomes only.
-8. **No sanitization, no audit writes.** The runner reports raw bytes.
-   Sanitization happens at the
-   [SanitizedLogger](../../src/lib/logger.ts) boundary in
-   [PhaseRunner](../../src/controller/phase-runner.ts);
-   audit writes happen via
-   [AuditLogWriter](../../src/audit/audit-log-writer.ts). `SECRET_PATTERNS`
-   stays the single source of truth (CLAUDE.md hard rule).
-9. **Cleanup is best-effort.** Temp files (e.g., prompt files) MUST be
-   removed in a `finally` block, but failures MUST NOT throw — the OS
-   reaps `os.tmpdir()` eventually.
+## `sideEffects` and runner eligibility
 
-## Adding another backend
+The Phase `sideEffects` declaration does not restrict a child process. It drives the mutation plan, consent, and rollback checkpoint. A Phase declaring `sideEffects: git` is refused on Codex and must use a Git-capable runner because Codex's workspace-write sandbox keeps `.git` read-only.
 
-1. Implement `BackendRunner` in `src/runner/<your>-cli.ts`. Mirror the
-   Claude or Codex adapter structure exactly (`safeSpawn` guard, byte
-   accounting, terminate helper, monitor hook emission).
-2. Add unit tests in `tests/unit/runner/<your>-cli.test.ts` covering at
-   minimum: argv shape, prompt transport, stdout/stderr capture,
-   truncation flag, timeout, cancellation, monitor events, and the
-   `cancelActive()` toggle.
-3. Extend the `BackendRunnerKind` union and `SUPPORTED_BACKENDS` tuple in
-   [src/runner/backend-runner-factory.ts](../../src/runner/backend-runner-factory.ts),
-   then add a `case` to `createBackendRunner`.
-4. Add the new value to the `enum` of `schegent.backend.runner` in
-   `package.json`. Update this doc.
-5. Audit against [docs/security/threat-model.md](../security/threat-model.md):
-   any new backend MUST honor the headless / append-only / sanitization
-   invariants.
-6. Extend per-phase validation and the Pipeline Builder runner enum, then run
-   `npm run ci`.
+<!-- Source: src/services/mutation-plan.ts -->
+<!-- Source: src/services/run-driver.ts -->
+<!-- Source: src/config/phase-runner-policy.ts -->
 
-## Diagnostics
+## Failure diagnostics
 
-When a phase fails on a non-default backend, capture:
+Use the Phase lifecycle audit fields (`exitCode`, `timedOut`, `killed`, and stream truncation metadata), then inspect the sanitized runtime log. Raw transcripts are local and unredacted. Claude alone currently writes adapter-specific verbose diagnostic artifacts when verbose logging is enabled.
 
-- `schegent.backend.runner` value from the workspace settings JSON
-- The `phase-end` audit entry's `exitCode`, `stdoutTruncated`,
-  `stderrTruncated`, `timedOut`, `killed` fields
-- The runtime log (`<workspaceRoot>/.schegent/syslog` by default) — every
-  runner write is structured + sanitized
-- The verbose diagnostic sink under `<workspaceRoot>/.schegent/sessions/<runId>/diagnostics/...`
-  if `schegent.logging.verbose === true` (Claude adapter only today)
-- For Codex specifically: the adapter does not honor
-  `request.verboseDiagnostics`. The plan to add Codex equivalents is
-  tracked in the next architecture refactoring pass.
+<!-- Source: src/contracts/audit-events.ts -->
+<!-- Source: src/audit/raw-transcript-writer.ts -->
+<!-- Source: src/audit/verbose-diagnostic-writer.ts -->
+<!-- Source: src/runner/claude-cli.ts -->

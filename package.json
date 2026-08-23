@@ -275,7 +275,7 @@
           "type": "boolean",
           "default": false,
           "scope": "resource",
-          "markdownDescription": "When enabled, every Claude CLI invocation is spawned with `--debug-file`, `--output-format stream-json`, and `--verbose` flags. CLI streams are captured under `<workspaceRoot>/.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/` (`debug.json`, `stream.jsonl`, `verbose.log`). Diagnostic files are **unredacted** and gitignored. Toggle off to return to standard headless mode. Toggling mid-run applies to the next phase invocation only \u2014 prior invocations are not re-captured. Setting changes are read at every phase invocation, so no extension reload is required."
+          "markdownDescription": "When enabled, each Claude CLI invocation additionally uses `--debug-file` and captures unredacted diagnostics under `<workspaceRoot>/.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/` (`debug.json`, `stream.jsonl`, `verbose.log`). Claude always uses `--output-format stream-json` and `--verbose` in print mode, regardless of this setting; Codex and Agy ignore this setting. Diagnostic files are gitignored. Toggling mid-run applies to the next phase invocation only \u2014 prior invocations are not re-captured, and no extension reload is required."
         },
         "schegent.logging.rawTranscriptMode": {
           "type": "string",
@@ -321,8 +321,8 @@
           "type": "string",
           "default": "",
           "scope": "resource",
-          "description": "Runtime debug log file path. Empty string resolves to `<workspaceRoot>/.schegent/syslog`. Accepts an absolute path (POSIX or Windows) or a workspace-relative path. Relative paths containing `..` are rejected. The parent directory is auto-created on first write; the file is created with mode 0644 on POSIX.",
-          "markdownDescription": "Runtime debug log file path. Empty string resolves to `<workspaceRoot>/.schegent/syslog`. Accepts an absolute path (POSIX or Windows) or a workspace-relative path. Relative paths containing `..` are rejected. The parent directory is auto-created on first write; the file is created with mode `0644` on POSIX."
+          "description": "Runtime debug log file path. Empty string resolves to `<workspaceRoot>/.schegent/syslog`. Workspace-relative paths are accepted unless they contain `..`. Absolute paths are accepted only beneath the workspace, Schegent global storage, or the OS temporary directory; the operator home directory is not an allowed root. The parent directory is auto-created on first write; the file is created with mode 0644 on POSIX.",
+          "markdownDescription": "Runtime debug log file path. Empty string resolves to `<workspaceRoot>/.schegent/syslog`. Workspace-relative paths are accepted unless they contain `..`. Absolute paths are accepted only beneath the workspace, Schegent global storage, or the OS temporary directory; the operator home directory is not an allowed root. The parent directory is auto-created on first write; the file is created with mode `0644` on POSIX."
         },
         "schegent.logging.runtimeLogMaxBytes": {
           "type": "integer",
