@@ -22,38 +22,29 @@ vi.mock('fs/promises', async () => {
   const real = await vi.importActual<typeof import('fs/promises')>('fs/promises');
   return {
     ...real,
-    appendFile: async (...args: Parameters<typeof real.appendFile>) => {
-      const run = () => real.appendFile(...args);
-      if (!seam.hook) return run();
-      return seam.hook(++seam.calls, async () => { await run(); });
+    // FR-R3-053 moved the audit append off `appendFile` and onto a safe
+    // `open` + `handle.write`, so the seam moved with it. Same shape: delegate
+    // to the real module unless a test installs a `hook`, and wrap only the
+    // write of the handle the writer actually got.
+    open: async (...args: Parameters<typeof real.open>) => {
+      const handle = await real.open(...args);
+      // Only the audit log. `ensureSchegentGitignore` also opens a handle now,
+      // and wrapping that one made call #1 the gitignore write -- so the wedge
+      // landed on the wrong operation and the ordering assertions stopped
+      // measuring ordering. Found by re-running the revert check after moving
+      // the seam.
+      if (!seam.hook || !String(args[0]).endsWith('audit.log')) return handle;
+      const write = handle.write.bind(handle);
+      return Object.assign(handle, {
+        write: (...w: unknown[]) =>
+          seam.hook?.(++seam.calls, async () => {
+            await (write as (...a: never[]) => Promise<unknown>)(...(w as never[]));
+          })
+      });
     }
   };
 });
 
-/**
- * FR-R3-050 / M-02 — a timed-out append must not be able to interleave.
- *
- * `doWrite` raced `fs.appendFile` against a timer. `Promise.race` reports
- * whichever settles first; it does not cancel the loser, and Node offers NO way
- * to cancel `fs.appendFile`. So on timeout the write was still in flight while
- * the chain moved on -- and the next link may rotate the live log or append its
- * own line. The abandoned write could then land in a generation it does not
- * belong to, or out of order.
- *
- * TWO GUARANTEES, ONE TIMER
- *
- * That single timer was serving two different things: the CALLER's latency bound
- * (a wedged disk must not stall a phase -- a recorded decision) and the CHAIN's
- * ordering barrier (append N is on disk before N+1 begins). Releasing the second
- * is the defect. The fix separates them; the caller's behaviour is unchanged.
- *
- * WHAT THIS FILE OBSERVES
- *
- * The barrier, directly: whether append N+1's write STARTS before append N's
- * write COMPLETES. That is a property of the call sequence, so it is observable
- * on a spy rather than inferred from file contents, and it does not depend on
- * timing luck.
- */
 describe('a timed-out append cannot interleave (M-02)', () => {
   let tmpRoot: string;
 

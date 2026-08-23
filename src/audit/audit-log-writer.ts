@@ -9,6 +9,7 @@ import {
   projectAuditPayload
 } from './audit-payload';
 import { ensureSchegentGitignore } from './schegent-gitignore';
+import { openWithinRoot, type SafeOpenRefusal } from '../lib/safe-open';
 import {
   resolveContainedLink,
   type ContainmentRefusal
@@ -55,6 +56,32 @@ const RETENTION_MAX_ARCHIVE_AGE_FLOOR_MS = 7 * 24 * 60 * 60 * 1000;
  * `ORDERING_BARRIER_TIMEOUT_MS` is what governs the chain.
  */
 const APPEND_TIMEOUT_MS = 5000;
+
+/**
+ * FR-R3-053 (H-02) — the audit log's path could not be safely opened.
+ *
+ * A distinct error type rather than a bare `Error`, so the chain's existing
+ * failure handling records WHY as a bounded code. `symlink-component` on the
+ * audit path is not a disk problem: it means something placed a link where the
+ * evidence directory belongs, which an operator must see as such.
+ */
+export class AuditPathRefusedError extends Error {
+  public constructor(
+    public readonly reason: SafeOpenRefusal,
+    public readonly errno: string
+  ) {
+    super(`audit path refused: ${reason} (${errno})`);
+    this.name = 'AuditPathRefusedError';
+  }
+}
+
+/**
+ * FR-R3-053 — the two path segments, named once. `logPath` and the safe open
+ * both use them, so the pathname an operator is shown cannot drift from the one
+ * the writer actually opens.
+ */
+const SCHEGENT_DIR_NAME = '.schegent';
+const AUDIT_LOG_NAME = 'audit.log';
 
 /**
  * The CHAIN's ordering barrier: how long append N+1 waits for append N to
@@ -141,7 +168,7 @@ export class AuditLogWriter {
   }
 
   public get logPath(): string {
-    return path.join(this.config.workspaceRoot, '.schegent', 'audit.log');
+    return path.join(this.config.workspaceRoot, SCHEGENT_DIR_NAME, AUDIT_LOG_NAME);
   }
 
   // Feature 068 (US3) — cold-start replay (`readAuditTailColdStart`) is keyed
@@ -262,13 +289,35 @@ export class AuditLogWriter {
   }
 
   private async doWrite(line: string): Promise<void> {
-    const dir = path.dirname(this.logPath);
-    await fs.mkdir(dir, { recursive: true });
     await this.ensureRuntimeGitignore();
     await this.maybeRotate();
-    // No timeout here. Whoever needs a bound wraps this; the chain needs the
-    // real settlement, and racing it away in here is what lost the ordering.
-    await fs.appendFile(this.logPath, line, 'utf8');
+    // FR-R3-053 (H-02) — opened through the safe walk, never `path.join` +
+    // `mkdir -p` + `appendFile`. All three of those follow symlinks, so a
+    // `.schegent` symlink already present in the workspace redirected the next
+    // append out of it -- the append-only evidence record, written somewhere
+    // else, with no race required. Reproduced in
+    // `tests/unit/audit/audit-path-containment.test.ts`.
+    //
+    // Reopened per append rather than held across the run, deliberately: the
+    // rotation between these two lines replaces the file, so a retained handle
+    // would keep appending to the rotated-away inode. Holding the descriptor is
+    // the right shape for a sink that never rotates; this one does. The
+    // no-race hole is closed either way, because every open re-walks.
+    const opened = await openWithinRoot(
+      this.config.workspaceRoot,
+      [SCHEGENT_DIR_NAME, AUDIT_LOG_NAME],
+      { flags: 'a', createDirs: true, dirMode: 0o700, fileMode: 0o600 }
+    );
+    if (opened.outcome === 'refused') {
+      throw new AuditPathRefusedError(opened.reason, opened.errno);
+    }
+    try {
+      // No timeout here. Whoever needs a bound wraps this; the chain needs the
+      // real settlement, and racing it away in here is what lost the ordering.
+      await opened.handle.write(line, null, 'utf8');
+    } finally {
+      await opened.handle.close().catch(() => undefined);
+    }
   }
 
   /**
