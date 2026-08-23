@@ -4,20 +4,80 @@ This tutorial takes a first-time operator from a source checkout to one queued S
 <!-- Source: package.json -->
 <!-- Source: tests/integration/runTest.ts -->
 
-You will import the shipped `Spec-kit New Feature` process, supply one instruction, and verify that Schegent accepted the run.
-<!-- Source: examples/speckit-new-feature.pipeline.yaml -->
+You will import the shipped `Spec-kit Bugfix` process, supply one instruction, and verify that Schegent accepted the run.
+<!-- Source: examples/speckit-bugfix.pipeline.yaml -->
+
+> **This tutorial was corrected under FR-R3-062.** It previously used
+> `Spec-kit New Feature`, whose `finalize` phase declares `sideEffects: git` and instructs the agent
+> to commit, switch branches and merge — in whatever workspace the reader had open, which it told
+> them should be the product checkout. It also stated that a fresh checkout contains `.schegent/`.
+> It does not: `.schegent/` is gitignored, and **both** activation directories have zero tracked
+> files, so neither activation trigger fires on a fresh clone. All three problems are addressed
+> below.
 
 ## Before you start
 
-Complete [Developer setup](developer-setup.md), including the automated Extension Development Host check. Keep the repository itself open as the test workspace: it contains `.schegent/`, which satisfies Schegent's workspace activation condition.
-<!-- Source: package.json -->
-<!-- Source: .schegent -->
+### Use a disposable workspace
 
-This particular pipeline invokes the `claude` runner and selects `claude-sonnet-5`. A real run therefore also requires a working Claude CLI with access to that model. Schegent does not install or authenticate that CLI for you.
-<!-- Source: examples/speckit-new-feature.pipeline.yaml -->
+**Do not use this repository, or any repository you care about, as the test workspace.** A Schegent
+run gives an agent the ability to write to the open workspace. Create an empty directory instead:
+
+```bash
+mkdir -p /tmp/schegent-tutorial && cd /tmp/schegent-tutorial && git init
+```
+
+**Rollback.** Everything this tutorial does is confined to that directory. To undo it entirely,
+close the window and delete the directory. Nothing is written outside it except VS Code's own
+per-workspace state, which VS Code discards with the folder.
+
+The pipeline used here — `Spec-kit Bugfix` — declares **no** `sideEffects: git` on any phase. That is
+why it is the one this tutorial uses. `Spec-kit New Feature` does, on two phases, and is not a first
+run.
+<!-- Source: examples/speckit-bugfix.pipeline.yaml -->
+<!-- Source: examples/speckit-bugfix.pipeline.yaml -->
+
+### Satisfy the activation condition explicitly
+
+Schegent activates on `workspaceContains:.specify/` or `workspaceContains:.schegent/`. **Neither
+directory exists in a fresh clone of this repository** — `.schegent/` is gitignored and both have
+zero tracked files — so activation must be arranged deliberately:
+
+```bash
+mkdir -p /tmp/schegent-tutorial/.schegent
+```
+
+Create it before opening the folder. VS Code evaluates `workspaceContains` at folder-open time, so a
+directory created afterwards does not trigger activation until the window is reloaded.
+<!-- Source: package.json -->
+
+### Launch an interactive Extension Development Host
+
+Complete [Developer setup](developer-setup.md) for dependencies and the build. Then, **from the
+Schegent checkout**, start an interactive host: run the **Run Extension** launch configuration
+(<kbd>F5</kbd>). A second VS Code window opens with the extension loaded.
+
+Use the interactive host, not `npm run test:integration`. That command runs the automated
+Extension Development Host and **exits when its suites finish** — it is a gate, not a session, and
+there is no window left to click through. The previous version of this tutorial pointed at it.
+<!-- Source: package.json -->
+<!-- Source: tests/integration/runTest.ts -->
+
+In the new window, open `/tmp/schegent-tutorial` as the folder.
+
+### Requirements the tutorial cannot supply
+
+This pipeline invokes the `claude` runner and selects `claude-sonnet-5`. A real run therefore also
+requires a working Claude CLI with access to that model. Schegent does not install or authenticate
+that CLI for you.
+
+Read the [threat model](../security/threat-model.md) before a first run. The default `claude` runner is
+spawned with `--dangerously-skip-permissions`: its approval prompts are off and the agent acts
+without asking, within whatever the OS user can reach. That is the reason the disposable workspace
+above is a requirement and not a suggestion.
+<!-- Source: examples/speckit-bugfix.pipeline.yaml -->
 <!-- Source: src/runner/claude-cli.ts -->
 
-Grant VS Code Workspace Trust to the checkout. In an untrusted workspace, Schegent displays `Workspace is not trusted` and disables catalog edits; the Runs surface also explains that launching is unavailable.
+Grant VS Code Workspace Trust to the disposable folder. In an untrusted workspace, Schegent displays `Workspace is not trusted` and disables catalog edits; the Runs surface also explains that launching is unavailable.
 <!-- Source: webview-ui/src/components/TrustBanner.svelte -->
 <!-- Source: webview-ui/src/components/PipelineBuilder.svelte -->
 <!-- Source: webview-ui/src/components/RunsSurface.svelte -->
@@ -37,46 +97,42 @@ The dashboard opens on **Queues** and also exposes **Runs**, **History**, **Metr
 
 1. Open **Builder**. Its initial tab is **Pipelines**.
 2. In the import panel, select **Import…**.
-3. In the YAML picker, choose `examples/speckit-new-feature.pipeline.yaml` from this checkout.
-4. Review the preflight result. It must identify a Pipeline with ID `speckit-new-feature` and name `Spec-kit New Feature`.
+3. In the YAML picker, choose `examples/speckit-bugfix.pipeline.yaml` from the Schegent checkout.
+4. Review the preflight result. It must identify a Pipeline with ID `speckit-bugfix` and name `Spec-kit Bugfix`.
 5. Select **Confirm import**.
 
-The document is a package: it defines the pipeline and includes all nine phase definitions it references. A successful confirmed import publishes the complete set so that the pipeline is launchable; the implementation first stages draft records and then publishes them as one import operation.
+The document is a package: it defines the pipeline and includes all five phase definitions it references. A successful confirmed import publishes the complete set so that the pipeline is launchable; the implementation first stages draft records and then publishes them as one import operation.
 <!-- Source: webview-ui/src/components/PipelineBuilder.svelte -->
 <!-- Source: webview-ui/src/components/Builder/BuilderTabs.svelte -->
 <!-- Source: webview-ui/src/components/Builder/CatalogEmptyState.svelte -->
 <!-- Source: webview-ui/src/components/ProcessImport/ProcessImportPreflight.svelte -->
 <!-- Source: src/extension.ts -->
 <!-- Source: tests/integration/catalog-import-always-draft.test.ts -->
-<!-- Source: examples/speckit-new-feature.pipeline.yaml -->
+<!-- Source: examples/speckit-bugfix.pipeline.yaml -->
 
 ## 3. Compose and queue the run
 
 1. Open **Runs**, then leave **Pipelines** selected.
-2. Select the active row named **Spec-kit New Feature**.
+2. Select the active row named **Spec-kit Bugfix**.
 3. Select **Trigger**.
 4. The sample declares no input ports, so the form says it can run as-is. Under **Additional context**, enter `e2e happy path` in **Instructions**.
 5. In **Process preview**, verify this exact phase order:
 
-   1. `speckit-specify`
-   2. `speckit-clarify`
-   3. `speckit-plan`
-   4. `speckit-tasks`
-   5. `speckit-checklist`
-   6. `speckit-analyze`
-   7. `speckit-implement`
-   8. `speckit-review`
-   9. `finalize`
+   1. `bugfix-report`
+   2. `bugfix-patch`
+   3. `bugfix-verify-pre`
+   4. `bugfix-implement`
+   5. `bugfix-verify-post`
 
 6. Select **Run Pipeline**.
 
-Success at this step means the form reports `Queued as <request-id>.`, where `<request-id>` is generated by the host. That message confirms admission to the queue, not completion of the nine phases.
+Success at this step means the form reports `Queued as <request-id>.`, where `<request-id>` is generated by the host. That message confirms admission to the queue, not completion of the five phases.
 <!-- Source: webview-ui/src/components/RunsSurface.svelte -->
 <!-- Source: webview-ui/src/components/Runs/LaunchableDetail.svelte -->
 <!-- Source: webview-ui/src/components/RunLauncher/RunLauncher.svelte -->
 <!-- Source: webview-ui/src/components/RunLauncher/SupplementalInputs.svelte -->
 <!-- Source: webview-ui/src/lib/run-composition.ts -->
-<!-- Source: examples/speckit-new-feature.pipeline.yaml -->
+<!-- Source: examples/speckit-bugfix.pipeline.yaml -->
 
 ## 4. Follow the run
 
