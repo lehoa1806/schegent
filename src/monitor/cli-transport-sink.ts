@@ -59,6 +59,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 
+import { KeyBlockLineRedactor } from '../lib/logger';
 import type { SanitizedLogger } from '../lib/logger';
 import {
   resolveContainedForWrite,
@@ -179,6 +180,25 @@ export interface CliTransportSinkDeps {
    * sink calls it on every line.
    */
   readonly sanitize: (line: string) => string;
+  /**
+   * FR-R3-048 (H-07) — optional stateful line sanitizer, used in preference to
+   * `sanitize` when present.
+   *
+   * This sink is line-oriented: it sanitizes one CLI output line per call, so a
+   * multiline `BEGIN…END` expression can never match here and a private key
+   * spread over forty lines became forty records each holding a fragment.
+   * Suppressing from a BEGIN marker to its matching END needs state, and state
+   * needs to know which run and which stream a line belongs to — `stdout` is not
+   * one stream once the concurrency cap rises above 1.
+   *
+   * Optional so every existing construction site and test double keeps compiling
+   * and behaving exactly as before; the production factory supplies it.
+   */
+  readonly sanitizeStreamLine?: (
+    line: string,
+    runId: string | null,
+    stream: CliTransportStream
+  ) => string;
   readonly logger: Pick<SanitizedLogger, 'warn'>;
   readonly now?: () => Date;
   /** Injection points, each defaulting to the matching `fs.promises` call. */
@@ -260,6 +280,11 @@ export function createCliTransportSettingsAccessor(
 export class CliTransportSink implements CliTransportRecorder {
   private readonly settings: CliTransportSettingsAccessor;
   private readonly sanitizeLine: (line: string) => string;
+  private readonly sanitizeStreamLine?: (
+    line: string,
+    runId: string | null,
+    stream: CliTransportStream
+  ) => string;
   private readonly logger: Pick<SanitizedLogger, 'warn'>;
   private readonly now: () => Date;
   private readonly appendFile: AppendFn;
@@ -313,6 +338,7 @@ export class CliTransportSink implements CliTransportRecorder {
   constructor(deps: CliTransportSinkDeps) {
     this.settings = deps.settings;
     this.sanitizeLine = deps.sanitize;
+    this.sanitizeStreamLine = deps.sanitizeStreamLine;
     this.logger = deps.logger;
     this.now = deps.now ?? ((): Date => new Date());
     this.appendFile = deps.appendFile ?? fs.appendFile;
@@ -369,7 +395,13 @@ export class CliTransportSink implements CliTransportRecorder {
 
   private format(entry: CliTransportRecord): string {
     const stamp = this.now().toISOString();
-    const sanitized = this.sanitizeLine(entry.line);
+    // FR-R3-048 — the stateful sanitizer when the caller supplied one, so a key
+    // block spanning lines is suppressed rather than written a fragment at a
+    // time. Falls back to the stateless one, which keeps every existing test
+    // double and construction site behaving as before.
+    const sanitized = this.sanitizeStreamLine
+      ? this.sanitizeStreamLine(entry.line, entry.runId, entry.stream)
+      : this.sanitizeLine(entry.line);
     return `${stamp}\t${field(entry.runId)}\t${field(entry.phase)}\t${entry.stream}\t${sanitized}\n`;
   }
 
@@ -677,9 +709,55 @@ export function createCliTransportSink(
   workspaceRoot: () => string | null,
   logger: Pick<SanitizedLogger, 'sanitize' | 'warn'>
 ): CliTransportSink {
+  // FR-R3-048 (H-07) — the injected sanitizer is STATEFUL here, because this sink
+  // is line-oriented. `format()` sanitizes one CLI output line per call, so a
+  // multiline `BEGIN…END` expression can never match: by the time the sanitizer
+  // runs, a key block has already been split across calls. Fixing only the
+  // pattern in `SECRET_PATTERNS` leaves this log holding the key while the whole
+  // suite goes green.
+  //
+  // Keyed by run AND stream, not by stream alone. `stdout` is not one stream: the
+  // concurrency cap can be raised to 20, and with a shared key a block opened by
+  // one Run's stdout would suppress every other Run's stdout until it closed.
+  // Both parts come off the record the caller already supplies.
+  //
+  // The map is not a leak: each entry is a boolean, a label and a counter (no
+  // lines), and `releaseRedactionState` drops a Run's entries when its streams
+  // end. A missing release costs O(1) per Run rather than O(output).
+  // Bounded by construction rather than by a release hook.
+  //
+  // A release hook would be tidier, but this sink has no per-run terminal
+  // callback and inventing a caller for one means reaching into the controller —
+  // scope this item does not own. So the map self-bounds: past the cap the
+  // oldest-inserted entry is evicted.
+  //
+  // The arithmetic is what makes that safe. Each entry is a boolean, a label and
+  // a counter, so the whole map is O(1) memory; and the default concurrency cap
+  // is 1 with a documented maximum of 20, i.e. at most 40 live (run, stream)
+  // pairs. A cap well above that means eviction can only ever reach state
+  // belonging to runs that already finished — never a live open block, which is
+  // the one case where discarding state would release a tail.
+  const MAX_TRACKED_STREAMS = 256;
+  const redactors = new Map<string, KeyBlockLineRedactor>();
+  const keyFor = (runId: string | null, stream: string): string => `${runId ?? '-'}:${stream}`;
   return new CliTransportSink({
     settings: createCliTransportSettingsAccessor(workspaceRoot),
     sanitize: (line) => logger.sanitize(line),
+    sanitizeStreamLine: (line, runId, stream) => {
+      const key = keyFor(runId, stream);
+      let redactor = redactors.get(key);
+      if (!redactor) {
+        if (redactors.size >= MAX_TRACKED_STREAMS) {
+          // Map iteration order is insertion order, so the first key is the
+          // oldest-inserted — a finished run's, given the arithmetic above.
+          const oldest = redactors.keys().next().value;
+          if (oldest !== undefined) redactors.delete(oldest);
+        }
+        redactor = new KeyBlockLineRedactor((input) => logger.sanitize(input));
+        redactors.set(key, redactor);
+      }
+      return redactor.sanitizeLine(line);
+    },
     logger
   });
 }

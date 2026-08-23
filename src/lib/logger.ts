@@ -1,3 +1,50 @@
+/**
+ * FR-R3-048 — the armor labels that denote a PRIVATE key, in one place.
+ *
+ * `AGENTS.md` names this file as the redaction set's home and forbids forking it.
+ * Stateful line redaction needs the same knowledge (which labels open a key
+ * block), so the list is exported and both consumers derive from it: the
+ * whole-string pattern in `SECRET_PATTERNS` below, and `KeyBlockLineRedactor`.
+ * Writing the list twice is how a pattern and a detector drift until one quietly
+ * stops covering a label.
+ *
+ * `PUBLIC KEY` is deliberately absent. Public keys are meant to be shareable and
+ * a test pins that they pass through byte-identical.
+ */
+export const PRIVATE_KEY_ARMOR_LABELS: ReadonlyArray<string> = Object.freeze([
+  'RSA',
+  'DSA',
+  'EC',
+  'OPENSSH',
+  'PGP',
+  'ENCRYPTED'
+]);
+
+/**
+ * `<LABEL> PRIVATE KEY` with an OPTIONAL ` BLOCK` suffix.
+ *
+ * Optional, not required: GnuPG writes `PGP PRIVATE KEY BLOCK`, while the older
+ * `PGP PRIVATE KEY` spelling is what the pre-change pattern matched -- and the
+ * hard rule forbids weakening, so both must match.
+ */
+const ARMOR_LABEL_ALTERNATION = `(?:${PRIVATE_KEY_ARMOR_LABELS.join('|')}) PRIVATE KEY(?: BLOCK)?`;
+
+/** A complete block: BEGIN through the next END. Non-greedy on purpose. */
+const PRIVATE_KEY_BLOCK_RE = new RegExp(
+  `-----BEGIN ${ARMOR_LABEL_ALTERNATION}-----[\\s\\S]*?-----END ${ARMOR_LABEL_ALTERNATION}-----`,
+  'g'
+);
+
+/** An unterminated block: BEGIN through end of input. */
+const PRIVATE_KEY_UNTERMINATED_RE = new RegExp(
+  `-----BEGIN ${ARMOR_LABEL_ALTERNATION}-----[\\s\\S]*$`,
+  'g'
+);
+
+/** Framing detectors for the line-oriented path. Same labels, no redaction here. */
+const PRIVATE_KEY_BEGIN_RE = new RegExp(`-----BEGIN ${ARMOR_LABEL_ALTERNATION}-----`);
+const PRIVATE_KEY_END_RE = new RegExp(`-----END ${ARMOR_LABEL_ALTERNATION}-----`);
+
 const SECRET_PATTERNS: ReadonlyArray<RegExp> = [
   // Anthropic / OpenAI style API keys. Word-boundary prefix prevents
   // matching `sk-` inside an unrelated word (e.g. `worksk-XYZ`); the
@@ -29,11 +76,29 @@ const SECRET_PATTERNS: ReadonlyArray<RegExp> = [
   /\b[rs]k_(live|test)_[A-Za-z0-9]{20,}\b/g,
   // GCP service account snippet
   /"private_key"\s*:\s*"-----BEGIN [^"]+-----[\s\S]+?-----END [^"]+-----\\n?"/g,
-  // Standalone PEM private-key headers — catches SSH, PGP, and other
-  // private keys that leak into stdout without the JSON envelope above.
-  // The header alone is enough to redact; the body is not required to
-  // match because the header is the high-signal indicator.
-  /-----BEGIN (?:RSA|DSA|EC|OPENSSH|PGP|ENCRYPTED) PRIVATE KEY-----/g,
+  // Standalone PEM private-key blocks — SSH, PGP and the rest, leaking into
+  // stdout without the JSON envelope above.
+  //
+  // FR-R3-048 (H-07). This used to match the HEADER ONLY, under the rationale
+  // that "the header alone is enough to redact; the body is not required to
+  // match because the header is the high-signal indicator". That is true of
+  // DETECTING a secret and false of REMOVING one, and nothing tested the
+  // difference: measured, a complete OpenSSH or RSA key lost its first line and
+  // kept its entire base64 body and its END footer. Worse, the standard armor
+  // GnuPG writes -- `PGP PRIVATE KEY BLOCK` -- did not match at all, so an
+  // exported GPG private key passed through untouched, header included.
+  //
+  // Two ordered alternatives, both built from PRIVATE_KEY_ARMOR_LABELS so this
+  // pattern and the line-oriented detector below cannot drift:
+  //   1. a complete block, non-greedy, so two adjacent blocks are two matches
+  //      and neither footer closes the other;
+  //   2. an unterminated block, through end of input.
+  // Order matters: bounded first, or a complete block would swallow the text
+  // after it. The second alternative is deliberate over-redaction -- text after
+  // an unterminated private-key header is lost, because a truncated key is
+  // still a key.
+  PRIVATE_KEY_BLOCK_RE,
+  PRIVATE_KEY_UNTERMINATED_RE,
   // Bearer / Authorization headers
   /Bearer\s+[A-Za-z0-9_\-.=]{16,}/gi,
   /authorization["'\s:=]+[A-Za-z0-9_\-.=]{16,}/gi,
@@ -200,3 +265,92 @@ export class SanitizedLogger {
     }
   }
 }
+
+/**
+ * FR-R3-048 (H-07), the half a regex cannot reach.
+ *
+ * `CliTransportSink` writes one record per CLI output line and sanitizes each
+ * line on its own (`format()` -> `sanitizeLine(entry.line)`). A
+ * `BEGIN[\s\S]*?END` expression can never match there: by the time the
+ * sanitizer runs, the block is already split across calls. So fixing only
+ * `SECRET_PATTERNS` yields a green suite and a transport log that still holds the
+ * key -- the most dangerous outcome available, because every signal says the work
+ * is done.
+ *
+ * THE ORDER IS DETECT-THEN-SANITIZE, AND THE REVERSE IS BROKEN
+ *
+ * The natural design -- sanitize the line, then open state if a BEGIN marker
+ * survives -- does not work, and this was measured rather than reasoned about:
+ * `PRIVATE_KEY_UNTERMINATED_RE` *consumes* the BEGIN marker on the first line, so
+ * nothing survives to detect, the state never opens, and every body line flows
+ * through unredacted. Detection therefore reads the RAW line.
+ *
+ * Redaction still happens only through `sanitize()`. The marker tests here are
+ * *framing* detection, derived from the same `PRIVATE_KEY_ARMOR_LABELS`, so they
+ * cannot drift from the pattern -- the no-fork rule holds.
+ *
+ * BOUNDED BY CONSTRUCTION
+ *
+ * State is a boolean, a label and a counter -- never the lines. So there is
+ * nothing buffered, which means nothing to release at stream end, and size is
+ * O(1) per stream rather than capped. The counter exists only to notice a block
+ * that never closes; past the cap the redactor keeps redacting rather than
+ * resuming, because a tail released after a cap is the leak the cap was for.
+ */
+export const REDACTION_SENTINEL = '[REDACTED]';
+
+/**
+ * Lines a single open block may span before the redactor stops counting.
+ *
+ * Not a release point -- see above. A 4096-bit RSA key armors to roughly 50
+ * lines and the largest realistic key an order of magnitude more, so this is far
+ * above any real block while still being a constant.
+ */
+export const MAX_KEY_BLOCK_LINES = 10_000;
+
+/**
+ * Per-stream line redactor. One instance per stream, so an open block on stdout
+ * cannot suppress stderr, and dropping the instance releases the state.
+ */
+export class KeyBlockLineRedactor {
+  private open = false;
+  private linesSinceOpen = 0;
+
+  public constructor(private readonly sanitizeWholeString: (input: string) => string) {}
+
+  /** `true` while a block is open. Exposed for assertions, not for control flow. */
+  public get isOpen(): boolean {
+    return this.open;
+  }
+
+  public sanitizeLine(line: string): string {
+    if (this.open) {
+      this.linesSinceOpen += 1;
+      // Closing needs a well-formed END for a private-key label -- but not
+      // necessarily the label that opened the block: concatenated or re-armored
+      // keys legitimately mismatch, and a strict match would hold suppression
+      // open for the rest of the stream on a shape that occurs in practice.
+      if (PRIVATE_KEY_END_RE.test(line)) {
+        this.open = false;
+        this.linesSinceOpen = 0;
+      }
+      // Past the cap we stay open. Resuming here would release exactly the tail
+      // the cap exists to contain.
+      return REDACTION_SENTINEL;
+    }
+
+    // Detection reads the RAW line, before sanitizing removes the marker.
+    const opensBlock = PRIVATE_KEY_BEGIN_RE.test(line);
+    const closesOnSameLine = PRIVATE_KEY_END_RE.test(line);
+    const sanitized = this.sanitizeWholeString(line);
+
+    // A whole block on one line is already handled by the pattern above; only a
+    // block that genuinely continues opens the state.
+    if (opensBlock && !closesOnSameLine) {
+      this.open = true;
+      this.linesSinceOpen = 0;
+    }
+    return sanitized;
+  }
+}
+
