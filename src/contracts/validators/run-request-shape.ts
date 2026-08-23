@@ -22,6 +22,7 @@
 
 import { PIPELINE_INPUT_PORT_TYPES } from '../pipeline-definitions';
 import { hasUnexpectedKeys } from './shared';
+import { runRequestBudgetViolations } from './run-request-budgets';
 
 const PORT_ID_MAX = 64;
 const PIPELINE_ID_MAX = 64;
@@ -126,5 +127,10 @@ export function validRunRequest(value: unknown): boolean {
     && request.supplemental.every(validSupplemental)
     && Array.isArray(request.outputs)
     && request.outputs.every(validOutput)
-    && (request.instructions === undefined || typeof request.instructions === 'string');
+    && (request.instructions === undefined || typeof request.instructions === 'string')
+    // FR-R3-057 — the same budgets, at the wire. The field validator reports
+    // them as typed errors for the webview; this refuses them outright, because
+    // a payload this large should not reach the code that reports on it. One
+    // rule, two consumers -- the principle this file's own header states.
+    && runRequestBudgetViolations(request as { readonly inputs?: readonly unknown[] }).length === 0;
 }

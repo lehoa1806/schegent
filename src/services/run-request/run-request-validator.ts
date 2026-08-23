@@ -60,6 +60,7 @@ import {
   resolvePriorOutput,
   type PriorRunOutputSource
 } from './output-reference-resolver';
+import { runRequestBudgetViolations } from '../../contracts/validators/run-request-budgets';
 
 /**
  * The filesystem half of the local-reference gate, injected rather than imported
@@ -358,6 +359,25 @@ export function validateUrlReference(value: string): LocalCheckResult {
   return { ok: true };
 }
 
+/**
+ * FR-R3-057 — the budget violations, mapped to field errors.
+ *
+ * The message names the field and the two numbers and nothing else: no value
+ * excerpt, no resolved path (FR-020). An operator who pasted 4 MiB needs to know
+ * which field and by how much.
+ */
+function validateBudgets(request: RunRequest): readonly RunRequestFieldError[] {
+  return runRequestBudgetViolations(request).map((violation) =>
+    error(
+      violation.field,
+      violation.code,
+      `${violation.field} exceeds its budget of ${violation.limit} ` +
+        `(actual ${violation.actual}).`,
+      { limit: violation.limit, actual: violation.actual }
+    )
+  );
+}
+
 function validateInstructions(instructions: string | undefined): readonly RunRequestFieldError[] {
   if (instructions === undefined || instructions.length <= MAX_DESCRIPTION_LENGTH) return [];
   // The limit is the existing host bound on a queue item's description, imported
@@ -513,7 +533,11 @@ export async function validateRunRequest(
     ...contract.errors,
     ...supplemental.errors,
     ...outputs.errors,
-    ...validateInstructions(request.instructions)
+    ...validateInstructions(request.instructions),
+    // FR-R3-057 — budgets before persistence. Placed with the other field
+    // errors so a rejected request mutates nothing (FR-R3-001's envelope
+    // discipline) and the operator sees every violation at once.
+    ...validateBudgets(request)
   ];
 
   if (errors.length > 0) return { ok: false, errors };

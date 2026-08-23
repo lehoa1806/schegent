@@ -102,6 +102,46 @@ Unredacted transcripts and verbose diagnostics can contain prompts, source code,
 <!-- Source: src/state/confirmations-config.ts -->
 <!-- Source: src/state/capability-trust-resolver.ts -->
 
+## Run request budgets (not configurable)
+
+FR-R3-057. A run request is bounded at validation, **before** it is persisted, frozen, built into a
+prompt, or written to stdin. These are fixed constants in
+`src/contracts/validators/run-request-budgets.ts`, not settings: they exist so that one local input
+cannot amplify into memory, persisted state, stdin volume, tokens and provider cost, and an operator
+who could raise them could re-create exactly that.
+
+Every budget counts **UTF-8 bytes**, not characters. A character budget under-counts by up to 4x on
+non-ASCII input, which is the wrong direction for a resource bound.
+
+| budget | limit | error code |
+|---|---|---|
+| one contract input's value | 1 MiB | `input-value-too-large` |
+| one supplemental text or instruction item | 1 MiB | `supplemental-value-too-large` |
+| one supplemental path | 4096 B (`PATH_MAX`) | `supplemental-value-too-large` |
+| one supplemental URL | 2048 B | `supplemental-value-too-large` |
+| one output target | 4096 B | `output-target-too-long` |
+| number of inputs | 64 | `inputs-count-exceeded` |
+| number of supplemental items | 256 | `supplemental-count-exceeded` |
+| number of outputs | 64 | `outputs-count-exceeded` |
+| **the whole request, summed** | **4 MiB** | `request-bytes-exceeded` |
+
+The aggregate is the one that matters most, because per-field budgets do not compose: 256
+supplemental items of 1 MiB each is 256 MiB with every individual field inside its limit.
+
+A violation is reported as a typed `RunRequestFieldError` carrying `limit` and `actual`, alongside
+every other failing field — an operator who pasted three oversized inputs learns all three at once.
+A rejected request mutates nothing. The same budgets also refuse the payload at the transport
+predicate, so a request this large does not reach the code that would report on it.
+
+**Measured ceiling.** A request at exactly the 4 MiB aggregate produces 4,195,498 bytes of prompt
+(1.0003x) — the prompt is the request text plus bounded framing. That number is the input to the
+per-host memory arithmetic in FR-R3-052.
+
+`schegent.*` settings have their own separate limits, listed above. The one overlap is
+`instructions`, which additionally carries the pre-existing character-based
+`instructions-too-long` limit shared with queue item descriptions; the aggregate above counts its
+bytes regardless.
+
 ## Where writes go
 
 The General Settings webview does not accept arbitrary keys. Its host allowlist covers only the scalar settings represented by `KEY_SPECS`; the host validates the entire update batch before writing any accepted value to VS Code's workspace target and rolls back earlier writes if a later write fails. Backend selection, model entries, environment-policy controls, trust gates, and other settings use their owning surfaces instead of that general-settings payload.
