@@ -78,8 +78,10 @@ interface InternalState {
    * Stamped once and never overwritten, so it survives a stall-and-resume that
    * moves `lastStdoutAt` repeatedly. `startedAt` is not a substitute: it records
    * when the process was spawned, and the interval between the two is the CLI's
-   * own startup, which is what `docs/operations/performance.md` tells operators
-   * to measure.
+   * own startup. (FR-R3-062: this previously cited
+   * `docs/operations/performance.md`, which does not exist. The measurement it
+   * described is exactly the interval named above, so the citation is dropped
+   * rather than replaced by a page written to host one sentence.)
    */
   firstOutputAt: string | null;
   stdoutLines: number;

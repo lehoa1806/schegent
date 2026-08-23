@@ -3,8 +3,13 @@ import * as path from 'node:path';
 /**
  * FR-R3-004 — attribution of working-tree changes to one Run.
  *
- * The decision record is
- * [`docs/architecture/checkpoint-attribution-decision.md`](../../docs/architecture/checkpoint-attribution-decision.md).
+ * FR-R3-062 — the cited decision record
+ * (`docs/architecture/checkpoint-attribution-decision.md`) does not exist and did
+ * not when this comment was written. Retargeted rather than restored: the
+ * reasoning is already stated below in full, so a page whose only purpose is to
+ * be the destination of this link would add a maintenance burden and no
+ * information. See `docs/operations/recovery-checkpoints.md` for the operator
+ * view of checkpoints.
  * The short version: a checkpoint is a diff of one shared working tree, and this
  * project forbids `git worktree`, so a patch is only attributable if something
  * knows who wrote what. Two sources are available and this ledger uses both, in
