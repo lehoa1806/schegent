@@ -23,6 +23,10 @@ import { OutputSinkBackpressure } from './output-sink-backpressure';
 import { waitForChildCompletion } from './child-completion';
 import { awaitStdinDelivery, writePromptToStdin } from './child-stdin';
 import { LineFramer, DEFAULT_MAX_LINE_UNITS } from '../lib/line-framer';
+import { processTreeSpawnOptions, signalProcessTree, processTreeIsGone } from './process-tree';
+
+/** FR-R3-054 — how long after SIGKILL to check whether the group really went. */
+const TREE_CONFIRM_DELAY_MS = 500;
 
 const SIGKILL_DELAY_MS = 2_000;
 // Feature 030 BUG-002 — after the invocation's terminal stream-json result line
@@ -160,7 +164,9 @@ function safeSpawn(
       'claude-cli: shell:true is forbidden — would expose prompt body to shell interpretation'
     );
   }
-  return spawnFn(command, args, { ...options, shell: false });
+  // FR-R3-054 (H-05) — its own process group, so the terminate ladder can reach
+  // descendants rather than only the direct child.
+  return spawnFn(command, args, { ...options, shell: false, ...processTreeSpawnOptions() });
 }
 
 /**
@@ -626,21 +632,27 @@ export class ClaudeCliRunner implements BackendRunner {
   private terminate(child: ChildProcess): void {
     this._logger.info(`[ClaudeCliRunner] terminate called! exitCode=${child.exitCode}, signalCode=${child.signalCode}`);
     if (child.exitCode === null && child.signalCode === null) {
-      try {
-        this._logger.info(`[ClaudeCliRunner] sending SIGTERM`);
-        child.kill('SIGTERM');
-      } catch (err) {
-        this._logger.info(`[ClaudeCliRunner] SIGTERM failed: ${(err as Error).message}`);
-      }
+      // FR-R3-054 (H-05) — signal the TREE. `child.kill` reached one process, so
+      // a forked helper outlived cancel and kept writing to the workspace after
+      // a terminal state was recorded.
+      this._logger.info(`[ClaudeCliRunner] sending SIGTERM to process tree`);
+      void signalProcessTree(child, 'SIGTERM');
       setTimeout(() => {
-        if (child.exitCode === null && child.signalCode === null) {
-          try {
-            this._logger.info(`[ClaudeCliRunner] sending SIGKILL`);
-            child.kill('SIGKILL');
-          } catch (err) {
-            this._logger.info(`[ClaudeCliRunner] SIGKILL failed: ${(err as Error).message}`);
-          }
-        }
+        // Original trigger preserved; the tree probe below answers the separate
+        // question of whether the terminal state may claim the work has stopped.
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        this._logger.info(`[ClaudeCliRunner] sending SIGKILL to process tree`);
+        void signalProcessTree(child, 'SIGKILL').then(() => {
+          setTimeout(() => {
+            if (processTreeIsGone(child)) return;
+            // SIGKILL is not catchable, so a surviving group is one we do not
+            // own. Said out loud rather than left for a later phase to trip over.
+            this._logger.warn(
+              '[ClaudeCliRunner] process tree not confirmed gone after SIGKILL; ' +
+                'descendants may still be running'
+            );
+          }, TREE_CONFIRM_DELAY_MS).unref();
+        });
       }, SIGKILL_DELAY_MS).unref?.();
     }
   }

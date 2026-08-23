@@ -74,7 +74,22 @@ Probe failure causes exposed to the host are `not-found`, `not-executable`, `non
 3. `shell: false` is mandatory, with `cwd` set to the workspace root and an explicitly built environment for ordinary Phase execution.
 4. Stdout and stderr use bounded `ZippedStreamBuffer` instances with observable truncation.
 5. The timeout is idle-based: output resets it unless sink backpressure has paused the stream.
-6. Cancellation observes the request's abort signal. Timeout or cancellation sends SIGTERM and escalates to SIGKILL after 2 seconds.
+6. Cancellation observes the request's abort signal. Timeout or cancellation sends SIGTERM and
+   escalates to SIGKILL after 2 seconds. **The signal goes to the backend's whole process tree, not
+   only to the direct child** (FR-R3-054): each backend is spawned into its own process group on
+   POSIX and signalled as a group, and reached with `taskkill /T` on Windows. Before this, a CLI
+   tool that forked a helper survived cancel, timeout, aggressive pause and deactivation, and could
+   keep mutating the workspace after Schegent had recorded a terminal state.
+
+   Where the tree cannot be confirmed gone 500 ms after SIGKILL, that is logged explicitly
+   ("process tree not confirmed gone after SIGKILL; descendants may still be running") rather than
+   the terminal state silently implying the work has stopped. SIGKILL is not catchable, so a group
+   that survives it is a group Schegent does not own.
+
+   **Residual, stated plainly:** a Windows Job Object with kill-on-close is stronger than
+   `taskkill /T` — it cannot be escaped by a process that re-parents itself — and needs a native
+   binding, so it is not implemented. On POSIX, a descendant that calls `setsid` for itself leaves
+   the group and is likewise out of reach.
 7. Monitor events identify the Run and report start, chunks, and exit. Hook errors do not control the child.
 8. Retry and rate-limit policy remain in the controller; adapters return raw invocation outcomes.
 9. Adapters do not own operator-visible sanitization or structured audit writes; those occur at the Phase runner/logger boundary.
