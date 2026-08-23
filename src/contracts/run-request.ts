@@ -114,7 +114,17 @@ export const RUN_REQUEST_ERROR_CODES = [
   'unknown-output-port',
   'prior-run-not-found',
   'prior-output-not-found',
-  'no-workspace-root'
+  'no-workspace-root',
+  // FR-R3-057 (M-03 / R-11) — resource budgets. Before these, only `portId`,
+  // `pipelineId` and `instructions` were bounded at all; everything carrying
+  // volume amplified freely into memory, state, stdin, tokens and cost.
+  'input-value-too-large',
+  'supplemental-value-too-large',
+  'output-target-too-long',
+  'inputs-count-exceeded',
+  'supplemental-count-exceeded',
+  'outputs-count-exceeded',
+  'request-bytes-exceeded'
 ] as const;
 
 export type RunRequestErrorCode = (typeof RUN_REQUEST_ERROR_CODES)[number];
