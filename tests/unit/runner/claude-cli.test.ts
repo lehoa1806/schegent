@@ -1,13 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
 import { EventEmitter } from 'events';
-import { Readable } from 'stream';
+import { Readable, Writable } from 'stream';
 import type { ChildProcess, SpawnOptions } from 'child_process';
 import { ClaudeCliRunner, type SpawnFn } from '../../../src/runner/claude-cli';
 
 interface FakeChild extends EventEmitter {
   stdout: Readable;
   stderr: Readable;
-  stdin: { write: ReturnType<typeof vi.fn>; end: ReturnType<typeof vi.fn> };
+  stdin: Writable & { write: ReturnType<typeof vi.fn>; end: ReturnType<typeof vi.fn> };
   killed: boolean;
   exitCode: number | null;
   signalCode: string | null;
@@ -18,7 +18,16 @@ function makeFakeChild(): FakeChild {
   const child = new EventEmitter() as FakeChild;
   child.stdout = new Readable({ read() { /* no-op */ } });
   child.stderr = new Readable({ read() { /* no-op */ } });
-  child.stdin = { write: vi.fn(), end: vi.fn() };
+  // FR-R3-047 — a real `Writable`, not a bare `{ write, end }`. The old double
+  // had no `.on`, so it could not carry an `'error'` listener and could never
+  // emit EPIPE — the defect H-04 describes, modelled inside the test double. A
+  // fake that cannot express the failure mode certifies the wrong thing. `write`
+  // and `end` remain spies, so every assertion below is unchanged; what is added
+  // is the ability to fail.
+  const realStdin = new Writable({ write(_c, _e, cb) { cb(); } });
+  vi.spyOn(realStdin, 'write');
+  vi.spyOn(realStdin, 'end');
+  child.stdin = realStdin as FakeChild['stdin'];
   child.killed = false;
   child.exitCode = null;
   child.signalCode = null;
@@ -41,7 +50,7 @@ describe('ClaudeCliRunner.invoke', () => {
       seen.command = command;
       seen.args = args;
       seen.options = options;
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new ClaudeCliRunner(spawnFn);
@@ -68,7 +77,7 @@ describe('ClaudeCliRunner.invoke', () => {
       const seen: { options: SpawnOptions } = { options: {} };
       const spawnFn: SpawnFn = (_command, _args, options) => {
         seen.options = options;
-        setImmediate(() => child.emit('exit', 0, null));
+        setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
         return child as unknown as ChildProcess;
       };
       const runner = new ClaudeCliRunner(spawnFn);
@@ -99,6 +108,7 @@ describe('ClaudeCliRunner.invoke', () => {
     const spawnFn: SpawnFn = () => {
       setImmediate(() => {
         child.emit('exit', 0, null);
+        child.emit('close', 0, null);
         child.stdout.emit('data', '[SCHEGENT_STATUS: CLEAR]\n');
         child.stderr.emit('data', 'warn: nothing important\n');
         child.emit('close', 0, null);
@@ -183,6 +193,7 @@ describe('ClaudeCliRunner.invoke', () => {
     await vi.advanceTimersByTimeAsync(1_001);
     expect(child.kill).toHaveBeenCalledWith('SIGTERM');
     child.emit('exit', null, 'SIGTERM');
+    child.emit('close', null, 'SIGTERM');
 
     const result = await promise;
     expect(result.timedOut).toBe(true);
@@ -214,6 +225,7 @@ describe('ClaudeCliRunner.invoke', () => {
     listeners.forEach((cb) => cb());
     expect(child.kill).toHaveBeenCalledWith('SIGTERM');
     child.emit('exit', null, 'SIGTERM');
+    child.emit('close', null, 'SIGTERM');
 
     const result = await promise;
     expect(result.killed).toBe(true);
@@ -226,7 +238,7 @@ describe('ClaudeCliRunner.invoke', () => {
   it('detaches the abort listener once the child exits', async () => {
     const child = makeFakeChild();
     const spawnFn: SpawnFn = () => {
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new ClaudeCliRunner(spawnFn);
@@ -273,6 +285,7 @@ describe('ClaudeCliRunner.invoke', () => {
     expect(child.kill).toHaveBeenCalledWith('SIGTERM');
 
     child.emit('exit', null, 'SIGTERM');
+    child.emit('close', null, 'SIGTERM');
     await promise;
     expect(runner.hasActiveProcess).toBe(false);
   });
@@ -287,7 +300,7 @@ describe('ClaudeCliRunner.invoke', () => {
     const seen: { args: ReadonlyArray<string> } = { args: [] };
     const spawnFn: SpawnFn = (_command, args) => {
       seen.args = args;
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new ClaudeCliRunner(spawnFn);
@@ -315,7 +328,7 @@ describe('ClaudeCliRunner.invoke', () => {
     const seen: { args: ReadonlyArray<string> } = { args: [] };
     const spawnFn: SpawnFn = (_command, args) => {
       seen.args = args;
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new ClaudeCliRunner(spawnFn);
@@ -335,7 +348,7 @@ describe('ClaudeCliRunner.invoke', () => {
   it('captures non-zero exit codes', async () => {
     const child = makeFakeChild();
     const spawnFn: SpawnFn = () => {
-      setImmediate(() => child.emit('exit', 1, null));
+      setImmediate(() => { child.emit('exit', 1, null); child.emit('close', 1, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new ClaudeCliRunner(spawnFn);
@@ -355,7 +368,7 @@ describe('ClaudeCliRunner.invoke', () => {
     const seen: { args: ReadonlyArray<string> } = { args: [] };
     const spawnFn: SpawnFn = (_command, args) => {
       seen.args = args;
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new ClaudeCliRunner(spawnFn);
@@ -399,7 +412,7 @@ describe('ClaudeCliRunner.invoke', () => {
     const seen: { args: ReadonlyArray<string> } = { args: [] };
     const spawnFn: SpawnFn = (_command, args) => {
       seen.args = args;
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new ClaudeCliRunner(spawnFn);
@@ -459,7 +472,9 @@ describe('ClaudeCliRunner concurrent invocations (Feature 093 T046a)', () => {
     expect(second.kill).toHaveBeenCalledWith('SIGTERM');
 
     first.emit('exit', null, 'SIGTERM');
+    first.emit('close', null, 'SIGTERM');
     second.emit('exit', null, 'SIGTERM');
+    second.emit('close', null, 'SIGTERM');
     await Promise.all([firstDone, secondDone]);
     expect(runner.hasActiveProcess).toBe(false);
   });
@@ -474,6 +489,7 @@ describe('ClaudeCliRunner concurrent invocations (Feature 093 T046a)', () => {
 
     first.exitCode = 0;
     first.emit('exit', 0, null);
+    first.emit('close', 0, null);
     await firstDone;
 
     expect(runner.hasActiveProcess).toBe(true);
@@ -483,6 +499,7 @@ describe('ClaudeCliRunner concurrent invocations (Feature 093 T046a)', () => {
     expect(second.kill).toHaveBeenCalledWith('SIGTERM');
 
     second.emit('exit', null, 'SIGTERM');
+    second.emit('close', null, 'SIGTERM');
     await secondDone;
     expect(runner.hasActiveProcess).toBe(false);
   });

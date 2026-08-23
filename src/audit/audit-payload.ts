@@ -298,7 +298,14 @@ export const RECORDABLE_PHASE_END_WARNINGS: ReadonlySet<string> = new Set([
   '[constitution] unterminated audit log',
   // src/parser/stdout-parser.ts
   '[constitution] multiple contract blocks',
-  '[constitution] missing audit log on clean response'
+  '[constitution] missing audit log on clean response',
+  // src/controller/phase-runner.ts — FR-R3-047 (H-04). Without this code the
+  // record would say `outcome: 'failed'` / `terminationReason: 'error'` with no
+  // stated cause, which is the exact shape that made a real 2026-08-16 failure
+  // undiagnosable from the audit alone. The closed `TerminationReason` union
+  // lives in the audit contract and is persisted in run state, so the cause
+  // travels here rather than as a new union member.
+  'stdin-delivery-failed'
 ]);
 
 interface ProjectedWarnings {

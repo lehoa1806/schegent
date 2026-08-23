@@ -43,7 +43,7 @@ interface SpawnCapture {
 function captureSpawn(child: FakeChild, capture: SpawnCapture): SpawnFn {
   return (_command, args) => {
     capture.args = args;
-    setImmediate(() => child.emit('exit', 0, null));
+    setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
     return child as unknown as ChildProcess;
   };
 }

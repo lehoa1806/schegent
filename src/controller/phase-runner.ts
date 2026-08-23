@@ -513,6 +513,33 @@ export class PhaseRunner {
       raw.stdoutBuffer.truncated || raw.stderrBuffer.truncated
     );
 
+    // FR-R3-047 (H-04) — checked FIRST, and no arm below moved to make room. A
+    // backend that received half a prompt answered a different question, so
+    // nothing it emitted is evidence about this phase — including a clean
+    // termination token. Full precedence rationale:
+    // specs/132-child-stdin-completion/contracts/stdin-delivery.md.
+    if (raw.stdinDeliveryFailed) {
+      const auditEntry = await this.appendAudit(inputs, 'phase-end', 'failure', {
+        ...this.pipelineMeta(inputs),
+        outcome: 'failed',
+        terminationReason: 'error',
+        warnings: ['stdin-delivery-failed'],
+        ...this.invocationMetricPayload(raw)
+      });
+      return {
+        result: { kind: 'malformed', warnings: ['stdin-delivery-failed'], auditEntry: null },
+        outcome: 'failed',
+        terminationReason: 'error',
+        stdoutSummary: this.logger.sanitize(summarize(unwrappedStream.text)),
+        stderrSummary: this.logger.sanitize(summarize(typeof raw.stderrBuffer === 'string' ? raw.stderrBuffer : raw.stderrBuffer.getTrailingLines(100))),
+        exitCode: raw.exitCode,
+        auditEntryId: auditEntry.id,
+        // The errno, never the prompt. The prompt is operator content.
+        warnings: [`prompt delivery to the backend failed (${raw.stdinErrorCode ?? 'unknown'})`],
+        phaseMessage: null
+      };
+    }
+
     // Feature 030 BUG-002 — hung-but-clean run = success, not timeout (FR-025).
     if (raw.timedOut && result.kind !== 'clean') {
       const auditEntry = await this.appendAudit(inputs, 'phase-end', 'failure', {

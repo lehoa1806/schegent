@@ -20,7 +20,22 @@ export interface ChildCompletion {
  */
 export function waitForChildCompletion(
   child: ChildProcess,
-  waitForStdioClose: boolean,
+  /**
+   * FR-R3-047 (M-01) — defaults to waiting, and every production call site now
+   * omits it. Both runners used to pass `outputSink !== undefined`, so whether a
+   * transcript sink existed decided whether this helper settled on `exit` or
+   * waited for `close`: with capture off it stopped at `exit` and lost anything
+   * buffered before `close`, which can include the terminal `{"type":"result"}`
+   * line and the session id. The comment below already said that waiting only for
+   * `exit` "loses buffered output"; the callers then did exactly that whenever an
+   * operator turned capture off. A privacy setting must not select correctness.
+   *
+   * The parameter survives rather than being removed because this helper's own
+   * tests pass it explicitly and the feature promised to edit no existing test.
+   * What makes the regression unrepresentable is the lint guard forbidding a
+   * production call site from passing `false`, not the shape of this signature.
+   */
+  waitForStdioClose = true,
   closeGraceMs = STDIO_CLOSE_GRACE_MS
 ): Promise<ChildCompletion> {
   return new Promise((resolve) => {

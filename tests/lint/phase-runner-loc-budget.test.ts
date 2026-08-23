@@ -51,8 +51,17 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
 // shape. No responsibility was added — the coordinator shell still forwards a
 // verdict it does not compute — so, as with FR-R3-001 T260 above, the budget buys
 // the note rather than new work.
+// FR-R3-047 (H-04) — bumped phase-runner.ts +30 for the stdin-delivery arm.
+// Unlike the T260 and 098 bumps above, this one buys real work rather than a
+// note: a new classification arm, checked above the existing chain. It is not a
+// split, and the reason is coherence — every sibling arm (timeout, cancellation,
+// clean-with-nonzero-exit) is decided here, and extracting one of five would put
+// a decision somewhere no reader would look for it while leaving the other four
+// in place. The rationale that would have cost another sixteen lines lives in
+// specs/132-child-stdin-completion/contracts/stdin-delivery.md instead, which is
+// why the arm costs 30 and not 46.
 const BUDGETS = [
-  { path: 'src/controller/phase-runner.ts', max: 815 },
+  { path: 'src/controller/phase-runner.ts', max: 845 },
   { path: 'src/controller/phase-sidecar-reader.ts', max: 400 },
   { path: 'src/controller/phase-retry-evaluator.ts', max: 180 },
   // Raised from 100 on 2026-08-16. The truncation arm of `mapOutcome` stopped

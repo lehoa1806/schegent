@@ -21,6 +21,7 @@ import {
 } from '../lib/incremental-fatal-scanner';
 import { OutputSinkBackpressure } from './output-sink-backpressure';
 import { waitForChildCompletion } from './child-completion';
+import { writePromptToStdin } from './child-stdin';
 
 const SIGKILL_DELAY_MS = 2_000;
 // Feature 030 BUG-002 — after the invocation's terminal stream-json result line
@@ -295,18 +296,18 @@ export class ClaudeCliRunner implements BackendRunner {
       this.active.set(invocationToken, child);
       this.emitHook({ kind: 'started', runId: request.runId ?? null, pid: child.pid ?? null });
 
-      if (child.stdin) {
-        try {
-          this._logger.info(`[ClaudeCliRunner] Writing to CLI stdin`);
-          child.stdin.write(request.prompt);
-          this._logger.info(`[ClaudeCliRunner] Ending CLI stdin`);
-          child.stdin.end();
-        } catch (err) {
-          this._logger.info(`[ClaudeCliRunner] Stdin write failed: ${(err as Error).message}`);
-          // stdin already closed; the CLI will fail and that surfaces via
-          // the existing exit-code / classification path.
-        }
-      }
+      // FR-R3-047 — attach-then-write through the shared helper. The previous
+      // shape caught synchronously around the write, and the comment claiming the
+      // failure "surfaces via the existing exit-code / classification path" was
+      // the defect in one sentence: an asynchronous 'error' with no listener is an
+      // uncaught exception, fatal to the extension host rather than to this
+      // invocation. Only the errno is logged; the prompt is operator content.
+      // Started, not awaited: see the note in process-lifecycle-runner.ts. The
+      // `'error'` listener is attached synchronously inside the helper, so the
+      // host is protected from this point on; awaiting here would delay the
+      // stream and lifecycle listeners below and lose a fast child's `'exit'`.
+      this._logger.info(`[ClaudeCliRunner] Writing to CLI stdin`);
+      const deliveryPromise = writePromptToStdin(child, request.prompt);
 
       const stdoutBuffer = new ZippedStreamBuffer();
       const stderrBuffer = new ZippedStreamBuffer();
@@ -475,7 +476,14 @@ export class ClaudeCliRunner implements BackendRunner {
         else request.cancellationSignal.addEventListener('abort', onAbort);
       }
 
-      const completion = await waitForChildCompletion(child, outputSink !== undefined);
+      // FR-R3-047 (M-01) — no second argument; see child-completion.ts.
+      const completion = await waitForChildCompletion(child);
+      const delivery = await deliveryPromise;
+      if (!delivery.delivered) {
+        this._logger.warn(
+          `[ClaudeCliRunner] Prompt delivery failed: ${delivery.errorCode ?? 'unknown'}`
+        );
+      }
       const exitCode = completion.exitCode;
       // Feature 030 BUG-002 — a grace-terminate after the completion marker
       // is NOT an operator cancellation, so do not flag it `killed` even
@@ -534,6 +542,9 @@ export class ClaudeCliRunner implements BackendRunner {
         diagnosticWarnings,
         command,
         cliSessionId,
+        ...(delivery.delivered
+          ? {}
+          : { stdinDeliveryFailed: true, stdinErrorCode: delivery.errorCode }),
         ...(stdoutScanner && stderrScanner
           ? { streamFatalMatch: combineStreamScans(stdoutScanner, stderrScanner) }
           : {})

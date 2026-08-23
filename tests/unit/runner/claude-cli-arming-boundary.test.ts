@@ -43,6 +43,7 @@ function makeFakeChild(): FakeChild {
   child.kill = vi.fn(() => {
     child.killed = true;
     child.emit('exit', null, 'SIGTERM');
+    child.emit('close', null, 'SIGTERM');
     return true;
   });
   return child;
@@ -102,6 +103,7 @@ describe('a close marker in content does not arm a grace-terminate (SC-006)', ()
       // Let the process finish on its own so the promise resolves.
       child.exitCode = 0;
       child.emit('exit', 0, null);
+      child.emit('close', 0, null);
       const raw = await p;
       expect(raw.completedAwaitingExit).toBeFalsy();
       expect(raw.killed).toBe(false);
@@ -171,6 +173,7 @@ describe('a terminal result envelope does arm a grace-terminate (SC-006)', () =>
 
     child.exitCode = 0;
     child.emit('exit', 0, null);
+    child.emit('close', 0, null);
     await p;
   });
 });

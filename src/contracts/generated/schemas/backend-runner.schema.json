@@ -184,6 +184,16 @@
           "type": "boolean"
         },
         {
+          "name": "stdinDeliveryFailed",
+          "optional": true,
+          "type": "boolean"
+        },
+        {
+          "name": "stdinErrorCode",
+          "optional": true,
+          "type": "string"
+        },
+        {
           "name": "durationMs",
           "optional": false,
           "type": "number"

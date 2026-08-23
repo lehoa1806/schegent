@@ -51,7 +51,7 @@ describe('CodexCliRunner.invoke', () => {
       seen.command = command;
       seen.args = args;
       seen.options = options;
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new CodexCliRunner(spawnFn);
@@ -79,7 +79,7 @@ describe('CodexCliRunner.invoke', () => {
       const seen: { options: SpawnOptions } = { options: {} };
       const spawnFn: SpawnFn = (_command, _args, options) => {
         seen.options = options;
-        setImmediate(() => child.emit('exit', 0, null));
+        setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
         return child as unknown as ChildProcess;
       };
       const runner = new CodexCliRunner(spawnFn);
@@ -110,7 +110,7 @@ describe('CodexCliRunner.invoke', () => {
     let observedArgs: ReadonlyArray<string> = [];
     const spawnFn: SpawnFn = (_cmd, args) => {
       observedArgs = args;
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new CodexCliRunner(spawnFn);
@@ -176,6 +176,7 @@ describe('CodexCliRunner.invoke', () => {
       setImmediate(() => {
         child.stdout.emit('data', 'hello');
         child.emit('exit', 0, null);
+        child.emit('close', 0, null);
       });
       return child as unknown as ChildProcess;
     };
@@ -196,7 +197,7 @@ describe('CodexCliRunner.invoke', () => {
     const spawnFn: SpawnFn = () => {
       // After the timeout terminates the child, simulate the resulting
       // signalled exit so the invoke() promise can settle.
-      setTimeout(() => child.emit('exit', null, 'SIGTERM'), 100);
+      setTimeout(() => { child.emit('exit', null, 'SIGTERM'); child.emit('close', null, 'SIGTERM'); }, 100);
       return child as unknown as ChildProcess;
     };
     const runner = new CodexCliRunner(spawnFn);
@@ -225,6 +226,7 @@ describe('CodexCliRunner.invoke', () => {
       setImmediate(() => {
         for (const cb of abortListeners) cb();
         child.emit('exit', null, 'SIGTERM');
+        child.emit('close', null, 'SIGTERM');
       });
       return child as unknown as ChildProcess;
     };
@@ -248,7 +250,7 @@ describe('CodexCliRunner.invoke', () => {
   it('detaches the abort listener once the child exits', async () => {
     const child = makeFakeChild();
     const spawnFn: SpawnFn = () => {
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new CodexCliRunner(spawnFn);
@@ -282,7 +284,7 @@ describe('CodexCliRunner.invoke', () => {
       // defensively that shell is not true on the path we observe.
       expect(options.shell).toBe(false);
       const child = makeFakeChild();
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new CodexCliRunner(evilSpawn);
@@ -303,7 +305,7 @@ describe('CodexCliRunner.invoke', () => {
     const child = makeFakeChild();
     const exits: Array<() => void> = [];
     const spawnFn: SpawnFn = () => {
-      exits.push(() => child.emit('exit', 0, null));
+      exits.push(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new CodexCliRunner(spawnFn);
@@ -363,7 +365,9 @@ describe('CodexCliRunner concurrent invocations (Feature 093 T046a)', () => {
     expect(second.kill).toHaveBeenCalledWith('SIGTERM');
 
     first.emit('exit', null, 'SIGTERM');
+    first.emit('close', null, 'SIGTERM');
     second.emit('exit', null, 'SIGTERM');
+    second.emit('close', null, 'SIGTERM');
     await Promise.all([firstDone, secondDone]);
     expect(runner.hasActiveProcess).toBe(false);
   });
@@ -378,6 +382,7 @@ describe('CodexCliRunner concurrent invocations (Feature 093 T046a)', () => {
 
     first.exitCode = 0;
     first.emit('exit', 0, null);
+    first.emit('close', 0, null);
     await firstDone;
 
     expect(runner.hasActiveProcess).toBe(true);
@@ -386,6 +391,7 @@ describe('CodexCliRunner concurrent invocations (Feature 093 T046a)', () => {
     expect(second.kill).toHaveBeenCalledWith('SIGTERM');
 
     second.emit('exit', null, 'SIGTERM');
+    second.emit('close', null, 'SIGTERM');
     await secondDone;
     expect(runner.hasActiveProcess).toBe(false);
   });

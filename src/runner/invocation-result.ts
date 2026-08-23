@@ -197,6 +197,31 @@ export interface RawInvocationOutput {
    * non-runner fixture is equivalent to `false`.
    */
   completedAwaitingExit?: boolean;
+  /**
+   * FR-R3-047 (H-04) — `true` iff the prompt did NOT fully reach the child
+   * before its stdin closed. Absent is equivalent to `false`, so a non-runner
+   * fixture that omits it reads as a healthy delivery.
+   *
+   * Distinct from every neighbour here. `timedOut` is a run that produced
+   * nothing for too long; `killed` is a run someone ended; a non-zero
+   * `exitCode` is a run the backend itself failed. This is a run the backend
+   * never fully heard: whatever it emitted is an answer to a *truncated*
+   * prompt, which is why the phase runner treats it as outranking even a clean
+   * termination token. A backend that certifies success on half a prompt is
+   * certifying the wrong work.
+   *
+   * Decided by the write-completion callback, never by `stdin.bytesWritten` —
+   * that counter reaches the full prompt length even when the write fails,
+   * because it counts bytes handed to the stream rather than bytes the peer
+   * accepted.
+   */
+  stdinDeliveryFailed?: boolean;
+  /**
+   * The errno behind `stdinDeliveryFailed` (for example `EPIPE`). An error code
+   * only: the prompt is operator content and may contain anything, so no part
+   * of it is ever carried here or anywhere else on this result.
+   */
+  stdinErrorCode?: string;
   durationMs: number;
   diagnosticWarnings?: ReadonlyArray<string>;
   /**
