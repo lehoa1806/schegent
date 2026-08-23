@@ -1,10 +1,26 @@
 import type { BackendRunner } from '../contracts/backend-runner';
+import { policyRequestFields, type ProcessEnvironmentPolicy } from '../runner/spawn-env';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import type { SchegentStatusBar } from '../ui/status-bar';
 import type { SanitizedLogger } from '../lib/logger';
 import { detectStatusOk } from '../parser/credit-error-detector';
 
 export interface WatchdogOptions {
+  /**
+   * FR-R3-049 (M-11) — REQUIRED, and required is the point.
+   *
+   * The poll used to forward none of the three policy fields. Because all three
+   * are optional on the request, that omission compiled, read like the other two
+   * internal invokers, and sent the automatic `/status` spawn the complete
+   * ambient environment -- the credentials an operator's allowlist exists to
+   * withhold, handed to the one subprocess nobody triggers.
+   *
+   * Making it required means the next internal invoker cannot repeat that by
+   * forgetting. The requirement sits here rather than on `InvocationRequest`
+   * because 69 test files construct request-shaped objects and 2 construct this,
+   * and the guarantee is identical either way.
+   */
+  environmentPolicy: ProcessEnvironmentPolicy;
   pollIntervalMs: number;
   cliPath: string;
   cwd: string;
@@ -181,7 +197,10 @@ export class CreditWatchdog {
         prompt: '/status',
         timeoutMs: this.options.timeoutMs,
         cliPath: this.options.cliPath,
-        cwd: this.options.cwd
+        cwd: this.options.cwd,
+        // The same helper the other two internal invokers use, so identical
+        // policies produce identical environments at every call site.
+        ...policyRequestFields(this.options.environmentPolicy)
       });
       const ok = raw.exitCode === 0 && detectStatusOk(raw.stdoutBuffer);
       const state = this.store.getWatchdog();

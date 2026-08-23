@@ -8,6 +8,14 @@ import type { ClaudeCliRunner } from '../../../src/runner/claude-cli';
 import type { SchegentStatusBar } from '../../../src/ui/status-bar';
 import type { RawInvocationOutput } from '../../../src/runner/invocation-result';
 
+/**
+ * FR-R3-049 — the watchdog now requires an environment policy, so every
+ * construction site supplies one. Added as a field only: no assertion in this
+ * file changes, because the poll's cadence, pause/resume and status detection
+ * are untouched by this feature.
+ */
+const TEST_ENV_POLICY = { mode: 'inherit', inheritProcessEnv: true } as const;
+
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
   get<T>(key: string): T | undefined {
@@ -59,7 +67,8 @@ const watchdogOpts = {
   pollIntervalMs: 30 * 60 * 1000,
   cliPath: 'claude',
   cwd: '/repo',
-  timeoutMs: 60_000
+  timeoutMs: 60_000,
+  environmentPolicy: TEST_ENV_POLICY
 };
 
 let memento: FakeMemento;

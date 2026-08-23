@@ -818,7 +818,8 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       pollIntervalMs: pollIntervalMinutes * 60 * 1000,
       cliPath: resolveCliPath(backendKind, workspaceRoot, cliPath),
       cwd: workspaceRoot,
-      timeoutMs: 60 * 1000
+      timeoutMs: 60 * 1000,
+      environmentPolicy: processEnvironmentPolicy
     },
     async () => {
       // Feature 093 (T037/T039) — C-4 aggregate. Credits returning un-blocks
