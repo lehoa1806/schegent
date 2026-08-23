@@ -13,6 +13,13 @@ const ENVELOPE_ROOT = resolve(REPO_ROOT, '..');
  * "a waiver with a ceiling" is unrepresentable rather than merely discouraged,
  * and `typecheck:tests` is what enforces it.
  */
+/**
+ * How far a high-water mark may sit above its file before it is stale. Small
+ * enough that ordinary editing does not churn the number, large enough that a
+ * refactor removing a hundred lines is not immediately a failing test.
+ */
+const RATCHET_SLACK = 100;
+
 interface CeilingEntry {
   readonly path: string;
   readonly maxLines: number;
@@ -33,6 +40,28 @@ interface WaivedEntry {
      * is what a reader greps for.
      */
     readonly reference: string;
+    /**
+     * The file's size when this waiver was last reconciled — a ratchet, not a
+     * ceiling.
+     *
+     * The decision these two files carry retired the *budget* as a forcing
+     * function: neither is forced to extract helpers, and neither gets an
+     * arbitrary number to fit under. That decision stands. What it left behind
+     * was no forcing function at all, and the 2026-08-22 architecture review
+     * called that out as STATE-1 — "a waiver that removed the forcing function
+     * without replacing it".
+     *
+     * Growth used to be `console.log`ged on every run and gated by nothing. A
+     * console.log inside a passing test is a signal nobody reads: between the
+     * review naming the file at 2,499 lines and this mark being set, it reached
+     * 2,512 and no one noticed.
+     *
+     * A high-water mark is not the ceiling the decision retired. It forbids
+     * growth, which is a different thing from forcing extraction: the file can
+     * be refactored freely, held at its size, or shrunk. It cannot get bigger
+     * without someone raising this number in a diff and saying why.
+     */
+    readonly highWaterMark: number;
   };
 }
 
@@ -514,7 +543,8 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
         'per-file caps for queue-manager.ts and workspace-state.ts raised to 10,000 lines; ' +
         'helpers may be extracted for cohesion, but the budget is no longer the forcing function',
       decidedOn: '2026-05-22',
-      reference: 'specs/063-clean-all-confirmations/plan.md'
+      reference: 'specs/063-clean-all-confirmations/plan.md',
+      highWaterMark: 2513
     }
   },
   // Feature 077 — public facade and every state-projection collaborator have
@@ -565,7 +595,8 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
         'per-file caps for queue-manager.ts and workspace-state.ts raised to 10,000 lines; ' +
         'helpers may be extracted for cohesion, but the budget is no longer the forcing function',
       decidedOn: '2026-05-22',
-      reference: 'specs/063-clean-all-confirmations/plan.md'
+      reference: 'specs/063-clean-all-confirmations/plan.md',
+      highWaterMark: 1821
     }
   },
   // Speckit-auto alignment (2026-07-30) — bumped 700 → 800 to absorb two new
@@ -642,10 +673,52 @@ describe('large source file LOC budgets', () => {
     expect(malformed).toEqual([]);
 
     const sizes = waived
-      .map((entry) => `${entry.path} ${lineCount(entry.path)} lines`)
+      .map((entry) => `${entry.path} ${lineCount(entry.path)}/${entry.waiver.highWaterMark} lines`)
       .join('; ');
-    // reported on every run, since no assertion enforces a ceiling on it.
-    console.log(`LOC waivers (no ceiling enforced, size reported): ${sizes}`);
+    console.log(`LOC waivers (ratcheted, no ceiling): ${sizes}`);
+  });
+
+  // STATE-1 from the 2026-08-22 review: "a waiver that removed the forcing
+  // function without replacing it". This is the replacement, and it is
+  // deliberately not the thing the decision retired — see `highWaterMark`.
+  it('no waived file grows past its recorded high-water mark', () => {
+    const grown = BUDGETS.filter(isWaived)
+      .map((entry) => ({ entry, actual: lineCount(entry.path) }))
+      .filter(({ entry, actual }) => actual > entry.waiver.highWaterMark)
+      .map(
+        ({ entry, actual }) =>
+          `${entry.path}: ${actual} lines, past its mark of ${entry.waiver.highWaterMark} ` +
+          `(+${actual - entry.waiver.highWaterMark})`
+      );
+    expect(
+      grown,
+      `A waived file grew:\n  ${grown.join('\n  ')}\n\n` +
+        `The waiver retired the ceiling, not the forcing function. Either keep the ` +
+        `addition size-neutral, extract the new behaviour into its own module, or raise ` +
+        `the mark in this file and say why in the commit — the point is that growing ` +
+        `these two takes a decision rather than happening quietly.`
+    ).toEqual([]);
+  });
+
+  it('a high-water mark comes down when the file does', () => {
+    // Ratchets only ratchet if they tighten. A mark left far above a file that
+    // has shrunk is headroom nobody granted, and it re-creates the gap this
+    // replaced — slowly, and with the gate reporting success throughout.
+    const slack = BUDGETS.filter(isWaived)
+      .map((entry) => ({ entry, actual: lineCount(entry.path) }))
+      .filter(({ entry, actual }) => entry.waiver.highWaterMark - actual > RATCHET_SLACK)
+      .map(
+        ({ entry, actual }) =>
+          `${entry.path}: mark ${entry.waiver.highWaterMark}, file ${actual} ` +
+          `(${entry.waiver.highWaterMark - actual} lines of unclaimed headroom)`
+      );
+    expect(
+      slack,
+      `These marks are stale and should be lowered to the file's current size:\n  ` +
+        slack.join('\n  ') +
+        `\n\nA mark more than ${RATCHET_SLACK} lines above its file has stopped ` +
+        `ratcheting and started granting room.`
+    ).toEqual([]);
   });
 
   it('every sidebar projector module stays at or below 300 lines', () => {
