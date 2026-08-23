@@ -1035,6 +1035,15 @@ export interface GeneralSettings {
   readonly sessionRetentionMaxAgeDays: number;
   readonly sessionRetentionMaxBytes: number;
   readonly rawTranscriptMode: 'always' | 'errors-only' | 'off';
+  /**
+   * FR-R3-051 (M-06) — the webview had no notion of this setting at all: absent
+   * from this type, from the idle snapshot and from `scopes`, while the manifest,
+   * the host fallback table and the host idle snapshot all carried it. Found by
+   * `settings-defaults-parity.test.ts`, which compares key SETS and not only
+   * values -- a missing key is how a default silently becomes whatever the code
+   * says.
+   */
+  readonly retryForceContinueOnCap: boolean;
   readonly scopes: {
     readonly cliPath: SettingScope;
     readonly loggingVerbose: SettingScope;
@@ -1058,6 +1067,7 @@ export interface GeneralSettings {
     readonly sessionRetentionMaxAgeDays: SettingScope;
     readonly sessionRetentionMaxBytes: SettingScope;
     readonly rawTranscriptMode: SettingScope;
+    readonly retryForceContinueOnCap: SettingScope;
   };
 }
 
@@ -1067,7 +1077,10 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   agyPath: 'agy',
   loggingVerbose: false,
   loopMaxIterations: 10,
-  invocationTimeoutSeconds: 1800,
+  // FR-R3-051 (M-06) — 5400, matching the manifest, the host fallback and the
+  // host idle snapshot. This surface alone said 1800, so the sidebar showed a
+  // timeout no install has until the host sent real settings.
+  invocationTimeoutSeconds: 5400,
   watchdogPollIntervalMinutes: 30,
   auditRotationSizeMB: 5,
   auditRotationMaxAgeDays: 30,
@@ -1101,7 +1114,8 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   runtimeLogMaxBytes: 5 * 1024 * 1024,
   runtimeLogMaxGenerations: 3,
   sessionRetentionMaxAgeDays: 30,
-  rawTranscriptMode: 'always',
+  rawTranscriptMode: 'errors-only',
+  retryForceContinueOnCap: false,
   sessionRetentionMaxBytes: 512 * 1024 * 1024,
   scopes: Object.freeze({
     cliPath: 'default',
@@ -1125,7 +1139,8 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
     runtimeLogMaxGenerations: 'default',
     sessionRetentionMaxAgeDays: 'default',
     sessionRetentionMaxBytes: 'default',
-    rawTranscriptMode: 'default'
+    rawTranscriptMode: 'default',
+    retryForceContinueOnCap: 'default'
   })
 });
 
