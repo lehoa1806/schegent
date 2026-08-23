@@ -55,7 +55,11 @@ npm run ci
 `verify:all` covers contract and documentation freshness, secrets, action pins, licenses, types, lint, host tests, and covered webview tests. `ci` adds the broader build, visual, evaluation, performance, E2E, package-smoke, and Extension Development Host paths but does not call `verify:all`.
 <!-- Source: package.json -->
 
-The checked-in **Full gate** workflow runs weekly and on manual dispatch; its header records a green run as required before cutting a release. It separately exercises host/webview/test typechecking, host lint, tests/evals, build/package smoke, visual regression, E2E, Extension Development Host integration, and a sustained 20,000-record evidence soak. The release workflow does not query that workflow's status, so confirming it is a maintainer action.
+The checked-in **Full gate** workflow runs weekly and on manual dispatch. It separately exercises host/webview/test typechecking, host lint, tests/evals, build/package smoke, visual regression, E2E, Extension Development Host integration, and a sustained 20,000-record evidence soak.
+
+**A tag run now requires a green Full gate on the exact release commit, mechanically** (FR-R3-060). The release job's first step queries that workflow's completed runs for `github.sha` and fails when none succeeded, naming what is missing and what to do about it. It fails closed: an unreadable API is not evidence of a green gate. This replaces the previous maintainer-confirmation step, under which a tag could publish with signed provenance over an artifact whose full gate ran on a different commit or not at all.
+
+The check applies to tag runs only. A `workflow_dispatch` creates no release, so requiring release evidence from it would block the dry-run described below. The decision logic is a pure function with unit coverage (`tests/unit/build/require-full-gate.test.ts`), because a gate exercised only by cutting a release is a gate nobody exercises.
 <!-- Source: .github/workflows/full-gate.yml -->
 <!-- Source: .github/workflows/release.yml -->
 
