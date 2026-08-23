@@ -8,6 +8,7 @@ import { projectTransportAggregate } from './monitor-state';
 import type { CliTransportRecorder } from './cli-transport-sink';
 import { ActivityCoalescer, type ActivityRecorder } from './activity-coalescer';
 import { StallDetector, type ClearTimeoutFn, type SetTimeoutFn } from './stall-detector';
+import { LineFramer, DEFAULT_MAX_LINE_UNITS, type FramedOutput } from '../lib/line-framer';
 
 export type RateLimitMatcher = { regex: RegExp; cause: string };
 
@@ -90,11 +91,23 @@ interface InternalState {
   pausedAtMonotonic: number | null;
   stdoutBuffer: string;
   stderrBuffer: string;
+  /** FR-R3-052 — bounded framing, one per stream. */
+  stdoutFramer: LineFramer;
+  stderrFramer: LineFramer;
+  /** First-loss-only reporting, so one huge record is not one event per chunk. */
+  stdoutFramingReported: boolean;
+  stderrFramingReported: boolean;
   lastRateLimitAtMonotonic: number | null;
   terminal: boolean;
 }
 
 const DEFAULT_RATE_LIMIT_CLUSTER_MS = 5_000;
+
+/**
+ * FR-R3-052 (M-10) — how many settled runs stay readable. Well above what any
+ * surface displays, and far below unbounded.
+ */
+const MAX_SETTLED_STATES = 32;
 
 export class ClaudeCliMonitor {
   /**
@@ -165,6 +178,10 @@ export class ClaudeCliMonitor {
       pausedAtMonotonic: null,
       stdoutBuffer: '',
       stderrBuffer: '',
+      stdoutFramer: new LineFramer(),
+      stderrFramer: new LineFramer(),
+      stdoutFramingReported: false,
+      stderrFramingReported: false,
       lastRateLimitAtMonotonic: null,
       terminal: false
     };
@@ -207,10 +224,15 @@ export class ClaudeCliMonitor {
     state.lastStdoutAt = now;
     state.lastStdoutMonotonic = monotonic;
     if (state.firstOutputAt === null) state.firstOutputAt = now;
-    const lines = this.splitLines(state.stdoutBuffer + chunk, 'stdout');
-    state.stdoutBuffer = lines.remainder;
-    state.stdoutLines += lines.complete.length;
-    for (const line of lines.complete) {
+    // FR-R3-052 (H-03) — bounded framing. `splitLines` returned the whole
+    // buffer as the remainder when it found no newline, and that remainder was
+    // assigned straight back here, so a newline-free stream retained every byte
+    // the CLI produced. Measured before the fix: 8 MiB in, 8 MiB held.
+    const framed = state.stdoutFramer.append(chunk);
+    state.stdoutBuffer = state.stdoutFramer.retained;
+    state.stdoutLines += framed.lines.length;
+    this.recordFramingLoss(state, 'stdout', framed);
+    for (const line of framed.lines) {
       // Feature FR-R3-007 (T358) — transport, not an audit event. This loop
       // used to `appendAudit('monitor-stdout-line', …)` once per line, which was
       // 93.2% of `audit.log` and read by nothing; the count that replaced it is
@@ -242,10 +264,13 @@ export class ClaudeCliMonitor {
     state.lastStderrAt = now;
     state.lastStderrMonotonic = monotonic;
     if (state.firstOutputAt === null) state.firstOutputAt = now;
-    const lines = this.splitLines(state.stderrBuffer + chunk, 'stderr');
-    state.stderrBuffer = lines.remainder;
-    state.stderrLines += lines.complete.length;
-    for (const line of lines.complete) {
+    // FR-R3-052 (H-03) — same bound on stderr. A CLI that writes a huge
+    // newline-free diagnostic to stderr is the same defect through the other pipe.
+    const framedErr = state.stderrFramer.append(chunk);
+    state.stderrBuffer = state.stderrFramer.retained;
+    state.stderrLines += framedErr.lines.length;
+    this.recordFramingLoss(state, 'stderr', framedErr);
+    for (const line of framedErr.lines) {
       // Feature FR-R3-007 (T359) — the stderr half of the same move. The
       // rate-limit scan stays here and stays on the raw line: it is a judgement
       // Schegent makes about the invocation, so `monitor-rate-limited` remains
@@ -275,6 +300,13 @@ export class ClaudeCliMonitor {
     // elapsed time; the exact end-of-phase totals are in the summary event below.
     this.activity.forget(state.runId);
     state.terminal = true;
+    // FR-R3-052 (M-10) — release the framing buffers now. The process has
+    // exited, so the partial line they hold is never completing, and holding it
+    // for the life of the host session is up to a megabyte per finished run.
+    state.stdoutBuffer = '';
+    state.stderrBuffer = '';
+    state.stdoutFramer = new LineFramer();
+    state.stderrFramer = new LineFramer();
     state.exitCode = args.exitCode;
     state.signal = args.signal;
     const durationMs = this.opts.monotonicNow() - state.startedAtMonotonic - state.pausedTotalMs;
@@ -322,7 +354,26 @@ export class ClaudeCliMonitor {
       },
       nextStatus === 'completed' ? 'success' : 'info'
     );
+    this.evictSettledStates();
     this.notify();
+  }
+
+  /**
+   * FR-R3-052 (M-10) — the state map only ever grew. Entries were `set` on start
+   * and removed only by `dispose()`, so a host session that ran hundreds of
+   * phases retained every one. Measured before the fix: 500 runs, 500 entries.
+   *
+   * Settled entries only, evicted oldest-first: an active run's state is what
+   * the monitor exists to hold. The most recent settled runs stay, because the
+   * sidebar reads the last run's status after it ends -- an eviction that took
+   * that away would trade a leak for a blank panel.
+   */
+  private evictSettledStates(): void {
+    const settled = [...this.states.entries()].filter(([, entry]) => entry.terminal);
+    if (settled.length <= MAX_SETTLED_STATES) return;
+    for (const [id] of settled.slice(0, settled.length - MAX_SETTLED_STATES)) {
+      this.states.delete(id);
+    }
   }
 
   /**
@@ -509,13 +560,37 @@ export class ClaudeCliMonitor {
     }
   }
 
-  private splitLines(buffered: string, _stream: 'stdout' | 'stderr'): { complete: string[]; remainder: string } {
-    const idx = buffered.lastIndexOf('\n');
-    if (idx === -1) return { complete: [], remainder: buffered };
-    const head = buffered.slice(0, idx);
-    const remainder = buffered.slice(idx + 1);
-    const complete = head.split('\n').filter((s) => s.length > 0);
-    return { complete, remainder };
+  /**
+   * FR-R3-052 — "no silent caps". A framer that truncates without saying so
+   * turns a corrupted stream into a plausible one: the line looks short, and
+   * nothing distinguishes that from a CLI that wrote a short line.
+   *
+   * Recorded as an audit event on the FIRST loss per stream only. A run whose
+   * output is one huge record would otherwise emit one event per chunk, which is
+   * the per-line audit volume problem FR-R3-007 removed.
+   */
+  private recordFramingLoss(
+    state: InternalState,
+    stream: 'stdout' | 'stderr',
+    framed: FramedOutput
+  ): void {
+    if (framed.truncatedLines === 0 && framed.droppedUnits === 0) return;
+    const framer = stream === 'stdout' ? state.stdoutFramer : state.stderrFramer;
+    const already = stream === 'stdout' ? state.stdoutFramingReported : state.stderrFramingReported;
+    if (stream === 'stdout') state.stdoutFramingReported = true;
+    else state.stderrFramingReported = true;
+    if (already) return;
+    this.appendAudit(
+      state.runId,
+      'monitor-output-truncated',
+      {
+        stream,
+        truncatedLines: framer.totals.truncatedLines,
+        droppedUnits: framer.totals.droppedUnits,
+        limitUnits: DEFAULT_MAX_LINE_UNITS
+      },
+      'info'
+    );
   }
 
   private appendAudit(
