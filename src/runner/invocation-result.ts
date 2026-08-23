@@ -198,9 +198,15 @@ export interface RawInvocationOutput {
    */
   completedAwaitingExit?: boolean;
   /**
-   * FR-R3-047 (H-04) — `true` iff the prompt did NOT fully reach the child
-   * before its stdin closed. Absent is equivalent to `false`, so a non-runner
-   * fixture that omits it reads as a healthy delivery.
+   * FR-R3-047 (H-04) — `true` iff writing the prompt to the child's stdin
+   * FAILED. Absent is equivalent to `false`, so a non-runner fixture that omits
+   * it reads as a healthy delivery.
+   *
+   * The condition is one-directional on purpose. Set, it proves the backend
+   * answered a truncated prompt. Unset, it only means the write reported no
+   * error — a prompt small enough to fit the OS pipe buffer is accepted even by
+   * a child that reads nothing, so this is never evidence that the backend
+   * consumed the prompt.
    *
    * Distinct from every neighbour here. `timedOut` is a run that produced
    * nothing for too long; `killed` is a run someone ended; a non-zero

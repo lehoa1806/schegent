@@ -1,5 +1,5 @@
 import { readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 /**
@@ -19,16 +19,40 @@ import { describe, expect, it } from 'vitest';
  * handler in two files that must not have one.
  */
 
-const RUNNER_DIR = join(__dirname, '..', '..', 'src', 'runner');
+const SRC_DIR = join(__dirname, '..', '..', 'src');
 const HELPER = 'writePromptToStdin';
 /** The helper itself is where the raw write legitimately lives. */
-const HELPER_FILE = 'child-stdin.ts';
+const HELPER_FILE = join('runner', 'child-stdin.ts');
 
-/** A raw write or close on a child's stdin, with or without optional chaining. */
-const RAW_STDIN_WRITE = /\bstdin\s*\??\.\s*(?:write|end)\s*\(/;
+/**
+ * A raw write or close on a child's stdin, through any of the three accessor
+ * forms TypeScript allows: plain, optional-chained, and non-null-asserted.
+ *
+ * `!` is not hypothetical here: `child.stdout!` and `child.stderr!` are the
+ * idiom both runners already use for the sibling pipes, so `child.stdin!.write(
+ * request.prompt)` is the shape a fourth backend is most likely to be written
+ * in — and a gate that missed it would pass the exact uncaught-EPIPE host crash
+ * it exists to forbid.
+ */
+const RAW_STDIN_WRITE = /\bstdin\s*[!?]?\.\s*(?:write|end)\s*\(/;
 
-function runnerFiles(): string[] {
-  return readdirSync(RUNNER_DIR).filter((f) => f.endsWith('.ts'));
+/**
+ * Every `.ts` file under `src`, as a path relative to `src`.
+ *
+ * The whole tree, not `src/runner` alone: the gate's premise is that no stdin
+ * write exists anywhere in `src`, and a fifth backend is as likely to be filed
+ * under a new subdirectory as beside the existing four. A gate that only reads
+ * one flat directory passes a runner written one level down, which is the same
+ * uncaught-EPIPE host crash with a different path.
+ */
+function sourceFiles(dir: string = SRC_DIR): string[] {
+  const found: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) found.push(...sourceFiles(full));
+    else if (entry.name.endsWith('.ts')) found.push(relative(SRC_DIR, full));
+  }
+  return found;
 }
 
 describe('stdin writes route through the shared helper', () => {
@@ -36,9 +60,9 @@ describe('stdin writes route through the shared helper', () => {
     const offenders: string[] = [];
     let writeSites = 0;
 
-    for (const file of runnerFiles()) {
+    for (const file of sourceFiles()) {
       if (file === HELPER_FILE) continue;
-      const source = readFileSync(join(RUNNER_DIR, file), 'utf8');
+      const source = readFileSync(join(SRC_DIR, file), 'utf8');
       const writesRaw = RAW_STDIN_WRITE.test(source);
       const usesHelper = source.includes(HELPER);
       if (usesHelper) writeSites += 1;
@@ -57,6 +81,10 @@ describe('stdin writes route through the shared helper', () => {
     // seen fire is one nobody should trust.
     const seeded = 'child.stdin?.write(request.prompt); child.stdin?.end();';
     expect(RAW_STDIN_WRITE.test(seeded)).toBe(true);
+    // Every accessor form, because a gate that only knows one of them is a gate
+    // the next author walks past without noticing.
+    expect(RAW_STDIN_WRITE.test('child.stdin.write(request.prompt);')).toBe(true);
+    expect(RAW_STDIN_WRITE.test('child.stdin!.write(request.prompt); child.stdin!.end();')).toBe(true);
     const corrected = 'const delivery = await writePromptToStdin(child, request.prompt);';
     expect(RAW_STDIN_WRITE.test(corrected)).toBe(false);
   });
@@ -67,13 +95,13 @@ describe('stdin writes route through the shared helper', () => {
     // for `close`. The parameter still exists because this helper's own tests pass
     // it; what makes the regression unrepresentable is this rule.
     const offenders: string[] = [];
-    for (const file of runnerFiles()) {
-      const source = readFileSync(join(RUNNER_DIR, file), 'utf8');
+    for (const file of sourceFiles()) {
+      const source = readFileSync(join(SRC_DIR, file), 'utf8');
       for (const line of source.split('\n')) {
         if (!line.includes('waitForChildCompletion(')) continue;
         // Declaration and default live in the helper; a call with a second
-        // argument anywhere in src/runner does not.
-        if (file === 'child-completion.ts') continue;
+        // argument anywhere else in src does not.
+        if (file === join('runner', 'child-completion.ts')) continue;
         if (/waitForChildCompletion\(\s*child\s*\)/.test(line)) continue;
         offenders.push(`${file}: ${line.trim()}`);
       }

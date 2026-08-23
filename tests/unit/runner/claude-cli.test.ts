@@ -108,7 +108,6 @@ describe('ClaudeCliRunner.invoke', () => {
     const spawnFn: SpawnFn = () => {
       setImmediate(() => {
         child.emit('exit', 0, null);
-        child.emit('close', 0, null);
         child.stdout.emit('data', '[SCHEGENT_STATUS: CLEAR]\n');
         child.stderr.emit('data', 'warn: nothing important\n');
         child.emit('close', 0, null);

@@ -2,7 +2,7 @@ import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import type { MonitorSidecarEvent, MonitorSidecarHook } from '../contracts/backend-runner';
 import type { SanitizedLogger } from '../lib/logger';
 import { waitForChildCompletion } from './child-completion';
-import { writePromptToStdin } from './child-stdin';
+import { awaitStdinDelivery, writePromptToStdin } from './child-stdin';
 import type { InvocationOutputSink, InvocationRequest, RawInvocationOutput } from './invocation-result';
 import { OutputSinkBackpressure } from './output-sink-backpressure';
 import { ZippedStreamBuffer } from './zipped-stream-buffer';
@@ -111,11 +111,34 @@ export class ProcessLifecycleRunner {
       // lost anything buffered before `close`, including the terminal result
       // line and the session id. A privacy setting must not decide correctness.
       const completion = await waitForChildCompletion(child);
-      const delivery = await deliveryPromise;
+      // Disarm the idle timer BEFORE reading the delivery result. The child has
+      // completed, so from here the timer can only mislabel: a delivery result
+      // that settles slowly used to be awaited inside the still-armed window,
+      // and an expiry landing in that gap flips `timedOut` on a run that had
+      // already exited cleanly.
+      idleTimerActive = false; clearTimeout(timer);
+      // Detached here too, and for the same reason: the bounded delivery read
+      // below is a NEW await after the child has already completed, and an abort
+      // landing inside it would flip `killed` on an invocation that had
+      // finished. Before this await existed there was no such window.
+      if (onAbort) request.cancellationSignal?.removeEventListener?.('abort', onAbort);
+      // FR-R3-047 — a child that never started (ENOENT on `cliPath`) breaks the
+      // stdin pipe as well, so the write fails EPIPE with nothing on the far
+      // end. That is not a delivery defect: reporting it as one would name the
+      // wrong cause for the commonest misconfiguration there is, and the
+      // condition outranks every other arm of the phase-runner chain. The read
+      // is skipped entirely in that case: `processError` already decides the
+      // classification, so the up-to-2s grace would be paid for a result
+      // discarded by construction.
+      const delivery = completion.processError === true
+        ? { delivered: true as const }
+        : await awaitStdinDelivery(deliveryPromise);
+      const stdinDeliveryFailed = !delivery.delivered;
+      if (stdinDeliveryFailed) {
+        this.logger.warn(`${this.label}: prompt delivery failed (${delivery.errorCode ?? 'unknown'})`);
+      }
       if (completion.signal && completion.exitCode === null) killed = true;
       if (completion.stdioCloseTimedOut) this.logger.warn(`${this.label}: stdio close grace expired`);
-      if (onAbort) request.cancellationSignal?.removeEventListener?.('abort', onAbort);
-      idleTimerActive = false; clearTimeout(timer);
       const signal = completion.signal ?? (child as { signalCode?: NodeJS.Signals | null }).signalCode ?? null;
       this.emit({
         kind: 'exited', runId: request.runId ?? null,
@@ -124,9 +147,17 @@ export class ProcessLifecycleRunner {
       stdoutBuffer.finalize(); stderrBuffer.finalize();
       return { stdoutBuffer, stderrBuffer, exitCode: completion.exitCode, killed, timedOut,
         durationMs: Date.now() - start, command: input.commandDisplay,
-        ...(delivery.delivered
-          ? {}
-          : { stdinDeliveryFailed: true, stdinErrorCode: delivery.errorCode }) };
+        // FR-R3-047 — see the note in claude-cli.ts: the allowlisted code rides
+        // `diagnosticWarnings` so a truncated prompt is recorded even on a
+        // non-clean invocation, where the phase-runner arm deliberately does not
+        // fire. Without it the cause would live only in the transient log.
+        ...(stdinDeliveryFailed
+          ? {
+              stdinDeliveryFailed: true,
+              stdinErrorCode: delivery.errorCode,
+              diagnosticWarnings: ['stdin-delivery-failed']
+            }
+          : {}) };
     } finally {
       this.active.delete(invocationToken);
     }

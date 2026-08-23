@@ -513,21 +513,39 @@ export class PhaseRunner {
       raw.stdoutBuffer.truncated || raw.stderrBuffer.truncated
     );
 
-    // FR-R3-047 (H-04) — checked FIRST, and no arm below moved to make room. A
-    // backend that received half a prompt answered a different question, so
-    // nothing it emitted is evidence about this phase — including a clean
-    // termination token. Full precedence rationale:
-    // specs/132-child-stdin-completion/contracts/stdin-delivery.md.
-    if (raw.stdinDeliveryFailed) {
+    // FR-R3-047 (H-04) — checked FIRST, and no arm below moved to make room.
+    //
+    // Gated on a CLEAN result, deliberately narrowed after review. The rule this
+    // arm enforces is "a success claim on a truncated prompt is not evidence" —
+    // that is the whole harm, and it is only reachable when the parse came back
+    // clean. It does NOT extend to a backend that refused before reading: a stale
+    // --resume id, a bad flag, an auth or credit refusal all exit fast and EPIPE
+    // an undrained prompt, and there the backend's own diagnostic is the true
+    // cause while the EPIPE is downstream noise. Firing here regardless swallowed
+    // `rate_limited` — losing its reset-scheduled retry in phase-sequencer — and
+    // dropped fatal-signature classification. The condition stays on the
+    // invocation result either way, so diagnostics keep it. The payload's warnings
+    // lead with the delivery code and then keep the invocation's own: a clean parse
+    // still reports `[constitution]` findings, and pinning that list to one element
+    // erased them. specs/132-child-stdin-completion/contracts/stdin-delivery.md.
+    if (raw.stdinDeliveryFailed && result.kind === 'clean') {
       const auditEntry = await this.appendAudit(inputs, 'phase-end', 'failure', {
         ...this.pipelineMeta(inputs),
         outcome: 'failed',
+        // Explicit: the projection defaults an absent `exitCode` to 0, recording
+        // a clean exit for a killed (`null`) or failed run.
+        exitCode: raw.exitCode,
         terminationReason: 'error',
-        warnings: ['stdin-delivery-failed'],
-        ...this.invocationMetricPayload(raw)
+        warnings: ['stdin-delivery-failed', ...(result.warnings ?? []), ...(raw.diagnosticWarnings ?? [])],
+        ...this.invocationMetricPayload(raw),
+        // The parse was clean, so the audit block WAS read: a run that changed the
+        // workspace while answering a truncated prompt must not record {0,0,0}.
+        files_created: audit.entry?.filesCreated ?? [],
+        files_modified: audit.entry?.filesModified ?? [],
+        commands_executed: audit.entry?.commandsExecuted ?? []
       });
       return {
-        result: { kind: 'malformed', warnings: ['stdin-delivery-failed'], auditEntry: null },
+        result: { kind: 'malformed', warnings: ['stdin-delivery-failed'], auditEntry: audit.entry },
         outcome: 'failed',
         terminationReason: 'error',
         stdoutSummary: this.logger.sanitize(summarize(unwrappedStream.text)),
@@ -546,6 +564,21 @@ export class PhaseRunner {
         ...this.pipelineMeta(inputs),
         outcome: 'timeout',
         terminationReason: 'timeout',
+        // FR-R3-047 — this feature's own recording channel, and the ONLY change
+        // it makes to a pre-existing arm. The contract claims a delivery failure
+        // is recorded on every failing invocation; without this the claim is
+        // false for a timed-out run, because `diagnosticWarnings` would reach no
+        // payload. Allowlist-filtered by the phase-end projection, so only
+        // code-resident literals survive.
+        //
+        // Deliberately NOT fixed here: this arm also omits `exitCode`, and the
+        // projection defaults an absent code to 0, so a run terminated by our own
+        // SIGTERM (`null`) is recorded as having exited cleanly. That is a real
+        // pre-existing evidence defect — the same class the stdin arm above
+        // guards against — but it is not this item's, and absorbing an unrelated
+        // fix into a scoped change is how a scope fence stops meaning anything.
+        // Filed in the FR-R3-047 record for its own item.
+        warnings: raw.diagnosticWarnings,
         ...this.invocationMetricPayload(raw)
       });
       return {
