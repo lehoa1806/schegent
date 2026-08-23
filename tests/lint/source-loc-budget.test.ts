@@ -614,7 +614,17 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // which hides the growth rather than recording it. Raised to exactly what the
   // file now measures, not to a round number with slack, per the note on
   // snapshot-composer.ts above.
-  { path: 'src/config/general-settings.ts', maxLines: 660 }
+  //
+  // FR-R3-051 / M-05 (2026-08-24) — 660 → 698 for the manifest scope becoming a
+  // declared, required field on every spec, one resolver from scope to
+  // configuration target, and the rollback capture/restore pair becoming
+  // scope-aware. Same shape as the note above: `scope` is a new column in the
+  // table this file exists to be, so extraction would split one declaration
+  // across two files to keep a ceiling. The prose that justified the change was
+  // moved OUT, to
+  // specs/136-settings-scope-and-defaults/contracts/settings-write-target.md,
+  // before raising — the budget buys the note, not the explanation.
+  { path: 'src/config/general-settings.ts', maxLines: 698 }
 ];
 
 function lineCount(path: string): number {

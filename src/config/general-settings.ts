@@ -7,10 +7,13 @@
 //   2. `writeGeneralSettings(config, updates)` validates a batch of
 //      updates transactionally — every key must be in the allowlist
 //      AND every value must match the declared runtime type — and then
-//      writes each accepted key to `vscode.ConfigurationTarget.Workspace`
-//      (FR-020). On validation failure no key is written; on a later
-//      persistence failure, keys already written by the batch are restored
-//      to their previous workspace-scope values.
+//      writes each accepted key at the configuration target its MANIFEST
+//      SCOPE requires — `Global` for an `application`-scoped key, which has
+//      no workspace layer, and `Workspace` otherwise (FR-R3-051 / M-05,
+//      superseding the original FR-020 "Workspace only"). On validation
+//      failure no key is written; on a later persistence failure, keys
+//      already written by the batch are restored at the same layer they
+//      were written to.
 //
 // The host adds the `schegent.` prefix; payload keys are unprefixed
 // scalar setting names. See contracts/general-settings-ipc.md.
@@ -35,8 +38,21 @@ export interface GeneralSettingsConfig {
   update(key: string, value: unknown, target: number): Promise<void> | Thenable<void>;
 }
 
+/** Mirrors `vscode.ConfigurationTarget.Global`. */
+export const CONFIGURATION_TARGET_GLOBAL = 1;
+
 /** Mirrors `vscode.ConfigurationTarget.Workspace`. */
 export const CONFIGURATION_TARGET_WORKSPACE = 2;
+
+/**
+ * FR-R3-051 (M-05) — the one place a key's configuration target is decided.
+ * An `application`-scoped setting has no workspace layer, so real VS Code
+ * refuses that write. See the contract named above for why this is one resolver
+ * and not a constant at each of the three call sites.
+ */
+export function configurationTargetFor(scope: ManifestSettingScope): number {
+  return scope === 'application' ? CONFIGURATION_TARGET_GLOBAL : CONFIGURATION_TARGET_WORKSPACE;
+}
 
 /** Setting scope as projected to the webview. */
 export type SettingScope = 'workspace' | 'user' | 'default';
@@ -126,7 +142,15 @@ type RuntimeType =
   | 'string-enum'
   | 'string-no-traversal';
 
+/**
+ * FR-R3-051 (M-05) — the manifest's `scope`, mirrored so a write can pick the
+ * target that scope requires. Required, so a key without one fails to compile.
+ * See specs/136-settings-scope-and-defaults/contracts/settings-write-target.md.
+ */
+export type ManifestSettingScope = 'application' | 'window' | 'resource';
+
 interface KeySpec {
+  readonly scope: ManifestSettingScope;
   readonly type: RuntimeType;
   readonly typedField: keyof Omit<GeneralSettings, 'scopes'>;
   readonly defaultValue: unknown;
@@ -136,47 +160,47 @@ interface KeySpec {
   readonly allowedValues?: readonly string[];
 }
 
-const KEY_SPECS: Readonly<Record<AllowedKey, KeySpec>> = Object.freeze({
-  'cli.path': { type: 'string', typedField: 'cliPath', defaultValue: 'claude' },
-  'codex.path': { type: 'string', typedField: 'codexPath', defaultValue: 'codex' },
-  'agy.path': { type: 'string', typedField: 'agyPath', defaultValue: 'agy' },
-  'logging.verbose': {
+export const KEY_SPECS: Readonly<Record<AllowedKey, KeySpec>> = Object.freeze({
+  'cli.path': { scope: 'application', type: 'string', typedField: 'cliPath', defaultValue: 'claude' },
+  'codex.path': { scope: 'application', type: 'string', typedField: 'codexPath', defaultValue: 'codex' },
+  'agy.path': { scope: 'application', type: 'string', typedField: 'agyPath', defaultValue: 'agy' },
+  'logging.verbose': { scope: 'resource',
     type: 'boolean',
     typedField: 'loggingVerbose',
     defaultValue: false
   },
-  'loop.maxIterations': {
+  'loop.maxIterations': { scope: 'resource',
     type: 'number',
     typedField: 'loopMaxIterations',
     defaultValue: 10,
     min: 1,
     max: 50
   },
-  'invocation.timeoutSeconds': {
+  'invocation.timeoutSeconds': { scope: 'resource',
     type: 'number',
     typedField: 'invocationTimeoutSeconds',
     defaultValue: 5400,
     min: 30
   },
-  'watchdog.pollIntervalMinutes': {
+  'watchdog.pollIntervalMinutes': { scope: 'resource',
     type: 'number',
     typedField: 'watchdogPollIntervalMinutes',
     defaultValue: 30,
     min: 1
   },
-  'audit.rotation.sizeMB': {
+  'audit.rotation.sizeMB': { scope: 'resource',
     type: 'number',
     typedField: 'auditRotationSizeMB',
     defaultValue: 5,
     min: 1
   },
-  'audit.rotation.maxAgeDays': {
+  'audit.rotation.maxAgeDays': { scope: 'resource',
     type: 'number',
     typedField: 'auditRotationMaxAgeDays',
     defaultValue: 30,
     min: 1
   },
-  defaultPipelineId: {
+  defaultPipelineId: { scope: 'resource',
     type: 'string',
     typedField: 'defaultPipelineId',
     // Feature 056 Track 3 (FR-013..FR-017) — Align host default with the
@@ -184,12 +208,12 @@ const KEY_SPECS: Readonly<Record<AllowedKey, KeySpec>> = Object.freeze({
     // idle snapshot agree. Feature 098 (T047, FR-033a) — that value is unset.
     defaultValue: ''
   },
-  fatalSignatures: {
+  fatalSignatures: { scope: 'resource',
     type: 'array-of-string',
     typedField: 'fatalSignatures',
     defaultValue: []
   },
-  'claude.autoCompactPctOverride': {
+  'claude.autoCompactPctOverride': { scope: 'resource',
     type: 'number-int-range',
     typedField: 'claudeAutoCompactPctOverride',
     defaultValue: undefined,
@@ -197,7 +221,7 @@ const KEY_SPECS: Readonly<Record<AllowedKey, KeySpec>> = Object.freeze({
     max: 100,
     allowClear: true
   },
-  'queue.globalConcurrencyCap': {
+  'queue.globalConcurrencyCap': { scope: 'resource',
     type: 'number-int-range',
     typedField: 'queueGlobalConcurrencyCap',
     // Feature 092 (T055, FR-026/FR-027) — the cap was pinned at 1 by feature
@@ -216,23 +240,23 @@ const KEY_SPECS: Readonly<Record<AllowedKey, KeySpec>> = Object.freeze({
     min: 1,
     max: 20
   },
-  'queue.defaultQueueId': {
+  'queue.defaultQueueId': { scope: 'window',
     type: 'string',
     typedField: 'queueDefaultQueueId',
     defaultValue: 'default'
   },
-  'logging.runtimeLogLevel': {
+  'logging.runtimeLogLevel': { scope: 'resource',
     type: 'string-enum',
     typedField: 'runtimeLogLevel',
     defaultValue: 'INFO',
     allowedValues: ['DEBUG', 'INFO', 'WARN', 'ERROR']
   },
-  'logging.runtimeLogFilePath': {
+  'logging.runtimeLogFilePath': { scope: 'resource',
     type: 'string-no-traversal',
     typedField: 'runtimeLogFilePath',
     defaultValue: ''
   },
-  'retry.maxAttempts': {
+  'retry.maxAttempts': { scope: 'resource',
     type: 'number-int-range',
     typedField: 'retryMaxAttempts',
     // Feature 056 Track 4 (FR-018..FR-022) — The advertised maximum
@@ -247,12 +271,12 @@ const KEY_SPECS: Readonly<Record<AllowedKey, KeySpec>> = Object.freeze({
   // Workspace-wide default for a phase's `forceContinueOnRetryCap`. Defaults
   // OFF: advancing on an unsatisfied condition is a deliberate trade of
   // verification for progress, so it is opted into, never inherited.
-  'retry.forceContinueOnCap': {
+  'retry.forceContinueOnCap': { scope: 'resource',
     type: 'boolean',
     typedField: 'retryForceContinueOnCap',
     defaultValue: false
   },
-  'logging.runtimeLogMaxBytes': {
+  'logging.runtimeLogMaxBytes': { scope: 'resource',
     type: 'number-int-range',
     typedField: 'runtimeLogMaxBytes',
     // Feature 056 Track 7 (F-009 runtime-log retention) — Default 5 MiB.
@@ -263,7 +287,7 @@ const KEY_SPECS: Readonly<Record<AllowedKey, KeySpec>> = Object.freeze({
     min: 65536,
     max: 1073741824
   },
-  'logging.runtimeLogMaxGenerations': {
+  'logging.runtimeLogMaxGenerations': { scope: 'resource',
     type: 'number-int-range',
     typedField: 'runtimeLogMaxGenerations',
     // Feature 056 Track 7 (F-009 runtime-log retention) — Default 3
@@ -274,24 +298,27 @@ const KEY_SPECS: Readonly<Record<AllowedKey, KeySpec>> = Object.freeze({
     min: 0,
     max: 20
   },
-  'logging.sessionRetentionMaxAgeDays': {
+  'logging.sessionRetentionMaxAgeDays': { scope: 'resource',
     type: 'number-int-range',
     typedField: 'sessionRetentionMaxAgeDays',
     defaultValue: 30,
     min: 1,
     max: 3650
   },
-  'logging.sessionRetentionMaxBytes': {
+  'logging.sessionRetentionMaxBytes': { scope: 'resource',
     type: 'number-int-range',
     typedField: 'sessionRetentionMaxBytes',
     defaultValue: 512 * 1024 * 1024,
     min: 1024 * 1024,
     max: 10 * 1024 * 1024 * 1024
   },
-  'logging.rawTranscriptMode': {
+  'logging.rawTranscriptMode': { scope: 'resource',
     type: 'string-enum',
     typedField: 'rawTranscriptMode',
-    defaultValue: 'always',
+    // FR-R3-051 (M-06) — `errors-only`, matching the manifest. This said
+    // `always`: the manifest is what VS Code applies, so a code fallback here
+    // retained MORE raw transcript data than the setting the user was shown.
+    defaultValue: 'errors-only',
     allowedValues: ['always', 'errors-only', 'off']
   }
 });
@@ -303,8 +330,8 @@ export type WriteResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly reason: string };
 
-interface WorkspaceValueSnapshot {
-  readonly hadWorkspaceValue: boolean;
+interface WrittenValueSnapshot {
+  readonly hadValue: boolean;
   readonly value: unknown;
 }
 
@@ -437,35 +464,44 @@ const RUNTIME_LOG_KEYS = new Set<string>([
   'logging.runtimeLogMaxGenerations'
 ]);
 
-function captureWorkspaceValue(
+/**
+ * FR-R3-051 (M-05) — snapshot the layer this batch is about to WRITE, which is
+ * the only layer a rollback may restore. Scope-aware through the same resolver
+ * as the write, not a parallel pair; see the contract for why.
+ */
+function captureWrittenValue(
   config: GeneralSettingsConfig,
-  key: string
-): WorkspaceValueSnapshot {
+  key: string,
+  scope: ManifestSettingScope
+): WrittenValueSnapshot {
   const inspected = config.inspect<unknown>(key);
-  const value = inspected?.workspaceValue;
+  const value =
+    configurationTargetFor(scope) === CONFIGURATION_TARGET_GLOBAL
+      ? inspected?.globalValue
+      : inspected?.workspaceValue;
   return {
-    hadWorkspaceValue: value !== undefined,
+    hadValue: value !== undefined,
     value
   };
 }
 
-async function restoreWorkspaceValue(
+async function restoreWrittenValue(
   config: GeneralSettingsConfig,
-  key: string,
-  snapshot: WorkspaceValueSnapshot
+  key: AllowedKey,
+  snapshot: WrittenValueSnapshot
 ): Promise<void> {
   await Promise.resolve(
     config.update(
       key,
-      snapshot.hadWorkspaceValue ? snapshot.value : undefined,
-      CONFIGURATION_TARGET_WORKSPACE
+      snapshot.hadValue ? snapshot.value : undefined,
+      configurationTargetFor(KEY_SPECS[key].scope)
     )
   );
 }
 
 async function rollbackWrittenSettings(
   config: GeneralSettingsConfig,
-  snapshots: ReadonlyMap<string, WorkspaceValueSnapshot>,
+  snapshots: ReadonlyMap<string, WrittenValueSnapshot>,
   writtenKeys: readonly string[],
   primaryReason: string
 ): Promise<string | null> {
@@ -473,7 +509,7 @@ async function rollbackWrittenSettings(
     const snapshot = snapshots.get(key);
     if (!snapshot) continue;
     try {
-      await restoreWorkspaceValue(config, key, snapshot);
+      await restoreWrittenValue(config, key as AllowedKey, snapshot);
     } catch (err) {
       const detail = err instanceof Error ? err.message : 'unknown';
       return `rollback-failed:${key}:after:${primaryReason}:${detail}`;
@@ -506,9 +542,9 @@ export async function writeGeneralSettings(
     }
   }
 
-  const snapshots = new Map<string, WorkspaceValueSnapshot>();
+  const snapshots = new Map<string, WrittenValueSnapshot>();
   for (const [key] of entries) {
-    snapshots.set(key, captureWorkspaceValue(config, key));
+    snapshots.set(key, captureWrittenValue(config, key, KEY_SPECS[key as AllowedKey].scope));
   }
 
   // All valid — write each. Surface the first underlying failure as
@@ -521,11 +557,13 @@ export async function writeGeneralSettings(
       spec.type === 'number-int-range' &&
       spec.allowClear === true &&
       (value === null || value === undefined);
+    // FR-R3-051 (M-05) — the target the key's manifest scope requires.
+    const target = configurationTargetFor(spec.scope);
     try {
       if (isClear) {
-        await Promise.resolve(config.update(key, undefined, CONFIGURATION_TARGET_WORKSPACE));
+        await Promise.resolve(config.update(key, undefined, target));
       } else {
-        await Promise.resolve(config.update(key, value, CONFIGURATION_TARGET_WORKSPACE));
+        await Promise.resolve(config.update(key, value, target));
       }
       writtenKeys.push(key);
     } catch (err) {

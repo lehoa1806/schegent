@@ -4,7 +4,9 @@
 //   - Allowlist enforcement: unknown keys rejected, no write attempted.
 //   - Per-key runtime type check (string/number/boolean/array-of-string).
 //   - `fatalSignatures` MUST be an array of non-empty strings.
-//   - All writes target `ConfigurationTarget.Workspace` only (FR-020).
+//   - Each write targets the layer its manifest scope declares: `Global` for
+//     `application`-scoped keys, `Workspace` otherwise (FR-R3-051 / M-05,
+//     superseding the original FR-020 "Workspace only").
 //   - Transactional semantics: if ANY key fails validation, NO key is
 //     written (matches contracts/general-settings-ipc.md).
 //   - `readGeneralSettings()` projects the current effective workspace
@@ -82,7 +84,13 @@ function makeConfig(opts: {
   return fake as unknown as GeneralSettingsConfig;
 }
 
-const CONFIGURATION_TARGET_WORKSPACE = 2; // vscode.ConfigurationTarget.Workspace
+// FR-R3-051 (M-06) — imported, not restated. A local copy of a constant the
+// source already exports is the same defect this feature is removing elsewhere:
+// it agrees until it doesn't, and nothing checks.
+import {
+  CONFIGURATION_TARGET_WORKSPACE,
+  CONFIGURATION_TARGET_GLOBAL
+} from '../../../src/config/general-settings';
 
 describe('Feature 011 — general-settings allowlist', () => {
   it('ALLOWED_KEYS contains exactly the scalar keys (unprefixed)', () => {
@@ -228,9 +236,18 @@ describe('Feature 011 — general-settings transactional accept/reject', () => {
     });
     expect(result.ok).toBe(true);
     expect(fake.updateCalls).toHaveLength(3);
-    for (const call of fake.updateCalls) {
-      expect(call.target).toBe(CONFIGURATION_TARGET_WORKSPACE);
-    }
+    // FR-R3-051 (M-05) — this loop used to assert every key went to the
+    // WORKSPACE target, `cli.path` included. That is the defect, asserted as
+    // correct: `cli.path` is `application`-scoped and has no workspace layer in
+    // real VS Code. Made scope-aware rather than dropped, so it now distinguishes
+    // the two targets instead of accepting either.
+    expect(
+      fake.updateCalls.map((call) => [call.key, call.target] as const)
+    ).toEqual([
+      ['loop.maxIterations', CONFIGURATION_TARGET_WORKSPACE],
+      ['logging.verbose', CONFIGURATION_TARGET_WORKSPACE],
+      ['cli.path', CONFIGURATION_TARGET_GLOBAL]
+    ]);
   });
 });
 

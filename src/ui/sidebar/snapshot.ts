@@ -1176,7 +1176,7 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   runtimeLogMaxGenerations: 3,
   sessionRetentionMaxAgeDays: 30,
   sessionRetentionMaxBytes: 512 * 1024 * 1024,
-  rawTranscriptMode: 'always',
+  rawTranscriptMode: 'errors-only',
   retryMaxAttempts: 5,
   retryForceContinueOnCap: false,
   scopes: Object.freeze({
