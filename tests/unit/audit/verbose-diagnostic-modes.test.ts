@@ -112,6 +112,22 @@ describe('verbose diagnostics are owner-only (M-13)', () => {
     }
   });
 
+  posixOnly('refuses to chmod through a symbolic link', async () => {
+    // `chmod` follows a link, so tightening a symlinked diagnostic path would
+    // change the mode of whatever it points at. Assert the outsider's mode is
+    // untouched -- that is the whole claim, so it has to be read from disk.
+    const outsider = path.join(root, 'outsider.txt');
+    await fs.writeFile(outsider, 'not a diagnostic', { mode: 0o666 });
+    const before = await modeOf(outsider);
+
+    const dir = path.join(root, 'link-target-dir');
+    await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+    await fs.symlink(outsider, path.join(dir, 'stream.jsonl'));
+    await writeThrough(dir);
+
+    expect(await modeOf(outsider)).toBe(before);
+  });
+
   posixOnly('grants no group or other access, whatever the ambient umask', async () => {
     const dir = path.join(root, 'no-group-other');
     await writeThrough(dir);

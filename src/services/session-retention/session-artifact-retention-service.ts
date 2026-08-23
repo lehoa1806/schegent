@@ -497,7 +497,11 @@ export class SessionArtifactRetentionService {
       const named = entry.isFile() || entry.isSymbolicLink();
       const match = named ? RAW_TRANSCRIPT_NAME.exec(entry.name) : null;
       const runId = match?.[1] ?? `${PENDING_STAGING_DIR_NAME}/${entry.name}`;
-      if (entry.name === '.' || entry.name === '..') continue;
+      // Mirrors the outer loop's guard, and on the same value: a name like
+      // `raw-..log` parses to an id of `.`, which is not a run and must not
+      // become a group key. (Deletion paths are built from the entry name, never
+      // from the key, so this was a hygiene defect and not a traversal one.)
+      if (!runId || runId === '.' || runId === '..') continue;
       const group = groups.get(runId) ?? {
         runId,
         targets: [],

@@ -123,7 +123,24 @@ export class VerboseDiagnosticWriter {
     desired: number
   ): Promise<void> {
     try {
-      const current = (await fs.stat(pathname)).mode & 0o777;
+      // `lstat`, not `stat`, and refuse a symlink outright. `stat` reports the
+      // TARGET's mode and `chmod` changes the TARGET (POSIX has no `lchmod` on
+      // Linux, and Node follows the link), so on a path an attacker can plant a
+      // symlink into this would become a chmod-an-arbitrary-file primitive.
+      // Bounded -- the mask only ever clears bits, so the worst case is stripping
+      // access from a file someone else owns the name of, not granting any -- but
+      // the diagnostics directory is inside the workspace, and refusing costs
+      // nothing: a real diagnostic path is never a symlink.
+      const stat = await fs.lstat(pathname);
+      if (stat.isSymbolicLink()) {
+        this.recordWarning(
+          target,
+          slot,
+          `verbose diagnostic ${slot} mode not enforced: path is a symbolic link`
+        );
+        return;
+      }
+      const current = stat.mode & 0o777;
       if ((current & NON_OWNER_BITS) === 0) return;
       await fs.chmod(pathname, current & desired);
       this.logger.info(

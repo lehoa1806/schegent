@@ -225,7 +225,12 @@ export class AuditLogWriter {
     // the chain and let an abandoned write interleave with the next append.
     this.writeChain = this.holdOrdering(settled);
     const next = this.boundForCaller(settled);
-    next.catch((err) => {
+    // The warn hangs off the caller's view, not off the chain: it reports what
+    // the caller was told, and putting it back on the chain would reintroduce
+    // exactly the release this fix removes. `void` because the branch is
+    // deliberate -- `next` is awaited below, and a `.catch` on a derived promise
+    // does not consume the rejection the caller still receives.
+    void next.catch((err) => {
       const code = (err as NodeJS.ErrnoException).code;
       const shouldWarn = this.evidenceHealth?.reportFailure(
         'audit',
