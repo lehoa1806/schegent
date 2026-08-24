@@ -33,10 +33,19 @@ npm ci --ignore-scripts
 npm --prefix webview-ui ci --ignore-scripts
 ```
 
+The visual regression suite needs a Chromium build that `npm install` does not fetch. Install it once:
+
+```bash
+npx playwright install chromium
+```
+
+Without it, `npm run test:visual` — and therefore `npm run ci:fast` — fails its preflight with one message naming this command. **Re-run it after any Playwright version bump**: the browser is pinned to a revision the installed Playwright resolves, so a bump moves the target and a cache that worked yesterday stops satisfying it. That is a stale cache, not a broken test, and the preflight says which. The recorded fail/install/pass sequence and what the preflight does not cover are in [Visual gate preflight observations](docs/operations/visual-gate-preflight-observations.md).
+
 See [Developer setup](docs/tutorials/developer-setup.md) for the complete build and Extension Development Host check.
 <!-- Source: .nvmrc -->
 <!-- Source: package.json -->
 <!-- Source: .github/workflows/ci.yml -->
+<!-- Source: scripts/check-playwright-browser.mjs -->
 
 ## Keep the change scoped
 
@@ -91,7 +100,7 @@ Review every generated difference. Do not hand-edit `src/contracts/generated/` t
 
 At minimum, run the checks relevant to the changed tree. The broad repository gates are:
 
-The review preflight `npm run ci:fast` invokes these manifest targets in order: `typecheck:tests`, `lint`, `verify:all`, `test:evals`, `test:visual`, `test:perf`, `build:host`, and `package:smoke`. It therefore includes browser-backed visual testing and a VSIX package smoke build, not only typechecking and unit tests.
+The review preflight `npm run ci:fast` invokes these manifest targets in order: `typecheck:tests`, `lint`, `verify:all`, `test:evals`, `test:visual`, `test:perf`, `build:host`, and `package:smoke`. It therefore includes browser-backed visual testing and a VSIX package smoke build, not only typechecking and unit tests. The visual step needs the Chromium build declared under [Prepare a checkout](#prepare-a-checkout) — `npx playwright install chromium`, re-run after a Playwright version bump. A missing or stale browser fails the preflight with a single setup message rather than a wall of red specs.
 
 <!-- Source: package.json -->
 
