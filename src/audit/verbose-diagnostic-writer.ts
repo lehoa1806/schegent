@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as fs from 'fs/promises';
-import { openWithinRoot } from '../lib/safe-open';
+import { ensureDirWithinRoot, openWithinRoot } from '../lib/safe-open';
 import type { SanitizedLogger } from '../lib/logger';
 import type { VerboseDiagnosticTarget } from '../runner/invocation-result';
 
@@ -33,13 +33,6 @@ const DIAGNOSTIC_FILE_MODE = 0o600;
 const NON_OWNER_BITS = 0o077;
 
 /**
- * FR-R3-053 — `openWithinRoot` opens FILES, so creating the directory means
- * opening one inside it. This marker is that file: it exists so the walk has a
- * leaf to create, and it is the same on every prepare so it does not accumulate.
- */
-const DIRECTORY_PROBE_NAME = '.prepared';
-
-/**
  * Best-effort sibling sink for `--debug-to-file`, `--output-format
  * stream-json`, and `--verbose` CLI streams.
  *
@@ -68,23 +61,19 @@ export class VerboseDiagnosticWriter {
       // nothing about what `mkdir` follows on the way there, and these
       // diagnostics are deliberately unredacted.
       //
-      // Opened and closed immediately: the directory is what has to exist, and
-      // holding a handle to it buys nothing. `appendBestEffort` opens each file
-      // through the same walk.
-      const probe = await openWithinRoot(
+      const ready = await ensureDirWithinRoot(
         target.workspaceRoot,
-        [...target.segments, DIRECTORY_PROBE_NAME],
-        { flags: 'a', createDirs: true, dirMode: DIAGNOSTIC_DIR_MODE, fileMode: DIAGNOSTIC_FILE_MODE }
+        target.segments,
+        DIAGNOSTIC_DIR_MODE
       );
-      if (probe.outcome === 'refused') {
+      if (ready.outcome === 'refused') {
         this.recordWarning(
           target,
           'directory',
-          `verbose diagnostic directory refused: ${probe.reason}`
+          `verbose diagnostic directory refused: ${ready.reason}`
         );
         return;
       }
-      await probe.handle.close().catch(() => undefined);
       // A `mode` applies only when the path is CREATED. A directory that already
       // exists -- every workspace that predates this change -- keeps whatever it
       // had, so the defect would persist for almost all installs. Tighten it.

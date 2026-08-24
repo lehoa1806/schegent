@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import type { SanitizedLogger } from '../lib/logger';
 import { resolveContainedLink } from '../lib/path-containment';
 import type { WorkflowRun } from '../state/workflow-run';
+import { ensureDirWithinRoot, openWithinRoot } from '../lib/safe-open';
 import {
   joinDiffSections,
   splitDiffSections,
@@ -101,7 +102,7 @@ export class RunCheckpointService {
 
     let capture: CheckpointCapture;
     try {
-      await this.ensureRunRoot(runRoot);
+      await this.ensureRunRoot(safeRun);
       capture = await this.capture();
     } catch (error) {
       // A tree that cannot be read is a snapshot failure, not a decline, and the
@@ -112,15 +113,18 @@ export class RunCheckpointService {
 
     const decision = this.decide(run, inFlight, capture);
     if (decision.kind === 'decline') {
-      await this.recordDeclined(runRoot, run, phaseId, safePhase, inFlight, decision);
+      await this.recordDeclined(runRoot, safeRun, run, phaseId, safePhase, inFlight, decision);
       return;
     }
 
     try {
       const prefix = `${Date.now()}-${safePhase}`;
-      await fs.writeFile(path.join(runRoot, `${prefix}.patch`), decision.body, { mode: 0o600 });
-      await fs.writeFile(
-        path.join(runRoot, `${prefix}.json`),
+      // FR-R3-053 — both artifacts through the walk. The patch first: if it is
+      // refused there is no point writing a manifest that points at nothing.
+      if (!(await this.writeCheckpointArtifact(safeRun, `${prefix}.patch`, decision.body))) return;
+      await this.writeCheckpointArtifact(
+        safeRun,
+        `${prefix}.json`,
         JSON.stringify(
           {
             runId: run.id,
@@ -140,8 +144,7 @@ export class RunCheckpointService {
           },
           null,
           2
-        ),
-        { mode: 0o600 }
+        )
       );
       await this.prune(runRoot);
     } catch (error) {
@@ -267,9 +270,83 @@ export class RunCheckpointService {
     return { diff, sections: splitDiffSections(diff), status, baseCommit: head.trim() };
   }
 
-  private async ensureRunRoot(runRoot: string): Promise<void> {
-    await fs.mkdir(runRoot, { recursive: true, mode: 0o700 });
-    await fs.chmod(runRoot, 0o700);
+  /**
+   * FR-R3-053 — the pre-flight, through the walk.
+   *
+   * Kept as a pre-flight rather than folded into the artifact writes: it runs
+   * before `capture()` so a directory that cannot be created blocks the
+   * Git-capable phase as `checkpoint-unavailable`, which is deliberately a
+   * different outcome from a decline. Doing it only at write time would turn that
+   * into a silent missing checkpoint after the work had already run.
+   *
+   * Throws on refusal, because the caller's `catch` is what maps it to
+   * `checkpoint-unavailable`.
+   */
+  /**
+   * FR-R3-053 — `this.root` is the trust anchor, and creating it is deliberately
+   * outside the walk's remit.
+   *
+   * In production `this.root` is `context.globalStorageUri.fsPath` — VS Code's
+   * per-extension global storage, which is **not under the workspace** and is a
+   * directory the extension is expected to create. `openWithinRoot` bounds paths
+   * beneath a root it trusts; it never creates that root, because the root is the
+   * one path it does not verify. Those two facts fit together here: the anchor is
+   * extension-owned storage outside the workspace, and everything beneath it —
+   * `checkpoints/<runId>/…`, where an unredacted binary Git diff lands — goes
+   * through the checked walk.
+   *
+   * An earlier attempt walked from `workspaceRoot` instead, on the assumption that
+   * the root sat under it. It does not, and every checkpoint was refused. Recorded
+   * because the assumption looks reasonable and is wrong.
+   */
+  private async ensureRunRoot(safeRun: string): Promise<void> {
+    await fs.mkdir(this.root, { recursive: true, mode: 0o700 });
+    const ready = await ensureDirWithinRoot(this.root, ['checkpoints', safeRun], 0o700);
+    if (ready.outcome === 'refused') {
+      throw new Error(`checkpoint run root refused: ${ready.reason} (${ready.errno})`);
+    }
+  }
+
+  /**
+   * FR-R3-053 (H-02) — write one checkpoint artifact through the safe walk.
+   *
+   * A checkpoint patch can contain an **unredacted binary Git diff** — the threat
+   * model says so — so a symlink at any component of
+   * `<root>/checkpoints/<runId>/` redirects that content out of the workspace.
+   * `mkdir -p` followed by `writeFile` on a composed path followed neither
+   * component nor leaf safely.
+   *
+   * `createDirs` builds `checkpoints/<runId>` as part of the walk, which is what
+   * `ensureRunRoot` was doing with `mkdir -p`; the chain is created with the same
+   * 0o700 it had.
+   *
+   * Returns whether it wrote, so a caller reports a refusal rather than assuming
+   * the artifact exists.
+   */
+  private async writeCheckpointArtifact(
+    safeRun: string,
+    leaf: string,
+    body: string
+  ): Promise<boolean> {
+    const opened = await openWithinRoot(this.root, ['checkpoints', safeRun, leaf], {
+      flags: 'w',
+      createDirs: true,
+      dirMode: 0o700,
+      fileMode: 0o600
+    });
+    if (opened.outcome === 'refused') {
+      this.logger.warn(
+        `checkpoint artifact refused: ${opened.reason} (${opened.errno}); ` +
+          'checkpoint not written'
+      );
+      return false;
+    }
+    try {
+      await opened.handle.write(body, null, 'utf8');
+      return true;
+    } finally {
+      await opened.handle.close().catch(() => undefined);
+    }
   }
 
   /**
@@ -296,6 +373,9 @@ export class RunCheckpointService {
    */
   private async recordDeclined(
     runRoot: string,
+    // FR-R3-053 — the safe run SEGMENT, not only the composed `runRoot`. The walk
+    // needs the segment; `runRoot` stays for `prune`, which is path-based.
+    safeRun: string,
     run: WorkflowRun,
     phaseId: string,
     safePhase: string,
@@ -306,9 +386,12 @@ export class RunCheckpointService {
       `checkpoint declined: ${decision.reason} runId=${run.id} phaseId=${phaseId} inFlightRuns=${inFlightRuns}`
     );
     try {
-      await this.ensureRunRoot(runRoot);
-      await fs.writeFile(
-        path.join(runRoot, `${Date.now()}-${safePhase}.declined.json`),
+      // FR-R3-053 — the declined manifest through the same walk. It carries no
+      // patch body, but it lands in the same directory, and a redirect that can
+      // place a file there can place any file there.
+      await this.writeCheckpointArtifact(
+        safeRun,
+        `${Date.now()}-${safePhase}.declined.json`,
         JSON.stringify(
           {
             runId: run.id,
@@ -321,8 +404,7 @@ export class RunCheckpointService {
           },
           null,
           2
-        ),
-        { mode: 0o600 }
+        )
       );
       // Markers are pruned on the same per-Run budget as snapshots — a Run that
       // spends its whole life beside a sibling writes one per Git-capable phase

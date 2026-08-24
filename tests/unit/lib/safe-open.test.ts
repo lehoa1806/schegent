@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { openWithinRoot } from '../../../src/lib/safe-open';
+import {
+  ensureDirWithinRoot,
+  openWithinRoot,
+  openWithinRootByPath,
+  segmentsUnderRoot
+} from '../../../src/lib/safe-open';
 
 /**
  * FR-R3-053 — every assertion here drives the real filesystem with real
@@ -96,5 +101,118 @@ describe('openWithinRoot refuses a symlink at any component', () => {
     await expect(
       openWithinRoot(root, ['x.log'], { flags: 'a+' })
     ).rejects.toThrow(/unsupported flags/);
+  });
+});
+
+describe('openWithinRootByPath derives the segments and keeps the same rules', () => {
+  let root: string;
+  let outside: string;
+
+  beforeEach(async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-bypath-'));
+    root = path.join(base, 'root');
+    outside = path.join(base, 'outside');
+    await fs.mkdir(root);
+    await fs.mkdir(outside);
+  });
+
+  afterEach(async () => {
+    await fs.rm(path.dirname(root), { recursive: true, force: true });
+  });
+
+  posixOnly('opens a path under the root', async () => {
+    const result = await openWithinRootByPath(root, path.join(root, 'a', 'b.log'), {
+      flags: 'a',
+      createDirs: true,
+      dirMode: 0o700
+    });
+    expect(result.outcome).toBe('opened');
+    if (result.outcome !== 'opened') return;
+    await result.handle.close();
+  });
+
+  it('refuses a path outside the root', async () => {
+    // The derivation IS the check: `path.relative` yields a `..` prefix and the
+    // walk never starts.
+    const result = await openWithinRootByPath(root, path.join(outside, 'x.log'), { flags: 'a' });
+    expect(result).toMatchObject({ outcome: 'refused', reason: 'escapes-root' });
+  });
+
+  it('refuses the root itself, which names no leaf to open', async () => {
+    const result = await openWithinRootByPath(root, root, { flags: 'a' });
+    expect(result).toMatchObject({ outcome: 'refused', reason: 'escapes-root' });
+  });
+
+  posixOnly('refuses a symlinked component reached by path, exactly as by segments', async () => {
+    // The convenience must not have looser rules than the primitive it wraps.
+    await fs.symlink(outside, path.join(root, 'linked'));
+    const result = await openWithinRootByPath(root, path.join(root, 'linked', 'x.log'), {
+      flags: 'a',
+      createDirs: true
+    });
+    expect(result).toMatchObject({ outcome: 'refused', reason: 'symlink-component' });
+    expect(await fs.readdir(outside)).toEqual([]);
+  });
+
+  it('reports segments under the root, and null for anything else', () => {
+    expect(segmentsUnderRoot(root, path.join(root, 'a', 'b'))).toEqual(['a', 'b']);
+    expect(segmentsUnderRoot(root, root)).toBeNull();
+    expect(segmentsUnderRoot(root, path.join(outside, 'a'))).toBeNull();
+  });
+});
+
+describe('ensureDirWithinRoot makes a directory without inventing a file', () => {
+  let root: string;
+  let outside: string;
+
+  beforeEach(async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-ensuredir-'));
+    root = path.join(base, 'root');
+    outside = path.join(base, 'outside');
+    await fs.mkdir(root);
+    await fs.mkdir(outside);
+  });
+
+  afterEach(async () => {
+    await fs.rm(path.dirname(root), { recursive: true, force: true });
+  });
+
+  posixOnly('creates the chain and leaves it EMPTY', async () => {
+    // The whole reason this exists. Spelling "make this directory" as "open a
+    // marker inside it" put a stray dotfile in every checkpoint and diagnostics
+    // directory, and broke listings that assert their exact contents.
+    const ready = await ensureDirWithinRoot(root, ['checkpoints', 'run-1'], 0o700);
+    expect(ready.outcome).toBe('ready');
+    const made = path.join(root, 'checkpoints', 'run-1');
+    expect(await fs.readdir(made)).toEqual([]);
+    expect((await fs.stat(made)).mode & 0o777).toBe(0o700);
+  });
+
+  posixOnly('is idempotent', async () => {
+    await ensureDirWithinRoot(root, ['a', 'b'], 0o700);
+    expect((await ensureDirWithinRoot(root, ['a', 'b'], 0o700)).outcome).toBe('ready');
+    expect(await fs.readdir(path.join(root, 'a', 'b'))).toEqual([]);
+  });
+
+  posixOnly('refuses a symlinked component, and creates nothing through it', async () => {
+    await fs.symlink(outside, path.join(root, 'linked'));
+    const ready = await ensureDirWithinRoot(root, ['linked', 'deep'], 0o700);
+    expect(ready).toMatchObject({ outcome: 'refused', reason: 'symlink-component' });
+    expect(await fs.readdir(outside)).toEqual([]);
+  });
+
+  posixOnly('refuses when a component is a regular file', async () => {
+    await fs.writeFile(path.join(root, 'a-file'), 'x');
+    const ready = await ensureDirWithinRoot(root, ['a-file', 'deep'], 0o700);
+    expect(ready).toMatchObject({ outcome: 'refused', reason: 'not-a-directory' });
+  });
+
+  it('refuses traversal and empty segment lists without touching disk', async () => {
+    for (const segments of [[], ['..'], ['a', '..'], ['']]) {
+      expect(await ensureDirWithinRoot(root, segments, 0o700)).toMatchObject({
+        outcome: 'refused',
+        reason: 'escapes-root'
+      });
+    }
   });
 });

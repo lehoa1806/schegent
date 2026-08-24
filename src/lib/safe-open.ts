@@ -106,6 +106,75 @@ function invalidSegment(segment: string): boolean {
  * caller's own workspace root, and a caller that cannot trust it has a different
  * problem than this function can solve.
  */
+type SafeOpenRefusalResult = Extract<SafeOpenResult, { outcome: 'refused' }>;
+
+/**
+ * FR-R3-053 — the component walk, shared by the file open and the
+ * directory-only entry point.
+ *
+ * `lstat`, never `stat`, so a symlink is reported AS a symlink rather than as
+ * whatever it points at. That is the check the old `path.join` + `mkdir -p` had
+ * none of.
+ */
+async function walkDirectories(
+  root: string,
+  segments: readonly string[],
+  options: { readonly createDirs?: boolean; readonly dirMode?: number }
+): Promise<{ readonly outcome: 'ready'; readonly directory: string } | SafeOpenRefusalResult> {
+  let current = root;
+  for (const segment of segments) {
+    current = path.join(current, segment);
+    let stat: Awaited<ReturnType<typeof fsp.lstat>> | null = null;
+    try {
+      stat = await fsp.lstat(current);
+    } catch (error) {
+      if (errnoOf(error) !== 'ENOENT') return refuse('io-failed', errnoOf(error)) as SafeOpenRefusalResult;
+      if (options.createDirs !== true) return refuse('io-failed', 'ENOENT') as SafeOpenRefusalResult;
+      try {
+        // `mkdir` without `recursive` fails if the name already exists, which is
+        // the behaviour wanted here: a component that appeared between the
+        // `lstat` and now is not silently adopted.
+        await fsp.mkdir(current, { mode: options.dirMode });
+      } catch (mkdirError) {
+        if (errnoOf(mkdirError) !== 'EEXIST') {
+          return refuse('io-failed', errnoOf(mkdirError)) as SafeOpenRefusalResult;
+        }
+      }
+      try {
+        stat = await fsp.lstat(current);
+      } catch (error) {
+        return refuse('io-failed', errnoOf(error)) as SafeOpenRefusalResult;
+      }
+    }
+    if (stat.isSymbolicLink()) return refuse('symlink-component') as SafeOpenRefusalResult;
+    if (!stat.isDirectory()) return refuse('not-a-directory') as SafeOpenRefusalResult;
+  }
+  return { outcome: 'ready', directory: current };
+}
+
+/**
+ * FR-R3-053 — create a DIRECTORY chain under a trusted root, safely, with no
+ * leaf file.
+ *
+ * The first version of this migration spelled "make this directory" as "open a
+ * marker file inside it", and the marker was wrong twice: it appeared in
+ * directory listings that assert their exact contents, and an operator browsing
+ * checkpoints or diagnostics would have found a stray dotfile with no
+ * explanation. A directory is a legitimate thing to want and should not have to
+ * be spelled as a file.
+ */
+export async function ensureDirWithinRoot(
+  root: string,
+  segments: readonly string[],
+  dirMode?: number
+): Promise<{ readonly outcome: 'ready' } | SafeOpenRefusalResult> {
+  if (segments.length === 0 || segments.some(invalidSegment)) {
+    return refuse('escapes-root') as SafeOpenRefusalResult;
+  }
+  const walked = await walkDirectories(root, segments, { createDirs: true, dirMode });
+  return walked.outcome === 'refused' ? walked : { outcome: 'ready' };
+}
+
 export async function openWithinRoot(
   root: string,
   segments: readonly string[],
@@ -122,37 +191,9 @@ export async function openWithinRoot(
     return refuse('escapes-root');
   }
 
-  let current = root;
-  // Every component except the last must be an existing, non-symlink directory.
-  for (const segment of segments.slice(0, -1)) {
-    current = path.join(current, segment);
-    let stat: Awaited<ReturnType<typeof fsp.lstat>> | null = null;
-    try {
-      stat = await fsp.lstat(current);
-    } catch (error) {
-      if (errnoOf(error) !== 'ENOENT') return refuse('io-failed', errnoOf(error));
-      if (options.createDirs !== true) return refuse('io-failed', 'ENOENT');
-      try {
-        // `mkdir` without `recursive` fails if the name already exists, which is
-        // the behaviour wanted here: a component that appeared between the
-        // `lstat` and now is not silently adopted.
-        await fsp.mkdir(current, { mode: options.dirMode });
-      } catch (mkdirError) {
-        if (errnoOf(mkdirError) !== 'EEXIST') {
-          return refuse('io-failed', errnoOf(mkdirError));
-        }
-      }
-      try {
-        stat = await fsp.lstat(current);
-      } catch (error) {
-        return refuse('io-failed', errnoOf(error));
-      }
-    }
-    // `lstat`, so a symlink is reported AS a symlink rather than as whatever it
-    // points at. This is the check the old `path.join` + `mkdir -p` had none of.
-    if (stat.isSymbolicLink()) return refuse('symlink-component');
-    if (!stat.isDirectory()) return refuse('not-a-directory');
-  }
+  const walked = await walkDirectories(root, segments.slice(0, -1), options);
+  if (walked.outcome === 'refused') return walked;
+  const current = walked.directory;
 
   const leaf = path.join(current, segments[segments.length - 1]);
   // Translated OUTSIDE the try. Inside it, an unsupported `flags` value would be
@@ -206,4 +247,42 @@ function toFlagBits(flags: string): number {
     default:
       throw new Error(`openWithinRoot: unsupported flags ${JSON.stringify(flags)}`);
   }
+}
+
+/**
+ * FR-R3-053 — the same walk, for a caller that already holds an absolute path.
+ *
+ * Several sinks are PORTS: they receive a pathname from whoever calls them and
+ * have no segment list to offer. Requiring segments there would mean an interface
+ * change at every call site, and the ones that matter most are exactly the ones
+ * with the most callers.
+ *
+ * So the segments are derived, and the derivation is the check: `path.relative`
+ * from the root, refused if it escapes or is absolute, then split. Every segment
+ * still goes through `invalidSegment`, so `..` cannot arrive by a different door
+ * than it would through `openWithinRoot` directly. This is a convenience over the
+ * same primitive, not a second one with different rules.
+ */
+export async function openWithinRootByPath(
+  root: string,
+  absolutePath: string,
+  options: Parameters<typeof openWithinRoot>[2]
+): Promise<SafeOpenResult> {
+  const segments = segmentsUnderRoot(root, absolutePath);
+  if (segments === null) return refuse('escapes-root');
+  return openWithinRoot(root, segments, options);
+}
+
+/**
+ * The path's segments relative to `root`, or `null` when it is not under it.
+ *
+ * Exported because a caller that needs to create a DIRECTORY (not a file) has to
+ * express that as a leaf inside it, and doing that arithmetic at each call site
+ * would put the escape check back in several places.
+ */
+export function segmentsUnderRoot(root: string, absolutePath: string): readonly string[] | null {
+  const relative = path.relative(root, absolutePath);
+  if (relative.length === 0) return null;
+  if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
+  return relative.split(path.sep);
 }
