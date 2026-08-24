@@ -5,8 +5,12 @@ cited as such.**
 
 FR-R3-061 added this file because the distinction was being lost. The corpus is a versioned,
 deterministic set of **10 cases** (`fixtures/backend-outcomes.json`), and the suite around it reports
-13 passing tests — the extra three are structural meta-assertions about the corpus itself, not
-additional cases. A review cited the suite as evidence that backend behaviour was qualified. It is
+**18 passing tests** — the extra eight are structural meta-assertions about the corpus itself, not
+additional cases. That tally is asserted by the suite against its own test declarations (FR-R3-067), so
+adding a test moves both sides at once; it read 13 for a while because `FR-R3-061` added two
+meta-assertions in the same change that wrote this sentence. Which counts in this corpus are checked, by
+what, and which were deliberately left uncounted is recorded in
+[Counts the round-3 documents assert](../../docs/operations/asserted-counts-sweep.md). A review cited the suite as evidence that backend behaviour was qualified. It is
 not evidence of that, and cannot be.
 
 ## What it does cover

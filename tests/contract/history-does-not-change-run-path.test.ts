@@ -204,25 +204,23 @@ describe('the queue model is unchanged by this feature (T083, FR-050)', () => {
 // ---------------------------------------------------------------------------
 
 describe('the audit writer is unchanged by this feature (T083, FR-050)', () => {
-  it('the event-type vocabulary did not grow', () => {
-    // Pinned by count. This feature reads the audit corpus — that is what the
-    // evidence panel does — and reading may not add a word to the vocabulary.
-    //
-    // 103 -> 104 on 2026-08-24: FR-R3-064 added `backend-posture-admitted`, the
-    // per-run record of which backend a Run was admitted to. Nothing to do with
-    // History, which is what the assertion below actually pins — and that is the
-    // weakness of this line: a GLOBAL count is being used to prove a LOCAL
-    // negative, so every unrelated additive event anywhere in the contract lands
-    // here and has to be re-blessed by hand. It has now happened. The claim that
-    // matters is the next test's ("added no event type for the History surface"),
-    // which cannot go stale because it names the shape it forbids rather than a
-    // cardinality. Flagged for FR-R3-067, which owns exactly this class of
-    // asserted count; not rewritten here, because changing another feature's
-    // parity claim is that item's call and not this one's.
-    expect(ALL_AUDIT_EVENT_TYPES).toHaveLength(104);
-  });
-
   it('added no event type for the History surface', () => {
+    // FR-R3-067 — the global `expect(ALL_AUDIT_EVENT_TYPES).toHaveLength(N)` that
+    // used to stand here is GONE, and its removal is the point rather than a
+    // tidy-up.
+    //
+    // It used a GLOBAL count to prove a LOCAL negative. Every additive event
+    // anywhere in the contract landed on this test, in a file about a different
+    // feature entirely: FR-R3-064 moved it 103 -> 104 for `backend-posture-admitted`,
+    // which has nothing to do with History. A number re-blessed without being read
+    // is worse than no number, and this one had begun collecting re-blessings.
+    //
+    // The assertion below is what the count was standing in for, and it cannot go
+    // stale: it names the SHAPE it forbids — any event type mentioning history —
+    // rather than a cardinality of everything. FR-050's claim is that this feature
+    // READS the audit corpus and does not add to it, and that is exactly what an
+    // event-name filter tests.
+    //
     // The two that mention history predate this feature and are about repairing
     // and re-attributing stored records, not about a surface reading them.
     expect(ALL_AUDIT_EVENT_TYPES.filter((type) => /histor/i.test(type)).sort()).toEqual([
