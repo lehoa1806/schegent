@@ -1,5 +1,7 @@
 # API and command reference
 
+This is the exhaustive user-facing reference for every command surface shipped by Schegent 0.2.0. Use the Command Palette sections for ordinary operation and the webview boundary sections when integrating or diagnosing the sidebar and Dashboard. This is the single authority for that surface; [why there is one reference here and not two](README.md) records the consolidation.
+
 Schegent 0.2.0 exposes a VS Code extension surface, not a network service. The production bundle has one entry point, `src/extension.ts`, and `package.json` declares `main` but no `bin` or `exports`. There is no production HTTP server, route table, REST endpoint, GraphQL endpoint, WebSocket server, URI handler, or shipped Schegent shell command. Both shipped webviews set `connect-src 'none'`. The only listening HTTP server in the repository serves built webviews on `127.0.0.1:4173` during visual tests.
 
 <!-- Source: package.json -->
