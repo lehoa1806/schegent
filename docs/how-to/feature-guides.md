@@ -121,4 +121,4 @@ Rerun also requires current window primacy. A missing history entry, paused Queu
 <!-- Source: src/commands/rerun-from-history.ts -->
 <!-- Source: src/services/guarded-run-service.ts -->
 
-For exact command arguments and every host/webview operation, see the [feature reference](../reference/feature-reference.md) and [API and CLI reference](../reference/api-and-cli.md).
+For exact command arguments and every host/webview operation, see the [API and command reference](../reference/api-and-cli.md).
