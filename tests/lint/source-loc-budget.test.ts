@@ -553,7 +553,14 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
         'helpers may be extracted for cohesion, but the budget is no longer the forcing function',
       decidedOn: '2026-05-22',
       reference: 'specs/063-clean-all-confirmations/plan.md',
-      highWaterMark: 2513
+      // FR-R3-055 / H-06 (2026-08-24) — 2513 → 2554 for the fence carried to the
+      // Run commit point: the optional claim on `setRun`, and the verify moved
+      // INSIDE the `KEYS.run` serialize chain so verify-and-write are one link
+      // rather than two operations. It has to be in this file because the commit
+      // point is, and the whole finding is that the check was not at the commit
+      // point. The protocol and its rationale are in
+      // docs/architecture/workspace-ownership-fencing.md.
+      highWaterMark: 2554
     }
   },
   // Feature 077 — public facade and every state-projection collaborator have

@@ -67,19 +67,39 @@ the fence map is a local closing epoch, checked immediately before the heartbeat
 (FR-R3-055), and `release` drains a beat already in flight so a caller returning from it can rely on
 no further write arriving.
 
-**Not guaranteed, and outstanding.**
+**The protocol, chosen and implemented (FR-R3-055, 2026-08-24).** Of the two the review offered —
+a compare-and-swap-capable commit, or fence-stamped snapshots that readers reject by generation —
+**fence-stamped snapshots** is what ships. `Memento` has no conditional write (that is why FR-R3-003
+moved election onto a file registry in the first place), so a true CAS commit would have meant moving
+queue and Run state off `Memento` entirely. The stamped protocol is additive and needs no state
+migration.
 
-1. **`writeGuarded` is two operations, not one transaction.** It verifies (or heartbeats) and then
-   separately awaits the callback. A lease reclaimed between those two steps does not stop the write.
-   Closing it needs either a compare-and-swap-capable commit, or fence-stamped snapshots that readers
-   reject by generation at read time. Neither is implemented.
+It has two halves, and both matter:
 
-2. **Ordinary queue and Run mutations do not carry a fence to their commit point.** Admission-time
-   ownership is their only check. A Run that loses its lease mid-work will still commit its next state
-   mutation.
+- **At the commit point.** `setRun` takes an optional execution claim, and when one is supplied the
+  verify happens **inside the serialized `KEYS.run` link**, not before it. That is the whole
+  difference from `writeGuarded`, which verifies and then separately awaits a callback: two
+  operations, with a reclaim able to land between them. One link of a chain that already serialises
+  this key is as close to a transaction as this storage allows, and strictly closer than two. A
+  superseded fence is refused as `fence-superseded` and **writes nothing**.
+- **At read time.** A committed record is stamped with the generation it was written under
+  (`WorkflowRun.writtenAtFence`), so a reader holding a newer one can tell it came from a superseded
+  holder. `isSupersededRun` answers that. An **unstamped** record answers *not superseded*,
+  deliberately: records predating the field, and every write made without a claim, carry no
+  generation to compare, and reading "no stamp" as guilt would reject the entire existing corpus.
 
-3. **`writeGuarded`'s single production caller guards only the advisory `KEYS.lock` mirror**, so the
-   protection it provides is narrower than the function's name suggests.
+**Still outstanding.**
 
-Items 1–3 are filed as the remainder of FR-R3-055. Until they ship, treat the fence as authoritative
-for *election and heartbeat*, and as advisory for *the content of a write*.
+1. **`writeGuarded` itself is unchanged** — still verify-then-callback, still two operations. Its
+   single production caller guards only the advisory `KEYS.lock` mirror, so the exposure is narrow,
+   but the function's name still promises more than it does.
+
+2. **Only the Run commit point carries a fence.** Queue mutations do not. `setRun` is where the
+   review's third acceptance interleaving lives and where the harm was concrete; the queue path is
+   the same mechanism applied again, and it is not applied yet.
+
+3. **The stamp is opt-in.** A caller that passes no claim gets the old behaviour, which is what keeps
+   every existing caller working — and means the guarantee holds only where a caller asks for it.
+
+Until those close: treat the fence as authoritative for *election, heartbeat, and a claimed Run
+mutation*, and as advisory for *an unclaimed write*.

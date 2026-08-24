@@ -456,7 +456,11 @@ export type QueueMutationRejectReason =
   | 'phase-not-found'
   | 'phase-already-removed'
   | 'cannot-delete-default-queue'
-  | 'invalid-global-concurrency-cap';
+  | 'invalid-global-concurrency-cap'
+  // FR-R3-055 (H-06) — the mutator's execution fence is no longer the live
+  // generation for that resource, so its state mutation is refused AT THE COMMIT
+  // POINT rather than believed because admission once said yes.
+  | 'fence-superseded';
 
 export class QueueMutationRejected extends Error {
   public readonly reason: QueueMutationRejectReason;
@@ -2043,18 +2047,55 @@ export class WorkspaceStateStore {
    * back snapshots missing each other's entries. Per-queue concurrency is a
    * property of what runs, not of how the record is written.
    */
-  public setRun(queueId: string, run: WorkflowRun | null): Promise<void> {
+  public setRun(
+    queueId: string,
+    run: WorkflowRun | null,
+    /**
+     * FR-R3-055 (H-06) — the execution fence this mutation is made under.
+     *
+     * Optional so every existing caller is unchanged; supplied by a caller that
+     * holds a lease and wants its mutation refused if the lease has moved on.
+     * The review's finding was that ordinary Run mutations carry no fence to
+     * their commit point, so admission-time ownership is their only check and a
+     * Run that lost its lease mid-work still commits.
+     */
+    claim?: OwnershipClaim
+  ): Promise<void> {
     if (run !== null) {
       validateRunInvariants(run);
       if (!findQueue(this.getQueueRegistry(), queueId)) {
         throw new QueueMutationRejected('unknown-queue-id', `Unknown queue id: ${queueId}`);
       }
     }
-    return this.serialize(KEYS.run, () => {
+    return this.serialize(KEYS.run, async () => {
+      // FR-R3-055 — the verify happens INSIDE this serialized link, not before
+      // it. That is the whole difference from `writeGuarded`, which verifies and
+      // then separately awaits a callback: two operations, with a reclaim able to
+      // land between them. `Memento` offers no conditional write, so one link of
+      // the chain that already serialises this key is as close to a transaction
+      // as this storage allows -- and it is strictly closer than two.
+      if (claim !== undefined) {
+        const verdict = await this.ownershipRegistry.verify(
+          claim.resource,
+          claim.ownerId,
+          claim.fence
+        );
+        if (verdict.outcome !== 'valid') {
+          throw new QueueMutationRejected(
+            'fence-superseded',
+            `Run mutation refused: fence ${claim.fence} is no longer the live generation ` +
+              `for ${claim.resource}`
+          );
+        }
+      }
       const next = { ...this.readRunMap() };
       if (run === null) delete next[queueId];
-      else next[queueId] = run;
-      return this.memento.update(KEYS.run, next);
+      // FR-R3-055 — stamp the generation the write was made under, so a reader
+      // holding a newer one can tell this entry came from a superseded holder.
+      // Additive and optional: a record written before this field deserializes
+      // unchanged, so no `STATE_SCHEMA_VERSION` moves.
+      else next[queueId] = claim === undefined ? run : { ...run, writtenAtFence: claim.fence };
+      await this.memento.update(KEYS.run, next);
     }).then(() => {
       this.notify(KEYS.run);
     });
