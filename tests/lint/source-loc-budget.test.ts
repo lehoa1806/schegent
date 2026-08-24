@@ -262,7 +262,16 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // `store` is a local of `activate()`, so the binding has to be written where
   // the projector is constructed, which is the trade the run-plan enumerator
   // entry above declines by name. Set to exactly what the file measures.
-  { path: 'src/extension.ts', maxLines: 1_335 },
+  //
+  // FR-R3-056 / H-01 (2026-08-24) — 1,335 → 1,343 for the capability posture: the
+  // configuration read that supplies `allowUncontained`, and deferring the credit
+  // watchdog's runner behind a thunk so an uncontained refusal no longer kills
+  // activation before it can say why. Both are wiring, and wiring is what this
+  // file is; the policy itself lives in
+  // src/services/backend-containment-policy.ts and the rationale in
+  // docs/architecture/agent-capability-posture.md, so nothing movable was left
+  // here. Prose trimmed before raising, per the note on general-settings.ts.
+  { path: 'src/extension.ts', maxLines: 1_343 },
   // P4 phase-control and lifecycle-auditor extraction ratchet: 1,200 → 730.
   // This file owns only the workflow facade, run dispatch, deletion, retry
   // entry, and persistence.

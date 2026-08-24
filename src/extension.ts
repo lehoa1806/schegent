@@ -534,6 +534,12 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     logger
   );
   const runnerRegistry = new BackendRunnerRegistry({
+    // FR-R3-056 (H-01) — the shipped posture. Unset reads as the manifest default
+    // (`false`), so a fresh install refuses an uncontained backend. See
+    // docs/architecture/agent-capability-posture.md.
+    allowUncontained: vscode.workspace
+      .getConfiguration('schegent.backend')
+      .get<boolean>('allowUncontainedBackends') === true,
     // Feature 093 (T046) — forward each event to the Run that produced it.
     // The hook stays one window-level function; only the addressing changes.
     monitorHook: (event) => {
@@ -810,7 +816,9 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   });
 
   const watchdog = new CreditWatchdog(
-    runnerRegistry.getOrCreate(),
+    // FR-R3-056 — deferred: constructing here refused at ACTIVATION, killing the
+    // extension before it could say why.
+    () => runnerRegistry.getOrCreate(),
     store,
     statusBar,
     logger,

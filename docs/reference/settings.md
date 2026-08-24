@@ -102,6 +102,24 @@ Unredacted transcripts and verbose diagnostics can contain prompts, source code,
 <!-- Source: src/state/confirmations-config.ts -->
 <!-- Source: src/state/capability-trust-resolver.ts -->
 
+## The capability posture setting
+
+`schegent.backend.allowUncontainedBackends` — boolean, default **`false`**, `application` scope.
+
+Allows a backend that runs with **no OS-enforced bound** on what it can reach. `claude` and `agy` are
+spawned with `--dangerously-skip-permissions`; `codex` carries a `workspace-write` sandbox and is
+unaffected by this setting.
+
+Because `schegent.backend.runner` defaults to `claude`, **a fresh install refuses its first run**
+until this is set to `true` or a sandboxed backend is selected (FR-R3-056). Enabling it is an explicit
+acceptance of the posture, not a convenience toggle.
+
+`application`-scoped on purpose: a workspace must not be able to grant itself the right to run an
+unbounded agent. It is also deliberately **not** writable through the workspace-scoped
+general-settings IPC surface, for the same reason.
+
+See [Agent capability posture](../architecture/agent-capability-posture.md).
+
 ## Run request budgets (not configurable)
 
 FR-R3-057. A run request is bounded at validation, **before** it is persisted, frozen, built into a

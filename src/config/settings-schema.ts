@@ -118,6 +118,16 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     enum: ['claude', 'codex', 'agy'],
     docLabel: 'Backend runner selection'
   },
+  // FR-R3-056 (H-01) — `application`-scoped deliberately: this is a machine-level
+  // safety posture, and a workspace must not be able to grant itself the right to
+  // run an unbounded agent.
+  'schegent.backend.allowUncontainedBackends': {
+    key: 'schegent.backend.allowUncontainedBackends',
+    type: 'boolean',
+    default: false,
+    scope: 'application',
+    docLabel: 'Allow backends with no OS-enforced bound'
+  },
   'schegent.backend.probeTimeoutSeconds': {
     key: 'schegent.backend.probeTimeoutSeconds',
     type: 'integer',

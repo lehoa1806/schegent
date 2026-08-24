@@ -277,7 +277,13 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
     const complexObjectKeys = new Set<string>(['models']);
     const backendRunnerKey = new Set<string>([
       'backend.runner',
-      'backend.probeTimeoutSeconds'
+      'backend.probeTimeoutSeconds',
+      // FR-R3-056 — the capability posture. Read at the point a backend is
+      // constructed, and deliberately NOT writable through the workspace-scoped
+      // general-settings IPC surface: a workspace must not be able to grant
+      // itself the right to run an unbounded agent, and a webview write path
+      // would be exactly that.
+      'backend.allowUncontainedBackends'
     ]);
     // Application-scoped CLI spawn hardening toggle. It is read once at
     // activation and intentionally not writable through the workspace-scoped

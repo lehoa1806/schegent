@@ -1,11 +1,18 @@
 # Decision record: agent capability posture
 
-**Status: DECISION PENDING — operator input required.** The engineering analysis is complete and a
-recommendation is stated. The choice itself is not an engineering call and is not made here.
+**Status: DECIDED — shape 3, shipped.** Decided 2026-08-24 on the operator's explicit delegation,
+after this record had been filed with the analysis and a recommendation and the decision was returned
+for a call to be made.
 
-Filed under FR-R3-056, which says to file this record first and that the item "is not closed by a
-documentation change". It is not closed by this document. This document exists so the decision can be
-made against facts rather than impressions, and so what is already true is written down.
+**What ships:** `schegent.backend.allowUncontainedBackends`, `application`-scoped, **default
+`false`**. A backend with no OS-enforced bound is refused at the point it would be constructed. The
+mechanism is in `src/services/backend-containment-policy.ts` and enforced in
+`createBackendRunner`; it is asserted by test, not by manifest prose.
+
+**This changes the default install.** `backend.runner` defaults to `claude`, which is uncontained, so
+a fresh install refuses its first run until the operator either sets this setting or selects a
+backend that carries a sandbox. That is the intended effect of shape 3, and it is reversible with one
+setting.
 
 ## The finding
 
@@ -83,11 +90,34 @@ the recorded consent/enforcement mechanism engaging" — without a provider migr
 enforceable with a mechanism, testable, and it does not foreclose shape 2; it makes the broker's job
 smaller by making the uncontained path explicit rather than implicit.
 
-## Recommendation
+## Decision
 
-**Shape 3, then shape 2.** Ship the refusal-by-default with recorded per-run consent; build the
-broker behind it. Do not start with shape 1: it trades the containment problem for a
-behaviour-compatibility problem across every authored pipeline.
+**Shape 3, then shape 2.** Shape 3 is shipped. Shape 2 — the capability broker — remains the
+destination and is not started.
+
+Shape 1 was rejected: defaulting to `codex` trades the containment problem for a
+behaviour-compatibility problem across every authored pipeline, and would not even help the shipped
+examples, which pin `runner: claude` and `model: claude-sonnet-5` per phase and would be refused
+regardless of the global default.
+
+### Where the refusal lives, and why there
+
+`createBackendRunner` — the last point before an uncontained backend exists as an object. Every route
+reaches it: admission, resume, an auto-drain, a continuation. A check at admission alone would be
+bypassed by every path that does not go through admission, which is most of them.
+
+`allowUncontained` is a **required** option, not an optional one defaulting to permissive, so `tsc`
+enumerates every construction site and no new one can be added without stating a posture. A lint gate
+additionally refuses a literal `allowUncontained: true` anywhere under `src/`, because a required
+option stops a site being *added* without a posture but not one hardcoding acceptance.
+
+### What the refusal must not do, and did
+
+It must not kill activation. The first implementation constructed the credit watchdog's runner during
+`activate()`, so the refusal crashed the extension before it could explain itself — an operator would
+have seen a dead Schegent with no message, which is far worse than a refused run. The watchdog now
+takes a thunk and constructs at poll time. That is better regardless: a long-lived object holding a
+runner built under a posture the operator can change is the caching shape the hard rules forbid.
 
 ## What is required to close FR-R3-056
 
@@ -98,23 +128,26 @@ The item's acceptance is mechanism, not prose:
 2. The mechanism is **asserted by test**, not by manifest prose.
 3. The threat model and backend docs describe the shipped posture exactly.
 
-## Why this document does not ship the mechanism
+## The three questions, answered
 
-The operator decision determines the mechanism's shape, and building the wrong one is worse than
-building none: a refusal path designed for shape 3 is not the policy layer shape 2 needs, and a
-consent surface designed before the shape is chosen would be rewritten.
+- **Which shape?** 3, then 2.
+- **What does the shipped default become?** Refuse, and require an explicit opt-in. Not a per-run
+  modal prompt: this product's premise is autonomous multi-phase runs drained from a queue, and a
+  modal per run would either block auto-drain or be dismissed reflexively — which is consent in form
+  and not in substance.
+- **What does the consent surface say, and how often?** The setting is the consent, and it is
+  `application`-scoped so a workspace cannot grant it to itself. Each constructed uncontained runner
+  logs that it is running unbounded and names the setting that permitted it.
 
-Three specific questions need answers before the enforcement half can be built:
+### Outstanding: a genuine per-run record
 
-- **Which shape?** (Recommendation above.)
-- **What does the shipped default become?** Refuse and require opt-in, or prompt per run?
-- **What does the consent surface say, and how often?** Once per workspace, once per session, or once
-  per run — the item says "unmistakable per-run consent", which is the strictest reading and the most
-  intrusive.
+The item's phrase is "unmistakable per-run consent". What ships is per-runner-construction, and the
+registry caches runners by kind, so **this is not a per-run record and does not claim to be**. A
+per-run audit entry belongs at admission and needs its own event in the audit contract. Recorded here
+as outstanding rather than glossed.
 
-Until those are answered, the honest state is the one recorded at the top of this file: **decision
-pending**. The MCP and new-backend freeze the review attached to this item holds meanwhile; the review
-makes that ordering explicit.
+The MCP and new-backend freeze the review attached to this item holds until shape 2 ships; the
+review makes that ordering explicit, and shape 3 does not lift it.
 
 ## Related
 

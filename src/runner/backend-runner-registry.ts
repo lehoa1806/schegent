@@ -30,8 +30,11 @@ import {
 export class BackendRunnerRegistry {
   private readonly runners = new Map<BackendRunnerKind, BackendRunner>();
 
+  // FR-R3-056 — no default for `factoryOptions` any more. It carried `{}`, which
+  // would now mean "uncontained refused" by accident rather than by decision; a
+  // caller must state its posture, and tsc is what makes that true.
   constructor(
-    private readonly factoryOptions: BackendRunnerFactoryOptions = {},
+    private readonly factoryOptions: BackendRunnerFactoryOptions,
     private readonly globalDefault: BackendRunnerKind = DEFAULT_BACKEND
   ) {}
 
