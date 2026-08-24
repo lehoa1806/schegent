@@ -65,6 +65,11 @@ const DISPATCH_ONLY_ALLOWLIST: ReadonlySet<string> = new Set<string>([]);
 // one file drop out of the reader and be covered by its siblings' entries,
 // which is the vacuous pass this gate exists to prevent.
 const EXPECTED_BRANCH_ENTRIES: ReadonlyMap<string, number> = new Map([
+  // FR-R3-061 — schedule + dispatch, no branch filter. Deliberately off the PR
+  // path: the canary probes real CLIs, and a PR gate that depends on a
+  // third-party service goes red for reasons unrelated to the change under
+  // review. Zero here IS the requirement, not an omission.
+  ['backend-canary.yml', 0],
   ['ci.yml', 2], // push + pull_request
   ['codeql.yml', 2], // push + pull_request (schedule carries no branch filter)
   ['dependency-review.yml', 1], // pull_request

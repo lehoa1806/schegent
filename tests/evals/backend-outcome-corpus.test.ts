@@ -171,3 +171,42 @@ describe('backend-neutral outcome evaluation corpus', () => {
     });
   }
 });
+
+/**
+ * FR-R3-061 (M-08 / R-15) — what this corpus is, asserted rather than assumed.
+ *
+ * A review cited this suite as evidence that backend behaviour was qualified. It
+ * is not, and cannot be: every input is a fixture, and nothing here runs a CLI,
+ * opens a socket, or authenticates. The scope note lives in `tests/evals/README.md`;
+ * these assertions keep it true, because a note nothing checks is a note that
+ * drifts.
+ */
+describe('the corpus measures parser coverage, not behavioural qualification', () => {
+  it('has a scope note that says so', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const readme = readFileSync(join(__dirname, 'README.md'), 'utf8');
+    expect(readme).toContain('not behavioral qualification');
+    expect(readme).toContain('backend-canary.yml');
+  });
+
+  it('reaches no CLI, socket or credential', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const source = readFileSync(join(__dirname, 'backend-outcome-corpus.test.ts'), 'utf8');
+    // Only the IMPORT lines. Scanning the whole file for these tokens fails on
+    // this assertion's own list -- the first version of it did exactly that, which
+    // is the same self-reference trap as a lint gate matching its own comment.
+    const imports = source
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith('import ') || line.includes("from '"));
+    const live = ['child_' + 'process', 'node:net', 'node:http', 'undici'];
+    for (const forbidden of live) {
+      expect(
+        imports.some((line) => line.includes(forbidden)),
+        `the corpus must not import ${forbidden}: a deterministic suite that grew a live call ` +
+          'would keep passing while becoming the flaky PR gate the review warned against'
+      ).toBe(false);
+    }
+  });
+});
