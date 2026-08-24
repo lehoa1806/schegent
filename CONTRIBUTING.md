@@ -109,7 +109,7 @@ npm run verify:all
 npm run ci
 ```
 
-`verify:all` covers contract freshness, documentation, secret scanning, pinned actions, production-license policy, all type checks, both lint passes, host tests, and covered webview tests. Two of its documentation gates decided their rules by measurement rather than by choosing a number, and both record how: [duplicate-authority threshold](docs/operations/duplicate-authority-threshold-measurement.md) and [counts the round-3 documents assert](docs/operations/asserted-counts-sweep.md). `ci` covers the broad build/test/package path but does not invoke `verify:all`; use both for a release-sized change. More focused commands and their exact scopes are documented in [Developer workflows](docs/how-to/developer-workflows.md).
+`verify:all` covers contract freshness, documentation, secret scanning, pinned actions, production-license policy, all type checks, both lint passes, host tests, and covered webview tests. Several of its checks decided their rules by measurement rather than by choosing a number, and each records how — among them the [duplicate-authority threshold](docs/operations/duplicate-authority-threshold-measurement.md), the [counts the round-3 documents assert](docs/operations/asserted-counts-sweep.md), the [lazy-route wait budget](docs/operations/lazy-route-wait-budget.md) and the [webview coverage floors](docs/development/coverage-measurements.md). `ci` covers the broad build/test/package path but does not invoke `verify:all`; use both for a release-sized change. More focused commands and their exact scopes are documented in [Developer workflows](docs/how-to/developer-workflows.md).
 <!-- Source: package.json -->
 
 The pull-request workflows currently configured for `develop` run the following:
