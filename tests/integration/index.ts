@@ -20,14 +20,37 @@ const HOST_TEST_SUFFIX = '.host.test.js';
 const FILTER_ENV = 'SCHEGENT_INTEGRATION_FILTER';
 
 /**
+ * Exclude a named subset from THIS launch.
+ *
+ * The leg runs in two launches because one module needs a workspace shape the
+ * others must not see: `runTest.ts` opens a single folder for the main pass and
+ * a real multi-root `.code-workspace` for `multi-root`. Splitting by env keeps
+ * the module list DISCOVERED here rather than written down in two places that
+ * drift.
+ *
+ * A stale exclusion is a FAILURE, not a no-op. If the name stops matching — a
+ * rename, a typo — the excluded module silently rejoins a pass whose workspace
+ * it was moved out of, and what a contributor sees is a window reload with no
+ * assertion output at all. Same discipline as the filter above: the harness must
+ * not quietly run something other than what it was told to run.
+ */
+const EXCLUDE_ENV = 'SCHEGENT_INTEGRATION_EXCLUDE';
+
+/**
  * What this leg covers, and what it does not — recorded here because "run it if
  * you touched something integration covers" is not actionable when nobody knows
  * what it covers.
  *
- * The 12 modules here need a LIVE extension host: activation ordering, the
+ * The modules here need a LIVE extension host: activation ordering, the
  * dashboard and sidebar surfaces coming up, multi-root behaviour, the
  * `.gitignore` the audit log writes, raw-transcript output, and the release-UI
  * qualification pass.
+ *
+ * They do not all want the same workspace. `runTest.ts` launches this entry
+ * point twice: once against a single folder (everything but `multi-root`), and
+ * once against a real multi-root `.code-workspace` (`multi-root` alone). The
+ * harness then asserts the two passes between them executed every discovered
+ * module, so a module cannot fall through the split unnoticed.
  *
  * The other 146 files under `tests/integration/` are NOT this leg. They run in
  * `test:host` on every `ci:fast`, because `vitest.config.ts` includes
@@ -44,20 +67,42 @@ export async function run(): Promise<void> {
     .sort();
 
   const filter = (process.env[FILTER_ENV] ?? '').trim();
-  const files = filter.length > 0 ? all.filter((f) => f.includes(filter)) : all;
+  const selected = filter.length > 0 ? all.filter((f) => f.includes(filter)) : all;
+
+  const exclude = (process.env[EXCLUDE_ENV] ?? '').trim();
+  const files = exclude.length > 0 ? selected.filter((f) => !f.includes(exclude)) : selected;
 
   // Say what was selected and what was skipped, always. A subset run whose
   // output looks like a full run is a subset run somebody will cite as one.
   if (filter.length > 0) {
     console.log(
-      `[integration] ${FILTER_ENV}=${JSON.stringify(filter)} selected ${files.length} of ` +
-        `${all.length} host-test module(s); skipped ${all.length - files.length}.`
+      `[integration] ${FILTER_ENV}=${JSON.stringify(filter)} selected ${selected.length} of ` +
+        `${all.length} host-test module(s); skipped ${all.length - selected.length}.`
     );
-    for (const skipped of all.filter((f) => !files.includes(f))) {
+    for (const skipped of all.filter((f) => !selected.includes(f))) {
       console.log(`[integration]   skipped ${skipped}`);
     }
-  } else {
+  }
+  if (exclude.length > 0) {
+    console.log(
+      `[integration] ${EXCLUDE_ENV}=${JSON.stringify(exclude)} removed ` +
+        `${selected.length - files.length} of the ${selected.length} selected module(s).`
+    );
+    for (const removed of selected.filter((f) => !files.includes(f))) {
+      console.log(`[integration]   excluded ${removed}`);
+    }
+  }
+  if (filter.length === 0 && exclude.length === 0) {
     console.log(`[integration] running all ${all.length} host-test module(s).`);
+  }
+
+  if (exclude.length > 0 && files.length === selected.length) {
+    throw new Error(
+      `${EXCLUDE_ENV}=${JSON.stringify(exclude)} removed none of the ${selected.length} selected ` +
+        `host-test module(s). An exclusion that excludes nothing is a stale exclusion, not a ` +
+        `no-op: the module it names is meant to run in a DIFFERENT workspace, so leaving it in ` +
+        `this pass runs it against a shape it was deliberately moved out of.`
+    );
   }
 
   if (files.length === 0) {
