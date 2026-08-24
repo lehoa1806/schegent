@@ -1,4 +1,5 @@
 import type { BackendRunnerKind } from '../runner/backend-runner-factory';
+import type { BackendContainment } from '../services/backend-containment-policy';
 import type { TerminationReason } from '../state/workflow-run';
 // Feature FR-R3-006 — the reset transaction's phase and refusal literals are
 // declared once, in a module that imports nothing, and the audit payload reuses
@@ -404,6 +405,63 @@ export const BACKEND_PING_EVENT_TYPES = ['backend-ping'] as const;
 // `AUDIT_SCHEMA_VERSION` bump.
 export const METRICS_EVENT_TYPES = ['metrics-view-opened'] as const;
 
+// FR-R3-064 — the per-run record of which backend a run was admitted to and
+// under what containment posture. Additive — no `AUDIT_SCHEMA_VERSION` bump
+// (follows the 028 / 030 / 031 / 032 precedent recorded above). Historical logs
+// lack the event entirely, which the warn-and-preserve parser already tolerates.
+//
+// WHY THIS EXISTS
+//
+// `schegent.backend.allowUncontainedBackends`' shipped description promised that
+// "every run that uses an uncontained backend records the fact in the audit log"
+// and nothing recorded it. FR-R3-056 shipped the refusal at
+// `createBackendRunner` and filed the missing per-run record as outstanding in
+// `docs/architecture/agent-capability-posture.md`; this closes it (shape B).
+//
+// WHAT IT IS NOT
+//
+// It is not the enforcement. `createBackendRunner` still refuses at the last
+// point before an uncontained backend exists as an object, and this event does
+// not move, weaken, or duplicate that. It is not a consent *prompt* either — the
+// setting is the consent surface, which is shape 3's recorded decision.
+//
+// ONE EVENT, BOTH CLASSIFICATIONS
+//
+// A `codex` run records `containment: 'os-enforced'`. That is deliberate: the
+// absence of an entry has to mean "not recorded", so the contained case is
+// recorded evidence rather than silence. Consent is the `containment: 'none'`
+// case, which is a property of the payload rather than of a second event type.
+export const BACKEND_POSTURE_EVENT_TYPES = ['backend-posture-admitted'] as const;
+
+/**
+ * FR-R3-064 — the closed payload for a backend-posture audit entry.
+ *
+ * Three bounded primitives and nothing else. No argv, no CLI path, no cwd, no
+ * workspace root, no message, no free-form text. `SECRET_PATTERNS` is unchanged
+ * because the payload has nowhere to put a secret — the same discipline
+ * `ProcessExchangePayload` states for itself, and for the same reason: keeping
+ * a value out is more reliable than filtering it on the way through.
+ */
+export interface BackendPostureAdmittedPayload {
+  /** The backend this run was admitted to. */
+  readonly runner: BackendRunnerKind;
+  /**
+   * The classification that backend's own argv carries, from
+   * `services/backend-containment-policy`. Derived at emission from the runner
+   * kind — never passed in, so it cannot disagree with the policy.
+   */
+  readonly containment: BackendContainment;
+  /**
+   * `schegent.backend.allowUncontainedBackends` as it read at THIS emission.
+   *
+   * Never a cached value. `extension.ts` reads the setting once at activation
+   * for the registry's construction-time refusal; reusing that would record an
+   * activation-time posture for a run happening now, which is the cached-verdict
+   * defect FR-R3-056 finding 1 removed.
+   */
+  readonly uncontainedAllowed: boolean;
+}
+
 // Feature 084 — Phase exchange (FR-047, FR-049). The payload records the
 // operation, the resource ids, the scope, the per-resource outcomes, and the
 // counts, and nothing else. Document contents, instruction or skill text, file
@@ -494,6 +552,7 @@ export const ALL_AUDIT_EVENT_TYPES = [
   ...TASK_EXECUTION_EVENT_TYPES,
   ...OPTIONAL_PHASE_EVENT_TYPES,
   ...BACKEND_PING_EVENT_TYPES,
+  ...BACKEND_POSTURE_EVENT_TYPES,
   ...METRICS_EVENT_TYPES,
   ...PROCESS_EXCHANGE_EVENT_TYPES,
   ...CONCURRENCY_EVENT_TYPES,
@@ -527,6 +586,7 @@ export type MigrationV11EventType = (typeof MIGRATION_V11_EVENT_TYPES)[number];
 export type MigrationV12EventType = (typeof MIGRATION_V12_EVENT_TYPES)[number];
 export type TaskExecutionEventType = (typeof TASK_EXECUTION_EVENT_TYPES)[number];
 export type BackendPingEventType = (typeof BACKEND_PING_EVENT_TYPES)[number];
+export type BackendPostureEventType = (typeof BACKEND_POSTURE_EVENT_TYPES)[number];
 export type OptionalPhaseEventType = (typeof OPTIONAL_PHASE_EVENT_TYPES)[number];
 export type MetricsEventType = (typeof METRICS_EVENT_TYPES)[number];
 export type ProcessExchangeEventType = (typeof PROCESS_EXCHANGE_EVENT_TYPES)[number];

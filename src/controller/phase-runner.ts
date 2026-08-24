@@ -23,6 +23,10 @@ import { composeVerboseDiagnosticPath } from '../audit/verbose-diagnostic-path';
 import { getEffectiveSignatures } from '../lib/fatal-signature-registry';
 import type { PhaseBreakpointAccessor } from './breakpoint-accessor';
 import {
+  BackendPostureRecorder,
+  type BackendPostureAccessor
+} from './backend-posture-recorder';
+import {
   PhaseSidecarReader,
   composePhaseMessagePath,
   type PhaseMessageResult
@@ -189,6 +193,8 @@ export interface ManualPauseAccessor {
 }
 
 export class PhaseRunner {
+  /** FR-R3-064 — see `BackendPostureRecorder`; this shell only calls it. */
+  private readonly postureRecorder: BackendPostureRecorder;
   private readonly sidecarReader: PhaseSidecarReader;
   private readonly retryEvaluator: PhaseRetryEvaluator;
   private readonly runnerRegistry: BackendRunnerRegistry | null;
@@ -205,7 +211,18 @@ export class PhaseRunner {
     private readonly autoCompactOverrideAccessor: AutoCompactOverrideAccessor | null = null,
     private readonly manualPauseAccessor: ManualPauseAccessor | null = null,
     private readonly phaseBreakpointAccessor: PhaseBreakpointAccessor | null = null,
-    lastRetryDecisionSink: LastRetryDecisionSink | null = null
+    lastRetryDecisionSink: LastRetryDecisionSink | null = null,
+    /**
+     * FR-R3-064 — optional in the SIGNATURE, mandatory in PRODUCTION, and the
+     * difference is stated rather than implied. FR-R3-049/056 preferred a required
+     * option so `tsc` enumerates every construction site; that is the better
+     * mechanism and not available cheaply here, because 109 test harnesses
+     * construct this class positionally. Enforcement is therefore a gate —
+     * `tests/lint/backend-posture-emission-funnel.test.ts` fails on a production
+     * `new PhaseRunner(` that omits this. Absent, nothing is recorded: writing
+     * `false` for a posture it cannot read would be a lie.
+     */
+    backendPostureAccessor: BackendPostureAccessor | null = null
   ) {
     // Feature 074 — accept either a BackendRunnerRegistry (per-phase
     // runner resolution) or a plain BackendRunner (backwards compat
@@ -217,6 +234,9 @@ export class PhaseRunner {
       this.runnerRegistry = null;
       this.singleRunner = runner as BackendRunner;
     }
+    this.postureRecorder = new BackendPostureRecorder(backendPostureAccessor, (entry) =>
+      this.appendRequiredAudit(entry)
+    );
     this.sidecarReader = new PhaseSidecarReader(auditWriter, logger);
     this.retryEvaluator = new PhaseRetryEvaluator(
       auditWriter,
@@ -349,6 +369,11 @@ export class PhaseRunner {
     // without a verdict and the runner it actually gets is resolved right above.
     const policyPhaseId = inputs.phaseDef?.id ?? inputs.phase;
     assertPhaseRunnerPolicy(policyPhaseId, inputs.phaseDef?.sideEffects, effectiveRunnerKind);
+    // FR-R3-064 — the per-run posture record, deliberately before `phase-start`:
+    // the posture a phase ran under is context for that phase's record, not a
+    // footnote after it. Every route that drives a Run dispatches through this
+    // method, which is why the record sits here; see `BackendPostureRecorder`.
+    await this.postureRecorder.recordOnce(inputs, effectiveRunnerKind);
 
     const startPayload: Record<string, unknown> = {
       ...(inputs.pipelineId === undefined ? {} : { pipelineId: inputs.pipelineId }),

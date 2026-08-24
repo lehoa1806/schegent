@@ -207,7 +207,19 @@ describe('the audit writer is unchanged by this feature (T083, FR-050)', () => {
   it('the event-type vocabulary did not grow', () => {
     // Pinned by count. This feature reads the audit corpus — that is what the
     // evidence panel does — and reading may not add a word to the vocabulary.
-    expect(ALL_AUDIT_EVENT_TYPES).toHaveLength(103);
+    //
+    // 103 -> 104 on 2026-08-24: FR-R3-064 added `backend-posture-admitted`, the
+    // per-run record of which backend a Run was admitted to. Nothing to do with
+    // History, which is what the assertion below actually pins — and that is the
+    // weakness of this line: a GLOBAL count is being used to prove a LOCAL
+    // negative, so every unrelated additive event anywhere in the contract lands
+    // here and has to be re-blessed by hand. It has now happened. The claim that
+    // matters is the next test's ("added no event type for the History surface"),
+    // which cannot go stale because it names the shape it forbids rather than a
+    // cardinality. Flagged for FR-R3-067, which owns exactly this class of
+    // asserted count; not rewritten here, because changing another feature's
+    // parity claim is that item's call and not this one's.
+    expect(ALL_AUDIT_EVENT_TYPES).toHaveLength(104);
   });
 
   it('added no event type for the History surface', () => {
