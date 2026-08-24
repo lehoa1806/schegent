@@ -71,8 +71,27 @@ const UNMIGRATED: readonly string[] = [
   'services/history/history-description-store.ts',
   'services/phase-log/phase-log-reader.ts',
   'services/phase-log/phase-log-tail-session.ts',
+  // FR-R3-053 — every WORKSPACE-adjacent path in this module is migrated: the
+  // patch, the metadata, the decline marker and the `checkpoints/<runId>` chain
+  // all go through the checked walk, which matters because a checkpoint patch can
+  // hold an unredacted binary Git diff.
+  //
+  // One raw call remains, deliberately: `fs.mkdir(this.root)`. In production that
+  // root is `context.globalStorageUri.fsPath` — VS Code's per-extension global
+  // storage, outside the workspace and a directory the extension is expected to
+  // create. It is the walk's TRUST ANCHOR, and the walk never creates its own
+  // anchor. Kept on this list rather than moved to a whole-module exemption,
+  // because "one reasoned call" is exactly what a ledger should show.
   'services/run-checkpoint-service.ts',
   'services/run-request/local-input-validator.ts',
+  // FR-R3-053 — attempted and reverted 2026-08-24, for a reason worth recording:
+  // this port's `containmentRoot` IS the directory `ensureDir` must create, and
+  // `openWithinRoot` deliberately never creates its own root (it is the one path
+  // it trusts rather than verifies). So migrating it needs either a
+  // root-creating variant of the primitive or the workspace root threaded through
+  // `createOwnershipFs`, and neither is a change to make on the way past.
+  // Measured: every election refused with `io-failed ENOENT` because the walk had
+  // no existing ancestor to start from.
   'state/ownership-fs.ts',
   'ui/sidebar/audit-tail-coldstart.ts'
 ];
