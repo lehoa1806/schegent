@@ -127,6 +127,8 @@ describe('phase-end warning vocabulary', () => {
       '[constitution] missing audit log on clean response',
       '[constitution] multiple contract blocks',
       '[constitution] unterminated audit log',
+      // FR-R3-058 (M-07). A code-resident literal, like every member here.
+      'host-verification-failed',
       'output-truncated-unclassifiable',
       // FR-R3-047 (H-04). A code-resident literal, like every member here.
       'stdin-delivery-failed'

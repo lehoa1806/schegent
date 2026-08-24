@@ -56,6 +56,11 @@ export const SPEC_KEY_ORDER = Object.freeze([
   'runner',
   'sideEffects',
   'evidencePolicy',
+  // FR-R3-058 — beside `evidencePolicy` because they are the two evidence axes:
+  // whether a record is required, and who is believed when the host and the model
+  // disagree. Without this key the field would be unauthorable in the shipped
+  // format, which would make the whole marking unreachable.
+  'hostVerification',
   'model',
   'effort',
   'timeoutSeconds',

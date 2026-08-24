@@ -61,7 +61,11 @@ const FULL_INSTRUCTION: PhaseDefinition = {
   // as a changed value rather than as a coincidentally-correct one. `git` pairs
   // legally with the `claude` runner above.
   sideEffects: 'git',
-  evidencePolicy: 'none'
+  evidencePolicy: 'none',
+  // FR-R3-058 — and not the default (`model-token`), for the same reason as the
+  // two above: a field dropped anywhere on the path must show up as a changed
+  // value, not as a coincidentally-correct one.
+  hostVerification: 'exit-code'
 };
 
 const FULL_SKILL: PhaseDefinition = {

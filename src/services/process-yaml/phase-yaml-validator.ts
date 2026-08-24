@@ -48,10 +48,12 @@ import {
 import {
   PHASE_EFFORT_LEVELS,
   PHASE_EVIDENCE_POLICIES,
+  PHASE_HOST_VERIFICATIONS,
   PHASE_RETRY_CONDITION_MAX_LEN,
   PHASE_SIDE_EFFECTS,
   type PhaseDefinitionEffort,
   type PhaseEvidencePolicy,
+  type PhaseHostVerification,
   type PhaseSideEffects
 } from '../../contracts/process-definitions';
 import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../../runner/backend-runner-factory';
@@ -386,6 +388,23 @@ function validateSpec(section: YamlMappingNode, defects: ImportDefect[]): PhaseY
     }
   }
 
+  // FR-R3-058 — same shape as `evidencePolicy` above.
+  let hostVerification: PhaseHostVerification | undefined;
+  const hostVerificationNode = optionalScalar(section, 'hostVerification', defects);
+  if (hostVerificationNode !== undefined) {
+    if (!(PHASE_HOST_VERIFICATIONS as readonly string[]).includes(hostVerificationNode.value)) {
+      defects.push(
+        defect(
+          'hostVerification',
+          'invalid-enum',
+          `Phase hostVerification must be one of ${PHASE_HOST_VERIFICATIONS.join(', ')}`
+        )
+      );
+    } else {
+      hostVerification = hostVerificationNode.value as PhaseHostVerification;
+    }
+  }
+
   let model: string | undefined;
   const modelNode = optionalScalar(section, 'model', defects);
   if (modelNode !== undefined) {
@@ -478,6 +497,7 @@ function validateSpec(section: YamlMappingNode, defects: ImportDefect[]): PhaseY
     ...(runner !== undefined ? { runner } : {}),
     ...(sideEffects !== undefined ? { sideEffects } : {}),
     ...(evidencePolicy !== undefined ? { evidencePolicy } : {}),
+    ...(hostVerification !== undefined ? { hostVerification } : {}),
     ...(model !== undefined ? { model } : {}),
     ...(effort !== undefined ? { effort } : {}),
     ...(timeoutSeconds !== undefined ? { timeoutSeconds } : {}),

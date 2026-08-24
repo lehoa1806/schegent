@@ -66,6 +66,32 @@ export type PhaseSideEffects = (typeof PHASE_SIDE_EFFECTS)[number];
 export const PHASE_EVIDENCE_POLICIES = ['required', 'best-effort', 'none'] as const;
 export type PhaseEvidencePolicy = (typeof PHASE_EVIDENCE_POLICIES)[number];
 
+/**
+ * FR-R3-058 (M-07 / R-10) — what evidence may advance this Phase.
+ *
+ * A separate axis from `evidencePolicy`, which asks whether an audit block must
+ * be present. This asks who is believed when the host's own signals and the
+ * model's disagree.
+ *
+ * `'model-token'` is the default and the historical behaviour, unchanged: a clean
+ * termination token advances the Phase even when the process timed out or exited
+ * non-zero. That is a recorded decision (FR-R3-023 verified evidence *shape*,
+ * FR-R3-038 *disclosed* the self-certification) and it is right for a Phase whose
+ * product is prose.
+ *
+ * `'exit-code'` marks the Phase SENSITIVE: the process's own exit status decides,
+ * and a clean token cannot override a non-zero exit or a timeout. For a Phase
+ * that runs tests, produces artifacts, or claims a side effect, the agent whose
+ * work is being judged should not also be the author of the evidence that
+ * advances it.
+ *
+ * Omission means `'model-token'`, so every existing definition behaves exactly as
+ * before. The step FR-R3-023 and FR-R3-038 both deferred is taken only where a
+ * definition asks for it.
+ */
+export const PHASE_HOST_VERIFICATIONS = ['model-token', 'exit-code'] as const;
+export type PhaseHostVerification = (typeof PHASE_HOST_VERIFICATIONS)[number];
+
 interface PhaseDefinitionBase {
   readonly phaseId: string;
   readonly name: string;
@@ -81,6 +107,8 @@ interface PhaseDefinitionBase {
    */
   readonly sideEffects?: PhaseSideEffects;
   readonly evidencePolicy?: PhaseEvidencePolicy;
+  /** FR-R3-058 — omission means `model-token`, the historical behaviour. */
+  readonly hostVerification?: PhaseHostVerification;
   readonly timeoutSeconds?: number;
   readonly loopable?: boolean;
   readonly retryCondition?: string;

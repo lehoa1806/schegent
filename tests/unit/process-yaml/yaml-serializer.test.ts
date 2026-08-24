@@ -92,6 +92,8 @@ describe('yaml-serializer — property order (FR-017)', () => {
       'runner',
       'sideEffects',
       'evidencePolicy',
+      // FR-R3-058 — the second evidence axis, emitted beside the first.
+      'hostVerification',
       'model',
       'effort',
       'timeoutSeconds',

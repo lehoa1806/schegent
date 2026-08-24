@@ -12,7 +12,11 @@ export {
   type PhaseSideEffects,
   type PhaseEvidencePolicy
 } from '../contracts/process-definitions';
-import type { PhaseSideEffects, PhaseEvidencePolicy } from '../contracts/process-definitions';
+import type {
+  PhaseSideEffects,
+  PhaseEvidencePolicy,
+  PhaseHostVerification
+} from '../contracts/process-definitions';
 import type {
   PhaseBinding,
   PipelineExecutionDefaults,
@@ -43,6 +47,8 @@ export interface PhaseDef {
   readonly runner?: BackendRunnerKind;
   readonly sideEffects?: PhaseSideEffects; // Omission => `workspace` at the freeze.
   readonly evidencePolicy?: PhaseEvidencePolicy;
+  /** FR-R3-058 — omission means `model-token`. */
+  readonly hostVerification?: PhaseHostVerification;
   readonly promptVersion?: string;
 }
 // Feature 082 — the runtime Pipeline shape. `id`, `name`, and `phases` are the

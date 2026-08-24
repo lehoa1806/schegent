@@ -305,7 +305,14 @@ export const RECORDABLE_PHASE_END_WARNINGS: ReadonlySet<string> = new Set([
   // undiagnosable from the audit alone. The closed `TerminationReason` union
   // lives in the audit contract and is persisted in run state, so the cause
   // travels here rather than as a new union member.
-  'stdin-delivery-failed'
+  'stdin-delivery-failed',
+  // src/controller/phase-runner.ts — FR-R3-058 (M-07). Reachable, unlike the
+  // FR-R3-050 marker that was deliberately NOT added here: the phase runner puts
+  // this code in the `warnings` array the phase-end projection reads, the same
+  // route `stdin-delivery-failed` takes. Without it the record would say
+  // `outcome: 'failed'` / `terminationReason: 'error'` with the cause dropped --
+  // the exact shape that made the 2026-08-16 failure undiagnosable.
+  'host-verification-failed'
 ]);
 
 interface ProjectedWarnings {

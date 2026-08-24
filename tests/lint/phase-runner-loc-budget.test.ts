@@ -77,8 +77,17 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
 // former the projection defaulted an absent code to 0 and recorded a clean exit
 // for a SIGTERMed child, and without the latter a `stdin-delivery-failed` on a
 // timed-out run reached no durable record at all.
+//
+// FR-R3-058 / M-07 (2026-08-24) — 875 → 927 for the sensitive-phase arm: a
+// `hostVerification` check on the timeout condition, and a failing return where
+// a non-zero exit alongside a clean token used to be a `logger.warn` and a
+// transition. The prose that justified it was moved OUT first, to
+// specs/145-host-verifiable-gates/contracts/host-verification.md; what remains is
+// the arm itself and a pointer. No responsibility was added — the file still
+// decides one phase's outcome from one invocation's evidence — so the fix is
+// headroom, not a split, on the same reasoning as phase-outcome-mapper.ts below.
 const BUDGETS = [
-  { path: 'src/controller/phase-runner.ts', max: 875 },
+  { path: 'src/controller/phase-runner.ts', max: 927 },
   { path: 'src/controller/phase-sidecar-reader.ts', max: 400 },
   { path: 'src/controller/phase-retry-evaluator.ts', max: 180 },
   // Raised from 100 on 2026-08-16. The truncation arm of `mapOutcome` stopped

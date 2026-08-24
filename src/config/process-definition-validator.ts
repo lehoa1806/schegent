@@ -1,11 +1,13 @@
 import {
   PHASE_EFFORT_LEVELS,
   PHASE_EVIDENCE_POLICIES,
+  PHASE_HOST_VERIFICATIONS,
   PHASE_ID_MAX_LEN,
   PHASE_RETRY_CONDITION_MAX_LEN,
   PHASE_SIDE_EFFECTS,
   type PhaseDefinition,
   type PhaseEvidencePolicy,
+  type PhaseHostVerification,
   type PhaseFieldError,
   type PhaseSideEffects
 } from '../contracts/process-definitions';
@@ -41,7 +43,11 @@ export const AUTHORED_PHASE_FIELDS: ReadonlySet<string> = new Set([
   // path must hold a definition to the same closed set, or a Phase would be
   // accepted by one route and refused by the other on the same field.
   'sideEffects',
-  'evidencePolicy'
+  'evidencePolicy',
+  // FR-R3-058 — authored, closed with the rest. A Phase accepted by the import
+  // path and refused by the save path on the same field is the defect this set
+  // exists to prevent.
+  'hostVerification'
 ]);
 
 const ERROR_MESSAGE_MAX = 512;
@@ -303,6 +309,28 @@ export function validatePhaseDefinition(
     }
   }
 
+  // FR-R3-058 — same shape as `evidencePolicy` above, deliberately: a second
+  // validation idiom for a second enum on the same object is how one of them
+  // ends up looser than the other.
+  let hostVerification: PhaseHostVerification | undefined;
+  if (value.hostVerification !== undefined) {
+    if (
+      typeof value.hostVerification !== 'string' ||
+      !(PHASE_HOST_VERIFICATIONS as readonly string[]).includes(value.hostVerification)
+    ) {
+      errors.push(
+        fieldError(
+          phaseId,
+          'hostVerification',
+          'invalid-enum',
+          `Phase hostVerification must be one of ${PHASE_HOST_VERIFICATIONS.join(', ')}`
+        )
+      );
+    } else {
+      hostVerification = value.hostVerification as PhaseHostVerification;
+    }
+  }
+
   if (runner === 'agy' && (effort === 'xhigh' || effort === 'max')) {
     errors.push(
       fieldError(
@@ -432,7 +460,8 @@ export function validatePhaseDefinition(
     ...(typeof forceContinueOnRetryCap === 'boolean' ? { forceContinueOnRetryCap } : {}),
     ...(runner !== undefined ? { runner } : {}),
     ...(sideEffects !== undefined ? { sideEffects } : {}),
-    ...(evidencePolicy !== undefined ? { evidencePolicy } : {})
+    ...(evidencePolicy !== undefined ? { evidencePolicy } : {}),
+    ...(hostVerification !== undefined ? { hostVerification } : {})
   };
   const definition: PhaseDefinition = hasInstruction
     ? { ...common, instruction: instruction as string }
