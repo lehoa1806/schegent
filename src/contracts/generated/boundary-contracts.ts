@@ -183,6 +183,7 @@ export const SETTINGS_KEYS = [
   "schegent.agy.path",
   "schegent.audit.rotation.maxAgeDays",
   "schegent.audit.rotation.sizeMB",
+  "schegent.backend.allowUncontainedBackends",
   "schegent.backend.probeTimeoutSeconds",
   "schegent.backend.runner",
   "schegent.claude.autoCompactPctOverride",

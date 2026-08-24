@@ -3,6 +3,7 @@ import { ClaudeCliRunner } from './claude-cli';
 import { CodexCliRunner } from './codex-cli';
 import { AgyCliRunner } from './agy-cli';
 import { SanitizedLogger } from '../lib/logger';
+import { judgeBackendContainment } from '../services/backend-containment-policy';
 
 // Feature 034 Item 050 — backend selection.
 //
@@ -35,7 +36,27 @@ export function isBackendRunnerKind(value: unknown): value is BackendRunnerKind 
     (SUPPORTED_BACKENDS as ReadonlyArray<string>).includes(value);
 }
 
+/**
+ * FR-R3-056 — thrown rather than returned, because there is no runner to return.
+ * A distinct type so a caller can report the posture refusal as itself instead of
+ * as a generic construction failure.
+ */
+export class UncontainedBackendRefusedError extends Error {
+  public constructor(
+    public readonly kind: BackendRunnerKind,
+    message: string
+  ) {
+    super(message);
+    this.name = 'UncontainedBackendRefusedError';
+  }
+}
+
 export interface BackendRunnerFactoryOptions {
+  /**
+   * FR-R3-056 — whether this host accepts a backend that has no OS-enforced
+   * bound. Required: see `createBackendRunner`.
+   */
+  readonly allowUncontained: boolean;
   readonly monitorHook?: MonitorSidecarHook | null;
   /**
    * Probe `<cli> --help` once per activation to pick the safest available
@@ -78,12 +99,43 @@ export function resolveBackendKind(
  * downstream (controller, monitor, sampler, audit) consumes the
  * `BackendRunner` interface only.
  */
+/**
+ * FR-R3-056 (H-01) — refused here, at the construction point.
+ *
+ * This is the last place before an uncontained backend exists as an object, and
+ * every route reaches it: admission, resume, an auto-drain, a continuation. A
+ * check placed at admission alone would be bypassed by every path that does not
+ * go through admission, which is most of them.
+ *
+ * `allowUncontained` is a REQUIRED option, not an optional one defaulting to
+ * permissive. An optional gate is a gate omitted at the one call site nobody
+ * revisits; making it required means `tsc` enumerates every construction site
+ * and no new one can be added without stating its posture. Same reasoning as the
+ * required `environmentPolicy` on `WatchdogOptions` (FR-R3-049).
+ */
 export function createBackendRunner(
   kind: BackendRunnerKind,
-  options: BackendRunnerFactoryOptions = {}
+  options: BackendRunnerFactoryOptions
 ): BackendRunner {
+  const verdict = judgeBackendContainment(kind, options.allowUncontained);
+  if (verdict.outcome === 'refused') {
+    throw new UncontainedBackendRefusedError(verdict.kind, verdict.message);
+  }
   const monitorHook = options.monitorHook ?? null;
   const logger = options.logger ?? new SanitizedLogger();
+  if (verdict.containment === 'none') {
+    // FR-R3-056 — say it out loud. The operator accepted this posture in a
+    // setting they may have set months ago; the run it applies to is now.
+    //
+    // Once per constructed runner, not once per run: the registry caches by
+    // kind, so this cannot claim to be a per-run record and does not. A genuine
+    // per-run entry belongs at admission and needs its own audit event; recorded
+    // as outstanding in the decision record rather than implied here.
+    logger.warn(
+      `backend '${kind}' has no OS-enforced bound; permitted by ` +
+        'schegent.backend.allowUncontainedBackends'
+    );
+  }
   switch (kind) {
     case 'codex':
       return new CodexCliRunner(undefined, monitorHook, logger);

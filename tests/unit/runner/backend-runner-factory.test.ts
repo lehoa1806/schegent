@@ -42,21 +42,21 @@ describe('resolveBackendKind', () => {
 
 describe('createBackendRunner', () => {
   it('constructs a ClaudeCliRunner for kind=claude', () => {
-    const runner = createBackendRunner('claude');
+    const runner = createBackendRunner('claude', { allowUncontained: true });
     expect(runner).toBeInstanceOf(ClaudeCliRunner);
     expect(runner.hasActiveProcess).toBe(false);
   });
 
   it('constructs a CodexCliRunner for kind=codex', () => {
-    const runner = createBackendRunner('codex');
+    const runner = createBackendRunner('codex', { allowUncontained: false });
     expect(runner).toBeInstanceOf(CodexCliRunner);
     expect(runner.hasActiveProcess).toBe(false);
   });
 
   it('forwards the monitor hook into the concrete runner', () => {
     const hook = vi.fn();
-    const claude = createBackendRunner('claude', { monitorHook: hook });
-    const codex = createBackendRunner('codex', { monitorHook: hook });
+    const claude = createBackendRunner('claude', { allowUncontained: true, monitorHook: hook });
+    const codex = createBackendRunner('codex', { allowUncontained: false, monitorHook: hook });
     // The hooks aren't observable from outside, but neither construction
     // should throw — that's the contract.
     expect(claude).toBeInstanceOf(ClaudeCliRunner);

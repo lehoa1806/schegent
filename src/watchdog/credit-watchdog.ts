@@ -63,7 +63,20 @@ export class CreditWatchdog {
   private skipNextStatusCheck = false;
 
   constructor(
-    private readonly runner: BackendRunner,
+    /**
+     * FR-R3-056 — a THUNK, not a runner.
+     *
+     * The watchdog is long-lived and the credit poll happens minutes to hours
+     * after activation. Holding a runner constructed at activation meant
+     * constructing it at activation, which is where an uncontained-backend
+     * refusal crashed the whole extension: an operator saw a dead Schegent with no
+     * explanation, which is far worse than a refused run.
+     *
+     * Deferring also removes a cached posture. A runner built under the old
+     * setting would keep polling after an operator changed it — the same shape as
+     * caching a setting on a long-lived object, which the hard rules forbid.
+     */
+    private readonly runner: () => BackendRunner,
     private readonly store: WorkspaceStateStore,
     private readonly statusBar: SchegentStatusBar,
     private readonly logger: SanitizedLogger,
@@ -197,7 +210,7 @@ export class CreditWatchdog {
         return;
       }
       this.logger.info('watchdog: polling /status');
-      const raw = await this.runner.invoke({
+      const raw = await this.runner().invoke({
         phase: CREDIT_POLL_PHASE_LABEL,
         iteration: 0,
         prompt: '/status',

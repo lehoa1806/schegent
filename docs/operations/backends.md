@@ -74,6 +74,27 @@ Probe failure causes exposed to the host are `not-found`, `not-executable`, `non
 3. `shell: false` is mandatory, with `cwd` set to the workspace root and an explicitly built environment for ordinary Phase execution.
 4. Stdout and stderr use bounded `ZippedStreamBuffer` instances with observable truncation.
 5. The timeout is idle-based: output resets it unless sink backpressure has paused the stream.
+**Capability posture (FR-R3-056).** A backend with no OS-enforced bound on what it can reach is
+**refused by default**. `claude` and `agy` are spawned with `--dangerously-skip-permissions`: their
+approval prompts are off and they act under the operator's local permissions. `codex` is spawned with
+`--sandbox workspace-write`, an OS-enforced filesystem bound that leaves `.git` read-only.
+
+Since `schegent.backend.runner` defaults to `claude`, **a fresh install refuses its first run** until
+the operator either sets `schegent.backend.allowUncontainedBackends` to `true` or selects a backend
+that carries a sandbox. The refusal names both options and happens at the point the backend would be
+constructed, so no route reaches an unbounded agent without it — not admission, not a resume, not an
+auto-drain, not a continuation.
+
+The setting is `application`-scoped: a workspace cannot grant itself the right to run an unbounded
+agent. Each constructed uncontained runner logs that it is running without a bound and names the
+setting that permitted it. Activation is unaffected — a refused posture does not stop Schegent
+loading, only running.
+
+The full reasoning, the two shapes not chosen, and what remains outstanding are in
+[Agent capability posture](../architecture/agent-capability-posture.md).
+<!-- Source: src/services/backend-containment-policy.ts -->
+<!-- Source: src/runner/backend-runner-factory.ts -->
+
 6. Cancellation observes the request's abort signal. Timeout or cancellation sends SIGTERM and
    escalates to SIGKILL after 2 seconds. **The signal goes to the backend's whole process tree, not
    only to the direct child** (FR-R3-054): each backend is spawned into its own process group on
