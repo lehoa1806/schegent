@@ -36,6 +36,12 @@ export function documentFromPhaseDefinition(definition: PhaseDefinition): PhaseY
   const common = {
     ...(definition.runner !== undefined ? { runner: definition.runner } : {}),
     ...(definition.sideEffects !== undefined ? { sideEffects: definition.sideEffects } : {}),
+    // FR-R3-058 — both directions, or the round-trip drops it silently. The
+    // bijection test is what caught this: adding the key to the writer's order
+    // and the reader's grammar is not the same as carrying the value.
+    ...(definition.hostVerification !== undefined
+      ? { hostVerification: definition.hostVerification }
+      : {}),
     ...(definition.evidencePolicy !== undefined
       ? { evidencePolicy: definition.evidencePolicy }
       : {}),
@@ -95,7 +101,10 @@ export function phaseDefinitionFromDocument(document: PhaseYamlDocument): PhaseD
       : {}),
     ...(spec.runner !== undefined ? { runner: spec.runner } : {}),
     ...(spec.sideEffects !== undefined ? { sideEffects: spec.sideEffects } : {}),
-    ...(spec.evidencePolicy !== undefined ? { evidencePolicy: spec.evidencePolicy } : {})
+    ...(spec.evidencePolicy !== undefined ? { evidencePolicy: spec.evidencePolicy } : {}),
+    ...(spec.hostVerification !== undefined
+      ? { hostVerification: spec.hostVerification }
+      : {})
   };
   return spec.instruction !== undefined
     ? { ...common, instruction: spec.instruction }

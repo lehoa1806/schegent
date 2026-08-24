@@ -31,7 +31,17 @@ function readArtifacts(): readonly SpecArtifact[] {
       const directory = resolve(SPECS_ROOT, entry.name);
       const specPath = resolve(directory, 'spec.md');
       const tasksPath = resolve(directory, 'tasks.md');
-      const body = readFileSync(specPath, 'utf8');
+      // FR-R3-058 — guarded, for the reason FR-R3-063 recorded when it guarded
+      // `check-docs.mjs`: an unreadable required file threw ENOENT and killed the
+      // whole run, so the one case this loop exists to notice was the one case it
+      // could not report. A gate that crashes rather than reports is the same
+      // defect as one that passes vacuously.
+      let body: string;
+      try {
+        body = readFileSync(specPath, 'utf8');
+      } catch {
+        body = '';
+      }
       const status = /^\*\*Status\*\*:\s*(.+?)\s*$/m.exec(body)?.[1] ?? '';
       return { directory, specPath, tasksPath, body, status };
     });

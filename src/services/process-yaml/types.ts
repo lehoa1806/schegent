@@ -19,6 +19,7 @@ import type {
   PhaseDefinition,
   PhaseDefinitionEffort,
   PhaseEvidencePolicy,
+  PhaseHostVerification,
   PhaseSideEffects,
   PhaseSourceStatus
 } from '../../contracts/process-definitions';
@@ -93,6 +94,8 @@ interface PhaseYamlSpecBase {
   readonly sideEffects?: PhaseSideEffects;
   /** Feature 098 — the evidence policy the author declared. Same optionality rule. */
   readonly evidencePolicy?: PhaseEvidencePolicy;
+  /** FR-R3-058 — the second evidence axis; see `PhaseHostVerification`. */
+  readonly hostVerification?: PhaseHostVerification;
   readonly model?: string;
   readonly effort?: PhaseDefinitionEffort;
   readonly timeoutSeconds?: number;

@@ -115,7 +115,14 @@ describe('stdin delivery precedence', () => {
       'utf8'
     );
     const stdinArm = source.indexOf("if (raw.stdinDeliveryFailed && result.kind === 'clean')");
-    const timeoutArm = source.indexOf("if (raw.timedOut && result.kind !== 'clean')");
+    // FR-R3-058 changed this arm's condition to admit a sensitive Phase
+    // (`|| requiresHostVerification(inputs)`). The literal is updated rather than
+    // loosened to a regex: this assertion is about arm ORDER, and matching the
+    // exact text is what makes it notice a reorder. A pattern loose enough to
+    // survive any edit would stop noticing.
+    const timeoutArm = source.indexOf(
+      "if (raw.timedOut && (result.kind !== 'clean' || requiresHostVerification(inputs)))"
+    );
     const killedArm = source.indexOf('if (raw.killed && raw.exitCode === null)');
     const cleanNonZero = source.indexOf("if (result.kind === 'clean' && raw.exitCode !== null");
 

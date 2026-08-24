@@ -40,6 +40,14 @@ import { RequiredEvidenceUnavailableError } from '../lib/errors';
 export { composePhaseMessagePath };
 export type { PhaseMessageResult };
 
+/**
+ * FR-R3-058 — does this Phase require the host's own evidence to advance? Read on
+ * every call, never cached: a definition can be re-published mid-run.
+ */
+function requiresHostVerification(inputs: PhaseRunInputs): boolean {
+  return inputs.phaseDef?.hostVerification === 'exit-code';
+}
+
 export interface PhaseRunInputs {
   phase: Phase;
   phaseDef?: PhaseDef;
@@ -557,8 +565,10 @@ export class PhaseRunner {
       };
     }
 
-    // Feature 030 BUG-002 — hung-but-clean run = success, not timeout (FR-025).
-    if (raw.timedOut && result.kind !== 'clean') {
+    // Feature 030 BUG-002 — hung-but-clean run = success, not timeout (FR-025),
+    // unless the Phase marked itself sensitive (FR-R3-058). See
+    // specs/145-host-verifiable-gates/contracts/host-verification.md.
+    if (raw.timedOut && (result.kind !== 'clean' || requiresHostVerification(inputs))) {
       const auditEntry = await this.appendAudit(inputs, 'phase-end', 'failure', {
         ...this.pipelineMeta(inputs),
         outcome: 'timeout',
@@ -617,6 +627,48 @@ export class PhaseRunner {
     // while the model completed successfully). Log a warning for observability
     // but do NOT throw — the model's successful completion takes precedence.
     if (result.kind === 'clean' && raw.exitCode !== null && raw.exitCode !== 0) {
+      // FR-R3-058 — for a sensitive Phase the exit status decides. A warning was
+      // the whole enforcement before: logged, and advanced anyway.
+      if (requiresHostVerification(inputs)) {
+        const verificationEntry = await this.appendAudit(inputs, 'phase-end', 'failure', {
+          ...this.pipelineMeta(inputs),
+          outcome: 'failed',
+          exitCode: raw.exitCode,
+          terminationReason: 'error',
+          warnings: ['host-verification-failed', ...(result.warnings ?? [])],
+          ...this.invocationMetricPayload(raw),
+          files_created: audit.entry?.filesCreated ?? [],
+          files_modified: audit.entry?.filesModified ?? [],
+          commands_executed: audit.entry?.commandsExecuted ?? []
+        });
+        this.logger.warn('phase-runner: host verification failed on a sensitive phase', {
+          phase: inputs.phase,
+          iteration: inputs.iteration,
+          exitCode: raw.exitCode
+        });
+        return {
+          result: {
+            kind: 'malformed',
+            warnings: ['host-verification-failed'],
+            auditEntry: audit.entry
+          },
+          outcome: 'failed',
+          terminationReason: 'error',
+          stdoutSummary: this.logger.sanitize(summarize(unwrappedStream.text)),
+          stderrSummary: this.logger.sanitize(
+            summarize(
+              typeof raw.stderrBuffer === 'string'
+                ? raw.stderrBuffer
+                : raw.stderrBuffer.getTrailingLines(100)
+            )
+          ),
+          exitCode: raw.exitCode,
+          auditEntryId: verificationEntry.id,
+          // The exit code, never output content. The number is the finding.
+          warnings: [`host verification failed: exit code ${raw.exitCode}`],
+          phaseMessage: null
+        };
+      }
       this.logger.warn('phase-runner: clean result with non-zero exit code', {
         phase: inputs.phase,
         iteration: inputs.iteration,
