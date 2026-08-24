@@ -10,7 +10,7 @@ describe('browser visual regression gate', () => {
       readonly scripts: Readonly<Record<string, string>>;
       readonly devDependencies: Readonly<Record<string, string>>;
     };
-    expect(pkg.devDependencies['@playwright/test']).toBe('^1.60.0');
+    expect(pkg.devDependencies['@playwright/test']).toBe('^1.62.1');
     expect(pkg.scripts['test:visual']).toContain('playwright.config.ts');
     expect(pkg.scripts['ci:fast']).toContain('npm run test:visual');
     expect(pkg.scripts['ci']).toContain('npm run test:visual');
