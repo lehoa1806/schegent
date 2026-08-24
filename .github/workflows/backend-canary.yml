@@ -1,0 +1,54 @@
+name: Backend canary
+
+# FR-R3-061 (M-08 / R-15) — behavioural qualification, off the PR path.
+#
+# The eval corpus is 10 deterministic fixtures over parser and outcome mapping.
+# Real CLI protocol drift, auth changes, prompt/tool regressions and cost drift
+# are invisible to it. This probes the real CLIs on a schedule.
+#
+# NOT a required check, and never blocking. The review is explicit that PR gates
+# stay deterministic: a gate that depends on a third-party service goes red for
+# reasons unrelated to the change under review, and people learn to re-run it
+# instead of reading it. Findings from this workflow are filed as findings.
+#
+# `scripts/backend-canary.mjs` always exits 0 unless the canary itself is broken,
+# so a drift cannot become a red gate by accident through an exit code.
+#
+# Credentials are an operator-supplied precondition. Without them the run does the
+# version probe only and says so in its output — a canary that reports success
+# because it did nothing is worse than one that does not run.
+
+on:
+  schedule:
+    # Wednesdays 07:00 UTC. Its own cadence, deliberately not the Monday
+    # full-gate slot: a canary that always runs beside the gate gets read as part
+    # of it.
+    - cron: '0 7 * * 3'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-canary-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    name: probe the real backends
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Probe backend versions and, where credentials allow, one live phase
+        run: node scripts/backend-canary-run.mjs
+
+      - name: Say what this run did and did not qualify
+        if: always()
+        run: |
+          echo "This workflow is not a required check. Its findings are filed, not gated."
+          echo "See tests/evals/README.md for what the deterministic corpus does and does not cover."
