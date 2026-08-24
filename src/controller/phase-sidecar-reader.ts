@@ -252,7 +252,13 @@ export class PhaseSidecarReader {
     // not present; we OR with `0` (identity) and rely on Windows' own
     // symlink-creation ACL (admin or Developer Mode) for partial defense.
     const silent = options.silentOnFailure === true;
-    const NOFOLLOW: number =
+    /**
+ * FR-R3-052 — a phase message above this is refused, not truncated. Far above
+ * any real sidecar; the bound exists so the allocation is not the file's size.
+ */
+const MAX_SIDECAR_BYTES = 8 * 1024 * 1024;
+
+const NOFOLLOW: number =
       (fs.constants as { O_NOFOLLOW?: number }).O_NOFOLLOW ?? 0;
     let handle: fs.FileHandle | null = null;
     let bytes: Buffer;
@@ -266,6 +272,14 @@ export class PhaseSidecarReader {
         if (silent) return null;
         await this.emitPhaseMessageInvalid(inputs, 'missing-sidecar');
         return this.invalidPhaseMessage(inputs, 'missing-sidecar');
+      }
+      // FR-R3-052 (H-03) — the size, checked BEFORE the read. `stat()` was
+      // already here and only `isFile()` was consulted. Refused rather than
+      // truncated: half a phase message is invalid input, not a smaller message.
+      if (stat.size > MAX_SIDECAR_BYTES) {
+        if (silent) return null;
+        await this.emitPhaseMessageInvalid(inputs, 'malformed-sidecar');
+        return this.invalidPhaseMessage(inputs, 'malformed-sidecar');
       }
       bytes = await handle.readFile();
       // Windows defense-in-depth: lstat after read catches the case where

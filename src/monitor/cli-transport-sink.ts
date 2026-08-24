@@ -148,7 +148,17 @@ type TransportFailureCause =
   | 'rotation-failed'
   | 'containment-refused'
   | 'format-failed'
+  // FR-R3-052 — the pending queue was already at its byte bound, so this line
+  // was refused rather than queued. Not an I/O failure: the disk may be fine and
+  // simply slower than the CLI is producing.
+  | 'pending-bytes-exceeded'
   | 'unknown';
+
+/**
+ * FR-R3-052 — how many accepted-but-unwritten bytes this sink will hold.
+ * Generous for a transport log at any real rate, and finite, which is the point.
+ */
+const MAX_PENDING_BYTES = 16 * 1024 * 1024;
 
 interface AppendFn {
   (target: string, data: string): Promise<void>;
@@ -308,6 +318,16 @@ export class CliTransportSink implements CliTransportRecorder {
   /** Test seam: lets a suite await the fire-and-forget IO deterministically. */
   private readonly pending = new Set<Promise<void>>();
 
+  /**
+   * FR-R3-052 — bytes accepted and not yet written. The quantity the per-line
+   * chain never bounded.
+   */
+  private pendingBytes = 0;
+  private droppedLines = 0;
+  private droppedBytes = 0;
+  /** One warn per path, not one per dropped line. */
+  private readonly dropReported = new Set<string>();
+
   /** Accumulated bytes per path, seeded from one `stat` on first emit. */
   private readonly bytesOnDisk = new Map<string, number>();
   private readonly bytesSeeded = new Set<string>();
@@ -387,16 +407,51 @@ export class CliTransportSink implements CliTransportRecorder {
     }
     if (!settings) return;
     if (this.refused.has(settings.path)) return;
+
+    // FR-R3-052 (H-03) — a pending-byte high-water mark.
+    //
+    // `OutputSinkBackpressure` pauses the pipes when the transcript sink backs
+    // up, and it genuinely works; the review under-credited it. It does not bound
+    // THIS queue. Every line accepted here allocates a closure, a promise and a
+    // formatted string, and appends to a per-path chain: against a blocked disk
+    // writer, millions of short lines accumulate with nothing to stop them.
+    //
+    // Composes with the backpressure rather than replacing it. Backpressure slows
+    // what arrives; this bounds what has already been accepted and not yet
+    // written, which is the part no upstream pause can reclaim.
+    const cost = data.length;
+    if (this.pendingBytes + cost > MAX_PENDING_BYTES) {
+      // No silent caps. Counted always, warned once per path -- a warn per
+      // dropped line under load is the volume problem FR-R3-007 removed.
+      this.droppedLines += 1;
+      this.droppedBytes += cost;
+      if (!this.dropReported.has(settings.path)) {
+        this.dropReported.add(settings.path);
+        this.warn(settings.path, 'pending-bytes-exceeded');
+      }
+      return;
+    }
+    this.pendingBytes += cost;
+
     const previous = this.chains.get(settings.path) ?? Promise.resolve();
     const next = previous.then(() => this.writeAbsorbing(settings, data));
     this.chains.set(settings.path, next);
     this.pending.add(next);
     void next.finally(() => {
+      this.pendingBytes -= cost;
       this.pending.delete(next);
       if (this.chains.get(settings.path) === next) {
         this.chains.delete(settings.path);
       }
     });
+  }
+
+  /**
+   * FR-R3-052 — lines refused because the pending queue was already at its
+   * bound. Readable, because a counter nothing can read is a silent cap.
+   */
+  public get droppedForBackpressure(): { readonly lines: number; readonly bytes: number } {
+    return { lines: this.droppedLines, bytes: this.droppedBytes };
   }
 
   /** Await in-flight writes. Settles immediately when none are pending. */
