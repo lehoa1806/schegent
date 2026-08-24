@@ -62,4 +62,19 @@ describe('the declared VS Code floor is the API the host compiles against', () =
   it('pins it to the floor itself, not merely to something below it', () => {
     expect(floorOf(types!)).toEqual(floorOf(engines!));
   });
+
+  it('makes the integration leg exercise the DECLARED FLOOR, not whatever is current', () => {
+    // The other half of H-08, and the half that had no gate. The harness passed no
+    // `version`, so `downloadAndUnzipVSCode` defaulted to `'stable'`: the manifest
+    // claimed a floor and the evidence exercised something else. Deriving the
+    // version from `engines.vscode` is what makes the tested binary the claimed
+    // one by construction; this assertion is what stops someone unpinning it and
+    // reintroducing the drift silently.
+    const harness = readFileSync(resolve(ROOT, 'tests/integration/runTest.ts'), 'utf8');
+    expect(harness).toMatch(/engines\?\.vscode|engines\.vscode/);
+    expect(harness).toMatch(/declaredVSCodeFloor/);
+    // A literal version in the harness is the hardcoded-fact defect the floor
+    // claim itself was.
+    expect(harness).not.toMatch(/version:\s*'\d+\.\d+\.\d+'/);
+  });
 });

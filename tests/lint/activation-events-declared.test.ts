@@ -18,7 +18,7 @@
 // event would watch for something that might never appear.
 //
 // **Why there is no `onCommand:` or `onView:` entry.** At `engines.vscode
-// ^1.85.0` both are implicit: since 1.74 VS Code activates an extension when one
+// the declared floor` both are implicit: since 1.74 VS Code activates an extension when one
 // of its contributed commands is invoked or one of its contributed views is
 // revealed, whether or not the manifest says so. This extension contributes 19
 // commands and one view; spelling any of them out here would add 20 lines that
@@ -99,7 +99,17 @@ describe('the activation surface is declared and bounded (111, FR-016, FR-017)',
     // infers them". If the extension stopped contributing commands or views, the
     // rule would pass for the wrong reason and the header's argument would be
     // stale rather than wrong.
-    expect(manifest.engines?.vscode).toBe('^1.85.0');
+    // FR-R3-059 — the FLOOR ITSELF is what this rule depends on, not a specific
+    // version string. VS Code has inferred activation from `contributes` since
+    // 1.74, so the header's argument holds for any floor at or above that. This
+    // was pinned to the literal `^1.85.0`, which is a hardcoded proxy for a
+    // derived fact: raising the floor to 1.134 broke it, and the rule it guards
+    // was never in question.
+    const INFERENCE_SINCE_MINOR = 74;
+    const floor = /^\D*(\d+)\.(\d+)\./.exec(manifest.engines?.vscode ?? '');
+    expect(floor, `unparseable engines.vscode ${manifest.engines?.vscode}`).not.toBeNull();
+    expect(Number(floor![1])).toBeGreaterThanOrEqual(1);
+    expect(Number(floor![2])).toBeGreaterThanOrEqual(INFERENCE_SINCE_MINOR);
     expect((manifest.contributes?.commands ?? []).length).toBeGreaterThan(0);
     expect(Object.keys(manifest.contributes?.views ?? {}).length).toBeGreaterThan(0);
   });
