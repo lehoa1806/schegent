@@ -157,6 +157,7 @@ drifts unnoticed, because the readers who would catch an error never get there.
 
 ### Architecture and decisions
 
+- [Agent capability posture](architecture/agent-capability-posture.md) — **decision pending**
 - [Local queue parallelism ratification](architecture/local-queue-parallelism-ratification.md)
 - [Remote multi-user expansion gate](architecture/remote-multi-user-expansion-gate.md)
 - [Workspace ownership fencing](architecture/workspace-ownership-fencing.md)
