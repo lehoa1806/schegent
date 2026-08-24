@@ -1,4 +1,8 @@
-// Feature 058 (Option B per docs/plans/workspace-isolation-strategy.md) —
+// Feature 058 (Option B). FR-R3-063 — this cited
+// `docs/plans/workspace-isolation-strategy.md`, which does not exist and neither
+// does `docs/plans/`. Retargeted to `docs/explanation/architecture.md`, which
+// documents the rule that survived: the first folder in a multi-root window is
+// canonical.
 // canonical workspace-folder accessor. Single source of truth for selecting
 // the Schegent canonical workspace folder.
 //

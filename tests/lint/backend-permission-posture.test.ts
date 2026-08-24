@@ -486,17 +486,23 @@ describe('backend permission posture', () => {
  * date. Enumerated deliberately: a directory-wide exclusion would let the next
  * drift land in a file nobody re-reads.
  *
- * Honest note: on today's tree this list excludes nothing — the listed review
- * currently pairs the vocabulary with a `sideEffects` reference, so removing the
- * list would not turn the suite red. It is here because a dated review that
- * quotes the old wording is a normal thing to write, and the mechanism was
- * observed working (a record was given the old wording, the gate stayed green,
- * and the change was reverted) rather than assumed. An allowlist nobody has
- * seen fire is one nobody should trust.
+ * FR-R3-063 — this list is now EMPTY, and the note above it was wrong.
+ *
+ * It named `docs/operations/principal-architecture-review-2026-05-18.md` and
+ * asserted, in the present tense, that "the listed review currently pairs the
+ * vocabulary with a `sideEffects` reference". That file does not exist. So the
+ * entry excused nothing, while standing ready to excuse whatever might later
+ * appear at that path -- and an exemption matching no file produces no signal, so
+ * nothing was going to notice.
+ *
+ * The mechanism is kept rather than deleted: a dated review that quotes the old
+ * containment wording is a normal thing to write, and the mechanism was observed
+ * working once (a record was given the old wording, the gate stayed green, and the
+ * change was reverted). Kept empty is honest; kept populated with a path that
+ * does not exist was not. The assertion below fails a dead entry, so the next one
+ * cannot sit here unnoticed.
  */
-const HISTORICAL_RECORDS = Object.freeze([
-  'docs/operations/principal-architecture-review-2026-05-18.md'
-]);
+const HISTORICAL_RECORDS: readonly string[] = Object.freeze([]);
 
 /** Phrases that describe `sideEffects` as bounding the subprocess. */
 const CONTAINMENT_VOCABULARY = Object.freeze([
@@ -889,5 +895,18 @@ describe('documented containment matches the spawned argv', () => {
     expect(collapse(read('docs/security/threat-model.md'))).toContain(
       'shell: false'
     );
+  });
+});
+
+/**
+ * FR-R3-063 — an exemption for a path that does not exist is dead standing
+ * permission, and silent: a rule matching no file reports nothing.
+ */
+describe('the historical-record exemption list is live', () => {
+  it('names only paths that exist', () => {
+    const missing = HISTORICAL_RECORDS.filter(
+      (relative) => !existsSync(resolve(ROOT, relative))
+    );
+    expect(missing).toEqual([]);
   });
 });

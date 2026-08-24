@@ -105,6 +105,71 @@ Historical decisions, deep operations notes, and feature-specific pages remain
 available because maintainers need evidence and exact contracts. Their presence
 does not make them onboarding material.
 
+## Complete index
+
+Every page in this tree, so that none is reachable only by knowing it exists.
+FR-R3-063 added this: the 2026-08-23 review found 21 of 53 pages with no inbound
+link — in a tree it had itself inventoried — and a page nobody can arrive at also
+drifts unnoticed, because the readers who would catch an error never get there.
+`tests/lint/doc-orphan-pages.test.ts` now fails on an unindexed page.
+
+### Courses
+
+- [Use Schegent](courses/use-schegent.md)
+- [Develop Schegent](courses/develop-schegent.md)
+
+### Tutorials
+
+- [Developer setup](tutorials/developer-setup.md)
+- [Run the shipped Spec-kit pipeline](tutorials/user-quickstart.md)
+
+### How-to
+
+- [Feature guides](how-to/feature-guides.md)
+
+### Concepts and explanation
+
+- [Local-first, not offline](concepts/local-first-not-offline.md)
+- [Domain model](explanation/domain-model.md)
+
+### Operations
+
+- [Backends](operations/backends.md)
+- [Built-artifact route diagnosis](operations/built-artifact-route-diagnosis.md)
+- [Configuration](operations/configuration.md)
+- [Contract generation](operations/contract-generation.md)
+- [Dashboard UI](operations/dashboard-ui.md)
+- [Data retention and deletion](operations/data-retention-and-deletion.md)
+- [Inspect audit logs](operations/inspect-audit-logs.md)
+- [Inspect raw transcripts](operations/inspect-raw-transcripts.md)
+- [Licenses](operations/licenses.md)
+- [Merge-gate observation](operations/merge-gate-observation.md)
+- [Multi-queue concurrency](operations/multi-queue-concurrency.md)
+- [Phase and task management](operations/phase-task-management.md)
+- [Process YAML](operations/process-yaml.md)
+- [Recovery from an interrupted run](operations/recovery-checkpoints.md)
+- [Release notes](operations/release-notes.md)
+- [Release provenance observation](operations/release-provenance-observation.md)
+- [Runtime log](operations/runtime-log.md)
+- [Single-task queue migration](operations/single-task-queue-migration.md)
+- [Trust scopes](operations/trust-scopes.md)
+- [VSIX allowlist derivation](operations/vsix-allowlist-derivation.md)
+
+### Architecture and decisions
+
+- [Local queue parallelism ratification](architecture/local-queue-parallelism-ratification.md)
+- [Remote multi-user expansion gate](architecture/remote-multi-user-expansion-gate.md)
+- [Workspace ownership fencing](architecture/workspace-ownership-fencing.md)
+
+### Development
+
+- [Coverage measurements](development/coverage-measurements.md)
+- [Lint and type-aware rules](development/lint-and-type-aware-rules.md)
+
+### Other
+
+- [Asset report](ASSET_REPORT.md)
+
 ## Current onboarding constraints
 
 These constraints explain why the courses include explicit stop-and-check

@@ -1,5 +1,5 @@
 // Feature 058 — activation guard for multi-root workspaces (Option B per
-// docs/plans/workspace-isolation-strategy.md).
+// docs/explanation/architecture.md).
 //
 // Surfaces ONE non-blocking informational toast naming the canonical
 // workspace folder when the extension activates against a multi-root
