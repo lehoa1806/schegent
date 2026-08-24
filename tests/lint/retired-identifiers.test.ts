@@ -25,7 +25,7 @@
 // without naming anything retired, which is most of them. No gate in this
 // repository reads a claim and decides whether it still holds, and this one does
 // not change that.
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -74,15 +74,30 @@ const RETIRED: ReadonlyArray<Retired> = Object.freeze([
  * let the next drift land in a file nobody re-reads.
  */
 const HISTORICAL: ReadonlyArray<{ path: string; why: string }> = Object.freeze([
-  {
-    path: 'docs/operations/principal-architecture-review-2026-05-18.md',
-    why: 'a dated review; its accuracy is a property of its date'
-  },
+  // FR-R3-063 — `docs/operations/principal-architecture-review-2026-05-18.md` was
+  // listed here and does not exist. A standing exemption for a missing path is
+  // worse than a stale comment: it pre-excuses whatever a future file at that
+  // path happens to contain, and nothing notices, because an exemption that
+  // matches nothing produces no signal. Removed; the assertion below now fails a
+  // dead entry so this cannot recur silently.
   {
     path: 'tests/lint/retired-identifiers.test.ts',
     why: 'this file names every retired identifier by definition'
   }
 ]);
+
+/**
+ * FR-R3-063 — an exemption for a path that does not exist is dead standing
+ * permission. It excuses nothing today and pre-excuses anything that later
+ * appears at that path, silently, because a rule matching no file reports
+ * nothing.
+ */
+describe('the historical exemption list is live', () => {
+  it('names only paths that exist', () => {
+    const missing = HISTORICAL.filter((entry) => !existsSync(resolve(REPO_ROOT, entry.path)));
+    expect(missing.map((entry) => entry.path)).toEqual([]);
+  });
+});
 
 /**
  * The lowest Node major `engines.node` admits.
