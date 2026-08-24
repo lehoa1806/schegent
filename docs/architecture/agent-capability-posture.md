@@ -139,12 +139,64 @@ The item's acceptance is mechanism, not prose:
   `application`-scoped so a workspace cannot grant it to itself. Each constructed uncontained runner
   logs that it is running unbounded and names the setting that permitted it.
 
-### Outstanding: a genuine per-run record
+### Decided: a genuine per-run record, built (FR-R3-064)
 
-The item's phrase is "unmistakable per-run consent". What ships is per-runner-construction, and the
-registry caches runners by kind, so **this is not a per-run record and does not claim to be**. A
-per-run audit entry belongs at admission and needs its own event in the audit contract. Recorded here
-as outstanding rather than glossed.
+The item's phrase is "unmistakable per-run consent". Shape 3 shipped
+per-runner-*construction*, and the registry caches runners by kind, so that was **not** a per-run
+record and did not claim to be. Two shapes were available to close the gap, and they differ in what
+the product can prove rather than in cost:
+
+- **Shape A — narrow the sentence.** State that the runner used is recorded on every phase start and
+  that containment is derivable from it. Minutes of work, honest, and it leaves this clause open.
+- **Shape B — build the record.** Add the admission-time event this section already specified, emit
+  it on every route that reaches a backend, and keep the promise the setting makes.
+
+**Chosen: shape B.** Rejected: shape A. The reason is not effort. The registry caches runners by
+kind, so a *construction*-time refusal can never be a per-run record however it is described — shape
+A would therefore have left a real gap in the evidence an operator needs after the fact, while
+describing that gap accurately. An operator who accepted this posture months ago and now needs to
+answer "which runs actually drove an unbounded agent?" is not served by a sentence explaining that
+they can infer it.
+
+**What ships:** the `backend-posture-admitted` audit event, declared in `src/contracts/audit-events.ts`
+and emitted in `PhaseRunner.run` immediately after the effective runner kind is resolved and before
+`phase-start`. Its payload is three bounded primitives — the backend kind, its containment
+classification, and the setting's value as read at that emission.
+
+**Why there, and not at admission or at construction.** The same argument that put the refusal at
+`createBackendRunner`: place the mechanism at the single funnel every route reaches. Every route that
+can drive a run — a start, a resume, an auto-drain, a continuation — dispatches its phases through
+`PhaseRunner.run`, so route coverage is structural rather than sampled. Admission alone would miss the
+routes that do not pass through it; construction fires once per window per kind, which is the gap this
+closes.
+
+**What it does not do.** It does not move, weaken, or duplicate the enforcement — `createBackendRunner`
+still refuses at the last point before an uncontained backend exists as an object. It adds no consent
+prompt: the setting is the consent surface, and that is shape 3's recorded decision. It does not widen
+or restate the containment classification, which is proven against each adapter's actual argv in
+`backend-containment-policy.test.ts`.
+
+**The posture is read fresh at each emission.** `extension.ts` reads
+`allowUncontainedBackends` once at activation for the runner registry's construction-time refusal; the
+emitter deliberately does **not** reuse that value, because a posture cached across the window is the
+defect finding 1 of this item removed when it deleted a runner held across a posture the operator can
+change. The emitter reads through an accessor, on the same never-cached pattern as the
+verbose-diagnostics, fatal-signatures and auto-compact settings.
+
+**Cardinality.** At most one entry per (run, backend kind) per extension-host activation, and never
+one per phase. A run driven to completion in one activation on one backend records exactly one. A run
+whose phases override the backend records one per distinct kind — recording only the first would make
+the manifest sentence false for the second, which is the whole defect being removed. A run resumed
+after a host restart records again, from a fresh read; the alternative is a persisted
+"already recorded" flag, which is the cached posture under another name.
+
+**Failure mode.** The entry is required evidence. An append failure raises through the same path
+`phase-start` already uses, so a run cannot drive an unbounded agent unrecorded. This adds no new
+failure mode: an audit writer that cannot append would fail the same phase microseconds later at
+`phase-start`.
+
+Shape 2 — the capability broker, which bounds what the agent may *do* rather than whether it may
+start — remains outstanding and is unaffected by this.
 
 The MCP and new-backend freeze the review attached to this item holds until shape 2 ships; the
 review makes that ordering explicit, and shape 3 does not lift it.

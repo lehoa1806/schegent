@@ -149,6 +149,10 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   // Feature 076 — optional-phase continuation is task-scoped.
   'phase-optional-failure-continued': 'task',
   'backend-ping': 'system',
+  // FR-R3-064 — task-scoped: it records which backend a specific Run was
+  // admitted to and under what posture, so it belongs to that Run's story
+  // rather than to the window's. `phase-start`, which it precedes, is task too.
+  'backend-posture-admitted': 'task',
   // Feature 073 — Metrics Dashboard adoption tracking; not tied to a
   // specific workflow run (system)
   'metrics-view-opened': 'system',
@@ -328,6 +332,7 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'phase-jumped':
         case 'phase-optional-failure-continued':
         case 'backend-ping':
+        case 'backend-posture-admitted':
         case 'metrics-view-opened':
         case 'process-exchange-export':
         case 'process-exchange-import-refused':

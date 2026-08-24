@@ -87,7 +87,16 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
 // decides one phase's outcome from one invocation's evidence — so the fix is
 // headroom, not a split, on the same reasoning as phase-outcome-mapper.ts below.
 const BUDGETS = [
-  { path: 'src/controller/phase-runner.ts', max: 927 },
+  // FR-R3-064 — bumped phase-runner.ts +30. The per-run backend-posture record
+  // was written inside `run()` first and this gate refused it, correctly: at +123
+  // it was a responsibility, not a forwarded decision. It now lives in
+  // `controller/backend-posture-recorder.ts`, on the same reasoning feature 057
+  // used for `PhaseSidecarReader`, `PhaseRetryEvaluator` and
+  // `PhaseOutcomeMapper`. What remains in the shell is what a shell should have:
+  // one constructor parameter, one construction, one awaited call, and the note
+  // saying why the call sits before `phase-start`. The gate is the reason the
+  // split happened rather than the headroom being taken, which is what it is for.
+  { path: 'src/controller/phase-runner.ts', max: 957 },
   // FR-R3-052 / H-03 (2026-08-24) — 400 → 415 for the size check that was
   // missing. `stat()` was already called here and only `isFile()` was read, so
   // `readFile()` took a multi-GiB sidecar wholly into memory. The bound, the

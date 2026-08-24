@@ -533,13 +533,19 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     vscode.workspace.getConfiguration('schegent.backend').get<string>('runner'),
     logger
   );
+  // FR-R3-064 — one reader, two tenures. The literals stay spelled out here
+  // because FR-R3-056's `uncontained-backend-not-hardcoded` gate asserts this
+  // file reads `getConfiguration('schegent.backend')` for the posture: the wiring
+  // site is where an auditor sees it enter the system.
+  const readUncontainedAllowed = (): boolean =>
+    vscode.workspace
+      .getConfiguration('schegent.backend')
+      .get<boolean>('allowUncontainedBackends') === true;
   const runnerRegistry = new BackendRunnerRegistry({
     // FR-R3-056 (H-01) — the shipped posture. Unset reads as the manifest default
     // (`false`), so a fresh install refuses an uncontained backend. See
     // docs/architecture/agent-capability-posture.md.
-    allowUncontained: vscode.workspace
-      .getConfiguration('schegent.backend')
-      .get<boolean>('allowUncontainedBackends') === true,
+    allowUncontained: readUncontainedAllowed(),
     // Feature 093 (T046) — forward each event to the Run that produced it.
     // The hook stays one window-level function; only the addressing changes.
     monitorHook: (event) => {
@@ -626,6 +632,11 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     const [queueId, current] = entry;
     await store.setRun(queueId, { ...current, lastRetryDecision: decision });
   };
+  // FR-R3-064 — the posture accessor: the same reader, called per emission
+  // instead of once at activation. The difference between the two uses is WHEN,
+  // not WHAT; passing the registry's captured boolean here would record an
+  // activation-time posture for a Run happening now.
+  const backendPostureAccessor = { isUncontainedAllowed: readUncontainedAllowed };
   const phaseRunner = new PhaseRunner(
     runnerRegistry,
     promptBuilder,
@@ -637,7 +648,8 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     autoCompactOverrideAccessor,
     null,
     phaseBreakpointAccessor,
-    lastRetryDecisionSink
+    lastRetryDecisionSink,
+    backendPostureAccessor
   );
   const runSafety = await createRunSafetyWiring({
     context,

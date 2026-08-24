@@ -271,7 +271,12 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // src/services/backend-containment-policy.ts and the rationale in
   // docs/architecture/agent-capability-posture.md, so nothing movable was left
   // here. Prose trimmed before raising, per the note on general-settings.ts.
-  { path: 'src/extension.ts', maxLines: 1_343 },
+  // FR-R3-064 — bumped +12. The posture the runner registry already reads at
+  // activation is now also read per emission for the per-run audit record, so the
+  // wiring site gains one reader function, one accessor object, and the note
+  // recording that the difference between the two uses is WHEN, not WHAT. No new
+  // responsibility: `extension.ts` still only wires.
+  { path: 'src/extension.ts', maxLines: 1_355 },
   // P4 phase-control and lifecycle-auditor extraction ratchet: 1,200 → 730.
   // This file owns only the workflow facade, run dispatch, deletion, retry
   // entry, and persistence.
