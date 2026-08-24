@@ -18,14 +18,18 @@ import { describe, expect, it } from 'vitest';
 import {
   WORKFLOW_CONDITION_OPERATORS,
   WORKFLOW_NODE_TERMINAL_STATUSES,
+  type PortablePipelineDefinition,
   type WorkflowCatalogSourceProjection,
   type WorkflowCondition,
   type WorkflowConditionOperator
 } from '../../lib/snapshot-types';
 import {
+  addWorkflowBranch,
   addWorkflowConditionValue,
   addWorkflowConnection,
   addWorkflowNode,
+  insertWorkflowNodeAfter,
+  spliceWorkflowNodeIntoConnection,
   conditionRightArity,
   conditionValues,
   formatWorkflowConditionLiteral,
@@ -591,5 +595,163 @@ describe('condition authoring (T048)', () => {
     expect(values.every((value) => WORKFLOW_NODE_TERMINAL_STATUSES.includes(value as never))).toBe(
       true
     );
+  });
+});
+
+// The canvas Builder's two composite edits (see `workflow-flow-layout.ts` for the
+// layout half). Both exist because the canvas offers one gesture where the list
+// Builder offered two controls, and a gesture that lands as two separate edits
+// renders an intermediate graph the operator never authored.
+describe('canvas composite edits', () => {
+  const pipeline = (
+    pipelineId: string,
+    ports: Pick<PortablePipelineDefinition, 'inputs' | 'outputs'>
+  ): PortablePipelineDefinition =>
+    ({
+      pipelineId,
+      name: pipelineId,
+      version: 1,
+      phaseIds: [],
+      bindings: [],
+      recommendedNext: [],
+      ...ports
+    }) as PortablePipelineDefinition;
+
+  const PIPELINES: readonly PortablePipelineDefinition[] = [
+    pipeline('spec-pipeline', {
+      inputs: [{ portId: 'goal', label: 'Goal', type: 'text' }],
+      outputs: [{ portId: 'spec', label: 'Spec', type: 'markdown' }]
+    }),
+    pipeline('release-pipeline', {
+      inputs: [{ portId: 'brief', label: 'Brief', type: 'text' }],
+      outputs: [{ portId: 'log', label: 'Log', type: 'markdown' }]
+    }),
+    pipeline('portless', { inputs: [], outputs: [] })
+  ];
+
+  describe('insertWorkflowNodeAfter', () => {
+    it('appends the node and one connection wiring the source to it', () => {
+      const next = insertWorkflowNodeAfter(row(), 'draft', 'release-pipeline', PIPELINES);
+
+      expect(next.nodes).toHaveLength(3);
+      const added = next.nodes[2];
+      expect(added.pipelineId).toBe('release-pipeline');
+      expect(next.connections).toHaveLength(2);
+      expect(next.connections[1]).toEqual({
+        from: { nodeId: 'draft', portId: 'spec' },
+        to: { nodeId: added.nodeId, portId: 'brief' }
+      });
+    });
+
+    it('never reuses an existing node identifier', () => {
+      const once = insertWorkflowNodeAfter(row(), 'draft', 'spec-pipeline', PIPELINES);
+      const twice = insertWorkflowNodeAfter(once, 'draft', 'spec-pipeline', PIPELINES);
+
+      const ids = twice.nodes.map((node) => node.nodeId);
+      expect(new Set(ids).size).toBe(ids.length);
+    });
+
+    it('leaves the draft untouched when the source node is not in it', () => {
+      const before = row();
+      expect(insertWorkflowNodeAfter(before, 'ghost', 'spec-pipeline', PIPELINES)).toEqual(before);
+    });
+
+    it('seeds empty port ids rather than throwing when a Pipeline declares none', () => {
+      const next = insertWorkflowNodeAfter(row(), 'draft', 'portless', PIPELINES);
+
+      // The host answers this with `unresolved-endpoint`; the point is that the
+      // connection exists and is visible enough to retarget.
+      expect(next.connections[1].to.portId).toBe('');
+    });
+  });
+
+  describe('spliceWorkflowNodeIntoConnection', () => {
+    it('retargets the arm at the new node and carries on to the original target', () => {
+      const next = spliceWorkflowNodeIntoConnection(row(), 0, 'release-pipeline', PIPELINES);
+      const added = next.nodes[2];
+
+      expect(next.connections).toHaveLength(2);
+      expect(next.connections[0]).toEqual({
+        from: { nodeId: 'draft', portId: 'spec' },
+        to: { nodeId: added.nodeId, portId: 'brief' }
+      });
+      expect(next.connections[1]).toEqual({
+        from: { nodeId: added.nodeId, portId: 'log' },
+        to: { nodeId: 'ship', portId: 'brief' }
+      });
+    });
+
+    it('keeps the spliced arm branch metadata upstream and does not copy it downstream', () => {
+      // The condition and the fallback marker say when THIS branch is taken, which
+      // inserting a node on it did not change. Copying them downstream would
+      // evaluate the condition twice and break one-default-per-source-node.
+      const branching = updateWorkflowConnection(row(), 0, {
+        condition: makeWorkflowCondition('draft'),
+        isDefault: true,
+        priority: 3
+      });
+
+      const next = spliceWorkflowNodeIntoConnection(branching, 0, 'release-pipeline', PIPELINES);
+
+      expect(next.connections[0].condition).toBeDefined();
+      expect(next.connections[0].isDefault).toBe(true);
+      expect(next.connections[0].priority).toBe(3);
+      expect(next.connections[1].condition).toBeUndefined();
+      expect(next.connections[1].isDefault).toBeUndefined();
+      expect(next.connections[1].priority).toBeUndefined();
+    });
+
+    it('leaves a self-connection alone rather than turning it into a longer cycle', () => {
+      const selfEdge = addWorkflowConnection(row(), {
+        from: { nodeId: 'draft', portId: 'spec' },
+        to: { nodeId: 'draft', portId: 'goal' }
+      });
+
+      expect(spliceWorkflowNodeIntoConnection(selfEdge, 1, 'spec-pipeline', PIPELINES)).toEqual(
+        selfEdge
+      );
+    });
+
+    it('is a no-op for a connection index the draft does not hold', () => {
+      const before = row();
+      expect(spliceWorkflowNodeIntoConnection(before, 7, 'spec-pipeline', PIPELINES)).toEqual(
+        before
+      );
+    });
+  });
+
+  describe('addWorkflowBranch', () => {
+    it('does not mark the first arm on a node as the default', () => {
+      // `ship` has no outgoing connection in the fixture.
+      const next = addWorkflowBranch(row(), 'ship', PIPELINES);
+
+      expect(next.connections).toHaveLength(2);
+      expect(next.connections[1].from.nodeId).toBe('ship');
+      expect(next.connections[1].isDefault).toBeUndefined();
+    });
+
+    it('seeds the second arm as the default, which is what makes a split terminate', () => {
+      const next = addWorkflowBranch(row(), 'draft', PIPELINES);
+
+      expect(next.connections[1].isDefault).toBe(true);
+    });
+
+    it('stops seeding a default once the node already has one', () => {
+      const twoArms = addWorkflowBranch(row(), 'draft', PIPELINES);
+      const threeArms = addWorkflowBranch(twoArms, 'draft', PIPELINES);
+
+      expect(threeArms.connections.filter((edge) => edge.isDefault === true)).toHaveLength(1);
+    });
+
+    it('seeds a target that is not the source when another node exists', () => {
+      const next = addWorkflowBranch(row(), 'draft', PIPELINES);
+
+      expect(next.connections[1].to.nodeId).not.toBe('draft');
+    });
+
+    it('leaves the draft untouched when the source node is not in it', () => {
+      const before = row();
+      expect(addWorkflowBranch(before, 'ghost', PIPELINES)).toEqual(before);
+    });
   });
 });

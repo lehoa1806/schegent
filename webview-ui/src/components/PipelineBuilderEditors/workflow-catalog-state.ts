@@ -295,20 +295,122 @@ export function makeWorkflowNodeDraft(
 }
 
 /**
- * A connection seeded from the first two nodes and their first declared ports.
- * A seed the host would reject is still better than an empty row the operator
- * cannot see the shape of; every part of it is editable before save.
+ * Append a node that runs `pipelineId` — what the Actions palette does.
+ *
+ * The FIRST node of an empty Workflow is also marked a start. `startNodeIds` must
+ * be non-empty (FR-015) and a lone node that starts nothing is reachable from
+ * nothing, so without this the very first thing the operator adds is immediately
+ * two defects they have to go and find the toggle for.
+ *
+ * Only when the Workflow was empty. A later node is not auto-started: once a
+ * graph exists, which nodes may begin it is a decision the operator has already
+ * made, and quietly adding to it would change how the Workflow runs.
  */
-export function makeWorkflowConnectionDraft(
+export function appendWorkflowNode(
   workflow: MutableWorkflow,
+  pipelineId: string
+): MutableWorkflow {
+  const first = workflow.nodes.length === 0;
+  const node = makeWorkflowNodeDraft(workflow, pipelineId);
+  const appended = addWorkflowNode(workflow, node);
+  return first ? toggleWorkflowStartNode(appended, node.nodeId) : appended;
+}
+
+/**
+ * Append a node and wire it downstream of `sourceNodeId` — the canvas `+` that
+ * sits on the edge between two cards.
+ *
+ * One edit rather than an add-then-connect pair at the call site. Two edits pass
+ * through a state the canvas would render: for one frame the new node is
+ * connected to nothing and appears in the detached lane as an `unreachable-node`
+ * the operator never authored. It is also the only way to name the new id once —
+ * the connection has to address whatever `makeWorkflowNodeDraft` actually chose.
+ *
+ * Ports are each Pipeline's first declared one, and empty when a Pipeline
+ * declares none: a
+ * seed the host refuses beats no connection at all, because the operator can see
+ * the former on the canvas and retarget it.
+ */
+export function insertWorkflowNodeAfter(
+  workflow: MutableWorkflow,
+  sourceNodeId: string,
+  pipelineId: string,
   pipelines: readonly PortablePipelineDefinition[]
-): WorkflowConnection {
-  const from = workflow.nodes[0];
-  const to = workflow.nodes[1] ?? workflow.nodes[0];
-  return {
-    from: { nodeId: from?.nodeId ?? '', portId: workflowPortIds(from, pipelines, 'out')[0] ?? '' },
-    to: { nodeId: to?.nodeId ?? '', portId: workflowPortIds(to, pipelines, 'in')[0] ?? '' }
-  };
+): MutableWorkflow {
+  const source = workflow.nodes.find((node) => node.nodeId === sourceNodeId);
+  if (!source) return workflow;
+  const node = makeWorkflowNodeDraft(workflow, pipelineId);
+  return addWorkflowConnection(addWorkflowNode(workflow, node), {
+    from: { nodeId: sourceNodeId, portId: workflowPortIds(source, pipelines, 'out')[0] ?? '' },
+    to: { nodeId: node.nodeId, portId: workflowPortIds(node, pipelines, 'in')[0] ?? '' }
+  });
+}
+
+/**
+ * Put a new node ON an existing connection — the canvas `+` that sits between
+ * two cards, which splices rather than forks.
+ *
+ * The authored connection is retargeted at the new node and a second connection
+ * carries on to the original target, so the arm the operator was looking at still
+ * leads where it led. Retargeting rather than removing-and-adding is what
+ * preserves the arm's own `condition`, `priority`, `isDefault`, and `selection`:
+ * those describe *when this branch is taken*, which the insertion did not change.
+ * The new downstream connection is deliberately bare — it inherits none of them,
+ * because a second copy of a default arm would break "at most one per source
+ * node" and a second copy of a condition would evaluate twice.
+ *
+ * A self-connection is left alone. Splicing one would produce a two-node cycle
+ * out of a one-node cycle, which is a different defect from the one the operator
+ * is looking at.
+ */
+export function spliceWorkflowNodeIntoConnection(
+  workflow: MutableWorkflow,
+  index: number,
+  pipelineId: string,
+  pipelines: readonly PortablePipelineDefinition[]
+): MutableWorkflow {
+  if (!inRange(index, workflow.connections.length)) return workflow;
+  const connection = workflow.connections[index];
+  if (connection.from.nodeId === connection.to.nodeId) return workflow;
+  const node = makeWorkflowNodeDraft(workflow, pipelineId);
+  const inserted = addWorkflowNode(workflow, node);
+  const rerouted = updateWorkflowConnection(inserted, index, {
+    to: { nodeId: node.nodeId, portId: workflowPortIds(node, pipelines, 'in')[0] ?? '' }
+  });
+  return addWorkflowConnection(rerouted, {
+    from: { nodeId: node.nodeId, portId: workflowPortIds(node, pipelines, 'out')[0] ?? '' },
+    to: { nodeId: connection.to.nodeId, portId: connection.to.portId }
+  });
+}
+
+/**
+ * Another outgoing arm on `sourceNodeId`, which is how a split is authored: the
+ * contract has no split node, only a node with more than one connection leaving
+ * it.
+ *
+ * Seeded as the DEFAULT arm when the node already has arms and none of them is
+ * one. A branching node whose every arm is conditional terminates silently when
+ * nothing matches (FR-028), and the fallback arm of a two-way split is exactly
+ * what stops that — seeding it means the common shape is authorable without the
+ * operator having to know the rule first. At most one default per source node
+ * holds by construction: the seed is skipped the moment one exists.
+ */
+export function addWorkflowBranch(
+  workflow: MutableWorkflow,
+  sourceNodeId: string,
+  pipelines: readonly PortablePipelineDefinition[]
+): MutableWorkflow {
+  const source = workflow.nodes.find((node) => node.nodeId === sourceNodeId);
+  if (!source) return workflow;
+  const outgoing = workflow.connections.filter((edge) => edge.from.nodeId === sourceNodeId);
+  // Any node but the source, so the seed is not a self-edge when one exists.
+  const target = workflow.nodes.find((node) => node.nodeId !== sourceNodeId) ?? source;
+  const fallback = outgoing.length > 0 && !outgoing.some((edge) => edge.isDefault === true);
+  return addWorkflowConnection(workflow, {
+    from: { nodeId: sourceNodeId, portId: workflowPortIds(source, pipelines, 'out')[0] ?? '' },
+    to: { nodeId: target.nodeId, portId: workflowPortIds(target, pipelines, 'in')[0] ?? '' },
+    ...(fallback ? { isDefault: true } : {})
+  });
 }
 
 /**
@@ -557,6 +659,22 @@ export function parseWorkflowConditionLiteral(text: string): WorkflowConditionLi
   if (trimmed === 'false') return false;
   if (DECIMAL_LITERAL.test(trimmed)) return Number(trimmed);
   return text;
+}
+
+/**
+ * A branch `priority` as the control spells it, or `undefined` for "unset".
+ *
+ * Blank means unset rather than zero, and that distinction is load-bearing: the
+ * offer order treats an absent priority as *last*, while `0` would put the arm
+ * first. Anything that is not a whole number also comes back `undefined` — the
+ * host reports `invalid-range` for a bad one, and inventing a number the operator
+ * did not type would author an ordering they never chose.
+ */
+export function parseWorkflowPriority(text: string): number | undefined {
+  const trimmed = text.trim();
+  if (trimmed === '') return undefined;
+  const value = Number(trimmed);
+  return Number.isInteger(value) ? value : undefined;
 }
 
 /** The inverse: what the value control shows for an authored literal. */

@@ -28,19 +28,23 @@
 // `workflow-catalog-state.ts`, and this module still only assembles calls into
 // it and hands the result back.
 
-import type { PortablePipelineDefinition, WorkflowNode } from '../../lib/snapshot-types';
+import type {
+  PortablePipelineDefinition,
+  WorkflowConnection,
+  WorkflowNode
+} from '../../lib/snapshot-types';
 import type { LifecycleConfirmOptions } from '../../lib/catalog-lifecycle';
 import type {
   DeactivateRequest,
   ExpectedDraftVersion
 } from '../../../../src/contracts/catalog-lifecycle';
 import {
+  addWorkflowBranch,
   addWorkflowConditionValue,
-  addWorkflowConnection,
-  addWorkflowNode,
+  appendWorkflowNode,
+  insertWorkflowNodeAfter,
   makeWorkflowCondition,
-  makeWorkflowConnectionDraft,
-  makeWorkflowNodeDraft,
+  spliceWorkflowNodeIntoConnection,
   moveWorkflowConnection,
   moveWorkflowNode,
   parseWorkflowConditionLiteral,
@@ -115,16 +119,24 @@ export function withWorkflowDraftEdited(
   return drafts.map((row) => (row.sourceKey === sourceKey ? edit(row) : row));
 }
 
-/** The callbacks `WorkflowGraphEditor` raises, in the order it declares them. */
+/** The callbacks the canvas Builder raises, in the order its panes declare them. */
 export interface WorkflowGraphActions {
-  addNode: () => void;
+  /** Palette: append a node that runs one named Pipeline. */
+  addNodeRunning: (pipelineId: string) => void;
+  /** Canvas `+` below a terminal card. */
+  insertAfter: (nodeId: string) => void;
+  /** Canvas `+` on an arm: a new node ON that connection. */
+  spliceInto: (connectionIndex: number) => void;
+  /** Another arm leaving one node, which is how a split is authored. */
+  addBranch: (nodeId: string) => void;
   removeNode: (index: number) => void;
   moveNode: (index: number, delta: number) => void;
   patchNode: (index: number, patch: Partial<WorkflowNode>) => void;
   toggleStartNode: (nodeId: string) => void;
-  addConnection: () => void;
   removeConnection: (index: number) => void;
   moveConnection: (index: number, delta: number) => void;
+  /** Branch metadata the canvas renders and therefore has to let the operator edit. */
+  patchConnection: (index: number, patch: Partial<WorkflowConnection>) => void;
   retargetConnection: (
     index: number,
     end: 'from' | 'to',
@@ -156,24 +168,38 @@ export function makeWorkflowGraphActions(
   pipelines: () => readonly PortablePipelineDefinition[]
 ): WorkflowGraphActions {
   return {
-    addNode: () =>
+    addNodeRunning: (pipelineId) =>
+      apply((workflow) => appendWorkflowNode(workflow, pipelineId)),
+    /**
+     * The new node runs the first effective Pipeline. The canvas `+` says "a node
+     * goes here", not "which node" — the inspector's Pipeline select is where that
+     * is decided, and asking first would put a modal in the middle of a gesture
+     * whose whole point is that it is one click.
+     */
+    insertAfter: (nodeId) =>
       apply((workflow) => {
         const pipelineId = pipelines()[0]?.pipelineId;
         return pipelineId === undefined
           ? workflow
-          : addWorkflowNode(workflow, makeWorkflowNodeDraft(workflow, pipelineId));
+          : insertWorkflowNodeAfter(workflow, nodeId, pipelineId, pipelines());
       }),
+    spliceInto: (connectionIndex) =>
+      apply((workflow) => {
+        const pipelineId = pipelines()[0]?.pipelineId;
+        return pipelineId === undefined
+          ? workflow
+          : spliceWorkflowNodeIntoConnection(workflow, connectionIndex, pipelineId, pipelines());
+      }),
+    addBranch: (nodeId) => apply((workflow) => addWorkflowBranch(workflow, nodeId, pipelines())),
     removeNode: (index) => apply((workflow) => removeWorkflowNode(workflow, index)),
     moveNode: (index, delta) => apply((workflow) => moveWorkflowNode(workflow, index, delta)),
     patchNode: (index, patch) => apply((workflow) => updateWorkflowNode(workflow, index, patch)),
     toggleStartNode: (nodeId) => apply((workflow) => toggleWorkflowStartNode(workflow, nodeId)),
-    addConnection: () =>
-      apply((workflow) =>
-        addWorkflowConnection(workflow, makeWorkflowConnectionDraft(workflow, pipelines()))
-      ),
     removeConnection: (index) => apply((workflow) => removeWorkflowConnection(workflow, index)),
     moveConnection: (index, delta) =>
       apply((workflow) => moveWorkflowConnection(workflow, index, delta)),
+    patchConnection: (index, patch) =>
+      apply((workflow) => updateWorkflowConnection(workflow, index, patch)),
     retargetConnection: (index, end, patch) =>
       apply((workflow) =>
         retargetWorkflowConnection(workflow, index, end, patch, pipelines())

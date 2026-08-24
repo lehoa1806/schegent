@@ -32,6 +32,7 @@
   import BuilderTabs from './Builder/BuilderTabs.svelte';
   import TrustBanner from './TrustBanner.svelte';
   import './PipelineBuilderEditors/pipeline-builder.css';
+  import './PipelineBuilderEditors/workflow-flow.css';
   interface Props {
     snapshot: WorkflowSnapshot;
     initialTab?: BuilderTab;

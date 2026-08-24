@@ -134,6 +134,18 @@ function snapshot(records: readonly WorkflowCatalogSourceProjection[]): Workflow
 const mount = (records: readonly WorkflowCatalogSourceProjection[], trusted = true) =>
   render(WorkflowCatalogEditor, { snapshot: snapshot(records), trusted });
 
+/**
+ * Reopen the top bar's picker. The Library list moved inside it when the canvas
+ * replaced the split pane, and choosing a row closes it — so a test that selects
+ * and then looks at the list again has to open it back up. What these assertions
+ * are about is the row, not the disclosure.
+ */
+const openPicker = async (container: HTMLElement): Promise<void> => {
+  if (container.querySelector('[data-testid="workflow-picker-list"]') !== null) return;
+  const toggle = container.querySelector<HTMLElement>('[data-testid="workflow-picker-toggle"]');
+  if (toggle) await fireEvent.click(toggle);
+};
+
 const rowFor = (container: HTMLElement, workflowId: string): HTMLElement => {
   const row = container.querySelector<HTMLElement>(
     `[data-testid="workflows-list-item-${workflowId}"]`
@@ -298,6 +310,7 @@ describe('WorkflowCatalogEditor duplicate (US5, T055)', () => {
       container.querySelector('[data-testid="workflows-duplicate"]') as HTMLElement
     );
 
+    await openPicker(container);
     const copy = container.querySelector('[data-testid="workflows-list-item-shipped-flow-copy"]');
     expect(copy, 'the copy must appear under its own identifier').not.toBeNull();
   });
@@ -310,6 +323,7 @@ describe('WorkflowCatalogEditor duplicate (US5, T055)', () => {
       container.querySelector('[data-testid="workflows-duplicate"]') as HTMLElement
     );
 
+    await openPicker(container);
     const original = rowFor(container, 'shipped-flow');
     expect(original.textContent).toBe(before);
   });
@@ -320,9 +334,8 @@ describe('WorkflowCatalogEditor duplicate (US5, T055)', () => {
     await fireEvent.click(
       container.querySelector('[data-testid="workflows-duplicate"]') as HTMLElement
     );
-    await fireEvent.click(
-      rowFor(container, 'shipped-flow-copy')
-    );
+    await openPicker(container);
+    await fireEvent.click(rowFor(container, 'shipped-flow-copy'));
 
     const name = container.querySelector<HTMLInputElement>('[data-testid="workflow-field-name"]');
     expect(name?.disabled).toBe(false);
@@ -369,16 +382,31 @@ describe('WorkflowCatalogEditor defect anchoring (US5, T055)', () => {
     ]
   });
 
-  it('anchors each host defect to the specific row it concerns (FR-044)', async () => {
+  it('anchors each host defect to the specific thing it concerns (FR-044)', async () => {
+    // The anchors changed with the surface: a node defect lands on that node's
+    // card, and a connection defect on that arm's chip. What did NOT change is
+    // that each one lands on the control that produced it rather than in one
+    // undifferentiated list at the bottom.
     const { container } = mount([DEFECTIVE]);
     await fireEvent.click(rowFor(container, 'design-then-build'));
 
-    const nodeRow = container.querySelector('[data-testid="workflow-node-1"]');
-    const connectionRow = container.querySelector('[data-testid="workflow-connection-0"]');
-    expect(nodeRow, 'the defective node row must render').not.toBeNull();
-    expect(connectionRow, 'the defective connection row must render').not.toBeNull();
-    expect(nodeRow?.textContent).toContain('names no Pipeline');
-    expect(connectionRow?.textContent).toContain('names no port');
+    const card = container.querySelector('[data-testid="workflow-node-1"]');
+    const chip = container.querySelector('[data-testid="workflow-branch-0"]');
+    expect(card, 'the defective node card must render').not.toBeNull();
+    expect(chip, 'the defective branch chip must render').not.toBeNull();
+    expect(card?.getAttribute('data-invalid')).toBe('true');
+    expect(chip?.getAttribute('data-invalid')).toBe('true');
+
+    // The node's message renders beside its card; the branch's renders in the
+    // inspector, which is where that arm's controls now live.
+    // `WorkflowRowDefects` exposes an `id`, because that is what the card's
+    // `aria-describedby` has to name.
+    const cardDefects = container.querySelector('#workflow-node-defects-1');
+    expect(cardDefects?.textContent).toContain('names no Pipeline');
+
+    await fireEvent.click(chip as HTMLElement);
+    const branchDefects = container.querySelector('#workflow-connection-defects-0');
+    expect(branchDefects?.textContent).toContain('names no port');
   });
 
   it('carries the association in text, not color alone (FR-044)', async () => {
@@ -522,6 +550,7 @@ describe('removal is a deactivation, gated where it is posted (FR-049)', () => {
     // the surface: no banner, the row still listed, the control live again
     // rather than stuck behind a pending save the host never performed.
     expect(container.querySelector('[data-testid="workflow-save-error-banner"]')).toBeNull();
+    await openPicker(container);
     expect(rowFor(container, 'design-then-build')).not.toBeNull();
     expect((getByTestId('workflows-remove') as HTMLButtonElement).disabled).toBe(false);
   });
@@ -533,6 +562,8 @@ describe('removal is a deactivation, gated where it is posted (FR-049)', () => {
     const { container, getByTestId } = mount([record(), record({ workflowId: 'keeper' })]);
     // An unsaved draft, created before the removal.
     await fireEvent.click(getByTestId('workflows-add'));
+    // Adding selects the new draft, which closes the picker the list lives in.
+    await openPicker(container);
     await fireEvent.click(rowFor(container, 'design-then-build'));
     await fireEvent.click(getByTestId('workflows-remove'));
 

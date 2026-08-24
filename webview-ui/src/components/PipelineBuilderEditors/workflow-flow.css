@@ -1,0 +1,124 @@
+/* The canvas Builder's surface. Loaded beside `pipeline-builder.css` from
+   PipelineBuilder.svelte, and scoped under `.pb` exactly as that file is, so the
+   two cannot collide with anything outside the Builder.
+
+   Every colour is a theme token. The reference design is a light-mode SaaS
+   canvas, and hardcoding its palette would make the Builder the one surface in
+   this extension that ignores the operator's theme — so the *shape* is taken
+   from it (raised cards on a sunken canvas, a centred trunk, pill-labelled
+   forks) and the colour comes from `theme.css`.
+
+   The fork is drawn with flexbox and pseudo-elements rather than positioned SVG.
+   Each arm is an equal-width flex column, so the horizontal bar can be inset by
+   exactly half a column at each end — `--wf-arms` carries the arm count, which
+   is the only value CSS cannot derive for itself. */
+
+.pb .wf-shell { display: flex; flex: 1; min-height: 0; border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); overflow: hidden; }
+
+/* Palette */
+.pb .wf-palette { width: 232px; flex: 0 0 auto; display: flex; flex-direction: column; gap: var(--schegent-space-3); padding: var(--schegent-space-3); overflow-y: auto; background: var(--schegent-shell-bg); border-right: 1px solid var(--schegent-divider); }
+.pb .wf-palette-head { display: flex; align-items: center; justify-content: space-between; gap: var(--schegent-space-2); }
+.pb .wf-palette-head h3 { margin: 0; font-size: var(--schegent-text-subheading); font-weight: 650; color: var(--schegent-fg); }
+.pb .wf-palette-group { display: flex; flex-direction: column; gap: 2px; }
+.pb .wf-palette-group-label { font-size: var(--schegent-text-caption); font-weight: 600; color: var(--schegent-muted-fg); padding: var(--schegent-space-2) 4px 4px; }
+.pb .wf-palette-item { display: flex; align-items: center; gap: var(--schegent-space-2); width: 100%; text-align: left; background: transparent; border: 1px solid transparent; border-radius: var(--schegent-radius-sm); padding: 6px; cursor: pointer; color: var(--schegent-fg); font: inherit; transition: background var(--schegent-duration-fast) var(--schegent-ease-out); }
+.pb .wf-palette-item:hover:not(:disabled) { background: var(--schegent-hover-bg); border-color: var(--schegent-divider); }
+.pb .wf-palette-item:disabled { opacity: 0.5; cursor: not-allowed; }
+.pb .wf-palette-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pb .wf-palette-rail { flex: 0 0 auto; padding: var(--schegent-space-3); background: var(--schegent-shell-bg); border-right: 1px solid var(--schegent-divider); }
+.pb .wf-palette-empty { font-size: var(--schegent-text-caption); color: var(--schegent-muted-fg); font-style: italic; padding: 4px; }
+
+/* The icon chip. A letter, not an icon font: no glyph set ships with this
+   webview, and an <img> would need a CSP source. */
+.pb .wf-chip { flex: 0 0 auto; width: 26px; height: 26px; border-radius: 7px; display: flex; align-items: center; justify-content: center; font-size: var(--schegent-text-caption); font-weight: 700; background: var(--schegent-surface-subtle); color: var(--schegent-muted-fg); }
+.pb .wf-chip-pipeline { background: var(--schegent-surface-active); color: var(--schegent-color-active); }
+.pb .wf-chip-logic { background: var(--schegent-surface-subtle); color: var(--schegent-color-warning); }
+.pb .wf-chip-start { background: var(--schegent-surface-active); color: var(--schegent-color-completed); }
+
+/* The drag affordance is decorative. Reorder and insert are buttons: FR-042
+   requires every operation to be reachable without a pointer, and a handle that
+   only responds to a drag would exclude every keyboard operator. */
+.pb .wf-handle { flex: 0 0 auto; color: var(--schegent-muted-fg); opacity: 0.55; font-size: var(--schegent-text-caption); letter-spacing: 1px; }
+
+/* Canvas */
+.pb .wf-canvas { flex: 1; min-width: 0; overflow: auto; padding: var(--schegent-space-5) var(--schegent-space-4); background: var(--schegent-pane-bg); }
+.pb .wf-lanes { display: flex; flex-direction: column; align-items: center; gap: var(--schegent-space-5); min-width: min-content; }
+.pb .wf-lane { display: flex; flex-direction: column; align-items: center; }
+.pb .wf-lane-note { font-size: var(--schegent-text-caption); color: var(--schegent-muted-fg); padding-bottom: var(--schegent-space-2); }
+.pb .wf-lane-note.is-defect { color: var(--schegent-error-text); }
+.pb .wf-subtree { display: flex; flex-direction: column; align-items: center; }
+
+.pb .wf-connector { width: 1px; height: 22px; background: var(--schegent-divider); flex: 0 0 auto; }
+.pb .wf-insert { width: 26px; height: 26px; border-radius: 50%; border: 1px solid var(--schegent-border); background: var(--schegent-surface-raised); color: var(--schegent-fg); display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: var(--schegent-text-body); line-height: 1; padding: 0; }
+.pb .wf-insert:hover:not(:disabled) { background: var(--schegent-hover-bg); border-color: var(--schegent-focus-border); }
+.pb .wf-insert:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.pb .wf-branches { display: flex; align-items: flex-start; gap: var(--schegent-space-4); position: relative; padding-top: 22px; }
+.pb .wf-branches::before { content: ''; position: absolute; top: 0; left: calc(50% / var(--wf-arms, 2)); right: calc(50% / var(--wf-arms, 2)); height: 1px; background: var(--schegent-divider); }
+.pb .wf-branch { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; position: relative; }
+.pb .wf-branch::before { content: ''; position: absolute; top: -22px; left: 50%; width: 1px; height: 22px; background: var(--schegent-divider); }
+
+/* The `Yes` / `No` chips of the reference design. Conditional arms take the
+   accent so the branching reads at a glance; the fallback stays neutral because
+   it is what happens when nothing matched, not another alternative. */
+.pb .wf-branch-label { max-width: 100%; border: 1px solid transparent; border-radius: 999px; padding: 2px 9px; font-size: var(--schegent-text-caption); font-weight: 600; background: var(--schegent-surface-active); color: var(--schegent-color-active); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: inherit; }
+.pb .wf-branch-label:hover { border-color: var(--schegent-focus-border); }
+.pb .wf-branch-label.is-default { background: var(--schegent-surface-subtle); color: var(--schegent-muted-fg); }
+/* An unconditional arm is still selectable — the inspector is where a condition
+   is added — so it gets a chip too, just a quiet one. */
+.pb .wf-branch-label.is-plain { background: transparent; color: var(--schegent-muted-fg); border-color: var(--schegent-divider); font-weight: 500; }
+.pb .wf-branch-label.is-selected { border-color: var(--schegent-focus-border); }
+.pb .wf-branch-label[data-invalid='true'] { border-color: var(--vscode-errorForeground); color: var(--schegent-error-text); }
+
+.pb .wf-end { border-radius: 999px; padding: 2px 10px; font-size: var(--schegent-text-caption); background: var(--schegent-surface-subtle); color: var(--schegent-muted-fg); }
+.pb .wf-jump { border-radius: var(--schegent-radius-sm); padding: 3px 9px; font-size: var(--schegent-text-caption); background: var(--schegent-surface-subtle); color: var(--schegent-muted-fg); border: 1px dashed var(--schegent-border); font-family: var(--schegent-mono-font); }
+
+/* Node card */
+.pb .wf-node { width: 300px; max-width: 100%; display: flex; flex-direction: column; gap: 6px; text-align: left; background: var(--schegent-surface-raised); border: 1px solid var(--schegent-border); border-radius: 10px; padding: 11px 13px; cursor: pointer; color: var(--schegent-fg); font: inherit; transition: border-color var(--schegent-duration-fast) var(--schegent-ease-out); }
+.pb .wf-node:hover { border-color: var(--schegent-focus-border); }
+.pb .wf-node.is-selected { border-color: var(--schegent-focus-border); background: var(--schegent-surface-selected); }
+.pb .wf-node[data-invalid='true'] { border-color: var(--vscode-errorForeground); }
+.pb .wf-node-head { display: flex; align-items: center; gap: var(--schegent-space-2); }
+.pb .wf-node-title { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pb .wf-node-body { font-size: var(--schegent-text-secondary); color: var(--schegent-muted-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pb .wf-node-foot { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.pb .wf-badge { border-radius: 999px; padding: 1px 8px; font-size: var(--schegent-text-caption); background: var(--schegent-surface-subtle); color: var(--schegent-muted-fg); }
+.pb .wf-badge.is-start { background: var(--schegent-surface-active); color: var(--schegent-color-completed); }
+.pb .wf-badge.is-defect { background: var(--vscode-inputValidation-errorBackground); color: var(--schegent-error-text); }
+.pb .wf-node-row { display: flex; align-items: flex-start; gap: 4px; }
+.pb .wf-node-col { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.pb .wf-node-actions { display: flex; flex-direction: column; gap: 2px; padding-top: 2px; }
+
+/* Inspector */
+.pb .wf-inspector { width: 296px; flex: 0 0 auto; display: flex; flex-direction: column; gap: var(--schegent-space-3); padding: var(--schegent-space-3); overflow-y: auto; background: var(--schegent-shell-bg); border-left: 1px solid var(--schegent-divider); }
+.pb .wf-inspector h3 { margin: 0; font-size: var(--schegent-text-subheading); font-weight: 650; color: var(--schegent-fg); }
+.pb .wf-inspector-sub { font-size: var(--schegent-text-caption); color: var(--schegent-muted-fg); font-family: var(--schegent-mono-font); }
+.pb .wf-inspector-section { display: flex; flex-direction: column; gap: var(--schegent-space-2); }
+.pb .wf-field { display: flex; flex-direction: column; gap: 3px; font-size: var(--schegent-text-caption); color: var(--schegent-muted-fg); }
+.pb .wf-field-row { display: flex; align-items: center; gap: 4px; }
+.pb .wf-field-row > .text-input, .pb .wf-field-row > .select-input { flex: 1; min-width: 0; }
+
+/* Top bar */
+.pb .wf-topbar { display: flex; align-items: center; gap: var(--schegent-space-2); flex-wrap: wrap; }
+.pb .wf-topbar-name { display: flex; align-items: center; gap: 6px; background: transparent; border: 1px solid transparent; border-radius: var(--schegent-radius-sm); padding: 5px 8px; cursor: pointer; color: var(--schegent-fg); font: inherit; font-weight: 650; font-size: var(--schegent-text-subheading); max-width: 320px; }
+.pb .wf-topbar-name:hover { background: var(--schegent-hover-bg); border-color: var(--schegent-divider); }
+.pb .wf-topbar-name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pb .wf-topbar-actions { display: flex; align-items: center; gap: var(--schegent-space-2); margin-left: auto; flex-wrap: wrap; }
+.pb .wf-picker { position: relative; }
+.pb .wf-picker-pop { position: absolute; z-index: var(--schegent-z-popover); top: calc(100% + 4px); left: 0; width: 320px; max-height: 340px; overflow-y: auto; padding: var(--schegent-space-2); background: var(--schegent-surface-raised); border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); }
+
+@media (max-width: 1100px) {
+  .pb .wf-shell { flex-wrap: wrap; }
+  .pb .wf-inspector { width: 100%; border-left: 0; border-top: 1px solid var(--schegent-divider); }
+}
+
+@media (max-width: 760px) {
+  .pb .wf-shell { flex-direction: column; }
+  .pb .wf-palette { width: auto; max-height: 200px; border-right: 0; border-bottom: 1px solid var(--schegent-divider); }
+  /* The fork degrades to a stacked rail: two 300px cards side by side do not fit,
+     and a horizontally scrolling canvas is worse than a vertical read. */
+  .pb .wf-branches { flex-direction: column; align-items: stretch; gap: var(--schegent-space-2); padding-left: var(--schegent-space-4); }
+  .pb .wf-branches::before { left: 0; right: auto; top: 0; bottom: 0; width: 1px; height: auto; }
+  .pb .wf-branch { align-items: flex-start; }
+  .pb .wf-branch::before { top: 14px; left: calc(var(--schegent-space-4) * -1); width: var(--schegent-space-4); height: 1px; }
+}

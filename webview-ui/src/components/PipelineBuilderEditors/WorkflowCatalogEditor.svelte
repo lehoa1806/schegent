@@ -1,10 +1,13 @@
 <script lang="ts">
   // Feature 083 (US1, T037; US5, T056) — the Workflow Library and its Builder.
   //
-  // This file owns the list, the identity fields, and the save; every graph row
-  // lives in `WorkflowGraphEditor` so both stay inside the 500-line Svelte
-  // budget. Every edit is one pure call into `workflow-catalog-state.ts` routed
-  // through `applyGraphEdit`, so no rule is expressible in this markup.
+  // This file owns the catalog, the lifecycle writes, and the save. The surface
+  // itself is a canvas: `WorkflowFlowTopBar` names which Workflow is open and
+  // `WorkflowFlowBuilder` holds the palette, the flow, and the inspector — so the
+  // identity fields moved into that inspector and the Library list moved into the
+  // top bar's picker. Every edit is still one pure call into
+  // `workflow-catalog-state.ts` routed through `applyGraphEdit`, so no rule is
+  // expressible in this markup or in any of the canvas components below it.
   //
   // `remove` and `reset` are the two destructive writes. Both confirm first, in
   // `workflow-catalog-actions.ts`, where the prompt and the mutation it
@@ -50,8 +53,8 @@
     type WorkflowDraftError
   } from './workflow-catalog-state';
   import CatalogEmptyState from '../Builder/CatalogEmptyState.svelte';
-  import WorkflowGraphEditor from './WorkflowGraphEditor.svelte';
-  import WorkflowLibraryList from './WorkflowLibraryList.svelte';
+  import WorkflowFlowBuilder from './WorkflowFlowBuilder.svelte';
+  import WorkflowFlowTopBar from './WorkflowFlowTopBar.svelte';
   import WorkflowToolbar from './WorkflowToolbar.svelte';
   import type { MutableWorkflow } from './types';
 
@@ -303,6 +306,14 @@
       'The Workflow catalog could not be loaded. Reload the view to retry.'}
   </div>
 {:else}
+  <WorkflowFlowTopBar
+    {rows}
+    {selected}
+    {selectedKey}
+    {lifecycleByKey}
+    onselect={(key) => (selectedKey = key)}
+  />
+
   <WorkflowToolbar
     {savePending}
     {mutatingDisabled}
@@ -345,92 +356,18 @@
        here and the guidance can never point at an action that cannot succeed. -->
   <CatalogEmptyState kind="workflow" count={rows.length} />
 
-  <div class="split-pane">
-    <div class="pane-left">
-      <WorkflowLibraryList
-        {rows}
-        {selectedKey}
-        {lifecycleByKey}
-        onselect={(key) => (selectedKey = key)}
-      />
+  {#if selected}
+    <WorkflowFlowBuilder
+      row={selected}
+      pipelines={effectivePipelines}
+      {defects}
+      {editable}
+      {graph}
+      onworkflowpatch={patchSelected}
+    />
+  {:else}
+    <div class="catalog-state" data-testid="workflows-no-selection">
+      Select a Workflow to view it.
     </div>
-
-    <div class="pane-right">
-      {#if selected}
-        {@const row = selected}
-        <label class="field">
-          Identifier
-          <input
-            data-testid="workflow-field-workflowId"
-            value={row.workflowId}
-            readonly={row.persisted}
-            disabled={!editable}
-            oninput={(event) => patchSelected({ workflowId: event.currentTarget.value })}
-          />
-        </label>
-        <label class="field">
-          Name
-          <input
-            data-testid="workflow-field-name"
-            value={row.name}
-            disabled={!editable}
-            oninput={(event) => patchSelected({ name: event.currentTarget.value })}
-          />
-        </label>
-        <label class="field">
-          Description
-          <textarea
-            data-testid="workflow-field-description"
-            value={row.description ?? ''}
-            disabled={!editable}
-            oninput={(event) => patchSelected({ description: event.currentTarget.value })}
-          ></textarea>
-        </label>
-        <!-- Feature 099 (T494a, FR-043) — no scope badge; one layer leaves it
-             one value to read, which is not a badge. -->
-        <div class="phase-badges">
-          <span class="status-badge status-{row.sourceStatus}">{row.sourceStatus}</span>
-        </div>
-
-        <WorkflowGraphEditor
-          nodes={row.nodes}
-          connections={row.connections}
-          startNodeIds={row.startNodeIds}
-          pipelines={effectivePipelines}
-          nodeDefects={defects.byNode}
-          connectionDefects={defects.byConnection}
-          readonly={!editable}
-          onnodeadd={graph.addNode}
-          onnoderemove={graph.removeNode}
-          onnodemove={graph.moveNode}
-          onnodepatch={graph.patchNode}
-          onstarttoggle={graph.toggleStartNode}
-          onconnectionadd={graph.addConnection}
-          onconnectionremove={graph.removeConnection}
-          onconnectionmove={graph.moveConnection}
-          onconnectionretarget={graph.retargetConnection}
-          onconditiontoggle={graph.toggleCondition}
-          onconditionpatch={graph.patchCondition}
-          onconditionvalue={graph.setConditionValue}
-          onconditionvalueadd={graph.addConditionValue}
-          onconditionvalueremove={graph.removeConditionValue}
-        />
-
-        <!-- Only what no row could show: everything anchored to a node or a
-             connection already renders on that row (FR-044), and repeating it
-             here would make the summary the place to read defects instead. -->
-        {#if defects.rest.length > 0}
-          <ul class="field-errors" data-testid="workflow-field-errors" role="alert">
-            {#each defects.rest as defect (defect.field + defect.code)}
-              <li>{defect.field}: {defect.message}</li>
-            {/each}
-          </ul>
-        {/if}
-      {:else}
-        <div class="catalog-state" data-testid="workflows-no-selection">
-          Select a Workflow to view it.
-        </div>
-      {/if}
-    </div>
-  </div>
+  {/if}
 {/if}
