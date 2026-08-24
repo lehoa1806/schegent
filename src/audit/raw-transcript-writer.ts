@@ -15,6 +15,7 @@ import {
   resolveContainedTarget,
   type ContainmentRefusal
 } from '../lib/path-containment';
+import { openWithinRoot, type SafeOpenRefusal } from '../lib/safe-open';
 import {
   normalizeEvidenceFailureCause,
   type EvidenceHealthReporter
@@ -352,10 +353,19 @@ export class RawTranscriptWriter {
   }
 
   private filePathFor(runId: string, mode: RawTranscriptMode): string {
-    const sessions = path.join(this.workspaceRoot, '.schegent', 'sessions');
+    return path.join(this.workspaceRoot, ...this.segmentsFor(runId, mode));
+  }
+
+  /**
+   * FR-R3-053 — the same path as `filePathFor`, expressed as the segments
+   * `openWithinRoot` walks. Both derive from this one list, so the pathname an
+   * operator is shown and the one actually opened cannot diverge.
+   */
+  private segmentsFor(runId: string, mode: RawTranscriptMode): readonly string[] {
+    const leaf = `raw-${runId}.log`;
     return mode === 'errors-only'
-      ? path.join(sessions, '.pending', `raw-${runId}.log`)
-      : path.join(sessions, `raw-${runId}.log`);
+      ? ['.schegent', 'sessions', '.pending', leaf]
+      : ['.schegent', 'sessions', leaf];
   }
 
   /**
@@ -395,13 +405,30 @@ export class RawTranscriptWriter {
   }
 
   private async doWrite(runId: string, content: string, mode: RawTranscriptMode): Promise<void> {
-    const target = this.filePathFor(runId, mode);
     try {
-      await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
       await this.ensureRuntimeGitignore();
-      const contained = await this.containedWriteTarget(target, 'transcript-append');
-      if (!contained) return;
-      await fs.appendFile(contained, content, { encoding: 'utf8', mode: 0o600 });
+      // FR-R3-053 (H-02) — one open that walks and refuses, replacing
+      // `mkdir -p` + a containment VERDICT + `appendFile` on the same pathname.
+      // The verdict was true when taken and re-resolved on the write, which is
+      // the check-to-use window this primitive exists to close. It matters more
+      // here than almost anywhere: raw transcripts are deliberately unredacted
+      // (see the threat model), so a symlink redirect leaks the unredacted stream
+      // out of the workspace.
+      const opened = await openWithinRoot(this.workspaceRoot, this.segmentsFor(runId, mode), {
+        flags: 'a',
+        createDirs: true,
+        dirMode: 0o700,
+        fileMode: 0o600
+      });
+      if (opened.outcome === 'refused') {
+        this.warnContainmentRefusal('transcript-append', opened.reason);
+        return;
+      }
+      try {
+        await opened.handle.write(content, null, 'utf8');
+      } finally {
+        await opened.handle.close().catch(() => undefined);
+      }
     } catch (err) {
       this.warnWriteFailure(runId, err as Error);
     }
@@ -479,7 +506,19 @@ export class RawTranscriptWriter {
    * not lead where it claimed. `operation` and `reason` are both bounded
    * literals, so the line names no location.
    */
-  private warnContainmentRefusal(operation: string, reason: ContainmentRefusal): void {
+  /**
+   * FR-R3-053 — widened to carry a `SafeOpenRefusal` too.
+   *
+   * The safe-open refusals are more specific than the containment ones
+   * (`symlink-component`, `symlink-leaf`, `not-a-directory`), and mapping them
+   * down to `not-contained` would discard exactly the part an operator can act
+   * on: "something put a link where the transcript directory belongs" is a
+   * different problem from "this path resolves outside the workspace".
+   */
+  private warnContainmentRefusal(
+    operation: string,
+    reason: ContainmentRefusal | SafeOpenRefusal
+  ): void {
     const shouldWarn = this.evidenceHealth?.reportFailure(
       'rawTranscript',
       'cleanup-failed'

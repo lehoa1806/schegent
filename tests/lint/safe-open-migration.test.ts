@@ -53,8 +53,13 @@ const INJECTED_FS_PORT = /\breadonly\s+\w+\??:\s*(AppendFn|WriteFileFn|MkdirFn|R
  * hand-built list.
  */
 const UNMIGRATED: readonly string[] = [
+  // FR-R3-053 second slice: the APPEND path is migrated; the promotion/rename and
+  // spool-root calls are not, so this stays. A partially migrated module is still
+  // an unmigrated one for this ledger's purpose.
   'audit/raw-transcript-writer.ts',
-  'audit/verbose-diagnostic-writer.ts',
+  // `audit/verbose-diagnostic-writer.ts` struck 2026-08-24 — fully migrated. Left
+  // as a comment rather than deleted silently: the ledger only shrinks, and
+  // recording which line went is how that stays checkable.
   'catalog/catalog-manifest.ts',
   'catalog/version-record.ts',
   'controller/phase-sidecar-reader.ts',

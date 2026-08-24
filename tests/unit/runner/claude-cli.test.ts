@@ -382,7 +382,17 @@ describe('ClaudeCliRunner.invoke', () => {
         directory: '/repo/.schegent/sessions/run-x/diagnostics/spec-kit/specify/iter-1',
         debugFile: '/repo/.schegent/sessions/run-x/diagnostics/spec-kit/specify/iter-1/debug.json',
         streamFile: '/repo/.schegent/sessions/run-x/diagnostics/spec-kit/specify/iter-1/stream.jsonl',
-        verboseLogFile: '/repo/.schegent/sessions/run-x/diagnostics/spec-kit/specify/iter-1/verbose.log'
+        verboseLogFile: '/repo/.schegent/sessions/run-x/diagnostics/spec-kit/specify/iter-1/verbose.log',
+        workspaceRoot: '/repo',
+        segments: [
+          '.schegent',
+          'sessions',
+          'run-x',
+          'diagnostics',
+          'spec-kit',
+          'specify',
+          'iter-1'
+        ]
       }
     });
     // Existing -p block stays first.
