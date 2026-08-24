@@ -35,8 +35,38 @@ function folderUri(p: string): string {
   return prefix + encodeURI(abs);
 }
 
+/**
+ * FR-R3-059 — the version this leg runs, read from `engines.vscode`.
+ *
+ * The harness used to pass no `version` at all, so `downloadAndUnzipVSCode`
+ * defaulted to `'stable'` — whatever was current on the machine that day. The
+ * manifest claimed a floor and the evidence exercised something else, and nothing
+ * connected the two: that is the whole of H-08. No break was ever demonstrated on
+ * the declared floor, and none could be, because the floor was never run.
+ *
+ * Derived rather than written down. A literal here would be correct on the day it
+ * was typed and wrong at the next bump — the same hardcoded-fact defect the
+ * floor claim itself was.
+ */
+function declaredVSCodeFloor(): string {
+  // `findRepoRoot`, not a relative hop: this file runs COMPILED from
+  // `out/tests/integration/`, so counting `..` from the source layout resolved to
+  // `out/` and read a package.json that is not there. The harness already has a
+  // function for finding the root; using it is what keeps the two in step.
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(findRepoRoot(__dirname), 'package.json'), 'utf8')
+  ) as { engines?: Record<string, string> };
+  const range = manifest.engines?.vscode;
+  if (!range) throw new Error('runTest: package.json declares no engines.vscode');
+  const match = /(\d+)\.(\d+)\.(\d+)/.exec(range);
+  if (!match) throw new Error(`runTest: unparseable engines.vscode ${JSON.stringify(range)}`);
+  return match[0];
+}
+
 async function acquireVSCodeExecutable(extensionDevelopmentPath: string): Promise<string> {
-  const options = { extensionDevelopmentPath };
+  const version = declaredVSCodeFloor();
+  console.log(`[integration] exercising the DECLARED FLOOR: VS Code ${version}`);
+  const options = { extensionDevelopmentPath, version };
   let reportedPath = await downloadAndUnzipVSCode(options);
   let executable = resolveDownloadedExecutable(reportedPath);
   if (executable) return executable;
