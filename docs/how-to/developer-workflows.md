@@ -66,7 +66,7 @@ Despite its name, `dev:webview` is `vite build --watch`; the repository does not
 | Sustained evidence path | `npm run test:soak` | `tests/perf/sustained-evidence-path.test.ts` with verbose output |
 | Deterministic CLI E2E | `npm run test:e2e` | `tests/e2e/**/*.test.ts`, including real child processes against the fake CLI fixture |
 | Evaluation fixtures | `npm run test:evals` | `tests/evals/**/*.test.ts` with verbose output |
-| Visual regression | `npm run test:visual` | Webview build, then serial Chromium Playwright specs in `tests/visual/` |
+| Visual regression | `npm run test:visual` | Browser preflight, webview build, then serial Chromium Playwright specs in `tests/visual/`. **Prerequisite:** `npx playwright install chromium`, re-run after a Playwright version bump — the preflight fails with one setup message if the build is absent or stale |
 | VS Code host integration | `npm run test:integration` | Full build, integration TypeScript emit, then a downloaded VS Code Extension Development Host |
 
 The root coverage floors are 80% statements, 75% branches, 80% functions, and 80% lines. The webview floors are 79%, 74%, 76%, and 79%, respectively; its command also checks that those floors retain the configured headroom.
@@ -76,6 +76,7 @@ The root coverage floors are 80% statements, 75% branches, 80% functions, and 80
 <!-- Source: vitest.evals.config.ts -->
 <!-- Source: vitest.perf.config.ts -->
 <!-- Source: playwright.config.ts -->
+<!-- Source: scripts/check-playwright-browser.mjs -->
 <!-- Source: tests/integration/runTest.ts -->
 <!-- Source: webview-ui/package.json -->
 <!-- Source: webview-ui/vitest.config.ts -->

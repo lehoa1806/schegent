@@ -56,9 +56,18 @@ npm install
 ```
 
 The root install uses the checked-in npm lockfile. Its `postinstall` script also installs the private `webview-ui` package, so a separate webview install is unnecessary.
+
+`npm install` does not fetch the Chromium build the visual regression suite launches. Install it once:
+
+```bash
+npx playwright install chromium
+```
+
+**Re-run it after any Playwright version bump** — the browser is pinned to a revision the installed Playwright resolves, so a bump moves the target and a previously working cache stops satisfying it. Without it, `npm run test:visual` and `npm run ci:fast` stop at a preflight that names this command; see [Visual gate preflight observations](../operations/visual-gate-preflight-observations.md).
 <!-- Source: package-lock.json -->
 <!-- Source: package.json -->
 <!-- Source: webview-ui/package.json -->
+<!-- Source: scripts/check-playwright-browser.mjs -->
 
 ## 5. Build the extension
 

@@ -426,7 +426,7 @@
     "test:soak": "vitest run tests/perf/sustained-evidence-path.test.ts --reporter=verbose",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "test:evals": "vitest run --config vitest.evals.config.ts --reporter=verbose",
-    "test:visual": "npm run build:webview && playwright test --config playwright.config.ts",
+    "test:visual": "node scripts/check-playwright-browser.mjs && npm run build:webview && playwright test --config playwright.config.ts",
     "test:integration:compile": "tsc -p tsconfig.integration.json",
     "test:integration": "npm run build && npm run test:integration:compile && node ./out/tests/integration/runTest.js",
     "verify:all": "npm run contracts:check && npm run docs:check && npm run security:secrets && npm run security:actions && npm run license:check && npm run typecheck && npm run typecheck:webview && npm run typecheck:tests && npm run lint && npm run lint:webview && npm run test:host && npm run test:webview:coverage",
