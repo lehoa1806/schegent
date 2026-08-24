@@ -319,6 +319,19 @@ export interface RunPlannedTotal {
 }
 
 export interface WorkflowRun {
+  /**
+   * FR-R3-055 (H-06) — the execution-lease generation this record was last
+   * written under, when the writer supplied one.
+   *
+   * Stamped so a reader holding a NEWER generation can tell the record came from
+   * a superseded holder. That is the "fence-stamped snapshots" half of the
+   * protocol: the commit-point check refuses the write it can see, and the stamp
+   * lets a reader disbelieve one that slipped past.
+   *
+   * Optional and additive: a record written before this field deserializes
+   * unchanged, so no `STATE_SCHEMA_VERSION` moves.
+   */
+  writtenAtFence?: number;
   id: string;
   featureId: string;
   featureDir: string;
@@ -546,4 +559,22 @@ export interface WatchdogState {
   pollIntervalMs: number;
   lastStatusOk: boolean | null;
   cause: string | null;
+}
+
+/**
+ * FR-R3-055 (H-06) — is this record the work of a superseded holder?
+ *
+ * The read-time half of the protocol. The commit-point check in `setRun` refuses
+ * a write it can see; this lets a reader disbelieve one that slipped past —
+ * written by a holder whose lease had already moved on, in the window the check
+ * cannot cover because `Memento` has no conditional write.
+ *
+ * An unstamped record answers **false**. That is deliberate: records written
+ * before this field existed, and every write made without a claim, carry no
+ * generation to compare, and treating "no stamp" as "superseded" would reject
+ * the entire existing corpus. The stamp is evidence when present, not an absence
+ * to be read as guilt.
+ */
+export function isSupersededRun(run: WorkflowRun, liveFence: number): boolean {
+  return run.writtenAtFence !== undefined && run.writtenAtFence < liveFence;
 }

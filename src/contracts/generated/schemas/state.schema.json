@@ -84,6 +84,11 @@
       },
       "default": [
         {
+          "name": "writtenAtFence",
+          "optional": true,
+          "type": "number"
+        },
+        {
           "name": "id",
           "optional": false,
           "type": "string"
