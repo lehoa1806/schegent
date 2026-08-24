@@ -805,6 +805,33 @@ export interface ImportCommitDeps {
   readonly publishPackage: (request: PackagePublishRequest) => Promise<LifecycleResult>;
 }
 
+/**
+ * The send threw instead of answering, at either commit track's boundary.
+ *
+ * `dispatch` in `lib/catalog-lifecycle.ts` resolves on every path it reaches,
+ * including its own ack timeout, so a rejected promise can only come from a throw
+ * inside its promise executor — `postCommand`'s `postMessage` (a `DataCloneError`
+ * when the payload holds something structured clone cannot carry),
+ * `markPending`, or `onceAck`. Each of those throws BEFORE the timeout is armed,
+ * so nothing will ever settle that promise: an awaiting caller waits forever
+ * unless the throw is turned back into the rejection shape it already handles.
+ *
+ * A fixed reason rather than the thrown message, for the reason the host's own
+ * read failure is generic: this string is rendered, and a transport `Error` can
+ * carry a path or a fragment of the payload. The detail stays in the console the
+ * throw already reached.
+ *
+ * Declared here rather than beside `dispatch` on purpose — this module holds no
+ * value import from `lib/catalog-lifecycle`, only a type one, and taking one
+ * would pull the snapshot store and the host transport into a pure state module.
+ */
+const DISPATCH_FAILED_REASON = 'dispatch-failed';
+
+const DISPATCH_FAILED: LifecycleResult = Object.freeze({
+  status: 'rejected',
+  reason: DISPATCH_FAILED_REASON
+});
+
 export interface ImportCommitReport {
   readonly outcome: ImportCommitOutcome;
   readonly results: readonly ImportLayerResult[];
@@ -833,7 +860,19 @@ export async function runImportCommit(
     // carrying all three would send the Pipeline before its Phases exist, and the
     // Workflow before its Pipelines do — and would report one verdict where the
     // per-row table needs one per layer (FR-042).
-    const ack = await deps.publishPackage({ layers: [write.layer] });
+    //
+    // A throw is reported as this layer's rejection rather than propagated. The
+    // loop's contract is "stop at the first rejection and report what did land",
+    // and a sender that threw landed nothing — so it IS a rejection, and letting
+    // it escape would discard the layers that already succeeded along with the
+    // caller's own in-flight bookkeeping. `DISPATCH_FAILED` names the one way
+    // `publishPackage` can reject rather than resolve.
+    let ack: LifecycleResult;
+    try {
+      ack = await deps.publishPackage({ layers: [write.layer] });
+    } catch {
+      ack = DISPATCH_FAILED;
+    }
     results.push({ key: write.key, ack });
     if (ack.status !== 'accepted') break;
   }
@@ -963,11 +1002,19 @@ export async function runModelCatalogImportCommit(
     const ack: SaveModelsImportResult = { status: 'rejected', reason: 'no-plan-revision' };
     return { outcome: 'failed', ack, rows: projectModelCatalogCommitResults(plan, ack) };
   }
-  const ack = await deps.saveModels({
-    models: modelCatalogImportDelta(plan),
-    expectedRevision,
-    mutation: { kind: 'import-package' }
-  });
+  // Turned into this track's rejection for the reason `runImportCommit` does the
+  // same with its publish: the sender can throw before anything settles its
+  // promise, and an escaping rejection would strand the caller's in-flight flag.
+  let ack: SaveModelsImportResult;
+  try {
+    ack = await deps.saveModels({
+      models: modelCatalogImportDelta(plan),
+      expectedRevision,
+      mutation: { kind: 'import-package' }
+    });
+  } catch {
+    ack = { status: 'rejected', reason: DISPATCH_FAILED_REASON };
+  }
   return {
     outcome: ack.status === 'accepted' ? 'imported' : 'failed',
     ack,

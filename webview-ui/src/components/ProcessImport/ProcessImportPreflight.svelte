@@ -197,27 +197,57 @@
     // The gate is re-read here, not trusted from the rendered `disabled`: a
     // keyboard activation can arrive in the same tick the state changed.
     if (blockedReason !== null || plan === null) return;
+    // `finally`, on both tracks below: `committing` is what withholds Confirm
+    // while a write is in flight, and a commit that threw is not a commit in
+    // flight. Cleared on the success path alone it latches on the first throw,
+    // and the control then reads 'A commit is already in progress.' until the
+    // webview is reloaded — a dead button, which is the state FR-057 exists to
+    // prevent.
+    //
+    // Both commit functions turn a throwing SENDER into a rejected ack, so a
+    // throw arriving here is something else again — building the writes,
+    // projecting the results. Unhandled either way, and unhandled is the one
+    // outcome the flag must not survive.
+    //
+    // `$state.snapshot` because what goes out crosses `postMessage`, which
+    // structured-clones it, and `plan` is read out of `surface` — a `$state` deep
+    // reactive proxy, which is not cloneable. Taken on the whole plan rather than
+    // per layer: the row builders spread shallowly (`{ ...declared }`), so a
+    // nested `inputs`/`outputs`/`bindings` array stays a proxy reference and the
+    // payload throws `DataCloneError` inside `dispatch`'s promise executor —
+    // before its ack timeout is armed, so nothing ever settles it.
+    const outbound = $state.snapshot(plan);
     // Feature 096 T024 — the Model Catalog is not in the store (FR-056), so it
     // dispatches through its own, simpler single-write commit function
     // (Implementation Notes point 1) instead of `runImportCommit`.
-    if (isModelCatalogPlan(plan)) {
+    if (isModelCatalogPlan(outbound)) {
       committing = true;
-      const report = await runModelCatalogImportCommit(plan, { saveModels: saveModelsImport });
-      committing = false;
-      outcome = report.outcome;
-      layerResults = [];
-      results = report.rows;
+      try {
+        const report = await runModelCatalogImportCommit(outbound, {
+          saveModels: saveModelsImport
+        });
+        outcome = report.outcome;
+        layerResults = [];
+        results = report.rows;
+      } finally {
+        committing = false;
+      }
       return;
     }
     committing = true;
-    // The three writes, in dependency order, each gated on its own revision.
-    // `runImportCommit` stops at the first rejection and reports what did land —
-    // there is nothing to undo here and nothing offered (FR-042b/c, FR-051).
-    const report = await runImportCommit(plan, { publishPackage: publishDefinitionPackage });
-    committing = false;
-    outcome = report.outcome;
-    layerResults = report.results;
-    results = report.rows;
+    try {
+      // The three writes, in dependency order, each gated on its own revision.
+      // `runImportCommit` stops at the first rejection and reports what did land —
+      // there is nothing to undo here and nothing offered (FR-042b/c, FR-051).
+      const report = await runImportCommit(outbound, {
+        publishPackage: publishDefinitionPackage
+      });
+      outcome = report.outcome;
+      layerResults = report.results;
+      results = report.rows;
+    } finally {
+      committing = false;
+    }
   }
 </script>
 

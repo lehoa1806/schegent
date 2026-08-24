@@ -689,6 +689,49 @@ describe('Feature 084 T037–T040 — confirming the import', () => {
     expect(getByTestId('process-import-results')).not.toBeNull();
   });
 
+  // A throwing sender is not a hypothetical: `dispatch` resolves on every path it
+  // reaches, including its own timeout, so the only way a publish rejects is a
+  // throw from inside its promise executor — `postCommand`'s `postMessage`
+  // (DataCloneError on a payload the structured clone cannot carry),
+  // `markPending`, or `onceAck`. Those throw BEFORE the timeout is armed, so
+  // nothing settles the promise, and a commit cleared only on its success path
+  // leaves Confirm disabled reading 'A commit is already in progress.' until the
+  // webview is reloaded.
+  it('reports a thrown publish as a failed commit rather than latching', async () => {
+    preflightSpy.mockResolvedValue(importable());
+    publishSpy.mockRejectedValue(new Error('could not be cloned'));
+
+    const { container, getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
+    await inspect(getByTestId);
+    await confirm(getByTestId);
+
+    expect(getByTestId('process-import-outcome').dataset['outcome']).toBe('failed');
+    // The reason is fixed rather than the thrown message: this string is rendered,
+    // and a transport Error can carry a path or a fragment of the payload.
+    expect(getByTestId('process-import-result-detail').textContent).toContain('dispatch-failed');
+    expect(getByTestId('process-import-result-detail').textContent).not.toContain('cloned');
+    // The latch, stated as its symptom: the surface has moved on to the result,
+    // so there is no Confirm left sitting there claiming a write is in flight.
+    expect(container.querySelector('[data-testid="process-import-confirm-blocked"]')).toBeNull();
+  });
+
+  it('lets the operator retry after a thrown publish', async () => {
+    preflightSpy.mockResolvedValue(importable());
+    publishSpy.mockRejectedValueOnce(new Error('could not be cloned'));
+
+    const { getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
+    await inspect(getByTestId);
+    await confirm(getByTestId);
+    expect(getByTestId('process-import-outcome').dataset['outcome']).toBe('failed');
+
+    // The flag really cleared, not merely rendered around: a second confirm has to
+    // reach the sender. While it was latched this click was a no-op.
+    await inspect(getByTestId);
+    await confirm(getByTestId);
+    expect(publishSpy).toHaveBeenCalledTimes(2);
+    expect(getByTestId('process-import-outcome').dataset['outcome']).toBe('imported');
+  });
+
   it('drops the previous result when a new document is inspected', async () => {
     preflightSpy.mockResolvedValue(importable());
     const { container, getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
@@ -1137,6 +1180,37 @@ describe('Feature 085 T048/T049 — the confirmed package write', () => {
       plan: packagePlan([importRow(PHASE), importRow(SECOND_PHASE), PIPELINE_ROW])
     };
   }
+
+  // The plan arrives from the host as plain data and is then held in `$state`,
+  // which wraps it in a deep reactive proxy. `postMessage` structured-clones what
+  // it is handed, and a Svelte state proxy is not cloneable — so a payload that
+  // still references one throws `DataCloneError` inside `dispatch`'s promise
+  // executor, before its ack timeout is armed. The row builders spread shallowly
+  // (`{ ...declared }`), which copies the nested arrays BY REFERENCE and leaves
+  // them proxied, so `phaseIds` being freshly copied is not enough.
+  //
+  // Every other test here hands `runImportCommit` plain literals through a mock
+  // that never clones, which is why the whole suite passed while the real send
+  // could not leave the webview.
+  it('sends a payload the host transport can actually clone', async () => {
+    preflightSpy.mockResolvedValue(packageResult());
+    const cloneFailures: string[] = [];
+    publishSpy.mockImplementation(async (request) => {
+      try {
+        structuredClone(request);
+      } catch (err) {
+        cloneFailures.push((err as Error).message);
+      }
+      return { status: 'accepted' };
+    });
+
+    const { getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
+    await inspect(getByTestId);
+    await confirm(getByTestId);
+
+    expect(cloneFailures).toEqual([]);
+    expect(getByTestId('process-import-outcome').dataset['outcome']).toBe('imported');
+  });
 
   it('writes the Phase layer before the Pipeline layer (FR-038)', async () => {
     preflightSpy.mockResolvedValue(packageResult());
