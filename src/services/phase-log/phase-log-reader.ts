@@ -13,6 +13,7 @@ import { resolvePhaseDirPath, resolveStreamJsonlPath } from './phase-log-path';
 import { sanitizeDisplayEntryBody } from './phase-log-sanitizer';
 import { truncateDisplayEntryBody } from './phase-log-truncator';
 import { detectVerboseDiagnosticsState } from './verbose-diagnostics-detector';
+import { readBoundedTail } from '../../lib/bounded-read';
 import type {
   IterationManifest,
   PhaseLogDisplayEntry,
@@ -98,8 +99,21 @@ export async function readIterationManifest(
   });
 
   let bytes = '';
+  let skippedBytes = 0;
   try {
-    bytes = await fs.readFile(streamPath, 'utf8');
+    // FR-R3-052 (H-03) — was `fs.readFile(streamPath, 'utf8')` with no `stat` at
+    // all, so a multi-GiB phase log went wholly into memory. Now the file's tail
+    // up to a bound, read in fixed chunks: a log's recent end is what an operator
+    // is looking at, and the allocation is the bound rather than the file.
+    const handle = await fs.open(streamPath, 'r');
+    try {
+      const { size } = await handle.stat();
+      const tail = await readBoundedTail(handle, size);
+      bytes = tail.bytes.toString('utf8');
+      skippedBytes = tail.skippedBytes;
+    } finally {
+      await handle.close();
+    }
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === 'ENOENT') {
@@ -156,6 +170,9 @@ export async function readIterationManifest(
     entries,
     skippedLines,
     truncatedCount,
+    // FR-R3-052 — omitted when nothing was skipped, so the field's presence is
+    // itself the signal rather than a zero every caller has to interpret.
+    ...(skippedBytes > 0 ? { skippedLeadingBytes: skippedBytes } : {}),
     verboseDiagnosticsState,
     isInFlight: args.isInFlight
   };

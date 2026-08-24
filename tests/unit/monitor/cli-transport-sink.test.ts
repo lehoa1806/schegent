@@ -683,3 +683,67 @@ describe('CliTransportSink — redaction state is per run, phase and stream (FR-
     expect(laterPhase).toBe('ordinary output from the next phase');
   });
 });
+
+describe('CliTransportSink — the pending-byte high-water mark (FR-R3-052)', () => {
+  /**
+   * H-03: the per-line closure/promise/string chain had no bound. Against a
+   * blocked disk writer, millions of short lines accumulate with nothing to stop
+   * them. `OutputSinkBackpressure` pauses the pipes -- it genuinely works, and the
+   * review under-credited it -- but it does not bound what this sink has already
+   * accepted and not yet written, which is the part no upstream pause reclaims.
+   */
+  it('drops lines rather than queueing unboundedly against a blocked writer', async () => {
+    let release = (): void => {};
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const accessor = countingAccessor();
+    const sink = new CliTransportSink({
+      settings: accessor,
+      sanitize: (line) => line,
+      logger,
+      now: () => new Date('2026-05-10T12:00:00.000Z'),
+      // A writer that never completes until released: the disk-blocked case.
+      appendFile: async () => {
+        await blocked;
+      },
+      mkdir: async () => undefined,
+      stat: async () => ({ size: 0 })
+    });
+
+    // 4 MiB of lines, well past the 16 MiB bound when repeated.
+    const line = 'x'.repeat(64 * 1024);
+    for (let i = 0; i < 512; i += 1) {
+      sink.record({ runId: 'r', phase: 'implement', stream: 'stdout', line } as never);
+    }
+
+    const dropped = sink.droppedForBackpressure;
+    // The bound bit: some lines were refused, and the count is readable.
+    expect(dropped.lines).toBeGreaterThan(0);
+    expect(dropped.bytes).toBeGreaterThan(0);
+    // And the refusal was reported, once, not per line.
+    expect(warnings.filter((w) => w.includes('pending-bytes-exceeded')).length).toBe(1);
+
+    release();
+    await sink.flushPendingWrites();
+  }, 30_000);
+
+  it('drops nothing when the writer keeps up', async () => {
+    // The bound must not cost a healthy sink anything.
+    const accessor = countingAccessor();
+    const sink = new CliTransportSink({
+      settings: accessor,
+      sanitize: (line) => line,
+      logger,
+      now: () => new Date('2026-05-10T12:00:00.000Z'),
+      appendFile: async () => undefined,
+      mkdir: async () => undefined,
+      stat: async () => ({ size: 0 })
+    });
+    for (let i = 0; i < 200; i += 1) {
+      sink.record({ runId: 'r', phase: 'implement', stream: 'stdout', line: `line ${i}` } as never);
+      await sink.flushPendingWrites();
+    }
+    expect(sink.droppedForBackpressure.lines).toBe(0);
+  }, 30_000);
+});

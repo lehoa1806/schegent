@@ -88,7 +88,14 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
 // headroom, not a split, on the same reasoning as phase-outcome-mapper.ts below.
 const BUDGETS = [
   { path: 'src/controller/phase-runner.ts', max: 927 },
-  { path: 'src/controller/phase-sidecar-reader.ts', max: 400 },
+  // FR-R3-052 / H-03 (2026-08-24) — 400 → 415 for the size check that was
+  // missing. `stat()` was already called here and only `isFile()` was read, so
+  // `readFile()` took a multi-GiB sidecar wholly into memory. The bound, the
+  // refusal, and the constant are the whole of the addition; the rationale lives
+  // in the item record, and the shared reader in src/lib/bounded-read.ts. Nothing
+  // movable was left here — this file's job is reading one sidecar safely, and a
+  // size bound is part of that job rather than a new one.
+  { path: 'src/controller/phase-sidecar-reader.ts', max: 415 },
   { path: 'src/controller/phase-retry-evaluator.ts', max: 180 },
   // Raised from 100 on 2026-08-16. The truncation arm of `mapOutcome` stopped
   // returning 'failed' and now returns 'transient_error'; the budget is spent

@@ -107,7 +107,22 @@ function sourceFiles(dir: string): readonly string[] {
 function rawCallers(): readonly string[] {
   const out: string[] = [];
   for (const file of sourceFiles(SRC)) {
-    const body = readFileSync(file, 'utf8');
+    // CODE lines only. This gate was written matching raw text, and it then
+    // flagged `lib/bounded-read.ts` for a docstring that NAMES the
+    // `fs.readFile` call it replaced. That is the third gate in this round to
+    // need the same correction (after `no-direct-syslog-fs-writes` and the
+    // bounded-reader gate), and the pattern is now unmistakable: a gate that
+    // matches comments pressures an author to write a worse comment to satisfy
+    // it, and a codebase that explains its own history will keep tripping one.
+    const body = readFileSync(file, 'utf8')
+      .split(/\r?\n/)
+      .filter((line) => {
+        const trimmed = line.trim();
+        return (
+          !trimmed.startsWith('//') && !trimmed.startsWith('*') && !trimmed.startsWith('/*')
+        );
+      })
+      .join('\n');
     if (!RAW_PATH_CALL.test(body) && !INJECTED_FS_PORT.test(body)) continue;
     out.push(relative(SRC, file).split(/[/\\]/).join('/'));
   }

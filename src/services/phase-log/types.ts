@@ -77,6 +77,16 @@ export interface IterationManifest {
   readonly entries: readonly PhaseLogDisplayEntry[];
   readonly skippedLines: number;
   readonly truncatedCount: number;
+  /**
+   * FR-R3-052 (H-03) — bytes at the START of the stream that were not read,
+   * because the file exceeded the read bound and the tail is the useful end.
+   *
+   * Optional and additive, so a projection built before this field deserializes
+   * unchanged. Present and nonzero is the "no silent caps" report: without it a
+   * reader would show the last 8 MiB of a 4 GiB log as though it were the whole
+   * log, and nothing in the UI could tell the operator otherwise.
+   */
+  readonly skippedLeadingBytes?: number;
   readonly verboseDiagnosticsState: VerboseDiagnosticsBanner;
   readonly isInFlight: boolean;
 }

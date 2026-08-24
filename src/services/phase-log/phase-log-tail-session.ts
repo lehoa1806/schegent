@@ -36,6 +36,7 @@ import { parseStreamJsonlBytes } from './phase-log-jsonl-parser';
 import { projectStreamJsonlLine } from './phase-log-display-projector';
 import { sanitizeDisplayEntryBody } from './phase-log-sanitizer';
 import { truncateDisplayEntryBody } from './phase-log-truncator';
+import { readBoundedRange, readBoundedTail } from '../../lib/bounded-read';
 
 export type TailEndedReason = 'webview-stop' | 'webview-dispose' | 'phase-complete';
 
@@ -65,6 +66,11 @@ export class PhaseLogTailSession {
 
   private offset = 0;
   private partial = '';
+  /**
+   * FR-R3-052 — bytes never read because the file exceeded the bound. Reported,
+   * not swallowed: a tail that silently starts 4 GiB in looks like a short log.
+   */
+  private skippedLeadingBytes = 0;
   private seq = 0;
   private skipped = 0;
   private disposed = false;
@@ -81,6 +87,18 @@ export class PhaseLogTailSession {
 
   get skippedLines(): number {
     return this.skipped;
+  }
+
+  /**
+   * FR-R3-052 — bytes at the start of the stream this session never read,
+   * because the file already exceeded the read bound when it opened.
+   *
+   * Exposed beside `skippedLines` rather than kept private: a counter nothing can
+   * read is a silent cap, and a tail that quietly begins 4 GiB in looks exactly
+   * like a short log to whoever is reading it.
+   */
+  get skippedLeadingByteCount(): number {
+    return this.skippedLeadingBytes;
   }
 
   get isDisposed(): boolean {
@@ -114,12 +132,22 @@ export class PhaseLogTailSession {
           // No new bytes; the partial buffer (if any) stays in place.
           return;
         }
-        const length = stat.size - this.offset;
-        const buf = Buffer.alloc(length);
-        const { bytesRead } = await handle.read(buf, 0, length, this.offset);
-        if (bytesRead <= 0) return;
-        this.offset += bytesRead;
-        const slice = bytesRead === length ? buf : buf.subarray(0, bytesRead);
+        // FR-R3-052 (H-03) — was `Buffer.alloc(stat.size - this.offset)`, and on
+        // the FIRST tick `offset` is 0, so it allocated the entire file. A phase
+        // log left by a rotation that never happened is multi-GiB with no attacker
+        // involved.
+        //
+        // On that first tick the tail is what matters: an operator opening a log
+        // wants what just happened. Afterwards `offset` is a real position and
+        // this reads forward from it, bounded, in fixed chunks.
+        const range =
+          this.offset === 0
+            ? await readBoundedTail(handle, stat.size)
+            : await readBoundedRange(handle, this.offset, stat.size - this.offset);
+        if (range.bytes.length === 0) return;
+        this.offset = range.nextOffset;
+        if (range.skippedBytes > 0) this.skippedLeadingBytes += range.skippedBytes;
+        const slice = range.bytes;
         const { parsedLines, skippedLines, partialTrailingBuffer } =
           parseStreamJsonlBytes(slice, this.partial);
         this.partial = partialTrailingBuffer;
