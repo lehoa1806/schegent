@@ -1,4 +1,6 @@
+import * as path from 'path';
 import * as fs from 'fs/promises';
+import { openWithinRoot } from '../lib/safe-open';
 import type { SanitizedLogger } from '../lib/logger';
 import type { VerboseDiagnosticTarget } from '../runner/invocation-result';
 
@@ -31,6 +33,13 @@ const DIAGNOSTIC_FILE_MODE = 0o600;
 const NON_OWNER_BITS = 0o077;
 
 /**
+ * FR-R3-053 — `openWithinRoot` opens FILES, so creating the directory means
+ * opening one inside it. This marker is that file: it exists so the walk has a
+ * leaf to create, and it is the same on every prepare so it does not accumulate.
+ */
+const DIRECTORY_PROBE_NAME = '.prepared';
+
+/**
  * Best-effort sibling sink for `--debug-to-file`, `--output-format
  * stream-json`, and `--verbose` CLI streams.
  *
@@ -53,7 +62,29 @@ export class VerboseDiagnosticWriter {
   public async prepare(target: VerboseDiagnosticTarget): Promise<void> {
     if (this.preparedDirs.has(target.directory)) return;
     try {
-      await fs.mkdir(target.directory, { recursive: true, mode: DIAGNOSTIC_DIR_MODE });
+      // FR-R3-053 (H-02) — walk the segments, refusing a symlink at every
+      // component, instead of `mkdir -p` on a composed absolute path. The
+      // composer already proved the path does not escape LEXICALLY; that says
+      // nothing about what `mkdir` follows on the way there, and these
+      // diagnostics are deliberately unredacted.
+      //
+      // Opened and closed immediately: the directory is what has to exist, and
+      // holding a handle to it buys nothing. `appendBestEffort` opens each file
+      // through the same walk.
+      const probe = await openWithinRoot(
+        target.workspaceRoot,
+        [...target.segments, DIRECTORY_PROBE_NAME],
+        { flags: 'a', createDirs: true, dirMode: DIAGNOSTIC_DIR_MODE, fileMode: DIAGNOSTIC_FILE_MODE }
+      );
+      if (probe.outcome === 'refused') {
+        this.recordWarning(
+          target,
+          'directory',
+          `verbose diagnostic directory refused: ${probe.reason}`
+        );
+        return;
+      }
+      await probe.handle.close().catch(() => undefined);
       // A `mode` applies only when the path is CREATED. A directory that already
       // exists -- every workspace that predates this change -- keeps whatever it
       // had, so the defect would persist for almost all installs. Tighten it.
@@ -93,7 +124,23 @@ export class VerboseDiagnosticWriter {
   ): Promise<void> {
     if (chunk.length === 0) return;
     try {
-      await fs.appendFile(file, chunk, { encoding: 'utf8', mode: DIAGNOSTIC_FILE_MODE });
+      // FR-R3-053 — through the walk, not on the composed path.
+      const leaf = path.basename(file);
+      const opened = await openWithinRoot(target.workspaceRoot, [...target.segments, leaf], {
+        flags: 'a',
+        createDirs: true,
+        dirMode: DIAGNOSTIC_DIR_MODE,
+        fileMode: DIAGNOSTIC_FILE_MODE
+      });
+      if (opened.outcome === 'refused') {
+        this.recordWarning(target, slot, `verbose diagnostic ${slot} refused: ${opened.reason}`);
+        return;
+      }
+      try {
+        await opened.handle.write(chunk, null, 'utf8');
+      } finally {
+        await opened.handle.close().catch(() => undefined);
+      }
       // Same reasoning as the directory: the mode applies on creation, so a file
       // written before this change stays readable until it is tightened. The
       // exposure is identical, so the treatment is.

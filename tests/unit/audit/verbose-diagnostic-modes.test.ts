@@ -60,7 +60,12 @@ describe('verbose diagnostics are owner-only (M-13)', () => {
       directory: dir,
       debugFile: path.join(dir, 'debug.log'),
       streamFile: path.join(dir, 'stream.jsonl'),
-      verboseLogFile: path.join(dir, 'verbose.log')
+      verboseLogFile: path.join(dir, 'verbose.log'),
+      // FR-R3-053 — the writer opens through a walk from a trusted root. These
+      // tests hand it the tmpdir as the root and the leaf directory as the one
+      // segment, so the paths above stay exactly what they were.
+      workspaceRoot: path.dirname(dir),
+      segments: [path.basename(dir)]
     };
   }
 
@@ -154,5 +159,43 @@ describe('verbose diagnostics are owner-only (M-13)', () => {
     await writeThrough(dir);
     const body = await fs.readFile(path.join(dir, 'stream.jsonl'), 'utf8');
     expect(body.includes(SENTINEL)).toBe(true);
+  });
+});
+
+describe('verbose diagnostics refuse a symlinked component (FR-R3-053)', () => {
+  let base: string;
+
+  beforeEach(async () => {
+    base = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-diag-link-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(base, { recursive: true, force: true });
+  });
+
+  posixOnly('refuses a symlinked diagnostics directory rather than writing through it', async () => {
+    // These diagnostics are DELIBERATELY UNREDACTED (see the threat model), so a
+    // link placed where the directory belongs leaks the unredacted stream out of
+    // the workspace. `composeVerboseDiagnosticPath` already proved the path does
+    // not escape lexically; `mkdir -p` still followed whatever was there.
+    const outside = path.join(base, 'outside');
+    await fs.mkdir(outside);
+    await fs.symlink(outside, path.join(base, 'linked'));
+
+    const writer = new VerboseDiagnosticWriter(new SanitizedLogger([]));
+    const dir = path.join(base, 'linked', 'iter-1');
+    const t: VerboseDiagnosticTarget = {
+      directory: dir,
+      debugFile: path.join(dir, 'debug.log'),
+      streamFile: path.join(dir, 'stream.jsonl'),
+      verboseLogFile: path.join(dir, 'verbose.log'),
+      workspaceRoot: base,
+      segments: ['linked', 'iter-1']
+    };
+    await writer.prepare(t);
+    await writer.teeStream(t, `${SENTINEL}\n`);
+
+    // Nothing reached the other side of the link.
+    expect(await fs.readdir(outside)).toEqual([]);
   });
 });

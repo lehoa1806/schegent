@@ -6,6 +6,23 @@ export interface VerboseDiagnosticTarget {
   readonly debugFile: string;
   readonly streamFile: string;
   readonly verboseLogFile: string;
+  /**
+   * FR-R3-053 — the trusted root and the segments beneath it, so the writer can
+   * OPEN through a symlink-refusing walk instead of `mkdir -p` on a composed
+   * absolute path.
+   *
+   * `composeVerboseDiagnosticPath` already validated every segment and proved the
+   * result does not escape lexically. That is not the same as opening it safely:
+   * `mkdir` with `recursive` follows a symlink at any component, so a link placed
+   * where the diagnostics directory belongs redirects the write — and these
+   * diagnostics are deliberately unredacted.
+   *
+   * Required, not optional. An optional pair would let the writer keep a
+   * permissive fallback, which is the gate-omitted-by-omission shape this round
+   * has removed repeatedly.
+   */
+  readonly workspaceRoot: string;
+  readonly segments: readonly string[];
 }
 
 /**

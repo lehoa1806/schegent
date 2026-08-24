@@ -103,10 +103,23 @@ export function composeVerboseDiagnosticPath(
     );
   }
 
+  // FR-R3-053 — the segments this function already composed, handed on so the
+  // writer opens through a walk rather than re-deriving from the absolute path.
+  const segments: readonly string[] = [
+    ...DIAGNOSTICS_ROOT_SEGMENTS,
+    address.runId,
+    DIAGNOSTICS_LEAF_SEGMENT,
+    address.pipelineId,
+    address.phaseId,
+    `iter-${address.iterationN}`
+  ];
+
   return {
     directory,
     debugFile: path.join(directory, DEBUG_FILE),
     streamFile: path.join(directory, STREAM_FILE),
-    verboseLogFile: path.join(directory, VERBOSE_LOG_FILE)
+    verboseLogFile: path.join(directory, VERBOSE_LOG_FILE),
+    workspaceRoot: address.workspaceRoot,
+    segments
   };
 }

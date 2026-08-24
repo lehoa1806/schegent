@@ -19,8 +19,10 @@ afterEach(async () => {
 });
 
 function makeTarget(overrides: Partial<VerboseDiagnosticTarget> = {}): VerboseDiagnosticTarget {
-  const dir = path.join(
-    tmpRoot,
+  // FR-R3-053 — the segments the writer walks, and the absolute paths derived
+  // from the same list, so the fixture cannot describe a different path from the
+  // one the writer opens.
+  const segments = [
     '.schegent',
     'sessions',
     'run-001',
@@ -28,12 +30,15 @@ function makeTarget(overrides: Partial<VerboseDiagnosticTarget> = {}): VerboseDi
     'security',
     'security-audit',
     'iter-1'
-  );
+  ] as const;
+  const dir = path.join(tmpRoot, ...segments);
   return {
     directory: dir,
     debugFile: path.join(dir, 'debug.json'),
     streamFile: path.join(dir, 'stream.jsonl'),
     verboseLogFile: path.join(dir, 'verbose.log'),
+    workspaceRoot: tmpRoot,
+    segments: [...segments],
     ...overrides
   };
 }
@@ -79,12 +84,17 @@ describe('VerboseDiagnosticWriter (010, T034, US3)', () => {
     // Point the target at a path under a regular file — mkdir will fail.
     const file = path.join(tmpRoot, 'a-file');
     await fs.writeFile(file, 'block', 'utf8');
-    const dir = path.join(file, 'diagnostics', 'p', 'q', 'iter-1');
+    const segments = ['a-file', 'diagnostics', 'p', 'q', 'iter-1'] as const;
+    const dir = path.join(tmpRoot, ...segments);
     const target: VerboseDiagnosticTarget = {
       directory: dir,
       debugFile: path.join(dir, 'debug.json'),
       streamFile: path.join(dir, 'stream.jsonl'),
-      verboseLogFile: path.join(dir, 'verbose.log')
+      verboseLogFile: path.join(dir, 'verbose.log'),
+      // FR-R3-053 — the walk refuses `a-file` as `not-a-directory`, where
+      // `mkdir -p` failed with ENOTDIR. Same outcome, named cause.
+      workspaceRoot: tmpRoot,
+      segments: [...segments]
     };
 
     await expect(writer.prepare(target)).resolves.not.toThrow();
