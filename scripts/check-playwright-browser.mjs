@@ -50,7 +50,8 @@
 //     does not satisfy it. Chromium means both of Chromium's builds: the headed
 //     one and the headless shell a headless launch actually starts. One install
 //     command provisions both, so the remedy stays one line.
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, basename, join } from 'node:path';
 // `@playwright/test` is the dependency package.json declares. `playwright-core`
 // is only reachable through it, so importing it directly would make this script
@@ -106,6 +107,46 @@ function resolveExpectedExecutable() {
 
 /** Cache directory prefix of the headless shell download. See `resolveShell`. */
 const SHELL_PREFIX = 'chromium_headless_shell-';
+
+/**
+ * The headless shell's own revision, from the toolchain's manifest.
+ *
+ * WHY THIS EXISTS, AND WHY IT IS NOT A RECONSTRUCTION
+ *
+ * `resolveShell` used to build the shell's directory name by pasting the HEADED
+ * revision after `SHELL_PREFIX`. That worked only while the two revisions agree,
+ * and `browsers.json` declares them as SEPARATE entries with INDEPENDENT
+ * `revision` fields — measured: `chromium` and `chromium-headless-shell` both at
+ * 1234 today, and the tip-of-tree pair both at 1433, so they track within a
+ * channel but nothing structurally ties them. A release that rolled them apart
+ * would have made this preflight fail on a CORRECTLY provisioned checkout, with
+ * a remedy that could not fix it — the worst failure a gate can have.
+ *
+ * So the revision is read rather than guessed. `browsers.json` is not an exported
+ * path, but `playwright-core/package.json` is, so it is reached through that
+ * anchor — and resolved from `@playwright/test`, the package this project
+ * actually declares, so this does not quietly depend on a hoisted transitive
+ * package (the defect review caught in the first draft of this file).
+ *
+ * Returns null when the manifest cannot be read or does not name the shell. The
+ * caller degrades rather than failing: see `resolveShell`.
+ */
+function readShellRevision() {
+  try {
+    const fromHere = createRequire(import.meta.url);
+    const testPkg = fromHere.resolve('@playwright/test/package.json');
+    const fromTest = createRequire(testPkg);
+    const corePkg = fromTest.resolve('playwright-core/package.json');
+    const manifest = JSON.parse(readFileSync(join(dirname(corePkg), 'browsers.json'), 'utf8'));
+    const entry = (manifest.browsers ?? []).find(
+      (browser) => browser.name === 'chromium-headless-shell'
+    );
+    const revision = entry?.revision;
+    return typeof revision === 'string' || typeof revision === 'number' ? String(revision) : null;
+  } catch {
+    return null;
+  }
+}
 
 /** …/<root>/chromium-<rev>/<platform>/… — walk up to the revision segment. */
 function findRevisionDir(executablePath) {
@@ -219,20 +260,9 @@ function describeInstalledState(state) {
  * `resolveExpectedExecutable` refuses to carry. Consistent with checking
  * EXISTENCE and not integrity.
  *
- * TWO RESIDUALS, BOTH DELIBERATE, BOTH REVIEWED AND KEPT
+ * THREE RESIDUALS, EACH DELIBERATE, EACH REVIEWED
  *
- * 1. The shell's DIRECTORY NAME IS RECONSTRUCTED from the headed revision, which
- *    is the one place this file does what `resolveExpectedExecutable`'s docstring
- *    says it never does. Not an oversight: Playwright exposes no public API for
- *    the shell path — `chromium.executablePath({ channel: 'chromium-headless-shell' })`
- *    returns the HEADED path, verified. `browsers.json` carries independent
- *    per-browser revisions, so a release that rolls the shell separately from the
- *    headed build would make this check fail on a correctly provisioned checkout,
- *    with a remedy that cannot fix it. That is the failure mode to watch; it has
- *    not happened, and the alternative today is not checking the shell at all —
- *    which is the bug this branch was added to close.
- *
- * 2. A HEADED BUILD IS STILL REQUIRED, even though a headless run starts only the
+ * 1. A HEADED BUILD IS STILL REQUIRED, even though a headless run starts only the
  *    shell. So `npx playwright install --only-shell chromium` produces a cache the
  *    suite would run on and this preflight rejects. Kept because the design
  *    commits to ONE documented remedy that provisions both builds: a contributor
@@ -241,15 +271,30 @@ function describeInstalledState(state) {
  *    under-reports and lets the suite fail at launch. If `--only-shell` ever
  *    becomes the documented command, this condition is what has to change.
  *
- * 3. AN INDETERMINATE SHELL RESOLUTION EXITS 0, unlike the headed path, which
+ * 2. AN INDETERMINATE SHELL RESOLUTION EXITS 0, unlike the headed path, which
  *    fails. The asymmetry is deliberate and worth stating because it is the one
  *    place this script relaxes its own rule. `resolveShell` returns null only
  *    when the headed executable EXISTS but its path carries no `chromium-<rev>`
  *    segment — a cache layout this file does not recognise. Failing there would
  *    turn a correctly provisioned checkout red with a remedy that cannot fix it,
  *    for a layout change that has not happened; exiting 0 lets the suite reach
- *    its own launch error, which is worse output but a true report. If the layout
- *    ever does change shape, this is where the silence will be.
+ *    its own launch error, which is worse output but a true report.
+ *
+ * 3. AN UNREADABLE MANIFEST DEGRADES THE SHELL CHECK rather than failing it. When
+ *    `readShellRevision` returns null there is no authoritative revision to
+ *    demand, so any populated shell build satisfies the check and a shell at the
+ *    wrong revision would pass. Same reasoning as 2: a script that cannot find a
+ *    file must not fail a checkout whose only fault is that. The headed check
+ *    still catches a stale pair, and the message says the revision is unknown
+ *    rather than naming one it guessed.
+ *
+ *    This replaces the residual that used to sit here. The shell's directory name
+ *    was RECONSTRUCTED from the headed revision, which would have failed a
+ *    correctly provisioned checkout the first time upstream rolled the two
+ *    revisions apart — `browsers.json` declares them as separate entries with
+ *    independent `revision` fields. It is now read from that manifest. Recorded
+ *    because "watch this, it has not happened yet" is a weaker thing to leave
+ *    behind than a fix, and the fix was available.
  */
 function resolveShell(executablePath) {
   const revisionDir = findRevisionDir(executablePath);
@@ -259,27 +304,46 @@ function resolveShell(executablePath) {
     return null;
   }
   const root = dirname(revisionDir);
-  const name = `${SHELL_PREFIX}${basename(revisionDir).slice('chromium-'.length)}`;
   let entries = [];
   try {
     entries = readdirSync(root);
   } catch {
     entries = [];
   }
-  let present = false;
-  if (entries.includes(name)) {
+  const nonEmpty = (entry) => {
     try {
       // Non-empty, so an interrupted download that left the directory behind
       // does not read as a provisioned one.
-      present = readdirSync(join(root, name)).length > 0;
+      return readdirSync(join(root, entry)).length > 0;
     } catch {
-      present = false;
+      return false;
     }
+  };
+
+  const revision = readShellRevision();
+  if (revision === null) {
+    // The manifest could not be read, so there is no authoritative revision to
+    // demand. DEGRADE rather than guess: any populated shell build satisfies the
+    // check. That is weaker — a shell at the wrong revision would pass — and it
+    // is the right trade, because the alternative is reconstructing a name that
+    // may not exist and failing a checkout whose only fault is that this script
+    // could not find a file. The headed check above still catches a stale pair.
+    const anyShell = entries.filter((entry) => entry.startsWith(SHELL_PREFIX));
+    const populated = anyShell.filter(nonEmpty);
+    return {
+      expectedDir: join(root, `${SHELL_PREFIX}<revision unknown>`),
+      present: populated.length > 0,
+      others: [],
+      revisionKnown: false
+    };
   }
+
+  const name = `${SHELL_PREFIX}${revision}`;
   return {
     expectedDir: join(root, name),
-    present,
-    others: entries.filter((entry) => entry.startsWith(SHELL_PREFIX) && entry !== name)
+    present: entries.includes(name) && nonEmpty(name),
+    others: entries.filter((entry) => entry.startsWith(SHELL_PREFIX) && entry !== name),
+    revisionKnown: true
   };
 }
 
