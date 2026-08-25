@@ -179,8 +179,18 @@ export function classifyMountCapability(
     return { capability: 'undetermined', cause: 'probe-timed-out' };
   }
 
-  // The first attempt decides this path on its own; `second` is `null` here.
-  if (first.outcome !== 'created' || second === null) return fromFailure(first.errno);
+  // The first attempt decides this path on its own.
+  if (first.outcome !== 'created') return fromFailure(first.errno);
+
+  // A `created` first attempt with no second is a CALLER ERROR, not an observation.
+  // Routing it through `fromFailure` reported a mount that demonstrably created a
+  // file as an unclassifiable syscall failure — because a `created` observation
+  // carries no errno. The doc says `null` means "the first did not create"; nothing
+  // enforced it, and this function is exported and tested independently of the
+  // probe.
+  if (second === null) {
+    return { capability: 'undetermined', cause: 'unclassified-error' };
+  }
 
   // THE CASE THIS PROBE EXISTS FOR. The name is already taken and the filesystem
   // created it again, so two windows can both believe they elected themselves.

@@ -110,6 +110,28 @@ export function childIsReaped(child: ChildProcess): boolean {
  * no group to probe, so this answers only for the direct child and callers must
  * treat a `true` there as "the child is gone", not "the tree is".
  */
+/**
+ * Is there anything left for the ladder to signal?
+ *
+ * ONE predicate, because the rule was written out twice — at the entry guard and at
+ * the escalation — each under a different multi-paragraph comment emphasising a
+ * different half. Dropping the win32 arm from one copy would either escalate against
+ * a reaped Windows child (a `taskkill /pid <pid> /T /F` at a possibly recycled pid,
+ * taking an unrelated process tree) or skip SIGKILL for the forked-helper case this
+ * feature was written for. Two copies, two opposite failures, one edit away.
+ *
+ * The rule: the child has been reaped AND its tree is gone. On Windows the second
+ * half is not answerable — `processTreeIsGone` there probes the direct child's pid
+ * and cannot tell "our child" from a new holder of a recycled pid — so a reaped
+ * child is taken as the end of it. That costs the "child exited, tree survived" case
+ * on Windows, which was never detectable there anyway, and it is part of the same
+ * permanent limit `docs/architecture/native-binding-decision.md` records.
+ */
+export function nothingLeftToSignal(child: ChildProcess): boolean {
+  if (!childIsReaped(child)) return false;
+  return process.platform === 'win32' || processTreeIsGone(child);
+}
+
 export function processTreeIsGone(child: ChildProcess): boolean {
   const pid = child.pid;
   if (pid === undefined) return true;
@@ -263,7 +285,7 @@ export function escalateAndReportTree(deps: TreeEscalationDeps): void {
   // survived" case is not detected. It never was — the probe only ever answered for
   // the direct child there — and it is part of the same permanent limit
   // `docs/architecture/native-binding-decision.md` records.
-  if (childIsReaped(child) && (process.platform === 'win32' || processTreeIsGone(child))) return;
+  if (nothingLeftToSignal(child)) return;
 
   // No probe on its OWN before the first signal, and the reason is FR-R3-054 §4 finding 1,
   // relearned: `processTreeIsGone` answers for the GROUP, and a child that leads no
@@ -284,6 +306,19 @@ export function escalateAndReportTree(deps: TreeEscalationDeps): void {
   // and closing it would cost the case above, which is not narrow at all.
 
   const confirmOrReport = (): void => {
+    // The SAME probe the kill guard refuses to act on, on the same platform — so it
+    // is refused here too. On Windows `processTreeIsGone` is `process.kill(pid, 0)`
+    // against the direct child's pid; once `taskkill /T /F` has reaped the child,
+    // a pid recycled inside the 500 ms confirm window answers "alive" and the
+    // product would file a `process-tree-unconfirmed` entry against a Run whose tree
+    // in fact died. Rejecting a probe for killing and trusting it for evidence is
+    // the worst of both: a false audit entry is a false lead an operator acts on.
+    //
+    // The cost is that the evidence path does not fire on Windows at all. That is
+    // the honest position — the probe cannot establish a surviving tree there — and
+    // `docs/operations/platform-observation-record.md` and `backends.md` say so
+    // rather than letting an operator infer coverage from silence.
+    if (process.platform === 'win32') return;
     if (processTreeIsGone(child)) return;
     if (deps.alreadyReported()) return;
     deps.markReported();
@@ -335,9 +370,7 @@ export function escalateAndReportTree(deps: TreeEscalationDeps): void {
     // child that leads no group (see the note at the top), and the child's status
     // alone was what skipped it for the arrangement this feature exists for. Only
     // when the child has exited AND the group is gone is there nothing left to kill.
-    if (childIsReaped(child) && (process.platform === 'win32' || processTreeIsGone(child))) {
-      return;
-    }
+    if (nothingLeftToSignal(child)) return;
     deps.info?.('sending SIGKILL to process tree');
     void signalProcessTree(child, 'SIGKILL').then(() => {
       setTimeout(confirmOrReport, TREE_CONFIRM_DELAY_MS).unref();

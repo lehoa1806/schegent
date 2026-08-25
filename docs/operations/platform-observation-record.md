@@ -35,7 +35,8 @@ There is no fourth class, and in particular there is no "expected to pass".
 | A mount that permits a **second** exclusive create is reported `unsupported` | `FR-R3-083` §4 | `tests/unit/state/mount-capability.test.ts` | **Asserted by unit table only** |
 | A read-only workspace is classified apart from a broken mount | `FR-R3-083` §4 | `tests/unit/state/mount-capability.test.ts` | **Asserted by unit table only** |
 | The probe answers `undetermined` within its bound against a create that never settles | `FR-R3-083` §4 | `tests/unit/state/mount-capability-probe.test.ts` | **Observed here** |
-| A process group that survives SIGKILL is recorded in evidence | `FR-R3-054` §5 | `tests/unit/controller/process-tree-degradation.test.ts` | **Observed here** (by injection: a real unkillable group is not producible) |
+| A process group that survives SIGKILL is recorded in evidence | `FR-R3-054` §5 | `tests/unit/controller/process-tree-degradation.test.ts` | **Observed here** (POSIX, by injection: a real unkillable group is not producible) |
+| The same, on Windows | `FR-R3-054` §5 | — | **Not implemented, deliberately.** There is no group to probe, so the only available check answers for the direct child — and a recycled pid inside the confirmation window would file an entry against a Run whose tree had died. The runtime-log warning is what Windows has. See [Backend operations](backends.md) step 6. |
 
 ## What this record does not claim
 

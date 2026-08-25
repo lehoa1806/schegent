@@ -94,7 +94,17 @@ afterEach(() => {
   expect(pending, 'a scheduled ladder rung would have fired against the real process.kill').toBe(0);
 });
 
-describe('escalateAndReportTree (FR-R3-083)', () => {
+/**
+ * POSIX ONLY, and skipped rather than adapted.
+ *
+ * `stubKill` stubs `process.kill`, which is the whole mechanism on POSIX. On Windows
+ * `signalProcessTree` routes through `killWindowsTree`, which SPAWNS `taskkill /pid
+ * <pid> /T` as a real child — the stub never sees it, every `-4242` assertion fails,
+ * and the fixture issues real `taskkill` commands at whatever process holds pid 4242
+ * on that machine. The Windows behaviour has its own fixture in
+ * `tests/unit/platform/`, which is where it belongs.
+ */
+describe.skipIf(process.platform === 'win32')('escalateAndReportTree (FR-R3-083)', () => {
   it('reports a surviving group after the full ladder', async () => {
     vi.useFakeTimers();
     stubKill(true);

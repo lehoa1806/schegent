@@ -117,14 +117,6 @@ export interface MountProbeDeps {
 }
 
 /**
- * Node errnos are short uppercase constants (`ENOTSUP`, `EROFS`). Bounded here
- * anyway, because `error.code` is `unknown` at the type level and this value is
- * interpolated into an operator-visible log line: nothing in the type system stops
- * a rejected promise from carrying a `code` that is a sentence, a path, or a
- * megabyte. Cheap, and it keeps the "bounded reason code" discipline the rest of
- * this codebase's refusals hold to.
- */
-/**
  * Extract an errno, bounded.
  *
  * There are four other `errnoOf`-shaped helpers in `src/`, and they are NOT
@@ -145,10 +137,12 @@ export interface MountProbeDeps {
  * that happen to share a name, and consolidating them is a change with its own
  * design question, not a tidy-up.
  *
- * The bound below is this one's own requirement: `error.code` is `unknown` at the
- * type level and this value is interpolated into an operator-visible log line, so
- * nothing in the types stops a rejection carrying a path or a sentence as its
- * `code`.
+ * WHY BOUNDED AT ALL. Node errnos are short uppercase constants (`ENOTSUP`,
+ * `EROFS`), but `error.code` is `unknown` at the type level and this value is
+ * interpolated into an operator-visible log line — nothing in the types stops a
+ * rejected promise carrying a `code` that is a sentence, a path, or a megabyte.
+ * Cheap, and it keeps the "bounded reason code" discipline the rest of this
+ * codebase's refusals hold to.
  */
 const MAX_ERRNO_LENGTH = 32;
 const ERRNO_SHAPE = /^[A-Z][A-Z0-9_]*$/;
@@ -307,12 +301,20 @@ export async function probeMountCapability(
   //
   // Bounded and best-effort, like everything else here: it must not become a way
   // for the probe to stall or to fail.
-  if (disposed()) return { capability: 'undetermined', cause: 'probe-disposed' };
-  if (deps.dropIgnoreFile !== false) {
-    await raceSettled(
-      ensureSchegentGitignore(deps.workspaceRoot, new SanitizedLogger([])).catch(() => undefined),
-      timeoutMs
-    );
+  // GUARDED, like the body below. The prologue used to sit outside any handler, so a
+  // synchronous throw from `deps.isDisposed()` or from constructing the logger
+  // rejected a function whose header promises it never throws — leaving the contract
+  // enforced only for callers that happen to attach one of their own.
+  try {
+    if (disposed()) return { capability: 'undetermined', cause: 'probe-disposed' };
+    if (deps.dropIgnoreFile !== false) {
+      await raceSettled(
+        ensureSchegentGitignore(deps.workspaceRoot, new SanitizedLogger([])).catch(() => undefined),
+        timeoutMs
+      );
+    }
+  } catch (error) {
+    return { capability: 'undetermined', cause: 'unclassified-error', errno: errnoOf(error) };
   }
 
   // Every attempt STARTED, whether or not its bound waited for it. A create that
@@ -370,8 +372,8 @@ export async function probeMountCapability(
     // ONLY when an attempt was actually abandoned. Registered unconditionally, this
     // repeated the whole realpath + lstat + rm round-trip on every ordinary probe —
     // both attempts having already settled, `Promise.all` resolves on the next
-    // microtask — so the mount class least able to afford the syscalls paid for them
-    // twice per activation, the second time after the function had resolved.
+    // microtask — so the syscalls were paid for twice per activation, the second
+    // time after the function had already resolved.
     if (bound.abandoned) {
       // BOUNDED, and `allSettled`. `Promise.all` on a create that never settles
       // never runs the sweep and retains its closure — with `deps`, `segments` and
@@ -389,7 +391,7 @@ export async function probeMountCapability(
     // Only when something COULD be there. When the first attempt was refused
     // (EEXIST) or failed (EROFS, ECONTAINMENT), nothing was created and nothing was
     // abandoned — and `resolveContainedLink` is a `realpath` plus an `lstat` on the
-    // mount this module's own comments call least able to afford them.
+    // mount that may not answer.
     //
     // WORKSPACE HYGIENE, NOT CORRECTNESS, and the distinction matters both ways.
     // An earlier comment here claimed a leftover artifact "turns the next
@@ -405,12 +407,8 @@ export async function probeMountCapability(
     // What a leftover actually costs is accumulation: one file per activation, on
     // the mount least able to afford it.
     //
-    // BOUNDED, by the same timer the attempts use. This is the defect the first
-    // version had: `resolveContainedLink` calls `realpath`/`lstat` on the same
-    // unresponsive mount, with nothing racing it, inside the `finally` of a
-    // function whose entire contract is that it is bounded. The verdict was
-    // computed and then never returned, no log line was ever written, and a libuv
-    // threadpool slot was held for the life of the extension host.
+    // Bounded by the same timer the attempts use — see `removeProbeArtifact` for
+    // what went wrong when it was not.
     // WHENEVER SOMETHING WAS CREATED, abandoned or not. The two flags are not
     // exclusive: attempt one can create and attempt two can then stall, which is an
     // ordinary shape on a degrading mount. A version that skipped the inline sweep
@@ -418,8 +416,6 @@ export async function probeMountCapability(
     // because it waits on a create that by hypothesis never settles.
     //
     // When nothing was created and nothing was abandoned there is nothing to look
-    // for, and `resolveContainedLink` is a `realpath` plus an `lstat` on the mount
-    // this module's own comments call least able to afford them.
     // REMOVAL RUNS EVEN WHEN DISPOSED, and that is the one deliberate exception to
     // `isDisposed`'s contract. The contract exists to stop the probe CREATING things
     // in a workspace the window has left; abandoning a file this probe made in that

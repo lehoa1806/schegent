@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import { platformLacksNoFollow } from '../../../src/lib/safe-open';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -121,7 +122,14 @@ describe('FR-R3-079 — the output target is re-judged at dispatch', () => {
     ]);
     expect(verdict.outcome).toBe('refused');
     if (verdict.outcome !== 'refused') return;
-    expect(verdict.reason).toBe('symlink-leaf');
+    // FR-R3-083 — the reason is platform-dependent now. Where the kernel would have
+      // refused the open atomically it is `symlink-leaf`; where it would not (no
+      // `O_NOFOLLOW`, i.e. Windows) this guard's `lstat` is all there is, and it says
+      // so. Pinning the POSIX value unguarded would fail on the very checkout this
+      // feature exists to support.
+      expect(verdict.reason).toBe(
+        platformLacksNoFollow() ? 'reparse-point-leaf' : 'symlink-leaf'
+      );
     expect(verdict.portId).toBe('report');
   });
 

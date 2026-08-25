@@ -145,12 +145,19 @@ The full reasoning, the two shapes not chosen, and what remains outstanding are 
    `process-tree-unconfirmed` event, so an operator reconstructing why a later phase saw foreign
    writes has evidence and not only a log line.
 
-   **Read the absence of that event narrowly.** The check asks whether the process *group* is gone
-   (POSIX) or whether the direct child is gone (Windows). A descendant that calls `setsid` for
-   itself, or that re-parents, has left the group — the check then reports the group as gone while
-   that process is still running. So no event means *the group was confirmed gone*, not *no
-   descendant survives*. That gap is the same permanent limit stated above, and it is why the
-   runtime-log warning is kept beside the audit entry rather than replaced by it.
+   **Read the absence of that event narrowly.** On POSIX the check asks whether the process
+   *group* is gone. A descendant that calls `setsid` for itself, or that re-parents, has left the
+   group — the check then reports the group as gone while that process is still running. So no
+   event means *the group was confirmed gone*, not *no descendant survives*. That gap is the same
+   permanent limit stated above, and it is why the runtime-log warning is kept beside the audit
+   entry rather than replaced by it.
+
+   **On Windows the event is not emitted at all.** There is no process group to probe, so the only
+   question `processTreeIsGone` can answer is whether the direct child is gone — and once
+   `taskkill /T /F` has reaped it, a recycled pid inside the confirmation window would answer
+   "alive" and produce an audit entry against a Run whose tree had in fact died. A false lead is
+   worse than none, so the check declines rather than guesses. The runtime-log warning is what
+   Windows operators have, and closing this properly needs the Job Object named above.
 
    The event also requires an invocation that names a Run; one that does not produces the log
    warning and no audit entry.
