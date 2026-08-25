@@ -123,13 +123,17 @@ describe('FR-R3-079 — the output target is re-judged at dispatch', () => {
     expect(verdict.outcome).toBe('refused');
     if (verdict.outcome !== 'refused') return;
     // FR-R3-083 — the reason is platform-dependent now. Where the kernel would have
-      // refused the open atomically it is `symlink-leaf`; where it would not (no
-      // `O_NOFOLLOW`, i.e. Windows) this guard's `lstat` is all there is, and it says
-      // so. Pinning the POSIX value unguarded would fail on the very checkout this
-      // feature exists to support.
-      expect(verdict.reason).toBe(
-        platformLacksNoFollow() ? 'reparse-point-leaf' : 'symlink-leaf'
-      );
+    // refused the open atomically it is `symlink-leaf`; where it would not (no
+    // `O_NOFOLLOW`, i.e. Windows) this guard's `lstat` is all there is, and it says
+    // so. Pinning the POSIX value unguarded would fail on the very checkout this
+    // feature exists to support.
+    //
+    // Only the two reparse kinds `lstat` reports as links are reachable at all;
+    // telling tags apart needs a native call, declined on the record in
+    // `docs/architecture/native-binding-decision.md`.
+    expect(verdict.reason).toBe(
+      platformLacksNoFollow() ? 'reparse-point-leaf' : 'symlink-leaf'
+    );
     expect(verdict.portId).toBe('report');
   });
 
