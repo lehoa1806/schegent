@@ -145,8 +145,13 @@ export function startMountCapabilityProbe(
   logger: MountCapabilityLogger,
   notifier: MountCapabilityNotifier
 ): { dispose(): void } {
-  // The probe outlives its caller: up to two bounds, longer on a slow mount. Stage
-  // 2 is re-wired on `schegent.reset` and on a workspace-folder change, so a probe
+  // The probe outlives its caller by up to FOUR bounds, not two: the gitignore
+  // drop, attempt one, attempt two, and the cleanup sweep are each raced against
+  // `MOUNT_PROBE_TIMEOUT_MS` in sequence. At the shipped 2 s that is 8 s, and a
+  // maintainer sizing a disposal window against "two bounds" would size it at half
+  // the real figure.
+  //
+  // Stage 2 is re-wired on `schegent.reset` and on a workspace-folder change, so a probe
   // started against root A can resolve after the window has moved to root B — and
   // then pop an operator notification about a workspace they are no longer in.
   // A verdict for a torn-down stage is DROPPED rather than shown. The `.catch`

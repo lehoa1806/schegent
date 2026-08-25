@@ -1,6 +1,6 @@
 import type { AuditEntry } from '../audit/audit-entry';
 import type { Phase } from './phase';
-import type { RunnerLabel } from '../contracts/backend-runner';
+import type { RunnerLabel, TreeEscalation } from '../contracts/backend-runner';
 import type { ProcessTreeUnconfirmedPayload } from '../contracts/audit-events';
 
 /**
@@ -55,6 +55,7 @@ export class ProcessTreeDegradationRecorder {
     readonly iteration: number;
     readonly pid: number | null;
     readonly runner: RunnerLabel;
+    readonly escalation: TreeEscalation;
   }): Promise<void> {
     // An unattributable event is DROPPED, not guessed at. This is how the monitor
     // already treats a `runId: null` lifecycle event, and the reasoning is the same:
@@ -66,10 +67,12 @@ export class ProcessTreeDegradationRecorder {
     const payload: ProcessTreeUnconfirmedPayload = {
       runner: event.runner,
       pid: event.pid,
-      // Enumerated, so a reader knows the ladder COMPLETED rather than that it was
-      // skipped. "Not confirmed gone" after a full escalation is a different finding
-      // from "never signalled".
-      escalation: 'sigterm-then-sigkill'
+      // CARRIED from the runner, never stamped here. An earlier version hardcoded
+      // the full-ladder value, so a survivor found after the direct child had exited
+      // -- where SIGKILL is never sent -- was recorded as having survived one. "Not
+      // confirmed gone after SIGKILL" and "not confirmed gone after SIGTERM alone"
+      // are different findings, and the second is the weaker claim.
+      escalation: event.escalation
     };
 
     try {

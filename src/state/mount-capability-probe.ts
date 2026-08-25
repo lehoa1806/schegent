@@ -177,19 +177,27 @@ async function realExclusiveCreate(
 }
 
 /**
- * Race any promise against the bound, resolving `null` on expiry.
+ * Race any promise against the bound, once.
  *
- * Separate from `withBound` because that one speaks in observations and this one is
- * used for the cleanup, where "did not answer" is not an observation about the
- * mount — it is a reason to give up quietly.
+ * ONE helper, because there were two near-identical ones here — same `settled`
+ * flag, same `setTimeout`+`unref`, same `clearTimeout`, same two-arm `.then` —
+ * differing only in what expiry and rejection produced. A fix to the race (an
+ * `AbortSignal`, a different clear-order) would have had to land twice, and the two
+ * could drift silently. The mapping now lives at the two callers, where it is
+ * visibly different rather than accidentally so.
  */
-function raceBound<T>(work: Promise<T>, timeoutMs: number): Promise<T | null> {
-  return new Promise<T | null>((resolve) => {
+type Settled<T> =
+  | { readonly state: 'value'; readonly value: T }
+  | { readonly state: 'error'; readonly error: unknown }
+  | { readonly state: 'timeout' };
+
+function raceSettled<T>(work: Promise<T>, timeoutMs: number): Promise<Settled<T>> {
+  return new Promise<Settled<T>>((resolve) => {
     let settled = false;
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      resolve(null);
+      resolve({ state: 'timeout' });
     }, timeoutMs);
     timer.unref();
     work.then(
@@ -197,62 +205,32 @@ function raceBound<T>(work: Promise<T>, timeoutMs: number): Promise<T | null> {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve(value);
+        resolve({ state: 'value', value });
       },
-      () => {
+      (error: unknown) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve(null);
+        resolve({ state: 'error', error });
       }
     );
   });
 }
 
 /**
- * Race one attempt against the bound.
+ * One exclusive-create attempt, bounded.
  *
  * The loser is abandoned, not awaited — awaiting it is the same stall the bound
- * exists to prevent. A settled-flag makes the race one-shot, so a create that
- * lands after expiry cannot overwrite the `timed-out` verdict.
- *
- * It says nothing about the FILE such a create may have made. That is
- * `probeMountCapability`'s `finally` to answer, and it does: the outstanding
- * attempts are tracked and swept again once they settle. Without that second
- * sweep the artifact survives on precisely the slow mount this probe exists to
- * diagnose, one file per activation, forever.
+ * exists to prevent. What it may leave behind is the caller's to sweep.
  */
-function withBound(
+async function withBound(
   attempt: Promise<ExclusiveCreateObservation>,
   timeoutMs: number
 ): Promise<ExclusiveCreateObservation> {
-  return new Promise<ExclusiveCreateObservation>((resolve) => {
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      resolve({ outcome: 'timed-out' });
-    }, timeoutMs);
-    // `unref()`, not `unref?.()`. The optional call is an unnecessary condition on a
-    // non-nullish value and the lint baseline counts it; FR-R3-054 removed one of
-    // these for the same reason. The timer must not hold the event loop open — a
-    // probe outliving activation is the opposite of bounded.
-    timer.unref();
-    attempt.then(
-      (observation) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve(observation);
-      },
-      (error) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve({ outcome: 'io-failed', errno: errnoOf(error) });
-      }
-    );
-  });
+  const settled = await raceSettled(attempt, timeoutMs);
+  if (settled.state === 'value') return settled.value;
+  if (settled.state === 'timeout') return { outcome: 'timed-out' };
+  return { outcome: 'io-failed', errno: errnoOf(settled.error) };
 }
 
 /**
@@ -270,24 +248,40 @@ export async function probeMountCapability(
   // Unique per attempt AND per process, so two windows activating on one workspace
   // probe different names and neither observes the other's artifact as its own
   // second create.
-  const leaf = `.mount-probe.${process.pid}.${probeCounter}`;
+  // pid + a per-attempt counter + the wall clock. The clock is what closes the
+  // case the first two do not: after an extension-host restart the counter resets
+  // to 1, and if the OS has reused the pid, a probe file left behind by an
+  // abandoned create (the slow-mount path this whole module exists for) makes the
+  // FIRST create answer EEXIST — which classifies `undetermined`, and
+  // `undetermined` deliberately does not notify. A genuinely broken mount would
+  // then be permanently unreportable, by the artifact its own brokenness produced.
+  const leaf = `.mount-probe.${process.pid}.${probeCounter}.${Date.now().toString(36)}`;
   const segments = [...PROBE_SEGMENTS_PREFIX, leaf];
   const create =
     deps.exclusiveCreate ??
     ((s: readonly string[]) => realExclusiveCreate(deps.workspaceRoot, s));
 
   // `schegent-gitignore.ts` states the invariant: every writer that creates
-  // `.schegent/` also drops the local ignore file. This probe runs at activation,
-  // BEFORE the audit writer, the rollup writer and the transcript writer — so on a
-  // fresh workspace it is the first writer, and without this the directory would be
-  // created un-ignored. On the slow-mount path this probe exists for, an abandoned
-  // create then leaves `.mount-probe.<pid>.<n>` visible in the operator's
-  // `git status`, in an arbitrary workspace.
+  // `.schegent/` also drops the local ignore file. This probe creates the directory
+  // and therefore owes it.
+  //
+  // It is NOT the first writer, and an earlier version of this comment claimed it
+  // was. `extension.ts` awaits `lock.tryAcquire()` twelve lines earlier, and that
+  // goes through `ownership-fs`'s `ensureAnchorWithinRoot` and creates
+  // `.schegent/ownership/` without calling the helper. So on a fresh workspace the
+  // directory already exists, un-ignored, before this runs — a residual that
+  // belongs to the ownership path, not here.
+  //
+  // What this call still buys is that the ignore file lands at ACTIVATION rather
+  // than at the first audit append, which is what keeps an abandoned
+  // `.mount-probe.*` (the slow-mount path this module exists for) out of the
+  // operator's `git status`. It is kept for that reason, and the reason is stated
+  // so a reader who notices the ordering does not delete it as redundant.
   //
   // Bounded and best-effort, like everything else here: it must not become a way
   // for the probe to stall or to fail.
   if (deps.exclusiveCreate === undefined) {
-    await raceBound(
+    await raceSettled(
       ensureSchegentGitignore(deps.workspaceRoot, NO_OP_LOGGER).catch(() => undefined),
       timeoutMs
     );
@@ -305,7 +299,7 @@ export async function probeMountCapability(
    * dead code. The runtime behaviour was correct either way; this makes the
    * mutation-through-a-closure visible instead of arguing with the checker.
    */
-  const bound = { abandoned: false };
+  const bound = { abandoned: false, created: false };
   const attempt = async (): Promise<ExclusiveCreateObservation> => {
     const started = create(segments);
     // Tracked through a handled derivative, so tracking can never itself add an
@@ -316,6 +310,7 @@ export async function probeMountCapability(
     ));
     const observation = await withBound(started, timeoutMs);
     if (observation.outcome === 'timed-out') bound.abandoned = true;
+    if (observation.outcome === 'created') bound.created = true;
     return observation;
   };
 
@@ -352,7 +347,10 @@ export async function probeMountCapability(
         removeProbeArtifact(deps.workspaceRoot, segments, timeoutMs)
       );
     }
-    // EVERY path — success, refusal, throw, and timeout.
+    // Only when something COULD be there. When the first attempt was refused
+    // (EEXIST) or failed (EROFS, ECONTAINMENT), nothing was created and nothing was
+    // abandoned — and `resolveContainedLink` is a `realpath` plus an `lstat` on the
+    // mount this module's own comments call least able to afford them.
     //
     // WORKSPACE HYGIENE, NOT CORRECTNESS, and the distinction matters both ways.
     // An earlier comment here claimed a leftover artifact "turns the next
@@ -374,7 +372,9 @@ export async function probeMountCapability(
     // function whose entire contract is that it is bounded. The verdict was
     // computed and then never returned, no log line was ever written, and a libuv
     // threadpool slot was held for the life of the extension host.
-    await removeProbeArtifact(deps.workspaceRoot, segments, timeoutMs);
+    if (bound.created || bound.abandoned) {
+      await removeProbeArtifact(deps.workspaceRoot, segments, timeoutMs);
+    }
   }
 }
 
@@ -403,15 +403,23 @@ async function removeProbeArtifact(
 ): Promise<void> {
   try {
     const composed = path.join(workspaceRoot, ...segments);
-    // Raced, because `resolveContainedLink` performs `realpath`/`lstat` on the very
-    // mount that may not answer. A cleanup that cannot complete is abandoned; the
-    // unique leaf name is what stops that costing anything but a stray file.
-    const verdict = await raceBound(resolveContainedLink(composed, [workspaceRoot]), timeoutMs);
-    if (verdict === null) return;
-    // `absent` is the ordinary case when the create never happened, and it is not a
-    // failure: a destructive op on a path that is not there has no work.
-    if (verdict.outcome !== 'contained') return;
-    await fsp.rm(verdict.resolved, { force: true });
+    // The WHOLE cleanup is raced, not just the containment resolve. An earlier
+    // version bounded `resolveContainedLink` and then awaited `fsp.rm` with nothing
+    // racing it — so a mount that answers `realpath`/`lstat` but stalls on `unlink`
+    // (a hard-mounted NFS share is the ordinary example) hung the `finally` of a
+    // function whose entire contract is that it is bounded. The verdict was
+    // computed and never returned, no line was ever logged, and the `unsupported`
+    // notification could never fire: a silent total failure of the feature on its
+    // target environment. It was also verbatim the defect the comment above it
+    // claimed to have fixed.
+    const removal = (async () => {
+      const verdict = await resolveContainedLink(composed, [workspaceRoot]);
+      // `absent` is the ordinary case when the create never happened, and it is not
+      // a failure: a destructive op on a path that is not there has no work.
+      if (verdict.outcome !== 'contained') return;
+      await fsp.rm(verdict.resolved, { force: true });
+    })();
+    await raceSettled(removal, timeoutMs);
   } catch {
     /* cleanup is best-effort; a stale artifact cannot mislead a later probe, which names its own leaf */
   }

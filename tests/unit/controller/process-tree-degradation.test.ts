@@ -34,7 +34,8 @@ const EVENT = {
   phase: 'implement',
   iteration: 2,
   pid: 4242,
-  runner: 'claude-cli'
+  runner: 'claude-cli',
+  escalation: 'sigterm-then-sigkill'
 } as const;
 
 describe('process-tree degradation recorder (FR-R3-083)', () => {
@@ -68,6 +69,16 @@ describe('process-tree degradation recorder (FR-R3-083)', () => {
     const h = harness();
     await h.recorder.record(EVENT);
     expect(h.appended[0].outcome).toBe('info');
+  });
+
+  it('carries the escalation the runner reported, rather than stamping one', async () => {
+    // The two are different findings. A survivor found after the direct child had
+    // exited was never sent SIGKILL, so recording it as having survived one
+    // overstates what was tried -- and the enumerated value exists precisely so a
+    // reader can tell whether the ladder completed.
+    const h = harness();
+    await h.recorder.record({ ...EVENT, escalation: 'sigterm-only-child-exited' });
+    expect(h.appended[0].payload.escalation).toBe('sigterm-only-child-exited');
   });
 
   it('drops an unattributable event rather than guessing a Run', async () => {

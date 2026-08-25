@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 import {
   openWithinRoot,
   refusesLeafAsReparsePoint,
-  setLeafCheckForTests
+  forceLeafCheckForTests
 } from '../../../src/lib/safe-open';
 
 /**
@@ -126,10 +126,10 @@ describe('the Windows leaf branch, forced on (FR-R3-083)', () => {
     // this machine it would otherwise ship UNEXECUTED. Forcing it is the only way to
     // exercise the code an operator on Windows actually runs -- including the paths
     // where getting it wrong breaks the audit writer rather than a containment case.
-    setLeafCheckForTests(true);
+    forceLeafCheckForTests(true);
   });
   afterEach(async () => {
-    setLeafCheckForTests(null);
+    forceLeafCheckForTests(false);
     await fs.rm(root, { recursive: true, force: true });
   });
 

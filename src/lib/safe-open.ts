@@ -108,11 +108,18 @@ const NOFOLLOW: number = (fsConstants as Partial<typeof fsConstants>).O_NOFOLLOW
  * answered when no such check exists on their platform.
  */
 export function platformLacksNoFollow(): boolean {
-  return leafCheckOverride ?? NOFOLLOW === 0;
+  // `||`, not `??`. The override can only ever turn the leaf check ON, never off.
+  // A seam that could turn it off would be a product-wide kill switch for a
+  // containment check — reachable from production code with no compile error, and
+  // leakable by a test whose `afterEach` never ran because `beforeEach` threw. The
+  // worst a leak can now do is add a check on a platform that does not need one,
+  // which is safe.
+  return forceLeafCheck || NOFOLLOW === 0;
 }
 
 /**
- * Test seam for the platform question. Production never calls this.
+ * Test seam for the platform question. Production never calls this, and it can only
+ * ADD the check — see `platformLacksNoFollow`.
  *
  * The leaf check is gated on a module constant that is only true on win32, so on
  * every platform this suite actually runs on the branch was UNREACHABLE — it
@@ -122,11 +129,11 @@ export function platformLacksNoFollow(): boolean {
  * previously-successful open into a containment refusal. Nothing in CI could have
  * caught that.
  */
-export function setLeafCheckForTests(value: boolean | null): void {
-  leafCheckOverride = value;
+export function forceLeafCheckForTests(on: boolean): void {
+  forceLeafCheck = on;
 }
 
-let leafCheckOverride: boolean | null = null;
+let forceLeafCheck = false;
 
 /**
  * FR-R3-083 (T1132-T1135) — should this leaf be refused as a reparse point?
@@ -171,17 +178,6 @@ export function refusesLeafAsReparsePoint(leafStat: { isSymbolicLink(): boolean 
   return leafStat.isSymbolicLink();
 }
 
-/**
- * Reject anything that is not a plain forward step. `path.join` would happily
- * absorb `..` and an absolute segment would replace the root outright, which is
- * how a lexical composition becomes an escape.
- *
- * This is the module's containment invariant: `openWithinRoot`,
- * `ensureAnchorWithinRoot` and `segmentsUnderRoot` all pass through it before any
- * segment reaches `path.join`. (Its doc was briefly orphaned when the reparse
- * predicate was inserted between the two — recorded because a comment attached to
- * the wrong function is worse than no comment.)
- */
 /**
  * FR-R3-083 — the whole leaf-redirect policy, in one place.
  *
@@ -229,6 +225,15 @@ export async function judgeLeafRedirect(
   };
 }
 
+/**
+ * Reject anything that is not a plain forward step. `path.join` would happily
+ * absorb `..` and an absolute segment would replace the root outright, which is
+ * how a lexical composition becomes an escape.
+ *
+ * This is the module's containment invariant: `openWithinRoot`,
+ * `ensureAnchorWithinRoot` and `segmentsUnderRoot` all pass through it before any
+ * segment reaches `path.join`.
+ */
 function invalidSegment(segment: string): boolean {
   return (
     segment.length === 0 ||
@@ -409,12 +414,26 @@ export async function openWithinRoot(
   // for a syscall on the audit path is the wrong direction, and `H-02` — the defect
   // this whole module exists for — was that exact escape in that exact file.
   //
-  // `ENOENT` ALONE is tolerated here, unlike the dispatch guard's `ENOENT`/`ENOTDIR`:
-  // this walk has already proved every component above the leaf, so an `ENOTDIR`
-  // at this point is a component that changed underneath it, which is a refusal and
-  // not an absence.
+  // WHAT IS TOLERATED, AND THE RISK THAT IS ACCEPTED
+  //
+  // `ENOENT` and `ENOTDIR` mean there is nothing here to be redirected THROUGH: the
+  // leaf does not exist yet (the ordinary state of a file about to be created), or a
+  // component below the proved chain is not a directory. Both proceed to the open,
+  // which answers for itself.
+  //
+  // `EPERM`, `EBUSY`, `EMFILE` and friends are REFUSALS, and that is a real
+  // availability trade rather than an oversight. On Windows the audit writer reopens
+  // `.schegent/audit.log` per append, so an antivirus or indexer holding the file
+  // briefly turns one append into a containment refusal rather than an I/O error.
+  //
+  // Accepted, for the reason the module exists: an `lstat` that cannot answer has
+  // not established that the leaf is not a reparse point, and the open that follows
+  // WOULD traverse one on this platform. Proceeding on an unanswerable check is a
+  // containment hole; refusing is a dropped append, which the evidence-health path
+  // already reports and which the next append retries. `H-02` was the audit file
+  // being written somewhere else, so this is the direction to fail in.
   if (platformLacksNoFollow()) {
-    const judged = await judgeLeafRedirect(leaf, ['ENOENT']);
+    const judged = await judgeLeafRedirect(leaf, ['ENOENT', 'ENOTDIR']);
     if (judged.outcome === 'refused') return refuse(judged.reason, judged.errno);
   }
 

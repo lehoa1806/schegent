@@ -109,6 +109,7 @@ describe('escalateAndReportTree (FR-R3-083)', () => {
       // downstream. `cancelActive` once passed an object carrying the live
       // ChildProcess, which a spread would have admitted silently.
       expect(Object.keys(event).sort()).toEqual([
+        'escalation',
         'iteration',
         'kind',
         'phase',
@@ -116,6 +117,7 @@ describe('escalateAndReportTree (FR-R3-083)', () => {
         'runId',
         'runner'
       ]);
+      expect(event.escalation).toBe('sigterm-then-sigkill');
     }
   });
 
@@ -140,6 +142,14 @@ describe('escalateAndReportTree (FR-R3-083)', () => {
     h.run();
     await vi.advanceTimersByTimeAsync(5_000);
     expect(h.events).toHaveLength(1);
+    const event = h.events[0];
+    // And it says SO. SIGKILL targets a leader that has already exited, so it is not
+    // sent -- and stamping the full-ladder value here would make the record claim a
+    // signal that was never delivered. The warning says the same thing.
+    if (event.kind === 'tree-unconfirmed') {
+      expect(event.escalation).toBe('sigterm-only-child-exited');
+    }
+    expect(h.warnings[0]).toContain('SIGKILL was not sent');
   });
 
   it('emits ONE entry when two cancel paths hit one hung child', async () => {

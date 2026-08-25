@@ -63,6 +63,12 @@ export type { InvocationRequest, RawInvocationOutput };
  */
 export type RunnerLabel = 'claude-cli' | 'codex-cli' | 'agy-cli';
 
+/**
+ * Which rungs of the termination ladder actually ran. See
+ * `ProcessTreeUnconfirmedPayload.escalation` for why the two are kept apart.
+ */
+export type TreeEscalation = 'sigterm-then-sigkill' | 'sigterm-only-child-exited';
+
 export type MonitorSidecarEvent =
   | { readonly kind: 'started'; readonly runId: string | null; readonly pid: number | null }
   | { readonly kind: 'stdout-chunk'; readonly runId: string | null; readonly chunk: string }
@@ -96,6 +102,8 @@ export type MonitorSidecarEvent =
       readonly pid: number | null;
       /** Which adapter's tree it was, for the audit payload. */
       readonly runner: RunnerLabel;
+      /** Which rungs actually ran. Never assumed — see `TreeEscalation`. */
+      readonly escalation: TreeEscalation;
     };
 
 export type MonitorSidecarHook = (event: MonitorSidecarEvent) => void;

@@ -265,7 +265,12 @@ export class ProcessLifecycleRunner {
    * caller is told so rather than the terminal state quietly claiming otherwise.
    */
   private terminate(child: ChildProcess, attribution: TreeAttribution): void {
-    if (child.exitCode !== null || child.signalCode !== null) return;
+    // NO early return on an exited child. FR-R3-054's original guard skipped
+    // `terminate` entirely once the direct child was gone, which made the tree
+    // confirmation unreachable for the ordinary shape: a cancel landing a few
+    // milliseconds after the CLI exits, with a forked helper still writing. The
+    // ladder itself decides what to signal — it does not escalate against a leader
+    // that has already exited — and it always asks whether the GROUP survived.
     escalateAndReportTree({
       child,
       attribution,

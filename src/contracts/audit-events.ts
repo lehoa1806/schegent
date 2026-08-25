@@ -1,7 +1,7 @@
 import type { BackendRunnerKind } from '../runner/backend-runner-factory';
 import type { BackendContainment } from '../services/backend-containment-policy';
 import type { TerminationReason } from '../state/workflow-run';
-import type { RunnerLabel } from './backend-runner';
+import type { RunnerLabel, TreeEscalation } from './backend-runner';
 // Feature FR-R3-006 — the reset transaction's phase and refusal literals are
 // declared once, in a module that imports nothing, and the audit payload reuses
 // them rather than restating them. A restated copy is a second source of truth
@@ -479,10 +479,20 @@ export interface ProcessTreeUnconfirmedPayload {
   /** The direct child's pid, or `null` when the child never had one. */
   readonly pid: number | null;
   /**
-   * What was tried before giving up. Bounded and enumerated, so a reader knows the
-   * escalation completed rather than that it was skipped.
+   * WHICH RUNGS ACTUALLY RAN before the group was found alive. Bounded and
+   * enumerated, and the distinction is load-bearing rather than decorative:
+   *
+   *   - `sigterm-then-sigkill` — the full ladder. SIGKILL is not catchable, so a
+   *     group that survived this is a group Schegent does not own.
+   *   - `sigterm-only-child-exited` — the direct child exited during the SIGTERM
+   *     grace, so there was no live leader to escalate against and SIGKILL was not
+   *     sent. A survivor here has only been asked once, politely.
+   *
+   * An earlier version stamped the first value unconditionally, which made the
+   * record claim a signal that was never delivered — on the branch where the CLI
+   * handles SIGTERM and exits while its forked helper does not.
    */
-  readonly escalation: 'sigterm-then-sigkill';
+  readonly escalation: TreeEscalation;
 }
 
 /**

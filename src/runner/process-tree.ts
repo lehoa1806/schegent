@@ -1,5 +1,10 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import type { MonitorSidecarEvent, RunnerLabel, TreeAttribution } from '../contracts/backend-runner';
+import type {
+  MonitorSidecarEvent,
+  RunnerLabel,
+  TreeAttribution,
+  TreeEscalation
+} from '../contracts/backend-runner';
 
 /**
  * FR-R3-054 (H-05) — own the backend process tree, not just the direct child.
@@ -232,12 +237,17 @@ export function escalateAndReportTree(deps: TreeEscalationDeps): void {
    * the right trigger for escalating — that is FR-R3-054's separation and it is
    * preserved — but it was never the right trigger for whether to ask.
    */
-  const confirmOrReport = (): void => {
+  const confirmOrReport = (escalation: TreeEscalation): void => {
     if (processTreeIsGone(child)) return;
     if (deps.alreadyReported()) return;
     deps.markReported();
     // SIGKILL is not catchable, so a surviving group is one we do not own.
-    deps.warn('process tree not confirmed gone after SIGKILL; descendants may still be running');
+    deps.warn(
+      escalation === 'sigterm-then-sigkill'
+        ? 'process tree not confirmed gone after SIGKILL; descendants may still be running'
+        : 'process tree not confirmed gone after SIGTERM (the direct child exited, so SIGKILL was ' +
+          'not sent); descendants may still be running'
+    );
     // And into EVIDENCE. A runtime-log line is not the audit record, so an
     // operator reconstructing why a later phase saw foreign writes had nothing
     // to read. Reported through the hook, never written here.
@@ -253,10 +263,15 @@ export function escalateAndReportTree(deps: TreeEscalationDeps): void {
       phase: attribution.phase,
       iteration: attribution.iteration,
       pid: child.pid ?? null,
-      runner
+      runner,
+      escalation
     });
   };
 
+  // The SIGTERM goes to the group whether or not the direct child is still alive:
+  // a group outlives its leader, and its remaining members are exactly what this
+  // path is about. `signalProcessTree` signals the group AND the child, and a
+  // signal to an already-reaped child reports ESRCH and is swallowed.
   deps.info?.('sending SIGTERM to process tree');
   void signalProcessTree(child, 'SIGTERM');
   setTimeout(() => {
@@ -264,12 +279,19 @@ export function escalateAndReportTree(deps: TreeEscalationDeps): void {
     // whether to ESCALATE. What changed is that its having exited no longer skips
     // the confirmation below.
     if (child.exitCode !== null || child.signalCode !== null) {
-      confirmOrReport();
+      // The direct child is gone, so there is nothing to escalate AGAINST — SIGKILL
+      // targets a leader that has already exited. The group may still hold members,
+      // which is exactly why the confirmation still runs. It is told which rungs
+      // actually ran: the enumerated value exists so a reader knows whether the
+      // ladder completed or stopped early, and stamping `sigterm-then-sigkill`
+      // unconditionally would have made the audit record claim a signal that was
+      // never delivered.
+      confirmOrReport('sigterm-only-child-exited');
       return;
     }
     deps.info?.('sending SIGKILL to process tree');
     void signalProcessTree(child, 'SIGKILL').then(() => {
-      setTimeout(confirmOrReport, TREE_CONFIRM_DELAY_MS).unref();
+      setTimeout(() => confirmOrReport('sigterm-then-sigkill'), TREE_CONFIRM_DELAY_MS).unref();
     });
   }, SIGKILL_DELAY_MS).unref();
 }
