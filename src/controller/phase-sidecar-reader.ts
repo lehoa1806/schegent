@@ -1,5 +1,6 @@
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import { openWithinRootByPath } from '../lib/safe-open';
 import type { Phase } from './phase';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { AuditEntryFields } from '../audit/audit-entry';
@@ -258,16 +259,39 @@ export class PhaseSidecarReader {
  */
 const MAX_SIDECAR_BYTES = 8 * 1024 * 1024;
 
-const NOFOLLOW: number =
-      (fs.constants as { O_NOFOLLOW?: number }).O_NOFOLLOW ?? 0;
+    // FR-R3-080 (T1067) — `O_NOFOLLOW` moved INTO the walk, which applies it to
+    // the leaf exactly as this file did and `lstat`s every component above it
+    // besides. The local constant went with the call that used it.
     let handle: fs.FileHandle | null = null;
     let bytes: Buffer;
     try {
-      handle = await fs.open(
-        absolutePath,
-        fs.constants.O_RDONLY | NOFOLLOW
-      );
-      const stat = await handle.stat();
+      // FR-R3-080 (T1067) — the whole component chain, not only the leaf.
+      //
+      // `O_NOFOLLOW` closes the window on the FINAL component and the comment
+      // above is right about that. It says nothing about the components ABOVE
+      // it: a link at any parent redirects the open before the kernel ever looks
+      // at the leaf. The checked walk `lstat`s each component in turn and then
+      // opens with the same `O_NOFOLLOW`, so both halves are covered by one
+      // call, and everything the block above describes — fstat binding to the
+      // descriptor, the read going through the descriptor — is unchanged.
+      const opened = await openWithinRootByPath(inputs.cwd, absolutePath, { flags: 'r' });
+      if (opened.outcome === 'refused') {
+        if (silent) return null;
+        // A link — at the leaf OR at any component above it — is reported as the
+        // redirect it is, which is what the ELOOP branch below did for the leaf
+        // alone. Everything else (absent, not a file, unreadable) stays
+        // `missing-sidecar`: the phase produced no message this host can read,
+        // and the operator's next step is the same either way.
+        const reason =
+          opened.reason === 'symlink-leaf' || opened.reason === 'symlink-component'
+            ? 'path-symlink-redirect'
+            : 'missing-sidecar';
+        await this.emitPhaseMessageInvalid(inputs, reason);
+        return this.invalidPhaseMessage(inputs, reason);
+      }
+      handle = opened.handle;
+      const openedHandle = opened.handle;
+      const stat = await openedHandle.stat();
       if (!stat.isFile()) {
         if (silent) return null;
         await this.emitPhaseMessageInvalid(inputs, 'missing-sidecar');
@@ -281,7 +305,7 @@ const NOFOLLOW: number =
         await this.emitPhaseMessageInvalid(inputs, 'malformed-sidecar');
         return this.invalidPhaseMessage(inputs, 'malformed-sidecar');
       }
-      bytes = await handle.readFile();
+      bytes = await openedHandle.readFile();
       // Windows defense-in-depth: lstat after read catches the case where
       // open() followed a symlink at the dentry level (no O_NOFOLLOW on Win).
       try {

@@ -25,6 +25,27 @@ import { join, relative, resolve } from 'node:path';
  * That is the difference between a tracked debt and a silent cap. Sampling which
  * modules to check, or exempting by directory, is what let this class of defect
  * live in the audit writer through several reviews.
+ *
+ * WHAT THIS LEDGER CANNOT CLOSE (FR-R3-080, T1078)
+ *
+ * The walk `lstat`s each component and then opens the leaf with `O_NOFOLLOW`.
+ * That closes the no-race hole — a path that IS a link, or that goes through
+ * one, is refused. It does not close the window between one component's `lstat`
+ * and the next syscall: an adversary who wins that interval can still swap a
+ * component the walk has already passed.
+ *
+ * Closing it needs a handle-relative walk — `openat` against each directory's
+ * descriptor — and Node exposes no `openat`; `/proc/self/fd` is Linux-only. So
+ * it needs a native binding, which is a dependency decision and not this item's
+ * to take. `FR-R3-083` asks the same question for Windows and for the Job
+ * Object, and this ledger consumes whatever that decision reaches. Until then
+ * the residual is stated here rather than implied by a list of struck entries,
+ * and `package.json` gains nothing.
+ *
+ * The `ATOMIC_PUBLISH_RENAME_RESIDUAL` list below is the same residual in its
+ * sharpest form: `rename` cannot be made handle-relative at all without
+ * `renameat`, so those three sites cannot be struck by any amount of care in
+ * this repository.
  */
 const SRC = resolve(__dirname, '..', '..', 'src');
 
@@ -89,20 +110,73 @@ const UNMIGRATED: readonly string[] = [
   // `audit/verbose-diagnostic-writer.ts` struck 2026-08-24 — fully migrated. Left
   // as a comment rather than deleted silently: the ledger only shrinks, and
   // recording which line went is how that stays checkable.
-  'catalog/catalog-manifest.ts',
-  'catalog/version-record.ts',
-  'controller/phase-sidecar-reader.ts',
+  // `controller/phase-sidecar-reader.ts` struck 2026-08-25 (FR-R3-080, T1067) —
+  // the read goes through the checked walk. It already opened with `O_NOFOLLOW`,
+  // which the module's own comment correctly described as closing the window on
+  // the FINAL component; what it said nothing about was the components ABOVE it,
+  // where a link redirects the open before the kernel ever looks at the leaf.
+  // The walk covers both and keeps the `O_NOFOLLOW` leaf open, so the fstat and
+  // descriptor-read discipline that comment describes is unchanged. A link at
+  // any depth now reports `path-symlink-redirect`, which the leaf-only ELOOP
+  // branch used to report for the leaf alone.
   // `lib/catalog-fs-adapter.ts` struck 2026-08-25 (FR-R3-069, feature 152) —
   // fully migrated: reads and writes go through `openWithinRootByPath`, the
   // store chain is created by `ensureAnchorWithinRoot` beneath the workspace
   // root, and judgments anchor at the workspace rather than at the store.
+  // FR-R3-080 (T1064, feature 153) — the SEC-07 APPEND window is closed and the
+  // entry stays, because the module is not fully migrated and a partially
+  // migrated module is an unmigrated one.
+  //
+  // What changed: the append used to prove the target once and then write to the
+  // PATHNAME on every line — the module's own comment said the residual out
+  // loud ("a target replaced mid-run with no accompanying settings change keeps
+  // its cached verdict until the next clear") and named paying `realpath` per
+  // line as the only way to shrink it. It now holds the DESCRIPTOR the walk
+  // produced, so the window is gone rather than narrowed, and the walk costs one
+  // open per target rather than one resolution per line. The roots are still read
+  // fresh on every append, so a narrowing is not inherited.
+  //
+  // What remains: rotation's `rename`/`unlink` and the `stat`/`readdir` reads go
+  // through injected function ports, which is what this gate's `INJECTED_FS_PORT`
+  // arm sees. Each destructive step proves its own path with the link form first,
+  // so they are check-then-act on a pathname — the same class, on the once-per-
+  // rollover half rather than the once-per-line half. Closing them means either a
+  // handle-relative rename (`FR-R3-083`'s dependency question) or removing the
+  // injected ports, which are this module's only test seam.
   'lib/runtime-log/runtime-log-sink.ts',
   'metrics/metrics-rollup-reader.ts',
   'metrics/metrics-rollup-writer.ts',
+  // FR-R3-080 (T1065, feature 153) — the SEC-07 APPEND window is closed and the
+  // entry stays, for the same reason its twin `lib/runtime-log/runtime-log-sink.ts`
+  // does. The append holds the descriptor the walk produced instead of writing to
+  // a pathname a verdict once approved, and the configured root is re-read per
+  // record so a change of scope is not inherited.
+  //
+  // What keeps it here: rotation's rename/unlink still act on pathnames behind
+  // their own link-form verdicts, and the `appendFile` port survives as the
+  // failure-injection seam for the warn-once-per-cause tests (EACCES, ENOSPC,
+  // ENOENT-parent cannot be induced reliably on a real filesystem). Production
+  // supplies no such port — but an injected write port is a pathname write by
+  // another name, and pretending otherwise is what a ledger exists to prevent.
   'monitor/cli-transport-sink.ts',
-  'services/history/history-description-store.ts',
-  'services/phase-log/phase-log-reader.ts',
-  'services/phase-log/phase-log-tail-session.ts',
+  // `services/history/history-description-store.ts` struck 2026-08-25
+  // (FR-R3-080, feature 153) — the SEC-06 check-then-act write is migrated. The
+  // `containedPathFor` verdict that used to precede it is gone from the write
+  // path rather than kept in front of the walk: leaving it would have made it
+  // the deciding check again, one resolution earlier than the effect. Both
+  // properties it enforced survive — "under `.schegent/history/`" is structural
+  // (segments derived from a ref this module minted from a `SAFE_RUN_ID`), and
+  // "inside the workspace" is what the walk answers at the point of effect. The
+  // read and remove paths keep the verdict, because their refs arrive from
+  // persisted state an operator can edit.
+  // `services/phase-log/phase-log-reader.ts` struck 2026-08-25 (FR-R3-080,
+  // T1070) — the bounded tail now reads from a descriptor the walk produced. The
+  // FR-R3-052 bound is untouched; only where the descriptor comes from changed.
+  // `services/phase-log/phase-log-tail-session.ts` struck 2026-08-25 (FR-R3-080,
+  // T1071) — same change, plus the trusted root the session needed to do it. The
+  // root is REQUIRED on the session's deps rather than optional: a tail with no
+  // root would open by pathname, which is the state being left. The registry
+  // already held it, since it composes the file path from it.
   // FR-R3-053 — every WORKSPACE-adjacent path in this module is migrated: the
   // patch, the metadata, the decline marker and the `checkpoints/<runId>` chain
   // all go through the checked walk, which matters because a checkpoint patch can
@@ -114,6 +188,17 @@ const UNMIGRATED: readonly string[] = [
   // create. It is the walk's TRUST ANCHOR, and the walk never creates its own
   // anchor. Kept on this list rather than moved to a whole-module exemption,
   // because "one reasoned call" is exactly what a ledger should show.
+  //
+  // FR-R3-080 (T1077, 2026-08-25) re-decided this rather than inheriting it, and
+  // the decision is unchanged. `ensureAnchorWithinRoot` — the primitive
+  // FR-R3-069 added, and the one that resolved the same question for the raw
+  // transcript writer's spool root under FR-R3-078 — anchors at a HIGHER trusted
+  // root and walks the components below it. Global storage has no such higher
+  // root: its parent is VS Code's own extension-storage directory, which this
+  // extension neither owns nor may create, so anchoring there would assert a
+  // trust relationship that does not exist. The entry therefore stays, with its
+  // reason, which is what the item asks for when the anchor is not creatable
+  // beneath something trusted.
   'services/run-checkpoint-service.ts',
   'services/run-request/local-input-validator.ts',
   // `state/ownership-fs.ts` struck 2026-08-25 (FR-R3-069, feature 152). The
@@ -124,6 +209,26 @@ const UNMIGRATED: readonly string[] = [
   // `createDiskOwnershipFs` as the trusted anchor, and the root-creating
   // primitive (`ensureAnchorWithinRoot`) for the store chain itself.
   'ui/sidebar/audit-tail-coldstart.ts'
+];
+
+/**
+ * FR-R3-080 (T1068, T1069) — modules the detector matches by NAME, not by call.
+ *
+ * `catalog/catalog-manifest.ts` and `catalog/version-record.ts` were on
+ * `UNMIGRATED` because they contain `fs.readFile(...)`. They do — but `fs` there
+ * is a PARAMETER of type `CatalogFsPort`, whose `readFile` takes path SEGMENTS
+ * and whose adapter (`lib/catalog-fs-adapter.ts`) was migrated to the checked
+ * walk by feature 152. Neither module imports node's filesystem at all.
+ *
+ * So the entries were never work; they were a false positive the ledger had been
+ * carrying as debt. Striking them for a migration that never needed to happen
+ * would be a false claim, so they are recorded here instead, and the assertion
+ * below is what makes the claim checkable: a module on this list that acquires a
+ * real `node:fs` import fails the gate.
+ */
+const READS_THROUGH_MIGRATED_PORT: readonly string[] = [
+  'catalog/catalog-manifest.ts',
+  'catalog/version-record.ts'
 ];
 
 /**
@@ -241,7 +346,8 @@ describe('safe-open migration (FR-R3-053)', () => {
     const known = new Set([
       ...UNMIGRATED,
       ...NOT_A_WORKSPACE_SINK,
-      ...ATOMIC_PUBLISH_RENAME_RESIDUAL
+      ...ATOMIC_PUBLISH_RENAME_RESIDUAL,
+      ...READS_THROUGH_MIGRATED_PORT
     ]);
     const unexpected = callers.filter((f) => !known.has(f));
     // A new entry here is a new sink built the way the H-02 escape was built.
@@ -271,6 +377,51 @@ describe('safe-open migration (FR-R3-053)', () => {
     const body = readFileSync(join(SRC, 'audit', 'audit-log-writer.ts'), 'utf8');
     const rawCalls = [...body.matchAll(new RegExp(RAW_PATH_CALL, 'g'))];
     expect(rawCalls.every((match) => match[1] === 'rename')).toBe(true);
+  });
+
+  it('keeps the port-reading list free of any real filesystem import', () => {
+    // What makes a `fs.readFile(...)` in these modules safe is that `fs` is a
+    // `CatalogFsPort` parameter and not node's. The moment one imports the real
+    // thing, that reasoning stops holding and this fails.
+    for (const relPath of READS_THROUGH_MIGRATED_PORT) {
+      const body = readFileSync(join(SRC, ...relPath.split('/')), 'utf8');
+      expect({ relPath, importsNodeFs: /from '(node:)?fs(\/promises)?'/.test(body) }).toEqual({
+        relPath,
+        importsNodeFs: false
+      });
+    }
+  });
+
+  it('keeps the injected fs ports out of production wiring (FR-R3-080, T1066)', () => {
+    // The `INJECTED_FS_PORT` arm above catches a sink that TAKES a filesystem
+    // function. It cannot see whether anything SUPPLIES one — and a raw call
+    // that moves from the sink to its composition root has not been migrated,
+    // it has been relocated. Measured 2026-08-25: neither production wiring site
+    // passes one, so the ports are a test seam and nothing more.
+    //
+    // This assertion is what keeps that true. A production site that starts
+    // supplying `appendFile`/`mkdir`/`writeFile`/`readFile` fails here, by name.
+    const wiring = [
+      'activation/backend-wiring.ts',
+      'monitor/cli-transport-sink.ts',
+      'extension.ts'
+    ];
+    const supplied: string[] = [];
+    for (const relPath of wiring) {
+      const body = readFileSync(join(SRC, ...relPath.split('/')), 'utf8')
+        .split(/\r?\n/)
+        .filter((line) => {
+          const trimmed = line.trim();
+          return (
+            !trimmed.startsWith('//') && !trimmed.startsWith('*') && !trimmed.startsWith('/*')
+          );
+        })
+        .join('\n');
+      if (/\b(appendFile|mkdir|writeFile|readFile)\s*:\s*(fs[a-zA-Z]*\.|\()/.test(body)) {
+        supplied.push(relPath);
+      }
+    }
+    expect(supplied).toEqual([]);
   });
 
   it('keeps the atomic-publish residual list to renames only', () => {

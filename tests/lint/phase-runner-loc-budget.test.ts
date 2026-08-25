@@ -109,7 +109,13 @@ const BUDGETS = [
   // in the item record, and the shared reader in src/lib/bounded-read.ts. Nothing
   // movable was left here — this file's job is reading one sidecar safely, and a
   // size bound is part of that job rather than a new one.
-  { path: 'src/controller/phase-sidecar-reader.ts', max: 415 },
+  // FR-R3-080 / T1067 (2026-08-25) — 415 → 439 for the component walk. The read
+  // opened with `O_NOFOLLOW`, which covers the leaf and says nothing about the
+  // components above it; the walk covers both. Twenty-four lines: the call, the
+  // refusal mapping that keeps `path-symlink-redirect` distinct from
+  // `missing-sidecar`, and the note recording what the old comment was right
+  // about and what it left out. Nothing to extract — it is one open.
+  { path: 'src/controller/phase-sidecar-reader.ts', max: 439 },
   { path: 'src/controller/phase-retry-evaluator.ts', max: 180 },
   // Raised from 100 on 2026-08-16. The truncation arm of `mapOutcome` stopped
   // returning 'failed' and now returns 'transient_error'; the budget is spent

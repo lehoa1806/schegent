@@ -150,6 +150,7 @@ describe('Feature 029 T033 — phase-log on-disk immutability (SC-005)', () => {
     const pushed: PhaseLogEntryPushPayload[] = [];
     const tail = new PhaseLogTailSession({
       sessionId: 'tail-1',
+      workspaceRoot: tmpDir,
       filePath: streamPath,
       selection: { ...SELECTION, iterationN: SELECTION.iterationN },
       pushToWebview: (msg) => pushed.push(msg),

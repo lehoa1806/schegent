@@ -3,7 +3,7 @@
 // at the IPC boundary (research.md §5). See
 // specs/020-phase-level-logs/contracts/phase-log-service.md §6.
 
-import * as fs from 'node:fs/promises';
+import { openWithinRootByPath } from '../../lib/safe-open';
 import { discoverIterations } from './phase-log-iteration-discovery';
 import { parseStreamJsonlBytes } from './phase-log-jsonl-parser';
 import { projectStreamJsonlLine } from './phase-log-display-projector';
@@ -105,7 +105,26 @@ export async function readIterationManifest(
     // all, so a multi-GiB phase log went wholly into memory. Now the file's tail
     // up to a bound, read in fixed chunks: a log's recent end is what an operator
     // is looking at, and the allocation is the bound rather than the file.
-    const handle = await fs.open(streamPath, 'r');
+    // FR-R3-080 (T1070) — the components walked, not just the leaf opened. The
+    // bounded read below is unchanged: it was the H-03 fix and it is orthogonal
+    // to where the descriptor came from.
+    const opened = await openWithinRootByPath(args.workspaceRoot, streamPath, { flags: 'r' });
+    if (opened.outcome === 'refused') {
+      // A refused path reads as an absent log rather than as an error the
+      // operator can act on, which is what the ENOENT branch below already
+      // decided for a phase log that is not there: the panel shows an empty
+      // iteration, and the refusal is not something the panel can explain.
+      return {
+        iterations,
+        selectedIteration,
+        entries: [],
+        skippedLines: 0,
+        truncatedCount: 0,
+        verboseDiagnosticsState,
+        isInFlight: args.isInFlight
+      };
+    }
+    const handle = opened.handle;
     try {
       const { size } = await handle.stat();
       const tail = await readBoundedTail(handle, size);

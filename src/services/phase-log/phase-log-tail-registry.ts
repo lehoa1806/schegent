@@ -143,6 +143,7 @@ export class PhaseLogTailRegistry {
     const sessionId = randomUUID();
     const session = new PhaseLogTailSession({
       sessionId,
+      workspaceRoot: req.workspaceRoot,
       filePath,
       selection: sel,
       pushToWebview: (raw) => {

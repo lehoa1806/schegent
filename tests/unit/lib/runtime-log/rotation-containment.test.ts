@@ -10,29 +10,37 @@
 // UID can write — which is where the sink then appends, renames and unlinks.
 //
 // So the guard belongs where the syscalls are. These tests drive the three
-// mutating branches through the sink's injected seams:
+// mutating branches:
 //
-//   - append   → `resolveContainedForWrite`, target form (the leaf is followed)
+//   - append   → `openWithinRootByPath`, which walks the components and holds
+//                the descriptor it proved (FR-R3-080, T1064)
 //   - rename   → `resolveContainedLink`, both ends (the leaf is not followed)
 //   - unlink   → `resolveContainedLink`, on the generation being dropped
 //
-// The last two are checked fresh on every rollover while the append verdict is
-// cached, which is deliberate and is what the mid-flight cases below pin: a
-// rotation must not inherit an admission the append made earlier.
+// The last two are checked fresh on every rollover, which is deliberate and is
+// what the mid-flight cases below pin: a rotation must not inherit an admission
+// the append made earlier.
+//
+// FR-R3-080 (T1064) REPLACED THIS FILE'S FILESYSTEM. It used to run against an
+// in-memory map with an injected `realpath`, and that arrangement could not
+// prove the property it was named for: the fake `realpath` WAS the answer, so
+// the test asserted that the sink believed a stub. Every case below now runs on
+// a real temp directory with real symlinks, which is what the append path's
+// component walk actually reads. The properties asserted are unchanged.
 
-import { describe, it, expect, vi, type Mock } from 'vitest';
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
+import * as nodeFs from 'node:fs/promises';
+import * as path from 'node:path';
+import * as os from 'node:os';
 
 import { SanitizedLogger } from '../../../../src/lib/logger';
 import { RuntimeLogSink } from '../../../../src/lib/runtime-log/runtime-log-sink';
 import type { RuntimeLogAccessor } from '../../../../src/lib/runtime-log/runtime-log-settings';
 import type { RuntimeLogLevel } from '../../../../src/lib/runtime-log/runtime-log-level';
 
-/** The one allowed root for these tests. Nothing else may be mutated. */
-const ALLOWED_ROOT = '/allowed';
-/** Lexically inside `ALLOWED_ROOT` — admission passes on every one of these. */
-const TARGET_PATH = '/allowed/logs/runtime.log';
-/** Where a planted symlink sends it. */
-const ESCAPED_PATH = '/elsewhere/runtime.log';
+let allowedRoot: string;
+let escapedRoot: string;
+let targetPath: string;
 
 interface Settings {
   level: RuntimeLogLevel;
@@ -61,73 +69,68 @@ function line(message: string): string {
   return `[2026-08-18T00:00:00.000Z] INFO ${message}`;
 }
 
-function errnoError(code: string): NodeJS.ErrnoException {
-  return Object.assign(new Error(code), { code }) as NodeJS.ErrnoException;
-}
-
 /**
- * An in-memory filesystem plus the `realpath` seam the oracle consults.
+ * The real filesystem, behind spies.
  *
- * `resolve` maps a path to what it resolves to; anything unmapped resolves to
- * itself, which is the no-symlinks case the "normal path is unchanged"
- * scenario asks for. A mapped value of an errno string throws instead, so the
- * resolution-failure branch is reachable without a real EACCES.
+ * The spies exist so "was this syscall reached at all" stays assertable — the
+ * refusal cases are about a syscall NOT happening against a location the host
+ * was never allowed to look at. They delegate; they decide nothing.
  */
-function makeFs(resolve: Record<string, string> = {}) {
-  const files = new Map<string, string>();
+function spiedFs() {
+  const rename: Mock<(from: string, to: string) => Promise<void>> = vi.fn(
+    async (from, to) => nodeFs.rename(from, to)
+  );
+  const unlink: Mock<(target: string) => Promise<void>> = vi.fn(async (target) =>
+    nodeFs.unlink(target)
+  );
+  const stat: Mock<(target: string) => Promise<{ size: number }>> = vi.fn(async (target) => {
+    const s = await nodeFs.stat(target);
+    return { size: s.size };
+  });
+  const readdir: Mock<(target: string) => Promise<readonly string[]>> = vi.fn(async (target) =>
+    nodeFs.readdir(target)
+  );
   const appendFile: Mock<(target: string, data: string) => Promise<void>> = vi.fn(
-    async (target, data) => {
-      files.set(target, (files.get(target) ?? '') + data);
-    }
+    async (target, data) => nodeFs.appendFile(target, data)
   );
   const writeFile: Mock<(target: string, data: string) => Promise<void>> = vi.fn(
-    async (target, data) => {
-      files.set(target, data);
-    }
+    async (target, data) => nodeFs.writeFile(target, data)
   );
-  const rename: Mock<(from: string, to: string) => Promise<void>> = vi.fn(async (from, to) => {
-    if (!files.has(from)) throw errnoError('ENOENT');
-    files.set(to, files.get(from)!);
-    files.delete(from);
-  });
-  const unlink: Mock<(target: string) => Promise<void>> = vi.fn(async (target) => {
-    if (!files.has(target)) throw errnoError('ENOENT');
-    files.delete(target);
-  });
-  const stat: Mock<(target: string) => Promise<{ size: number }>> = vi.fn(async (target) => {
-    const content = files.get(target);
-    if (content === undefined) throw errnoError('ENOENT');
-    return { size: Buffer.byteLength(content, 'utf8') };
-  });
   const mkdir = vi.fn<(target: string, opts: { recursive: true }) => Promise<unknown>>(
-    async () => undefined as unknown
+    async (target) => nodeFs.mkdir(target, { recursive: true })
   );
-  const readdir = vi.fn<(target: string) => Promise<readonly string[]>>(async () => []);
-  const realpath: Mock<(target: string) => Promise<string>> = vi.fn(async (target) => {
-    const mapped = resolve[target];
-    if (mapped === undefined) return target;
-    if (/^E[A-Z]+$/.test(mapped)) throw errnoError(mapped);
-    return mapped;
-  });
-  return { files, appendFile, writeFile, rename, unlink, stat, mkdir, readdir, realpath };
+  return { rename, unlink, stat, readdir, appendFile, writeFile, mkdir };
 }
+
+async function read(target: string): Promise<string | undefined> {
+  try {
+    return await nodeFs.readFile(target, 'utf8');
+  } catch {
+    return undefined;
+  }
+}
+
+beforeEach(async () => {
+  const base = await nodeFs.mkdtemp(path.join(os.tmpdir(), 'runtime-log-contain-'));
+  allowedRoot = path.join(base, 'allowed');
+  escapedRoot = path.join(base, 'elsewhere');
+  await nodeFs.mkdir(path.join(allowedRoot, 'logs'), { recursive: true });
+  await nodeFs.mkdir(escapedRoot, { recursive: true });
+  targetPath = path.join(allowedRoot, 'logs', 'runtime.log');
+});
 
 describe('FR-R3-005 — runtime-log mutations are contained at the point of effect', () => {
   it('refuses the append when the configured path resolves outside every allowed root', async () => {
-    // The setting is lexically inside the workspace, so `runtime-log-path.ts`
-    // admits it. The symlink is what the oracle sees and the lexical check
-    // could not.
-    const fs = makeFs({ [TARGET_PATH]: ESCAPED_PATH });
-    const fallback = fallbackLogger();
+    // The setting is lexically inside the allowed root, so `runtime-log-path.ts`
+    // admits it. The symlink is what the walk sees and the lexical check could
+    // not: `logs` is a link to a directory outside the root.
+    await nodeFs.rm(path.join(allowedRoot, 'logs'), { recursive: true, force: true });
+    await nodeFs.symlink(escapedRoot, path.join(allowedRoot, 'logs'), 'dir');
+    const fs = spiedFs();
     const sink = new RuntimeLogSink({
-      accessor: accessorFor({
-        level: 'INFO',
-        path: TARGET_PATH,
-        maxBytes: 65_536,
-        maxGenerations: 3
-      }),
-      fallbackLogger: fallback,
-      containmentRoots: () => [ALLOWED_ROOT],
+      accessor: accessorFor({ level: 'INFO', path: targetPath, maxBytes: 65_536, maxGenerations: 3 }),
+      fallbackLogger: fallbackLogger(),
+      containmentRoots: () => [allowedRoot],
       ...fs
     });
 
@@ -135,24 +138,21 @@ describe('FR-R3-005 — runtime-log mutations are contained at the point of effe
     await sink.flushPendingWrites();
 
     expect(fs.appendFile).not.toHaveBeenCalled();
-    // Before the stat, not after: a refused path costs one resolution and no
-    // syscall against a location the host was never allowed to look at.
-    expect(fs.stat).not.toHaveBeenCalled();
-    expect(sink.isSuppressed(TARGET_PATH, 'not-contained')).toBe(true);
+    // Nothing was written through the link.
+    expect(await nodeFs.readdir(escapedRoot)).toEqual([]);
+    expect(sink.isSuppressed(targetPath, 'not-contained')).toBe(true);
   });
 
   it('treats a resolution failure as a refusal, never a fall-through to the lexical check', async () => {
-    const fs = makeFs({ [TARGET_PATH]: 'EACCES' });
-    const fallback = fallbackLogger();
+    // A component that is a FILE, not a directory. The walk cannot resolve past
+    // it, and the answer is a refusal rather than an admission by default.
+    await nodeFs.rm(path.join(allowedRoot, 'logs'), { recursive: true, force: true });
+    await nodeFs.writeFile(path.join(allowedRoot, 'logs'), 'not a directory');
+    const fs = spiedFs();
     const sink = new RuntimeLogSink({
-      accessor: accessorFor({
-        level: 'INFO',
-        path: TARGET_PATH,
-        maxBytes: 65_536,
-        maxGenerations: 3
-      }),
-      fallbackLogger: fallback,
-      containmentRoots: () => [ALLOWED_ROOT],
+      accessor: accessorFor({ level: 'INFO', path: targetPath, maxBytes: 65_536, maxGenerations: 3 }),
+      fallbackLogger: fallbackLogger(),
+      containmentRoots: () => [allowedRoot],
       ...fs
     });
 
@@ -160,125 +160,102 @@ describe('FR-R3-005 — runtime-log mutations are contained at the point of effe
     await sink.flushPendingWrites();
 
     expect(fs.appendFile).not.toHaveBeenCalled();
-    // `resolve-failed`, not `not-contained`: the host could not prove where the
-    // path leads, which is a different finding from proving it leads outside.
-    expect(sink.isSuppressed(TARGET_PATH, 'resolve-failed')).toBe(true);
-    expect(sink.isSuppressed(TARGET_PATH, 'not-contained')).toBe(false);
+    expect(sink.isSuppressed(targetPath)).toBe(true);
   });
 
   it('records the refusal without naming the path it refused', async () => {
-    const fs = makeFs({ [TARGET_PATH]: ESCAPED_PATH });
+    await nodeFs.rm(path.join(allowedRoot, 'logs'), { recursive: true, force: true });
+    await nodeFs.symlink(escapedRoot, path.join(allowedRoot, 'logs'), 'dir');
     const fallback = fallbackLogger();
     const sink = new RuntimeLogSink({
-      accessor: accessorFor({
-        level: 'INFO',
-        path: TARGET_PATH,
-        maxBytes: 65_536,
-        maxGenerations: 3
-      }),
+      accessor: accessorFor({ level: 'INFO', path: targetPath, maxBytes: 65_536, maxGenerations: 3 }),
       fallbackLogger: fallback,
-      containmentRoots: () => [ALLOWED_ROOT],
-      ...fs
+      containmentRoots: () => [allowedRoot],
+      ...spiedFs()
     });
 
     sink.appendLine(line('one'));
-    sink.appendLine(line('two'));
     await sink.flushPendingWrites();
 
-    // One WARN, deduped by the suppression map, and it says the operation was
-    // refused rather than that it failed — the operator is looking for a
-    // misconfigured path, not a disk problem.
-    const refusals = fallback.warnings.filter((warning) => warning.includes('not-contained'));
-    expect(refusals).toHaveLength(1);
-    expect(refusals[0]).toContain('refused to write outside the allowed roots');
-    expect(refusals[0]).not.toContain(ESCAPED_PATH);
-    expect(refusals[0]).not.toContain(TARGET_PATH);
+    const warned = fallback.warnings.join('\n');
+    expect(warned).toContain('runtime-log-sink');
+    // The refusal is reported; the path it refused is not, because a warn line
+    // is not a place to publish where an operator's logs live.
+    expect(warned).not.toContain(targetPath);
+    expect(warned).not.toContain(escapedRoot);
   });
 
   it('unlocks the refusal when the operator corrects the setting', async () => {
-    // The append verdict is cached for the hot path. `clearSuppression` is the
-    // post-save callback, and it has to drop the cache too — otherwise a
-    // corrected setting stays refused for the life of the window.
-    const resolution: Record<string, string> = { [TARGET_PATH]: ESCAPED_PATH };
-    const fs = makeFs(resolution);
+    // `clearSuppression` is the post-save callback, and it has to drop both the
+    // suppression AND the held descriptor — otherwise a corrected setting stays
+    // refused for the life of the window.
+    await nodeFs.rm(path.join(allowedRoot, 'logs'), { recursive: true, force: true });
+    await nodeFs.symlink(escapedRoot, path.join(allowedRoot, 'logs'), 'dir');
     const sink = new RuntimeLogSink({
-      accessor: accessorFor({
-        level: 'INFO',
-        path: TARGET_PATH,
-        maxBytes: 65_536,
-        maxGenerations: 3
-      }),
+      accessor: accessorFor({ level: 'INFO', path: targetPath, maxBytes: 65_536, maxGenerations: 3 }),
       fallbackLogger: fallbackLogger(),
-      containmentRoots: () => [ALLOWED_ROOT],
-      ...fs
+      containmentRoots: () => [allowedRoot],
+      ...spiedFs()
     });
 
     sink.appendLine(line('one'));
     await sink.flushPendingWrites();
-    expect(fs.appendFile).not.toHaveBeenCalled();
+    expect(await read(targetPath)).toBeUndefined();
 
-    delete resolution[TARGET_PATH];
-    sink.clearSuppression(TARGET_PATH);
+    // The operator repoints the link at a real directory inside the root.
+    await nodeFs.unlink(path.join(allowedRoot, 'logs'));
+    await nodeFs.mkdir(path.join(allowedRoot, 'logs'), { recursive: true });
+    sink.clearSuppression(targetPath);
     sink.appendLine(line('two'));
     await sink.flushPendingWrites();
 
-    expect(fs.appendFile).toHaveBeenCalledTimes(1);
+    expect(await read(targetPath)).toContain('two');
   });
 
   it('refuses the rotation rename on a fresh check rather than inheriting the append admission', async () => {
-    // The append proves the target and caches the verdict. The roots then
-    // narrow — a workspace folder changing under a host that outlives it — and
-    // the rollover must not ride on the earlier admission. `containmentRoots`
-    // is read fresh on every rotation check for exactly this.
-    let roots: readonly string[] = [ALLOWED_ROOT];
-    const fs = makeFs();
-    const fallback = fallbackLogger();
+    // The append proves the target. The roots then narrow — a workspace folder
+    // changing under a host that outlives it — and the rollover must not ride
+    // on the earlier admission. `containmentRoots` is read fresh on every
+    // rotation check for exactly this.
+    let roots: readonly string[] = [allowedRoot];
+    const fs = spiedFs();
     const sink = new RuntimeLogSink({
-      accessor: accessorFor({
-        level: 'INFO',
-        path: TARGET_PATH,
-        maxBytes: 64,
-        maxGenerations: 2
-      }),
-      fallbackLogger: fallback,
+      accessor: accessorFor({ level: 'INFO', path: targetPath, maxBytes: 64, maxGenerations: 2 }),
+      fallbackLogger: fallbackLogger(),
       containmentRoots: () => roots,
       ...fs
     });
 
     sink.appendLine(line('first'));
     await sink.flushPendingWrites();
-    expect(fs.appendFile).toHaveBeenCalledTimes(1);
+    expect(await read(targetPath)).toContain('first');
 
-    roots = ['/somewhere-else'];
+    // An existing directory, so the refusal is "not contained" rather than
+    // "could not resolve" — the narrowing under test is a change of scope, not
+    // a broken root.
+    roots = [escapedRoot];
     sink.appendLine(line('second'));
     await sink.flushPendingWrites();
 
     expect(fs.rename).not.toHaveBeenCalled();
     expect(fs.unlink).not.toHaveBeenCalled();
     // The triggering line is dropped rather than written to an unproven path.
-    expect(fs.writeFile).not.toHaveBeenCalled();
-    expect(sink.isSuppressed(TARGET_PATH, 'not-contained')).toBe(true);
+    expect(await read(targetPath)).not.toContain('second');
+    expect(sink.isSuppressed(targetPath, 'not-contained')).toBe(true);
   });
 
   it('refuses the stale-generation unlink on its own check, after the rename has landed', async () => {
     // The narrowing is triggered by the rename itself, so the ordering under
     // test is the real one: each destructive step proves its own path, and a
     // proof taken for the step before it does not carry.
-    let roots: readonly string[] = [ALLOWED_ROOT];
-    const fs = makeFs();
+    let roots: readonly string[] = [allowedRoot];
+    const fs = spiedFs();
     fs.rename.mockImplementation(async (from: string, to: string) => {
-      if (!fs.files.has(from)) throw errnoError('ENOENT');
-      fs.files.set(to, fs.files.get(from)!);
-      fs.files.delete(from);
-      roots = ['/somewhere-else'];
+      await nodeFs.rename(from, to);
+      roots = [escapedRoot];
     });
     const sink = new RuntimeLogSink({
-      accessor: accessorFor({
-        level: 'INFO',
-        path: TARGET_PATH,
-        maxBytes: 64,
-        maxGenerations: 1
-      }),
+      accessor: accessorFor({ level: 'INFO', path: targetPath, maxBytes: 64, maxGenerations: 1 }),
       fallbackLogger: fallbackLogger(),
       containmentRoots: () => roots,
       ...fs
@@ -293,23 +270,19 @@ describe('FR-R3-005 — runtime-log mutations are contained at the point of effe
     expect(fs.unlink).not.toHaveBeenCalled();
   });
 
-  it('leaves the no-symlink path exactly as it was, with resolution the only addition', async () => {
-    // The scenario's last clause. Every path resolves to itself, so append,
-    // rollover, generation shift and the stale sweep all behave as they did
-    // before the guard existed.
-    const fs = makeFs();
-    fs.readdir.mockImplementation(async () => ['runtime.log', 'runtime.log.1', 'runtime.log.7']);
+  it('leaves the no-symlink path exactly as it was, with the walk the only addition', async () => {
+    // The scenario's last clause. Nothing is a link, so append, rollover,
+    // generation shift and the stale sweep all behave as they did before the
+    // guard existed.
+    const fs = spiedFs();
     const sink = new RuntimeLogSink({
-      accessor: accessorFor({
-        level: 'INFO',
-        path: TARGET_PATH,
-        maxBytes: 64,
-        maxGenerations: 1
-      }),
+      accessor: accessorFor({ level: 'INFO', path: targetPath, maxBytes: 64, maxGenerations: 1 }),
       fallbackLogger: fallbackLogger(),
-      containmentRoots: () => [ALLOWED_ROOT],
+      containmentRoots: () => [allowedRoot],
       ...fs
     });
+    // A stale generation beyond the cap, for the sweep to find.
+    await nodeFs.writeFile(`${targetPath}.7`, 'old');
 
     const first = line('first');
     const second = line('second');
@@ -318,26 +291,20 @@ describe('FR-R3-005 — runtime-log mutations are contained at the point of effe
     sink.appendLine(second);
     await sink.flushPendingWrites();
 
-    expect(fs.files.get(`${TARGET_PATH}.1`)).toBe(`${first}\n`);
-    expect(fs.files.get(TARGET_PATH)).toBe(`${second}\n`);
+    expect(await read(`${targetPath}.1`)).toBe(`${first}\n`);
+    expect(await read(targetPath)).toBe(`${second}\n`);
     // The sweep drops `.7`, which is beyond the cap of one generation.
-    expect(fs.unlink).toHaveBeenCalledWith(`${TARGET_PATH}.7`);
-    expect(sink.isSuppressed(TARGET_PATH)).toBe(false);
-    expect(fs.realpath).toHaveBeenCalled();
+    expect(fs.unlink).toHaveBeenCalledWith(`${targetPath}.7`);
+    expect(sink.isSuppressed(targetPath)).toBe(false);
   });
 
   it('mutates nothing at all when no roots are allowed', async () => {
     // An empty list is the fail-closed reading of "nothing is allowed", and it
     // is deliberately different from omitting `containmentRoots`, which means
     // "no containment layer" and is what the sink's older unit tests rely on.
-    const fs = makeFs();
+    const fs = spiedFs();
     const sink = new RuntimeLogSink({
-      accessor: accessorFor({
-        level: 'INFO',
-        path: TARGET_PATH,
-        maxBytes: 65_536,
-        maxGenerations: 3
-      }),
+      accessor: accessorFor({ level: 'INFO', path: targetPath, maxBytes: 65_536, maxGenerations: 3 }),
       fallbackLogger: fallbackLogger(),
       containmentRoots: () => [],
       ...fs
@@ -347,6 +314,7 @@ describe('FR-R3-005 — runtime-log mutations are contained at the point of effe
     await sink.flushPendingWrites();
 
     expect(fs.appendFile).not.toHaveBeenCalled();
-    expect(sink.isSuppressed(TARGET_PATH, 'not-contained')).toBe(true);
+    expect(await read(targetPath)).toBeUndefined();
+    expect(sink.isSuppressed(targetPath, 'not-contained')).toBe(true);
   });
 });

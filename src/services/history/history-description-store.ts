@@ -23,7 +23,7 @@ import * as path from 'node:path';
 import { promises as fs } from 'node:fs';
 import type { SanitizedLogger } from '../../lib/logger';
 import { historyErrorCode } from './error-code';
-import { openWithinRootByPath } from '../../lib/safe-open';
+import { openWithinRoot, openWithinRootByPath } from '../../lib/safe-open';
 import {
   resolveContainedForWrite,
   resolveContainedLink,
@@ -57,6 +57,18 @@ const SAFE_RUN_ID = /^[A-Za-z0-9._-]{1,128}$/;
  */
 export function historyDescriptionRef(runId: string): string | null {
   return SAFE_RUN_ID.test(runId) ? `.schegent/history/${runId}.txt` : null;
+}
+
+/**
+ * FR-R3-080 (T1063) — the same reference, as the segments the checked walk
+ * walks.
+ *
+ * Derived from the ref rather than composed independently, so the path an
+ * operator is shown and the one actually opened cannot diverge — the same rule
+ * `raw-transcript-writer.ts` keeps between `filePathFor` and `segmentsFor`.
+ */
+function refSegments(ref: string): readonly string[] {
+  return ref.split('/');
 }
 
 export interface HistoryDescriptionStoreDeps {
@@ -99,14 +111,58 @@ export class HistoryDescriptionStore {
       this.logger.warn(`history-description: refusing to address run id of unexpected shape`);
       return null;
     }
-    const absolute = await this.containedPathFor(ref, 'write');
-    if (absolute === null) return null;
+    // FR-R3-080 (T1063) — one open that walks and refuses, replacing a cached
+    // containment verdict followed by `fs.mkdir` + `fs.writeFile` on the same
+    // composed pathname.
+    //
+    // `SEC-06`. The verdict was true when taken and the path was re-resolved by
+    // name afterwards, so a workspace writer that swapped a component in between
+    // redirected the write. What travels here is operator-authored description
+    // text, which the file mode below already treats as sensitive.
+    //
+    // The reference is still validated first — `historyDescriptionRef` refuses a
+    // run id of unexpected shape BEFORE it becomes a path, which is a different
+    // and earlier check than containment, and neither subsumes the other.
+    //
+    // What is NOT kept on this path is the old `containedPathFor(ref, 'write')`
+    // verdict. It was the first half of the check-then-act pair, and leaving it
+    // in front of the walk would make it the deciding check again: it refuses
+    // the same arrangements the walk refuses, one `realpath` earlier and one
+    // resolution removed from the write. The two properties it enforced are both
+    // still enforced — "under `.schegent/history/`" is structural here, because
+    // the segments are derived from a ref this module minted from a
+    // `SAFE_RUN_ID`, and "inside the workspace" is what the walk answers, at the
+    // point of effect instead of before it. The READ and REMOVE paths keep it,
+    // because their refs arrive from persisted state an operator can edit.
     try {
-      await fs.mkdir(path.dirname(absolute), { recursive: true, mode: 0o700 });
       // 0600 rather than the default: the text is operator-authored input to a
       // run and sits beside the session evidence, which is already 0600. A
       // description can name internal systems, ticket numbers, or hostnames.
-      await fs.writeFile(absolute, text, { encoding: 'utf8', mode: 0o600 });
+      const opened = await openWithinRoot(this.workspaceRoot, refSegments(ref), {
+        flags: 'w',
+        createDirs: true,
+        dirMode: 0o700,
+        fileMode: 0o600
+      });
+      if (opened.outcome === 'refused') {
+        // The refusal class AND the errno when there is one. `io-failed` alone
+        // tells an operator nothing they can act on, and the errno is the half
+        // that distinguishes "the parent is a file" from "the disk is gone".
+        // Never the caught message: Node's quotes the absolute path it tried,
+        // and FR-047 rules that out of a log line as firmly as out of a rendered
+        // one — `ref` names the same file relative to a root the reader knows.
+        const detail =
+          opened.errno === undefined || opened.errno === 'none'
+            ? opened.reason
+            : `${opened.reason} ${opened.errno}`;
+        this.logger.warn(`history-description: write refused (${detail}) ref=${ref}`);
+        return null;
+      }
+      try {
+        await opened.handle.write(text, null, 'utf8');
+      } finally {
+        await opened.handle.close().catch(() => undefined);
+      }
       return ref;
     } catch (err) {
       // The code and the workspace-relative reference, never the caught
