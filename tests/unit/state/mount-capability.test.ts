@@ -131,6 +131,15 @@ describe('mount capability classification (FR-R3-083)', () => {
     expect(verdict.errno).toBe('ENOSPC');
   });
 
+  it('bounds any errno before it reaches a verdict', () => {
+    // The funnel every verdict's errno passes through, including the probe's
+    // injection seam. Bounding it at one producer left the other channel unguarded
+    // while a test asserted the guarantee against the covered one.
+    const verdict = classifyMountCapability(failed('/Users/someone/private/path'), null);
+    expect(verdict.errno).toBe('unknown');
+    expect(verdict.errno).not.toContain('/');
+  });
+
   it('keeps the four capabilities mutually distinguishable', () => {
     // FR-008/FR-010, SC-004. `undetermined` is a third answer and not a shading of
     // either neighbour; collapsing it into one of them is the silent downgrade

@@ -123,6 +123,26 @@ export interface MountCapabilityVerdict {
 const UNSUPPORTED_ERRNOS: ReadonlySet<string> = new Set(['ENOTSUP', 'EOPNOTSUPP', 'ENOSYS']);
 
 /**
+ * Bound an errno before it can reach a verdict.
+ *
+ * HERE, at the classification funnel, and not at any one producer. Every
+ * `MountCapabilityVerdict.errno` passes through this module, and it is interpolated
+ * into an operator-visible log line — while `error.code` is `unknown` at the type
+ * level and `safe-open`'s own extractor returns any string verbatim. Bounding it at
+ * one producer left the other channel and the injection seam unguarded, with a test
+ * asserting the guarantee against the path that happened to be covered.
+ *
+ * Node errnos are short uppercase constants; anything else is not one.
+ */
+const MAX_ERRNO_LENGTH = 32;
+const ERRNO_SHAPE = /^[A-Z][A-Z0-9_]*$/;
+
+function boundErrno(errno: string | undefined): string | undefined {
+  if (errno === undefined) return undefined;
+  return errno.length <= MAX_ERRNO_LENGTH && ERRNO_SHAPE.test(errno) ? errno : 'unknown';
+}
+
+/**
  * The containment layer's own refusal, surfaced by the probe as a pseudo-errno.
  *
  * Not a real `errno`, and named so it cannot be mistaken for one: `safe-open`
@@ -132,7 +152,8 @@ const UNSUPPORTED_ERRNOS: ReadonlySet<string> = new Set(['ENOTSUP', 'EOPNOTSUPP'
  */
 export const CONTAINMENT_REFUSED_ERRNO = 'ECONTAINMENT';
 
-function fromFailure(errno: string | undefined): MountCapabilityVerdict {
+function fromFailure(raw: string | undefined): MountCapabilityVerdict {
+  const errno = boundErrno(raw);
   if (errno === 'EROFS') {
     return { capability: 'read-only', cause: 'read-only-workspace', errno };
   }

@@ -154,6 +154,20 @@ describe('mount capability probe (FR-R3-083)', () => {
     expect(verdict.capability).toBe('undetermined');
   });
 
+  it('bounds the errno on the PRODUCTION channel too, not just the rejection one', async () => {
+    // The finding this closes: the bound guarded only errors caught by `withBound`,
+    // while `realExclusiveCreate` returned `safe-open`'s own errno verbatim -- and
+    // that is the channel carrying a real filesystem's answer into an
+    // operator-visible log line. A test asserting the guarantee exercised the other
+    // path, so the guarantee read as held while the live path was unguarded.
+    const verdict = await probeMountCapability({
+      workspaceRoot,
+      exclusiveCreate: () =>
+        Promise.resolve({ outcome: 'io-failed', errno: '/Users/someone/private/path' })
+    });
+    expect(verdict.errno).not.toContain('/');
+  });
+
   it('preserves a real errno, so the bound above is not just discarding data', async () => {
     const verdict = await probeMountCapability({
       workspaceRoot,

@@ -118,7 +118,7 @@ export interface MountProbeDeps {
 }
 
 /**
- * Extract an errno, bounded.
+ * Extract an errno.
  *
  * There are four other `errnoOf`-shaped helpers in `src/`, and they are NOT
  * interchangeable -- an earlier draft of this comment called them byte-identical
@@ -138,24 +138,15 @@ export interface MountProbeDeps {
  * that happen to share a name, and consolidating them is a change with its own
  * design question, not a tidy-up.
  *
- * WHY BOUNDED AT ALL. Node errnos are short uppercase constants (`ENOTSUP`,
- * `EROFS`), but `error.code` is `unknown` at the type level and this value is
- * interpolated into an operator-visible log line — nothing in the types stops a
- * rejected promise carrying a `code` that is a sentence, a path, or a megabyte.
- * Cheap, and it keeps the "bounded reason code" discipline the rest of this
- * codebase's refusals hold to.
+ * The BOUND lives in `mount-capability.ts`, at the classification funnel every
+ * verdict's errno passes through. Bounding it here instead left the other producer
+ * and the injection seam unguarded.
  */
-const MAX_ERRNO_LENGTH = 32;
-const ERRNO_SHAPE = /^[A-Z][A-Z0-9_]*$/;
-
-function boundErrno(code: string): string {
-  return code.length <= MAX_ERRNO_LENGTH && ERRNO_SHAPE.test(code) ? code : 'unknown';
-}
 
 function errnoOf(error: unknown): string {
   if (error && typeof error === 'object' && 'code' in error) {
     const code = (error as { code?: unknown }).code;
-    if (typeof code === 'string') return boundErrno(code);
+    if (typeof code === 'string') return code;
   }
   return 'unknown';
 }
@@ -190,12 +181,10 @@ async function realExclusiveCreate(
   // EEXIST is the answer the second attempt wants, so it is a REFUSAL and not an
   // I/O failure. Everything else the walk could not complete is the latter.
   if (result.errno === 'EEXIST') return { outcome: 'refused', errno: 'EEXIST' };
-  // BOUNDED here too. `safe-open`'s own `errnoOf` returns any string `code`,
-  // unbounded and unshaped, and this value reaches an operator-visible log line
-  // through the verdict. Bounding only the rejection channel left the production
-  // path — which is the one that actually carries a filesystem's answer — unguarded,
-  // while a test asserting the guarantee exercised the other one.
-  return { outcome: 'io-failed', errno: boundErrno(result.errno) };
+  // Bounded at the classification funnel in `mount-capability.ts`, which every
+  // verdict's errno passes through — including the injection seam's, which a bound
+  // here would still have missed.
+  return { outcome: 'io-failed', errno: result.errno };
 }
 
 /**
