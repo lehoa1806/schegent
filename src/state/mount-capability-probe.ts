@@ -140,7 +140,11 @@ function withBound(
       settled = true;
       resolve({ outcome: 'timed-out' });
     }, timeoutMs);
-    timer.unref?.();
+    // `unref()`, not `unref?.()`. The optional call is an unnecessary condition on a
+    // non-nullish value and the lint baseline counts it; FR-R3-054 removed one of
+    // these for the same reason. The timer must not hold the event loop open — a
+    // probe outliving activation is the opposite of bounded.
+    timer.unref();
     attempt.then(
       (observation) => {
         if (settled) return;
