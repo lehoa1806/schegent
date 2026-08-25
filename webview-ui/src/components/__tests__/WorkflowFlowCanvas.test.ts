@@ -108,7 +108,7 @@ const mount = (options: MountOptions = {}) => {
 /** The node ids of the cards, in the order they appear in the document. */
 const cardOrder = (container: Element): string[] =>
   Array.from(container.querySelectorAll('[data-testid^="workflow-node-title-"]')).map((element) =>
-    (element.textContent ?? '').trim()
+    element.textContent.trim()
   );
 
 describe('the canvas draws the graph', () => {
@@ -127,8 +127,8 @@ describe('the canvas draws the graph', () => {
       nodes: [{ nodeId: 'draft', pipelineId: 'authoring', label: 'Write the spec' }, node('ship', 'release')]
     });
 
-    expect(getByTestId('workflow-node-title-0').textContent?.trim()).toBe('Write the spec');
-    expect(getByTestId('workflow-node-title-1').textContent?.trim()).toBe('ship');
+    expect(getByTestId('workflow-node-title-0').textContent.trim()).toBe('Write the spec');
+    expect(getByTestId('workflow-node-title-1').textContent.trim()).toBe('ship');
   });
 
   it('shows the Pipeline as the body, so two nodes running one Pipeline stay distinct', () => {
@@ -137,8 +137,8 @@ describe('the canvas draws the graph', () => {
       connections: [edge('first', 'second')]
     });
 
-    expect(getByTestId('workflow-node-pipeline-0').textContent?.trim()).toBe('authoring');
-    expect(getByTestId('workflow-node-pipeline-1').textContent?.trim()).toBe('authoring');
+    expect(getByTestId('workflow-node-pipeline-0').textContent.trim()).toBe('authoring');
+    expect(getByTestId('workflow-node-pipeline-1').textContent.trim()).toBe('authoring');
     expect(cardOrder(getByTestId('workflow-canvas'))).toEqual(['first', 'second']);
   });
 
@@ -170,13 +170,13 @@ describe('branch chips read the arm they label', () => {
       ]
     });
 
-    expect(getByTestId('workflow-branch-0').textContent?.trim()).toBe('draft status = completed');
+    expect(getByTestId('workflow-branch-0').textContent.trim()).toBe('draft status = completed');
   });
 
   it('labels the fallback arm as the fallback it is', () => {
     const { getByTestId } = mount({ connections: [edge('draft', 'ship', { isDefault: true })] });
 
-    expect(getByTestId('workflow-branch-0').textContent?.trim()).toBe('Otherwise');
+    expect(getByTestId('workflow-branch-0').textContent.trim()).toBe('Otherwise');
   });
 
   it('gives an unconditional arm a quiet chip rather than no chip at all', () => {
@@ -184,7 +184,7 @@ describe('branch chips read the arm they label', () => {
     // and the inspector is where a condition is added.
     const { getByTestId } = mount();
 
-    expect(getByTestId('workflow-branch-0').textContent?.trim()).toBe('Always');
+    expect(getByTestId('workflow-branch-0').textContent.trim()).toBe('Always');
   });
 
   it('selects the connection when its chip is activated', async () => {
@@ -263,7 +263,7 @@ describe('a node that cannot run still renders (FR-044)', () => {
 
     expect(getByTestId('workflow-node-unknown-pipeline-0')).toBeTruthy();
     // The identifier still shows: that is the defect the operator has to act on.
-    expect(getByTestId('workflow-node-pipeline-0').textContent?.trim()).toBe('deleted-pipeline');
+    expect(getByTestId('workflow-node-pipeline-0').textContent.trim()).toBe('deleted-pipeline');
   });
 
   it('badges every member of a cycle', () => {

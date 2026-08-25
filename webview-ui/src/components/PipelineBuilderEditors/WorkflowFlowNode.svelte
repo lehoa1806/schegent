@@ -16,6 +16,7 @@
   // reaches neither a screen reader nor a monochrome display (FR-044).
   import type { FlowNodeSlot } from './workflow-flow-layout';
   import { nodeTitle, pipelineOf, type WorkflowFlowView } from './workflow-flow-view';
+  import type { WorkflowNode } from '../../lib/snapshot-types';
   import WorkflowRowDefects from './WorkflowRowDefects.svelte';
 
   interface Props {
@@ -26,7 +27,11 @@
   const { view, slot }: Props = $props();
 
   const index = $derived(slot.nodeIndex);
-  const node = $derived(view.nodes[index]);
+  // `noUncheckedIndexedAccess` is off, so an out-of-range index types as a
+  // node while yielding `undefined` at run time. The guards below are real
+  // protection; annotating the truth is what makes them legible to the type
+  // checker (and to `no-unnecessary-condition`) instead of reading as dead.
+  const node = $derived<WorkflowNode | undefined>(view.nodes[index]);
   const defects = $derived(view.nodeDefects[index] ?? []);
   const pipeline = $derived(node ? pipelineOf(view, node) : null);
   const selected = $derived(view.selection?.kind === 'node' && view.selection.index === index);

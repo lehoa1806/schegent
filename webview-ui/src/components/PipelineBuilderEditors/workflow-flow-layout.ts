@@ -128,9 +128,14 @@ function describeCondition(condition: WorkflowCondition): string {
     condition.left.source === 'node-status'
       ? `${condition.left.nodeId} status`
       : `${condition.left.nodeId}.${condition.left.field}`;
-  const symbol = OPERATOR_SYMBOLS[condition.operator] ?? condition.operator;
+  // Typed as possibly absent so the fallback below stays meaningful: a
+  // persisted operator outside the union types as impossible but is not.
+  const symbol: string | undefined = OPERATOR_SYMBOLS[condition.operator];
+  const operatorLabel = symbol ?? condition.operator;
   const right = describeRight(condition);
-  return right === null ? `${operand} ${symbol}` : `${operand} ${symbol} ${right}`;
+  return right === null
+    ? `${operand} ${operatorLabel}`
+    : `${operand} ${operatorLabel} ${right}`;
 }
 
 /** Null when the operator takes no right operand, or none was authored yet. */
