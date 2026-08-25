@@ -333,6 +333,7 @@ import type { ExecutionLease } from './execution-lease';
 import {
   isFencedClaim,
   unfencedCommit,
+  type QueueCommitClaim,
   type RunCommitClaim
 } from './ownership-claim';
 import { createMementoOwnershipFs, type OwnershipFs } from './ownership-fs';
@@ -1523,10 +1524,41 @@ export class WorkspaceStateStore {
    */
   public updateQueue<T>(
     mutate: (current: QueueState) => { readonly queue: QueueState; readonly result: T },
-    queueId: string
+    queueId: string,
+    /**
+     * FR-R3-077 (T1045) — the execution fence this queue mutation is made under.
+     *
+     * **Required**, and delivered as its own change after the Run commit point's
+     * half landed, which is the order `00_escalated_residuals_decision.md` §2
+     * sets. Folding the two into one change is what that record forbids: the Run
+     * path is the one the review measured and the one a stale host reaches
+     * first, and a single change that moved both would have made the smaller
+     * blast radius indistinguishable from the larger.
+     *
+     * The verification happens INSIDE the serialized link that performs the
+     * memento write, for the same reason `setRun`'s does: `Memento` offers no
+     * conditional write, and one link of the chain that already serializes this
+     * key is as close to a transaction as this storage allows — strictly closer
+     * than two.
+     */
+    claim: QueueCommitClaim
   ): Promise<T> {
     let result!: T;
     return this.serialize(KEYS.queue, async () => {
+      if (isFencedClaim(claim)) {
+        const verdict = await this.ownershipRegistry.verify(
+          claim.resource,
+          claim.ownerId,
+          claim.fence
+        );
+        if (verdict.outcome !== 'valid') {
+          throw new QueueMutationRejected(
+            'fence-superseded',
+            `Queue mutation refused: fence ${claim.fence} is no longer the live generation ` +
+              `for ${claim.resource}`
+          );
+        }
+      }
       const current = this.getQueue(queueId);
       const mutation = mutate(current);
       const next = ensureExtendedQueueShape({
@@ -1797,7 +1829,9 @@ export class WorkspaceStateStore {
         queue: { ...queue, requests: [...shifted, nextRequest] },
         result: nextRequest
       };
-    }, queueId);
+    }, queueId,
+      this.runCommitClaim(queueId)
+    );
   }
 
   public async removePendingRequest(taskId: string): Promise<FeatureRequest> {
@@ -1823,7 +1857,9 @@ export class WorkspaceStateStore {
         },
         result: target
       };
-    }, owner.queueId);
+    }, owner.queueId,
+      this.runCommitClaim(owner.queueId)
+    );
   }
 
   public getRequest(taskId: string): FeatureRequest | null {
@@ -1848,7 +1884,9 @@ export class WorkspaceStateStore {
         },
         result: target
       };
-    }, owner.queueId);
+    }, owner.queueId,
+      this.runCommitClaim(owner.queueId)
+    );
   }
 
   public async modifyPendingRequest(
@@ -1886,7 +1924,9 @@ export class WorkspaceStateStore {
         },
         result: nextTarget
       };
-    }, owner.queueId);
+    }, owner.queueId,
+      this.runCommitClaim(owner.queueId)
+    );
   }
 
   // Feature 065 BUG-009 T078 (FR-030) — `position` is interpreted as a
@@ -1942,7 +1982,9 @@ export class WorkspaceStateStore {
         },
         result: byId.get(taskId) ?? target
       };
-    }, owner.queueId);
+    }, owner.queueId,
+      this.runCommitClaim(owner.queueId)
+    );
   }
 
   /**

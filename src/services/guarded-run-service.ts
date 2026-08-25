@@ -110,7 +110,7 @@ export interface GuardedRunServiceDeps {
   readonly controller: Pick<SchegentWorkflowController, 'getCatalog'>;
   readonly logger: SanitizedLogger;
   readonly audit?: Pick<AuditLogWriter, 'append'> | null;
-  readonly store: Pick<WorkspaceStateStore, 'getLock' | 'getQueue' | 'updateQueue'>;
+  readonly store: Pick<WorkspaceStateStore, 'getLock' | 'getQueue' | 'updateQueue' | 'runCommitClaim'>;
   readonly clock?: () => number;
   /** Optional override for tests; production reads the catalog via the controller. */
   readonly catalogProvider?: () => PipelineCatalog;
@@ -255,7 +255,8 @@ export class GuardedRunService {
         },
         result: undefined
       }),
-      queueId
+      queueId,
+      this.deps.store.runCommitClaim(queueId)
     );
     if (this.deps.scheduledStartCoordinator) {
       await this.deps.scheduledStartCoordinator.arm(
@@ -331,7 +332,9 @@ export class GuardedRunService {
           updatedAt: now
         },
         result: undefined
-      }), queueId);
+      }), queueId,
+        this.deps.store.runCommitClaim(queueId)
+      );
       return { outcome: 'applied', lifecycleAfter: 'idle-pending' };
     }
 
@@ -364,7 +367,9 @@ export class GuardedRunService {
           updatedAt: now
         },
         result: undefined
-      }), queueId);
+      }), queueId,
+        this.deps.store.runCommitClaim(queueId)
+      );
       if (coordinator) {
         if (current.scheduledStartAt !== null) {
           await coordinator.change(queueId, requested, source);
@@ -389,7 +394,9 @@ export class GuardedRunService {
         updatedAt: now
       },
       result: undefined
-    }), queueId);
+    }), queueId,
+      this.deps.store.runCommitClaim(queueId)
+    );
     if (wasIdlePending) {
       await this.appendScheduleAudit('idle-pending-exited', {
         queueId,
@@ -514,7 +521,9 @@ export class GuardedRunService {
           updatedAt: now
         },
         result: undefined
-      }), queueId);
+      }), queueId,
+        this.deps.store.runCommitClaim(queueId)
+      );
       if (wasIdlePending) {
         await this.appendScheduleAudit('idle-pending-exited', {
           queueId,
@@ -540,7 +549,9 @@ export class GuardedRunService {
           updatedAt: now
         },
         result: undefined
-      }), queueId);
+      }), queueId,
+        this.deps.store.runCommitClaim(queueId)
+      );
       if (this.deps.scheduledStartCoordinator) {
         await this.deps.scheduledStartCoordinator.arm(
           queueId,
@@ -570,7 +581,9 @@ export class GuardedRunService {
             updatedAt: now
           },
           result: undefined
-        }), queueId);
+        }), queueId,
+          this.deps.store.runCommitClaim(queueId)
+        );
         await this.appendScheduleAudit('idle-pending-entered', {
           queueId,
           scheduledStartAt: null,
@@ -592,7 +605,9 @@ export class GuardedRunService {
           updatedAt: now
         },
         result: undefined
-      }), queueId);
+      }), queueId,
+        this.deps.store.runCommitClaim(queueId)
+      );
       await this.appendScheduleAudit('idle-pending-entered', {
         queueId,
         scheduledStartAt: null,

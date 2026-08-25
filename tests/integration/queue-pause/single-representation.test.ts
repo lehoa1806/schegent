@@ -27,6 +27,7 @@
 // `RunDriver` would spawn a CLI to answer a question the gate already settled.
 
 import { describe, it, expect, beforeEach } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { WorkspaceStateStore, KEYS, type Memento } from '../../../src/state/workspace-state';
 import { QueueManager } from '../../../src/queue/queue-manager';
 import { AutoDrainCoordinator } from '../../../src/services/auto-drain-coordinator';
@@ -289,7 +290,8 @@ describe('FR-R3-011 — one write, so there is nothing left to reconcile', () =>
         },
         result: undefined
       }),
-      DEFAULT_QUEUE_ID
+      DEFAULT_QUEUE_ID,
+      unfencedCommit('test-fixture')
     );
 
     const reopened = await makeHarness(h.memento);

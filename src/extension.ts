@@ -802,7 +802,8 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
         },
         result: undefined
       }),
-      queueId
+      queueId,
+      store.runCommitClaim(queueId)
     );
     await controller.drainQueuedWork(queueId);
   };
@@ -1210,7 +1211,9 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
           ? { ...cur, migrationNotice: 'dismissed', updatedAt: Date.now() }
           : cur,
         result: cur.migrationNotice === 'pending'
-      }), DEFAULT_QUEUE_ID);
+      }), DEFAULT_QUEUE_ID,
+        store.runCommitClaim(DEFAULT_QUEUE_ID)
+      );
       if (!changed) return;
       projector.kick();
     },

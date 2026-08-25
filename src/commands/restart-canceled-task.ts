@@ -90,7 +90,7 @@ export async function runRestartCanceledTask(ctx: {
         },
         result: next
       };
-    }, targetQueueId);
+    }, targetQueueId, ctx.store.runCommitClaim(targetQueueId));
     if (!restarted) return { ok: false, reason: 'illegal-state' };
 
     await ctx.audit.append({

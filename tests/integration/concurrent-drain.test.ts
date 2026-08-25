@@ -20,6 +20,7 @@
 //                  queue promotes as soon as capacity frees.
 
 import { describe, it, expect } from 'vitest';
+import { unfencedCommit } from '../../src/state/ownership-claim';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
 import { QueueManager } from '../../src/queue/queue-manager';
 import { WorkspaceLockManager, type Clock, type Scheduler } from '../../src/state/lock';
@@ -336,7 +337,8 @@ describe('feature 092 (T044, FR-039/FR-040, SC-004) — independent queue lifecy
     await w.queue.enqueue('task on B', { queueId: QUEUE_B });
     await w.store.updateQueue(
       (current) => ({ queue: { ...current, queueLifecycle: 'idle-pending'}, result: undefined }),
-      QUEUE_B
+      QUEUE_B,
+      unfencedCommit('test-fixture')
     );
 
     w.audits.length = 0;

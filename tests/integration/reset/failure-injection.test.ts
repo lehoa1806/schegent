@@ -26,6 +26,7 @@
 // instruction they occur at rather than approximated with timing.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 
 // `vi.hoisted` rather than bare module-level consts: `vi.mock` is hoisted above
 // the imports, and the imports below pull in `vscode` while the consts are still
@@ -322,7 +323,8 @@ describe('FR-R3-006 — a write racing the clear cannot land inside it', () => {
     // ordering has to come from the serialize chain, not from the test.
     const write = store.updateQueue(
       (queue) => ({ queue: { ...queue, paused: true }, result: undefined }),
-      DEFAULT_QUEUE_ID
+      DEFAULT_QUEUE_ID,
+      unfencedCommit('test-fixture')
     );
     const reset = store.reset();
     await Promise.all([write, reset]);
@@ -349,7 +351,8 @@ describe('FR-R3-006 — a write racing the clear cannot land inside it', () => {
     const reset = store.reset();
     const write = store.updateQueue(
       (queue) => ({ queue: { ...queue, paused: true }, result: undefined }),
-      DEFAULT_QUEUE_ID
+      DEFAULT_QUEUE_ID,
+      unfencedCommit('test-fixture')
     );
     await Promise.all([reset, write]);
 
@@ -390,7 +393,8 @@ describe('FR-R3-006 — a write racing the clear cannot land inside it', () => {
     await expect(
       store.updateQueue(
         (queue) => ({ queue: { ...queue, paused: true }, result: undefined }),
-        DEFAULT_QUEUE_ID
+        DEFAULT_QUEUE_ID,
+        unfencedCommit('test-fixture')
       )
     ).resolves.toBeUndefined();
     expect(memento.get(KEYS.queue)).not.toBeUndefined();

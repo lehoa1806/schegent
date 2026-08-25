@@ -410,7 +410,9 @@ export class QueueManager {
         queue: { ...queue, requests, inFlightId: featureId },
         result: requests.find((request) => request.id === featureId)
       };
-    }, ownerQueueId);
+    }, ownerQueueId,
+      this.store.runCommitClaim(ownerQueueId)
+    );
     // Feature 019 — DEBUG instrumentation. `markInFlight` is the
     // effective "dequeue" — a pending task transitions to in-flight.
     // `sizeAfter` reflects the pending count after the transition.
@@ -482,7 +484,8 @@ export class QueueManager {
         },
         result: undefined
       }),
-      this.queueIdForTask(featureId)
+      this.queueIdForTask(featureId),
+      this.store.runCommitClaim(this.queueIdForTask(featureId))
     );
   }
 
@@ -519,7 +522,9 @@ export class QueueManager {
           ? null
           : queue.inFlightId;
       return { queue: { ...queue, requests, inFlightId }, result: true };
-    }, this.queueIdForTask(featureId));
+    }, this.queueIdForTask(featureId),
+      this.store.runCommitClaim(this.queueIdForTask(featureId))
+    );
   }
 
   public async cancel(featureId: string): Promise<boolean> {
@@ -535,7 +540,9 @@ export class QueueManager {
           : r
       );
       return { queue: { ...queue, requests }, result: true };
-    }, this.queueIdForTask(featureId));
+    }, this.queueIdForTask(featureId),
+      this.store.runCommitClaim(this.queueIdForTask(featureId))
+    );
   }
 
   public async remove(featureId: string): Promise<boolean> {
@@ -628,7 +635,8 @@ export class QueueManager {
               },
               result: undefined
             }),
-            resolvedQueueId
+            resolvedQueueId,
+            this.store.runCommitClaim(resolvedQueueId)
           );
           // Note: `scheduled-start-canceled` is emitted by the coordinator's
           // own `cancel()` method (above), not duplicated here. We only emit
@@ -662,7 +670,8 @@ export class QueueManager {
               },
               result: undefined
             }),
-            resolvedQueueId
+            resolvedQueueId,
+            this.store.runCommitClaim(resolvedQueueId)
           );
           if (
             nextLifecycle === 'idle-pending' &&
@@ -725,7 +734,8 @@ export class QueueManager {
             },
             result: undefined
           }),
-          queueId
+          queueId,
+          this.store.runCommitClaim(queueId)
         );
         return { ok: true, queueId };
       } catch (err) {
@@ -770,7 +780,8 @@ export class QueueManager {
             },
             result: undefined
           }),
-          queueId
+          queueId,
+          this.store.runCommitClaim(queueId)
         );
         return { ok: true, queueId };
       } catch (err) {
@@ -1321,7 +1332,8 @@ export class QueueManager {
           },
           result: undefined
         }),
-        entry.id
+        entry.id,
+        this.store.runCommitClaim(entry.id)
       );
     }
     return due.map((entry) => entry.id);
@@ -1368,7 +1380,7 @@ export class QueueManager {
         queue: { ...queue, requests: reordered.map((r, i) => ({ ...r, position: i })) },
         result: { ok: true }
       };
-    }, this.queueIdForTask(featureId));
+    }, this.queueIdForTask(featureId), this.store.runCommitClaim(this.queueIdForTask(featureId)));
   }
 
   public async moveUp(featureId: string): Promise<MutationResult> {
@@ -1505,7 +1517,8 @@ export class QueueManager {
           },
           result: undefined
         }),
-        queueId
+        queueId,
+        this.store.runCommitClaim(queueId)
       );
     }
 
@@ -1676,7 +1689,9 @@ export class QueueManager {
           : { ...queue, requests: filtered.map((r, i) => ({ ...r, position: i })) },
         result: before - filtered.length
       };
-    }, queueId);
+    }, queueId,
+      this.store.runCommitClaim(queueId)
+    );
     if (removed === 0) return { removed: 0 };
     // BUG-001 escape hatch: when the operator clears completed/failed items
     // and no in-flight task remains, also release any lingering pause so a

@@ -21,6 +21,7 @@
 // text; sharing one persisted field would make dismissing either dismiss both.
 
 import { describe, it, expect } from 'vitest';
+import { unfencedCommit } from '../../src/state/ownership-claim';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
 import { QueueManager } from '../../src/queue/queue-manager';
 import { ExecutionLeaseManager } from '../../src/state/execution-lease';
@@ -180,7 +181,8 @@ describe('feature 092 (T046, FR-037, SC-009) — the shared-working-tree notice'
         queue: { ...current, migrationNotice: 'pending' as const },
         result: undefined
       }),
-      DEFAULT_QUEUE_ID
+      DEFAULT_QUEUE_ID,
+      unfencedCommit('test-fixture')
     );
 
     const created = await queue.createQueue('Docs');
@@ -201,7 +203,8 @@ describe('feature 092 (T046, FR-037, SC-009) — the shared-working-tree notice'
         queue: { ...current, migrationNotice: 'dismissed' as const },
         result: undefined
       }),
-      DEFAULT_QUEUE_ID
+      DEFAULT_QUEUE_ID,
+      unfencedCommit('test-fixture')
     );
     expect(store.getQueue(DEFAULT_QUEUE_ID).migrationNotice).toBe('dismissed');
     expect(store.getConcurrencyNotice()).toBe('dismissed');
