@@ -113,6 +113,22 @@ interface RunDirectory {
   readonly mtimeMs: number;
 }
 
+/**
+ * FR-R3-082 (T1096) — the bounds an activation-time sweep runs under.
+ *
+ * 2 s of wall clock, 32 levels, 10,000 entries per directory. The first is the
+ * one that matters for activation: depth and breadth are proxies for size, and
+ * elapsed time is the thing an operator actually experiences.
+ *
+ * Chosen against what a real workspace holds rather than against what a planted
+ * one might: a checkpoint store is one directory per run holding a patch and a
+ * metadata file, so 32 levels and 10,000 entries are both far outside anything
+ * this host writes. A tree that hits either was not written by this host.
+ */
+const WALK_ELAPSED_BUDGET_MS = 2_000;
+const WALK_MAX_DEPTH = 32;
+const WALK_MAX_BREADTH = 10_000;
+
 const EMPTY_RESULT: RunCheckpointRetentionResult = Object.freeze({
   retainedRunCount: 0,
   retainedBytes: 0,
@@ -139,6 +155,14 @@ export class RunCheckpointRetentionService {
   private readonly now: () => number;
   private readonly policy: RunCheckpointRetentionPolicy;
   private sweepTail: Promise<void> = Promise.resolve();
+  /**
+   * FR-R3-082 (T1097) — which caps this sweep has already reported.
+   *
+   * Per sweep, not per process: a workspace that was capped last time deserves
+   * to hear it again this time, because the operator may have acted on it and
+   * the sweep is telling them whether that worked.
+   */
+  private capsReported = new Set<string>();
 
   constructor(private readonly deps: RunCheckpointRetentionDeps) {
     this.checkpointsRoot = path.join(deps.globalStorageRoot, 'checkpoints');
@@ -166,6 +190,8 @@ export class RunCheckpointRetentionService {
   }
 
   private async performSweep(): Promise<RunCheckpointRetentionResult> {
+    // FR-R3-082 (T1097) — per sweep. See the field's note.
+    this.capsReported = new Set<string>();
     try {
       return await this.runSweep();
     } catch (error) {
@@ -332,19 +358,70 @@ export class RunCheckpointRetentionService {
    * measured as an entry rather than traversed into whatever it points at.
    */
   private async measure(target: string): Promise<{ bytes: number; mtimeMs: number }> {
-    const stat = await this.fs.lstat(target);
-    if (!stat.isDirectory()) {
-      return { bytes: stat.size, mtimeMs: stat.mtimeMs };
+    // FR-R3-082 (T1096) — an explicit stack with three bounds and a yield,
+    // replacing unbounded recursion.
+    //
+    // `REL-07`. This walked a `.schegent`-adjacent tree with no bound on breadth,
+    // depth or elapsed time, at activation, over content a cloned workspace can
+    // plant. Recursion also meant a deep enough tree overflowed the stack, which
+    // turns a slow sweep into a thrown one.
+    //
+    // Every bound REPORTS when it is hit (T1097). A sweep that quietly gives up
+    // on a large tree is worse than a slow one: it leaves evidence unreaped while
+    // reporting success, and the caller has no way to tell the two apart. So the
+    // walk degrades — it measures what it reached and says what it did not.
+    const stack: Array<{ path: string; depth: number }> = [{ path: target, depth: 0 }];
+    let bytes = 0;
+    let mtimeMs = 0;
+    let visited = 0;
+    const startedAt = this.now();
+
+    while (stack.length > 0) {
+      if (this.now() - startedAt > WALK_ELAPSED_BUDGET_MS) {
+        this.reportCap('elapsed', { visited, budgetMs: WALK_ELAPSED_BUDGET_MS });
+        break;
+      }
+      const current = stack.pop()!;
+      const stat = await this.fs.lstat(current.path);
+      bytes += stat.size;
+      mtimeMs = Math.max(mtimeMs, stat.mtimeMs);
+      visited += 1;
+      // `lstat`, never `stat`: a symlink reports as not-a-directory and its size
+      // is taken without descending, so a link planted inside a run directory is
+      // measured as an entry rather than traversed into whatever it points at.
+      if (!stat.isDirectory()) continue;
+      if (current.depth >= WALK_MAX_DEPTH) {
+        this.reportCap('depth', { depth: current.depth });
+        continue;
+      }
+      const entries = await this.fs.readdir(current.path, { withFileTypes: true });
+      const admitted = entries.slice(0, WALK_MAX_BREADTH);
+      if (entries.length > WALK_MAX_BREADTH) {
+        this.reportCap('breadth', { entries: entries.length, admitted: admitted.length });
+      }
+      for (const entry of admitted) {
+        stack.push({ path: path.join(current.path, entry.name), depth: current.depth + 1 });
+      }
+      // Yield between directories so a long sweep does not hold the event loop
+      // through the whole of activation.
+      await Promise.resolve();
     }
-    let bytes = stat.size;
-    let mtimeMs = stat.mtimeMs;
-    const entries = await this.fs.readdir(target, { withFileTypes: true });
-    for (const entry of entries) {
-      const child = await this.measure(path.join(target, entry.name));
-      bytes += child.bytes;
-      mtimeMs = Math.max(mtimeMs, child.mtimeMs);
-    }
+
     return { bytes, mtimeMs };
+  }
+
+  /**
+   * FR-R3-082 (T1097) — a cap reached is reported, once per cap per sweep.
+   *
+   * Once, not once per occurrence: a planted tree hits the breadth cap in every
+   * directory, and ten thousand identical warnings is a way of saying nothing.
+   * The counts travel with it, because "the sweep was capped" without a number
+   * is not something an operator can size.
+   */
+  private reportCap(cap: 'elapsed' | 'depth' | 'breadth', context: Record<string, number>): void {
+    if (this.capsReported.has(cap)) return;
+    this.capsReported.add(cap);
+    this.deps.logger.warn(`checkpoint-retention: ${cap} cap reached; sweep is partial`, context);
   }
 
   /**

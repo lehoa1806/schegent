@@ -218,7 +218,12 @@ const UNMIGRATED: readonly string[] = [
   // took both halves that note named: the workspace root threaded through
   // `createDiskOwnershipFs` as the trusted anchor, and the root-creating
   // primitive (`ensureAnchorWithinRoot`) for the store chain itself.
-  'ui/sidebar/audit-tail-coldstart.ts'
+  // `ui/sidebar/audit-tail-coldstart.ts` struck 2026-08-25 (FR-R3-082, T1095) —
+  // in one visit, which is what the item's sequencing asks for: the same change
+  // that put the read through the checked walk also bounded it to the last
+  // 256 KiB (`REL-07`: it read a whole audit log to show a tail, at activation,
+  // over content a cloned workspace can plant). The skip is reported, so a tail
+  // that starts megabytes in cannot pass for a short log.
 ];
 
 /**
