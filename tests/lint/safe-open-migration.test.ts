@@ -163,6 +163,20 @@ const ATOMIC_PUBLISH_RENAME_RESIDUAL: readonly string[] = [
  * stops gating.
  */
 const NOT_A_WORKSPACE_SINK: readonly string[] = [
+  // FR-R3-079 (T1060) — the OUTPUT side was never counted, and the reason it is
+  // still not listed is a measurement rather than an omission. The 2026-08-24
+  // register noted that `services/run-request/local-input-validator.ts` is on the
+  // ledger while its sibling `output-target-validator.ts` is not; re-measured on
+  // 2026-08-25, that validator makes no filesystem call at all — existence is
+  // asked of an injected probe, and the probe (`services/run-output/run-output-probe.ts`)
+  // uses `lstat`, which observes and never opens. Nothing was missed, so nothing
+  // is added; the item's "add it if it is not fully migrated" resolves to the
+  // other arm, and this comment is where that resolution is recorded so the
+  // question is not re-opened from the register alone.
+  //
+  // The output side's real gap was never a raw call. It was that the containment
+  // verdict was LEXICAL and taken once; `services/dispatch-output-guard.ts` is
+  // where that is answered, at the point of effect.
   // The primitive itself.
   'lib/safe-open.ts',
   // Answers "is this contained?" for one-shot operations; the primitive's peer,

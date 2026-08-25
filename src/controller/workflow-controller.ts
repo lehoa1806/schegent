@@ -272,6 +272,8 @@ export class SchegentWorkflowController {
         this.lifecycleAuditor.emitOptionalPhaseFailureContinued(run, payload),
       emitRunSnapshotDeclined: (run, payload) =>
         this.lifecycleAuditor.emitRunSnapshotDeclined(run, payload),
+      emitOutputTargetRefusedAtDispatch: (run, payload) =>
+        this.lifecycleAuditor.emitOutputTargetRefusedAtDispatch(run, payload),
       onRunTerminal: deps.onRunTerminal,
       terminalTransitions: deps.terminalTransitions,
       checkpoints: deps.checkpoints,

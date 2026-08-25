@@ -516,13 +516,14 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // raising. Set to exactly what the file measures.
   // FR-R3-075 (feature 152) — 993 → 995 for the optional maxDurationMs on the
   // controller options and its one-line doc. Set to what the file measures.
-  // FR-R3-077 (feature 153) — 995 → 1005. Nine lines: the store learns its
+  // FR-R3-077 / FR-R3-079 (feature 153) — 995 → 1007. Eleven lines: the store learns its
   // claim source where the lease manager is resolved (six-line note included),
-  // and the driver dep that carries the read-side decline into evidence.
+  // and the two driver deps that carry the read-side decline and the
+  // dispatch-time output refusal into evidence.
   // Extraction was measured and declined: `executionLease` is a local of this
   // constructor, so a helper module would hide a one-line binding behind an
   // import and a call site — the trade the entries above decline by name.
-  { path: 'src/controller/workflow-controller.ts', maxLines: 1_005 },
+  { path: 'src/controller/workflow-controller.ts', maxLines: 1_007 },
   // P4 domain-validator extraction ratchet: 1,200 → 775. The registry owns
   // command coverage; phase-log and metrics validators own shape rules.
   // Feature 088 (T032) — 775 → 776 for the two connected-run commands. Both

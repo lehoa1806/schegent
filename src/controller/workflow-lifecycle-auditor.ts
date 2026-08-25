@@ -7,6 +7,7 @@ import type {
 } from './phase-control-service';
 import type {
   OptionalPhaseFailureContinuedPayload,
+  OutputTargetRefusedAtDispatchPayload,
   RunSnapshotDeclinedPayload
 } from '../contracts/audit-events';
 
@@ -134,6 +135,28 @@ export class WorkflowLifecycleAuditor {
       });
     } catch (err) {
       this.logger.warn(`run-snapshot-declined audit append failed: ${(err as Error).message}`);
+    }
+  }
+
+  /** FR-R3-079 (T1058) — the dispatch refusal, as evidence an operator can read. */
+  public async emitOutputTargetRefusedAtDispatch(
+    run: WorkflowRun,
+    payload: OutputTargetRefusedAtDispatchPayload
+  ): Promise<void> {
+    if (!this.writer) return;
+    try {
+      await this.writer.append({
+        runId: run.id,
+        phase: run.currentPhase,
+        iteration: run.currentIteration,
+        eventType: 'output-target-refused-at-dispatch',
+        outcome: 'failure',
+        payload: { ...payload }
+      });
+    } catch (err) {
+      this.logger.warn(
+        `output-target-refused audit append failed: ${(err as Error).message}`
+      );
     }
   }
 

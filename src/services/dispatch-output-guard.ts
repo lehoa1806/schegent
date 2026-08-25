@@ -1,0 +1,100 @@
+// FR-R3-079 (T1056) — re-walk every declared output target at dispatch.
+//
+// `SEC-04` of the 2026-08-24 register, and the one row of it that reached
+// neither an item nor a written deferral. The shape: an operator names an output
+// inside the workspace, the host validates it LEXICALLY (`path.resolve` plus
+// `path.relative`, no `realpath`), the operator confirms, the target is frozen
+// into the plan — and nothing checks it again. The CLI then writes it. For the
+// enabled Claude and Agy runners that CLI is uncontained and runs under the
+// operator's full local authority, so a parent component swapped for a symlink
+// after the confirmation writes an "inside the workspace" file outside it.
+//
+// The window is the whole life of the request: validation happens when the
+// operator composes it, and the write happens when the child runs. This module
+// closes the host's half of that window by re-judging immediately before the
+// frozen plan reaches the runner.
+//
+// WHAT IT DOES NOT CLOSE, stated because the alternative is implying otherwise:
+// the child still writes later. Between this walk and the child's `open` there
+// is a residual interval that no host-side check can remove — only the sandbox
+// can, and only for the runner that has one. That asymmetry is `FR-R3-032`'s and
+// the operations record points at it rather than restating it.
+//
+// The walk CREATES NOTHING. An output that does not exist yet must not be
+// brought into existence by its own check, so only the parent chain is walked.
+
+import * as path from 'node:path';
+import type { FrozenOutputRequest } from '../contracts/run-request';
+import { segmentsUnderRoot, walkDirectoriesWithinRoot } from '../lib/safe-open';
+import type { SafeOpenRefusal } from '../lib/safe-open';
+
+export type DispatchOutputVerdict =
+  | { readonly outcome: 'contained' }
+  | {
+      readonly outcome: 'refused';
+      readonly portId: string;
+      readonly reason: SafeOpenRefusal;
+    };
+
+const CONTAINED: DispatchOutputVerdict = { outcome: 'contained' };
+
+/**
+ * FR-R3-079 (T1057) — the Run-level failure a refused target produces.
+ *
+ * A typed error rather than a returned outcome because the dispatch seam it is
+ * raised from returns a phase output, and there is no phase output to return: the
+ * runner was never called. The driver's existing failure handling turns this into
+ * a failed Run with the message below, which names the port and the refusal
+ * class — never the path, which does not belong in the record.
+ */
+export class OutputTargetRefusedAtDispatch extends Error {
+  public readonly portId: string;
+  public readonly reason: SafeOpenRefusal;
+
+  constructor(portId: string, reason: SafeOpenRefusal) {
+    super(`output target refused at dispatch: port ${portId} (${reason})`);
+    this.name = 'OutputTargetRefusedAtDispatch';
+    this.portId = portId;
+    this.reason = reason;
+  }
+}
+
+/**
+ * The one output-port type whose target reaches beyond the workspace by design.
+ *
+ * Its externality is the operator's decision and it was already taken, at
+ * request time, behind its own confirmation. Turning that deliberate path into a
+ * refusal here would be this item breaking a feature rather than closing a
+ * window — `FR-R3-079`'s acceptance says so explicitly.
+ */
+const EXTERNAL_SIDE_EFFECT_PORT_TYPE = 'external-reference';
+
+export async function judgeOutputTargetsAtDispatch(
+  workspaceRoot: string,
+  outputs: readonly FrozenOutputRequest[]
+): Promise<DispatchOutputVerdict> {
+  for (const output of outputs) {
+    if (output.type === EXTERNAL_SIDE_EFFECT_PORT_TYPE) continue;
+    const absolute = path.resolve(workspaceRoot, output.target);
+    const segments = segmentsUnderRoot(workspaceRoot, absolute);
+    if (segments === null || segments.length === 0) {
+      // Lexically outside already. Request-time validation refuses this, so
+      // reaching it here means the plan was composed by something that did not
+      // validate — which is a refusal, not a pass.
+      return { outcome: 'refused', portId: output.portId, reason: 'escapes-root' };
+    }
+    // The PARENT chain only: the leaf is what the child will create.
+    const walked = await walkDirectoriesWithinRoot(workspaceRoot, segments.slice(0, -1));
+    if (walked.outcome === 'refused') {
+      // A component that does not exist is not a refusal. The walk verified every
+      // component ABOVE the missing one — none of them was a symlink or a
+      // non-directory — and a path that stops existing partway through has
+      // nothing to be redirected through. The child (or the phase) creates the
+      // rest. Refusing here would fail every run whose output directory has not
+      // been created yet, which is most of them.
+      if (walked.reason === 'io-failed' && walked.errno === 'ENOENT') continue;
+      return { outcome: 'refused', portId: output.portId, reason: walked.reason };
+    }
+  }
+  return CONTAINED;
+}

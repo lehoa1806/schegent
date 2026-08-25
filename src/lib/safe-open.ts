@@ -153,6 +153,23 @@ async function walkDirectories(
 }
 
 /**
+ * FR-R3-079 (T1056) — judge a directory chain WITHOUT creating any of it.
+ *
+ * `ensureDirWithinRoot` walks and creates; the dispatch-time output check needs
+ * the walk and must create nothing, because a declared output that does not
+ * exist yet must not be brought into existence by its own containment check. A
+ * missing component answers `io-failed`/`ENOENT`, which the caller reads as
+ * "there is nothing here to be redirected through" rather than as a refusal to
+ * dispatch — see `services/dispatch-output-guard.ts` for that reading.
+ */
+export async function walkDirectoriesWithinRoot(
+  root: string,
+  segments: readonly string[]
+): Promise<{ readonly outcome: 'ready'; readonly directory: string } | SafeOpenRefusalResult> {
+  return walkDirectories(root, segments, { createDirs: false });
+}
+
+/**
  * FR-R3-053 — create a DIRECTORY chain under a trusted root, safely, with no
  * leaf file.
  *

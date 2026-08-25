@@ -30,8 +30,13 @@ import { resolveSessionDispatch } from './session-dispatch-policy';
 import type { BackendAvailabilityProbe } from './backend-capability-service';
 import type {
   OptionalPhaseFailureContinuedPayload,
+  OutputTargetRefusedAtDispatchPayload,
   RunSnapshotDeclinedPayload
 } from '../contracts/audit-events';
+import {
+  judgeOutputTargetsAtDispatch,
+  OutputTargetRefusedAtDispatch
+} from './dispatch-output-guard';
 import type { TerminalTransitionCoordinator } from './terminal-transition-coordinator';
 import { mutationPlanIsApproved } from './mutation-plan';
 import type { RunCheckpointService } from './run-checkpoint-service';
@@ -153,6 +158,11 @@ export interface RunDriverDeps {
   readonly emitRunSnapshotDeclined?: (
     run: WorkflowRun,
     payload: RunSnapshotDeclinedPayload
+  ) => Promise<void>;
+  /** FR-R3-079 (T1058) — the dispatch refusal's evidence record. */
+  readonly emitOutputTargetRefusedAtDispatch?: (
+    run: WorkflowRun,
+    payload: OutputTargetRefusedAtDispatchPayload
   ) => Promise<void>;
   readonly scheduleAutoDrain: () => void;
   /**
@@ -296,6 +306,33 @@ export class RunDriver {
     run: WorkflowRun,
     inputs: PhaseRunInputs
   ): Promise<PhaseRunOutput> {
+    // FR-R3-079 (T1056) — the output targets are re-judged HERE, at the last
+    // host-side instruction before the child exists.
+    //
+    // Request-time validation decided containment lexically and the operator
+    // confirmed it; the whole planning phase then ran. This is the second gate
+    // that item asks for, and this is the seam because every phase passes
+    // through it exactly once and it already sits inside the Run's attribution
+    // window. The frozen plan is READ, never rewritten (FR-017): the verdict
+    // gates execution and is not a correction to what the operator approved.
+    const verdict = await judgeOutputTargetsAtDispatch(
+      this.deps.options.cwd,
+      run.envelope?.outputs ?? []
+    );
+    if (verdict.outcome === 'refused') {
+      await this.deps.emitOutputTargetRefusedAtDispatch?.(run, {
+        runId: run.id,
+        portId: verdict.portId,
+        reason: verdict.reason
+      });
+      this.deps.logger.warn(
+        `output target refused at dispatch: port ${verdict.portId} (${verdict.reason})`
+      );
+      // A Run-level failure with a named cause, raised BEFORE the runner is
+      // called, so the child is never given the target. Not a silent downgrade,
+      // and not an error surfaced from a child that was never started.
+      throw new OutputTargetRefusedAtDispatch(verdict.portId, verdict.reason);
+    }
     await this.deps.mutationLedger?.observeBeforePhase(run);
     let output: PhaseRunOutput | null = null;
     try {
