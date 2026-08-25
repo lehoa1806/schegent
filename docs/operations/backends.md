@@ -129,10 +129,23 @@ The full reasoning, the two shapes not chosen, and what remains outstanding are 
    the terminal state silently implying the work has stopped. SIGKILL is not catchable, so a group
    that survives it is a group Schegent does not own.
 
-   **Residual, stated plainly:** a Windows Job Object with kill-on-close is stronger than
+   **Permanent limit, stated plainly:** a Windows Job Object with kill-on-close is stronger than
    `taskkill /T` — it cannot be escaped by a process that re-parents itself — and needs a native
-   binding, so it is not implemented. On POSIX, a descendant that calls `setsid` for itself leaves
-   the group and is likewise out of reach.
+   binding. On POSIX, a descendant that calls `setsid` for itself leaves the group and is likewise
+   out of reach.
+
+   This is **not** a pending follow-up. Whether this product should carry a native binding was
+   decided once, for the four residuals that share the question, in
+   [Native binding decision](../architecture/native-binding-decision.md) (2026-08-25). The answer is
+   **no**, so both escapes above will remain open, and `taskkill /T` — the well-audited equivalent
+   the requirement itself allows — is what Schegent ships. The record states what the rejected branch
+   would have bought and the three things that would reopen it.
+
+   Where the tree cannot be confirmed gone, that is now also recorded in the audit log as a
+   `process-tree-unconfirmed` event, so an operator reconstructing why a later phase saw foreign
+   writes has evidence and not only a log line. Which acceptance halves have actually been observed,
+   and on which platform, is in
+   [Platform observation record](platform-observation-record.md).
 7. Monitor events identify the Run and report start, chunks, and exit. Hook errors do not control the child.
 8. Retry and rate-limit policy remain in the controller; adapters return raw invocation outcomes.
 9. Adapters do not own operator-visible sanitization or structured audit writes; those occur at the Phase runner/logger boundary.
