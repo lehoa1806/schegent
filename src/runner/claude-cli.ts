@@ -24,12 +24,10 @@ import { OutputSinkBackpressure } from './output-sink-backpressure';
 import { waitForChildCompletion } from './child-completion';
 import { awaitStdinDelivery, writePromptToStdin } from './child-stdin';
 import { LineFramer, DEFAULT_MAX_LINE_UNITS } from '../lib/line-framer';
-import { processTreeSpawnOptions, signalProcessTree, processTreeIsGone } from './process-tree';
+import { processTreeSpawnOptions, escalateAndReportTree } from './process-tree';
 
 /** FR-R3-054 — how long after SIGKILL to check whether the group really went. */
-const TREE_CONFIRM_DELAY_MS = 500;
 
-const SIGKILL_DELAY_MS = 2_000;
 // Feature 030 BUG-002 — after the invocation's terminal stream-json result line
 // (`{"type":"result"}`) appears in stdout, the runner waits at most this long
 // for the process to exit on its own before grace-terminating it. Short enough
@@ -687,51 +685,31 @@ export class ClaudeCliRunner implements BackendRunner {
     if (this.active.size === 0) return false;
     this._logger.info(`[ClaudeCliRunner] cancelActive called for ${this.active.size} subprocess(es)`);
     for (const entry of this.active.values()) {
-      this.terminate(entry.child, entry);
+      this.terminate(entry.child, {
+        runId: entry.runId,
+        phase: entry.phase,
+        iteration: entry.iteration
+      });
     }
     return true;
   }
 
   private terminate(child: ChildProcess, attribution: TreeAttribution): void {
-    this._logger.info(`[ClaudeCliRunner] terminate called! exitCode=${child.exitCode}, signalCode=${child.signalCode}`);
+    this._logger.info(
+      `[ClaudeCliRunner] terminate called! exitCode=${child.exitCode}, signalCode=${child.signalCode}`
+    );
     // FR-R3-083 — one ladder per child. See `terminating`.
     if (this.terminating.has(child)) return;
-    if (child.exitCode === null && child.signalCode === null) {
-      this.terminating.add(child);
-      // FR-R3-054 (H-05) — signal the TREE. `child.kill` reached one process, so
-      // a forked helper outlived cancel and kept writing to the workspace after
-      // a terminal state was recorded.
-      this._logger.info(`[ClaudeCliRunner] sending SIGTERM to process tree`);
-      void signalProcessTree(child, 'SIGTERM');
-      setTimeout(() => {
-        // Original trigger preserved; the tree probe below answers the separate
-        // question of whether the terminal state may claim the work has stopped.
-        if (child.exitCode !== null || child.signalCode !== null) return;
-        this._logger.info(`[ClaudeCliRunner] sending SIGKILL to process tree`);
-        void signalProcessTree(child, 'SIGKILL').then(() => {
-          setTimeout(() => {
-            if (processTreeIsGone(child)) return;
-            // SIGKILL is not catchable, so a surviving group is one we do not
-            // own. Said out loud rather than left for a later phase to trip over.
-            // The log line STAYS: an operator tailing the runtime log must not lose
-            // it because the same fact now also reaches the audit record.
-            this._logger.warn(
-              '[ClaudeCliRunner] process tree not confirmed gone after SIGKILL; ' +
-                'descendants may still be running'
-            );
-            // FR-R3-083 / FR-R3-054 §5 — and into EVIDENCE, through the hook. This
-            // runner does not import the audit writer; it reports a lifecycle fact
-            // and something else decides what to record.
-            this.emitHook({
-              kind: 'tree-unconfirmed',
-              ...attribution,
-              pid: child.pid ?? null,
-              runner: 'claude-cli'
-            });
-          }, TREE_CONFIRM_DELAY_MS).unref();
-        });
-      }, SIGKILL_DELAY_MS).unref?.();
-    }
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    this.terminating.add(child);
+    escalateAndReportTree({
+      child,
+      attribution,
+      runner: 'claude-cli',
+      info: (message) => this._logger.info(`[ClaudeCliRunner] ${message}`),
+      warn: (message) => this._logger.warn(`[ClaudeCliRunner] ${message}`),
+      emit: (event) => this.emitHook(event)
+    });
   }
 
 }

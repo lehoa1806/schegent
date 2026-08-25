@@ -50,7 +50,7 @@ describe('mount capability classification (FR-R3-083)', () => {
     });
   });
 
-  it.each(['ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EPERM'])(
+  it.each(['ENOTSUP', 'EOPNOTSUPP', 'ENOSYS'])(
     'reports unsupported when the filesystem answers %s',
     (errno) => {
       const verdict = classifyMountCapability(failed(errno), failed(errno));
@@ -74,14 +74,22 @@ describe('mount capability classification (FR-R3-083)', () => {
     });
   });
 
-  it('does not treat ordinary permissions as a mount property', () => {
-    // EACCES is deliberately absent from the unsupported set. A wrongly-owned
-    // `.schegent` directory is not a broken filesystem, and reporting it as one
-    // sends the operator to the wrong problem entirely.
-    const verdict = classifyMountCapability(failed('EACCES'), failed('EACCES'));
-    expect(verdict.capability).toBe('undetermined');
-    expect(verdict.cause).toBe('unclassified-error');
-  });
+  it.each(['EACCES', 'EPERM'])(
+    'does not treat a permissions answer (%s) as a mount property',
+    (errno) => {
+      // Neither is in the unsupported set. A root-owned `.schegent`, an immutable
+      // flag, or a FUSE mount answering EPERM where another answers EACCES would
+      // otherwise produce "move the workspace to a local-style filesystem" about a
+      // filesystem that is perfectly capable.
+      //
+      // `ownership-registry.ts` lists ENOTSUP/EPERM/EROFS/ENOSYS as codes worth
+      // keeping APART; reading that as an equivalence class is what put EPERM here
+      // in the first draft.
+      const verdict = classifyMountCapability(failed(errno), failed(errno));
+      expect(verdict.capability).toBe('undetermined');
+      expect(verdict.cause).toBe('unclassified-error');
+    }
+  );
 
   it('reports a containment refusal as undetermined, never as a mount finding', () => {
     const verdict = classifyMountCapability(

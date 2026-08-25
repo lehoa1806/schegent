@@ -50,17 +50,20 @@ describe('runners report, they do not record (FR-R3-083)', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('emits the degraded-tree fact from both escalation ladders', () => {
-    // The two runners with a SIGTERM->SIGKILL ladder are the two that can observe a
-    // surviving group. A ladder that stopped emitting would leave the audit record
-    // silent about a Run whose descendants outlived it, which is the exact silence
-    // this feature closed -- and it would be invisible, because the log line would
-    // still be there.
+  it('emits the degraded-tree fact from exactly ONE place', () => {
+    // Originally this asserted the two runner files by name -- which PINNED the
+    // duplication instead of flagging it. `claude-cli.ts` does not delegate to
+    // `ProcessLifecycleRunner` (a pre-existing shape), so FR-R3-083's additions to
+    // the ladder had landed twice, byte for byte.
+    //
+    // The ladder now lives in `process-tree.ts` and both runners call it. A second
+    // emitter appearing here means the ladder has been copied again, and the next
+    // change to what is recorded will land in one copy.
     const emitters = sources
       .filter((s) => s.body.includes("kind: 'tree-unconfirmed'"))
       .map((s) => s.name)
       .sort();
-    expect(emitters).toEqual(['claude-cli.ts', 'process-lifecycle-runner.ts']);
+    expect(emitters).toEqual(['process-tree.ts']);
   });
 
   it('keeps the runtime-log warning beside the audit emission', () => {
@@ -71,5 +74,16 @@ describe('runners report, they do not record (FR-R3-083)', () => {
     for (const source of sources.filter((s) => s.body.includes("kind: 'tree-unconfirmed'"))) {
       expect(source.body).toContain('not confirmed gone after SIGKILL');
     }
+  });
+
+  it('has both runners reach that one place', () => {
+    // The other half: one emitter is only correct if both ladders still run. A
+    // runner that stopped calling it would go silent about a surviving group, and
+    // the assertion above would still pass.
+    const callers = sources
+      .filter((s) => s.body.includes('escalateAndReportTree({'))
+      .map((s) => s.name)
+      .sort();
+    expect(callers).toEqual(['claude-cli.ts', 'process-lifecycle-runner.ts']);
   });
 });

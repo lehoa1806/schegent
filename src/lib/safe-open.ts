@@ -98,10 +98,19 @@ function refuse(reason: SafeOpenRefusal, errno = 'none'): SafeOpenResult {
 const NOFOLLOW: number = (fsConstants as Partial<typeof fsConstants>).O_NOFOLLOW ?? 0;
 
 /**
- * Reject anything that is not a plain forward step. `path.join` would happily
- * absorb `..` and an absolute segment would replace the root outright, which is
- * how a lexical composition becomes an escape.
+ * Whether this platform's `open` can refuse a link-like leaf atomically.
+ *
+ * Exported so every leaf check in the product reports the SAME refusal for the
+ * same arrangement. `dispatch-output-guard.ts` performs its own `lstat` on a
+ * declared output's leaf, and on Windows `lstat` reports a junction as a link just
+ * as it does here — so without this the two would name one arrangement two ways,
+ * and an operator reading a refused dispatch would be told the atomic kernel check
+ * answered when no such check exists on their platform.
  */
+export function platformLacksNoFollow(): boolean {
+  return NOFOLLOW === 0;
+}
+
 /**
  * FR-R3-083 (T1132-T1135) — should this leaf be refused as a reparse point?
  *
@@ -145,6 +154,17 @@ export function refusesLeafAsReparsePoint(leafStat: { isSymbolicLink(): boolean 
   return leafStat.isSymbolicLink();
 }
 
+/**
+ * Reject anything that is not a plain forward step. `path.join` would happily
+ * absorb `..` and an absolute segment would replace the root outright, which is
+ * how a lexical composition becomes an escape.
+ *
+ * This is the module's containment invariant: `openWithinRoot`,
+ * `ensureAnchorWithinRoot` and `segmentsUnderRoot` all pass through it before any
+ * segment reaches `path.join`. (Its doc was briefly orphaned when the reparse
+ * predicate was inserted between the two — recorded because a comment attached to
+ * the wrong function is worse than no comment.)
+ */
 function invalidSegment(segment: string): boolean {
   return (
     segment.length === 0 ||

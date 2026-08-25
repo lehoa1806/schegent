@@ -312,8 +312,11 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // reached for the writer itself would be a second audit author writing outside
   // any phase's lifetime. The reasoning lives in
   // src/controller/process-tree-degradation-recorder.ts; what is here is the wiring.
-  // Prose trimmed before raising. Set to exactly what the file measures.
-  { path: 'src/extension.ts', maxLines: 1_456 },
+  // FR-R3-083 (review remediation, 2026-08-25) — 1456 → 1457. One line: the probe
+  // launch is now registered on `disposables` so a verdict cannot surface against a
+  // workspace this window has left, which needs a two-line comment rather than one.
+  // Set to exactly what the file measures.
+  { path: 'src/extension.ts', maxLines: 1_457 },
   // P4 phase-control and lifecycle-auditor extraction ratchet: 1,200 → 730.
   // This file owns only the workflow facade, run dispatch, deletion, retry
   // entry, and persistence.

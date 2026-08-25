@@ -91,18 +91,25 @@ export interface MountCapabilityVerdict {
 /**
  * Codes that mean the filesystem does not implement exclusive creation.
  *
- * These are the codes `ownership-registry.ts` already names as worth keeping
- * apart, minus `EROFS`, which gets its own arm above. `EACCES` is deliberately
- * ABSENT: ordinary permissions are not a mount capability, and reporting a
- * wrongly-owned `.schegent` directory as a broken filesystem sends the operator to
- * the wrong problem entirely.
+ * `ownership-registry.ts` names `ENOTSUP`, `EPERM`, `EROFS` and `ENOSYS` as codes
+ * worth keeping APART, and that is a keep-them-apart list — not an equivalence
+ * class. Only the two that actually say "this operation is not implemented here"
+ * belong in this set:
+ *
+ *   - `EROFS` has its own arm above: the mount is fine, the checkout is read-only.
+ *   - `EPERM` is a PERMISSIONS answer, for the same reason `EACCES` is. A
+ *     root-owned `.schegent`, an immutable flag (`chattr +i`), or a FUSE or
+ *     container mount that answers `EPERM` where another would answer `EACCES`,
+ *     would all have produced the operator notification "this workspace is on a
+ *     filesystem that does not implement atomic exclusive creation... move the
+ *     workspace" — about a mount that is perfectly capable. That is the false
+ *     finding this module excludes `EACCES` to avoid, arriving through the other
+ *     door.
+ *
+ * So `EPERM` classifies `undetermined`, which is the honest answer: the probe did
+ * not get to find out.
  */
-const UNSUPPORTED_ERRNOS: ReadonlySet<string> = new Set([
-  'ENOTSUP',
-  'EOPNOTSUPP',
-  'ENOSYS',
-  'EPERM'
-]);
+const UNSUPPORTED_ERRNOS: ReadonlySet<string> = new Set(['ENOTSUP', 'EOPNOTSUPP', 'ENOSYS']);
 
 /**
  * The containment layer's own refusal, surfaced by the probe as a pseudo-errno.

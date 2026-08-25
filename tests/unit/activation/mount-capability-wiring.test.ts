@@ -43,7 +43,7 @@ const ROOT = '/private/tmp/some-workspace-root';
 
 function report(verdict: MountCapabilityVerdict, root = ROOT): ReturnType<typeof harness> {
   const h = harness();
-  reportMountCapability(verdict, root, h.logger as any, h.notifier);
+  reportMountCapability(verdict, root, h.logger, h.notifier);
   return h;
 }
 

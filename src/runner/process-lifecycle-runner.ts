@@ -9,16 +9,7 @@ import { awaitStdinDelivery, writePromptToStdin } from './child-stdin';
 import type { InvocationOutputSink, InvocationRequest, RawInvocationOutput } from './invocation-result';
 import { OutputSinkBackpressure } from './output-sink-backpressure';
 import { ZippedStreamBuffer } from './zipped-stream-buffer';
-import { processTreeSpawnOptions, signalProcessTree, processTreeIsGone } from './process-tree';
-
-/**
- * FR-R3-054 — how long after SIGKILL to check whether the group really went.
- * Short: SIGKILL is not catchable, so a group that survives it is a group we do
- * not own, and waiting longer does not change that.
- */
-const TREE_CONFIRM_DELAY_MS = 500;
-
-const SIGKILL_DELAY_MS = 2_000;
+import { processTreeSpawnOptions, escalateAndReportTree } from './process-tree';
 
 export type ProcessSpawnFn = (
   command: string,
@@ -243,7 +234,19 @@ export class ProcessLifecycleRunner {
    */
   public cancelActive(): boolean {
     if (this.active.size === 0) return false;
-    for (const entry of this.active.values()) this.terminate(entry.child, entry);
+    for (const entry of this.active.values()) {
+      // Named fields, NEVER the map entry. The entry also holds the live
+      // `ChildProcess`, and `terminate` spreads its attribution into a sidecar
+      // event — so passing the entry puts a non-serialisable handle carrying
+      // `spawnargs` (the full argv) into a contract whose safety argument is that
+      // it has nowhere to put a secret. A spread bypasses excess-property checks,
+      // so the type system does not catch it.
+      this.terminate(entry.child, {
+        runId: entry.runId,
+        phase: entry.phase,
+        iteration: entry.iteration
+      });
+    }
     return true;
   }
 
@@ -261,42 +264,16 @@ export class ProcessLifecycleRunner {
    * caller is told so rather than the terminal state quietly claiming otherwise.
    */
   private terminate(child: ChildProcess, attribution: TreeAttribution): void {
-    if (child.exitCode !== null || child.signalCode !== null) return;
     // FR-R3-083 — one ladder per child. See `terminating`.
     if (this.terminating.has(child)) return;
+    if (child.exitCode !== null || child.signalCode !== null) return;
     this.terminating.add(child);
-    void signalProcessTree(child, 'SIGTERM');
-    setTimeout(() => {
-      // The original trigger, unchanged: the direct child's own status decides
-      // whether to escalate. The tree check below is additive -- it decides
-      // whether the terminal state may claim the work has stopped, which is a
-      // different question and was previously not asked at all.
-      if (child.exitCode === null && child.signalCode === null) {
-        void signalProcessTree(child, 'SIGKILL').then(() => {
-          setTimeout(() => {
-            if (processTreeIsGone(child)) return;
-            // No silent lie. The phase is ending with descendants possibly alive,
-            // and that is a fact an operator needs when a later phase behaves as
-            // though something else is writing to the workspace.
-            // The log line STAYS. An operator tailing the runtime log must not
-            // lose it just because the same fact now also reaches the audit record.
-            this.logger.warn(
-              `${this.label}: process tree not confirmed gone after SIGKILL; ` +
-                'descendants may still be running'
-            );
-            // FR-R3-083 / FR-R3-054 §5 — and into EVIDENCE. A runtime-log line is
-            // not the audit record, so an operator reconstructing why a later phase
-            // saw foreign writes had nothing to read. Reported through the hook, not
-            // written here: this runner does not import the audit writer.
-            this.emit({
-              kind: 'tree-unconfirmed',
-              ...attribution,
-              pid: child.pid ?? null,
-              runner: this.label
-            });
-          }, TREE_CONFIRM_DELAY_MS).unref();
-        });
-      }
-    }, SIGKILL_DELAY_MS).unref();
+    escalateAndReportTree({
+      child,
+      attribution,
+      runner: this.label,
+      warn: (message) => this.logger.warn(`${this.label}: ${message}`),
+      emit: (event) => this.emit(event)
+    });
   }
 }

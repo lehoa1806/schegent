@@ -421,8 +421,9 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     showErrorMessage: (m) => vscode.window.showErrorMessage(m)
   });
   warnIfEnvironmentIsUnrestricted(processEnvironmentPolicy, workspaceRoot, logger);
-  // FR-R3-083 (`PORT-01`) — bounded, never awaited. See `startMountCapabilityProbe`.
-  startMountCapabilityProbe(workspaceRoot, logger, notifier);
+  // FR-R3-083 (`PORT-01`) — bounded, never awaited, and dropped on teardown so a
+  // verdict cannot surface against a workspace this window has left.
+  disposables.push(startMountCapabilityProbe(workspaceRoot, logger, notifier));
   // The extension also activates via the implicit `onView:schegent.sidebar` event,
   // so `workspaceContains:.specify/` does not imply the directory is there.
   warnIfScaffoldingMissing(workspaceRoot, logger, notifier);

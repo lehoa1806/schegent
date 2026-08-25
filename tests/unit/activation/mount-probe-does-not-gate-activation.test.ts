@@ -4,7 +4,8 @@ import { resolve } from 'node:path';
 import { probeMountCapability } from '../../../src/state/mount-capability-probe';
 import {
   reportMountCapability,
-  resetMountCapabilityWarnings
+  resetMountCapabilityWarnings,
+  startMountCapabilityProbe
 } from '../../../src/activation/mount-capability-wiring';
 import type { ExclusiveCreateObservation } from '../../../src/state/mount-capability';
 
@@ -44,10 +45,39 @@ describe('the mount probe does not gate activation (FR-R3-083)', () => {
     // cannot surface as an unhandled rejection during activation.
     expect(call.slice(0, 400)).toMatch(/\.then\(/);
     expect(call.slice(0, 400)).toMatch(/\(\)\s*=>\s*undefined/);
-    // And activation itself neither awaits the launcher nor holds its result.
+    // And activation itself does not await the launcher -- and DOES register it for
+    // disposal. The probe outlives its caller by up to two bounds, and stage 2 is
+    // re-wired on `schegent.reset` and on a workspace-folder change, so an
+    // unregistered probe can resolve after the window has moved and notify the
+    // operator about a workspace they are no longer in.
     const extension = readFileSync(EXTENSION, 'utf8');
-    expect(extension).toContain('startMountCapabilityProbe(workspaceRoot, logger, notifier);');
+    expect(extension).toContain(
+      'disposables.push(startMountCapabilityProbe(workspaceRoot, logger, notifier));'
+    );
     expect(extension).not.toMatch(/await\s+startMountCapabilityProbe/);
+  });
+
+  it('drops a verdict that arrives after disposal', async () => {
+    // The half a source assertion cannot cover. `.catch()` stops a disposed-UI
+    // throw becoming an unhandled rejection; it does nothing about a successful,
+    // MISATTRIBUTED notification, which is the actual operator-visible defect.
+    resetMountCapabilityWarnings();
+    const notifications: string[] = [];
+    let settle: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    const handle = startMountCapabilityProbe(
+      '/nonexistent-root-for-this-assertion',
+      { info: () => undefined, warn: () => undefined },
+      { warn: (m: string) => void notifications.push(m) }
+    );
+    handle.dispose();
+    settle?.();
+    await gate;
+    // Let the probe settle on its own terms; nothing may reach the notifier.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(notifications).toEqual([]);
   });
 
   it.each<[string, () => Promise<ExclusiveCreateObservation>]>([
@@ -66,7 +96,7 @@ describe('the mount probe does not gate activation (FR-R3-083)', () => {
       reportMountCapability(
         verdict,
         '/nonexistent-root-for-this-assertion',
-        { info: () => undefined, warn: () => undefined } as any,
+        { info: () => undefined, warn: () => undefined },
         { warn: (m: string) => void notifications.push(m) }
       )
     ).not.toThrow();

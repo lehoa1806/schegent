@@ -82,19 +82,30 @@ export interface MountProbeDeps {
 }
 
 /**
- * Extract an errno.
+ * Extract an errno, bounded.
  *
- * A FIFTH byte-identical copy of this helper -- `lib/safe-open.ts`,
- * `lib/catalog-fs-adapter.ts`, `runner/process-tree.ts` and `runner/child-stdin.ts`
- * hold the others -- and the duplication is real. It is kept rather than resolved
- * here for a stated reason: extracting a shared helper edits five files this
- * feature otherwise does not touch, and the work-style rule is that a change
- * touches only the files its task requires. A five-file refactor riding along on a
- * portability feature is exactly the drive-by that rule forbids.
+ * There are four other `errnoOf`-shaped helpers in `src/`, and they are NOT
+ * interchangeable -- an earlier draft of this comment called them byte-identical
+ * and that was wrong in a way that would have misled the next maintainer:
  *
- * It is recorded rather than left silent so the next reader knows the count is
- * five, and so the extraction can be done as its own change with all five sites in
- * one diff.
+ *   - `lib/safe-open.ts`, `runner/process-tree.ts` -- any string `code`, unbounded,
+ *     fallback `'unknown'`
+ *   - `lib/catalog-fs-adapter.ts` -- any string `code`, unbounded, fallback
+ *     `'EUNKNOWN'`, and callers compare against that literal
+ *   - `runner/child-stdin.ts` -- shape-checked, not length-checked, fallback
+ *     `FALLBACK_CODE`
+ *   - this one -- shape-checked AND length-capped, fallback `'unknown'`
+ *
+ * Four behaviours and three fallbacks. A naive extraction would silently change
+ * three call sites, two of which compare against their own fallback literal. So
+ * this is not "duplication awaiting a refactor" -- it is four deliberate contracts
+ * that happen to share a name, and consolidating them is a change with its own
+ * design question, not a tidy-up.
+ *
+ * The bound below is this one's own requirement: `error.code` is `unknown` at the
+ * type level and this value is interpolated into an operator-visible log line, so
+ * nothing in the types stops a rejection carrying a path or a sentence as its
+ * `code`.
  */
 /**
  * Node errnos are short uppercase constants (`ENOTSUP`, `EROFS`). Bounded here
@@ -107,6 +118,7 @@ export interface MountProbeDeps {
 const MAX_ERRNO_LENGTH = 32;
 const ERRNO_SHAPE = /^[A-Z][A-Z0-9_]*$/;
 
+/** See the note above on why this is not the same helper as the other four. */
 function errnoOf(error: unknown): string {
   if (error && typeof error === 'object' && 'code' in error) {
     const code = (error as { code?: unknown }).code;
@@ -148,6 +160,39 @@ async function realExclusiveCreate(
   // I/O failure. Everything else the walk could not complete is the latter.
   if (result.errno === 'EEXIST') return { outcome: 'refused', errno: 'EEXIST' };
   return { outcome: 'io-failed', errno: result.errno };
+}
+
+/**
+ * Race any promise against the bound, resolving `null` on expiry.
+ *
+ * Separate from `withBound` because that one speaks in observations and this one is
+ * used for the cleanup, where "did not answer" is not an observation about the
+ * mount — it is a reason to give up quietly.
+ */
+function raceBound<T>(work: Promise<T>, timeoutMs: number): Promise<T | null> {
+  return new Promise<T | null>((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve(null);
+    }, timeoutMs);
+    timer.unref();
+    work.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(null);
+      }
+    );
+  });
 }
 
 /**
@@ -244,19 +289,39 @@ export async function probeMountCapability(
     // It is still not a mount finding.
     return { capability: 'undetermined', cause: 'unclassified-error', errno: errnoOf(error) };
   } finally {
-    // EVERY path — success, refusal, throw, and timeout. A probe that leaves its
-    // artifact behind turns the next activation's first create into a second one,
-    // which would report `unsupported` on a perfectly good mount.
-    await removeProbeArtifact(deps.workspaceRoot, segments);
-    // And ONCE MORE when an abandoned create finally lands. The sweep above ran
-    // while that create was still in flight, so on the timeout path it removed
-    // nothing and the file appeared afterwards. Not awaited — the bound is the
-    // whole point — so this costs the caller nothing.
+    // The deferred sweep is registered FIRST, before anything is awaited. An
+    // abandoned create can land at any point after its bound expires, and if this
+    // registration sat below an await that never settles it would never happen at
+    // all — the leak it exists to prevent would be guaranteed on exactly the mount
+    // that caused it.
     if (outstanding.length > 0) {
       void Promise.all(outstanding).then(() =>
-        removeProbeArtifact(deps.workspaceRoot, segments)
+        removeProbeArtifact(deps.workspaceRoot, segments, timeoutMs)
       );
     }
+    // EVERY path — success, refusal, throw, and timeout.
+    //
+    // WORKSPACE HYGIENE, NOT CORRECTNESS, and the distinction matters both ways.
+    // An earlier comment here claimed a leftover artifact "turns the next
+    // activation's first create into a second one, which would report `unsupported`
+    // on a perfectly good mount". That is false: the leaf carries the pid and a
+    // per-attempt counter, so no later probe reuses the name, and even on pid reuse
+    // the first create answers EEXIST, which classifies `undetermined` and never
+    // `unsupported`. Two readers could act wrongly on that sentence — one deleting
+    // the unique naming as redundant, one treating this cleanup as
+    // correctness-critical and therefore worth an unbounded wait, which is exactly
+    // the defect this block used to have.
+    //
+    // What a leftover actually costs is accumulation: one file per activation, on
+    // the mount least able to afford it.
+    //
+    // BOUNDED, by the same timer the attempts use. This is the defect the first
+    // version had: `resolveContainedLink` calls `realpath`/`lstat` on the same
+    // unresponsive mount, with nothing racing it, inside the `finally` of a
+    // function whose entire contract is that it is bounded. The verdict was
+    // computed and then never returned, no log line was ever written, and a libuv
+    // threadpool slot was held for the life of the extension host.
+    await removeProbeArtifact(deps.workspaceRoot, segments, timeoutMs);
   }
 }
 
@@ -280,11 +345,16 @@ export async function probeMountCapability(
  */
 async function removeProbeArtifact(
   workspaceRoot: string,
-  segments: readonly string[]
+  segments: readonly string[],
+  timeoutMs: number
 ): Promise<void> {
   try {
     const composed = path.join(workspaceRoot, ...segments);
-    const verdict = await resolveContainedLink(composed, [workspaceRoot]);
+    // Raced, because `resolveContainedLink` performs `realpath`/`lstat` on the very
+    // mount that may not answer. A cleanup that cannot complete is abandoned; the
+    // unique leaf name is what stops that costing anything but a stray file.
+    const verdict = await raceBound(resolveContainedLink(composed, [workspaceRoot]), timeoutMs);
+    if (verdict === null) return;
     // `absent` is the ordinary case when the create never happened, and it is not a
     // failure: a destructive op on a path that is not there has no work.
     if (verdict.outcome !== 'contained') return;

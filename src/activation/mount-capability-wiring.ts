@@ -1,4 +1,17 @@
 import type { SanitizedLogger } from '../lib/logger';
+
+/**
+ * The two methods this module uses.
+ *
+ * `Pick<>` rather than the concrete class, matching `cli-transport-sink.ts`,
+ * `claude-cli-monitor.ts`, `backend-runner-factory.ts` and three others. Taking the
+ * class forced both new suites to write `as any` at the call site, which disables
+ * checking of EVERY argument there — so a later signature change would not have
+ * failed those tests. Declaring a narrow notifier interface for the same reason one
+ * line below, and then not doing it for the logger, was an inconsistency with a
+ * cost.
+ */
+type MountCapabilityLogger = Pick<SanitizedLogger, 'info' | 'warn'>;
 import type { MountCapabilityVerdict } from '../state/mount-capability';
 import { probeMountCapability } from '../state/mount-capability-probe';
 
@@ -75,7 +88,7 @@ const UNSUPPORTED_MESSAGE =
 export function reportMountCapability(
   verdict: MountCapabilityVerdict,
   workspaceRoot: string,
-  logger: SanitizedLogger,
+  logger: MountCapabilityLogger,
   notifier: MountCapabilityNotifier
 ): void {
   // The errno is the datum that separates a full disk from a permissions problem
@@ -129,12 +142,23 @@ export function reportMountCapability(
  */
 export function startMountCapabilityProbe(
   workspaceRoot: string,
-  logger: SanitizedLogger,
+  logger: MountCapabilityLogger,
   notifier: MountCapabilityNotifier
-): void {
+): { dispose(): void } {
+  // The probe outlives its caller: up to two bounds, longer on a slow mount. Stage
+  // 2 is re-wired on `schegent.reset` and on a workspace-folder change, so a probe
+  // started against root A can resolve after the window has moved to root B — and
+  // then pop an operator notification about a workspace they are no longer in.
+  // A verdict for a torn-down stage is DROPPED rather than shown. The `.catch`
+  // below only stops a disposed-UI throw becoming an unhandled rejection; it does
+  // nothing about a successful, misattributed notification.
+  let disposed = false;
   void probeMountCapability({ workspaceRoot })
     .then(
-      (verdict) => reportMountCapability(verdict, workspaceRoot, logger, notifier),
+      (verdict) => {
+        if (disposed) return;
+        reportMountCapability(verdict, workspaceRoot, logger, notifier);
+      },
       () => undefined
     )
     // `.then(onFulfilled, onRejected)` does NOT route a throw from `onFulfilled`
@@ -144,4 +168,10 @@ export function startMountCapabilityProbe(
     // down underneath it — which is precisely when a VS Code UI call throws.
     // This is the arm that keeps that off the activation path.
     .catch(() => undefined);
+
+  return {
+    dispose: () => {
+      disposed = true;
+    }
+  };
 }
