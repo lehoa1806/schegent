@@ -30,8 +30,14 @@ export interface AuditLogConfig {
   retentionMaxArchiveAgeMs: number;
 }
 
-const DEFAULT_SIZE = 5 * 1024 * 1024;
-const DEFAULT_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+// FR-R3-085 — exported so the operator-facing retention disclosure DERIVES these
+// bounds rather than restating them. A restated bound is the class that recurred
+// three times in this round; `retention-disclosure.ts` reads these and a gate
+// fails when the rendered document and these values disagree.
+export const AUDIT_ROTATION_DEFAULT_SIZE_BYTES = 5 * 1024 * 1024;
+export const AUDIT_ROTATION_DEFAULT_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+const DEFAULT_SIZE = AUDIT_ROTATION_DEFAULT_SIZE_BYTES;
+const DEFAULT_AGE_MS = AUDIT_ROTATION_DEFAULT_AGE_MS;
 const DEFAULT_MAX_ARCHIVES = 10;
 const DEFAULT_MAX_ARCHIVE_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 

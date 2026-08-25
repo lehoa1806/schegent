@@ -134,6 +134,10 @@ drifts unnoticed, because the readers who would catch an error never get there.
 
 ### Operations
 
+- [What Schegent keeps on this machine](operations/evidence-retention-disclosure.md) — every artifact
+  retained locally, whether its content is redacted, and the bound on each, derived from the constants
+  that enforce them rather than restated (FR-R3-085)
+
 - [Backends](operations/backends.md)
 - [Built-artifact route diagnosis](operations/built-artifact-route-diagnosis.md)
 - [Configuration](operations/configuration.md)
