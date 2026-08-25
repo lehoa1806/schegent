@@ -22,6 +22,7 @@ This catalog describes code-resident mitigations and residual risk. It does not 
 | [T3](#t3--audit-log-tampering-or-non-append-writes) | Audit evidence is truncated or rewritten | The host has one append/rotation writer, but no hash chain or tamper detector. | <!-- Source: src/audit/audit-log-writer.ts --> |
 | [T4](#t4--workspace-path-leakage-into-the-structured-audit-log) | Local paths leak through structured evidence | Audit contracts use bounded identifiers, counts, and selection tuples instead of artifact paths. | <!-- Source: src/contracts/audit-events.ts --><!-- Source: src/contracts/sidebar-ipc/history-evidence.ts --> |
 | [T5](#t5--concurrent-state-mutation-across-multiple-vs-code-windows) | Multiple VS Code windows mutate one workspace | Filesystem-backed fenced ownership plus primary-host gates. | <!-- Source: src/state/ownership-registry.ts --><!-- Source: src/ui/sidebar/message-router.ts --> |
+| [T5b](#t5b--an-output-target-is-judged-once-then-written-later) | A confirmed output target is subverted between validation and the child's write | Every declared target's components are re-walked at dispatch; a refusal fails the Run with a named cause before the runner is called. | <!-- Source: src/services/dispatch-output-guard.ts --><!-- Source: src/lib/output-target-identity.ts --> |
 | [T6](#t6--lease-leak-fail-deadly) | A stranded execution lease stalls a queue | Explicit releases and 15-second stale-lease reclamation. | <!-- Source: src/state/execution-lease.ts --><!-- Source: src/state/lock.ts --> |
 | [T7](#t7--untrusted-workspace-executing-extension-capabilities) | An untrusted workspace triggers mutations or subprocess work | Mutating IPC fails closed on `workspace.isTrusted`; restricted activation avoids workspace-bound services. | <!-- Source: src/ui/sidebar/message-router.ts --><!-- Source: src/extension.ts --> |
 | [T8](#t8--prompt-injection-via-spec-plan-task-or-instruction-content) | Repository or operator text instructs the model to act maliciously | No content analyzer is claimed; the operator controls what enters a run and grants run approval for declared high-impact effects. | <!-- Source: src/runner/prompt-builder.ts --><!-- Source: src/activation/git-approval.ts --> |
@@ -103,7 +104,11 @@ Audit and evidence contracts favor identifiers, counts, hashes, and bounded tupl
 
 The ownership registry persists a fenced record under `.schegent/ownership`; the router independently refuses guarded work from a secondary window. Activation elects before it recovers: every recovery installer is gated on the primacy result, and the resume path claims its queue's execution lease before marking work in flight (FR-R3-070).
 
+The fence reaches the point of effect (FR-R3-077). Both commit points — the Run record and the queue record — take a **required** claim and verify it inside the same serialized link that performs the write, so a host whose lease was reclaimed while it was stalled is refused when it resumes and commits, by the fence rather than by a storage error. A call site that provably holds no lease says so by name, from a closed set, and the set is pinned by a test. Because the memento offers no conditional write, a reclaim landing between the verify and the update can still leave a record written by a superseded holder; the read side is the answer to that, declining a record stamped at a superseded generation and recording the decline as evidence rather than dropping it.
+
 <!-- Source: src/state/ownership-registry.ts -->
+<!-- Source: src/state/ownership-claim.ts -->
+<!-- Source: src/state/workspace-state.ts -->
 <!-- Source: src/ui/sidebar/commands/primacy-gate.ts -->
 <!-- Source: src/extension.ts -->
 
@@ -111,9 +116,26 @@ The ownership registry persists a fenced record under `.schegent/ownership`; the
 
 The catalog and ownership stores judge containment against the trusted workspace root, never against a store directory the checkout itself supplies (FR-R3-069). A workspace arriving with `.schegent`, `.schegent/catalog`, or `.schegent/ownership` symlinked out of the workspace refuses — nothing is created, written, read, or arbitrated through the link — while a link that resolves inside the workspace is admitted. Store chains are created only through the safe-open anchor walk, which refuses a symlinked component by name.
 
+FR-R3-078 and FR-R3-080 close the check-to-use window on the sinks that still had one: the raw transcript's end-write and promotion, the history description store, the phase-log readers and the phase sidecar reader now act on descriptors the walk produced rather than on a pathname re-resolved after a verdict, and the two hot append sinks hold the descriptor the walk proved instead of re-writing to a name. A refused write is reported as a refusal — distinctly from a failure — and reaches an operator as a phase-end warning rather than a log line nobody reads.
+
+The residual is stated rather than implied: the walk `lstat`s each component and opens the leaf with `O_NOFOLLOW`, which closes the no-race hole and does not close the window between one component's `lstat` and the next syscall. Closing that needs a handle-relative walk, which needs a native binding; the migration ledger records it, with the sites where a `rename` cannot be made handle-relative at all.
+
 <!-- Source: src/lib/catalog-fs-adapter.ts -->
 <!-- Source: src/state/ownership-fs.ts -->
 <!-- Source: src/lib/safe-open.ts -->
+<!-- Source: src/audit/raw-transcript-writer.ts -->
+
+### T5b — An output target is judged once, then written later
+
+An operator names an output inside the workspace and confirms it; the target is frozen into the plan; the whole planning phase runs; the CLI then writes it. Request-time containment is lexical (`path.resolve`/`path.relative`, no `realpath`), so a parent component swapped for a symlink in that interval sends an "inside the workspace" write outside it — under the operator's full local authority, for the runners that are uncontained.
+
+Every declared output target's component chain is re-walked at dispatch, immediately before the frozen plan reaches the runner (FR-R3-079). A refusal is a Run-level failure with a named cause recorded in evidence, raised before the runner is called, so the child never receives the target; the frozen plan is read and never rewritten. Collision identity is canonical, including for a target that does not exist yet, so two names for one file through a link are one claim rather than two.
+
+The residual is the asymmetry FR-R3-032 established: re-walking at dispatch narrows the window to the interval between the walk and the child's write, and only the sandboxed runner closes that. The deliberate external-side-effect port keeps its own confirmation and is not turned into a refusal.
+
+<!-- Source: src/services/dispatch-output-guard.ts -->
+<!-- Source: src/lib/output-target-identity.ts -->
+<!-- Source: src/services/run-driver.ts -->
 
 ### T6 — Lease leak fail-deadly
 

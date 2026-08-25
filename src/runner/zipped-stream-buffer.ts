@@ -17,6 +17,33 @@ import * as zlib from 'zlib';
  * hundreds of MiB per invocation, times two buffers, times concurrent runs.
  */
 export const MAX_STREAM_BUFFER_BYTES = 64 * 1024 * 1024;
+
+/**
+ * FR-R3-081 (T1085) — why `gzipSync`/`gunzipSync` stay synchronous.
+ *
+ * The 2026-08-24 review named the synchronous compression as a latency finding
+ * independent of the memory one, and called it "the half no measurement can
+ * dismiss". It was measured anyway, because the item requires this decision to
+ * be taken on its own evidence rather than on the memory question's.
+ *
+ * Measured 2026-08-25 (Node v24.19.0, macOS 26.6.2 arm64) at this buffer's real
+ * `flushThresholdBytes` of 1 MiB, over 40 rounds of realistic phase text:
+ *
+ *     gzipSync    p50 1.84 ms   p95 1.96 ms   max 2.00 ms
+ *     gunzipSync  p50 0.32 ms   p95 0.41 ms   max 0.62 ms
+ *
+ * A ~2 ms stall, once per megabyte of accepted output, against a 16 ms frame
+ * budget. That does not justify the change, and the change is not free: `zlib`'s
+ * async forms complete out of order, so a correct move requires serializing
+ * compression per buffer — a queue, its own ordering invariant, and a new way
+ * for output to interleave. Adding a failure mode for a 2 ms stall is a worse
+ * trade than the stall.
+ *
+ * The decision is recorded here rather than only in the operations record
+ * because this is where someone would come to make the change. If the flush
+ * threshold rises materially, re-measure: the cost is linear in the flush size
+ * and the reasoning above is about the number, not about the shape.
+ */
 export const STREAM_TRUNCATION_MARKER = '\n[SCHEGENT_OUTPUT_TRUNCATED]\n';
 const TAIL_SEGMENT_MAX_BYTES = 64 * 1024;
 

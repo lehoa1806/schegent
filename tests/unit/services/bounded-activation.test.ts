@@ -60,13 +60,13 @@ function auditLine(index: number): string {
 describe('FR-R3-082 — the cold-start audit tail is bounded by bytes (T1095)', () => {
   it('shows the END of a planted log and holds only the cap', async () => {
     const logPath = path.join(workspaceRoot, '.schegent', 'audit.log');
-    // Well past the 256 KiB cap: ~12 MiB of entries.
-    const handle = await fs.open(logPath, 'a');
-    try {
-      for (let i = 0; i < 40_000; i += 1) await handle.write(auditLine(i));
-    } finally {
-      await handle.close();
-    }
+    // Well past the 256 KiB cap. Composed in memory and written once: forty
+    // thousand individual appends is a slow way to build a fixture, and under a
+    // parallel suite it is slow enough to time out on a machine that is
+    // otherwise fine.
+    const planted: string[] = [];
+    for (let i = 0; i < 40_000; i += 1) planted.push(auditLine(i));
+    await fs.writeFile(logPath, planted.join(''));
     expect((await fs.stat(logPath)).size).toBeGreaterThan(4 * 1024 * 1024);
 
     const entries = await readAuditTailColdStart(workspaceRoot, logger);
@@ -112,8 +112,16 @@ describe('FR-R3-082 — the cold-start audit tail is bounded by bytes (T1095)', 
 describe('FR-R3-082 — the retention walk is bounded and says so (T1096, T1097)', () => {
   async function plantWide(runDir: string, entries: number): Promise<void> {
     await fs.mkdir(runDir, { recursive: true });
-    for (let i = 0; i < entries; i += 1) {
-      await fs.writeFile(path.join(runDir, `f-${i}`), 'x');
+    // Batched: ten thousand sequential `writeFile` calls is the fixture, not the
+    // thing under test, and it is what made this file time out inside a parallel
+    // suite while passing alone.
+    const BATCH = 500;
+    for (let start = 0; start < entries; start += BATCH) {
+      await Promise.all(
+        Array.from({ length: Math.min(BATCH, entries - start) }, (_, offset) =>
+          fs.writeFile(path.join(runDir, `f-${start + offset}`), 'x')
+        )
+      );
     }
   }
 

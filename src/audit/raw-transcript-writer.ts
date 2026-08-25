@@ -214,6 +214,23 @@ class FileRawTranscriptCapture implements RawTranscriptCapture {
 export class RawTranscriptWriter {
   private readonly workspaceRoot: string;
   private readonly logger: SanitizedLogger;
+  /**
+   * FR-R3-081 (T1081) — one write chain per run, and it is REMOVED when the run
+   * is done with it.
+   *
+   * `M-10` named the monitor map and the transcript map; `FR-R3-052` bounded the
+   * monitor half and recorded the other as outstanding. This is that half.
+   * Measured before the fix: entries were added at three sites and deleted at
+   * none, so the map held one promise per run id for the lifetime of the
+   * extension host — a leak whose rate is "however many runs the operator
+   * starts".
+   *
+   * The entry is dropped when its link settles and nothing newer has replaced
+   * it — the identity check matters, because a later append can arrive while an
+   * earlier one is still settling and the map must keep the newer chain. The
+   * definitive removal is `finalizeRun`, which is where a run stops producing
+   * transcript writes at all.
+   */
   private readonly chains = new Map<string, Promise<void>>();
   private readonly failedRuns = new Set<string>();
   private gitignoreEnsure: Promise<void> | null = null;
@@ -303,6 +320,7 @@ export class RawTranscriptWriter {
     const previous = this.chains.get(input.runId) ?? Promise.resolve();
     const next = previous.then(() => this.doWriteEnd(input));
     this.chains.set(input.runId, next);
+    this.releaseChainWhenSettled(input.runId, next);
     return next;
   }
 
@@ -333,6 +351,10 @@ export class RawTranscriptWriter {
     });
     this.chains.set(runId, next);
     await next;
+    // FR-R3-081 (T1081) — the definitive removal. A finalized run writes no more
+    // transcript, so its chain entry has nothing left to order and holding it
+    // would be the leak this bounds.
+    if (this.chains.get(runId) === next) this.chains.delete(runId);
   }
 
   private filePathFor(runId: string, mode: RawTranscriptMode): string {
@@ -440,7 +462,23 @@ export class RawTranscriptWriter {
     const previous = this.chains.get(runId) ?? Promise.resolve();
     const next = previous.then(() => this.doWrite(runId, content, mode));
     this.chains.set(runId, next);
+    this.releaseChainWhenSettled(runId, next);
     return next;
+  }
+
+  /**
+   * FR-R3-081 (T1081) — drop a run's chain entry once it has nothing pending.
+   *
+   * The identity check is the whole of it: `this.chains.get(runId) === settled`
+   * is false whenever a newer append has already replaced this link, and
+   * deleting then would drop a chain that still has work behind it.
+   */
+  private releaseChainWhenSettled(runId: string, settled: Promise<void>): void {
+    void settled
+      .catch(() => undefined)
+      .then(() => {
+        if (this.chains.get(runId) === settled) this.chains.delete(runId);
+      });
   }
 
   private async doWrite(runId: string, content: string, mode: RawTranscriptMode): Promise<void> {
