@@ -582,10 +582,11 @@ export class RawTranscriptWriter {
     operation: string,
     reason: ContainmentRefusal | SafeOpenRefusal
   ): void {
-    const shouldWarn = this.evidenceHealth?.reportFailure(
-      'rawTranscript',
-      'cleanup-failed'
-    ) ?? true;
+    // FR-R3-080 (T1075) — reported as a REFUSAL, not as a cleanup failure. The
+    // distinction is what routes it to a phase-end warning an operator sees, and
+    // it is also simply true: nothing failed here, a write was declined because
+    // its path could not be proven.
+    const shouldWarn = this.evidenceHealth?.reportFailure('rawTranscript', 'path-refused') ?? true;
     if (!shouldWarn) return;
     this.logger.warn(
       `raw transcript ${operation} refused: containment ${reason}; workflow continues with degraded raw evidence`

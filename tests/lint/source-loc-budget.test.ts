@@ -295,7 +295,10 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // the workspace root reaches the sidecar store at this site and nowhere else,
   // and a handler may not learn one of its own. Wiring, which is this file's one
   // responsibility. Set to what the file measures.
-  { path: 'src/extension.ts', maxLines: 1_423 },
+  // FR-R3-080 / T1075 (2026-08-25) — 1423 → 1426. Three lines: the evidence-health
+  // drain reaching the phase runner, and the note on why an absent drain is the
+  // state this item exists to leave. Wiring, which is what this file is.
+  { path: 'src/extension.ts', maxLines: 1_426 },
   // P4 phase-control and lifecycle-auditor extraction ratchet: 1,200 → 730.
   // This file owns only the workflow facade, run dispatch, deletion, retry
   // entry, and persistence.

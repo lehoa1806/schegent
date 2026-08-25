@@ -6,6 +6,7 @@ import {
 } from '../sidebar-ipc';
 import {
   QUEUE_ID_MAX,
+  isSafePathSegment,
   fail,
   hasUnexpectedKeys,
   ok,
@@ -50,23 +51,28 @@ function validatePhaseLogSelection(
     return fail('unexpected-payload-fields', { type, correlationId });
   }
   const queueId = selection['queueId'];
-  if (typeof queueId !== 'string' || queueId.length === 0 || queueId.length > QUEUE_ID_MAX) {
+  // FR-R3-080 (T1073) — shape as well as size. Each of these becomes a path
+  // component in `phase-log-path.ts`, and a bounded identifier is not a safe
+  // path segment.
+  if (!isSafePathSegment(queueId)) {
     return fail('invalid-queueId', { type, correlationId });
   }
   const taskId = selection['taskId'];
-  if (typeof taskId !== 'string' || taskId.length === 0 || taskId.length > QUEUE_ID_MAX) {
+  // FR-R3-080 (T1073) — shape as well as size. Each of these becomes a path
+  // component in `phase-log-path.ts`, and a bounded identifier is not a safe
+  // path segment.
+  if (!isSafePathSegment(taskId)) {
     return fail('invalid-taskId', { type, correlationId });
   }
   const pipelineId = selection['pipelineId'];
-  if (
-    typeof pipelineId !== 'string' ||
-    pipelineId.length === 0 ||
-    pipelineId.length > QUEUE_ID_MAX
-  ) {
+  if (!isSafePathSegment(pipelineId)) {
     return fail('invalid-pipelineId', { type, correlationId });
   }
   const phaseId = selection['phaseId'];
-  if (typeof phaseId !== 'string' || phaseId.length === 0 || phaseId.length > QUEUE_ID_MAX) {
+  // FR-R3-080 (T1073) — shape as well as size. Each of these becomes a path
+  // component in `phase-log-path.ts`, and a bounded identifier is not a safe
+  // path segment.
+  if (!isSafePathSegment(phaseId)) {
     return fail('invalid-phaseId', { type, correlationId });
   }
 

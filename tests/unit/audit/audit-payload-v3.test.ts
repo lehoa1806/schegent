@@ -127,6 +127,16 @@ describe('phase-end warning vocabulary', () => {
       '[constitution] missing audit log on clean response',
       '[constitution] multiple contract blocks',
       '[constitution] unterminated audit log',
+      // FR-R3-080 (T1076). Five code-resident literals, one per evidence sink,
+      // composed by `pathRefusedWarning` from a closed sink-name union — never
+      // by splicing a path or an errno onto a prefix. Enumerated as a set rather
+      // than added when each sink first refuses: discovering the gap from a
+      // silent decline is the failure this item removes.
+      'evidence-path-refused:audit',
+      'evidence-path-refused:historyPointer',
+      'evidence-path-refused:metricsRollup',
+      'evidence-path-refused:rawTranscript',
+      'evidence-path-refused:runtimeLog',
       // FR-R3-058 (M-07). A code-resident literal, like every member here.
       'host-verification-failed',
       'output-truncated-unclassifiable',

@@ -312,7 +312,22 @@ export const RECORDABLE_PHASE_END_WARNINGS: ReadonlySet<string> = new Set([
   // route `stdin-delivery-failed` takes. Without it the record would say
   // `outcome: 'failed'` / `terminationReason: 'error'` with the cause dropped --
   // the exact shape that made the 2026-08-16 failure undiagnosable.
-  'host-verification-failed'
+  'host-verification-failed',
+  // src/services/evidence-health/evidence-health-monitor.ts — FR-R3-080 (T1076).
+  // One code per evidence sink, enumerated rather than pattern-matched, because
+  // an allowlist that accepts a PREFIX accepts whatever a caller appends to it —
+  // and the thing a sink would most plausibly append is the path it refused.
+  //
+  // Enumerated as a set rather than added one at a time: SEC-06 and SEC-07 name
+  // three sinks between them, and the two that are not named can refuse for the
+  // same reason the moment they are migrated. Adding them when they refuse would
+  // mean discovering the gap from a silent decline, which is the failure this
+  // item exists to remove.
+  'evidence-path-refused:audit',
+  'evidence-path-refused:rawTranscript',
+  'evidence-path-refused:runtimeLog',
+  'evidence-path-refused:metricsRollup',
+  'evidence-path-refused:historyPointer'
 ]);
 
 interface ProjectedWarnings {

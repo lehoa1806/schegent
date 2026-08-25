@@ -677,7 +677,10 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     null,
     phaseBreakpointAccessor,
     lastRetryDecisionSink,
-    backendPostureAccessor
+    backendPostureAccessor,
+    // FR-R3-080 (T1075) — the refused-write drain. Without it a refusal reaches
+    // the log and stops there, which is the state this item exists to leave.
+    evidenceHealth
   );
   const runSafety = await createRunSafetyWiring({
     context,

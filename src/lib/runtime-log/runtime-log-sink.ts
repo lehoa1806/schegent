@@ -813,6 +813,13 @@ export class RuntimeLogSink implements LogSink {
     targetPath: string,
     cause: SuppressionCause
   ): void {
+    // FR-R3-080 (T1075) — a containment refusal reaches evidence health as a
+    // refusal, so the phase runner can surface it at phase end. The failure
+    // causes keep their own codes: "the write went wrong" and "the write never
+    // ran" are different facts and an operator acts on them differently.
+    if (CONTAINMENT_CAUSES.has(cause)) {
+      this.evidenceHealth?.reportFailure('runtimeLog', 'path-refused');
+    }
     let set = this.suppressed.get(targetPath);
     if (!set) {
       set = new Set();

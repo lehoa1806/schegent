@@ -224,7 +224,19 @@ export class PhaseRunner {
      * `new PhaseRunner(` that omits this. Absent, nothing is recorded: writing
      * `false` for a posture it cannot read would be a lie.
      */
-    backendPostureAccessor: BackendPostureAccessor | null = null
+    backendPostureAccessor: BackendPostureAccessor | null = null,
+    /**
+     * FR-R3-080 (T1075) — where a refused evidence write becomes an
+     * operator-visible phase-end warning.
+     *
+     * Positional and defaulted for the same reason `backendPostureAccessor`
+     * above is: 109 test harnesses construct this class positionally, so a
+     * required parameter is not available cheaply here. Absent, the phase-end
+     * record carries no refusal codes — which is exactly the state this item
+     * exists to leave, so production wiring is what makes it true, and the
+     * warnings themselves are the observable proof.
+     */
+    private readonly evidenceHealthDrain: { drainPathRefusals(): readonly string[] } | null = null
   ) {
     // Feature 074 — accept either a BackendRunnerRegistry (per-phase
     // runner resolution) or a plain BackendRunner (backwards compat
@@ -779,6 +791,15 @@ export class PhaseRunner {
     if (raw.diagnosticWarnings && raw.diagnosticWarnings.length > 0) {
       combinedWarnings.push(...raw.diagnosticWarnings);
     }
+    // FR-R3-080 (T1075) — every evidence write REFUSED during this phase, as a
+    // warning on the phase's own record.
+    //
+    // Drained rather than read: each refusal is reported against the phase it
+    // happened in and is not repeated on every phase after it. The codes are
+    // allowlist-filtered by the phase-end projection like every other warning
+    // here, so only the code-resident literals survive — which is what keeps a
+    // sink from putting a path in one.
+    combinedWarnings.push(...(this.evidenceHealthDrain?.drainPathRefusals() ?? []));
 
     const auditEntry = await this.appendAudit(
       inputs,
