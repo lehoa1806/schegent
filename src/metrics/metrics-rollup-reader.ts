@@ -7,19 +7,26 @@
 // rollup exists to remove, and the only way to guarantee it never happens is for
 // the code not to exist (T393).
 
-import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { SanitizedLogger } from '../lib/logger';
 import {
   METRICS_ROLLUP_FILENAME,
-  parseMetricsRollupLine,
+  type MetricsRollupCarryForward,
   type MetricsRollupRecord
 } from './metrics-rollup';
+import { streamRollup } from './metrics-rollup-stream';
 
 export interface MetricsRollupReadResult {
   /** False when the file does not exist yet, or could not be read at all. */
   readonly available: boolean;
   readonly records: readonly MetricsRollupRecord[];
+  /**
+   * FR-R3-082 (T1091) — what a trim discarded, as totals to start from.
+   *
+   * `undefined` for a rollup that has never been trimmed, which is every rollup
+   * written before this feature — so those compose exactly as they always did.
+   */
+  readonly carryForward: MetricsRollupCarryForward | undefined;
   /** Lines present but unusable. Surfaced so a corrupt tail is visible. */
   readonly unreadableRecords: number;
 }
@@ -27,6 +34,7 @@ export interface MetricsRollupReadResult {
 const EMPTY: MetricsRollupReadResult = Object.freeze({
   available: false,
   records: Object.freeze([]),
+  carryForward: undefined,
   unreadableRecords: 0
 });
 
@@ -49,37 +57,24 @@ export async function readMetricsRollup(
   workspaceRoot: string,
   logger?: SanitizedLogger
 ): Promise<MetricsRollupReadResult> {
-  let content: string;
+  // FR-R3-082 (T1093) — streamed, not `readFile`. The header this replaced said
+  // the whole file was "well inside a single read" because a record is a few
+  // hundred bytes a day; that reasoning is about the ORDINARY case, and an
+  // evidence file's size is not this host's to assume. The bound now comes from
+  // the reader rather than from an estimate of how much history exists.
+  let streamed;
   try {
-    content = await fs.readFile(metricsRollupPath(workspaceRoot), 'utf8');
+    streamed = await streamRollup(workspaceRoot, metricsRollupPath(workspaceRoot));
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
-    if (code !== 'ENOENT') {
-      logger?.warn('metrics rollup read failed; cumulative totals fall back to the retained log', {
-        ...(typeof code === 'string' ? { errno: code } : {})
-      });
-    }
+    logger?.warn('metrics rollup read failed; cumulative totals fall back to the retained log', {
+      ...(typeof code === 'string' ? { errno: code } : {})
+    });
     return EMPTY;
   }
+  if (!streamed.available) return EMPTY;
 
-  const records: MetricsRollupRecord[] = [];
-  let unreadableRecords = 0;
-  for (const line of content.split('\n')) {
-    const { record, warning } = parseMetricsRollupLine(line);
-    if (record !== null) {
-      records.push(record);
-      continue;
-    }
-    if (warning !== undefined) unreadableRecords += 1;
-  }
+  const { records, carryForward, unreadableRecords } = streamed;
 
-  if (unreadableRecords > 0) {
-    // Counts only — no line bodies, no path. An unreadable record understates
-    // cumulative totals by exactly one run, so it must not pass silently.
-    logger?.warn('metrics rollup has unreadable records; cumulative totals understate by that many runs', {
-      unreadableRecords
-    });
-  }
-
-  return { available: true, records, unreadableRecords };
+  return { available: true, records, carryForward, unreadableRecords };
 }

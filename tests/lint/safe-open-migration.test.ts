@@ -144,8 +144,18 @@ const UNMIGRATED: readonly string[] = [
   // handle-relative rename (`FR-R3-083`'s dependency question) or removing the
   // injected ports, which are this module's only test seam.
   'lib/runtime-log/runtime-log-sink.ts',
-  'metrics/metrics-rollup-reader.ts',
-  'metrics/metrics-rollup-writer.ts',
+  // `metrics/metrics-rollup-reader.ts` and `metrics/metrics-rollup-writer.ts`
+  // struck 2026-08-25 (FR-R3-082, T1098) — in ONE visit each, which is the cost
+  // that item was deferred to avoid paying twice. The same change that migrated
+  // the path calls also applied the FR-R3-050 I/O barrier, added the trim with
+  // its carry-forward header, and moved both sides onto the streaming reader in
+  // `metrics/metrics-rollup-stream.ts` (which is where the reads now go, and
+  // which walks).
+  //
+  // The trim publishes through a `rename`, which is the atomic-publish residual
+  // named below. It is listed there rather than here because it is the same
+  // trade every durable file in this repository makes, and because `renameat`
+  // is not Node's to offer.
   // FR-R3-080 (T1065, feature 153) — the SEC-07 APPEND window is closed and the
   // entry stays, for the same reason its twin `lib/runtime-log/runtime-log-sink.ts`
   // does. The append holds the descriptor the walk produced instead of writing to
@@ -259,6 +269,10 @@ const READS_THROUGH_MIGRATED_PORT: readonly string[] = [
 const ATOMIC_PUBLISH_RENAME_RESIDUAL: readonly string[] = [
   'audit/audit-log-writer.ts',
   'lib/catalog-fs-adapter.ts',
+  // FR-R3-082 (T1098) — added by the trim, which publishes a compacted rollup
+  // through a rename. The temp file it renames FROM is written through the
+  // checked walk; the publish itself cannot be, for the reason this list exists.
+  'metrics/metrics-rollup-writer.ts',
   'state/ownership-fs.ts'
 ];
 

@@ -3,6 +3,7 @@ import * as path from 'path';
 import { randomUUID } from 'crypto';
 import type { AuditEntry } from './audit-entry';
 import { AUDIT_SCHEMA_VERSION } from '../contracts/audit-events';
+import { boundForCaller, holdOrdering } from '../lib/io-barrier';
 import type { SanitizedLogger } from '../lib/logger';
 import {
   AuditPayloadValidationError,
@@ -250,8 +251,24 @@ export class AuditLogWriter {
     );
     // The barrier keeps its own link, so a caller-bound expiry cannot release
     // the chain and let an abandoned write interleave with the next append.
-    this.writeChain = this.holdOrdering(settled);
-    const next = this.boundForCaller(settled);
+    // FR-R3-082 (T1089) — the two helpers moved to `lib/io-barrier.ts` so the
+    // metrics rollup writer uses THIS shape rather than a second copy of it.
+    // Behaviour is unchanged; the reporting stays here, where the wording that
+    // suits an audit log lives.
+    this.writeChain = holdOrdering(
+      settled,
+      (barrierMs) => {
+        this.logger.warn(
+          'audit append ordering is no longer guaranteed; an append stayed ' +
+            'in flight past the ordering barrier',
+          { code: ORDERING_UNGUARANTEED_CODE, barrierMs }
+        );
+      },
+      ORDERING_BARRIER_TIMEOUT_MS
+    );
+    const next = boundForCaller(settled, APPEND_TIMEOUT_MS, () =>
+      new Error(`audit append timed out after ${APPEND_TIMEOUT_MS}ms`)
+    );
     // The warn hangs off the caller's view, not off the chain: it reports what
     // the caller was told, and putting it back on the chain would reintroduce
     // exactly the release this fix removes. `void` because the branch is
@@ -318,62 +335,6 @@ export class AuditLogWriter {
     } finally {
       await opened.handle.close().catch(() => undefined);
     }
-  }
-
-  /**
-   * The caller's view: reject on `APPEND_TIMEOUT_MS` so a wedged disk cannot
-   * stall a phase. Observably unchanged from the previous behaviour -- same
-   * bound, same rejection, same message.
-   */
-  private async boundForCaller(settled: Promise<void>): Promise<void> {
-    let timer: NodeJS.Timeout | undefined;
-    try {
-      await Promise.race([
-        settled,
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(
-            () => reject(new Error(`audit append timed out after ${APPEND_TIMEOUT_MS}ms`)),
-            APPEND_TIMEOUT_MS
-          );
-        })
-      ]);
-    } finally {
-      if (timer !== undefined) clearTimeout(timer);
-    }
-  }
-
-  /**
-   * The chain's view: hold the next append until this one has really settled,
-   * so nothing can interleave with a write the caller already gave up on.
-   *
-   * Bounded by `ORDERING_BARRIER_TIMEOUT_MS` rather than unbounded, and the
-   * expiry is recorded: past that point ordering genuinely is not guaranteed,
-   * and a log that stays silent about it reads as an ordered log.
-   *
-   * Never rejects -- it is the chain, and a rejected chain link would surface
-   * as an unhandled rejection with no caller to receive it.
-   */
-  private holdOrdering(settled: Promise<void>): Promise<void> {
-    let timer: NodeJS.Timeout | undefined;
-    const expired = new Promise<'expired'>((resolve) => {
-      timer = setTimeout(() => resolve('expired'), ORDERING_BARRIER_TIMEOUT_MS);
-      timer.unref();
-    });
-    return Promise.race([
-      settled.then(() => 'settled' as const, () => 'settled' as const),
-      expired
-    ])
-      .then((outcome) => {
-        if (outcome !== 'expired') return;
-        this.logger.warn(
-          'audit append ordering is no longer guaranteed; an append stayed ' +
-            'in flight past the ordering barrier',
-          { code: ORDERING_UNGUARANTEED_CODE, barrierMs: ORDERING_BARRIER_TIMEOUT_MS }
-        );
-      })
-      .finally(() => {
-        if (timer !== undefined) clearTimeout(timer);
-      });
   }
 
   private ensureRuntimeGitignore(): Promise<void> {
