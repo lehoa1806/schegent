@@ -8,6 +8,25 @@
 //     rather than the path, and an `lstat` after the open covers Windows, where
 //     `O_NOFOLLOW` does not exist. There is no check-then-act window to race.
 //
+//     **FR-R3-080 (2026-08-26) — that closed the LEAF and nothing above it.**
+//     `resolveWithinWorkspace` is purely lexical, and `O_NOFOLLOW` guards only
+//     the final component, so a symlinked ANCESTOR inside the workspace pointing
+//     outside it satisfied the check and was never looked at: the verdict came
+//     back usable for a path that is not in the workspace. The repro is filed
+//     with the envelope's bug records in `docs/features/bugs/`, under
+//     `local-input-validator-ancestor-symlink` — named rather than linked,
+//     because that tree is outside this repository and a repo-relative path to
+//     it is a dangling reference by construction (the practice
+//     `services/guarded-run-service.ts` already follows).
+//
+//     Both entry points now go through `lib/safe-open.ts`'s component walk,
+//     which `lstat`s every component and refuses a link at any depth — and which
+//     carries FR-R3-083's Windows reparse check with it. The lexical check
+//     stays and stays FIRST: `resolveRunOutputs` establishes that a path is
+//     judged lexically before any syscall touches it, so an uncontained
+//     candidate is refused without a filesystem read at an operator-supplied
+//     location.
+//
 //   * **Bounds enforced during the walk** (research §5, the ingestion-bomb
 //     pattern): count, bytes, and extension are checked as each entry is
 //     reached and the walk aborts on the first breach. Measuring the whole tree
@@ -27,6 +46,12 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { RunRequestErrorCode } from '../../contracts/run-request';
 import { resolveWithinWorkspace } from './workspace-containment';
+import {
+  openWithinRootByPath,
+  segmentsUnderRoot,
+  walkDirectoriesWithinRoot,
+  type SafeOpenRefusal
+} from '../../lib/safe-open';
 
 export const FOLDER_MAX_FILES = 500;
 export const FOLDER_MAX_BYTES = 5 * 1024 * 1024;
@@ -117,11 +142,9 @@ function refuse(code: RunRequestErrorCode, bounds?: { limit: number; actual: num
   return bounds === undefined ? { ok: false, code } : { ok: false, code, ...bounds };
 }
 
-/**
- * `O_NOFOLLOW` is POSIX. On Windows it is absent, so OR with `0` (identity) and
- * rely on the `lstat` after the open plus Windows' own symlink-creation ACL.
- */
-const NOFOLLOW: number = (fs.constants as { O_NOFOLLOW?: number }).O_NOFOLLOW ?? 0;
+// The local `O_NOFOLLOW` constant went with the migration: `lib/safe-open.ts`
+// owns that decision now, including the Windows branch FR-R3-083 added, and a
+// second copy of a platform constant is a second place for it to drift.
 
 function codeOf(err: unknown): string | undefined {
   return (err as { code?: string } | null)?.code;
@@ -158,20 +181,22 @@ export async function checkLocalFile(
   if (!contained.ok) return refuse('path-escapes-workspace');
 
   const absolutePath = contained.absolutePath;
-  let handle: fs.FileHandle | null = null;
+  // Through the walk, which proves every component and opens the leaf. The
+  // handle is closed immediately: this answers "is this reference usable?", and
+  // reading a file the composer only needs to reference would be work done for
+  // nothing.
+  const opened = await openWithinRootByPath(workspaceRoot, absolutePath, { flags: 'r' });
+  if (opened.outcome === 'refused') return refusalFor(opened.reason, opened.errno);
   try {
-    handle = await fs.open(absolutePath, fs.constants.O_RDONLY | NOFOLLOW);
-    const stat = await handle.stat();
+    const stat = await opened.handle.stat();
+    // The walk guarantees a regular file at the leaf, so this is the narrower
+    // question the caller asked: a directory supplied where a file was named.
     if (!stat.isFile()) return refuse('file-not-found');
-    const afterOpen = await fs.lstat(absolutePath);
-    if (afterOpen.isSymbolicLink()) return refuse('symlink-limit-exceeded');
     return OK;
-  } catch (err) {
-    if (isSymlinkRefusal(err)) return refuse('symlink-limit-exceeded');
-    if (isAbsent(err)) return refuse('file-not-found');
+  } catch {
     return refuse('file-unreadable');
   } finally {
-    await handle?.close();
+    await opened.handle.close().catch(() => undefined);
   }
 }
 
@@ -189,6 +214,15 @@ export async function checkLocalFolder(
 ): Promise<LocalCheckResult> {
   const contained = resolveWithinWorkspace(workspaceRoot, candidate);
   if (!contained.ok) return refuse('path-escapes-workspace');
+
+  // FR-R3-080 — prove the chain from the workspace root DOWN to the walk root
+  // before walking it. The `lstat` below refuses a symlinked walk root and the
+  // loop refuses a symlinked entry, but neither could see a link one level up:
+  // `lstat` follows it and reports a real directory.
+  const segments = segmentsUnderRoot(workspaceRoot, contained.absolutePath);
+  if (segments === null) return refuse('path-escapes-workspace');
+  const walked = await walkDirectoriesWithinRoot(workspaceRoot, segments);
+  if (walked.outcome === 'refused') return refusalFor(walked.reason, walked.errno);
 
   const rootStat = await lstatOrNull(contained.absolutePath);
   if (rootStat === null) return refuse('file-not-found');
@@ -241,6 +275,43 @@ export async function checkLocalFolder(
   }
 
   return OK;
+}
+
+/**
+ * Translate a `SafeOpenRefusal` into this module's closed code set.
+ *
+ * One site, so the mapping is stated once. A link at ANY depth is
+ * `symlink-limit-exceeded` — the code this module already used for the leaf, and
+ * the one FR-016 names — because to a caller the finding is the same: the
+ * reference reaches outside the workspace through a link. `reparse-point-leaf`
+ * is the Windows form of exactly that (FR-R3-083) — reachable only where the
+ * platform has no `O_NOFOLLOW`, and covering the reparse ATTRIBUTE rather than
+ * the tag, which needs a native call declined on the record in
+ * `docs/architecture/native-binding-decision.md`.
+ *
+ * `escapes-root` cannot be reached here — `resolveWithinWorkspace` refused first
+ * — but it is mapped rather than defaulted, so a future caller that skips the
+ * lexical check does not land on `file-unreadable` for a containment refusal.
+ */
+function refusalFor(reason: SafeOpenRefusal, errno?: string): LocalCheckResult {
+  switch (reason) {
+    case 'symlink-component':
+    case 'symlink-leaf':
+    case 'reparse-point-leaf':
+      return refuse('symlink-limit-exceeded');
+    case 'escapes-root':
+      return refuse('path-escapes-workspace');
+    case 'not-a-directory':
+    case 'not-a-regular-file':
+      return refuse('file-not-found');
+    case 'io-failed':
+      // The ERRNO decides, not the reason. The walk reports a missing component
+      // and an unreadable one under the same `io-failed`, and collapsing them
+      // told an operator their `chmod 000` file did not exist. Caught by the
+      // suite's pre-existing "refuses a file that cannot be read" case, which is
+      // what that case is for.
+      return refuse(errno === 'ENOENT' || errno === 'ENOTDIR' ? 'file-not-found' : 'file-unreadable');
+  }
 }
 
 async function lstatOrNull(target: string) {

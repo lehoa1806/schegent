@@ -236,3 +236,53 @@ describe('the walk aborts on first breach', () => {
     expect(stats).toBeLessThanOrEqual(FOLDER_MAX_FILES + 1);
   });
 });
+
+describe('a symlinked ANCESTOR, not just a symlinked leaf', () => {
+  // The gap this suite did not have: both entry points established containment
+  // with `resolveWithinWorkspace`, which is purely lexical -- `path.resolve` then
+  // `path.relative`, no `realpath` and no `lstat`. `checkLocalFile`'s
+  // `O_NOFOLLOW` closes the FINAL component and `checkLocalFolder` refuses a
+  // symlinked walk root and any symlinked entry it reaches, but neither looked at
+  // the components BETWEEN the workspace root and the candidate.
+  //
+  // So a link one level up satisfied the lexical check and was never examined,
+  // and the verdict came back usable for a path that is not in the workspace.
+  // Filed as `docs/features/bugs/local-input-validator-ancestor-symlink.md`.
+  let outside: string;
+
+  beforeEach(async () => {
+    outside = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-outside-'));
+    await fs.mkdir(path.join(outside, 'inner'));
+    await fs.writeFile(path.join(outside, 'inner', 'secret.txt'), 'not yours', 'utf8');
+    // The ancestor. Inside the workspace by name, outside it in fact.
+    await fs.symlink(outside, path.join(root, 'link'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(outside, { recursive: true, force: true });
+  });
+
+  it('refuses a file reached through a symlinked ancestor', async () => {
+    const result = await checkLocalFile(root, 'link/inner/secret.txt');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('symlink-limit-exceeded');
+  });
+
+  it('refuses a folder reached through a symlinked ancestor', async () => {
+    const result = await checkLocalFolder(root, 'link/inner');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('symlink-limit-exceeded');
+  });
+
+  it('still accepts an ordinary nested file, so the walk is not refusing everything', async () => {
+    // Non-vacuity for the two above. A component check that refused every nested
+    // path would satisfy them while breaking every legitimate reference.
+    await write('real/inner/notes.md');
+    await expect(checkLocalFile(root, 'real/inner/notes.md')).resolves.toEqual({ ok: true });
+  });
+
+  it('still accepts an ordinary nested folder', async () => {
+    await write('real/inner/notes.md');
+    await expect(checkLocalFolder(root, 'real/inner')).resolves.toEqual({ ok: true });
+  });
+});

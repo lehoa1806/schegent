@@ -92,6 +92,26 @@ const INJECTED_FS_PORT = /\breadonly\s+\w+\??:\s*(AppendFn|WriteFileFn|MkdirFn|R
  * hand-built list.
  */
 const UNMIGRATED: readonly string[] = [
+  // `services/run-request/local-input-validator.ts` struck 2026-08-26 (FR-R3-080)
+  // — and the strike is a DEFECT FIX, not migration hygiene, which is the finding
+  // this entry produced on its way out.
+  //
+  // It was carried here from `FR-R3-053` §5 and assigned to `FR-R3-080` by that
+  // item's closure "so it is not orphaned". Nobody re-read the line to ask what
+  // the unmigrated call actually let through. It let through this:
+  // `resolveWithinWorkspace` is purely lexical, and the leaf `O_NOFOLLOW` guards
+  // only the final component, so a symlinked ANCESTOR inside the workspace
+  // pointing outside it satisfied the check and was never examined — the verdict
+  // came back `usable` for a path that is not in the workspace. The repro is filed
+  // with the envelope's bug records in `docs/features/bugs/`, under
+  // `local-input-validator-ancestor-symlink` — named rather than linked, because
+  // that tree is outside this repository.
+  //
+  // Both entry points now go through the component walk. The lexical check stays
+  // and stays first, per `resolveRunOutputs`' ordering rule.
+  //
+  // The cost of carrying a containment gap on a debt list: a ledger entry reads
+  // as "not reached yet", never as "open defect".
   // `audit/raw-transcript-writer.ts` struck 2026-08-25 (FR-R3-078, feature 153) —
   // fully migrated. The entry used to read "the APPEND path is migrated; the
   // promotion/rename and spool-root calls are not", and a partially migrated
@@ -150,7 +170,6 @@ const UNMIGRATED: readonly string[] = [
   // rollover half rather than the once-per-line half. Closing them means either a
   // handle-relative rename (`FR-R3-083`'s dependency question) or removing the
   // injected ports, which are this module's only test seam.
-  'lib/runtime-log/runtime-log-sink.ts',
   // `metrics/metrics-rollup-reader.ts` and `metrics/metrics-rollup-writer.ts`
   // struck 2026-08-25 (FR-R3-082, T1098) — in ONE visit each, which is the cost
   // that item was deferred to avoid paying twice. The same change that migrated
@@ -175,7 +194,6 @@ const UNMIGRATED: readonly string[] = [
   // ENOENT-parent cannot be induced reliably on a real filesystem). Production
   // supplies no such port — but an injected write port is a pathname write by
   // another name, and pretending otherwise is what a ledger exists to prevent.
-  'monitor/cli-transport-sink.ts',
   // `services/history/history-description-store.ts` struck 2026-08-25
   // (FR-R3-080, feature 153) — the SEC-06 check-then-act write is migrated. The
   // `containedPathFor` verdict that used to precede it is gone from the write
@@ -194,7 +212,6 @@ const UNMIGRATED: readonly string[] = [
   // root is REQUIRED on the session's deps rather than optional: a tail with no
   // root would open by pathname, which is the state being left. The registry
   // already held it, since it composes the file path from it.
-  'services/run-request/local-input-validator.ts',
   // `state/ownership-fs.ts` struck 2026-08-25 (FR-R3-069, feature 152). The
   // 2026-08-24 attempt was reverted because the port's containment root WAS the
   // directory `ensureDir` must create and `openWithinRoot` never creates its
@@ -361,6 +378,40 @@ const PERMANENT_LIMIT: readonly PermanentLimit[] = [
 ];
 
 /**
+ * FR-R3-080 (2026-08-26) — sinks whose filesystem calls are MIGRATED, and whose
+ * only remaining flag is an injected function port that exists as a test seam.
+ *
+ * WHY THIS IS A DISPOSITION AND NOT DEBT
+ *
+ * The detector flags a module for `INJECTED_FS_PORT` as well as for a raw call,
+ * and it is right to: a sink that takes `appendFile` as a parameter could have
+ * its raw call relocated to a composition root rather than removed, which is not
+ * a migration. So the question is never "does the port exist" but "does anything
+ * production SUPPLY one" — and the assertion below has measured that at zero
+ * since T1066.
+ *
+ * Both modules here hold the descriptor the walk produced and re-read their roots
+ * per write; their append windows were closed by `FR-R3-080`'s first pass. What
+ * is left is the seam itself, and it cannot be removed without removing the
+ * tests it exists for: `EACCES`, `ENOSPC` and `ENOENT-parent` cannot be induced
+ * reliably on a real filesystem, and the warn-once-per-cause behaviour is only
+ * observable by inducing them.
+ *
+ * That makes it the same shape as `TRUST_ANCHOR`: a line that cannot move is not
+ * debt, and a shrink-only list containing one makes "drained" unreachable. It is
+ * still checked — the assertion below proves production supplies nothing, and a
+ * module here that acquires a RAW call fails the general sweep by name.
+ *
+ * Their rotation `rename`/`unlink` is a separate residual and is the `renameat`
+ * question, answered permanently in
+ * `docs/architecture/native-binding-decision.md`.
+ */
+const TEST_ONLY_FS_PORT: readonly string[] = [
+  'lib/runtime-log/runtime-log-sink.ts',
+  'monitor/cli-transport-sink.ts'
+];
+
+/**
  * Modules that are not workspace sinks or sources at all, so the primitive does
  * not apply. Kept short and reasoned, because a broad exemption is how a gate
  * stops gating.
@@ -446,12 +497,60 @@ describe('safe-open migration (FR-R3-053)', () => {
       ...NOT_A_WORKSPACE_SINK,
       ...ATOMIC_PUBLISH_RENAME_RESIDUAL,
       ...READS_THROUGH_MIGRATED_PORT,
+      ...TEST_ONLY_FS_PORT,
       ...TRUST_ANCHOR
     ]);
     const unexpected = callers.filter((f) => !known.has(f));
     // A new entry here is a new sink built the way the H-02 escape was built.
     // Use `openWithinRoot`, or add a reasoned line to NOT_A_WORKSPACE_SINK.
     expect(unexpected).toEqual([]);
+  });
+
+  it('is DRAINED — and says so by measuring, not by transcription', () => {
+    // FR-R3-080's whole purpose, reached 2026-08-26. The assertion below
+    // ("lists nothing stale") passes vacuously on an empty list, so the drain
+    // needs its own statement or the milestone is invisible in the gate that owns
+    // it.
+    //
+    // Deliberately asserts EMPTY rather than a number. `FR-R3-067`'s rule is that
+    // a count lives where it is measured; the moment this reads `toHaveLength(3)`
+    // it is a transcription that goes stale on the next strike.
+    expect(UNMIGRATED).toEqual([]);
+  });
+
+  it('still fails a NEW raw sink, so a drained list is not a disabled gate', () => {
+    // The failure mode of reaching zero: the list is empty, every assertion over
+    // it is vacuous, and the gate quietly stops gating. What keeps it live is the
+    // sweep — `rawCallers()` measures the tree and the "no raw path call outside
+    // the tracked and reasoned sets" assertion refuses anything unaccounted for.
+    // This pins that the sweep still SEES modules, which is the one way that
+    // assertion could pass by finding nothing.
+    expect(rawCallers().length).toBeGreaterThan(5);
+  });
+
+  it('keeps the test-only fs ports free of any raw filesystem call', () => {
+    // The disposition covers an injected PORT, and nothing else. A module here
+    // that acquires a raw call would otherwise be sheltered by a line it earned
+    // for a seam — the same failure `keeps the atomic-publish residual list to
+    // renames only` exists to prevent for that list.
+    const offenders: string[] = [];
+    for (const relPath of TEST_ONLY_FS_PORT) {
+      const body = readFileSync(join(SRC, ...relPath.split('/')), 'utf8')
+        .split(/\r?\n/)
+        .filter((line) => {
+          const trimmed = line.trim();
+          return (
+            !trimmed.startsWith('//') && !trimmed.startsWith('*') && !trimmed.startsWith('/*')
+          );
+        })
+        .join('\n');
+      // `rename`/`unlink` are the rotation residual and are expected; anything
+      // else is a raw call this disposition does not cover.
+      const kinds = [...body.matchAll(new RegExp(RAW_PATH_CALL, 'g'))].map((m) => m[1]);
+      const unexpected = [...new Set(kinds)].filter((k) => k !== 'rename');
+      if (unexpected.length > 0) offenders.push(`${relPath}: ${unexpected.join(', ')}`);
+    }
+    expect(offenders).toEqual([]);
   });
 
   it('lists nothing in UNMIGRATED that no longer needs to be there', () => {
