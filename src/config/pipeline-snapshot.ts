@@ -29,6 +29,12 @@ export function snapshotPhaseDef(
     version: phase.version ?? 1,
     runner: effectiveRunnerKindForPhase(phase, defaultRunner),
     sideEffects: phase.sideEffects ?? 'workspace',
+    // FR-R3-086 — the declared capability set is frozen with the plan. Omission
+    // stays omission rather than being defaulted to the full set here: the
+    // enforcement plan reads an absent set as DEFAULT_CAPABILITY_SET, and
+    // writing the full list into every snapshot would make an untouched phase's
+    // frozen contract change shape for no behavioural reason.
+    capabilities: phase.capabilities === undefined ? undefined : Object.freeze([...phase.capabilities]),
     evidencePolicy: phase.evidencePolicy ?? 'required',
     promptVersion: phase.promptVersion ?? 'custom-v1'
   });

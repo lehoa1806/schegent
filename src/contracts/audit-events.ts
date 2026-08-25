@@ -1,3 +1,4 @@
+import type { PhaseCapability } from './phase-capabilities';
 import type { BackendRunnerKind } from './backend-kinds';
 import type { BackendContainment } from '../services/backend-containment-policy';
 import type { TerminationReason } from '../state/workflow-run';
@@ -435,6 +436,44 @@ export const METRICS_EVENT_TYPES = ['metrics-view-opened'] as const;
 export const BACKEND_POSTURE_EVENT_TYPES = ['backend-posture-admitted'] as const;
 
 /**
+ * FR-R3-086 (H-01 / SEC-08) — a phase refused because its declared capability
+ * set cannot be enforced.
+ *
+ * DECLARED HERE BEFORE ANY OPERATOR-FACING TEXT CLAIMS IT. `D2` exists because a
+ * manifest promised a record the contract did not declare, and
+ * `tests/lint/capability-text-contract-parity.test.ts` fails when a document
+ * names an event this contract does not carry. The order is the point: contract
+ * first, prose second.
+ *
+ * WHAT THIS IS NOT. It is not a tool-call denial. The host does not observe tool
+ * calls — it narrows the authority the backend grants itself and the backend's
+ * own permission engine refuses at the attempt. This event records the case where
+ * the backend has NO surface that can express a withheld capability, so the phase
+ * is refused before it starts rather than run with the declared set ignored.
+ *
+ * That distinction is the honest half of this mechanism and it is repeated in
+ * `docs/security/threat-model.md` in the same section that states what the
+ * mechanism does bound.
+ */
+export const CAPABILITY_REFUSAL_EVENT_TYPES = ['capability-refused'] as const;
+export type CapabilityRefusalEventType = (typeof CAPABILITY_REFUSAL_EVENT_TYPES)[number];
+
+/**
+ * The payload, and every field is a closed union, a number, or an array of
+ * closed-union members.
+ *
+ * NO PATHS, no task description, no operator-authored content — the standing
+ * rules for every audit payload in this contract. `phaseIndex` addresses the
+ * phase by position because a sequence may repeat a phase, which is the same
+ * reason pipeline bindings address by index rather than by id.
+ */
+export interface CapabilityRefusedPayload {
+  readonly kind: BackendRunnerKind;
+  readonly unenforceable: readonly PhaseCapability[];
+  readonly phaseIndex: number;
+}
+
+/**
  * FR-R3-083 / FR-R3-054 §5 — a terminal state that does not lie, in EVIDENCE.
  *
  * When the backend's process group cannot be proven gone within the grace window
@@ -628,6 +667,7 @@ export const ALL_AUDIT_EVENT_TYPES = [
   ...OPTIONAL_PHASE_EVENT_TYPES,
   ...BACKEND_PING_EVENT_TYPES,
   ...BACKEND_POSTURE_EVENT_TYPES,
+  ...CAPABILITY_REFUSAL_EVENT_TYPES,
   ...PROCESS_TREE_EVENT_TYPES,
   ...METRICS_EVENT_TYPES,
   ...PROCESS_EXCHANGE_EVENT_TYPES,

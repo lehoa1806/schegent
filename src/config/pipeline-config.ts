@@ -1,5 +1,6 @@
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type Effort = (typeof EFFORT_LEVELS)[number];
+import type { PhaseCapability } from '../contracts/phase-capabilities';
 import { SUPPORTED_BACKENDS, isBackendRunnerKind, type BackendRunnerKind } from '../contracts/backend-kinds';
 // One declaration serves the authored contract and the runtime shape. These were
 // duplicated string unions here; a Phase now declares its own containment class,
@@ -50,6 +51,15 @@ export interface PhaseDef {
   /** FR-R3-058 — omission means `model-token`. */
   readonly hostVerification?: PhaseHostVerification;
   readonly promptVersion?: string;
+  /**
+   * FR-R3-086 — what this phase's agent may do.
+   *
+   * **Omission means every capability**, which is the historical behaviour and
+   * the common case: the phase spawns with today's argv, byte for byte.
+   * Narrowing is opt-in, per phase, and is frozen into the Run's pipeline
+   * snapshot with the rest of the plan.
+   */
+  readonly capabilities?: readonly PhaseCapability[];
 }
 // Feature 082 — the runtime Pipeline shape. `id`, `name`, and `phases` are the
 // legacy required trio; every contract field added by the Pipeline Builder is

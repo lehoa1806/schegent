@@ -15,6 +15,9 @@ import type {
 import { VerboseDiagnosticWriter } from '../audit/verbose-diagnostic-writer';
 import { SanitizedLogger } from '../lib/logger';
 import { buildSpawnEnv } from './spawn-env';
+import { planCapabilityEnforcement } from '../services/capability-enforcement-plan';
+import { CapabilityNotEnforceableError } from '../services/capability-refusal';
+import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import { ZippedStreamBuffer } from './zipped-stream-buffer';
 import {
   IncrementalFatalScanner,
@@ -175,6 +178,58 @@ function safeSpawn(
  * stream; truncation is silent. Timeout and cancellation both terminate
  * the subprocess via `terminate()`.
  */
+/**
+ * FR-R3-031 / FR-R3-032 — the permission posture, as an unconditional module-scope
+ * literal so that "unconditional" is CHECKABLE by reading this file.
+ *
+ * `tests/lint/backend-permission-posture.test.ts` parses this declaration. That
+ * is not incidental: the disclosure those items shipped is only trustworthy while
+ * the argv is legible where the spawn happens, and four gates read this source
+ * text rather than the runtime argv for exactly that reason.
+ *
+ * FR-R3-086 narrows it per phase through `capabilityArgs`, and
+ * `tests/lint/capability-argv-parity.test.ts` asserts this literal equals
+ * `unboundedArgs(kind)` so the plan and the adapter cannot disagree about what
+ * "unbounded" means.
+ */
+const UNBOUNDED_PERMISSION_ARGS = ['--dangerously-skip-permissions'];
+
+/**
+ * FR-R3-086 — the argv this backend spawns with, under the phase's declared
+ * capability set.
+ *
+ * WHY THE DEFAULT LITERAL STAYS IN THIS FILE. Four gates read each adapter's
+ * SOURCE TEXT to prove the permission posture — `backend-permission-posture`,
+ * `backend-containment-policy`, and the two documentation-parity gates — because
+ * a posture proven from source cannot be quietly changed by a table somewhere
+ * else. Moving the flag into a shared module made all four go red, and they were
+ * right to: the FR-R3-031/032 disclosure is only trustworthy while the argv is
+ * legible where the spawn happens.
+ *
+ * So `unbounded` is passed in as a literal from the call site below, and this
+ * returns it unchanged whenever the phase declared nothing — which is every
+ * phase today. The plan is consulted ONLY to narrow. `capability-argv-parity`
+ * asserts the literal each adapter passes equals `unboundedArgs(kind)`, so the
+ * two cannot drift.
+ *
+ * A refusal is thrown rather than returned because there is no invocation to
+ * return: the phase must not start.
+ */
+function capabilityArgs(
+  kind: BackendRunnerKind,
+  request: InvocationRequest,
+  unbounded: readonly string[]
+): readonly string[] {
+  if (request.capabilities === undefined || request.capabilities.declaredAt === 'default') {
+    return unbounded;
+  }
+  const plan = planCapabilityEnforcement(kind, request.capabilities);
+  if (plan.outcome === 'refused') {
+    throw new CapabilityNotEnforceableError(plan.kind, plan.unenforceable);
+  }
+  return plan.args;
+}
+
 export class ClaudeCliRunner implements BackendRunner {
   private readonly spawnFn: SpawnFn;
   private readonly monitorHook: MonitorSidecarHook | null;
@@ -265,8 +320,12 @@ export class ClaudeCliRunner implements BackendRunner {
       continuePrefix = [];
     }
 
+    // FR-R3-086 — the argv comes from the capability plan, not from a literal
+    // here. A phase that declares nothing gets `DEFAULT_CAPABILITY_SET`, which
+    // the plan turns into `['--dangerously-skip-permissions']` — byte-identical
+    // to what stood here — so nothing about an existing run changes shape.
     const baseArgs = [
-      '--dangerously-skip-permissions',
+      ...capabilityArgs('claude', request, UNBOUNDED_PERMISSION_ARGS),
       ...continuePrefix,
       '-p'
     ];

@@ -8,6 +8,22 @@ import { resolve } from 'node:path';
 // budget without updating the spec.
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
+//
+// FR-R3-086 — bumped phase-runner.ts +7 for the capability refusal: one import,
+// a two-line call site, and one member on the audit eventType union.
+//
+// The MECHANISM is not here, and that is what the +7 buys. `refuseUnenforceable
+// Capabilities` lives in `capability-refusal-recorder.ts`, in the shape
+// `backend-posture-recorder.ts` and `process-tree-degradation-recorder.ts`
+// already established: the coordinator shell calls it and does not learn what it
+// does. An earlier draft put the whole method here and cost +27; extracting it
+// took that back to +7, which is the forwarding cost of one more decision the
+// shell coordinates.
+//
+// Recorded rather than absorbed because the reviewer brief's §6 is still open:
+// `STATE-1` was closed on a ratchet and the brief asks whether the wrong half was
+// closed. A budget raised without a stated reason is exactly the shape that
+// question is about.
 
 // Feature 010 BUG-001 (Bugfix 2026-05-22) — bumped phase-runner.ts +10
 // and phase-retry-evaluator.ts +30 to accommodate the FR-028 retry-decision
@@ -107,7 +123,7 @@ const BUDGETS = [
   // and the fold into the phase-end warnings with the reason the codes are
   // drained rather than read. Nothing to extract: the fold is where the
   // warnings are assembled.
-  { path: 'src/controller/phase-runner.ts', max: 1_014 },
+  { path: 'src/controller/phase-runner.ts', max: 1_021 },
   // FR-R3-052 / H-03 (2026-08-24) — 400 → 415 for the size check that was
   // missing. `stat()` was already called here and only `isFile()` was read, so
   // `readFile()` took a multi-GiB sidecar wholly into memory. The bound, the

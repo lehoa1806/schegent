@@ -70,6 +70,31 @@ The controls common to all six reduce malformed-input and confused-deputy risk; 
 - Workspace-local audit evidence can be modified or deleted by an operator or backend process. Schegent neither hashes the log as a chain nor detects post-write tampering. <!-- Source: src/audit/audit-log-writer.ts -->
 - The host does not implement an offline network guarantee for backend CLIs. <!-- Source: src/runner/claude-cli.ts --><!-- Source: src/runner/codex-cli.ts --><!-- Source: src/runner/agy-cli.ts -->
 
+**FR-R3-086 — a phase may narrow what its agent may do, and here is what that does NOT bound.**
+A Phase definition may declare a capability set (`workspace-write`, `outside-workspace-write`,
+`process-spawn`, `network`), frozen into the Run's plan snapshot. The host translates it into the
+backend's own enforcement flags — `--disallowedTools` and `--permission-mode` for Claude, `--sandbox`
+for Agy, `--sandbox` for Codex — so the backend's permission engine refuses at the attempt.
+
+What it bounds and what it does not, in the same paragraph on purpose:
+
+- **The host does not observe tool calls.** It hands the backend a narrowed authority and trusts the
+  backend to apply it. That trust is the anchor of the whole mechanism, and nothing here verifies it.
+- **`agy` can express only `process-spawn`.** Its CLI has a single `--sandbox` switch and no per-tool
+  flag, so a phase withholding `network`, `workspace-write` or `outside-workspace-write` on that
+  backend is **refused before it starts** rather than run unbounded. Refusing is the honest outcome; it
+  is not a working one.
+- **The default is unchanged.** A phase that declares no capability set spawns with exactly the argv it
+  spawned with before this existed. `SEC-08` is not closed by this: narrowing is opt-in, per phase, and
+  a fresh install still refuses its first uncontained run.
+- **This is not a mediated broker.** The broker — where the host would see each call rather than
+  delegating — is recorded as the destination in
+  [Agent capability posture](../architecture/agent-capability-posture.md), with the review's own 1–3
+  month estimate and the expansion-freeze constraint that blocks its most plausible route.
+
+A refusal is a Run-level outcome with a named cause and a declared `capability-refused` audit event,
+distinguishable from a phase failure. <!-- Source: src/services/capability-enforcement-plan.ts --><!-- Source: src/contracts/phase-capabilities.ts -->
+
 ## Threat anchors
 
 ### T1 — Secret leakage to operator-visible sinks

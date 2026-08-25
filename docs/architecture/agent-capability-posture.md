@@ -119,6 +119,73 @@ have seen a dead Schegent with no message, which is far worse than a refused run
 takes a thunk and constructs at poll time. That is better regardless: a long-lived object holding a
 runner built under a posture the operator can change is the caching shape the hard rules forbid.
 
+## FR-R3-086 — stage 1: the route, costed, decided 2026-08-25
+
+`FR-R3-056` shipped shape 3 and said plainly that shape 2 *"is the only shape that bounds `claude`
+itself rather than gating whether it may run at all"*. `FR-R3-086` is where that is decided on
+mechanism. The three routes it names, each costed rather than argued from preference:
+
+### Route A — OS/CLI-enforced containment, driven by a host-declared capability set — **CHOSEN**
+
+The host declares a capability set per phase and translates it into each backend's **own** enforcement
+surface. The backend's permission engine refuses at the attempt.
+
+**Why it was chosen, and it is not a compromise.** The route reads as the weakest of the three until
+the CLIs are actually checked. Re-derived from the installed binaries on 2026-08-25:
+
+| Backend | Enforcement surface it already has |
+|---|---|
+| `claude` | `--permission-mode`, `--allowedTools`, `--disallowedTools`, `--settings` |
+| `agy` | `--sandbox` (*"run in a sandbox with terminal restrictions enabled"*), `--mode` |
+| `codex` | `-s/--sandbox`, `-a/--ask-for-approval` — already at `workspace-write` |
+
+All three carry one. So route A reaches **enforcement at the point of effect** without building a
+mediator process inside the expansion freeze — and without MCP, which the reviewer brief names as the
+most plausible route to what `SEC-1` lacks and which is explicitly blocked.
+
+**Cost paid:** a per-phase declared set, one translation site, a run-level refusal, an audit event, and
+the gaps below.
+
+**What it does NOT bound, stated because a containment claim without its limits is the `R-14` class:**
+
+- **The host does not observe tool calls.** It hands the backend a narrowed authority and trusts the
+  backend to apply it. That trust is the anchor of this whole mechanism.
+- **`agy` can express only one of the four capabilities.** Its CLI has `--sandbox` and no per-tool
+  flag, so a phase withholding `network`, `workspace-write` or `outside-workspace-write` on `agy` is
+  **refused before it starts** rather than run unbounded. That is an honest outcome, not a working
+  one, and it is the strongest argument for route B later.
+- **Nothing here closes `SEC-08` at the default.** A phase that declares no capability set spawns with
+  today's argv, byte for byte. Narrowing is opt-in, per phase.
+
+### Route B — a host-side mediated broker — **the destination, not yet built**
+
+Every tool call passes through a host-side mediator that approves, denies or logs it against a
+declared set. Strongest of the three: it would remove the trust anchor above, because the host would
+see each call rather than delegating.
+
+**Cost:** the review's own estimate is **1–3 months**. Its most plausible implementation route runs
+through a plug-in protocol the expansion freeze blocks. `FR-R3-086` §5 is explicit that *"shipping a
+token mediator to close a High is how a High gets relabelled a second time"*, and a half-built broker
+that replaced a working refusal would be strictly worse than the refusal.
+
+**Recorded as the destination.** If a backend's own surface proves insufficient — and `agy`'s already
+is, for three of four capabilities — route B is what closes the gap.
+
+### Route C — a separately enabled expert mode — **rejected**
+
+Keep today's behaviour explicitly out of the ordinary path.
+
+**Cost:** none, which is the problem. This is what shipped as shape 3, and choosing it again would be
+choosing not to bound anything. Its honest description is *"we chose not to bound it"*, and the
+2026-08-22 reviewer brief's question — whether an undisclosed unbounded tool boundary becoming a
+disclosed one is a High closed or a High relabelled — would stay open on the same terms.
+
+### What this does and does not close
+
+**`SEC-08` is not marked closed by this.** The mechanism bounds a phase that opts into a narrower set;
+the default is unchanged and `agy` is bounded in only one dimension. Whether that is enough is a
+judgement for the independent review, and `FR-R3-093` §6 says this item does not pre-empt it.
+
 ## What is required to close FR-R3-056
 
 The item's acceptance is mechanism, not prose:

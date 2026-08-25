@@ -26,6 +26,7 @@ import {
   BackendPostureRecorder,
   type BackendPostureAccessor
 } from './backend-posture-recorder';
+import { refuseUnenforceableCapabilities } from './capability-refusal-recorder';
 import {
   PhaseSidecarReader,
   composePhaseMessagePath,
@@ -197,6 +198,9 @@ export interface ManualPauseAccessor {
 export class PhaseRunner {
   /** FR-R3-064 — see `BackendPostureRecorder`; this shell only calls it. */
   private readonly postureRecorder: BackendPostureRecorder;
+
+
+
   private readonly sidecarReader: PhaseSidecarReader;
   private readonly retryEvaluator: PhaseRetryEvaluator;
   private readonly runnerRegistry: BackendRunnerRegistry | null;
@@ -388,6 +392,8 @@ export class PhaseRunner {
     // footnote after it. Every route that drives a Run dispatches through this
     // method, which is why the record sits here; see `BackendPostureRecorder`.
     await this.postureRecorder.recordOnce(inputs, effectiveRunnerKind);
+    // FR-R3-086 — refuse before `phase-start`; see `capability-refusal-recorder`.
+    await refuseUnenforceableCapabilities(inputs, effectiveRunnerKind, this.appendAudit.bind(this));
 
     const startPayload: Record<string, unknown> = {
       ...(inputs.pipelineId === undefined ? {} : { pipelineId: inputs.pipelineId }),
@@ -985,6 +991,7 @@ export class PhaseRunner {
       | 'cancel'
       | 'fatal-signature-matched'
       | 'auto-compact-override-applied'
+      | 'capability-refused' // FR-R3-086; declared in the audit contract first
       | 'cli-invocation',
     outcome: 'success' | 'failure' | 'info',
     payload: Record<string, unknown>

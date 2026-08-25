@@ -171,6 +171,7 @@ export const AUDIT_EVENT_TYPES = [
   "phase-optional-failure-continued",
   "backend-ping",
   "backend-posture-admitted",
+  "capability-refused",
   "process-tree-unconfirmed",
   "metrics-view-opened",
   "process-exchange-export",
