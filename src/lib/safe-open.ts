@@ -332,6 +332,14 @@ export async function openWithinRootByPath(
 export function segmentsUnderRoot(root: string, absolutePath: string): readonly string[] | null {
   const relative = path.relative(root, absolutePath);
   if (relative.length === 0) return null;
-  if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
+  // `'..' + sep`, not a bare `'..'` prefix. A directory legitimately named
+  // `..scratch` inside the root relativizes to `..scratch/x`, which starts with
+  // `..` and is INSIDE — rejecting it refused a contained path. The escape
+  // shapes are exactly `..` itself and anything below it, which is what
+  // `resolveWithinWorkspace` has always tested and what this now matches; the
+  // two rules disagreeing is how an operator-named target could pass request-time
+  // validation and then be refused at dispatch as `escapes-root`.
+  if (relative === '..' || relative.startsWith('..' + path.sep)) return null;
+  if (path.isAbsolute(relative)) return null;
   return relative.split(path.sep);
 }

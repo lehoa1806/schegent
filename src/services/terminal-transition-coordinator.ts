@@ -84,7 +84,21 @@ export class TerminalTransitionCoordinator {
     // durable half and still runs, which is exactly what replay is for.
     const active = this.store.findRunByTask(run.featureId);
     if (active !== null && active.run.id === run.id) {
-      await this.store.setRun(active.queueId, run, this.store.runCommitClaim(active.queueId));
+      // FR-R3-077 made this commit point fenced, so it can now REFUSE — a lease
+      // this window no longer holds, or an ownership record that could not be
+      // read. The intent stays journalled either way, which is what the next
+      // activation replays; what must NOT happen is the refusal escaping this
+      // method. `RunDriver` calls `complete()` from a `finally`, so a throw here
+      // skipped the execution-lease release and the auto-drain behind it and
+      // left the queue holding a lease forever — a wedge, from a transient read.
+      try {
+        await this.store.setRun(active.queueId, run, this.store.runCommitClaim(active.queueId));
+      } catch (error) {
+        this.logger.warn(
+          `terminal-transition: replay remains pending: ${(error as Error).message}`
+        );
+        return;
+      }
     }
     try {
       await this.queue.finish(run.featureId, run.status as 'completed' | 'failed' | 'canceled');

@@ -555,7 +555,14 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       telemetryProjector?.updateTelemetry(snap);
     }
   });
-  disposables.push({ dispose: () => sampler.dispose() });
+  /** FR-R3-081 — run id → sampled pid, so an exit can name its own series. */
+  const samplerPidByRun = new Map<string, number>();
+  disposables.push({
+    dispose: () => {
+      samplerPidByRun.clear();
+      sampler.dispose();
+    }
+  });
   // Invocation runners are lazy and share one monitor hook.
   const backendKind = resolveBackendKind(
     vscode.workspace.getConfiguration('schegent.backend').get<string>('runner'),
@@ -580,6 +587,12 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       if (event.kind === 'started') {
         monitor.onSpawnPid(event.runId, event.pid);
         if (event.pid !== null) {
+          // FR-R3-081 — remembered so the exit can name WHICH child it was. The
+          // `'exited'` event carries the run id and not the pid, and with more
+          // than one run sampled a sampler that has to guess stops the wrong
+          // series: the survivor goes unsampled and the dead pid is polled until
+          // the window closes.
+          if (event.runId !== null) samplerPidByRun.set(event.runId, event.pid);
           sampler.start(event.pid, Date.now());
         }
       } else if (event.kind === 'stdout-chunk') {
@@ -593,7 +606,12 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
           killed: event.killed,
           timedOut: event.timedOut
         });
-        sampler.stop({ signal: event.signal as NodeJS.Signals | null });
+        const exitedPid = event.runId === null ? undefined : samplerPidByRun.get(event.runId);
+        if (event.runId !== null) samplerPidByRun.delete(event.runId);
+        sampler.stop({
+          signal: event.signal as NodeJS.Signals | null,
+          ...(exitedPid === undefined ? {} : { pid: exitedPid })
+        });
       }
     },
     probeTransport: true,

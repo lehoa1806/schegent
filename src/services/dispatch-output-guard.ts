@@ -24,6 +24,7 @@
 // brought into existence by its own check, so only the parent chain is walked.
 
 import * as path from 'node:path';
+import * as fs from 'node:fs/promises';
 import type { FrozenOutputRequest } from '../contracts/run-request';
 import { segmentsUnderRoot, walkDirectoriesWithinRoot } from '../lib/safe-open';
 import type { SafeOpenRefusal } from '../lib/safe-open';
@@ -94,6 +95,30 @@ export async function judgeOutputTargetsAtDispatch(
       // been created yet, which is most of them.
       if (walked.reason === 'io-failed' && walked.errno === 'ENOENT') continue;
       return { outcome: 'refused', portId: output.portId, reason: walked.reason };
+    }
+    // The LEAF, which the parent walk deliberately skips. Skipping it entirely
+    // was the hole: a declared output that does not exist at request time (so it
+    // is confirmed without an overwrite prompt) and is then created as a symlink
+    // before dispatch passed this check untouched, and the child's write
+    // followed it out of the workspace — `SEC-04` with one more step.
+    //
+    // `lstat` and not `stat`: the question is whether this NAME is a link, not
+    // what it points at. Absent is the ordinary case and stays a pass — the
+    // child creates it — and nothing here creates anything, so the
+    // "judges without creating" property is unchanged.
+    const leaf = path.join(walked.directory, segments[segments.length - 1]!);
+    try {
+      const stat = await fs.lstat(leaf);
+      if (stat.isSymbolicLink()) {
+        return { outcome: 'refused', portId: output.portId, reason: 'symlink-leaf' };
+      }
+    } catch (error) {
+      const errno = (error as NodeJS.ErrnoException).code;
+      // Absent is a pass. Anything else is unanswerable, and an unanswerable
+      // containment check is a refusal, not a pass.
+      if (errno !== 'ENOENT' && errno !== 'ENOTDIR') {
+        return { outcome: 'refused', portId: output.portId, reason: 'io-failed' };
+      }
     }
   }
   return CONTAINED;

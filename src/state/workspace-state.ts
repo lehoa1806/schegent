@@ -331,6 +331,7 @@ import { assertConnectedRunInvariants, type ConnectedWorkflowRun } from './conne
 // so a value import here would close a cycle the type import cannot.
 import type { ExecutionLease } from './execution-lease';
 import {
+  checkCommitFence,
   isFencedClaim,
   unfencedCommit,
   type QueueCommitClaim,
@@ -494,7 +495,11 @@ export type QueueMutationRejectReason =
   // FR-R3-055 (H-06) — the mutator's execution fence is no longer the live
   // generation for that resource, so its state mutation is refused AT THE COMMIT
   // POINT rather than believed because admission once said yes.
-  | 'fence-superseded';
+  | 'fence-superseded'
+  // The two refusals `fence-superseded` used to absorb; see `checkCommitFence`
+  // in `ownership-claim.ts` for why each is its own answer.
+  | 'fence-unverifiable'
+  | 'fence-wrong-resource';
 
 export class QueueMutationRejected extends Error {
   public readonly reason: QueueMutationRejectReason;
@@ -1546,18 +1551,8 @@ export class WorkspaceStateStore {
     let result!: T;
     return this.serialize(KEYS.queue, async () => {
       if (isFencedClaim(claim)) {
-        const verdict = await this.ownershipRegistry.verify(
-          claim.resource,
-          claim.ownerId,
-          claim.fence
-        );
-        if (verdict.outcome !== 'valid') {
-          throw new QueueMutationRejected(
-            'fence-superseded',
-            `Queue mutation refused: fence ${claim.fence} is no longer the live generation ` +
-              `for ${claim.resource}`
-          );
-        }
+        const f = await checkCommitFence(this.ownershipRegistry, claim, queueId, 'Queue');
+        if (f !== null) throw new QueueMutationRejected(f.reason, f.message);
       }
       const current = this.getQueue(queueId);
       const mutation = mutate(current);
@@ -2257,18 +2252,8 @@ export class WorkspaceStateStore {
       // the chain that already serialises this key is as close to a transaction
       // as this storage allows -- and it is strictly closer than two.
       if (isFencedClaim(claim)) {
-        const verdict = await this.ownershipRegistry.verify(
-          claim.resource,
-          claim.ownerId,
-          claim.fence
-        );
-        if (verdict.outcome !== 'valid') {
-          throw new QueueMutationRejected(
-            'fence-superseded',
-            `Run mutation refused: fence ${claim.fence} is no longer the live generation ` +
-              `for ${claim.resource}`
-          );
-        }
+        const f = await checkCommitFence(this.ownershipRegistry, claim, queueId, 'Run');
+        if (f !== null) throw new QueueMutationRejected(f.reason, f.message);
       }
       const next = { ...this.readRunMap() };
       if (run === null) delete next[queueId];

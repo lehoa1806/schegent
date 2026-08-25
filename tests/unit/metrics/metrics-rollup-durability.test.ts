@@ -139,9 +139,13 @@ describe('FR-R3-082 — a trim loses history, never totals (T1091, T1092)', () =
     // Force the trim by writing a header-and-records file over the threshold,
     // rather than by appending 8 MiB of real records: the property under test is
     // the arithmetic across a trim, and the threshold is not what makes it true.
+    // The padding goes FIRST, ahead of the records. The reader is bounded and
+    // keeps the tail (newest last in an append-only file), so padding appended
+    // after the records would push the records themselves outside the bound and
+    // the fixture would be measuring the read bound rather than the trim.
     const padded =
-      (await fs.readFile(metricsRollupPath(workspaceRoot), 'utf8')) +
-      `${' '.repeat(9 * 1024 * 1024)}\n`;
+      `${' '.repeat(9 * 1024 * 1024)}\n` +
+      (await fs.readFile(metricsRollupPath(workspaceRoot), 'utf8'));
     await fs.writeFile(metricsRollupPath(workspaceRoot), padded);
 
     await new SmallWindowWriter({ workspaceRoot, logger }).append(record('run-trigger', 0.25));
@@ -182,9 +186,13 @@ describe('FR-R3-082 — a trim loses history, never totals (T1091, T1092)', () =
     const before = await readMetricsRollup(workspaceRoot, logger);
     const runsBefore = composeCumulativeTotals(before.records, [], before.carryForward).rollupRuns;
 
+    // The padding goes FIRST, ahead of the records. The reader is bounded and
+    // keeps the tail (newest last in an append-only file), so padding appended
+    // after the records would push the records themselves outside the bound and
+    // the fixture would be measuring the read bound rather than the trim.
     const padded =
-      (await fs.readFile(metricsRollupPath(workspaceRoot), 'utf8')) +
-      `${' '.repeat(9 * 1024 * 1024)}\n`;
+      `${' '.repeat(9 * 1024 * 1024)}\n` +
+      (await fs.readFile(metricsRollupPath(workspaceRoot), 'utf8'));
     await fs.writeFile(metricsRollupPath(workspaceRoot), padded);
     await new SmallWindowWriter({ workspaceRoot, logger }).append(record('run-trigger', 2));
 
@@ -250,5 +258,54 @@ describe('FR-R3-082 — the rollup path is walked, not composed (T1098)', () => 
     // Reported as unavailable, which the projection already distinguishes from
     // an empty rollup.
     expect(read.available).toBe(false);
+  });
+});
+
+describe('FR-R3-082 — the streaming read is bounded (T1093)', () => {
+  it('keeps the newest records and REPORTS what the bound skipped', async () => {
+    // A rollup this large means the trim never ran — a workspace whose
+    // `.schegent` refuses every trim, or a file written before trimming existed.
+    // The chunked read bounds the buffer and not the output, so without a bound
+    // on the records themselves this is the same unbounded residency the
+    // whole-file read had, with extra steps: previously a >2 GiB file threw
+    // `ERR_FS_FILE_TOO_LARGE` and was caught; an unbounded record array just
+    // exhausts the heap instead.
+    const logPath = metricsRollupPath(workspaceRoot);
+    await new MetricsRollupWriter({ workspaceRoot, logger }).append(record('run-oldest', 1));
+    const older = await fs.readFile(logPath, 'utf8');
+    await fs.writeFile(logPath, older + ' '.repeat(9 * 1024 * 1024) + '\n');
+    await fs.appendFile(logPath, '');
+    const writer = new MetricsRollupWriter({ workspaceRoot, logger });
+    // Bypass the trim so the oversized file survives the read under test.
+    await fs.appendFile(
+      logPath,
+      JSON.stringify({
+        v: 1,
+        runId: 'run-newest',
+        terminalStatus: 'completed',
+        startedAt: '2026-08-25T00:00:00.000Z',
+        endedAt: '2026-08-25T00:01:00.000Z',
+        durationMs: 60_000,
+        phasesTotal: 1,
+        phasesCompleted: 1,
+        phasesSkipped: 0,
+        backendInvocations: 1
+      }) + '\n'
+    );
+    expect(writer).toBeDefined();
+
+    const streamed = await streamRollup(workspaceRoot, logPath);
+    // The newest record survived the bound; the oldest, behind 9 MiB of filler,
+    // did not — and the skip is reported rather than presented as history that
+    // was never there.
+    expect(streamed.records.map((entry) => entry.runId)).toContain('run-newest');
+    expect(streamed.skippedBytes).toBeGreaterThan(0);
+  }, 30_000);
+
+  it('reports nothing skipped for an ordinary rollup', async () => {
+    await new MetricsRollupWriter({ workspaceRoot, logger }).append(record('run-1', 1));
+    const streamed = await streamRollup(workspaceRoot, metricsRollupPath(workspaceRoot));
+    expect(streamed.skippedBytes).toBe(0);
+    expect(streamed.records).toHaveLength(1);
   });
 });

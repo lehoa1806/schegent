@@ -76,5 +76,27 @@ export async function readMetricsRollup(
 
   const { records, carryForward, unreadableRecords } = streamed;
 
+  if (streamed.skippedBytes > 0) {
+    // The rollup exceeded the read bound, so this answer is the newest records
+    // only and the totals composed from it understate. Never silent: an
+    // understated cumulative cost that nobody flagged is the same defect the
+    // carry-forward header exists to prevent, arriving by a different door.
+    logger?.warn(
+      'metrics rollup exceeds the read bound; cumulative totals cover the newest records only',
+      { skippedBytes: streamed.skippedBytes }
+    );
+  }
+
+  if (unreadableRecords > 0) {
+    // Counts only — no line bodies, no path. An unreadable record understates
+    // cumulative totals by exactly one run, so it must not pass silently. The
+    // move to `streamRollup` dropped this warn because the streamer has no
+    // logger; the count still reaches here, so the report belongs here.
+    logger?.warn(
+      'metrics rollup has unreadable records; cumulative totals understate by that many runs',
+      { unreadableRecords }
+    );
+  }
+
   return { available: true, records, carryForward, unreadableRecords };
 }

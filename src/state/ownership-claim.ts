@@ -16,6 +16,7 @@
  * cannot arrive without a reviewed edit in three places.
  */
 
+import { queueResource, type OwnershipRegistry } from './ownership-registry';
 import type { OwnershipClaim } from './workspace-state';
 
 /**
@@ -94,4 +95,59 @@ export function unfencedCommit(reason: UnfencedCommitReason): UnfencedCommit {
  */
 export function isFencedClaim(claim: RunCommitClaim): claim is OwnershipClaim {
   return !('kind' in claim);
+}
+
+/** Why a fenced commit was refused, for `QueueMutationRejected` to carry. */
+export interface CommitFenceFailure {
+  readonly reason: 'fence-wrong-resource' | 'fence-unverifiable' | 'fence-superseded';
+  readonly message: string;
+}
+
+/**
+ * FR-R3-077 follow-up — verify a commit fence against the queue it NAMES, and
+ * tell the two ways it can fail apart. `null` when the fence holds.
+ *
+ * Two things the commit points asserted and did not do.
+ *
+ * FIRST, the resource. `OwnershipClaim`'s header says bundling `resource` with
+ * `fence` "keeps a caller from pairing a primacy token with a queue", and the
+ * two claim aliases above are documented as "deliberately not the same type".
+ * Neither held: TypeScript aliases are structural, so `RunCommitClaim` and
+ * `QueueCommitClaim` are interchangeable, and `setRun`/`updateQueue` passed
+ * `claim.resource` straight to `verify` without ever asking whether it was THIS
+ * queue's resource. A primacy claim therefore verified — primacy is live — and
+ * stamped `writtenAtFence` from the primacy generation counter, which
+ * `readRunIfLive` then compares against the queue's independent one. No caller
+ * does that today; this is what keeps it that way, at runtime, which is where a
+ * claim is actually built.
+ *
+ * SECOND, the difference between a fence shown to be stale and a fence that
+ * could not be READ. `OwnershipRegistry.verify` answers `unavailable` from a
+ * bare catch on any storage failure, so an unreadable ownership record reported
+ * as `fence-superseded` and sent an operator looking for a reclaim that never
+ * happened. Both still refuse — an unanswerable check is a refusal, not a pass,
+ * which is the discipline the lock mirror and `pre-push` already keep.
+ */
+export async function checkCommitFence(
+  registry: Pick<OwnershipRegistry, 'verify'>,
+  claim: OwnershipClaim,
+  queueId: string,
+  subject: 'Run' | 'Queue'
+): Promise<CommitFenceFailure | null> {
+  const expected = queueResource(queueId);
+  if (claim.resource !== expected) {
+    return {
+      reason: 'fence-wrong-resource',
+      message: `${subject} mutation refused: claim names ${claim.resource}, not ${expected}`
+    };
+  }
+  const { outcome } = await registry.verify(expected, claim.ownerId, claim.fence);
+  if (outcome === 'valid') return null;
+  const unverifiable = outcome === 'unavailable';
+  return {
+    reason: unverifiable ? 'fence-unverifiable' : 'fence-superseded',
+    message:
+      `${subject} mutation refused: fence ${claim.fence} for ${expected} is ` +
+      (unverifiable ? 'unverifiable; the ownership record could not be read' : 'superseded')
+  };
 }

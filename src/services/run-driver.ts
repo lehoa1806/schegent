@@ -320,11 +320,16 @@ export class RunDriver {
       run.envelope?.outputs ?? []
     );
     if (verdict.outcome === 'refused') {
-      await this.deps.emitOutputTargetRefusedAtDispatch?.(run, {
-        runId: run.id,
-        portId: verdict.portId,
-        reason: verdict.reason
-      });
+      // `.catch` for the same reason `emitRunSnapshotDeclined` above has one: a
+      // failing audit append must not replace the named refusal as this Run's
+      // failure cause. The refusal is the fact; the record of it is best-effort.
+      await this.deps
+        .emitOutputTargetRefusedAtDispatch?.(run, {
+          runId: run.id,
+          portId: verdict.portId,
+          reason: verdict.reason
+        })
+        .catch(() => undefined);
       this.deps.logger.warn(
         `output target refused at dispatch: port ${verdict.portId} (${verdict.reason})`
       );
@@ -1051,7 +1056,19 @@ export class RunDriver {
     } finally {
       if (run.status !== 'running') {
         if (run.status !== 'paused') {
-          await this.deps.terminalTransitions?.complete(run, description);
+          // Guarded for the same reason `onRunTerminal` below is: everything
+          // after this block — `isRunning`, the execution-lease release, the
+          // auto-drain — is this Run giving its queue back, and a throw here
+          // used to skip all of it and wedge the queue for the window's
+          // lifetime. FR-R3-077 made the commit points inside `complete()`
+          // fenced, so it can now refuse where it previously could not.
+          try {
+            await this.deps.terminalTransitions?.complete(run, description);
+          } catch (error) {
+            this.deps.logger.warn(
+              `run-driver: terminal transition failed: ${(error as Error).message}`
+            );
+          }
         }
         try {
           await this.deps.onRunTerminal?.(run);

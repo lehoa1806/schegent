@@ -110,7 +110,20 @@ export async function readIterationManifest(
     // to where the descriptor came from.
     const opened = await openWithinRootByPath(args.workspaceRoot, streamPath, { flags: 'r' });
     if (opened.outcome === 'refused') {
-      // A refused path reads as an absent log rather than as an error the
+      // A PERMISSION refusal is not an absent log. Before the walk, `fs.open`
+      // threw EACCES/EPERM, the catch below rethrew it (it only swallows
+      // ENOENT), and `readPhaseLog` mapped it to `permission-denied` — a
+      // failure the operator can actually act on. Collapsing every refusal to
+      // an empty result dropped that signal and showed an existing iteration
+      // with zero entries instead, which reads as "this phase logged nothing".
+      if (opened.errno === 'EACCES' || opened.errno === 'EPERM') {
+        const denied: NodeJS.ErrnoException = new Error(
+          `phase log stream is not readable (${opened.errno})`
+        );
+        denied.code = opened.errno;
+        throw denied;
+      }
+      // Everything else reads as an absent log rather than as an error the
       // operator can act on, which is what the ENOENT branch below already
       // decided for a phase log that is not there: the panel shows an empty
       // iteration, and the refusal is not something the panel can explain.

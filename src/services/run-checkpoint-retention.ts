@@ -163,6 +163,12 @@ export class RunCheckpointRetentionService {
    * the sweep is telling them whether that worked.
    */
   private capsReported = new Set<string>();
+  /**
+   * When the current sweep began, so `WALK_ELAPSED_BUDGET_MS` bounds the sweep
+   * rather than each run directory inside it. `null` outside a sweep, which is
+   * only reachable from a direct `measure` in a test.
+   */
+  private sweepStartedAt: number | null = null;
 
   constructor(private readonly deps: RunCheckpointRetentionDeps) {
     this.checkpointsRoot = path.join(deps.globalStorageRoot, 'checkpoints');
@@ -192,6 +198,7 @@ export class RunCheckpointRetentionService {
   private async performSweep(): Promise<RunCheckpointRetentionResult> {
     // FR-R3-082 (T1097) — per sweep. See the field's note.
     this.capsReported = new Set<string>();
+    this.sweepStartedAt = this.now();
     try {
       return await this.runSweep();
     } catch (error) {
@@ -202,6 +209,8 @@ export class RunCheckpointRetentionService {
         errno: errnoCode(error)
       });
       return { ...EMPTY_RESULT, failures: 1 };
+    } finally {
+      this.sweepStartedAt = null;
     }
   }
 
@@ -374,7 +383,13 @@ export class RunCheckpointRetentionService {
     let bytes = 0;
     let mtimeMs = 0;
     let visited = 0;
-    const startedAt = this.now();
+    // The SWEEP's clock, not this directory's. `measure` runs once per run
+    // directory, so a clock started here bounded each directory instead of the
+    // sweep — the docblock above promises 2 s because "elapsed time is the thing
+    // an operator actually experiences", and 300 run directories under a
+    // per-directory clock cost 600 s of it. Depth and breadth stay per-directory,
+    // which is what they mean.
+    const startedAt = this.sweepStartedAt ?? this.now();
 
     while (stack.length > 0) {
       if (this.now() - startedAt > WALK_ELAPSED_BUDGET_MS) {

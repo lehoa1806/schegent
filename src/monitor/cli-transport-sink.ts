@@ -384,7 +384,14 @@ export class CliTransportSink implements CliTransportRecorder {
    *
    * Dropped wherever the destination's identity can change: a rotation (which
    * renames this very file — a held descriptor would follow the inode into the
-   * rotated generation), a truncate, a write failure, and disposal.
+   * rotated generation), a truncate, a write failure, and a repoint of
+   * `settings.path` (handled in `appendHandleFor`, because this sink has no
+   * settings-save signal to hang it off).
+   *
+   * NOT dropped on disposal, because there is no disposal: nothing disposes this
+   * sink, so at most one descriptor — the current destination's — is held for
+   * the host's lifetime. Said plainly rather than left implied; the previous
+   * wording claimed a disposal hook that does not exist.
    */
   private readonly appendHandles = new Map<string, { handle: FileHandle; root: string }>();
 
@@ -764,6 +771,15 @@ export class CliTransportSink implements CliTransportRecorder {
    * writing under a handle proved against the old one.
    */
   private async appendHandleFor(targetPath: string, root: string): Promise<FileHandle | null> {
+    // Any handle held for a DIFFERENT destination is stale. `settings.path` is
+    // read fresh per record and this sink has no settings-save signal to drop a
+    // cache on (its twin `RuntimeLogSink` is wired to one; this one is not, as
+    // the cache header above says), so repointing the transport path used to
+    // leave the old descriptor open for the host's lifetime and add a second.
+    // Only one destination is ever current, so anything else goes.
+    for (const other of [...this.appendHandles.keys()]) {
+      if (other !== targetPath) await this.closeAppendHandle(other);
+    }
     const held = this.appendHandles.get(targetPath);
     if (held) {
       if (held.root === root) return held.handle;

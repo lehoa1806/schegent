@@ -303,8 +303,23 @@ export class MetricsRollupWriter {
    */
   private async trimIfOversized(): Promise<void> {
     try {
+      // The SIZE first, from a stat, before anything reads or parses a line.
+      //
+      // This runs on every append and the append is awaited by the terminal
+      // transition, so the common case — a rollup comfortably under the
+      // threshold — must not pay a whole-file read and a `JSON.parse` per record
+      // to discover that nothing needs doing. It used to.
+      let sizeBytes: number;
+      try {
+        sizeBytes = (await fs.stat(this.rollupPath)).size;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+        throw err;
+      }
+      if (sizeBytes <= TRIM_THRESHOLD_BYTES) return;
+
       const streamed = await streamRollup(this.deps.workspaceRoot, this.rollupPath);
-      if (!streamed.available || streamed.sizeBytes <= TRIM_THRESHOLD_BYTES) return;
+      if (!streamed.available) return;
 
       // Newest last in an append-only file, so the retained window is the tail.
       const retained = streamed.records.slice(-this.retainedRecordsAfterTrim());
@@ -328,6 +343,16 @@ export class MetricsRollupWriter {
               runs: carried.rollupRuns,
               trimmedThrough: discarded.length === 0 ? '' : discarded[discarded.length - 1]!.endedAt
             });
+      // A REWRITE THROUGH THIS BUILD'S SCHEMA, and that costs something worth
+      // naming: `parseMetricsRollupLine` produces a fixed record shape, so a
+      // field a NEWER build added is already gone by the time the trim sees the
+      // line, and re-serializing writes this build's field set back while
+      // preserving the record's own `v`. A v1 host trimming a v2-written file
+      // therefore strips the v2 fields and leaves `v: 2` claiming they are
+      // there. Nothing today has a v2, so nothing is lost today; the moment the
+      // schema moves, either the trim carries unknown fields through the parse
+      // or it refuses to rewrite a record whose `v` exceeds its own. Recorded
+      // here because this is the line that would do the damage.
       const body = retained.map((entry) => serializeMetricsRollupRecord(entry)).join('');
 
       // FR-R3-082 (T1098) — the temp file through the checked walk too. The
@@ -366,7 +391,19 @@ export class MetricsRollupWriter {
         });
       }
       await fs.rename(temp, this.rollupPath);
-      this.knownRunIds = new Set(retained.map((entry) => entry.runId));
+      // The dedup set is NOT narrowed to the retained ids. A discarded run's
+      // contribution now lives in the carry-forward header, so re-appending it
+      // would count it twice — once in the header, once as a live record — and
+      // `append` short-circuits on exactly this set. Terminal-transition replay
+      // relies on that ("the writer's run-id idempotence keeps a repeat at zero
+      // appends"), so forgetting the discarded ids is what would make a trim
+      // able to inflate `cumulativeCostUsd`. The set holds run-id strings only,
+      // so keeping them costs almost nothing next to being wrong.
+      //
+      // `knownRunIds` is therefore left exactly as it is: it already holds every
+      // id loaded from the file plus every id appended since, which is the whole
+      // set the trim just split into header and body.
+      for (const entry of retained) this.knownRunIds?.add(entry.runId);
     } catch (err) {
       // A failed trim is not a failed append. The record is already durable and
       // the file is merely larger than intended; reporting it as an evidence

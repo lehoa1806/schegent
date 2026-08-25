@@ -105,6 +105,38 @@ describe('FR-R3-079 — the output target is re-judged at dispatch', () => {
     });
   });
 
+  it('refuses a LEAF swapped for a symlink out of the workspace', async () => {
+    // The parent walk deliberately skips the leaf, "because the leaf is what the
+    // child will create". That is true only while the leaf does not exist. A
+    // target absent at request time is confirmed with no overwrite prompt, and
+    // anything co-resident can create it as a link before dispatch — after which
+    // the child's write follows it out. `SEC-04` with one more step, and the walk
+    // above never looked at the name that was swapped.
+    await fs.mkdir(path.join(workspaceRoot, 'out'), { recursive: true });
+    await fs.writeFile(path.join(outside, 'secret.txt'), 'SECRET');
+    await fs.symlink(path.join(outside, 'secret.txt'), path.join(workspaceRoot, 'out', 'report.md'));
+
+    const verdict = await judgeOutputTargetsAtDispatch(workspaceRoot, [
+      output('report', 'out/report.md')
+    ]);
+    expect(verdict.outcome).toBe('refused');
+    if (verdict.outcome !== 'refused') return;
+    expect(verdict.reason).toBe('symlink-leaf');
+    expect(verdict.portId).toBe('report');
+  });
+
+  it('passes an ordinary leaf that already exists as a regular file', async () => {
+    // The overwrite case, which is the operator's decision and was taken at
+    // request time. The leaf check must not turn it into a refusal.
+    await fs.mkdir(path.join(workspaceRoot, 'out'), { recursive: true });
+    await fs.writeFile(path.join(workspaceRoot, 'out', 'report.md'), 'previous');
+
+    const verdict = await judgeOutputTargetsAtDispatch(workspaceRoot, [
+      output('report', 'out/report.md')
+    ]);
+    expect(verdict.outcome).toBe('contained');
+  });
+
   it('carries the port and reason on the Run-level failure', () => {
     const error = new OutputTargetRefusedAtDispatch('report', 'symlink-component');
     expect(error.portId).toBe('report');

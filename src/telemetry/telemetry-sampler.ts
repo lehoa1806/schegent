@@ -41,7 +41,17 @@ import type { ShellOutFn } from './platform/platform-ps';
 
 export interface TelemetrySampler {
   start(pid: number, startedAt: number): void;
-  stop(exitInfo: { signal: NodeJS.Signals | null }): void;
+  /**
+   * FR-R3-081 (T1083) — `pid` names WHICH child exited.
+   *
+   * Optional in the type and effectively required with more than one child
+   * sampled: without it the sampler can only guess, and the guess it used to
+   * make was "the projected one", which with two runs stops the WRONG series —
+   * the surviving run goes unsampled while the dead one is polled forever. The
+   * caller has the pid (it announced the spawn), so this is a widening of the
+   * port rather than a new source of truth.
+   */
+  stop(exitInfo: { signal: NodeJS.Signals | null; pid?: number }): void;
   current(): TelemetrySnapshot | null;
   dispose(): void;
 }
@@ -116,6 +126,12 @@ export class TelemetrySamplerImpl implements TelemetrySampler {
       this.warnOnce(pid, 'already-sampling');
       return;
     }
+    // This pid's WARN dedup starts fresh, and ONLY this pid's: the set used to
+    // be cleared wholesale in `start()`, which is wrong once several children
+    // are sampled at once (it would un-dedup every other live series), but not
+    // clearing it at all left invariant S4 unmet and let the set grow for the
+    // sampler's whole lifetime.
+    this.forgetWarnings(pid);
     this.series.set(pid, { startedAt, lastLive: null });
     // The first child to start is the one the sidebar shows, and it keeps that
     // role until it exits. Every OTHER child is sampled just the same — its
@@ -155,6 +171,11 @@ export class TelemetrySamplerImpl implements TelemetrySampler {
     const entry = this.series.get(pid);
     if (entry === undefined) return;
     this.series.delete(pid);
+    // Captured BEFORE `projectedPid` moves on. The exit-sample guard below asks
+    // whether THIS child was the projected one when it exited; reading
+    // `projectedPid` after the reassignment answers a different question, and
+    // answered it wrongly whenever another series remained.
+    const wasProjected = this.projectedPid === pid || this.projectedPid === null;
     if (this.projectedPid === pid) this.projectedPid = this.firstSeriesPid();
     if (this.series.size === 0 && this.timer !== null) {
       clearInterval(this.timer);
@@ -175,7 +196,7 @@ export class TelemetrySamplerImpl implements TelemetrySampler {
     });
     // Only the projected child's exit reaches the projection, for the same
     // reason only its samples do.
-    if (pid === (this.projectedPid ?? pid)) this.safeOnSample(finalSample);
+    if (wasProjected) this.safeOnSample(finalSample);
 
     // Schedule null clear on the microtask boundary so the projector's
     // debounce coalesces appropriately.
@@ -258,6 +279,14 @@ export class TelemetrySamplerImpl implements TelemetrySampler {
       uptimeMs: null,
       sampledAt: new Date(this.now()).toISOString()
     });
+  }
+
+  /** Drop every dedup key belonging to `pid`, so a reused pid warns again. */
+  private forgetWarnings(pid: number): void {
+    const prefix = `${pid}::`;
+    for (const key of [...this.warnedClasses]) {
+      if (key.startsWith(prefix)) this.warnedClasses.delete(key);
+    }
   }
 
   private warnOnce(pid: number, errorClass: FailureClass | 'already-sampling'): void {

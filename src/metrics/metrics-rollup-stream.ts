@@ -16,7 +16,7 @@
 // "what is in the rollup" come to disagree.
 
 import { openWithinRootByPath } from '../lib/safe-open';
-import { CHUNK_BYTES } from '../lib/bounded-read';
+import { CHUNK_BYTES, DEFAULT_MAX_READ_BYTES } from '../lib/bounded-read';
 import {
   parseMetricsRollupLine,
   type MetricsRollupCarryForward,
@@ -33,6 +33,13 @@ export interface StreamedRollup {
   readonly unreadableRecords: number;
   /** File size in bytes at the moment it was read, for the trim's threshold. */
   readonly sizeBytes: number;
+  /**
+   * Bytes at the START of the file this read skipped because the file exceeded
+   * the read bound. Reported, never swallowed: the records in them are missing
+   * from `records`, so cumulative totals composed from this read understate, and
+   * a caller that could not tell would present a partial answer as a whole one.
+   */
+  readonly skippedBytes: number;
 }
 
 const ABSENT: StreamedRollup = Object.freeze({
@@ -40,7 +47,8 @@ const ABSENT: StreamedRollup = Object.freeze({
   records: Object.freeze([]),
   carryForward: undefined,
   unreadableRecords: 0,
-  sizeBytes: 0
+  sizeBytes: 0,
+  skippedBytes: 0
 });
 
 /**
@@ -56,7 +64,18 @@ const ABSENT: StreamedRollup = Object.freeze({
  */
 export async function streamRollup(
   workspaceRoot: string,
-  rollupPath: string
+  rollupPath: string,
+  /**
+   * How much of the file to consume, newest-first.
+   *
+   * The chunked read bounds the BUFFER; it does not bound the output, and an
+   * unbounded record array is the same unbounded residency the whole-file read
+   * had with extra steps. A rollup this large means the trim never ran — a
+   * workspace whose `.schegent` refuses, or a file written before trimming
+   * existed — and the honest degradation is to read the newest records the bound
+   * allows and SAY what was skipped.
+   */
+  maxBytes: number = DEFAULT_MAX_READ_BYTES
 ): Promise<StreamedRollup> {
   // FR-R3-082 (T1098) — through the checked walk, which is what strikes this
   // module's entry from the migration ledger. `.schegent/` is a directory a
@@ -80,12 +99,19 @@ export async function streamRollup(
   let carryForward: MetricsRollupCarryForward | undefined;
   let unreadableRecords = 0;
   let sizeBytes = 0;
+  let skippedBytes = 0;
 
   try {
     sizeBytes = (await handle.stat()).size;
+    // Newest last in an append-only file, so the bound keeps the TAIL.
+    skippedBytes = Math.max(0, sizeBytes - maxBytes);
     const buffer = Buffer.allocUnsafe(CHUNK_BYTES);
-    let offset = 0;
-    let partial = '';
+    let offset = skippedBytes;
+    // A bound that cuts mid-record leaves a fragment at the front. Dropped
+    // rather than parsed — it would be counted as an unreadable record, which
+    // would be blaming the file for this read's own bound.
+    let partial = skippedBytes > 0 ? '' : '';
+    let droppedFragment = skippedBytes === 0;
     for (;;) {
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
       if (bytesRead === 0) break;
@@ -96,6 +122,10 @@ export async function streamRollup(
       // only when the chunk happened to end on one, so it is always carried.
       partial = lines.pop() ?? '';
       for (const line of lines) {
+        if (!droppedFragment) {
+          droppedFragment = true;
+          continue;
+        }
         const result = consume(line);
         if (result === 'unreadable') unreadableRecords += 1;
       }
@@ -105,7 +135,7 @@ export async function streamRollup(
     await handle.close().catch(() => undefined);
   }
 
-  return { available: true, records, carryForward, unreadableRecords, sizeBytes };
+  return { available: true, records, carryForward, unreadableRecords, sizeBytes, skippedBytes };
 
   function consume(line: string): 'ok' | 'unreadable' {
     const parsed = parseMetricsRollupLine(line);

@@ -130,7 +130,7 @@ export async function readMetrics(
   // rollup or reconstructs a record for a day the corpus no longer covers —
   // there is no backfill path to take.
   const rollup = await readMetricsRollup(workspaceRoot, logger);
-  const composed = composeCumulativeTotals(rollup.records, tasks);
+  const composed = composeCumulativeTotals(rollup.records, tasks, rollup.carryForward);
 
   // Feature 103 (T093, FR-025) — the run detail's cost and phase counts come
   // from the rollup and not from `tasks`. `tasks` is a fold over the retained

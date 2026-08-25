@@ -433,11 +433,41 @@ export class RawTranscriptWriter {
       }
       return;
     }
-    const destination = await openWithinRoot(
-      this.workspaceRoot,
-      this.segmentsFor(runId, 'always'),
-      { flags: 'wx', createDirs: true, dirMode: 0o700, fileMode: 0o600 }
-    );
+    // `wx` FIRST, so a retained transcript that is already there is detected
+    // rather than written through — a partial one left by a crash between the
+    // copy and the removal must not be silently mistaken for a complete file.
+    const destinationSegments = this.segmentsFor(runId, 'always');
+    let destination = await openWithinRoot(this.workspaceRoot, destinationSegments, {
+      flags: 'wx',
+      createDirs: true,
+      dirMode: 0o700,
+      fileMode: 0o600
+    });
+    // EEXIST is not a refusal, and treating it as one stranded evidence. A run
+    // id is promoted more than once whenever it is RESUMED: `onRunTerminal`
+    // fires on `paused` as well as on the terminal statuses, `resumeExisting`
+    // reuses the same `run.id`, and the resumed leg writes a fresh pending
+    // transcript. With `wx` alone the second promotion reported
+    // `transcript-promote refused: containment io-failed` and left the whole
+    // post-resume transcript in `.pending`, where session retention eventually
+    // reaps it — the run's evidence for the leg that actually failed.
+    //
+    // So the destination is REOPENED for append and the legs accumulate in
+    // order, which is what a reader of a resumed run's transcript wants. The
+    // old `fs.rename` replaced the file and lost the earlier leg instead; this
+    // loses neither.
+    if (
+      destination.outcome === 'refused' &&
+      destination.reason === 'io-failed' &&
+      destination.errno === 'EEXIST'
+    ) {
+      destination = await openWithinRoot(this.workspaceRoot, destinationSegments, {
+        flags: 'a',
+        createDirs: true,
+        dirMode: 0o700,
+        fileMode: 0o600
+      });
+    }
     if (destination.outcome === 'refused') {
       await source.handle.close().catch(() => undefined);
       // The pending transcript stays where it is rather than being promoted. It
@@ -446,10 +476,11 @@ export class RawTranscriptWriter {
       this.warnContainmentRefusal('transcript-promote', destination.reason);
       return;
     }
+    const destinationHandle = destination.handle;
     try {
-      await copyBetweenHandles(source.handle, destination.handle);
+      await copyBetweenHandles(source.handle, destinationHandle);
     } finally {
-      await destination.handle.close().catch(() => undefined);
+      await destinationHandle.close().catch(() => undefined);
       await source.handle.close().catch(() => undefined);
     }
     // Only after the destination is closed: an unlinked source with an unwritten
