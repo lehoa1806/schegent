@@ -44,7 +44,8 @@
 //     passes here and fails at launch. Detecting that needs a launch, which is
 //     the cost this whole design avoids. Stated rather than implied.
 //   - It checks CHROMIUM only, because that is the only browser
-//     `playwright.config.ts` uses. `playwright-install-doc-parity` asserts that
+//     `playwright.config.ts` uses. the `playwright-browser-install` entry in
+//     `tests/lint/procedure-surface-registry.test.ts` asserts that
 //     correspondence against the script's CODE, so adding a second browser to
 //     the config cannot leave it unchecked here — a comment claiming coverage
 //     does not satisfy it. Chromium means both of Chromium's builds: the headed

@@ -30,7 +30,7 @@
 //
 // This file resolves configuration; it lints no files, so it adds no ESLint pass to
 // `verify:all` (FR-019a).
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { extname, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { ESLint } from 'eslint';
@@ -57,10 +57,19 @@ interface Owner {
  * or the repo-wide `repo` for a total spanning both — but a non-vacuity test below
  * requires every entry to carry at least one of them.
  */
+/** Per-file counts, keyed by a path relative to the tree that produced them. */
+type FileCounts = Readonly<Record<string, number>>;
+
 interface RuleEntry {
   readonly host?: number;
   readonly webview?: number;
   readonly repo?: number;
+  /**
+   * FR-R3-088 — the sites behind the count. Declared rather than cast: a record
+   * shape that only a cast can reach is a shape the compiler cannot keep honest.
+   */
+  readonly hostFiles?: FileCounts;
+  readonly webviewFiles?: FileCounts;
   readonly owner: Owner;
   readonly reductionNote: string;
 }
@@ -340,5 +349,111 @@ describe('Feature 112 eslint baseline agrees with the configuration', () => {
         `fix; a fall is a stale record that would hide the next one. Sites:\n  ` +
         sites.join('\n  ')
     ).toBe(recorded);
+  });
+});
+
+/**
+ * FR-R3-088 — a baseline that carries a COUNT can say something got worse. Only
+ * one that carries the SITES can say which.
+ *
+ * The 2026-08-24 review recorded the webview lint failure verbatim: *"The record
+ * holds a count, not a list of sites, so it cannot say which 9 of the 283 are
+ * new."* That is the same defect `D5` found in the duplicate-authority gate —
+ * whole-file hashing could not see a three-line divergence — and the same one an
+ * accessibility baseline would have met next.
+ *
+ * The record now carries per-file counts alongside each tree's total, so a rise
+ * names the files that grew instead of telling a contributor to run the tool
+ * twice and diff by hand.
+ *
+ * WHY FILES AND NOT LINES. A line number rots the moment anything above it is
+ * edited — FR-R3-027's lesson, where a citation to "plan.md lines 26 and 66" was
+ * wrong by the next commit. A file path survives every edit inside that file. A
+ * record whose entries rot generates noise until someone stops reading it, and a
+ * record nobody reads is worse than a count.
+ *
+ * Both directions are asserted, because a breakdown that drifts from its own
+ * total is a second authority on one number — exactly what FR-R3-066 exists to
+ * remove.
+ */
+describe('FR-R3-088 — the baseline carries sites, not only counts', () => {
+  const TREES = ['host', 'webview'] as const;
+
+  it('every tree-scoped rule carries a per-file breakdown for that tree', () => {
+    const missing: string[] = [];
+    for (const [ruleId, entry] of Object.entries(BASELINE.rules)) {
+      for (const tree of TREES) {
+        if (typeof entry[tree] !== 'number') continue;
+        if (entry[`${tree}Files`] === undefined) missing.push(`${ruleId}.${tree}Files`);
+      }
+    }
+    expect(
+      missing,
+      'A count without a breakdown cannot name a new site. Run ' +
+        '`node scripts/lint.mjs <tree> --write-baseline` to derive it.'
+    ).toEqual([]);
+  });
+
+  it('each breakdown sums to the count it sits beside', () => {
+    // The two cannot drift: if they could, the message naming "new sites" would
+    // be computed from a distribution that disagrees with the total it is
+    // compared against, and would name the wrong files. Naming the wrong file is
+    // worse than naming none — the reason `byFile` exists in the first place.
+    const drifted: string[] = [];
+    for (const [ruleId, entry] of Object.entries(BASELINE.rules)) {
+      for (const tree of TREES) {
+        const count = entry[tree];
+        const files = entry[`${tree}Files`];
+        if (typeof count !== 'number' || files === undefined) continue;
+        const summed = Object.values(files).reduce((total, value) => total + value, 0);
+        if (summed !== count) drifted.push(`${ruleId}.${tree}: count=${count} breakdown=${summed}`);
+      }
+    }
+    expect(drifted).toEqual([]);
+  });
+
+  it('every file named in a breakdown still exists', () => {
+    // A stale path is an entry excusing a file that is gone — the exact shape
+    // `allowlist-entries-still-apply.test.ts` was written for, one record over.
+    //
+    // Paths are recorded relative to the TREE that produced them, because that
+    // is the cwd `scripts/lint.mjs` lints each tree from — `src/components/…`
+    // means `webview-ui/src/components/…` under the webview entry and
+    // `repo/src/…` under the host one. Resolving both against the repo root
+    // would report every webview path as missing, which is a bug in the reader
+    // rather than a finding about the record.
+    const treeRoot: Record<(typeof TREES)[number], string> = {
+      host: REPO_ROOT,
+      webview: WEBVIEW_ROOT
+    };
+    const gone: string[] = [];
+    for (const [ruleId, entry] of Object.entries(BASELINE.rules)) {
+      for (const tree of TREES) {
+        const files = entry[`${tree}Files`];
+        if (files === undefined) continue;
+        for (const file of Object.keys(files)) {
+          if (!existsSync(resolve(treeRoot[tree], file))) gone.push(`${ruleId}.${tree}: ${file}`);
+        }
+      }
+    }
+    expect(gone).toEqual([]);
+  });
+
+  it('the breakdowns are non-empty where the count is non-zero (non-vacuity)', () => {
+    // Without this, an empty `{}` breakdown would satisfy every assertion above
+    // for a rule whose count is zero — and would satisfy the sum check for a
+    // non-zero one only by being wrong, which the sum check catches. This pins
+    // the remaining direction: a real count must have real files behind it.
+    let checkedNonZero = 0;
+    for (const [, entry] of Object.entries(BASELINE.rules)) {
+      for (const tree of TREES) {
+        const count = entry[tree];
+        const files = entry[`${tree}Files`];
+        if (typeof count !== 'number' || count === 0 || files === undefined) continue;
+        expect(Object.keys(files).length).toBeGreaterThan(0);
+        checkedNonZero += 1;
+      }
+    }
+    expect(checkedNonZero).toBeGreaterThan(4);
   });
 });

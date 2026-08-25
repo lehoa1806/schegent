@@ -168,6 +168,9 @@ drifts unnoticed, because the readers who would catch an error never get there.
 ### Development
 
 - [Coverage measurements](development/coverage-measurements.md)
+- [Gate integrity measurements](development/gate-integrity-measurements.md) — the vacuity detector's
+  false-negative rate, the zero-offender enumeration, the product-versus-suite coverage split, and the
+  re-verified webview dead-code classification (FR-R3-088)
 - [Lint and type-aware rules](development/lint-and-type-aware-rules.md)
 
 ### Other
