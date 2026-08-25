@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 
 /**
@@ -36,18 +36,25 @@ import { join, relative, resolve } from 'node:path';
  *
  * Closing it needs a handle-relative walk — `openat` against each directory's
  * descriptor — and Node exposes no `openat`; `/proc/self/fd` is Linux-only. So
- * it needs a native binding, which is a dependency decision and not this item's
- * to take. `FR-R3-083` asks the same question for Windows and for the Job
- * Object, and this ledger consumes whatever that decision reaches. Until then
- * the residual is stated here rather than implied by a list of struck entries,
- * and `package.json` gains nothing.
+ * it needs a native binding, which was a dependency decision this ledger could
+ * not take.
+ *
+ * **That decision has now been taken, and the answer is no** —
+ * `docs/architecture/native-binding-decision.md`, 2026-08-25, `FR-R3-083` stage 1. The
+ * consequence for this file is `PERMANENT_LIMIT` below: the residual stops being an open follow-up
+ * and becomes a stated limit, so it is never read as an `UNMIGRATED` entry awaiting a cycle that
+ * will not come. `package.json` gains nothing, permanently.
  *
  * The `ATOMIC_PUBLISH_RENAME_RESIDUAL` list below is the same residual in its
  * sharpest form: `rename` cannot be made handle-relative at all without
- * `renameat`, so those three sites cannot be struck by any amount of care in
- * this repository.
+ * `renameat`, so those sites cannot be struck by any amount of care in
+ * this repository. It keeps its own list and its own assertion — that every entry is a `rename` and
+ * nothing else — and joins `PERMANENT_LIMIT` by CLASSIFICATION rather than by being merged into it.
+ * Merging would discard that assertion, which is the only thing that stops a module acquiring a raw
+ * `open` and being sheltered by a line it earned for a `rename`.
  */
-const SRC = resolve(__dirname, '..', '..', 'src');
+const REPO_ROOT = resolve(__dirname, '..', '..');
+const SRC = resolve(REPO_ROOT, 'src');
 
 /**
  * Raw filesystem calls that resolve a pathname, and therefore follow symlinks.
@@ -270,7 +277,9 @@ const READS_THROUGH_MIGRATED_PORT: readonly string[] = [
  * publish a file they created themselves, inside a directory they proved, and the
  * residual window is the same one no Node primitive can close: `rename` cannot be
  * made handle-relative without `renameat`, which needs a native binding. That
- * dependency question is `FR-R3-083`'s, and this list is what it will consume.
+ * dependency question was `FR-R3-083`'s, it has been answered **no**
+ * (`docs/architecture/native-binding-decision.md`), and this list is what consumed it: every entry
+ * here is a PERMANENT limit, recorded as such in `PERMANENT_LIMIT` below.
  *
  * What is NOT permitted here: a rename of a pathname a caller supplied, or a
  * rename whose destination directory was not walked. `FR-R3-078` had one of
@@ -285,6 +294,70 @@ const ATOMIC_PUBLISH_RENAME_RESIDUAL: readonly string[] = [
   // checked walk; the publish itself cannot be, for the reason this list exists.
   'metrics/metrics-rollup-writer.ts',
   'state/ownership-fs.ts'
+];
+
+/**
+ * FR-R3-083 (T1143-T1146) — residuals that CANNOT BE CLOSED IN THIS RUNTIME.
+ *
+ * A third disposition, and the reason it has to exist: `UNMIGRATED` only shrinks, and every rule
+ * around it — nothing may be added, a stale entry fails — is built on the premise that each line is
+ * work someone will eventually do. A residual that no amount of work in this repository can close
+ * does not fit that premise. Left in `UNMIGRATED` it would be permanent debt wearing the costume of
+ * tracked debt; left out of the ledger entirely it would be invisible.
+ *
+ * So it is named here, with what is missing and where the decision was taken. The decision is
+ * `docs/architecture/native-binding-decision.md` (2026-08-25): a native binding is NOT acceptable for
+ * this product, because it would be its first runtime dependency and a compiled one. That record
+ * states the branch it rejected, what that branch would have bought, and the three things that would
+ * reopen it.
+ *
+ * This list is NOT an exemption. Two rules keep it honest, and both are asserted below:
+ *
+ *   - Every entry names a real `site` on disk. A site that has been deleted or moved fails, exactly
+ *     as a stale `UNMIGRATED` line does — a permanent list is still a checked list.
+ *   - Every entry cites the record, and the record is resolved on disk, so moving it fails here.
+ *
+ * `ATOMIC_PUBLISH_RENAME_RESIDUAL` is classified by the `renameat` entry below. It is deliberately
+ * NOT merged in: that list carries an assertion this one cannot make (every entry is a `rename` and
+ * nothing else), and a merge would spend it for tidiness.
+ */
+interface PermanentLimit {
+  /** What stays open, in one line. */
+  readonly residual: string;
+  /** A real path under `src/` or `tests/`, relative to the repository root. */
+  readonly site: string;
+  /** The syscall or OS object that would close it, and that Node does not reach. */
+  readonly missingPrimitive: string;
+}
+
+/** The one authority. Resolved on disk below, so a rename fails here rather than rotting. */
+const NATIVE_BINDING_RECORD = 'docs/architecture/native-binding-decision.md';
+
+const PERMANENT_LIMIT: readonly PermanentLimit[] = [
+  {
+    residual:
+      'A component swapped between its own lstat and the next syscall, on a path already inside a trusted root.',
+    site: 'src/lib/safe-open.ts',
+    missingPrimitive: 'openat(2) — a handle-relative walk. /proc/self/fd is Linux-only.'
+  },
+  {
+    residual:
+      'Atomic publish: the rename half of write-temp-then-publish resolves both pathnames.',
+    site: 'tests/lint/safe-open-migration.test.ts',
+    missingPrimitive: 'renameat(2). This is the ATOMIC_PUBLISH_RENAME_RESIDUAL list above, classified.'
+  },
+  {
+    residual:
+      'On Windows, a descendant that re-parents itself escapes taskkill /T. On POSIX, one that calls setsid escapes its group.',
+    site: 'src/runner/process-tree.ts',
+    missingPrimitive: 'A Job Object with kill-on-close.'
+  },
+  {
+    residual:
+      'At the Windows leaf, the reparse ATTRIBUTE is reachable but the reparse TAG is not, so a mount point cannot be told from a placeholder.',
+    site: 'src/lib/safe-open.ts',
+    missingPrimitive: 'FSCTL_GET_REPARSE_POINT / GetFileInformationByHandleEx.'
+  }
 ];
 
 /**
@@ -467,6 +540,49 @@ describe('safe-open migration (FR-R3-053)', () => {
       }
     }
     expect(supplied).toEqual([]);
+  });
+
+  it('keeps every permanent-limit entry pointing at a site that exists', () => {
+    // FR-R3-083 (T1146) — the staleness rule that governs UNMIGRATED governs this
+    // list too. "Cannot be closed" is not "need not be checked": a site that was
+    // deleted or moved leaves an entry describing a residual in a file nobody can
+    // find, which is worse than no entry because it reads as covered.
+    const missing = PERMANENT_LIMIT.filter(
+      (entry) => !existsSync(resolve(REPO_ROOT, ...entry.site.split('/')))
+    ).map((entry) => entry.site);
+    expect(missing).toEqual([]);
+  });
+
+  it('keeps the permanent-limit list non-empty and pointed at a record that resolves', () => {
+    // FR-R3-083 (T1145) — the citation is the whole mechanism. Without it a reader
+    // arriving here learns that something is permanent and not why, which is the
+    // shape of claim this round has spent itself removing.
+    expect(PERMANENT_LIMIT.length).toBeGreaterThan(0);
+    expect(existsSync(resolve(REPO_ROOT, ...NATIVE_BINDING_RECORD.split('/')))).toBe(true);
+    const record = readFileSync(resolve(REPO_ROOT, ...NATIVE_BINDING_RECORD.split('/')), 'utf8');
+    // The record must actually take the decision, not merely discuss it. A record
+    // that says "under consideration" cannot be what a permanent limit rests on.
+    expect(record).toContain('DECIDED');
+    for (const entry of PERMANENT_LIMIT) {
+      expect(entry.missingPrimitive.trim().length).toBeGreaterThan(0);
+      expect(entry.residual.trim().length).toBeGreaterThan(0);
+    }
+  });
+
+  it('classifies the atomic-publish rename residual without merging the two lists', () => {
+    // FR-R3-026a — the rename list keeps its own assertion (renames only, checked
+    // below). PERMANENT_LIMIT names it rather than absorbing it, so neither claim
+    // is spent for the other.
+    const renameEntry = PERMANENT_LIMIT.find((entry) =>
+      entry.missingPrimitive.includes('renameat')
+    );
+    expect(renameEntry).toBeDefined();
+    expect(ATOMIC_PUBLISH_RENAME_RESIDUAL.length).toBeGreaterThan(0);
+    // The two lists hold different element types on purpose: one is a file list
+    // with a call-shape assertion, the other is a residual record. A future merge
+    // would have to delete one of them, and this is where that shows up.
+    expect(typeof ATOMIC_PUBLISH_RENAME_RESIDUAL[0]).toBe('string');
+    expect(typeof PERMANENT_LIMIT[0]).toBe('object');
   });
 
   it('keeps the atomic-publish residual list to renames only', () => {

@@ -9,13 +9,19 @@ const SCAN_ROOTS = [
 ] as const;
 
 const ALLOWED_FILES: ReadonlySet<string> = new Set([
-  // FR-R3-054 — comment-only. Both files explain that a signalled process tree
-  // may leave descendants "still running"; neither compares a status literal.
-  // Added rather than reworded: this gate's allowlist exists for exactly this
-  // case and carries sixteen such precedents, and writing a worse comment to
-  // satisfy a text match is the wrong trade.
+  // FR-R3-054 — comment-only. Explains that a signalled process tree may leave
+  // descendants "still running"; it does not compare a status literal. Added
+  // rather than reworded: this gate's allowlist exists for exactly this case and
+  // carries sixteen such precedents, and writing a worse comment to satisfy a text
+  // match is the wrong trade.
+  //
+  // `src/runner/process-lifecycle-runner.ts` was struck 2026-08-25 (FR-R3-083):
+  // extracting the escalation ladder into `process-tree.ts` took the phrase with
+  // it, and `allowlist-entries-still-apply.test.ts` caught the entry excusing
+  // something that file no longer does. Recorded rather than deleted silently —
+  // the allowlist is expected to shrink, and which line went is how that stays
+  // checkable.
   'src/runner/process-tree.ts',
-  'src/runner/process-lifecycle-runner.ts',
   'src/commands/cancel.ts',
   'src/commands/auto.ts',
   // Feature 063 — references `controller.running` (a WorkflowController

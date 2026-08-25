@@ -1,6 +1,7 @@
 import type { BackendRunnerKind } from '../runner/backend-runner-factory';
 import type { BackendContainment } from '../services/backend-containment-policy';
 import type { TerminationReason } from '../state/workflow-run';
+import type { RunnerLabel, TreeEscalation } from './backend-runner';
 // Feature FR-R3-006 — the reset transaction's phase and refusal literals are
 // declared once, in a module that imports nothing, and the audit payload reuses
 // them rather than restating them. A restated copy is a second source of truth
@@ -434,6 +435,63 @@ export const METRICS_EVENT_TYPES = ['metrics-view-opened'] as const;
 export const BACKEND_POSTURE_EVENT_TYPES = ['backend-posture-admitted'] as const;
 
 /**
+ * FR-R3-083 / FR-R3-054 §5 — a terminal state that does not lie, in EVIDENCE.
+ *
+ * When the backend's process group cannot be proven gone within the grace window
+ * after SIGKILL, the runner logs a warning. `FR-R3-054`'s acceptance asks for the
+ * degraded path to be "visibly recorded in evidence", and a runtime-log line is not
+ * evidence: it is not in the audit record, so an operator reconstructing why a
+ * later phase saw foreign writes has nothing to read.
+ *
+ * SIGKILL is not catchable, so a group that survives it is a group Schegent does
+ * not own. That is a fact about a Run and belongs in the Run's record.
+ *
+ * WHY AN EVENT AND NOT A `TerminationReason`
+ *
+ * `FR-R3-054` §5 named the reason it did not ship one: that union is closed and
+ * persisted in `WorkflowRun`, so extending it is a state-schema change with its own
+ * migration story. `FR-R3-064` established the shape used instead — an audit event
+ * carrying the Run's identity, needing no migration — and this follows it.
+ *
+ * ABSENCE IS THE SIGNAL. No event is emitted when the tree is confirmed gone, so a
+ * Run with no such entry is a Run whose descendants were accounted for.
+ */
+export const PROCESS_TREE_EVENT_TYPES = ['process-tree-unconfirmed'] as const;
+
+/**
+ * The closed payload for a `process-tree-unconfirmed` entry.
+ *
+ * Identifiers and a bounded classification, and nothing else. No path, no argv, no
+ * operator-authored content, no message — the same discipline
+ * `BackendPostureAdmittedPayload` states for itself, and for the same reason: a
+ * payload with nowhere to put a secret needs no redaction to be safe.
+ *
+ * `pid` is the direct child's, and is present because an operator with a surviving
+ * process to find needs somewhere to start. It is a runtime identifier of a process
+ * this product spawned, not a property of the workspace.
+ */
+export interface ProcessTreeUnconfirmedPayload {
+  /**
+   * Which adapter's tree it was. A closed union, so this payload's "nowhere to put
+   * a secret" claim is enforced by the type rather than asserted by a comment.
+   */
+  readonly runner: RunnerLabel;
+  /** The direct child's pid, or `null` when the child never had one. */
+  readonly pid: number | null;
+  /**
+   * WHICH RUNGS ACTUALLY RAN before the group was found alive.
+   *
+   * One member today — `sigterm-then-sigkill` — because the ladder escalates on the
+   * GROUP, so a report is only reachable after a delivered SIGKILL. See
+   * `TreeEscalation` for the arm that existed briefly and was removed, and why.
+   *
+   * Carried from the runner rather than stamped here: if a rung is ever added, it
+   * reaches the audit record without an edit to the recorder.
+   */
+  readonly escalation: TreeEscalation;
+}
+
+/**
  * FR-R3-064 — the closed payload for a backend-posture audit entry.
  *
  * Three bounded primitives and nothing else. No argv, no CLI path, no cwd, no
@@ -570,6 +628,7 @@ export const ALL_AUDIT_EVENT_TYPES = [
   ...OPTIONAL_PHASE_EVENT_TYPES,
   ...BACKEND_PING_EVENT_TYPES,
   ...BACKEND_POSTURE_EVENT_TYPES,
+  ...PROCESS_TREE_EVENT_TYPES,
   ...METRICS_EVENT_TYPES,
   ...PROCESS_EXCHANGE_EVENT_TYPES,
   ...CONCURRENCY_EVENT_TYPES,
@@ -605,6 +664,7 @@ export type MigrationV12EventType = (typeof MIGRATION_V12_EVENT_TYPES)[number];
 export type TaskExecutionEventType = (typeof TASK_EXECUTION_EVENT_TYPES)[number];
 export type BackendPingEventType = (typeof BACKEND_PING_EVENT_TYPES)[number];
 export type BackendPostureEventType = (typeof BACKEND_POSTURE_EVENT_TYPES)[number];
+export type ProcessTreeEventType = (typeof PROCESS_TREE_EVENT_TYPES)[number];
 export type OptionalPhaseEventType = (typeof OPTIONAL_PHASE_EVENT_TYPES)[number];
 export type MetricsEventType = (typeof METRICS_EVENT_TYPES)[number];
 export type ProcessExchangeEventType = (typeof PROCESS_EXCHANGE_EVENT_TYPES)[number];

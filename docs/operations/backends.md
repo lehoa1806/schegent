@@ -129,10 +129,50 @@ The full reasoning, the two shapes not chosen, and what remains outstanding are 
    the terminal state silently implying the work has stopped. SIGKILL is not catchable, so a group
    that survives it is a group Schegent does not own.
 
-   **Residual, stated plainly:** a Windows Job Object with kill-on-close is stronger than
+   **Permanent limit, stated plainly:** a Windows Job Object with kill-on-close is stronger than
    `taskkill /T` — it cannot be escaped by a process that re-parents itself — and needs a native
-   binding, so it is not implemented. On POSIX, a descendant that calls `setsid` for itself leaves
-   the group and is likewise out of reach.
+   binding. On POSIX, a descendant that calls `setsid` for itself leaves the group and is likewise
+   out of reach.
+
+   This is **not** a pending follow-up. Whether this product should carry a native binding was
+   decided once, for the four residuals that share the question, in
+   [Native binding decision](../architecture/native-binding-decision.md) (2026-08-25). The answer is
+   **no**, so both escapes above will remain open, and `taskkill /T` — the well-audited equivalent
+   the requirement itself allows — is what Schegent ships. The record states what the rejected branch
+   would have bought and the three things that would reopen it.
+
+   Where the tree cannot be confirmed gone, that is now also recorded in the audit log as a
+   `process-tree-unconfirmed` event, so an operator reconstructing why a later phase saw foreign
+   writes has evidence and not only a log line.
+
+   **Read the absence of that event narrowly.** On POSIX the check asks whether the process
+   *group* is gone. A descendant that calls `setsid` for itself, or that re-parents, has left the
+   group — the check then reports the group as gone while that process is still running. So no
+   event means *the group was confirmed gone*, not *no descendant survives*. That gap is the same
+   permanent limit stated above, and it is why the runtime-log warning is kept beside the audit
+   entry rather than replaced by it.
+
+   **A helper that outlives its parent is out of reach once the parent is reaped.**
+   The ladder addresses a tree by the direct child's pid, and once the operating system has reaped
+   that child the pid is free to be reused — a new process group leader can hold it, and a probe
+   would then answer "alive" about a stranger. Signalling there would kill an unrelated process
+   tree, and recording it would file a false lead. So the ladder stops when the child is reaped.
+   That is the same class of escape as `setsid` and re-parenting above, and it is closed by the
+   same thing: a Job Object, which the [native binding decision](../architecture/native-binding-decision.md)
+   declines.
+
+   **On Windows the event is not emitted at all.** There is no process group to probe, so the only
+   question `processTreeIsGone` can answer is whether the direct child is gone — and once
+   `taskkill /T /F` has reaped it, a recycled pid inside the confirmation window would answer
+   "alive" and produce an audit entry against a Run whose tree had in fact died. A false lead is
+   worse than none, so the check declines rather than guesses. The runtime-log warning is what
+   Windows operators have, and closing this properly needs the Job Object named above.
+
+   The event also requires an invocation that names a Run; one that does not produces the log
+   warning and no audit entry.
+
+   Which acceptance halves have actually been observed, and on which platform, is in
+   [Platform observation record](platform-observation-record.md).
 7. Monitor events identify the Run and report start, chunks, and exit. Hook errors do not control the child.
 8. Retry and rate-limit policy remain in the controller; adapters return raw invocation outcomes.
 9. Adapters do not own operator-visible sanitization or structured audit writes; those occur at the Phase runner/logger boundary.

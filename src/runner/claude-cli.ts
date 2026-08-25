@@ -9,7 +9,8 @@ import type {
 import type {
   BackendRunner,
   MonitorSidecarEvent,
-  MonitorSidecarHook
+  MonitorSidecarHook,
+  TreeAttribution
 } from '../contracts/backend-runner';
 import { VerboseDiagnosticWriter } from '../audit/verbose-diagnostic-writer';
 import { SanitizedLogger } from '../lib/logger';
@@ -23,12 +24,8 @@ import { OutputSinkBackpressure } from './output-sink-backpressure';
 import { waitForChildCompletion } from './child-completion';
 import { awaitStdinDelivery, writePromptToStdin } from './child-stdin';
 import { LineFramer, DEFAULT_MAX_LINE_UNITS } from '../lib/line-framer';
-import { processTreeSpawnOptions, signalProcessTree, processTreeIsGone } from './process-tree';
+import { processTreeSpawnOptions, escalateAndReportTree } from './process-tree';
 
-/** FR-R3-054 — how long after SIGKILL to check whether the group really went. */
-const TREE_CONFIRM_DELAY_MS = 500;
-
-const SIGKILL_DELAY_MS = 2_000;
 // Feature 030 BUG-002 — after the invocation's terminal stream-json result line
 // (`{"type":"result"}`) appears in stdout, the runner waits at most this long
 // for the process to exit on its own before grace-terminating it. Short enough
@@ -197,8 +194,33 @@ export class ClaudeCliRunner implements BackendRunner {
    * same clobber. The token also makes the exit-path delete exact — an
    * invocation removes its own entry and no other.
    */
-  private readonly active = new Map<number, ChildProcess>();
+  /**
+   * FR-R3-083 — the run id travels WITH the child, so `cancelActive()` (which
+   * iterates this map and had no run id to offer) can still attribute a
+   * `tree-unconfirmed` report. Deactivation-time cancellation is one of the paths
+   * FR-R3-054 was written for, and an anonymous record there would be the least
+   * useful one.
+   */
+  private readonly active = new Map<
+    number,
+    TreeAttribution & { readonly child: ChildProcess }
+  >();
   private nextInvocationToken = 1;
+
+  /**
+   * FR-R3-083 — children whose surviving group has already been REPORTED.
+   *
+   * Not "children already being terminated". An earlier version guarded the whole
+   * ladder, which meant a later, genuinely different trigger (idle expiry, then the
+   * absolute deadline) could no longer re-signal a tree the first pass failed to
+   * reach -- and `signalProcessTree` swallows a failed group signal by design, so a
+   * first pass failing silently is the ordinary case, not an exotic one.
+   *
+   * What must not happen twice is the audit ENTRY: two overlapping cancel paths on
+   * one hung child would otherwise record two surviving groups where there was one.
+   * A WeakSet so a reaped child is collectable.
+   */
+  private readonly reportedTrees = new WeakSet<ChildProcess>();
 
   constructor(
     spawnFn: SpawnFn = spawn as unknown as SpawnFn,
@@ -292,6 +314,11 @@ export class ClaudeCliRunner implements BackendRunner {
     // a map entry would leak, and a leaked entry makes `hasActiveProcess`
     // permanently true.
     const invocationToken = this.nextInvocationToken++;
+    const attribution: TreeAttribution = {
+      runId: request.runId ?? null,
+      phase: request.phase,
+      iteration: request.iteration
+    };
     try {
       const child = safeSpawn(this.spawnFn, request.cliPath, args, {
         stdio,
@@ -300,7 +327,7 @@ export class ClaudeCliRunner implements BackendRunner {
         env: buildSpawnEnv(request)
       });
       this._logger.info(`[ClaudeCliRunner] Spawned CLI: ${command}, PID=${child.pid}`);
-      this.active.set(invocationToken, child);
+      this.active.set(invocationToken, { child, ...attribution });
       this.emitHook({ kind: 'started', runId: request.runId ?? null, pid: child.pid ?? null });
 
       // FR-R3-047 — attach-then-write through the shared helper. The previous
@@ -380,7 +407,7 @@ export class ClaudeCliRunner implements BackendRunner {
         );
         if (sawCompletionMarker) completedAwaitingExit = true;
         else timedOut = true;
-        this.terminate(child);
+        this.terminate(child, attribution);
       };
       let timer: NodeJS.Timeout = setTimeout(onIdleExpiry, request.timeoutMs);
       let idleTimerActive = true;
@@ -405,7 +432,7 @@ export class ClaudeCliRunner implements BackendRunner {
                   `phase=${request.phase} iteration=${request.iteration}`
               );
               deadlineExceeded = true;
-              this.terminate(child);
+              this.terminate(child, attribution);
             }, request.maxDurationMs)
           : null;
       const resetIdleTimer = (): void => {
@@ -507,7 +534,7 @@ export class ClaudeCliRunner implements BackendRunner {
         onAbort = () => {
           this._logger.info(`[ClaudeCliRunner] onAbort fired! (cancellationSignal)`);
           killed = true;
-          this.terminate(child);
+          this.terminate(child, attribution);
         };
         if (request.cancellationSignal.aborted) onAbort();
         else request.cancellationSignal.addEventListener('abort', onAbort);
@@ -656,38 +683,35 @@ export class ClaudeCliRunner implements BackendRunner {
   public cancelActive(): boolean {
     if (this.active.size === 0) return false;
     this._logger.info(`[ClaudeCliRunner] cancelActive called for ${this.active.size} subprocess(es)`);
-    for (const child of this.active.values()) {
-      this.terminate(child);
+    for (const entry of this.active.values()) {
+      this.terminate(entry.child, {
+        runId: entry.runId,
+        phase: entry.phase,
+        iteration: entry.iteration
+      });
     }
     return true;
   }
 
-  private terminate(child: ChildProcess): void {
-    this._logger.info(`[ClaudeCliRunner] terminate called! exitCode=${child.exitCode}, signalCode=${child.signalCode}`);
-    if (child.exitCode === null && child.signalCode === null) {
-      // FR-R3-054 (H-05) — signal the TREE. `child.kill` reached one process, so
-      // a forked helper outlived cancel and kept writing to the workspace after
-      // a terminal state was recorded.
-      this._logger.info(`[ClaudeCliRunner] sending SIGTERM to process tree`);
-      void signalProcessTree(child, 'SIGTERM');
-      setTimeout(() => {
-        // Original trigger preserved; the tree probe below answers the separate
-        // question of whether the terminal state may claim the work has stopped.
-        if (child.exitCode !== null || child.signalCode !== null) return;
-        this._logger.info(`[ClaudeCliRunner] sending SIGKILL to process tree`);
-        void signalProcessTree(child, 'SIGKILL').then(() => {
-          setTimeout(() => {
-            if (processTreeIsGone(child)) return;
-            // SIGKILL is not catchable, so a surviving group is one we do not
-            // own. Said out loud rather than left for a later phase to trip over.
-            this._logger.warn(
-              '[ClaudeCliRunner] process tree not confirmed gone after SIGKILL; ' +
-                'descendants may still be running'
-            );
-          }, TREE_CONFIRM_DELAY_MS).unref();
-        });
-      }, SIGKILL_DELAY_MS).unref?.();
-    }
+  private terminate(child: ChildProcess, attribution: TreeAttribution): void {
+    this._logger.info(
+      `[ClaudeCliRunner] terminate called! exitCode=${child.exitCode}, signalCode=${child.signalCode}`
+    );
+    // The ladder owns the decision, including whether there is anything left to
+    // signal at all. See `childIsReaped` in `process-tree.ts` for that rule and why
+    // it is the whole of it.
+    escalateAndReportTree({
+      child,
+      attribution,
+      runner: 'claude-cli',
+      info: (message) => this._logger.info(`[ClaudeCliRunner] ${message}`),
+      warn: (message) => this._logger.warn(`[ClaudeCliRunner] ${message}`),
+      emit: (event) => this.emitHook(event),
+      // FR-R3-083 — the guard is on the REPORT, not on the ladder. See the note in
+      // `escalateAndReportTree`.
+      alreadyReported: () => this.reportedTrees.has(child),
+      markReported: () => void this.reportedTrees.add(child)
+    });
   }
 
 }

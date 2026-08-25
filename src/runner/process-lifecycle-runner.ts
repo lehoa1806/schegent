@@ -1,21 +1,16 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
-import type { MonitorSidecarEvent, MonitorSidecarHook } from '../contracts/backend-runner';
+import type {
+  MonitorSidecarEvent,
+  MonitorSidecarHook,
+  TreeAttribution, RunnerLabel } from '../contracts/backend-runner';
 import type { SanitizedLogger } from '../lib/logger';
 import { waitForChildCompletion } from './child-completion';
 import { awaitStdinDelivery, writePromptToStdin } from './child-stdin';
 import type { InvocationOutputSink, InvocationRequest, RawInvocationOutput } from './invocation-result';
 import { OutputSinkBackpressure } from './output-sink-backpressure';
 import { ZippedStreamBuffer } from './zipped-stream-buffer';
-import { processTreeSpawnOptions, signalProcessTree, processTreeIsGone } from './process-tree';
+import { processTreeSpawnOptions, escalateAndReportTree } from './process-tree';
 
-/**
- * FR-R3-054 — how long after SIGKILL to check whether the group really went.
- * Short: SIGKILL is not catchable, so a group that survives it is a group we do
- * not own, and waiting longer does not change that.
- */
-const TREE_CONFIRM_DELAY_MS = 500;
-
-const SIGKILL_DELAY_MS = 2_000;
 export type ProcessSpawnFn = (
   command: string,
   args: ReadonlyArray<string>,
@@ -40,14 +35,41 @@ export class ProcessLifecycleRunner {
    * same clobber. The token also makes the exit-path delete exact — an
    * invocation removes its own entry and no other.
    */
-  private readonly active = new Map<number, ChildProcess>();
+  /**
+   * FR-R3-083 — the run id travels WITH the child.
+   *
+   * `cancelActive()` iterates this map and had no run id to offer, so a
+   * `tree-unconfirmed` report from that path could not be attributed. Carrying the
+   * id here rather than threading it through `terminate`'s callers is what makes
+   * deactivation-time cancellation — one of the paths FR-R3-054 was written for —
+   * produce an attributable record instead of an anonymous one.
+   */
+  private readonly active = new Map<
+    number,
+    TreeAttribution & { readonly child: ChildProcess }
+  >();
   private nextInvocationToken = 1;
+
+  /**
+   * FR-R3-083 — children whose surviving group has already been REPORTED.
+   *
+   * Not "children already being terminated". An earlier version guarded the whole
+   * ladder, which meant a later, genuinely different trigger (idle expiry, then the
+   * absolute deadline) could no longer re-signal a tree the first pass failed to
+   * reach -- and `signalProcessTree` swallows a failed group signal by design, so a
+   * first pass failing silently is the ordinary case, not an exotic one.
+   *
+   * What must not happen twice is the audit ENTRY: two overlapping cancel paths on
+   * one hung child would otherwise record two surviving groups where there was one.
+   * A WeakSet so a reaped child is collectable.
+   */
+  private readonly reportedTrees = new WeakSet<ChildProcess>();
 
   constructor(
     private readonly spawnFn: ProcessSpawnFn = spawn as unknown as ProcessSpawnFn,
     private readonly monitorHook: MonitorSidecarHook | null,
     private readonly logger: SanitizedLogger,
-    private readonly label: string
+    private readonly label: RunnerLabel
   ) {}
 
   public get hasActiveProcess(): boolean { return this.active.size > 0; }
@@ -69,7 +91,12 @@ export class ProcessLifecycleRunner {
       ...processTreeSpawnOptions()
     });
     const invocationToken = this.nextInvocationToken++;
-    this.active.set(invocationToken, child);
+    const attribution: TreeAttribution = {
+      runId: request.runId ?? null,
+      phase: request.phase,
+      iteration: request.iteration
+    };
+    this.active.set(invocationToken, { child, ...attribution });
     // Feature 093 (T046a) — `finally`, not a trailing statement. A single slot
     // self-healed on a throw because the next spawn overwrote it; a map entry
     // would leak, and a leaked entry makes `hasActiveProcess` permanently true.
@@ -99,9 +126,9 @@ export class ProcessLifecycleRunner {
       const reset = (): void => {
         clearTimeout(timer);
         if (!idleTimerActive) return;
-        timer = setTimeout(() => { timedOut = true; this.terminate(child); }, request.timeoutMs);
+        timer = setTimeout(() => { timedOut = true; this.terminate(child, attribution); }, request.timeoutMs);
       };
-      timer = setTimeout(() => { timedOut = true; this.terminate(child); }, request.timeoutMs);
+      timer = setTimeout(() => { timedOut = true; this.terminate(child, attribution); }, request.timeoutMs);
       // FR-R3-075 — the absolute wall-clock deadline: armed once at spawn,
       // NEVER reset, and deliberately outside the backpressure suspension below
       // — a blocked sink pauses the idle clock, not the wall. The idle timer
@@ -115,7 +142,7 @@ export class ProcessLifecycleRunner {
       const deadlineFired = (): boolean => deadlineExceeded;
       const deadlineTimer =
         request.maxDurationMs !== undefined && request.maxDurationMs > 0
-          ? setTimeout(() => { deadlineExceeded = true; this.terminate(child); }, request.maxDurationMs)
+          ? setTimeout(() => { deadlineExceeded = true; this.terminate(child, attribution); }, request.maxDurationMs)
           : null;
       const backpressure = new OutputSinkBackpressure(outputSink, () => clearTimeout(timer), reset);
       child.stdout?.on('data', (chunk: string) => {
@@ -128,7 +155,7 @@ export class ProcessLifecycleRunner {
       });
       let onAbort: (() => void) | null = null;
       if (request.cancellationSignal) {
-        onAbort = () => { killed = true; this.terminate(child); };
+        onAbort = () => { killed = true; this.terminate(child, attribution); };
         if (request.cancellationSignal.aborted) onAbort();
         else request.cancellationSignal.addEventListener('abort', onAbort);
       }
@@ -208,7 +235,19 @@ export class ProcessLifecycleRunner {
    */
   public cancelActive(): boolean {
     if (this.active.size === 0) return false;
-    for (const child of this.active.values()) this.terminate(child);
+    for (const entry of this.active.values()) {
+      // Named fields, NEVER the map entry. The entry also holds the live
+      // `ChildProcess`, and `terminate` spreads its attribution into a sidecar
+      // event — so passing the entry puts a non-serialisable handle carrying
+      // `spawnargs` (the full argv) into a contract whose safety argument is that
+      // it has nowhere to put a secret. A spread bypasses excess-property checks,
+      // so the type system does not catch it.
+      this.terminate(entry.child, {
+        runId: entry.runId,
+        phase: entry.phase,
+        iteration: entry.iteration
+      });
+    }
     return true;
   }
 
@@ -225,28 +264,22 @@ export class ProcessLifecycleRunner {
    * honestly. Where the tree cannot be proven gone within the grace window, the
    * caller is told so rather than the terminal state quietly claiming otherwise.
    */
-  private terminate(child: ChildProcess): void {
-    if (child.exitCode !== null || child.signalCode !== null) return;
-    void signalProcessTree(child, 'SIGTERM');
-    setTimeout(() => {
-      // The original trigger, unchanged: the direct child's own status decides
-      // whether to escalate. The tree check below is additive -- it decides
-      // whether the terminal state may claim the work has stopped, which is a
-      // different question and was previously not asked at all.
-      if (child.exitCode === null && child.signalCode === null) {
-        void signalProcessTree(child, 'SIGKILL').then(() => {
-          setTimeout(() => {
-            if (processTreeIsGone(child)) return;
-            // No silent lie. The phase is ending with descendants possibly alive,
-            // and that is a fact an operator needs when a later phase behaves as
-            // though something else is writing to the workspace.
-            this.logger.warn(
-              `${this.label}: process tree not confirmed gone after SIGKILL; ` +
-                'descendants may still be running'
-            );
-          }, TREE_CONFIRM_DELAY_MS).unref();
-        });
-      }
-    }, SIGKILL_DELAY_MS).unref();
+  private terminate(child: ChildProcess, attribution: TreeAttribution): void {
+    // The ladder owns the decision, including whether there is anything left to
+    // signal at all. See `childIsReaped` in `process-tree.ts` for that rule and why
+    // it is the whole of it.
+    escalateAndReportTree({
+      child,
+      attribution,
+      runner: this.label,
+      warn: (message) => this.logger.warn(`${this.label}: ${message}`),
+      emit: (event) => this.emit(event),
+      // FR-R3-083 — the guard is on the REPORT, not on the ladder. Suppressing a
+      // second ladder means a tree the first pass failed to reach (a group signal
+      // that failed is swallowed by design) is never signalled again by a later,
+      // genuinely different trigger.
+      alreadyReported: () => this.reportedTrees.has(child),
+      markReported: () => void this.reportedTrees.add(child)
+    });
   }
 }

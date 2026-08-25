@@ -31,6 +31,32 @@ export interface ChildCompletion {
  * only for `close` can strand the workflow queue. This helper races the two
  * lifecycle boundaries and destroys the local pipe readers after the bounded
  * grace so no late data can reach an already-finalized transcript sink.
+ *
+ * WHAT THE GRACE TOLERATES TODAY (FR-R3-083, re-measured 2026-08-25)
+ *
+ * `FR-R3-054` §5 left this open: cancellation now signals the whole process group,
+ * and "descendant survival is what it exists to tolerate, so it may now be
+ * tolerating something that no longer happens." Measured in
+ * `tests/unit/runner/child-completion-tree.test.ts`, on darwin/arm64. The answer is
+ * that the two paths differ, and the grace is KEPT:
+ *
+ *   - On the NORMAL-completion path the grace is still load-bearing. Nothing
+ *     signals the group there -- `terminate()` is not involved when a phase simply
+ *     finishes -- so a descendant that inherited the pipe still holds the write end
+ *     after the child exits, and `'close'` does not arrive. This is the ordinary
+ *     case, on every run that ends well.
+ *
+ *   - After a TREE KILL the grace is redundant: the descendant dies with the group
+ *     and `'close'` arrives inside the window.
+ *
+ * Two things follow, and the second is the one worth carrying. Deleting the grace
+ * because cancellation no longer needs it would have unbounded the path that still
+ * does. And the tree kill only makes it redundant while the child is a GROUP
+ * LEADER: a spawn path that omitted `processTreeSpawnOptions()` would degrade
+ * silently to a direct-child kill, the descendant would keep the pipe, and this
+ * grace would become the only bound on that path too. It is the same reason
+ * `signalProcessTree` signals the group AND the child rather than choosing between
+ * them.
  */
 export function waitForChildCompletion(
   child: ChildProcess,

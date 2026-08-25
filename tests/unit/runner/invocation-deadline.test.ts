@@ -29,7 +29,7 @@ function makeRunner(): ProcessLifecycleRunner {
     spawn as unknown as ProcessSpawnFn,
     null,
     new SanitizedLogger(),
-    'deadline-fixture'
+    'codex-cli'
   );
 }
 

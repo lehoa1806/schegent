@@ -359,6 +359,9 @@ export class MetricsRollupWriter {
       // rename that publishes it is the atomic-publish residual the migration
       // ledger records by name: Node exposes no `renameat`, so the publish
       // cannot be made handle-relative here any more than it can anywhere else.
+      // FR-R3-083 settled whether to reach for a native binding and the answer is
+      // no, so this is a PERMANENT stated limit rather than a pending one:
+      // `docs/architecture/native-binding-decision.md`.
       const tempSegments = [...ROLLUP_SEGMENTS.slice(0, -1), `${ROLLUP_LEAF}.trim`];
       const temp = path.join(this.deps.workspaceRoot, ...tempSegments);
       const opened = await openWithinRoot(this.deps.workspaceRoot, tempSegments, {

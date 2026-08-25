@@ -22,19 +22,19 @@
   ],
   "rules": {
     "@typescript-eslint/no-unnecessary-condition": {
-      "host": 343,
+      "host": 342,
       "webview": 271,
       "owner": {
-        "decision": "D9 \u2014 Six baseline entries, each owned",
+        "decision": "D9 — Six baseline entries, each owned",
         "reference": "specs/112-webview-lint-and-type-aware-rules/plan.md"
       },
-      "reductionNote": "620 checks against values the compiler already types as non-nullable. Most are not dead code; they are the cost of noUncheckedIndexedAccess being off, which types an indexed read as T and so makes the guard after it read as unnecessary. Turning that flag on measures 1,176 errors (verdict in docs/development/lint-and-type-aware-rules.md), so this count falls with that flag, not by editing 620 sites. Lower it opportunistically when a file is already being changed; do not open a sweep. Lowered 274 -> 271 on 2026-08-25 under exactly that rule: the Workflow Flow refactor landed nine new sites in WorkflowFlowNode.svelte, workflow-flow-layout.ts and WorkflowFlowCanvas.test.ts, which held develop's webview lint red. Cleared by making the types honest rather than by deleting guards -- the two source sites annotate the indexed read and the operator lookup as possibly absent, so every runtime guard stands and reads as meaningful -- plus the redundant optional chaining in the test file. Three pre-existing sites in the same test file went with them, which is why the count lands below the old baseline rather than back at it. Host lowered 345 -> 343 across 2026-08-25 under the same rule, two sites in two features: FR-R3-078's `isFencedClaim` discriminates on `'kind' in claim` rather than on a cast plus a comparison the compiler already knows is false; and FR-R3-081's multi-PID sampler takes 'any registered pid' from a loop rather than from `[...keys][0] ?? null`, which with `noUncheckedIndexedAccess` off is typed `number` and so reads as dead code to the linter while being load-bearing at runtime. Both made the types honest rather than deleting a guard."
+      "reductionNote": "620 checks against values the compiler already types as non-nullable. Most are not dead code; they are the cost of noUncheckedIndexedAccess being off, which types an indexed read as T and so makes the guard after it read as unnecessary. Turning that flag on measures 1,176 errors (verdict in docs/development/lint-and-type-aware-rules.md), so this count falls with that flag, not by editing 620 sites. Lower it opportunistically when a file is already being changed; do not open a sweep. Lowered 274 -> 271 on 2026-08-25 under exactly that rule: the Workflow Flow refactor landed nine new sites in WorkflowFlowNode.svelte, workflow-flow-layout.ts and WorkflowFlowCanvas.test.ts, which held develop's webview lint red. Cleared by making the types honest rather than by deleting guards -- the two source sites annotate the indexed read and the operator lookup as possibly absent, so every runtime guard stands and reads as meaningful -- plus the redundant optional chaining in the test file. Three pre-existing sites in the same test file went with them, which is why the count lands below the old baseline rather than back at it. Host lowered 345 -> 343 across 2026-08-25 under the same rule, two sites in two features: FR-R3-078's `isFencedClaim` discriminates on `'kind' in claim` rather than on a cast plus a comparison the compiler already knows is false; and FR-R3-081's multi-PID sampler takes 'any registered pid' from a loop rather than from `[...keys][0] ?? null`, which with `noUncheckedIndexedAccess` off is typed `number` and so reads as dead code to the linter while being load-bearing at runtime. Both made the types honest rather than deleting a guard. Host lowered 343 -> 342 on 2026-08-25 by FR-R3-083, under the same opportunistic rule: extracting the SIGTERM->SIGKILL->confirm ladder out of claude-cli.ts and process-lifecycle-runner.ts into process-tree.ts removed one of two duplicated `.unref?.()` optional calls. The copies had drifted -- one spelled `.unref()` and the other `.unref?.()` -- which is itself an argument for the extraction. No guard was deleted; one of two copies of the same statement stopped existing."
     },
     "@typescript-eslint/no-unused-vars": {
       "host": 2,
       "webview": 10,
       "owner": {
-        "decision": "D9 \u2014 Six baseline entries, each owned",
+        "decision": "D9 — Six baseline entries, each owned",
         "reference": "specs/112-webview-lint-and-type-aware-rules/plan.md"
       },
       "reductionNote": "12 bindings nothing reads, of four kinds: 2 caught-error parameters (src/controller/phase-runner.ts:401, tests/integration/task-lifecycle-events.test.ts:148), 3 unused type imports, 2 dead imports in webview-ui/src/components/PhaseProgression.svelte, and 5 unused destructurings and test-callback parameters. Each is a one-line deletion or an _ prefix with no behavioural risk, so the route is to clear each when its file is next edited. The rule stays at warn per FR-028 and is baselined anyway, because a warn nothing bounds is how 12 becomes 120."
@@ -42,15 +42,15 @@
     "svelte/prefer-svelte-reactivity": {
       "webview": 11,
       "owner": {
-        "decision": "D9 \u2014 Six baseline entries, each owned",
+        "decision": "D9 — Six baseline entries, each owned",
         "reference": "specs/112-webview-lint-and-type-aware-rules/plan.md"
       },
-      "reductionNote": "11 plain Map, Set or Date instances held in reactive state. The fix is the SvelteMap/SvelteSet/SvelteDate equivalents from svelte/reactivity, which changes what re-renders \u2014 mutating a plain Map in $state updates nothing today, and will update the DOM afterwards. One commit per component, with that component's tests re-read rather than re-run blind. The rule sits at warn only because a live entry here plus error is the contradiction the FR-017 gate exists to catch; promote it back to error in the same change that clears the count and deletes this entry."
+      "reductionNote": "11 plain Map, Set or Date instances held in reactive state. The fix is the SvelteMap/SvelteSet/SvelteDate equivalents from svelte/reactivity, which changes what re-renders — mutating a plain Map in $state updates nothing today, and will update the DOM afterwards. One commit per component, with that component's tests re-read rather than re-run blind. The rule sits at warn only because a live entry here plus error is the contradiction the FR-017 gate exists to catch; promote it back to error in the same change that clears the count and deletes this entry."
     },
     "svelte/require-each-key": {
       "webview": 10,
       "owner": {
-        "decision": "D9 \u2014 Six baseline entries, each owned",
+        "decision": "D9 — Six baseline entries, each owned",
         "reference": "specs/112-webview-lint-and-type-aware-rules/plan.md"
       },
       "reductionNote": "10 keyless {#each} blocks. A key changes how Svelte reuses DOM nodes across a list update: it fixes state leaking between rows when the list reorders, and it can also change which element keeps focus and which transitions play. So each site is a behavioural fix owned by its list's own component, not a mechanical edit. Same promote-to-error procedure as svelte/prefer-svelte-reactivity."
@@ -58,7 +58,7 @@
     "svelte/prefer-writable-derived": {
       "webview": 1,
       "owner": {
-        "decision": "D9 \u2014 Six baseline entries, each owned",
+        "decision": "D9 — Six baseline entries, each owned",
         "reference": "specs/112-webview-lint-and-type-aware-rules/plan.md"
       },
       "reductionNote": "One $state that mirrors a $derived and is written back to. The fix is a writable $derived, which changes when the value resets relative to its source. A single site, so this entry should be the first of the three Svelte entries to reach zero and be deleted."
@@ -66,7 +66,7 @@
     "suppressionDirectives": {
       "repo": 4,
       "owner": {
-        "decision": "D10 \u2014 Suppression hygiene is a deletion, not a baseline",
+        "decision": "D10 — Suppression hygiene is a deletion, not a baseline",
         "reference": "specs/112-webview-lint-and-type-aware-rules/plan.md"
       },
       "reductionNote": "Four line-scoped eslint-disable comments repo-wide, down from 70; the other 66 named rules that were off or removed and were deleted rather than recorded here. This total is bounded so that lowering a rule count above by suppressing a site shows up as a rise here instead of as an improvement. Of the four: prefer-const at tests/integration/cascaded-pause.test.ts:110 goes when that closure stops needing its binding declared upfront; no-require-imports at tests/integration/index.ts:17 goes when the VS Code test loader takes ESM; the two no-control-regex ones (webview-ui/src/lib/ansi.ts:5 and .../pipeline-catalog-state.ts:465) are load-bearing, because parsing ANSI means matching control characters, and are expected to stay. This count has no tree key, so the lint run skips it and tests/lint/eslint-baseline.test.ts checks it (FR-018)."

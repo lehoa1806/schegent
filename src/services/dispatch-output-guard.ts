@@ -24,9 +24,8 @@
 // brought into existence by its own check, so only the parent chain is walked.
 
 import * as path from 'node:path';
-import * as fs from 'node:fs/promises';
 import type { FrozenOutputRequest } from '../contracts/run-request';
-import { segmentsUnderRoot, walkDirectoriesWithinRoot } from '../lib/safe-open';
+import { segmentsUnderRoot, walkDirectoriesWithinRoot, judgeLeafRedirect, platformLacksNoFollow } from '../lib/safe-open';
 import type { SafeOpenRefusal } from '../lib/safe-open';
 
 export type DispatchOutputVerdict =
@@ -106,19 +105,34 @@ export async function judgeOutputTargetsAtDispatch(
     // what it points at. Absent is the ordinary case and stays a pass — the
     // child creates it — and nothing here creates anything, so the
     // "judges without creating" property is unchanged.
+    //
+    // FR-R3-083 — the REASON is chosen the way `safe-open` chooses it, through the
+    // same predicate and the same platform question. On Windows `lstat` reports a
+    // junction as a link exactly as it does here, and `safe-open`'s leaf check
+    // answers `reparse-point-leaf` for that arrangement; naming it `symlink-leaf`
+    // here would tell an operator the atomic kernel refusal answered on a platform
+    // that has no such refusal. Two names for one arrangement, in one product.
+    //
+    // What neither name covers is a reparse TAG other than symlink or mount point;
+    // `lstat` reports those as ordinary files and telling them apart needs a native
+    // call, declined on the record in
+    // `docs/architecture/native-binding-decision.md`. A permanent stated limit,
+    // and the same one `safe-open.ts` carries.
     const leaf = path.join(walked.directory, segments[segments.length - 1]!);
-    try {
-      const stat = await fs.lstat(leaf);
-      if (stat.isSymbolicLink()) {
-        return { outcome: 'refused', portId: output.portId, reason: 'symlink-leaf' };
-      }
-    } catch (error) {
-      const errno = (error as NodeJS.ErrnoException).code;
-      // Absent is a pass. Anything else is unanswerable, and an unanswerable
-      // containment check is a refusal, not a pass.
-      if (errno !== 'ENOENT' && errno !== 'ENOTDIR') {
-        return { outcome: 'refused', portId: output.portId, reason: 'io-failed' };
-      }
+    // FR-R3-083 — ONE leaf policy, in `safe-open.ts`. This site and the walk's own
+    // leaf check used to hold two copies with different error tolerance, and the
+    // only thing they shared was the `isSymbolicLink()` call — none of the policy
+    // that actually differed. The tolerance is now an explicit argument, so the
+    // difference between the two callers is declared rather than accidental.
+    //
+    // `ENOTDIR` is tolerated HERE and not in the walk: this guard judges a declared
+    // output target that may not exist yet, at any depth, so a component that is a
+    // file means "there is nothing here to be redirected through". The walk has
+    // already proved every component above its leaf, so the same code there would
+    // mean something changed underneath it — a refusal, not an absence.
+    const judged = await judgeLeafRedirect(leaf, ['ENOENT', 'ENOTDIR'], platformLacksNoFollow());
+    if (judged.outcome === 'refused') {
+      return { outcome: 'refused', portId: output.portId, reason: judged.reason };
     }
   }
   return CONTAINED;

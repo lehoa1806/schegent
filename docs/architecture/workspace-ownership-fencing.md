@@ -45,6 +45,15 @@ Any read or write failure becomes `unavailable`, and callers treat that outcome 
 
 Correct mutual exclusion depends on the mounted filesystem implementing exclusive creation atomically. The registry preserves the originating error code so failures such as `ENOTSUP`, `EPERM`, `EROFS`, or `ENOSYS` remain diagnosable. Filesystems or remote-development mounts that do not honor exclusive-create semantics are outside what this mechanism can prove; moving the workspace to a filesystem with correct local-style exclusive creation is the safe resolution.
 
+**This limit is permanent, not current** (`FR-R3-083`, 2026-08-25). It is a property of the filesystem rather than of this code, and nothing reachable from Node can establish exclusivity where the mount does not provide it. The dependency question that would be asked next — whether to reach for a native binding — was decided once, for the four residuals that share it, in [Native binding decision](native-binding-decision.md); the answer is no, and that record states the branch it rejected. The disclosure `FR-R3-040` shipped is therefore strengthened here rather than duplicated: it said the limit exists, and this says it is not going to close.
+
+What did change is that something now **looks**. `FR-R3-083` added a bounded mount-capability probe at activation (`src/state/mount-capability-probe.ts`): it performs two exclusive creates at one name through the containment primitive and classifies the mount `supported`, `unsupported`, `read-only`, or `undetermined`. An `unsupported` verdict — including the case a refusal-only probe would miss, a mount that permits the *second* create — reaches the operator as a notification naming the condition, the consequence and the remedy. An `undetermined` verdict is reported as undetermined and never as either neighbour. The probe never refuses a run, never changes this registry's behaviour, and cannot stall activation; it is a diagnosis, and the fence's own fail-closed posture is still what protects the workspace.
+
+Which of these behaviours have been observed on real hardware, and which are asserted by unit table only, is recorded in [Platform observation record](../operations/platform-observation-record.md). No NFS, SMB, 9p or virtiofs mount was used.
+
+<!-- Source: src/state/mount-capability.ts -->
+<!-- Source: src/state/mount-capability-probe.ts -->
+
 <!-- Source: src/state/ownership-registry.ts -->
 <!-- Source: src/state/ownership-fs.ts -->
 

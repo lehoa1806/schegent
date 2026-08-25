@@ -28,6 +28,7 @@
 // contract re-exports those types so adapters and consumers see a single
 // type identity and the controller doesn't need to choose between two
 // near-identical shapes.
+import type { Phase } from '../controller/phase';
 import type {
   InvocationOutputSink,
   InvocationRequest,
@@ -35,6 +36,32 @@ import type {
 } from '../runner/invocation-result';
 
 export type { InvocationRequest, RawInvocationOutput };
+
+/**
+ * FR-R3-083 — which adapter's tree it was.
+ *
+ * A CLOSED union, not `string`, and the reason is the audit payload downstream:
+ * `ProcessTreeUnconfirmedPayload` is justified as needing no redaction precisely
+ * because it "has nowhere to put a secret". A free-form `string` fed from a
+ * constructor argument is somewhere. These three values are the adapter module
+ * identifiers and are deliberately NOT `BackendRunnerKind` ('claude' | 'codex' |
+ * 'agy') -- the runner that owns a process tree is the adapter, and collapsing the
+ * two would make the payload name a backend where it means an implementation.
+ */
+export type RunnerLabel = 'claude-cli' | 'codex-cli' | 'agy-cli';
+
+/**
+ * Which rungs of the termination ladder ran before the group was found alive.
+ *
+ * ONE value, and the history is worth keeping. A `'sigterm-only-child-exited'` arm
+ * existed briefly, for a version that skipped SIGKILL once the direct child had
+ * exited. That version was wrong — the group outlives its leader, so the signal it
+ * skipped was the one that would have reaped the survivor — and with the ladder now
+ * escalating on the GROUP, a report is only ever reachable after a delivered
+ * SIGKILL. An enum arm nothing can emit is worse than no arm: it invites a reader
+ * to handle a case that cannot occur.
+ */
+export type TreeEscalation = 'sigterm-then-sigkill';
 
 /**
  * Feature 093 (T046) — every sidecar event names the Run whose subprocess
@@ -62,9 +89,46 @@ export type MonitorSidecarEvent =
       readonly timedOut: boolean;
       /** FR-R3-075 — the absolute deadline fired; distinct from the idle stall. */
       readonly deadlineExceeded?: boolean;
+    }
+  /**
+   * FR-R3-083 / FR-R3-054 §5 — the process group could not be proven gone within
+   * the grace window after SIGKILL.
+   *
+   * Reported through this hook rather than written by the runner, for two reasons.
+   * The runner has no business importing the audit writer — it reports lifecycle
+   * facts and something else decides what they mean. And the probe fires on a
+   * delayed, `unref`'d timer AFTER the phase may already have ended, so it needs a
+   * sink that outlives the phase; this hook is a window-level function that does.
+   */
+  | {
+      readonly kind: 'tree-unconfirmed';
+      readonly runId: string | null;
+      /** The phase and iteration whose invocation owned the tree, for attribution. */
+      readonly phase: Phase;
+      readonly iteration: number;
+      readonly pid: number | null;
+      /** Which adapter's tree it was, for the audit payload. */
+      readonly runner: RunnerLabel;
+      /** Which rungs actually ran. Never assumed — see `TreeEscalation`. */
+      readonly escalation: TreeEscalation;
     };
 
 export type MonitorSidecarHook = (event: MonitorSidecarEvent) => void;
+
+/**
+ * FR-R3-083 — who a `tree-unconfirmed` report belongs to.
+ *
+ * The three identity fields of the event arm above, named once so a runner
+ * carries them as ONE value. Every `terminate()` call site used to repeat the
+ * same triple positionally, and a repeated triple is a triple that can be
+ * transposed — `phase` and `iteration` are the two an argument swap would not
+ * make ill-typed at every site.
+ */
+export interface TreeAttribution {
+  readonly runId: string | null;
+  readonly phase: Phase;
+  readonly iteration: number;
+}
 
 export interface BackendRunner {
   /** Whether an invocation is currently running. */

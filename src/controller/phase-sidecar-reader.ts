@@ -278,14 +278,14 @@ const MAX_SIDECAR_BYTES = 8 * 1024 * 1024;
       if (opened.outcome === 'refused') {
         if (silent) return null;
         // A link — at the leaf OR at any component above it — is reported as the
-        // redirect it is, which is what the ELOOP branch below did for the leaf
-        // alone. Everything else (absent, not a file, unreadable) stays
-        // `missing-sidecar`: the phase produced no message this host can read,
-        // and the operator's next step is the same either way.
-        const reason =
-          opened.reason === 'symlink-leaf' || opened.reason === 'symlink-component'
-            ? 'path-symlink-redirect'
-            : 'missing-sidecar';
+        // redirect it is, which is what the ELOOP branch did for the leaf alone.
+        // `reparse-point-leaf` is that same fact by the weaker Windows route
+        // FR-R3-083 added (`docs/architecture/native-binding-decision.md`); omitted,
+        // a Windows operator is told "no message" for a redirected sidecar.
+        // Everything else (absent, not a file, unreadable) stays `missing-sidecar`.
+        const redirected =
+          opened.reason === 'symlink-leaf' || opened.reason === 'symlink-component' || opened.reason === 'reparse-point-leaf';
+        const reason = redirected ? 'path-symlink-redirect' : 'missing-sidecar';
         await this.emitPhaseMessageInvalid(inputs, reason);
         return this.invalidPhaseMessage(inputs, reason);
       }
