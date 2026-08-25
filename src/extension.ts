@@ -33,6 +33,7 @@ import {
   type RuntimeEvidenceWiring
 } from './activation/backend-wiring';
 import { startMountCapabilityProbe } from './activation/mount-capability-wiring';
+import { ProcessTreeDegradationRecorder } from './controller/process-tree-degradation-recorder';
 import { warnIfScaffoldingMissing } from './activation/workspace-scaffolding';
 import { createConnectedRunService, registerStage2Ui } from './activation/ui-wiring';
 import { SchegentOutputChannel } from './ui/output-channel';
@@ -579,6 +580,8 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     vscode.workspace
       .getConfiguration('schegent.backend')
       .get<boolean>('allowUncontainedBackends') === true;
+  // FR-R3-083 — a runner reports; this records. See the recorder for why.
+  const treeDegradationRecorder = new ProcessTreeDegradationRecorder((e) => auditWriter.append(e));
   const runnerRegistry = new BackendRunnerRegistry({
     // FR-R3-056 (H-01) — the shipped posture. Unset reads as the manifest default
     // (`false`), so a fresh install refuses an uncontained backend. See
@@ -615,6 +618,9 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
           signal: event.signal as NodeJS.Signals | null,
           ...(exitedPid === undefined ? {} : { pid: exitedPid })
         });
+      } else if (event.kind === 'tree-unconfirmed') {
+        // FR-R3-083 — best-effort by design; arrives after the phase has ended.
+        void treeDegradationRecorder.record(event);
       }
     },
     probeTransport: true,

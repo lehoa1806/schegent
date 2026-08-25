@@ -1,3 +1,4 @@
+import type { Phase } from '../controller/phase';
 import { spawn, type ChildProcess, type SpawnOptions } from 'child_process';
 import { extractCliSessionId } from "../parser/session-id-extractor";
 
@@ -197,7 +198,22 @@ export class ClaudeCliRunner implements BackendRunner {
    * same clobber. The token also makes the exit-path delete exact — an
    * invocation removes its own entry and no other.
    */
-  private readonly active = new Map<number, ChildProcess>();
+  /**
+   * FR-R3-083 — the run id travels WITH the child, so `cancelActive()` (which
+   * iterates this map and had no run id to offer) can still attribute a
+   * `tree-unconfirmed` report. Deactivation-time cancellation is one of the paths
+   * FR-R3-054 was written for, and an anonymous record there would be the least
+   * useful one.
+   */
+  private readonly active = new Map<
+    number,
+    {
+      readonly child: ChildProcess;
+      readonly runId: string | null;
+      readonly phase: Phase;
+      readonly iteration: number;
+    }
+  >();
   private nextInvocationToken = 1;
 
   constructor(
@@ -300,7 +316,12 @@ export class ClaudeCliRunner implements BackendRunner {
         env: buildSpawnEnv(request)
       });
       this._logger.info(`[ClaudeCliRunner] Spawned CLI: ${command}, PID=${child.pid}`);
-      this.active.set(invocationToken, child);
+      this.active.set(invocationToken, {
+      child,
+      runId: request.runId ?? null,
+      phase: request.phase,
+      iteration: request.iteration
+    });
       this.emitHook({ kind: 'started', runId: request.runId ?? null, pid: child.pid ?? null });
 
       // FR-R3-047 — attach-then-write through the shared helper. The previous
@@ -380,7 +401,7 @@ export class ClaudeCliRunner implements BackendRunner {
         );
         if (sawCompletionMarker) completedAwaitingExit = true;
         else timedOut = true;
-        this.terminate(child);
+        this.terminate(child, request.runId ?? null, request.phase, request.iteration);
       };
       let timer: NodeJS.Timeout = setTimeout(onIdleExpiry, request.timeoutMs);
       let idleTimerActive = true;
@@ -405,7 +426,7 @@ export class ClaudeCliRunner implements BackendRunner {
                   `phase=${request.phase} iteration=${request.iteration}`
               );
               deadlineExceeded = true;
-              this.terminate(child);
+              this.terminate(child, request.runId ?? null, request.phase, request.iteration);
             }, request.maxDurationMs)
           : null;
       const resetIdleTimer = (): void => {
@@ -507,7 +528,7 @@ export class ClaudeCliRunner implements BackendRunner {
         onAbort = () => {
           this._logger.info(`[ClaudeCliRunner] onAbort fired! (cancellationSignal)`);
           killed = true;
-          this.terminate(child);
+          this.terminate(child, request.runId ?? null, request.phase, request.iteration);
         };
         if (request.cancellationSignal.aborted) onAbort();
         else request.cancellationSignal.addEventListener('abort', onAbort);
@@ -656,13 +677,18 @@ export class ClaudeCliRunner implements BackendRunner {
   public cancelActive(): boolean {
     if (this.active.size === 0) return false;
     this._logger.info(`[ClaudeCliRunner] cancelActive called for ${this.active.size} subprocess(es)`);
-    for (const child of this.active.values()) {
-      this.terminate(child);
+    for (const entry of this.active.values()) {
+      this.terminate(entry.child, entry.runId, entry.phase, entry.iteration);
     }
     return true;
   }
 
-  private terminate(child: ChildProcess): void {
+  private terminate(
+    child: ChildProcess,
+    runId: string | null,
+    phase: Phase,
+    iteration: number
+  ): void {
     this._logger.info(`[ClaudeCliRunner] terminate called! exitCode=${child.exitCode}, signalCode=${child.signalCode}`);
     if (child.exitCode === null && child.signalCode === null) {
       // FR-R3-054 (H-05) — signal the TREE. `child.kill` reached one process, so
@@ -680,10 +706,23 @@ export class ClaudeCliRunner implements BackendRunner {
             if (processTreeIsGone(child)) return;
             // SIGKILL is not catchable, so a surviving group is one we do not
             // own. Said out loud rather than left for a later phase to trip over.
+            // The log line STAYS: an operator tailing the runtime log must not lose
+            // it because the same fact now also reaches the audit record.
             this._logger.warn(
               '[ClaudeCliRunner] process tree not confirmed gone after SIGKILL; ' +
                 'descendants may still be running'
             );
+            // FR-R3-083 / FR-R3-054 §5 — and into EVIDENCE, through the hook. This
+            // runner does not import the audit writer; it reports a lifecycle fact
+            // and something else decides what to record.
+            this.emitHook({
+              kind: 'tree-unconfirmed',
+              runId,
+              phase,
+              iteration,
+              pid: child.pid ?? null,
+              runner: 'claude-cli'
+            });
           }, TREE_CONFIRM_DELAY_MS).unref();
         });
       }, SIGKILL_DELAY_MS).unref?.();

@@ -305,7 +305,15 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // this is three lines and not seventeen — the first draft put the whole
   // fire-and-forget expression here and this gate is what sent it to a module.
   // Prose trimmed before raising. Set to exactly what the file measures.
-  { path: 'src/extension.ts', maxLines: 1_450 },
+  // FR-R3-083 (T1162, 2026-08-25) — 1450 → 1456. Six lines: the degradation
+  // recorder's construction and the `tree-unconfirmed` arm of the monitor hook.
+  // Both are here for the same reason the rest of that hook is: this is the one
+  // place a runner's sidecar report meets the audit writer, and a runner that
+  // reached for the writer itself would be a second audit author writing outside
+  // any phase's lifetime. The reasoning lives in
+  // src/controller/process-tree-degradation-recorder.ts; what is here is the wiring.
+  // Prose trimmed before raising. Set to exactly what the file measures.
+  { path: 'src/extension.ts', maxLines: 1_456 },
   // P4 phase-control and lifecycle-auditor extraction ratchet: 1,200 → 730.
   // This file owns only the workflow facade, run dispatch, deletion, retry
   // entry, and persistence.

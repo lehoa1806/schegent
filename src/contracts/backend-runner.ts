@@ -28,6 +28,7 @@
 // contract re-exports those types so adapters and consumers see a single
 // type identity and the controller doesn't need to choose between two
 // near-identical shapes.
+import type { Phase } from '../controller/phase';
 import type {
   InvocationOutputSink,
   InvocationRequest,
@@ -62,6 +63,26 @@ export type MonitorSidecarEvent =
       readonly timedOut: boolean;
       /** FR-R3-075 — the absolute deadline fired; distinct from the idle stall. */
       readonly deadlineExceeded?: boolean;
+    }
+  /**
+   * FR-R3-083 / FR-R3-054 §5 — the process group could not be proven gone within
+   * the grace window after SIGKILL.
+   *
+   * Reported through this hook rather than written by the runner, for two reasons.
+   * The runner has no business importing the audit writer — it reports lifecycle
+   * facts and something else decides what they mean. And the probe fires on a
+   * delayed, `unref`'d timer AFTER the phase may already have ended, so it needs a
+   * sink that outlives the phase; this hook is a window-level function that does.
+   */
+  | {
+      readonly kind: 'tree-unconfirmed';
+      readonly runId: string | null;
+      /** The phase and iteration whose invocation owned the tree, for attribution. */
+      readonly phase: Phase;
+      readonly iteration: number;
+      readonly pid: number | null;
+      /** Which runner's tree it was, for the audit payload. */
+      readonly runner: string;
     };
 
 export type MonitorSidecarHook = (event: MonitorSidecarEvent) => void;

@@ -1,3 +1,4 @@
+import type { Phase } from '../controller/phase';
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import type { MonitorSidecarEvent, MonitorSidecarHook } from '../contracts/backend-runner';
 import type { SanitizedLogger } from '../lib/logger';
@@ -40,7 +41,24 @@ export class ProcessLifecycleRunner {
    * same clobber. The token also makes the exit-path delete exact — an
    * invocation removes its own entry and no other.
    */
-  private readonly active = new Map<number, ChildProcess>();
+  /**
+   * FR-R3-083 — the run id travels WITH the child.
+   *
+   * `cancelActive()` iterates this map and had no run id to offer, so a
+   * `tree-unconfirmed` report from that path could not be attributed. Carrying the
+   * id here rather than threading it through `terminate`'s callers is what makes
+   * deactivation-time cancellation — one of the paths FR-R3-054 was written for —
+   * produce an attributable record instead of an anonymous one.
+   */
+  private readonly active = new Map<
+    number,
+    {
+      readonly child: ChildProcess;
+      readonly runId: string | null;
+      readonly phase: Phase;
+      readonly iteration: number;
+    }
+  >();
   private nextInvocationToken = 1;
 
   constructor(
@@ -69,7 +87,12 @@ export class ProcessLifecycleRunner {
       ...processTreeSpawnOptions()
     });
     const invocationToken = this.nextInvocationToken++;
-    this.active.set(invocationToken, child);
+    this.active.set(invocationToken, {
+      child,
+      runId: request.runId ?? null,
+      phase: request.phase,
+      iteration: request.iteration
+    });
     // Feature 093 (T046a) — `finally`, not a trailing statement. A single slot
     // self-healed on a throw because the next spawn overwrote it; a map entry
     // would leak, and a leaked entry makes `hasActiveProcess` permanently true.
@@ -99,9 +122,9 @@ export class ProcessLifecycleRunner {
       const reset = (): void => {
         clearTimeout(timer);
         if (!idleTimerActive) return;
-        timer = setTimeout(() => { timedOut = true; this.terminate(child); }, request.timeoutMs);
+        timer = setTimeout(() => { timedOut = true; this.terminate(child, request.runId ?? null, request.phase, request.iteration); }, request.timeoutMs);
       };
-      timer = setTimeout(() => { timedOut = true; this.terminate(child); }, request.timeoutMs);
+      timer = setTimeout(() => { timedOut = true; this.terminate(child, request.runId ?? null, request.phase, request.iteration); }, request.timeoutMs);
       // FR-R3-075 — the absolute wall-clock deadline: armed once at spawn,
       // NEVER reset, and deliberately outside the backpressure suspension below
       // — a blocked sink pauses the idle clock, not the wall. The idle timer
@@ -115,7 +138,7 @@ export class ProcessLifecycleRunner {
       const deadlineFired = (): boolean => deadlineExceeded;
       const deadlineTimer =
         request.maxDurationMs !== undefined && request.maxDurationMs > 0
-          ? setTimeout(() => { deadlineExceeded = true; this.terminate(child); }, request.maxDurationMs)
+          ? setTimeout(() => { deadlineExceeded = true; this.terminate(child, request.runId ?? null, request.phase, request.iteration); }, request.maxDurationMs)
           : null;
       const backpressure = new OutputSinkBackpressure(outputSink, () => clearTimeout(timer), reset);
       child.stdout?.on('data', (chunk: string) => {
@@ -128,7 +151,7 @@ export class ProcessLifecycleRunner {
       });
       let onAbort: (() => void) | null = null;
       if (request.cancellationSignal) {
-        onAbort = () => { killed = true; this.terminate(child); };
+        onAbort = () => { killed = true; this.terminate(child, request.runId ?? null, request.phase, request.iteration); };
         if (request.cancellationSignal.aborted) onAbort();
         else request.cancellationSignal.addEventListener('abort', onAbort);
       }
@@ -208,7 +231,7 @@ export class ProcessLifecycleRunner {
    */
   public cancelActive(): boolean {
     if (this.active.size === 0) return false;
-    for (const child of this.active.values()) this.terminate(child);
+    for (const entry of this.active.values()) this.terminate(entry.child, entry.runId, entry.phase, entry.iteration);
     return true;
   }
 
@@ -225,7 +248,12 @@ export class ProcessLifecycleRunner {
    * honestly. Where the tree cannot be proven gone within the grace window, the
    * caller is told so rather than the terminal state quietly claiming otherwise.
    */
-  private terminate(child: ChildProcess): void {
+  private terminate(
+    child: ChildProcess,
+    runId: string | null,
+    phase: Phase,
+    iteration: number
+  ): void {
     if (child.exitCode !== null || child.signalCode !== null) return;
     void signalProcessTree(child, 'SIGTERM');
     setTimeout(() => {
@@ -240,10 +268,24 @@ export class ProcessLifecycleRunner {
             // No silent lie. The phase is ending with descendants possibly alive,
             // and that is a fact an operator needs when a later phase behaves as
             // though something else is writing to the workspace.
+            // The log line STAYS. An operator tailing the runtime log must not
+            // lose it just because the same fact now also reaches the audit record.
             this.logger.warn(
               `${this.label}: process tree not confirmed gone after SIGKILL; ` +
                 'descendants may still be running'
             );
+            // FR-R3-083 / FR-R3-054 §5 — and into EVIDENCE. A runtime-log line is
+            // not the audit record, so an operator reconstructing why a later phase
+            // saw foreign writes had nothing to read. Reported through the hook, not
+            // written here: this runner does not import the audit writer.
+            this.emit({
+              kind: 'tree-unconfirmed',
+              runId,
+              phase,
+              iteration,
+              pid: child.pid ?? null,
+              runner: this.label
+            });
           }, TREE_CONFIRM_DELAY_MS).unref();
         });
       }
