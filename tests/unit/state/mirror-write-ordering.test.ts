@@ -28,7 +28,6 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { STALENESS_THRESHOLD_MS, WorkspaceLockManager } from '../../../src/state/lock';
-import type { WorkspaceLock } from '../../../src/state/workflow-run';
 import {
   createHosts,
   ManualClock,
@@ -52,6 +51,13 @@ beforeEach(async () => {
 /**
  * Records the order in which a host's ownership refresh and mirror write run,
  * by wrapping both and delegating. The wrappers observe; they change nothing.
+ *
+ * FR-R3-077 (T1041) — the mirror half is now observed at the memento update for
+ * the lock key rather than at `setLock`. `writeGuarded` used to verify and then
+ * await a caller's callback, and that callback was `setLock`; the replacement
+ * performs the write inside the serialized link itself, which is the whole
+ * point of the change. Probing the storage write is also the more faithful
+ * observation: it cannot be satisfied by a method that no longer writes.
  */
 function traceOrder(host: Host): string[] {
   const calls: string[] = [];
@@ -59,17 +65,17 @@ function traceOrder(host: Host): string[] {
     heartbeat: (...args: unknown[]) => Promise<unknown>;
   };
   const store = host.store as unknown as {
-    setLock: (lock: WorkspaceLock | null) => Promise<void>;
+    memento: { update: (key: string, value: unknown) => Promise<void> };
   };
   const realHeartbeat = registry.heartbeat.bind(registry);
-  const realSetLock = store.setLock.bind(store);
+  const realUpdate = store.memento.update.bind(store.memento);
   registry.heartbeat = async (...args: unknown[]) => {
     calls.push('record-refresh');
     return realHeartbeat(...args);
   };
-  store.setLock = async (lock: WorkspaceLock | null) => {
-    calls.push('mirror-write');
-    return realSetLock(lock);
+  store.memento.update = async (key: string, value: unknown) => {
+    if (key === 'schegent.lock') calls.push('mirror-write');
+    return realUpdate(key, value);
   };
   return calls;
 }

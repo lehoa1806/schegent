@@ -28,7 +28,10 @@ import {
 } from '../runner/backend-runner-factory';
 import { resolveSessionDispatch } from './session-dispatch-policy';
 import type { BackendAvailabilityProbe } from './backend-capability-service';
-import type { OptionalPhaseFailureContinuedPayload } from '../contracts/audit-events';
+import type {
+  OptionalPhaseFailureContinuedPayload,
+  RunSnapshotDeclinedPayload
+} from '../contracts/audit-events';
 import type { TerminalTransitionCoordinator } from './terminal-transition-coordinator';
 import { mutationPlanIsApproved } from './mutation-plan';
 import type { RunCheckpointService } from './run-checkpoint-service';
@@ -139,6 +142,18 @@ export interface RunDriverDeps {
     run: WorkflowRun,
     payload: OptionalPhaseFailureContinuedPayload
   ) => Promise<void>;
+  /**
+   * FR-R3-077 (T1040) — the read-side decline's evidence record.
+   *
+   * Optional on the same terms as `releaseExecutionLease` below: the unit
+   * harnesses build a driver directly and have no audit writer. The decline
+   * itself is NOT optional — it happens whether or not anyone is listening, and
+   * the unconditional `logger.warn` beside this call is what a harness sees.
+   */
+  readonly emitRunSnapshotDeclined?: (
+    run: WorkflowRun,
+    payload: RunSnapshotDeclinedPayload
+  ) => Promise<void>;
   readonly scheduleAutoDrain: () => void;
   /**
    * Feature 092 (T132, FR-033a) — returns the finished Run's queue execution
@@ -233,9 +248,34 @@ export class RunDriver {
    * a successor on the same queue while this driver is mid-flight, and the
    * successor is not a newer snapshot of this Run.
    */
-  private latestSnapshotOf(run: WorkflowRun): WorkflowRun | null {
+  private async latestSnapshotOf(run: WorkflowRun): Promise<WorkflowRun | null> {
     const found = this.deps.store.findRunByTask(run.featureId);
-    return found !== null && found.run.id === run.id ? found.run : null;
+    if (found === null || found.run.id !== run.id) return null;
+    // FR-R3-077 (T1040) — and it must not have been written by a holder whose
+    // lease had already moved on.
+    //
+    // The commit point refuses a write it can see; `Memento` has no conditional
+    // write, so a write from a superseded holder can still land in the window
+    // between the verify and the update. This is the reader that disbelieves
+    // one. Declining here costs this driver its refreshed snapshot — every
+    // caller already handles `null`, because a Task can be deleted mid-flight —
+    // and it never costs the Run its record.
+    const verdict = await this.deps.store.readRunIfLive(found.queueId);
+    if (verdict.outcome === 'superseded' && verdict.run.id === run.id) {
+      this.deps.logger.warn(
+        `run snapshot declined: record for run ${run.id} was written at fence ` +
+          `${verdict.writtenAtFence}, superseded by ${verdict.liveFence}`
+      );
+      await this.deps
+        .emitRunSnapshotDeclined?.(run, {
+          runId: run.id,
+          writtenAtFence: verdict.writtenAtFence,
+          liveFence: verdict.liveFence
+        })
+        .catch(() => undefined);
+      return null;
+    }
+    return found.run;
   }
 
   /**
@@ -560,7 +600,7 @@ export class RunDriver {
             this.phaseOverrideAbortKey(run.id, run.currentPhase)
           )
         ) {
-          const latestRun = this.latestSnapshotOf(run);
+          const latestRun = await this.latestSnapshotOf(run);
           if (latestRun !== null) {
             run = latestRun;
           }
@@ -587,7 +627,7 @@ export class RunDriver {
           iteration,
           iterationCap: this.deps.options.iterationCap,
           activePhaseDef,
-          latestManualPauseAt: this.latestSnapshotOf(run)?.manualPauseAt ?? null,
+          latestManualPauseAt: (await this.latestSnapshotOf(run))?.manualPauseAt ?? null,
           now: Date.now(),
           forceContinueOnRetryCapDefault:
             this.deps.options.getForceContinueOnRetryCap?.() ?? false
@@ -821,7 +861,7 @@ export class RunDriver {
           // old read would have merged the successor's phase, iteration, and
           // completed-phase list into this pause write. There is nothing left to
           // pause, so the loop exits the same way every other pause branch does.
-          const latestRun = this.latestSnapshotOf(run);
+          const latestRun = await this.latestSnapshotOf(run);
           if (latestRun === null) {
             this.deps.logger.warn(
               `manual pause skipped: run ${run.id} is no longer active on its queue`

@@ -142,7 +142,8 @@ async function makeWindow(
         if (!result.acquired) leaseDenials.push({ queueId, ownerId: result.ownerId });
         return result;
       },
-      release: (queueId: string) => executionLease.release(queueId)
+      release: (queueId: string) => executionLease.release(queueId),
+      claimFor: (queueId: string) => executionLease.claimFor(queueId)
     },
     controller: controller as unknown as SchegentWorkflowController
   });

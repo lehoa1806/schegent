@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { unfencedCommit } from '../../../../src/state/ownership-claim';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
@@ -101,7 +102,7 @@ afterEach(async () => {
 
 describe('Multi-window equivalence (T068 / SC-014)', () => {
   it('two projectors with the same store inputs produce byte-equal deterministic cores', async () => {
-    await store.setRun(DEFAULT_QUEUE_ID, runningRun());
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun(), unfencedCommit('test-fixture'));
     await store.setQueue({
       paused: false,
       pausedReason: null,
@@ -250,7 +251,7 @@ describe('Multi-window equivalence (T068 / SC-014)', () => {
   });
 
   it('lock heartbeat staleness flips secondary back to primary readonly behavior', async () => {
-    await store.setRun(DEFAULT_QUEUE_ID, runningRun());
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun(), unfencedCommit('test-fixture'));
     await store.setLock({
       ownerId: 'window-A',
       acquiredAt: 1_700_000_000_000,

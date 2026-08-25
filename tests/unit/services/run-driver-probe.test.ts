@@ -19,7 +19,9 @@ describe('RunDriver Probing (Feature 074)', () => {
         warnings: [],
         auditEntryId: null
       }) },
-      store: { setRun: vi.fn(), findRunByTask: vi.fn(() => null) },
+      store: { setRun: vi.fn(), findRunByTask: vi.fn(() => null),
+        // FR-R3-077 — no record to judge, so the read side has nothing to decline.
+        readRunIfLive: vi.fn(async () => ({ outcome: 'absent' as const })) },
       // `findById` is asked for the frozen plan's declared outputs at completion
       // (Feature 091, T011). No plan here means nothing is recorded.
       queue: { notifyStatusChange: vi.fn(), finish: vi.fn(), findById: vi.fn(() => null) },

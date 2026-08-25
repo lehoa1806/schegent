@@ -658,7 +658,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     const entry = Object.entries(store.getRunMap()).find(([, run]) => run.id === runId);
     if (entry === undefined) return;
     const [queueId, current] = entry;
-    await store.setRun(queueId, { ...current, lastRetryDecision: decision });
+    await store.setRun(queueId, { ...current, lastRetryDecision: decision }, store.runCommitClaim(queueId));
   };
   // FR-R3-064 — the posture accessor: the same reader, called per emission
   // instead of once at activation. The difference between the two uses is WHEN,

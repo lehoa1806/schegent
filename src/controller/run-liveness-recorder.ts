@@ -4,7 +4,7 @@ import type { WorkspaceStateStore } from '../state/workspace-state';
 import { isTerminalRunStatus } from '../state/workflow-run';
 
 export interface RunLivenessRecorderDeps {
-  readonly store: Pick<WorkspaceStateStore, 'findRunById' | 'setRun'>;
+  readonly store: Pick<WorkspaceStateStore, 'findRunById' | 'setRun' | 'runCommitClaim'>;
   readonly logger: SanitizedLogger;
 }
 
@@ -57,7 +57,8 @@ export function recordRunLiveness(
           stdoutLines: observation.stdoutLines,
           stderrLines: observation.stderrLines
         }
-      })
+        // FR-R3-077 — a liveness write is a Run commit like any other.
+      }, store.runCommitClaim(queueId))
       .catch((err: unknown) => {
         logger.warn(
           `run-liveness write failed for run ${observation.runId}: ${(err as Error).message}`

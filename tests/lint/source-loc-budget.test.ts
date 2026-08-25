@@ -516,7 +516,13 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // raising. Set to exactly what the file measures.
   // FR-R3-075 (feature 152) — 993 → 995 for the optional maxDurationMs on the
   // controller options and its one-line doc. Set to what the file measures.
-  { path: 'src/controller/workflow-controller.ts', maxLines: 995 },
+  // FR-R3-077 (feature 153) — 995 → 1005. Nine lines: the store learns its
+  // claim source where the lease manager is resolved (six-line note included),
+  // and the driver dep that carries the read-side decline into evidence.
+  // Extraction was measured and declined: `executionLease` is a local of this
+  // constructor, so a helper module would hide a one-line binding behind an
+  // import and a call site — the trade the entries above decline by name.
+  { path: 'src/controller/workflow-controller.ts', maxLines: 1_005 },
   // P4 domain-validator extraction ratchet: 1,200 → 775. The registry owns
   // command coverage; phase-log and metrics validators own shape rules.
   // Feature 088 (T032) — 775 → 776 for the two connected-run commands. Both
@@ -605,7 +611,20 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // grew a tolerated-optional `description` arm (dropped when non-string,
       // never grounds to reject a replayable transition). Validator shape, not
       // new responsibility.
-      highWaterMark: 2564
+      // FR-R3-077 (feature 153) — 2564 → 2694: the claim on `setRun` stopped
+      // being optional. What grew is the claim SOURCE (`bindRunClaimSource` /
+      // `runCommitClaim`) and the reasoning for its shape, plus the queue
+      // commit point's own claim. The source has to be here because the commit
+      // points are here and because `PhaseControlService` and friends take a
+      // `Pick<>` of this store and nothing else; the alternative was widening a
+      // dozen constructors to thread a lease manager, which is a larger diff
+      // that changes nothing about which commits are fenced. The reason SET is
+      // extracted — it is in src/state/ownership-claim.ts, with its own test.
+      // The read side (`readRunIfLive`) and the guarded mirror commit
+      // (`refreshLockMirrorGuarded`) are here for the same reason, and the
+      // latter is a REPLACEMENT: `writeGuarded` was deleted in the same change,
+      // so the net is smaller than the additions.
+      highWaterMark: 2694
     }
   },
   // Feature 077 — public facade and every state-projection collaborator have
@@ -657,7 +676,10 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
         'helpers may be extracted for cohesion, but the budget is no longer the forcing function',
       decidedOn: '2026-05-22',
       reference: 'specs/063-clean-all-confirmations/plan.md',
-      highWaterMark: 1821
+      // FR-R3-077 (feature 153) — 1821 → 1827: five Run commit points in this
+      // file now name the claim they commit under. One line each, no new
+      // responsibility.
+      highWaterMark: 1827
     }
   },
   // Speckit-auto alignment (2026-07-30) — bumped 700 → 800 to absorb two new

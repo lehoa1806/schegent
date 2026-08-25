@@ -176,6 +176,8 @@ export const AUDIT_EVENT_TYPES = [
   "process-exchange-import-refused",
   "process-exchange-import-committed",
   "runs-overlapped",
+  "run-snapshot-declined",
+  "output-target-refused-at-dispatch",
   "definition-published",
   "definition-deactivated",
   "definition-restored"

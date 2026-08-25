@@ -9,7 +9,7 @@ import { resolveControlTarget } from './sole-run-resolver';
 
 export interface ManualRetryOverrideDeps {
   readonly logger: SanitizedLogger;
-  readonly store: Pick<WorkspaceStateStore, 'getRun' | 'getRunMap' | 'getQueue' | 'setRun'>;
+  readonly store: Pick<WorkspaceStateStore, 'getRun' | 'getRunMap' | 'getQueue' | 'setRun' | 'runCommitClaim'>;
   readonly queue: Pick<QueueManager, 'setQueuePausedState'>;
   readonly sessions: Pick<RunSessionRegistry, 'peek' | 'acquire'>;
   readonly retryCoordinator: Pick<
@@ -80,7 +80,7 @@ export async function applyManualRetryOverride(
     pendingRetryAt: null,
     pendingRetryCause: null
   };
-  await store.setRun(target.queueId, updated);
+  await store.setRun(target.queueId, updated, store.runCommitClaim(target.queueId));
   await retryCoordinator.appendManualRetryAudit({
     runId: run.id,
     phase: run.currentPhase,

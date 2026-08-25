@@ -15,6 +15,7 @@
 // lives in `tests/integration/per-queue-snapshot-isolation.test.ts`.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { unfencedCommit } from '../../src/state/ownership-claim';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
@@ -164,7 +165,7 @@ describe('snapshot v4 — envelope shape (T085, FR-048 – FR-050)', () => {
   it.each(DELETED_ROOT_SINGULARS)(
     'has no top-level `%s` — deleted, not deprecated (FR-049)',
     async (field) => {
-      await store.setRun(DEFAULT_QUEUE_ID, sampleRun());
+      await store.setRun(DEFAULT_QUEUE_ID, sampleRun(), unfencedCommit('test-fixture'));
       const snapshot = project() as unknown as Record<string, unknown>;
       expect(field in snapshot).toBe(false);
       expect(buildIdleSnapshot({ isPrimary: true }) as unknown as Record<string, unknown>).not.toHaveProperty(
@@ -274,7 +275,8 @@ describe('snapshot v4 — QueueRuntime fields (T086, FR-048, FR-056)', () => {
         manualPauseAt: 1_700_000_002_000,
         manualPauseCause: 'breakpoint-paused',
         resumeTargetPhaseId: 'speckit-tasks'
-      })
+      }),
+      unfencedCommit('test-fixture')
     );
 
     const runtime = project().queues.find((entry) => entry.queueId === DEFAULT_QUEUE_ID);
@@ -296,7 +298,8 @@ describe('snapshot v4 — QueueRuntime fields (T086, FR-048, FR-056)', () => {
         featureId: enqueued.id,
         manualPauseAt: 1_700_000_001_000,
         manualPauseCause: 'operator-paused'
-      })
+      }),
+      unfencedCommit('test-fixture')
     );
 
     const runtime = project().queues.find((entry) => entry.queueId === DEFAULT_QUEUE_ID);
@@ -324,7 +327,8 @@ describe('snapshot v4 — QueueRuntime fields (T086, FR-048, FR-056)', () => {
           { phaseId: 'speckit-implement', setAt: 1_700_000_002_000, actor: 'operator' },
           { phaseId: 'speckit-tasks', setAt: 1_700_000_001_000, actor: 'operator' }
         ]
-      })
+      }),
+      unfencedCommit('test-fixture')
     );
 
     const runtime = project().queues.find((entry) => entry.queueId === DEFAULT_QUEUE_ID);

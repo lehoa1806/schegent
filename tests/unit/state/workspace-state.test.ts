@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { resolve } from 'node:path';
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
@@ -112,7 +113,7 @@ describe('WorkspaceStateStore.subscribe', () => {
   it('fires listener after setRun with the run key', async () => {
     const events: StoreChangeKey[] = [];
     store.subscribe((key) => events.push(key));
-    await store.setRun(DEFAULT_QUEUE_ID, sampleRun());
+    await store.setRun(DEFAULT_QUEUE_ID, sampleRun(), unfencedCommit('test-fixture'));
     expect(events).toEqual([KEYS.run]);
   });
 
@@ -152,7 +153,7 @@ describe('WorkspaceStateStore.subscribe', () => {
 
     await store.setQueue(emptyQueue());
     subA.dispose();
-    await store.setRun(DEFAULT_QUEUE_ID, sampleRun());
+    await store.setRun(DEFAULT_QUEUE_ID, sampleRun(), unfencedCommit('test-fixture'));
     await store.setLock(sampleLock());
 
     expect(a).toEqual([KEYS.queue]);
@@ -175,8 +176,8 @@ describe('WorkspaceStateStore.subscribe', () => {
     store.subscribe((key) => events.push(key));
     await store.setQueue(emptyQueue());
     await store.setQueue(emptyQueue());
-    await store.setRun(DEFAULT_QUEUE_ID, sampleRun());
-    await store.setRun(DEFAULT_QUEUE_ID, null);
+    await store.setRun(DEFAULT_QUEUE_ID, sampleRun(), unfencedCommit('test-fixture'));
+    await store.setRun(DEFAULT_QUEUE_ID, null, unfencedCommit('test-fixture'));
     await store.setLock(sampleLock());
     await store.setLock(null);
     expect(events).toEqual([
@@ -347,7 +348,7 @@ describe('WorkspaceStateStore feature-017 queue foundations', () => {
   });
 
   it('enforces the manual pause pair invariant at the persistence boundary', async () => {
-    expect(() => store.setRun(DEFAULT_QUEUE_ID, { ...sampleRun(), manualPauseAt: 1_700_000_000_000 })).toThrow(
+    expect(() => store.setRun(DEFAULT_QUEUE_ID, { ...sampleRun(), manualPauseAt: 1_700_000_000_000 }, unfencedCommit('test-fixture'))).toThrow(
       /manualPauseAt/
     );
   });
@@ -356,7 +357,7 @@ describe('WorkspaceStateStore feature-017 queue foundations', () => {
     const manager = new QueueManager(store);
     const running = { ...pendingFeature('running'), status: 'in-flight' as const, runId: 'run-1' };
     await store.setQueue({ ...emptyQueue(), requests: [running], inFlightId: 'running' });
-    await store.setRun(DEFAULT_QUEUE_ID, { ...sampleRun(), featureId: 'running' });
+    await store.setRun(DEFAULT_QUEUE_ID, { ...sampleRun(), featureId: 'running' }, unfencedCommit('test-fixture'));
 
     expect(await manager.setQueuePausedState(true, DEFAULT_QUEUE_ID)).toMatchObject({ ok: true });
     expect(store.getRun(DEFAULT_QUEUE_ID)?.manualPauseCause).toBe('queue-paused-mid-run');
@@ -374,7 +375,9 @@ describe('WorkspaceStateStore feature-017 queue foundations', () => {
       featureId: 'running',
       manualPauseAt: 1_700_000_000_000,
       manualPauseCause: 'operator-paused'
-    });
+    },
+      unfencedCommit('test-fixture')
+    );
 
     expect(await manager.setQueuePausedState(true, DEFAULT_QUEUE_ID)).toMatchObject({ ok: true });
     expect(store.getRun(DEFAULT_QUEUE_ID)?.manualPauseCause).toBe('operator-paused');

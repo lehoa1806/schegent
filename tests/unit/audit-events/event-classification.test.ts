@@ -169,6 +169,11 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   // Feature 092 — a concurrency overlap is a workspace-level fact, not a
   // property of any one Run.
   'runs-overlapped': 'system',
+  // FR-R3-077 / FR-R3-079 — both name a run, so both are task-scoped: the
+  // decline is about one Run's record and the refusal is about one Run's
+  // declared output.
+  'run-snapshot-declined': 'task',
+  'output-target-refused-at-dispatch': 'task',
   // Feature 100 (T513) — the three catalog lifecycle transitions. Catalog writes
   // the operator asked for, belonging to no Run: they carry no `runId`, and a run
   // holding a frozen plan is unaffected by them by construction (FR-010, FR-026).
@@ -337,6 +342,8 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'process-exchange-export':
         case 'process-exchange-import-refused':
         case 'process-exchange-import-committed':
+        case 'run-snapshot-declined':
+        case 'output-target-refused-at-dispatch':
         case 'runs-overlapped':
         case 'definition-published':
         case 'definition-deactivated':

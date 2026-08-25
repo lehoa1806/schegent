@@ -211,7 +211,8 @@ async function makeWorkspace(tmpRoot: string, mode: TerminalMode): Promise<Works
         release: async (queueId: string) => {
           released.push(queueId);
           await leaseManager.release(queueId);
-        }
+        },
+        claimFor: (queueId: string) => leaseManager.claimFor(queueId)
       }
     }
   );

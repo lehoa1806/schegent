@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { unfencedCommit } from '../../src/state/ownership-claim';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
@@ -87,7 +88,7 @@ describe('Render budget regression (SC-006)', () => {
   });
 
   it(`runs ${SNAPSHOT_COUNT} v2 project() passes under ${TOTAL_BUDGET_MS} ms total with median ≤ ${MEDIAN_BUDGET_MS} ms`, async () => {
-    await store.setRun(DEFAULT_QUEUE_ID, runningRun(3, 'speckit-analyze'));
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun(3, 'speckit-analyze'), unfencedCommit('test-fixture'));
     const projector = new StateProjector({
       store,
       audit,
@@ -154,7 +155,7 @@ describe('Render budget regression (SC-006)', () => {
       scheduledStartSource: null,
       requests: queueRequests
     });
-    await store.setRun(DEFAULT_QUEUE_ID, runningRun(2, 'speckit-plan'));
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun(2, 'speckit-plan'), unfencedCommit('test-fixture'));
 
     const noopDisposable = { dispose: () => {} };
     const fakeMonitor = {
@@ -226,7 +227,7 @@ describe('Render budget regression (SC-006)', () => {
   });
 
   it('hot-path project() with full audit tail and active sub-progress respects per-call budget', async () => {
-    await store.setRun(DEFAULT_QUEUE_ID, runningRun(7, 'speckit-clarify'));
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun(7, 'speckit-clarify'), unfencedCommit('test-fixture'));
     const projector = new StateProjector({
       store,
       audit,

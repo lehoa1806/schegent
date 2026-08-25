@@ -13,6 +13,7 @@
 // hand-built projection object.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { unfencedCommit } from '../../../../src/state/ownership-claim';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
@@ -149,7 +150,7 @@ async function seedRun(
       queueLifecycle: 'running'},
     queueId
   );
-  await store.setRun(queueId, run);
+  await store.setRun(queueId, run, unfencedCommit('test-fixture'));
 }
 
 function project(): StateProjector {

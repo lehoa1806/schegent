@@ -5,7 +5,10 @@ import type {
   BreakpointAuditEvent,
   PhaseControlAuditEvent
 } from './phase-control-service';
-import type { OptionalPhaseFailureContinuedPayload } from '../contracts/audit-events';
+import type {
+  OptionalPhaseFailureContinuedPayload,
+  RunSnapshotDeclinedPayload
+} from '../contracts/audit-events';
 
 export type TaskLifecycleAuditEvent =
   | 'task-execution-started'
@@ -102,6 +105,35 @@ export class WorkflowLifecycleAuditor {
       this.logger.warn(
         `optional-phase continuation audit append failed: ${(err as Error).message}`
       );
+    }
+  }
+
+  /**
+   * FR-R3-077 (T1040) — the read-side decline, as evidence.
+   *
+   * `warn` and not `info`: a superseded record reaching a reader means a write
+   * landed in the window the commit-point check cannot cover, which is a fact
+   * about this workspace's concurrency rather than a routine event.
+   */
+  public async emitRunSnapshotDeclined(
+    run: WorkflowRun,
+    payload: RunSnapshotDeclinedPayload
+  ): Promise<void> {
+    if (!this.writer) return;
+    try {
+      await this.writer.append({
+        runId: run.id,
+        phase: run.currentPhase,
+        iteration: run.currentIteration,
+        eventType: 'run-snapshot-declined',
+        // `failure` and not `info`: the audit outcome vocabulary has three arms
+        // and no `warn`. A superseded record reaching a reader is a refusal that
+        // happened, which is what `failure` records here — the read declined.
+        outcome: 'failure',
+        payload: { ...payload }
+      });
+    } catch (err) {
+      this.logger.warn(`run-snapshot-declined audit append failed: ${(err as Error).message}`);
     }
   }
 

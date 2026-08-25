@@ -3,6 +3,7 @@
 // data-model.md §7 plus mutual exclusion with `phaseOverrides`.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { SchegentWorkflowController } from '../../../src/controller/workflow-controller';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
 import { QueueManager } from '../../../src/queue/queue-manager';
@@ -138,7 +139,7 @@ async function seedRun(
     resumeTargetPhaseId: null,
     ...overrides
   };
-  await store.setRun(DEFAULT_QUEUE_ID, run);
+  await store.setRun(DEFAULT_QUEUE_ID, run, unfencedCommit('test-fixture'));
   return { feature, run };
 }
 

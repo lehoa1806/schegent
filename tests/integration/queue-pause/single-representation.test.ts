@@ -88,7 +88,11 @@ async function makeHarness(memento: FakeMemento = new FakeMemento()): Promise<Ha
     // only gate this file is entitled to attribute a refusal to is step 2.
     executionLease: {
       tryAcquire: async () => ({ acquired: true, ownerId: 'this-window' }),
-      release: () => {}
+      release: () => {},
+      // FR-R3-077 — no lease record behind this double, so no claim to give. The
+      // store's commit points record that as `lease-not-held` rather than
+      // pretending to a fence this double never had.
+      claimFor: () => null
     },
     controller: controller as unknown as SchegentWorkflowController
   });

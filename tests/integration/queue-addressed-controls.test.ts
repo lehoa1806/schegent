@@ -33,6 +33,7 @@
 // that fails by naming what it waited for; there are no sleeps.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { unfencedCommit } from '../../src/state/ownership-claim';
 import { vi } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -273,7 +274,9 @@ describe('Feature 093 US4 — lifecycle controls address one queue s Run', () =>
         delayedRetryCount: 2,
         pendingRetryAt: armedAt,
         pendingRetryCause: 'transient_error'
-      });
+      },
+        unfencedCommit('test-fixture')
+      );
     }
 
     expect(await h.controller.retryPhaseNow(QUEUE_A)).toEqual({ ok: true });

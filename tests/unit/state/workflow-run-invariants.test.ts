@@ -5,6 +5,7 @@
 // the memento write so split-state corruption is impossible at the boundary.
 
 import { describe, it, expect, beforeEach } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { WorkspaceStateStore, type Memento } from '../../../src/state/workspace-state';
 import type { WorkflowRun, PhaseBreakpoint, PhaseOverride } from '../../../src/state/workflow-run';
 import type { PhaseDef } from '../../../src/config/pipeline-config';
@@ -80,13 +81,13 @@ function override(phaseId: string, action: PhaseOverride['action']): PhaseOverri
 describe('WorkflowRun invariants — manualPauseAt / manualPauseCause pair (Feature 028)', () => {
   it('rejects manualPauseAt non-null with manualPauseCause null', () => {
     expect(() =>
-      store.setRun(DEFAULT_QUEUE_ID, baseRun({ manualPauseAt: 1_700_000_000_000, manualPauseCause: null }))
+      store.setRun(DEFAULT_QUEUE_ID, baseRun({ manualPauseAt: 1_700_000_000_000, manualPauseCause: null }), unfencedCommit('test-fixture'))
     ).toThrow(/manualPauseAt.*manualPauseCause.*both null or both non-null/);
   });
 
   it('rejects manualPauseAt null with manualPauseCause non-null (operator-paused)', () => {
     expect(() =>
-      store.setRun(DEFAULT_QUEUE_ID, baseRun({ manualPauseAt: null, manualPauseCause: 'operator-paused' }))
+      store.setRun(DEFAULT_QUEUE_ID, baseRun({ manualPauseAt: null, manualPauseCause: 'operator-paused' }), unfencedCommit('test-fixture'))
     ).toThrow(/manualPauseAt.*manualPauseCause.*both null or both non-null/);
   });
 
@@ -97,14 +98,15 @@ describe('WorkflowRun invariants — manualPauseAt / manualPauseCause pair (Feat
           manualPauseAt: null,
           manualPauseCause: 'breakpoint-paused',
           resumeTargetPhaseId: 'speckit-plan'
-        })
+        }),
+        unfencedCommit('test-fixture')
       )
     ).toThrow(/manualPauseAt.*manualPauseCause.*both null or both non-null/);
   });
 
   it('accepts both-null', async () => {
     await expect(
-      store.setRun(DEFAULT_QUEUE_ID, baseRun({ manualPauseAt: null, manualPauseCause: null }))
+      store.setRun(DEFAULT_QUEUE_ID, baseRun({ manualPauseAt: null, manualPauseCause: null }), unfencedCommit('test-fixture'))
     ).resolves.toBeUndefined();
   });
 
@@ -116,7 +118,8 @@ describe('WorkflowRun invariants — manualPauseAt / manualPauseCause pair (Feat
           manualPauseCause: 'breakpoint-paused',
           resumeTargetPhaseId: 'speckit-tasks',
           phaseBreakpoints: []
-        })
+        }),
+        unfencedCommit('test-fixture')
       )
     ).resolves.toBeUndefined();
   });
@@ -125,13 +128,13 @@ describe('WorkflowRun invariants — manualPauseAt / manualPauseCause pair (Feat
 describe('WorkflowRun invariants — phaseBreakpoints (Feature 028)', () => {
   it('rejects a breakpoint whose phaseId is not in pipeline.phases', () => {
     expect(() =>
-      store.setRun(DEFAULT_QUEUE_ID, baseRun({ phaseBreakpoints: [bp('unknown-phase')] }))
+      store.setRun(DEFAULT_QUEUE_ID, baseRun({ phaseBreakpoints: [bp('unknown-phase')] }), unfencedCommit('test-fixture'))
     ).toThrow(/phaseBreakpoints phaseId 'unknown-phase' is not in pipeline.phases/);
   });
 
   it('rejects duplicate phaseIds in phaseBreakpoints', () => {
     expect(() =>
-      store.setRun(DEFAULT_QUEUE_ID, baseRun({ phaseBreakpoints: [bp('speckit-plan'), bp('speckit-plan')] }))
+      store.setRun(DEFAULT_QUEUE_ID, baseRun({ phaseBreakpoints: [bp('speckit-plan'), bp('speckit-plan')] }), unfencedCommit('test-fixture'))
     ).toThrow(/phaseBreakpoints contains duplicate phaseId 'speckit-plan'/);
   });
 
@@ -141,7 +144,8 @@ describe('WorkflowRun invariants — phaseBreakpoints (Feature 028)', () => {
         baseRun({
           phaseBreakpoints: [bp('speckit-tasks')],
           phaseOverrides: [override('speckit-tasks', 'skipped')]
-        })
+        }),
+        unfencedCommit('test-fixture')
       )
     ).toThrow(/appears in BOTH phaseBreakpoints AND phaseOverrides/);
   });
@@ -152,7 +156,8 @@ describe('WorkflowRun invariants — phaseBreakpoints (Feature 028)', () => {
         baseRun({
           phaseBreakpoints: [bp('speckit-tasks')],
           phaseOverrides: [override('speckit-tasks', 'disabled')]
-        })
+        }),
+        unfencedCommit('test-fixture')
       )
     ).toThrow(/appears in BOTH phaseBreakpoints AND phaseOverrides/);
   });
@@ -163,19 +168,21 @@ describe('WorkflowRun invariants — phaseBreakpoints (Feature 028)', () => {
         baseRun({
           phaseBreakpoints: [bp('speckit-tasks')],
           phaseOverrides: [override('speckit-tasks', 'removed')]
-        })
+        }),
+        unfencedCommit('test-fixture')
       )
     ).toThrow(/appears in BOTH phaseBreakpoints AND phaseOverrides/);
   });
 
   it('accepts an empty phaseBreakpoints (default for fresh runs)', async () => {
-    await expect(store.setRun(DEFAULT_QUEUE_ID, baseRun({ phaseBreakpoints: [] }))).resolves.toBeUndefined();
+    await expect(store.setRun(DEFAULT_QUEUE_ID, baseRun({ phaseBreakpoints: [] }), unfencedCommit('test-fixture'))).resolves.toBeUndefined();
   });
 
   it('accepts multiple distinct breakpoints all in the pipeline', async () => {
     await expect(
       store.setRun(DEFAULT_QUEUE_ID, 
-        baseRun({ phaseBreakpoints: [bp('speckit-tasks'), bp('finalize')] })
+        baseRun({ phaseBreakpoints: [bp('speckit-tasks'), bp('finalize')] }),
+        unfencedCommit('test-fixture')
       )
     ).resolves.toBeUndefined();
   });
@@ -186,7 +193,8 @@ describe('WorkflowRun invariants — phaseBreakpoints (Feature 028)', () => {
         baseRun({
           phaseBreakpoints: [bp('speckit-tasks')],
           phaseOverrides: [override('finalize', 'skipped')]
-        })
+        }),
+        unfencedCommit('test-fixture')
       )
     ).resolves.toBeUndefined();
   });
@@ -200,7 +208,8 @@ describe('WorkflowRun invariants — resumeTargetPhaseId / manualPauseCause coup
           manualPauseAt: 1_700_000_000_000,
           manualPauseCause: 'breakpoint-paused',
           resumeTargetPhaseId: null
-        })
+        }),
+        unfencedCommit('test-fixture')
       )
     ).toThrow(/resumeTargetPhaseId.*non-null iff manualPauseCause === 'breakpoint-paused'/);
   });
@@ -212,7 +221,8 @@ describe('WorkflowRun invariants — resumeTargetPhaseId / manualPauseCause coup
           manualPauseAt: 1_700_000_000_000,
           manualPauseCause: 'operator-paused',
           resumeTargetPhaseId: 'speckit-plan'
-        })
+        }),
+        unfencedCommit('test-fixture')
       )
     ).toThrow(/resumeTargetPhaseId.*non-null iff manualPauseCause === 'breakpoint-paused'/);
   });
@@ -224,7 +234,8 @@ describe('WorkflowRun invariants — resumeTargetPhaseId / manualPauseCause coup
           manualPauseAt: 1_700_000_000_000,
           manualPauseCause: 'queue-paused-mid-run',
           resumeTargetPhaseId: 'speckit-plan'
-        })
+        }),
+        unfencedCommit('test-fixture')
       )
     ).toThrow(/resumeTargetPhaseId.*non-null iff manualPauseCause === 'breakpoint-paused'/);
   });
@@ -236,14 +247,15 @@ describe('WorkflowRun invariants — resumeTargetPhaseId / manualPauseCause coup
           manualPauseAt: null,
           manualPauseCause: null,
           resumeTargetPhaseId: 'speckit-plan'
-        })
+        }),
+        unfencedCommit('test-fixture')
       )
     ).toThrow(/resumeTargetPhaseId.*non-null iff manualPauseCause === 'breakpoint-paused'/);
   });
 
   it('accepts resumeTargetPhaseId null with manualPauseCause=null', async () => {
     await expect(
-      store.setRun(DEFAULT_QUEUE_ID, baseRun({ resumeTargetPhaseId: null, manualPauseCause: null }))
+      store.setRun(DEFAULT_QUEUE_ID, baseRun({ resumeTargetPhaseId: null, manualPauseCause: null }), unfencedCommit('test-fixture'))
     ).resolves.toBeUndefined();
   });
 });
@@ -252,7 +264,7 @@ describe('WorkflowRun invariants — phaseBreakpoints shape (Feature 028)', () =
   it('rejects phaseBreakpoints when not an array', () => {
     const bad = baseRun() as unknown as WorkflowRun & { phaseBreakpoints: unknown };
     (bad as { phaseBreakpoints: unknown }).phaseBreakpoints = 'not-an-array';
-    expect(() => store.setRun(DEFAULT_QUEUE_ID, bad as WorkflowRun)).toThrow(
+    expect(() => store.setRun(DEFAULT_QUEUE_ID, bad as WorkflowRun, unfencedCommit('test-fixture'))).toThrow(
       /phaseBreakpoints must be an array/
     );
   });

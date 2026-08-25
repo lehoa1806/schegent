@@ -88,7 +88,9 @@ describe('RunDriver resolves the manual-pause snapshot by the Run own identity (
           auditEntryId: null
         })
       },
-      store: { findRunByTask: vi.fn(() => null) },
+      store: { findRunByTask: vi.fn(() => null),
+        // FR-R3-077 — no record to judge, so the read side has nothing to decline.
+        readRunIfLive: vi.fn(async () => ({ outcome: 'absent' as const })) },
       queue: {
         notifyStatusChange: vi.fn(),
         finish: vi.fn(),

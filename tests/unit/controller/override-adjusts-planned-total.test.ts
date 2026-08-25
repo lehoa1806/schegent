@@ -21,6 +21,7 @@
 //     rather than asserting the arithmetic in isolation.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { SchegentWorkflowController } from '../../../src/controller/workflow-controller';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
 import { QueueManager } from '../../../src/queue/queue-manager';
@@ -152,7 +153,7 @@ async function seedRun(extra: Partial<WorkflowRun> = {}): Promise<WorkflowRun> {
     resumeTargetPhaseId: null,
     ...extra
   };
-  await store.setRun(DEFAULT_QUEUE_ID, run);
+  await store.setRun(DEFAULT_QUEUE_ID, run, unfencedCommit('test-fixture'));
   return run;
 }
 
@@ -167,9 +168,9 @@ describe('FR-R3-008 — an override adjusts the recorded total in the same write
     await seedRun();
     const writes: WorkflowRun[] = [];
     const passThrough = store.setRun.bind(store);
-    vi.spyOn(store, 'setRun').mockImplementation(async (queueId, run) => {
+    vi.spyOn(store, 'setRun').mockImplementation(async (queueId, run, claim) => {
       if (run) writes.push(run);
-      return passThrough(queueId, run);
+      return passThrough(queueId, run, claim);
     });
 
     expect(await controller.disablePhase('speckit-tasks')).toEqual({ ok: true });
@@ -239,7 +240,9 @@ describe('FR-R3-008 — an override adjusts the recorded total in the same write
         settled('speckit-plan', 'skipped'),
         settled('speckit-tasks', 'skipped')
       ]
-    });
+    },
+      unfencedCommit('test-fixture')
+    );
 
     const done = store.getRun(DEFAULT_QUEUE_ID)!;
     // Four settled records against a denominator of two, and still 100 — because

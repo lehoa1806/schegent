@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { runCancel } from '../../../src/commands/cancel';
 import { WorkspaceStateStore, type Memento } from '../../../src/state/workspace-state';
 import { QueueManager } from '../../../src/queue/queue-manager';
@@ -104,7 +105,7 @@ describe('runCancel — palette path (no taskId)', () => {
   it('cancels the in-flight run and routes through the controller', async () => {
     const feature = await queue.enqueue('feature description');
     await queue.markInFlight(feature.id, 'run-1');
-    await store.setRun(DEFAULT_QUEUE_ID, makeRun({ featureId: feature.id }));
+    await store.setRun(DEFAULT_QUEUE_ID, makeRun({ featureId: feature.id }), unfencedCommit('test-fixture'));
 
     const result = await runCancel({ controller, store, queue, audit, notifier, logger });
 
@@ -123,7 +124,7 @@ describe('runCancel — palette path (no taskId)', () => {
   });
 
   it('refuses when the persisted run is not running', async () => {
-    await store.setRun(DEFAULT_QUEUE_ID, makeRun({ status: 'completed' }));
+    await store.setRun(DEFAULT_QUEUE_ID, makeRun({ status: 'completed' }), unfencedCommit('test-fixture'));
 
     const result = await runCancel({ controller, store, queue, audit, notifier, logger });
 
@@ -200,7 +201,7 @@ describe('runCancel — sidebar path (taskId) — BUG-001', () => {
   it('cancels the matching in-flight task and routes through the controller', async () => {
     const feature = await queue.enqueue('in-flight task');
     await queue.markInFlight(feature.id, 'run-1');
-    await store.setRun(DEFAULT_QUEUE_ID, makeRun({ id: 'run-1', featureId: feature.id }));
+    await store.setRun(DEFAULT_QUEUE_ID, makeRun({ id: 'run-1', featureId: feature.id }), unfencedCommit('test-fixture'));
 
     const result = await runCancel({
       controller,
@@ -234,7 +235,7 @@ describe('runCancel — sidebar path (taskId) — BUG-001', () => {
     // the row identity instead.
     const featureA = await queue.enqueue('queue-A task');
     await queue.markInFlight(featureA.id, 'run-A');
-    await store.setRun(DEFAULT_QUEUE_ID, makeRun({ id: 'run-A', featureId: featureA.id }));
+    await store.setRun(DEFAULT_QUEUE_ID, makeRun({ id: 'run-A', featureId: featureA.id }), unfencedCommit('test-fixture'));
 
     const featureB = await queue.enqueue('queue-B task');
     // Simulate a second in-flight FeatureRequest (cap=2). Bypass capacity
@@ -286,7 +287,7 @@ describe('runCancel — sidebar path (taskId) — BUG-001', () => {
     const featureSwapped = await queue.enqueue('swapped task');
     await queue.markInFlight(featureSwapped.id, 'run-old');
     // Singular run projection still references the prior (now-completed) run.
-    await store.setRun(DEFAULT_QUEUE_ID, makeRun({ id: 'run-old', featureId: 'stale-feature-id', status: 'completed' }));
+    await store.setRun(DEFAULT_QUEUE_ID, makeRun({ id: 'run-old', featureId: 'stale-feature-id', status: 'completed' }), unfencedCommit('test-fixture'));
 
     const result = await runCancel({
       controller,

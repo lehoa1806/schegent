@@ -304,7 +304,8 @@ async function makeOverlapHarness(cap: number, extraQueues: readonly string[]): 
     queue,
     executionLease: {
       tryAcquire: (queueId: string) => executionLease.tryAcquire(queueId),
-      release: (queueId: string) => executionLease.release(queueId)
+      release: (queueId: string) => executionLease.release(queueId),
+      claimFor: (queueId: string) => executionLease.claimFor(queueId)
     },
     controller: controller as unknown as SchegentWorkflowController,
     auditWriter

@@ -10,6 +10,7 @@
 // identifiers.
 
 import { describe, it, expect, beforeEach } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import {
   WorkspaceStateStore,
   KEYS,
@@ -80,7 +81,9 @@ describe('restart hydration coherence (US5 / T039 / FR-030)', () => {
       manualPauseCause: null,
       phaseBreakpoints: [],
       resumeTargetPhaseId: null
-    } as never);
+    } as never,
+      unfencedCommit('test-fixture')
+    );
     await store.setQueue({
       requests: [
         {

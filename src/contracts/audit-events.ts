@@ -498,6 +498,23 @@ export const PROCESS_EXCHANGE_EVENT_TYPES = [
 // ids to names at display time.
 export const CONCURRENCY_EVENT_TYPES = ['runs-overlapped'] as const;
 
+// FR-R3-077 / FR-R3-079 (feature 153) — the two point-of-effect refusals this
+// round added, as evidence rather than as log lines.
+//
+// `run-snapshot-declined` is the read side of the execution fence: a driver
+// loaded a Run record stamped at a generation the ownership registry has since
+// superseded, and refused to act on it. `output-target-refused-at-dispatch` is
+// the output target's second verdict, taken immediately before the frozen plan
+// reaches the runner, when a component of the target's path stopped resolving
+// inside the workspace after the operator confirmed it.
+//
+// Both record a refusal (`failure` in the three-arm outcome vocabulary) and both are additive — no `AUDIT_SCHEMA_VERSION`
+// bump. A refusal nobody can see afterwards is a refusal nobody can act on.
+export const POINT_OF_EFFECT_EVENT_TYPES = [
+  'run-snapshot-declined',
+  'output-target-refused-at-dispatch'
+] as const;
+
 // Feature 100 (T513, FR-052, FR-053, FR-054, FR-055) — the three catalog
 // lifecycle transitions that move a definition's pointers. Three event types
 // rather than one with an `operation` field, because FR-052 asks for exactly
@@ -556,6 +573,7 @@ export const ALL_AUDIT_EVENT_TYPES = [
   ...METRICS_EVENT_TYPES,
   ...PROCESS_EXCHANGE_EVENT_TYPES,
   ...CONCURRENCY_EVENT_TYPES,
+  ...POINT_OF_EFFECT_EVENT_TYPES,
   ...CATALOG_LIFECYCLE_EVENT_TYPES
 ] as const;
 
@@ -684,6 +702,29 @@ export interface CatalogLifecyclePayload {
 }
 
 export type AuditEventType = (typeof ALL_AUDIT_EVENT_TYPES)[number];
+
+/**
+ * FR-R3-077 (T1040) — both generations, never a bare "declined".
+ *
+ * An operator reading this needs to know which generation wrote the record and
+ * which one is live; the difference between them is the whole finding.
+ */
+export interface RunSnapshotDeclinedPayload {
+  readonly runId: string;
+  readonly writtenAtFence: number;
+  readonly liveFence: number;
+}
+
+/**
+ * FR-R3-079 (T1058) — which output port was refused, and what the checked walk
+ * refused it for. The path itself is deliberately absent: workspace paths are
+ * not serialized into the structured audit log.
+ */
+export interface OutputTargetRefusedAtDispatchPayload {
+  readonly runId: string;
+  readonly portId: string;
+  readonly reason: string;
+}
 
 export interface OptionalPhaseFailureContinuedPayload {
   readonly runId: string;

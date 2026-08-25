@@ -6,6 +6,7 @@
 // when a phase pause subsequently fires (FR-004 / FR-005).
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { SchegentWorkflowController } from '../../../src/controller/workflow-controller';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
 import { QueueManager } from '../../../src/queue/queue-manager';
@@ -113,7 +114,7 @@ async function seedInFlightRun(
     phaseBreakpoints: [],
     resumeTargetPhaseId: null
   };
-  await store.setRun(DEFAULT_QUEUE_ID, run);
+  await store.setRun(DEFAULT_QUEUE_ID, run, unfencedCommit('test-fixture'));
   return { feature, run };
 }
 
@@ -190,7 +191,7 @@ describe('SchegentWorkflowController — cascade-pause integration (Feature 028,
     // existing `run-already-paused` reject path. Here we exercise the
     // pure cascade-only path by clearing the run's pause first.)
     const run = store.getRun(DEFAULT_QUEUE_ID)!;
-    await store.setRun(DEFAULT_QUEUE_ID, { ...run, manualPauseAt: null, manualPauseCause: null });
+    await store.setRun(DEFAULT_QUEUE_ID, { ...run, manualPauseAt: null, manualPauseCause: null }, unfencedCommit('test-fixture'));
 
     await queue.cascadedPause(DEFAULT_QUEUE_ID);
     entry = findQueue(store.getProjectedQueueRegistry(), DEFAULT_QUEUE_ID);

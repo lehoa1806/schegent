@@ -10,6 +10,7 @@
 //   5. In-flight task — cancel runs before cleanup.
 
 import * as fs from 'node:fs/promises';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -224,7 +225,7 @@ describe('Feature 034 T005 — WorkflowController.deleteTask cleanup wiring', ()
       phaseBreakpoints: [],
       resumeTargetPhaseId: null
     };
-    await store.setRun(DEFAULT_QUEUE_ID, run);
+    await store.setRun(DEFAULT_QUEUE_ID, run, unfencedCommit('test-fixture'));
     await seedSessionArtifacts(runId);
 
     // Order tracking: cancel → setRun(canceled) → cleanup.
@@ -249,9 +250,9 @@ describe('Feature 034 T005 — WorkflowController.deleteTask cleanup wiring', ()
         order.push('cancel');
       });
     const origSetRun = store.setRun.bind(store);
-    const setRunSpy = vi.spyOn(store, 'setRun').mockImplementation(async (queueId, r) => {
+    const setRunSpy = vi.spyOn(store, 'setRun').mockImplementation(async (queueId, r, claim) => {
       if (r && r.status === 'canceled') order.push('setRun:canceled');
-      return origSetRun(queueId, r);
+      return origSetRun(queueId, r, claim);
     });
     const result = await controller.deleteTask(feature.id);
 

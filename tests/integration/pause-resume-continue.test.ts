@@ -1,4 +1,5 @@
 import { ZippedStreamBuffer } from '../../src/runner/zipped-stream-buffer';
+import { unfencedCommit } from '../../src/state/ownership-claim';
 import { drainUntil as sharedDrainUntil } from './concurrent-run-harness';
 // Feature 033 T010 — Integration: pause-then-resume preserves -c continuation.
 //
@@ -424,7 +425,9 @@ describe('Feature 033 US3 — aggressive pause integrates with breakpoint-paused
                     ...run.phaseBreakpoints,
                     { phaseId: 'speckit-clarify', setAt: Date.now(), actor: 'operator' as const }
                   ]
-                });
+                },
+                  unfencedCommit('test-fixture')
+                );
               }
             })();
           });

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { SchegentWorkflowController } from '../../../src/controller/workflow-controller';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
 import type { Memento } from '../../../src/state/workspace-state';
@@ -75,7 +76,9 @@ describe('WorkflowController Audit Emissions (Feature 072)', () => {
       phaseBreakpoints: [],
       phaseOverrides: [],
       resumeTargetPhaseId: null
-    } as any);
+    } as any,
+      unfencedCommit('test-fixture')
+    );
 
     const result = await controller.pauseActivePhase();
     expect(result.ok).toBe(true);
@@ -118,7 +121,9 @@ describe('WorkflowController Audit Emissions (Feature 072)', () => {
       phaseBreakpoints: [],
       phaseOverrides: [],
       resumeTargetPhaseId: null
-    } as any);
+    } as any,
+      unfencedCommit('test-fixture')
+    );
 
     await expect(controller.pauseActivePhase()).resolves.toMatchObject({ ok: true });
     

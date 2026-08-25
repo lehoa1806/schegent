@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { TerminalTransitionCoordinator } from '../../../src/services/terminal-transition-coordinator';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
@@ -57,7 +58,8 @@ describe('TerminalTransitionCoordinator', () => {
         await journal.setTerminalTransitionIntent(runId, intent as never);
       }),
       findRunByTask: storeRunLookup({ run: terminalRun(), queueId: DEFAULT_QUEUE_ID }),
-      setRun: vi.fn(async () => { order.push('run'); })
+      setRun: vi.fn(async () => { order.push('run'); }),
+      runCommitClaim: vi.fn(() => unfencedCommit('test-fixture'))
     };
     const queue = { finish: vi.fn(async () => { order.push('queue'); }) };
     const history = { record: vi.fn(async () => { order.push('history'); return { outcome: 'recorded' as const }; }) };
@@ -74,7 +76,8 @@ describe('TerminalTransitionCoordinator', () => {
     const store = {
       ...journal,
       findRunByTask: storeRunLookup({ run, queueId: DEFAULT_QUEUE_ID }),
-      setRun: vi.fn(async () => undefined)
+      setRun: vi.fn(async () => undefined),
+      runCommitClaim: vi.fn(() => unfencedCommit('test-fixture'))
     };
     const queue = { finish: vi.fn(async () => undefined) };
     const history = { record: vi.fn(async () => ({ outcome: 'recorded' as const })) };
@@ -106,7 +109,8 @@ describe('TerminalTransitionCoordinator concurrent transitions (Feature 093 T048
         { run: runA, queueId: 'queue-a' },
         { run: runB, queueId: 'queue-b' }
       ),
-      setRun: vi.fn(async () => undefined)
+      setRun: vi.fn(async () => undefined),
+      runCommitClaim: vi.fn(() => unfencedCommit('test-fixture'))
     };
     const queue = { finish: vi.fn(async () => undefined) };
     const history = { record: vi.fn(async () => ({ outcome: 'recorded' as const })) };
@@ -153,8 +157,10 @@ describe('TerminalTransitionCoordinator concurrent transitions (Feature 093 T048
 
     expect(queue.finish).toHaveBeenCalledWith('task-a', 'completed');
     expect(queue.finish).toHaveBeenCalledWith('task-b', 'failed');
-    expect(store.setRun).toHaveBeenCalledWith('queue-a', runA);
-    expect(store.setRun).toHaveBeenCalledWith('queue-b', runB);
+    // FR-R3-077 — the commit point now carries a claim; these doubles hold no
+    // lease, so it is the recorded unfenced form rather than a fence.
+    expect(store.setRun).toHaveBeenCalledWith('queue-a', runA, unfencedCommit('test-fixture'));
+    expect(store.setRun).toHaveBeenCalledWith('queue-b', runB, unfencedCommit('test-fixture'));
     expect(journal.entries).toEqual({});
   });
 
@@ -169,6 +175,7 @@ describe('TerminalTransitionCoordinator concurrent transitions (Feature 093 T048
         { run: runA, queueId: 'queue-a' },
         { run: runB, queueId: 'queue-b' }
       ),
+      runCommitClaim: vi.fn(() => unfencedCommit('test-fixture')),
       setRun: vi.fn(async (_queueId: string, run: WorkflowRun) => {
         if (run.id === 'run-a') throw new Error('record write failed');
       })
@@ -205,7 +212,8 @@ describe('TerminalTransitionCoordinator legacy journal (Feature 093 T048)', () =
     const store = {
       ...journal,
       findRunByTask: storeRunLookup({ run, queueId: DEFAULT_QUEUE_ID }),
-      setRun: vi.fn(async () => undefined)
+      setRun: vi.fn(async () => undefined),
+      runCommitClaim: vi.fn(() => unfencedCommit('test-fixture'))
     };
     const queue = { finish: vi.fn(async () => undefined) };
     const history = { record: vi.fn(async () => ({ outcome: 'recorded' as const })) };

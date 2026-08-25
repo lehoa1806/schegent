@@ -25,6 +25,7 @@
 // gone.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { unfencedCommit } from '../../src/state/ownership-claim';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
@@ -141,7 +142,7 @@ describe('per-queue snapshot isolation — audit lines (T087, FR-051, SC-005)', 
   it('attributes each queue only the lines its own Run wrote', async () => {
     const onDefault = await queue.enqueue('task on default', { queueId: DEFAULT_QUEUE_ID });
     await queue.enqueue('task on B', { queueId: QUEUE_B });
-    await store.setRun(DEFAULT_QUEUE_ID, sampleRun({ id: 'run-default', featureId: onDefault.id }));
+    await store.setRun(DEFAULT_QUEUE_ID, sampleRun({ id: 'run-default', featureId: onDefault.id }), unfencedCommit('test-fixture'));
 
     const snapshot = project();
     // The tail the host publishes is the workspace feed — it is not partitioned
@@ -162,7 +163,7 @@ describe('per-queue snapshot isolation — audit lines (T087, FR-051, SC-005)', 
   it('never lets one queue read another queue Run as its own', async () => {
     const onDefault = await queue.enqueue('task on default', { queueId: DEFAULT_QUEUE_ID });
     await queue.enqueue('task on B', { queueId: QUEUE_B });
-    await store.setRun(DEFAULT_QUEUE_ID, sampleRun({ id: 'run-default', featureId: onDefault.id }));
+    await store.setRun(DEFAULT_QUEUE_ID, sampleRun({ id: 'run-default', featureId: onDefault.id }), unfencedCommit('test-fixture'));
 
     const snapshot = project();
     expect(runtimeFor(snapshot, DEFAULT_QUEUE_ID).inFlightRun?.runId).toBe('run-default');
@@ -175,7 +176,7 @@ describe('per-queue snapshot isolation — log tail binding (T088, FR-052)', () 
     const onDefault = await queue.enqueue('task on default', { queueId: DEFAULT_QUEUE_ID });
     const onB = await queue.enqueue('task on B', { queueId: QUEUE_B });
 
-    await store.setRun(DEFAULT_QUEUE_ID, sampleRun({ id: 'run-default', featureId: onDefault.id }));
+    await store.setRun(DEFAULT_QUEUE_ID, sampleRun({ id: 'run-default', featureId: onDefault.id }), unfencedCommit('test-fixture'));
     const attached = runtimeFor(project(), DEFAULT_QUEUE_ID).inFlightRun;
     expect(attached?.runId).toBe('run-default');
 
@@ -187,7 +188,7 @@ describe('per-queue snapshot isolation — log tail binding (T088, FR-052)', () 
     // queue therefore keeps `run-default` instead of losing it, and both
     // assertions get sharper: it is not that the displaced queue publishes
     // nothing, it is that neither queue's binding moved.
-    await store.setRun(QUEUE_B, sampleRun({ id: 'run-b', featureId: onB.id }));
+    await store.setRun(QUEUE_B, sampleRun({ id: 'run-b', featureId: onB.id }), unfencedCommit('test-fixture'));
     const after = project();
     expect(runtimeFor(after, QUEUE_B).inFlightRun?.runId).toBe('run-b');
 
@@ -208,7 +209,7 @@ describe('per-queue snapshot isolation — log tail binding (T088, FR-052)', () 
 describe('per-queue snapshot isolation — inactive queues (T089, FR-053)', () => {
   it('publishes an empty projection rather than inheriting another queue Run', async () => {
     const onDefault = await queue.enqueue('task on default', { queueId: DEFAULT_QUEUE_ID });
-    await store.setRun(DEFAULT_QUEUE_ID, sampleRun({ id: 'run-default', featureId: onDefault.id }));
+    await store.setRun(DEFAULT_QUEUE_ID, sampleRun({ id: 'run-default', featureId: onDefault.id }), unfencedCommit('test-fixture'));
 
     const idle = runtimeFor(project(), QUEUE_B);
     expect(idle.inFlightRun).toBeNull();
@@ -241,7 +242,8 @@ describe('per-queue snapshot isolation — inactive queues (T089, FR-053)', () =
           }
         ],
         phaseBreakpoints: [{ phaseId: 'speckit-implement', setAt: 1_700_000_002_000, actor: 'operator' }]
-      })
+      }),
+      unfencedCommit('test-fixture')
     );
 
     const snapshot = project();

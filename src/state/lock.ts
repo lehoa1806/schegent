@@ -80,7 +80,7 @@ export const systemScheduler: Scheduler = {
  * a default to inherit.
  *
  * Why reading the mirror is safe at all: `heartbeat()` writes it through
- * `writeGuarded`, which refreshes the ownership record *before* the mirror write
+ * `refreshLockMirrorGuarded`, which refreshes the ownership record *before* the mirror write
  * and returns *before* it on a refused or unanswerable refresh, and
  * `tryAcquire()` writes it only after `acquire` returned. So the mirror can
  * never be fresher than the record, and because the reclaim rule in
@@ -207,26 +207,28 @@ export class WorkspaceLockManager {
    * until the rival goes away; if it does not, this window is primary again within
    * one beat, at a new generation.
    *
-   * The mirror refresh goes through `writeGuarded` (T302) rather than being
-   * written after a separate check, because the mirror is what every synchronous
-   * reader trusts: a beat that lost the resource must not leave a *fresh*
-   * `KEYS.lock` entry behind it. `refreshHeartbeatAt` folds the record's own
-   * liveness refresh into the same call, so this costs one storage round trip and
-   * not two.
+   * The mirror refresh goes through `refreshLockMirrorGuarded` (T302, reshaped by
+   * FR-R3-077 T1041) rather than being written after a separate check, because
+   * the mirror is what every synchronous reader trusts: a beat that lost the
+   * resource must not leave a *fresh* `KEYS.lock` entry behind it.
+   * `refreshHeartbeatAt` folds the record's own liveness refresh into the same
+   * call, so this costs one storage round trip and not two.
+   *
+   * What changed in T1041 is the shape, not the protocol: the verify used to
+   * happen and then a callback was awaited — two operations — and it now happens
+   * inside the same serialized link that writes the mirror.
    */
   public async heartbeat(): Promise<void> {
     const claim = this.claim();
     if (claim === null) return;
     const now = this.clock.now();
-    const outcome = await this.store.writeGuarded(
+    const lock = this.store.getLock();
+    const outcome = await this.store.refreshLockMirrorGuarded(
       claim,
-      () => {
-        const lock = this.store.getLock();
-        return this.store.setLock({
-          ownerId: this.ownerId,
-          acquiredAt: lock?.ownerId === this.ownerId ? lock.acquiredAt : now,
-          heartbeatAt: now
-        });
+      {
+        ownerId: this.ownerId,
+        acquiredAt: lock?.ownerId === this.ownerId ? lock.acquiredAt : now,
+        heartbeatAt: now
       },
       { refreshHeartbeatAt: now }
     );

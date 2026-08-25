@@ -1029,7 +1029,9 @@ export class QueueManager {
           ...active.run,
           status: 'canceled',
           lastTransitionAt: Date.now()
-        });
+        },
+          this.store.runCommitClaim(active.queueId)
+        );
       }
       return {
         ok: true,
@@ -1518,7 +1520,7 @@ export class QueueManager {
 
     // 3. Clear the active run snapshot — one per queue that held one.
     for (const queueId of runQueueIdsBefore) {
-      await this.store.setRun(queueId, null);
+      await this.store.setRun(queueId, null, this.store.runCommitClaim(queueId));
     }
 
     // 4. Reset watchdog backoff fields. Preserve `pollIntervalMs` (config)
@@ -1562,7 +1564,7 @@ export class QueueManager {
     //    on some *other* queue while the probe was awaited — work `clearAll`
     //    never saw and has no mandate over.
     for (const queueId of runQueueIdsBefore) {
-      await this.store.setRun(queueId, null);
+      await this.store.setRun(queueId, null, this.store.runCommitClaim(queueId));
     }
 
     return {
@@ -1741,7 +1743,9 @@ export class QueueManager {
       ...matching,
       manualPauseAt: now,
       manualPauseCause: 'queue-paused-mid-run'
-    });
+    },
+      this.store.runCommitClaim(queueId)
+    );
   }
 
   private async resumeMatchingRunForQueue(queueId: string, now: number, resumePrompt?: string): Promise<void> {
@@ -1755,7 +1759,9 @@ export class QueueManager {
       manualPauseCause: null,
       lastTransitionAt: now,
       resumePrompt
-    });
+    },
+      this.store.runCommitClaim(queueId)
+    );
   }
 
   private matchingRunForQueue(run: WorkflowRun | null, queueId: string): WorkflowRun | null {

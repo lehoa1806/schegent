@@ -41,7 +41,7 @@ export interface TaskDeletionOutcome {
 export interface TaskDeletionDeps {
   readonly logger: SanitizedLogger;
   readonly queue: Pick<QueueManager, 'findById' | 'queueIdForTask' | 'removeTask'>;
-  readonly store: Pick<WorkspaceStateStore, 'getRun' | 'setRun'>;
+  readonly store: Pick<WorkspaceStateStore, 'getRun' | 'setRun' | 'runCommitClaim'>;
   readonly cancelActive: (queueId: string) => void;
   readonly releaseExecutionLeaseForRun: (run: WorkflowRun) => Promise<void>;
   readonly sessionCleanup: SessionCleanupRunner;
@@ -82,7 +82,7 @@ export async function deleteTaskWithSessionCleanup(
         status: 'canceled',
         lastTransitionAt: Date.now()
       };
-      await store.setRun(queueId, canceled);
+      await store.setRun(queueId, canceled, store.runCommitClaim(queueId));
       // Feature 093 (T068b, FR-028) — no window-primacy release here either.
       // Deleting one Task cancelled one queue's Run; primacy is the window's
       // and its siblings are still executing under it.
