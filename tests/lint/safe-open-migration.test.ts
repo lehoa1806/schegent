@@ -28,9 +28,20 @@ import { join, relative, resolve } from 'node:path';
  */
 const SRC = resolve(__dirname, '..', '..', 'src');
 
-/** Raw filesystem calls that resolve a pathname, and therefore follow symlinks. */
+/**
+ * Raw filesystem calls that resolve a pathname, and therefore follow symlinks.
+ *
+ * FR-R3-078 (feature 153) added `rename`, and the omission it closes is worth
+ * recording: this gate was written against the H-02 escape shape — `path.join`
+ * + `mkdir -p` + `appendFile` — and `rename` resolves BOTH of its pathnames the
+ * same way. `raw-transcript-writer.ts`'s promotion was a `rename` on two names
+ * judged a moment earlier, which is `SEC-03` exactly, and this detector would
+ * have reported the module as migrated the moment its opens were fixed. A gate
+ * that misses the call the item is about is the shape of defect this whole
+ * round has been about.
+ */
 const RAW_PATH_CALL =
-  /\bfs[a-zA-Z]*\.(appendFile|writeFile|readFile|createWriteStream|createReadStream|mkdir|open)\s*\(/;
+  /\bfs[a-zA-Z]*\.(appendFile|writeFile|readFile|createWriteStream|createReadStream|mkdir|open|rename)\s*\(/;
 
 /**
  * The other shape, and the one that nearly slipped past this gate:
@@ -53,10 +64,28 @@ const INJECTED_FS_PORT = /\breadonly\s+\w+\??:\s*(AppendFn|WriteFileFn|MkdirFn|R
  * hand-built list.
  */
 const UNMIGRATED: readonly string[] = [
-  // FR-R3-053 second slice: the APPEND path is migrated; the promotion/rename and
-  // spool-root calls are not, so this stays. A partially migrated module is still
-  // an unmigrated one for this ledger's purpose.
-  'audit/raw-transcript-writer.ts',
+  // `audit/raw-transcript-writer.ts` struck 2026-08-25 (FR-R3-078, feature 153) —
+  // fully migrated. The entry used to read "the APPEND path is migrated; the
+  // promotion/rename and spool-root calls are not", and a partially migrated
+  // module is an unmigrated one. All three are now closed: `doWriteEnd` opens
+  // through `openWithinRoot` instead of re-resolving a judged pathname,
+  // `finalizeRun` promotes descriptor-to-descriptor and then removes the source
+  // through the contained-removal helper, and the spool root is created by
+  // `ensureAnchorWithinRoot` anchored at its OS-temp parent.
+  //
+  // Two things this strike does NOT claim. The promotion is no longer atomic —
+  // Node exposes no `renameat`, so handle-relative promotion costs `rename`'s
+  // atomicity; a crash between copy and removal leaves the pending transcript
+  // intact and the next finalize reclaims it. And the spool root is anchored at
+  // the OS temp parent rather than beneath the workspace root, because spools
+  // are deliberately outside the workspace and relocating unredacted scratch
+  // into the tree a run is editing would widen the exposure. Both are recorded
+  // at their call sites in the module as well as here.
+  //
+  // This gate is also the non-vacuity control for the promotion: the adversarial
+  // fixture in tests/unit/audit/raw-transcript-writer-containment.test.ts cannot
+  // discriminate the check-to-use window (the old shape refused that arrangement
+  // too), and a raw `fs.rename` returning to this module fails HERE, by name.
   // `audit/verbose-diagnostic-writer.ts` struck 2026-08-24 — fully migrated. Left
   // as a comment rather than deleted silently: the ledger only shrinks, and
   // recording which line went is how that stays checkable.
@@ -95,6 +124,37 @@ const UNMIGRATED: readonly string[] = [
   // `createDiskOwnershipFs` as the trusted anchor, and the root-creating
   // primitive (`ensureAnchorWithinRoot`) for the store chain itself.
   'ui/sidebar/audit-tail-coldstart.ts'
+];
+
+/**
+ * FR-R3-078 (feature 153) — modules whose ONLY remaining raw call is the rename
+ * half of an atomic publish, and what that costs.
+ *
+ * Widening `RAW_PATH_CALL` to cover `rename` surfaced three sites the detector
+ * had never looked at. None of them is a new sink and none was written since the
+ * migration: each is `write temp through the checked walk` → `fs.rename(temp,
+ * final)` inside a directory the walk already proved. Two of the three
+ * (`lib/catalog-fs-adapter.ts`, `state/ownership-fs.ts`) were STRUCK from
+ * `UNMIGRATED` by feature 152, and they were struck honestly — against a
+ * detector that could not see a rename. That is a finding about the gate, and it
+ * is recorded here rather than repaired by narrowing the regex back.
+ *
+ * These are listed separately from `UNMIGRATED` because the remaining exposure is
+ * a different one. An unmigrated sink resolves a pathname it was handed; these
+ * publish a file they created themselves, inside a directory they proved, and the
+ * residual window is the same one no Node primitive can close: `rename` cannot be
+ * made handle-relative without `renameat`, which needs a native binding. That
+ * dependency question is `FR-R3-083`'s, and this list is what it will consume.
+ *
+ * What is NOT permitted here: a rename of a pathname a caller supplied, or a
+ * rename whose destination directory was not walked. `FR-R3-078` had one of
+ * those — `raw-transcript-writer.ts`'s promotion — and it was replaced with a
+ * descriptor copy rather than added to this list.
+ */
+const ATOMIC_PUBLISH_RENAME_RESIDUAL: readonly string[] = [
+  'audit/audit-log-writer.ts',
+  'lib/catalog-fs-adapter.ts',
+  'state/ownership-fs.ts'
 ];
 
 /**
@@ -164,7 +224,11 @@ describe('safe-open migration (FR-R3-053)', () => {
   });
 
   it('has no raw path call outside the tracked and reasoned sets', () => {
-    const known = new Set([...UNMIGRATED, ...NOT_A_WORKSPACE_SINK]);
+    const known = new Set([
+      ...UNMIGRATED,
+      ...NOT_A_WORKSPACE_SINK,
+      ...ATOMIC_PUBLISH_RENAME_RESIDUAL
+    ]);
     const unexpected = callers.filter((f) => !known.has(f));
     // A new entry here is a new sink built the way the H-02 escape was built.
     // Use `openWithinRoot`, or add a reasoned line to NOT_A_WORKSPACE_SINK.
@@ -182,7 +246,34 @@ describe('safe-open migration (FR-R3-053)', () => {
   it('keeps the audit path migrated', () => {
     // The one FR-R3-053 confirmed exploitable with no race. Named explicitly so
     // a regression here fails as itself and not as a count.
-    expect(callers).not.toContain('audit/audit-log-writer.ts');
+    //
+    // FR-R3-078 qualified this, and the qualification is the honest reading: the
+    // audit writer's APPEND path — the H-02 escape itself — is migrated and must
+    // stay migrated, which is what the `UNMIGRATED` assertion below pins. Its
+    // archive `rename` is the atomic-publish residual above, listed by name.
+    expect(UNMIGRATED).not.toContain('audit/audit-log-writer.ts');
     expect(callers).not.toContain('audit/schegent-gitignore.ts');
+    // And the residual is exactly the rename, not a re-opened append path.
+    const body = readFileSync(join(SRC, 'audit', 'audit-log-writer.ts'), 'utf8');
+    const rawCalls = [...body.matchAll(new RegExp(RAW_PATH_CALL, 'g'))];
+    expect(rawCalls.every((match) => match[1] === 'rename')).toBe(true);
+  });
+
+  it('keeps the atomic-publish residual list to renames only', () => {
+    // The list exists for one call shape. A module that acquired a raw `open` or
+    // `mkdir` must not be sheltered by having been on it for a `rename`.
+    for (const relPath of ATOMIC_PUBLISH_RENAME_RESIDUAL) {
+      const body = readFileSync(join(SRC, ...relPath.split('/')), 'utf8')
+        .split(/\r?\n/)
+        .filter((line) => {
+          const trimmed = line.trim();
+          return (
+            !trimmed.startsWith('//') && !trimmed.startsWith('*') && !trimmed.startsWith('/*')
+          );
+        })
+        .join('\n');
+      const kinds = [...body.matchAll(new RegExp(RAW_PATH_CALL, 'g'))].map((m) => m[1]);
+      expect({ relPath, kinds: [...new Set(kinds)] }).toEqual({ relPath, kinds: ['rename'] });
+    }
   });
 });
