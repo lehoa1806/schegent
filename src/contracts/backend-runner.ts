@@ -38,19 +38,6 @@ import type {
 export type { InvocationRequest, RawInvocationOutput };
 
 /**
- * Feature 093 (T046) — every sidecar event names the Run whose subprocess
- * produced it.
- *
- * The hook is one window-level function shared by every runner, and before this
- * the events were anonymous: the monitor attached each chunk to whichever Run
- * had most recently called `onStart`. That was unambiguous while a window could
- * only execute one Run and silently wrong the moment it can execute several —
- * Run B's stdout would extend Run A's stall deadline and land in A's audit
- * stream. `runId` is `null` only when the invocation carried none (fakes and
- * older callers); the monitor treats that as "no attributable Run" and ignores
- * the event rather than guessing.
- */
-/**
  * FR-R3-083 — which adapter's tree it was.
  *
  * A CLOSED union, not `string`, and the reason is the audit payload downstream:
@@ -76,6 +63,19 @@ export type RunnerLabel = 'claude-cli' | 'codex-cli' | 'agy-cli';
  */
 export type TreeEscalation = 'sigterm-then-sigkill';
 
+/**
+ * Feature 093 (T046) — every sidecar event names the Run whose subprocess
+ * produced it.
+ *
+ * The hook is one window-level function shared by every runner, and before this
+ * the events were anonymous: the monitor attached each chunk to whichever Run
+ * had most recently called `onStart`. That was unambiguous while a window could
+ * only execute one Run and silently wrong the moment it can execute several —
+ * Run B's stdout would extend Run A's stall deadline and land in A's audit
+ * stream. `runId` is `null` only when the invocation carried none (fakes and
+ * older callers); the monitor treats that as "no attributable Run" and ignores
+ * the event rather than guessing.
+ */
 export type MonitorSidecarEvent =
   | { readonly kind: 'started'; readonly runId: string | null; readonly pid: number | null }
   | { readonly kind: 'stdout-chunk'; readonly runId: string | null; readonly chunk: string }

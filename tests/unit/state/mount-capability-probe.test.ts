@@ -29,6 +29,17 @@ afterEach(async () => {
   await fs.rm(workspaceRoot, { recursive: true, force: true });
 });
 
+/** A real exclusive create, so the abandoned-second-attempt case has a real file to sweep. */
+async function realCreateForTest(
+  segments: readonly string[]
+): Promise<ExclusiveCreateObservation> {
+  const dir = path.join(workspaceRoot, ...segments.slice(0, -1));
+  await fs.mkdir(dir, { recursive: true });
+  const handle = await fs.open(path.join(dir, segments[segments.length - 1]), 'wx');
+  await handle.close();
+  return { outcome: 'created' };
+}
+
 /** What the probe left behind under `.schegent/`, or `[]` when it made nothing. */
 async function schegentEntries(): Promise<readonly string[]> {
   try {
@@ -167,6 +178,39 @@ describe('mount capability probe (FR-R3-083)', () => {
       exclusiveCreate: () => Promise.resolve({ outcome: 'created' })
     });
     expect(await schegentEntries()).not.toContain('.gitignore');
+  });
+
+  it('stops doing filesystem work once disposed', async () => {
+    // `dispose()` used to set a flag that suppressed only the REPORT while the probe
+    // kept creating `.schegent/`, writing the ignore file, and creating and removing
+    // `.mount-probe.*` -- against a root the window had left, or during host
+    // shutdown. A disposal contract that stops the notification and not the writes
+    // is not a disposal contract.
+    const verdict = await probeMountCapability({ workspaceRoot, isDisposed: () => true });
+    expect(verdict).toEqual({ capability: 'undetermined', cause: 'probe-disposed' });
+    expect(await schegentEntries()).toEqual([]);
+  });
+
+  it('removes the artifact when the FIRST create landed and the second was abandoned', async () => {
+    // Both flags at once, which is an ordinary shape on a degrading mount. A version
+    // that skipped the inline sweep whenever anything was abandoned left the first
+    // attempt's file behind forever -- the deferred sweep cannot help there, because
+    // it waits on a create that never settles.
+    let call = 0;
+    const verdict = await probeMountCapability({
+      workspaceRoot,
+      timeoutMs: 40,
+      exclusiveCreate: async (segments) => {
+        call += 1;
+        if (call === 1) {
+          const opened = await realCreateForTest(segments);
+          return opened;
+        }
+        return new Promise<ExclusiveCreateObservation>(() => undefined);
+      }
+    });
+    expect(verdict.cause).toBe('probe-timed-out');
+    expect(await probeArtifacts()).toEqual([]);
   });
 
   it('names a probe artifact unique to the process and the attempt', async () => {

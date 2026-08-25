@@ -3,6 +3,12 @@ import * as path from 'node:path';
 import { openWithinRoot } from '../lib/safe-open';
 import { resolveContainedLink } from '../lib/path-containment';
 import { ensureSchegentGitignore } from '../audit/schegent-gitignore';
+// A real `SanitizedLogger` with no sinks discards everything, and it TYPECHECKS.
+// A hand-rolled stub had to be laundered through `as unknown as`, which disabled
+// checking at the call site entirely — so a refusal path calling `logger.debug`
+// would have thrown inside activation, from the one module whose contract says it
+// never throws.
+import { SanitizedLogger } from '../lib/logger';
 import {
   CONTAINMENT_REFUSED_ERRNO,
   classifyMountCapability,
@@ -45,17 +51,13 @@ import {
 export const MOUNT_PROBE_TIMEOUT_MS = 2_000;
 
 /**
- * `ensureSchegentGitignore` takes a logger for its own refusal path. The probe has
- * none — it is a pure decision plus its I/O, and it reports through a verdict
- * rather than through a log — so it passes a sink that discards. A gitignore
- * refusal is not this function's finding to report, and reporting it here would put
- * a second voice on the activation path saying something about `.schegent`.
+ * How many probe bounds the deferred sweep waits for an abandoned create to settle.
+ *
+ * The sweep exists for a create that lost its race but lands shortly after. One
+ * that never lands must not hold its closure — and everything the closure captures
+ * — for the life of the extension host.
  */
-const NO_OP_LOGGER = {
-  info: () => undefined,
-  warn: () => undefined,
-  error: () => undefined
-} as unknown as Parameters<typeof ensureSchegentGitignore>[1];
+const DEFERRED_SWEEP_BOUNDS = 5;
 
 /** Where the probe writes. Inside `.schegent/`, which the product already owns. */
 const PROBE_SEGMENTS_PREFIX: readonly string[] = ['.schegent'];
@@ -94,6 +96,17 @@ export interface MountProbeDeps {
   /** Injection seam for the bound, so a test does not wait two seconds. */
   readonly timeoutMs?: number;
   /**
+   * Asked between stages. When it answers true the probe stops doing filesystem
+   * work and resolves `undetermined`.
+   *
+   * `dispose()` used to set a flag that suppressed only the REPORT, while the probe
+   * kept creating `.schegent/`, writing the ignore file, creating and removing
+   * `.mount-probe.*` — against a workspace root the window had left, or during host
+   * shutdown. A disposal contract that stops the notification and not the writes is
+   * not a disposal contract.
+   */
+  readonly isDisposed?: () => boolean;
+  /**
    * Whether to drop `.schegent/.gitignore`. Defaults to true.
    *
    * Its own option rather than a side effect of `exclusiveCreate` being absent: what
@@ -103,6 +116,14 @@ export interface MountProbeDeps {
   readonly dropIgnoreFile?: boolean;
 }
 
+/**
+ * Node errnos are short uppercase constants (`ENOTSUP`, `EROFS`). Bounded here
+ * anyway, because `error.code` is `unknown` at the type level and this value is
+ * interpolated into an operator-visible log line: nothing in the type system stops
+ * a rejected promise from carrying a `code` that is a sentence, a path, or a
+ * megabyte. Cheap, and it keeps the "bounded reason code" discipline the rest of
+ * this codebase's refusals hold to.
+ */
 /**
  * Extract an errno, bounded.
  *
@@ -129,18 +150,9 @@ export interface MountProbeDeps {
  * nothing in the types stops a rejection carrying a path or a sentence as its
  * `code`.
  */
-/**
- * Node errnos are short uppercase constants (`ENOTSUP`, `EROFS`). Bounded here
- * anyway, because `error.code` is `unknown` at the type level and this value is
- * interpolated into an operator-visible log line: nothing in the type system stops
- * a rejected promise from carrying a `code` that is a sentence, a path, or a
- * megabyte. Cheap, and it keeps the "bounded reason code" discipline the rest of
- * this codebase's refusals hold to.
- */
 const MAX_ERRNO_LENGTH = 32;
 const ERRNO_SHAPE = /^[A-Z][A-Z0-9_]*$/;
 
-/** See the note above on why this is not the same helper as the other four. */
 function errnoOf(error: unknown): string {
   if (error && typeof error === 'object' && 'code' in error) {
     const code = (error as { code?: unknown }).code;
@@ -265,6 +277,7 @@ export async function probeMountCapability(
   // then be permanently unreportable, by the artifact its own brokenness produced.
   const leaf = `.mount-probe.${process.pid}.${probeCounter}.${Date.now().toString(36)}`;
   const segments = [...PROBE_SEGMENTS_PREFIX, leaf];
+  const disposed = (): boolean => deps.isDisposed?.() === true;
   const create =
     deps.exclusiveCreate ??
     ((s: readonly string[]) => realExclusiveCreate(deps.workspaceRoot, s));
@@ -294,9 +307,10 @@ export async function probeMountCapability(
   //
   // Bounded and best-effort, like everything else here: it must not become a way
   // for the probe to stall or to fail.
+  if (disposed()) return { capability: 'undetermined', cause: 'probe-disposed' };
   if (deps.dropIgnoreFile !== false) {
     await raceSettled(
-      ensureSchegentGitignore(deps.workspaceRoot, NO_OP_LOGGER).catch(() => undefined),
+      ensureSchegentGitignore(deps.workspaceRoot, new SanitizedLogger([])).catch(() => undefined),
       timeoutMs
     );
   }
@@ -329,7 +343,9 @@ export async function probeMountCapability(
   };
 
   try {
+    if (disposed()) return { capability: 'undetermined', cause: 'probe-disposed' };
     const first = await attempt();
+    if (disposed()) return { capability: 'undetermined', cause: 'probe-disposed' };
     // The second attempt is only meaningful when the first created something.
     //
     // `null`, not a fabricated `io-failed`. `classifyMountCapability` returns from
@@ -357,8 +373,17 @@ export async function probeMountCapability(
     // microtask — so the mount class least able to afford the syscalls paid for them
     // twice per activation, the second time after the function had resolved.
     if (bound.abandoned) {
-      void Promise.all(outstanding).then(() =>
-        removeProbeArtifact(deps.workspaceRoot, segments, timeoutMs)
+      // BOUNDED, and `allSettled`. `Promise.all` on a create that never settles
+      // never runs the sweep and retains its closure — with `deps`, `segments` and
+      // `outstanding` — for the life of the extension host, once per activation.
+      // A generous multiple of the probe's own bound: long enough that a create
+      // which is merely slow still gets swept, short enough that one which is hung
+      // is let go.
+      void raceSettled(Promise.allSettled(outstanding), timeoutMs * DEFERRED_SWEEP_BOUNDS).then(
+        (settled) => {
+          if (settled.state !== 'value') return;
+          return removeProbeArtifact(deps.workspaceRoot, segments, timeoutMs);
+        }
       );
     }
     // Only when something COULD be there. When the first attempt was refused
@@ -386,14 +411,16 @@ export async function probeMountCapability(
     // function whose entire contract is that it is bounded. The verdict was
     // computed and then never returned, no log line was ever written, and a libuv
     // threadpool slot was held for the life of the extension host.
-    // NOT on the abandoned path. There the deferred sweep above is the one that can
-    // work, because by construction the create has not settled and there is nothing
-    // to remove yet — an inline call would issue `realpath` + `lstat` against the
-    // unresponsive mount for no possible result, and be raced to a full extra bound
-    // in the process. On the mount this module's own comments call least able to
-    // afford the syscalls, that is another 2 s added to a verdict that is already
-    // computed.
-    if (bound.created && !bound.abandoned) {
+    // WHENEVER SOMETHING WAS CREATED, abandoned or not. The two flags are not
+    // exclusive: attempt one can create and attempt two can then stall, which is an
+    // ordinary shape on a degrading mount. A version that skipped the inline sweep
+    // on `abandoned` left THAT file forever — the deferred sweep below cannot help,
+    // because it waits on a create that by hypothesis never settles.
+    //
+    // When nothing was created and nothing was abandoned there is nothing to look
+    // for, and `resolveContainedLink` is a `realpath` plus an `lstat` on the mount
+    // this module's own comments call least able to afford them.
+    if (bound.created) {
       await removeProbeArtifact(deps.workspaceRoot, segments, timeoutMs);
     }
   }

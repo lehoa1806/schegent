@@ -1,6 +1,5 @@
 import type { AuditEntry } from '../audit/audit-entry';
-import type { Phase } from './phase';
-import type { RunnerLabel, TreeEscalation } from '../contracts/backend-runner';
+import type { MonitorSidecarEvent } from '../contracts/backend-runner';
 import type { ProcessTreeUnconfirmedPayload } from '../contracts/audit-events';
 
 /**
@@ -49,14 +48,15 @@ export class ProcessTreeDegradationRecorder {
    * is that hook errors do not propagate into runner control flow; this holds up its
    * end of that rather than relying on the runner's `catch`.
    */
-  public async record(event: {
-    readonly runId: string | null;
-    readonly phase: Phase;
-    readonly iteration: number;
-    readonly pid: number | null;
-    readonly runner: RunnerLabel;
-    readonly escalation: TreeEscalation;
-  }): Promise<void> {
+  public async record(
+    /**
+     * DERIVED from the contract arm, not re-declared. An inline shape is
+     * structurally satisfied by whatever `extension.ts` passes, so a rename or a
+     * new field on the sidecar arm would compile here and silently drop or mistype
+     * the data — an audit entry losing a field with no build error.
+     */
+    event: Omit<Extract<MonitorSidecarEvent, { kind: 'tree-unconfirmed' }>, 'kind'>
+  ): Promise<void> {
     // An unattributable event is DROPPED, not guessed at. This is how the monitor
     // already treats a `runId: null` lifecycle event, and the reasoning is the same:
     // with more than one Run in a window, attributing this to whichever Run happens

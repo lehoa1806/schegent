@@ -186,11 +186,22 @@ describe('the leaf policy, both platform answers (FR-R3-083)', () => {
     if (judged.outcome === 'refused') expect(judged.reason).toBe('io-failed');
   });
 
-  it('tolerates the same case for a caller that declares it, like the dispatch guard', () => {
+  it('tolerates the same case for a caller that declares it, like the dispatch guard', async () => {
     // Same function, different declared tolerance. The difference between the two
     // callers is an argument a reader can see, not two copies of a rule.
-    return expect(
+    //
+    // The file MUST be created here. `beforeEach` mkdtemps a fresh root, so without
+    // it `lstat` answers ENOENT -- which both tolerance lists accept, and the test
+    // would pass while exercising nothing. Verified: ENOENT with no `afile`, ENOTDIR
+    // once it exists as a file. Narrowing the guard's tolerance back to `['ENOENT']`
+    // would then not have failed here, which is the exact drift the consolidation
+    // was written to catch.
+    await fs.writeFile(path.join(root, 'afile'), 'x');
+    await expect(
       judgeLeafRedirect(path.join(root, 'afile', 'leaf'), ['ENOENT', 'ENOTDIR'], true)
     ).resolves.toEqual({ outcome: 'ok' });
+    // And the walk's own tolerance refuses the same arrangement.
+    const strict = await judgeLeafRedirect(path.join(root, 'afile', 'leaf'), ['ENOENT'], true);
+    expect(strict).toEqual({ outcome: 'refused', reason: 'io-failed', errno: 'ENOTDIR' });
   });
 });

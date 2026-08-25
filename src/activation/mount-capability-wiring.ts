@@ -158,11 +158,13 @@ export function startMountCapabilityProbe(
   // Stage 2 is re-wired on `schegent.reset` and on a workspace-folder change, so a probe
   // started against root A can resolve after the window has moved to root B — and
   // then pop an operator notification about a workspace they are no longer in.
-  // A verdict for a torn-down stage is DROPPED rather than shown. The `.catch`
-  // below only stops a disposed-UI throw becoming an unhandled rejection; it does
-  // nothing about a successful, misattributed notification.
+  // A verdict for a torn-down stage is DROPPED rather than shown, AND the probe is
+  // told, so it stops doing filesystem work against a root the window has left. The
+  // `.catch` below only stops a disposed-UI throw becoming an unhandled rejection;
+  // it does nothing about a successful, misattributed notification, and nothing at
+  // all about writes.
   let disposed = false;
-  void probeMountCapability({ workspaceRoot })
+  void probeMountCapability({ workspaceRoot, isDisposed: () => disposed })
     .then(
       (verdict) => {
         if (disposed) return;

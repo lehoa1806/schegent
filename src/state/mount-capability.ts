@@ -74,7 +74,15 @@ export type MountCapabilityCause =
   /** The containment primitive refused the probe's own location. */
   | 'containment-refused'
   /** A syscall failed with a code this table does not classify. */
-  | 'unclassified-error';
+  | 'unclassified-error'
+  /**
+   * The probe was disposed mid-flight and stopped.
+   *
+   * Its own cause rather than folding into `probe-timed-out`: nothing was measured
+   * and nothing timed out. Stage 2 went away, which is a fact about the window and
+   * not about the mount.
+   */
+  | 'probe-disposed';
 
 export interface MountCapabilityVerdict {
   readonly capability: MountCapability;

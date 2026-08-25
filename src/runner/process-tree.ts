@@ -97,6 +97,19 @@ export async function signalProcessTree(
  * no group to probe, so this answers only for the direct child and callers must
  * treat a `true` there as "the child is gone", not "the tree is".
  */
+/**
+ * Has the direct child finished?
+ *
+ * `exitCode !== null || signalCode !== null`, and the second half is not optional:
+ * a child killed by SIGTERM — the ORDINARY cancel outcome — reports
+ * `exitCode === null, signalCode === 'SIGTERM'`. A guard testing `exitCode` alone
+ * therefore never fires on the commonest path, which is how a "skip when the child
+ * is gone" check came to escalate against every cleanly-reaped child.
+ */
+export function childIsReaped(child: ChildProcess): boolean {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
 export function processTreeIsGone(child: ChildProcess): boolean {
   const pid = child.pid;
   if (pid === undefined) return true;
@@ -226,7 +239,19 @@ export interface TreeEscalationDeps {
 export function escalateAndReportTree(deps: TreeEscalationDeps): void {
   const { child, attribution, runner } = deps;
 
-  // NO probe before the first signal, and the reason is FR-R3-054 §4 finding 1,
+  // NOTHING LEFT TO DO: the child has been reaped AND its group is gone. Both
+  // halves, for two different reasons — see `childIsReaped` for why `signalCode`
+  // matters, and the note below for why the group probe alone is not enough.
+  //
+  // This is what keeps the raw group signal away from a reaped pid. A runner holds
+  // its `active` entry until after `awaitStdinDelivery`'s grace and its diagnostic
+  // writes, so a child can sit there for seconds after exiting; a `cancelAll()` at
+  // deactivation landing in that window used to run the whole ladder against a dead
+  // pid. On Windows that is `taskkill /pid <pid> /T /F`, which has no
+  // group-id protection at all and would take an unrelated process's whole tree.
+  if (childIsReaped(child) && processTreeIsGone(child)) return;
+
+  // No probe on its OWN before the first signal, and the reason is FR-R3-054 §4 finding 1,
   // relearned: `processTreeIsGone` answers for the GROUP, and a child that leads no
   // group of its own — an injected double, or a real child from a spawn path this
   // migration has not reached — makes `kill(-pid, 0)` throw ESRCH, which reads as
@@ -296,7 +321,7 @@ export function escalateAndReportTree(deps: TreeEscalationDeps): void {
     // child that leads no group (see the note at the top), and the child's status
     // alone was what skipped it for the arrangement this feature exists for. Only
     // when the child has exited AND the group is gone is there nothing left to kill.
-    if (child.exitCode !== null && processTreeIsGone(child)) return;
+    if (childIsReaped(child) && processTreeIsGone(child)) return;
     deps.info?.('sending SIGKILL to process tree');
     void signalProcessTree(child, 'SIGKILL').then(() => {
       setTimeout(confirmOrReport, TREE_CONFIRM_DELAY_MS).unref();

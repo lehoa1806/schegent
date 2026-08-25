@@ -479,18 +479,14 @@ export interface ProcessTreeUnconfirmedPayload {
   /** The direct child's pid, or `null` when the child never had one. */
   readonly pid: number | null;
   /**
-   * WHICH RUNGS ACTUALLY RAN before the group was found alive. Bounded and
-   * enumerated, and the distinction is load-bearing rather than decorative:
+   * WHICH RUNGS ACTUALLY RAN before the group was found alive.
    *
-   *   - `sigterm-then-sigkill` — the full ladder. SIGKILL is not catchable, so a
-   *     group that survived this is a group Schegent does not own.
-   *   - `sigterm-only-child-exited` — the direct child exited during the SIGTERM
-   *     grace, so there was no live leader to escalate against and SIGKILL was not
-   *     sent. A survivor here has only been asked once, politely.
+   * One member today — `sigterm-then-sigkill` — because the ladder escalates on the
+   * GROUP, so a report is only reachable after a delivered SIGKILL. See
+   * `TreeEscalation` for the arm that existed briefly and was removed, and why.
    *
-   * An earlier version stamped the first value unconditionally, which made the
-   * record claim a signal that was never delivered — on the branch where the CLI
-   * handles SIGTERM and exits while its forked helper does not.
+   * Carried from the runner rather than stamped here: if a rung is ever added, it
+   * reaches the audit record without an edit to the recorder.
    */
   readonly escalation: TreeEscalation;
 }
