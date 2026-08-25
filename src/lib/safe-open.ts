@@ -31,9 +31,11 @@ import * as path from 'node:path';
  * `fstat`s the handle it actually got. That closes the no-race hole completely
  * -- a symlink at any component is refused -- and narrows the racing window to
  * "a component is swapped between its `lstat` and the next syscall", which
- * remains open. Closing it needs a native addon, which the no-new-dependency
- * constraint rules out. Recorded rather than implied: see
- * FR-R3-053's follow-on item for the `openat` binding.
+ * remains open. Closing it needs `openat(2)` — a handle-relative walk — and therefore a native
+ * addon. FR-R3-083 asked that question once for all four residuals that share it and answered it:
+ * see `docs/architecture/native-binding-decision.md`. The answer is **no**, so this window is a
+ * PERMANENT stated limit rather than an open follow-up, and `tests/lint/safe-open-migration.test.ts`
+ * carries it under that disposition.
  */
 
 /** Why a safe open was refused. Bounded, and safe to log. */
@@ -73,9 +75,13 @@ function refuse(reason: SafeOpenRefusal, errno = 'none'): SafeOpenResult {
 
 /**
  * `O_NOFOLLOW` is POSIX. On Windows the flag does not exist and Node ignores
- * it, so the leaf check there rests on the `lstat` below instead. A
- * reparse-point-rejecting Windows design is a stated follow-on, not something
- * this constant quietly implies.
+ * it, so the leaf check there rests on the `lstat` below plus the reparse-point
+ * check FR-R3-083 added at the leaf.
+ *
+ * That check reaches the reparse ATTRIBUTE, not the reparse TAG. Distinguishing tags — a mount point
+ * from a dedup reparse from an OneDrive placeholder — needs `FSCTL_GET_REPARSE_POINT`, which is a
+ * native call. `docs/architecture/native-binding-decision.md` answered that question **no**, so the
+ * tag-level distinction is a PERMANENT stated limit.
  */
 // Typed as `Partial` because the ambient types claim `number` unconditionally
 // while Windows Node does not define this constant at all. Asserting the type

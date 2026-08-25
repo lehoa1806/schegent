@@ -404,8 +404,10 @@ export class RawTranscriptWriter {
    *
    * WHY A COPY AND NOT A RENAME (T1050). Node exposes no `renameat`, and
    * `/proc/self/fd` is Linux-only, so a rename cannot be made handle-relative —
-   * the same wall `FR-R3-053` §5 residual 1 hit, and the dependency question
-   * belongs to `FR-R3-083`, not here. The item's requirement is handles *or a
+   * the same wall `FR-R3-053` §5 residual 1 hit. That dependency question belonged
+   * to `FR-R3-083` and has since been answered **no**
+   * (`docs/architecture/native-binding-decision.md`), so the copy below is not an
+   * interim shape awaiting a binding; it is what this module ships. The item's requirement is handles *or a
    * refusal*, so the promotion is performed as a descriptor-to-descriptor copy
    * followed by a contained removal of the source. Every filesystem operation
    * then acts on something the walk produced.

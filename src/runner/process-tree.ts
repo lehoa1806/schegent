@@ -27,9 +27,14 @@ import { spawn, type ChildProcess } from 'node:child_process';
  * Windows: there is no process group to create. `detached` there controls
  * console allocation, not lifetime, and asking for it would suggest a guarantee
  * that does not exist. The tree is reached with `taskkill /T` instead, which is
- * the well-audited equivalent named in the requirement; a real Job Object with
- * kill-on-close needs a native binding and is stated as follow-on rather than
- * implied here.
+ * the well-audited equivalent named in the requirement.
+ *
+ * A real Job Object with kill-on-close is stronger — it cannot be escaped by a process that
+ * re-parents itself — and needs a native binding. FR-R3-083 asked that question once for the four
+ * residuals that share it: `docs/architecture/native-binding-decision.md`. The answer is **no**, so
+ * `taskkill /T` is not a stopgap awaiting a better one; it is what this product ships, and the
+ * re-parenting escape is a PERMANENT stated limit. `docs/operations/backends.md` step 6 says so to
+ * operators.
  */
 export function processTreeSpawnOptions(): { readonly detached: boolean } {
   return { detached: process.platform !== 'win32' };

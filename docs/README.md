@@ -147,6 +147,7 @@ drifts unnoticed, because the readers who would catch an error never get there.
 - [Merge-gate observation](operations/merge-gate-observation.md)
 - [Multi-queue concurrency](operations/multi-queue-concurrency.md)
 - [Phase and task management](operations/phase-task-management.md)
+- [Platform observation record](operations/platform-observation-record.md)
 - [Process YAML](operations/process-yaml.md)
 - [Recovery from an interrupted run](operations/recovery-checkpoints.md)
 - [Release notes](operations/release-notes.md)
@@ -159,6 +160,7 @@ drifts unnoticed, because the readers who would catch an error never get there.
 ### Architecture and decisions
 
 - [Agent capability posture](architecture/agent-capability-posture.md) — **decided, shipped 2026-08-24** (shape 3: uncontained backends refused by default, `schegent.backend.allowUncontainedBackends` is the opt-in)
+- [Native binding decision](architecture/native-binding-decision.md) — **decided 2026-08-25: no** (the `openat`, `renameat`, Job Object and reparse-tag residuals are permanent stated limits)
 - [Local queue parallelism ratification](architecture/local-queue-parallelism-ratification.md)
 - [Remote multi-user expansion gate](architecture/remote-multi-user-expansion-gate.md)
 - [Workspace ownership fencing](architecture/workspace-ownership-fencing.md)
