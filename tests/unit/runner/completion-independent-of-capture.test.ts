@@ -55,7 +55,7 @@ describe('completion no longer depends on transcript capture', () => {
     const observed: Array<{ label: string; exitCode: number | null; sawResult: boolean; sawSession: boolean }> = [];
     for (const { label, sink } of runs) {
       const runner = new ProcessLifecycleRunner(
-        spawn as unknown as ProcessSpawnFn, null, new SanitizedLogger([]), 'm01'
+        spawn as unknown as ProcessSpawnFn, null, new SanitizedLogger([]), 'codex-cli'
       );
       const raw = await runner.invoke({
         request: requestFor(''),

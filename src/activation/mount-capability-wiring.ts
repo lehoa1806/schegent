@@ -35,17 +35,27 @@ export interface MountCapabilityNotifier {
 }
 
 /**
- * Warned-once, keyed by workspace root.
+ * Notified-once, keyed by workspace root.
  *
  * Module-level and keyed by root rather than a boolean, matching
  * `warnIfEnvironmentIsUnrestricted`: a window that adds a folder must be able to
  * warn about the new one, and must not re-warn about the old one.
+ *
+ * A root is recorded only on the arm that actually NOTIFIES, which is the same
+ * discipline `warnIfEnvironmentIsUnrestricted` follows — it records the root
+ * after its own early return, never before. Recording every verdict would let
+ * the first one win permanently: `wireStage2` runs again in the same process
+ * after `schegent.reset` and after a workspace-folder change, so a first probe
+ * that answered `undetermined` — a transient timeout on exactly the slow mount
+ * this exists for — would silently swallow the `unsupported` verdict that
+ * followed it. The log lines are not gated, because a log line is a record and
+ * not an interruption.
  */
-const warnedWorkspaces = new Set<string>();
+const notifiedWorkspaces = new Set<string>();
 
 /** Test seam. Activation never calls this. */
 export function resetMountCapabilityWarnings(): void {
-  warnedWorkspaces.clear();
+  notifiedWorkspaces.clear();
 }
 
 /**
@@ -68,9 +78,6 @@ export function reportMountCapability(
   logger: SanitizedLogger,
   notifier: MountCapabilityNotifier
 ): void {
-  if (warnedWorkspaces.has(workspaceRoot)) return;
-  warnedWorkspaces.add(workspaceRoot);
-
   // The errno is the datum that separates a full disk from a permissions problem
   // from a mount that does not implement the primitive, which is why
   // `AcquireOutcome` preserves it too. Absent when nothing supplied one.
@@ -85,6 +92,10 @@ export function reportMountCapability(
       return;
     case 'unsupported':
       logger.warn(`mount capability: UNSUPPORTED — exclusive create does not arbitrate (${cause})`);
+      // The NOTIFICATION is the once-per-workspace thing, not the record. Marked
+      // here, on the arm that delivers it, so no other verdict can spend it.
+      if (notifiedWorkspaces.has(workspaceRoot)) return;
+      notifiedWorkspaces.add(workspaceRoot);
       void notifier.warn(UNSUPPORTED_MESSAGE);
       return;
     case 'read-only':
@@ -121,8 +132,16 @@ export function startMountCapabilityProbe(
   logger: SanitizedLogger,
   notifier: MountCapabilityNotifier
 ): void {
-  void probeMountCapability({ workspaceRoot }).then(
-    (verdict) => reportMountCapability(verdict, workspaceRoot, logger, notifier),
-    () => undefined
-  );
+  void probeMountCapability({ workspaceRoot })
+    .then(
+      (verdict) => reportMountCapability(verdict, workspaceRoot, logger, notifier),
+      () => undefined
+    )
+    // `.then(onFulfilled, onRejected)` does NOT route a throw from `onFulfilled`
+    // to `onRejected`, so the arm above covers the probe and nothing else.
+    // `reportMountCapability` calls the notifier, and the probe can still be in
+    // flight when a workspace-folder change or `schegent.reset` tears stage 2
+    // down underneath it — which is precisely when a VS Code UI call throws.
+    // This is the arm that keeps that off the activation path.
+    .catch(() => undefined);
 }

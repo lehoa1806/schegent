@@ -39,10 +39,16 @@ native binding — they would. It is whether this product should have one.
   nobody in this repository can reproduce.
 - **An install-time compiler dependency** for anyone the prebuild matrix misses: a C++ toolchain and
   Python, on a contributor's machine, to install a VS Code extension's dependencies.
-- **It would be the first.** Measured 2026-08-25 from [`package.json`](../../package.json):
-  `dependencies` is `{}`. The product ships **zero** runtime dependencies. A native binding would not
-  be one more entry on a list — it would create the list, and it would create it with a compiled
-  artifact. This is the input that decides the question, and it is the reason the answer is not close.
+- **It would be the first.** Measured 2026-08-25, re-read from the files rather than transcribed:
+  [`package.json`](../../package.json) has **no `dependencies` key at all** — only `devDependencies`
+  (18 entries) — and [`webview-ui/package.json`](../../webview-ui/package.json) likewise has none.
+  The product ships **zero** runtime dependencies, in both trees. A native binding would not be one
+  more entry on a list; it would create the list, and it would create it with a compiled artifact.
+  This is the input that decides the question, and it is the reason the answer is not close.
+
+  *(An earlier draft of this line said `dependencies` is `{}`. It is absent, which is a stronger
+  statement of the same fact — but the sentence claimed a measurement, and a measurement that is
+  approximately right is the drift this round exists to remove.)*
 
 **What that branch would have bought:** the component-swap window closed on all platforms, atomic
 publish restored for four sites, an unescapable kill on Windows, and true reparse-tag rejection. Real

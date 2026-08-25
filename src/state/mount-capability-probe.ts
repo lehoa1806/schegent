@@ -81,10 +81,38 @@ export interface MountProbeDeps {
   readonly timeoutMs?: number;
 }
 
+/**
+ * Extract an errno.
+ *
+ * A FIFTH byte-identical copy of this helper -- `lib/safe-open.ts`,
+ * `lib/catalog-fs-adapter.ts`, `runner/process-tree.ts` and `runner/child-stdin.ts`
+ * hold the others -- and the duplication is real. It is kept rather than resolved
+ * here for a stated reason: extracting a shared helper edits five files this
+ * feature otherwise does not touch, and the work-style rule is that a change
+ * touches only the files its task requires. A five-file refactor riding along on a
+ * portability feature is exactly the drive-by that rule forbids.
+ *
+ * It is recorded rather than left silent so the next reader knows the count is
+ * five, and so the extraction can be done as its own change with all five sites in
+ * one diff.
+ */
+/**
+ * Node errnos are short uppercase constants (`ENOTSUP`, `EROFS`). Bounded here
+ * anyway, because `error.code` is `unknown` at the type level and this value is
+ * interpolated into an operator-visible log line: nothing in the type system stops
+ * a rejected promise from carrying a `code` that is a sentence, a path, or a
+ * megabyte. Cheap, and it keeps the "bounded reason code" discipline the rest of
+ * this codebase's refusals hold to.
+ */
+const MAX_ERRNO_LENGTH = 32;
+const ERRNO_SHAPE = /^[A-Z][A-Z0-9_]*$/;
+
 function errnoOf(error: unknown): string {
   if (error && typeof error === 'object' && 'code' in error) {
     const code = (error as { code?: unknown }).code;
-    if (typeof code === 'string') return code;
+    if (typeof code === 'string' && code.length <= MAX_ERRNO_LENGTH && ERRNO_SHAPE.test(code)) {
+      return code;
+    }
   }
   return 'unknown';
 }
@@ -125,9 +153,15 @@ async function realExclusiveCreate(
 /**
  * Race one attempt against the bound.
  *
- * The loser is abandoned, not awaited. A settled-flag guards the cleanup so a
- * create that lands after expiry still removes what it made — otherwise a slow
- * mount would leave the artifact behind precisely when the probe stopped watching.
+ * The loser is abandoned, not awaited — awaiting it is the same stall the bound
+ * exists to prevent. A settled-flag makes the race one-shot, so a create that
+ * lands after expiry cannot overwrite the `timed-out` verdict.
+ *
+ * It says nothing about the FILE such a create may have made. That is
+ * `probeMountCapability`'s `finally` to answer, and it does: the outstanding
+ * attempts are tracked and swept again once they settle. Without that second
+ * sweep the artifact survives on precisely the slow mount this probe exists to
+ * diagnose, one file per activation, forever.
  */
 function withBound(
   attempt: Promise<ExclusiveCreateObservation>,
@@ -183,14 +217,26 @@ export async function probeMountCapability(
     deps.exclusiveCreate ??
     ((s: readonly string[]) => realExclusiveCreate(deps.workspaceRoot, s));
 
+  // Every attempt STARTED, whether or not its bound waited for it. A create that
+  // loses the race still runs, and a create that runs can still make a file.
+  const outstanding: Promise<unknown>[] = [];
+  const attempt = (): Promise<ExclusiveCreateObservation> => {
+    const started = create(segments);
+    // Tracked through a handled derivative, so tracking can never itself add an
+    // unhandled rejection; `withBound` observes the original.
+    outstanding.push(started.then(
+      () => undefined,
+      () => undefined
+    ));
+    return withBound(started, timeoutMs);
+  };
+
   try {
-    const first = await withBound(create(segments), timeoutMs);
+    const first = await attempt();
     // The second attempt is only meaningful when the first created something. If it
     // did not, the name is not taken and a second create proves nothing.
     const second: ExclusiveCreateObservation =
-      first.outcome === 'created'
-        ? await withBound(create(segments), timeoutMs)
-        : { outcome: 'io-failed' };
+      first.outcome === 'created' ? await attempt() : { outcome: 'io-failed' };
     return classifyMountCapability(first, second);
   } catch (error) {
     // Belt and braces: `withBound` already converts a rejection into an
@@ -202,6 +248,15 @@ export async function probeMountCapability(
     // artifact behind turns the next activation's first create into a second one,
     // which would report `unsupported` on a perfectly good mount.
     await removeProbeArtifact(deps.workspaceRoot, segments);
+    // And ONCE MORE when an abandoned create finally lands. The sweep above ran
+    // while that create was still in flight, so on the timeout path it removed
+    // nothing and the file appeared afterwards. Not awaited — the bound is the
+    // whole point — so this costs the caller nothing.
+    if (outstanding.length > 0) {
+      void Promise.all(outstanding).then(() =>
+        removeProbeArtifact(deps.workspaceRoot, segments)
+      );
+    }
   }
 }
 

@@ -132,14 +132,16 @@ const NOFOLLOW: number = (fsConstants as Partial<typeof fsConstants>).O_NOFOLLOW
  *
  * PURE, so the classification is reachable from a test on ANY platform -- including
  * the ones where the arrangement cannot be created at all.
+ *
+ * It takes no platform flag. Whether to ASK is the caller's decision -- on a
+ * platform with a real `O_NOFOLLOW` the kernel already refused atomically, and a
+ * second, weaker check there would add a syscall and a race to a settled answer.
+ * That gate lives at the one call site, in an `if (NOFOLLOW === 0)`. An earlier
+ * draft passed the platform in as a parameter, which made one condition into two
+ * expressions that could drift, and left the function's own guard reachable only
+ * from a test.
  */
-export function refusesLeafAsReparsePoint(
-  leafStat: { isSymbolicLink(): boolean },
-  platformHasNoFollow: boolean
-): boolean {
-  // On a platform with `O_NOFOLLOW` the kernel already refused atomically, and a
-  // second, weaker check would only add a syscall and a race to a settled answer.
-  if (platformHasNoFollow) return false;
+export function refusesLeafAsReparsePoint(leafStat: { isSymbolicLink(): boolean }): boolean {
   return leafStat.isSymbolicLink();
 }
 
@@ -309,10 +311,31 @@ export async function openWithinRoot(
   // FR-R3-083 — the leaf check this platform's `O_NOFOLLOW` will not perform.
   // Skipped entirely where `NOFOLLOW` is real, so the POSIX path keeps its exact
   // syscall sequence and its exact refusals.
+  //
+  // WHAT THIS COSTS ON WINDOWS, AND WHY IT IS PAID
+  //
+  // One extra `lstat` per open, on every open. The hottest caller is the audit
+  // writer, which deliberately reopens `.schegent/audit.log` per append rather than
+  // holding a descriptor across a run, so on Windows that path goes from
+  // (lstat per component + open + fstat) to one syscall more. Measured as a
+  // proportion that is real and as an absolute that is a local metadata read.
+  //
+  // Paid, deliberately: without it the leaf open on Windows FOLLOWS a junction or
+  // symlink at the last component, which redirects the evidence record out of the
+  // workspace with no race required. Trading a containment hole in the audit path
+  // for a syscall on the audit path is the wrong direction, and `H-02` -- the
+  // defect this whole module exists for -- was that exact escape in that exact
+  // file.
+  //
+  // Not narrowed by `flags`. `'wx'` would in fact be safe to skip, since
+  // `O_CREAT|O_EXCL` refuses an existing name outright and cannot follow it -- but
+  // the append path is the hot one and the exclusive-create path is not, so the
+  // carve-out would buy nothing where the cost is and add a second rule about when
+  // the leaf is checked.
   if (NOFOLLOW === 0) {
     try {
       const leafStat = await fsp.lstat(leaf);
-      if (refusesLeafAsReparsePoint(leafStat, false)) return refuse('reparse-point-leaf');
+      if (refusesLeafAsReparsePoint(leafStat)) return refuse('reparse-point-leaf');
     } catch (error) {
       // ENOENT is the ordinary case for a creating open: there is no entry to be a
       // reparse point. Anything else could not be proven, and a leaf that cannot be

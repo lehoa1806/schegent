@@ -1,6 +1,8 @@
-import type { Phase } from '../controller/phase';
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
-import type { MonitorSidecarEvent, MonitorSidecarHook } from '../contracts/backend-runner';
+import type {
+  MonitorSidecarEvent,
+  MonitorSidecarHook,
+  TreeAttribution, RunnerLabel } from '../contracts/backend-runner';
 import type { SanitizedLogger } from '../lib/logger';
 import { waitForChildCompletion } from './child-completion';
 import { awaitStdinDelivery, writePromptToStdin } from './child-stdin';
@@ -17,6 +19,7 @@ import { processTreeSpawnOptions, signalProcessTree, processTreeIsGone } from '.
 const TREE_CONFIRM_DELAY_MS = 500;
 
 const SIGKILL_DELAY_MS = 2_000;
+
 export type ProcessSpawnFn = (
   command: string,
   args: ReadonlyArray<string>,
@@ -52,20 +55,29 @@ export class ProcessLifecycleRunner {
    */
   private readonly active = new Map<
     number,
-    {
-      readonly child: ChildProcess;
-      readonly runId: string | null;
-      readonly phase: Phase;
-      readonly iteration: number;
-    }
+    TreeAttribution & { readonly child: ChildProcess }
   >();
   private nextInvocationToken = 1;
+
+  /**
+   * FR-R3-083 — children whose escalation ladder is already running.
+   *
+   * `terminate` is reached from four places (idle expiry, the absolute deadline,
+   * the cancellation signal, and `cancelActive`) and more than one of them fires
+   * on the same child routinely: an idle expiry is normally followed by the
+   * controller's own abort. The `exitCode`/`signalCode` guard only catches a
+   * SECOND call after the child has already died, which is exactly the case a
+   * hung child does not present — and a hung child is the only case that can
+   * reach the `tree-unconfirmed` report at the end of the ladder. Two ladders
+   * meant two audit entries for one surviving group, which reads as two.
+   */
+  private readonly terminating = new WeakSet<ChildProcess>();
 
   constructor(
     private readonly spawnFn: ProcessSpawnFn = spawn as unknown as ProcessSpawnFn,
     private readonly monitorHook: MonitorSidecarHook | null,
     private readonly logger: SanitizedLogger,
-    private readonly label: string
+    private readonly label: RunnerLabel
   ) {}
 
   public get hasActiveProcess(): boolean { return this.active.size > 0; }
@@ -87,12 +99,12 @@ export class ProcessLifecycleRunner {
       ...processTreeSpawnOptions()
     });
     const invocationToken = this.nextInvocationToken++;
-    this.active.set(invocationToken, {
-      child,
+    const attribution: TreeAttribution = {
       runId: request.runId ?? null,
       phase: request.phase,
       iteration: request.iteration
-    });
+    };
+    this.active.set(invocationToken, { child, ...attribution });
     // Feature 093 (T046a) — `finally`, not a trailing statement. A single slot
     // self-healed on a throw because the next spawn overwrote it; a map entry
     // would leak, and a leaked entry makes `hasActiveProcess` permanently true.
@@ -122,9 +134,9 @@ export class ProcessLifecycleRunner {
       const reset = (): void => {
         clearTimeout(timer);
         if (!idleTimerActive) return;
-        timer = setTimeout(() => { timedOut = true; this.terminate(child, request.runId ?? null, request.phase, request.iteration); }, request.timeoutMs);
+        timer = setTimeout(() => { timedOut = true; this.terminate(child, attribution); }, request.timeoutMs);
       };
-      timer = setTimeout(() => { timedOut = true; this.terminate(child, request.runId ?? null, request.phase, request.iteration); }, request.timeoutMs);
+      timer = setTimeout(() => { timedOut = true; this.terminate(child, attribution); }, request.timeoutMs);
       // FR-R3-075 — the absolute wall-clock deadline: armed once at spawn,
       // NEVER reset, and deliberately outside the backpressure suspension below
       // — a blocked sink pauses the idle clock, not the wall. The idle timer
@@ -138,7 +150,7 @@ export class ProcessLifecycleRunner {
       const deadlineFired = (): boolean => deadlineExceeded;
       const deadlineTimer =
         request.maxDurationMs !== undefined && request.maxDurationMs > 0
-          ? setTimeout(() => { deadlineExceeded = true; this.terminate(child, request.runId ?? null, request.phase, request.iteration); }, request.maxDurationMs)
+          ? setTimeout(() => { deadlineExceeded = true; this.terminate(child, attribution); }, request.maxDurationMs)
           : null;
       const backpressure = new OutputSinkBackpressure(outputSink, () => clearTimeout(timer), reset);
       child.stdout?.on('data', (chunk: string) => {
@@ -151,7 +163,7 @@ export class ProcessLifecycleRunner {
       });
       let onAbort: (() => void) | null = null;
       if (request.cancellationSignal) {
-        onAbort = () => { killed = true; this.terminate(child, request.runId ?? null, request.phase, request.iteration); };
+        onAbort = () => { killed = true; this.terminate(child, attribution); };
         if (request.cancellationSignal.aborted) onAbort();
         else request.cancellationSignal.addEventListener('abort', onAbort);
       }
@@ -231,7 +243,7 @@ export class ProcessLifecycleRunner {
    */
   public cancelActive(): boolean {
     if (this.active.size === 0) return false;
-    for (const entry of this.active.values()) this.terminate(entry.child, entry.runId, entry.phase, entry.iteration);
+    for (const entry of this.active.values()) this.terminate(entry.child, entry);
     return true;
   }
 
@@ -248,13 +260,11 @@ export class ProcessLifecycleRunner {
    * honestly. Where the tree cannot be proven gone within the grace window, the
    * caller is told so rather than the terminal state quietly claiming otherwise.
    */
-  private terminate(
-    child: ChildProcess,
-    runId: string | null,
-    phase: Phase,
-    iteration: number
-  ): void {
+  private terminate(child: ChildProcess, attribution: TreeAttribution): void {
     if (child.exitCode !== null || child.signalCode !== null) return;
+    // FR-R3-083 — one ladder per child. See `terminating`.
+    if (this.terminating.has(child)) return;
+    this.terminating.add(child);
     void signalProcessTree(child, 'SIGTERM');
     setTimeout(() => {
       // The original trigger, unchanged: the direct child's own status decides
@@ -280,9 +290,7 @@ export class ProcessLifecycleRunner {
             // written here: this runner does not import the audit writer.
             this.emit({
               kind: 'tree-unconfirmed',
-              runId,
-              phase,
-              iteration,
+              ...attribution,
               pid: child.pid ?? null,
               runner: this.label
             });

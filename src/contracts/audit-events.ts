@@ -1,6 +1,7 @@
 import type { BackendRunnerKind } from '../runner/backend-runner-factory';
 import type { BackendContainment } from '../services/backend-containment-policy';
 import type { TerminationReason } from '../state/workflow-run';
+import type { RunnerLabel } from './backend-runner';
 // Feature FR-R3-006 — the reset transaction's phase and refusal literals are
 // declared once, in a module that imports nothing, and the audit payload reuses
 // them rather than restating them. A restated copy is a second source of truth
@@ -470,8 +471,11 @@ export const PROCESS_TREE_EVENT_TYPES = ['process-tree-unconfirmed'] as const;
  * this product spawned, not a property of the workspace.
  */
 export interface ProcessTreeUnconfirmedPayload {
-  /** Which runner's tree it was. */
-  readonly runner: string;
+  /**
+   * Which adapter's tree it was. A closed union, so this payload's "nowhere to put
+   * a secret" claim is enforced by the type rather than asserted by a comment.
+   */
+  readonly runner: RunnerLabel;
   /** The direct child's pid, or `null` when the child never had one. */
   readonly pid: number | null;
   /**

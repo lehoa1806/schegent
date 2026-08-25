@@ -1,5 +1,6 @@
 import type { AuditEntry } from '../audit/audit-entry';
 import type { Phase } from './phase';
+import type { RunnerLabel } from '../contracts/backend-runner';
 import type { ProcessTreeUnconfirmedPayload } from '../contracts/audit-events';
 
 /**
@@ -53,7 +54,7 @@ export class ProcessTreeDegradationRecorder {
     readonly phase: Phase;
     readonly iteration: number;
     readonly pid: number | null;
-    readonly runner: string;
+    readonly runner: RunnerLabel;
   }): Promise<void> {
     // An unattributable event is DROPPED, not guessed at. This is how the monitor
     // already treats a `runId: null` lifecycle event, and the reasoning is the same:

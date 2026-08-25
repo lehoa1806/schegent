@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { openWithinRoot, refusesLeafAsReparsePoint } from '../../../src/lib/safe-open';
 
 /**
@@ -31,19 +33,28 @@ import { openWithinRoot, refusesLeafAsReparsePoint } from '../../../src/lib/safe
  * so rather than letting these unit assertions read as a Windows result.
  */
 describe('reparse-point leaf classification (FR-R3-083)', () => {
-  it('refuses a link-like leaf on a platform without O_NOFOLLOW', () => {
-    expect(refusesLeafAsReparsePoint({ isSymbolicLink: () => true }, false)).toBe(true);
+  it('refuses a link-like leaf', () => {
+    expect(refusesLeafAsReparsePoint({ isSymbolicLink: () => true })).toBe(true);
   });
 
   it('does not refuse an ordinary leaf', () => {
-    expect(refusesLeafAsReparsePoint({ isSymbolicLink: () => false }, false)).toBe(false);
+    expect(refusesLeafAsReparsePoint({ isSymbolicLink: () => false })).toBe(false);
   });
 
-  it('defers to the kernel where O_NOFOLLOW is real', () => {
-    // Not an optimisation. A second, weaker check after an atomic refusal adds a
-    // syscall and a race to a settled answer, and would make the POSIX path's
-    // refusal depend on which of two checks won.
-    expect(refusesLeafAsReparsePoint({ isSymbolicLink: () => true }, true)).toBe(false);
+  it('is asked only where O_NOFOLLOW is absent, and that gate lives at the call site', () => {
+    // The predicate answers "is this leaf link-like?"; whether to ASK is the
+    // caller's decision, and on a platform with a real O_NOFOLLOW the kernel has
+    // already refused atomically. Asserted against the source because the condition
+    // is a platform constant -- there is no way to observe both branches in one
+    // process, and an earlier draft that passed the platform in as a parameter made
+    // one condition into two that could drift.
+    const source = readFileSync(
+      resolve(__dirname, '..', '..', '..', 'src', 'lib', 'safe-open.ts'),
+      'utf8'
+    );
+    expect(source).toContain('if (NOFOLLOW === 0) {');
+    const guarded = source.slice(source.indexOf('if (NOFOLLOW === 0) {'));
+    expect(guarded.slice(0, 600)).toContain('refusesLeafAsReparsePoint(leafStat)');
   });
 });
 

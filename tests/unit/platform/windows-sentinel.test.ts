@@ -73,14 +73,34 @@ describe.skipIf(!IS_WINDOWS)(
       }
     }, 15_000);
 
-    it('reports the tree as gone after the kill', () => {
-      // `processTreeIsGone` on Windows answers only for the direct child -- there is
-      // no group to probe. Asserted here so the Windows record says what the probe
-      // means there, rather than leaving a reader to assume it means what it means
-      // on POSIX.
-      const child = spawn(process.execPath, ['-e', 'setTimeout(()=>{},50)'], { stdio: 'ignore' });
-      child.kill('SIGKILL');
-      expect(typeof processTreeIsGone(child)).toBe('boolean');
-    });
+    it('distinguishes a live child from a dead one', async () => {
+      // `processTreeIsGone` on Windows answers only for the DIRECT CHILD -- there is
+      // no group to probe -- so this records what the probe means there rather than
+      // leaving a reader to assume it means what it means on POSIX.
+      //
+      // Asserted behaviourally, both directions. The first version of this test
+      // asserted `typeof ... === 'boolean'`, which holds for every possible
+      // implementation including `return false` unconditionally -- it would have
+      // let the platform record list a Windows acceptance half as covered by a
+      // fixture that exercised nothing.
+      //
+      // It cannot be dry-run on POSIX to check the assertions are sound, and the
+      // reason IS the fact under test: `processTreeIsGone` probes `-pid` (the
+      // group) on POSIX and `pid` (the child) on Windows, so a non-detached child
+      // reports `true` on POSIX while alive. Unrun here, like the rest of this
+      // file -- see docs/operations/platform-observation-record.md.
+      const child = spawn(process.execPath, ['-e', 'setTimeout(()=>{},10000)'], {
+        stdio: 'ignore'
+      });
+      try {
+        expect(processTreeIsGone(child)).toBe(false);
+        const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+        child.kill('SIGKILL');
+        await exited;
+        expect(processTreeIsGone(child)).toBe(true);
+      } finally {
+        child.kill('SIGKILL');
+      }
+    }, 15_000);
   }
 );

@@ -109,6 +109,31 @@ describe('mount capability probe (FR-R3-083)', () => {
     ).resolves.toMatchObject({ capability: 'undetermined' });
   });
 
+  it('does not let an arbitrary error code reach an operator-visible line', async () => {
+    // `error.code` is `unknown` at the type level and the verdict's errno is
+    // interpolated into a log line. Nothing in the types stops a rejection from
+    // carrying a path, a sentence, or a megabyte as its `code`, so the shape is
+    // bounded rather than trusted.
+    const verdict = await probeMountCapability({
+      workspaceRoot,
+      exclusiveCreate: () =>
+        Promise.reject(
+          Object.assign(new Error('x'), { code: '/Users/someone/private/workspace' })
+        )
+    });
+    expect(verdict.errno).toBe('unknown');
+    expect(verdict.capability).toBe('undetermined');
+  });
+
+  it('preserves a real errno, so the bound above is not just discarding data', async () => {
+    const verdict = await probeMountCapability({
+      workspaceRoot,
+      exclusiveCreate: () => Promise.reject(Object.assign(new Error('x'), { code: 'ENOTSUP' }))
+    });
+    expect(verdict.errno).toBe('ENOTSUP');
+    expect(verdict.capability).toBe('unsupported');
+  });
+
   it('names a probe artifact unique to the process and the attempt', async () => {
     // FR-013. Two windows activating on one workspace must not observe each other's
     // artifact as their own second create. Observed rather than asserted about the

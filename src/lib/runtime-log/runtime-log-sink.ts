@@ -79,10 +79,17 @@ type SuppressionCause =
  * survive, and both arms of this map are on the "never ran" side.
  */
 function mapSafeOpenRefusal(reason: SafeOpenRefusal): SuppressionCause {
+  // FR-R3-083 — `reparse-point-leaf` sits with the two symlink refusals, not in
+  // `default`. It is the Windows leaf check standing in for the `O_NOFOLLOW`
+  // that platform does not have (`docs/architecture/native-binding-decision.md`),
+  // so it answers the same question `symlink-leaf` answers by a weaker route: the
+  // path is not somewhere this sink may write. Left in `default` it reported
+  // "I could not find out", which is the one thing the walk did in fact find out.
   switch (reason) {
     case 'escapes-root':
     case 'symlink-component':
     case 'symlink-leaf':
+    case 'reparse-point-leaf':
     case 'not-a-directory':
     case 'not-a-regular-file':
       return 'not-contained';

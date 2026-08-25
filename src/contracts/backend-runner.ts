@@ -50,6 +50,19 @@ export type { InvocationRequest, RawInvocationOutput };
  * older callers); the monitor treats that as "no attributable Run" and ignores
  * the event rather than guessing.
  */
+/**
+ * FR-R3-083 — which adapter's tree it was.
+ *
+ * A CLOSED union, not `string`, and the reason is the audit payload downstream:
+ * `ProcessTreeUnconfirmedPayload` is justified as needing no redaction precisely
+ * because it "has nowhere to put a secret". A free-form `string` fed from a
+ * constructor argument is somewhere. These three values are the adapter module
+ * identifiers and are deliberately NOT `BackendRunnerKind` ('claude' | 'codex' |
+ * 'agy') -- the runner that owns a process tree is the adapter, and collapsing the
+ * two would make the payload name a backend where it means an implementation.
+ */
+export type RunnerLabel = 'claude-cli' | 'codex-cli' | 'agy-cli';
+
 export type MonitorSidecarEvent =
   | { readonly kind: 'started'; readonly runId: string | null; readonly pid: number | null }
   | { readonly kind: 'stdout-chunk'; readonly runId: string | null; readonly chunk: string }
@@ -81,11 +94,26 @@ export type MonitorSidecarEvent =
       readonly phase: Phase;
       readonly iteration: number;
       readonly pid: number | null;
-      /** Which runner's tree it was, for the audit payload. */
-      readonly runner: string;
+      /** Which adapter's tree it was, for the audit payload. */
+      readonly runner: RunnerLabel;
     };
 
 export type MonitorSidecarHook = (event: MonitorSidecarEvent) => void;
+
+/**
+ * FR-R3-083 — who a `tree-unconfirmed` report belongs to.
+ *
+ * The three identity fields of the event arm above, named once so a runner
+ * carries them as ONE value. Every `terminate()` call site used to repeat the
+ * same triple positionally, and a repeated triple is a triple that can be
+ * transposed — `phase` and `iteration` are the two an argument swap would not
+ * make ill-typed at every site.
+ */
+export interface TreeAttribution {
+  readonly runId: string | null;
+  readonly phase: Phase;
+  readonly iteration: number;
+}
 
 export interface BackendRunner {
   /** Whether an invocation is currently running. */

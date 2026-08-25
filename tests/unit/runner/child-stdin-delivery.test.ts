@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { Writable } from 'node:stream';
 import { describe, expect, it } from 'vitest';
 import { SanitizedLogger } from '../../../src/lib/logger';
+import type { RunnerLabel } from '../../../src/contracts/backend-runner';
 import { ProcessLifecycleRunner, type ProcessSpawnFn } from '../../../src/runner/process-lifecycle-runner';
 import { ClaudeCliRunner } from '../../../src/runner/claude-cli';
 import { awaitStdinDelivery, writePromptToStdin } from '../../../src/runner/child-stdin';
@@ -49,7 +50,7 @@ function requestFor(prompt: string): InvocationRequest {
   };
 }
 
-function realRunner(label: string): ProcessLifecycleRunner {
+function realRunner(label: RunnerLabel): ProcessLifecycleRunner {
   return new ProcessLifecycleRunner(
     spawn as unknown as ProcessSpawnFn,
     null,
@@ -91,7 +92,7 @@ async function withFaultListeners<T>(
 
 describe('prompt delivery to a real child (H-04)', () => {
   it('fails the invocation, not the host, when the child destroys stdin mid-write', async () => {
-    const runner = realRunner('h04-generic');
+    const runner = realRunner('codex-cli');
     const { value: raw, faults } = await withFaultListeners(() =>
       runner.invoke({
         request: requestFor('x'.repeat(EIGHT_MIB)),
@@ -121,7 +122,7 @@ describe('prompt delivery to a real child (H-04)', () => {
   }, 45_000);
 
   it('records nothing and behaves as before when the child reads the whole prompt', async () => {
-    const runner = realRunner('h04-happy');
+    const runner = realRunner('codex-cli');
     const { value: raw, faults } = await withFaultListeners(() =>
       runner.invoke({
         request: requestFor('y'.repeat(64 * 1024)),
@@ -144,7 +145,7 @@ describe('prompt delivery to a real child (H-04)', () => {
     const lines: string[] = [];
     const logger = new SanitizedLogger([{ appendLine: (line: string) => lines.push(line) }]);
     const runner = new ProcessLifecycleRunner(
-      spawn as unknown as ProcessSpawnFn, null, logger, 'h04-leak'
+      spawn as unknown as ProcessSpawnFn, null, logger, 'codex-cli'
     );
     const prompt = `${marker}${'z'.repeat(EIGHT_MIB)}`;
 
@@ -205,7 +206,7 @@ describe('a child that never started is not a delivery failure', () => {
    * only one the operator sees.
    */
   it('leaves the condition unset when the CLI path does not exist', async () => {
-    const runner = realRunner('h04-enoent');
+    const runner = realRunner('codex-cli');
     const { value: raw, faults } = await withFaultListeners(() =>
       runner.invoke({
         request: { ...requestFor('a prompt no process will ever read'), cliPath: '/nonexistent/schegent-cli' },

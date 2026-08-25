@@ -38,8 +38,12 @@ describe.skipIf(!IS_WINDOWS)(
   () => {
     it('refuses a leaf that is a junction', async () => {
       const root = await fs.mkdtemp(path.join(os.tmpdir(), 'win-reparse-'));
+      // Both roots in the SAME `finally`. The target directory used to be removed
+      // on the success path only, so an `expect.fail` — which is the point of the
+      // arrangement check below — leaked it. A fixture that litters `$TMPDIR` on
+      // its failure path is the shape `tests/global-temp-root.ts` records.
+      const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'win-reparse-target-'));
       try {
-        const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'win-reparse-target-'));
         await fs.writeFile(path.join(outside, 'secret.txt'), 'not yours');
 
         let arrangementMade = true;
@@ -68,17 +72,16 @@ describe.skipIf(!IS_WINDOWS)(
           // both are recorded; what must not happen is an `opened`.
           expect(['symlink-component', 'reparse-point-leaf']).toContain(result.reason);
         }
-
-        await fs.rm(outside, { recursive: true, force: true });
       } finally {
+        await fs.rm(outside, { recursive: true, force: true });
         await fs.rm(root, { recursive: true, force: true });
       }
     }, 15_000);
 
     it('refuses a junction that IS the leaf', async () => {
       const root = await fs.mkdtemp(path.join(os.tmpdir(), 'win-reparse-leaf-'));
+      const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'win-reparse-leaf-target-'));
       try {
-        const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'win-reparse-leaf-target-'));
         let arrangementMade = true;
         try {
           await fs.symlink(outside, path.join(root, 'leaf'), 'junction');
@@ -95,8 +98,8 @@ describe.skipIf(!IS_WINDOWS)(
         if (result.outcome === 'refused') {
           expect(result.reason).toBe('reparse-point-leaf');
         }
-        await fs.rm(outside, { recursive: true, force: true });
       } finally {
+        await fs.rm(outside, { recursive: true, force: true });
         await fs.rm(root, { recursive: true, force: true });
       }
     }, 15_000);
