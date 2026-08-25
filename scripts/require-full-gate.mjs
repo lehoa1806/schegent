@@ -63,7 +63,9 @@ export const REQUIRED_JOB_NAMES = Object.freeze([
   'browser visual regression',
   'deterministic E2E smoke (feature 055)',
   'extension-host integration smoke',
-  'sustained evidence soak'
+  'sustained evidence soak',
+  // FR-R3-090 — the documented install, proven from a clean checkout.
+  'clean install parity'
 ]);
 
 /**

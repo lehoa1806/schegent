@@ -173,6 +173,12 @@ drifts unnoticed, because the readers who would catch an error never get there.
   re-verified webview dead-code classification (FR-R3-088)
 - [Lint and type-aware rules](development/lint-and-type-aware-rules.md)
 
+### Release
+
+- [Held major dependency upgrades](release/held-major-upgrades.md) — the deliberate holds, why each is
+  held, and when it was last re-examined. A held upgrade with no review date is indistinguishable from a
+  forgotten one (FR-R3-090).
+
 ### Other
 
 - [Asset report](ASSET_REPORT.md)
