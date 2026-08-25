@@ -2,6 +2,7 @@ import type { SanitizedLogger } from '../../../lib/logger';
 import type { AuditEventType } from '../../../contracts/audit-events';
 import type { BackendPingService } from '../../../services/backend-ping-service';
 import type { HistoryEvidenceResolution } from '../../../services/history/history-evidence-service';
+import type { DescriptionResolution } from '../../../services/history/history-description-resolver';
 import type { CatalogLifecycleOps, CatalogStore } from '../../../catalog';
 import type { PipelineCatalog } from '../../../config/pipeline-config';
 import type { CatalogVersionRef } from '../../../contracts/catalog-version';
@@ -439,6 +440,18 @@ export interface RouterDeps {
    */
   readonly historyEvidenceService?: {
     resolve(runId: string): Promise<HistoryEvidenceResolution>;
+  };
+  /**
+   * FR-R3-071 (feature 152) — resolves one history row's stored description
+   * for the sidebar's replay panel. Optional and injected at activation for
+   * the same reason `historyEvidenceService` is: the sidecar read needs a
+   * workspace root, and no handler may learn one of its own.
+   *
+   * `null` means the run id names no history row — state, answered here rather
+   * than by the validator.
+   */
+  readonly historyDescriptionService?: {
+    resolve(runId: string): Promise<DescriptionResolution | null>;
   };
   readonly backendPingService?: Pick<BackendPingService, 'ping'>;
   /**

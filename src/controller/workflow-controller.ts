@@ -52,6 +52,8 @@ export interface WorkflowControllerOptions {
   cwd: string;
   iterationCap: number;
   timeoutMs: number;
+  /** FR-R3-075 — absolute per-invocation wall-clock bound; see extension.ts. */
+  maxDurationMs?: number;
   inheritProcessEnv?: boolean;
   processEnvAllowlist?: readonly string[];
   skipProbing?: boolean;
@@ -133,6 +135,7 @@ export class SchegentWorkflowController {
   private readonly historyRecorder: HistoryRecorder;
   /** Feature 092 (T132, FR-033a) — ends a terminal Run's execution lease. */
   private readonly releaseExecutionLeaseForRun: (run: WorkflowRun) => Promise<void>;
+  private readonly executionLease: ExecutionLeasePort;
   private readonly autoDrainCoordinator: AutoDrainCoordinator;
   private readonly retryCoordinator: RetryCoordinator;
   /**
@@ -199,6 +202,10 @@ export class SchegentWorkflowController {
     // Feature 092 (T132, FR-033a) — one manager, addressed by both ends of the
     // tenure: the drain claims at step 6, the terminal transition releases.
     const executionLease = deps.executionLease ?? new ExecutionLeaseManager(store, lock.id);
+    // FR-R3-070 (feature 152) — the resume seam claims through the same
+    // manager the drain and the terminal release share, so a resumed Run's
+    // lease is returned by the one existing release path.
+    this.executionLease = executionLease;
     this.releaseExecutionLeaseForRun = (run) =>
       releaseExecutionLeaseForTerminalRun({ queue, executionLease, logger }, run);
     this.autoDrainCoordinator = new AutoDrainCoordinator({
@@ -738,6 +745,25 @@ export class SchegentWorkflowController {
         planFingerprint: mutationPlan.fingerprint,
         approvedPhaseIds: mutationPlan.gitCapablePhaseIds
       };
+    }
+    // FR-R3-070 — the resume path claims its queue's execution lease the way
+    // the drain's step 6 does, so activation ordering is defence in depth
+    // rather than the only defence. `tryAcquire` admits unclaimed, already-
+    // ours, and stale, so a drain-covered or paused resume re-affirms rather
+    // than double-claims; the terminal transition releases as it always did.
+    const leaseClaim = await this.executionLease.tryAcquire(queueId);
+    if (!leaseClaim.acquired) {
+      this.logger.warn(
+        `resume: queue ${queueId} execution lease held by another window; declining`
+      );
+      return NOT_RESUMED;
+    }
+    if (this.executionLease.hasLease && !(await this.executionLease.hasLease(queueId))) {
+      await Promise.resolve(this.executionLease.release(queueId)).catch(() => undefined);
+      this.logger.warn(
+        `resume: execution lease for queue ${queueId} could not be verified; declining`
+      );
+      return NOT_RESUMED;
     }
     const next: WorkflowRun = {
       ...run,

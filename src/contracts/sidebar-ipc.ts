@@ -84,6 +84,9 @@ export const CMD_OPEN_VERBOSE_SETTING = 'CMD_OPEN_VERBOSE_SETTING' as const;
 // FR-R3-010 — resolve a completed Run's `auditLogPointer` to its audit records.
 // READ-ONLY, so out of `MUTATING_COMMANDS`; `cmd-resolve-audit-pointer.ts` says why.
 export const CMD_RESOLVE_AUDIT_POINTER = 'CMD_RESOLVE_AUDIT_POINTER' as const;
+// FR-R3-071 — resolve a completed Run's stored description for replay.
+// READ-ONLY, so out of `MUTATING_COMMANDS`; `cmd-resolve-history-description.ts` says why.
+export const CMD_RESOLVE_HISTORY_DESCRIPTION = 'CMD_RESOLVE_HISTORY_DESCRIPTION' as const;
 // Feature 028 — future-phase breakpoints. Operator marks a pending phase
 // as a "pause when reached" point. The pipeline runs preceding phases
 // then halts before invoking the marked phase. Both are mutating —
@@ -196,6 +199,7 @@ export const COMMAND_TYPES = [
   CMD_STOP_PHASE_LOG_TAIL,
   CMD_OPEN_VERBOSE_SETTING,
   CMD_RESOLVE_AUDIT_POINTER,
+  CMD_RESOLVE_HISTORY_DESCRIPTION,
   CMD_SET_PHASE_BREAKPOINT,
   CMD_CLEAR_PHASE_BREAKPOINT,
   CMD_START_QUEUE,
@@ -245,6 +249,12 @@ import type {
 import type { ReadMetricsCommand } from './sidebar-ipc/metrics';
 import { isReadMetricsRequest } from './sidebar-ipc/metrics';
 import type { ResolveAuditPointerCommand } from './sidebar-ipc/history-evidence';
+import type { ResolveHistoryDescriptionCommand } from './sidebar-ipc/history-description';
+export type {
+  ResolveHistoryDescriptionRequest,
+  ResolveHistoryDescriptionCommand,
+  ResolveHistoryDescriptionResponse
+} from './sidebar-ipc/history-description';
 export type { HistoryEvidenceEntry, ResolveAuditPointerRequest, ResolveAuditPointerCommand,
   ResolveAuditPointerResponse } from './sidebar-ipc/history-evidence';
 import type {
@@ -490,7 +500,7 @@ export interface SaveModelsCommand extends CommandBase<typeof CMD_SAVE_MODELS> {
 // src/config/general-settings.ts `KEY_SPECS` — webview must mirror but
 // is NOT the source of truth):
 //   - cli.path, logging.verbose, loop.maxIterations,
-//     invocation.timeoutSeconds, watchdog.pollIntervalMinutes,
+//     invocation.idleTimeoutSeconds, invocation.maxDurationSeconds, watchdog.pollIntervalMinutes,
 //     audit.rotation.sizeMB, audit.rotation.maxAgeDays,
 //     defaultPipelineId, fatalSignatures,
 //     queue.globalConcurrencyCap, logging.runtimeLogLevel,
@@ -594,6 +604,7 @@ export type SidebarCommand =
   | StopPhaseLogTailCommand
   | OpenVerboseSettingCommand
   | ResolveAuditPointerCommand
+  | ResolveHistoryDescriptionCommand
   | StartQueueCommand
   | ClearAllCommand
   | SetConfirmSuppressionCommand
@@ -801,6 +812,11 @@ export function isCmdOpenVerboseSetting(value: unknown): value is OpenVerboseSet
 export function isCmdResolveAuditPointer(value: unknown): value is ResolveAuditPointerCommand {
   return isObjectWithType(value, CMD_RESOLVE_AUDIT_POINTER);
 }
+export function isCmdResolveHistoryDescription(
+  value: unknown
+): value is ResolveHistoryDescriptionCommand {
+  return isObjectWithType(value, CMD_RESOLVE_HISTORY_DESCRIPTION);
+}
 // Feature 028 — phase breakpoint set/clear guards.
 export function isCmdSetPhaseBreakpoint(value: unknown): value is SetPhaseBreakpointCommand {
   return isObjectWithType(value, CMD_SET_PHASE_BREAKPOINT);
@@ -1007,6 +1023,7 @@ export const COMMAND_GUARDS: Readonly<
   [CMD_STOP_PHASE_LOG_TAIL]: isCmdStopPhaseLogTail,
   [CMD_OPEN_VERBOSE_SETTING]: isCmdOpenVerboseSetting,
   [CMD_RESOLVE_AUDIT_POINTER]: isCmdResolveAuditPointer,
+  [CMD_RESOLVE_HISTORY_DESCRIPTION]: isCmdResolveHistoryDescription,
   [CMD_SET_PHASE_BREAKPOINT]: isCmdSetPhaseBreakpoint,
   [CMD_CLEAR_PHASE_BREAKPOINT]: isCmdClearPhaseBreakpoint,
   [CMD_START_QUEUE]: isCmdStartQueue,

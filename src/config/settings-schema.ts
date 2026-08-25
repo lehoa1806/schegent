@@ -168,13 +168,33 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     scope: 'resource',
     docLabel: 'Credit watchdog poll interval (minutes)'
   },
+  'schegent.invocation.idleTimeoutSeconds': {
+    key: 'schegent.invocation.idleTimeoutSeconds',
+    type: 'number',
+    default: 5400,
+    min: 30,
+    scope: 'resource',
+    docLabel: 'Per-phase idle timeout (seconds)'
+  },
+  'schegent.invocation.maxDurationSeconds': {
+    key: 'schegent.invocation.maxDurationSeconds',
+    type: 'number',
+    default: 21600,
+    min: 60,
+    scope: 'resource',
+    docLabel: 'Per-invocation max duration (seconds)'
+  },
+  // FR-R3-075 — deprecated manifest alias of idleTimeoutSeconds, kept for
+  // migration (an explicit legacy value is honoured while the renamed key is
+  // unset). Present here because this schema mirrors the MANIFEST; the IPC
+  // settings surface (KEY_SPECS) deliberately omits it.
   'schegent.invocation.timeoutSeconds': {
     key: 'schegent.invocation.timeoutSeconds',
     type: 'number',
     default: 5400,
     min: 30,
     scope: 'resource',
-    docLabel: 'Per-phase invocation timeout (seconds)'
+    docLabel: 'Per-phase idle timeout (seconds) — deprecated alias'
   },
   'schegent.audit.rotation.sizeMB': {
     key: 'schegent.audit.rotation.sizeMB',

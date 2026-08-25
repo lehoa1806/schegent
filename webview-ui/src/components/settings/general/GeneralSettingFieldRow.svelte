@@ -12,7 +12,8 @@
     | 'agyPath'
     | 'loggingVerbose'
     | 'loopMaxIterations'
-    | 'invocationTimeoutSeconds'
+    | 'invocationIdleTimeoutSeconds'
+    | 'invocationMaxDurationSeconds'
     | 'watchdogPollIntervalMinutes'
     | 'auditRotationSizeMB'
     | 'auditRotationMaxAgeDays'
@@ -51,7 +52,8 @@
     agyPath: string;
     loggingVerbose: boolean;
     loopMaxIterations: number;
-    invocationTimeoutSeconds: number;
+    invocationIdleTimeoutSeconds: number;
+    invocationMaxDurationSeconds: number;
     watchdogPollIntervalMinutes: number;
     auditRotationSizeMB: number;
     auditRotationMaxAgeDays: number;
@@ -152,7 +154,8 @@
           draft[
             spec.key as
               | 'loopMaxIterations'
-              | 'invocationTimeoutSeconds'
+              | 'invocationIdleTimeoutSeconds'
+              | 'invocationMaxDurationSeconds'
               | 'watchdogPollIntervalMinutes'
               | 'auditRotationSizeMB'
               | 'auditRotationMaxAgeDays'

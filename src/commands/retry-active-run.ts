@@ -7,6 +7,8 @@ import type { WorkspaceStateStore } from '../state/workspace-state';
 import type { SchegentWorkflowController } from '../controller/workflow-controller';
 import { resolveSoleRun } from '../controller/sole-run-resolver';
 import type { GuardedRunService } from '../services/guarded-run-service';
+import type { HistoryDescriptionStore } from '../services/history/history-description-store';
+import { resolveHistoryDescription } from '../services/history/history-description-resolver';
 
 export interface RetryActiveRunCtx {
   // `store` and `controller` are optional so test fixtures that exercise
@@ -16,6 +18,8 @@ export interface RetryActiveRunCtx {
   readonly controller?: Pick<SchegentWorkflowController, 'resumeExisting'>;
   readonly queue: Pick<QueueManager, 'hasInFlight' | 'list' | 'retry'>;
   readonly history: Pick<HistoryStore, 'list'>;
+  /** FR-R3-071 — the sidecar read half; the resolver is the only reader. */
+  readonly descriptions: Pick<HistoryDescriptionStore, 'read'>;
   readonly lock: Pick<WorkspaceLockManager, 'hasPrimacy'>;
   readonly guarded: Pick<GuardedRunService, 'scheduleOrEnqueue'>;
   readonly notifier: Notifier;
@@ -76,35 +80,41 @@ export async function runRetryActiveRun(
       ctx.notifier.warn('Schegent: no recent run available to retry.');
       return;
     }
-    // Feature 013 — Wave 6 (US6, FR-029..FR-031): use the full sanitized
-    // `originalDescription` when present so the retry replays the original
-    // input byte-identically. Legacy entries (pre-Wave-6 write) are refused
-    // here — unlike `rerun-from-history`, retry-active-run has no `force`
-    // affordance because it's a one-touch retry; the operator can fall back
-    // to the explicit "Re-run" history action with `force: true` if they
-    // want to replay the truncated preview.
-    if (lastHistory.originalDescription === undefined) {
+    // Feature 013 — Wave 6 (US6, FR-029..FR-031), reshaped by FR-R3-071:
+    // resolved through the sidecar resolver so the retry replays
+    // the original input byte-identically (sidecar bytes, or a legacy entry's
+    // inline text). An unresolvable entry is refused here — unlike
+    // `rerun-from-history`, retry-active-run has no `force` affordance because
+    // it's a one-touch retry; the operator can fall back to the explicit
+    // "Re-run" history action with `force: true` if they want to replay the
+    // truncated preview.
+    const resolution = await resolveHistoryDescription(lastHistory, {
+      descriptions: ctx.descriptions,
+      logger: ctx.logger
+    });
+    if (resolution.outcome !== 'resolved' && resolution.outcome !== 'legacy') {
       ctx.notifier.warn(
         `Schegent: retry unavailable — original description for ${lastHistory.runId.slice(0, 8)} was not stored under this build.`
       );
       ctx.logger.warn(
-        `retryActiveRun: rejected-legacy-entry runId=${lastHistory.runId} (originalDescription missing)`
+        `retryActiveRun: rejected-legacy-entry runId=${lastHistory.runId} (description ${resolution.outcome})`
       );
       return;
     }
+    const resolvedDescription = resolution.description;
     // Feature 065 — retry-active-run intentionally omits `startIntent`.
     // The host path runs against an already-`running` queue (we just
     // verified `!hasInFlight()` for the in-flight slot, but the queue
     // lifecycle remains `running` while there's a queued task); per
     // FR-006 the host appends silently with no chooser surface.
     const result = await ctx.guarded.scheduleOrEnqueue({
-      description: lastHistory.originalDescription,
+      description: resolvedDescription,
       scheduledAt: Date.now(),
       via: 'retry-active',
       pipelineId: lastHistory.pipelineId ?? null,
       rerun: {
         originalRunId: lastHistory.runId,
-        originalDescription: lastHistory.originalDescription,
+        originalDescription: resolvedDescription,
         reason: 'manual'
       }
     });
@@ -113,7 +123,7 @@ export async function runRetryActiveRun(
         ctx.logger.info(
           `retryActiveRun: re-enqueued from history ${lastHistory.runId} as ${result.queueItemId ?? '?'}`
         );
-        ctx.notifier.info(`Schegent: re-enqueued '${truncate(lastHistory.originalDescription)}'.`);
+        ctx.notifier.info(`Schegent: re-enqueued '${truncate(resolvedDescription)}'.`);
         return;
       case 'rejected-paused':
         ctx.notifier.warn('Schegent: queue is paused; cannot retry.');
@@ -160,6 +170,8 @@ interface RetryTargetHistory {
   readonly runId: string;
   readonly descriptionPreview: string;
   readonly originalDescription: string | undefined;
+  /** FR-R3-071 — carried through so the resolver can reach the sidecar. */
+  readonly descriptionRef: string | undefined;
   readonly pipelineId: string | undefined;
 }
 
@@ -170,6 +182,7 @@ function pickMostRecentTerminalHistory(
     completedAt: string;
     terminalStatus: string;
     originalDescription?: string;
+    descriptionRef?: string;
     pipelineId?: string;
   }[]
 ): RetryTargetHistory | null {
@@ -183,6 +196,7 @@ function pickMostRecentTerminalHistory(
           runId: h.runId,
           descriptionPreview: h.descriptionPreview,
           originalDescription: h.originalDescription,
+          descriptionRef: h.descriptionRef,
           pipelineId: h.pipelineId
         },
         completedAt: t

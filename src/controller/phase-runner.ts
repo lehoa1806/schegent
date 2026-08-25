@@ -64,6 +64,8 @@ export interface PhaseRunInputs {
   cliPath: string;
   cwd: string;
   timeoutMs: number;
+  /** FR-R3-075 — absolute per-invocation wall-clock bound. */
+  maxDurationMs?: number;
   inheritProcessEnv?: boolean;
   processEnvAllowlist?: readonly string[];
   runId: string;
@@ -475,6 +477,7 @@ export class PhaseRunner {
         runId: inputs.runId,
         prompt,
         timeoutMs: inputs.timeoutMs,
+        ...(inputs.maxDurationMs !== undefined ? { maxDurationMs: inputs.maxDurationMs } : {}),
         cliPath: inputs.cliPath,
         cwd: inputs.cwd,
         env,
@@ -519,6 +522,7 @@ export class PhaseRunner {
       exitCode: raw.exitCode,
       killed: raw.killed,
       timedOut: raw.timedOut,
+      ...(raw.deadlineExceeded === true ? { deadlineExceeded: true } : {}),
       capture: rawTranscriptCapture,
       mode: inputs.rawTranscriptMode
     });
@@ -590,6 +594,43 @@ export class PhaseRunner {
       };
     }
 
+    // FR-R3-075 — the absolute invocation deadline, checked AHEAD of the idle
+    // arm so the two can never both claim a run (the runner already clears
+    // `timedOut` when the deadline wins in one tick; the arm order is the same
+    // rule one layer up). Same FR-025 posture as the idle arm: a clean,
+    // non-host-verification-sensitive result stays a success. Unlike the idle
+    // arm this one records the exit code — the omission documented there is a
+    // pre-existing defect this new arm does not replicate.
+    if (
+      raw.deadlineExceeded === true &&
+      (result.kind !== 'clean' || requiresHostVerification(inputs))
+    ) {
+      const auditEntry = await this.appendAudit(inputs, 'phase-end', 'failure', {
+        ...this.pipelineMeta(inputs),
+        outcome: 'deadline',
+        terminationReason: 'deadline',
+        warnings: raw.diagnosticWarnings,
+        ...this.invocationMetricPayload(raw)
+      });
+      return {
+        result: { kind: 'malformed', warnings: ['deadline'], auditEntry: null },
+        outcome: 'failed',
+        terminationReason: 'deadline',
+        stdoutSummary: this.logger.sanitize(summarize(unwrappedStream.text)),
+        stderrSummary: this.logger.sanitize(
+          summarize(
+            typeof raw.stderrBuffer === 'string'
+              ? raw.stderrBuffer
+              : raw.stderrBuffer.getTrailingLines(100)
+          )
+        ),
+        exitCode: raw.exitCode,
+        auditEntryId: auditEntry.id,
+        warnings: ['phase exceeded its absolute invocation deadline'],
+        phaseMessage: null
+      };
+    }
+
     // Feature 030 BUG-002 — hung-but-clean run = success, not timeout (FR-025),
     // unless the Phase marked itself sensitive (FR-R3-058). See
     // specs/145-host-verifiable-gates/contracts/host-verification.md.
@@ -605,13 +646,9 @@ export class PhaseRunner {
         // payload. Allowlist-filtered by the phase-end projection, so only
         // code-resident literals survive.
         //
-        // Deliberately NOT fixed here: this arm also omits `exitCode`, and the
-        // projection defaults an absent code to 0, so a run terminated by our own
-        // SIGTERM (`null`) is recorded as having exited cleanly. That is a real
-        // pre-existing evidence defect — the same class the stdin arm above
-        // guards against — but it is not this item's, and absorbing an unrelated
-        // fix into a scoped change is how a scope fence stops meaning anything.
-        // Filed in the FR-R3-047 record for its own item.
+        // FR-R3-075 (feature 152) closed this arm's documented exitCode
+        // omission the general way: the code now rides
+        // `invocationMetricPayload`, so no arm can omit it again.
         warnings: raw.diagnosticWarnings,
         ...this.invocationMetricPayload(raw)
       });
@@ -866,11 +903,16 @@ export class PhaseRunner {
   }
 
   private invocationMetricPayload(
-    raw: Pick<RawInvocationOutput, 'stdoutBuffer' | 'stderrBuffer' | 'durationMs'>
+    raw: Pick<RawInvocationOutput, 'stdoutBuffer' | 'stderrBuffer' | 'durationMs' | 'exitCode'>
   ): Record<string, unknown> {
     return {
       // Runner timing stays canonical; CLI-reported duration is separate.
       durationMs: raw.durationMs,
+      // FR-R3-075 (feature 152) — the exit code rides the SHARED payload so no
+      // termination arm can omit it again: the idle-timeout arm used to leave
+      // it out, and the projection defaulted the absence to 0, recording a run
+      // our own SIGTERM killed (exitCode null) as having exited cleanly.
+      exitCode: raw.exitCode,
       ...(raw.stdoutBuffer.truncated ? { stdoutTruncated: true } : {}),
       ...(raw.stderrBuffer.truncated ? { stderrTruncated: true } : {}),
       ...(extractInvocationUsageMetrics(raw.stdoutBuffer) ?? {})

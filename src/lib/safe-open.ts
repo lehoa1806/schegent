@@ -168,11 +168,43 @@ export async function ensureDirWithinRoot(
   segments: readonly string[],
   dirMode?: number
 ): Promise<{ readonly outcome: 'ready' } | SafeOpenRefusalResult> {
+  // One walk, two shapes: this is the anchor primitive minus the returned
+  // path, delegated so the next containment fix lands in exactly one place.
+  const made = await ensureAnchorWithinRoot(root, segments, dirMode);
+  return made.outcome === 'refused' ? made : { outcome: 'ready' };
+}
+
+/**
+ * FR-R3-069 (feature 152) — create a store ANCHOR's own chain beneath a higher
+ * trusted root, and hand back the composed anchor path.
+ *
+ * `openWithinRoot` trusts and never creates its own root — the right contract,
+ * and exactly what a store adapter cannot satisfy when the directory it must
+ * create IS the root it was anchored at (the FR-R3-053 §4c.1 reverted attempt:
+ * every election refused `io-failed ENOENT` because the walk had no existing
+ * ancestor). This is the missing primitive that item named: the workspace root
+ * is the trusted anchor, the store directory is segments beneath it, and the
+ * same `lstat` walk that refuses a symlinked component refuses a symlinked
+ * `.schegent` or store directory BY NAME instead of adopting its target.
+ *
+ * The returned `anchor` is for path composition only. Trust stays with `root`:
+ * a caller that anchored later judgments at the returned path would trust a
+ * directory a checkout can swap for a link after this call — the exact defect
+ * FR-R3-069 removes. Concurrent first-creation is safe: each component's
+ * `mkdir` tolerates `EEXIST` and the component is re-`lstat`ed afterwards.
+ */
+export async function ensureAnchorWithinRoot(
+  root: string,
+  segments: readonly string[],
+  dirMode?: number
+): Promise<{ readonly outcome: 'ready'; readonly anchor: string } | SafeOpenRefusalResult> {
   if (segments.length === 0 || segments.some(invalidSegment)) {
     return refuse('escapes-root') as SafeOpenRefusalResult;
   }
   const walked = await walkDirectories(root, segments, { createDirs: true, dirMode });
-  return walked.outcome === 'refused' ? walked : { outcome: 'ready' };
+  return walked.outcome === 'refused'
+    ? walked
+    : { outcome: 'ready', anchor: walked.directory };
 }
 
 export async function openWithinRoot(

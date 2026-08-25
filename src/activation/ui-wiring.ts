@@ -38,6 +38,7 @@ import type { WorkspaceLockManager } from '../state/lock';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import type { ConnectedRunProjection } from '../contracts/sidebar-ipc';
 import { DashboardBridge } from '../ui/dashboard/dashboard-bridge';
+import { HistoryDescriptionStore } from '../services/history/history-description-store';
 import type { Notifier } from '../ui/notifications';
 import {
   projectConnectedRun,
@@ -158,6 +159,14 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
     extensionRoot: deps.extensionRoot,
     projector: deps.projector,
     dispatch: deps.dispatch,
+    logger: deps.logger
+  });
+  // FR-R3-071 — one store instance for the sidecar READ half, shared by both
+  // replay commands. The write half lives on the recorder's own instance
+  // (createHistoryRecorder); the two address the same files by construction,
+  // because refs are derived from run ids alone.
+  const historyDescriptions = new HistoryDescriptionStore({
+    workspaceRoot: deps.workspaceRoot,
     logger: deps.logger
   });
   const queueOpsCtx = {
@@ -289,6 +298,7 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
       runRerunFromHistory(arg, {
         guarded: deps.guardedRunService,
         history: deps.historyStore,
+        descriptions: historyDescriptions,
         lock: deps.lock,
         notifier: deps.notifier,
         logger: deps.logger
@@ -311,6 +321,7 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
         controller: deps.controller,
         queue: deps.queue,
         history: deps.historyStore,
+        descriptions: historyDescriptions,
         lock: deps.lock,
         guarded: deps.guardedRunService,
         notifier: deps.notifier,

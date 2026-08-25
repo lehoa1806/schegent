@@ -45,9 +45,12 @@ export type GeneralSettingsControlId =
   | 'loopMaxIterations'
   | 'loopMaxIterations-save'
   | 'loopMaxIterations-reset'
-  | 'invocationTimeoutSeconds'
-  | 'invocationTimeoutSeconds-save'
-  | 'invocationTimeoutSeconds-reset'
+  | 'invocationIdleTimeoutSeconds'
+  | 'invocationIdleTimeoutSeconds-save'
+  | 'invocationIdleTimeoutSeconds-reset'
+  | 'invocationMaxDurationSeconds'
+  | 'invocationMaxDurationSeconds-save'
+  | 'invocationMaxDurationSeconds-reset'
   | 'watchdogPollIntervalMinutes'
   | 'watchdogPollIntervalMinutes-save'
   | 'watchdogPollIntervalMinutes-reset'
@@ -194,21 +197,41 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
       'no unsaved changes on this field.'
   },
 
-  invocationTimeoutSeconds: {
-    title: 'Invocation timeout (seconds)',
+  invocationIdleTimeoutSeconds: {
+    title: 'Invocation idle timeout (seconds)',
     body:
-      'Maximum wall-clock duration for a single CLI invocation (60–7200). ' +
-      'The runner aborts the phase as a fatal error if any single call ' +
-      'exceeds this budget.'
+      'Idle window for a single CLI invocation (60–7200): the runner ' +
+      'terminates the phase after this long with no output. Output resets ' +
+      'the window, so a streaming phase runs on — the max duration below is ' +
+      'what bounds it.'
   },
-  'invocationTimeoutSeconds-save': {
+  'invocationIdleTimeoutSeconds-save': {
     body:
-      'Save the invocation timeout. Disabled until the value differs from ' +
+      'Save the idle timeout. Disabled until the value differs from ' +
       'the saved projection.'
   },
-  'invocationTimeoutSeconds-reset': {
+  'invocationIdleTimeoutSeconds-reset': {
     body:
-      'Restore the projected invocation timeout. Disabled when there are ' +
+      'Restore the projected idle timeout. Disabled when there are ' +
+      'no unsaved changes on this field.'
+  },
+
+  invocationMaxDurationSeconds: {
+    title: 'Invocation max duration (seconds)',
+    body:
+      'Absolute wall-clock bound for a single CLI invocation (60–86400), ' +
+      'armed at spawn and never reset — a chatty child that keeps emitting ' +
+      'output cannot extend it. Terminations under this bound are recorded ' +
+      'as deadline, distinct from an idle timeout.'
+  },
+  'invocationMaxDurationSeconds-save': {
+    body:
+      'Save the max duration. Disabled until the value differs from ' +
+      'the saved projection.'
+  },
+  'invocationMaxDurationSeconds-reset': {
+    body:
+      'Restore the projected max duration. Disabled when there are ' +
       'no unsaved changes on this field.'
   },
 

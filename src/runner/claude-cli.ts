@@ -384,6 +384,30 @@ export class ClaudeCliRunner implements BackendRunner {
       };
       let timer: NodeJS.Timeout = setTimeout(onIdleExpiry, request.timeoutMs);
       let idleTimerActive = true;
+      // FR-R3-075 — the absolute wall-clock deadline: armed once at spawn,
+      // NEVER reset, and outside the backpressure suspension — a blocked sink
+      // pauses the idle clock, not the wall. The idle window above detects a
+      // stalled CLI; this bounds the invocation as a whole, so a chatty child
+      // emitting a byte inside every idle window still terminates.
+      let deadlineExceeded = false;
+      // Read through an accessor: the flag is assigned only inside the
+      // timer's closure, so top-level flow keeps the literal-false
+      // narrowing and the lint's type-driven condition check would call
+      // every read below unnecessary. A function entry resets narrowing.
+      const deadlineFired = (): boolean => deadlineExceeded;
+      const deadlineTimer =
+        request.maxDurationMs !== undefined && request.maxDurationMs > 0
+          ? setTimeout(() => {
+              this._logger.info(
+                '[ClaudeCliRunner] invocation deadline exceeded ' +
+                  `maxDurationMs=${request.maxDurationMs} ` +
+                  `elapsedMs=${Date.now() - invocationStartedAt} ` +
+                  `phase=${request.phase} iteration=${request.iteration}`
+              );
+              deadlineExceeded = true;
+              this.terminate(child);
+            }, request.maxDurationMs)
+          : null;
       const resetIdleTimer = (): void => {
         clearTimeout(timer);
         if (!idleTimerActive) return;
@@ -498,6 +522,13 @@ export class ClaudeCliRunner implements BackendRunner {
       // `completedAwaitingExit` on a run that had already exited.
       idleTimerActive = false;
       clearTimeout(timer);
+      if (deadlineTimer !== null) clearTimeout(deadlineTimer);
+      // FR-R3-075 — exactly one termination reason: the deadline wins over the
+      // idle stall when both elapsed in the same tick. `completedAwaitingExit`
+      // is left alone — it is a classification hint, not a termination reason,
+      // and a result the CLI completed before the deadline killed the lingering
+      // process is still classified on its merits.
+      if (deadlineFired()) timedOut = false;
       // Detach the cancellation listener here too, and for the same reason: the
       // bounded delivery read below is a NEW await after the child has already
       // completed, and an abort landing inside it would flip `killed` on an
@@ -546,7 +577,8 @@ export class ClaudeCliRunner implements BackendRunner {
         exitCode,
         signal: exitSignal,
         killed,
-        timedOut
+        timedOut,
+        ...(deadlineFired() ? { deadlineExceeded: true } : {})
       });
 
       let diagnosticWarnings: ReadonlyArray<string> | undefined;
@@ -585,6 +617,7 @@ export class ClaudeCliRunner implements BackendRunner {
         exitCode,
         killed,
         timedOut,
+        ...(deadlineFired() ? { deadlineExceeded: true } : {}),
         completedAwaitingExit,
         durationMs: Date.now() - start,
         diagnosticWarnings,

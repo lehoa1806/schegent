@@ -60,6 +60,8 @@ export type MonitorSidecarEvent =
       readonly signal: string | null;
       readonly killed: boolean;
       readonly timedOut: boolean;
+      /** FR-R3-075 — the absolute deadline fired; distinct from the idle stall. */
+      readonly deadlineExceeded?: boolean;
     };
 
 export type MonitorSidecarHook = (event: MonitorSidecarEvent) => void;

@@ -18,7 +18,8 @@
     | 'agyPath'
     | 'loggingVerbose'
     | 'loopMaxIterations'
-    | 'invocationTimeoutSeconds'
+    | 'invocationIdleTimeoutSeconds'
+    | 'invocationMaxDurationSeconds'
     | 'watchdogPollIntervalMinutes'
     | 'auditRotationSizeMB'
     | 'auditRotationMaxAgeDays'
@@ -97,7 +98,8 @@
       max: 10737418240
     },
     { key: 'loopMaxIterations', ipcKey: 'loop.maxIterations', label: 'Loop Max Iterations', kind: 'number', min: 1, max: 100 },
-    { key: 'invocationTimeoutSeconds', ipcKey: 'invocation.timeoutSeconds', label: 'Invocation Timeout (seconds)', kind: 'number', min: 60, max: 7200 },
+    { key: 'invocationIdleTimeoutSeconds', ipcKey: 'invocation.idleTimeoutSeconds', label: 'Invocation Idle Timeout (seconds)', kind: 'number', min: 60, max: 7200 },
+    { key: 'invocationMaxDurationSeconds', ipcKey: 'invocation.maxDurationSeconds', label: 'Invocation Max Duration (seconds)', kind: 'number', min: 60, max: 86400 },
     { key: 'watchdogPollIntervalMinutes', ipcKey: 'watchdog.pollIntervalMinutes', label: 'Watchdog Poll Interval (minutes)', kind: 'number', min: 1, max: 240 },
     { key: 'auditRotationSizeMB', ipcKey: 'audit.rotation.sizeMB', label: 'Audit Rotation Size (MB)', kind: 'number', min: 1, max: 100 },
     { key: 'auditRotationMaxAgeDays', ipcKey: 'audit.rotation.maxAgeDays', label: 'Audit Retention (days)', kind: 'number', min: 1, max: 365 },
@@ -143,7 +145,8 @@
     agyPath: string;
     loggingVerbose: boolean;
     loopMaxIterations: number;
-    invocationTimeoutSeconds: number;
+    invocationIdleTimeoutSeconds: number;
+    invocationMaxDurationSeconds: number;
     watchdogPollIntervalMinutes: number;
     auditRotationSizeMB: number;
     auditRotationMaxAgeDays: number;
@@ -166,7 +169,8 @@
       agyPath: s.agyPath,
       loggingVerbose: s.loggingVerbose,
       loopMaxIterations: s.loopMaxIterations,
-      invocationTimeoutSeconds: s.invocationTimeoutSeconds,
+      invocationIdleTimeoutSeconds: s.invocationIdleTimeoutSeconds,
+      invocationMaxDurationSeconds: s.invocationMaxDurationSeconds,
       watchdogPollIntervalMinutes: s.watchdogPollIntervalMinutes,
       auditRotationSizeMB: s.auditRotationSizeMB,
       auditRotationMaxAgeDays: s.auditRotationMaxAgeDays,

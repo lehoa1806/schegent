@@ -20,6 +20,16 @@ workflow controller, and finally registers operator commands and webviews. A
 workspace-less window receives only the reduced UI and evidence wiring that can
 operate without a project root.
 
+Election precedes recovery (FR-R3-070): the primacy claim is taken immediately
+after the lock and lease managers are constructed, and every recovery
+installer — the scheduled-start re-arm, the credit-watchdog reattach, the
+delayed-retry resume, and the persisted-run sweep — is gated on its result. A
+non-primary window installs no recovery timers and leaves persisted deadlines
+addressable for the primary; the resume path additionally claims its queue's
+execution lease before marking anything in flight, so activation ordering is
+defence in depth rather than the only defence. The scheduled-start coordinator
+re-verifies primacy with the authoritative fenced predicate at fire time.
+
 The production dependency direction is intentionally one-way:
 
 ```text
@@ -190,7 +200,21 @@ raw evidence sink when enabled, invokes the runner, and classifies bounded
 stdout and stderr. The controller records liveness, advances successful phases,
 applies bounded delayed retry policy, pauses on operator or breakpoint control,
 and hands terminal Runs to history and cleanup services. A terminal transition
-journal makes a partially completed terminal write recoverable at activation.
+journal makes a partially completed terminal write recoverable at activation;
+it journals the sanitized run description (FR-R3-071) so crash-replay records
+the operator's text, and it clears only when the history recorder reports a
+durable append. History replay resolves descriptions through the sidecar
+description store's typed read — the host commands and the sidebar rerun
+surface share one resolver, and force retains its meaning of "replay the
+truncated preview knowingly".
+
+Each backend invocation carries two independent bounds (FR-R3-075): an idle
+window (`schegent.invocation.idleTimeoutSeconds`, reset by output, suspended
+under sink backpressure) and an absolute wall-clock deadline
+(`schegent.invocation.maxDurationSeconds`, armed once at spawn and never
+reset). Evidence distinguishes the two terminations — `timeout` for a child
+that went quiet, `deadline` for one that ran long — end to end: raw output,
+monitor events, transcript, and the phase-end audit record.
 
 Workflows compose multiple Pipeline Runs. Connected-run state identifies the
 Workflow graph node, child Run, revision, and continuation position so a later
@@ -241,7 +265,16 @@ Schema upgrades are forward-only. State written by a newer unsupported version
 is refused rather than guessed backward.
 
 The workspace lock decides which VS Code window is authoritative for mutations.
-Its durable ownership record is filesystem-fenced and freshness-aware. The
+Its durable ownership record is filesystem-fenced and freshness-aware.
+Containment for the on-disk stores is anchored at the workspace root
+(FR-R3-069), never at a store directory the checkout itself supplies: the
+catalog and ownership adapters take the trusted workspace root and the
+untrusted store directory as separate required parameters, resolve the store
+against the root per operation, and create store chains only through the
+safe-open anchor walk — so a cloned workspace arriving with `.schegent`,
+`.schegent/catalog`, or `.schegent/ownership` symlinked out of the workspace
+refuses instead of adopting the link target as its own boundary, while a link
+that stays inside the workspace is admitted. The
 separate execution lease is per queue and lasts from admission to terminal
 transition. This split prevents a Run from releasing window primacy while still
 letting separate queues carry independent execution ownership.

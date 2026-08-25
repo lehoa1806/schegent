@@ -5,7 +5,7 @@
 // credentials. This half does the I/O and nothing else.
 
 import { spawnSync } from 'node:child_process';
-import { decideBackendState, formatReport, canaryExitCode } from './backend-canary.mjs';
+import { runnerBackendResult, formatReport, canaryExitCode } from './backend-canary.mjs';
 
 /** The three shipped backends, and the version prefix last observed for each. */
 const BACKENDS = [
@@ -30,14 +30,18 @@ function versionProbe(command) {
   return { ok: true, version: match?.[0] ?? 'unknown' };
 }
 
-const results = BACKENDS.map(({ backend, command, credentialEnv }) => {
-  const probe = versionProbe(command);
-  // No live probe without a credential. Deliberately not attempted-and-caught:
-  // an auth failure and an absent credential are different findings, and
-  // conflating them would report drift where there is only a missing secret.
-  const liveProbe = process.env[credentialEnv] ? { ok: true, detail: 'live phase reached' } : null;
-  return { backend, ...decideBackendState({ versionProbe: probe, liveProbe }) };
-});
+const results = BACKENDS.map(({ backend, command, credentialEnv }) =>
+  // FR-R3-072: the runner constructs no probe result. It hands the decision
+  // layer only what it observed -- the executed version probe and the raw
+  // credential value -- and the decision layer turns "credential absent" and
+  // "credential present, no live path" into distinct honest skips. `ok` is
+  // unreachable from here until a live invocation exists.
+  runnerBackendResult({
+    backend,
+    versionProbe: versionProbe(command),
+    credentialValue: process.env[credentialEnv]
+  })
+);
 
 console.log(formatReport(results));
 process.exit(canaryExitCode(results));

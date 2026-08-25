@@ -54,6 +54,15 @@ export interface InvocationRequest {
   runId?: string;
   prompt: string;
   timeoutMs: number;
+  /**
+   * FR-R3-075 — the absolute wall-clock bound on the whole invocation, armed
+   * at spawn and never reset. Distinct from `timeoutMs`, which is the IDLE
+   * window a chatty child resets on every chunk; this is what bounds the child
+   * that emits one byte inside every idle window forever. Optional so contract
+   * harnesses and older construction sites compile unchanged; absent or 0
+   * means no wall-clock bound (the idle window still applies).
+   */
+  maxDurationMs?: number;
   cliPath: string;
   cwd: string;
   env?: Record<string, string>;
@@ -200,6 +209,15 @@ export interface RawInvocationOutput {
   exitCode: number | null;
   killed: boolean;
   timedOut: boolean;
+  /**
+   * FR-R3-075 — `true` iff the absolute wall-clock deadline (`maxDurationMs`)
+   * terminated the invocation. Distinct from `timedOut`, which is the idle
+   * stall a chatty child can reset forever: an operator reading a stopped
+   * phase needs to know whether it went quiet or ran long. When both windows
+   * elapse in one tick the deadline wins and `timedOut` is cleared, so
+   * evidence records exactly one reason. Absent is equivalent to `false`.
+   */
+  deadlineExceeded?: boolean;
   /**
    * Feature 030 BUG-002 — `true` iff the runner observed the invocation's
    * terminal `{"type":"result"}` stream-json line and then grace-terminated the

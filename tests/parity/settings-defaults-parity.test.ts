@@ -320,6 +320,14 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
       'trust.allowCustomRetryConditions'
     ]);
     const uiKeys = new Set<string>(['ui.confirmations.enable']);
+    // FR-R3-075 (feature 152) — deprecated manifest aliases. Each carries a
+    // `deprecationMessage`, is hidden from the settings editor's default view,
+    // and is READ-ONLY to the host (an inspect-based fallback in extension.ts
+    // honours an explicit legacy value while the renamed key is unset). It is
+    // never written through the IPC settings surface, so it deliberately has
+    // no KEY_SPECS validator — adding one would give two keys one typed field
+    // and let the unset alias's default clobber an explicit new-key value.
+    const deprecatedAliasKeys = new Set<string>(['invocation.timeoutSeconds']);
 
     const orphans: string[] = [];
     for (const key of allKeys) {
@@ -330,7 +338,8 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
         cliApplicationKeys.has(key) ||
         multiRootKeys.has(key) ||
         trustScopeKeys.has(key) ||
-        uiKeys.has(key);
+        uiKeys.has(key) ||
+        deprecatedAliasKeys.has(key);
       if (!covered) orphans.push(key);
     }
 

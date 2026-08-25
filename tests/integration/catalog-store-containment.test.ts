@@ -307,7 +307,7 @@ describe('Feature 099 — nothing escapes the store directory (T496l)', () => {
     // proves. The adapter refuses them anyway, because the core is not the only
     // thing that could ever call it and a lexical join would happily produce this
     // path.
-    const adapter = createCatalogFsAdapter(storeRootOf(workspaceRoot));
+    const adapter = createCatalogFsAdapter({ workspaceRoot, storeRoot: storeRootOf(workspaceRoot) });
 
     expect(await adapter.writeFileAtomic(['..', '..', 'escape.json'], '{}')).toEqual({
       outcome: 'failed',
@@ -318,11 +318,13 @@ describe('Feature 099 — nothing escapes the store directory (T496l)', () => {
       errno: CONTAINMENT_ERRNO
     });
 
-    // The store's own directory is created — `ensureParent` creates the anchor it
-    // measures containment against, as every save's writability check already does
-    // — but the directory the write was aimed at is not, because that one is
-    // proven first. Both halves are pinned: a refused write may leave the store
-    // root and nothing else.
+    // The store's own directory is created — `ensureParent` creates the anchor
+    // entries are judged against, because an entry cannot be judged against a
+    // root that does not exist yet — but the directory the write was aimed at
+    // is not, because that one is proven first. FR-R3-069 changed how the
+    // anchor is made (judged against the workspace root, created by the
+    // checked walk), not whether: a refused write may leave the store root and
+    // nothing else.
     expect(await treeOf(workspaceRoot)).toEqual({
       files: ['outside.json'],
       directories: ['.schegent', '.schegent/catalog']
@@ -334,7 +336,7 @@ describe('Feature 099 — nothing escapes the store directory (T496l)', () => {
     // The only destructive call the store makes is retention's prune. An escaping
     // unlink is the one that costs something that cannot be undone, so it is
     // refused before the syscall rather than reported after it.
-    const adapter = createCatalogFsAdapter(storeRootOf(workspaceRoot));
+    const adapter = createCatalogFsAdapter({ workspaceRoot, storeRoot: storeRootOf(workspaceRoot) });
 
     expect(await adapter.removeFile(['..', '..', 'outside.json'])).toEqual({
       outcome: 'failed',
@@ -356,7 +358,7 @@ describe('Feature 099 — nothing escapes the store directory (T496l)', () => {
     await mkdir(escapeTarget, { recursive: true });
     await symlink(escapeTarget, join(storeRoot, 'phases', 'evil'));
 
-    const adapter = createCatalogFsAdapter(storeRoot);
+    const adapter = createCatalogFsAdapter({ workspaceRoot, storeRoot });
     expect(await adapter.writeFileIfAbsent(['phases', 'evil', 'v1.json'], '{}')).toEqual({
       outcome: 'failed',
       errno: CONTAINMENT_ERRNO
@@ -394,7 +396,7 @@ describe('Feature 099 — nothing escapes the store directory (T496l)', () => {
     await mkdir(escapeTarget, { recursive: true });
     await symlink(escapeTarget, join(storeRoot, 'phases'));
 
-    const adapter = createCatalogFsAdapter(storeRoot);
+    const adapter = createCatalogFsAdapter({ workspaceRoot, storeRoot });
     expect(await adapter.writeFileAtomic(['phases', 'fresh', 'v1.json'], '{}')).toEqual({
       outcome: 'failed',
       errno: CONTAINMENT_ERRNO

@@ -68,12 +68,17 @@ Install and authenticate one supported CLI before asking Schegent to invoke it.
 Schegent does not install the CLI, sign in for you, or provide a hosted model
 service.
 
-For the default case—Claude is authenticated and `claude` is on `PATH`—you do
-not need to set any Schegent setting. Configure only the differences in your
-environment:
+Even for the default case—Claude is authenticated and `claude` is on
+`PATH`—one setting is required: the default runner is uncontained, so a fresh
+install **refuses its first run** until you enable
+`schegent.backend.allowUncontainedBackends` (or select Codex, which carries its
+own sandbox). That refusal is the shipped capability posture, not a fault —
+see [Agent capability posture](../architecture/agent-capability-posture.md).
+Configure it, plus only the differences in your environment:
 
 | Need | Setting | Required when |
 |---|---|---|
+| Allow an uncontained backend | `schegent.backend.allowUncontainedBackends` | Always for Claude or Agy — a fresh install refuses its first run without it. Application-scoped, default `false`. |
 | Select the backend | `schegent.backend.runner` | You use Codex or Agy instead of the default Claude runner. |
 | Locate Claude | `schegent.cli.path` | `claude` is not available on `PATH`. |
 | Locate Codex | `schegent.codex.path` | `codex` is not available on `PATH`. |

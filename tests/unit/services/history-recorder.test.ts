@@ -110,9 +110,11 @@ describe('HistoryRecorder (T098 / T102)', () => {
     });
   });
 
-  it('is a no-op when no history store is wired', async () => {
+  it('is a no-op when no history store is wired, reported as a typed skip (FR-R3-071)', async () => {
     const recorder = new HistoryRecorder(makeDeps({ historyStore: null }));
-    await expect(recorder.record(makeRun(), 'desc', 'completed')).resolves.toBeUndefined();
+    await expect(recorder.record(makeRun(), 'desc', 'completed')).resolves.toEqual({
+      outcome: 'skipped-no-store'
+    });
   });
 
   // Feature 103 (T080, FR-047) — the code, never the caught message. This case
@@ -133,7 +135,13 @@ describe('HistoryRecorder (T098 / T102)', () => {
     const recorder = new HistoryRecorder(
       makeDeps({ historyStore: { append } as never, logger })
     );
-    await expect(recorder.record(makeRun(), 'desc', 'failed')).resolves.toBeUndefined();
+    // FR-R3-071 -- still swallowed (no throw), and the failure now surfaces as
+    // a typed result so the terminal-transition coordinator can keep its
+    // repair intent. The code, never the message, exactly as the log line.
+    await expect(recorder.record(makeRun(), 'desc', 'failed')).resolves.toEqual({
+      outcome: 'failed',
+      code: 'ENOSPC'
+    });
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('history append failed'));
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('ENOSPC'));
     expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('/Users/someone/work'));

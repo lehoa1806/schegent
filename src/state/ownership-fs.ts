@@ -18,7 +18,14 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
-import { resolveContainedLink } from '../lib/path-containment';
+import { resolveContainedLink, resolveContainedTarget } from '../lib/path-containment';
+import type { FileHandle } from 'fs/promises';
+import {
+  ensureAnchorWithinRoot,
+  openWithinRootByPath,
+  segmentsUnderRoot,
+  type SafeOpenRefusal
+} from '../lib/safe-open';
 
 export interface OwnershipFs {
   /** Create `dir` and any missing parents. Idempotent. */
@@ -75,55 +82,166 @@ let tempCounter = 0;
  * (`ensureSchegentGitignore` writes `*`), so nothing written under it is a
  * candidate for accidental commit.
  *
- * Feature FR-R3-005 — `containmentRoot` is required, not optional, and is
- * normally the same ownership directory handed to `useOwnershipStorage`. The
- * registry writes nowhere else, so that is the tightest honest root, and a
- * required parameter makes `npm run typecheck` the list of call sites that
- * have to name one. A default would be a guess about where a caller intends
- * to write, and the guess reads as a proven root everywhere downstream.
+ * Feature FR-R3-005 made the containment root required so `npm run typecheck`
+ * is the list of call sites that name one. FR-R3-069 (feature 152) splits the
+ * one path it took into the two roles it was silently playing: `workspaceRoot`
+ * is the TRUSTED anchor every judgment resolves against, and `ownershipDir` is
+ * the UNTRUSTED store directory paths are composed from. Anchoring judgments at
+ * the store itself was the F-02 defect — the containment judge realpaths the
+ * root it is handed, so a checkout arriving with `.schegent/ownership` as a
+ * symlink made its own target the boundary and every escape judged `contained`.
+ * Judged from the workspace root, a symlinked store component refuses by name
+ * (`symlink-component`), while a link that stays inside the workspace is still
+ * admitted. Both parameters are required for the FR-R3-005 reason.
  */
-export function createDiskOwnershipFs(containmentRoot: string): OwnershipFs {
-  const roots = [containmentRoot];
+export function createDiskOwnershipFs(anchor: {
+  readonly workspaceRoot: string;
+  readonly ownershipDir: string;
+}): OwnershipFs {
+  const { workspaceRoot } = anchor;
+  const roots = [workspaceRoot];
+  const containmentError = (reason: string): NodeJS.ErrnoException =>
+    Object.assign(new Error(`ownership storage refused: containment ${reason}`), {
+      code: 'ESCHEGENTCONTAINMENT'
+    });
+  /**
+   * The trusted root in the form a RESOLVED path derives from. The judge
+   * realpaths the roots it compares against, so a resolved path may sit under
+   * the workspace root's real form rather than its lexical one (`/tmp` vs
+   * `/private/tmp` on macOS). Lexical first, real form as the fallback — the
+   * same two forms `judge` already treats as one root.
+   */
+  const walkRootFor = async (
+    resolvedPath: string
+  ): Promise<{ root: string; segments: readonly string[] } | null> => {
+    const direct = segmentsUnderRoot(workspaceRoot, resolvedPath);
+    if (direct !== null) return { root: workspaceRoot, segments: direct };
+    const real = await fs.realpath(workspaceRoot);
+    const viaReal = segmentsUnderRoot(real, resolvedPath);
+    return viaReal === null ? null : { root: real, segments: viaReal };
+  };
+  /** The two dir-shaped operations act only on the adapter's own store dir. */
+  const requireStoreDir = (dir: string): void => {
+    if (path.resolve(dir) !== path.resolve(anchor.ownershipDir)) {
+      throw containmentError('not-contained');
+    }
+  };
+  /** A safe-open refusal, translated to this port's error vocabulary. */
+  const refusalError = (file: string, reason: SafeOpenRefusal, errno: string): NodeJS.ErrnoException => {
+    if (reason === 'io-failed') {
+      return Object.assign(new Error(`ownership storage I/O failed: ${errno}`), { code: errno });
+    }
+    if (errno === 'EEXIST') return alreadyExistsError(file);
+    return containmentError(reason);
+  };
+  /**
+   * FR-R3-069 — the two-level judgment, same scheme as `catalog-fs-adapter.ts`.
+   * Level one resolves the STORE DIRECTORY itself against the trusted
+   * workspace root, target form, so a symlinked `.schegent/ownership` (or a
+   * symlinked `.schegent` above it) is followed and judged: escaping refuses
+   * every operation, staying inside the workspace is admitted and yields the
+   * real directory. Level two judges each entry against that RESOLVED store
+   * directory, keeping the registry scoped to its own tree. Resolved per call,
+   * never cached. An absent store directory falls back to the link form so the
+   * very first election in a fresh workspace is judged against where its chain
+   * will land — the FR-R3-053 §4c.1 ENOENT revert, closed.
+   */
+  const storeRoots = async (): Promise<readonly string[]> => {
+    const target = await resolveContainedTarget(anchor.ownershipDir, roots);
+    if (target.outcome === 'contained') return [target.resolved];
+    if (target.outcome !== 'absent') {
+      throw containmentError(target.reason);
+    }
+    const link = await resolveContainedLink(anchor.ownershipDir, roots);
+    if (link.outcome !== 'contained') {
+      throw containmentError(link.outcome === 'refused' ? link.reason : link.outcome);
+    }
+    return [link.resolved];
+  };
   /**
    * Refuse rather than mutate. These are `rename` and `rm` on the entry, so
    * the link form is the right one: the registry's own temp files and records
    * are what it removes, and following a leaf would refuse a cleanup of a link
-   * it created.
+   * it created. Judged against the store directory as RESOLVED from the
+   * workspace root, never against a root the checkout chose.
    */
   const proveContainedEntry = async (file: string): Promise<string> => {
-    const verdict = await resolveContainedLink(file, roots);
+    const verdict = await resolveContainedLink(file, await storeRoots());
     if (verdict.outcome !== 'contained') {
-      throw Object.assign(
-        new Error(`ownership storage refused: containment ${
-          verdict.outcome === 'refused' ? verdict.reason : verdict.outcome
-        }`),
-        { code: 'ESCHEGENTCONTAINMENT' }
-      );
+      throw containmentError(verdict.outcome === 'refused' ? verdict.reason : verdict.outcome);
     }
     return verdict.resolved;
   };
+  /**
+   * Prove `file` against the workspace root, then open the RESOLVED path
+   * through the safe walk. Prove-first is what admits a store directory that is
+   * an in-workspace symlink (the judge resolves it and finds it contained)
+   * while refusing one that escapes; the walk over the resolved path is then
+   * defence in depth — its `lstat` per component and `O_NOFOLLOW` leaf hold
+   * even if a component is swapped for a link after the judgment.
+   */
+  const openProven = async (file: string, flags: 'r' | 'wx' | 'w'): Promise<FileHandle> => {
+    const proven = await proveContainedEntry(file);
+    const walk = await walkRootFor(proven);
+    if (walk === null) throw containmentError('escapes-root');
+    const result = await openWithinRootByPath(walk.root, proven, {
+      flags,
+      fileMode: FILE_MODE
+    });
+    if (result.outcome === 'refused') throw refusalError(file, result.reason, result.errno);
+    return result.handle;
+  };
   return {
     async ensureDir(dir) {
-      await fs.mkdir(dir, { recursive: true, mode: DIR_MODE });
+      // The one operation whose target IS the store anchor: level one judges
+      // it against the workspace root, then the chain is created beneath the
+      // trusted anchor by the primitive FR-R3-053 §4c.1 named missing — never
+      // by a raw `mkdir -p` that follows whatever `.schegent` points at. The
+      // registry only ever ensures its own directory; an argument naming any
+      // other path is a wiring defect and refuses rather than being adopted.
+      requireStoreDir(dir);
+      const [resolved] = await storeRoots();
+      const walk = await walkRootFor(resolved);
+      if (walk === null) throw containmentError('escapes-root');
+      const made = await ensureAnchorWithinRoot(walk.root, walk.segments, DIR_MODE);
+      if (made.outcome === 'refused') throw refusalError(dir, made.reason, made.errno);
     },
     async list(dir) {
+      // Same reasoning as ensureDir: the registry lists only its own
+      // directory, and the resolved store dir is the judged form of it.
+      requireStoreDir(dir);
+      const [resolved] = await storeRoots();
       try {
-        return await fs.readdir(dir);
+        return await fs.readdir(resolved);
       } catch (err) {
         if (isMissing(err)) return [];
         throw err;
       }
     },
     async read(file) {
+      let handle: FileHandle;
       try {
-        return await fs.readFile(file, 'utf8');
+        handle = await openProven(file, 'r');
       } catch (err) {
         if (isMissing(err)) return null;
         throw err;
       }
+      try {
+        return await handle.readFile({ encoding: 'utf8' });
+      } finally {
+        await handle.close().catch(() => undefined);
+      }
     },
     async createExclusive(file, data) {
-      await fs.writeFile(file, data, { encoding: 'utf8', flag: 'wx', mode: FILE_MODE });
+      // 'wx' through the safe walk keeps the one atomic primitive atomic: the
+      // exclusive create happens at the leaf open, and an EEXIST refusal is
+      // rethrown in the shape `isAlreadyExists` recognizes.
+      const handle = await openProven(file, 'wx');
+      try {
+        await handle.writeFile(data, { encoding: 'utf8' });
+      } finally {
+        await handle.close().catch(() => undefined);
+      }
     },
     async replace(file, data) {
       tempCounter += 1;
@@ -136,7 +254,12 @@ export function createDiskOwnershipFs(containmentRoot: string): OwnershipFs {
       // that reads like ordinary I/O trouble.
       const provenTemp = await proveContainedEntry(temp);
       const provenFile = await proveContainedEntry(file);
-      await fs.writeFile(provenTemp, data, { encoding: 'utf8', mode: FILE_MODE });
+      const handle = await openProven(provenTemp, 'w');
+      try {
+        await handle.writeFile(data, { encoding: 'utf8' });
+      } finally {
+        await handle.close().catch(() => undefined);
+      }
       try {
         await fs.rename(provenTemp, provenFile);
       } catch (err) {

@@ -28,6 +28,7 @@
   // interpolated with `{}`, which escapes. Nothing here uses `{@html}`.
 
   import RunLauncher from './RunLauncher/RunLauncher.svelte';
+  import { resolveHistoryDescription } from '../lib/history-description-ipc';
   import { rerunUnavailableMessage, type RerunTarget } from '../lib/history-rerun';
   import type { HistoryRow } from '../lib/history-rows';
   import type { PipelineDefinition } from '../lib/snapshot-types';
@@ -49,7 +50,7 @@
 
   const { row, target, pipeline, onClose }: Props = $props();
 
-  const state = $derived(
+  const panelState = $derived(
     target.state === 'unavailable'
       ? 'unavailable'
       : pipeline === undefined
@@ -59,17 +60,65 @@
 
   /**
    * FR-033 — pre-filled from the historical run's inputs, which is the whole of
-   * what history retains: the description, and only as far as the stored
-   * preview goes. Input port values are not recorded (see `HistoryEntry`), so
-   * there is nothing else to seed and the note below says so rather than
-   * leaving an empty contract section to imply the Pipeline asks for nothing.
+   * what history retains: the description, and — since FR-R3-071 — the FULL
+   * stored one rather than its preview, resolved from the host per open. Input
+   * port values are not recorded (see `HistoryEntry`), so there is nothing else
+   * to seed and the note below says so rather than leaving an empty contract
+   * section to imply the Pipeline asks for nothing. The preview remains the
+   * fallback when the sidecar cannot be read, and the extent note appears only
+   * then.
    *
    * Seeded into `instruction` because that is the control whose value the
    * composer routes to `RunRequest.instructions` — the field the host bounds
    * and the one a free-form description belongs in.
    */
+  /**
+   * FR-R3-071 (feature 152) — the resolved description, or `null` until the
+   * host answers (and permanently when it cannot).
+   *
+   * The projection carries only the preview, deliberately, so the full text is
+   * asked for per open rather than kept in every snapshot. `$state` rather than
+   * a derived: it is an answer that arrives, not a function of the row.
+   */
+  let descriptionAnswer = $state<{ readonly text: string | null } | null>(null);
+
+  $effect(() => {
+    // Re-asked per row, and the answer is discarded when the row changes — a
+    // late reply must never seed the launcher for a run the operator is no
+    // longer looking at.
+    const runId = row.runId;
+    descriptionAnswer = null;
+    let current = true;
+    void resolveHistoryDescription(runId).then((result) => {
+      if (!current) return;
+      descriptionAnswer =
+        result.outcome === 'resolved' || result.outcome === 'legacy'
+          ? { text: result.description }
+          : // `missing` / `unreadable` / `failure`: fall back to the preview and
+            // its extent note. That path is already honest and says what it is.
+            { text: null };
+    });
+    return () => {
+      current = false;
+    };
+  });
+
+  /**
+   * The form is not mounted until the answer settles, and that is the point
+   * rather than a loading nicety. `RunLauncher` snapshots `initialSupplemental`
+   * with `untrack` — deliberately, so a later prop change cannot clobber what
+   * the operator has typed — so a form mounted on the preview would keep the
+   * truncation even after the full text arrived. Waiting means the form is
+   * seeded once, correctly, and never mutates under the cursor.
+   */
+  const resolvingDescription = $derived(descriptionAnswer === null);
+
   const prefill = $derived<Record<string, string>>(
-    row.descriptionPreview.length > 0 ? { instruction: row.descriptionPreview } : {}
+    descriptionAnswer?.text != null
+      ? { instruction: descriptionAnswer.text }
+      : row.descriptionPreview.length > 0
+        ? { instruction: row.descriptionPreview }
+        : {}
   );
 
   // The same extent statement the detail makes (FR-053). A truncation that does
@@ -77,7 +126,8 @@
   // would be worse than on the detail, because the operator is about to submit
   // it as the instruction for a new run.
   const showsExtent = $derived(
-    row.descriptionPreview.length > 0 &&
+    descriptionAnswer?.text == null &&
+      row.descriptionPreview.length > 0 &&
       row.descriptionLength !== null &&
       row.descriptionLength > row.descriptionPreview.length
   );
@@ -90,7 +140,7 @@
 <section
   class="rerun-panel"
   data-testid="history-rerun-panel"
-  data-state={state}
+  data-state={panelState}
   aria-label="Repeat this run"
 >
   <header class="rerun-header">
@@ -161,7 +211,16 @@
          freeze site, and nothing here sends one. -->
     <!-- No `onClose`: the panel's own header owns closing, and a second Close
          inside the form would be two controls for one action. -->
-    <RunLauncher {pipeline} initialSupplemental={prefill} queueId={target.queue.queueId} />
+    <!-- FR-R3-071 — mounted only once the recorded description has settled, so
+         the composer is seeded with the full text rather than a preview it
+         would then keep (it snapshots its initial values on purpose). -->
+    {#if resolvingDescription}
+      <p class="note" data-testid="history-rerun-description-loading">
+        Reading the recorded description…
+      </p>
+    {:else}
+      <RunLauncher {pipeline} initialSupplemental={prefill} queueId={target.queue.queueId} />
+    {/if}
   {/if}
 </section>
 

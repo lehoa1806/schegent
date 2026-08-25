@@ -101,7 +101,8 @@ describe('Feature 011 — general-settings allowlist', () => {
         'agy.path',
         'logging.verbose',
         'loop.maxIterations',
-        'invocation.timeoutSeconds',
+        'invocation.idleTimeoutSeconds',
+        'invocation.maxDurationSeconds',
         'watchdog.pollIntervalMinutes',
         'audit.rotation.sizeMB',
         'audit.rotation.maxAgeDays',
@@ -314,7 +315,8 @@ describe('Feature 011 — readGeneralSettings projects current values + scopes',
         'cli.path': 'claude',
         'logging.verbose': false,
         'loop.maxIterations': 10,
-        'invocation.timeoutSeconds': 5400,
+        'invocation.idleTimeoutSeconds': 5400,
+        'invocation.maxDurationSeconds': 21600,
         'watchdog.pollIntervalMinutes': 30,
         'audit.rotation.sizeMB': 5,
         'audit.rotation.maxAgeDays': 30,
@@ -368,12 +370,12 @@ describe('Feature 011 — readGeneralSettings projects current values + scopes',
     const config = makeConfig({
       workspace: {
         'loop.maxIterations': 51,
-        'invocation.timeoutSeconds': 29
+        'invocation.idleTimeoutSeconds': 29
       }
     });
     const snap = readGeneralSettings(config);
     expect(snap.loopMaxIterations).toBe(10);
-    expect(snap.invocationTimeoutSeconds).toBe(5400);
+    expect(snap.invocationIdleTimeoutSeconds).toBe(5400);
   });
 });
 

@@ -40,12 +40,14 @@ that goes red for reasons unrelated to the change under review.
   `docs/security/threat-model.md` on self-certification, and `hostVerification` (FR-R3-058) for the
   mechanism that stops a Phase advancing on its own claim.
 
-## Where behavioral qualification lives
+## Where behavioral qualification will live
 
 `.github/workflows/backend-canary.yml` — scheduled, off the PR path, and non-blocking by design.
-It probes real CLI versions and protocol shape where credentials are available, and **degrades to a
-version probe and says so in its output** where they are not. Its failures are findings to file, not
-gate reds: making PRs depend on a third-party service is exactly what the review warned against.
+Today it is a **version probe plus an honest skip**: it probes real CLI versions, and it skips the
+live phase and says so in its output — `skipped-no-credentials` without a credential,
+`skipped-no-live-path` with one — until operator-supplied credentials and a live invocation exist.
+Its failures are findings to file, not gate reds: making PRs depend on a third-party service is
+exactly what the review warned against.
 
 Adding a case here is welcome and does not change any of the above. The corpus can be exhaustive
 about parsing and still say nothing about behaviour.

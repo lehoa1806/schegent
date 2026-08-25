@@ -26,7 +26,8 @@ export interface GeneralSettingsPayload {
   readonly 'cli.path'?: string;
   readonly 'logging.verbose'?: boolean;
   readonly 'loop.maxIterations'?: number;
-  readonly 'invocation.timeoutSeconds'?: number;
+  readonly 'invocation.idleTimeoutSeconds'?: number;
+  readonly 'invocation.maxDurationSeconds'?: number;
   readonly 'watchdog.pollIntervalMinutes'?: number;
   readonly 'audit.rotation.sizeMB'?: number;
   readonly 'audit.rotation.maxAgeDays'?: number;

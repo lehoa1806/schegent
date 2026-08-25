@@ -157,7 +157,7 @@ drifts unnoticed, because the readers who would catch an error never get there.
 
 ### Architecture and decisions
 
-- [Agent capability posture](architecture/agent-capability-posture.md) — **decision pending**
+- [Agent capability posture](architecture/agent-capability-posture.md) — **decided, shipped 2026-08-24** (shape 3: uncontained backends refused by default, `schegent.backend.allowUncontainedBackends` is the opt-in)
 - [Local queue parallelism ratification](architecture/local-queue-parallelism-ratification.md)
 - [Remote multi-user expansion gate](architecture/remote-multi-user-expansion-gate.md)
 - [Workspace ownership fencing](architecture/workspace-ownership-fencing.md)

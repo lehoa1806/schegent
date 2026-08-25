@@ -101,10 +101,19 @@ Audit and evidence contracts favor identifiers, counts, hashes, and bounded tupl
 
 ### T5 — Concurrent state mutation across multiple VS Code windows
 
-The ownership registry persists a fenced record under `.schegent/ownership`; the router independently refuses guarded work from a secondary window.
+The ownership registry persists a fenced record under `.schegent/ownership`; the router independently refuses guarded work from a secondary window. Activation elects before it recovers: every recovery installer is gated on the primacy result, and the resume path claims its queue's execution lease before marking work in flight (FR-R3-070).
 
 <!-- Source: src/state/ownership-registry.ts -->
 <!-- Source: src/ui/sidebar/commands/primacy-gate.ts -->
+<!-- Source: src/extension.ts -->
+
+### T5a — A cloned checkout supplies its own containment boundary
+
+The catalog and ownership stores judge containment against the trusted workspace root, never against a store directory the checkout itself supplies (FR-R3-069). A workspace arriving with `.schegent`, `.schegent/catalog`, or `.schegent/ownership` symlinked out of the workspace refuses — nothing is created, written, read, or arbitrated through the link — while a link that resolves inside the workspace is admitted. Store chains are created only through the safe-open anchor walk, which refuses a symlinked component by name.
+
+<!-- Source: src/lib/catalog-fs-adapter.ts -->
+<!-- Source: src/state/ownership-fs.ts -->
+<!-- Source: src/lib/safe-open.ts -->
 
 ### T6 — Lease leak fail-deadly
 
@@ -140,7 +149,7 @@ Schegent has several distinct local sensitive-data surfaces:
 
 - Raw session transcripts are local and unredacted. Claude verbose diagnostics are optional and unredacted. Generated ignore rules reduce accidental commits but are not encryption or access control.
 - Recovery checkpoints live under extension `globalStorage/checkpoints`. A checkpoint patch is `git diff --binary --no-ext-diff HEAD`, so it may contain source and secrets that were present in uncommitted changes. Run directories use mode `0700` and files use `0600`. Their separate retention policy is 14 days and 256 MiB, while protecting the ten most recent Run directories from the size bound; session-retention settings do not govern them.
-- `.schegent/cli-transport.log` is sanitized through the shared secret patterns but deliberately retains paths found in backend output. `.schegent/history/<runId>.txt` stores the full sanitized Task description with mode `0600`; sanitization is pattern-based and is not a general data-classification guarantee.
+- `.schegent/cli-transport.log` is sanitized through the shared secret patterns but deliberately retains paths found in backend output. `.schegent/history/<runId>.txt` stores the full sanitized Task description with mode `0600`; sanitization is pattern-based and is not a general data-classification guarantee. Since FR-R3-071 that text also reaches the sidebar on request (`CMD_RESOLVE_HISTORY_DESCRIPTION`), so the operator repeating a run edits what they actually wrote rather than an 80-character preview: the webview names a run id and never a path, the host resolves the sidecar through the single description resolver, and the command is read-only — outside `MUTATING_COMMANDS` and ungated by primacy, on the same terms as the evidence drill-down.
 
 <!-- Source: src/audit/raw-transcript-writer.ts -->
 <!-- Source: src/audit/verbose-diagnostic-writer.ts -->

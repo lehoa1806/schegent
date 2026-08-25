@@ -49,20 +49,30 @@ export class TerminalTransitionCoordinator {
     private readonly rollup?: TerminalRollupHook
   ) {}
 
-  public async begin(run: WorkflowRun): Promise<void> {
+  public async begin(run: WorkflowRun, description?: string): Promise<void> {
     if (!isTerminalRunStatus(run.status)) return;
     const existing = this.store.getTerminalTransitionIntents()[run.id];
-    if (existing && existing.run.status === run.status) return;
+    // FR-R3-071 — an intent journalled early (the controller's begin carries no
+    // description) is upgraded when `complete()` re-begins with one, so a crash
+    // after this point replays the operator's text rather than the feature id.
+    if (
+      existing &&
+      existing.run.status === run.status &&
+      (existing.description !== undefined || description === undefined)
+    ) {
+      return;
+    }
     await this.store.setTerminalTransitionIntent(run.id, {
       schemaVersion: 1,
       run,
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      ...(description !== undefined ? { description } : {})
     });
   }
 
   public async complete(run: WorkflowRun, description: string): Promise<void> {
     if (!isTerminalRunStatus(run.status)) return;
-    await this.begin(run);
+    await this.begin(run, description);
     // Feature 093 (T039) — pattern C-2, and deliberately `findRunByTask` rather
     // than `queueIdForTask`: the latter falls back to the reserved queue when
     // the Task row is gone, which is safe for a mutation that then finds
@@ -78,12 +88,22 @@ export class TerminalTransitionCoordinator {
     }
     try {
       await this.queue.finish(run.featureId, run.status as 'completed' | 'failed' | 'canceled');
-      await this.history.record(
+      const recorded = await this.history.record(
         run,
         description,
         run.status as 'completed' | 'failed' | 'canceled'
       );
-      await this.store.setTerminalTransitionIntent(run.id, null);
+      // FR-R3-071 — the intent clears only when history is durable (or a store
+      // is deliberately absent). `record` used to swallow its failures, so a
+      // failed append still cleared the repair intent and the crash-replay this
+      // journal exists for had nothing to replay.
+      if (recorded.outcome === 'failed') {
+        this.logger.warn(
+          `terminal-transition: replay remains pending: history record failed (${recorded.code})`
+        );
+      } else {
+        await this.store.setTerminalTransitionIntent(run.id, null);
+      }
     } catch (error) {
       this.logger.warn(`terminal-transition: replay remains pending: ${(error as Error).message}`);
     }
@@ -116,7 +136,16 @@ export class TerminalTransitionCoordinator {
   public async replay(): Promise<void> {
     for (const intent of Object.values(this.store.getTerminalTransitionIntents())) {
       try {
-        await this.complete(intent.run, intent.run.featureId);
+        // FR-R3-071 — the journalled description is what the interrupted
+        // transition was completing with; only a legacy intent (or one written
+        // by the controller's early begin) forces the featureId substitution,
+        // and the substitution is logged rather than silent.
+        if (intent.description === undefined) {
+          this.logger.warn(
+            `terminal-transition: intent for run ${intent.run.id} carries no description; replaying with featureId`
+          );
+        }
+        await this.complete(intent.run, intent.description ?? intent.run.featureId);
       } catch (error) {
         this.logger.warn(
           `terminal-transition: replay of run ${intent.run.id} failed: ${(error as Error).message}`

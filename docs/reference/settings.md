@@ -43,7 +43,8 @@ The backend choice is a privilege choice, not a cosmetic preference. A Phase's `
 |---|---|---|---|---|
 | `schegent.loop.maxIterations` | number, `1`–`50` | `10` | resource | Maximum loop iterations before force-advance behavior. |
 | `schegent.watchdog.pollIntervalMinutes` | number, minimum `1` | `30` | resource | Credit-watchdog polling interval in minutes. |
-| `schegent.invocation.timeoutSeconds` | number, minimum `30` | `5400` | resource | Timeout for one Phase invocation. |
+| `schegent.invocation.idleTimeoutSeconds` | number, minimum `30` | `5400` | resource | Idle window for one Phase invocation: terminated after this long with no output. Renamed from `schegent.invocation.timeoutSeconds`, which is still read as a fallback while unset. |
+| `schegent.invocation.maxDurationSeconds` | number, minimum `60` | `21600` | resource | Absolute wall-clock bound on one Phase invocation, armed at spawn and never reset — bounds a chatty child the idle window cannot. Default is 4x the idle default and ~1.7x the longest legitimately long phase observed (3.6 h). |
 | `schegent.defaultPipelineId` | empty string or `^[a-z][a-z0-9-]{0,63}$` | empty string | resource | Pipeline used when enqueueing omits one. Empty means no default; Schegent ships no definitions. |
 | `schegent.retry.maxAttempts` | integer, `1`–`5` | `5` | resource | Maximum delayed-retry attempts before the Run and Queue pause. |
 | `schegent.retry.forceContinueOnCap` | boolean | `false` | resource | When a `retryCondition` remains truthy at its final allowed iteration, allows advancement and records a forced-continue runtime event. Failed and timed-out outcomes remain terminal. |

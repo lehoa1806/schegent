@@ -232,6 +232,9 @@ describe('the corpus measures parser coverage, not behavioural qualification', (
     const readme = readFileSync(join(__dirname, 'README.md'), 'utf8');
     expect(readme).toContain('not behavioral qualification');
     expect(readme).toContain('backend-canary.yml');
+    // FR-R3-072 — the canary itself qualifies nothing yet either: it is a
+    // version probe plus an honest skip until a live invocation exists.
+    expect(readme).toContain('skipped-no-live-path');
   });
 
   it("reports the test tally its README states", async () => {

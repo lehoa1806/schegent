@@ -63,7 +63,10 @@ const UNMIGRATED: readonly string[] = [
   'catalog/catalog-manifest.ts',
   'catalog/version-record.ts',
   'controller/phase-sidecar-reader.ts',
-  'lib/catalog-fs-adapter.ts',
+  // `lib/catalog-fs-adapter.ts` struck 2026-08-25 (FR-R3-069, feature 152) —
+  // fully migrated: reads and writes go through `openWithinRootByPath`, the
+  // store chain is created by `ensureAnchorWithinRoot` beneath the workspace
+  // root, and judgments anchor at the workspace rather than at the store.
   'lib/runtime-log/runtime-log-sink.ts',
   'metrics/metrics-rollup-reader.ts',
   'metrics/metrics-rollup-writer.ts',
@@ -84,15 +87,13 @@ const UNMIGRATED: readonly string[] = [
   // because "one reasoned call" is exactly what a ledger should show.
   'services/run-checkpoint-service.ts',
   'services/run-request/local-input-validator.ts',
-  // FR-R3-053 — attempted and reverted 2026-08-24, for a reason worth recording:
-  // this port's `containmentRoot` IS the directory `ensureDir` must create, and
-  // `openWithinRoot` deliberately never creates its own root (it is the one path
-  // it trusts rather than verifies). So migrating it needs either a
-  // root-creating variant of the primitive or the workspace root threaded through
-  // `createOwnershipFs`, and neither is a change to make on the way past.
-  // Measured: every election refused with `io-failed ENOENT` because the walk had
-  // no existing ancestor to start from.
-  'state/ownership-fs.ts',
+  // `state/ownership-fs.ts` struck 2026-08-25 (FR-R3-069, feature 152). The
+  // 2026-08-24 attempt was reverted because the port's containment root WAS the
+  // directory `ensureDir` must create and `openWithinRoot` never creates its
+  // own root — measured as every election refusing `io-failed ENOENT`. The fix
+  // took both halves that note named: the workspace root threaded through
+  // `createDiskOwnershipFs` as the trusted anchor, and the root-creating
+  // primitive (`ensureAnchorWithinRoot`) for the store chain itself.
   'ui/sidebar/audit-tail-coldstart.ts'
 ];
 

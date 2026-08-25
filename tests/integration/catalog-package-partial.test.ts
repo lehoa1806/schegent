@@ -94,7 +94,7 @@ type WriteMatcher = (key: string, contents: string) => boolean;
  * the state a genuine mid-document I/O failure would have left.
  */
 function openStoreFailingWrite(matches: WriteMatcher, errno: string): CatalogStore {
-  const inner = createCatalogFsAdapter(storeRootOf(workspaceRoot));
+  const inner = createCatalogFsAdapter({ workspaceRoot, storeRoot: storeRootOf(workspaceRoot) });
   let fired = false;
   const fails = (key: string, contents: string): boolean => {
     if (fired || !matches(key, contents)) return false;
@@ -124,7 +124,7 @@ function openStoreFailingWrite(matches: WriteMatcher, errno: string): CatalogSto
 /** An ordinary window, as the host builds it. */
 function openStore(): CatalogStore {
   return createCatalogStore({
-    fs: createCatalogFsAdapter(storeRootOf(workspaceRoot)),
+    fs: createCatalogFsAdapter({ workspaceRoot, storeRoot: storeRootOf(workspaceRoot) }),
     clock: systemClock,
     digest: nodeDigest,
     provenance: createQueueRunProvenance(() => [])

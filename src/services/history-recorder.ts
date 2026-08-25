@@ -36,6 +36,18 @@ import type { SanitizedLogger } from '../lib/logger';
 import type { WorkflowRun } from '../state/workflow-run';
 import type { RunOriginRef } from '../contracts/run-origin';
 
+/**
+ * FR-R3-071 — whether a terminal record is durable. `recorded` means the
+ * history entry landed; `skipped-no-store` is a configured absence, not a
+ * failure; `failed` carries the code the warn line already logged. The
+ * terminal-transition coordinator clears its repair intent only on the first
+ * two.
+ */
+export type HistoryRecordResult =
+  | { readonly outcome: 'recorded' }
+  | { readonly outcome: 'skipped-no-store' }
+  | { readonly outcome: 'failed'; readonly code: string };
+
 export interface HistoryRecorderDeps {
   readonly historyStore: Pick<HistoryStore, 'append'> | null;
   readonly logger: SanitizedLogger;
@@ -131,8 +143,12 @@ export class HistoryRecorder {
     run: WorkflowRun,
     description: string,
     terminalStatus: 'completed' | 'failed' | 'canceled'
-  ): Promise<void> {
-    if (!this.historyStore) return;
+  ): Promise<HistoryRecordResult> {
+    // FR-R3-071 — the caller that clears the terminal repair intent needs to
+    // know whether history is durable; the internal catch used to swallow that
+    // answer, so a failed append still cleared the intent. The fire-and-forget
+    // call sites keep ignoring the result, which is their existing behaviour.
+    if (!this.historyStore) return { outcome: 'skipped-no-store' };
     try {
       // Feature 103 (T030, FR-015) — resolved before the build and each behind
       // its own guard, so an unanswerable provenance costs the field and not the
@@ -170,8 +186,15 @@ export class HistoryRecorder {
         withDescriptionRef(built.entry, ref)
       );
       await this.discardEvictedDescriptions(evicted);
+      // A failed description write with a successful append is still
+      // 'recorded': the entry exists and resolves as legacy/missing later,
+      // which is the same shape a legacy entry already has. Durability here
+      // means the ENTRY landed.
+      return { outcome: 'recorded' };
     } catch (err) {
-      this.logger.warn(`history append failed: ${historyErrorCode(err)}`);
+      const code = historyErrorCode(err);
+      this.logger.warn(`history append failed: ${code}`);
+      return { outcome: 'failed', code };
     }
   }
 

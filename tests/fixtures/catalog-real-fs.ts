@@ -81,7 +81,7 @@ export function openStore(
   options: { readonly provenance?: RunProvenance } = {}
 ): CatalogStore {
   return createCatalogStore({
-    fs: createCatalogFsAdapter(storeRootOf(workspaceRoot)),
+    fs: createCatalogFsAdapter({ workspaceRoot, storeRoot: storeRootOf(workspaceRoot) }),
     clock: systemClock,
     digest: nodeDigest,
     provenance: options.provenance ?? noLiveRuns()
