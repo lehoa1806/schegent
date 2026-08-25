@@ -74,7 +74,22 @@ export function holdOrdering(
 export async function boundForCaller<T>(
   settled: Promise<T>,
   timeoutMs: number,
-  makeTimeoutError: () => Error
+  makeTimeoutError: () => Error,
+  /**
+   * `unref()` the bound's timer. Off by default, so every existing caller is
+   * byte-for-byte unchanged.
+   *
+   * FR-R3-083 needs it: the mount probe's deferred sweep waits several bounds on a
+   * create that may never settle, and a ref'd timer there holds the Node event loop
+   * open for that whole window after the probe has already answered — measured at
+   * ~1.5 s past the verdict with a 300 ms bound, and ~10 s at the shipped one. A
+   * probe outliving activation is the opposite of bounded.
+   *
+   * `holdOrdering` above already unrefs for the same reason; this makes the choice
+   * available on this half rather than sending the next caller off to hand-roll a
+   * third race.
+   */
+  unrefTimer = false
 ): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   try {
@@ -82,6 +97,7 @@ export async function boundForCaller<T>(
       settled,
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(makeTimeoutError()), timeoutMs);
+        if (unrefTimer) timer.unref();
       })
     ]);
   } finally {

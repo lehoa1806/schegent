@@ -96,52 +96,32 @@ export async function signalProcessTree(
  * `exitCode === null, signalCode === 'SIGTERM'`. A guard testing `exitCode` alone
  * therefore never fires on the commonest path, which is how a "skip when the child
  * is gone" check came to escalate against every cleanly-reaped child.
- */
-export function childIsReaped(child: ChildProcess): boolean {
-  return child.exitCode !== null || child.signalCode !== null;
-}
-
-/**
- * Is there anything left for the ladder to signal?
  *
- * A REAPED CHILD ENDS IT. Not "reaped and the group looks gone" — reaped, and that
- * is the whole rule.
- *
- * WHY, AFTER TRYING THE OTHER THING TWICE
+ * THIS IS ALSO THE LADDER'S SIGNAL GATE, and it is deliberately the whole rule
+ * rather than "reaped and the group looks gone".
  *
  * The tempting version escalates while the group still answers, so that a CLI which
  * handles SIGTERM and exits — leaving a forked helper that ignores it — still gets
  * its group SIGKILLed. That case is real and it is what FR-R3-054 was written for.
  * But the address the ladder would use is the exited child's pid, and once Node has
- * reaped the child that pid is the operating system's to reuse:
+ * reaped the child that pid is the operating system's to reuse: a new group leader
+ * can hold it, `kill(-pid, 0)` answers "alive" about a stranger, and the ladder
+ * would SIGKILL that stranger's whole tree. On Windows `taskkill /pid <pid> /T /F`
+ * is the same hazard with none of the pgid reservation to soften it.
  *
- *   - A runner holds its `active` entry through `awaitStdinDelivery`'s grace and its
- *     diagnostic writes, so a `cancelAll()` at deactivation can land seconds after
- *     the child is gone.
- *   - A process group id is released once its last member exits. A new leader can
- *     then hold it, and `process.kill(-pid, 0)` answers "alive" about a stranger.
- *   - `signalProcessTree` would then send `SIGKILL` to that stranger's whole group,
- *     and `confirmOrReport` would file a `process-tree-unconfirmed` entry against a
- *     Run that no longer owns the pid. On Windows `taskkill /pid <pid> /T /F` is the
- *     same hazard with none of the pgid reservation to soften it.
+ * Killing an unrelated process tree is worse than missing a kill, so the safety
+ * property that held before this feature — a reaped child is never signalled — is
+ * kept. What is lost is a helper that outlives its parent: the same shape as the
+ * `setsid` and re-parenting escapes `docs/architecture/native-binding-decision.md`
+ * records as permanent, and named as such in `docs/operations/backends.md`.
  *
- * Killing an unrelated process tree, and recording a false lead an operator will
- * act on, are both worse than missing a detection. Before this feature a reaped
- * child was never signalled at all; that safety property is restored rather than
- * traded away for a case the probe cannot distinguish from a stranger.
- *
- * WHAT IS LOST, STATED
- *
- * A helper that outlives its parent, once the parent is reaped, is out of reach.
- * That is the same shape as the `setsid` and re-parenting escapes
- * `docs/architecture/native-binding-decision.md` records as permanent: a descendant
- * this product can no longer safely address. It is named in
- * `docs/operations/backends.md` step 6 rather than left for a reader to infer from
- * the absence of an audit entry.
+ * It gates SIGNALLING only. Whether to REPORT is a different question with a
+ * different cost, decided at `confirmOrReport`.
  */
-export function nothingLeftToSignal(child: ChildProcess): boolean {
-  return childIsReaped(child);
+export function childIsReaped(child: ChildProcess): boolean {
+  return child.exitCode !== null || child.signalCode !== null;
 }
+
 
 /**
  * Whether the tree is gone. This is what lets a phase finalize honestly: a
@@ -197,8 +177,12 @@ function errnoOf(error: unknown): string {
  * are the same two numbers describing the same ladder, and two copies is two places
  * for them to stop agreeing.
  */
-export const SIGKILL_DELAY_MS = 2_000;
-export const TREE_CONFIRM_DELAY_MS = 500;
+// Module-private. They were exported while each runner ran its own ladder; with the
+// ladder consolidated here they have no consumer outside this file, and leaving them
+// exported presents them as a tunable part of the contract — an invitation to import
+// them and re-implement the ladder, which is the duplication the extraction removed.
+const SIGKILL_DELAY_MS = 2_000;
+const TREE_CONFIRM_DELAY_MS = 500;
 
 /**
  * FR-R3-083 — the escalation ladder, once.
@@ -305,7 +289,7 @@ export function escalateAndReportTree(deps: TreeEscalationDeps): void {
   // survived" case is not detected. It never was — the probe only ever answered for
   // the direct child there — and it is part of the same permanent limit
   // `docs/architecture/native-binding-decision.md` records.
-  if (nothingLeftToSignal(child)) return;
+  if (childIsReaped(child)) return;
 
   // No probe on its OWN before the first signal, and the reason is FR-R3-054 §4 finding 1,
   // relearned: `processTreeIsGone` answers for the GROUP, and a child that leads no
@@ -326,16 +310,28 @@ export function escalateAndReportTree(deps: TreeEscalationDeps): void {
   // and closing it would cost the case above, which is not narrow at all.
 
   const confirmOrReport = (): void => {
-    // The same rule as the kill guard, for the same reason: a probe against a reaped
-    // child's pid cannot tell our tree from a stranger holding a recycled one, and a
-    // false audit entry is a false lead an operator acts on. Rejecting the probe for
-    // killing and trusting it for evidence would be the worst of both.
+    // NOT the signal gate. Applying it here suppressed the report in the ordinary
+    // case — 500 ms after the ladder's own SIGKILL the child is reaped by definition,
+    // so the one arrangement this evidence path exists for (child dead, helper still
+    // alive) produced no warning and no audit entry at all. The feature's headline
+    // claim was true of nothing.
     //
-    // On Windows the probe answers only for the direct child in any case, so the
-    // evidence path does not fire there at all. That is the honest position, and
-    // `docs/operations/platform-observation-record.md` and `backends.md` say so
-    // rather than letting an operator infer coverage from silence.
-    if (nothingLeftToSignal(child) || process.platform === 'win32') return;
+    // The two questions have different costs, and that is why they get different
+    // gates. Signalling a possibly-recycled pgid DESTROYS an unrelated process tree.
+    // Reporting on one writes an observational audit entry carrying the pid, which
+    // an operator can check and which the runtime-log warning already accompanies.
+    // A wrong entry here is a weak lead; a wrong kill there is someone else's work
+    // gone. Treating them as the same question is what broke this.
+    //
+    // The residual is stated rather than closed: between a child's reaping and its
+    // removal from the runner's `active` map, a recycled pid whose new holder leads
+    // a group can produce a spurious entry. `docs/operations/backends.md` says so.
+    //
+    // On Windows the probe answers only for the direct child, so it cannot establish
+    // a surviving tree at all and the evidence path does not fire there.
+    // `platform-observation-record.md` records that rather than letting an operator
+    // infer coverage from silence.
+    if (process.platform === 'win32') return;
     if (processTreeIsGone(child)) return;
     if (deps.alreadyReported()) return;
     deps.markReported();
@@ -364,30 +360,12 @@ export function escalateAndReportTree(deps: TreeEscalationDeps): void {
   deps.info?.('sending SIGTERM to process tree');
   void signalProcessTree(child, 'SIGTERM');
   setTimeout(() => {
-    // ESCALATE ON THE GROUP, NOT ON THE DIRECT CHILD.
-    //
-    // This is the correction to an earlier version that returned here whenever the
-    // direct child had exited, on the premise that "SIGKILL targets a leader that
-    // has already exited". It does not: `signalProcessTree` sends
-    // `process.kill(-pid, …)`, and a POSIX process group outlives its leader for as
-    // long as any member remains. So on the exact arrangement this feature exists
-    // for — the CLI installs a SIGTERM handler and exits while its forked helper
-    // ignores it — that version declined to send the one signal that would have
-    // reaped the helper, and then filed an audit entry describing the survivor it
-    // had chosen not to kill.
-    //
-    // FR-R3-054 §4 finding 2 warned against gating escalation on
-    // `processTreeIsGone`, having found that it "changed when SIGKILL is sent". It
-    // does not apply here, and the reason is worth writing down: a live direct child
-    // is a live group member, so the group test can never SUPPRESS a SIGKILL that
-    // the child test would have sent. It can only ADD one — in exactly the case
-    // above. Strict superset, not a different rule.
-    //
-    // BOTH conditions. `processTreeIsGone` alone would skip the escalation for a
-    // child that leads no group (see the note at the top), and the child's status
-    // alone was what skipped it for the arrangement this feature exists for. Only
-    // when the child has exited AND the group is gone is there nothing left to kill.
-    if (nothingLeftToSignal(child)) return;
+    // The signal gate, and the whole of it. See `childIsReaped` for why a reaped
+    // child ends the ladder rather than "reaped and the group looks gone" — an
+    // earlier version of THIS comment described the second rule, which the code has
+    // never implemented, and a contradicted comment in a codebase where comments are
+    // the design record is worse than none.
+    if (childIsReaped(child)) return;
     deps.info?.('sending SIGKILL to process tree');
     void signalProcessTree(child, 'SIGKILL').then(() => {
       setTimeout(confirmOrReport, TREE_CONFIRM_DELAY_MS).unref();

@@ -118,8 +118,15 @@ export function reportMountCapability(
       // verdict arrives in. A bare call leaves that rejection unobserved, and the
       // `unknown` return type on the interface is what keeps the floating-promise
       // rule from saying so.
-      void Promise.resolve(notifier.warn(UNSUPPORTED_MESSAGE)).catch(() => undefined);
-      notifiedWorkspaces.add(workspaceRoot);
+      void Promise.resolve(notifier.warn(UNSUPPORTED_MESSAGE)).then(
+        () => notifiedWorkspaces.add(workspaceRoot),
+        // Not marked. A synchronous throw was already handled; an ASYNC rejection —
+        // which is the shape VS Code produces when the host is disposing, i.e. this
+        // verdict's own window — used to run the `add` on the next line regardless.
+        // The root was then permanently marked notified and a later `schegent.reset`
+        // logged the finding without ever showing it, for the life of the host.
+        () => undefined
+      );
       return;
     case 'read-only':
       logger.warn(

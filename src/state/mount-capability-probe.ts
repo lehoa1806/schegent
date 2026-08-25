@@ -211,6 +211,11 @@ async function realExclusiveCreate(
  * on expiry because its callers want an error with their own code, and this one
  * needs a tri-state that never throws — the probe's whole contract is that a failure
  * to answer is a verdict, not an exception.
+ *
+ * The bound's timer is UNREF'D. The deferred sweep waits several bounds on a create
+ * that may never settle, and a ref'd timer there holds the Node event loop open for
+ * that whole window after the probe has answered — a probe outliving activation is
+ * the opposite of bounded.
  */
 type Settled<T> =
   | { readonly state: 'value'; readonly value: T }
@@ -222,7 +227,7 @@ const PROBE_TIMEOUT_MARKER = Symbol('mount-probe-timeout');
 
 async function raceSettled<T>(work: Promise<T>, timeoutMs: number): Promise<Settled<T>> {
   try {
-    return { state: 'value', value: await boundForCaller(work, timeoutMs, timeoutError) };
+    return { state: 'value', value: await boundForCaller(work, timeoutMs, timeoutError, true) };
   } catch (error) {
     if (isTimeout(error)) return { state: 'timeout' };
     return { state: 'error', error };

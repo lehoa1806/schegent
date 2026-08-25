@@ -98,16 +98,49 @@ describe('mount capability reporting (FR-R3-083)', () => {
     }
   });
 
-  it('warns once per workspace root, not once per window', () => {
+  it('warns once per workspace root, not once per window', async () => {
     // FR-012, matching `warnIfEnvironmentIsUnrestricted`. Keyed by root rather than
     // a boolean so a window that adds a folder can warn about the new one.
+    //
+    // The `await` is load-bearing, and so is the reason for it: the root is marked
+    // notified only when the notifier's `Thenable` RESOLVES. Marking synchronously
+    // recorded an attempt rather than a delivery, so a rejection -- the shape VS Code
+    // produces while the host is disposing, which is exactly this verdict's window --
+    // burned the one notification for that root for the life of the extension host.
+    //
+    // The cost of the async mark is a window of one microtask in which two verdicts
+    // for the same root would both notify. A second verdict requires stage 2 to be
+    // re-wired, which is not same-tick, so the window is not reachable in practice.
     const verdict: MountCapabilityVerdict = { capability: 'unsupported', cause: 'exclusive-create-unsupported' };
     const first = report(verdict, '/a');
+    await Promise.resolve();
     const again = report(verdict, '/a');
+    await Promise.resolve();
     const other = report(verdict, '/b');
+    await Promise.resolve();
     expect(first.notifications).toHaveLength(1);
     expect(again.notifications).toEqual([]);
     expect(other.notifications).toHaveLength(1);
+  });
+
+  it('does NOT mark the root when the notification is rejected', async () => {
+    // The failure the delivery-not-attempt rule exists for. A rejected warn must
+    // leave the root unmarked, so the next verdict for it can still reach the
+    // operator.
+    resetMountCapabilityWarnings();
+    const verdict: MountCapabilityVerdict = { capability: 'unsupported', cause: 'exclusive-create-unsupported' };
+    const rejecting = harness();
+    reportMountCapability(
+      verdict,
+      '/c',
+      rejecting.logger,
+      { warn: () => Promise.reject(new Error('host disposing')) }
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    const retry = report(verdict, '/c');
+    await Promise.resolve();
+    expect(retry.notifications).toHaveLength(1);
   });
 
   it('preserves the deciding errno in the log line', () => {

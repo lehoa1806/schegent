@@ -19,7 +19,9 @@ records reads, six months later, exactly like a passing one.
 | **Unrun here** | The fixture exists and is written to run unedited on the platform it targets. It has not run on that platform. The acceptance half is **unmet**, not met. |
 | **Asserted by unit table only** | The condition cannot be produced on any filesystem available to this project, so the classification is exercised by handing the observation in directly. The code path is covered; the real-world behaviour is not measured. This is a **weaker claim** and is recorded as one. |
 
-There is no fourth class, and in particular there is no "expected to pass".
+There is no fourth class, and in particular there is no "expected to pass". A row whose
+parenthetical says *by injection* is **Asserted by unit table only** — that phrase in an
+*Observed here* row is a misfiled row, not a shade of meaning.
 
 ## The record
 
@@ -35,7 +37,8 @@ There is no fourth class, and in particular there is no "expected to pass".
 | A mount that permits a **second** exclusive create is reported `unsupported` | `FR-R3-083` §4 | `tests/unit/state/mount-capability.test.ts` | **Asserted by unit table only** |
 | A read-only workspace is classified apart from a broken mount | `FR-R3-083` §4 | `tests/unit/state/mount-capability.test.ts` | **Asserted by unit table only** |
 | The probe answers `undetermined` within its bound against a create that never settles | `FR-R3-083` §4 | `tests/unit/state/mount-capability-probe.test.ts` | **Observed here** |
-| A process group that survives SIGKILL is recorded in evidence | `FR-R3-054` §5 | `tests/unit/controller/process-tree-degradation.test.ts` | **Observed here** (POSIX, by injection: a real unkillable group is not producible) |
+| The escalation ladder reports a group that survives SIGKILL | `FR-R3-054` §5 | `tests/unit/runner/tree-escalation.test.ts` | **Asserted by unit table only** — a genuinely unkillable process group is not producible on demand, so the ladder's decisions are driven against a child double with a stubbed probe. What is established is which decision it reaches, not that it has ever reached it against a real survivor. |
+| That report reaches the audit record | `FR-R3-054` §5 | `tests/unit/controller/process-tree-degradation.test.ts`, `tests/lint/tree-degradation-emission-funnel.test.ts` | **Observed here** — the recorder runs against a real append, and the wiring between the runner's hook and the audit writer is gated. |
 | The same, on Windows | `FR-R3-054` §5 | — | **Not implemented, deliberately.** There is no group to probe, so the only available check answers for the direct child — and a recycled pid inside the confirmation window would file an entry against a Run whose tree had died. The runtime-log warning is what Windows has. See [Backend operations](backends.md) step 6. |
 
 ## What this record does not claim

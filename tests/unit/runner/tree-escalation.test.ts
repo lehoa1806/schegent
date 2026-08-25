@@ -24,6 +24,14 @@ import type { MonitorSidecarEvent } from '../../../src/contracts/backend-runner'
  */
 const attribution = { runId: 'run-1', phase: 'implement', iteration: 1 } as const;
 
+/**
+ * The ladder's SIGTERM->SIGKILL delay, restated here because the constant is
+ * module-private in `process-tree.ts` — deliberately, so nothing imports it and
+ * re-implements the ladder against it. This copy is a test's own clock, not a second
+ * definition: it only has to be >= the real one for the timer advance to pass it.
+ */
+const SIGKILL_DELAY_FOR_TEST = 2_000;
+
 interface Harness {
   readonly child: ChildProcess;
   readonly events: MonitorSidecarEvent[];
@@ -200,17 +208,46 @@ describe.skipIf(process.platform === 'win32')('escalateAndReportTree (FR-R3-083)
     await vi.advanceTimersByTimeAsync(5_000);
   });
 
-  it('skips SIGKILL only when the child has exited AND the group is gone', async () => {
+  it.each([
+    ['a live group', true],
+    ['a dead group', false]
+  ])('skips SIGKILL for a reaped child, whatever the group says (%s)', async (_label, alive) => {
+    // Named for what it checks. The previous name claimed a conjunction -- exited
+    // AND group gone -- which the code has never implemented and which this shape of
+    // test could not have distinguished anyway: the ladder returns before any group
+    // probe, so a single `stubKill(false)` case holds identically under either rule.
+    //
+    // Running BOTH is what pins the child-only rule: with a LIVE group and a reaped
+    // child there is still no SIGKILL, which a conjunction would have sent.
     vi.useFakeTimers();
-    stubKill(false);
+    stubKill(alive);
     const killSpy = vi.spyOn(process, 'kill');
     const h = harness(fakeChild(4242, true));
     h.run();
-    killSpy.mockClear();
     await vi.advanceTimersByTimeAsync(5_000);
-    const escalations = killSpy.mock.calls.filter(([, sig]) => sig === 'SIGKILL');
-    expect(escalations).toEqual([]);
-    expect(h.events).toEqual([]);
+    expect(killSpy.mock.calls.filter(([, signal]) => signal !== 0)).toEqual([]);
+  });
+
+  it('REPORTS a surviving group even though the child was reaped by our own SIGKILL', async () => {
+    // The case the feature exists for, and the one an earlier version suppressed by
+    // reusing the signal gate here: 500 ms after the ladder's own SIGKILL the child
+    // is reaped by definition, so gating the report on that produced no warning and
+    // no audit entry for any real survivor.
+    //
+    // Signalling and reporting have different costs -- one destroys an unrelated
+    // process tree, the other writes an observational entry an operator can check --
+    // so they get different gates.
+    vi.useFakeTimers();
+    const child = fakeChild(4242, false);
+    stubKill(true);
+    const h = harness(child);
+    h.run();
+    // The ladder's SIGKILL lands and the child is reaped, exactly as in production.
+    await vi.advanceTimersByTimeAsync(SIGKILL_DELAY_FOR_TEST + 10);
+    Object.assign(child, { signalCode: 'SIGKILL' });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(h.events).toHaveLength(1);
+    expect(h.warnings[0]).toContain('not confirmed gone after SIGKILL');
   });
 
   it('emits ONE entry when two cancel paths hit one hung child', async () => {

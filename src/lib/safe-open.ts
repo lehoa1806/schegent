@@ -42,7 +42,18 @@ import * as path from 'node:path';
 export type SafeOpenRefusal =
   /** A path component is a symbolic link. */
   | 'symlink-component'
-  /** The leaf itself is a symbolic link (`O_NOFOLLOW` refused the open). */
+  /**
+   * The leaf itself is link-like, established by a check the caller trusts.
+   *
+   * In `openWithinRoot` that check is the kernel's: `O_NOFOLLOW` refused the open,
+   * atomically. In `services/dispatch-output-guard.ts` — which never opens anything
+   * — it is that site's own `lstat`. The earlier wording said only the first, which
+   * made the reason claim an atomicity its second caller does not have.
+   *
+   * The distinction from `reparse-point-leaf` is therefore about the PLATFORM, not
+   * about which caller asked: this reason means the check was as strong as that
+   * platform allows, and `reparse-point-leaf` means the platform allows less.
+   */
   | 'symlink-leaf'
   /**
    * The leaf carries a reparse point, on a platform with no `O_NOFOLLOW`.
