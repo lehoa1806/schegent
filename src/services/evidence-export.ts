@@ -267,8 +267,18 @@ export async function verifyExport(
   let chainBroken = false;
   let previous: string | null = null;
   for (const [index, link] of manifest.chain.entries()) {
-    const entry = manifest.contents[index];
-    if (!entry || link.previousDigest !== previous || link.digest !== sha256(`${previous ?? ''}${entry.digest}`)) {
+    // `.at()` rather than `[index]`: the manifest was parsed from a file the
+    // recipient may have edited, so `contents` can be SHORTER than `chain`. The
+    // declared type says otherwise and the type is the thing that is wrong here
+    // — a cast over `JSON.parse` cannot make an untrusted file well-formed. A
+    // truncated `contents` with an intact `chain` is exactly the tamper this
+    // verification exists to catch.
+    const entry = manifest.contents.at(index);
+    if (
+      entry === undefined ||
+      link.previousDigest !== previous ||
+      link.digest !== sha256(`${previous ?? ''}${entry.digest}`)
+    ) {
       chainBroken = true;
       break;
     }

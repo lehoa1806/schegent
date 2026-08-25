@@ -283,6 +283,31 @@ this change's scope), so the claim rests on the one-directional import assertion
 modules — not on a tool that walks the whole graph. A cycle elsewhere in the tree
 would not be caught by either.
 
+**Agent capability boundary (FR-R3-086).** A Phase may declare a capability set —
+`workspace-write`, `outside-workspace-write`, `process-spawn`, `network` — frozen
+into the Run's plan snapshot. `services/capability-enforcement-plan.ts` translates
+it into the chosen backend's own enforcement flags, so the backend's permission
+engine refuses at the attempt. **Omission means every capability**, and the plan
+turns that into each adapter's current argv byte for byte, so a phase that
+declares nothing spawns exactly as it did before. A capability the backend cannot
+express refuses the phase before it starts, via
+`controller/capability-refusal-recorder.ts`, recording `capability-refused` first.
+The limits — the host does not observe tool calls, and `agy` can express one of
+four — are stated in `docs/security/threat-model.md` beside what it does bound.
+
+**Local evidence controls (FR-R3-085).** `services/retention-disclosure.ts` derives
+the operator-facing retention document from the constants that enforce it;
+`services/evidence-export.ts` produces a manifest checked in both directions with
+an export-side digest chain; `services/evidence-delete.ts` refuses rather than
+races and reports both what it removed and what it retained. All three route
+through the shared containment oracle and act on the resolved path.
+
+<!-- Source: src/contracts/phase-capabilities.ts -->
+<!-- Source: src/services/capability-enforcement-plan.ts -->
+<!-- Source: src/controller/capability-refusal-recorder.ts -->
+<!-- Source: src/services/evidence-export.ts -->
+<!-- Source: src/services/evidence-delete.ts -->
+<!-- Source: src/services/retention-disclosure.ts -->
 <!-- Source: src/contracts/backend-kinds.ts -->
 <!-- Source: src/runner/backend-runner-factory.ts -->
 <!-- Source: src/runner/claude-cli.ts -->

@@ -128,14 +128,33 @@ Every gate this feature adds was exercised in both directions — introduce the 
 revert, observe green — before it was called done. A gate whose red state was never observed is a
 gate with an unproven failure path.
 
-| Gate | Control |
-|---|---|
-| `tests/lint/backend-kind-placement.test.ts` | value import added to a real config module; type-only import must NOT report; re-export hub detected |
-| `tests/contract/backend-kind-move-equivalence.test.ts` | pre-move literals are not read from the module under test |
-| `tests/unit/build/require-full-gate.test.ts` | skipped job refuses / same job successful passes |
-| `tests/unit/build/full-gate-parity.test.ts` | job name removed from `REQUIRED_JOB_NAMES` → 2 assertions red; reverted → green |
-| `scripts/envelope-doc-liveness.sh` | dead path → red naming it; reverted → green; backend names stripped → red |
-| `tests/lint/gate-integrity/vacuity-false-negative-census.test.ts` | the mutation is pinned against a synthetic control of each recognised shape |
+| Gate | Control | Red observed |
+|---|---|---|
+| `tests/lint/backend-kind-placement.test.ts` | value import added to a real config module; type-only import must NOT report; re-export hub detected | yes |
+| `tests/contract/backend-kind-move-equivalence.test.ts` | pre-move literals are not read from the module under test | yes |
+| `tests/unit/build/require-full-gate.test.ts` | skipped job refuses / same job successful passes | yes |
+| `tests/unit/build/full-gate-parity.test.ts` | job name removed from `REQUIRED_JOB_NAMES` → 2 assertions red; reverted → green | yes, by live mutation |
+| `scripts/envelope-doc-liveness.sh` | dead path → red naming it; reverted → green; backend names stripped → red | yes, 9/9 selftest |
+| `scripts/single-platform-qualifier.sh` | unqualified claim → red naming file and line; qualifier added → green; a qualifier 12 lines away does NOT discharge | yes, 8/8 selftest |
+| `tests/lint/install-flag-parity.test.ts` | `--ignore-scripts` stripped from a real workflow's real text | yes |
+| `tests/lint/held-major-staleness.test.ts` | a backdated row in the real record's real text | yes |
+| `tests/lint/dependency-change-scope.test.ts` | a bumped range and an undeclared addition | yes |
+| `tests/lint/retention-disclosure-parity.test.ts` | a perturbed constant makes the rendered table differ from the document | yes |
+| `tests/unit/services/evidence-export.test.ts` | an unlisted file added to the artifact → red; removed → green | yes |
+| `tests/unit/audit/platform-permission-modes.test.ts` | a loosened mode is detected | yes |
+| `tests/a11y/a11y-scan.test.ts` (spec) | a baseline entry removed → `new: 1`, named; restored → green | yes, by live mutation |
+| `tests/lint/a11y-policy-parity.test.ts` | a drifted statement and a widened tag set | yes |
+| `tests/unit/services/capability-enforcement-plan.test.ts` | withholding a capability changes the argv — the plan is not a no-op | yes |
+| `tests/integration/capability-refusal.test.ts` | narrowed set → refused at the attempt; widened set → same operation succeeds | yes |
+| `tests/lint/capability-argv-parity.test.ts` | a drifted adapter literal | yes |
+| `tests/lint/capability-text-contract-parity.test.ts` | an undeclared event-shaped token | yes |
+| `tests/lint/expansion-freeze.test.ts` | each frozen pattern matched against its own probe | yes |
+| `tests/lint/gate-integrity/vacuity-false-negative-census.test.ts` | the mutation is pinned against a synthetic control of each recognised shape | yes |
+| `tests/lint/procedure-surface-registry.test.ts` | a registered probe surface: disagree → throws, agree → does not, unregistered → not checked | yes |
+
+**Two of these were driven by a LIVE mutation of the real tree** — the job-name removal and the
+accessibility baseline entry — rather than by an in-memory fixture. Where a live mutation was used, the
+tree was restored and re-verified green in the same step.
 
 ---
 
@@ -147,3 +166,26 @@ gate with an unproven failure path.
 | Backend containment asymmetry | `repo/docs/security/threat-model.md` | envelope threat model, checked by `envelope-doc-liveness.sh` |
 | Backend identity | `repo/src/contracts/backend-kinds.ts` | every importer; `backend-kind-placement.test.ts` |
 | Vacuity control idioms | `tests/lint/gate-integrity/vacuity-detector.ts` | the gate and the census both import it |
+| Retention bounds | the retention constants in `src/audit/`, `src/services/`, `src/monitor/` | `retention-disclosure.ts` reads them; `retention-disclosure-parity.test.ts` gates the rendered document |
+| Held major upgrades | `docs/release/held-major-upgrades.md` | `held-major-staleness.test.ts` resolves every row against the two manifests |
+| Install-script policy | the workflow files **and** the two `.npmrc` files | neither derives from the other — npm reads one, Actions the other — so `install-flag-parity.test.ts` checks them against each other in both directions |
+| Accessibility target | `PRODUCT.md` and `docs/prd-metrics-dashboard.md` | the scan's tag set; `a11y-policy-parity.test.ts` binds all three |
+| Capability audit events | `src/contracts/audit-events.ts` | operator-facing text; `capability-text-contract-parity.test.ts`, checked contract-first |
+| Default backend argv | the `UNBOUNDED_PERMISSION_ARGS` literal in each adapter | `unboundedArgs()` in the plan; `capability-argv-parity.test.ts`. **Two authorities on purpose**: four gates read the adapter source to prove the posture, and the plan needs the value to answer "what does the default produce?" — neither can be derived from the other without losing what the other provides. |
+
+### Bounds, caps and coverage fractions this feature prints (FR-081)
+
+Every one of these is emitted at run time rather than recorded here, so it cannot go stale:
+
+| Printed by | What it declares |
+|---|---|
+| `vacuity-false-negative-census` | `mutated=N stillCalledControlled=M rate=R%`, plus what the mutation does **not** model |
+| `zero-offender-census` | classifiable gates, tree files scanned, and **how many gate files were NOT classified** |
+| `allowlist-entries-still-apply` | checked *N* of *M* path claims, the readable-gate count, and that a clean run is not a clean sweep |
+| `scripts/test-census.mjs` | two coverage figures, the rule that assigns each, and what it does not measure |
+| `scripts/envelope-doc-liveness.sh` | registered documents, spans resolved, spans excused, and the 2-line tombstone window |
+| `scripts/single-platform-qualifier.sh` | its scan roots, its claim count, its discharge vocabulary, and what it does not check |
+| `scripts/posture-status.sh` | three things it did **not** verify — unconditionally, not through `say()` |
+| the accessibility scan | target, surface count, exclusion list (including when empty), and that a scan is not conformance |
+| `docs/release/accessibility-at-matrix.md` | every supported platform, recorded **untested** |
+| `tests/unit/audit/platform-permission-modes.test.ts` | the platform it did not exercise |

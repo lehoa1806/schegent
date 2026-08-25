@@ -179,6 +179,8 @@ drifts unnoticed, because the readers who would catch an error never get there.
 
 ### Release
 
+- [Canary credentials: an itemized request](release/canary-credential-request.md) — what the scheduled
+  backend canary would need to run a live phase, per credential, with the cost of a leak (FR-R3-084)
 - [Assistive-technology matrix](release/accessibility-at-matrix.md) — what real screen-reader testing
   has been done per platform, and where the honest answer is **untested** (FR-R3-091)
 - [Held major dependency upgrades](release/held-major-upgrades.md) — the deliberate holds, why each is

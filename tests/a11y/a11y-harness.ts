@@ -34,7 +34,15 @@ export const THEME_CLASS: Readonly<Record<ThemeName, string>> = {
 export const THEMES: readonly ThemeName[] = ['light', 'dark', 'high-contrast'];
 
 function inlineJson(value: unknown): string {
-  const encoded = JSON.stringify(value);
+  // Annotated `string | undefined` because that is what it is: `JSON.stringify`
+  // returns `undefined` for `undefined`, a function, or a symbol. The lib type
+  // says `string`, which is why the guard below reads as unnecessary to the
+  // type-aware rule while being entirely necessary at run time.
+  // Cast, not an annotation: an annotation is narrowed away by the initializer's
+  // declared type, so the guard still reads as impossible. The cast states the
+  // truth the lib type omits — `JSON.stringify` returns `undefined` for
+  // `undefined`, a function or a symbol — and keeps the run-time guard real.
+  const encoded = JSON.stringify(value) as string | undefined;
   if (encoded === undefined) throw new Error('a11y fixture is not JSON-serializable');
   return encoded.replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026');
 }
