@@ -152,6 +152,15 @@ The full reasoning, the two shapes not chosen, and what remains outstanding are 
    permanent limit stated above, and it is why the runtime-log warning is kept beside the audit
    entry rather than replaced by it.
 
+   **A helper that outlives its parent is out of reach once the parent is reaped.**
+   The ladder addresses a tree by the direct child's pid, and once the operating system has reaped
+   that child the pid is free to be reused — a new process group leader can hold it, and a probe
+   would then answer "alive" about a stranger. Signalling there would kill an unrelated process
+   tree, and recording it would file a false lead. So the ladder stops when the child is reaped.
+   That is the same class of escape as `setsid` and re-parenting above, and it is closed by the
+   same thing: a Job Object, which the [native binding decision](../architecture/native-binding-decision.md)
+   declines.
+
    **On Windows the event is not emitted at all.** There is no process group to probe, so the only
    question `processTreeIsGone` can answer is whether the direct child is gone — and once
    `taskkill /T /F` has reaped it, a recycled pid inside the confirmation window would answer

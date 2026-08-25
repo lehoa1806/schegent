@@ -147,26 +147,30 @@ describe.skipIf(process.platform === 'win32')('escalateAndReportTree (FR-R3-083)
     expect(h.warnings).toEqual([]);
   });
 
-  it('SIGKILLs the group even when the direct child has exited', async () => {
-    // The arrangement this feature exists for: the CLI installs a SIGTERM handler
-    // and exits while its forked helper ignores it and keeps writing.
+  it('does NOTHING once the direct child has been reaped', async () => {
+    // The safety property, restored after two rounds of trying to have it both ways.
     //
-    // An earlier version returned here, reasoning that SIGKILL "targets a leader
-    // that has already exited". It does not -- `signalProcessTree` signals the
-    // GROUP, and a POSIX group outlives its leader while any member remains. That
-    // version declined to send the one signal that would have reaped the helper and
-    // then filed an audit entry describing the survivor it chose not to kill.
+    // The tempting version escalates while the group still answers, so a CLI that
+    // handles SIGTERM and exits -- leaving a forked helper that ignores it -- still
+    // gets its group SIGKILLed. But the address is the exited child's pid, and once
+    // Node reaps it that pid is the OS's to reuse: a new group leader can hold it,
+    // `kill(-pid, 0)` answers "alive" about a stranger, and the ladder would SIGKILL
+    // that stranger's whole tree and then file an audit entry against a Run that no
+    // longer owns the pid.
+    //
+    // Killing an unrelated process tree, and recording a false lead, are both worse
+    // than missing a detection. What is lost is named as a permanent limit rather
+    // than quietly absorbed.
     vi.useFakeTimers();
     stubKill(true);
     const killSpy = vi.spyOn(process, 'kill');
     const h = harness(fakeChild(4242, true));
     h.run();
     await vi.advanceTimersByTimeAsync(5_000);
-    // The group was signalled with SIGKILL, negative pid, despite the exited child.
-    expect(
-      killSpy.mock.calls.some(([pid, signal]) => pid === -4242 && signal === 'SIGKILL')
-    ).toBe(true);
-    expect(h.events).toHaveLength(1);
+    const realSignals = killSpy.mock.calls.filter(([, signal]) => signal !== 0);
+    expect(realSignals).toEqual([]);
+    expect(h.events).toEqual([]);
+    expect(h.warnings).toEqual([]);
   });
 
   it('still SIGTERMs a child that leads no group, rather than reading ESRCH as gone', async () => {

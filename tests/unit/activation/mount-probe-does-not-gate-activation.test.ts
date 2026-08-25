@@ -46,7 +46,7 @@ describe('the mount probe does not gate activation (FR-R3-083)', () => {
     expect(call.slice(0, 400)).toMatch(/\.then\(/);
     expect(call.slice(0, 400)).toMatch(/\(\)\s*=>\s*undefined/);
     // And activation itself does not await the launcher -- and DOES register it for
-    // disposal. The probe outlives its caller by up to two bounds, and stage 2 is
+    // disposal. The probe outlives its caller by roughly ten bounds (see `startMountCapabilityProbe`), and stage 2 is
     // re-wired on `schegent.reset` and on a workspace-folder change, so an
     // unregistered probe can resolve after the window has moved and notify the
     // operator about a workspace they are no longer in.

@@ -102,6 +102,48 @@ export function childIsReaped(child: ChildProcess): boolean {
 }
 
 /**
+ * Is there anything left for the ladder to signal?
+ *
+ * A REAPED CHILD ENDS IT. Not "reaped and the group looks gone" — reaped, and that
+ * is the whole rule.
+ *
+ * WHY, AFTER TRYING THE OTHER THING TWICE
+ *
+ * The tempting version escalates while the group still answers, so that a CLI which
+ * handles SIGTERM and exits — leaving a forked helper that ignores it — still gets
+ * its group SIGKILLed. That case is real and it is what FR-R3-054 was written for.
+ * But the address the ladder would use is the exited child's pid, and once Node has
+ * reaped the child that pid is the operating system's to reuse:
+ *
+ *   - A runner holds its `active` entry through `awaitStdinDelivery`'s grace and its
+ *     diagnostic writes, so a `cancelAll()` at deactivation can land seconds after
+ *     the child is gone.
+ *   - A process group id is released once its last member exits. A new leader can
+ *     then hold it, and `process.kill(-pid, 0)` answers "alive" about a stranger.
+ *   - `signalProcessTree` would then send `SIGKILL` to that stranger's whole group,
+ *     and `confirmOrReport` would file a `process-tree-unconfirmed` entry against a
+ *     Run that no longer owns the pid. On Windows `taskkill /pid <pid> /T /F` is the
+ *     same hazard with none of the pgid reservation to soften it.
+ *
+ * Killing an unrelated process tree, and recording a false lead an operator will
+ * act on, are both worse than missing a detection. Before this feature a reaped
+ * child was never signalled at all; that safety property is restored rather than
+ * traded away for a case the probe cannot distinguish from a stranger.
+ *
+ * WHAT IS LOST, STATED
+ *
+ * A helper that outlives its parent, once the parent is reaped, is out of reach.
+ * That is the same shape as the `setsid` and re-parenting escapes
+ * `docs/architecture/native-binding-decision.md` records as permanent: a descendant
+ * this product can no longer safely address. It is named in
+ * `docs/operations/backends.md` step 6 rather than left for a reader to infer from
+ * the absence of an audit entry.
+ */
+export function nothingLeftToSignal(child: ChildProcess): boolean {
+  return childIsReaped(child);
+}
+
+/**
  * Whether the tree is gone. This is what lets a phase finalize honestly: a
  * terminal state recorded while descendants are still running is a terminal
  * state that lies.
@@ -110,28 +152,6 @@ export function childIsReaped(child: ChildProcess): boolean {
  * no group to probe, so this answers only for the direct child and callers must
  * treat a `true` there as "the child is gone", not "the tree is".
  */
-/**
- * Is there anything left for the ladder to signal?
- *
- * ONE predicate, because the rule was written out twice — at the entry guard and at
- * the escalation — each under a different multi-paragraph comment emphasising a
- * different half. Dropping the win32 arm from one copy would either escalate against
- * a reaped Windows child (a `taskkill /pid <pid> /T /F` at a possibly recycled pid,
- * taking an unrelated process tree) or skip SIGKILL for the forked-helper case this
- * feature was written for. Two copies, two opposite failures, one edit away.
- *
- * The rule: the child has been reaped AND its tree is gone. On Windows the second
- * half is not answerable — `processTreeIsGone` there probes the direct child's pid
- * and cannot tell "our child" from a new holder of a recycled pid — so a reaped
- * child is taken as the end of it. That costs the "child exited, tree survived" case
- * on Windows, which was never detectable there anyway, and it is part of the same
- * permanent limit `docs/architecture/native-binding-decision.md` records.
- */
-export function nothingLeftToSignal(child: ChildProcess): boolean {
-  if (!childIsReaped(child)) return false;
-  return process.platform === 'win32' || processTreeIsGone(child);
-}
-
 export function processTreeIsGone(child: ChildProcess): boolean {
   const pid = child.pid;
   if (pid === undefined) return true;
@@ -306,19 +326,16 @@ export function escalateAndReportTree(deps: TreeEscalationDeps): void {
   // and closing it would cost the case above, which is not narrow at all.
 
   const confirmOrReport = (): void => {
-    // The SAME probe the kill guard refuses to act on, on the same platform — so it
-    // is refused here too. On Windows `processTreeIsGone` is `process.kill(pid, 0)`
-    // against the direct child's pid; once `taskkill /T /F` has reaped the child,
-    // a pid recycled inside the 500 ms confirm window answers "alive" and the
-    // product would file a `process-tree-unconfirmed` entry against a Run whose tree
-    // in fact died. Rejecting a probe for killing and trusting it for evidence is
-    // the worst of both: a false audit entry is a false lead an operator acts on.
+    // The same rule as the kill guard, for the same reason: a probe against a reaped
+    // child's pid cannot tell our tree from a stranger holding a recycled one, and a
+    // false audit entry is a false lead an operator acts on. Rejecting the probe for
+    // killing and trusting it for evidence would be the worst of both.
     //
-    // The cost is that the evidence path does not fire on Windows at all. That is
-    // the honest position — the probe cannot establish a surviving tree there — and
+    // On Windows the probe answers only for the direct child in any case, so the
+    // evidence path does not fire there at all. That is the honest position, and
     // `docs/operations/platform-observation-record.md` and `backends.md` say so
     // rather than letting an operator infer coverage from silence.
-    if (process.platform === 'win32') return;
+    if (nothingLeftToSignal(child) || process.platform === 'win32') return;
     if (processTreeIsGone(child)) return;
     if (deps.alreadyReported()) return;
     deps.markReported();

@@ -133,7 +133,21 @@ export function reportMountCapability(
           'a finding nor an assurance'
       );
       return;
+    default:
+      // EXHAUSTIVE, checked by the compiler. `MountCapability` already grew from
+      // three arms to four in this feature, and every case above `return`s — so a
+      // fifth would fall out of the switch, produce no log line and no notification,
+      // and `tsc` would stay green. This module's own header argues that a probe
+      // which finds an unsupported mount and continues quietly is worse than no
+      // probe; a silent fall-through is exactly that, arriving through the type
+      // system instead of the filesystem.
+      return assertNeverCapability(verdict.capability);
   }
+}
+
+/** Compile-time proof that the switch above covers every `MountCapability`. */
+function assertNeverCapability(value: never): void {
+  void value;
 }
 
 /**
@@ -155,11 +169,18 @@ export function startMountCapabilityProbe(
   logger: MountCapabilityLogger,
   notifier: MountCapabilityNotifier
 ): { dispose(): void } {
-  // The probe outlives its caller by up to FOUR bounds, not two: the gitignore
-  // drop, attempt one, attempt two, and the cleanup sweep are each raced against
-  // `MOUNT_PROBE_TIMEOUT_MS` in sequence. At the shipped 2 s that is 8 s, and a
-  // maintainer sizing a disposal window against "two bounds" would size it at half
-  // the real figure.
+  // THE PROBE'S I/O OUTLIVES THIS CALL BY ROUGHLY TEN BOUNDS.
+  //
+  // Sequentially: the gitignore drop, attempt one, attempt two and the inline
+  // cleanup are each raced against `MOUNT_PROBE_TIMEOUT_MS` (four), and on the
+  // abandoned path a deferred sweep waits `DEFERRED_SWEEP_BOUNDS` (five) more and
+  // then runs its own bounded removal. At the shipped 2 s that is about 20 s of
+  // probe-owned filesystem work after this function returns.
+  //
+  // The number is written once, here, because it has been wrong twice — first "two
+  // bounds", then "four" — and a maintainer sizing a disposal window against either
+  // would size it at a fraction of the real figure. `disposed` is what makes the
+  // over-run safe rather than the number being small.
   //
   // Stage 2 is re-wired on `schegent.reset` and on a workspace-folder change, so a probe
   // started against root A can resolve after the window has moved to root B — and

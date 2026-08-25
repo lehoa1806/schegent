@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 
 /**
  * FR-R3-083 (T1154) — a runner reports a lifecycle fact; something else decides
@@ -23,15 +23,67 @@ import { join, resolve } from 'node:path';
  *
  * Hermetic (FR-R3-033): `readdirSync`, never a spawned binary.
  */
-const RUNNER_DIR = resolve(__dirname, '..', '..', 'src', 'runner');
+/**
+ * The WHOLE of `src/`, walked recursively.
+ *
+ * This gate used to read a non-recursive listing of `src/runner` alone, which is not
+ * what it claims to measure: a second `tree-unconfirmed` emitter in `src/services`,
+ * `src/controller`, or a new `src/runner/tree/` subdirectory would have left the
+ * assertion green while the duplication it was rewritten to catch reappeared.
+ */
+const SRC_DIR = resolve(__dirname, '..', '..', 'src');
+const RUNNER_DIR = resolve(SRC_DIR, 'runner');
+
+/**
+ * CONSTRUCTS the event, rather than merely naming it.
+ *
+ * The trailing comma is what discriminates. An object literal being built writes
+ * `kind: 'tree-unconfirmed',` with more fields to follow; the contract's own
+ * declaration writes `readonly kind: 'tree-unconfirmed';` and the recorder's
+ * parameter type writes `{ kind: 'tree-unconfirmed' }`. A substring match counted
+ * all three as emitters the moment this gate started walking `src/` recursively —
+ * which would have made it fail on the very layering it exists to pin.
+ */
+const EMITS_TREE_UNCONFIRMED = /kind:\s*'tree-unconfirmed',/;
 
 /** Modules that would make a runner an audit author rather than a reporter. */
 const FORBIDDEN_IMPORT = /from\s+'[^']*(?:audit\/audit-log-writer|audit\/audit-entry|controller\/process-tree-degradation-recorder)'/;
 
-function runnerSources(): readonly { readonly name: string; readonly body: string }[] {
-  return readdirSync(RUNNER_DIR)
-    .filter((name) => name.endsWith('.ts'))
-    .map((name) => ({ name, body: readFileSync(join(RUNNER_DIR, name), 'utf8') }));
+interface Source {
+  readonly name: string;
+  readonly path: string;
+  readonly body: string;
+}
+
+function walk(dir: string, out: Source[]): void {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      walk(full, out);
+      continue;
+    }
+    if (entry.isFile() && entry.name.endsWith('.ts')) {
+      out.push({
+        name: entry.name,
+        path: relative(SRC_DIR, full).split(/[/\\]/).join('/'),
+        body: readFileSync(full, 'utf8')
+      });
+    }
+  }
+}
+
+/** Everything under `src/`, so a copy cannot hide in a directory this gate never read. */
+function allSources(): readonly Source[] {
+  const out: Source[] = [];
+  walk(SRC_DIR, out);
+  return out;
+}
+
+/** The runner modules specifically, for the import assertion. */
+function runnerSources(): readonly Source[] {
+  const out: Source[] = [];
+  walk(RUNNER_DIR, out);
+  return out;
 }
 
 describe('runners report, they do not record (FR-R3-083)', () => {
@@ -59,11 +111,11 @@ describe('runners report, they do not record (FR-R3-083)', () => {
     // The ladder now lives in `process-tree.ts` and both runners call it. A second
     // emitter appearing here means the ladder has been copied again, and the next
     // change to what is recorded will land in one copy.
-    const emitters = sources
-      .filter((s) => s.body.includes("kind: 'tree-unconfirmed'"))
-      .map((s) => s.name)
+    const emitters = allSources()
+      .filter((s) => EMITS_TREE_UNCONFIRMED.test(s.body))
+      .map((s) => s.path)
       .sort();
-    expect(emitters).toEqual(['process-tree.ts']);
+    expect(emitters).toEqual(['runner/process-tree.ts']);
   });
 
   it('keeps the runtime-log warning beside the audit emission', () => {
@@ -71,7 +123,7 @@ describe('runners report, they do not record (FR-R3-083)', () => {
     // log line as redundant. The audit append is BEST-EFFORT: when it cannot land --
     // a writer disposed by `deactivate()`, which is a common shape here -- the log
     // line is the only surviving record.
-    for (const source of sources.filter((s) => s.body.includes("kind: 'tree-unconfirmed'"))) {
+    for (const source of allSources().filter((s) => EMITS_TREE_UNCONFIRMED.test(s.body))) {
       expect(source.body).toContain('not confirmed gone after SIGKILL');
     }
   });

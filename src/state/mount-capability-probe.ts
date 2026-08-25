@@ -2,6 +2,7 @@ import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
 import { openWithinRoot } from '../lib/safe-open';
 import { resolveContainedLink } from '../lib/path-containment';
+import { boundForCaller } from '../lib/io-barrier';
 import { ensureSchegentGitignore } from '../audit/schegent-gitignore';
 // A real `SanitizedLogger` with no sinks discards everything, and it TYPECHECKS.
 // A hand-rolled stub had to be laundered through `as unknown as`, which disabled
@@ -147,12 +148,14 @@ export interface MountProbeDeps {
 const MAX_ERRNO_LENGTH = 32;
 const ERRNO_SHAPE = /^[A-Z][A-Z0-9_]*$/;
 
+function boundErrno(code: string): string {
+  return code.length <= MAX_ERRNO_LENGTH && ERRNO_SHAPE.test(code) ? code : 'unknown';
+}
+
 function errnoOf(error: unknown): string {
   if (error && typeof error === 'object' && 'code' in error) {
     const code = (error as { code?: unknown }).code;
-    if (typeof code === 'string' && code.length <= MAX_ERRNO_LENGTH && ERRNO_SHAPE.test(code)) {
-      return code;
-    }
+    if (typeof code === 'string') return boundErrno(code);
   }
   return 'unknown';
 }
@@ -187,48 +190,57 @@ async function realExclusiveCreate(
   // EEXIST is the answer the second attempt wants, so it is a REFUSAL and not an
   // I/O failure. Everything else the walk could not complete is the latter.
   if (result.errno === 'EEXIST') return { outcome: 'refused', errno: 'EEXIST' };
-  return { outcome: 'io-failed', errno: result.errno };
+  // BOUNDED here too. `safe-open`'s own `errnoOf` returns any string `code`,
+  // unbounded and unshaped, and this value reaches an operator-visible log line
+  // through the verdict. Bounding only the rejection channel left the production
+  // path — which is the one that actually carries a filesystem's answer — unguarded,
+  // while a test asserting the guarantee exercised the other one.
+  return { outcome: 'io-failed', errno: boundErrno(result.errno) };
 }
 
 /**
- * Race any promise against the bound, once.
+ * Race any promise against the bound, once, without throwing.
  *
- * ONE helper, because there were two near-identical ones here — same `settled`
- * flag, same `setTimeout`+`unref`, same `clearTimeout`, same two-arm `.then` —
- * differing only in what expiry and rejection produced. A fix to the race (an
- * `AbortSignal`, a different clear-order) would have had to land twice, and the two
- * could drift silently. The mapping now lives at the two callers, where it is
- * visibly different rather than accidentally so.
+ * Built ON `io-barrier.ts`'s `boundForCaller` rather than beside it. That module's
+ * header states it exists "so there is ONE implementation" of a bounded wait, and
+ * that "two copies of a shape are two shapes as soon as one is edited" — a third
+ * hand-rolled settled-flag/`setTimeout`/`clearTimeout` here would have made the next
+ * fix to the race land in two of three places.
+ *
+ * What is local is the SETTLEMENT DISCIPLINE, not the race: `boundForCaller` rejects
+ * on expiry because its callers want an error with their own code, and this one
+ * needs a tri-state that never throws — the probe's whole contract is that a failure
+ * to answer is a verdict, not an exception.
  */
 type Settled<T> =
   | { readonly state: 'value'; readonly value: T }
   | { readonly state: 'error'; readonly error: unknown }
   | { readonly state: 'timeout' };
 
-function raceSettled<T>(work: Promise<T>, timeoutMs: number): Promise<Settled<T>> {
-  return new Promise<Settled<T>>((resolve) => {
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      resolve({ state: 'timeout' });
-    }, timeoutMs);
-    timer.unref();
-    work.then(
-      (value) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve({ state: 'value', value });
-      },
-      (error: unknown) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve({ state: 'error', error });
-      }
-    );
+/** Distinguishes the bound's own rejection from the work's, since both arrive as one. */
+const PROBE_TIMEOUT_MARKER = Symbol('mount-probe-timeout');
+
+async function raceSettled<T>(work: Promise<T>, timeoutMs: number): Promise<Settled<T>> {
+  try {
+    return { state: 'value', value: await boundForCaller(work, timeoutMs, timeoutError) };
+  } catch (error) {
+    if (isTimeout(error)) return { state: 'timeout' };
+    return { state: 'error', error };
+  }
+}
+
+function timeoutError(): Error {
+  return Object.assign(new Error('mount probe bound expired'), {
+    [PROBE_TIMEOUT_MARKER]: true
   });
+}
+
+function isTimeout(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as Record<symbol, unknown>)[PROBE_TIMEOUT_MARKER] === true
+  );
 }
 
 /**
@@ -384,6 +396,13 @@ export async function probeMountCapability(
       void raceSettled(Promise.allSettled(outstanding), timeoutMs * DEFERRED_SWEEP_BOUNDS).then(
         (settled) => {
           if (settled.state !== 'value') return;
+          // Disposal is re-checked HERE, not only between stages. This callback can
+          // fire up to `DEFERRED_SWEEP_BOUNDS` bounds later, long after the window
+          // has moved on, and nothing else can cancel it. Removal of an artifact
+          // this probe made is the stated exception to the disposal contract — but
+          // the exception is for the INLINE sweep, which runs while the root is
+          // still the one we were given. This one is not covered by it.
+          if (disposed()) return;
           return removeProbeArtifact(deps.workspaceRoot, segments, timeoutMs);
         }
       );

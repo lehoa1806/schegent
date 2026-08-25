@@ -581,7 +581,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     vscode.workspace
       .getConfiguration('schegent.backend')
       .get<boolean>('allowUncontainedBackends') === true;
-  // FR-R3-083 — a runner reports; this records. See the recorder for why.
+  // FR-R3-083 — a runner reports; this records. Gate: tree-degradation-emission-funnel.
   const treeDegradationRecorder = new ProcessTreeDegradationRecorder((e) => auditWriter.append(e));
   const runnerRegistry = new BackendRunnerRegistry({
     // FR-R3-056 (H-01) — the shipped posture. Unset reads as the manifest default
