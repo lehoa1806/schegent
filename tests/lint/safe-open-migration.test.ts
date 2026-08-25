@@ -187,29 +187,6 @@ const UNMIGRATED: readonly string[] = [
   // root is REQUIRED on the session's deps rather than optional: a tail with no
   // root would open by pathname, which is the state being left. The registry
   // already held it, since it composes the file path from it.
-  // FR-R3-053 — every WORKSPACE-adjacent path in this module is migrated: the
-  // patch, the metadata, the decline marker and the `checkpoints/<runId>` chain
-  // all go through the checked walk, which matters because a checkpoint patch can
-  // hold an unredacted binary Git diff.
-  //
-  // One raw call remains, deliberately: `fs.mkdir(this.root)`. In production that
-  // root is `context.globalStorageUri.fsPath` — VS Code's per-extension global
-  // storage, outside the workspace and a directory the extension is expected to
-  // create. It is the walk's TRUST ANCHOR, and the walk never creates its own
-  // anchor. Kept on this list rather than moved to a whole-module exemption,
-  // because "one reasoned call" is exactly what a ledger should show.
-  //
-  // FR-R3-080 (T1077, 2026-08-25) re-decided this rather than inheriting it, and
-  // the decision is unchanged. `ensureAnchorWithinRoot` — the primitive
-  // FR-R3-069 added, and the one that resolved the same question for the raw
-  // transcript writer's spool root under FR-R3-078 — anchors at a HIGHER trusted
-  // root and walks the components below it. Global storage has no such higher
-  // root: its parent is VS Code's own extension-storage directory, which this
-  // extension neither owns nor may create, so anchoring there would assert a
-  // trust relationship that does not exist. The entry therefore stays, with its
-  // reason, which is what the item asks for when the anchor is not creatable
-  // beneath something trusted.
-  'services/run-checkpoint-service.ts',
   'services/run-request/local-input-validator.ts',
   // `state/ownership-fs.ts` struck 2026-08-25 (FR-R3-069, feature 152). The
   // 2026-08-24 attempt was reverted because the port's containment root WAS the
@@ -241,6 +218,35 @@ const UNMIGRATED: readonly string[] = [
  * below is what makes the claim checkable: a module on this list that acquires a
  * real `node:fs` import fails the gate.
  */
+/**
+ * FR-R3-053 closure decision (2026-08-25) — modules whose only raw call is on
+ * their own TRUST ANCHOR, which the walk by definition cannot create.
+ *
+ * `openWithinRoot` trusts its root and never creates it. A module whose root is
+ * outside the workspace, and beneath no higher root this extension owns, has
+ * nowhere to anchor a walk — so its one `mkdir` is not debt, it is the boundary
+ * the walk starts from.
+ *
+ * This was on `UNMIGRATED` from the beginning, correctly, because "one reasoned
+ * call" is exactly what a ledger should show. Keeping it there permanently is a
+ * different thing: it makes the debt count include a line that can never move,
+ * which makes "drained" unreachable and therefore meaningless as a target. So
+ * the reasoned call is recorded HERE, where it is still counted, still asserted,
+ * and no longer confused with work.
+ *
+ * The assertion below is what keeps that honest: a module on this list that
+ * acquires any raw call other than the anchor `mkdir` fails the gate.
+ */
+const TRUST_ANCHOR: readonly string[] = [
+  // `context.globalStorageUri.fsPath` — VS Code's per-extension global storage.
+  // Outside any workspace, and its parent is VS Code's own extension-storage
+  // directory, which this extension neither owns nor may create. There is no
+  // higher trusted root to anchor at; `ensureAnchorWithinRoot` resolved exactly
+  // this shape for the raw-transcript spool root, and it does not apply here.
+  // Every WORKSPACE-adjacent path in this module was migrated by FR-R3-053.
+  'services/run-checkpoint-service.ts'
+];
+
 const READS_THROUGH_MIGRATED_PORT: readonly string[] = [
   'catalog/catalog-manifest.ts',
   'catalog/version-record.ts'
@@ -366,7 +372,8 @@ describe('safe-open migration (FR-R3-053)', () => {
       ...UNMIGRATED,
       ...NOT_A_WORKSPACE_SINK,
       ...ATOMIC_PUBLISH_RENAME_RESIDUAL,
-      ...READS_THROUGH_MIGRATED_PORT
+      ...READS_THROUGH_MIGRATED_PORT,
+      ...TRUST_ANCHOR
     ]);
     const unexpected = callers.filter((f) => !known.has(f));
     // A new entry here is a new sink built the way the H-02 escape was built.
@@ -396,6 +403,25 @@ describe('safe-open migration (FR-R3-053)', () => {
     const body = readFileSync(join(SRC, 'audit', 'audit-log-writer.ts'), 'utf8');
     const rawCalls = [...body.matchAll(new RegExp(RAW_PATH_CALL, 'g'))];
     expect(rawCalls.every((match) => match[1] === 'rename')).toBe(true);
+  });
+
+  it('keeps the trust-anchor list to its anchor call and nothing else', () => {
+    // The list exists for one call on one directory. A module that acquired a
+    // second raw call — or moved its anchor somewhere a walk COULD reach — must
+    // not be sheltered by having been on it.
+    for (const relPath of TRUST_ANCHOR) {
+      const body = readFileSync(join(SRC, ...relPath.split('/')), 'utf8')
+        .split(/\r?\n/)
+        .filter((line) => {
+          const trimmed = line.trim();
+          return (
+            !trimmed.startsWith('//') && !trimmed.startsWith('*') && !trimmed.startsWith('/*')
+          );
+        })
+        .join('\n');
+      const kinds = [...body.matchAll(new RegExp(RAW_PATH_CALL, 'g'))].map((m) => m[1]);
+      expect({ relPath, kinds: [...new Set(kinds)] }).toEqual({ relPath, kinds: ['mkdir'] });
+    }
   });
 
   it('keeps the port-reading list free of any real filesystem import', () => {
