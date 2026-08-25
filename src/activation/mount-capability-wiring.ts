@@ -105,11 +105,15 @@ export function reportMountCapability(
       return;
     case 'unsupported':
       logger.warn(`mount capability: UNSUPPORTED — exclusive create does not arbitrate (${cause})`);
-      // The NOTIFICATION is the once-per-workspace thing, not the record. Marked
-      // here, on the arm that delivers it, so no other verdict can spend it.
       if (notifiedWorkspaces.has(workspaceRoot)) return;
+      // Recorded only AFTER the call returns. A VS Code UI call throws when stage 2
+      // is torn down underneath it — which is precisely when this probe's verdict
+      // arrives — and marking first burned the one notification for that root: the
+      // operator would never be told their filesystem cannot arbitrate, for the life
+      // of the extension host. The bookkeeping has to record a DELIVERY, not an
+      // attempt. The log line above is unconditional for the same reason.
+      notifier.warn(UNSUPPORTED_MESSAGE);
       notifiedWorkspaces.add(workspaceRoot);
-      void notifier.warn(UNSUPPORTED_MESSAGE);
       return;
     case 'read-only':
       logger.warn(

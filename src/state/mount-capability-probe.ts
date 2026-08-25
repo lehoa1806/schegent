@@ -93,6 +93,14 @@ export interface MountProbeDeps {
   readonly exclusiveCreate?: (segments: readonly string[]) => Promise<ExclusiveCreateObservation>;
   /** Injection seam for the bound, so a test does not wait two seconds. */
   readonly timeoutMs?: number;
+  /**
+   * Whether to drop `.schegent/.gitignore`. Defaults to true.
+   *
+   * Its own option rather than a side effect of `exclusiveCreate` being absent: what
+   * decides it is whether this probe is doing real I/O against a workspace, not
+   * which parameter a test happened to pass.
+   */
+  readonly dropIgnoreFile?: boolean;
 }
 
 /**
@@ -278,9 +286,15 @@ export async function probeMountCapability(
   // operator's `git status`. It is kept for that reason, and the reason is stated
   // so a reader who notices the ordering does not delete it as redundant.
   //
+  // Gated on its OWN option, never on `exclusiveCreate === undefined`. Hanging a
+  // production side effect off whether a test seam was supplied means any future
+  // non-test caller that injects a create — a diagnostics command, a second probe
+  // variant — silently stops dropping the file, and the drop is never exercised
+  // through the seam at all.
+  //
   // Bounded and best-effort, like everything else here: it must not become a way
   // for the probe to stall or to fail.
-  if (deps.exclusiveCreate === undefined) {
+  if (deps.dropIgnoreFile !== false) {
     await raceSettled(
       ensureSchegentGitignore(deps.workspaceRoot, NO_OP_LOGGER).catch(() => undefined),
       timeoutMs
@@ -372,7 +386,14 @@ export async function probeMountCapability(
     // function whose entire contract is that it is bounded. The verdict was
     // computed and then never returned, no log line was ever written, and a libuv
     // threadpool slot was held for the life of the extension host.
-    if (bound.created || bound.abandoned) {
+    // NOT on the abandoned path. There the deferred sweep above is the one that can
+    // work, because by construction the create has not settled and there is nothing
+    // to remove yet — an inline call would issue `realpath` + `lstat` against the
+    // unresponsive mount for no possible result, and be raced to a full extra bound
+    // in the process. On the mount this module's own comments call least able to
+    // afford the syscalls, that is another 2 s added to a verdict that is already
+    // computed.
+    if (bound.created && !bound.abandoned) {
       await removeProbeArtifact(deps.workspaceRoot, segments, timeoutMs);
     }
   }

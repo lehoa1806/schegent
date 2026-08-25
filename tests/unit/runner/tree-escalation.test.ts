@@ -131,25 +131,55 @@ describe('escalateAndReportTree (FR-R3-083)', () => {
     expect(h.warnings).toEqual([]);
   });
 
-  it('still confirms when the DIRECT CHILD exited but the group did not', async () => {
-    // The arrangement this evidence path exists for, and the one an earlier version
-    // skipped entirely: the CLI handles SIGTERM and exits while the helper it forked
-    // ignores it and keeps writing. The child's status is the right trigger for
-    // whether to ESCALATE; it was never the right trigger for whether to ASK.
+  it('SIGKILLs the group even when the direct child has exited', async () => {
+    // The arrangement this feature exists for: the CLI installs a SIGTERM handler
+    // and exits while its forked helper ignores it and keeps writing.
+    //
+    // An earlier version returned here, reasoning that SIGKILL "targets a leader
+    // that has already exited". It does not -- `signalProcessTree` signals the
+    // GROUP, and a POSIX group outlives its leader while any member remains. That
+    // version declined to send the one signal that would have reaped the helper and
+    // then filed an audit entry describing the survivor it chose not to kill.
     vi.useFakeTimers();
     stubKill(true);
+    const killSpy = vi.spyOn(process, 'kill');
     const h = harness(fakeChild(4242, true));
     h.run();
     await vi.advanceTimersByTimeAsync(5_000);
+    // The group was signalled with SIGKILL, negative pid, despite the exited child.
+    expect(
+      killSpy.mock.calls.some(([pid, signal]) => pid === -4242 && signal === 'SIGKILL')
+    ).toBe(true);
     expect(h.events).toHaveLength(1);
-    const event = h.events[0];
-    // And it says SO. SIGKILL targets a leader that has already exited, so it is not
-    // sent -- and stamping the full-ladder value here would make the record claim a
-    // signal that was never delivered. The warning says the same thing.
-    if (event.kind === 'tree-unconfirmed') {
-      expect(event.escalation).toBe('sigterm-only-child-exited');
-    }
-    expect(h.warnings[0]).toContain('SIGKILL was not sent');
+  });
+
+  it('still SIGTERMs a child that leads no group, rather than reading ESRCH as gone', () => {
+    // FR-R3-054 §4 finding 1, relearned the hard way. `processTreeIsGone` answers for
+    // the GROUP, so a child with no group of its own -- an injected double, or a real
+    // child from a spawn path the migration has not reached -- makes `kill(-pid, 0)`
+    // throw ESRCH, which reads as "gone". An earlier version probed before the first
+    // signal and therefore stopped signalling those children entirely: thirty-one
+    // runner tests failed, and a real unmigrated child would have gone unsignalled
+    // too. The signals are unconditional; only the ESCALATION consults the probe.
+    stubKill(false);
+    const killSpy = vi.spyOn(process, 'kill');
+    const h = harness(fakeChild(4242, false));
+    h.run();
+    // The group signal was attempted despite the probe answering "gone".
+    expect(killSpy.mock.calls.some(([pid, sig]) => pid === -4242 && sig === 'SIGTERM')).toBe(true);
+  });
+
+  it('skips SIGKILL only when the child has exited AND the group is gone', async () => {
+    vi.useFakeTimers();
+    stubKill(false);
+    const killSpy = vi.spyOn(process, 'kill');
+    const h = harness(fakeChild(4242, true));
+    h.run();
+    killSpy.mockClear();
+    await vi.advanceTimersByTimeAsync(5_000);
+    const escalations = killSpy.mock.calls.filter(([, sig]) => sig === 'SIGKILL');
+    expect(escalations).toEqual([]);
+    expect(h.events).toEqual([]);
   });
 
   it('emits ONE entry when two cancel paths hit one hung child', async () => {

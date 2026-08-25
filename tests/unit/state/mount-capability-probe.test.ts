@@ -148,6 +148,27 @@ describe('mount capability probe (FR-R3-083)', () => {
     expect(verdict.capability).toBe('unsupported');
   });
 
+  it('drops the ignore file even when a create is injected', async () => {
+    // The drop hangs on its OWN option, not on whether a test seam was supplied.
+    // Gating it on `exclusiveCreate === undefined` meant the production side effect
+    // was decided by which parameter a caller passed -- and that it was never
+    // exercised through the seam at all.
+    await probeMountCapability({
+      workspaceRoot,
+      exclusiveCreate: () => Promise.resolve({ outcome: 'created' })
+    });
+    expect(await schegentEntries()).toContain('.gitignore');
+  });
+
+  it('can be told not to drop it', async () => {
+    await probeMountCapability({
+      workspaceRoot,
+      dropIgnoreFile: false,
+      exclusiveCreate: () => Promise.resolve({ outcome: 'created' })
+    });
+    expect(await schegentEntries()).not.toContain('.gitignore');
+  });
+
   it('names a probe artifact unique to the process and the attempt', async () => {
     // FR-013. Two windows activating on one workspace must not observe each other's
     // artifact as their own second create. Observed rather than asserted about the

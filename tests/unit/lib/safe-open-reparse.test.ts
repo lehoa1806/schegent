@@ -5,9 +5,9 @@ import * as path from 'node:path';
 import { resolve } from 'node:path';
 import { readFileSync } from 'node:fs';
 import {
+  judgeLeafRedirect,
   openWithinRoot,
-  refusesLeafAsReparsePoint,
-  forceLeafCheckForTests
+  refusesLeafAsReparsePoint
 } from '../../../src/lib/safe-open';
 
 /**
@@ -117,59 +117,80 @@ describe('the POSIX leaf path is unchanged (FR-020, SC-006)', () => {
 });
 
 
-describe('the Windows leaf branch, forced on (FR-R3-083)', () => {
+describe('the leaf policy, both platform answers (FR-R3-083)', () => {
   let root: string;
 
   beforeEach(async () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), 'safe-open-leafcheck-'));
-    // The branch is gated on a platform constant that is only true on win32, so on
-    // this machine it would otherwise ship UNEXECUTED. Forcing it is the only way to
-    // exercise the code an operator on Windows actually runs -- including the paths
-    // where getting it wrong breaks the audit writer rather than a containment case.
-    forceLeafCheckForTests(true);
   });
   afterEach(async () => {
-    forceLeafCheckForTests(false);
     await fs.rm(root, { recursive: true, force: true });
   });
 
-  it('refuses a link-like leaf through the forced branch', async () => {
-    await fs.writeFile(path.join(root, 'real.txt'), 'x');
-    await fs.symlink(path.join(root, 'real.txt'), path.join(root, 'link.txt'));
-    const result = await openWithinRoot(root, ['link.txt'], { flags: 'r' });
-    expect(result.outcome).toBe('refused');
-    // The WEAK reason, because in this branch the kernel did not refuse -- this is
-    // the check-then-open. On POSIX without the override the same arrangement
-    // answers `symlink-leaf`, which the suite above asserts.
-    if (result.outcome === 'refused') expect(result.reason).toBe('reparse-point-leaf');
-  });
+  /**
+   * The platform answer is an ARGUMENT, so both branches are reachable here with no
+   * global to leak. An earlier version used a module-level override, which was a
+   * product-wide kill switch for a containment check -- and which also selected the
+   * refusal REASON for `dispatch-output-guard`, a caller that runs on every platform
+   * and never gates on it.
+   *
+   * What this cannot cover is `openWithinRoot`'s own Windows branch end-to-end,
+   * because that one reads the real platform constant. The Windows fixture is the
+   * only thing that covers it, and it is recorded as unrun in
+   * `docs/operations/platform-observation-record.md` rather than implied to pass.
+   */
+  it.runIf(process.platform !== 'win32')(
+    'names the WEAK reason where the platform has no O_NOFOLLOW',
+    async () => {
+      await fs.writeFile(path.join(root, 'real.txt'), 'x');
+      await fs.symlink(path.join(root, 'real.txt'), path.join(root, 'link.txt'));
+      const judged = await judgeLeafRedirect(path.join(root, 'link.txt'), ['ENOENT'], true);
+      expect(judged).toEqual({ outcome: 'refused', reason: 'reparse-point-leaf' });
+    }
+  );
 
-  it('still opens an ordinary leaf, so the branch is not refusing everything', async () => {
+  it.runIf(process.platform !== 'win32')(
+    'names the STRONG reason where the kernel would have refused atomically',
+    async () => {
+      await fs.writeFile(path.join(root, 'real.txt'), 'x');
+      await fs.symlink(path.join(root, 'real.txt'), path.join(root, 'link.txt'));
+      const judged = await judgeLeafRedirect(path.join(root, 'link.txt'), ['ENOENT'], false);
+      expect(judged).toEqual({ outcome: 'refused', reason: 'symlink-leaf' });
+    }
+  );
+
+  it('passes an ordinary leaf', async () => {
     // The regression that would break every sink on Windows, including the audit
-    // writer's reopen-per-append. Unreachable before this seam existed.
+    // writer's reopen-per-append.
     await fs.writeFile(path.join(root, 'plain.txt'), 'x');
-    const result = await openWithinRoot(root, ['plain.txt'], { flags: 'r' });
-    expect(result.outcome).toBe('opened');
-    if (result.outcome === 'opened') await result.handle.close();
+    expect(await judgeLeafRedirect(path.join(root, 'plain.txt'), ['ENOENT'], true)).toEqual({
+      outcome: 'ok'
+    });
   });
 
-  it('still creates a leaf that does not exist yet', async () => {
-    // ENOENT from the added lstat is the ordinary state of a file about to be
-    // created. Reading it as a refusal would break every exclusive create on
-    // Windows -- including the mount probe's own.
-    const result = await openWithinRoot(root, ['fresh.txt'], { flags: 'wx' });
-    expect(result.outcome).toBe('opened');
-    if (result.outcome === 'opened') await result.handle.close();
+  it('passes an absent leaf, so a creating open is not refused', async () => {
+    // ENOENT is the ordinary state of a file about to be created. Reading it as a
+    // refusal would break every exclusive create -- including the mount probe's own.
+    expect(await judgeLeafRedirect(path.join(root, 'fresh.txt'), ['ENOENT'], true)).toEqual({
+      outcome: 'ok'
+    });
   });
 
-  it('still appends, which is the hot audit path', async () => {
-    const first = await openWithinRoot(root, ['audit.log'], { flags: 'a', createDirs: true });
-    expect(first.outcome).toBe('opened');
-    if (first.outcome === 'opened') await first.handle.close();
-    // Second append against an EXISTING regular file: the case the branch sees on
-    // every single audit entry, since AuditLogWriter reopens per append.
-    const second = await openWithinRoot(root, ['audit.log'], { flags: 'a' });
-    expect(second.outcome).toBe('opened');
-    if (second.outcome === 'opened') await second.handle.close();
+  it('refuses an unanswerable lstat rather than proceeding to the open', async () => {
+    // A component that is a file, with ENOTDIR NOT tolerated -- the walk's own
+    // setting. It has already proved every component above the leaf, so this can
+    // only mean one was replaced between the walk and this syscall.
+    await fs.writeFile(path.join(root, 'afile'), 'x');
+    const judged = await judgeLeafRedirect(path.join(root, 'afile', 'leaf'), ['ENOENT'], true);
+    expect(judged.outcome).toBe('refused');
+    if (judged.outcome === 'refused') expect(judged.reason).toBe('io-failed');
+  });
+
+  it('tolerates the same case for a caller that declares it, like the dispatch guard', () => {
+    // Same function, different declared tolerance. The difference between the two
+    // callers is an argument a reader can see, not two copies of a rule.
+    return expect(
+      judgeLeafRedirect(path.join(root, 'afile', 'leaf'), ['ENOENT', 'ENOTDIR'], true)
+    ).resolves.toEqual({ outcome: 'ok' });
   });
 });

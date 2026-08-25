@@ -25,7 +25,7 @@
 
 import * as path from 'node:path';
 import type { FrozenOutputRequest } from '../contracts/run-request';
-import { segmentsUnderRoot, walkDirectoriesWithinRoot, judgeLeafRedirect } from '../lib/safe-open';
+import { segmentsUnderRoot, walkDirectoriesWithinRoot, judgeLeafRedirect, platformLacksNoFollow } from '../lib/safe-open';
 import type { SafeOpenRefusal } from '../lib/safe-open';
 
 export type DispatchOutputVerdict =
@@ -130,7 +130,7 @@ export async function judgeOutputTargetsAtDispatch(
     // file means "there is nothing here to be redirected through". The walk has
     // already proved every component above its leaf, so the same code there would
     // mean something changed underneath it — a refusal, not an absence.
-    const judged = await judgeLeafRedirect(leaf, ['ENOENT', 'ENOTDIR']);
+    const judged = await judgeLeafRedirect(leaf, ['ENOENT', 'ENOTDIR'], platformLacksNoFollow());
     if (judged.outcome === 'refused') {
       return { outcome: 'refused', portId: output.portId, reason: judged.reason };
     }

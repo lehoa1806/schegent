@@ -2,8 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import type {
   MonitorSidecarEvent,
   RunnerLabel,
-  TreeAttribution,
-  TreeEscalation
+  TreeAttribution
 } from '../contracts/backend-runner';
 
 /**
@@ -227,27 +226,30 @@ export interface TreeEscalationDeps {
 export function escalateAndReportTree(deps: TreeEscalationDeps): void {
   const { child, attribution, runner } = deps;
 
-  /**
-   * Ask the honesty question, whatever the direct child did.
-   *
-   * Split out because it must run on BOTH paths. An earlier version returned as
-   * soon as the direct child had exited, which skipped it entirely for the one
-   * arrangement this evidence path exists for: the CLI handles SIGTERM and exits
-   * while the helper it forked ignores it and keeps writing. The child's status is
-   * the right trigger for escalating — that is FR-R3-054's separation and it is
-   * preserved — but it was never the right trigger for whether to ask.
-   */
-  const confirmOrReport = (escalation: TreeEscalation): void => {
+  // NO probe before the first signal, and the reason is FR-R3-054 §4 finding 1,
+  // relearned: `processTreeIsGone` answers for the GROUP, and a child that leads no
+  // group of its own — an injected double, or a real child from a spawn path this
+  // migration has not reached — makes `kill(-pid, 0)` throw ESRCH, which reads as
+  // "gone". Guarding the ladder on that probe therefore stopped signalling those
+  // children ENTIRELY. It broke thirty-one runner tests, and it would equally have
+  // stopped reaching a real child spawned without `processTreeSpawnOptions()`.
+  //
+  // That leaves a residual worth naming rather than closing badly: `signalProcessTree`
+  // reaches the group through the raw `process.kill(-pid, …)` (and `taskkill /pid
+  // <pid> /T` on Windows), which have none of the protection `child.kill()` gains
+  // once Node has reaped the child. Between a child's exit and its removal from the
+  // runner's `active` map, a recycled pid could in principle be signalled. A process
+  // group id is not recycled while the group has members, so the window needs an
+  // empty group AND pid reuse AND the new holder leading a group — the same class of
+  // narrow race as the component-swap window in `docs/architecture/native-binding-decision.md`,
+  // and closing it would cost the case above, which is not narrow at all.
+
+  const confirmOrReport = (): void => {
     if (processTreeIsGone(child)) return;
     if (deps.alreadyReported()) return;
     deps.markReported();
     // SIGKILL is not catchable, so a surviving group is one we do not own.
-    deps.warn(
-      escalation === 'sigterm-then-sigkill'
-        ? 'process tree not confirmed gone after SIGKILL; descendants may still be running'
-        : 'process tree not confirmed gone after SIGTERM (the direct child exited, so SIGKILL was ' +
-          'not sent); descendants may still be running'
-    );
+    deps.warn('process tree not confirmed gone after SIGKILL; descendants may still be running');
     // And into EVIDENCE. A runtime-log line is not the audit record, so an
     // operator reconstructing why a later phase saw foreign writes had nothing
     // to read. Reported through the hook, never written here.
@@ -264,34 +266,40 @@ export function escalateAndReportTree(deps: TreeEscalationDeps): void {
       iteration: attribution.iteration,
       pid: child.pid ?? null,
       runner,
-      escalation
+      escalation: 'sigterm-then-sigkill'
     });
   };
 
-  // The SIGTERM goes to the group whether or not the direct child is still alive:
-  // a group outlives its leader, and its remaining members are exactly what this
-  // path is about. `signalProcessTree` signals the group AND the child, and a
-  // signal to an already-reaped child reports ESRCH and is swallowed.
   deps.info?.('sending SIGTERM to process tree');
   void signalProcessTree(child, 'SIGTERM');
   setTimeout(() => {
-    // The original trigger, unchanged: the direct child's own status decides
-    // whether to ESCALATE. What changed is that its having exited no longer skips
-    // the confirmation below.
-    if (child.exitCode !== null || child.signalCode !== null) {
-      // The direct child is gone, so there is nothing to escalate AGAINST — SIGKILL
-      // targets a leader that has already exited. The group may still hold members,
-      // which is exactly why the confirmation still runs. It is told which rungs
-      // actually ran: the enumerated value exists so a reader knows whether the
-      // ladder completed or stopped early, and stamping `sigterm-then-sigkill`
-      // unconditionally would have made the audit record claim a signal that was
-      // never delivered.
-      confirmOrReport('sigterm-only-child-exited');
-      return;
-    }
+    // ESCALATE ON THE GROUP, NOT ON THE DIRECT CHILD.
+    //
+    // This is the correction to an earlier version that returned here whenever the
+    // direct child had exited, on the premise that "SIGKILL targets a leader that
+    // has already exited". It does not: `signalProcessTree` sends
+    // `process.kill(-pid, …)`, and a POSIX process group outlives its leader for as
+    // long as any member remains. So on the exact arrangement this feature exists
+    // for — the CLI installs a SIGTERM handler and exits while its forked helper
+    // ignores it — that version declined to send the one signal that would have
+    // reaped the helper, and then filed an audit entry describing the survivor it
+    // had chosen not to kill.
+    //
+    // FR-R3-054 §4 finding 2 warned against gating escalation on
+    // `processTreeIsGone`, having found that it "changed when SIGKILL is sent". It
+    // does not apply here, and the reason is worth writing down: a live direct child
+    // is a live group member, so the group test can never SUPPRESS a SIGKILL that
+    // the child test would have sent. It can only ADD one — in exactly the case
+    // above. Strict superset, not a different rule.
+    //
+    // BOTH conditions. `processTreeIsGone` alone would skip the escalation for a
+    // child that leads no group (see the note at the top), and the child's status
+    // alone was what skipped it for the arrangement this feature exists for. Only
+    // when the child has exited AND the group is gone is there nothing left to kill.
+    if (child.exitCode !== null && processTreeIsGone(child)) return;
     deps.info?.('sending SIGKILL to process tree');
     void signalProcessTree(child, 'SIGKILL').then(() => {
-      setTimeout(() => confirmOrReport('sigterm-then-sigkill'), TREE_CONFIRM_DELAY_MS).unref();
+      setTimeout(confirmOrReport, TREE_CONFIRM_DELAY_MS).unref();
     });
   }, SIGKILL_DELAY_MS).unref();
 }

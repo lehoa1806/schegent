@@ -108,32 +108,9 @@ const NOFOLLOW: number = (fsConstants as Partial<typeof fsConstants>).O_NOFOLLOW
  * answered when no such check exists on their platform.
  */
 export function platformLacksNoFollow(): boolean {
-  // `||`, not `??`. The override can only ever turn the leaf check ON, never off.
-  // A seam that could turn it off would be a product-wide kill switch for a
-  // containment check — reachable from production code with no compile error, and
-  // leakable by a test whose `afterEach` never ran because `beforeEach` threw. The
-  // worst a leak can now do is add a check on a platform that does not need one,
-  // which is safe.
-  return forceLeafCheck || NOFOLLOW === 0;
+  return NOFOLLOW === 0;
 }
 
-/**
- * Test seam for the platform question. Production never calls this, and it can only
- * ADD the check — see `platformLacksNoFollow`.
- *
- * The leaf check is gated on a module constant that is only true on win32, so on
- * every platform this suite actually runs on the branch was UNREACHABLE — it
- * shipped unexecuted, and a source-text assertion was standing in for a behavioural
- * one. That matters beyond coverage: the branch sits on the audit writer's
- * reopen-per-append path, and a non-`ENOENT` `lstat` error there turns a
- * previously-successful open into a containment refusal. Nothing in CI could have
- * caught that.
- */
-export function forceLeafCheckForTests(on: boolean): void {
-  forceLeafCheck = on;
-}
-
-let forceLeafCheck = false;
 
 /**
  * FR-R3-083 (T1132-T1135) — should this leaf be refused as a reparse point?
@@ -203,7 +180,19 @@ export type LeafJudgement =
 
 export async function judgeLeafRedirect(
   leafPath: string,
-  tolerate: readonly string[]
+  tolerate: readonly string[],
+  /**
+   * Whether this platform's `open` can refuse a link-like leaf atomically.
+   *
+   * An ARGUMENT, not a module global. A mutable global here was a product-wide kill
+   * switch for a containment check — and worse than that, it also selected the
+   * refusal REASON for `dispatch-output-guard`, which runs on every platform and
+   * never gates on it. A leaked override would have made a symlinked declared output
+   * on Linux report `reparse-point-leaf`, telling an operator the weak check
+   * answered where the kernel had refused atomically. Passing it removes the global
+   * entirely, the way `tolerate` already is.
+   */
+  lacksNoFollow: boolean
 ): Promise<LeafJudgement> {
   let leafStat: Awaited<ReturnType<typeof fsp.lstat>>;
   try {
@@ -221,7 +210,7 @@ export async function judgeLeafRedirect(
   if (!refusesLeafAsReparsePoint(leafStat)) return { outcome: 'ok' };
   return {
     outcome: 'refused',
-    reason: platformLacksNoFollow() ? 'reparse-point-leaf' : 'symlink-leaf'
+    reason: lacksNoFollow ? 'reparse-point-leaf' : 'symlink-leaf'
   };
 }
 
@@ -416,10 +405,17 @@ export async function openWithinRoot(
   //
   // WHAT IS TOLERATED, AND THE RISK THAT IS ACCEPTED
   //
-  // `ENOENT` and `ENOTDIR` mean there is nothing here to be redirected THROUGH: the
-  // leaf does not exist yet (the ordinary state of a file about to be created), or a
-  // component below the proved chain is not a directory. Both proceed to the open,
-  // which answers for itself.
+  // `ENOENT` means there is nothing here to be redirected THROUGH: the leaf does not
+  // exist yet, which is the ordinary state of a file about to be created. It
+  // proceeds to the open, which answers for itself.
+  //
+  // `ENOTDIR` is NOT tolerated here, and that is the difference from
+  // `dispatch-output-guard`. This walk has already proved every component above the
+  // leaf is a directory, so an `ENOTDIR` from this `lstat` can only mean a component
+  // was replaced by a file between the walk and this syscall — a detected TOCTOU
+  // swap, which is a refusal and not an absence. The dispatch guard judges a target
+  // that may not exist at any depth, so there the same code means "nothing here to
+  // be redirected through".
   //
   // `EPERM`, `EBUSY`, `EMFILE` and friends are REFUSALS, and that is a real
   // availability trade rather than an oversight. On Windows the audit writer reopens
@@ -433,7 +429,7 @@ export async function openWithinRoot(
   // already reports and which the next append retries. `H-02` was the audit file
   // being written somewhere else, so this is the direction to fail in.
   if (platformLacksNoFollow()) {
-    const judged = await judgeLeafRedirect(leaf, ['ENOENT', 'ENOTDIR']);
+    const judged = await judgeLeafRedirect(leaf, ['ENOENT'], true);
     if (judged.outcome === 'refused') return refuse(judged.reason, judged.errno);
   }
 

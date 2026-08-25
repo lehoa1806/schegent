@@ -64,10 +64,17 @@ export type { InvocationRequest, RawInvocationOutput };
 export type RunnerLabel = 'claude-cli' | 'codex-cli' | 'agy-cli';
 
 /**
- * Which rungs of the termination ladder actually ran. See
- * `ProcessTreeUnconfirmedPayload.escalation` for why the two are kept apart.
+ * Which rungs of the termination ladder ran before the group was found alive.
+ *
+ * ONE value, and the history is worth keeping. A `'sigterm-only-child-exited'` arm
+ * existed briefly, for a version that skipped SIGKILL once the direct child had
+ * exited. That version was wrong — the group outlives its leader, so the signal it
+ * skipped was the one that would have reaped the survivor — and with the ladder now
+ * escalating on the GROUP, a report is only ever reachable after a delivered
+ * SIGKILL. An enum arm nothing can emit is worse than no arm: it invites a reader
+ * to handle a case that cannot occur.
  */
-export type TreeEscalation = 'sigterm-then-sigkill' | 'sigterm-only-child-exited';
+export type TreeEscalation = 'sigterm-then-sigkill';
 
 export type MonitorSidecarEvent =
   | { readonly kind: 'started'; readonly runId: string | null; readonly pid: number | null }

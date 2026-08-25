@@ -72,13 +72,13 @@ describe('process-tree degradation recorder (FR-R3-083)', () => {
   });
 
   it('carries the escalation the runner reported, rather than stamping one', async () => {
-    // The two are different findings. A survivor found after the direct child had
-    // exited was never sent SIGKILL, so recording it as having survived one
-    // overstates what was tried -- and the enumerated value exists precisely so a
-    // reader can tell whether the ladder completed.
+    // The recorder must not invent this. Today the union has one member, because
+    // the ladder escalates on the GROUP and so a report is only reachable after a
+    // delivered SIGKILL -- but the value travels from the runner, so a second rung
+    // added later reaches the audit record without touching this file.
     const h = harness();
-    await h.recorder.record({ ...EVENT, escalation: 'sigterm-only-child-exited' });
-    expect(h.appended[0].payload.escalation).toBe('sigterm-only-child-exited');
+    await h.recorder.record({ ...EVENT, escalation: 'sigterm-then-sigkill' });
+    expect(h.appended[0].payload.escalation).toBe('sigterm-then-sigkill');
   });
 
   it('drops an unattributable event rather than guessing a Run', async () => {
