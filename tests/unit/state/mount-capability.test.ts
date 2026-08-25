@@ -100,6 +100,18 @@ describe('mount capability classification (FR-R3-083)', () => {
     expect(verdict.cause).toBe('containment-refused');
   });
 
+  it('does not read a null second attempt as an observation', () => {
+    // `null` means the first attempt did not create, so there was nothing to attempt
+    // again. It must reach `fromFailure(first.errno)` and not be treated as an
+    // io-failure of its own -- an earlier version passed a fabricated
+    // `{ outcome: 'io-failed' }` here, which looked like something observed.
+    expect(classifyMountCapability(failed('ENOTSUP'), null)).toEqual({
+      capability: 'unsupported',
+      cause: 'exclusive-create-unsupported',
+      errno: 'ENOTSUP'
+    });
+  });
+
   it.each([
     ['first', timedOut, exists],
     ['second', created, timedOut]

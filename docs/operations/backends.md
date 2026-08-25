@@ -143,8 +143,19 @@ The full reasoning, the two shapes not chosen, and what remains outstanding are 
 
    Where the tree cannot be confirmed gone, that is now also recorded in the audit log as a
    `process-tree-unconfirmed` event, so an operator reconstructing why a later phase saw foreign
-   writes has evidence and not only a log line. Which acceptance halves have actually been observed,
-   and on which platform, is in
+   writes has evidence and not only a log line.
+
+   **Read the absence of that event narrowly.** The check asks whether the process *group* is gone
+   (POSIX) or whether the direct child is gone (Windows). A descendant that calls `setsid` for
+   itself, or that re-parents, has left the group — the check then reports the group as gone while
+   that process is still running. So no event means *the group was confirmed gone*, not *no
+   descendant survives*. That gap is the same permanent limit stated above, and it is why the
+   runtime-log warning is kept beside the audit entry rather than replaced by it.
+
+   The event also requires an invocation that names a Run; one that does not produces the log
+   warning and no audit entry.
+
+   Which acceptance halves have actually been observed, and on which platform, is in
    [Platform observation record](platform-observation-record.md).
 7. Monitor events identify the Run and report start, chunks, and exit. Hook errors do not control the child.
 8. Retry and rate-limit policy remain in the controller; adapters return raw invocation outcomes.

@@ -177,47 +177,99 @@ export interface TreeEscalationDeps {
   readonly warn: (message: string) => void;
   /** The sidecar hook. The runner reports; something else records. */
   readonly emit: (event: MonitorSidecarEvent) => void;
+  /**
+   * Has this child's surviving group already been reported?
+   *
+   * The guard is on the REPORT rather than on the ladder, so two overlapping cancel
+   * paths on one hung child produce one audit entry — while each still signals a
+   * tree the other may have failed to reach.
+   */
+  readonly alreadyReported: () => boolean;
+  readonly markReported: () => void;
 }
 
 /**
  * Run SIGTERM → SIGKILL → confirm, reporting a group that survives.
  *
- * Re-entrancy is the CALLER's to guard, with a `WeakSet<ChildProcess>` per runner:
- * two overlapping cancel paths on one hung child would otherwise start two ladders
- * and emit two `tree-unconfirmed` entries for one surviving group.
+ * WHAT THE CONFIRMATION ESTABLISHES, AND WHAT IT DOES NOT
+ *
+ * `processTreeIsGone` probes the process GROUP (`kill(-pid, 0)`) on POSIX and the
+ * direct child on Windows. So a `true` answer means "the group is gone", and it
+ * does **not** mean "no descendant survives":
+ *
+ *   - A descendant that calls `setsid` for itself, or is spawned `detached`, leaves
+ *     the group. After SIGKILL the group is empty, the probe answers `true`, and
+ *     that descendant is still running. Verified experimentally, not reasoned:
+ *     leader detached, grandchild detached, group SIGKILLed — grandchild alive,
+ *     probe `true`.
+ *   - On Windows there is no group to probe at all, so the answer is about the
+ *     direct child only.
+ *
+ * This is the SAME escape `docs/architecture/native-binding-decision.md` records as
+ * a permanent limit: a re-parenting descendant is out of reach of `taskkill /T` and
+ * of a process group alike, and closing it needs a Job Object. The evidence path
+ * therefore reports a group Schegent could not kill; **absence of the report is not
+ * a statement that no descendant survives**, and every document that describes it
+ * says so in those words.
+ *
+ * Re-entrancy is the CALLER's to guard, with a `WeakSet<ChildProcess>` per runner.
+ * The guard belongs on the REPORT, not on the ladder: suppressing a whole second
+ * ladder means a tree the first pass failed to reach — `signalProcessTree` swallows
+ * a failed group signal by design — never gets signalled again by a later, genuinely
+ * different trigger. So `alreadyReported` gates the emission and the warn; the
+ * signals are always sent.
  */
 export function escalateAndReportTree(deps: TreeEscalationDeps): void {
   const { child, attribution, runner } = deps;
+
+  /**
+   * Ask the honesty question, whatever the direct child did.
+   *
+   * Split out because it must run on BOTH paths. An earlier version returned as
+   * soon as the direct child had exited, which skipped it entirely for the one
+   * arrangement this evidence path exists for: the CLI handles SIGTERM and exits
+   * while the helper it forked ignores it and keeps writing. The child's status is
+   * the right trigger for escalating — that is FR-R3-054's separation and it is
+   * preserved — but it was never the right trigger for whether to ask.
+   */
+  const confirmOrReport = (): void => {
+    if (processTreeIsGone(child)) return;
+    if (deps.alreadyReported()) return;
+    deps.markReported();
+    // SIGKILL is not catchable, so a surviving group is one we do not own.
+    deps.warn('process tree not confirmed gone after SIGKILL; descendants may still be running');
+    // And into EVIDENCE. A runtime-log line is not the audit record, so an
+    // operator reconstructing why a later phase saw foreign writes had nothing
+    // to read. Reported through the hook, never written here.
+    //
+    // Fields NAMED, never spread from `attribution`: a spread bypasses
+    // excess-property checks, and `cancelActive` once handed over the whole
+    // `active` map entry — which holds the live `ChildProcess` and its
+    // `spawnargs` — into a payload whose safety argument is that it has nowhere
+    // to put a secret.
+    deps.emit({
+      kind: 'tree-unconfirmed',
+      runId: attribution.runId,
+      phase: attribution.phase,
+      iteration: attribution.iteration,
+      pid: child.pid ?? null,
+      runner
+    });
+  };
+
   deps.info?.('sending SIGTERM to process tree');
   void signalProcessTree(child, 'SIGTERM');
   setTimeout(() => {
     // The original trigger, unchanged: the direct child's own status decides
-    // whether to escalate.
-    if (child.exitCode !== null || child.signalCode !== null) return;
+    // whether to ESCALATE. What changed is that its having exited no longer skips
+    // the confirmation below.
+    if (child.exitCode !== null || child.signalCode !== null) {
+      confirmOrReport();
+      return;
+    }
     deps.info?.('sending SIGKILL to process tree');
     void signalProcessTree(child, 'SIGKILL').then(() => {
-      setTimeout(() => {
-        if (processTreeIsGone(child)) return;
-        // SIGKILL is not catchable, so a surviving group is one we do not own.
-        deps.warn('process tree not confirmed gone after SIGKILL; descendants may still be running');
-        // And into EVIDENCE. A runtime-log line is not the audit record, so an
-        // operator reconstructing why a later phase saw foreign writes had nothing
-        // to read. Reported through the hook, never written here.
-        //
-        // Fields NAMED, never spread from `attribution`: a spread bypasses
-        // excess-property checks, and `cancelActive` once handed over the whole
-        // `active` map entry — which holds the live `ChildProcess` and its
-        // `spawnargs` — into a payload whose safety argument is that it has nowhere
-        // to put a secret.
-        deps.emit({
-          kind: 'tree-unconfirmed',
-          runId: attribution.runId,
-          phase: attribution.phase,
-          iteration: attribution.iteration,
-          pid: child.pid ?? null,
-          runner
-        });
-      }, TREE_CONFIRM_DELAY_MS).unref();
+      setTimeout(confirmOrReport, TREE_CONFIRM_DELAY_MS).unref();
     });
   }, SIGKILL_DELAY_MS).unref();
 }

@@ -26,8 +26,6 @@ import { awaitStdinDelivery, writePromptToStdin } from './child-stdin';
 import { LineFramer, DEFAULT_MAX_LINE_UNITS } from '../lib/line-framer';
 import { processTreeSpawnOptions, escalateAndReportTree } from './process-tree';
 
-/** FR-R3-054 — how long after SIGKILL to check whether the group really went. */
-
 // Feature 030 BUG-002 — after the invocation's terminal stream-json result line
 // (`{"type":"result"}`) appears in stdout, the runner waits at most this long
 // for the process to exit on its own before grace-terminating it. Short enough
@@ -210,18 +208,19 @@ export class ClaudeCliRunner implements BackendRunner {
   private nextInvocationToken = 1;
 
   /**
-   * FR-R3-083 — children whose escalation ladder is already running.
+   * FR-R3-083 — children whose surviving group has already been REPORTED.
    *
-   * `terminate` is reached from four places (idle expiry, the absolute deadline,
-   * the cancellation signal, and `cancelActive`) and more than one of them fires
-   * on the same child routinely: an idle expiry is normally followed by the
-   * controller's own abort. The `exitCode`/`signalCode` guard only catches a
-   * SECOND call after the child has already died, which is exactly the case a
-   * hung child does not present — and a hung child is the only case that can
-   * reach the `tree-unconfirmed` report at the end of the ladder. Two ladders
-   * meant two audit entries for one surviving group, which reads as two.
+   * Not "children already being terminated". An earlier version guarded the whole
+   * ladder, which meant a later, genuinely different trigger (idle expiry, then the
+   * absolute deadline) could no longer re-signal a tree the first pass failed to
+   * reach -- and `signalProcessTree` swallows a failed group signal by design, so a
+   * first pass failing silently is the ordinary case, not an exotic one.
+   *
+   * What must not happen twice is the audit ENTRY: two overlapping cancel paths on
+   * one hung child would otherwise record two surviving groups where there was one.
+   * A WeakSet so a reaped child is collectable.
    */
-  private readonly terminating = new WeakSet<ChildProcess>();
+  private readonly reportedTrees = new WeakSet<ChildProcess>();
 
   constructor(
     spawnFn: SpawnFn = spawn as unknown as SpawnFn,
@@ -698,17 +697,18 @@ export class ClaudeCliRunner implements BackendRunner {
     this._logger.info(
       `[ClaudeCliRunner] terminate called! exitCode=${child.exitCode}, signalCode=${child.signalCode}`
     );
-    // FR-R3-083 — one ladder per child. See `terminating`.
-    if (this.terminating.has(child)) return;
     if (child.exitCode !== null || child.signalCode !== null) return;
-    this.terminating.add(child);
     escalateAndReportTree({
       child,
       attribution,
       runner: 'claude-cli',
       info: (message) => this._logger.info(`[ClaudeCliRunner] ${message}`),
       warn: (message) => this._logger.warn(`[ClaudeCliRunner] ${message}`),
-      emit: (event) => this.emitHook(event)
+      emit: (event) => this.emitHook(event),
+      // FR-R3-083 — the guard is on the REPORT, not on the ladder. See the note in
+      // `escalateAndReportTree`.
+      alreadyReported: () => this.reportedTrees.has(child),
+      markReported: () => void this.reportedTrees.add(child)
     });
   }
 

@@ -4,7 +4,11 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { resolve } from 'node:path';
 import { readFileSync } from 'node:fs';
-import { openWithinRoot, refusesLeafAsReparsePoint } from '../../../src/lib/safe-open';
+import {
+  openWithinRoot,
+  refusesLeafAsReparsePoint,
+  setLeafCheckForTests
+} from '../../../src/lib/safe-open';
 
 /**
  * FR-R3-083 (T1132-T1136) — the leaf check Windows never had.
@@ -52,9 +56,9 @@ describe('reparse-point leaf classification (FR-R3-083)', () => {
       resolve(__dirname, '..', '..', '..', 'src', 'lib', 'safe-open.ts'),
       'utf8'
     );
-    expect(source).toContain('if (NOFOLLOW === 0) {');
-    const guarded = source.slice(source.indexOf('if (NOFOLLOW === 0) {'));
-    expect(guarded.slice(0, 600)).toContain('refusesLeafAsReparsePoint(leafStat)');
+    expect(source).toContain('if (platformLacksNoFollow()) {');
+    const guarded = source.slice(source.indexOf('if (platformLacksNoFollow()) {'));
+    expect(guarded.slice(0, 900)).toContain('judgeLeafRedirect(leaf,');
   });
 });
 
@@ -109,5 +113,63 @@ describe('the POSIX leaf path is unchanged (FR-020, SC-006)', () => {
     const result = await openWithinRoot(root, ['fresh.txt'], { flags: 'wx' });
     expect(result.outcome).toBe('opened');
     if (result.outcome === 'opened') await result.handle.close();
+  });
+});
+
+
+describe('the Windows leaf branch, forced on (FR-R3-083)', () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), 'safe-open-leafcheck-'));
+    // The branch is gated on a platform constant that is only true on win32, so on
+    // this machine it would otherwise ship UNEXECUTED. Forcing it is the only way to
+    // exercise the code an operator on Windows actually runs -- including the paths
+    // where getting it wrong breaks the audit writer rather than a containment case.
+    setLeafCheckForTests(true);
+  });
+  afterEach(async () => {
+    setLeafCheckForTests(null);
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it('refuses a link-like leaf through the forced branch', async () => {
+    await fs.writeFile(path.join(root, 'real.txt'), 'x');
+    await fs.symlink(path.join(root, 'real.txt'), path.join(root, 'link.txt'));
+    const result = await openWithinRoot(root, ['link.txt'], { flags: 'r' });
+    expect(result.outcome).toBe('refused');
+    // The WEAK reason, because in this branch the kernel did not refuse -- this is
+    // the check-then-open. On POSIX without the override the same arrangement
+    // answers `symlink-leaf`, which the suite above asserts.
+    if (result.outcome === 'refused') expect(result.reason).toBe('reparse-point-leaf');
+  });
+
+  it('still opens an ordinary leaf, so the branch is not refusing everything', async () => {
+    // The regression that would break every sink on Windows, including the audit
+    // writer's reopen-per-append. Unreachable before this seam existed.
+    await fs.writeFile(path.join(root, 'plain.txt'), 'x');
+    const result = await openWithinRoot(root, ['plain.txt'], { flags: 'r' });
+    expect(result.outcome).toBe('opened');
+    if (result.outcome === 'opened') await result.handle.close();
+  });
+
+  it('still creates a leaf that does not exist yet', async () => {
+    // ENOENT from the added lstat is the ordinary state of a file about to be
+    // created. Reading it as a refusal would break every exclusive create on
+    // Windows -- including the mount probe's own.
+    const result = await openWithinRoot(root, ['fresh.txt'], { flags: 'wx' });
+    expect(result.outcome).toBe('opened');
+    if (result.outcome === 'opened') await result.handle.close();
+  });
+
+  it('still appends, which is the hot audit path', async () => {
+    const first = await openWithinRoot(root, ['audit.log'], { flags: 'a', createDirs: true });
+    expect(first.outcome).toBe('opened');
+    if (first.outcome === 'opened') await first.handle.close();
+    // Second append against an EXISTING regular file: the case the branch sees on
+    // every single audit entry, since AuditLogWriter reopens per append.
+    const second = await openWithinRoot(root, ['audit.log'], { flags: 'a' });
+    expect(second.outcome).toBe('opened');
+    if (second.outcome === 'opened') await second.handle.close();
   });
 });

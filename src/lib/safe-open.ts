@@ -108,8 +108,25 @@ const NOFOLLOW: number = (fsConstants as Partial<typeof fsConstants>).O_NOFOLLOW
  * answered when no such check exists on their platform.
  */
 export function platformLacksNoFollow(): boolean {
-  return NOFOLLOW === 0;
+  return leafCheckOverride ?? NOFOLLOW === 0;
 }
+
+/**
+ * Test seam for the platform question. Production never calls this.
+ *
+ * The leaf check is gated on a module constant that is only true on win32, so on
+ * every platform this suite actually runs on the branch was UNREACHABLE — it
+ * shipped unexecuted, and a source-text assertion was standing in for a behavioural
+ * one. That matters beyond coverage: the branch sits on the audit writer's
+ * reopen-per-append path, and a non-`ENOENT` `lstat` error there turns a
+ * previously-successful open into a containment refusal. Nothing in CI could have
+ * caught that.
+ */
+export function setLeafCheckForTests(value: boolean | null): void {
+  leafCheckOverride = value;
+}
+
+let leafCheckOverride: boolean | null = null;
 
 /**
  * FR-R3-083 (T1132-T1135) — should this leaf be refused as a reparse point?
@@ -165,6 +182,53 @@ export function refusesLeafAsReparsePoint(leafStat: { isSymbolicLink(): boolean 
  * predicate was inserted between the two — recorded because a comment attached to
  * the wrong function is worse than no comment.)
  */
+/**
+ * FR-R3-083 — the whole leaf-redirect policy, in one place.
+ *
+ * Two sites ask the same question of a leaf: `openWithinRoot` below (on platforms
+ * with no `O_NOFOLLOW`) and `services/dispatch-output-guard.ts` (on every platform,
+ * for a declared output target). They had two copies of it with DIFFERENT error
+ * tolerance — `ENOENT` here, `ENOENT` and `ENOTDIR` there — and one shared helper
+ * that carried only the `isSymbolicLink()` call, i.e. none of the policy that
+ * actually differed. The next change to leaf policy would have landed in one copy.
+ *
+ * The tolerance is now an explicit ARGUMENT rather than an accident. Each caller
+ * declares what "nothing here to be redirected through" means for it, and a reader
+ * comparing the two sees one function called two ways instead of two rules.
+ *
+ * The reason is chosen by platform, once: `symlink-leaf` where the kernel would
+ * have refused the open atomically, `reparse-point-leaf` where this check-then-open
+ * is all there is. Naming the strong refusal on a platform that has no such refusal
+ * is the drift this consolidation exists to prevent.
+ */
+export type LeafJudgement =
+  | { readonly outcome: 'ok' }
+  | { readonly outcome: 'refused'; readonly reason: SafeOpenRefusal; readonly errno?: string };
+
+export async function judgeLeafRedirect(
+  leafPath: string,
+  tolerate: readonly string[]
+): Promise<LeafJudgement> {
+  let leafStat: Awaited<ReturnType<typeof fsp.lstat>>;
+  try {
+    leafStat = await fsp.lstat(leafPath);
+  } catch (error) {
+    const errno = errnoOf(error);
+    // A tolerated code means there is nothing here to be redirected THROUGH — most
+    // often a leaf that does not exist yet, which is the ordinary state of a file
+    // about to be created and must never read as a refusal.
+    if (tolerate.includes(errno)) return { outcome: 'ok' };
+    // Anything else could not be proven, and a leaf that cannot be proven is not
+    // opened.
+    return { outcome: 'refused', reason: 'io-failed', errno };
+  }
+  if (!refusesLeafAsReparsePoint(leafStat)) return { outcome: 'ok' };
+  return {
+    outcome: 'refused',
+    reason: platformLacksNoFollow() ? 'reparse-point-leaf' : 'symlink-leaf'
+  };
+}
+
 function invalidSegment(segment: string): boolean {
   return (
     segment.length === 0 ||
@@ -336,33 +400,22 @@ export async function openWithinRoot(
   //
   // One extra `lstat` per open, on every open. The hottest caller is the audit
   // writer, which deliberately reopens `.schegent/audit.log` per append rather than
-  // holding a descriptor across a run, so on Windows that path goes from
-  // (lstat per component + open + fstat) to one syscall more. Measured as a
-  // proportion that is real and as an absolute that is a local metadata read.
+  // holding a descriptor across a run, so on Windows that path gains one syscall
+  // per entry.
   //
   // Paid, deliberately: without it the leaf open on Windows FOLLOWS a junction or
   // symlink at the last component, which redirects the evidence record out of the
   // workspace with no race required. Trading a containment hole in the audit path
-  // for a syscall on the audit path is the wrong direction, and `H-02` -- the
-  // defect this whole module exists for -- was that exact escape in that exact
-  // file.
+  // for a syscall on the audit path is the wrong direction, and `H-02` — the defect
+  // this whole module exists for — was that exact escape in that exact file.
   //
-  // Not narrowed by `flags`. `'wx'` would in fact be safe to skip, since
-  // `O_CREAT|O_EXCL` refuses an existing name outright and cannot follow it -- but
-  // the append path is the hot one and the exclusive-create path is not, so the
-  // carve-out would buy nothing where the cost is and add a second rule about when
-  // the leaf is checked.
-  if (NOFOLLOW === 0) {
-    try {
-      const leafStat = await fsp.lstat(leaf);
-      if (refusesLeafAsReparsePoint(leafStat)) return refuse('reparse-point-leaf');
-    } catch (error) {
-      // ENOENT is the ordinary case for a creating open: there is no entry to be a
-      // reparse point. Anything else could not be proven, and a leaf that cannot be
-      // proven is not opened.
-      const errno = errnoOf(error);
-      if (errno !== 'ENOENT') return refuse('io-failed', errno);
-    }
+  // `ENOENT` ALONE is tolerated here, unlike the dispatch guard's `ENOENT`/`ENOTDIR`:
+  // this walk has already proved every component above the leaf, so an `ENOTDIR`
+  // at this point is a component that changed underneath it, which is a refusal and
+  // not an absence.
+  if (platformLacksNoFollow()) {
+    const judged = await judgeLeafRedirect(leaf, ['ENOENT']);
+    if (judged.outcome === 'refused') return refuse(judged.reason, judged.errno);
   }
 
   let handle: fsp.FileHandle;

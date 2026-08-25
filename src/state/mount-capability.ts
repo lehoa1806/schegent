@@ -93,8 +93,11 @@ export interface MountCapabilityVerdict {
  *
  * `ownership-registry.ts` names `ENOTSUP`, `EPERM`, `EROFS` and `ENOSYS` as codes
  * worth keeping APART, and that is a keep-them-apart list — not an equivalence
- * class. Only the two that actually say "this operation is not implemented here"
- * belong in this set:
+ * class. Only the codes that actually say "this operation is not implemented here"
+ * belong in this set — `ENOTSUP` and `ENOSYS` from that list, plus `EOPNOTSUPP`,
+ * which is an alias of `ENOTSUP` on Linux but a DISTINCT code on macOS and BSD and
+ * so has to be named separately rather than assumed covered. Three members, and the
+ * two the list excludes are:
  *
  *   - `EROFS` has its own arm above: the mount is fine, the checkout is read-only.
  *   - `EPERM` is a PERMISSIONS answer, for the same reason `EACCES` is. A
@@ -151,16 +154,25 @@ function fromFailure(errno: string | undefined): MountCapabilityVerdict {
  */
 export function classifyMountCapability(
   first: ExclusiveCreateObservation,
-  second: ExclusiveCreateObservation
+  /**
+   * The second attempt, or `null` when the first did not create and so there was
+   * nothing to attempt again.
+   *
+   * `null` rather than a fabricated observation: the first attempt already explains
+   * that path, and a stand-in value that looks like a real observation is a trap for
+   * the next rule added here.
+   */
+  second: ExclusiveCreateObservation | null
 ): MountCapabilityVerdict {
   // A bound that expired is not evidence. It must never manufacture a finding out
   // of the probe's own impatience, which is exactly what an unresponsive network
   // mount — the environment this probe exists for — would otherwise produce.
-  if (first.outcome === 'timed-out' || second.outcome === 'timed-out') {
+  if (first.outcome === 'timed-out' || second?.outcome === 'timed-out') {
     return { capability: 'undetermined', cause: 'probe-timed-out' };
   }
 
-  if (first.outcome !== 'created') return fromFailure(first.errno);
+  // The first attempt decides this path on its own; `second` is `null` here.
+  if (first.outcome !== 'created' || second === null) return fromFailure(first.errno);
 
   // THE CASE THIS PROBE EXISTS FOR. The name is already taken and the filesystem
   // created it again, so two windows can both believe they elected themselves.

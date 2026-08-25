@@ -2,6 +2,7 @@ import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
 import { openWithinRoot } from '../lib/safe-open';
 import { resolveContainedLink } from '../lib/path-containment';
+import { ensureSchegentGitignore } from '../audit/schegent-gitignore';
 import {
   CONTAINMENT_REFUSED_ERRNO,
   classifyMountCapability,
@@ -42,6 +43,19 @@ import {
  * not a visible freeze.
  */
 export const MOUNT_PROBE_TIMEOUT_MS = 2_000;
+
+/**
+ * `ensureSchegentGitignore` takes a logger for its own refusal path. The probe has
+ * none — it is a pure decision plus its I/O, and it reports through a verdict
+ * rather than through a log — so it passes a sink that discards. A gitignore
+ * refusal is not this function's finding to report, and reporting it here would put
+ * a second voice on the activation path saying something about `.schegent`.
+ */
+const NO_OP_LOGGER = {
+  info: () => undefined,
+  warn: () => undefined,
+  error: () => undefined
+} as unknown as Parameters<typeof ensureSchegentGitignore>[1];
 
 /** Where the probe writes. Inside `.schegent/`, which the product already owns. */
 const PROBE_SEGMENTS_PREFIX: readonly string[] = ['.schegent'];
@@ -262,10 +276,37 @@ export async function probeMountCapability(
     deps.exclusiveCreate ??
     ((s: readonly string[]) => realExclusiveCreate(deps.workspaceRoot, s));
 
+  // `schegent-gitignore.ts` states the invariant: every writer that creates
+  // `.schegent/` also drops the local ignore file. This probe runs at activation,
+  // BEFORE the audit writer, the rollup writer and the transcript writer — so on a
+  // fresh workspace it is the first writer, and without this the directory would be
+  // created un-ignored. On the slow-mount path this probe exists for, an abandoned
+  // create then leaves `.mount-probe.<pid>.<n>` visible in the operator's
+  // `git status`, in an arbitrary workspace.
+  //
+  // Bounded and best-effort, like everything else here: it must not become a way
+  // for the probe to stall or to fail.
+  if (deps.exclusiveCreate === undefined) {
+    await raceBound(
+      ensureSchegentGitignore(deps.workspaceRoot, NO_OP_LOGGER).catch(() => undefined),
+      timeoutMs
+    );
+  }
+
   // Every attempt STARTED, whether or not its bound waited for it. A create that
   // loses the race still runs, and a create that runs can still make a file.
   const outstanding: Promise<unknown>[] = [];
-  const attempt = (): Promise<ExclusiveCreateObservation> => {
+  /**
+   * Did any attempt outlive its bound? Only then is a deferred sweep worth anything.
+   *
+   * A record rather than a `let`, because the mutation happens inside `attempt`'s
+   * closure and TypeScript's control-flow analysis does not follow it: a plain
+   * boolean narrows to `false` at the `finally` and the linter reports the guard as
+   * dead code. The runtime behaviour was correct either way; this makes the
+   * mutation-through-a-closure visible instead of arguing with the checker.
+   */
+  const bound = { abandoned: false };
+  const attempt = async (): Promise<ExclusiveCreateObservation> => {
     const started = create(segments);
     // Tracked through a handled derivative, so tracking can never itself add an
     // unhandled rejection; `withBound` observes the original.
@@ -273,15 +314,22 @@ export async function probeMountCapability(
       () => undefined,
       () => undefined
     ));
-    return withBound(started, timeoutMs);
+    const observation = await withBound(started, timeoutMs);
+    if (observation.outcome === 'timed-out') bound.abandoned = true;
+    return observation;
   };
 
   try {
     const first = await attempt();
-    // The second attempt is only meaningful when the first created something. If it
-    // did not, the name is not taken and a second create proves nothing.
-    const second: ExclusiveCreateObservation =
-      first.outcome === 'created' ? await attempt() : { outcome: 'io-failed' };
+    // The second attempt is only meaningful when the first created something.
+    //
+    // `null`, not a fabricated `io-failed`. `classifyMountCapability` returns from
+    // `first` before ever reading the second on that path, so a value here is dead
+    // — and a dead value that LOOKS like an observation is a trap: a later rule that
+    // consulted `second` earlier would silently classify a fabricated
+    // `io-failed`-with-no-errno as something observed. `null` cannot be mistaken for
+    // one.
+    const second = first.outcome === 'created' ? await attempt() : null;
     return classifyMountCapability(first, second);
   } catch (error) {
     // Belt and braces: `withBound` already converts a rejection into an
@@ -294,7 +342,12 @@ export async function probeMountCapability(
     // registration sat below an await that never settles it would never happen at
     // all — the leak it exists to prevent would be guaranteed on exactly the mount
     // that caused it.
-    if (outstanding.length > 0) {
+    // ONLY when an attempt was actually abandoned. Registered unconditionally, this
+    // repeated the whole realpath + lstat + rm round-trip on every ordinary probe —
+    // both attempts having already settled, `Promise.all` resolves on the next
+    // microtask — so the mount class least able to afford the syscalls paid for them
+    // twice per activation, the second time after the function had resolved.
+    if (bound.abandoned) {
       void Promise.all(outstanding).then(() =>
         removeProbeArtifact(deps.workspaceRoot, segments, timeoutMs)
       );

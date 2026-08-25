@@ -38,6 +38,20 @@ async function schegentEntries(): Promise<readonly string[]> {
   }
 }
 
+/**
+ * Probe artifacts only.
+ *
+ * `.gitignore` is EXPECTED: `schegent-gitignore.ts` states that every writer which
+ * creates `.schegent/` also drops the local ignore file, and the probe runs at
+ * activation ahead of the audit, rollup and transcript writers -- so on a fresh
+ * workspace it is the first writer and owes it. Without that, an abandoned create
+ * on the slow-mount path this probe exists for would leave a file visible in the
+ * operator's `git status`.
+ */
+async function probeArtifacts(): Promise<readonly string[]> {
+  return (await schegentEntries()).filter((name) => name.startsWith('.mount-probe'));
+}
+
 describe('mount capability probe (FR-R3-083)', () => {
   it('reports supported on an ordinary local filesystem', async () => {
     // Not a tautology: this is the only place the real `O_EXCL` path runs. A
@@ -50,10 +64,10 @@ describe('mount capability probe (FR-R3-083)', () => {
 
   it('leaves nothing behind on the supported path', async () => {
     await probeMountCapability({ workspaceRoot });
-    // SC-005. A probe that leaves its artifact turns the NEXT activation's first
-    // create into a second one, which would report `unsupported` on a good mount --
-    // the probe manufacturing its own finding.
-    expect(await schegentEntries()).toEqual([]);
+    // SC-005.
+    expect(await probeArtifacts()).toEqual([]);
+    // And the ignore file IS there, because the probe created the directory.
+    expect(await schegentEntries()).toContain('.gitignore');
   });
 
   it('leaves nothing behind when the create throws', async () => {
@@ -62,7 +76,7 @@ describe('mount capability probe (FR-R3-083)', () => {
       exclusiveCreate: () => Promise.reject(Object.assign(new Error('boom'), { code: 'EIO' }))
     });
     expect(verdict.capability).toBe('undetermined');
-    expect(await schegentEntries()).toEqual([]);
+    expect(await probeArtifacts()).toEqual([]);
   });
 
   it('leaves nothing behind when the probe times out', async () => {
@@ -72,7 +86,7 @@ describe('mount capability probe (FR-R3-083)', () => {
       exclusiveCreate: () => new Promise<ExclusiveCreateObservation>(() => undefined)
     });
     expect(verdict.capability).toBe('undetermined');
-    expect(await schegentEntries()).toEqual([]);
+    expect(await probeArtifacts()).toEqual([]);
   });
 
   it('answers undetermined WITHIN its bound against a create that never settles', async () => {

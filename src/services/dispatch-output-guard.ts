@@ -24,9 +24,8 @@
 // brought into existence by its own check, so only the parent chain is walked.
 
 import * as path from 'node:path';
-import * as fs from 'node:fs/promises';
 import type { FrozenOutputRequest } from '../contracts/run-request';
-import { segmentsUnderRoot, walkDirectoriesWithinRoot, refusesLeafAsReparsePoint, platformLacksNoFollow } from '../lib/safe-open';
+import { segmentsUnderRoot, walkDirectoriesWithinRoot, judgeLeafRedirect } from '../lib/safe-open';
 import type { SafeOpenRefusal } from '../lib/safe-open';
 
 export type DispatchOutputVerdict =
@@ -120,22 +119,20 @@ export async function judgeOutputTargetsAtDispatch(
     // `docs/architecture/native-binding-decision.md`. A permanent stated limit,
     // and the same one `safe-open.ts` carries.
     const leaf = path.join(walked.directory, segments[segments.length - 1]!);
-    try {
-      const stat = await fs.lstat(leaf);
-      if (refusesLeafAsReparsePoint(stat)) {
-        return {
-          outcome: 'refused',
-          portId: output.portId,
-          reason: platformLacksNoFollow() ? 'reparse-point-leaf' : 'symlink-leaf'
-        };
-      }
-    } catch (error) {
-      const errno = (error as NodeJS.ErrnoException).code;
-      // Absent is a pass. Anything else is unanswerable, and an unanswerable
-      // containment check is a refusal, not a pass.
-      if (errno !== 'ENOENT' && errno !== 'ENOTDIR') {
-        return { outcome: 'refused', portId: output.portId, reason: 'io-failed' };
-      }
+    // FR-R3-083 — ONE leaf policy, in `safe-open.ts`. This site and the walk's own
+    // leaf check used to hold two copies with different error tolerance, and the
+    // only thing they shared was the `isSymbolicLink()` call — none of the policy
+    // that actually differed. The tolerance is now an explicit argument, so the
+    // difference between the two callers is declared rather than accidental.
+    //
+    // `ENOTDIR` is tolerated HERE and not in the walk: this guard judges a declared
+    // output target that may not exist yet, at any depth, so a component that is a
+    // file means "there is nothing here to be redirected through". The walk has
+    // already proved every component above its leaf, so the same code there would
+    // mean something changed underneath it — a refusal, not an absence.
+    const judged = await judgeLeafRedirect(leaf, ['ENOENT', 'ENOTDIR']);
+    if (judged.outcome === 'refused') {
+      return { outcome: 'refused', portId: output.portId, reason: judged.reason };
     }
   }
   return CONTAINED;

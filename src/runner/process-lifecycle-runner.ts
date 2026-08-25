@@ -51,18 +51,19 @@ export class ProcessLifecycleRunner {
   private nextInvocationToken = 1;
 
   /**
-   * FR-R3-083 — children whose escalation ladder is already running.
+   * FR-R3-083 — children whose surviving group has already been REPORTED.
    *
-   * `terminate` is reached from four places (idle expiry, the absolute deadline,
-   * the cancellation signal, and `cancelActive`) and more than one of them fires
-   * on the same child routinely: an idle expiry is normally followed by the
-   * controller's own abort. The `exitCode`/`signalCode` guard only catches a
-   * SECOND call after the child has already died, which is exactly the case a
-   * hung child does not present — and a hung child is the only case that can
-   * reach the `tree-unconfirmed` report at the end of the ladder. Two ladders
-   * meant two audit entries for one surviving group, which reads as two.
+   * Not "children already being terminated". An earlier version guarded the whole
+   * ladder, which meant a later, genuinely different trigger (idle expiry, then the
+   * absolute deadline) could no longer re-signal a tree the first pass failed to
+   * reach -- and `signalProcessTree` swallows a failed group signal by design, so a
+   * first pass failing silently is the ordinary case, not an exotic one.
+   *
+   * What must not happen twice is the audit ENTRY: two overlapping cancel paths on
+   * one hung child would otherwise record two surviving groups where there was one.
+   * A WeakSet so a reaped child is collectable.
    */
-  private readonly terminating = new WeakSet<ChildProcess>();
+  private readonly reportedTrees = new WeakSet<ChildProcess>();
 
   constructor(
     private readonly spawnFn: ProcessSpawnFn = spawn as unknown as ProcessSpawnFn,
@@ -264,16 +265,19 @@ export class ProcessLifecycleRunner {
    * caller is told so rather than the terminal state quietly claiming otherwise.
    */
   private terminate(child: ChildProcess, attribution: TreeAttribution): void {
-    // FR-R3-083 — one ladder per child. See `terminating`.
-    if (this.terminating.has(child)) return;
     if (child.exitCode !== null || child.signalCode !== null) return;
-    this.terminating.add(child);
     escalateAndReportTree({
       child,
       attribution,
       runner: this.label,
       warn: (message) => this.logger.warn(`${this.label}: ${message}`),
-      emit: (event) => this.emit(event)
+      emit: (event) => this.emit(event),
+      // FR-R3-083 — the guard is on the REPORT, not on the ladder. Suppressing a
+      // second ladder means a tree the first pass failed to reach (a group signal
+      // that failed is swallowed by design) is never signalled again by a later,
+      // genuinely different trigger.
+      alreadyReported: () => this.reportedTrees.has(child),
+      markReported: () => void this.reportedTrees.add(child)
     });
   }
 }
