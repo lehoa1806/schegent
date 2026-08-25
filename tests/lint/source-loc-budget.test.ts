@@ -298,7 +298,14 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // FR-R3-080 / T1075 (2026-08-25) — 1423 → 1447. Twenty-four lines: the evidence-health drain, the queue claims at the three queue mutation sites in activation, and the run-id-to-pid map the telemetry sampler's exit path needs — without it an exit could only guess which child it was, and with two runs the guess stopped the wrong series: the evidence-health
   // drain reaching the phase runner, and the note on why an absent drain is the
   // state this item exists to leave. Wiring, which is what this file is.
-  { path: 'src/extension.ts', maxLines: 1_447 },
+  // FR-R3-083 (T1172a, 2026-08-25) — 1447 → 1450. Three lines: the import and the
+  // one-line launch of the mount-capability probe, plus its pointer comment. The
+  // probe's own reasoning, its bound, its warn-once record and its notification
+  // decision all live in src/activation/mount-capability-wiring.ts, which is why
+  // this is three lines and not seventeen — the first draft put the whole
+  // fire-and-forget expression here and this gate is what sent it to a module.
+  // Prose trimmed before raising. Set to exactly what the file measures.
+  { path: 'src/extension.ts', maxLines: 1_450 },
   // P4 phase-control and lifecycle-auditor extraction ratchet: 1,200 → 730.
   // This file owns only the workflow facade, run dispatch, deletion, retry
   // entry, and persistence.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, type Dirent } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 
 /**
@@ -69,7 +69,7 @@ const SEARCH_ROOTS: readonly string[] = ['src', 'tests', 'webview-ui/src'];
 const SKIP_DIRECTORIES: ReadonlySet<string> = new Set(['node_modules', 'dist', 'out', '.vite']);
 
 function walk(dir: string, out: string[]): void {
-  let entries: ReturnType<typeof readdirSync>;
+  let entries: Dirent[];
   try {
     entries = readdirSync(dir, { withFileTypes: true });
   } catch {
