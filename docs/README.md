@@ -179,6 +179,8 @@ drifts unnoticed, because the readers who would catch an error never get there.
 
 ### Release
 
+- [Assistive-technology matrix](release/accessibility-at-matrix.md) — what real screen-reader testing
+  has been done per platform, and where the honest answer is **untested** (FR-R3-091)
 - [Held major dependency upgrades](release/held-major-upgrades.md) — the deliberate holds, why each is
   held, and when it was last re-examined. A held upgrade with no review date is indistinguishable from a
   forgotten one (FR-R3-090).

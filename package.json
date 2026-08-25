@@ -174,7 +174,7 @@
           "type": "boolean",
           "default": false,
           "scope": "application",
-          "markdownDescription": "Allow a backend that runs with **no OS-enforced bound** on what it can reach. `claude` and `agy` are spawned with `--dangerously-skip-permissions`: their approval prompts are off and they act under your local permissions. `codex` carries a `workspace-write` sandbox and is unaffected by this setting.\n\n**Default `false`, and a run using an uncontained backend is refused until you set this** (FR-R3-056). Enabling it is an explicit acceptance of that posture. Every run that reaches a backend records which backend it used, whether that backend carries an OS-enforced bound, and whether this setting was enabled at the time, in the audit log — once per run, not once per phase (FR-R3-064).\n\nThis is a machine-level safety posture, so it is `application`-scoped: a workspace cannot grant it to itself. See `repo/docs/architecture/agent-capability-posture.md`."
+          "markdownDescription": "Allow a backend that runs with **no OS-enforced bound** on what it can reach. `claude` and `agy` are spawned with `--dangerously-skip-permissions`: their approval prompts are off and they act under your local permissions. `codex` carries a `workspace-write` sandbox and is unaffected by this setting.\n\n**Default `false`, and a run using an uncontained backend is refused until you set this** (FR-R3-056). Enabling it is an explicit acceptance of that posture. Every run that reaches a backend records which backend it used, whether that backend carries an OS-enforced bound, and whether this setting was enabled at the time, in the audit log \u2014 once per run, not once per phase (FR-R3-064).\n\nThis is a machine-level safety posture, so it is `application`-scoped: a workspace cannot grant it to itself. See `repo/docs/architecture/agent-capability-posture.md`."
         },
         "schegent.backend.probeTimeoutSeconds": {
           "type": "integer",
@@ -223,7 +223,7 @@
           "default": 21600,
           "minimum": 60,
           "scope": "resource",
-          "description": "Absolute wall-clock bound on one CLI invocation in seconds, armed at spawn and never reset — a chatty child that keeps emitting output cannot extend it. Default 21600 (6 h): four times the idle default and well above the longest legitimately long phase observed (3.6 h), so a real phase is not killed while a runaway is."
+          "description": "Absolute wall-clock bound on one CLI invocation in seconds, armed at spawn and never reset \u2014 a chatty child that keeps emitting output cannot extend it. Default 21600 (6 h): four times the idle default and well above the longest legitimately long phase observed (3.6 h), so a real phase is not killed while a runaway is."
         },
         "schegent.invocation.timeoutSeconds": {
           "type": "number",
@@ -442,11 +442,12 @@
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "test:evals": "vitest run --config vitest.evals.config.ts --reporter=verbose",
     "test:visual": "node scripts/check-playwright-browser.mjs && npm run build:webview && playwright test --config playwright.config.ts",
+    "a11y": "node scripts/check-playwright-browser.mjs && npm run build:webview && playwright test --config playwright.a11y.config.ts",
     "test:integration:compile": "tsc -p tsconfig.integration.json",
     "test:integration": "npm run build && npm run test:integration:compile && node ./out/tests/integration/runTest.js",
     "verify:all": "npm run contracts:check && npm run docs:check && npm run security:secrets && npm run security:actions && npm run license:check && npm run typecheck && npm run typecheck:webview && npm run typecheck:tests && npm run lint && npm run lint:webview && npm run test:host && npm run test:webview:coverage",
     "ci:fast": "npm run typecheck:tests && npm run lint && npm run verify:all && npm run test:evals && npm run test:visual && npm run test:perf && npm run build:host && npm run package:smoke",
-    "ci": "npm run typecheck && npm run typecheck:webview && npm run typecheck:tests && npm run lint && npm run lint:webview && npm run build:webview && npm run test:host && npm run test:webview:coverage && npm run test:evals && npm run test:visual && npm run test:perf && npm run test:e2e && npm run build && npm run package:smoke && npm run test:integration",
+    "ci": "npm run typecheck && npm run typecheck:webview && npm run typecheck:tests && npm run lint && npm run lint:webview && npm run build:webview && npm run test:host && npm run test:webview:coverage && npm run test:evals && npm run test:visual && npm run a11y && npm run test:perf && npm run test:e2e && npm run build && npm run package:smoke && npm run test:integration",
     "package": "vsce package --no-dependencies",
     "package:smoke": "node scripts/package-vsix-smoke.mjs",
     "postinstall": "npm --prefix webview-ui install --no-audit --no-fund"
@@ -460,6 +461,7 @@
     "@vitest/coverage-v8": "^3.2.7",
     "@vscode/test-electron": "^2.3.9",
     "@vscode/vsce": "^3.9.2",
+    "axe-core": "^4.13.0",
     "esbuild": "^0.28.2",
     "eslint": "^9.39.5",
     "eslint-plugin-svelte": "^3.23.0",
