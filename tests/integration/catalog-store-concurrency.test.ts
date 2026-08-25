@@ -341,7 +341,7 @@ describe('Feature 100 — write-once is the kernel, not a check (T514, FR-030)',
     // `flag: 'wx'` is `O_EXCL`: the existence test and the creation are one
     // syscall. Eight concurrent writers, one file, one winner — and the file holds
     // the winner's bytes rather than a mixture.
-    const adapter = createCatalogFsAdapter(storeRootOf(workspaceRoot));
+    const adapter = createCatalogFsAdapter({ workspaceRoot, storeRoot: storeRootOf(workspaceRoot) });
     const at = ['phases', 'implement', 'v1.json'];
 
     const outcomes = await Promise.all(

@@ -3,10 +3,14 @@ import type { WorkspaceLockManager } from '../state/lock';
 import type { Notifier } from '../ui/notifications';
 import type { SanitizedLogger } from '../lib/logger';
 import type { GuardedRunService } from '../services/guarded-run-service';
+import type { HistoryDescriptionStore } from '../services/history/history-description-store';
+import { resolveHistoryDescription } from '../services/history/history-description-resolver';
 
 export interface RerunCtx {
   guarded: Pick<GuardedRunService, 'scheduleOrEnqueue'>;
   history: Pick<HistoryStore, 'list'>;
+  /** FR-R3-071 — the sidecar read half; the resolver is the only reader. */
+  descriptions: Pick<HistoryDescriptionStore, 'read'>;
   lock: Pick<WorkspaceLockManager, 'hasPrimacy'>;
   notifier: Notifier;
   logger: SanitizedLogger;
@@ -42,24 +46,27 @@ export async function runRerunFromHistory(arg: unknown, ctx: RerunCtx): Promise<
       return;
     }
 
-    // Feature 013 — Wave 6 (US6, FR-029..FR-031): dual rerun path.
+    // Feature 013 — Wave 6 (US6, FR-029..FR-031): dual rerun path, and
+    // FR-R3-071 (feature 152): the resolution now goes through the sidecar
+    // resolver rather than the inline field FR-R3-010 stopped writing.
     //
-    // - If the entry carries `originalDescription` (post-Wave-6 write),
-    //   replay it byte-for-byte (the field is the FULL sanitized
-    //   description, no length cap).
-    // - If the entry is legacy (pre-Wave-6 write, `originalDescription`
-    //   absent) AND `force !== true`, refuse with an operator-visible
-    //   warning. The preview is intentionally NOT used as a silent
-    //   fallback (FR-031).
-    // - If legacy AND `force === true`, the operator has opted in to
-    //   replaying the truncated preview; we proceed with `descriptionPreview`
+    // - `resolved` (sidecar bytes) and `legacy` (pre-sidecar inline text) both
+    //   replay byte-for-byte — the FULL sanitized description, no length cap.
+    // - `missing`/`unreadable` AND `force !== true`: refuse with the
+    //   operator-visible warning. The preview is intentionally NOT used as a
+    //   silent fallback (FR-031).
+    // - `missing`/`unreadable` AND `force === true`: the operator has opted in
+    //   to replaying the truncated preview; proceed with `descriptionPreview`
     //   and log the divergence at warn level for the audit-tail surface.
-    const originalDescription = entry.originalDescription ?? null;
+    const resolution = await resolveHistoryDescription(entry, {
+      descriptions: ctx.descriptions,
+      logger: ctx.logger
+    });
     let descriptionToRun: string;
     let rerunDescriptionField: string;
-    if (originalDescription !== null) {
-      descriptionToRun = originalDescription;
-      rerunDescriptionField = originalDescription;
+    if (resolution.outcome === 'resolved' || resolution.outcome === 'legacy') {
+      descriptionToRun = resolution.description;
+      rerunDescriptionField = resolution.description;
     } else if (!force) {
       ctx.notifier.warn(
         `Schegent: rerun unavailable for ${runId.slice(0, 8)} — original description was not stored under this build. Re-run with force=true to replay the truncated preview.`

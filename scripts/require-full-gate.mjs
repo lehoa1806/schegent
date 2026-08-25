@@ -18,7 +18,15 @@
 // be exercised by cutting a release is a gate nobody exercises.
 
 /** The workflow whose green run at this SHA is the evidence being required. */
-export const FULL_GATE_WORKFLOW = 'full-gate.yml';
+export // FR-R3-074 (feature 152) — KNOWN LIMIT, recorded rather than implied: this
+// binding accepts the RUN-level conclusion. GitHub reports a run 'success'
+// even when a job was skipped, so a future job-level `if:`/`needs:` in
+// full-gate.yml could skip a named check while this gate stays green. Today no
+// job in that workflow carries a condition, and tests/unit/build/
+// full-gate-parity.test.ts pins the executed target set; the durable fix is a
+// per-job query of /runs/{id}/jobs, filed in the round-3 residuals decision
+// record.
+const FULL_GATE_WORKFLOW = 'full-gate.yml';
 
 /**
  * Decide from a `GET /actions/workflows/{id}/runs` payload.

@@ -8,6 +8,12 @@ name: Full gate
 # integration-host and deterministic E2E coverage on a weekly cadence
 # plus on demand. Required green before cutting a release per
 # RELEASE.md.
+#
+# FR-R3-074 — release.yml binds to this file by exact SHA
+# (scripts/require-full-gate.mjs) and its requirement comment names the
+# eval / e2e / perf / visual / full-coverage checks. Every named check must be
+# an executed `npm run` step here; tests/unit/build/full-gate-parity.test.ts
+# fails the build when one is removed or renamed.
 
 on:
   schedule:
@@ -86,6 +92,9 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm --prefix webview-ui ci --ignore-scripts
       - run: npm run lint
+      # FR-R3-074 — the webview lint baseline must sit inside the gate the
+      # release binds to, not only in the per-PR chains.
+      - run: npm run lint:webview
 
   test:
     name: unit tests
@@ -102,8 +111,30 @@ jobs:
       # arbitrary scripts on `npm ci`.
       - run: npm ci --ignore-scripts
       - run: npm --prefix webview-ui ci --ignore-scripts
-      - run: npm run test
+      # FR-R3-074 — the release binding names a full-coverage check, so both
+      # test legs run under their coverage thresholds rather than as the bare
+      # suites: `test:coverage` for the host, `test:webview:coverage` for the
+      # webview — the same two legs ci.yml holds per PR (`test:coverage`
+      # directly, `test:webview:coverage` via `verify:all`).
+      - run: npm run test:coverage
+      - run: npm run test:webview:coverage
       - run: npm run test:evals
+
+  perf:
+    name: perf budgets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+          cache: 'npm'
+      # FR-R3-074 — the release binding names a perf check, so the wall-clock
+      # budgets run inside this gate. Host install only: vitest.perf.config.ts
+      # scopes the suite to tests/perf/** against the vscode stub and touches
+      # no webview code — the same shape the evidence-soak job relies on.
+      - run: npm ci --ignore-scripts
+      - run: npm run test:perf
 
   build:
     name: build

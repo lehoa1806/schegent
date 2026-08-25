@@ -207,6 +207,41 @@ interface CountEntry {
   readonly why: string;
 }
 
+/**
+ * FR-R3-073 (feature 152) — the lease staleness window, in seconds.
+ *
+ * The recovery runbook tells an operator how long to wait before concluding a
+ * lease's holder is gone; the review found it saying 30 while the code said 15,
+ * doubling a wait made while a run is stuck. Derived from the constant's own
+ * declaration line so the number cannot be transcribed twice.
+ */
+function leaseStalenessSeconds(): number {
+  const body = readDocument('repo/src/state/lock.ts');
+  const match = /export const STALENESS_THRESHOLD_MS = ([\d_]+);/.exec(body);
+  if (!match) {
+    throw new Error('asserted-counts: STALENESS_THRESHOLD_MS no longer declared in lock.ts');
+  }
+  return Number(match[1].replace(/_/g, '')) / 1000;
+}
+
+/**
+ * FR-R3-073 (feature 152) — the VS Code engine floor's minor version.
+ *
+ * The developer-setup tutorial declared 1.85.0 while the manifest required
+ * ^1.107.0 — a reader on 1.90 would install, then fail. The MINOR number is the
+ * moving part (the major is pinned to 1.x by the caret), so that is what is
+ * derived and what the claim states.
+ */
+function vscodeEngineFloorMinor(): number {
+  const body = readDocument('repo/package.json');
+  const parsed = JSON.parse(body) as { engines?: { vscode?: string } };
+  const match = /^\^1\.(\d+)\.\d+$/.exec(parsed.engines?.vscode ?? '');
+  if (!match) {
+    throw new Error('asserted-counts: engines.vscode no longer a ^1.x.y range in package.json');
+  }
+  return Number(match[1]);
+}
+
 /** The corpus fixture. */
 function corpusCases(): number {
   const body = readDocument('repo/tests/evals/fixtures/backend-outcomes.json');
@@ -278,6 +313,30 @@ const REGISTRY: readonly CountEntry[] = [
       'Registering is the cheaper fix than rewording, because the sentence introduces the corpus and a ' +
       'reader of §1 wants its size. Envelope-only, so the claim side is skipped in a standalone ' +
       'checkout while the producer comparison still runs.'
+  },
+  {
+    document: 'repo/docs/operations/recovery-checkpoints.md',
+    claim: 'heartbeat goes stale (15 seconds',
+    stated: 15,
+    producer: 'STALENESS_THRESHOLD_MS in repo/src/state/lock.ts',
+    derive: leaseStalenessSeconds,
+    why:
+      'REGISTERED because the runbook tells an operator how long to wait before concluding a stuck ' +
+      "run's holder is gone, and the review found it saying 30 against a code value of 15 — the one " +
+      'timing number in the corpus whose drift doubles a wait made under pressure (FR-R3-073). The ' +
+      'sentence names its producer, and this entry is what fails when the constant moves.'
+  },
+  {
+    document: 'repo/docs/tutorials/developer-setup.md',
+    claim: 'VS Code 1.107.0 or newer',
+    stated: 107,
+    producer: 'engines.vscode in repo/package.json',
+    derive: vscodeEngineFloorMinor,
+    why:
+      'REGISTERED because the tutorial declared a 1.85.0 floor while the manifest required ^1.107.0: ' +
+      'a reader on an in-between version installs, then fails at activation with no pointer back to ' +
+      'this line (FR-R3-073). The minor version is the moving part under the ^1 caret, so it is what ' +
+      'is derived and what drifts when the engine floor is raised or lowered again.'
   }
 ];
 

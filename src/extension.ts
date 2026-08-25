@@ -88,6 +88,8 @@ import { ScheduledStartCoordinator } from './services/scheduled-start-coordinato
 import { readMetrics } from './metrics/metrics-service';
 import { AuditPointerResolver } from './services/history/audit-pointer-resolver';
 import { HistoryEvidenceService } from './services/history/history-evidence-service';
+import { HistoryDescriptionStore } from './services/history/history-description-store';
+import { resolveHistoryDescription } from './services/history/history-description-resolver';
 import { createPhaseLogService } from './services/phase-log';
 import { resolveRunOrigin } from './services/run-origin-resolver';
 import { createPhaseLogTailWiring } from './activation/phase-log-tail-wiring';
@@ -330,7 +332,22 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   });
   const iterationCap = config.get<number>('loop.maxIterations', 10);
   const pollIntervalMinutes = config.get<number>('watchdog.pollIntervalMinutes', 30);
-  const timeoutSeconds = config.get<number>('invocation.timeoutSeconds', 5400);
+  // FR-R3-075 — the idle window, renamed to say what it is. The old key is
+  // honored as a fallback when the operator set it explicitly and has not yet
+  // adopted the new name; `inspect` distinguishes an explicit value from the
+  // manifest default, which plain `get` cannot.
+  const idleInspect = config.inspect<number>('invocation.idleTimeoutSeconds');
+  const idleExplicit =
+    idleInspect?.workspaceFolderValue ?? idleInspect?.workspaceValue ?? idleInspect?.globalValue;
+  const legacyInspect = config.inspect<number>('invocation.timeoutSeconds');
+  const legacyExplicit =
+    legacyInspect?.workspaceFolderValue ??
+    legacyInspect?.workspaceValue ??
+    legacyInspect?.globalValue;
+  const timeoutSeconds = idleExplicit ?? legacyExplicit ?? 5400;
+  // FR-R3-075 — the absolute per-invocation bound; reasoning beside the
+  // default's declaration in general-settings.ts.
+  const maxDurationSeconds = config.get<number>('invocation.maxDurationSeconds', 21600);
   const rotationSizeMB = config.get<number>('audit.rotation.sizeMB', 5);
   const rotationMaxAgeDays = config.get<number>('audit.rotation.maxAgeDays', 30);
   const catalogReader: CatalogConfigReader = createCatalogReader(workspaceRoot);
@@ -370,18 +387,29 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   // and is exactly the assumption finding REL-01 was about. `.schegent/` is
   // covered by its own `.gitignore` (`*`), and an ownership record carries owner
   // ids and timestamps only — never a workspace path.
-  // Feature FR-R3-005 (T330) — one expression, read twice: the adapter's
-  // containment root and the registry's directory are the same path by
-  // construction, so they cannot drift into a guard that proves membership of
-  // a tree the registry does not write to.
+  // Feature FR-R3-005 (T330) — one expression, read twice: the adapter's store
+  // directory and the registry's directory are the same path by construction,
+  // so they cannot drift into a guard that proves membership of a tree the
+  // registry does not write to. FR-R3-069 (feature 152) splits the TRUST role
+  // out of that expression: judgments anchor at `workspaceRoot`, which a
+  // checkout cannot choose, while paths still compose from `ownershipDir` — so
+  // a `.schegent/ownership` symlinked out of the workspace refuses instead of
+  // authorizing its own target.
   const ownershipDir = path.join(workspaceRoot, '.schegent', 'ownership');
-  store.useOwnershipStorage(createDiskOwnershipFs(ownershipDir), ownershipDir);
+  store.useOwnershipStorage(createDiskOwnershipFs({ workspaceRoot, ownershipDir }), ownershipDir);
   const lock = new WorkspaceLockManager(store, ownerId);
   // Feature 092 (T049, FR-031) — the execution half of the lock split. Same
   // owner id as the workspace lock so a crash strands both together, but a
   // separate manager over a separate key: holding a queue's execution lease
   // must never make this window primary.
   const executionLeases = new ExecutionLeaseManager(store, ownerId);
+  // FR-R3-070 — elect BEFORE recovering. The recovery installers below used to
+  // run ahead of this call, so a window about to lose the election could still
+  // resume and drive a Run the primary already owned. Primacy is decided here,
+  // once; every installer is gated on the result, and a non-primary window
+  // leaves persisted deadlines addressable for the primary — the decline-and-
+  // retain shape fire() models. See plan.md "Activation Lifecycle", FR-041(c).
+  const lockResult = await lock.tryAcquire();
   const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   disposables.push(statusBarItem);
   const statusBar = new SchegentStatusBar(statusBarItem);
@@ -677,6 +705,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       cwd: workspaceRoot,
       iterationCap,
       timeoutMs: timeoutSeconds * 1000,
+      maxDurationMs: maxDurationSeconds * 1000,
       inheritProcessEnv: processEnvironmentPolicy.inheritProcessEnv,
       processEnvAllowlist: processEnvironmentPolicy.processEnvAllowlist,
       defaultRunnerKind: backendKind,
@@ -792,6 +821,9 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     // and leaves the armed deadline persisted; `QueueScheduleWatchdog` below
     // retries it once this window is primary. The operator is NOT prompted.
     isForeignLockHeld: () => lock.isForeignLockHeld(),
+    // FR-R3-070 — the authoritative fire-time predicate beside the probe; a
+    // window whose fence lapsed after election must not promote a schedule.
+    hasPrimacy: () => lock.hasPrimacy(),
     // Feature 098 (T058 / FR-031a) — a schedule that comes due with nothing
     // imported meets the refusal a manual launch meets, and the operator is
     // told in the same words. Read through `catalogSession.catalog` rather than
@@ -802,10 +834,16 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       onRefused: (refusal) => void notifier.warn(refusal.message) // advisory
     }
   });
-  try {
-    await scheduledStartCoordinator.reArm();
-  } catch (err) {
-    logger.warn(`scheduled-start re-arm failed: ${(err as Error).message}`);
+  if (lockResult.acquired) {
+    try {
+      await scheduledStartCoordinator.reArm();
+    } catch (err) {
+      logger.warn(`scheduled-start re-arm failed: ${(err as Error).message}`);
+    }
+  } else {
+    // FR-R3-070 — non-primary: no re-arm. Persisted schedules stay exactly as
+    // they are, addressable by the primary window's coordinator and watchdog.
+    logger.info('scheduled-start re-arm skipped: window is not primary');
   }
 
   // Feature 065 (T036/T037) — late-wire the pause/resume cancel + audit
@@ -853,6 +891,13 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       // `pendingRetryAt` and would otherwise resume it early on a sibling's
       // shorter deadline. A queue with no deadline at all is not in a delayed
       // retry — that is the credit-poll arm, and it resumes as it always did.
+      // FR-R3-070 — the sweep runs long after activation, so primacy is
+      // re-checked at fire time with the authoritative predicate rather than
+      // trusted from the activation-era election result.
+      if (!(await lock.hasPrimacy())) {
+        logger.warn('watchdog resume sweep skipped: window is not primary');
+        return;
+      }
       controller.claimElapsedDelayedRetries();
       for (const queueId of Object.keys(store.getRunMap())) {
         if (controller.hasPendingDelayedRetry(queueId)) continue;
@@ -1258,6 +1303,19 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       resolver: new AuditPointerResolver({ workspaceRoot, logger }),
       evidenceHealth
     }),
+    // FR-R3-071 — the sidebar replay panel's description read, through the one
+    // resolver the host commands use. Same closure shape and the same reason:
+    // the workspace root reaches the sidecar store here and nowhere else.
+    historyDescriptionService: {
+      resolve: async (runId) => {
+        const entry = historyStore.list().find((row) => row.runId === runId);
+        if (!entry) return null;
+        return resolveHistoryDescription(entry, {
+          descriptions: new HistoryDescriptionStore({ workspaceRoot, logger }),
+          logger
+        });
+      }
+    },
     // Feature 073 — existing session-scoped correlation id, reused (not
     // newly minted) for the metrics-view-opened audit payload
     // (contracts/metrics-view-opened-event.md).
@@ -1286,18 +1344,28 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   phaseLogTail.bindDashboardBridge(uiWiring.dashboardBridge);
   output.log(`activated; cli=${cliPath}, cap=${iterationCap}, pollIntervalMin=${pollIntervalMinutes}`);
 
-  await watchdog.reattachOnActivation();
+  if (lockResult.acquired) {
+    await watchdog.reattachOnActivation();
+  } else {
+    // FR-R3-070 — non-primary: the persisted poll deadline remains for the
+    // primary window to reattach.
+    logger.info('watchdog reattach skipped: window is not primary');
+  }
 
   // Feature 011 FR-013 — restart handshake. If the persisted run has a
   // pending delayed-retry deadline, re-arm the watchdog (or resume
   // immediately if it has already elapsed).
-  await controller.resumeExistingFromActivation();
+  if (lockResult.acquired) {
+    await controller.resumeExistingFromActivation();
+  } else {
+    // FR-R3-070 — the path that used to fire setImmediate(resumeExisting)
+    // before the election was decided; the elapsed deadline stays persisted.
+    logger.info('delayed-retry re-arm skipped: window is not primary');
+  }
 
-  // Stage 2 always reclaims the workspace lock if the prior holder is gone or the lock is
-  // stale. This decouples primary-window status from run-resumption: even when no run is
-  // persisted, this window must be primary so the sidebar mounts as enabled. See plan.md
-  // "Activation Lifecycle" rule and FR-041(c).
-  const lockResult = await lock.tryAcquire();
+  // FR-R3-070 — the election itself moved above the recovery installers.
+  // Primary-window status stays decoupled from run-resumption: even with no
+  // run persisted, this window must be primary so the sidebar mounts enabled.
   // Feature 093 (T037/T039) — C-4 aggregate. A window that crashed mid-
   // concurrency persisted several Runs, and each is re-armed on the queue that
   // owns it. With one entry this is the previous behavior exactly.

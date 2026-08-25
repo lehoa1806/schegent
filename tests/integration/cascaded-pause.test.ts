@@ -80,9 +80,29 @@ function makeLock(): WorkspaceLockManager {
  * it now has. Left on the lock, this test would assert the cascade while the
  * drain was in fact free to dispatch, which is the opposite of what it checks.
  */
-function makeRefusingLease(): ExecutionLeasePort {
+/**
+ * FR-R3-070 (feature 152) — the same reasoning one gate later. The resume seam
+ * now claims the execution lease too (`resumeExistingOnQueue` mirrors the
+ * drain's step 6), so a lease that refuses EVERYTHING no longer models this
+ * walkthrough: its premise is that the window that owns the paused Run may
+ * resume it, while the drain stays refused. `grantNext()` opens exactly one
+ * claim — the operator's resume — and every other claim (including the
+ * post-terminal drain sweep that would otherwise dispatch task B) still
+ * refuses, which is what keeps "B stays pending" meaning "the cascade held".
+ */
+function makeRefusingLease(): ExecutionLeasePort & { grantNext: () => void } {
+  let grants = 0;
   return {
-    tryAcquire: vi.fn(async () => ({ acquired: false, ownerId: 'other-window' })),
+    grantNext: () => {
+      grants += 1;
+    },
+    tryAcquire: vi.fn(async () => {
+      if (grants > 0) {
+        grants -= 1;
+        return { acquired: true, ownerId: 'this-window' };
+      }
+      return { acquired: false, ownerId: 'other-window' };
+    }),
     release: vi.fn(async () => {})
   };
 }
@@ -102,6 +122,7 @@ describe('Feature 028 — Walkthrough 1 (cascaded active-phase pause)', () => {
     const logger = new SanitizedLogger();
     const audit = new AuditLogWriter({ workspaceRoot: tmpRoot }, logger);
 
+    const lease = makeRefusingLease();
     // We control when pause is triggered by injecting it from the CLI mock
     // mid-phase: during the FIRST `speckit-clarify` invocation, the runner
     // returns clean stdout BUT calls `controller.pauseActivePhase()` first,
@@ -147,7 +168,7 @@ describe('Feature 028 — Walkthrough 1 (cascaded active-phase pause)', () => {
       logger,
       makeLock(),
       { cliPath: 'noop', cwd: tmpRoot, iterationCap: 5, timeoutMs: 1000 },
-      { catalog: buildSpeckitCatalog(), executionLease: makeRefusingLease() }
+      { catalog: buildSpeckitCatalog(), executionLease: lease }
     );
 
     // Enqueue two tasks: A (will run) and B (must stay pending).
@@ -180,6 +201,9 @@ describe('Feature 028 — Walkthrough 1 (cascaded active-phase pause)', () => {
     // setImmediate. Wait for that microtask to drain and the resumed run
     // to complete naturally (it will drive clarify → plan → tasks →
     // analyze → implement → finalize → done).
+    // FR-R3-070 — the resume seam claims the lease; open exactly one grant
+    // for it (see makeRefusingLease). Everything else keeps refusing.
+    lease.grantNext();
     await controller.resumeActivePhase();
     // Bounded by elapsed time rather than by a round count. Each round
     // sleeps 10ms, so the old cap was ~2000ms of sleep plus however long the

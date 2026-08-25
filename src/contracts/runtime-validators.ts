@@ -64,6 +64,7 @@ import {
   CMD_START_PHASE_LOG_TAIL,
   CMD_STOP_PHASE_LOG_TAIL,
   CMD_RESOLVE_AUDIT_POINTER,
+  CMD_RESOLVE_HISTORY_DESCRIPTION,
   CMD_SET_PHASE_BREAKPOINT,
   CMD_CLEAR_PHASE_BREAKPOINT,
   CMD_START_QUEUE, CMD_READ_METRICS,
@@ -85,6 +86,7 @@ import {
 } from './validators/phase-log';
 import { validateReadMetrics } from './validators/metrics';
 import { validateResolveAuditPointer } from './validators/history-evidence';
+import { validateResolveHistoryDescription } from './validators/history-description';
 import {
   validateExportProcessYaml,
   validatePreflightProcessYaml
@@ -126,6 +128,7 @@ import {
 export { isValidReadMetricsResponse } from './validators/metrics';
 export { isValidReadDefinitionVersionResponse } from './validators/catalog-history';
 export { isValidResolveAuditPointerResponse } from './validators/history-evidence';
+export { isValidResolveHistoryDescriptionResponse } from './validators/history-description';
 export type { IpcValidationError, IpcValidationResult } from './validators/shared';
 
 const DESCRIPTION_MAX = 4096;
@@ -264,6 +267,8 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
       return validateNoPayload(CMD_OPEN_VERBOSE_SETTING, obj, correlationId);
     case CMD_RESOLVE_AUDIT_POINTER:
       return validateResolveAuditPointer(obj, correlationId);
+    case CMD_RESOLVE_HISTORY_DESCRIPTION:
+      return validateResolveHistoryDescription(obj, correlationId);
     case CMD_SET_PHASE_BREAKPOINT:
       return validatePhaseBreakpointPayload(CMD_SET_PHASE_BREAKPOINT, obj, correlationId);
     case CMD_CLEAR_PHASE_BREAKPOINT:

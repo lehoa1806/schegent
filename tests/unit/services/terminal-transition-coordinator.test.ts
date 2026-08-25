@@ -60,7 +60,7 @@ describe('TerminalTransitionCoordinator', () => {
       setRun: vi.fn(async () => { order.push('run'); })
     };
     const queue = { finish: vi.fn(async () => { order.push('queue'); }) };
-    const history = { record: vi.fn(async () => { order.push('history'); }) };
+    const history = { record: vi.fn(async () => { order.push('history'); return { outcome: 'recorded' as const }; }) };
     const coordinator = new TerminalTransitionCoordinator(
       store as never, queue as never, history as never, new SanitizedLogger()
     );
@@ -77,7 +77,7 @@ describe('TerminalTransitionCoordinator', () => {
       setRun: vi.fn(async () => undefined)
     };
     const queue = { finish: vi.fn(async () => undefined) };
-    const history = { record: vi.fn(async () => undefined) };
+    const history = { record: vi.fn(async () => ({ outcome: 'recorded' as const })) };
     const coordinator = new TerminalTransitionCoordinator(
       store as never, queue as never, history as never, new SanitizedLogger()
     );
@@ -109,7 +109,7 @@ describe('TerminalTransitionCoordinator concurrent transitions (Feature 093 T048
       setRun: vi.fn(async () => undefined)
     };
     const queue = { finish: vi.fn(async () => undefined) };
-    const history = { record: vi.fn(async () => undefined) };
+    const history = { record: vi.fn(async () => ({ outcome: 'recorded' as const })) };
     return {
       store,
       queue,
@@ -174,7 +174,7 @@ describe('TerminalTransitionCoordinator concurrent transitions (Feature 093 T048
       })
     };
     const queue = { finish: vi.fn(async () => undefined) };
-    const history = { record: vi.fn(async () => undefined) };
+    const history = { record: vi.fn(async () => ({ outcome: 'recorded' as const })) };
     const coordinator = new TerminalTransitionCoordinator(
       store as never, queue as never, history as never, new SanitizedLogger()
     );
@@ -208,7 +208,7 @@ describe('TerminalTransitionCoordinator legacy journal (Feature 093 T048)', () =
       setRun: vi.fn(async () => undefined)
     };
     const queue = { finish: vi.fn(async () => undefined) };
-    const history = { record: vi.fn(async () => undefined) };
+    const history = { record: vi.fn(async () => ({ outcome: 'recorded' as const })) };
     const coordinator = new TerminalTransitionCoordinator(
       store as never, queue as never, history as never, new SanitizedLogger()
     );

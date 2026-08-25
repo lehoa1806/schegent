@@ -32,6 +32,12 @@ import type {
 } from '../catalog/ports';
 import { tempNameFor } from '../catalog/atomic-write';
 import { resolveContainedLink, resolveContainedTarget } from './path-containment';
+import {
+  ensureAnchorWithinRoot,
+  openWithinRootByPath,
+  segmentsUnderRoot,
+  type SafeOpenResult
+} from './safe-open';
 
 /** The store's directory, under the workspace's `.schegent/`. */
 export const CATALOG_DIRECTORY_SEGMENTS = ['.schegent', 'catalog'] as const;
@@ -73,16 +79,97 @@ function nextTempToken(): string {
 /**
  * The production filesystem for the catalog store.
  *
- * `storeRoot` is `null` when no workspace folder is open. That is not an error
+ * `anchor` is `null` when no workspace folder is open. That is not an error
  * state to guard against at every call: reads report `absent`, which is already
  * the empty catalog (FR-001a), and writes never get here because `save` asks
  * `checkWritability` first and refuses `no-workspace` by name (FR-033a).
+ *
+ * FR-R3-069 (feature 152) — two required roles where one path used to play
+ * both: `workspaceRoot` is the TRUSTED anchor every containment judgment
+ * resolves against, and `storeRoot` is the UNTRUSTED store directory paths are
+ * composed from. Anchoring the judge at the store itself was the F-01 defect —
+ * the judge realpaths the root it is handed, so a checkout arriving with
+ * `.schegent` or `.schegent/catalog` as a symlink made its own target the
+ * boundary and everything beneath it judged `contained`. Judged from the
+ * workspace root, an escaping store link refuses; one that stays inside the
+ * workspace is still admitted.
  */
-export function createCatalogFsAdapter(storeRoot: string | null): CatalogFsPort {
-  const roots = storeRoot === null ? [] : [storeRoot];
+export function createCatalogFsAdapter(
+  anchor: { readonly workspaceRoot: string; readonly storeRoot: string } | null
+): CatalogFsPort {
+  const workspaceRoot = anchor === null ? null : anchor.workspaceRoot;
+  const storeRoot = anchor === null ? null : anchor.storeRoot;
+  const roots = workspaceRoot === null ? [] : [workspaceRoot];
 
   const pathFor = (at: StoreSegments): string | null =>
     storeRoot === null ? null : path.join(storeRoot, ...at);
+
+  /** A safe-open refusal reduced to this adapter's errno vocabulary. */
+  const refusalErrno = (result: Extract<SafeOpenResult, { outcome: 'refused' }>): string =>
+    result.reason === 'io-failed' ? result.errno : CONTAINMENT_ERRNO;
+
+  /**
+   * The trusted root in the form a RESOLVED path derives from. The judge
+   * realpaths the roots it compares against, so a resolved path may sit under
+   * the workspace root's real form rather than its lexical one (`/tmp` vs
+   * `/private/tmp` on macOS). Lexical first, real form as the fallback — the
+   * same two forms `judge` already treats as one root.
+   */
+  const walkRootFor = async (
+    resolvedPath: string
+  ): Promise<{ root: string; segments: readonly string[] } | null> => {
+    if (workspaceRoot === null) return null;
+    const direct = segmentsUnderRoot(workspaceRoot, resolvedPath);
+    if (direct !== null) return { root: workspaceRoot, segments: direct };
+    try {
+      const real = await fs.realpath(workspaceRoot);
+      const viaReal = segmentsUnderRoot(real, resolvedPath);
+      return viaReal === null ? null : { root: real, segments: viaReal };
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * Open an already-proven path through the safe walk from the workspace root
+   * — defence in depth beneath the judgment above it, on the same terms as
+   * `ownership-fs.ts`.
+   */
+  const openContained = async (
+    provenPath: string,
+    flags: 'r' | 'w' | 'wx'
+  ): Promise<SafeOpenResult> => {
+    const walk = await walkRootFor(provenPath);
+    if (walk === null) {
+      return { outcome: 'refused', reason: 'escapes-root', errno: CONTAINMENT_ERRNO };
+    }
+    return openWithinRootByPath(walk.root, provenPath, { flags, fileMode: FILE_MODE });
+  };
+
+  /**
+   * FR-R3-069 — the two-level judgment. Level one resolves the STORE ROOT
+   * itself against the trusted workspace root, target form, so a
+   * `.schegent`/`catalog` symlink is followed and judged: escaping the
+   * workspace refuses everything, staying inside it is admitted and yields the
+   * real directory. Level two (the per-op proofs below) then judges each entry
+   * against that RESOLVED store root, which preserves the shipped store-scoping
+   * — an intra-store link that points elsewhere in the workspace still refuses,
+   * exactly as before this feature. Resolved per call, never cached: a store
+   * root swapped for a link between operations is re-judged, which is the
+   * anchor property F-01 was about.
+   *
+   * `null` means level one refused (or no workspace is open); an absent store
+   * root falls back to the link form so the first write into a fresh workspace
+   * is judged against where its chain will actually land.
+   */
+  const storeRoots = async (): Promise<readonly string[] | null> => {
+    if (workspaceRoot === null || storeRoot === null) return null;
+    const target = await resolveContainedTarget(storeRoot, roots);
+    if (target.outcome === 'contained') return [target.resolved];
+    if (target.outcome !== 'absent') return null;
+    const link = await resolveContainedLink(storeRoot, roots);
+    return link.outcome === 'contained' ? [link.resolved] : null;
+  };
 
   /**
    * Prove containment for a path this adapter is about to write, rename, or
@@ -96,7 +183,9 @@ export function createCatalogFsAdapter(storeRoot: string | null): CatalogFsPort 
    * see.
    */
   const proveContainedEntry = async (target: string): Promise<string | null> => {
-    const verdict = await resolveContainedLink(target, roots);
+    const scoped = await storeRoots();
+    if (scoped === null) return null;
+    const verdict = await resolveContainedLink(target, scoped);
     return verdict.outcome === 'contained' ? verdict.resolved : null;
   };
 
@@ -114,7 +203,9 @@ export function createCatalogFsAdapter(storeRoot: string | null): CatalogFsPort 
    * empty catalog (FR-001a), not an escape.
    */
   const proveContainedRead = async (target: string): Promise<ReadPermission> => {
-    const verdict = await resolveContainedTarget(target, roots);
+    const scoped = await storeRoots();
+    if (scoped === null) return { outcome: 'refused' };
+    const verdict = await resolveContainedTarget(target, scoped);
     if (verdict.outcome === 'contained') return { outcome: 'read', at: verdict.resolved };
     if (verdict.outcome === 'absent') return { outcome: 'absent' };
     return { outcome: 'refused' };
@@ -138,22 +229,27 @@ export function createCatalogFsAdapter(storeRoot: string | null): CatalogFsPort 
    * ancestry it would create that entry inside, and `resolveContainedLink`
    * resolves that chain in full.
    *
-   * The store root is created first, unconditionally, because it is the anchor
-   * containment is measured against and cannot be proven against itself before it
-   * exists — an unresolvable root refuses everything, which would make the very
-   * first write into a fresh workspace indistinguishable from an escape. This is
-   * the same `mkdir` `checkWritability` already performs at the top of every save,
-   * so it adds no reach: what lies at the resolved store root is the store, by
-   * definition, and the lazy-directory rule (FR-001a, SC-018) is about a workspace
-   * that never saves rather than one whose save was refused.
+   * FR-R3-069 — the store anchor is still created first, because an entry
+   * cannot be judged against a root that does not exist yet (the truth inside
+   * the old "cannot be proven against itself" note). What changed is HOW: the
+   * anchor is judged against the workspace root (inside `storeRoots`) and
+   * created by the checked walk, never by a raw `mkdir -p` that follows
+   * whatever `.schegent` points at.
    */
   const ensureParent = async (target: string): Promise<boolean> => {
-    if (storeRoot === null) return false;
-    await fs.mkdir(storeRoot, { recursive: true, mode: DIR_MODE });
-    const verdict = await resolveContainedLink(path.dirname(target), roots);
+    if (workspaceRoot === null) return false;
+    const scoped = await storeRoots();
+    if (scoped === null) return false;
+    const anchorWalk = await walkRootFor(scoped[0]);
+    if (anchorWalk === null) return false;
+    const anchorMade = await ensureAnchorWithinRoot(anchorWalk.root, anchorWalk.segments, DIR_MODE);
+    if (anchorMade.outcome === 'refused') return false;
+    const verdict = await resolveContainedLink(path.dirname(target), scoped);
     if (verdict.outcome !== 'contained') return false;
-    await fs.mkdir(verdict.resolved, { recursive: true, mode: DIR_MODE });
-    return true;
+    const walk = await walkRootFor(verdict.resolved);
+    if (walk === null) return false;
+    const made = await ensureAnchorWithinRoot(walk.root, walk.segments, DIR_MODE);
+    return made.outcome === 'ready';
   };
 
   return {
@@ -163,11 +259,21 @@ export function createCatalogFsAdapter(storeRoot: string | null): CatalogFsPort 
       const proven = await proveContainedRead(target);
       if (proven.outcome === 'absent') return { outcome: 'absent' };
       if (proven.outcome === 'refused') return { outcome: 'failed', errno: CONTAINMENT_ERRNO };
+      const opened = await openContained(proven.at, 'r');
+      if (opened.outcome === 'refused') {
+        if (opened.errno === 'ENOENT' || opened.errno === 'ENOTDIR') return { outcome: 'absent' };
+        return { outcome: 'failed', errno: refusalErrno(opened) };
+      }
       try {
-        return { outcome: 'read', contents: await fs.readFile(proven.at, 'utf8') };
+        return {
+          outcome: 'read',
+          contents: await opened.handle.readFile({ encoding: 'utf8' })
+        };
       } catch (error) {
         if (isMissing(error)) return { outcome: 'absent' };
         return { outcome: 'failed', errno: errnoOf(error) };
+      } finally {
+        await opened.handle.close().catch(() => undefined);
       }
     },
 
@@ -192,7 +298,15 @@ export function createCatalogFsAdapter(storeRoot: string | null): CatalogFsPort 
         if (provenTemp === null || provenTarget === null) {
           return { outcome: 'failed', errno: CONTAINMENT_ERRNO };
         }
-        await fs.writeFile(provenTemp, contents, { encoding: 'utf8', mode: FILE_MODE });
+        const opened = await openContained(provenTemp, 'w');
+        if (opened.outcome === 'refused') {
+          return { outcome: 'failed', errno: refusalErrno(opened) };
+        }
+        try {
+          await opened.handle.writeFile(contents, { encoding: 'utf8' });
+        } finally {
+          await opened.handle.close().catch(() => undefined);
+        }
         try {
           await fs.rename(provenTemp, provenTarget);
         } catch (error) {
@@ -222,7 +336,16 @@ export function createCatalogFsAdapter(storeRoot: string | null): CatalogFsPort 
         // `wx` is the write-once primitive itself (FR-030): the kernel decides who
         // wins, so two windows racing on one version id produce exactly one write
         // and one `EEXIST`. A stat-then-write here would be the race, not the guard.
-        await fs.writeFile(proven, contents, { encoding: 'utf8', flag: 'wx', mode: FILE_MODE });
+        const opened = await openContained(proven, 'wx');
+        if (opened.outcome === 'refused') {
+          if (opened.errno === 'EEXIST') return { outcome: 'exists' };
+          return { outcome: 'failed', errno: refusalErrno(opened) };
+        }
+        try {
+          await opened.handle.writeFile(contents, { encoding: 'utf8' });
+        } finally {
+          await opened.handle.close().catch(() => undefined);
+        }
         return { outcome: 'written' };
       } catch (error) {
         if (errnoOf(error) === 'EEXIST') return { outcome: 'exists' };
@@ -265,15 +388,25 @@ export function createCatalogFsAdapter(storeRoot: string | null): CatalogFsPort 
     },
 
     async checkWritability(): Promise<StoreWritability> {
-      if (storeRoot === null) return 'no-workspace';
+      if (workspaceRoot === null || storeRoot === null) return 'no-workspace';
       try {
         // The save path is the only caller, and it is about to write — so creating
         // the store directory here does not violate the never-saved case (FR-001a).
-        await fs.mkdir(storeRoot, { recursive: true, mode: DIR_MODE });
-        // `mkdir` succeeding is most of the answer; `access` covers the directory
-        // that exists and is not writable, which is the case an operator hits after
-        // cloning a repository with a read-only `.schegent/` (FR-033b).
-        await fs.access(storeRoot, fs.constants.W_OK);
+        // FR-R3-069 — judged against the workspace root first (admitting a store
+        // link that stays inside the workspace, refusing one that escapes), then
+        // created beneath the trusted anchor — never by a raw mkdir that follows
+        // a planted `.schegent` link. A refused chain reads as not-writable,
+        // which the refused save reports.
+        const scoped = await storeRoots();
+        if (scoped === null) return 'not-writable';
+        const walk = await walkRootFor(scoped[0]);
+        if (walk === null) return 'not-writable';
+        const made = await ensureAnchorWithinRoot(walk.root, walk.segments, DIR_MODE);
+        if (made.outcome === 'refused') return 'not-writable';
+        // The anchor walk succeeding is most of the answer; `access` covers the
+        // directory that exists and is not writable, which is the case an operator
+        // hits after cloning a repository with a read-only `.schegent/` (FR-033b).
+        await fs.access(made.anchor, fs.constants.W_OK);
         return 'writable';
       } catch {
         return 'not-writable';

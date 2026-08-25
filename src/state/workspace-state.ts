@@ -507,14 +507,24 @@ const DELAYED_RETRY_COUNT_PERSISTED_CEILING = 20;
  */
 function asTerminalTransitionIntent(raw: unknown): TerminalTransitionIntent | null {
   if (!raw || typeof raw !== 'object') return null;
-  const intent = raw as Partial<TerminalTransitionIntent>;
-  return intent.schemaVersion === 1
-    && intent.run !== undefined
-    && typeof intent.run === 'object'
-    && typeof (intent.run as WorkflowRun).id === 'string'
-    && typeof intent.createdAt === 'number'
-    ? (intent as TerminalTransitionIntent)
-    : null;
+  const intent = raw as Partial<TerminalTransitionIntent> & { description?: unknown };
+  if (
+    intent.schemaVersion !== 1 ||
+    intent.run === undefined ||
+    typeof intent.run !== 'object' ||
+    typeof (intent.run as WorkflowRun).id !== 'string' ||
+    typeof intent.createdAt !== 'number'
+  ) {
+    return null;
+  }
+  // FR-R3-071 — the journalled description is optional; a non-string value is
+  // dropped rather than coerced or grounds for rejecting the whole intent,
+  // which would strand a replayable transition over a corrupt convenience field.
+  if (intent.description !== undefined && typeof intent.description !== 'string') {
+    const { description: _dropped, ...rest } = intent;
+    return rest as TerminalTransitionIntent;
+  }
+  return intent as TerminalTransitionIntent;
 }
 
 function validateRunInvariants(run: WorkflowRun): void {

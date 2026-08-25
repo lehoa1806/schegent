@@ -250,16 +250,24 @@ describe('FR-R3-005 — destructive filesystem calls route through the containme
   });
 
   it('roots the ownership adapter in the directory the registry writes to', () => {
-    // `createDiskOwnershipFs` proves its renames and removes against the root
-    // it was handed. Handing it one and the registry another would guard a tree
-    // nothing is written to, which reads as a working guard.
+    // `createDiskOwnershipFs` composes its paths from the store directory it
+    // was handed. Handing it one and the registry another would guard a tree
+    // nothing is written to, which reads as a working guard. FR-R3-069 split
+    // the TRUST role out of that argument — judgments anchor at the workspace
+    // root — so the pinned shape is now the two-role object, and the no-drift
+    // property is the same back-reference it always was: the adapter's store
+    // directory and the registry's directory are one identifier read twice,
+    // with `workspaceRoot` named as the separate trusted anchor.
     const source = stripComments(read('src/extension.ts'));
     const call = /useOwnershipStorage\s*\(([\s\S]*?)\)\s*;/.exec(source);
     expect(call, 'the useOwnershipStorage call must be readable').not.toBeNull();
     expect(
-      /createDiskOwnershipFs\s*\(\s*(\w+)\s*\)\s*,\s*\1\s*$/.test(call![1]!.trim()),
-      'createDiskOwnershipFs must be rooted at the same directory passed to ' +
-        'useOwnershipStorage; a different root guards a tree nothing writes to'
+      /createDiskOwnershipFs\s*\(\s*\{\s*workspaceRoot,\s*(\w+)\s*\}\s*\)\s*,\s*\1\s*$/.test(
+        call![1]!.trim()
+      ),
+      'createDiskOwnershipFs must take { workspaceRoot, <dir> } with the same <dir> ' +
+        'passed to useOwnershipStorage; a different store dir guards a tree nothing ' +
+        'writes to, and a missing workspaceRoot re-anchors trust at the store'
     ).toBe(true);
   });
 });

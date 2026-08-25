@@ -100,6 +100,12 @@ It has two halves, and both matter:
 
 3. **The stamp is opt-in.** A caller that passes no claim gets the old behaviour, which is what keeps
    every existing caller working — and means the guarantee holds only where a caller asks for it.
+   Measured 2026-08-25: **no production caller asks for it.** All 35 production `setRun` call sites
+   pass no claim; `writtenAtFence` is written only by the claimed path in `workspace-state.ts` and
+   read only by `isSupersededRun`, whose only callers are its own tests. Layer 3 is a shipped,
+   tested primitive with zero production presence — scheduled to become mandatory in the
+   lease-owned mutation funnel under the round-4 item recorded in
+   `docs/features/round_3/00_escalated_residuals_decision.md` (workspace envelope).
 
 Until those close: treat the fence as authoritative for *election, heartbeat, and a claimed Run
 mutation*, and as advisory for *an unclaimed write*.

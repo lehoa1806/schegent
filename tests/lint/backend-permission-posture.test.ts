@@ -402,6 +402,31 @@ describe('backend permission posture', () => {
     }
   });
 
+  it('names the first-run gate setting on every onboarding surface (FR-R3-073)', () => {
+    if (readPosture() !== 'prompts-disabled') return;
+    // FR-R3-073 (feature 152) — the review's reading-path finding: the course
+    // told the default-case operator "you do not need to set any Schegent
+    // setting" while the shipped posture refuses a fresh install's first run
+    // until this one is set. The two onboarding surfaces a first run passes
+    // through must name the setting and say what happens without it.
+    const FIRST_RUN_GATE_SETTING = 'schegent.backend.allowuncontainedbackends';
+    for (const surface of ['README.md', 'docs/courses/use-schegent.md']) {
+      const text = collapse(read(surface));
+      expect(
+        text,
+        seeDoc(
+          `${surface} does not name ${FIRST_RUN_GATE_SETTING}. A fresh install refuses its ` +
+            'first run without it, so an onboarding page that omits it sends the reader to a ' +
+            'refusal with no pointer back'
+        )
+      ).toContain(FIRST_RUN_GATE_SETTING);
+      expect(
+        text,
+        seeDoc(`${surface} must say the first run is refused without the setting`)
+      ).toContain('refuses its first run');
+    }
+  });
+
   it('names every runner on every disclosure surface', () => {
     if (readPosture() !== 'prompts-disabled') return;
     for (const surface of [...PACKAGED_SURFACES, ...SOURCE_SURFACES]) {

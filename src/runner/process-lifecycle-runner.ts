@@ -102,6 +102,21 @@ export class ProcessLifecycleRunner {
         timer = setTimeout(() => { timedOut = true; this.terminate(child); }, request.timeoutMs);
       };
       timer = setTimeout(() => { timedOut = true; this.terminate(child); }, request.timeoutMs);
+      // FR-R3-075 — the absolute wall-clock deadline: armed once at spawn,
+      // NEVER reset, and deliberately outside the backpressure suspension below
+      // — a blocked sink pauses the idle clock, not the wall. The idle timer
+      // detects a stalled child; this bounds the invocation as a whole, so a
+      // child emitting one byte inside every idle window still terminates.
+      let deadlineExceeded = false;
+      // Read through an accessor: the flag is assigned only inside the
+      // timer's closure, so top-level flow keeps the literal-false
+      // narrowing and the lint's type-driven condition check would call
+      // every read below unnecessary. A function entry resets narrowing.
+      const deadlineFired = (): boolean => deadlineExceeded;
+      const deadlineTimer =
+        request.maxDurationMs !== undefined && request.maxDurationMs > 0
+          ? setTimeout(() => { deadlineExceeded = true; this.terminate(child); }, request.maxDurationMs)
+          : null;
       const backpressure = new OutputSinkBackpressure(outputSink, () => clearTimeout(timer), reset);
       child.stdout?.on('data', (chunk: string) => {
         stdoutBuffer.append(chunk); backpressure.write('stdout', child.stdout!, chunk);
@@ -129,6 +144,11 @@ export class ProcessLifecycleRunner {
       // and an expiry landing in that gap flips `timedOut` on a run that had
       // already exited cleanly.
       idleTimerActive = false; clearTimeout(timer);
+      if (deadlineTimer !== null) clearTimeout(deadlineTimer);
+      // FR-R3-075 — exactly one termination reason: when both windows elapsed
+      // in the same tick the deadline wins, because "ran long" is the fact the
+      // operator can act on and "went quiet" is subsumed by it.
+      if (deadlineFired()) timedOut = false;
       // Detached here too, and for the same reason: the bounded delivery read
       // below is a NEW await after the child has already completed, and an abort
       // landing inside it would flip `killed` on an invocation that had
@@ -154,10 +174,12 @@ export class ProcessLifecycleRunner {
       const signal = completion.signal ?? (child as { signalCode?: NodeJS.Signals | null }).signalCode ?? null;
       this.emit({
         kind: 'exited', runId: request.runId ?? null,
-        exitCode: completion.exitCode, signal, killed, timedOut
+        exitCode: completion.exitCode, signal, killed, timedOut,
+        ...(deadlineFired() ? { deadlineExceeded: true } : {})
       });
       stdoutBuffer.finalize(); stderrBuffer.finalize();
       return { stdoutBuffer, stderrBuffer, exitCode: completion.exitCode, killed, timedOut,
+        ...(deadlineFired() ? { deadlineExceeded: true } : {}),
         durationMs: Date.now() - start, command: input.commandDisplay,
         // FR-R3-047 — see the note in claude-cli.ts: the allowlisted code rides
         // `diagnosticWarnings` so a truncated prompt is recorded even on a

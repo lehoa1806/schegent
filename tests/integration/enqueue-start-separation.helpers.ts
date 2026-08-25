@@ -239,6 +239,12 @@ export async function makeHarness(opts: {
   initialNow?: number;
   catalog?: PipelineCatalog;
   withScaffolding?: boolean;
+  /**
+   * FR-R3-070 — lets a test model a competing window holding the workspace
+   * lock. Wired through to the coordinator's foreign-lock probe; undefined
+   * keeps the pre-existing single-window behaviour.
+   */
+  isForeignLockHeld?: () => boolean;
 } = {}): Promise<Harness> {
   const ownerId = opts.ownerId ?? 'self-window';
   const memento = new FakeMemento();
@@ -296,7 +302,8 @@ export async function makeHarness(opts: {
     },
     now: () => clock.now(),
     setTimer: fakeTimer.setTimer,
-    clearTimer: fakeTimer.clearTimer
+    clearTimer: fakeTimer.clearTimer,
+    ...(opts.isForeignLockHeld ? { isForeignLockHeld: opts.isForeignLockHeld } : {})
   });
 
   const service = new GuardedRunService({

@@ -84,7 +84,7 @@ export function createHostCatalogStore(
 ): CatalogStore | null {
   if (!isCatalogActivationTrusted()) return null;
   return createCatalogStore({
-    fs: createCatalogFsAdapter(catalogStoreRoot()),
+    fs: createCatalogFsAdapter(catalogStoreAnchor()),
     clock: systemClock,
     digest: nodeDigest,
     provenance: createQueueRunProvenance(enumeratePlans, enumerateRetained)
@@ -92,16 +92,23 @@ export function createHostCatalogStore(
 }
 
 /**
- * The store root as an absolute path, or `null` with no workspace folder open.
+ * The workspace root and the store root beneath it, or `null` with no
+ * workspace folder open.
  *
  * The one place in the feature where a workspace root and the store's segments
  * meet, and it hands the result straight to the fs adapter — which is the one
- * place that keeps it (FR-061).
+ * place that keeps it (FR-061). FR-R3-069 — both roles travel separately: the
+ * workspace root is the trusted anchor judgments resolve against, the store
+ * root only composes paths, so a symlinked `.schegent`/`catalog` in a cloned
+ * checkout refuses instead of becoming its own containment boundary.
  */
-function catalogStoreRoot(): string | null {
+function catalogStoreAnchor(): { workspaceRoot: string; storeRoot: string } | null {
   const folder = getCanonicalWorkspaceRoot();
   if (folder === undefined) return null;
-  return vscode.Uri.joinPath(folder.uri, ...CATALOG_DIRECTORY_SEGMENTS).fsPath;
+  return {
+    workspaceRoot: folder.uri.fsPath,
+    storeRoot: vscode.Uri.joinPath(folder.uri, ...CATALOG_DIRECTORY_SEGMENTS).fsPath
+  };
 }
 
 /**

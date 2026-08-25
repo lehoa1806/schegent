@@ -17,8 +17,15 @@ export interface BackendState {
 export declare function decideBackendState(input: {
   readonly versionProbe?: ProbeResult | null;
   readonly liveProbe?: ProbeResult | null;
+  readonly credentialPresent?: boolean;
   readonly expectedVersionPrefix?: string;
 }): BackendState;
+
+export declare function runnerBackendResult(input: {
+  readonly backend: string;
+  readonly versionProbe?: ProbeResult | null;
+  readonly credentialValue?: string;
+}): BackendState & { readonly backend: string };
 
 export declare function canaryExitCode(results: unknown): number;
 

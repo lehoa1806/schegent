@@ -206,7 +206,7 @@ The webview supplies no file path for export or preflight; the host owns the ope
 
 <!-- Source: src/contracts/sidebar-ipc/process-yaml.ts -->
 
-`CMD_SAVE_GENERAL_SETTINGS.updates` accepts only these unprefixed keys, and validates the entire batch before writing: `cli.path`, `codex.path`, `agy.path`, `logging.verbose`, `loop.maxIterations`, `invocation.timeoutSeconds`, `watchdog.pollIntervalMinutes`, `audit.rotation.sizeMB`, `audit.rotation.maxAgeDays`, `defaultPipelineId`, `fatalSignatures`, `claude.autoCompactPctOverride`, `queue.globalConcurrencyCap`, `queue.defaultQueueId`, `logging.runtimeLogLevel`, `logging.runtimeLogFilePath`, `retry.maxAttempts`, `retry.forceContinueOnCap`, `logging.runtimeLogMaxBytes`, `logging.runtimeLogMaxGenerations`, `logging.sessionRetentionMaxAgeDays`, `logging.sessionRetentionMaxBytes`, and `logging.rawTranscriptMode`.
+`CMD_SAVE_GENERAL_SETTINGS.updates` accepts only these unprefixed keys, and validates the entire batch before writing: `cli.path`, `codex.path`, `agy.path`, `logging.verbose`, `loop.maxIterations`, `invocation.idleTimeoutSeconds`, `invocation.maxDurationSeconds`, `watchdog.pollIntervalMinutes`, `audit.rotation.sizeMB`, `audit.rotation.maxAgeDays`, `defaultPipelineId`, `fatalSignatures`, `claude.autoCompactPctOverride`, `queue.globalConcurrencyCap`, `queue.defaultQueueId`, `logging.runtimeLogLevel`, `logging.runtimeLogFilePath`, `retry.maxAttempts`, `retry.forceContinueOnCap`, `logging.runtimeLogMaxBytes`, `logging.runtimeLogMaxGenerations`, `logging.sessionRetentionMaxAgeDays`, `logging.sessionRetentionMaxBytes`, and `logging.rawTranscriptMode`.
 
 <!-- Source: src/config/general-settings.ts -->
 

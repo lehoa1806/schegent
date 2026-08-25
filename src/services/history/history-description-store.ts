@@ -23,6 +23,7 @@ import * as path from 'node:path';
 import { promises as fs } from 'node:fs';
 import type { SanitizedLogger } from '../../lib/logger';
 import { historyErrorCode } from './error-code';
+import { openWithinRootByPath } from '../../lib/safe-open';
 import {
   resolveContainedForWrite,
   resolveContainedLink,
@@ -62,6 +63,18 @@ export interface HistoryDescriptionStoreDeps {
   readonly workspaceRoot: string;
   readonly logger: Pick<SanitizedLogger, 'warn'>;
 }
+
+/**
+ * FR-R3-071 — what a sidecar read established. `missing` is a valid contained
+ * path whose file is not there (swept, or never written); `refused` is a
+ * reference outside `.schegent/history/` or the workspace; `unreadable` is any
+ * other I/O failure, carrying its code and never a message.
+ */
+export type HistoryDescriptionReadOutcome =
+  | { readonly outcome: 'read'; readonly text: string }
+  | { readonly outcome: 'missing' }
+  | { readonly outcome: 'unreadable'; readonly code: string }
+  | { readonly outcome: 'refused' };
 
 export class HistoryDescriptionStore {
   private readonly workspaceRoot: string;
@@ -109,21 +122,37 @@ export class HistoryDescriptionStore {
   }
 
   /**
-   * The full description an entry references, or `null` when it cannot be read.
+   * The full description an entry references, as a typed outcome.
    *
-   * `null` covers every unreachable case with one answer — no reference, a
-   * reference that resolves outside the workspace, a file the retention sweep
-   * or an operator removed, an unreadable file. The caller's next step is the
-   * same for all of them, and distinguishing them would mean reporting a
-   * filesystem condition to an operator who asked to rerun a task.
+   * FR-R3-071 (feature 152) — the nullable this replaces collapsed every
+   * unreachable case into one answer, which was defensible while nothing
+   * called it and wrong the moment something did: the resolver has to tell an
+   * operator-actionable absence (the retention sweep removed the file) from a
+   * refused reference (outside `.schegent/history/` or the workspace) and from
+   * an I/O failure, because the replay commands word each differently. The
+   * codes stay codes — never the caught message, which names the absolute path.
    */
-  public async read(ref: string): Promise<string | null> {
-    const absolute = await this.containedPathFor(ref, 'read');
-    if (absolute === null) return null;
+  public async read(ref: string): Promise<HistoryDescriptionReadOutcome> {
+    // The LINK form ('remove' picks that oracle entry point), not the target
+    // form the old nullable used: the target form reports an absent file as
+    // the same null as an escaping ref, and `missing` is exactly the arm the
+    // resolver needs told apart. What the target form bought — refusing a leaf
+    // replaced with a link out of the workspace — the safe walk below keeps:
+    // its `O_NOFOLLOW` open refuses a symlinked leaf as `symlink-leaf`.
+    const absolute = await this.containedPathFor(ref, 'remove');
+    if (absolute === null) return { outcome: 'refused' };
+    const opened = await openWithinRootByPath(this.workspaceRoot, absolute, { flags: 'r' });
+    if (opened.outcome === 'refused') {
+      if (opened.errno === 'ENOENT' || opened.errno === 'ENOTDIR') return { outcome: 'missing' };
+      if (opened.reason === 'io-failed') return { outcome: 'unreadable', code: opened.errno };
+      return { outcome: 'refused' };
+    }
     try {
-      return await fs.readFile(absolute, 'utf8');
-    } catch {
-      return null;
+      return { outcome: 'read', text: await opened.handle.readFile({ encoding: 'utf8' }) };
+    } catch (err) {
+      return { outcome: 'unreadable', code: historyErrorCode(err) };
+    } finally {
+      await opened.handle.close().catch(() => undefined);
     }
   }
 

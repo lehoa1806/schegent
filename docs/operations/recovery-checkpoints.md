@@ -27,7 +27,9 @@ Two things hold a run's identity, and they are not the same:
    running and writing to the workspace. Deal with that before restarting anything, or the next
    phase races it.
 2. **Check the lease.** A queue whose execution lease is held by a window that is gone will be
-   reclaimed once its heartbeat goes stale (30 seconds). Waiting is correct; forcing it is not.
+   reclaimed once its heartbeat goes stale (15 seconds — `STALENESS_THRESHOLD_MS` in
+   `src/state/lock.ts`, which is the value this sentence is checked against). Waiting is correct;
+   forcing it is not.
 3. **Read the runtime log** rather than guessing:
    [Inspect the runtime log](runtime-log.md).
 
@@ -54,7 +56,9 @@ when state is *inconsistent*, not when a run is merely slow.
 
 ## Checkpoints
 
-A run checkpoint records the point a run reached so a later resume does not repeat committed work.
+A run checkpoint captures the working tree's diff at the point a run reached. There is **no
+in-product restore path**: nothing resumes from a checkpoint automatically, and a later resume does
+not read one — a checkpoint is restored by an operator applying the patch file by hand.
 Retention is bounded — checkpoints are pruned by age and count like other evidence, so an old
 checkpoint is not a durable record and must not be treated as one. The audit log is the durable
 record.

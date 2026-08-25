@@ -79,6 +79,52 @@ describe('Feature 065 (T044) — offline-elapsed re-arm (FR-011 / FR-012 / FR-01
     });
   });
 
+  it('FR-R3-070 — non-primary window: elapsed scheduledStartAt is declined and retained, never promoted', async () => {
+    // The companion to (a-d): the same elapsed deadline, but a competing
+    // window holds the workspace lock. The offline-elapsed branch must take
+    // fire()'s lock-unavailable arm — decline, audit, retain — instead of
+    // promoting under a window that is not primary.
+    const h2 = await makeHarness({ isForeignLockHeld: () => true });
+    try {
+      await h2.service.scheduleOrEnqueue({
+        description: 'task awaiting a primary window',
+        scheduledAt: h2.clock.now(),
+        via: 'webview',
+        callerKind: 'human'
+      });
+      const elapsedAt = h2.clock.now() - 60_000;
+      const current = h2.store.getQueue('default');
+      await h2.store.setQueue({
+        ...current,
+        queueLifecycle: 'idle-pending',
+        pauseSource: null,
+        scheduledStartAt: elapsedAt,
+        scheduledStartSource: 'operator-chooser',
+        updatedAt: h2.clock.now()
+      });
+      const baselineFired = h2.audit.byType('scheduled-start-fired').length;
+      const baselineSuperseded = h2.audit.byType('scheduled-start-superseded').length;
+
+      await h2.coordinator.reArm();
+      await new Promise((r) => setImmediate(r));
+
+      const after = h2.store.getQueue('default');
+      expect(after.queueLifecycle).toBe('idle-pending');
+      expect(after.scheduledStartAt).toBe(elapsedAt);
+      expect(after.scheduledStartSource).toBe('operator-chooser');
+      expect(h2.audit.byType('scheduled-start-fired').length).toBe(baselineFired);
+      const superseded = h2.audit.byType('scheduled-start-superseded');
+      expect(superseded.length).toBe(baselineSuperseded + 1);
+      expect(superseded[superseded.length - 1].payload).toMatchObject({
+        superseder: 'lock-unavailable',
+        transitionReason: 'superseded',
+        scheduledStartAt: elapsedAt
+      });
+    } finally {
+      h2.cleanup();
+    }
+  });
+
   it('(e) future scheduledStartAt → reArm arms with remaining duration; fires exactly once at original target', async () => {
     // Arrange: a pending task and a persisted future scheduledStartAt.
     await h.service.scheduleOrEnqueue({

@@ -276,7 +276,26 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // wiring site gains one reader function, one accessor object, and the note
   // recording that the difference between the two uses is WHEN, not WHAT. No new
   // responsibility: `extension.ts` still only wires.
-  { path: 'src/extension.ts', maxLines: 1_355 },
+  // FR-R3-070 (feature 152) — 1,355 → 1,385 for elect-before-recovering: the
+  // election hoisted above the recovery installers, three lockResult.acquired
+  // gates with their decline logs, and the watchdog sweep's fire-time
+  // hasPrimacy() re-check. All of it is activation ordering, which is this
+  // file's one responsibility and cannot move — the landmarks are pinned by
+  // tests/lint/elect-before-recovering.test.ts, which reads this file by name.
+  // Prose trimmed before raising. Set to exactly what the file measures.
+  // FR-R3-075 (feature 152) — 1,385 → 1,405 for the idle/deadline settings
+  // read: the inspect-based legacy-key fallback (an explicit old value is
+  // honoured while the renamed key is unset — `get` cannot tell explicit from
+  // manifest default), the max-duration read, and threading both into the
+  // controller options. Wiring, which is this file's one responsibility.
+  // Set to exactly what the file measures.
+  // FR-R3-071 (feature 152) — 1,405 → 1,423 for the sidebar replay panel's
+  // description read: the history-row lookup plus the resolver call, wired as a
+  // closure beside the evidence service for the same reason that one is here —
+  // the workspace root reaches the sidecar store at this site and nowhere else,
+  // and a handler may not learn one of its own. Wiring, which is this file's one
+  // responsibility. Set to what the file measures.
+  { path: 'src/extension.ts', maxLines: 1_423 },
   // P4 phase-control and lifecycle-auditor extraction ratchet: 1,200 → 730.
   // This file owns only the workflow facade, run dispatch, deletion, retry
   // entry, and persistence.
@@ -487,7 +506,17 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // other site. Not a budget manoeuvre: it is the move this entry named, and it
   // is taken now because this feature is what made the duplication cost
   // something. No ceiling change — a ratchet that only ever loosens is not one.
-  { path: 'src/controller/workflow-controller.ts', maxLines: 973 },
+  //
+  // FR-R3-070 (feature 152) — 973 → 993 for the resume path's execution-lease
+  // claim: the field, the claim-and-verify block in resumeExistingOnQueue
+  // (mirroring the drain's step 6 + T301 re-check), and its two decline logs.
+  // The extraction note above already named resumeExistingOnQueue as the block
+  // that carries the lease and primacy invariants and should stay put; this is
+  // that block gaining the invariant it was named for. Prose trimmed before
+  // raising. Set to exactly what the file measures.
+  // FR-R3-075 (feature 152) — 993 → 995 for the optional maxDurationMs on the
+  // controller options and its one-line doc. Set to what the file measures.
+  { path: 'src/controller/workflow-controller.ts', maxLines: 995 },
   // P4 domain-validator extraction ratchet: 1,200 → 775. The registry owns
   // command coverage; phase-log and metrics validators own shape rules.
   // Feature 088 (T032) — 775 → 776 for the two connected-run commands. Both
@@ -542,7 +571,14 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // fields stay optional so the pre-096 unconditional manual-edit call site
   // keeps compiling unmodified. Joining them would misstate the module for a
   // command that does not fit its shape.
-  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 1024 },
+  //
+  // FR-R3-071 (feature 152) — 1,024 → 1,041 for CMD_RESOLVE_HISTORY_DESCRIPTION:
+  // the constant, its COMMAND_TYPES and command-union memberships, the type
+  // re-exports, the type guard and its guard-table row. That is the per-command
+  // shape this file holds for every command; the request and response types
+  // live in their own module under sidebar-ipc/, exactly as the sibling
+  // read-only command's do. Set to what the file measures.
+  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 1_041 },
   // Waived, not budgeted. Feature 063's operator decision retired the ceiling
   // on this file and on queue-manager.ts below; it did not set a large one. The
   // entries used to say `maxLines: 10_000` against files of 2,500 and 1,821,
@@ -565,7 +601,11 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // point is, and the whole finding is that the check was not at the commit
       // point. The protocol and its rationale are in
       // docs/architecture/workspace-ownership-fencing.md.
-      highWaterMark: 2554
+      // FR-R3-071 (feature 152) — 2554 → 2564: the terminal-intent validator
+      // grew a tolerated-optional `description` arm (dropped when non-string,
+      // never grounds to reject a replayable transition). Validator shape, not
+      // new responsibility.
+      highWaterMark: 2564
     }
   },
   // Feature 077 — public facade and every state-projection collaborator have
@@ -645,7 +685,12 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // moved OUT, to
   // specs/136-settings-scope-and-defaults/contracts/settings-write-target.md,
   // before raising — the budget buys the note, not the explanation.
-  { path: 'src/config/general-settings.ts', maxLines: 698 }
+  // FR-R3-075 (feature 152) — 698 → 712 for the idle/max-duration split:
+  // one typed field became two, with their scope-map rows and the KEY_SPECS
+  // entries (the max-duration default's reasoning lives beside its entry).
+  // The four-surface lock-step means this file grows exactly when the manifest
+  // does; nothing movable was added. Set to what the file measures.
+  { path: 'src/config/general-settings.ts', maxLines: 712 }
 ];
 
 function lineCount(path: string): number {

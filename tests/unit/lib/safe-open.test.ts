@@ -3,6 +3,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import {
+  ensureAnchorWithinRoot,
   ensureDirWithinRoot,
   openWithinRoot,
   openWithinRootByPath,
@@ -213,6 +214,70 @@ describe('ensureDirWithinRoot makes a directory without inventing a file', () =>
         outcome: 'refused',
         reason: 'escapes-root'
       });
+    }
+  });
+});
+
+describe('ensureAnchorWithinRoot creates a store anchor beneath a higher trusted root (FR-R3-069)', () => {
+  let root: string;
+  let outside: string;
+
+  beforeEach(async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-anchor-'));
+    root = path.join(base, 'root');
+    outside = path.join(base, 'outside');
+    await fs.mkdir(root);
+    await fs.mkdir(outside);
+  });
+
+  afterEach(async () => {
+    await fs.rm(path.dirname(root), { recursive: true, force: true });
+  });
+
+  posixOnly('creates the anchor chain and returns the composed anchor path', async () => {
+    const made = await ensureAnchorWithinRoot(root, ['.schegent', 'ownership'], 0o700);
+    expect(made.outcome).toBe('ready');
+    const anchor = (made as { anchor: string }).anchor;
+    expect(anchor).toBe(path.join(root, '.schegent', 'ownership'));
+    expect(await fs.readdir(anchor)).toEqual([]);
+    expect(((await fs.stat(anchor)).mode) & 0o777).toBe(0o700);
+  });
+
+  posixOnly('refuses a symlinked component by name, and creates nothing through it', async () => {
+    // The F-01/F-02 shape: the checkout arrives with the store's parent as a
+    // link out. The refusal names the link — 'symlink-component' — rather than
+    // reporting an I/O error, and the link target stays empty.
+    await fs.symlink(outside, path.join(root, '.schegent'));
+    const made = await ensureAnchorWithinRoot(root, ['.schegent', 'ownership'], 0o700);
+    expect(made).toMatchObject({ outcome: 'refused', reason: 'symlink-component' });
+    expect(await fs.readdir(outside)).toEqual([]);
+  });
+
+  posixOnly('is safe under concurrent first-creation: every contender lands ready', async () => {
+    const outcomes = await Promise.all(
+      Array.from({ length: 8 }, () => ensureAnchorWithinRoot(root, ['.schegent', 'ownership'], 0o700))
+    );
+    expect(outcomes.every((o) => o.outcome === 'ready')).toBe(true);
+    expect(await fs.readdir(path.join(root, '.schegent'))).toEqual(['ownership']);
+  });
+
+  posixOnly('accepts a pre-existing chain and still hands back the anchor', async () => {
+    await fs.mkdir(path.join(root, '.schegent', 'ownership'), { recursive: true, mode: 0o700 });
+    const made = await ensureAnchorWithinRoot(root, ['.schegent', 'ownership'], 0o700);
+    expect(made.outcome).toBe('ready');
+  });
+
+  posixOnly('leaves openWithinRoot untouched: the file walk still never creates its own root', async () => {
+    // The primitive's contract boundary, pinned: creating an anchor is THIS
+    // function's job; openWithinRoot on a missing chain (no createDirs) still
+    // refuses rather than creating.
+    const result = await openWithinRoot(path.join(root, 'never-made'), ['a.txt'], { flags: 'w' });
+    expect(result.outcome).toBe('refused');
+  });
+
+  posixOnly('refuses escape-shaped segments outright', async () => {
+    for (const segments of [[], ['..'], ['a', '..', 'b'], ['/abs'], ['a/b']]) {
+      expect((await ensureAnchorWithinRoot(root, segments, 0o700)).outcome).toBe('refused');
     }
   });
 });

@@ -421,7 +421,7 @@ export async function makeHarness(
     terminalTransitions: new TerminalTransitionCoordinator(
       store,
       queue,
-      { record: vi.fn(async () => {}) },
+      { record: vi.fn(async () => ({ outcome: 'recorded' as const })) },
       logger
     ),
     executionLease: lease,

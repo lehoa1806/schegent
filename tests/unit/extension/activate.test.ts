@@ -110,6 +110,7 @@ vi.mock('vscode', () => {
   };
 });
 
+import * as vscode from 'vscode';
 import { activate } from '../../../src/extension';
 // Feature 058 — the canonical-folder picker memoizes its first read for the
 // process lifetime, so tests that run `activate(...)` multiple times need to
@@ -186,6 +187,10 @@ beforeEach(async () => {
     recursive: true,
     force: true
   });
+  // FR-R3-069 — the ownership adapter's judgments anchor at the workspace
+  // root, which therefore must EXIST (in production a VS Code workspace folder
+  // does by definition). The mocked folder here is only a path, so create it.
+  await fs.mkdir(WORKSPACE_ROOT, { recursive: true });
   // Feature 099 (T496f) — flushed AFTER the await, not before it. The prior
   // case's activation is still alive by design (see the note above), and its
   // in-flight async work reads the picker; a flush that happens before an
@@ -324,7 +329,10 @@ describe('activate() — Stage 2 workspace lock reclaim (BUG-005)', () => {
     const fresh = Date.now() - 1_000; // well within the 15s threshold
     const otherOwner = 'schegent-other-pid-cafebabe';
     const ownershipDir = path.join(WORKSPACE_ROOT, '.schegent', 'ownership');
-    const incumbent = new OwnershipRegistry(createDiskOwnershipFs(ownershipDir), ownershipDir);
+    const incumbent = new OwnershipRegistry(
+      createDiskOwnershipFs({ workspaceRoot: WORKSPACE_ROOT, ownershipDir }),
+      ownershipDir
+    );
     expect(
       (await incumbent.acquire(PRIMACY_RESOURCE, otherOwner, fresh, STALENESS_THRESHOLD_MS))
         .outcome
@@ -343,5 +351,51 @@ describe('activate() — Stage 2 workspace lock reclaim (BUG-005)', () => {
     // And the incumbent still holds the record it was granted.
     const record = await incumbent.read(PRIMACY_RESOURCE);
     expect(record?.holder?.ownerId).toBe(otherOwner);
+  });
+
+  it('FR-R3-070 — a non-primary window installs no recovery and resumes nothing', async () => {
+    // Same incumbent seeding as above; what is asserted is the other half of
+    // elect-before-recovering: losing the election means every recovery
+    // installer declines — no scheduled-start re-arm, no watchdog reattach, no
+    // delayed-retry re-arm, no persisted-run resume. The observable is the
+    // activation log, which is where each installer records its decline.
+    mocks.state.workspaceFolders = [{ uri: { fsPath: WORKSPACE_ROOT } }];
+    const fresh = Date.now() - 1_000;
+    const otherOwner = 'schegent-other-pid-cafebabe';
+    const ownershipDir = path.join(WORKSPACE_ROOT, '.schegent', 'ownership');
+    const incumbent = new OwnershipRegistry(
+      createDiskOwnershipFs({ workspaceRoot: WORKSPACE_ROOT, ownershipDir }),
+      ownershipDir
+    );
+    expect(
+      (await incumbent.acquire(PRIMACY_RESOURCE, otherOwner, fresh, STALENESS_THRESHOLD_MS))
+        .outcome
+    ).toBe('acquired');
+    const store = new Map<string, unknown>([
+      ['schegent.schemaVersion', '1.0.0'],
+      ['schegent.lock', { ownerId: otherOwner, acquiredAt: fresh, heartbeatAt: fresh }]
+    ]);
+    const { context } = buildContext({ mementoStore: store });
+    // The mock returns one shared channel object, so this handle sees every
+    // line the activation's logger writes.
+    const channel = vscode.window.createOutputChannel('probe') as unknown as {
+      appendLine: ReturnType<typeof vi.fn>;
+    };
+    const before = channel.appendLine.mock.calls.length;
+
+    await activate(context as Parameters<typeof activate>[0]);
+
+    const lines = channel.appendLine.mock.calls
+      .slice(before)
+      .map((call) => String(call[0]))
+      .join('\n');
+    for (const declined of [
+      'scheduled-start re-arm skipped: window is not primary',
+      'watchdog reattach skipped: window is not primary',
+      'delayed-retry re-arm skipped: window is not primary'
+    ]) {
+      expect(lines).toContain(declined);
+    }
+    expect(lines).not.toContain('activation: resuming run');
   });
 });

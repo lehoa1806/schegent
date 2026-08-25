@@ -1,0 +1,16 @@
+{
+  // FR-R3-073 (feature 152) — the interactive Extension Development Host the
+  // user quickstart's F5 instruction assumes. `tests/lint/launch-procedure-
+  // doc-parity.test.ts` holds the tutorials and this file to one procedure.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run Extension",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": ["--extensionDevelopmentPath=${workspaceFolder}"],
+      "outFiles": ["${workspaceFolder}/out/**/*.js"],
+      "preLaunchTask": "npm: build"
+    }
+  ]
+}

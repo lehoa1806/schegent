@@ -9,7 +9,8 @@ This tutorial takes a fresh clone to a compiled Schegent extension and then runs
 Install these tools before cloning:
 
 - Node.js 22 or 24. The checked-in `.nvmrc` selects `24.19.0`.
-- VS Code 1.85.0 or newer within the 1.x release line.
+- VS Code 1.107.0 or newer within the 1.x release line — the floor the manifest's
+  `engines.vscode` (`^1.107.0`) declares, which is what this line is checked against.
 - npm, which is the only package runner used by the checked-in build scripts.
 
 <!-- Source: package.json -->
@@ -111,9 +112,12 @@ Schegent registers its sidebar before checking for an open workspace. Workspace-
 <!-- Source: src/extension.ts -->
 <!-- Source: package.json -->
 
-The repository does not contain `.vscode/launch.json` or an interactive extension-host npm script. Therefore, `npm run test:integration` is the only local Extension Development Host launch procedure defined by this checkout; an interactive F5 workflow is not repository-documented.
-<!-- Absence verified: .vscode contains only settings.json, and package.json defines no interactive extension-host script. -->
-<!-- Source: .vscode/settings.json -->
+The repository provides `.vscode/launch.json` with a **Run Extension** extension-host
+configuration, so the interactive session in [User quickstart](user-quickstart.md) — F5 → **Run
+Extension** — is the local Extension Development Host workflow this checkout defines.
+`npm run test:integration` remains the automated gate: it runs the suites and exits, leaving no
+window to click through.
+<!-- Source: .vscode/launch.json -->
 <!-- Source: package.json -->
 
 ## Optional: rebuild only the webview while editing

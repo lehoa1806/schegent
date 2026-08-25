@@ -64,6 +64,11 @@
           "type": "number"
         },
         {
+          "name": "maxDurationMs",
+          "optional": true,
+          "type": "number"
+        },
+        {
           "name": "cliPath",
           "optional": false,
           "type": "string"
@@ -176,6 +181,11 @@
         {
           "name": "timedOut",
           "optional": false,
+          "type": "boolean"
+        },
+        {
+          "name": "deadlineExceeded",
+          "optional": true,
           "type": "boolean"
         },
         {

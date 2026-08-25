@@ -716,14 +716,20 @@ describe('Feature FR-R3-003 (T307, FR-028, SC-009) — the tenure holds under fe
     // The seam activation stage 2 uses, pointed at the workspace this harness
     // already created. Managers read `store.ownership` per call, so `h.lock`
     // built in `makeHarness` lands on it too.
-    h.lockStore.useOwnershipStorage(createDiskOwnershipFs(ownershipDir()), ownershipDir());
+    h.lockStore.useOwnershipStorage(
+      createDiskOwnershipFs({ workspaceRoot: tmpRoot, ownershipDir: ownershipDir() }),
+      ownershipDir()
+    );
   });
 
   /** A second extension host: its own memento, the same ownership directory. */
   async function rivalHost(): Promise<RivalHost> {
     const store = new WorkspaceStateStore(new FakeMemento());
     await store.initialize();
-    store.useOwnershipStorage(createDiskOwnershipFs(ownershipDir()), ownershipDir());
+    store.useOwnershipStorage(
+      createDiskOwnershipFs({ workspaceRoot: tmpRoot, ownershipDir: ownershipDir() }),
+      ownershipDir()
+    );
     return {
       manager: new WorkspaceLockManager(store, 'window-b', h.lockClock, noopScheduler),
       store

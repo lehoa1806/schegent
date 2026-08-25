@@ -62,7 +62,8 @@ const DEFAULTS: Record<string, unknown> = {
   'cli.path': 'claude',
   'logging.verbose': false,
   'loop.maxIterations': 10,
-  'invocation.timeoutSeconds': 5400,
+  'invocation.idleTimeoutSeconds': 5400,
+  'invocation.maxDurationSeconds': 21600,
   'watchdog.pollIntervalMinutes': 30,
   'audit.rotation.sizeMB': 5,
   'audit.rotation.maxAgeDays': 30,
@@ -91,7 +92,8 @@ describe('Feature 011 — Settings surface (US2)', () => {
     expect(typeof snap.cliPath).toBe('string');
     expect(typeof snap.loggingVerbose).toBe('boolean');
     expect(typeof snap.loopMaxIterations).toBe('number');
-    expect(typeof snap.invocationTimeoutSeconds).toBe('number');
+    expect(typeof snap.invocationIdleTimeoutSeconds).toBe('number');
+    expect(typeof snap.invocationMaxDurationSeconds).toBe('number');
     expect(typeof snap.watchdogPollIntervalMinutes).toBe('number');
     expect(typeof snap.auditRotationSizeMB).toBe('number');
     expect(typeof snap.auditRotationMaxAgeDays).toBe('number');

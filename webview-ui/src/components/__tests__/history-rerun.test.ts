@@ -20,6 +20,7 @@ import type { RunRequest } from '../../../../src/contracts/run-request';
 import type { HistoryRow } from '../../lib/history-rows';
 import type { RerunTarget } from '../../lib/history-rerun';
 import type { PipelineDefinition } from '../../lib/snapshot-types';
+import type { ResolveHistoryDescriptionResult } from '../../lib/history-description-ipc';
 
 const launchSpy = vi.fn<(request: RunRequest, queueId?: string) => Promise<LaunchPipelineResult>>();
 vi.mock('../../lib/run-launcher-ipc', () => ({
@@ -28,6 +29,17 @@ vi.mock('../../lib/run-launcher-ipc', () => ({
 
 vi.mock('../../lib/use-confirm', () => ({
   useConfirm: vi.fn(async () => true)
+}));
+
+// FR-R3-071 (feature 152) — the panel asks the host for the FULL stored
+// description on open, because the projection carries only the preview. Mocked
+// at the single call site, and defaulted to `missing` so every case written
+// before this feature still exercises the preview-plus-extent path it was
+// written for; the resolved path is asserted explicitly below.
+const resolveDescriptionSpy =
+  vi.fn<(runId: string) => Promise<ResolveHistoryDescriptionResult>>();
+vi.mock('../../lib/history-description-ipc', () => ({
+  resolveHistoryDescription: (runId: string) => resolveDescriptionSpy(runId)
 }));
 
 // Late import so the component binds to the mocked call site above.
@@ -92,6 +104,8 @@ function mount(
 beforeEach(() => {
   launchSpy.mockReset();
   launchSpy.mockResolvedValue({ outcome: 'enqueued', requestId: 'q-1' });
+  resolveDescriptionSpy.mockReset();
+  resolveDescriptionSpy.mockResolvedValue({ outcome: 'missing', runId: 'run-1' });
 });
 afterEach(() => cleanup());
 
@@ -264,5 +278,61 @@ describe('HistoryRerunPanel — submitting (FR-038, FR-059)', () => {
     // the Active version it just displayed would have every re-run rejected.
     expect(JSON.stringify(request)).not.toContain('catalogVersion');
     expect(JSON.stringify(request)).not.toContain('v7');
+  });
+});
+
+
+describe('HistoryRerunPanel — the description it repeats (FR-R3-071)', () => {
+  it('seeds the full stored description, not the preview, when the host resolves it', async () => {
+    // The defect this closes: the panel is the surface an operator uses to
+    // repeat a run, and it submitted an 80-char truncation of their own text.
+    const full = 'ship the thing, and all the detail that did not fit in the preview';
+    resolveDescriptionSpy.mockResolvedValue({
+      outcome: 'resolved',
+      runId: 'run-1',
+      description: full
+    });
+    const { getByTestId, queryByTestId } = mount(
+      readyTarget(),
+      row({ descriptionPreview: 'ship the', descriptionLength: full.length })
+    );
+    await tick();
+    await tick();
+    expect(resolveDescriptionSpy).toHaveBeenCalledWith('run-1');
+    const instruction = getByTestId('run-supplemental-instruction') as HTMLTextAreaElement;
+    expect(instruction.value).toBe(full);
+    // Nothing was truncated, so the extent note has nothing to say.
+    expect(queryByTestId('history-rerun-prefill-extent')).toBeNull();
+  });
+
+  it('seeds a legacy entry the same way — it is the authored text too', async () => {
+    resolveDescriptionSpy.mockResolvedValue({
+      outcome: 'legacy',
+      runId: 'run-1',
+      description: 'pre-sidecar text'
+    });
+    const { getByTestId } = mount(readyTarget(), row({ descriptionPreview: 'pre-side' }));
+    await tick();
+    await tick();
+    const instruction = getByTestId('run-supplemental-instruction') as HTMLTextAreaElement;
+    expect(instruction.value).toBe('pre-sidecar text');
+  });
+
+  it('keeps the preview and its extent note when the sidecar cannot be read', async () => {
+    // `missing` / `unreadable` are answers, not errors: the pre-152 behaviour
+    // is already honest and stays, note included.
+    for (const outcome of ['missing', 'unreadable'] as const) {
+      resolveDescriptionSpy.mockResolvedValue({ outcome, runId: 'run-1' });
+      const { getByTestId, unmount } = mount(
+        readyTarget(),
+        row({ descriptionPreview: 'ship the', descriptionLength: 400 })
+      );
+      await tick();
+      await tick();
+      const instruction = getByTestId('run-supplemental-instruction') as HTMLTextAreaElement;
+      expect(instruction.value).toBe('ship the');
+      expect(getByTestId('history-rerun-prefill-extent').textContent).toContain('400');
+      unmount();
+    }
   });
 });

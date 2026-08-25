@@ -259,7 +259,7 @@ async function makeHarness(workspaceRoot: string): Promise<Harness> {
     terminalTransitions: new TerminalTransitionCoordinator(
       store,
       queue,
-      { record: vi.fn(async () => {}) },
+      { record: vi.fn(async () => ({ outcome: 'recorded' as const })) },
       logger
     )
   };

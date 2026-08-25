@@ -65,6 +65,8 @@ interface RunDriverOptions {
   readonly cwd: string;
   readonly iterationCap: number;
   readonly timeoutMs: number;
+  /** FR-R3-075 — absolute per-invocation wall-clock bound (no per-phase form). */
+  readonly maxDurationMs?: number;
   readonly inheritProcessEnv?: boolean;
   readonly processEnvAllowlist?: readonly string[];
   // Feature 074 — resolve the CLI binary path for a given runner kind.
@@ -518,6 +520,9 @@ export class RunDriver {
           timeoutMs: activePhaseDef?.timeoutSeconds
             ? activePhaseDef.timeoutSeconds * 1000
             : this.deps.options.timeoutMs,
+          // FR-R3-075 — deliberately NOT per-phase: the deadline bounds the
+          // invocation as a whole and a Phase definition cannot loosen it.
+          maxDurationMs: this.deps.options.maxDurationMs,
           inheritProcessEnv: this.deps.options.inheritProcessEnv !== false,
           processEnvAllowlist: this.deps.options.processEnvAllowlist,
           runId: run.id,

@@ -69,6 +69,8 @@ export interface RawTranscriptEndInput {
   exitCode: number | null;
   killed: boolean;
   timedOut: boolean;
+  /** FR-R3-075 -- the absolute deadline fired; rendered distinct from `timeout`. */
+  deadlineExceeded?: boolean;
   /** Verbatim disk-backed stream capture, when one was available. */
   capture?: RawTranscriptCapture | null;
   mode?: RawTranscriptMode;
@@ -650,6 +652,7 @@ function formatStartBlock(input: RawTranscriptStartInput): string {
 }
 
 function formatExitCode(input: RawTranscriptEndInput): string {
+  if (input.deadlineExceeded === true) return 'deadline';
   if (input.timedOut) return 'timeout';
   if (input.exitCode === null) return 'null';
   return String(input.exitCode);

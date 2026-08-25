@@ -96,7 +96,12 @@ const BUDGETS = [
   // one constructor parameter, one construction, one awaited call, and the note
   // saying why the call sits before `phase-start`. The gate is the reason the
   // split happened rather than the headroom being taken, which is what it is for.
-  { path: 'src/controller/phase-runner.ts', max: 957 },
+  // FR-R3-075 (feature 152) — 957 → 995 for the deadline arm: checked ahead
+  // of the idle arm so the two bounds can never both claim a run, recording
+  // the exit code the idle arm's documented omission does not, plus the
+  // maxDurationMs input and its pass-through to the runner. The arm is the
+  // decision chain's own shape and cannot move without a second oracle.
+  { path: 'src/controller/phase-runner.ts', max: 995 },
   // FR-R3-052 / H-03 (2026-08-24) — 400 → 415 for the size check that was
   // missing. `stat()` was already called here and only `isFile()` was read, so
   // `readFile()` took a multi-GiB sidecar wholly into memory. The bound, the

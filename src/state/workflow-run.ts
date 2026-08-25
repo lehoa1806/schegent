@@ -120,9 +120,22 @@ export interface TerminalTransitionIntent {
   readonly schemaVersion: 1;
   readonly run: WorkflowRun;
   readonly createdAt: number;
+  /**
+   * FR-R3-071 — the sanitized description the terminal transition was
+   * completing with, journalled so crash-replay records the operator's text
+   * rather than substituting the feature id. Optional: intents written before
+   * this field (and the controller's early `begin`) carry none, and replay
+   * falls back with a warn. Transient — the intent clears at completion — so
+   * this does not re-grow the memento the sidecar move shrank.
+   */
+  readonly description?: string;
 }
 
+// FR-R3-075 — 'deadline' is the absolute wall-clock bound; 'timeout' remains
+// the idle stall. An operator reading a stopped phase needs to know whether it
+// went quiet or ran long, so the two are never collapsed.
 export type TerminationReason =
+  | 'deadline'
   | 'token'
   | 'open_questions'
   | 'remaining_issues'

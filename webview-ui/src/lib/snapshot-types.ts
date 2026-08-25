@@ -1016,7 +1016,8 @@ export interface GeneralSettings {
   readonly cliPath: string;
   readonly loggingVerbose: boolean;
   readonly loopMaxIterations: number;
-  readonly invocationTimeoutSeconds: number;
+  readonly invocationIdleTimeoutSeconds: number;
+  readonly invocationMaxDurationSeconds: number;
   readonly watchdogPollIntervalMinutes: number;
   readonly auditRotationSizeMB: number;
   readonly auditRotationMaxAgeDays: number;
@@ -1048,7 +1049,8 @@ export interface GeneralSettings {
     readonly cliPath: SettingScope;
     readonly loggingVerbose: SettingScope;
     readonly loopMaxIterations: SettingScope;
-    readonly invocationTimeoutSeconds: SettingScope;
+    readonly invocationIdleTimeoutSeconds: SettingScope;
+    readonly invocationMaxDurationSeconds: SettingScope;
     readonly watchdogPollIntervalMinutes: SettingScope;
     readonly auditRotationSizeMB: SettingScope;
     readonly auditRotationMaxAgeDays: SettingScope;
@@ -1080,7 +1082,8 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   // FR-R3-051 (M-06) — 5400, matching the manifest, the host fallback and the
   // host idle snapshot. This surface alone said 1800, so the sidebar showed a
   // timeout no install has until the host sent real settings.
-  invocationTimeoutSeconds: 5400,
+  invocationIdleTimeoutSeconds: 5400,
+  invocationMaxDurationSeconds: 21600,
   watchdogPollIntervalMinutes: 30,
   auditRotationSizeMB: 5,
   auditRotationMaxAgeDays: 30,
@@ -1121,7 +1124,8 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
     cliPath: 'default',
     loggingVerbose: 'default',
     loopMaxIterations: 'default',
-    invocationTimeoutSeconds: 'default',
+    invocationIdleTimeoutSeconds: 'default',
+    invocationMaxDurationSeconds: 'default',
     watchdogPollIntervalMinutes: 'default',
     auditRotationSizeMB: 'default',
     auditRotationMaxAgeDays: 'default',

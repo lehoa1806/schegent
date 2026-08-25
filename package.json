@@ -211,12 +211,27 @@
           "scope": "resource",
           "description": "Credit watchdog poll interval in minutes."
         },
+        "schegent.invocation.idleTimeoutSeconds": {
+          "type": "number",
+          "default": 5400,
+          "minimum": 30,
+          "scope": "resource",
+          "description": "Per-phase CLI invocation IDLE timeout in seconds: the invocation is terminated after this long with no output. Output resets the window; schegent.invocation.maxDurationSeconds is the absolute bound."
+        },
+        "schegent.invocation.maxDurationSeconds": {
+          "type": "number",
+          "default": 21600,
+          "minimum": 60,
+          "scope": "resource",
+          "description": "Absolute wall-clock bound on one CLI invocation in seconds, armed at spawn and never reset — a chatty child that keeps emitting output cannot extend it. Default 21600 (6 h): four times the idle default and well above the longest legitimately long phase observed (3.6 h), so a real phase is not killed while a runaway is."
+        },
         "schegent.invocation.timeoutSeconds": {
           "type": "number",
           "default": 5400,
           "minimum": 30,
           "scope": "resource",
-          "description": "Per-phase CLI invocation timeout in seconds."
+          "deprecationMessage": "Renamed: use schegent.invocation.idleTimeoutSeconds (this setting was always an idle window, not a total-duration bound). An explicit value here is still honored while the new key is unset.",
+          "description": "Deprecated alias of schegent.invocation.idleTimeoutSeconds."
         },
         "schegent.audit.rotation.sizeMB": {
           "type": "number",
@@ -275,7 +290,7 @@
           "minimum": 1,
           "maximum": 20,
           "scope": "resource",
-          "markdownDescription": "Maximum number of workflow runs that may be in-flight across the whole workspace at the same time. Each queue still runs at most one Task, so this is the ceiling on how many queues may be busy at once. A value outside the range is refused, not clamped. Range: 1\u201320. Concurrent local runs are authorised for a single local operator on one host process by the architecture record `docs/architecture/local-queue-parallelism-ratification.md`; concurrent runs share one working tree."
+          "markdownDescription": "Maximum number of workflow runs that may be in-flight across the whole workspace at the same time. Each queue still runs at most one Task, so this is the ceiling on how many queues may be busy at once. A value outside the range is refused, not clamped. Range: 1\u201320. Concurrent local runs are authorised for a single local operator on one host process by the architecture record `docs/architecture/local-queue-parallelism-ratification.md`; concurrent runs share one working tree. Resource posture at the ceiling: each in-flight run may hold two 64 MiB compressed stream buffers (`MAX_STREAM_BUFFER_BYTES`), an accepted-input byte budget of up to 2.56 GiB across 20 runs \u2014 resident heap is lower (the head half is retained compressed), and every run's edits land in the one shared working tree."
         },
         "schegent.logging.verbose": {
           "type": "boolean",

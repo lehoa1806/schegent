@@ -61,7 +61,8 @@ export interface GeneralSettings {
   readonly cliPath: string;
   readonly loggingVerbose: boolean;
   readonly loopMaxIterations: number;
-  readonly invocationTimeoutSeconds: number;
+  readonly invocationIdleTimeoutSeconds: number;
+  readonly invocationMaxDurationSeconds: number;
   readonly watchdogPollIntervalMinutes: number;
   readonly auditRotationSizeMB: number;
   readonly auditRotationMaxAgeDays: number;
@@ -85,7 +86,8 @@ export interface GeneralSettings {
     readonly cliPath: SettingScope;
     readonly loggingVerbose: SettingScope;
     readonly loopMaxIterations: SettingScope;
-    readonly invocationTimeoutSeconds: SettingScope;
+    readonly invocationIdleTimeoutSeconds: SettingScope;
+    readonly invocationMaxDurationSeconds: SettingScope;
     readonly watchdogPollIntervalMinutes: SettingScope;
     readonly auditRotationSizeMB: SettingScope;
     readonly auditRotationMaxAgeDays: SettingScope;
@@ -112,7 +114,8 @@ type AllowedKey =
   | 'cli.path'
   | 'logging.verbose'
   | 'loop.maxIterations'
-  | 'invocation.timeoutSeconds'
+  | 'invocation.idleTimeoutSeconds'
+  | 'invocation.maxDurationSeconds'
   | 'watchdog.pollIntervalMinutes'
   | 'audit.rotation.sizeMB'
   | 'audit.rotation.maxAgeDays'
@@ -176,11 +179,21 @@ export const KEY_SPECS: Readonly<Record<AllowedKey, KeySpec>> = Object.freeze({
     min: 1,
     max: 50
   },
-  'invocation.timeoutSeconds': { scope: 'resource',
+  'invocation.idleTimeoutSeconds': { scope: 'resource',
     type: 'number',
-    typedField: 'invocationTimeoutSeconds',
+    typedField: 'invocationIdleTimeoutSeconds',
     defaultValue: 5400,
     min: 30
+  },
+  // FR-R3-075 -- the absolute wall-clock bound beside the idle window above.
+  // 21600 s = 4x the idle default and ~1.7x the longest legitimately long
+  // phase observed to date (3.6 h): loose enough that no real phase yet seen
+  // would have been killed, bounded enough that a chatty runaway stops.
+  'invocation.maxDurationSeconds': { scope: 'resource',
+    type: 'number',
+    typedField: 'invocationMaxDurationSeconds',
+    defaultValue: 21600,
+    min: 60
   },
   'watchdog.pollIntervalMinutes': { scope: 'resource',
     type: 'number',
