@@ -72,7 +72,7 @@ import { describe, expect, it } from 'vitest';
  *   `backend-outcomes.json` -> red TWICE, once per entry:
  *     "repo/tests/evals/README.md states 10 in \"deterministic set of **10 cases**\",
  *      but the `cases` array ... yields 11."
- *     ".../61_FR-R3-061_behavioral_canaries.md states 10 in \"deterministic corpus of
+ *     ".../DONE_61_FR-R3-061_behavioral_canaries.md states 10 in \"deterministic corpus of
  *      **10 cases**\", but the `cases` array ... yields 11."
  *   Each message names the document, the claim, and BOTH numbers, and says to
  *   correct the document rather than the producer.
@@ -301,7 +301,7 @@ const REGISTRY: readonly CountEntry[] = [
       'reachable without running the evals config.'
   },
   {
-    document: 'docs/features/round_3/61_FR-R3-061_behavioral_canaries.md',
+    document: 'docs/features/round_3/DONE_61_FR-R3-061_behavioral_canaries.md',
     claim: 'deterministic corpus of **10 cases**',
     stated: 10,
     producer: 'the `cases` array in repo/tests/evals/fixtures/backend-outcomes.json',
