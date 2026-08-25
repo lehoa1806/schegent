@@ -9,7 +9,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { groupsFromModelsConfig, modelsConfigFromGroups } from '../../src/config/model-catalog';
-import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../../src/runner/backend-runner-factory';
+import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../../src/contracts/backend-kinds';
 import {
   parseModelCatalogDocument,
   serializeModelCatalogDocument

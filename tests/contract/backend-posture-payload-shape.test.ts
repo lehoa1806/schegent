@@ -34,7 +34,8 @@ const PAYLOAD = 'BackendPostureAdmittedPayload';
 
 /** Referenced unions this payload may use, and where each is declared. */
 const ALLOWED_UNIONS: ReadonlyArray<{ name: string; file: string }> = [
-  { name: 'BackendRunnerKind', file: 'src/runner/backend-runner-factory.ts' },
+  // FR-R3-089 — identity moved out of the factory; the factory keeps construction.
+  { name: 'BackendRunnerKind', file: 'src/contracts/backend-kinds.ts' },
   { name: 'BackendContainment', file: 'src/services/backend-containment-policy.ts' }
 ];
 

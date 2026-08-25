@@ -625,7 +625,7 @@ export interface ActivePipelineSummary {
 }
 
 import type { PhaseDef, PipelineDef } from '../../config/pipeline-config';
-import type { BackendRunnerKind } from '../../runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../../contracts/backend-kinds';
 import type { GeneralSettings } from '../../config/general-settings';
 import type { TelemetrySnapshot } from '../../telemetry/telemetry-snapshot';
 export type { GeneralSettings } from '../../config/general-settings';

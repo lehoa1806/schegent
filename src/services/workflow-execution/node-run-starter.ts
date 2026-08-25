@@ -34,7 +34,7 @@ import { CATALOG_EMPTY_REASON, type CatalogEmptyReason } from '../../contracts/e
 import type { RunRequestFieldError } from '../../contracts/run-request';
 import type { FrozenRunPlan, RunRequest } from '../../contracts/run-request';
 import type { RunOutputRecord } from '../../contracts/run-results';
-import type { BackendRunnerKind } from '../../runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../../contracts/backend-kinds';
 import type { SanitizedLogger } from '../../lib/logger';
 import type { WorkflowRunPipeline } from '../../state/workflow-run';
 import { checkLocalFile, checkLocalFolder } from '../run-request/local-input-validator';

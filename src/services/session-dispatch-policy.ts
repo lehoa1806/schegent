@@ -1,4 +1,4 @@
-import type { BackendRunnerKind } from '../runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../contracts/backend-kinds';
 
 export interface SessionDispatchInputs {
   readonly requestedContinue: boolean;

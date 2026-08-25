@@ -12,7 +12,7 @@ import {
   type PipelineOutputPort
 } from '../contracts/pipeline-definitions';
 import { PHASE_EFFORT_LEVELS } from '../contracts/process-definitions';
-import { SUPPORTED_BACKENDS } from '../runner/backend-runner-factory';
+import { SUPPORTED_BACKENDS } from '../contracts/backend-kinds';
 
 export const PIPELINE_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 export { PIPELINE_ID_MAX_LEN };

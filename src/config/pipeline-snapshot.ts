@@ -1,6 +1,6 @@
 import type { PhaseBinding } from '../contracts/pipeline-definitions';
-import type { BackendRunnerKind } from '../runner/backend-runner-factory';
-import { DEFAULT_BACKEND } from '../runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../contracts/backend-kinds';
+import { DEFAULT_BACKEND } from '../contracts/backend-kinds';
 import type { WorkflowRunPipeline } from '../state/workflow-run';
 import type { PhaseDef, PipelineDef } from './pipeline-config';
 import { writesGitMetadata } from './phase-runner-policy';

@@ -10,7 +10,7 @@
 
 import { describe, it, expect } from 'vitest';
 import type { PhaseDefinitionEffort } from '../../../src/contracts/process-definitions';
-import type { BackendRunnerKind } from '../../../src/runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../../../src/contracts/backend-kinds';
 import {
   BINDING_SOURCE_KEY_ORDER,
   DOCUMENT_KEY_ORDER,

@@ -25,7 +25,7 @@
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 const ROOT = resolve(__dirname, '../../..');
 
@@ -160,5 +160,121 @@ describe('full gate / release binding parity (FR-R3-074)', () => {
     expect(namedChecks(REQUIRE_GATE, 'scripts/require-full-gate.mjs')).toEqual([
       ...RELEASE_CHECK_TARGETS.keys()
     ]);
+  });
+});
+
+/**
+ * FR-R3-087 — the release binding's job list and this file's target map are ONE
+ * list, checked from both ends.
+ *
+ * Before this, the parity test asserted the workflow's *text* and the release
+ * binding asserted the run's *conclusion*. Nothing asserted that the jobs the
+ * text names actually ran — which is precisely the gap a job-level `if:` would
+ * open. Two lists that agree by coincidence is the duplicate-authority shape
+ * FR-R3-066 exists to remove.
+ */
+describe('FR-R3-087 — the per-job list and the target map are one authority', () => {
+  /**
+   * Every `name:` that belongs to a job, i.e. the `name:` at job indentation
+   * (four spaces) rather than a step's `- name:` at six or more.
+   */
+  function jobNames(workflowSource: string): readonly string[] {
+    const names: string[] = [];
+    for (const line of workflowSource.split('\n')) {
+      const match = /^ {4}name:\s*(\S.*?)\s*$/.exec(line);
+      if (match !== null) names.push(match[1] as string);
+    }
+    return names;
+  }
+
+  /**
+   * The blocks a job occupies, keyed by its `name:` — so a target executed in
+   * one job is not credited to another.
+   */
+  function jobBlocks(workflowSource: string): ReadonlyMap<string, string> {
+    const blocks = new Map<string, string>();
+    const lines = workflowSource.split('\n');
+    let current: string | null = null;
+    let buffer: string[] = [];
+    const flush = (): void => {
+      if (current !== null) blocks.set(current, buffer.join('\n'));
+      current = null;
+      buffer = [];
+    };
+    for (const line of lines) {
+      if (/^ {2}[\w-]+:\s*$/.test(line)) flush();
+      const named = /^ {4}name:\s*(\S.*?)\s*$/.exec(line);
+      if (named !== null) {
+        current = named[1] as string;
+        buffer = [];
+        continue;
+      }
+      if (current !== null) buffer.push(line);
+    }
+    flush();
+    return blocks;
+  }
+
+  let requiredJobNames: readonly string[];
+
+  beforeAll(async () => {
+    const gate = await import('../../../scripts/require-full-gate.mjs');
+    requiredJobNames = gate.REQUIRED_JOB_NAMES as readonly string[];
+  });
+
+  it('scanned a workflow with jobs in it', () => {
+    // Anti-vacuity floor: an indentation change that stopped the reader seeing
+    // jobs would make every assertion below pass on an empty set.
+    expect(jobNames(FULL_GATE).length).toBeGreaterThanOrEqual(11);
+    expect(jobBlocks(FULL_GATE).size).toBe(jobNames(FULL_GATE).length);
+  });
+
+  it('every required job name resolves to a job in full-gate.yml', () => {
+    const actual = new Set(jobNames(FULL_GATE));
+    const unresolved = requiredJobNames.filter((name) => !actual.has(name));
+    expect(unresolved).toEqual([]);
+  });
+
+  it('every job NOT required carries an explicit optional marker with a reason', () => {
+    // A subset stays a DECISION rather than an omission. Without this, a job
+    // added by a later change is silently outside the release binding and
+    // nobody chose that.
+    const required = new Set(requiredJobNames);
+    const unmarked: string[] = [];
+    for (const [name, block] of jobBlocks(FULL_GATE)) {
+      if (required.has(name)) continue;
+      if (!/#\s*release-binding:\s*optional/.test(block)) unmarked.push(name);
+    }
+    expect(unmarked).toEqual([]);
+  });
+
+  it('every release-named target is executed inside a job the binding requires', () => {
+    // The two ends meet here: RELEASE_CHECK_TARGETS is the release wording's
+    // list, REQUIRED_JOB_NAMES is the binding's, and this asserts they describe
+    // the same jobs. Diverge either and this fails.
+    const blocks = jobBlocks(FULL_GATE);
+    const required = new Set(requiredJobNames);
+    const orphaned: string[] = [];
+    for (const target of RELEASE_CHECK_TARGETS.values()) {
+      const hosts = [...blocks.entries()]
+        .filter(([, block]) => block.includes(`npm run ${target}`))
+        .map(([name]) => name);
+      if (hosts.length === 0 || !hosts.some((name) => required.has(name))) {
+        orphaned.push(target);
+      }
+    }
+    expect(orphaned).toEqual([]);
+  });
+
+  it('NON-VACUITY: an unmarked extra job and an unresolvable required name are both detected', () => {
+    const withExtra = FULL_GATE + '\n  surprise:\n    name: surprise job\n    runs-on: ubuntu-latest\n';
+    const required = new Set(requiredJobNames);
+    const unmarked = [...jobBlocks(withExtra).keys()].filter(
+      (name) => !required.has(name) && !/#\s*release-binding:\s*optional/.test(jobBlocks(withExtra).get(name) ?? '')
+    );
+    expect(unmarked).toContain('surprise job');
+
+    const actual = new Set(jobNames(FULL_GATE));
+    expect(['a job that does not exist'].filter((name) => !actual.has(name))).toHaveLength(1);
   });
 });

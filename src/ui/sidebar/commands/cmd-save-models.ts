@@ -15,7 +15,7 @@
 // what distinguishes an import-confirm from a manual add/remove here.
 
 import { modelsLayerRevision } from '../../../config/model-catalog';
-import { isBackendRunnerKind, type BackendRunnerKind } from '../../../runner/backend-runner-factory';
+import { isBackendRunnerKind, type BackendRunnerKind } from '../../../contracts/backend-kinds';
 import { planModelCatalogImport } from '../../../services/process-yaml/model-catalog-import-planner';
 import {
   MODEL_CATALOG_YAML_KIND,

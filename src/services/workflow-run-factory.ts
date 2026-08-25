@@ -3,7 +3,7 @@ import { type PhaseDef, type PipelineCatalog } from '../config/pipeline-config';
 import { snapshotPhaseDef, snapshotPipelineContract } from '../config/pipeline-snapshot';
 import type { SanitizedLogger } from '../lib/logger';
 import type { FeatureRequest } from '../queue/feature-request';
-import { DEFAULT_BACKEND, type BackendRunnerKind } from '../runner/backend-runner-factory';
+import { DEFAULT_BACKEND, type BackendRunnerKind } from '../contracts/backend-kinds';
 import type {
   MutationPlanSnapshot,
   RawTranscriptMode,

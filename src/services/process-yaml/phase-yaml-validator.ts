@@ -56,7 +56,7 @@ import {
   type PhaseHostVerification,
   type PhaseSideEffects
 } from '../../contracts/process-definitions';
-import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../../runner/backend-runner-factory';
+import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../../contracts/backend-kinds';
 import {
   PHASE_YAML_API_VERSION,
   PHASE_YAML_KIND,

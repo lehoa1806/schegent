@@ -9,7 +9,7 @@ import {
   normalizeBackendProbeTimeoutSeconds,
   parseAgyModels
 } from '../../../src/services/backend-capability-service';
-import type { BackendRunnerKind } from '../../../src/runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../../../src/contracts/backend-kinds';
 
 interface FakeChild extends ChildProcess {
   readonly kill: ReturnType<typeof vi.fn>;

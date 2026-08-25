@@ -264,6 +264,26 @@ Output is bounded before it reaches parsers or UI projections. Structured audit
 events do not receive arbitrary subprocess output. Raw transcripts, when
 enabled, are a separate evidence class and may contain sensitive backend output.
 
+**Backend identity is separate from backend construction (FR-R3-089).** The
+backend enum — `BackendRunnerKind`, `SUPPORTED_BACKENDS`, `DEFAULT_BACKEND`,
+`isBackendRunnerKind` — lives in `src/contracts/backend-kinds.ts`, a leaf module
+that imports nothing. The runner family keeps construction. Before the move,
+validators in `config/` and `services/` that only needed to know *which backend
+names exist* imported them from the module that knows *how to build one*, and the
+visible symptom was a module cycle: `services/backend-containment-policy.ts`
+took `SUPPORTED_BACKENDS` from the factory as a value while the factory imported
+`judgeBackendContainment` from the policy.
+
+**The cycle is gone as a consequence of the move**, not as a separate fix: the
+policy now reads identity from contracts, so only the `factory → policy` edge
+remains and it is acyclic. **Stated limit**: this repository ships no dependency-
+cycle checker (`madge` or equivalent is not a dependency, and adding one is not in
+this change's scope), so the claim rests on the one-directional import assertion in
+`tests/lint/backend-kind-placement.test.ts` plus direct inspection of the two
+modules — not on a tool that walks the whole graph. A cycle elsewhere in the tree
+would not be caught by either.
+
+<!-- Source: src/contracts/backend-kinds.ts -->
 <!-- Source: src/runner/backend-runner-factory.ts -->
 <!-- Source: src/runner/claude-cli.ts -->
 <!-- Source: src/runner/codex-cli.ts -->

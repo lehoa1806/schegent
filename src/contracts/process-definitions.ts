@@ -1,4 +1,4 @@
-import type { BackendRunnerKind } from '../runner/backend-runner-factory';
+import type { BackendRunnerKind } from './backend-kinds';
 
 /**
  * How long a Phase id may be (feature 089, FR-037).

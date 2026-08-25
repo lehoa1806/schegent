@@ -1,5 +1,5 @@
 import type { TelemetrySnapshot } from '../../telemetry/telemetry-snapshot';
-import type { BackendRunnerKind } from '../../runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../../contracts/backend-kinds';
 import type { SanitizedLogger } from '../../lib/logger';
 import type { WorkspaceStateStore } from '../../state/workspace-state';
 import type { WorkflowRun } from '../../state/workflow-run';

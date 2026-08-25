@@ -2,7 +2,7 @@ import type { Phase, PhaseOutcome } from './phase';
 import { policyRequestFields } from '../runner/spawn-env';
 import type { BackendRunner } from '../contracts/backend-runner';
 import type { BackendRunnerRegistry } from '../runner/backend-runner-registry';
-import { DEFAULT_BACKEND } from '../runner/backend-runner-factory';
+import { DEFAULT_BACKEND } from '../contracts/backend-kinds';
 import type { PromptBuilder } from '../runner/prompt-builder';
 import type { ExecutionEnvelope } from '../contracts/run-request';
 import type { AuditLogWriter } from '../audit/audit-log-writer';

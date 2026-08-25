@@ -37,7 +37,7 @@ import type {
   WorkflowNode,
   WorkflowSourceStatus
 } from '../../contracts/workflow-definitions';
-import type { BackendRunnerKind } from '../../runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../../contracts/backend-kinds';
 
 /** The only `apiVersion` this format admits (FR-002). */
 export const PHASE_YAML_API_VERSION = 'schegent/v1';

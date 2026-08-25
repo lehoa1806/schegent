@@ -1,5 +1,5 @@
 import type { PingBackendCommand } from '../messages';
-import type { BackendRunnerKind } from '../../../runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../../../contracts/backend-kinds';
 import type { CommandHandler } from './handler-contract';
 import { ack } from './handler-helpers';
 

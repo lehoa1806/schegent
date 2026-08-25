@@ -7,7 +7,7 @@ import {
   type ValidationError,
   type ValidationWarning
 } from './pipeline-config';
-import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../runner/backend-runner-factory';
+import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../contracts/backend-kinds';
 import { resolvePhaseCatalog, type ResolvedPhaseCatalog } from './process-catalog';
 import { resolvePipelineCatalog, type ResolvedPipelineCatalog } from './pipeline-catalog';
 import { storedRows } from '../catalog';

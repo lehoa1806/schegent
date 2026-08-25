@@ -15,7 +15,7 @@ import {
   PHASE_RETRY_CONDITION_MAX_LEN,
   type PhaseDefinition
 } from '../../contracts/process-definitions';
-import type { BackendRunnerKind } from '../../runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../../contracts/backend-kinds';
 import type { ResolvedPhaseCatalog } from '../../config/process-catalog';
 import { NO_BUILDER_LIFECYCLE, type BuilderLifecycleLookup } from './builder-lifecycle';
 import type { PhaseCatalogProjection } from './snapshot';

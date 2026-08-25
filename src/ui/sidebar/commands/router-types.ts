@@ -7,7 +7,7 @@ import type { CatalogLifecycleOps, CatalogStore } from '../../../catalog';
 import type { PipelineCatalog } from '../../../config/pipeline-config';
 import type { CatalogVersionRef } from '../../../contracts/catalog-version';
 import type { RunOutputRecord } from '../../../contracts/run-results';
-import type { BackendRunnerKind } from '../../../runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../../../contracts/backend-kinds';
 import type { ConnectedWorkflowRun } from '../../../state/connected-workflow-run';
 import type { ConnectedRunWriteResult } from '../../../state/workspace-state';
 import type { ChildRunStateReader } from '../connected-run-projector';

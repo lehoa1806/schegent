@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
-import { SUPPORTED_BACKENDS } from '../../src/runner/backend-runner-factory';
+import { SUPPORTED_BACKENDS } from '../../src/contracts/backend-kinds';
 
 describe('Backend Runner Kind Exhaustive Parity (Feature 074)', () => {
   it('ensures SUPPORTED_BACKENDS matches settings-schema enum and createBackendRunner switch', () => {

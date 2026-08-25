@@ -19,7 +19,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import type { BackendRunnerKind } from '../../src/runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../../src/contracts/backend-kinds';
 import { planModelCatalogImport } from '../../src/services/process-yaml/model-catalog-import-planner';
 import { parseModelCatalogDocument } from '../../src/services/process-yaml/model-catalog-yaml-mapper';
 import type { DocumentRefusalCode, ModelCatalogYamlDocument } from '../../src/services/process-yaml/types';

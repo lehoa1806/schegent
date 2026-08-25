@@ -149,7 +149,7 @@ import type { ExportProcessYamlRequest } from '../../../src/contracts/sidebar-ip
 import type { CatalogStore } from '../../../src/catalog';
 import type { CatalogKind } from '../../../src/contracts/catalog-store';
 import { FakeCatalogStore } from '../../fixtures/fake-catalog-store';
-import type { BackendRunnerKind } from '../../../src/runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../../../src/contracts/backend-kinds';
 import type {
   ModelCatalogImportRow,
   ModelCatalogSkipRow

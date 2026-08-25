@@ -12,7 +12,7 @@ import {
   type QueueRuntime,
   type WorkflowSnapshot
 } from './snapshot';
-import type { BackendRunnerKind } from '../../runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../../contracts/backend-kinds';
 
 export type PlaceholderReason = 'no-workspace' | 'init-failed';
 

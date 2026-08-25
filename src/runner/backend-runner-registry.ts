@@ -1,10 +1,6 @@
 import type { BackendRunner } from '../contracts/backend-runner';
-import {
-  type BackendRunnerKind,
-  type BackendRunnerFactoryOptions,
-  createBackendRunner,
-  DEFAULT_BACKEND
-} from './backend-runner-factory';
+import { type BackendRunnerFactoryOptions, createBackendRunner } from './backend-runner-factory';
+import { DEFAULT_BACKEND, type BackendRunnerKind } from '../contracts/backend-kinds';
 
 // Feature 074 — Lazy runner registry. Replaces single-runner injection in
 // `PhaseRunner` with a per-invocation kind lookup so that individual phases

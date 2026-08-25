@@ -1,6 +1,6 @@
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type Effort = (typeof EFFORT_LEVELS)[number];
-import { SUPPORTED_BACKENDS, isBackendRunnerKind, type BackendRunnerKind } from '../runner/backend-runner-factory';
+import { SUPPORTED_BACKENDS, isBackendRunnerKind, type BackendRunnerKind } from '../contracts/backend-kinds';
 // One declaration serves the authored contract and the runtime shape. These were
 // duplicated string unions here; a Phase now declares its own containment class,
 // so a second copy would let the document field and the runtime field drift with

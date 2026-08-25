@@ -45,7 +45,7 @@ import type {
 import type { PhaseDef, PipelineDef } from '../../config/pipeline-config';
 import { snapshotPhaseDef, snapshotPipelineContract } from '../../config/pipeline-snapshot';
 import { MAX_DESCRIPTION_LENGTH } from '../../queue/feature-request';
-import type { BackendRunnerKind } from '../../runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../../contracts/backend-kinds';
 import type { WorkflowRunPipeline } from '../../state/workflow-run';
 import {
   FOLDER_MAX_BYTES,

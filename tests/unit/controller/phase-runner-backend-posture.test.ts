@@ -17,7 +17,7 @@ import {
   type BackendPostureAccessor
 } from '../../../src/controller/backend-posture-recorder';
 import { MAX_QUEUES } from '../../../src/queue/queue-registry';
-import { SUPPORTED_BACKENDS } from '../../../src/runner/backend-runner-factory';
+import { SUPPORTED_BACKENDS } from '../../../src/contracts/backend-kinds';
 import { RequiredEvidenceUnavailableError } from '../../../src/lib/errors';
 import { ZippedStreamBuffer } from '../../../src/runner/zipped-stream-buffer';
 import type { ClaudeCliRunner } from '../../../src/runner/claude-cli';

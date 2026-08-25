@@ -12,7 +12,7 @@ import {
   type PhaseSideEffects
 } from '../contracts/process-definitions';
 import { validate as validateRetryCondition } from '../lib/retry-condition';
-import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../runner/backend-runner-factory';
+import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../contracts/backend-kinds';
 
 export const PHASE_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 export { PHASE_ID_MAX_LEN };

@@ -1,4 +1,4 @@
-import type { BackendRunnerKind } from '../runner/backend-runner-factory';
+import type { BackendRunnerKind } from './backend-kinds';
 import type { BackendContainment } from '../services/backend-containment-policy';
 import type { TerminationReason } from '../state/workflow-run';
 import type { RunnerLabel, TreeEscalation } from './backend-runner';

@@ -9,10 +9,9 @@ import {
 } from '../../../src/services/backend-containment-policy';
 import {
   createBackendRunner,
-  DEFAULT_BACKEND,
-  SUPPORTED_BACKENDS,
   UncontainedBackendRefusedError
 } from '../../../src/runner/backend-runner-factory';
+import { DEFAULT_BACKEND, SUPPORTED_BACKENDS } from '../../../src/contracts/backend-kinds';
 import { BackendRunnerRegistry } from '../../../src/runner/backend-runner-registry';
 
 /**

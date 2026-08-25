@@ -4,7 +4,7 @@ import type { ResolvedPipelineCatalog } from '../../config/pipeline-catalog';
 import type { ResolvedPhaseCatalog } from '../../config/process-catalog';
 import type { SanitizedLogger } from '../../lib/logger';
 import type { ClaudeCliMonitor } from '../../monitor/claude-cli-monitor';
-import type { BackendRunnerKind } from '../../runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../../contracts/backend-kinds';
 import type { EvidenceHealthSnapshot } from '../../services/evidence-health/evidence-health-monitor';
 import type { BackendPingState } from '../../services/backend-ping-service';
 import type { Disposable, WorkspaceStateStore } from '../../state/workspace-state';
