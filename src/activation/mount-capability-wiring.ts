@@ -112,7 +112,13 @@ export function reportMountCapability(
       // operator would never be told their filesystem cannot arbitrate, for the life
       // of the extension host. The bookkeeping has to record a DELIVERY, not an
       // attempt. The log line above is unconditional for the same reason.
-      notifier.warn(UNSUPPORTED_MESSAGE);
+      // `Promise.resolve(...).catch(...)`, not a bare call and not a bare `void`.
+      // `Notifier.warn` returns the `Thenable` from `showWarningMessage`, and VS Code
+      // rejects it when the host is disposing — which is exactly the window this
+      // verdict arrives in. A bare call leaves that rejection unobserved, and the
+      // `unknown` return type on the interface is what keeps the floating-promise
+      // rule from saying so.
+      void Promise.resolve(notifier.warn(UNSUPPORTED_MESSAGE)).catch(() => undefined);
       notifiedWorkspaces.add(workspaceRoot);
       return;
     case 'read-only':

@@ -53,10 +53,14 @@ async function schegentEntries(): Promise<readonly string[]> {
  * Probe artifacts only.
  *
  * `.gitignore` is EXPECTED: `schegent-gitignore.ts` states that every writer which
- * creates `.schegent/` also drops the local ignore file, and the probe runs at
- * activation ahead of the audit, rollup and transcript writers -- so on a fresh
- * workspace it is the first writer and owes it. Without that, an abandoned create
- * on the slow-mount path this probe exists for would leave a file visible in the
+ * creates `.schegent/` also drops the local ignore file, and the probe creates it.
+ *
+ * It is NOT the first writer -- `extension.ts` elects ownership first, and that path
+ * creates `.schegent/ownership/` without dropping the file. The source says so at
+ * `mount-capability-probe.ts`; this comment used to restate the retracted version,
+ * which left two answers in the tree with the false one reading as a test-asserted
+ * fact. What the call buys is that the ignore file lands at ACTIVATION rather than
+ * at the first audit append, which keeps an abandoned `.mount-probe.*` out of the
  * operator's `git status`.
  */
 async function probeArtifacts(): Promise<readonly string[]> {

@@ -113,49 +113,6 @@ export function platformLacksNoFollow(): boolean {
 
 
 /**
- * FR-R3-083 (T1132-T1135) — should this leaf be refused as a reparse point?
- *
- * WHAT THIS CLOSES, AND WHY IT WAS OPEN
- *
- * The walk `lstat`s every DIRECTORY component and opens the leaf `O_NOFOLLOW`.
- * `NOFOLLOW` is `0` on Windows, so on that platform the leaf open followed
- * whatever the entry pointed at, and nothing looked. A symlink or a junction AT
- * THE LEAF -- the last component, the one being written to -- redirected the bytes,
- * and the module's own comment said the check "rests on the `lstat` below", which
- * was a description of a check the leaf never received.
- *
- * `lstat` reports both `IO_REPARSE_TAG_SYMLINK` and `IO_REPARSE_TAG_MOUNT_POINT`
- * (a junction) as symbolic links, so those two -- the reparse kinds that redirect a
- * path -- are reachable and are refused.
- *
- * WHAT IT DOES NOT CLOSE, STATED RATHER THAN IMPLIED
- *
- * Other reparse tags (cloud placeholders, dedup, app-exec links) are reported by
- * `lstat` as ordinary files, so this cannot see them. Telling tags apart needs
- * `FSCTL_GET_REPARSE_POINT`, which is a native call.
- * `docs/architecture/native-binding-decision.md` answered that question **no**, so
- * the tag-level distinction is a PERMANENT stated limit.
- *
- * And this is a check-then-open, not an atomic refusal: an entry swapped between
- * the `lstat` and the `open` is the same component-swap window the walk's other
- * components have, recorded in that same decision.
- *
- * PURE, so the classification is reachable from a test on ANY platform -- including
- * the ones where the arrangement cannot be created at all.
- *
- * It takes no platform flag. Whether to ASK is the caller's decision -- on a
- * platform with a real `O_NOFOLLOW` the kernel already refused atomically, and a
- * second, weaker check there would add a syscall and a race to a settled answer.
- * That gate lives at the one call site, in an `if (NOFOLLOW === 0)`. An earlier
- * draft passed the platform in as a parameter, which made one condition into two
- * expressions that could drift, and left the function's own guard reachable only
- * from a test.
- */
-export function refusesLeafAsReparsePoint(leafStat: { isSymbolicLink(): boolean }): boolean {
-  return leafStat.isSymbolicLink();
-}
-
-/**
  * FR-R3-083 — the whole leaf-redirect policy, in one place.
  *
  * Two sites ask the same question of a leaf: `openWithinRoot` below (on platforms
@@ -207,7 +164,17 @@ export async function judgeLeafRedirect(
     // opened.
     return { outcome: 'refused', reason: 'io-failed', errno };
   }
-  if (!refusesLeafAsReparsePoint(leafStat)) return { outcome: 'ok' };
+  // `isSymbolicLink()` is the whole check, and the name it used to carry
+  // (`refusesLeafAsReparsePoint`) claimed more than it did: `lstat` reports the two
+  // reparse kinds that REDIRECT a path — symlink and junction — as links, and says
+  // nothing about any other tag. It was an exported one-line predicate with a single
+  // caller (this one) and a name that told a reader it reached the reparse tag, so
+  // it is inlined here where the policy is.
+  //
+  // What it cannot see: cloud placeholders, dedup, app-exec links. Telling tags
+  // apart needs `FSCTL_GET_REPARSE_POINT`, a native call declined on the record in
+  // `docs/architecture/native-binding-decision.md`. A PERMANENT stated limit.
+  if (!leafStat.isSymbolicLink()) return { outcome: 'ok' };
   return {
     outcome: 'refused',
     reason: lacksNoFollow ? 'reparse-point-leaf' : 'symlink-leaf'

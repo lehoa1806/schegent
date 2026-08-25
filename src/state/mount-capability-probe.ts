@@ -420,6 +420,12 @@ export async function probeMountCapability(
     // When nothing was created and nothing was abandoned there is nothing to look
     // for, and `resolveContainedLink` is a `realpath` plus an `lstat` on the mount
     // this module's own comments call least able to afford them.
+    // REMOVAL RUNS EVEN WHEN DISPOSED, and that is the one deliberate exception to
+    // `isDisposed`'s contract. The contract exists to stop the probe CREATING things
+    // in a workspace the window has left; abandoning a file this probe made in that
+    // same workspace is the litter the ignore-file drop exists to prevent, and it
+    // would be the operator's to find. Bounded, and it only ever touches a leaf this
+    // function named.
     if (bound.created) {
       await removeProbeArtifact(deps.workspaceRoot, segments, timeoutMs);
     }

@@ -4,11 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { resolve } from 'node:path';
 import { readFileSync } from 'node:fs';
-import {
-  judgeLeafRedirect,
-  openWithinRoot,
-  refusesLeafAsReparsePoint
-} from '../../../src/lib/safe-open';
+import { judgeLeafRedirect, openWithinRoot } from '../../../src/lib/safe-open';
 
 /**
  * FR-R3-083 (T1132-T1136) — the leaf check Windows never had.
@@ -36,29 +32,20 @@ import {
  * this cycle's platform -- `docs/operations/platform-observation-record.md` says
  * so rather than letting these unit assertions read as a Windows result.
  */
-describe('reparse-point leaf classification (FR-R3-083)', () => {
-  it('refuses a link-like leaf', () => {
-    expect(refusesLeafAsReparsePoint({ isSymbolicLink: () => true })).toBe(true);
-  });
-
-  it('does not refuse an ordinary leaf', () => {
-    expect(refusesLeafAsReparsePoint({ isSymbolicLink: () => false })).toBe(false);
-  });
-
-  it('is asked only where O_NOFOLLOW is absent, and that gate lives at the call site', () => {
-    // The predicate answers "is this leaf link-like?"; whether to ASK is the
-    // caller's decision, and on a platform with a real O_NOFOLLOW the kernel has
-    // already refused atomically. Asserted against the source because the condition
-    // is a platform constant -- there is no way to observe both branches in one
-    // process, and an earlier draft that passed the platform in as a parameter made
-    // one condition into two that could drift.
+describe('the leaf check is asked only where the kernel will not refuse (FR-R3-083)', () => {
+  it('gates the walk\'s leaf check on the platform, at the one call site', () => {
+    // Asserted against the source because the condition is a platform constant --
+    // there is no way to observe both branches in one process. It matters: on a
+    // platform with a real O_NOFOLLOW the kernel refuses atomically, and adding a
+    // second check-then-open there would put a syscall and a race in front of a
+    // settled answer, on every open in the product.
     const source = readFileSync(
       resolve(__dirname, '..', '..', '..', 'src', 'lib', 'safe-open.ts'),
       'utf8'
     );
     expect(source).toContain('if (platformLacksNoFollow()) {');
     const guarded = source.slice(source.indexOf('if (platformLacksNoFollow()) {'));
-    expect(guarded.slice(0, 900)).toContain('judgeLeafRedirect(leaf,');
+    expect(guarded.slice(0, 1400)).toContain('judgeLeafRedirect(leaf,');
   });
 });
 

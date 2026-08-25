@@ -84,8 +84,14 @@ function stubKill(alive: boolean): void {
 }
 
 afterEach(() => {
+  // NOTHING PENDING before the stub comes off. A rung left scheduled fires against
+  // the REAL `process.kill` once `restoreAllMocks` runs, which for a fake child means
+  // signalling whatever process group happens to hold that pid on this machine. One
+  // test in this file did exactly that. `getTimerCount` catches the next one.
+  const pending = vi.isFakeTimers() ? vi.getTimerCount() : 0;
   vi.restoreAllMocks();
   vi.useRealTimers();
+  expect(pending, 'a scheduled ladder rung would have fired against the real process.kill').toBe(0);
 });
 
 describe('escalateAndReportTree (FR-R3-083)', () => {
@@ -153,7 +159,7 @@ describe('escalateAndReportTree (FR-R3-083)', () => {
     expect(h.events).toHaveLength(1);
   });
 
-  it('still SIGTERMs a child that leads no group, rather than reading ESRCH as gone', () => {
+  it('still SIGTERMs a child that leads no group, rather than reading ESRCH as gone', async () => {
     // FR-R3-054 §4 finding 1, relearned the hard way. `processTreeIsGone` answers for
     // the GROUP, so a child with no group of its own -- an injected double, or a real
     // child from a spawn path the migration has not reached -- makes `kill(-pid, 0)`
@@ -161,12 +167,23 @@ describe('escalateAndReportTree (FR-R3-083)', () => {
     // signal and therefore stopped signalling those children entirely: thirty-one
     // runner tests failed, and a real unmigrated child would have gone unsignalled
     // too. The signals are unconditional; only the ESCALATION consults the probe.
+    // FAKE TIMERS, like every other case here, and not optional. `escalateAndReportTree`
+    // schedules a real 2 s `setTimeout` for the SIGKILL rung. Without fake timers this
+    // test returns immediately, `afterEach` restores `process.kill`, and two seconds
+    // later the callback fires an UNSTUBBED `process.kill(-4242, 'SIGKILL')` at
+    // whatever process group 4242 is on the machine running the suite. `.unref()` does
+    // not stop a timer firing -- it only stops it holding the loop open -- and a full
+    // `test:host` run lives far longer than 2.5 s.
+    vi.useFakeTimers();
     stubKill(false);
     const killSpy = vi.spyOn(process, 'kill');
     const h = harness(fakeChild(4242, false));
     h.run();
     // The group signal was attempted despite the probe answering "gone".
     expect(killSpy.mock.calls.some(([pid, sig]) => pid === -4242 && sig === 'SIGTERM')).toBe(true);
+    // Drain the scheduled rungs against the stub, so nothing is left pending when
+    // `afterEach` restores the real `process.kill`.
+    await vi.advanceTimersByTimeAsync(5_000);
   });
 
   it('skips SIGKILL only when the child has exited AND the group is gone', async () => {

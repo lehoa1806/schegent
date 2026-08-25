@@ -89,15 +89,6 @@ export async function signalProcessTree(
 }
 
 /**
- * Whether the tree is gone. This is what lets a phase finalize honestly: a
- * terminal state recorded while descendants are still running is a terminal
- * state that lies.
- *
- * Signal 0 checks for existence without delivering anything. On Windows there is
- * no group to probe, so this answers only for the direct child and callers must
- * treat a `true` there as "the child is gone", not "the tree is".
- */
-/**
  * Has the direct child finished?
  *
  * `exitCode !== null || signalCode !== null`, and the second half is not optional:
@@ -110,6 +101,15 @@ export function childIsReaped(child: ChildProcess): boolean {
   return child.exitCode !== null || child.signalCode !== null;
 }
 
+/**
+ * Whether the tree is gone. This is what lets a phase finalize honestly: a
+ * terminal state recorded while descendants are still running is a terminal
+ * state that lies.
+ *
+ * Signal 0 checks for existence without delivering anything. On Windows there is
+ * no group to probe, so this answers only for the direct child and callers must
+ * treat a `true` there as "the child is gone", not "the tree is".
+ */
 export function processTreeIsGone(child: ChildProcess): boolean {
   const pid = child.pid;
   if (pid === undefined) return true;
@@ -177,12 +177,12 @@ export const TREE_CONFIRM_DELAY_MS = 500;
  *
  * WHAT IS DELIBERATELY NOT PARAMETERISED
  *
- * The trigger. `child.exitCode`/`signalCode` decide whether to escalate and that
- * check stays at the top, unchanged, because it is the original FR-R3-054
- * behaviour and the tree probe is additive to it: the direct child's status decides
- * whether to escalate, and the probe decides only whether a terminal state may
- * claim the work has stopped. Those are different questions and conflating them was
- * FR-R3-054's own recorded first mistake.
+ * The trigger. Every caller gets the same escalation rule, and that rule is stated
+ * in one place — at the guard itself, below. Read it there rather than here: an
+ * earlier version of THIS paragraph described a different rule from the one the code
+ * implemented, which in a codebase where these comments are the design record is
+ * worse than no paragraph. What is worth saying at the interface is only that the
+ * decision is not the caller's to vary.
  */
 export interface TreeEscalationDeps {
   readonly child: ChildProcess;
@@ -249,7 +249,21 @@ export function escalateAndReportTree(deps: TreeEscalationDeps): void {
   // deactivation landing in that window used to run the whole ladder against a dead
   // pid. On Windows that is `taskkill /pid <pid> /T /F`, which has no
   // group-id protection at all and would take an unrelated process's whole tree.
-  if (childIsReaped(child) && processTreeIsGone(child)) return;
+  //
+  // ON WINDOWS THE PROBE IS NOT ENOUGH, so a reaped child ends it here regardless.
+  // `processTreeIsGone` there is `process.kill(pid, 0)` against the direct child's
+  // pid — it cannot distinguish "our child" from "a new holder of a recycled pid",
+  // and Windows recycles aggressively. A probe answering "alive" against the new
+  // holder would send `taskkill /pid <pid> /T /F` at an unrelated process and its
+  // entire descendant tree, and then file a `tree-unconfirmed` entry against a Run
+  // that no longer owns it. POSIX has the pgid reservation to lean on; Windows has
+  // nothing, so the honest answer is to stop.
+  //
+  // The cost is stated rather than hidden: on Windows the "child exited, tree
+  // survived" case is not detected. It never was — the probe only ever answered for
+  // the direct child there — and it is part of the same permanent limit
+  // `docs/architecture/native-binding-decision.md` records.
+  if (childIsReaped(child) && (process.platform === 'win32' || processTreeIsGone(child))) return;
 
   // No probe on its OWN before the first signal, and the reason is FR-R3-054 §4 finding 1,
   // relearned: `processTreeIsGone` answers for the GROUP, and a child that leads no
@@ -321,7 +335,9 @@ export function escalateAndReportTree(deps: TreeEscalationDeps): void {
     // child that leads no group (see the note at the top), and the child's status
     // alone was what skipped it for the arrangement this feature exists for. Only
     // when the child has exited AND the group is gone is there nothing left to kill.
-    if (childIsReaped(child) && processTreeIsGone(child)) return;
+    if (childIsReaped(child) && (process.platform === 'win32' || processTreeIsGone(child))) {
+      return;
+    }
     deps.info?.('sending SIGKILL to process tree');
     void signalProcessTree(child, 'SIGKILL').then(() => {
       setTimeout(confirmOrReport, TREE_CONFIRM_DELAY_MS).unref();
