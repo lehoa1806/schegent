@@ -44,6 +44,15 @@ export type SafeOpenRefusal =
   | 'symlink-component'
   /** The leaf itself is a symbolic link (`O_NOFOLLOW` refused the open). */
   | 'symlink-leaf'
+  /**
+   * The leaf carries a reparse point, on a platform with no `O_NOFOLLOW`.
+   *
+   * Kept DISTINCT from `symlink-leaf` because the two are different checks with
+   * different strength, and an operator reading a refusal should be able to tell
+   * which one answered. `symlink-leaf` is the kernel refusing the open atomically.
+   * This one is a check-then-open, so it is a narrowing and not a guarantee.
+   */
+  | 'reparse-point-leaf'
   /** A component that must be a directory is not one. */
   | 'not-a-directory'
   /** The opened descriptor is not a regular file. */
@@ -93,6 +102,47 @@ const NOFOLLOW: number = (fsConstants as Partial<typeof fsConstants>).O_NOFOLLOW
  * absorb `..` and an absolute segment would replace the root outright, which is
  * how a lexical composition becomes an escape.
  */
+/**
+ * FR-R3-083 (T1132-T1135) — should this leaf be refused as a reparse point?
+ *
+ * WHAT THIS CLOSES, AND WHY IT WAS OPEN
+ *
+ * The walk `lstat`s every DIRECTORY component and opens the leaf `O_NOFOLLOW`.
+ * `NOFOLLOW` is `0` on Windows, so on that platform the leaf open followed
+ * whatever the entry pointed at, and nothing looked. A symlink or a junction AT
+ * THE LEAF -- the last component, the one being written to -- redirected the bytes,
+ * and the module's own comment said the check "rests on the `lstat` below", which
+ * was a description of a check the leaf never received.
+ *
+ * `lstat` reports both `IO_REPARSE_TAG_SYMLINK` and `IO_REPARSE_TAG_MOUNT_POINT`
+ * (a junction) as symbolic links, so those two -- the reparse kinds that redirect a
+ * path -- are reachable and are refused.
+ *
+ * WHAT IT DOES NOT CLOSE, STATED RATHER THAN IMPLIED
+ *
+ * Other reparse tags (cloud placeholders, dedup, app-exec links) are reported by
+ * `lstat` as ordinary files, so this cannot see them. Telling tags apart needs
+ * `FSCTL_GET_REPARSE_POINT`, which is a native call.
+ * `docs/architecture/native-binding-decision.md` answered that question **no**, so
+ * the tag-level distinction is a PERMANENT stated limit.
+ *
+ * And this is a check-then-open, not an atomic refusal: an entry swapped between
+ * the `lstat` and the `open` is the same component-swap window the walk's other
+ * components have, recorded in that same decision.
+ *
+ * PURE, so the classification is reachable from a test on ANY platform -- including
+ * the ones where the arrangement cannot be created at all.
+ */
+export function refusesLeafAsReparsePoint(
+  leafStat: { isSymbolicLink(): boolean },
+  platformHasNoFollow: boolean
+): boolean {
+  // On a platform with `O_NOFOLLOW` the kernel already refused atomically, and a
+  // second, weaker check would only add a syscall and a race to a settled answer.
+  if (platformHasNoFollow) return false;
+  return leafStat.isSymbolicLink();
+}
+
 function invalidSegment(segment: string): boolean {
   return (
     segment.length === 0 ||
@@ -255,6 +305,23 @@ export async function openWithinRoot(
   // caught and reported as `io-failed` -- a programming error disguised as a
   // filesystem one, which is the opposite of what this function promises.
   const flagBits = NOFOLLOW | toFlagBits(options.flags);
+
+  // FR-R3-083 — the leaf check this platform's `O_NOFOLLOW` will not perform.
+  // Skipped entirely where `NOFOLLOW` is real, so the POSIX path keeps its exact
+  // syscall sequence and its exact refusals.
+  if (NOFOLLOW === 0) {
+    try {
+      const leafStat = await fsp.lstat(leaf);
+      if (refusesLeafAsReparsePoint(leafStat, false)) return refuse('reparse-point-leaf');
+    } catch (error) {
+      // ENOENT is the ordinary case for a creating open: there is no entry to be a
+      // reparse point. Anything else could not be proven, and a leaf that cannot be
+      // proven is not opened.
+      const errno = errnoOf(error);
+      if (errno !== 'ENOENT') return refuse('io-failed', errno);
+    }
+  }
+
   let handle: fsp.FileHandle;
   try {
     handle = await fsp.open(leaf, flagBits, options.fileMode);
