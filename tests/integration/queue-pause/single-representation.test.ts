@@ -27,6 +27,7 @@
 // `RunDriver` would spawn a CLI to answer a question the gate already settled.
 
 import { describe, it, expect, beforeEach } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { WorkspaceStateStore, KEYS, type Memento } from '../../../src/state/workspace-state';
 import { QueueManager } from '../../../src/queue/queue-manager';
 import { AutoDrainCoordinator } from '../../../src/services/auto-drain-coordinator';
@@ -88,7 +89,11 @@ async function makeHarness(memento: FakeMemento = new FakeMemento()): Promise<Ha
     // only gate this file is entitled to attribute a refusal to is step 2.
     executionLease: {
       tryAcquire: async () => ({ acquired: true, ownerId: 'this-window' }),
-      release: () => {}
+      release: () => {},
+      // FR-R3-077 — no lease record behind this double, so no claim to give. The
+      // store's commit points record that as `lease-not-held` rather than
+      // pretending to a fence this double never had.
+      claimFor: () => null
     },
     controller: controller as unknown as SchegentWorkflowController
   });
@@ -285,7 +290,8 @@ describe('FR-R3-011 — one write, so there is nothing left to reconcile', () =>
         },
         result: undefined
       }),
-      DEFAULT_QUEUE_ID
+      DEFAULT_QUEUE_ID,
+      unfencedCommit('test-fixture')
     );
 
     const reopened = await makeHarness(h.memento);

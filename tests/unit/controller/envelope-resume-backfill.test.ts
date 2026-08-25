@@ -24,6 +24,7 @@
 // (changing the legacy serialized shape T267 pins).
 
 import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { SchegentWorkflowController } from '../../../src/controller/workflow-controller';
 import { WorkspaceStateStore, type Memento } from '../../../src/state/workspace-state';
 import { QueueManager } from '../../../src/queue/queue-manager';
@@ -125,7 +126,7 @@ async function resumeWith(options: {
     phaseBreakpoints: [], resumeTargetPhaseId: null,
     ...(options.runEnvelope ? { envelope: options.runEnvelope } : {})
   };
-  await store.setRun(DEFAULT_QUEUE_ID, persisted);
+  await store.setRun(DEFAULT_QUEUE_ID, persisted, unfencedCommit('test-fixture'));
 
   const admission = await controller.admitResume(DEFAULT_QUEUE_ID);
   // The drive is handed back rather than awaited by design; swallow it so a

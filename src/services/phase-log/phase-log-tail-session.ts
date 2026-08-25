@@ -28,6 +28,7 @@
 // See contracts/phase-log-service.md §7.
 
 import * as fs from 'node:fs/promises';
+import { openWithinRootByPath } from '../../lib/safe-open';
 import type {
   PhaseLogDisplayEntry,
   PhaseLogSelection
@@ -48,6 +49,15 @@ export interface PhaseLogEntryPushPayload {
 
 export interface PhaseLogTailSessionDeps {
   readonly sessionId: string;
+  /**
+   * FR-R3-080 (T1071) — the trusted root the tailed file must sit under.
+   *
+   * Required, not optional: a tail session with no root would open its file by
+   * pathname, which is the state this migration exists to leave. The registry
+   * already holds the workspace root — it composes `filePath` from it — so this
+   * costs one line at the one construction site.
+   */
+  readonly workspaceRoot: string;
   readonly filePath: string;
   readonly selection: PhaseLogSelection;
   readonly pushToWebview: (msg: PhaseLogEntryPushPayload) => void;
@@ -57,6 +67,7 @@ export interface PhaseLogTailSessionDeps {
 
 export class PhaseLogTailSession {
   readonly sessionId: string;
+  readonly workspaceRoot: string;
   readonly filePath: string;
   readonly selection: PhaseLogSelection;
 
@@ -78,6 +89,7 @@ export class PhaseLogTailSession {
 
   constructor(deps: PhaseLogTailSessionDeps) {
     this.sessionId = deps.sessionId;
+    this.workspaceRoot = deps.workspaceRoot;
     this.filePath = deps.filePath;
     this.selection = deps.selection;
     this.pushToWebview = deps.pushToWebview;
@@ -111,14 +123,16 @@ export class PhaseLogTailSession {
     this.inTick = true;
     try {
       let handle: fs.FileHandle | null = null;
-      try {
-        handle = await fs.open(this.filePath, 'r');
-      } catch {
-        // File may be temporarily absent between watcher events. A
-        // missing file at tick time is non-fatal — wait for the next
-        // tick. Skipped lines/seq state is preserved.
-        return;
-      }
+      // FR-R3-080 (T1071) — the components walked, not just the leaf opened.
+      // A refusal is treated exactly as an absent file was: non-fatal, wait for
+      // the next tick, state preserved. A tail is a view, and a view that
+      // cannot prove its file is one that shows nothing rather than one that
+      // shows whatever the path now points at.
+      const opened = await openWithinRootByPath(this.workspaceRoot, this.filePath, {
+        flags: 'r'
+      });
+      if (opened.outcome === 'refused') return;
+      handle = opened.handle;
       try {
         const stat = await handle.stat();
         if (stat.size < this.offset) {

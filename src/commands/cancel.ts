@@ -106,7 +106,9 @@ async function cancelByTaskId(
       ...activeRun,
       status: 'canceled',
       lastTransitionAt: Date.now()
-    });
+    },
+      ctx.store.runCommitClaim(queueId)
+    );
     await ctx.queue.finish(feature.id, 'canceled');
     // Feature 093 (T068b, FR-028) — cancelling one Task does not end the
     // window's primacy. See the header note.
@@ -162,7 +164,7 @@ async function cancelActiveRun(ctx: Parameters<typeof runCancel>[0]): Promise<Ca
     payload: { taskId: run.featureId, runId: run.id, reason: 'user-cancel' },
     outcome: 'info'
   });
-  await ctx.store.setRun(queueId, { ...run, status: 'canceled', lastTransitionAt: Date.now() });
+  await ctx.store.setRun(queueId, { ...run, status: 'canceled', lastTransitionAt: Date.now() }, ctx.store.runCommitClaim(queueId));
   await ctx.queue.finish(run.featureId, 'canceled');
   // Feature 093 (T068b, FR-028) — same as the by-id path: the window keeps
   // primacy. Here it matters even when the resolver found a sole *running* Run,

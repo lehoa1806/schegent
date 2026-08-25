@@ -106,6 +106,7 @@ async function tailEntries(): Promise<readonly PhaseLogDisplayEntry[]> {
   const pushed: PhaseLogEntryPushPayload[] = [];
   const session = new PhaseLogTailSession({
     sessionId: 's1',
+    workspaceRoot: tmpDir,
     filePath: streamPath(),
     selection: SELECTION,
     pushToWebview: (msg) => pushed.push(msg),

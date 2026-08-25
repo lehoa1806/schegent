@@ -28,7 +28,15 @@ import {
 } from '../runner/backend-runner-factory';
 import { resolveSessionDispatch } from './session-dispatch-policy';
 import type { BackendAvailabilityProbe } from './backend-capability-service';
-import type { OptionalPhaseFailureContinuedPayload } from '../contracts/audit-events';
+import type {
+  OptionalPhaseFailureContinuedPayload,
+  OutputTargetRefusedAtDispatchPayload,
+  RunSnapshotDeclinedPayload
+} from '../contracts/audit-events';
+import {
+  judgeOutputTargetsAtDispatch,
+  OutputTargetRefusedAtDispatch
+} from './dispatch-output-guard';
 import type { TerminalTransitionCoordinator } from './terminal-transition-coordinator';
 import { mutationPlanIsApproved } from './mutation-plan';
 import type { RunCheckpointService } from './run-checkpoint-service';
@@ -139,6 +147,23 @@ export interface RunDriverDeps {
     run: WorkflowRun,
     payload: OptionalPhaseFailureContinuedPayload
   ) => Promise<void>;
+  /**
+   * FR-R3-077 (T1040) — the read-side decline's evidence record.
+   *
+   * Optional on the same terms as `releaseExecutionLease` below: the unit
+   * harnesses build a driver directly and have no audit writer. The decline
+   * itself is NOT optional — it happens whether or not anyone is listening, and
+   * the unconditional `logger.warn` beside this call is what a harness sees.
+   */
+  readonly emitRunSnapshotDeclined?: (
+    run: WorkflowRun,
+    payload: RunSnapshotDeclinedPayload
+  ) => Promise<void>;
+  /** FR-R3-079 (T1058) — the dispatch refusal's evidence record. */
+  readonly emitOutputTargetRefusedAtDispatch?: (
+    run: WorkflowRun,
+    payload: OutputTargetRefusedAtDispatchPayload
+  ) => Promise<void>;
   readonly scheduleAutoDrain: () => void;
   /**
    * Feature 092 (T132, FR-033a) — returns the finished Run's queue execution
@@ -233,9 +258,34 @@ export class RunDriver {
    * a successor on the same queue while this driver is mid-flight, and the
    * successor is not a newer snapshot of this Run.
    */
-  private latestSnapshotOf(run: WorkflowRun): WorkflowRun | null {
+  private async latestSnapshotOf(run: WorkflowRun): Promise<WorkflowRun | null> {
     const found = this.deps.store.findRunByTask(run.featureId);
-    return found !== null && found.run.id === run.id ? found.run : null;
+    if (found === null || found.run.id !== run.id) return null;
+    // FR-R3-077 (T1040) — and it must not have been written by a holder whose
+    // lease had already moved on.
+    //
+    // The commit point refuses a write it can see; `Memento` has no conditional
+    // write, so a write from a superseded holder can still land in the window
+    // between the verify and the update. This is the reader that disbelieves
+    // one. Declining here costs this driver its refreshed snapshot — every
+    // caller already handles `null`, because a Task can be deleted mid-flight —
+    // and it never costs the Run its record.
+    const verdict = await this.deps.store.readRunIfLive(found.queueId);
+    if (verdict.outcome === 'superseded' && verdict.run.id === run.id) {
+      this.deps.logger.warn(
+        `run snapshot declined: record for run ${run.id} was written at fence ` +
+          `${verdict.writtenAtFence}, superseded by ${verdict.liveFence}`
+      );
+      await this.deps
+        .emitRunSnapshotDeclined?.(run, {
+          runId: run.id,
+          writtenAtFence: verdict.writtenAtFence,
+          liveFence: verdict.liveFence
+        })
+        .catch(() => undefined);
+      return null;
+    }
+    return found.run;
   }
 
   /**
@@ -256,6 +306,38 @@ export class RunDriver {
     run: WorkflowRun,
     inputs: PhaseRunInputs
   ): Promise<PhaseRunOutput> {
+    // FR-R3-079 (T1056) — the output targets are re-judged HERE, at the last
+    // host-side instruction before the child exists.
+    //
+    // Request-time validation decided containment lexically and the operator
+    // confirmed it; the whole planning phase then ran. This is the second gate
+    // that item asks for, and this is the seam because every phase passes
+    // through it exactly once and it already sits inside the Run's attribution
+    // window. The frozen plan is READ, never rewritten (FR-017): the verdict
+    // gates execution and is not a correction to what the operator approved.
+    const verdict = await judgeOutputTargetsAtDispatch(
+      this.deps.options.cwd,
+      run.envelope?.outputs ?? []
+    );
+    if (verdict.outcome === 'refused') {
+      // `.catch` for the same reason `emitRunSnapshotDeclined` above has one: a
+      // failing audit append must not replace the named refusal as this Run's
+      // failure cause. The refusal is the fact; the record of it is best-effort.
+      await this.deps
+        .emitOutputTargetRefusedAtDispatch?.(run, {
+          runId: run.id,
+          portId: verdict.portId,
+          reason: verdict.reason
+        })
+        .catch(() => undefined);
+      this.deps.logger.warn(
+        `output target refused at dispatch: port ${verdict.portId} (${verdict.reason})`
+      );
+      // A Run-level failure with a named cause, raised BEFORE the runner is
+      // called, so the child is never given the target. Not a silent downgrade,
+      // and not an error surfaced from a child that was never started.
+      throw new OutputTargetRefusedAtDispatch(verdict.portId, verdict.reason);
+    }
     await this.deps.mutationLedger?.observeBeforePhase(run);
     let output: PhaseRunOutput | null = null;
     try {
@@ -560,7 +642,7 @@ export class RunDriver {
             this.phaseOverrideAbortKey(run.id, run.currentPhase)
           )
         ) {
-          const latestRun = this.latestSnapshotOf(run);
+          const latestRun = await this.latestSnapshotOf(run);
           if (latestRun !== null) {
             run = latestRun;
           }
@@ -587,7 +669,7 @@ export class RunDriver {
           iteration,
           iterationCap: this.deps.options.iterationCap,
           activePhaseDef,
-          latestManualPauseAt: this.latestSnapshotOf(run)?.manualPauseAt ?? null,
+          latestManualPauseAt: (await this.latestSnapshotOf(run))?.manualPauseAt ?? null,
           now: Date.now(),
           forceContinueOnRetryCapDefault:
             this.deps.options.getForceContinueOnRetryCap?.() ?? false
@@ -821,7 +903,7 @@ export class RunDriver {
           // old read would have merged the successor's phase, iteration, and
           // completed-phase list into this pause write. There is nothing left to
           // pause, so the loop exits the same way every other pause branch does.
-          const latestRun = this.latestSnapshotOf(run);
+          const latestRun = await this.latestSnapshotOf(run);
           if (latestRun === null) {
             this.deps.logger.warn(
               `manual pause skipped: run ${run.id} is no longer active on its queue`
@@ -974,7 +1056,19 @@ export class RunDriver {
     } finally {
       if (run.status !== 'running') {
         if (run.status !== 'paused') {
-          await this.deps.terminalTransitions?.complete(run, description);
+          // Guarded for the same reason `onRunTerminal` below is: everything
+          // after this block — `isRunning`, the execution-lease release, the
+          // auto-drain — is this Run giving its queue back, and a throw here
+          // used to skip all of it and wedge the queue for the window's
+          // lifetime. FR-R3-077 made the commit points inside `complete()`
+          // fenced, so it can now refuse where it previously could not.
+          try {
+            await this.deps.terminalTransitions?.complete(run, description);
+          } catch (error) {
+            this.deps.logger.warn(
+              `run-driver: terminal transition failed: ${(error as Error).message}`
+            );
+          }
         }
         try {
           await this.deps.onRunTerminal?.(run);

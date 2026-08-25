@@ -15,6 +15,7 @@
 // born-empty value and writes nothing.
 
 import { describe, it, expect, beforeEach } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import {
   KEYS,
   WorkspaceStateStore,
@@ -121,7 +122,8 @@ describe('workspace-state — per-queue isolation (FR-006)', () => {
         queue: { ...current, requests: [...current.requests, buildPendingTask({ position: 9 })] },
         result: current.requests.length
       }),
-      QUEUE_B
+      QUEUE_B,
+      unfencedCommit('test-fixture')
     );
 
     expect(raw()[QUEUE_B].requests).toHaveLength(2);
@@ -134,7 +136,8 @@ describe('workspace-state — per-queue isolation (FR-006)', () => {
         queue: { ...current, paused: true, pausedReason: 'operator', queueLifecycle: 'operator-paused'},
         result: null
       }),
-      QUEUE_A
+      QUEUE_A,
+      unfencedCommit('test-fixture')
     );
 
     expect(store.getQueue(QUEUE_A).queueLifecycle === 'operator-paused').toBe(true);
@@ -150,11 +153,13 @@ describe('workspace-state — per-queue isolation (FR-006)', () => {
     await Promise.all([
       store.updateQueue(
         (c) => ({ queue: { ...c, requests: [buildPendingTask({ id: 'a1', position: 0 })] }, result: null }),
-        QUEUE_A
+        QUEUE_A,
+        unfencedCommit('test-fixture')
       ),
       store.updateQueue(
         (c) => ({ queue: { ...c, requests: [buildPendingTask({ id: 'b1', position: 0 })] }, result: null }),
-        QUEUE_B
+        QUEUE_B,
+        unfencedCommit('test-fixture')
       )
     ]);
 

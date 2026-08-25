@@ -19,6 +19,7 @@
 // testing the probe against a tree the Run never touched.
 
 import * as fs from 'node:fs/promises';
+import { unfencedCommit } from '../../src/state/ownership-claim';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -197,7 +198,7 @@ async function completeRun(plan: FrozenRunPlan, runId: string) {
     isContinueGate: { consume: vi.fn().mockReturnValue(false) } as any,
     lock: makeLock(),
     persistTransition: async (_prev: WorkflowRun, next: WorkflowRun) => {
-      await store.setRun(DEFAULT_QUEUE_ID, next);
+      await store.setRun(DEFAULT_QUEUE_ID, next, unfencedCommit('test-fixture'));
       return next;
     },
     scheduleAutoDrain: vi.fn(),
@@ -227,7 +228,9 @@ async function completeRun(plan: FrozenRunPlan, runId: string) {
     phaseOverrides: [],
     resumeTargetPhaseId: null,
     envelope: plan
-  } as any);
+  } as any,
+    unfencedCommit('test-fixture')
+  );
 
   await new RunDriver(deps).drive(store.getRun(DEFAULT_QUEUE_ID)!, 'produce the report');
   return store.getRun(DEFAULT_QUEUE_ID)!;

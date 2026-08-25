@@ -23,6 +23,7 @@
 // worked.
 
 import { describe, expect, it, beforeEach } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { ACTIVITY_COALESCE_INTERVAL_MS } from '../../../src/monitor/activity-coalescer';
 import { ClaudeCliMonitor } from '../../../src/monitor/claude-cli-monitor';
 import { SanitizedLogger } from '../../../src/lib/logger';
@@ -152,7 +153,9 @@ async function seedRun(
     phaseBreakpoints: [],
     resumeTargetPhaseId: null,
     ...overrides
-  });
+  },
+    unfencedCommit('test-fixture')
+  );
 }
 
 /** `recordRunActivity` is fire-and-forget; let its `setRun` land. */

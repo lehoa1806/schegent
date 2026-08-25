@@ -88,24 +88,45 @@ It has two halves, and both matter:
   deliberately: records predating the field, and every write made without a claim, carry no
   generation to compare, and reading "no stamp" as guilt would reject the entire existing corpus.
 
-**Still outstanding.**
+**Closed by FR-R3-077 (feature 153, 2026-08-25).** All three items below recorded what was
+outstanding when this record was written. All three have since been taken, and the measurements that
+replaced them are stated here rather than in a separate note, because a record whose "outstanding"
+section is stale is worse than one that has none.
 
-1. **`writeGuarded` itself is unchanged** — still verify-then-callback, still two operations. Its
-   single production caller guards only the advisory `KEYS.lock` mirror, so the exposure is narrow,
-   but the function's name still promises more than it does.
+1. **`writeGuarded` is deleted.** It was verify-then-callback — two operations, behind a name that
+   promised atomicity — and its single production caller guarded the advisory `KEYS.lock` mirror.
+   That caller now goes through `refreshLockMirrorGuarded`, which verifies *inside* the same
+   serialized link that performs the mirror write: one link, not two operations. The helper was
+   removed rather than reshaped in place, on the reasoning AGENTS.md records for `withLock` — a
+   working wrapper of a defective shape is a working template for reintroducing the defect.
 
-2. **Only the Run commit point carries a fence.** Queue mutations do not. `setRun` is where the
-   review's third acceptance interleaving lives and where the harm was concrete; the queue path is
-   the same mechanism applied again, and it is not applied yet.
+2. **The queue mutation path carries the same fence.** `updateQueue` takes a required
+   `QueueCommitClaim` and verifies it inside its own serialized link on `KEYS.queue`. Delivered as a
+   separate change *after* the Run commit point's half, which is the order
+   `docs/features/round_3/00_escalated_residuals_decision.md` §2 sets — the Run path is the one the
+   review measured and the one a revived stale host reaches first.
 
-3. **The stamp is opt-in.** A caller that passes no claim gets the old behaviour, which is what keeps
-   every existing caller working — and means the guarantee holds only where a caller asks for it.
-   Measured 2026-08-25: **no production caller asks for it.** All 35 production `setRun` call sites
-   pass no claim; `writtenAtFence` is written only by the claimed path in `workspace-state.ts` and
-   read only by `isSupersededRun`, whose only callers are its own tests. Layer 3 is a shipped,
-   tested primitive with zero production presence — scheduled to become mandatory in the
-   lease-owned mutation funnel under the round-4 item recorded in
-   `docs/features/round_3/00_escalated_residuals_decision.md` (workspace envelope).
+3. **The stamp is no longer opt-in; the claim is required.** What this item recorded was measured
+   again before it was fixed, and the re-measurement corrected the figure: `setRun` has **26**
+   production call sites, not 35. Thirty-six occurrences of the token exist in `repo/src`, of which
+   nine are prose in comments and one is the declaration. The rest of the finding held exactly —
+   none of the 26 passed a claim, so `writtenAtFence` was never written and `isSupersededRun` had no
+   production caller at all.
 
-Until those close: treat the fence as authoritative for *election, heartbeat, and a claimed Run
-mutation*, and as advisory for *an unclaimed write*.
+   `setRun`'s claim is now a required parameter, so the type-checker enumerates the call sites rather
+   than a grep. A site that provably holds no lease passes `unfencedCommit(reason)` from a closed set
+   (`state/ownership-claim.ts`), which is a recorded finding about that site rather than a default —
+   and `tests/unit/state/unfenced-commit-inventory.test.ts` pins the set, keeps `test-fixture` out of
+   `src/`, and keeps `lease-not-held` to the single site that derives it.
+
+   The read side has its production caller: `WorkspaceStateStore.readRunIfLive` declines a record
+   stamped at a superseded generation, `RunDriver` acts on the decline, and the decline is recorded
+   as the `run-snapshot-declined` audit event rather than dropped.
+
+**What remains true.** The commit-point check refuses a write it can see. `Memento` offers no
+conditional write, so a reclaim landing between the verify and the update can still leave a record
+written by a superseded holder — that window is why the read side exists, and
+`tests/unit/state/run-mutation-fence.test.ts` forces it explicitly rather than describing it.
+
+Treat the fence as authoritative for *election, heartbeat, a Run mutation and a queue mutation*, and
+the read-side decline as the answer to the write that slipped through.

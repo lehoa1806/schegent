@@ -309,10 +309,19 @@ describe('RawTranscriptWriter per-run isolation (T008, US2)', () => {
 });
 
 describe('RawTranscriptWriter best-effort (T012, FR-007)', () => {
-  it('does not throw when fs.appendFile rejects, warns once per runId, stays usable for other runIds', async () => {
-    // Force EISDIR on writes to runId="fail" by pre-creating a directory at
-    // the target file path. This is a real filesystem failure, not a mock —
-    // appendFile cannot redefine its property descriptor under vi.spyOn.
+  it('does not throw when the target is unwritable, reports it, stays usable for other runIds', async () => {
+    // Force a failure on writes to runId="fail" by pre-creating a directory at
+    // the target file path. This is a real filesystem failure, not a mock.
+    //
+    // FR-R3-078 (T1047) changed what this failure is CALLED, and the change is
+    // the acceptance rather than a regression. The end-write used to be
+    // `fs.open(contained, 'a')` on a re-resolved pathname, which reported
+    // EISDIR as a bare write failure. It now goes through the checked walk,
+    // which opens the path and finds it is not a regular file — so the report
+    // names the reason instead of reporting an I/O error, which is exactly what
+    // this item requires of a refusal. The best-effort halves this test exists
+    // for are unchanged and still asserted: it does not throw, it reports once,
+    // and the writer stays usable for other run ids.
     const sessionsDir = path.join(workspaceRoot, '.schegent', 'sessions');
     await fs.mkdir(sessionsDir, { recursive: true });
     await fs.mkdir(path.join(sessionsDir, 'raw-fail.log'));
@@ -327,10 +336,20 @@ describe('RawTranscriptWriter best-effort (T012, FR-007)', () => {
       timedOut: false
     });
 
-    const failWarnings = warnSpy.mock.calls.filter((c) =>
-      String(c[0]).includes('raw transcript write failed for run fail')
+    const refusals = warnSpy.mock.calls.filter((c) =>
+      String(c[0]).includes('raw transcript transcript-write refused')
     );
-    expect(failWarnings).toHaveLength(1);
+    expect(refusals.length).toBeGreaterThanOrEqual(1);
+    // `io-failed`: the walk's open of a directory fails at the syscall with
+    // EISDIR before the regular-file check is reached. Either way the report
+    // names a refusal class rather than surfacing a raw write error.
+    expect(String(refusals[0]?.[0])).toContain('io-failed');
+    // Named, not guessed: no bare write-failure line for this run.
+    expect(
+      warnSpy.mock.calls.filter((c) =>
+        String(c[0]).includes('raw transcript write failed for run fail')
+      )
+    ).toHaveLength(0);
 
     await writer.appendStart({ runId: 'ok', phase: 'speckit-specify', iteration: 1, prompt: 'p2' });
     await writer.appendEnd({

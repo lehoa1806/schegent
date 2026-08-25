@@ -101,7 +101,13 @@ const BUDGETS = [
   // the exit code the idle arm's documented omission does not, plus the
   // maxDurationMs input and its pass-through to the runner. The arm is the
   // decision chain's own shape and cannot move without a second oracle.
-  { path: 'src/controller/phase-runner.ts', max: 995 },
+  // FR-R3-080 / T1075 (2026-08-25) — 995 → 1014. Nineteen lines: the drain
+  // parameter with the note on why it is positional (109 harnesses construct
+  // this class positionally, so a required parameter is not available cheaply),
+  // and the fold into the phase-end warnings with the reason the codes are
+  // drained rather than read. Nothing to extract: the fold is where the
+  // warnings are assembled.
+  { path: 'src/controller/phase-runner.ts', max: 1_014 },
   // FR-R3-052 / H-03 (2026-08-24) — 400 → 415 for the size check that was
   // missing. `stat()` was already called here and only `isFile()` was read, so
   // `readFile()` took a multi-GiB sidecar wholly into memory. The bound, the
@@ -109,7 +115,13 @@ const BUDGETS = [
   // in the item record, and the shared reader in src/lib/bounded-read.ts. Nothing
   // movable was left here — this file's job is reading one sidecar safely, and a
   // size bound is part of that job rather than a new one.
-  { path: 'src/controller/phase-sidecar-reader.ts', max: 415 },
+  // FR-R3-080 / T1067 (2026-08-25) — 415 → 439 for the component walk. The read
+  // opened with `O_NOFOLLOW`, which covers the leaf and says nothing about the
+  // components above it; the walk covers both. Twenty-four lines: the call, the
+  // refusal mapping that keeps `path-symlink-redirect` distinct from
+  // `missing-sidecar`, and the note recording what the old comment was right
+  // about and what it left out. Nothing to extract — it is one open.
+  { path: 'src/controller/phase-sidecar-reader.ts', max: 439 },
   { path: 'src/controller/phase-retry-evaluator.ts', max: 180 },
   // Raised from 100 on 2026-08-16. The truncation arm of `mapOutcome` stopped
   // returning 'failed' and now returns 'transient_error'; the budget is spent

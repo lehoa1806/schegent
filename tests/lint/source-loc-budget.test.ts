@@ -295,7 +295,10 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // the workspace root reaches the sidecar store at this site and nowhere else,
   // and a handler may not learn one of its own. Wiring, which is this file's one
   // responsibility. Set to what the file measures.
-  { path: 'src/extension.ts', maxLines: 1_423 },
+  // FR-R3-080 / T1075 (2026-08-25) — 1423 → 1447. Twenty-four lines: the evidence-health drain, the queue claims at the three queue mutation sites in activation, and the run-id-to-pid map the telemetry sampler's exit path needs — without it an exit could only guess which child it was, and with two runs the guess stopped the wrong series: the evidence-health
+  // drain reaching the phase runner, and the note on why an absent drain is the
+  // state this item exists to leave. Wiring, which is what this file is.
+  { path: 'src/extension.ts', maxLines: 1_447 },
   // P4 phase-control and lifecycle-auditor extraction ratchet: 1,200 → 730.
   // This file owns only the workflow facade, run dispatch, deletion, retry
   // entry, and persistence.
@@ -516,7 +519,14 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // raising. Set to exactly what the file measures.
   // FR-R3-075 (feature 152) — 993 → 995 for the optional maxDurationMs on the
   // controller options and its one-line doc. Set to what the file measures.
-  { path: 'src/controller/workflow-controller.ts', maxLines: 995 },
+  // FR-R3-077 / FR-R3-079 (feature 153) — 995 → 1007. Eleven lines: the store learns its
+  // claim source where the lease manager is resolved (six-line note included),
+  // and the two driver deps that carry the read-side decline and the
+  // dispatch-time output refusal into evidence.
+  // Extraction was measured and declined: `executionLease` is a local of this
+  // constructor, so a helper module would hide a one-line binding behind an
+  // import and a call site — the trade the entries above decline by name.
+  { path: 'src/controller/workflow-controller.ts', maxLines: 1_007 },
   // P4 domain-validator extraction ratchet: 1,200 → 775. The registry owns
   // command coverage; phase-log and metrics validators own shape rules.
   // Feature 088 (T032) — 775 → 776 for the two connected-run commands. Both
@@ -605,7 +615,23 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // grew a tolerated-optional `description` arm (dropped when non-string,
       // never grounds to reject a replayable transition). Validator shape, not
       // new responsibility.
-      highWaterMark: 2564
+      // FR-R3-077 (feature 153) — 2564 → 2736: the claim on `setRun` stopped
+      // being optional. What grew is the claim SOURCE (`bindRunClaimSource` /
+      // `runCommitClaim`) and the reasoning for its shape, plus the queue
+      // commit point's own claim. The source has to be here because the commit
+      // points are here and because `PhaseControlService` and friends take a
+      // `Pick<>` of this store and nothing else; the alternative was widening a
+      // dozen constructors to thread a lease manager, which is a larger diff
+      // that changes nothing about which commits are fenced. The reason SET is
+      // extracted — it is in src/state/ownership-claim.ts, with its own test.
+      // The queue commit point's own claim (FR-R3-077b, T1045) is the second
+      // half, landed as its own change after the Run half, which is the order
+      // the escalated-residuals decision sets.
+      // The read side (`readRunIfLive`) and the guarded mirror commit
+      // (`refreshLockMirrorGuarded`) are here for the same reason, and the
+      // latter is a REPLACEMENT: `writeGuarded` was deleted in the same change,
+      // so the net is smaller than the additions.
+      highWaterMark: 2736
     }
   },
   // Feature 077 — public facade and every state-projection collaborator have
@@ -657,7 +683,10 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
         'helpers may be extracted for cohesion, but the budget is no longer the forcing function',
       decidedOn: '2026-05-22',
       reference: 'specs/063-clean-all-confirmations/plan.md',
-      highWaterMark: 1821
+      // FR-R3-077 (feature 153) — 1821 → 1842: five Run commit points and ten
+      // queue mutation points in this file now name the claim they commit
+      // under. One line each, no new responsibility.
+      highWaterMark: 1842
     }
   },
   // Speckit-auto alignment (2026-07-30) — bumped 700 → 800 to absorb two new

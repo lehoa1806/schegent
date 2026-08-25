@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { ExecutionLeaseManager } from '../../../src/state/execution-lease';
 import { QueueMutationRejected } from '../../../src/state/workspace-state';
 import { isSupersededRun, type WorkflowRun } from '../../../src/state/workflow-run';
@@ -147,14 +148,99 @@ describe('a Run mutation carries its fence to the commit point', () => {
     expect(a.store.getRun('default')?.id).toBe('original');
   });
 
-  it('leaves an unclaimed mutation exactly as it was', async () => {
-    // Every existing caller passes no claim, and none of them may change
-    // behaviour. The stamp is also absent, so nothing reads as superseded.
+  it('leaves an unfenced mutation exactly as it was', async () => {
+    // FR-R3-077 (T1039) corrected what this used to say. The claim is no longer
+    // optional and "every existing caller passes no claim" is no longer true: a
+    // caller now either fences its commit or names, from a closed set, why it
+    // cannot. What is unchanged is the BEHAVIOUR of an unfenced commit — it
+    // writes, and it carries no stamp, so nothing reads it as superseded.
     const host = hosts[0]!;
-    await host.store.setRun('default', run('unclaimed'));
+    await host.store.setRun('default', run('unclaimed'), unfencedCommit('test-fixture'));
     const stored = host.store.getRun('default');
     expect(stored?.id).toBe('unclaimed');
     expect(stored?.writtenAtFence).toBeUndefined();
+  });
+});
+
+describe('the forced interleaving: verify, stall, reclaim, resume, commit', () => {
+  it('refuses the resumed commit at the commit point', async () => {
+    // The acceptance interleaving in its literal order. window-a holds the queue
+    // and is mid-work; it stalls long enough for window-b to reclaim; it wakes up
+    // and commits. Nothing about its own state told it anything had changed —
+    // that is the point, and the fence is the only thing standing between the
+    // stale holder and the record.
+    const a = hosts[0]!;
+    const leaseA = new ExecutionLeaseManager(a.store, 'window-a', clock, scheduler);
+    expect((await leaseA.tryAcquire('default')).acquired).toBe(true);
+    const claimA = leaseA.claimFor('default')!;
+
+    // Mid-work: a legitimate commit under the live claim lands.
+    await a.store.setRun('default', run('run-1'), claimA);
+    expect(a.store.getRun('default')?.writtenAtFence).toBe(claimA.fence);
+
+    // The stall, and the reclaim underneath it.
+    clock.advance(10 * 60 * 1000);
+    const leaseB = new ExecutionLeaseManager(hosts[1]!.store, 'window-b', clock, scheduler);
+    expect((await leaseB.tryAcquire('default')).acquired).toBe(true);
+
+    // window-a resumes holding the same claim object it always held.
+    await expect(
+      a.store.setRun('default', { ...run('run-1'), currentIteration: 1 }, claimA)
+    ).rejects.toThrow(QueueMutationRejected);
+    // And the record it would have overwritten is intact.
+    expect(a.store.getRun('default')?.currentIteration).toBe(0);
+  });
+
+  it('lets the read side decline a write that slipped through the verify window', async () => {
+    // The half the commit-point check cannot cover. `Memento` offers no
+    // conditional write, so a reclaim that lands BETWEEN the verify and the
+    // update leaves a record written by a superseded holder. The stamp is what
+    // makes that record recognisable afterwards.
+    const a = hosts[0]!;
+    const leaseA = new ExecutionLeaseManager(a.store, 'window-a', clock, scheduler);
+    await leaseA.tryAcquire('default');
+    const claimA = leaseA.claimFor('default')!;
+
+    // Force the interleaving precisely: the reclaim happens inside the verify.
+    const registry = a.store.ownership as unknown as {
+      verify: (...args: unknown[]) => Promise<unknown>;
+    };
+    const realVerify = registry.verify.bind(registry);
+    let reclaimed = false;
+    registry.verify = async (...args: unknown[]) => {
+      const verdict = await realVerify(...args);
+      if (!reclaimed) {
+        reclaimed = true;
+        clock.advance(10 * 60 * 1000);
+        await new ExecutionLeaseManager(hosts[1]!.store, 'window-b', clock, scheduler).tryAcquire(
+          'default'
+        );
+      }
+      return verdict;
+    };
+    await a.store.setRun('default', run('slipped'), claimA);
+    registry.verify = realVerify;
+
+    // The write landed — that is the window, and it is real.
+    expect(a.store.getRun('default')?.id).toBe('slipped');
+    // And the reader refuses to act on it, naming both generations.
+    const verdict = await a.store.readRunIfLive('default');
+    expect(verdict.outcome).toBe('superseded');
+    if (verdict.outcome === 'superseded') {
+      expect(verdict.writtenAtFence).toBe(claimA.fence);
+      expect(verdict.liveFence).toBeGreaterThan(claimA.fence);
+    }
+  });
+
+  it('reads an unstamped record as live rather than as guilt', async () => {
+    const a = hosts[0]!;
+    await a.store.setRun('default', run('legacy'), unfencedCommit('test-fixture'));
+    const verdict = await a.store.readRunIfLive('default');
+    expect(verdict.outcome).toBe('live');
+  });
+
+  it('answers absent for a queue with no Run', async () => {
+    expect((await hosts[0]!.store.readRunIfLive('default')).outcome).toBe('absent');
   });
 });
 

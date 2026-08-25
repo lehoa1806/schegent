@@ -3,7 +3,7 @@
 // at the IPC boundary (research.md §5). See
 // specs/020-phase-level-logs/contracts/phase-log-service.md §6.
 
-import * as fs from 'node:fs/promises';
+import { openWithinRootByPath } from '../../lib/safe-open';
 import { discoverIterations } from './phase-log-iteration-discovery';
 import { parseStreamJsonlBytes } from './phase-log-jsonl-parser';
 import { projectStreamJsonlLine } from './phase-log-display-projector';
@@ -105,7 +105,39 @@ export async function readIterationManifest(
     // all, so a multi-GiB phase log went wholly into memory. Now the file's tail
     // up to a bound, read in fixed chunks: a log's recent end is what an operator
     // is looking at, and the allocation is the bound rather than the file.
-    const handle = await fs.open(streamPath, 'r');
+    // FR-R3-080 (T1070) — the components walked, not just the leaf opened. The
+    // bounded read below is unchanged: it was the H-03 fix and it is orthogonal
+    // to where the descriptor came from.
+    const opened = await openWithinRootByPath(args.workspaceRoot, streamPath, { flags: 'r' });
+    if (opened.outcome === 'refused') {
+      // A PERMISSION refusal is not an absent log. Before the walk, `fs.open`
+      // threw EACCES/EPERM, the catch below rethrew it (it only swallows
+      // ENOENT), and `readPhaseLog` mapped it to `permission-denied` — a
+      // failure the operator can actually act on. Collapsing every refusal to
+      // an empty result dropped that signal and showed an existing iteration
+      // with zero entries instead, which reads as "this phase logged nothing".
+      if (opened.errno === 'EACCES' || opened.errno === 'EPERM') {
+        const denied: NodeJS.ErrnoException = new Error(
+          `phase log stream is not readable (${opened.errno})`
+        );
+        denied.code = opened.errno;
+        throw denied;
+      }
+      // Everything else reads as an absent log rather than as an error the
+      // operator can act on, which is what the ENOENT branch below already
+      // decided for a phase log that is not there: the panel shows an empty
+      // iteration, and the refusal is not something the panel can explain.
+      return {
+        iterations,
+        selectedIteration,
+        entries: [],
+        skippedLines: 0,
+        truncatedCount: 0,
+        verboseDiagnosticsState,
+        isInFlight: args.isInFlight
+      };
+    }
+    const handle = opened.handle;
     try {
       const { size } = await handle.stat();
       const tail = await readBoundedTail(handle, size);

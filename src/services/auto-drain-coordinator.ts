@@ -21,7 +21,7 @@
 import { DEFAULT_QUEUE_ID } from '../queue/queue-registry';
 import type { FeatureRequest } from '../queue/feature-request';
 import type { QueueManager } from '../queue/queue-manager';
-import type { WorkspaceStateStore } from '../state/workspace-state';
+import type { OwnershipClaim, WorkspaceStateStore } from '../state/workspace-state';
 import { isTerminalRunStatus } from '../state/workflow-run';
 import type { SchegentWorkflowController } from '../controller/workflow-controller';
 import type { SanitizedLogger } from '../lib/logger';
@@ -46,6 +46,19 @@ export interface ExecutionLeasePort {
    * windows' Runs in one tree.
    */
   hasLease?(queueId: string): Promise<boolean>;
+  /**
+   * FR-R3-077 (T1038) — this window's claim on `queueId`, for the commit points
+   * that now require one.
+   *
+   * **Required**, unlike `hasLease` above. That one is optional because a double
+   * that omits it degrades to the pre-feature admission rule; this one decides
+   * whether every Run commit in the window carries a fence, and a double that
+   * silently omitted it would turn the whole mechanism off for whatever composed
+   * it. The item's rule is that a caller which cannot produce a claim is a
+   * recorded finding rather than a default, and an optional member here would be
+   * the default.
+   */
+  claimFor(queueId: string): OwnershipClaim | null;
 }
 
 /**

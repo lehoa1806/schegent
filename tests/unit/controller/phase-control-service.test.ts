@@ -14,6 +14,7 @@
 // covered a snapshot-less Run.
 
 import { describe, expect, it, vi } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { PhaseControlService } from '../../../src/controller/phase-control-service';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
 
@@ -51,7 +52,8 @@ function makeService(run: WorkflowRun) {
       getRun: vi.fn(() => run),
       setRun,
       getQueue: vi.fn(() => null),
-      setWatchdog: vi.fn(async () => {})
+      setWatchdog: vi.fn(async () => {}),
+      runCommitClaim: vi.fn(() => unfencedCommit('test-fixture'))
     },
     queue: {
       cascadedPause: vi.fn(async () => {}),

@@ -18,6 +18,7 @@
 // and a real captured memento is worth more than one hand-written to pass.
 
 import { readFileSync } from 'node:fs';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { FeatureRequest } from '../../../src/queue/feature-request';
@@ -109,7 +110,7 @@ describe('a Run persisted before feature 087 reads back unchanged (T036)', () =>
     const run = store.getRun(DEFAULT_QUEUE_ID);
     if (run === null) throw new Error('fixture must persist a Run');
 
-    await store.setRun(DEFAULT_QUEUE_ID, run);
+    await store.setRun(DEFAULT_QUEUE_ID, run, unfencedCommit('test-fixture'));
 
     // Feature 093 (T027) — the byte comparison is against the Run under its
     // queue, because the record is now a map. Comparing the whole map to the
@@ -148,7 +149,7 @@ describe('a Run and a queue item built without the new fields serialize without 
     const run = store.getRun(DEFAULT_QUEUE_ID);
     if (run === null) throw new Error('fixture must persist a Run');
 
-    await store.setRun(DEFAULT_QUEUE_ID, run);
+    await store.setRun(DEFAULT_QUEUE_ID, run, unfencedCommit('test-fixture'));
     const stored = memento.get<WorkflowRun>(KEYS.run);
     if (stored === undefined) throw new Error('setRun must persist');
     for (const key of RUN_KEYS) {

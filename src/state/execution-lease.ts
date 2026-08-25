@@ -21,6 +21,7 @@ import {
   queueResource,
   type OwnershipRegistry
 } from './ownership-registry';
+import type { OwnershipClaim } from './workspace-state';
 
 /** One queue's execution claim. Persisted under `KEYS.executionLeases`. */
 export interface ExecutionLease {
@@ -137,6 +138,23 @@ export class ExecutionLeaseManager {
   /** The fencing token this window's claim on `queueId` was issued at. */
   public fenceOfRecord(queueId: string): number | null {
     return this.fences.get(queueId) ?? null;
+  }
+
+  /**
+   * FR-R3-077 (T1037) — this window's claim on `queueId`, as a commit point wants
+   * it, or `null` when this window holds none.
+   *
+   * Deliberately built from the REMEMBERED fence rather than from the record: a
+   * host whose lease was reclaimed while it was stalled still carries the
+   * generation it was issued, and handing that stale generation to the commit
+   * point is precisely how the commit gets refused. A claim rebuilt from the
+   * current record would launder the staleness away and the fence would verify
+   * every time.
+   */
+  public claimFor(queueId: string): OwnershipClaim | null {
+    const fence = this.fences.get(queueId);
+    if (fence === undefined) return null;
+    return { resource: queueResource(queueId), ownerId: this.ownerId, fence };
   }
 
   /**

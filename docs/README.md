@@ -143,6 +143,7 @@ drifts unnoticed, because the readers who would catch an error never get there.
 - [Inspect audit logs](operations/inspect-audit-logs.md)
 - [Inspect raw transcripts](operations/inspect-raw-transcripts.md)
 - [Licenses](operations/licenses.md)
+- [Concurrent-run resource measurement](operations/concurrent-run-resource-measurement.md)
 - [Merge-gate observation](operations/merge-gate-observation.md)
 - [Multi-queue concurrency](operations/multi-queue-concurrency.md)
 - [Phase and task management](operations/phase-task-management.md)

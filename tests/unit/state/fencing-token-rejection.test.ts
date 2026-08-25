@@ -8,7 +8,8 @@
 // another.
 //
 // The token is issued at acquisition, carried by the holder, and checked at the
-// point of effect, so the revived host's write is rejected. `writeGuarded` is
+// point of effect, so the revived host's write is rejected. The guarded mirror
+// commit (`refreshLockMirrorGuarded`, FR-R3-077 T1041, replacing `writeGuarded`) is
 // where that check lives, and these tests are about its typed outcome rather than
 // about a boolean: a caller told "you are not the holder" has to know *which*
 // generation superseded it and *who* holds the resource now, or it cannot tell a
@@ -79,12 +80,9 @@ async function reclaimedFromUnder(
 describe('a guarded write from a revived stale holder is rejected (T305)', () => {
   it('rejects on the token, naming the generation and the owner of record', async () => {
     const { staleFence, currentFence } = await reclaimedFromUnder(PRIMACY_RESOURCE);
-    let ran = false;
-    const outcome = await hosts[0]!.store.writeGuarded(
+    const outcome = await hosts[0]!.store.refreshLockMirrorGuarded(
       primacyClaim('window-a', staleFence),
-      async () => {
-        ran = true;
-      }
+      { ownerId: 'window-a', acquiredAt: 1, heartbeatAt: 1 }
     );
     expect(outcome).toEqual({
       outcome: 'rejected',
@@ -92,21 +90,20 @@ describe('a guarded write from a revived stale holder is rejected (T305)', () =>
       currentFence,
       ownerOfRecord: 'window-b'
     });
-    // Rejected, not merely reported: the write must not have happened.
-    expect(ran).toBe(false);
+    // Rejected, not merely reported: the write must not have happened. FR-R3-077
+    // (T1041) replaced the callback with the mirror itself, so "did it run" is
+    // now read off the record rather than off a flag the callback set.
+    expect(hosts[0]!.store.getLock()).toBeNull();
   });
 
   it('performs the write for the holder of the current generation', async () => {
     const { currentFence } = await reclaimedFromUnder(PRIMACY_RESOURCE);
-    let ran = false;
-    const outcome = await hosts[1]!.store.writeGuarded(
+    const outcome = await hosts[1]!.store.refreshLockMirrorGuarded(
       primacyClaim('window-b', currentFence),
-      async () => {
-        ran = true;
-      }
+      { ownerId: 'window-b', acquiredAt: 1, heartbeatAt: 1 }
     );
     expect(outcome).toEqual({ outcome: 'written' });
-    expect(ran).toBe(true);
+    expect(hosts[1]!.store.getLock()?.ownerId).toBe('window-b');
   });
 
   it('distinguishes a released generation from a superseded one', async () => {
@@ -119,12 +116,9 @@ describe('a guarded write from a revived stale holder is rejected (T305)', () =>
     const fence = acquired.outcome === 'acquired' ? acquired.fence : -1;
     await hosts[0]!.store.ownership.release(PRIMACY_RESOURCE, 'window-a', fence);
 
-    let ran = false;
-    const outcome = await hosts[0]!.store.writeGuarded(
+    const outcome = await hosts[0]!.store.refreshLockMirrorGuarded(
       primacyClaim('window-a', fence),
-      async () => {
-        ran = true;
-      }
+      { ownerId: 'window-a', acquiredAt: 1, heartbeatAt: 1 }
     );
     // The generation is still current — release keeps the record so the token is
     // never re-issued — but the holder slot is empty. `not-holder` is a different
@@ -135,23 +129,20 @@ describe('a guarded write from a revived stale holder is rejected (T305)', () =>
       currentFence: fence,
       ownerOfRecord: null
     });
-    expect(ran).toBe(false);
+    expect(hosts[0]!.store.getLock()).toBeNull();
   });
 
   it('reports unavailable, not rejected, when storage cannot answer', async () => {
     const { staleFence } = await reclaimedFromUnder(PRIMACY_RESOURCE);
     fs.faults.failList = true;
-    let ran = false;
-    const outcome = await hosts[0]!.store.writeGuarded(
+    const outcome = await hosts[0]!.store.refreshLockMirrorGuarded(
       primacyClaim('window-a', staleFence),
-      async () => {
-        ran = true;
-      }
+      { ownerId: 'window-a', acquiredAt: 1, heartbeatAt: 1 }
     );
     // A caller that conflated the two would surrender a live claim on a failed
     // read. The write still does not happen — that half is the same.
     expect(outcome).toEqual({ outcome: 'unavailable' });
-    expect(ran).toBe(false);
+    expect(hosts[0]!.store.getLock()).toBeNull();
   });
 
   it('reports unavailable when the claim was good and the write failed', async () => {
@@ -162,9 +153,21 @@ describe('a guarded write from a revived stale holder is rejected (T305)', () =>
       STALENESS_THRESHOLD_MS
     );
     const fence = acquired.outcome === 'acquired' ? acquired.fence : -1;
-    const outcome = await hosts[0]!.store.writeGuarded(primacyClaim('window-a', fence), () =>
-      Promise.reject(new Error('memento write failed'))
+    // FR-R3-077 (T1041) — the write is now the store's own memento update, so the
+    // failure is injected there rather than into a caller's callback.
+    const failing = hosts[0]!.store as unknown as {
+      memento: { update: (key: string, value: unknown) => Promise<void> };
+    };
+    const realUpdate = failing.memento.update.bind(failing.memento);
+    failing.memento.update = (key: string, value: unknown) =>
+      key === 'schegent.lock'
+        ? Promise.reject(new Error('memento write failed'))
+        : realUpdate(key, value);
+    const outcome = await hosts[0]!.store.refreshLockMirrorGuarded(
+      primacyClaim('window-a', fence),
+      { ownerId: 'window-a', acquiredAt: 1, heartbeatAt: 1 }
     );
+    failing.memento.update = realUpdate;
     // It says nothing about who holds the resource, so it must not read as a lost
     // claim.
     expect(outcome).toEqual({ outcome: 'unavailable' });
@@ -252,9 +255,9 @@ describe('the revived holder observes that it is no longer the holder (T305)', (
     // on it.
     expect(a.fenceOfRecord('queue-b')).toBe(staleFence);
     expect(await a.hasLease('queue-b')).toBe(false);
-    const outcome = await hosts[0]!.store.writeGuarded(
+    const outcome = await hosts[0]!.store.refreshLockMirrorGuarded(
       { resource: queueResource('queue-b'), ownerId: 'window-a', fence: staleFence },
-      async () => undefined
+      { ownerId: 'window-a', acquiredAt: 1, heartbeatAt: 1 }
     );
     expect(outcome.outcome).toBe('rejected');
   });

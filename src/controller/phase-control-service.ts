@@ -41,7 +41,7 @@ export interface PhaseControlAuditor {
 interface PhaseControlServiceDeps {
   readonly store: Pick<
     WorkspaceStateStore,
-    'getRun' | 'setRun' | 'getQueue' | 'setWatchdog'
+    'getRun' | 'setRun' | 'getQueue' | 'setWatchdog' | 'runCommitClaim'
   >;
   // Feature 093 (T035) — the Pick shrank rather than grew. Phase B added
   // `queueIdForTask` here so each write could name its queue by re-deriving it
@@ -106,7 +106,7 @@ export class PhaseControlService {
       manualPauseAt: Date.now(),
       manualPauseCause: 'operator-paused'
     };
-    await this.deps.store.setRun(queueId, updated);
+    await this.deps.store.setRun(queueId, updated, this.deps.store.runCommitClaim(queueId));
     try {
       this.deps.cancelActive(queueId);
     } catch (err) {
@@ -160,7 +160,7 @@ export class PhaseControlService {
       delayedRetryCount: run.pendingRetryAt !== null ? 0 : run.delayedRetryCount,
       ...(customPrompt ? { resumePrompt: customPrompt } : {})
     };
-    await this.deps.store.setRun(queueId, updated);
+    await this.deps.store.setRun(queueId, updated, this.deps.store.runCommitClaim(queueId));
     await this.deps.auditor.appendPhaseControl('phase-resumed', updated, {
       runId: updated.id,
       phaseId: updated.currentPhase,
@@ -199,7 +199,7 @@ export class PhaseControlService {
       ...plannedTotalPatch(run, nextOverrides),
       lastTransitionAt: Date.now()
     };
-    await this.deps.store.setRun(queueId, updated);
+    await this.deps.store.setRun(queueId, updated, this.deps.store.runCommitClaim(queueId));
     if (hadPendingRetry || run.delayedRetryCount > 0) {
       // Feature 093 (T035) — the retry-cap pause is recorded on the queue that
       // exhausted it, so the read is queue-addressed for the same reason the
@@ -242,7 +242,9 @@ export class PhaseControlService {
         ...run,
         pendingRetryAt: null,
         pendingRetryCause: null
-      });
+      },
+        this.deps.store.runCommitClaim(queueId)
+      );
       await this.deps.store.setWatchdog({
         paused: false,
         pausedSince: null,
@@ -265,7 +267,9 @@ export class PhaseControlService {
         manualPauseCause: null,
         resumeTargetPhaseId: null,
         lastTransitionAt: Date.now()
-      });
+      },
+        this.deps.store.runCommitClaim(queueId)
+      );
       this.scheduleResume(queueId, 'skipPhase resume (terminal) failed');
     }
     return result;
@@ -296,7 +300,7 @@ export class PhaseControlService {
       ...plannedTotalPatch(run, nextOverrides),
       lastTransitionAt: Date.now()
     };
-    await this.deps.store.setRun(queueId, updated);
+    await this.deps.store.setRun(queueId, updated, this.deps.store.runCommitClaim(queueId));
     await this.deps.auditor.appendPhaseControl('phase-enabled', updated, {
       runId: updated.id,
       phaseId
@@ -342,7 +346,7 @@ export class PhaseControlService {
       phaseBreakpoints: [...run.phaseBreakpoints, entry],
       lastTransitionAt: Date.now()
     };
-    await this.deps.store.setRun(queueId, updated);
+    await this.deps.store.setRun(queueId, updated, this.deps.store.runCommitClaim(queueId));
     await this.deps.auditor.appendBreakpoint('phase-breakpoint-set', updated, {
       runId: updated.id,
       phaseId,
@@ -373,7 +377,7 @@ export class PhaseControlService {
       phaseBreakpoints: run.phaseBreakpoints.filter((entry) => entry.phaseId !== phaseId),
       lastTransitionAt: Date.now()
     };
-    await this.deps.store.setRun(queueId, updated);
+    await this.deps.store.setRun(queueId, updated, this.deps.store.runCommitClaim(queueId));
     await this.deps.auditor.appendBreakpoint('phase-breakpoint-cleared', updated, {
       runId: updated.id,
       phaseId,
@@ -423,7 +427,7 @@ export class PhaseControlService {
       ...plannedTotalPatch(run, nextOverrides),
       lastTransitionAt: Date.now()
     };
-    await this.deps.store.setRun(queueId, updated);
+    await this.deps.store.setRun(queueId, updated, this.deps.store.runCommitClaim(queueId));
     if (run.currentPhase === phaseId && run.status === 'running') {
       this.deps.noteActivePhaseOverrideAbort(queueId, run.id, phaseId);
       this.deps.cancelActive(queueId);
@@ -464,7 +468,7 @@ export class PhaseControlService {
       phaseBreakpoints: run.phaseBreakpoints.filter((entry) => entry.phaseId !== phaseId),
       lastTransitionAt: Date.now()
     };
-    await this.deps.store.setRun(queueId, updated);
+    await this.deps.store.setRun(queueId, updated, this.deps.store.runCommitClaim(queueId));
     await this.deps.auditor.appendPhaseControl(eventType, updated, {
       runId: updated.id,
       phaseId,

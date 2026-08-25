@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { RunDriver } from '../../../src/services/run-driver';
 import type { RunDriverDeps } from '../../../src/services/run-driver';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
@@ -81,7 +82,7 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
       isContinueGate: { consume: vi.fn().mockReturnValue(false) } as any,
       lock: makeLock(),
       persistTransition: async (_oldRun, newRun) => {
-        await store.setRun(DEFAULT_QUEUE_ID, newRun);
+        await store.setRun(DEFAULT_QUEUE_ID, newRun, unfencedCommit('test-fixture'));
         return newRun;
       },
       scheduleAutoDrain: vi.fn(),
@@ -111,7 +112,9 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
       phaseBreakpoints: [],
       phaseOverrides: [],
       resumeTargetPhaseId: null
-    } as any);
+    } as any,
+      unfencedCommit('test-fixture')
+    );
 
     phaseRunnerMock.run.mockResolvedValueOnce({
       result: { kind: 'malformed', warnings: [], fatalCause: 'Fatal error occurred', auditEntry: null },
@@ -168,7 +171,9 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
       phaseBreakpoints: [],
       phaseOverrides: [],
       resumeTargetPhaseId: null
-    } as any);
+    } as any,
+      unfencedCommit('test-fixture')
+    );
 
     phaseRunnerMock.run.mockResolvedValue({
       result: { kind: 'clean', auditEntry: null as never },
@@ -235,7 +240,9 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
         phaseBreakpoints: [],
         phaseOverrides: [],
         resumeTargetPhaseId: null
-      } as any);
+      } as any,
+        unfencedCommit('test-fixture')
+      );
     }
 
     // FR-R3-001 (T266) — the declaration lives on the Run's frozen envelope, not
@@ -244,7 +251,7 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
     // edited or removed while the Run it describes is still executing.
     async function declaring(outputs: readonly unknown[]): Promise<void> {
       const seeded = store.getRun(DEFAULT_QUEUE_ID)!;
-      await store.setRun(DEFAULT_QUEUE_ID, { ...seeded, envelope: { outputs } } as any);
+      await store.setRun(DEFAULT_QUEUE_ID, { ...seeded, envelope: { outputs } } as any, unfencedCommit('test-fixture'));
     }
 
     function cleanPhase(): void {
@@ -407,7 +414,9 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
         phaseBreakpoints: [],
         phaseOverrides: [],
         resumeTargetPhaseId: null
-      } as any);
+      } as any,
+        unfencedCommit('test-fixture')
+      );
       phaseRunnerMock.run.mockResolvedValueOnce({
         result: { kind: 'malformed', warnings: [outcome], auditEntry: null },
         outcome,
@@ -483,7 +492,9 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
         phaseBreakpoints: [],
         phaseOverrides: [],
         resumeTargetPhaseId: null
-      } as any);
+      } as any,
+        unfencedCommit('test-fixture')
+      );
       (deps.retryCoordinator.isRetryCapExhaustedOnNextFailure as any)
         .mockReturnValue(true);
       phaseRunnerMock.run.mockResolvedValueOnce({
@@ -541,7 +552,9 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
       phaseBreakpoints: [],
       phaseOverrides: [],
       resumeTargetPhaseId: null
-    } as any);
+    } as any,
+      unfencedCommit('test-fixture')
+    );
 
     phaseRunnerMock.run.mockResolvedValue({
       result: { kind: 'clean', auditEntry: null as never },
@@ -581,7 +594,9 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
       phaseBreakpoints: [],
       phaseOverrides: [],
       resumeTargetPhaseId: null
-    } as any);
+    } as any,
+      unfencedCommit('test-fixture')
+    );
 
     await expect(driver.drive(store.getRun(DEFAULT_QUEUE_ID)!, 'retention failure')).resolves.toBeUndefined();
 
@@ -612,7 +627,9 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
       phaseBreakpoints: [],
       phaseOverrides: [],
       resumeTargetPhaseId: null
-    } as any);
+    } as any,
+      unfencedCommit('test-fixture')
+    );
     phaseRunnerMock.run.mockRejectedValueOnce(
       new RequiredEvidenceUnavailableError('phase-start')
     );

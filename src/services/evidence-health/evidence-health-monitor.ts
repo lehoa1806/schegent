@@ -59,6 +59,31 @@ export interface EvidenceHealthDisposable {
 
 export type EvidenceHealthListener = (snapshot: EvidenceHealthSnapshot) => void;
 
+/**
+ * FR-R3-080 (T1075) — the phase-end warning code for a sink whose write was
+ * REFUSED rather than failed.
+ *
+ * One code per sink, composed here rather than at the call sites, so the
+ * phase-end allowlist can hold the literals and no caller can invent a code the
+ * allowlist has never seen. `SEC-06` / `SEC-07`'s refusals reached the log and
+ * stopped there, and a refusal nobody surfaces is a refusal nobody acts on.
+ */
+export function pathRefusedWarning(sink: EvidenceSinkName): string {
+  return `evidence-path-refused:${sink}`;
+}
+
+/**
+ * Every sink name, so the allowlist and its test enumerate the same set the
+ * type does rather than a hand-copied echo of it.
+ */
+export const EVIDENCE_SINK_NAMES: readonly EvidenceSinkName[] = [
+  'audit',
+  'rawTranscript',
+  'runtimeLog',
+  'metricsRollup',
+  'historyPointer'
+];
+
 const POLICIES: Readonly<Record<EvidenceSinkName, EvidenceContinuationPolicy>> = Object.freeze({
   audit: 'fail-closed',
   rawTranscript: 'continue-degraded',
@@ -94,6 +119,9 @@ function healthySinks(): Record<EvidenceSinkName, EvidenceSinkHealth> {
  * availability-preserving.
  */
 export class EvidenceHealthMonitor implements EvidenceHealthReporter {
+  /** FR-R3-080 — refusal codes awaiting a phase end to report them. */
+  private readonly pathRefusals = new Set<string>();
+
   private readonly listeners = new Set<EvidenceHealthListener>();
   private readonly now: () => Date;
   private sinks: Record<EvidenceSinkName, EvidenceSinkHealth> = healthySinks();
@@ -102,9 +130,24 @@ export class EvidenceHealthMonitor implements EvidenceHealthReporter {
     this.now = now;
   }
 
+  /**
+   * FR-R3-080 (T1075) — refusal codes recorded since the last drain.
+   *
+   * Drained rather than read, and drained by the phase runner at phase end, so
+   * each refusal is reported against the phase it happened in and is not
+   * repeated on every phase after it. A `Set`, so a sink refusing on every line
+   * of output contributes one warning rather than ten thousand.
+   */
+  public drainPathRefusals(): readonly string[] {
+    const drained = [...this.pathRefusals];
+    this.pathRefusals.clear();
+    return drained;
+  }
+
   public reportFailure(sink: EvidenceSinkName, cause: string): boolean {
     const previous = this.sinks[sink];
     const normalizedCause = normalizeEvidenceFailureCause(cause);
+    if (normalizedCause === 'path-refused') this.pathRefusals.add(pathRefusedWarning(sink));
     const shouldWarn = previous.status === 'healthy' || previous.cause !== normalizedCause;
     this.sinks = {
       ...this.sinks,
@@ -177,6 +220,14 @@ export function normalizeEvidenceFailureCause(cause: unknown): string {
     case 'ETIMEDOUT':
     case 'timeout':
       return 'timeout';
+    case 'path-refused':
+      // FR-R3-080 (T1075) — a REFUSAL, not a failure, and the distinction is the
+      // whole point of the round that added it: `io-error` says the write was
+      // attempted and went wrong, and this says the write never ran because the
+      // path could not be proven. Folding the two would tell an operator to look
+      // at their disk when they should be looking at their tree. Carries no path,
+      // like every case here.
+      return raw;
     case 'partial-write':
     case 'stream-error':
     case 'cleanup-failed':

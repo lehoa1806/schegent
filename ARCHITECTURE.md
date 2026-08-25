@@ -30,6 +30,22 @@ execution lease before marking anything in flight, so activation ordering is
 defence in depth rather than the only defence. The scheduled-start coordinator
 re-verifies primacy with the authoritative fenced predicate at fire time.
 
+The fence reaches the point of effect (FR-R3-077). `WorkspaceStateStore.setRun`
+and `updateQueue` both take a **required** ownership claim and verify it inside
+the serialized link that performs the write, so a revived stale host is refused
+at the commit rather than merely late; a call site that provably holds no lease
+names its reason from a closed set in `src/state/ownership-claim.ts`, and a test
+pins that set. The read side declines a record stamped at a superseded
+generation and records the decline as evidence, which is the answer to the write
+that lands between the verify and the update — the window a memento with no
+conditional write cannot close.
+
+Output targets are re-judged where they take effect (FR-R3-079).
+`RunDriver.dispatchObserved` re-walks every declared target's component chain
+immediately before the frozen plan reaches the runner; a refusal fails the Run
+with a named cause recorded in evidence, before the child exists. The frozen
+plan is read, never rewritten.
+
 The production dependency direction is intentionally one-way:
 
 ```text

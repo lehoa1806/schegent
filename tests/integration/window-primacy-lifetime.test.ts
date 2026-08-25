@@ -20,6 +20,7 @@
 // between deciding whether a second Run exists to observe.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { unfencedCommit } from '../../src/state/ownership-claim';
 import { RunDriver } from '../../src/services/run-driver';
 import type { RunDriverDeps } from '../../src/services/run-driver';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
@@ -157,7 +158,7 @@ async function makeDriver(
     isContinueGate: { consume: vi.fn().mockReturnValue(false) } as never,
     lock,
     persistTransition: async (_oldRun, newRun) => {
-      await store.setRun(DEFAULT_QUEUE_ID, newRun);
+      await store.setRun(DEFAULT_QUEUE_ID, newRun, unfencedCommit('test-fixture'));
       return newRun;
     },
     scheduleAutoDrain: vi.fn()

@@ -20,6 +20,7 @@
 // failure mode for a suite whose whole subject is interleaving.
 
 import { vi } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import * as fs from 'node:fs/promises';
@@ -323,7 +324,7 @@ export async function makeDriveHarness(): Promise<CheckpointDriveHarness> {
         id: 'this-window'
       },
       persistTransition: async (_prev: WorkflowRun, next: WorkflowRun) => {
-        await store.setRun(queueId, next);
+        await store.setRun(queueId, next, unfencedCommit('test-fixture'));
         return next;
       },
       scheduleAutoDrain: vi.fn(),
@@ -398,7 +399,7 @@ export async function makeDriveHarness(): Promise<CheckpointDriveHarness> {
         resumeTargetPhaseId: null
       } as unknown as WorkflowRun;
       const completed = (async () => {
-        await store.setRun(queueId, run);
+        await store.setRun(queueId, run, unfencedCommit('test-fixture'));
         await new RunDriver(depsFor(queueId)).drive(store.getRun(queueId)!, `work for ${runId}`);
       })();
       started.push(completed);

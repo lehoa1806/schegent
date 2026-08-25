@@ -37,6 +37,7 @@
 // would be a second source of truth for what a secret looks like.
 
 import { describe, expect, it } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import {
   buildCatalog,
   type PhaseDef,
@@ -276,7 +277,9 @@ describe('a refused submission audits the refusal, never the content', () => {
         // submission was accepted and there was no refusal to audit.
         queue: { ...queue, queueLifecycle: 'operator-paused' as const, pauseSource: 'operator' as const },
         result: undefined
-      }), 'default');
+      }), 'default',
+        unfencedCommit('test-fixture')
+      );
 
       await submit(harness, LOADED);
 

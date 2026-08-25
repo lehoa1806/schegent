@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { SchegentWorkflowController } from '../../../src/controller/workflow-controller';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
 import { QueueManager } from '../../../src/queue/queue-manager';
@@ -671,7 +672,9 @@ describe('SchegentWorkflowController.resumeExisting', () => {
       manualPauseCause: 'operator-paused',
       phaseBreakpoints: [],
       resumeTargetPhaseId: null
-    });
+    },
+      unfencedCommit('test-fixture')
+    );
     runSpy.mockImplementation(async () => makeOutput());
     const codexController = new SchegentWorkflowController(
       phaseRunner,
@@ -718,7 +721,9 @@ describe('SchegentWorkflowController phase controls', () => {
       manualPauseCause: 'operator-paused',
       phaseBreakpoints: [],
       resumeTargetPhaseId: null
-    });
+    },
+      unfencedCommit('test-fixture')
+    );
 
     const result = await controller.resumeActivePhase();
     const run = store.getRun(DEFAULT_QUEUE_ID)!;
@@ -755,7 +760,9 @@ describe('SchegentWorkflowController phase controls', () => {
       manualPauseCause: 'operator-paused',
       phaseBreakpoints: [],
       resumeTargetPhaseId: null
-    });
+    },
+      unfencedCommit('test-fixture')
+    );
 
     const result = await controller.restartActivePhase();
     const run = store.getRun(DEFAULT_QUEUE_ID)!;
@@ -789,7 +796,9 @@ describe('SchegentWorkflowController phase controls', () => {
       manualPauseCause: null,
       phaseBreakpoints: [],
       resumeTargetPhaseId: null
-    });
+    },
+      unfencedCommit('test-fixture')
+    );
 
     await controller.resumeExisting(DEFAULT_QUEUE_ID);
 

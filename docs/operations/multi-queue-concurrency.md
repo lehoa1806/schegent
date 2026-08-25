@@ -40,3 +40,13 @@ An execution lease is scoped to one Queue. Window primacy and execution leases s
 <!-- Source: src/queue/queue-manager.ts -->
 <!-- Source: src/services/auto-drain-coordinator.ts -->
 <!-- Source: src/state/execution-lease.ts -->
+
+
+## What concurrency costs, measured
+
+The aggregate resource question that comes with raising `globalConcurrencyCap` is answered by
+measurement rather than by arithmetic, in
+[Concurrent-run resource measurement](concurrent-run-resource-measurement.md): resident heap and file
+descriptors at the maximum cap, the method, and the tree the figures were taken on. It also records
+why no admission-control mechanism was built, which is the kind of decision that is only defensible
+with the numbers beside it.

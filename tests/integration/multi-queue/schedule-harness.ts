@@ -9,6 +9,7 @@
 // `drainQueuedWork(queueId)` — and not a test-local approximation of it.
 
 import { vi } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import {
   FakeMemento,
   MutableClock,
@@ -102,7 +103,8 @@ export async function makeScheduleHarness(
         },
         result: undefined
       }),
-      queueId
+      queueId,
+      unfencedCommit('test-fixture')
     );
     await drainQueuedWork(queueId);
   };
@@ -140,7 +142,8 @@ export async function makeScheduleHarness(
   const putQueue = async (queueId: string, over: Partial<QueueState>): Promise<void> => {
     await store.updateQueue(
       (current) => ({ queue: { ...current, ...over }, result: undefined }),
-      queueId
+      queueId,
+      unfencedCommit('test-fixture')
     );
   };
 

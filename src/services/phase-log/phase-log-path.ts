@@ -15,6 +15,7 @@
 // surface as empty states / banner states, not exceptions.
 
 import * as path from 'node:path';
+import { isSafePathSegment } from '../../contracts/validators/shared';
 
 const DIAGNOSTICS_ROOT_SEGMENTS = ['.schegent', 'sessions'] as const;
 const DIAGNOSTICS_LEAF_SEGMENT = 'diagnostics';
@@ -42,15 +43,45 @@ function requireNonEmptyString(name: string, value: unknown): asserts value is s
   }
 }
 
+/**
+ * FR-R3-080 (T1074) — the grammar, re-applied where the identifier becomes a
+ * path component.
+ *
+ * The contracts validator applies the same rule at the IPC boundary. This is
+ * not redundant with it, and the redundancy is the point: the validator covers
+ * what crosses IPC, and this covers every OTHER route into a path — a
+ * host-internal caller, a value read back from persisted state, a future call
+ * site nobody has written yet. One check is a filter; two independent checks
+ * against one shared oracle is a grammar.
+ *
+ * Shares `isSafePathSegment` with the validator rather than restating the rule,
+ * because two implementations of one grammar drift, and the drift is silent
+ * until something composes a path the validator would have refused.
+ *
+ * Throws, matching `requireNonEmptyString` above: a malformed segment reaching
+ * composition is a programming error at the call site, and returning a value
+ * would make it the caller's option to ignore.
+ */
+function requireSafeSegment(name: string, value: unknown): asserts value is string {
+  requireNonEmptyString(name, value);
+  if (!isSafePathSegment(value)) {
+    // The name, never the value: this is called with operator-influenced input
+    // and the message reaches a log.
+    throw new TypeError(`${name} is not a safe path segment`);
+  }
+}
+
 function validateSessionAddress(args: SessionAddress): void {
+  // The root is a host-owned absolute path and is a ROOT, not a segment — it
+  // legitimately contains separators. The runId is a segment.
   requireNonEmptyString('workspaceRoot', args.workspaceRoot);
-  requireNonEmptyString('runId', args.runId);
+  requireSafeSegment('runId', args.runId);
 }
 
 function validatePhaseAddress(args: PhaseAddress): void {
   validateSessionAddress(args);
-  requireNonEmptyString('pipelineId', args.pipelineId);
-  requireNonEmptyString('phaseId', args.phaseId);
+  requireSafeSegment('pipelineId', args.pipelineId);
+  requireSafeSegment('phaseId', args.phaseId);
 }
 
 /**

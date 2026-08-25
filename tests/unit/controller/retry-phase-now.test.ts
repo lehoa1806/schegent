@@ -6,6 +6,7 @@
 // schedules resume on the next tick.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { SchegentWorkflowController } from '../../../src/controller/workflow-controller';
 // Feature 098 (T080) — the controller no longer carries a compiled-in catalog,
 // so a test that drives Phases supplies one. See the fixture header for why the
@@ -172,7 +173,9 @@ describe('retryPhaseNow — rejection guards', () => {
       status: 'paused',
       pendingRetryAt: null,
       pendingRetryCause: null
-    });
+    },
+      unfencedCommit('test-fixture')
+    );
 
     const result = await controller.retryPhaseNow();
     expect(result.ok).toBe(false);
@@ -257,7 +260,9 @@ describe('retryPhaseNow — queue unpause gating (FR-009)', () => {
       pendingRetryAt: Date.now() + 60_000,
       pendingRetryCause: 'transient_error',
       status: 'paused'
-    });
+    },
+      unfencedCommit('test-fixture')
+    );
 
     runSpy.mockImplementation(async () => makeOutput());
     const result = await controller.retryPhaseNow();

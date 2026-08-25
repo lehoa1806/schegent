@@ -96,6 +96,8 @@ function makeRefusingLease(): ExecutionLeasePort & { grantNext: () => void } {
     grantNext: () => {
       grants += 1;
     },
+    // FR-R3-077 — a refusing-lease double holds nothing, so it claims nothing.
+    claimFor: () => null,
     tryAcquire: vi.fn(async () => {
       if (grants > 0) {
         grants -= 1;

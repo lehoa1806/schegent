@@ -330,6 +330,13 @@ import { assertConnectedRunInvariants, type ConnectedWorkflowRun } from './conne
 // Type-only: `execution-lease.ts` imports the staleness constants from `lock.ts`,
 // so a value import here would close a cycle the type import cannot.
 import type { ExecutionLease } from './execution-lease';
+import {
+  checkCommitFence,
+  isFencedClaim,
+  unfencedCommit,
+  type QueueCommitClaim,
+  type RunCommitClaim
+} from './ownership-claim';
 import { createMementoOwnershipFs, type OwnershipFs } from './ownership-fs';
 import {
   isResetInterrupted,
@@ -340,8 +347,10 @@ import {
 import {
   MEMENTO_OWNERSHIP_DIR,
   OwnershipRegistry,
+  queueResource,
   type FenceCheck
 } from './ownership-registry';
+import { isSupersededRun } from './workflow-run';
 
 /**
  * FR-R3-010 (T403) — retained terminal runs **per queue**.
@@ -373,6 +382,32 @@ export interface OwnershipClaim {
   readonly ownerId: string;
   readonly fence: number;
 }
+
+/**
+ * FR-R3-077 — whoever can answer "does this window hold `queueId`, and at what
+ * generation". `ExecutionLeaseManager` is the production implementation; the
+ * narrow shape is what lets a test bind a stub without a lease manager.
+ */
+export interface RunClaimSource {
+  claimFor(queueId: string): OwnershipClaim | null;
+}
+
+/**
+ * FR-R3-077 — what `readRunIfLive` answers.
+ *
+ * `superseded` carries both generations rather than a bare boolean, because the
+ * decline has to be observable: a reader that logged "declined" without the two
+ * numbers gives an operator nothing to act on.
+ */
+export type RunReadVerdict =
+  | { readonly outcome: 'absent' }
+  | { readonly outcome: 'live'; readonly run: WorkflowRun }
+  | {
+      readonly outcome: 'superseded';
+      readonly run: WorkflowRun;
+      readonly writtenAtFence: number;
+      readonly liveFence: number;
+    };
 
 /**
  * The outcome of a guarded write (T302).
@@ -460,7 +495,11 @@ export type QueueMutationRejectReason =
   // FR-R3-055 (H-06) — the mutator's execution fence is no longer the live
   // generation for that resource, so its state mutation is refused AT THE COMMIT
   // POINT rather than believed because admission once said yes.
-  | 'fence-superseded';
+  | 'fence-superseded'
+  // The two refusals `fence-superseded` used to absorb; see `checkCommitFence`
+  // in `ownership-claim.ts` for why each is its own answer.
+  | 'fence-unverifiable'
+  | 'fence-wrong-resource';
 
 export class QueueMutationRejected extends Error {
   public readonly reason: QueueMutationRejectReason;
@@ -680,6 +719,10 @@ export class WorkspaceStateStore {
   private readonly chains = new Map<string, Promise<void>>();
   private readonly listeners = new Set<StoreChangeListener>();
   private readonly logger: SanitizedLogger | null;
+  /** FR-R3-077 — bound at composition; see `bindRunClaimSource`. */
+  private runClaimSource: RunClaimSource | null = null;
+  /** One warn per queue, not one per commit: a stranded lease is not news twice. */
+  private readonly unfencedQueuesWarned = new Set<string>();
   // Feature 092 (T056) retired the one-shot saturation-WARN guard that used to
   // live here: the reader no longer saturates, so there is no silent coercion
   // left to warn about.
@@ -738,60 +781,112 @@ export class WorkspaceStateStore {
   }
 
   /**
-   * Feature FR-R3-003 (T302) — perform `write` only while `claim` is still the
-   * current generation's holder, and report a typed rejection when it is not.
+   * FR-R3-077 (T1038) — where a commit point gets the claim it is now required to
+   * carry.
    *
-   * This is the point-of-effect check the fencing token exists for. A host whose
-   * claim went stale, was reclaimed, and then revived still carries the token it
-   * was issued, and every path it can take to a write goes through here, so the
-   * write is *rejected* rather than merely late. The refusal is a value and not
-   * an exception: the caller decides whether to re-acquire (primacy, whose tenure
-   * has not ended) or to stand down (an execution lease, which now belongs to
-   * whoever reclaimed it), and neither of those is a failure to log.
+   * Bound once, at composition, by whoever owns the per-queue execution leases.
+   * The alternative considered and rejected was threading a lease manager through
+   * every service that writes a Run: `PhaseControlService` takes a `Pick<>` of the
+   * store and nothing else, and widening a dozen constructors is a large diff that
+   * changes nothing about *which* commits are fenced.
    *
-   * `refreshHeartbeatAt` folds the claim's own heartbeat into the same check, so
-   * a holder refreshing its liveness and writing the state that depends on it
-   * costs one storage round trip rather than two. Omit it for a write that must
-   * not extend the claim's tenure.
-   *
-   * `unavailable` means storage could not answer, and is deliberately not
-   * conflated with `rejected`: the first is transient and the claim may well
-   * still be ours, the second is a decision that has already been taken
-   * elsewhere. A caller that treats them alike surrenders a live claim on a
-   * failed read.
+   * What is NOT delegated is the choice. `setRun` takes `RunCommitClaim`, so every
+   * call site still says either "fence me against the lease I hold"
+   * (`store.runCommitClaim(queueId)`) or "I hold none, and here is why"
+   * (`unfencedCommit(reason)`), and the two are distinguishable in a diff and
+   * countable by `tests/unit/state/unfenced-commit-inventory.test.ts`.
    */
-  public async writeGuarded(
+  public bindRunClaimSource(source: RunClaimSource): void {
+    this.runClaimSource = source;
+  }
+
+  /**
+   * The commit claim for `queueId`: this window's live lease claim when it holds
+   * one, and an observable unfenced commit when it does not.
+   *
+   * `lease-not-held` is the one reason produced here rather than written at a call
+   * site, and it is the honest answer to a real case: a Run's terminal transition
+   * releases its queue's lease, and a late write after that release has no claim
+   * to carry. Refusing it would strand the record; passing it silently is what
+   * this item exists to stop. So it is passed, warned once per queue, and the
+   * inventory test pins this file as the ONLY place the reason may appear.
+   */
+  public runCommitClaim(queueId: string): RunCommitClaim {
+    const claim = this.runClaimSource?.claimFor(queueId) ?? null;
+    if (claim !== null) return claim;
+    if (!this.unfencedQueuesWarned.has(queueId)) {
+      this.unfencedQueuesWarned.add(queueId);
+      this.logger?.warn('state commit carries no execution fence', {
+        reason: 'lease-not-held'
+      });
+    }
+    return unfencedCommit('lease-not-held');
+  }
+
+  /**
+   * FR-R3-003 (T302) → FR-R3-077 (T1041) — the advisory lock mirror, refreshed
+   * under a claim that reaches the write.
+   *
+   * This replaces `writeGuarded(claim, write)`, which is **deleted**. That
+   * helper verified the claim and then awaited a callback: two operations, with
+   * a reclaim able to land between them, behind a name that promised atomicity.
+   * The 2026-08-24 review found it had exactly one production caller — this
+   * one, guarding the advisory `KEYS.lock` mirror — so the exposure was narrow
+   * and the shape was the problem: a working helper of that shape is a working
+   * template for reintroducing the defect this round exists to remove. That is
+   * the same reasoning that deleted `withLock`, and it is recorded in AGENTS.md
+   * under the lock-release rule.
+   *
+   * What replaces it is not a general-purpose wrapper. It is one method for one
+   * write, with the verify INSIDE the `KEYS.lock` serialize chain that performs
+   * the mirror update — one link, the same shape `setRun` uses, and as close to
+   * a conditional write as `Memento` allows.
+   *
+   * `unavailable` and `rejected` stay distinct for the reason they always did: a
+   * failed read says nothing about who holds the resource, and a caller that
+   * conflates them surrenders a live claim on a transient error.
+   */
+  public async refreshLockMirrorGuarded(
     claim: OwnershipClaim,
-    write: () => Promise<void>,
+    mirror: WorkspaceLock,
     options: { readonly refreshHeartbeatAt?: number } = {}
   ): Promise<GuardedWriteOutcome> {
-    const verdict =
-      options.refreshHeartbeatAt === undefined
-        ? await this.ownershipRegistry.verify(claim.resource, claim.ownerId, claim.fence)
-        : await this.ownershipRegistry.heartbeat(
-            claim.resource,
-            claim.ownerId,
-            claim.fence,
-            options.refreshHeartbeatAt
-          );
-    if (verdict.outcome === 'unavailable') return { outcome: 'unavailable' };
-    if (verdict.outcome === 'rejected') {
-      return {
-        outcome: 'rejected',
-        reason: verdict.reason,
-        currentFence: verdict.currentFence,
-        ownerOfRecord: verdict.ownerOfRecord
-      };
-    }
-    try {
-      await write();
-    } catch {
-      // The claim was good and the write was not. Reported as `unavailable` for
-      // the same reason a failed read is: it says nothing about who holds the
-      // resource, and a caller must not read it as having lost one.
-      return { outcome: 'unavailable' };
-    }
-    return { outcome: 'written' };
+    let outcome: GuardedWriteOutcome = { outcome: 'unavailable' } as GuardedWriteOutcome;
+    await this.serialize(KEYS.lock, async () => {
+      const verdict =
+        options.refreshHeartbeatAt === undefined
+          ? await this.ownershipRegistry.verify(claim.resource, claim.ownerId, claim.fence)
+          : await this.ownershipRegistry.heartbeat(
+              claim.resource,
+              claim.ownerId,
+              claim.fence,
+              options.refreshHeartbeatAt
+            );
+      if (verdict.outcome === 'unavailable') {
+        outcome = { outcome: 'unavailable' };
+        return;
+      }
+      if (verdict.outcome === 'rejected') {
+        outcome = {
+          outcome: 'rejected',
+          reason: verdict.reason,
+          currentFence: verdict.currentFence,
+          ownerOfRecord: verdict.ownerOfRecord
+        };
+        return;
+      }
+      try {
+        await this.memento.update(KEYS.lock, mirror);
+        outcome = { outcome: 'written' };
+      } catch {
+        // The claim was good and the write was not. Reported as `unavailable`
+        // for the same reason a failed read is: it says nothing about who holds
+        // the resource, and a caller must not read it as having lost one.
+        outcome = { outcome: 'unavailable' };
+      }
+    });
+    if (outcome.outcome === 'written') this.notify(KEYS.lock);
+    return outcome;
   }
 
   public subscribe(listener: StoreChangeListener): Disposable {
@@ -1434,10 +1529,31 @@ export class WorkspaceStateStore {
    */
   public updateQueue<T>(
     mutate: (current: QueueState) => { readonly queue: QueueState; readonly result: T },
-    queueId: string
+    queueId: string,
+    /**
+     * FR-R3-077 (T1045) — the execution fence this queue mutation is made under.
+     *
+     * **Required**, and delivered as its own change after the Run commit point's
+     * half landed, which is the order `00_escalated_residuals_decision.md` §2
+     * sets. Folding the two into one change is what that record forbids: the Run
+     * path is the one the review measured and the one a stale host reaches
+     * first, and a single change that moved both would have made the smaller
+     * blast radius indistinguishable from the larger.
+     *
+     * The verification happens INSIDE the serialized link that performs the
+     * memento write, for the same reason `setRun`'s does: `Memento` offers no
+     * conditional write, and one link of the chain that already serializes this
+     * key is as close to a transaction as this storage allows — strictly closer
+     * than two.
+     */
+    claim: QueueCommitClaim
   ): Promise<T> {
     let result!: T;
     return this.serialize(KEYS.queue, async () => {
+      if (isFencedClaim(claim)) {
+        const f = await checkCommitFence(this.ownershipRegistry, claim, queueId, 'Queue');
+        if (f !== null) throw new QueueMutationRejected(f.reason, f.message);
+      }
       const current = this.getQueue(queueId);
       const mutation = mutate(current);
       const next = ensureExtendedQueueShape({
@@ -1708,7 +1824,9 @@ export class WorkspaceStateStore {
         queue: { ...queue, requests: [...shifted, nextRequest] },
         result: nextRequest
       };
-    }, queueId);
+    }, queueId,
+      this.runCommitClaim(queueId)
+    );
   }
 
   public async removePendingRequest(taskId: string): Promise<FeatureRequest> {
@@ -1734,7 +1852,9 @@ export class WorkspaceStateStore {
         },
         result: target
       };
-    }, owner.queueId);
+    }, owner.queueId,
+      this.runCommitClaim(owner.queueId)
+    );
   }
 
   public getRequest(taskId: string): FeatureRequest | null {
@@ -1759,7 +1879,9 @@ export class WorkspaceStateStore {
         },
         result: target
       };
-    }, owner.queueId);
+    }, owner.queueId,
+      this.runCommitClaim(owner.queueId)
+    );
   }
 
   public async modifyPendingRequest(
@@ -1797,7 +1919,9 @@ export class WorkspaceStateStore {
         },
         result: nextTarget
       };
-    }, owner.queueId);
+    }, owner.queueId,
+      this.runCommitClaim(owner.queueId)
+    );
   }
 
   // Feature 065 BUG-009 T078 (FR-030) — `position` is interpreted as a
@@ -1853,7 +1977,9 @@ export class WorkspaceStateStore {
         },
         result: byId.get(taskId) ?? target
       };
-    }, owner.queueId);
+    }, owner.queueId,
+      this.runCommitClaim(owner.queueId)
+    );
   }
 
   /**
@@ -1998,6 +2124,40 @@ export class WorkspaceStateStore {
    * projections, and a caller that mutated the live record would change what is
    * running without going through the invariant check or the write chain.
    */
+  /**
+   * FR-R3-077 (T1040) — the read-side half of the fence, with a production
+   * caller at last.
+   *
+   * `setRun` refuses a write it can SEE; `Memento` offers no conditional write,
+   * so a write made by a holder whose lease had already moved on can still land
+   * in the window between the verify and the update. This is how a reader
+   * disbelieves such a record instead of acting on it.
+   *
+   * An unstamped record answers `live`: records written before the stamp
+   * existed, and every `unfencedCommit`, carry no generation to compare, and
+   * reading absence as guilt would reject the entire existing corpus. The stamp
+   * is evidence when present.
+   *
+   * Storage that cannot answer resolves to the current generation `0`, which no
+   * stamp is below — so an unreadable registry never manufactures a decline. A
+   * fence check that fails open on a read is right for the same reason it is
+   * wrong on a write: declining here would strand a live Run on a transient I/O
+   * error, and the write path already refuses what it must.
+   */
+  public async readRunIfLive(queueId: string): Promise<RunReadVerdict> {
+    const run = this.getRun(queueId);
+    if (run === null) return { outcome: 'absent' };
+    const record = await this.ownershipRegistry.read(queueResource(queueId));
+    const liveFence = record?.fence ?? 0;
+    if (!isSupersededRun(run, liveFence)) return { outcome: 'live', run };
+    return {
+      outcome: 'superseded',
+      run,
+      writtenAtFence: run.writtenAtFence ?? 0,
+      liveFence
+    };
+  }
+
   public getRunMap(): Readonly<RunStateMap> {
     return { ...this.readRunMap() };
   }
@@ -2061,15 +2221,22 @@ export class WorkspaceStateStore {
     queueId: string,
     run: WorkflowRun | null,
     /**
-     * FR-R3-055 (H-06) — the execution fence this mutation is made under.
+     * FR-R3-055 (H-06) / FR-R3-077 (T1038) — the execution fence this mutation is
+     * made under. **Required.**
      *
-     * Optional so every existing caller is unchanged; supplied by a caller that
-     * holds a lease and wants its mutation refused if the lease has moved on.
-     * The review's finding was that ordinary Run mutations carry no fence to
-     * their commit point, so admission-time ownership is their only check and a
-     * Run that lost its lease mid-work still commits.
+     * It used to be optional, "so every existing caller is unchanged", and the
+     * 2026-08-24 review measured what that bought: 35 call sites, none passing
+     * one, `writtenAtFence` never written, `isSupersededRun` with no production
+     * caller. A required parameter is a compiler-enforced inventory — the same
+     * reasoning `createDiskOwnershipFs` applies to `containmentRoot` and
+     * `createBackendRunner` to `allowUncontained`.
+     *
+     * A caller that provably holds no lease passes `unfencedCommit(reason)` with
+     * a reason from the closed set in `state/ownership-claim.ts`. That is a
+     * recorded finding about the call site, which the item requires; it is not a
+     * default, which the item forbids.
      */
-    claim?: OwnershipClaim
+    claim: RunCommitClaim
   ): Promise<void> {
     if (run !== null) {
       validateRunInvariants(run);
@@ -2084,19 +2251,9 @@ export class WorkspaceStateStore {
       // land between them. `Memento` offers no conditional write, so one link of
       // the chain that already serialises this key is as close to a transaction
       // as this storage allows -- and it is strictly closer than two.
-      if (claim !== undefined) {
-        const verdict = await this.ownershipRegistry.verify(
-          claim.resource,
-          claim.ownerId,
-          claim.fence
-        );
-        if (verdict.outcome !== 'valid') {
-          throw new QueueMutationRejected(
-            'fence-superseded',
-            `Run mutation refused: fence ${claim.fence} is no longer the live generation ` +
-              `for ${claim.resource}`
-          );
-        }
+      if (isFencedClaim(claim)) {
+        const f = await checkCommitFence(this.ownershipRegistry, claim, queueId, 'Run');
+        if (f !== null) throw new QueueMutationRejected(f.reason, f.message);
       }
       const next = { ...this.readRunMap() };
       if (run === null) delete next[queueId];
@@ -2104,7 +2261,7 @@ export class WorkspaceStateStore {
       // holding a newer one can tell this entry came from a superseded holder.
       // Additive and optional: a record written before this field deserializes
       // unchanged, so no `STATE_SCHEMA_VERSION` moves.
-      else next[queueId] = claim === undefined ? run : { ...run, writtenAtFence: claim.fence };
+      else next[queueId] = isFencedClaim(claim) ? { ...run, writtenAtFence: claim.fence } : run;
       await this.memento.update(KEYS.run, next);
     }).then(() => {
       this.notify(KEYS.run);

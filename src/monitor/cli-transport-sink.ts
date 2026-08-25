@@ -57,8 +57,10 @@
 // `src/lib/path-containment.ts` before they run.
 
 import * as fs from 'node:fs/promises';
+import type { FileHandle } from 'node:fs/promises';
 import * as path from 'node:path';
 
+import { openWithinRootByPath, type SafeOpenRefusal } from '../lib/safe-open';
 import { KeyBlockLineRedactor } from '../lib/logger';
 import type { SanitizedLogger } from '../lib/logger';
 import {
@@ -246,6 +248,18 @@ function errnoCode(error: unknown): string | null {
   return null;
 }
 
+/**
+ * FR-R3-080 (T1065) — the checked walk's refusal vocabulary, mapped onto this
+ * sink's failure causes.
+ *
+ * Every arm lands on `containment-refused`, which is the cause this sink already
+ * reports for a refused destination, because that is what all of them are: the
+ * record never ran, as opposed to a write that failed.
+ */
+function mapSafeOpenRefusal(_reason: SafeOpenRefusal): TransportFailureCause {
+  return 'containment-refused';
+}
+
 function mapFailureCause(code: string | null): TransportFailureCause {
   switch (code) {
     case 'ENOENT':
@@ -299,7 +313,6 @@ export class CliTransportSink implements CliTransportRecorder {
   ) => string;
   private readonly logger: Pick<SanitizedLogger, 'warn'>;
   private readonly now: () => Date;
-  private readonly appendFile: AppendFn;
   private readonly writeFile: WriteFileFn;
   private readonly mkdir: MkdirFn;
   private readonly rename: RenameFn;
@@ -355,7 +368,32 @@ export class CliTransportSink implements CliTransportRecorder {
    * the same bargain `RuntimeLogSink` documents, minus the settings-save signal
    * that lets that sink drop its cache.
    */
+  private readonly appendFilePort: AppendFn | undefined;
   private readonly containmentCache = new Map<string, ContainmentVerdict>();
+
+  /**
+   * FR-R3-080 (T1065) — the append path's DESCRIPTOR, held per target path.
+   *
+   * `SEC-07`, the same shape as `lib/runtime-log/runtime-log-sink.ts` and closed
+   * the same way, because they are the same defect in two sinks: a verdict
+   * proved once, then a write to the PATHNAME on every record. The cache's own
+   * header said the residual out loud — "a destination replaced mid-session
+   * keeps its verdict". A held descriptor removes the window instead of
+   * narrowing it, and costs one walk per destination rather than one resolution
+   * per line.
+   *
+   * Dropped wherever the destination's identity can change: a rotation (which
+   * renames this very file — a held descriptor would follow the inode into the
+   * rotated generation), a truncate, a write failure, and a repoint of
+   * `settings.path` (handled in `appendHandleFor`, because this sink has no
+   * settings-save signal to hang it off).
+   *
+   * NOT dropped on disposal, because there is no disposal: nothing disposes this
+   * sink, so at most one descriptor — the current destination's — is held for
+   * the host's lifetime. Said plainly rather than left implied; the previous
+   * wording claimed a disposal hook that does not exist.
+   */
+  private readonly appendHandles = new Map<string, { handle: FileHandle; root: string }>();
 
   constructor(deps: CliTransportSinkDeps) {
     this.settings = deps.settings;
@@ -363,8 +401,8 @@ export class CliTransportSink implements CliTransportRecorder {
     this.sanitizeStreamLine = deps.sanitizeStreamLine;
     this.logger = deps.logger;
     this.now = deps.now ?? ((): Date => new Date());
-    this.appendFile = deps.appendFile ?? fs.appendFile;
     this.writeFile = deps.writeFile ?? fs.writeFile;
+    this.appendFilePort = deps.appendFile;
     this.mkdir = deps.mkdir ?? fs.mkdir;
     this.rename = deps.rename ?? fs.rename;
     this.unlink = deps.unlink ?? fs.unlink;
@@ -509,14 +547,40 @@ export class CliTransportSink implements CliTransportRecorder {
     // record larger than the whole budget still rotates, which is the
     // degenerate-but-correct reading.
     if (currentBytes + dataBytes > settings.maxBytes) {
+      // Before the rename: a descriptor held across a rotation follows the inode
+      // into the rotated generation and appends there forever.
+      await this.closeAppendHandle(targetPath);
       if (!(await this.rotate(settings))) return;
       if (await this.writeWithParentRecovery(this.writeFile, targetPath, data)) {
         this.bytesOnDisk.set(targetPath, dataBytes);
       }
       return;
     }
-    if (await this.writeWithParentRecovery(this.appendFile, targetPath, data)) {
+    // FR-R3-080 (T1065) — the append goes to the descriptor the walk produced.
+    //
+    // Unless a caller injected an `appendFile` port, which only the failure-mode
+    // tests do: they drive EACCES, ENOSPC and ENOENT-parent, none of which can
+    // be induced reliably on a real filesystem, and the warn-once-per-cause
+    // semantics they pin are worth keeping. Production supplies no such port,
+    // and this is one of the reasons this module stays on the migration ledger:
+    // an injected write port is a pathname write by another name.
+    if (this.appendFilePort !== undefined) {
+      if (await this.writeWithParentRecovery(this.appendFilePort, targetPath, data)) {
+        this.bytesOnDisk.set(targetPath, currentBytes + dataBytes);
+      }
+      return;
+    }
+    const handle = await this.appendHandleFor(targetPath, settings.root);
+    if (handle === null) return;
+    try {
+      await handle.write(data, null, 'utf8');
       this.bytesOnDisk.set(targetPath, currentBytes + dataBytes);
+    } catch (error) {
+      // The held descriptor is dropped on any write failure: the next record
+      // re-walks rather than retrying a handle whose file may have been
+      // unlinked, rotated or filled.
+      await this.closeAppendHandle(targetPath);
+      this.warn(targetPath, mapFailureCause(errnoCode(error)));
     }
   }
 
@@ -698,6 +762,48 @@ export class CliTransportSink implements CliTransportRecorder {
    * may not exist on a workspace's first phase — and any other failure warns
    * once for its cause and drops the record.
    */
+  /**
+   * FR-R3-080 (T1065) — the append descriptor for `targetPath`, opened through
+   * the checked walk and held until the destination's identity can change.
+   *
+   * The root is read fresh from the settings on every record, exactly as the
+   * verdict path read it: a session whose configured root changes must not keep
+   * writing under a handle proved against the old one.
+   */
+  private async appendHandleFor(targetPath: string, root: string): Promise<FileHandle | null> {
+    // Any handle held for a DIFFERENT destination is stale. `settings.path` is
+    // read fresh per record and this sink has no settings-save signal to drop a
+    // cache on (its twin `RuntimeLogSink` is wired to one; this one is not, as
+    // the cache header above says), so repointing the transport path used to
+    // leave the old descriptor open for the host's lifetime and add a second.
+    // Only one destination is ever current, so anything else goes.
+    for (const other of [...this.appendHandles.keys()]) {
+      if (other !== targetPath) await this.closeAppendHandle(other);
+    }
+    const held = this.appendHandles.get(targetPath);
+    if (held) {
+      if (held.root === root) return held.handle;
+      await this.closeAppendHandle(targetPath);
+    }
+    const opened = await openWithinRootByPath(root, targetPath, {
+      flags: 'a',
+      createDirs: true
+    });
+    if (opened.outcome === 'refused') {
+      this.warn(targetPath, mapSafeOpenRefusal(opened.reason));
+      return null;
+    }
+    this.appendHandles.set(targetPath, { handle: opened.handle, root });
+    return opened.handle;
+  }
+
+  private async closeAppendHandle(targetPath: string): Promise<void> {
+    const held = this.appendHandles.get(targetPath);
+    if (!held) return;
+    this.appendHandles.delete(targetPath);
+    await held.handle.close().catch(() => undefined);
+  }
+
   private async writeWithParentRecovery(
     write: AppendFn | WriteFileFn,
     targetPath: string,

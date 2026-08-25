@@ -15,6 +15,7 @@
 // because a write that touched nothing at all would also pass the negative.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { SchegentWorkflowController } from '../../../src/controller/workflow-controller';
 import { WorkflowLifecycleAuditor } from '../../../src/controller/workflow-lifecycle-auditor';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
@@ -137,7 +138,7 @@ async function seedRun(
     resumeTargetPhaseId: null,
     ...overrides
   };
-  await store.setRun(queueId, run);
+  await store.setRun(queueId, run, unfencedCommit('test-fixture'));
   return run;
 }
 

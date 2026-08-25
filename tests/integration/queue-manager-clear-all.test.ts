@@ -18,6 +18,7 @@
 //   - The fully-clean state is a no-op (`wasNoop: true`).
 
 import { describe, it, expect } from 'vitest';
+import { unfencedCommit } from '../../src/state/ownership-claim';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
 import { QueueManager } from '../../src/queue/queue-manager';
 import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
@@ -93,7 +94,7 @@ async function buildPopulatedSystem(): Promise<{
   await queue.setQueuePausedState(true, DEFAULT_QUEUE_ID, 'maintenance', 'operator');
 
   // Set an active run + watchdog backoff
-  await store.setRun(DEFAULT_QUEUE_ID, sampleRun(a.id));
+  await store.setRun(DEFAULT_QUEUE_ID, sampleRun(a.id), unfencedCommit('test-fixture'));
   await store.setWatchdog({
     paused: true,
     pausedSince: 1_700_000_000_000,
@@ -245,7 +246,7 @@ describe('QueueManager.clearAll() — integration (T019)', () => {
   ) => async (): Promise<boolean> => {
     // The write happens before the probe settles, exactly as the real
     // cancel path does: the transition is persisted on the way to the ack.
-    await store.setRun(DEFAULT_QUEUE_ID, sampleRun('feat-1', 'canceled'));
+    await store.setRun(DEFAULT_QUEUE_ID, sampleRun('feat-1', 'canceled'), unfencedCommit('test-fixture'));
     return settle();
   };
 

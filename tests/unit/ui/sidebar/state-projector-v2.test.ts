@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { unfencedCommit } from '../../../../src/state/ownership-claim';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
@@ -134,7 +135,7 @@ describe('StateProjector v2 — live activity', () => {
 
   it('running workflow with no events yet shows live freshness', async () => {
     vi.useFakeTimers();
-    await store.setRun(DEFAULT_QUEUE_ID, runningRun());
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun(), unfencedCommit('test-fixture'));
     const p = makeProjector();
     p.start();
     const snap = p.getCurrentSnapshot();
@@ -145,7 +146,7 @@ describe('StateProjector v2 — live activity', () => {
 
   it('captures the most recent qualifying audit summary verbatim', async () => {
     vi.useFakeTimers();
-    await store.setRun(DEFAULT_QUEUE_ID, runningRun());
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun(), unfencedCommit('test-fixture'));
     const p = makeProjector({ debounceMs: 100 });
     p.start();
     p.subscribe(() => {});
@@ -170,7 +171,7 @@ describe('StateProjector v2 — live activity', () => {
 
   it('system-category events do not advance lastActivity (pause and resume are system)', async () => {
     vi.useFakeTimers();
-    await store.setRun(DEFAULT_QUEUE_ID, runningRun());
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun(), unfencedCommit('test-fixture'));
     const p = makeProjector({ debounceMs: 100 });
     p.start();
     p.subscribe(() => {});
@@ -205,7 +206,7 @@ describe('StateProjector v2 — live activity', () => {
 
   it('transitions live → slowing → stalled as monotonic time advances', async () => {
     vi.useFakeTimers();
-    await store.setRun(DEFAULT_QUEUE_ID, runningRun());
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun(), unfencedCommit('test-fixture'));
     const p = makeProjector({ debounceMs: 100, tickIntervalMs: 1000 });
     p.start();
     p.subscribe(() => {});
@@ -233,7 +234,7 @@ describe('StateProjector v2 — live activity', () => {
 
   it('staleSeconds reflects floor(ms / 1000) for non-idle freshness', async () => {
     vi.useFakeTimers();
-    await store.setRun(DEFAULT_QUEUE_ID, runningRun());
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun(), unfencedCommit('test-fixture'));
     const p = makeProjector({ debounceMs: 100, tickIntervalMs: 1000 });
     p.start();
     p.subscribe(() => {});
@@ -259,7 +260,7 @@ describe('StateProjector v2 — live activity', () => {
 
   it('returns to live within one render cycle after a stalled state', async () => {
     vi.useFakeTimers();
-    await store.setRun(DEFAULT_QUEUE_ID, runningRun());
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun(), unfencedCommit('test-fixture'));
     const p = makeProjector({ debounceMs: 100, tickIntervalMs: 1000 });
     p.start();
     p.subscribe(() => {});
@@ -293,7 +294,7 @@ describe('StateProjector v2 — live activity', () => {
 
   it('paused workflow surfaces freshness=paused regardless of activity age', async () => {
     vi.useFakeTimers();
-    await store.setRun(DEFAULT_QUEUE_ID, runningRun({ status: 'paused' }));
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun({ status: 'paused' }), unfencedCommit('test-fixture'));
     const p = makeProjector();
     p.start();
     expect(liveOf(p.getCurrentSnapshot()).freshness).toBe('paused');
@@ -314,7 +315,7 @@ describe('StateProjector v2 — workflow elapsed time', () => {
 
   it('running workflow advances elapsed monotonically across ticks', async () => {
     vi.useFakeTimers();
-    await store.setRun(DEFAULT_QUEUE_ID, runningRun());
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun(), unfencedCommit('test-fixture'));
     const p = makeProjector({ tickIntervalMs: 1000 });
     p.start();
     p.subscribe(() => {});
@@ -333,13 +334,13 @@ describe('StateProjector v2 — workflow elapsed time', () => {
 
   it('freezes elapsed during pause and resumes from frozen value', async () => {
     vi.useFakeTimers();
-    await store.setRun(DEFAULT_QUEUE_ID, runningRun());
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun(), unfencedCommit('test-fixture'));
     const p = makeProjector({ tickIntervalMs: 1000 });
     p.start();
     p.subscribe(() => {});
 
     tickMonotonic(5_000);
-    await store.setRun(DEFAULT_QUEUE_ID, runningRun({ status: 'paused' }));
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun({ status: 'paused' }), unfencedCommit('test-fixture'));
     await vi.advanceTimersByTimeAsync(120);
     const pausedAt = elapsedOf(p.getCurrentSnapshot());
     expect(pausedAt).toBe(5_000);
@@ -348,7 +349,7 @@ describe('StateProjector v2 — workflow elapsed time', () => {
     await vi.advanceTimersByTimeAsync(120);
     expect(elapsedOf(p.getCurrentSnapshot())).toBe(5_000);
 
-    await store.setRun(DEFAULT_QUEUE_ID, runningRun({ status: 'running' }));
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun({ status: 'running' }), unfencedCommit('test-fixture'));
     await vi.advanceTimersByTimeAsync(120);
     tickMonotonic(2_000);
     await vi.advanceTimersByTimeAsync(1_100);
@@ -363,7 +364,7 @@ describe('StateProjector v2 — phase elapsed time', () => {
   // empty phase list and the loop below would assert nothing. The `length` check
   // is what keeps that from passing vacuously.
   it('not-started phases have elapsedMs === 0', async () => {
-    await store.setRun(DEFAULT_QUEUE_ID, runningRun({ currentPhase: 'speckit-plan' }));
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun({ currentPhase: 'speckit-plan' }), unfencedCommit('test-fixture'));
     const p = makeProjector();
     p.start();
     const notStarted = tilesOf(p.getCurrentSnapshot()).filter(
@@ -378,7 +379,7 @@ describe('StateProjector v2 — phase elapsed time', () => {
 
   it('active phase elapsed advances with monotonic clock and freezes on phase change', async () => {
     vi.useFakeTimers();
-    await store.setRun(DEFAULT_QUEUE_ID, runningRun({ currentPhase: 'speckit-plan' }));
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun({ currentPhase: 'speckit-plan' }), unfencedCommit('test-fixture'));
     const p = makeProjector({ tickIntervalMs: 1000 });
     p.start();
     p.subscribe(() => {});
@@ -407,7 +408,8 @@ describe('StateProjector v2 — phase elapsed time', () => {
             auditEntryId: null
           }
         ]
-      })
+      }),
+      unfencedCommit('test-fixture')
     );
     await vi.advanceTimersByTimeAsync(120);
 
@@ -425,7 +427,7 @@ describe('StateProjector v2 — phase elapsed time', () => {
 
   it('phase elapsed is monotonic non-decreasing within a single activation', async () => {
     vi.useFakeTimers();
-    await store.setRun(DEFAULT_QUEUE_ID, runningRun({ currentPhase: 'speckit-plan' }));
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun({ currentPhase: 'speckit-plan' }), unfencedCommit('test-fixture'));
     const p = makeProjector({ tickIntervalMs: 1000 });
     p.start();
     p.subscribe(() => {});
@@ -446,7 +448,7 @@ describe('StateProjector v2 — sub-progress', () => {
   it('null sub-progress for non-active phases', async () => {
     // Same reason as the elapsed case above: the strip only exists under a queue
     // that owns a Run, so one is seeded and the non-active tiles are the subject.
-    await store.setRun(DEFAULT_QUEUE_ID, runningRun({ currentPhase: 'speckit-plan' }));
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun({ currentPhase: 'speckit-plan' }), unfencedCommit('test-fixture'));
     const p = makeProjector();
     p.start();
     const inactive = tilesOf(p.getCurrentSnapshot()).filter((tile) => tile.state !== 'active');
@@ -459,7 +461,7 @@ describe('StateProjector v2 — sub-progress', () => {
 
   it('clarify in active state derives iteration sub-progress from currentIteration', async () => {
     vi.useFakeTimers();
-    await store.setRun(DEFAULT_QUEUE_ID, runningRun({ currentPhase: 'speckit-clarify', currentIteration: 3 }));
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun({ currentPhase: 'speckit-clarify', currentIteration: 3 }), unfencedCommit('test-fixture'));
     const p = makeProjector();
     p.start();
     const tile = tilesOf(p.getCurrentSnapshot()).find((t) => t.name === 'speckit-clarify')!;
@@ -472,7 +474,7 @@ describe('StateProjector v2 — sub-progress', () => {
 
   it('analyze active state derives iteration sub-progress', async () => {
     vi.useFakeTimers();
-    await store.setRun(DEFAULT_QUEUE_ID, runningRun({ currentPhase: 'speckit-analyze', currentIteration: 7 }));
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun({ currentPhase: 'speckit-analyze', currentIteration: 7 }), unfencedCommit('test-fixture'));
     const p = makeProjector();
     p.start();
     const tile = tilesOf(p.getCurrentSnapshot()).find((t) => t.name === 'speckit-analyze')!;
@@ -484,7 +486,7 @@ describe('StateProjector v2 — sub-progress', () => {
 
   it('clarify sub-progress is null when currentIteration is 0', async () => {
     vi.useFakeTimers();
-    await store.setRun(DEFAULT_QUEUE_ID, runningRun({ currentPhase: 'speckit-clarify', currentIteration: 0 }));
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun({ currentPhase: 'speckit-clarify', currentIteration: 0 }), unfencedCommit('test-fixture'));
     const p = makeProjector();
     p.start();
     const tile = tilesOf(p.getCurrentSnapshot()).find((t) => t.name === 'speckit-clarify')!;
@@ -494,7 +496,7 @@ describe('StateProjector v2 — sub-progress', () => {
 
   it('implement sub-progress derives from audit payloads with tasksCompleted/tasksTotal', async () => {
     vi.useFakeTimers();
-    await store.setRun(DEFAULT_QUEUE_ID, runningRun({ currentPhase: 'speckit-implement' }));
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun({ currentPhase: 'speckit-implement' }), unfencedCommit('test-fixture'));
     const p = makeProjector({ debounceMs: 100 });
     p.start();
     p.subscribe(() => {});
@@ -519,7 +521,7 @@ describe('StateProjector v2 — sub-progress', () => {
 
   it('implement sub-progress is monotonic non-decreasing (clamps to max observed)', async () => {
     vi.useFakeTimers();
-    await store.setRun(DEFAULT_QUEUE_ID, runningRun({ currentPhase: 'speckit-implement' }));
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun({ currentPhase: 'speckit-implement' }), unfencedCommit('test-fixture'));
     const p = makeProjector({ debounceMs: 100 });
     p.start();
     p.subscribe(() => {});
@@ -562,7 +564,7 @@ describe('StateProjector v2 — sub-progress', () => {
 
   it('sub-progress is cleared when the run leaves the implementing phase', async () => {
     vi.useFakeTimers();
-    await store.setRun(DEFAULT_QUEUE_ID, runningRun({ currentPhase: 'speckit-implement' }));
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun({ currentPhase: 'speckit-implement' }), unfencedCommit('test-fixture'));
     const p = makeProjector({ debounceMs: 100 });
     p.start();
     p.subscribe(() => {});
@@ -594,7 +596,8 @@ describe('StateProjector v2 — sub-progress', () => {
             auditEntryId: null
           }
         ]
-      })
+      }),
+      unfencedCommit('test-fixture')
     );
     await vi.advanceTimersByTimeAsync(120);
 
@@ -624,7 +627,7 @@ describe('StateProjector v2 — 1Hz tick', () => {
 
   it('ticks regularly while status is running', async () => {
     vi.useFakeTimers();
-    await store.setRun(DEFAULT_QUEUE_ID, runningRun());
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun(), unfencedCommit('test-fixture'));
     const p = makeProjector({ tickIntervalMs: 1000, debounceMs: 100 });
     p.start();
     const snapshots: number[] = [];
@@ -641,14 +644,14 @@ describe('StateProjector v2 — 1Hz tick', () => {
 
   it('stops ticking when status moves away from running', async () => {
     vi.useFakeTimers();
-    await store.setRun(DEFAULT_QUEUE_ID, runningRun());
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun(), unfencedCommit('test-fixture'));
     const p = makeProjector({ tickIntervalMs: 1000, debounceMs: 100 });
     p.start();
     p.subscribe(() => {});
 
     await vi.advanceTimersByTimeAsync(1_100);
 
-    await store.setRun(DEFAULT_QUEUE_ID, runningRun({ status: 'completed' }));
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun({ status: 'completed' }), unfencedCommit('test-fixture'));
     await vi.advanceTimersByTimeAsync(120);
 
     const tickCountAfterComplete: number[] = [];

@@ -91,6 +91,7 @@ describe('Feature 020 T041 — PhaseLogTailSession', () => {
     const spy = makePushSpy();
     const session = new PhaseLogTailSession({
       sessionId: 'sess-1',
+      workspaceRoot: tmpDir,
       filePath: streamPath(),
       selection: SELECTION,
       pushToWebview: spy.push,
@@ -112,6 +113,7 @@ describe('Feature 020 T041 — PhaseLogTailSession', () => {
     const spy = makePushSpy();
     const session = new PhaseLogTailSession({
       sessionId: 'sess-1',
+      workspaceRoot: tmpDir,
       filePath: streamPath(),
       selection: SELECTION,
       pushToWebview: spy.push,
@@ -142,6 +144,7 @@ describe('Feature 020 T041 — PhaseLogTailSession', () => {
     const spy = makePushSpy();
     const session = new PhaseLogTailSession({
       sessionId: 'sess-1',
+      workspaceRoot: tmpDir,
       filePath: streamPath(),
       selection: SELECTION,
       pushToWebview: spy.push,
@@ -169,6 +172,7 @@ describe('Feature 020 T041 — PhaseLogTailSession', () => {
     const spy = makePushSpy();
     const session = new PhaseLogTailSession({
       sessionId: 'sess-1',
+      workspaceRoot: tmpDir,
       filePath: streamPath(),
       selection: SELECTION,
       pushToWebview: spy.push,
@@ -186,6 +190,7 @@ describe('Feature 020 T041 — PhaseLogTailSession', () => {
     const spy = makePushSpy();
     const session = new PhaseLogTailSession({
       sessionId: 'sess-1',
+      workspaceRoot: tmpDir,
       filePath: streamPath(),
       selection: SELECTION,
       pushToWebview: spy.push,
@@ -205,6 +210,7 @@ describe('Feature 020 T041 — PhaseLogTailSession', () => {
     const spy = makePushSpy();
     const session = new PhaseLogTailSession({
       sessionId: 'sess-1',
+      workspaceRoot: tmpDir,
       filePath: streamPath(),
       selection: SELECTION,
       pushToWebview: spy.push,
@@ -223,6 +229,7 @@ describe('Feature 020 T041 — PhaseLogTailSession', () => {
     const spy = makePushSpy();
     const session = new PhaseLogTailSession({
       sessionId: 'sess-1',
+      workspaceRoot: tmpDir,
       filePath: streamPath(),
       selection: SELECTION,
       pushToWebview: spy.push,
@@ -248,6 +255,7 @@ describe('Feature 020 T041 — PhaseLogTailSession', () => {
     const spy = makePushSpy();
     const session = new PhaseLogTailSession({
       sessionId: 'sess-1',
+      workspaceRoot: tmpDir,
       filePath: streamPath(),
       selection: SELECTION,
       pushToWebview: spy.push,
@@ -266,6 +274,7 @@ describe('Feature 020 T041 — PhaseLogTailSession', () => {
     const spy = makePushSpy();
     const session = new PhaseLogTailSession({
       sessionId: 'sess-1',
+      workspaceRoot: tmpDir,
       filePath: streamPath(),
       selection: SELECTION,
       pushToWebview: spy.push,
@@ -284,6 +293,7 @@ describe('Feature 020 T041 — PhaseLogTailSession', () => {
     const spy = makePushSpy();
     const session = new PhaseLogTailSession({
       sessionId: 'sess-XYZ',
+      workspaceRoot: tmpDir,
       filePath: streamPath(),
       selection: SELECTION,
       pushToWebview: spy.push,
@@ -302,6 +312,7 @@ describe('Feature 020 T041 — PhaseLogTailSession push contract', () => {
     const spy = makePushSpy();
     const session = new PhaseLogTailSession({
       sessionId: 'sess-1',
+      workspaceRoot: tmpDir,
       filePath: streamPath(),
       selection: SELECTION,
       pushToWebview: spy.push,
@@ -321,6 +332,7 @@ describe('Feature 020 T041 — PhaseLogTailSession push contract', () => {
     const pushSpy = vi.fn();
     new PhaseLogTailSession({
       sessionId: 'sess-1',
+      workspaceRoot: tmpDir,
       filePath: streamPath(),
       selection: SELECTION,
       pushToWebview: pushSpy,

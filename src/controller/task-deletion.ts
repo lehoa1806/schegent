@@ -41,7 +41,7 @@ export interface TaskDeletionOutcome {
 export interface TaskDeletionDeps {
   readonly logger: SanitizedLogger;
   readonly queue: Pick<QueueManager, 'findById' | 'queueIdForTask' | 'removeTask'>;
-  readonly store: Pick<WorkspaceStateStore, 'getRun' | 'setRun'>;
+  readonly store: Pick<WorkspaceStateStore, 'getRun' | 'setRun' | 'runCommitClaim'>;
   readonly cancelActive: (queueId: string) => void;
   readonly releaseExecutionLeaseForRun: (run: WorkflowRun) => Promise<void>;
   readonly sessionCleanup: SessionCleanupRunner;
@@ -82,7 +82,17 @@ export async function deleteTaskWithSessionCleanup(
         status: 'canceled',
         lastTransitionAt: Date.now()
       };
-      await store.setRun(queueId, canceled);
+      // Guarded: FR-R3-077 made this commit point fenced, so it can refuse when
+      // this window's lease has moved on or the ownership record cannot be read.
+      // The driver is already cancelled by the line above, so a throw here would
+      // strand the deletion partway — no lease release, no `removeTask`, no
+      // session cleanup — with the row still reading `running` and nothing left
+      // running to repair it. The cleanup below is what has to happen either way.
+      try {
+        await store.setRun(queueId, canceled, store.runCommitClaim(queueId));
+      } catch (error) {
+        logger.warn(`task-deletion: canceled run not persisted: ${(error as Error).message}`);
+      }
       // Feature 093 (T068b, FR-028) — no window-primacy release here either.
       // Deleting one Task cancelled one queue's Run; primacy is the window's
       // and its siblings are still executing under it.

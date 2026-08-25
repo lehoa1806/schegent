@@ -32,6 +32,7 @@
 // "the cap refused the second one".
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { unfencedCommit } from '../../src/state/ownership-claim';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
@@ -241,7 +242,7 @@ describe('Feature 093 (T061, G-3) — interleaved whole-map writes preserve both
     // second write's snapshot predated.
     const nextA = { ...h.store.getRun(QUEUE_A)!, currentIteration: 41 };
     const nextB = { ...h.store.getRun(QUEUE_B)!, currentIteration: 42 };
-    await Promise.all([h.store.setRun(QUEUE_A, nextA), h.store.setRun(QUEUE_B, nextB)]);
+    await Promise.all([h.store.setRun(QUEUE_A, nextA, unfencedCommit('test-fixture')), h.store.setRun(QUEUE_B, nextB, unfencedCommit('test-fixture'))]);
 
     expect(h.runKeys()).toEqual([QUEUE_A, QUEUE_B].sort());
     expect(h.store.getRun(QUEUE_A)?.currentIteration).toBe(41);
@@ -252,8 +253,8 @@ describe('Feature 093 (T061, G-3) — interleaved whole-map writes preserve both
     // The reverse issue order must hold too — a guarantee that only worked one
     // way round would be an ordering coincidence.
     await Promise.all([
-      h.store.setRun(QUEUE_B, { ...nextB, currentIteration: 52 }),
-      h.store.setRun(QUEUE_A, { ...nextA, currentIteration: 51 })
+      h.store.setRun(QUEUE_B, { ...nextB, currentIteration: 52 }, unfencedCommit('test-fixture')),
+      h.store.setRun(QUEUE_A, { ...nextA, currentIteration: 51 }, unfencedCommit('test-fixture'))
     ]);
     expect(h.store.getRun(QUEUE_A)?.currentIteration).toBe(51);
     expect(h.store.getRun(QUEUE_B)?.currentIteration).toBe(52);

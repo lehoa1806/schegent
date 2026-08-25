@@ -202,6 +202,12 @@ export class SchegentWorkflowController {
     // Feature 092 (T132, FR-033a) — one manager, addressed by both ends of the
     // tenure: the drain claims at step 6, the terminal transition releases.
     const executionLease = deps.executionLease ?? new ExecutionLeaseManager(store, lock.id);
+    // FR-R3-077 (T1038) — the commit points now REQUIRE a claim, and this is where
+    // the store learns who can answer for one. Bound here rather than in the
+    // constructor because the lease manager is resolved here, and bound
+    // unconditionally so a window that composes a controller cannot end up with
+    // fenced commit points and no source to fence them against.
+    store.bindRunClaimSource(executionLease);
     // FR-R3-070 (feature 152) — the resume seam claims through the same
     // manager the drain and the terminal release share, so a resumed Run's
     // lease is returned by the one existing release path.
@@ -264,6 +270,10 @@ export class SchegentWorkflowController {
         this.lifecycleAuditor.emitTaskLifecycle(eventType, run, payload),
       emitOptionalPhaseFailureContinued: (run, payload) =>
         this.lifecycleAuditor.emitOptionalPhaseFailureContinued(run, payload),
+      emitRunSnapshotDeclined: (run, payload) =>
+        this.lifecycleAuditor.emitRunSnapshotDeclined(run, payload),
+      emitOutputTargetRefusedAtDispatch: (run, payload) =>
+        this.lifecycleAuditor.emitOutputTargetRefusedAtDispatch(run, payload),
       onRunTerminal: deps.onRunTerminal,
       terminalTransitions: deps.terminalTransitions,
       checkpoints: deps.checkpoints,
@@ -470,7 +480,7 @@ export class SchegentWorkflowController {
       // on the next line requires it — so the resolver's removed-Task fallback
       // is not reachable from this call.
       const queueId = this.queue.queueIdForTask(feature.id);
-      await this.store.setRun(queueId, run);
+      await this.store.setRun(queueId, run, this.store.runCommitClaim(queueId));
       await this.queue.markInFlight(feature.id, run.id, false);
       // The `catch` below covered the drive too before the split, so it keeps
       // covering it — attached synchronously, so a rejection is never briefly
@@ -683,7 +693,9 @@ export class SchegentWorkflowController {
       await this.store.setRun(queueId, {
         ...run,
         resumePrompt: customPrompt
-      });
+      },
+        this.store.runCommitClaim(queueId)
+      );
     }
 
     const feature = this.queue.findById(run.featureId);
@@ -792,7 +804,7 @@ export class SchegentWorkflowController {
         : {}),
       ...clearedPauseFieldsOnResume(run)
     };
-    await this.store.setRun(queueId, next);
+    await this.store.setRun(queueId, next, this.store.runCommitClaim(queueId));
     await this.queue.markInFlight(feature.id, next.id, true);
     // Admitted. `driveSession` carries its own `finally` disposal, so the drive
     // is handed back rather than awaited (T049a).
@@ -988,7 +1000,7 @@ export class SchegentWorkflowController {
           }
         : next;
     await this.terminalTransitions?.begin(merged);
-    await this.store.setRun(queueId, merged);
+    await this.store.setRun(queueId, merged, this.store.runCommitClaim(queueId));
     return merged;
   }
 }

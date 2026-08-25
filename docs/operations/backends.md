@@ -90,6 +90,28 @@ agent. Each constructed uncontained runner logs that it is running without a bou
 setting that permitted it. Activation is unaffected — a refused posture does not stop Schegent
 loading, only running.
 
+### What that asymmetry means for a declared output target
+
+An operator naming an output inside the workspace is confirming a path that is checked twice: once at
+request time, and once more at dispatch, immediately before the frozen plan reaches the runner
+(FR-R3-079). The second check walks the target's component chain and refuses a Run whose target has
+since acquired a symlinked parent — before the child is started, with a named cause in the evidence
+record rather than an error surfaced from the CLI.
+
+**It narrows the window; it does not close it.** The host's last look at the target and the child's
+write are still separated by the child's own runtime, and only an OS-enforced bound can cover that
+interval:
+
+| Runner | After the dispatch-time walk |
+|---|---|
+| `codex` | The sandbox (`--sandbox workspace-write`) bounds the write itself. The interval is covered. |
+| `claude`, `agy` | Uncontained by construction — the CLI runs under the operator's full local authority, and nothing but the operator's own filesystem permissions bounds where it writes. The interval is **not** covered. |
+
+So for the enabled uncontained runners the dispatch check is a strong narrowing and not a guarantee,
+and this is the honest statement of it rather than an implication drawn from the table above. The
+asymmetry itself is not new and is not this item's to change; it is the one FR-R3-032 established and
+the reason `allowUncontainedBackends` exists as a deliberate, application-scoped decision.
+
 The full reasoning, the two shapes not chosen, and what remains outstanding are in
 [Agent capability posture](../architecture/agent-capability-posture.md).
 <!-- Source: src/services/backend-containment-policy.ts -->

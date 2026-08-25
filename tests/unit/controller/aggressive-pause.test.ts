@@ -21,6 +21,7 @@
 //       on the 028 invariant).
 
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { SchegentWorkflowController } from '../../../src/controller/workflow-controller';
 import type { DelayedRetryWatchdog } from '../../../src/controller/workflow-controller';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
@@ -139,7 +140,7 @@ async function seedRunningRun(): Promise<{ feature: { id: string }; run: Workflo
     phaseBreakpoints: [],
     resumeTargetPhaseId: null
   };
-  await store.setRun(DEFAULT_QUEUE_ID, run);
+  await store.setRun(DEFAULT_QUEUE_ID, run, unfencedCommit('test-fixture'));
   return { feature, run };
 }
 
@@ -167,7 +168,7 @@ async function seedDelayedRetryRun(): Promise<void> {
     phaseBreakpoints: [],
     resumeTargetPhaseId: null
   };
-  await store.setRun(DEFAULT_QUEUE_ID, run);
+  await store.setRun(DEFAULT_QUEUE_ID, run, unfencedCommit('test-fixture'));
 }
 
 describe('Feature 033 US1 — Aggressive pause via cancelActive()', () => {
