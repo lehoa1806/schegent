@@ -329,7 +329,17 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // taking on a policy rather than making a call. The closure became
   // `src/monitor/drop-reporting-transport.ts`, which is also where the reasoning for
   // wrapping rather than changing the sink lives. What is left here is the seam.
-  { path: 'src/extension.ts', maxLines: 1_486 },
+  // FR-R3-112 — 1486 -> 1488, two lines: `auditWriter` and `notifier` join the
+  // run-safety wiring input so the spend bound can observe the record that carries
+  // usage and tell the operator when it pauses a run. One line per argument.
+  //
+  // WHY THE LINE IS HERE AND NOT THE WATCHER. Everything the bound does — the
+  // accumulation, the precedence, the verdict, the pause write — lives in
+  // `src/services/spend-bound.ts`, `spend-bound-watcher.ts` and
+  // `activation/run-safety-wiring.ts`. What activation gained is two arguments to a
+  // call it already made. That is the shape this budget is meant to permit: the shell
+  // hands over a dependency, the behaviour lives in a leaf.
+  { path: 'src/extension.ts', maxLines: 1_488 },
   //
   // FR-R3-103 (FR-042, FR-046) — 1459 -> 1471. Nine lines for the dependency wiring of the resume
   // liveness check plus two imports, three more registering the fence-loss abort, and the
@@ -700,7 +710,25 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // (`refreshLockMirrorGuarded`) are here for the same reason, and the
       // latter is a REPLACEMENT: `writeGuarded` was deleted in the same change,
       // so the net is smaller than the additions.
-      highWaterMark: 2736
+      // FR-R3-111 (FR-112, FR-113) — 2736 → 2769: the Run quarantine.
+      //
+      // Two branches of the Run load path destroyed unparseable records in silence. The map branch
+      // did `changed = true; continue;` — dropped, written over, no audit event — and the singular
+      // branch did `return []` without even that flag. Meanwhile an unparseable QUEUE entry had
+      // been preserved for inspection since the v9 → v10 migrator, under
+      // `KEYS.queueMigrationQuarantine`. The asymmetry was unexplained, and the silence was the
+      // worse half: an operator whose Run vanished had nothing to read.
+      //
+      // WHAT THIS ENTRY BOUGHT AND WHAT IT DID NOT. The first draft was +92, and this forcing
+      // function refused it — correctly. The quarantine writer, its bound, and its event buffer
+      // moved to `src/state/run-quarantine.ts`; the long explanation of why the map branch is
+      // currently unreachable moved to the test that asserts it. What is left here is the key, the
+      // two call sites, a delegate and a drain: the seam, not the mechanism.
+      //
+      // The remaining 33 are that seam plus imports. Raised rather than compressed further,
+      // because the next compression available was deleting the pointers that tell a reader where
+      // the mechanism went.
+      highWaterMark: 2769
     }
   },
   // Feature 077 — public facade and every state-projection collaborator have

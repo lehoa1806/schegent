@@ -78,12 +78,16 @@ describe('FR-R3-105 — a hostile value from a frozen plan is refused at dispatc
       'utf8'
     );
     expect(source).toContain("import { isSafeArgvValue } from '../contracts/argv-value'");
-    expect(source).toContain('isSafeArgvValue(inputs.phaseDef?.model)');
+    // The authored model is read ONCE into `authoredModel` and checked once — a shape this test
+    // asked for indirectly and a lint ratchet then required outright, since the double read was
+    // also a double optional-chain the compiler called unnecessary.
+    expect(source).toContain('const authoredModel = inputs.phaseDef?.model;');
+    expect(source).toContain('isSafeArgvValue(authoredModel)');
     // No rewriting on this path: a `replace` or `sanitize` applied to the model value
     // would be the laundering this item forbids.
     const line = source
       .split('\n')
-      .find((l) => l.includes('isSafeArgvValue(inputs.phaseDef?.model)')) as string;
+      .find((l) => l.includes('isSafeArgvValue(authoredModel)')) as string;
     expect(line).not.toMatch(/replace\(|sanitize|slice\(|normalize/);
   });
 });

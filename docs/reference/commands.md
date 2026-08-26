@@ -13,6 +13,7 @@ This is the manifest-parity index for every command Schegent contributes to the 
 | `schegent.cancel` | Schegent: Cancel In-Flight Workflow | Cancel the addressed Task, or the sole running Run when no ID is supplied. | <!-- Source: package.json --><!-- Source: src/commands/cancel.ts --> |
 | `schegent.reset` | Schegent: Reset Workspace State | Ask for confirmation and run the staged workspace reset. | <!-- Source: package.json --><!-- Source: src/commands/reset.ts --> |
 | `schegent.showAuditLog` | Schegent: Show Audit Log | Open the workspace audit log. | <!-- Source: package.json --><!-- Source: src/commands/show-audit.ts --> |
+| `schegent.verifyAuditChain` | Schegent: Verify Audit Chain | Walk the audit log's hash chain across archives and cut records and report the FIRST break; a break also reports the audit sink as failing on the evidence-health surface. <!-- Source: package.json --><!-- Source: src/commands/verify-audit-chain.ts --> |
 | `schegent.exportAuditLog` | Schegent: Export Metadata-Only Audit | Save a schema-v3 metadata-only audit export. | <!-- Source: package.json --><!-- Source: src/commands/export-audit.ts --> |
 | `schegent.pauseQueue` | Schegent: Pause Queue | Pause the default queue, optionally with a reason. | <!-- Source: package.json --><!-- Source: src/commands/queue-ops.ts --> |
 | `schegent.resumeQueue` | Schegent: Resume Queue | Resume the default queue. | <!-- Source: package.json --><!-- Source: src/commands/queue-ops.ts --> |

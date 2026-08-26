@@ -52,3 +52,55 @@ describe('exact VSIX content policy', () => {
     );
   });
 });
+
+/**
+ * FR-R3-112 — repository tooling configuration stays out of the package.
+ *
+ * FOUND BY THE PACKAGING GATE, which is the part worth recording. `vsce package` refused the
+ * build with *"found GitHub Token"* pointing at `.secretlintrc.json` line 15 — the allowlist entry
+ * holding a **synthetic** token (`ghp_0123456789…`, sequential filler) so the redaction fixture in
+ * `workflow-catalog-projector.test.ts` does not trip the scanner. The scanner's verdict about the
+ * string was wrong; its verdict about the FILE was right, and that is the defect: a repository lint
+ * configuration was being shipped to every operator who installs the extension.
+ *
+ * The two untracked records are here for the same reason one step further on: `.gate-attestation.json`
+ * and `.backend-qualification.json` describe one machine's observation of one tree at one moment.
+ * Neither is committed, so neither is usually present — which is exactly why an ignore rule is the
+ * right place for them rather than a hope that they never are.
+ */
+describe('the package carries no repository tooling configuration', () => {
+  const MUST_NOT_SHIP = [
+    '.secretlintrc.json',
+    '.secretlintignore',
+    '.gate-attestation.json',
+    '.backend-qualification.json'
+  ] as const;
+
+  it('ignores each by name in .vscodeignore', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const ignore = readFileSync(
+      resolve(__dirname, '..', '..', '..', '.vscodeignore'),
+      'utf8'
+    );
+    for (const name of MUST_NOT_SHIP) {
+      expect(
+        ignore.split('\n').some((line) => line.trim() === name),
+        `${name} must be ignored by name; a published extension has no use for it`
+      ).toBe(true);
+    }
+  });
+
+  it('would reject each if it reached the archive anyway', async () => {
+    // The ignore rule is a claim about what vsce does; this is the independent check that the
+    // content policy would catch the file if the rule were ever removed or misspelled.
+    const { assertAllowedEntryNames } = await import('../../../scripts/check-vsix-smoke.mjs');
+    const names = await plausiblePackagedNames();
+    for (const name of MUST_NOT_SHIP) {
+      expect(
+        () => assertAllowedEntryNames([...names, `extension/${name}`]),
+        `${name} must not be an allowed entry`
+      ).toThrow();
+    }
+  });
+});

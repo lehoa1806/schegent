@@ -1,7 +1,7 @@
 # GitHub Actions — Terminal Record
 
 **Status**: terminal. Actions are **retired by operator decision, 2026-08-26**, for budget.
-**Recorded**: 2026-08-26 · **Item**: [`FR-R3-099`](../../../docs/features/round_3/99_FR-R3-099_actions_retired_by_decision.md)
+**Recorded**: 2026-08-26 · **Item**: [`FR-R3-099`](../../../docs/features/round_3/DONE_99_FR-R3-099_actions_retired_by_decision.md)
 **Repository at the time of capture**: `repo/` HEAD `2a885187`
 
 ## What this record is, and where its numbers come from
@@ -12,7 +12,7 @@ the harvest had to happen before the disable, and after the disable it would be 
 **Provenance — read this before using any figure below.** These numbers come from the **live GitHub
 API, queried twice on 2026-08-26 during the round-3 consolidation**, and are transcribed from that
 capture as recorded in
-[`FR-R3-099` §2](../../../docs/features/round_3/99_FR-R3-099_actions_retired_by_decision.md).
+[`FR-R3-099` §2](../../../docs/features/round_3/DONE_99_FR-R3-099_actions_retired_by_decision.md).
 **No fresh API call was made when this record was written.** The environment that wrote it holds no
 GitHub credential, and fabricating a second reading — or presenting a transcription as a live query —
 would be the exact defect this item exists to repair, one week later and in the same direction.
@@ -98,7 +98,7 @@ Every local claim it bears on, named:
 | Three-OS matrix | **Gone.** Single-platform verification becomes a permanent stated limit, not a pending state |
 | Node version-floor job | **Gone.** No local substitute; the floor is now declared and unverified |
 | Scheduled `security-audit` | **Gone as a schedule.** Its last pass is the dated fact above |
-| Scheduled `backend-canary` | **Gone as a schedule.** The local cadence that replaces it is [`FR-R3-104`](../../../docs/features/round_3/104_FR-R3-104_backend_qualification_that_gates.md) |
+| Scheduled `backend-canary` | **Gone as a schedule.** The local cadence that replaces it is [`FR-R3-104`](../../../docs/features/round_3/DONE_104_FR-R3-104_backend_qualification_that_gates.md) |
 
 ## Still owed to the operator — the half the tree cannot do
 

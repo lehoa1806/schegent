@@ -365,6 +365,51 @@ export const MIGRATION_V7_EVENT_TYPES = ['state-migrated-v6-to-v7'] as const;
  * operator-authored content. Additive, so no `AUDIT_SCHEMA_VERSION` bump — the same
  * warn-and-preserve reasoning the migration families above record.
  */
+/**
+ * FR-R3-111 (FR-112) — an unparseable Run record was preserved rather than destroyed.
+ *
+ * WHY THIS EVENT EXISTS. The load path did `changed = true; continue;` — the record was dropped,
+ * written over, and left no trace. An operator whose Run vanished had nothing to read, and no
+ * reader could tell a corrupt record from one that never existed. Meanwhile an unparseable QUEUE
+ * entry had been preserved for inspection since the v9 -> v10 migrator. The asymmetry was
+ * unexplained, and the silence was the worse half of it.
+ *
+ * PAYLOAD DISCIPLINE. `queueId` and a closed reason code, plus the resulting depth so a reader can
+ * see whether the cap is being approached. The rejected value itself is kept in the Memento
+ * quarantine, NOT here: it is arbitrary persisted data and could carry anything, and the audit log
+ * is not the place for content nobody has validated.
+ */
+export const RUN_QUARANTINE_EVENT_TYPES = ['run-record-quarantined'] as const;
+export type RunQuarantineEventType = (typeof RUN_QUARANTINE_EVENT_TYPES)[number];
+
+export interface RunRecordQuarantinedPayload {
+  readonly queueId: string;
+  readonly reason: 'unparseable' | 'migration-failed';
+  readonly quarantineDepth: number;
+}
+
+/**
+ * A preserved record, as stored.
+ *
+ * `raw` is the value that failed to parse. It lives in the Memento rather than in the audit log
+ * precisely because it is unvalidated — see the payload note above.
+ */
+export interface RunQuarantineEntry {
+  readonly queueId: string;
+  readonly capturedAtMs: number;
+  readonly reason: 'unparseable' | 'migration-failed';
+  readonly raw: unknown;
+}
+
+/**
+ * How many quarantined Run records to keep.
+ *
+ * Bounded oldest-out, in the same shape the queue quarantine uses: a corruption loop must not be
+ * able to fill the Memento. Small on purpose — these exist to be looked at once, and twenty is
+ * already more than anyone will read.
+ */
+export const RUN_QUARANTINE_CAP = 20;
+
 export const RUN_RESUME_EVENT_TYPES = [
   'run-resumed',
   'run-resume-declined-orphan-alive',
@@ -781,6 +826,8 @@ export const ALL_AUDIT_EVENT_TYPES = [
   ...CAPABILITY_REFUSAL_EVENT_TYPES,
   // FR-R3-103 — activation's resume decision and the supersession abort.
   ...RUN_RESUME_EVENT_TYPES,
+  // FR-R3-111 — a corrupt Run record preserved rather than destroyed.
+  ...RUN_QUARANTINE_EVENT_TYPES,
   ...PROCESS_TREE_EVENT_TYPES,
   ...METRICS_EVENT_TYPES,
   ...PROCESS_EXCHANGE_EVENT_TYPES,

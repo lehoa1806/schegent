@@ -148,7 +148,12 @@ describe('FR-R3-090 §5 — no dependency is bumped, and the scanners are untouc
     };
     const packages = lock.packages ?? {};
     for (const pkg of PROMOTIONS) {
-      const entry = packages[`node_modules/${pkg}`];
+      // Read as possibly-absent and narrowed once. `packages` is typed as total over its keys,
+      // so `entry?.x` after the assertion below reads as dead to the linter while the absence is
+      // the very thing being asserted.
+      const entry = packages[`node_modules/${pkg}`] as
+        | { dev?: boolean; version?: string }
+        | undefined;
       expect(
         entry,
         `${pkg} is declared as a PROMOTION but has no lockfile entry — then it is an ` +

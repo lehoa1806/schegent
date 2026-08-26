@@ -1,3 +1,4 @@
+import { waitForCondition } from '../../../wait-for-condition';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { unfencedCommit } from '../../../../src/state/ownership-claim';
 import * as fs from 'fs/promises';
@@ -228,8 +229,12 @@ describe('StateProjector.getCurrentSnapshot', () => {
     p.start();
     expect(p.getCurrentSnapshot().isPrimary).toBe(false);
     await store.setLock(sampleLock('this-window'));
-    // wait for debounce
-    await new Promise((r) => setTimeout(r, 130));
+    // FR-R3-114 row 3 — was `setTimeout(r, 130)`, a 30% margin over the 100 ms debounce against
+    // an unbounded scheduler delay. Now bounded by a deadline and satisfied the moment the
+    // projection reflects the lock.
+    await waitForCondition(() => p.getCurrentSnapshot().isPrimary, {
+      label: 'the projection reflects this window holding the lock'
+    });
     expect(p.getCurrentSnapshot().isPrimary).toBe(true);
     p.dispose();
   });

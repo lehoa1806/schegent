@@ -14,6 +14,7 @@ import type { SanitizedLogger } from '../lib/logger';
 import { parseAuditLogBlock } from '../parser/audit-log-parser';
 import { parseInvocation, type InvocationResult } from '../parser/stdout-parser';
 import { extractInvocationUsageMetrics } from '../parser/invocation-usage';
+import { cliVersionFields, observedVersionOf } from '../runner/cli-version-probe';
 import { unwrapStreamJson } from '../parser/stream-json-unwrapper';
 import { detectCreditError } from '../parser/credit-error-detector';
 import type { RawTranscriptMode, TerminationReason } from '../state/workflow-run';
@@ -210,6 +211,8 @@ export class PhaseRunner {
   private readonly sidecarReader: PhaseSidecarReader;
   private readonly retryEvaluator: PhaseRetryEvaluator;
   private readonly runnerRegistry: BackendRunnerRegistry | null;
+  /** FR-R3-104 — version observed at the current phase's start; see `cli-version-probe.ts`. */
+  private observedCliVersion: string | null = null;
   private readonly singleRunner: BackendRunner | null;
 
   constructor(
@@ -420,6 +423,10 @@ export class PhaseRunner {
     if (inputs.phaseDef?.effort) startPayload.effort = inputs.phaseDef.effort;
     const authoredStartpayloadTimeoutMs = authoredPhaseTimeoutMs(inputs.phaseDef);
     if (authoredStartpayloadTimeoutMs !== undefined) startPayload.timeoutMs = authoredStartpayloadTimeoutMs;
+    // FR-R3-104 (FR-054) — which CLI this phase drives. A VERSION, never a path; the leaf owns
+    // the probe, its TTL cache and its failure handling.
+    this.observedCliVersion = await observedVersionOf(this.runnerRegistry, inputs.cliPath);
+    Object.assign(startPayload, cliVersionFields(this.observedCliVersion, effectiveRunnerKind, this.logger));
     await this.appendAudit(inputs, 'phase-start', 'info', startPayload);
 
     this.logger.info(`phase-start ${inputs.phase} iter=${inputs.iteration}`);
@@ -427,6 +434,7 @@ export class PhaseRunner {
     // (never cached on the runner) so a mid-run toggle applies on the
     // next invocation. The accessor is the workspace-setting read site.
     const verboseDiagnostics = this.buildVerboseTarget(inputs);
+    const authoredModel = inputs.phaseDef?.model; // FR-R3-105 — read once, checked once.
     // Feature 012 FR-006 — read schegent.claude.autoCompactPctOverride at
     // run() entry (never cached). When set, inject as the env var the
     // Claude CLI reads to override its auto-compaction threshold; when
@@ -512,7 +520,7 @@ export class PhaseRunner {
         // FR-R3-105 (FR-063) — the defensive half; a frozen plan can predate the bound.
         // Dropped, never rewritten; `contracts/argv-value.ts` states why. `effort` needs
         // no check: it is enum-closed at every validator.
-        ...(isSafeArgvValue(inputs.phaseDef?.model) ? { model: inputs.phaseDef?.model } : {}),
+        ...(isSafeArgvValue(authoredModel) ? { model: authoredModel } : {}),
         ...(inputs.phaseDef?.effort ? { effort: inputs.phaseDef.effort } : {}),
         ...(verboseDiagnostics ? { verboseDiagnostics } : {}),
         // Feature 032 — forward the controller's session-continuation
@@ -961,7 +969,9 @@ export class PhaseRunner {
       exitCode: raw.exitCode,
       ...(raw.stdoutBuffer.truncated ? { stdoutTruncated: true } : {}),
       ...(raw.stderrBuffer.truncated ? { stderrTruncated: true } : {}),
-      ...(extractInvocationUsageMetrics(raw.stdoutBuffer, backend) ?? {})
+      ...(extractInvocationUsageMetrics(raw.stdoutBuffer, backend) ?? {}),
+      // FR-R3-104 — the version observed at this phase's START, not re-probed here.
+      ...(this.observedCliVersion === null ? {} : { cliVersion: this.observedCliVersion })
     };
   }
 

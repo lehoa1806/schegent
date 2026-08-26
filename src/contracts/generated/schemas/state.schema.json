@@ -44,7 +44,8 @@
           "operator-paused",
           "queue-paused-mid-run",
           "breakpoint-paused",
-          "verify-paused"
+          "verify-paused",
+          "spend-bound-reached"
         ]
       },
       "uniqueItems": true

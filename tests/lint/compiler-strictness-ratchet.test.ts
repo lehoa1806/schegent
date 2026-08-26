@@ -111,6 +111,19 @@ function measure(option: 'noUncheckedIndexedAccess' | 'exactOptionalPropertyType
   return { total, src, byFile };
 }
 
+/**
+ * How long one measurement may take.
+ *
+ * This case creates a full TypeScript program over the whole tree, twice — once per flag — which
+ * measured **12.5 s** standalone on the reference machine and exceeded the 30 s default when the
+ * gate ran it under coverage instrumentation alongside 780 other files. That is COST, not a hang:
+ * the alternative to paying it is a ratchet that measures nothing.
+ *
+ * Bounded rather than unbounded, so a genuinely wedged compiler still fails instead of holding the
+ * gate open forever.
+ */
+const MEASURE_TIMEOUT_MS = 180_000;
+
 describe('FR-R3-110 — compiler strictness is adopted under a ratchet', () => {
   it.each(RATCHET)('$flag has not grown past its pinned count', (entry) => {
     const measured = measure(entry.flag);
@@ -154,7 +167,7 @@ describe('FR-R3-110 — compiler strictness is adopted under a ratchet', () => {
           `${entry.total} (${entry.total - measured.total} of slack). Lower the pin to lock it in.`
       );
     }
-  });
+  }, MEASURE_TIMEOUT_MS);
 
   it('neither flag is silently enabled in a tsconfig, which would make the ratchet dead code', () => {
     // If a flag graduates into the build, this ratchet entry must be DELETED rather than left

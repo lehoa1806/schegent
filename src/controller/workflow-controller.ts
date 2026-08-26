@@ -446,7 +446,7 @@ export class SchegentWorkflowController {
    * that means, exactly as it does for an operator cancel.
    */
   public abortOnSupersession(): void {
-    for (const session of this.sessions.all()) session?.driver.abortOnSupersession();
+    for (const session of this.sessions.all()) session.driver.abortOnSupersession();
   }
 
   public async startNew(

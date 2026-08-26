@@ -71,6 +71,10 @@
         "title": "Schegent: Show Audit Log"
       },
       {
+        "command": "schegent.verifyAuditChain",
+        "title": "Schegent: Verify Audit Chain"
+      },
+      {
         "command": "schegent.exportAuditLog",
         "title": "Schegent: Export Metadata-Only Audit"
       },
@@ -232,6 +236,26 @@
           "scope": "resource",
           "deprecationMessage": "Renamed: use schegent.invocation.idleTimeoutSeconds (this setting was always an idle window, not a total-duration bound). An explicit value here is still honored while the new key is unset.",
           "description": "Deprecated alias of schegent.invocation.idleTimeoutSeconds."
+        },
+        "schegent.spend.maxUsdPerRun": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "minimum": 0.01,
+          "scope": "resource",
+          "markdownDescription": "Per-run spend bound in US dollars (FR-R3-112). `null` (the default) means **no bound** — the mechanism ships enabled and unset, because a bound arriving as a surprise mid-run is worse than no bound. Crossing the bound **pauses** the run through the ordinary operator-resumable pause (cause `spend-bound-reached`); it never fails or cancels it, so nothing is destroyed. Applies to backends that report a cost — today, `claude`. For `codex` and `agy`, which report tokens and no cost, use `schegent.spend.maxTokensPerRun`. A per-phase override may be declared on a Phase as `spendBoundUsd`."
+        },
+        "schegent.spend.maxTokensPerRun": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "minimum": 1,
+          "scope": "resource",
+          "markdownDescription": "Per-run spend bound in tokens (FR-R3-112), for backends that report tokens and no cost — today, `codex` and `agy`. `null` (the default) means **no bound**. Behaves identically to the dollar bound: crossing it pauses the run, resumable by the operator, with no terminal transition. A per-phase override may be declared on a Phase as `spendBoundTokens`."
         },
         "schegent.audit.rotation.sizeMB": {
           "type": "number",
@@ -426,6 +450,7 @@
     "security:secrets": "node scripts/scan-secrets.mjs",
     "security:actions": "node scripts/check-workflow-pins.mjs",
     "security:audit": "npm audit --audit-level=low && npm --prefix webview-ui audit --audit-level=low",
+    "audit:verify": "node --experimental-strip-types scripts/verify-audit-chain.ts",
     "selftest:install": "bash scripts/clean-install-selftest.sh",
     "license:check": "node scripts/check-licenses.mjs",
     "dev:webview": "npm --prefix webview-ui run dev",

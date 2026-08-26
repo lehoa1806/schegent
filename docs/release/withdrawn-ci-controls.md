@@ -1,6 +1,6 @@
 # Withdrawn CI-dependent controls
 
-**Date**: 2026-08-26 · **Item**: [`FR-R3-099`](../../../docs/features/round_3/99_FR-R3-099_actions_retired_by_decision.md)
+**Date**: 2026-08-26 · **Item**: [`FR-R3-099`](../../../docs/features/round_3/DONE_99_FR-R3-099_actions_retired_by_decision.md)
 **Cause**: Actions retired by operator decision, for budget. See
 [the terminal record](actions-terminal-record.md).
 
@@ -19,7 +19,7 @@ statement that the withdrawn control was wrong.
 | `.github/workflows/codeql.yml` | GitHub code scanning | Same. **No local substitute exists**; recorded in `SECURITY.md` |
 | `.github/workflows/security-audit.yml` | Scheduled `npm audit` | The audit itself is local and stays in the attested chain; only the schedule went |
 | `.github/workflows/dependency-review.yml` | Dependency-diff review on pull requests | Reduces to `npm audit`, already local |
-| `.github/workflows/backend-canary.yml` | The canary's only scheduled vehicle | Replaced by a local declared cadence — [`FR-R3-104`](../../../docs/features/round_3/104_FR-R3-104_backend_qualification_that_gates.md) |
+| `.github/workflows/backend-canary.yml` | The canary's only scheduled vehicle | Replaced by a local declared cadence — [`FR-R3-104`](../../../docs/features/round_3/DONE_104_FR-R3-104_backend_qualification_that_gates.md) |
 | `.github/workflows/pr.yml` | Pull-request checks | Same |
 | `tests/unit/build/require-full-gate.test.ts` | Unit coverage of `decideFullGate` — the pure decision behind the binding, tested without cutting a release | Tested a function that no longer exists |
 | `tests/unit/build/full-gate-parity.test.ts` | Pinned the five job names shared by `full-gate.yml` and `require-full-gate.mjs`, so a rename could not silently detach the binding from the workflow | Both sides of the parity are gone |

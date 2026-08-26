@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { randomBytes } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -59,6 +60,29 @@ const CHUNK = 64 * 1024;
  */
 const MEASURED_HEAP_CEILING_BYTES = 400 * 1024 * 1024;
 
+/**
+ * FR-R3-114 row 2 — the ceiling for the incompressible case, measured separately.
+ *
+ * MEASURED 2026-08-27 on darwin/arm64 (macOS 26.6.2, Node 24.19.0): **41.9 MiB** and **23.8 MiB**
+ * on two consecutive runs — against 2.50 GiB of accepted-input arithmetic, and BELOW the 75.0 MiB
+ * the compressible text case measured on 2026-08-25. Both figures are recorded rather than the
+ * better one: a 1.8x spread between consecutive runs is GC timing inside the measurement window,
+ * and a single number would imply a precision this method does not have.
+ *
+ * THE RESULT IS THE OPPOSITE OF WHAT ROW 2 PREDICTED, and that is the finding. The residual
+ * assumed the 75 MiB figure was gzip hiding the real cost, so incompressible input would approach
+ * the 2.50 GiB arithmetic. It does not, because `MAX_STREAM_BUFFER_BYTES` bounds what the buffer
+ * ACCEPTS, and the compressed representation is what it retains: incompressible bytes hit the
+ * accepted-input bound sooner, so fewer of them are held. Compression makes a buffer hold MORE
+ * input, not less memory. The pathological case is bounded by construction, and the residual's
+ * exposure — "≈2.5 GiB accepted-input arithmetic, invisible to the soak's guard" — is not real.
+ *
+ * 250 MiB is ~6x the measurement: this is a regression guard on a case whose measured cost is
+ * small, and the headroom absorbs GC timing inside the window (the no-newline run once measured a
+ * NEGATIVE delta for that reason).
+ */
+const INCOMPRESSIBLE_HEAP_CEILING_BYTES = 250 * 1024 * 1024;
+
 let workspaceRoot: string;
 
 beforeEach(async () => {
@@ -92,6 +116,30 @@ function textChunk(index: number): string {
 /** The pathological case: no newline, ever. A line-oriented bound cannot help. */
 function noNewlineChunk(): string {
   return 'x'.repeat(CHUNK);
+}
+
+/**
+ * FR-R3-114 row 2 — the case that defeats the compression the other two rely on.
+ *
+ * WHY THE EXISTING CASES DO NOT COVER THIS. Both fixtures above compress: ordinary phase output
+ * is repetitive text, and `'x'.repeat(65536)` compresses to almost nothing — which is why the
+ * no-newline case measured a heap delta below the noise floor and was recorded as a pass. The
+ * accepted-input arithmetic at cap 20 is ~2.50 GiB, and the measured 75 MiB was a statement about
+ * gzip, not about the bound. So the one shape that makes the buffer pay full price — incompressible
+ * bytes — was the one never driven.
+ *
+ * CRYPTO-RANDOM, not `Math.random()`: a PRNG's output is incompressible enough, but this test is
+ * about a WORST CASE and `crypto.randomBytes` is the only source here that cannot be argued with.
+ * Base64 rather than raw bytes because `ZippedStreamBuffer.append` takes a string, and base64 of
+ * random bytes is still incompressible (its 6-bit alphabet costs 33% size, which this accounts for
+ * by measuring what is actually appended).
+ *
+ * Deterministic across runs is NOT wanted here and would be a mistake: the point is that no
+ * arrangement of these bytes compresses, and a fixed seed would invite someone to conclude the
+ * measurement holds only for that seed.
+ */
+function incompressibleChunk(): string {
+  return randomBytes(CHUNK).toString('base64');
 }
 
 async function fillBuffers(make: (i: number) => string): Promise<number> {
@@ -139,6 +187,30 @@ describe('FR-R3-081 — aggregate heap and descriptors at the maximum cap', () =
       `[aggregate-soak] no-newline: resident heap delta ${(used / (1024 * 1024)).toFixed(1)} MiB`
     );
     expect(used).toBeLessThan(MEASURED_HEAP_CEILING_BYTES);
+  }, 300_000);
+
+  it('holds resident heap under a MEASURED ceiling on INCOMPRESSIBLE output (FR-R3-114 row 2)', async () => {
+    // The gap row 2 names. This is the only case in the file whose heap cost is the buffer's real
+    // cost rather than gzip's opinion of it, so it gets its own measured ceiling — the shared
+    // 400 MiB was set against compressible fixtures and would be a fiction here.
+    const before = residentHeapBytes();
+    const after = await fillBuffers(() => incompressibleChunk());
+    const used = after - before;
+    const arithmetic = MAX_STREAM_BUFFER_BYTES * CAP * STREAMS_PER_RUN;
+    console.log(
+      `[aggregate-soak] incompressible: ${CAP * STREAMS_PER_RUN} buffers, resident heap delta ` +
+        `${(used / (1024 * 1024)).toFixed(1)} MiB (accepted-input arithmetic would be ` +
+        `${(arithmetic / (1024 * 1024 * 1024)).toFixed(2)} GiB)`
+    );
+    expect(
+      used,
+      `incompressible heap delta ${(used / (1024 * 1024)).toFixed(1)} MiB exceeded the measured ` +
+        `ceiling ${(INCOMPRESSIBLE_HEAP_CEILING_BYTES / (1024 * 1024)).toFixed(0)} MiB. Re-measure ` +
+        'and re-argue; do not raise the number.'
+    ).toBeLessThan(INCOMPRESSIBLE_HEAP_CEILING_BYTES);
+    // Non-vacuity: the load must actually have cost something, or a buffer that silently dropped
+    // its input would pass this by using no memory at all.
+    expect(used, 'incompressible input must cost real heap').toBeGreaterThan(8 * 1024 * 1024);
   }, 300_000);
 
   it('does not leak file descriptors across the load', async () => {

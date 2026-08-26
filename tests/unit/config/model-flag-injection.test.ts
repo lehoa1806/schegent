@@ -34,7 +34,7 @@ const phase = (over: Record<string, unknown> = {}): Record<string, unknown> => (
 
 const errorsFor = (over: Record<string, unknown>) => {
   const result = validatePhaseDefinition(phase(over));
-  return result.errors ?? [];
+  return result.errors;
 };
 
 describe('FR-R3-105 — a flag-shaped model is refused at the validator', () => {
@@ -83,7 +83,7 @@ describe('FR-R3-105 — a flag-shaped model is refused at the validator', () => 
       'model_v2:latest'
     ]) {
       const result = validatePhaseDefinition(phase({ model }));
-      expect(result.errors ?? [], `${model} must be accepted`).toEqual([]);
+      expect(result.errors, `${model} must be accepted`).toEqual([]);
       expect(result.definition?.model, `${model} must not be rewritten`).toBe(model);
     }
   });

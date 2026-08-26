@@ -14,6 +14,16 @@ contracts/**
 !dist/webview/**/*.css
 !resources/**
 .gitignore
+# FR-R3-112 / FR-R3-104 — repository tooling configuration and local observation records. None of
+# these belong in a published extension, and two of them are ACTIVELY harmful there: the secretlint
+# configuration carries a synthetic GitHub token in its allowlist, which `vsce package`'s own
+# scanner correctly refuses to ship, and the two untracked records describe one machine's
+# observation of one tree at one moment. Found by the packaging gate, which read the config as a
+# credential leak — the right verdict about the wrong file being present.
+.secretlintrc.json
+.secretlintignore
+.gate-attestation.json
+.backend-qualification.json
 .nvmrc
 Cargo.lock
 Cargo.toml

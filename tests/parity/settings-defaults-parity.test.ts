@@ -328,6 +328,14 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
     // no KEY_SPECS validator — adding one would give two keys one typed field
     // and let the unset alias's default clobber an explicit new-key value.
     const deprecatedAliasKeys = new Set<string>(['invocation.timeoutSeconds']);
+    // FR-R3-112 — the per-run spend bound. Nullable numbers read at evaluation time by
+    // `src/activation/run-safety-wiring.ts` through `getConfiguration()`, re-read on every
+    // evaluation so an operator who sets a limit mid-run means it for that run. Deliberately NOT
+    // in `KEY_SPECS`: the general-settings IPC surface is workspace-scoped and webview-writable,
+    // and a webview that could raise its own spend bound is not a bound. The JSON schema in
+    // `package.json` plus `SETTINGS_SCHEMA` constrain the value; the same arrangement the trust
+    // scopes above use, and for the same reason.
+    const spendBoundKeys = new Set<string>(['spend.maxUsdPerRun', 'spend.maxTokensPerRun']);
 
     const orphans: string[] = [];
     for (const key of allKeys) {
@@ -339,7 +347,8 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
         multiRootKeys.has(key) ||
         trustScopeKeys.has(key) ||
         uiKeys.has(key) ||
-        deprecatedAliasKeys.has(key);
+        deprecatedAliasKeys.has(key) ||
+        spendBoundKeys.has(key);
       if (!covered) orphans.push(key);
     }
 

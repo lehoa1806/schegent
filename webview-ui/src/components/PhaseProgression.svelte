@@ -4,6 +4,7 @@
   import { phaseDeleteConfirmation, type DeleteConfirmationCopy } from '../lib/deletion-confirmation';
   import { removeTaskPhase } from '../lib/phase-control';
   import { formatDuration } from '../lib/format-duration';
+  import { pauseBadgeLabel, type PauseBadgeCause } from '../lib/pause-labels';
 
   interface Props {
     phases: readonly PhaseTile[];
@@ -16,11 +17,8 @@
     targetsSubjectRun: boolean; // Off-target guard — `PhaseControlMenu` documents it.
     isPrimary?: boolean;
     manualPauseAt?: string | null;
-    manualPauseCause?:
-      | 'operator-paused'
-      | 'queue-paused-mid-run'
-      | 'breakpoint-paused'
-      | null;
+    // Verbatim from the host's `ManualPauseCause`; declared beside the label it drives.
+    manualPauseCause?: PauseBadgeCause;
     phaseOverrides?: readonly { readonly phaseId: string; readonly action: 'skipped' | 'disabled' | 'removed' }[];
     phaseBreakpoints?: readonly { readonly phaseId: string; readonly setAt: string; readonly actor: 'operator' | 'system' }[];
     resumeTargetPhaseId?: string | null;
@@ -53,6 +51,8 @@
   }: Props = $props();
 
   const LARGE_PIPELINE_THRESHOLD = 10;
+
+  const pauseBadgeText = $derived(pauseBadgeLabel(manualPauseCause));
 
   const headerText = $derived(
     (() => {
@@ -132,7 +132,7 @@
       <span class="visually-hidden" data-testid="dashboard-phase-progression-header">{headerText}</span>
       {#if manualPauseAt}
         <div class="manual-pause-badge" data-testid="phase-manual-pause-badge">
-          {manualPauseCause === 'queue-paused-mid-run' ? 'Queue paused' : 'Phase paused'}
+          {pauseBadgeText}
         </div>
       {/if}
     </div>

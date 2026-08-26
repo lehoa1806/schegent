@@ -11,7 +11,10 @@ import { createGitApprovalRequester } from './git-approval';
 import { createHistoryRecorder } from '../services/history-recorder';
 import { MetricsRollupWriter } from '../metrics/metrics-rollup-writer';
 import { TerminalRunRollupRecorder } from '../metrics/terminal-run-rollup-recorder';
+import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { EvidenceHealthReporter } from '../services/evidence-health/evidence-health-monitor';
+import type { Notifier } from '../ui/notifications';
+import { createSpendBoundWatcher } from '../services/spend-bound-watcher';
 import { RunCheckpointService } from '../services/run-checkpoint-service';
 import { RunCheckpointRetentionService } from '../services/run-checkpoint-retention';
 import { RunMutationLedger } from '../services/run-mutation-ledger';
@@ -29,6 +32,8 @@ export async function createRunSafetyWiring(input: {
   sessionRetention: SessionArtifactRetentionService;
   protectedSessionRunIds: () => ReadonlySet<string>;
   evidenceHealth: EvidenceHealthReporter;
+  auditWriter: AuditLogWriter;
+  notifier: Notifier;
 }) {
   // FR-R3-009 — the durable cumulative-totals rollup. Constructed here so the
   // terminal-transition coordinator, which is the single append site, is the only
@@ -86,6 +91,42 @@ export async function createRunSafetyWiring(input: {
   // operator's history rather than with this workspace, and activation must not
   // wait on it. `sweep()` never rejects, so the `void` drops a promise that
   // cannot carry a failure — every fault inside it is already a warning.
+  // FR-R3-112 — the spend bound, observing the one record that carries usage.
+  //
+  // WIRED HERE because this is where the other bounds on a run's behaviour are wired,
+  // and because everything it needs is already here: the store it stamps, the queue's
+  // Run identity, the audit stream it reads, and the operator it tells. The subscription
+  // is disposed with the extension, so a deactivated host stops evaluating.
+  //
+  // The workspace bound is read PER EVALUATION, not captured: an operator who sets a
+  // limit while a run is in flight means it for that run, and a value closed over at
+  // activation would apply the previous window's setting for the rest of the session.
+  const spendWatcher = createSpendBoundWatcher({
+    config: () => {
+      const settings = vscode.workspace.getConfiguration('schegent');
+      return {
+        limitUsd: settings.get<number | null>('spend.maxUsdPerRun', null),
+        limitTokens: settings.get<number | null>('spend.maxTokensPerRun', null)
+      };
+    },
+    findRunById: (runId) => input.store.findRunById(runId),
+    // The same fenced write the operator's own pause makes. An unfenced claim is
+    // refused by the store, which is the correct outcome: a window that has lost
+    // primacy must not stamp another window's Run.
+    pause: async (queueId, run) => {
+      await input.store.setRun(queueId, run, input.store.runCommitClaim(queueId));
+    },
+    // `void`, not returned: `Notifier.warn` resolves when the operator dismisses the notice, and
+    // the watcher's contract is fire-and-forget — awaiting an operator's attention inside a bound
+    // check would stall the next evaluation behind a toast nobody clicked.
+    notify: (message) => {
+      void input.notifier.warn(message);
+    },
+    logger: input.logger,
+    now: () => Date.now()
+  });
+  input.context.subscriptions.push(input.auditWriter.subscribe(spendWatcher.onAuditEntry));
+
   const checkpointRetention = new RunCheckpointRetentionService({
     globalStorageRoot: input.context.globalStorageUri.fsPath,
     logger: input.logger
@@ -94,6 +135,7 @@ export async function createRunSafetyWiring(input: {
   return {
     terminalTransitions,
     mutationLedger,
+    spendWatcher,
     checkpointRetention,
     checkpoints: new RunCheckpointService(
       input.context.globalStorageUri.fsPath,

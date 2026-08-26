@@ -24,6 +24,28 @@ So the clause is amended to what actually answers its concern: a dated record, i
 a reader with the checkout can check. Recorded as an amendment rather than a completion, because the
 original wording is not satisfied and pretending otherwise is the failure this round exists to remove.
 
+## The freshness bound, and what reads it
+
+**A qualification stands for 14 days.** That number is not written here: it is
+`QUALIFICATION_MAX_AGE_MS` in `repo/scripts/backend-qualification.mjs`, and
+`tests/unit/build/backend-qualification.test.ts` fails if this sentence and the constant
+disagree (FR-R3-104, FR-052). The reasoning for fourteen days lives beside the constant.
+
+`npm run release:preflight` refuses a release when the newest record is absent, unreadable,
+undated, older than that bound, taken against a different CLI version than the installed one, or
+taken before a change under `src/runner/`, `src/parser/` or `src/contracts/backend-kinds.ts`. It
+does **not** run on `npm run gate` or `npm run ci`: a live turn costs the operator's own
+subscription quota, and a gate that charges a turn per run is a gate people disable.
+
+### The version-drift decision (FR-055)
+
+Recorded here because the item requires the reason, not just the behaviour:
+
+| Where | On drift | Why |
+|---|---|---|
+| Phase start | **Warns**, in the runtime log and the invocation record | Refusing to run because a CLI was upgraded would strand an operator mid-feature with no path forward, and the upgrade is usually benign. The warning is what makes a later failure diagnosable. |
+| Release preflight | **Refuses**, with the `SCHEGENT_RELEASE_UNQUALIFIED=1` override | A release is a deliberate act with a person present. A *warning* at that moment is read by the same person who has already decided to ship, so it would change nothing. The override exists because "the CLI moved and I still need to ship" is a real position; what it must not be is silent, so taking it prints `RELEASING UNQUALIFIED` and points at this log. |
+
 ## How to add an entry
 
 Run `npm run canary` and paste its output with the date and the platform. It is a **local
@@ -168,3 +190,47 @@ not).
   control in this area.
 - **The ambient-configuration pinning decision** (`--settings`), which `FR-R3-105` deferred because the
   flag's stability cannot be established without a live turn. The observation shipped instead.
+
+---
+
+## 2026-08-27 · FR-R3-104 — the cadence became a gate, and what stayed unqualified
+
+The record the canary writes is now **read by the release path**. `npm run release:preflight`
+refuses when the newest record is absent, unreadable, undated, older than the declared bound, taken
+against a different CLI version than the installed one, or taken before a change under
+`src/runner/`, `src/parser/` or `src/contracts/backend-kinds.ts`. Every refusal arm and the
+override are exercised by `tests/unit/build/backend-qualification.test.ts` — 21 cases, none of
+which spends a live turn, because the decision is pure over its inputs.
+
+**Verified locally, once, on one platform (darwin).** Nothing here says anything about Linux or
+Windows; see `docs/architecture/release-posture-engineering-preview.md`.
+
+### Unqualified, dated, with the reason (FR-057, spec B3)
+
+- **`unqualified` — the live drift scenario end to end.** The gate's version-drift arm is verified
+  against synthetic inputs (`installed 2.2.0` vs `qualified 2.1.246`), and the *whole* path —
+  upgrade a real CLI, run the real canary, watch the real preflight refuse, re-qualify, watch it
+  pass — has not been run. It needs a live turn per qualification, which costs the operator's own
+  subscription quota, and it needs a CLI upgrade to be available at the moment of testing. Recorded
+  as unqualified rather than claimed: the arms are proven, the end-to-end sequence is not.
+  **What that leaves open**: an error in how the record is *written* (as opposed to decided) would
+  be invisible to the pure tests. The record's shape is asserted from the writer's side in
+  `backend-qualification.test.ts`, which narrows this but does not close it.
+- **`unqualified` — the adapters' flag sets against the CLIs' `--help` output.** Still not read;
+  see the entry above, which has recorded this since before the agy incident. FR-R3-104 does not
+  change its status and does not pretend to: no live turn is needed, three installed CLIs and one
+  operator session are, and neither was available in the environment that implemented this item.
+  It remains the cheapest unspent control in this area.
+- **`unqualified` — every backend on this machine, as of this entry.** The qualification record
+  this item introduced does not exist in this checkout: writing it requires `npm run canary`, which
+  spends three live turns. So `npm run release:preflight` will refuse with `no-qualification` until
+  an operator runs the canary. **That refusal is the correct state**, not a defect: the release path
+  now says "nothing has qualified these backends" instead of saying nothing at all.
+
+### The freshness bound in practice
+
+The first canary run after this item lands will qualify the release path for fourteen days. An
+operator who releases more often than fortnightly pays one canary run per fortnight; one who
+releases less often pays one per release. That was the cost the bound was chosen against, and it is
+recorded here so a future change to `QUALIFICATION_MAX_AGE_MS` is a change to a stated trade rather
+than to a number.

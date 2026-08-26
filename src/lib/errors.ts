@@ -147,7 +147,13 @@ export function errorMessage(thrown: unknown): string {
     // `[object Object]`, which is worse than saying nothing because it looks like content.
     const candidate = (thrown as { message?: unknown }).message;
     if (typeof candidate === 'string' && candidate.trim().length > 0) return candidate.trim();
-    return `non-Error object thrown (${thrown.constructor?.name ?? 'unknown type'})`;
+    // The constructor is read through `unknown` rather than optional-chained: TypeScript types
+    // `constructor` as always present, so `?.` reads as dead code to the linter — but an object
+    // created with `Object.create(null)` genuinely has none, and this branch exists for values a
+    // library threw.
+    const ctor: unknown = (thrown as { constructor?: unknown }).constructor;
+    const ctorName = typeof ctor === 'function' ? ctor.name : undefined;
+    return `non-Error object thrown (${ctorName ?? 'unknown type'})`;
   }
   // number, boolean, bigint, symbol, function — all safely stringifiable and all worth naming.
   return `${typeof thrown} thrown: ${String(thrown)}`;

@@ -83,7 +83,15 @@ const VALID_MANUAL_PAUSE_CAUSES: ReadonlySet<ManualPauseCause> = new Set<ManualP
   // the Run would reload without the field the webview Resume control requires.
   // Deliberately not the task-level `'phase-paused'`: this set is what keeps the
   // two vocabularies disjoint, and a test feeds that exact value in to prove it.
-  'verify-paused'
+  'verify-paused',
+  // FR-R3-112 — the spend bound. Listed here for the reason the note above gives, and it is not
+  // hypothetical for this cause: a run paused for spend is paused across a host restart by
+  // definition — nobody resumes a budget pause in the same second — so this is the value most
+  // likely to be read back off disk. Omitted, it would parse to null, `manualPausePairInvariant`
+  // would zero `manualPauseAt` with it, and the run would reload without the field the Resume
+  // control requires. Additive, so no version bump: no record written before the bound existed
+  // can carry it.
+  'spend-bound-reached'
 ]);
 
 const VALID_BREAKPOINT_ACTORS: ReadonlySet<'operator' | 'system'> = new Set<'operator' | 'system'>([

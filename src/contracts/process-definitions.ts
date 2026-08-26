@@ -183,6 +183,21 @@ interface PhaseDefinitionBase {
    */
   readonly capabilities?: readonly PhaseCapability[];
   readonly timeoutSeconds?: number;
+  /**
+   * FR-R3-112 — the per-phase spend bound, in US dollars, overriding the
+   * workspace default while this phase runs.
+   *
+   * TWO FIELDS RATHER THAN ONE, because a single number cannot carry two units.
+   * `codex` and `agy` report tokens and no cost at all (FR-R3-098 left cost
+   * ABSENT there rather than derived from a rate card nobody published), so a
+   * lone `spendBound: 5` would mean five dollars on one backend and five tokens
+   * on another — a bound that pauses instantly on two of the three backends. The
+   * denomination is derived from what the backend reports; which of these two
+   * figures it consults follows from that.
+   */
+  readonly spendBoundUsd?: number;
+  /** FR-R3-112 — the same bound, for backends that report tokens and no cost. */
+  readonly spendBoundTokens?: number;
   readonly loopable?: boolean;
   readonly retryCondition?: string;
   readonly isRequired?: boolean;

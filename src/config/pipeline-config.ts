@@ -39,6 +39,10 @@ export interface PhaseDef {
   readonly model?: string;
   readonly effort?: Effort;
   readonly timeoutSeconds?: number;
+  /** FR-R3-112 — per-phase spend bound in USD; see `PhaseDefinitionBase`. */
+  readonly spendBoundUsd?: number;
+  /** FR-R3-112 — per-phase spend bound in tokens, for backends reporting no cost. */
+  readonly spendBoundTokens?: number;
   readonly loopable?: boolean;
   readonly retryCondition?: string;
   readonly isRequired?: boolean;

@@ -303,7 +303,14 @@ export function decideBackendState({ versionProbe, liveProbe, expectedVersionPre
  * invocation exists. An empty-string credential is absent.
  */
 export function runnerBackendResult({ backend, versionProbe, liveProbe, expectedVersionPrefix }) {
-  return { backend, ...decideBackendState({ versionProbe, liveProbe, expectedVersionPrefix }) };
+  return {
+    backend,
+    // FR-R3-104 (FR-056) — the observed version as a FIELD, not only inside `detail`'s
+    // sentence. The qualification record has to name the versions it qualified, and parsing
+    // that out of prose would make the record's accuracy depend on the wording of a message.
+    observedVersion: typeof versionProbe?.version === 'string' ? versionProbe.version : null,
+    ...decideBackendState({ versionProbe, liveProbe, expectedVersionPrefix })
+  };
 }
 
 /**

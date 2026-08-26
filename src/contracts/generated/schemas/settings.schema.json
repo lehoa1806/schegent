@@ -502,6 +502,30 @@
           "itemPattern": null
         },
         {
+          "key": "schegent.spend.maxTokensPerRun",
+          "type": "number|null",
+          "default": null,
+          "scope": "resource",
+          "enum": null,
+          "minimum": 1,
+          "maximum": null,
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
+        },
+        {
+          "key": "schegent.spend.maxUsdPerRun",
+          "type": "number|null",
+          "default": null,
+          "scope": "resource",
+          "enum": null,
+          "minimum": 0.01,
+          "maximum": null,
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
+        },
+        {
           "key": "schegent.trust.allowCustomPhases",
           "type": "boolean|null",
           "default": null,

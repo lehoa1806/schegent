@@ -106,6 +106,10 @@ interface PhaseYamlSpecBase {
   readonly model?: string;
   readonly effort?: PhaseDefinitionEffort;
   readonly timeoutSeconds?: number;
+  /** FR-R3-112 — the per-phase spend bound, in USD. */
+  readonly spendBoundUsd?: number;
+  /** FR-R3-112 — the same bound in tokens, for backends that report no cost. */
+  readonly spendBoundTokens?: number;
   readonly loopable?: boolean;
   readonly isRequired?: boolean;
   readonly forceContinueOnRetryCap?: boolean;

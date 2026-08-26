@@ -7,6 +7,13 @@
 // same reason: an unanswerable check is a refusal, not a pass.
 import { readFileSync } from 'node:fs';
 import { ATTESTATION_PATH, decideRelease, readTreeState } from './gate-attestation.mjs';
+import {
+  DRIFT_OVERRIDE_ENV,
+  changedQualificationPaths,
+  decideQualification,
+  probeInstalledVersions,
+  readQualification
+} from './backend-qualification.mjs';
 
 function readAttestation() {
   let raw;
@@ -38,3 +45,36 @@ if (!verdict.ok) {
   process.exit(1);
 }
 console.log(`require-local-gate: ${verdict.message}`);
+
+// FR-R3-104 (FR-051, FR-053, FR-055, FR-058) — the second binding: the gate attestation says the
+// verification suite passed on this tree, and it says nothing about whether the three third-party
+// CLIs this product drives still speak the protocol the adapters parse. Every fixture in the eval
+// corpus is a recording of the OLD protocol, so protocol drift is invisible to the whole suite.
+//
+// HERE AND NOT IN `npm run gate`, because qualification costs live turns on the operator's own
+// subscription. A release is a deliberate act with a person present; `ci` is not.
+//
+// REFUSES, WITH AN OVERRIDE, and the reason for that shape rather than a warning: a warning at
+// release time is read by the same person who is about to type `npm publish` and has already
+// decided to. The override exists because "the CLI moved and I still need to ship" is a real
+// position an operator may take; what it must not be is silent, so taking it prints
+// RELEASING UNQUALIFIED and points at the log entry FR-057 requires.
+const qualification = readQualification();
+const qualificationVerdict = decideQualification({
+  record: qualification,
+  head,
+  installedVersions: probeInstalledVersions(),
+  changedPaths: changedQualificationPaths(qualification?.commit, head),
+  now: new Date().toISOString(),
+  overrideRequested: process.env[DRIFT_OVERRIDE_ENV] === '1'
+});
+
+if (!qualificationVerdict.ok) {
+  console.error(
+    `require-local-gate: REFUSED (${qualificationVerdict.reason})\n  ${qualificationVerdict.message}\n` +
+      `  To release anyway, set ${DRIFT_OVERRIDE_ENV}=1 and record the unqualified release in ` +
+      'docs/release/backend-qualification-log.md.'
+  );
+  process.exit(1);
+}
+console.log(`require-local-gate: ${qualificationVerdict.message}`);

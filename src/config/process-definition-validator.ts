@@ -30,6 +30,19 @@ export const PHASE_TIMEOUT_MIN = 1;
 export const PHASE_TIMEOUT_MAX = 3600;
 
 /**
+ * FR-R3-112 — bounds on the authored per-phase spend override.
+ *
+ * A ceiling as well as a floor, for the same reason every other authored bound has
+ * one: an operator-imported document controls this value, and a bound of
+ * `Number.MAX_VALUE` is a bound that never fires while reading as governance. The
+ * ceilings are deliberately generous — they refuse absurdity, not ambition.
+ */
+export const PHASE_SPEND_USD_MIN = 0.01;
+export const PHASE_SPEND_USD_MAX = 10_000;
+export const PHASE_SPEND_TOKENS_MIN = 1;
+export const PHASE_SPEND_TOKENS_MAX = 1_000_000_000;
+
+/**
  * FR-R3-105 — the argv boundary. Every authored field falls in exactly one of three
  * classes, and `tests/lint/argv-field-partition.test.ts` asserts the three cover
  * `AUTHORED_PHASE_FIELDS` exactly.
@@ -78,6 +91,12 @@ export const AUTHORED_PHASE_FIELDS: ReadonlySet<string> = new Set([
   'model',
   'effort',
   'timeoutSeconds',
+  // FR-R3-112 — the per-phase spend override. Two fields because the bound has two
+  // denominations; see `PhaseDefinitionBase.spendBoundUsd`. Both land in the
+  // implicit third argv class: neither reaches a command line, and
+  // `argv-field-partition` asserts that claim against the adapters.
+  'spendBoundUsd',
+  'spendBoundTokens',
   'loopable',
   'retryCondition',
   'isRequired',
@@ -128,6 +147,44 @@ function fieldError(
     code: bounded(code, ERROR_CODE_MAX),
     message: bounded(message, ERROR_MESSAGE_MAX)
   });
+}
+
+/**
+ * FR-R3-112 — one bound check for both spend fields.
+ *
+ * Written once rather than twice because the only difference between them is
+ * whether the figure is a whole number: dollars are not, tokens are. Two copies of
+ * the same range check is how the USD field and the token field come to disagree
+ * about what "out of range" means, and the refusal must name the field either way.
+ */
+function boundedSpend(
+  value: unknown,
+  field: 'spendBoundUsd' | 'spendBoundTokens',
+  min: number,
+  max: number,
+  integral: boolean,
+  phaseId: string,
+  errors: PhaseFieldError[]
+): number | undefined {
+  if (value === undefined) return undefined;
+  const valid =
+    typeof value === 'number' &&
+    Number.isFinite(value) &&
+    (!integral || Number.isInteger(value)) &&
+    value >= min &&
+    value <= max;
+  if (!valid) {
+    errors.push(
+      fieldError(
+        phaseId,
+        field,
+        'invalid-range',
+        `Phase ${field} must be ${integral ? 'an integer' : 'a number'} from ${min} to ${max}`
+      )
+    );
+    return undefined;
+  }
+  return value;
 }
 
 function recognizedDisplay(raw: Record<string, unknown>): Readonly<Record<string, unknown>> {
@@ -480,6 +537,25 @@ export function validatePhaseDefinition(
     }
   }
 
+  const spendBoundUsd = boundedSpend(
+    value.spendBoundUsd,
+    'spendBoundUsd',
+    PHASE_SPEND_USD_MIN,
+    PHASE_SPEND_USD_MAX,
+    false,
+    phaseId,
+    errors
+  );
+  const spendBoundTokens = boundedSpend(
+    value.spendBoundTokens,
+    'spendBoundTokens',
+    PHASE_SPEND_TOKENS_MIN,
+    PHASE_SPEND_TOKENS_MAX,
+    true,
+    phaseId,
+    errors
+  );
+
   const loopable = value.loopable;
   if (loopable !== undefined && typeof loopable !== 'boolean') {
     errors.push(fieldError(phaseId, 'loopable', 'boolean-required', 'Phase loopable must be boolean'));
@@ -571,6 +647,8 @@ export function validatePhaseDefinition(
     ...(model !== undefined ? { model } : {}),
     ...(effort !== undefined ? { effort } : {}),
     ...(timeoutSeconds !== undefined ? { timeoutSeconds } : {}),
+    ...(spendBoundUsd !== undefined ? { spendBoundUsd } : {}),
+    ...(spendBoundTokens !== undefined ? { spendBoundTokens } : {}),
     ...(typeof loopable === 'boolean' ? { loopable } : {}),
     ...(retryCondition !== undefined ? { retryCondition } : {}),
     ...(typeof isRequired === 'boolean' ? { isRequired } : {}),

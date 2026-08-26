@@ -149,8 +149,12 @@ export function planCapabilityEnforcement(
   for (const capability of withheld) {
     const flags = surface.withhold[capability];
     if (flags === undefined) continue;
-    const [flag, ...values] = flags;
+    // `.at(0)` rather than destructuring: the head of a readonly array is TYPED as present while
+    // an empty declaration genuinely yields `undefined`, and `at` is the read whose type says so.
+    // A withhold entry with no flag narrows nothing, and skipping it is the correct answer.
+    const flag = flags.at(0);
     if (flag === undefined) continue;
+    const values = flags.slice(1);
     if (values.length === 0) {
       if (!bare.includes(flag)) bare.push(flag);
       continue;

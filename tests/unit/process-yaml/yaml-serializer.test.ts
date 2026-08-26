@@ -102,6 +102,11 @@ describe('yaml-serializer — property order (FR-017)', () => {
       'model',
       'effort',
       'timeoutSeconds',
+      // FR-R3-112 — the per-phase spend bound, both denominations. Pinned here because this
+      // literal is the whole authored spec surface in one place: a field that reached the format
+      // without passing through this list would be authorable and unpinned.
+      'spendBoundUsd',
+      'spendBoundTokens',
       'loopable',
       'isRequired',
       'forceContinueOnRetryCap',
