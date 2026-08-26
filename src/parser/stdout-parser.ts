@@ -1,4 +1,5 @@
 import type { AuditEntryFields } from '../audit/audit-entry';
+import type { PhaseEvidencePolicy } from '../contracts/process-definitions';
 import {
   classifyFatal,
   type EffectiveSignature,
@@ -241,6 +242,61 @@ function extractBulletsAfter(stdout: string, headingRegex: RegExp): string[] {
 
 import type { ApiErrorMetadata } from './stream-json-unwrapper';
 
+/**
+ * Record a missing audit block at the volume the Phase asked for.
+ *
+ * `'required'` is the default and today's behaviour, unchanged: the absence is a
+ * constitution violation and is warned about. `'best-effort'` records it as an
+ * expectation that was not met rather than a rule that was broken. `'none'`
+ * declares that this Phase produces no audit block, so its absence is not news
+ * and no warning is written.
+ *
+ * Every branch still ADVANCES exactly as before. This chooses what is said about
+ * the absence, not what follows from it — see `ParseInputs.evidencePolicy` for
+ * why the field cannot tighten.
+ */
+/**
+ * One missing-audit warning, at the volume the Phase asked for, or `null` to drop
+ * it. Warnings about anything else pass through untouched.
+ */
+function relabelMissingAuditWarning(
+  warning: string,
+  policy: PhaseEvidencePolicy | undefined
+): string | null {
+  const relaxed = RELAXED_MISSING_AUDIT.get(warning);
+  if (relaxed === undefined) return warning;
+  const effective = policy ?? 'required';
+  if (effective === 'none') return null;
+  return effective === 'best-effort' ? relaxed : warning;
+}
+
+/**
+ * The `best-effort` spelling of each `required` missing-audit warning.
+ *
+ * A `Map` rather than an object literal because the lookup is genuinely partial —
+ * most warnings passing through here are about something else entirely — and
+ * `Record<string, string>` would have TypeScript believe every key hits. Not a
+ * style preference: it made the `undefined` check below read as dead code, which
+ * `no-unnecessary-condition` correctly flagged. `.get()` returns
+ * `string | undefined`, so the check is load-bearing and now says so.
+ */
+const RELAXED_MISSING_AUDIT: ReadonlyMap<string, string> = new Map([
+  ['[constitution] missing audit log', '[evidence] audit log absent, best-effort'],
+  [
+    '[constitution] missing audit log on clean response',
+    '[evidence] audit log absent on clean response, best-effort'
+  ]
+]);
+
+function pushMissingAuditWarning(
+  warnings: string[],
+  policy: PhaseEvidencePolicy | undefined,
+  requiredText: '[constitution] missing audit log' | '[constitution] missing audit log on clean response'
+): void {
+  const relabelled = relabelMissingAuditWarning(requiredText, policy);
+  if (relabelled !== null && !warnings.includes(relabelled)) warnings.push(relabelled);
+}
+
 export interface ParseInputs {
   stdout: string;
   stderr: string;
@@ -248,6 +304,20 @@ export interface ParseInputs {
   rateLimit: { matched: boolean; cause: string };
   auditEntry: AuditEntryFields | null;
   auditWarnings: string[];
+  /**
+   * FR-R3-086 follow-up (S12) — the Phase's declared evidence policy.
+   *
+   * It governs how the ABSENCE of an audit block is REPORTED. It does not gate
+   * advancement, and the reason is specific rather than an oversight:
+   * `pipeline-snapshot.ts` has always resolved omission to `'required'`, so that
+   * value is already baked into every snapshot ever written. Giving it teeth
+   * would retroactively tighten every one of them, including runs mid-flight.
+   * The field can therefore only relax from the default, never tighten.
+   *
+   * Optional, defaulting to `'required'`, so every existing caller and every
+   * persisted snapshot behaves exactly as before.
+   */
+  evidencePolicy?: PhaseEvidencePolicy | undefined;
   apiError?: ApiErrorMetadata | null;
   /**
    * Feature 011 FR-033 — operator-additive fatal signatures merged with
@@ -282,7 +352,14 @@ export interface ParseInputs {
 }
 
 export function parseInvocation(inputs: ParseInputs): InvocationResult {
-  const warnings = [...inputs.auditWarnings];
+  // S12 — the policy is applied at the MERGE, not at one push site. The
+  // "missing audit log" warning has two independent producers: this module and
+  // `audit-log-parser.ts`, which reaches here through `inputs.auditWarnings`. A
+  // policy that gated only the local push would leave `'none'` still warning,
+  // which is what the first run of the S12 tests found.
+  const warnings = inputs.auditWarnings.map((warning) =>
+    relabelMissingAuditWarning(warning, inputs.evidencePolicy)
+  ).filter((warning): warning is string => warning !== null);
 
   // Feature 010 — FR-001/002/006: fatal classification runs BEFORE any
   // other detection (including rate-limit). A registered signature in
@@ -382,7 +459,7 @@ export function parseInvocation(inputs: ParseInputs): InvocationResult {
   // the variants gained the field, wrote to an array nobody read.
   if (blocksPresent === 0) {
     if (!inputs.auditEntry) {
-      warnings.push('[constitution] missing audit log');
+      pushMissingAuditWarning(warnings, inputs.evidencePolicy, '[constitution] missing audit log');
     }
     return {
       kind: 'remaining_issues',
@@ -415,7 +492,11 @@ export function parseInvocation(inputs: ParseInputs): InvocationResult {
 
   if (tokenMatched) {
     if (!inputs.auditEntry) {
-      warnings.push('[constitution] missing audit log on clean response');
+      pushMissingAuditWarning(
+        warnings,
+        inputs.evidencePolicy,
+        '[constitution] missing audit log on clean response'
+      );
       return { kind: 'clean', auditEntry: null, warnings };
     }
     return { kind: 'clean', auditEntry: inputs.auditEntry, warnings };

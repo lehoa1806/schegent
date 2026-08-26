@@ -565,6 +565,7 @@ export class PhaseRunner {
       rateLimit,
       auditEntry: audit.entry,
       auditWarnings: audit.warnings,
+      evidencePolicy: inputs.phaseDef?.evidencePolicy, // S12 — its first reader
       region: audit.region, // FR-003 — bounds where a token may be read; see T25
       effectiveFatalSignatures,
       apiError: unwrappedStream.apiError,

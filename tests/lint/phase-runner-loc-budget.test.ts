@@ -9,6 +9,13 @@ import { resolve } from 'node:path';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 //
+// Post-155 (S12) — +1, to 1028, for `evidencePolicy`'s FIRST READER. The field
+// was validated, persisted, snapshotted and exported, and no code path consulted
+// it; one line in the shell forwards it to the parser that now does. Written as a
+// plain property rather than the spread-conditional this file favours, because
+// the conditional form cost four lines to say the same thing and the parser's
+// field accepts an explicit `undefined` for exactly that reason.
+//
 // Post-155 — phase-runner.ts HELD at 1027, not raised. The seam gate added after
 // the security review found that `phaseDef.timeoutSeconds` was recorded at three
 // sites in this file and applied at none: an authored per-phase bound that four
@@ -169,7 +176,7 @@ const BUDGETS = [
   // and the fold into the phase-end warnings with the reason the codes are
   // drained rather than read. Nothing to extract: the fold is where the
   // warnings are assembled.
-  { path: 'src/controller/phase-runner.ts', max: 1_027 },
+  { path: 'src/controller/phase-runner.ts', max: 1_028 },
   // FR-R3-052 / H-03 (2026-08-24) — 400 → 415 for the size check that was
   // missing. `stat()` was already called here and only `isFile()` was read, so
   // `readFile()` took a multi-GiB sidecar wholly into memory. The bound, the

@@ -67,22 +67,33 @@ export type PhaseSideEffects = (typeof PHASE_SIDE_EFFECTS)[number];
 /**
  * What an author says about the evidence this Phase owes.
  *
- * **A DECLARATION, and not yet enforcement.** The value is validated, persisted,
- * frozen into the plan snapshot and carried through the portable exchange format,
- * and no code path branches on it: `required`, `best-effort` and `none` classify a
- * Phase identically today. `tests/lint/authored-fields-have-readers.test.ts` found
- * that, and holds this note in place — the field cannot quietly gain or lose an
- * effect without that gate saying so.
+ * **It governs how the ABSENCE of an audit block is REPORTED, and nothing else.**
+ * All three values still advance the Phase identically; what differs is what the
+ * record says about a missing block:
  *
- * Stated here rather than left to be discovered because the previous wording said
- * this axis "asks whether an audit block must be present", which reads as a
- * mechanism. Nothing asks. That gap is the class `R-14`, `D2` and `F-08` all
- * belong to, and the correction is the same one those took: say what the code
- * does.
+ *   * `'required'` — the default. A missing block is a constitution violation and
+ *     is warned about. This is the historical behaviour, unchanged.
+ *   * `'best-effort'` — recorded as an expectation not met rather than a rule
+ *     broken.
+ *   * `'none'` — this Phase produces no audit block, so its absence is not news
+ *     and no warning is written.
  *
- * Enforcing it would change which Phases advance — the most safety-critical
- * decision the host makes — so it is recorded open rather than implemented in
- * passing.
+ * **Why it cannot gate advancement, which is a fact about the data rather than a
+ * preference.** `config/pipeline-snapshot.ts` has always resolved omission to
+ * `'required'`, so that value is already written into every snapshot ever taken by
+ * every Phase that never declared one. Giving `'required'` teeth would
+ * retroactively tighten all of them, including runs in flight, on a decision — what
+ * advances a Phase — where a silent retroactive change is the worst possible kind.
+ * So the field relaxes from the default and never tightens.
+ *
+ * Gating advancement on declared evidence remains **open**, owed its own item and
+ * a migration for the baked-in default. Recorded rather than attempted here.
+ *
+ * *History:* until 2026-08-26 no code path read this field at all — all three
+ * values classified a Phase identically — while this comment said the axis "asks
+ * whether an audit block must be present". `tests/lint/authored-fields-have-readers.test.ts`
+ * found that and now holds both halves in place: the field cannot lose its reader,
+ * and it cannot regain a note claiming it has none.
  */
 export const PHASE_EVIDENCE_POLICIES = ['required', 'best-effort', 'none'] as const;
 export type PhaseEvidencePolicy = (typeof PHASE_EVIDENCE_POLICIES)[number];

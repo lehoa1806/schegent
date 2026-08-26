@@ -12,6 +12,7 @@
  * `tests/unit/controller/warning-delivery.test.ts`, asserts they arrive in the
  * persisted audit entry — construction is not delivery.
  */
+import { RECORDABLE_PHASE_END_WARNINGS } from '../../../src/audit/audit-payload';
 import { describe, it, expect } from 'vitest';
 import { parseAuditLogBlock } from '../../../src/parser/audit-log-parser';
 import { parseInvocation, type InvocationResult, type ParseInputs } from '../../../src/parser/stdout-parser';
@@ -170,5 +171,87 @@ describe('failClosedOnTruncatedOutput preserves warnings (FR-032)', () => {
     const twice = failClosedOnTruncatedOutput(once, true);
 
     expect(warningsOf(twice)?.filter((w) => w === OUTPUT_TRUNCATED_WARNING)).toHaveLength(1);
+  });
+});
+
+// FR-R3-086 follow-up (S12) — `evidencePolicy`'s first reader.
+//
+// The field was validated, persisted, frozen into the plan snapshot, carried
+// through the portable exchange format and projected to the UI, and NO code path
+// branched on it: all three settings classified a Phase identically. That is what
+// `tests/lint/authored-fields-have-readers.test.ts` was built to catch, and what
+// it caught.
+//
+// WHAT IT CAN AND CANNOT DO, and the limit is a fact about the data rather than a
+// design preference. `pipeline-snapshot.ts` has always resolved omission to
+// `'required'`, so that value is already written into every snapshot ever taken.
+// Giving `'required'` teeth would retroactively tighten all of them, including
+// runs mid-flight. So the field RELAXES from the default and never tightens: it
+// governs how the absence of an audit block is REPORTED, and every branch still
+// advances exactly as it did before.
+describe('evidencePolicy governs how a missing audit block is reported (S12)', () => {
+  const MISSING_ON_CLEAN = '[constitution] missing audit log on clean response';
+  const RELAXED_ON_CLEAN = '[evidence] audit log absent on clean response, best-effort';
+
+  it('required — the default, and today’s behaviour unchanged', () => {
+    // Asserted against BOTH spellings of the default: an explicit `required` and
+    // an omitted field. A change that moved only one of them would be a change to
+    // every already-persisted snapshot, and this is what would notice.
+    for (const overrides of [{ evidencePolicy: 'required' as const }, {}]) {
+      const result = parse(TOKEN, overrides);
+      expect(result.kind).toBe('clean');
+      expect(warningsOf(result)).toContain(MISSING_ON_CLEAN);
+    }
+  });
+
+  it('best-effort — recorded as an expectation unmet, not a rule broken', () => {
+    const result = parse(TOKEN, { evidencePolicy: 'best-effort' });
+    expect(result.kind).toBe('clean');
+    expect(warningsOf(result)).toContain(RELAXED_ON_CLEAN);
+    expect(warningsOf(result)).not.toContain(MISSING_ON_CLEAN);
+  });
+
+  it('none — the Phase declares it produces no audit block, so absence is not news', () => {
+    const result = parse(TOKEN, { evidencePolicy: 'none' });
+    expect(result.kind).toBe('clean');
+    expect(warningsOf(result)).not.toContain(MISSING_ON_CLEAN);
+    expect(warningsOf(result)).not.toContain(RELAXED_ON_CLEAN);
+  });
+
+  it('advances identically under all three, which is the whole safety property', () => {
+    // The field must not change what follows from the absence, only what is said
+    // about it. If this ever diverges, a persisted `required` has gained teeth.
+    const kinds = (['required', 'best-effort', 'none'] as const).map(
+      (evidencePolicy) => parse(TOKEN, { evidencePolicy }).kind
+    );
+    expect(new Set(kinds).size).toBe(1);
+    expect(kinds[0]).toBe('clean');
+  });
+
+  it('reports the no-contract-block path at the same three volumes', () => {
+    const noBlock = 'the model said nothing structured';
+    expect(warningsOf(parse(noBlock, { evidencePolicy: 'required' }))).toContain(
+      '[constitution] missing audit log'
+    );
+    expect(warningsOf(parse(noBlock, { evidencePolicy: 'best-effort' }))).toContain(
+      '[evidence] audit log absent, best-effort'
+    );
+    expect(warningsOf(parse(noBlock, { evidencePolicy: 'none' }))).not.toContain(
+      '[constitution] missing audit log'
+    );
+  });
+
+  it('every warning it can emit is recordable in the audit payload', () => {
+    // A warning the payload cannot name degrades to `omittedWarningCount`, and
+    // "something was warned about" is precisely the record this round keeps
+    // finding too weak to act on.
+    for (const warning of [
+      MISSING_ON_CLEAN,
+      RELAXED_ON_CLEAN,
+      '[constitution] missing audit log',
+      '[evidence] audit log absent, best-effort'
+    ]) {
+      expect(RECORDABLE_PHASE_END_WARNINGS.has(warning), warning).toBe(true);
+    }
   });
 });
