@@ -299,6 +299,13 @@ export const RECORDABLE_PHASE_END_WARNINGS: ReadonlySet<string> = new Set([
   // src/parser/stdout-parser.ts
   '[constitution] multiple contract blocks',
   '[constitution] missing audit log on clean response',
+  // FR-R3-086 follow-up (S12) — the same two absences at `best-effort` volume.
+  // Recordable for the same reason the two above are: a warning the payload
+  // cannot name degrades to `omittedWarningCount`, and an absence of evidence
+  // that is recorded as "something was warned about" is exactly the record this
+  // round keeps finding too weak to act on.
+  '[evidence] audit log absent, best-effort',
+  '[evidence] audit log absent on clean response, best-effort',
   // src/controller/phase-runner.ts — FR-R3-047 (H-04). Without this code the
   // record would say `outcome: 'failed'` / `terminationReason: 'error'` with no
   // stated cause, which is the exact shape that made a real 2026-08-16 failure

@@ -64,15 +64,11 @@ const DECLARATORY: Readonly<Record<string, string>> = {
   loopable:
     'DEPRECATED and knowingly unread. `transition()` has never consulted it when handed a phase ' +
     'definition, and `run-planned-total.ts` records that at the code: the loop is decided by ' +
-    '`retryCondition`. Kept in the shape so a caller holding an older PhaseDef type-checks.',
-  evidencePolicy:
-    'DECLARATION ONLY, and not yet enforcement. Validated, persisted, snapshotted and carried ' +
-    'through the exchange format; no code path branches on its value, so `required`, ' +
-    '`best-effort` and `none` currently classify a Phase identically. Found by this gate. ' +
-    'Enforcing it would change which Phases advance — the most safety-critical decision the host ' +
-    'makes — so it is recorded as open rather than implemented in passing. See ' +
-    '`docs/features/custom-phases.md` and the contract, both of which now say this rather than ' +
-    'implying a mechanism.'
+    '`retryCondition`. Kept in the shape so a caller holding an older PhaseDef type-checks.'
+  // `evidencePolicy` was listed here until 2026-08-26 and has a reader now. The
+  // removal is the interesting part: the gate's REVERSE direction is what forced
+  // it. A field listed here that quietly gains an effect would otherwise carry a
+  // note saying the host ignores it, and a reader would trust that note.
 };
 
 function sourceFiles(dir: string, acc: string[] = []): string[] {

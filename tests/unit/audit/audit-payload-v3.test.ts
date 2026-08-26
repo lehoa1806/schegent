@@ -127,6 +127,14 @@ describe('phase-end warning vocabulary', () => {
       '[constitution] missing audit log on clean response',
       '[constitution] multiple contract blocks',
       '[constitution] unterminated audit log',
+      // FR-R3-086 follow-up (S12). The `best-effort` spelling of the two
+      // missing-audit warnings above. Recordable for the same reason they are: a
+      // warning this payload cannot name degrades to `omittedWarningCount`, and
+      // "something was warned about" is exactly the record this round keeps
+      // finding too weak to act on. The `none` policy emits nothing, so it adds
+      // no member — an absence declared in advance is not an event.
+      '[evidence] audit log absent on clean response, best-effort',
+      '[evidence] audit log absent, best-effort',
       // FR-R3-080 (T1076). Five code-resident literals, one per evidence sink,
       // composed by `pathRefusedWarning` from a closed sink-name union — never
       // by splicing a path or an errno onto a prefix. Enumerated as a set rather
