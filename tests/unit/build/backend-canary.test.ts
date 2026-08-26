@@ -27,24 +27,20 @@ describe('the backend canary reports what it actually established', () => {
   it('reports ok when the version probe and the live probe both pass', () => {
     const verdict = canary.decideBackendState({
       versionProbe: version('1.2.3'),
-      liveProbe: { ok: true },
-      credentialPresent: true
+      liveProbe: { ok: true }
     });
     expect(verdict.state).toBe('ok');
   });
 
-  it('reports skipped-no-credentials, and says the run made no behavioural claim', () => {
-    // The most common state in practice, and the one that must never read as a
-    // pass. A canary that reports success because it did nothing is worse than
-    // one that does not run.
+  it('reports skipped-not-authenticated, and says the run made no behavioural claim', () => {
     const verdict = canary.decideBackendState({
       versionProbe: version('1.2.3'),
-      liveProbe: null,
-      credentialPresent: false
+      liveProbe: { ok: false, notAuthenticated: true, detail: 'not signed in' }
     });
-    expect(verdict.state).toBe('skipped-no-credentials');
-    expect(verdict.detail).toContain('NOT run');
-    expect(verdict.detail).toContain('says nothing about protocol');
+    expect(verdict.state).toBe('skipped-not-authenticated');
+    for (const unestablished of ['protocol', 'auth', 'prompt', 'cost']) {
+      expect(verdict.detail).toContain(unestablished);
+    }
   });
 
   it('reports unavailable when the CLI is absent, not drifted', () => {
@@ -69,8 +65,7 @@ describe('the backend canary reports what it actually established', () => {
   it('reports drift when the live probe fails', () => {
     const verdict = canary.decideBackendState({
       versionProbe: version('1.2.3'),
-      liveProbe: { ok: false, detail: 'auth rejected' },
-      credentialPresent: true
+      liveProbe: { ok: false, detail: 'auth rejected' }
     });
     expect(verdict.state).toBe('drifted');
     expect(verdict.detail).toContain('auth rejected');
@@ -88,7 +83,7 @@ describe('the backend canary reports what it actually established', () => {
 
   it('says in its report that a degraded run qualified nothing', () => {
     const report = canary.formatReport([
-      { backend: 'claude', state: 'skipped-no-credentials', detail: 'd' },
+      { backend: 'claude', state: 'skipped-not-authenticated', detail: 'd' },
       { backend: 'codex', state: 'drifted', detail: 'd' }
     ]);
     expect(report).toContain('version probe only');
@@ -107,53 +102,90 @@ describe('the backend canary reports what it actually established', () => {
  * input it can receive reaches `ok`.
  */
 describe('the runner cannot report a pass it did not run', () => {
-  // Every input the runner can hand the decision: the credential env var is
-  // unset, empty, or set; the version probe succeeded, failed, or never ran.
-  const credentialValues: Array<string | undefined> = [undefined, '', 'a-real-looking-secret'];
+  // REWRITTEN 2026-08-26. This block used to assert that `ok` was unreachable
+  // from every runner-reachable input, because no live invocation existed. One
+  // does now, it has been run by hand against two authenticated CLIs, and `ok` is
+  // reachable on purpose. Asserting it is still unreachable would pin the absence
+  // of the feature rather than the safety of it.
+  //
+  // What still holds, and is what actually mattered: `ok` requires BOTH a
+  // positive authentication answer and a real live-probe result. Neither alone,
+  // and neither fabricated.
   const versionProbes = [version('1.2.3'), { ok: false, detail: 'ENOENT' }, null];
 
-  it('never reports ok from any runner-reachable input', () => {
-    for (const credentialValue of credentialValues) {
-      for (const versionProbe of versionProbes) {
-        const verdict = canary.runnerBackendResult({
-          backend: 'claude',
-          versionProbe,
-          credentialValue
-        });
-        expect(verdict.state).not.toBe('ok');
-        expect(canary.PROBE_STATES).toContain(verdict.state);
-      }
+  it('never reports ok without a live probe result', () => {
+    for (const versionProbe of versionProbes) {
+      const verdict = canary.runnerBackendResult({ backend: 'claude', versionProbe });
+      expect(verdict.state).not.toBe('ok');
+      expect(canary.PROBE_STATES).toContain(verdict.state);
     }
   });
 
-  it('names what a credentialed skip leaves unestablished', () => {
+  it('never reports ok without a live probe result', () => {
+    // `ok` is a claim that a turn completed. Nothing but a real live result may
+    // produce it — the defect this block was originally written for was a
+    // fabricated probe result attached to a phase that never ran.
+    for (const versionProbe of versionProbes) {
+      const verdict = canary.runnerBackendResult({ backend: 'claude', versionProbe });
+      expect(verdict.state).not.toBe('ok');
+      expect(canary.PROBE_STATES).toContain(verdict.state);
+    }
+  });
+
+  it('reports ok only from a real live probe result', () => {
     const verdict = canary.runnerBackendResult({
       backend: 'claude',
       versionProbe: version('1.2.3'),
-      credentialValue: 'a-real-looking-secret'
+      liveProbe: { ok: true, detail: 'answered in 6 chars' }
     });
-    expect(verdict.state).toBe('skipped-no-live-path');
-    expect(verdict.detail).toContain('credential is present');
-    expect(verdict.detail).toContain('no live invocation is implemented');
+    expect(verdict.state).toBe('ok');
+  });
+
+  it('names what an unauthenticated skip leaves unestablished', () => {
+    const verdict = canary.runnerBackendResult({
+      backend: 'agy',
+      versionProbe: version('1.2.3'),
+      liveProbe: { ok: false, notAuthenticated: true, detail: 'not signed in' }
+    });
+    expect(verdict.state).toBe('skipped-not-authenticated');
+    expect(verdict.detail).toContain('not signed in');
     for (const unestablished of ['protocol', 'auth', 'prompt', 'cost']) {
       expect(verdict.detail).toContain(unestablished);
     }
   });
 
-  it('treats an empty-string credential as absent', () => {
-    // `KEY=` in a workflow env block is a missing secret, not a present one.
+  it('treats an unrecognised failure as drift, not as a skip', () => {
+    // A skip is a shrug nobody reads. A failure this canary cannot explain is a
+    // finding, and calling it "probably just auth" would convert real protocol
+    // drift into silence — which is what the classifier is kept narrow to avoid.
     const verdict = canary.runnerBackendResult({
       backend: 'claude',
       versionProbe: version('1.2.3'),
-      credentialValue: ''
+      liveProbe: { ok: false, detail: 'exit 7' }
     });
-    expect(verdict.state).toBe('skipped-no-credentials');
+    expect(verdict.state).toBe('drifted');
   });
+
+  it('reads a sign-in refusal out of real CLI output, and nothing wider', () => {
+    // Fixtures are the ACTUAL strings observed on 2026-08-26. `agy models`
+    // printed its refusal beside exit 0, which is why output is the signal and
+    // status is not.
+    expect(canary.saysNotAuthenticated('Error: Please sign in to view available models.', '')).toBe(
+      true
+    );
+    expect(canary.saysNotAuthenticated('', 'Not logged in')).toBe(true);
+    expect(canary.saysNotAuthenticated('unauthorized', '')).toBe(true);
+    // Narrow on purpose: an ordinary failure must NOT be excused as auth.
+    expect(canary.saysNotAuthenticated('exit 7', '')).toBe(false);
+    expect(canary.saysNotAuthenticated('canary', '')).toBe(false);
+    expect(canary.saysNotAuthenticated('', '')).toBe(false);
+  });
+
 
   it('counts both skip states as version-probe-only in the report', () => {
     const report = canary.formatReport([
       { backend: 'claude', state: 'skipped-no-live-path', detail: 'd' },
-      { backend: 'codex', state: 'skipped-no-credentials', detail: 'd' }
+      { backend: 'codex', state: 'skipped-not-authenticated', detail: 'd' }
     ]);
     expect(report).toContain('2 backend(s) ran the version probe only');
     expect(report).toContain('No behavioural claim');
@@ -189,99 +221,93 @@ describe('the runner cannot report a pass it did not run', () => {
  * is not a broken canary, it is a canary that quietly starts claiming more than
  * it ran.
  */
-describe('FR-R3-084 — the live phase is blocked on an operator action, not omitted', () => {
-  it('behaviour with no credential is unchanged: skipped-no-credentials, exit 0', async () => {
-    const canary = await import('../../../scripts/backend-canary.mjs');
-    for (const backend of ['claude', 'codex', 'agy']) {
-      const result = canary.runnerBackendResult({
-        backend,
-        versionProbe: { ok: true, version: '1.2.3' },
-        credentialValue: undefined
-      });
-      expect(result.state).toBe('skipped-no-credentials');
-    }
-    const results = ['claude', 'codex', 'agy'].map((backend) =>
-      canary.runnerBackendResult({
-        backend,
-        versionProbe: { ok: true, version: '1.2.3' },
-        credentialValue: ''
-      })
-    );
-    // An empty-string credential is ABSENT, not present-and-broken.
-    for (const result of results) expect(result.state).toBe('skipped-no-credentials');
-    expect(canary.canaryExitCode(results)).toBe(0);
-  });
-
-  it('a drift still exits 0 — a finding must not become a red gate by accident', async () => {
-    // FR-R3-084 §4. Non-zero stays reserved for the canary itself being broken.
-    const canary = await import('../../../scripts/backend-canary.mjs');
-    const drifted = canary.decideBackendState({
-      versionProbe: { ok: true, version: '9.9.9' },
-      credentialPresent: false,
-      expectedVersionPrefix: '1.'
-    });
-    expect(canary.canaryExitCode([{ backend: 'claude', ...drifted }])).toBe(0);
-  });
-
-  it('the credential request itemizes every credential with scope, reader and leak cost', () => {
-    const request = readFileSync(
-      resolve(__dirname, '../../../docs/release/canary-credential-request.md'),
+describe('FR-R3-084 — the live phase, written after it was run', () => {
+  // REWRITTEN 2026-08-26, and the reason is the point of the item.
+  //
+  // This block used to pin that NO live invocation existed and that the reason
+  // was recorded — because the item forbids shipping a live call that has never
+  // run. That guard did its job: it stood until the call had actually been made.
+  //
+  // The premise it rested on was wrong, and the operator said so: these backends
+  // authenticate by SUBSCRIPTION, not by API key. `claude auth status` reports
+  // `authMethod: "claude.ai"`, `codex login status` reports "Logged in using
+  // ChatGPT", and no `*_API_KEY` variable exists on the machine this is developed
+  // on. The canary had been asking whether a key was set as a proxy for whether a
+  // live call was possible, and the proxy was false while the truth was true.
+  //
+  // The live phase was then written, RUN BY HAND, and observed:
+  //   claude: ok — version 2.1.246, live probe passed
+  //   codex:  ok — version 0.149.0, live probe passed
+  //   agy:    skipped-not-authenticated — not signed in on this machine
+  //
+  // So what is pinned now is what still needs protecting: `ok` requires a real
+  // live result, the prompt discloses nothing, the deadline is bounded, and a
+  // drift is never an exit code.
+  it('the live invocation is bounded, fixed, and discloses nothing', () => {
+    const runner = readFileSync(
+      resolve(__dirname, '../../../scripts/backend-canary-run.mjs'),
       'utf8'
     );
-    for (const env of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'AGY_API_KEY']) {
-      expect(request, `${env} must be named`).toContain(env);
-    }
-    expect(request).toContain('Minimum scope needed');
-    expect(request).toContain('What a leak costs');
-    expect(request).toContain('Read by');
-    // The env var names must be the ones the runner ACTUALLY reads, or the
-    // request asks for a secret nothing would consume.
+    // One turn, a fixed trivial prompt, and a hard wall-clock deadline. A prompt
+    // built from anything in the workspace would send workspace content to a
+    // provider, which is the failure this pins against.
+    expect(runner).toContain("const CANARY_PROMPT = 'Reply with exactly one word: canary'");
+    expect(runner).toMatch(/LIVE_TIMEOUT_MS\s*=\s*\d/);
+    expect(runner).toContain('timeout: LIVE_TIMEOUT_MS');
+    // The prompt is a constant, never interpolated.
+    expect(runner).not.toMatch(/CANARY_PROMPT\s*\+/);
+    expect(runner).not.toMatch(/`[^`]*\$\{[^}]*\}[^`]*`\s*\]\s*\}/);
+  });
+
+  it('reads no API key, because none is what this product uses', () => {
+    // The correction of 2026-08-26. A request for a secret nothing consumes is
+    // worse than no request: it asks an operator to create a live credential for
+    // no reason.
     const runner = readFileSync(
       resolve(__dirname, '../../../scripts/backend-canary-run.mjs'),
       'utf8'
     );
     for (const env of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'AGY_API_KEY']) {
-      expect(runner, `${env} must be what the runner reads`).toContain(env);
+      expect(runner, `${env} is not how these CLIs authenticate here`).not.toContain(env);
     }
+    expect(runner).toContain('auth');
   });
 
-  it('no live invocation was written — the precondition is recorded instead', () => {
-    // The assertion that keeps this honest. If someone later adds a live call
-    // without running it by hand, this is what refuses.
+  it('never asks a CLI that is not installed for a turn', () => {
     const runner = readFileSync(
       resolve(__dirname, '../../../scripts/backend-canary-run.mjs'),
       'utf8'
     );
-    // A live phase would need to spawn the CLI with a prompt. The version probe
-    // is the only spawn, and it passes `--version`.
-    const spawns = [...runner.matchAll(/spawnSync\([^)]*\)/g)].map((match) => match[0]);
-    expect(spawns.length).toBeGreaterThan(0);
-    for (const spawn of spawns) {
-      expect(spawn, 'the only spawn is the version probe').toContain("'--version'");
-    }
+    // The only ordering left. There is no auth gate, because the auth gate was a
+    // proxy and proxies were the defect twice over — see backend-canary.mjs.
+    expect(runner).toContain('version.ok === true ? liveProbe(');
+    expect(runner).not.toContain('authProbe');
+  });
+
+  it('a drift is a finding, never an exit code', async () => {
+    const canary = await import('../../../scripts/backend-canary.mjs');
+    expect(
+      canary.canaryExitCode([{ backend: 'claude', state: 'drifted', detail: 'd' }])
+    ).toBe(0);
+    expect(
+      canary.canaryExitCode([{ backend: 'agy', state: 'skipped-not-authenticated', detail: 'd' }])
+    ).toBe(0);
+  });
+
+  it('the qualification run is recorded, and no prefix is enforced from it', () => {
     const request = readFileSync(
       resolve(__dirname, '../../../docs/release/canary-credential-request.md'),
       'utf8'
     );
-    expect(request).toContain('No live invocation');
-    expect(request).toContain('precondition on an operator action');
-  });
-
-  it('the expected-version prefix is still absent, with the reason recorded', () => {
     const runner = readFileSync(
       resolve(__dirname, '../../../scripts/backend-canary-run.mjs'),
       'utf8'
     );
-    // Nothing supplies a prefix, so drift detection stays structural.
+    // A first observation on one machine is not a qualified baseline, and pinning
+    // a prefix from it would make every routine CLI update report drift. The run
+    // is recorded as evidence; the pin stays absent, which is what the item asks.
+    expect(request).toContain('2026-08-26');
+    expect(request).toContain('2.1.246');
     expect(runner).not.toMatch(/expectedVersionPrefix:\s*'[^']+'/);
-    const request = readFileSync(
-      resolve(__dirname, '../../../docs/release/canary-credential-request.md'),
-      'utf8'
-    );
-    // Matched on a phrase that survives a line wrap: the document is prose and
-    // a multi-word assertion that spans a wrap point is a brittle test, not a
-    // strict one.
-    expect(request).toContain('qualified baseline');
-    expect(request).toContain('no prefix, structural drift detection');
   });
 });

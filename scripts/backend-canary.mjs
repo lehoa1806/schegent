@@ -13,17 +13,47 @@
 //
 // DEGRADATION IS A REPORTED STATE, NOT A SKIP
 //
-// Credentials are an operator-supplied precondition, and no live invocation is
-// implemented yet (FR-R3-072). Either way this runs the version probe only and
-// SAYS SO in its output. A canary that silently reports success because it did
-// nothing is worse than one that does not run.
+// When the live phase does not run, this says so and says why. A canary that
+// silently reports success because it did nothing is worse than one that does
+// not run.
+//
+// IT ATTEMPTS THE THING IT REPORTS ON (2026-08-26)
+//
+// This took two corrections in one afternoon, and the second is the instructive
+// one.
+//
+// FIRST, the canary decided "can we make a live call?" by testing whether
+// `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `AGY_API_KEY` held a non-empty string.
+// On the machine this product is developed on that is false while the truth is
+// true: the CLIs authenticate by SUBSCRIPTION — `claude auth status` reports
+// `authMethod: "claude.ai"`, `codex login status` reports "Logged in using
+// ChatGPT" — and no API key variable exists anywhere. The canary reported
+// `skipped-no-credentials` forever on a machine where a live call succeeds.
+//
+// SECOND, the fix for that substituted a DIFFERENT proxy: ask each CLI whether it
+// is signed in, via `claude auth status`, `codex login status`, `agy models`. That
+// was wrong too, and wrong the same way. `agy models` answers "Please sign in to
+// view available models" — a statement about MODEL LISTING permission — while
+// `agy --print` completes a turn perfectly. The probe reported a working,
+// authenticated backend as unauthenticated. A false negative, one step after
+// fixing a false negative.
+//
+// So there is no auth probe. The only non-proxy answer to "can this backend
+// complete a live turn?" is to ATTEMPT A LIVE TURN and classify what came back.
+// An unauthenticated CLI spends one refused call, which costs nothing because it
+// fails at auth before reaching a model — and is worth far more than a verdict
+// that disagrees with reality.
+//
+// The classifier reads OUTPUT, never exit status: `agy models` printed its
+// refusal beside exit 0, and that fail-open shape is exactly what a status-keyed
+// check would have swallowed.
 
 /** What a probe can conclude. */
 export const PROBE_STATES = [
   'ok',
   'drifted',
   'unavailable',
-  'skipped-no-credentials',
+  'skipped-not-authenticated',
   'skipped-no-live-path'
 ];
 
@@ -32,12 +62,7 @@ export const PROBE_STATES = [
  * probe. A pure function so the decision is testable without a CLI present --
  * the same reasoning as `require-full-gate.mjs`.
  */
-export function decideBackendState({
-  versionProbe,
-  liveProbe,
-  credentialPresent,
-  expectedVersionPrefix
-}) {
+export function decideBackendState({ versionProbe, liveProbe, expectedVersionPrefix }) {
   if (!versionProbe || versionProbe.ok !== true) {
     return {
       state: 'unavailable',
@@ -57,22 +82,21 @@ export function decideBackendState({
     };
   }
   if (!liveProbe) {
-    // `ok` is reachable only from a real liveProbe result. A present credential
-    // with no live path is a distinct honest skip, not a pass.
-    if (credentialPresent === true) {
-      return {
-        state: 'skipped-no-live-path',
-        detail:
-          `version ${versionProbe.version} observed; a credential is present but no live ` +
-          'invocation is implemented, so the live phase was NOT run. This run says nothing ' +
-          'about protocol, auth, prompt or cost.'
-      };
-    }
     return {
-      state: 'skipped-no-credentials',
+      state: 'skipped-no-live-path',
       detail:
-        `version ${versionProbe.version} observed; the live phase was NOT run because no ` +
-        'credentials were supplied. This run says nothing about protocol, auth, prompt or cost.'
+        `version ${versionProbe.version} observed; no live invocation is implemented for this ` +
+        'backend, so the live phase was NOT run. This run says nothing about protocol, auth, ' +
+        'prompt or cost.'
+    };
+  }
+  if (liveProbe.ok !== true && liveProbe.notAuthenticated === true) {
+    // Not a drift: the backend is fine, this machine is not signed in to it.
+    return {
+      state: 'skipped-not-authenticated',
+      detail:
+        `version ${versionProbe.version} observed; the live turn was refused because this CLI ` +
+        'is not signed in. This run says nothing about protocol, auth, prompt or cost.'
     };
   }
   if (liveProbe.ok !== true) {
@@ -88,9 +112,27 @@ export function decideBackendState({
  * passes no liveProbe, so `ok` is unreachable from here until a live
  * invocation exists. An empty-string credential is absent.
  */
-export function runnerBackendResult({ backend, versionProbe, credentialValue }) {
-  const credentialPresent = typeof credentialValue === 'string' && credentialValue.length > 0;
-  return { backend, ...decideBackendState({ versionProbe, credentialPresent }) };
+export function runnerBackendResult({ backend, versionProbe, liveProbe, expectedVersionPrefix }) {
+  return { backend, ...decideBackendState({ versionProbe, liveProbe, expectedVersionPrefix }) };
+}
+
+/**
+ * Does this failed live attempt say the CLI is not signed in?
+ *
+ * Reads OUTPUT, never exit status. `agy models` printed its sign-in refusal
+ * beside exit 0, and a status-keyed check would have read that as success — the
+ * fail-open shape this round keeps closing.
+ *
+ * Deliberately narrow: only text that clearly says "sign in" counts. An
+ * unrecognised failure becomes `drifted`, which is a finding somebody reads,
+ * rather than a skip, which is a shrug. Guessing wide here would convert real
+ * protocol drift into "probably just auth".
+ */
+export function saysNotAuthenticated(stdout, stderr) {
+  const text = `${stdout ?? ''}\n${stderr ?? ''}`;
+  return /please (sign|log) in|not (signed|logged) in|unauthorized|authentication (failed|required)/i.test(
+    text
+  );
 }
 
 /**
@@ -110,9 +152,11 @@ export function formatReport(results) {
   for (const { backend, state, detail } of results) {
     lines.push(`  ${backend}: ${state} — ${detail}`);
   }
-  const degraded = results.filter(
-    (r) => r.state === 'skipped-no-credentials' || r.state === 'skipped-no-live-path'
-  ).length;
+  // DERIVED from the state name, not a list of them. The previous version named
+  // two states literally and silently stopped counting when the states were
+  // renamed on 2026-08-26 — a degraded run that reported no degradation, which is
+  // the one thing this note exists to prevent.
+  const degraded = results.filter((r) => String(r.state).startsWith('skipped-')).length;
   if (degraded > 0) {
     lines.push(
       `  NOTE: ${degraded} backend(s) ran the version probe only. No behavioural claim is made ` +

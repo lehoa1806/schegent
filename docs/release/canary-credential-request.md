@@ -1,20 +1,65 @@
-# Canary credentials: an itemized request
+# Canary credentials: a request WITHDRAWN, and the live phase that replaced it
 
-**Raised**: 2026-08-25 · **Feature**: 155 (`FR-R3-084`) · **Decision owner**: the repository operator
+**Raised**: 2026-08-25 · **Withdrawn**: 2026-08-26 · **Feature**: 155 (`FR-R3-084`)
+· **Decision owner**: the repository operator
 
-## What is being asked for, and why it is a request rather than a commit
+> **This request is withdrawn. Nothing is being asked for.**
+>
+> It rested on a premise that was wrong: that a live canary needs API keys. It does not. These
+> backends authenticate by **subscription**, and the live phase now runs on that — no secret, no
+> repository variable, no new plumbing. The itemization below is kept for the record, struck through
+> in effect, because a withdrawn request is more useful than a deleted one: the next person to
+> reach for an API key should be able to see that this was considered and why it was not needed.
 
-The scheduled backend canary (`.github/workflows/backend-canary.yml`) probes each CLI's version and
-then reports, honestly, that **it did not run a live phase** — every time, on every backend. It reports
-`skipped-no-credentials` when no credential is present and `skipped-no-live-path` when one is. Both are
-truthful, both are skips, and only the first has ever been observed.
+## What was wrong, in two steps
 
-`FR-R3-072` removed the fabricated live probe, so the canary can no longer report a pass it did not
-run. **The dishonest half is closed.** What remains is that the honest half has nothing to say, because
-there is no live phase to run — and there cannot be one without operator-supplied secrets.
+**First, the canary asked whether an API key was set.** `credentialPresent` was
+`process.env.ANTHROPIC_API_KEY?.length > 0` and its siblings. On the machine this product is
+developed on that is false while the truth is true: `claude auth status` reports
+`authMethod: "claude.ai"`, `codex login status` reports "Logged in using ChatGPT", and no `*_API_KEY`
+variable exists anywhere. The canary therefore reported `skipped-no-credentials` **forever**, on a
+machine where a live turn succeeds on the first try — and this document asked an operator to create
+three live credentials to fix a problem that did not exist.
 
-**An operator cannot approve what is not itemized, and a canary is not worth a broad token.** So this
-is the itemization, and nothing is committed on the strength of it.
+**Second, the fix for that substituted a different proxy** — ask each CLI whether it is signed in, via
+`claude auth status`, `codex login status`, `agy models`. Wrong the same way. `agy models` answers
+*"Please sign in to view available models"* — a statement about model-listing permission — while
+`agy --print` completes a turn perfectly. The probe reported a working, authenticated backend as
+unauthenticated. A false negative one step after fixing a false negative.
+
+**So there is no auth probe.** The only non-proxy answer to *"can this backend complete a live
+turn?"* is to attempt a live turn. That is what the canary does now.
+
+## The qualification run
+
+Recorded because `FR-R3-084` §3 requires the version pin to be **derived, not guessed**, and because
+a live phase that has never run is exactly what that item forbids shipping.
+
+**2026-08-26**, `darwin`, one machine, run by hand before the code was committed:
+
+```
+[backend-canary] results
+  claude: ok — version 2.1.246, live probe passed
+  codex: ok — version 0.149.0, live probe passed
+  agy: ok — version 1.1.20, live probe passed
+```
+
+`ok` was previously unreachable by construction. This is the first time any backend has reached it.
+
+**No expected-version prefix is enforced from this run**, and that is deliberate. One observation on
+one machine is not a qualified baseline — it is the versions that happened to be installed, which is
+precisely what §3 warns against — and pinning a prefix from it would make every routine CLI update
+report drift. Drift detection stays structural until there is a qualification run worth pinning to.
+
+## What is still true about CI
+
+A scheduled GitHub Actions runner has no subscription session: no `~/.claude` credentials, no browser
+to sign in with. So the live phase is expected to report `skipped-not-authenticated` there, which is
+**the honest answer** rather than the wrong one it used to give. Running the canary live in CI would
+need credentials — that is the only surviving reason to revisit the itemization below, and it is a
+convenience, not a blocker. The local run above is what establishes the protocol still parses.
+
+---
 
 ## The credentials
 
