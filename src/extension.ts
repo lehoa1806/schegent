@@ -460,7 +460,9 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       v7MigrationEvents,
       v11MigrationEvents,
       v12MigrationEvents,
-      runRepairEvents
+      runRepairEvents,
+      // FR-R3-111 — drained where the writer exists; `initialize()` buffers it before that.
+      quarantineEvents: store.drainRunQuarantineEvents()
     },
     auditWriter,
     logger

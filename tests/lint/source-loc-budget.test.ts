@@ -333,13 +333,20 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // run-safety wiring input so the spend bound can observe the record that carries
   // usage and tell the operator when it pauses a run. One line per argument.
   //
+  // FR-R3-111 follow-up — 1488 -> 1490, two more: the quarantine drain, forwarded where the audit
+  // writer exists. It is here rather than in a leaf because the drain has exactly one correct
+  // moment — after `initialize()` buffered it and after the writer was constructed — and that
+  // moment is a line of activation. Bought by a defect, not by a preference: the drain had been
+  // called by nothing but its own test, so a corrupt run record was quarantined and the event that
+  // replaces the silent discard was never written.
+  //
   // WHY THE LINE IS HERE AND NOT THE WATCHER. Everything the bound does — the
   // accumulation, the precedence, the verdict, the pause write — lives in
   // `src/services/spend-bound.ts`, `spend-bound-watcher.ts` and
   // `activation/run-safety-wiring.ts`. What activation gained is two arguments to a
   // call it already made. That is the shape this budget is meant to permit: the shell
   // hands over a dependency, the behaviour lives in a leaf.
-  { path: 'src/extension.ts', maxLines: 1_488 },
+  { path: 'src/extension.ts', maxLines: 1_490 },
   //
   // FR-R3-103 (FR-042, FR-046) — 1459 -> 1471. Nine lines for the dependency wiring of the resume
   // liveness check plus two imports, three more registering the fence-loss abort, and the

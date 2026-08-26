@@ -169,3 +169,78 @@ describe('FR-R3-111 — a corrupt Run record is quarantined, not discarded', () 
     expect(store.drainRunQuarantineEvents().length).toBe(0);
   });
 });
+
+describe('FR-R3-111 — the quarantine reaches the audit log, not just the buffer', () => {
+  it('forwards a drained quarantine event through the migration forwarder', async () => {
+    // THE HALF THAT WAS MISSING. The buffer, the drain and the closed payload all shipped; the
+    // drain was called by nothing but this file's own tests, so in production a corrupt run record
+    // was quarantined and the audit event that replaces the silent discard was never appended.
+    // The item is about not discarding evidence silently, and its own evidence was being discarded
+    // silently. Found by measuring public methods with no caller anywhere in `src/`.
+    const { forwardMigrationAuditEvents } = await import(
+      '../../../src/state/migration-audit-forwarder.js'
+    );
+    const appended: Array<Record<string, unknown>> = [];
+    await forwardMigrationAuditEvents(
+      {
+        v6MigrationEvents: [],
+        v7MigrationEvents: [],
+        v11MigrationEvents: [],
+        v12MigrationEvents: [],
+        runRepairEvents: [],
+        quarantineEvents: [
+          {
+            eventType: 'run-record-quarantined',
+            payload: { queueId: 'default', reason: 'unparseable', quarantineDepth: 1 }
+          }
+        ]
+      },
+      { append: async (entry: Record<string, unknown>) => { appended.push(entry); return entry; } } as never,
+      { warn: () => undefined } as never
+    );
+
+    expect(appended).toHaveLength(1);
+    expect(appended[0]!.eventType).toBe('run-record-quarantined');
+    expect(appended[0]!.outcome, 'a quarantine is a failure of the state handed to this host').toBe(
+      'failure'
+    );
+    // No run identity: a quarantined record is one whose identity could not be trusted enough to
+    // read. And no path, per the hard rule on the structured log.
+    expect(appended[0]!.runId).toBe('');
+    expect(JSON.stringify(appended[0]!.payload)).not.toContain('/');
+  });
+
+  it('appends nothing when nothing was quarantined', async () => {
+    // The common case, and the one that must stay silent: an activation with no corrupt record
+    // must not write an event saying so.
+    const { forwardMigrationAuditEvents } = await import(
+      '../../../src/state/migration-audit-forwarder.js'
+    );
+    const appended: unknown[] = [];
+    await forwardMigrationAuditEvents(
+      {
+        v6MigrationEvents: [],
+        v7MigrationEvents: [],
+        v11MigrationEvents: [],
+        v12MigrationEvents: [],
+        runRepairEvents: []
+      },
+      { append: async (entry: unknown) => { appended.push(entry); return entry; } } as never,
+      { warn: () => undefined } as never
+    );
+    expect(appended).toEqual([]);
+  });
+
+  it('is drained by activation, not only by this test file', async () => {
+    // The reachability claim itself, checked on the source. The behavioural cases above prove the
+    // forwarder works; this one proves something calls it with the store's drain — which is the
+    // exact link that was missing for three hours.
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const activation = readFileSync(
+      resolve(__dirname, '..', '..', '..', 'src', 'extension.ts'),
+      'utf8'
+    );
+    expect(activation).toContain('quarantineEvents: store.drainRunQuarantineEvents()');
+  });
+});
