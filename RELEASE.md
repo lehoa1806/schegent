@@ -57,11 +57,33 @@ npm run ci
 
 The checked-in **Full gate** workflow runs weekly and on manual dispatch. It separately exercises host/webview/test typechecking, host lint, tests/evals, build/package smoke, visual regression, E2E, Extension Development Host integration, and a sustained 20,000-record evidence soak.
 
-**A tag run now requires a green Full gate on the exact release commit, mechanically** (FR-R3-060). The release job's first step queries that workflow's completed runs for `github.sha` and fails when none succeeded, naming what is missing and what to do about it. It fails closed: an unreadable API is not evidence of a green gate. This replaces the previous maintainer-confirmation step, under which a tag could publish with signed provenance over an artifact whose full gate ran on a different commit or not at all.
+**A tag run requires a green Full gate on the exact release commit, mechanically** (FR-R3-060). The release job's first step queries that workflow's completed runs for `github.sha` and fails when none succeeded, naming what is missing and what to do about it. It fails closed: an unreadable API is not evidence of a green gate. This replaces the previous maintainer-confirmation step, under which a tag could publish with signed provenance over an artifact whose full gate ran on a different commit or not at all.
+
+> **This binding is currently unreachable, and that is a statement about the process rather than about the code** (`S14`, FR-R3-095). Eight workflow files are checked in and **this project does not run GitHub Actions**, so `full-gate.yml` produces no runs and `require-full-gate.mjs` has no records to read. Nothing above is wrong about what the binding does; it simply has no data source under the process in use, and a tag run is not what releases this extension today. The script and this section stay in place, unchanged, for the day Actions run — deleting a correct binding to tidy away an inert one would have to be undone. **The binding that operates today is the local one in §2a**, and it is not a substitute for the matrix, the Node floor, code scanning or dependency review, none of which a single local machine can supply.
+<!-- Source: scripts/require-full-gate.mjs -->
+<!-- Source: docs/features/round_3/DONE_95_FR-R3-095_a_release_gate_that_exists.md -->
 
 The check applies to tag runs only. A `workflow_dispatch` creates no release, so requiring release evidence from it would block the dry-run described below. The decision logic is a pure function with unit coverage (`tests/unit/build/require-full-gate.test.ts`), because a gate exercised only by cutting a release is a gate nobody exercises.
 <!-- Source: .github/workflows/full-gate.yml -->
 <!-- Source: .github/workflows/release.yml -->
+
+## 2a. Bind the release to a gate result for THIS commit (local path)
+
+Running the gates is not the same as having evidence that they ran, and until FR-R3-095 the local release path had neither a script nor a binding — `npm run package` would package any tree at all.
+
+```bash
+npm run gate:record      # runs `npm run ci` under observation and records the result
+npm run release          # refuses unless a recorded PASS names HEAD over a clean tree
+```
+
+`gate:record` **spawns** the gate and records the exit code it observed, at the commit, on the platform, with the tree confirmed clean before and after. The writer sits outside the thing the record vouches for, so it cannot record a pass it did not see — a gate step that wrote its own attestation would prove only that the step ran. A red run is recorded too, so a failure leaves anti-evidence instead of leaving an older commit's pass as the newest record anyone finds.
+
+`release` runs the check and then packages. It refuses, naming which of six causes applies, when: the tree is dirty, no record exists, the record names another commit, it records a different command, it records a failing gate, or it is a version this checker does not read. The record is untracked — it describes one machine's observation of one tree, and a committed one would travel to a clone that never earned it.
+
+**What this is not.** A local attestation is not tamper-evident against the operator whose machine wrote it: anyone who can run the release can also edit the file it reads. It reduces the risk of releasing a commit whose gate never ran, or whose gate ran on a different tree. It is not a substitute for independent verification, and the success message says so along with the single platform the gate ran on.
+<!-- Source: scripts/gate-attestation.mjs -->
+<!-- Source: scripts/record-gate-run.mjs -->
+<!-- Source: package.json -->
 
 ## 3. Optionally dry-run the release job
 

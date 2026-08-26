@@ -450,7 +450,10 @@
     "verify:all": "npm run contracts:check && npm run docs:check && npm run security:secrets && npm run security:actions && npm run license:check && npm run typecheck && npm run typecheck:webview && npm run typecheck:tests && npm run lint && npm run lint:webview && npm run test:host && npm run test:webview:coverage",
     "ci:fast": "npm run typecheck:tests && npm run lint && npm run verify:all && npm run test:evals && npm run test:visual && npm run test:perf && npm run build:host && npm run package:smoke",
     "ci": "npm run typecheck && npm run typecheck:webview && npm run typecheck:tests && npm run lint && npm run lint:webview && npm run build:webview && npm run test:host && npm run test:webview:coverage && npm run test:evals && npm run test:visual && npm run a11y && npm run test:perf && npm run test:e2e && npm run build && npm run package:smoke && npm run test:integration",
+    "gate:record": "node scripts/record-gate-run.mjs",
+    "release:preflight": "node scripts/require-local-gate.mjs",
     "package": "vsce package --no-dependencies",
+    "release": "npm run release:preflight && npm run package",
     "package:smoke": "node scripts/package-vsix-smoke.mjs",
     "postinstall": "npm --prefix webview-ui install --no-audit --no-fund"
   },
