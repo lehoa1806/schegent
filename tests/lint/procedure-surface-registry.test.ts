@@ -106,6 +106,63 @@ const REGISTRY: readonly ProcedureSurface[] = [
       ).not.toBeNull();
       expect((constant as RegExpExecArray)[1]).toContain('playwright install');
     }
+  },
+  {
+    // FR-R3-101 (FR-022, FR-023) — the install sequence, across every surface that teaches it.
+    //
+    // THE CLASS, AGAIN, AND WORSE. `.npmrc` set `ignore-scripts=true` (a deliberate hardening,
+    // FR-R3-090), which disabled the root `postinstall` that installed `webview-ui`.
+    // `CONTRIBUTING.md` was updated to the two-command sequence. **Four other surfaces were
+    // not**, and two of them affirmatively stated the thing that had become false — "its
+    // postinstall also installs webview-ui", "a single npm install prepares both package
+    // trees". A contributor following the README, the tutorial, the how-to or the course got a
+    // checkout whose first build failed, for months.
+    //
+    // WHY THE EXISTING SELFTEST DID NOT CATCH IT. `clean-install-selftest.sh` tests
+    // CONTRIBUTING's sequence and only CONTRIBUTING's, in a chain that seldom runs. It verified
+    // the one document that was right.
+    //
+    // WHAT IS REGISTERED IS CHECKED. That is the whole point of putting these five here rather
+    // than fixing five documents: the next `.npmrc` change fails a gate instead of breaking
+    // four documents for months.
+    id: 'two-command-install',
+    producer: '.npmrc',
+    surfaces: [
+      'CONTRIBUTING.md',
+      'README.md',
+      'docs/tutorials/developer-setup.md',
+      'docs/how-to/developer-workflows.md',
+      'docs/courses/develop-schegent.md'
+    ],
+    // The second command IS the sequence: the first is unremarkable, and a surface that names
+    // only the first is exactly the broken state this closes.
+    literals: ['npm --prefix webview-ui ci'],
+    // The claims that were false. Each was written when the postinstall did run, and each
+    // survived the hardening that stopped it.
+    forbidden: [
+      'a separate webview install is unnecessary',
+      'a single npm install prepares both package trees',
+      'The root install also installs `webview-ui`'
+    ],
+    reason:
+      'FR-R3-101: `.npmrc` ignore-scripts=true disables the postinstall that installed ' +
+      'webview-ui, so every surface teaching a bare install hands a contributor a checkout ' +
+      'whose first build fails. Four of five taught it, two of them affirmatively',
+    verifyProducer: (source) => {
+      // The hardening is what makes the second command necessary. If `ignore-scripts` is ever
+      // turned off, this entry's premise is gone and the gate should be re-examined rather
+      // than left asserting a command nobody needs — so the producer is checked, not assumed.
+      const active = source
+        .split('\n')
+        .filter((line) => !line.trimStart().startsWith('#'))
+        .join('\n');
+      expect(
+        /^\s*ignore-scripts\s*=\s*true\s*$/m.test(active),
+        '.npmrc no longer sets ignore-scripts=true. The two-command install sequence exists ' +
+          'BECAUSE of that setting; if the hardening is gone, re-examine this registry entry ' +
+          'rather than leaving five documents pinned to a command nobody needs.'
+      ).toBe(true);
+    }
   }
 ];
 

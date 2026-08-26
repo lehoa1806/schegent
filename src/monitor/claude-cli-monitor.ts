@@ -1,3 +1,4 @@
+import { errorMessage } from '../lib/errors';
 import type { Disposable } from '../state/workspace-state';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { Phase } from '../controller/phase';
@@ -644,7 +645,7 @@ export class ClaudeCliMonitor {
       })
       .catch((err: unknown) => {
         try {
-          this.opts.logger.warn(`[monitor] audit append failed: ${(err as Error).message}`);
+          this.opts.logger.warn(`[monitor] audit append failed: ${errorMessage(err)}`);
         } catch {
           // never throw from audit failure path
         }

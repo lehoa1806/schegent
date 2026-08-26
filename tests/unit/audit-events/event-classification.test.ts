@@ -190,7 +190,17 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   // holding a frozen plan is unaffected by them by construction (FR-010, FR-026).
   'definition-published': 'system',
   'definition-deactivated': 'system',
-  'definition-restored': 'system'
+  'definition-restored': 'system',
+  // FR-R3-103 — all three name a Run, so all three are task-scoped.
+  //
+  // `run-resume-declined-orphan-alive` is the one worth arguing about: it is a decision made
+  // at ACTIVATION, which is window-scoped work, and it would be defensible to call it system.
+  // Task wins because of who reads it. The operator's question is "why did MY Run not come
+  // back", and a system-scoped entry would be true and unattributable — the same reasoning
+  // `process-tree-unconfirmed` records above.
+  'run-resumed': 'task',
+  'run-resume-declined-orphan-alive': 'task',
+  'run-invocation-aborted-on-supersession': 'task'
 };
 
 function assertExhaustive(value: never): never {
@@ -361,7 +371,11 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'runs-overlapped':
         case 'definition-published':
         case 'definition-deactivated':
-        case 'definition-restored': {
+        case 'definition-restored':
+        // FR-R3-103 — activation's resume decision and the supersession abort.
+        case 'run-resumed':
+        case 'run-resume-declined-orphan-alive':
+        case 'run-invocation-aborted-on-supersession': {
           const scope = classifyAuditEvent(evt);
           expect(scope === 'task' || scope === 'system').toBe(true);
           break;

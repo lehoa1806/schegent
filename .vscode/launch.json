@@ -9,7 +9,15 @@
       "type": "extensionHost",
       "request": "launch",
       "args": ["--extensionDevelopmentPath=${workspaceFolder}"],
-      "outFiles": ["${workspaceFolder}/out/**/*.js"],
+      // FR-R3-101 (FR-028) — `dist`, not `out`.
+      //
+      // This said `out/**/*.js`, which is the INTEGRATION-TEST compile target
+      // (`tsconfig.integration.json`). The extension host bundles to
+      // `dist/extension.js` (`esbuild.config.mjs`), so F5 breakpoints bound against the
+      // wrong artifact — set anywhere in `src/`, they simply never hit, and nothing said
+      // why. `tests/lint/launch-config-outfiles.test.ts` now reads this file and the
+      // bundler config and fails when they name different directories.
+      "outFiles": ["${workspaceFolder}/dist/**/*.js"],
       "preLaunchTask": "npm: build"
     }
   ]

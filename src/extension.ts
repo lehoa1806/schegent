@@ -64,6 +64,9 @@ import { PlaceholderProjector } from './ui/sidebar/placeholder-projector';
 import { ClaudeCliMonitor } from './monitor/claude-cli-monitor';
 import { createCliTransportSink } from './monitor/cli-transport-sink';
 import { withDropReporting } from './monitor/drop-reporting-transport';
+import { checkLiveness, createLivenessProbe } from './services/process-liveness';
+import { resumePersistedRuns } from './services/resume-decision';
+import { createSpawnIdentityRecorder } from './state/spawn-identity-recorder';
 import type { RunActivityObservation } from './monitor/activity-coalescer';
 import { TelemetrySamplerImpl } from './telemetry/telemetry-sampler';
 import { psShellOut } from './telemetry/platform/platform-ps';
@@ -585,6 +588,11 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       .get<boolean>('allowUncontainedBackends') === true;
   // FR-R3-083 — a runner reports; this records. Gate: tree-degradation-emission-funnel.
   const treeDegradationRecorder = new ProcessTreeDegradationRecorder((e) => auditWriter.append(e));
+  const spawnIdentityRecorder = createSpawnIdentityRecorder({
+    store,
+    now: () => Date.now(),
+    log: (message) => logger.info(message)
+  });
   const runnerRegistry = new BackendRunnerRegistry({
     // FR-R3-056 (H-01) — the shipped posture. Unset reads as the manifest default
     // (`false`), so a fresh install refuses an uncontained backend. See
@@ -595,6 +603,9 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     monitorHook: (event) => {
       if (event.kind === 'started') {
         monitor.onSpawnPid(event.runId, event.pid);
+        // FR-R3-103 (FR-041) — persist the tree's identity so a later host can ask
+        // whether it is still alive before resuming into the same worktree.
+        void spawnIdentityRecorder.recordSpawn(event.runId, event.pid);
         if (event.pid !== null) {
           // FR-R3-081 — remembered so the exit can name WHICH child it was. The
           // `'exited'` event carries the run id and not the pid, and with more
@@ -609,6 +620,8 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       } else if (event.kind === 'stderr-chunk') {
         monitor.onStderrChunk(event.runId, event.chunk);
       } else if (event.kind === 'exited') {
+        // FR-R3-103 — cleared at reaped exit, so a finished Run does not read as an orphan.
+        void spawnIdentityRecorder.clearOnExit(event.runId);
         monitor.onExit(event.runId, {
           exitCode: event.exitCode,
           signal: event.signal,
@@ -1405,12 +1418,26 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   // Feature 093 (T037/T039) — C-4 aggregate. A window that crashed mid-
   // concurrency persisted several Runs, and each is re-armed on the queue that
   // owns it. With one entry this is the previous behavior exactly.
+  // FR-R3-103 (FR-046) — a lost fence terminates this window's children.
+  context.subscriptions.push(lock.onFenceLost(() => controller.abortOnSupersession()));
+
   if (lockResult.acquired) {
-    for (const [queueId, persistedRun] of Object.entries(store.getRunMap())) {
-      if (persistedRun.status !== 'running') continue;
-      logger.info(`activation: resuming run ${persistedRun.id} at ${persistedRun.currentPhase}`);
-      void controller.resumeExisting(queueId);
-    }
+    // FR-R3-103 — ask whether the previous host's tree is still alive before resuming.
+    const probe = createLivenessProbe();
+    void resumePersistedRuns({
+      // Filtered HERE: this file is on the status-literal allowlist and
+      // `resume-decision.ts` is not, which is the right way round — the policy module
+      // should not know the status vocabulary.
+      runs: () =>
+        Object.entries(store.getRunMap()).filter(([, run]) => run.status === 'running'),
+      liveness: (identity) => checkLiveness(identity, probe),
+      appendAudit: async (entry) => {
+        await auditWriter.append({ ...entry, payload: { ...entry.payload } });
+      },
+      resume: (queueId) => void controller.resumeExisting(queueId),
+      notify: (message) => void vscode.window.showWarningMessage(message),
+      log: (message) => logger.info(message)
+    });
   }
 
   const dispose = async (): Promise<void> => {

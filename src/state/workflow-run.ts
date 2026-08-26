@@ -1,3 +1,4 @@
+import type { SpawnIdentity } from '../contracts/spawn-identity';
 import type { Phase, PhaseOutcome } from '../controller/phase';
 import type { PhaseDef } from '../config/pipeline-config';
 import type { CatalogVersionRef } from '../contracts/catalog-version';
@@ -345,6 +346,20 @@ export interface WorkflowRun {
    * unchanged, so no `STATE_SCHEMA_VERSION` moves.
    */
   writtenAtFence?: number;
+  /**
+   * FR-R3-103 (FR-041) — the process tree this Run last spawned, or absent.
+   *
+   * Written under the fence at spawn and cleared when the child is reaped, so its presence
+   * means a tree was running when this record was last written. Whether it is running NOW is
+   * what the liveness check asks, and activation asks it before resuming a persisted
+   * `running` Run — because before this field existed, activation resumed into whatever the
+   * previous host had left behind and the two raced in one worktree.
+   *
+   * Optional and additive: a Run persisted before this field deserializes unchanged and reads
+   * as `unrecorded`, which resumes exactly as it did before. So no `STATE_SCHEMA_VERSION`
+   * moves and no migrator is owed.
+   */
+  spawnIdentity?: SpawnIdentity;
   id: string;
   featureId: string;
   featureDir: string;

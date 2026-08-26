@@ -343,6 +343,49 @@ export const MIGRATION_V7_EVENT_TYPES = ['state-migrated-v6-to-v7'] as const;
 // is unchanged. Additive — no `AUDIT_SCHEMA_VERSION` bump (follows the 030 / 065
 // migration-event precedent); historical records lack these events entirely and
 // stay readable under the warn-and-preserve parser discipline.
+/**
+ * FR-R3-103 — what activation decided about a persisted `running` Run, and what a lost fence
+ * did to its child.
+ *
+ * WHY THREE EVENTS AND NOT ONE FIELD. These are three different histories and an operator
+ * chasing "why did my Run not come back" needs to tell them apart:
+ *
+ *   - `run-resume-declined-orphan-alive` — the previous host's process tree is still running,
+ *     so activation did NOT resume into it. Nothing failed; the Run is executing somewhere and
+ *     this window is deliberately staying out of the worktree.
+ *   - `run-invocation-aborted-on-supersession` — this window lost the execution fence while
+ *     holding a live child, so the host terminated the invocation. The operator did not cancel
+ *     it, which is precisely why it needs a record: without one, a Run that stops mid-phase
+ *     looks like a crash.
+ *   - `run-resumed` — the ordinary case, recorded so the OTHER two are legible as exceptions
+ *     rather than as the only entries that exist. A trail that logs only the unusual path
+ *     cannot distinguish "nothing happened" from "nothing was checked".
+ *
+ * Every payload is ids, a closed liveness verdict, and nothing else. No paths, no
+ * operator-authored content. Additive, so no `AUDIT_SCHEMA_VERSION` bump — the same
+ * warn-and-preserve reasoning the migration families above record.
+ */
+export const RUN_RESUME_EVENT_TYPES = [
+  'run-resumed',
+  'run-resume-declined-orphan-alive',
+  'run-invocation-aborted-on-supersession'
+] as const;
+export type RunResumeEventType = (typeof RUN_RESUME_EVENT_TYPES)[number];
+
+/**
+ * The payload for all three.
+ *
+ * `liveness` is carried on the declined and resumed arms because it is the reason for the
+ * decision, and an operator reading `run-resumed` on a Run whose previous tree could not be
+ * checked should be able to see that `unanswerable` — not infer it from an ordinary-looking
+ * resume. Absent on the supersession arm, where no liveness question was asked.
+ */
+export interface RunResumePayload {
+  readonly queueId: string;
+  readonly runId: string;
+  readonly liveness?: 'alive' | 'dead' | 'unrecorded' | 'unanswerable';
+}
+
 export const MIGRATION_V11_EVENT_TYPES = [
   'state-migrated-v10-to-v11',
   'run-reassigned-to-default-queue',
@@ -736,6 +779,8 @@ export const ALL_AUDIT_EVENT_TYPES = [
   ...BACKEND_PING_EVENT_TYPES,
   ...BACKEND_POSTURE_EVENT_TYPES,
   ...CAPABILITY_REFUSAL_EVENT_TYPES,
+  // FR-R3-103 — activation's resume decision and the supersession abort.
+  ...RUN_RESUME_EVENT_TYPES,
   ...PROCESS_TREE_EVENT_TYPES,
   ...METRICS_EVENT_TYPES,
   ...PROCESS_EXCHANGE_EVENT_TYPES,

@@ -476,7 +476,9 @@ const schemas = {
     'Schegent Sidebar IPC Contract',
     ['src/contracts/sidebar-ipc.ts'],
     {
-      schemaVersion: { type: 'integer', const: sidebar.numberConst('SCHEMA_VERSION') },
+      // FR-R3-110 (FR-103) — renamed from the bare `SCHEMA_VERSION`, which collided with
+      // `src/ui/sidebar/snapshot.ts`'s constant of the same name and a different value.
+      schemaVersion: { type: 'integer', const: sidebar.numberConst('SIDEBAR_IPC_SCHEMA_VERSION') },
       commandTypes: enumProperty(commandTypes),
       hostMessageTypes: enumProperty(hostMessageTypes),
       workflowSnapshotFields: interfaceProperty(snapshot.interfaceProperties('WorkflowSnapshot'))

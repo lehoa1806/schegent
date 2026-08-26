@@ -431,6 +431,24 @@ export class SchegentWorkflowController {
     for (const session of targets) session?.driver.cancelActive();
   }
 
+  /**
+   * FR-R3-103 (FR-046, FR-047) — this window lost the execution fence, so every child it is
+   * holding is terminated.
+   *
+   * EVERY session, unconditionally, and no queue argument. Supersession is a WINDOW-level
+   * fact: the fence is per workspace, so losing it means none of this window's Runs may keep
+   * writing the tree. A per-queue variant would invite a caller to terminate one Run and leave
+   * its siblings unfenced, which is the state this closes.
+   *
+   * It does NOT release the primacy lease and it does not end any Run. `AGENTS.md`: no
+   * Run-scoped path releases primacy, and a superseded window may be primary again within one
+   * heartbeat. What is terminated is the invocation; the Run's own state machine decides what
+   * that means, exactly as it does for an operator cancel.
+   */
+  public abortOnSupersession(): void {
+    for (const session of this.sessions.all()) session?.driver.abortOnSupersession();
+  }
+
   public async startNew(
     feature: FeatureRequest,
     featureDir: string | null,

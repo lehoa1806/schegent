@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 83
+    vacuity-census-denominator: 86
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **83** |
+| Gates the detector calls **controlled** (the denominator) | **86** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -31,8 +31,21 @@ narrowing its sample — the exact failure this measurement exists to prevent.
 | **+1** | `actions-retirement-claims.test.ts` | Joined. Scans both trees' Markdown for the falsehood `FR-R3-099` repaired, and carries a floor asserting the scan found documents in *both* trees, so a directory rename cannot empty it into a silent pass |
 | **+1** | `reference-doc-claims.test.ts` | Joined. Covers `repo/docs/reference/`, the directory two independent reviews found uncovered, and carries a page-count floor plus a check that its own per-file exemption list is truthful |
 
-Net **82 → 83**. The false-negative rate is **0.0%** at every intermediate state; no gate was removed
-from the census and none was added to move the number.
+| **+1** | `webview-host-import-direction.test.ts` | Joined. Pins webview → host imports to `src/contracts/` for values and to type-only elsewhere; carries a floor asserting the scan found more than twenty host imports, so a directory rename cannot empty it |
+| **+1** | `no-new-error-cast.test.ts` | Joined. A shrink-only baseline over `(err as Error).message`; carries a floor on the number of source files scanned, so a rename cannot report zero casts as progress |
+| **+1** | `dependency-direction.test.ts` | Joined. Refuses a value import from a leaf layer (`contracts`, `lib`) into a layer that acts; carries a floor asserting both leaf directories contain sources |
+
+Net **82 → 86**. The false-negative rate is **0.0%** at every intermediate state; no gate was
+removed from the census and none was added to move the number.
+
+Two gates added by feature 156 are deliberately **not** in the census, and the reason is the
+detector's own definition rather than an exemption: `key-fixture-bodies-are-filler.test.ts` and
+`launch-config-outfiles.test.ts` read a fixed, named set of files rather than walking a tree, so
+there is no scan whose emptiness could hide a pass and nothing for a vacuity control to protect.
+`webview-bundle-boundary.test.ts` is out for a different reason worth stating: it walks a tree
+that may legitimately be absent (`dist/webview/` before a build), and it reports that as a
+**skip** rather than a pass — which is the property the detector looks for, expressed by a
+console warning rather than by the idiom the detector recognises.
 
 **Method.** Every gate the detector classifies as controlled — a **full census**, no sampling and no
 seed, so the denominator cannot be narrowed to improve the number. Each gate's source is neutered *in

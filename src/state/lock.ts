@@ -91,6 +91,9 @@ export const systemScheduler: Scheduler = {
  * `tests/unit/state/mirror-write-ordering.test.ts` fails if it is reordered.
  */
 export class WorkspaceLockManager {
+  /** FR-R3-103 — listeners for fence loss; see `onFenceLost`. */
+  private readonly fenceLostListeners = new Set<() => void>();
+
   private readonly store: WorkspaceStateStore;
   private readonly ownerId: string;
   private readonly clock: Clock;
@@ -237,7 +240,48 @@ export class WorkspaceLockManager {
     // surrendering a claim that may well still be ours.
     if (outcome.outcome === 'unavailable') return;
     this.fence = null;
+    // FR-R3-103 (FR-046) — tell someone the fence is gone.
+    //
+    // THE HALF THIS CLOSES. Losing the fence stopped the STATE STORE from committing — the
+    // beat nulls the fence and re-acquires, and the commit-point check refuses writes in
+    // between. It did nothing about the CHILD. No path from fence loss reached an
+    // `AbortController` or a process tree, so a superseded window's subprocess went on
+    // mutating the shared checkout for as long as it liked: fencing turned its *state* writes
+    // into refusals while its *file* writes landed. Attribution and checkpoints detect that;
+    // nothing prevented it.
+    //
+    // A CALLBACK, not a direct abort. This class knows about leases and storage, and giving it
+    // a reference to a driver or a process tree would make the lock manager the place where
+    // "what does supersession mean" is decided. The driver registers what it wants done; this
+    // reports the fact.
+    //
+    // Fired BEFORE `tryAcquire()`. Re-acquisition may succeed within the same beat, and a
+    // window that is primary again must not have swallowed the fact that it briefly was not —
+    // its child ran unfenced for that interval either way.
+    //
+    // Errors are swallowed deliberately: a listener that throws must not prevent the
+    // re-acquisition below, or one bad callback would leave the window permanently
+    // non-primary.
+    for (const listener of this.fenceLostListeners) {
+      try {
+        listener();
+      } catch {
+        /* a listener must not be able to stop the re-acquisition */
+      }
+    }
     await this.tryAcquire();
+  }
+
+  /**
+   * Register a callback for the moment this window loses its fence.
+   *
+   * FR-R3-103 (FR-046). The driver uses it to run the same abort ladder an operator cancel
+   * uses. Returns a disposer, because a window that registered and then disposed must not keep
+   * a dead driver reachable from a long-lived lock manager.
+   */
+  public onFenceLost(listener: () => void): { dispose: () => void } {
+    this.fenceLostListeners.add(listener);
+    return { dispose: () => this.fenceLostListeners.delete(listener) };
   }
 
   public async release(): Promise<void> {

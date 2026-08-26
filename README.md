@@ -64,7 +64,20 @@ Claude is the default backend. Claude and Agy run with CLI approval prompts off 
 New contributors should begin with [Course: Develop Schegent](docs/courses/develop-schegent.md).
 
 ```bash
-npm install
+nvm use
+npm ci
+npm --prefix webview-ui ci
+```
+
+**Two commands, and the second one is the point.** `.npmrc` sets `ignore-scripts=true` in both
+trees (`FR-R3-090`), so the root `postinstall` that used to install `webview-ui` does not run.
+Without the second command the first build fails, and it fails somewhere that does not mention
+installing. `CONTRIBUTING.md` is the authority for this sequence; every other document links to
+it rather than repeating it.
+
+Then verify:
+
+```bash
 npm run verify:all
 npm run build
 ```

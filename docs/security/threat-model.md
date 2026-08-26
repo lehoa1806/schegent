@@ -365,3 +365,55 @@ This does not make the model's evidence truthful. It separates a bounded control
 <!-- Source: src/parser/stdout-parser.ts -->
 <!-- Source: src/runner/claude-cli.ts -->
 <!-- Source: tests/lint/no-content-driven-process-control.test.ts -->
+
+### T26 — A process nobody owns keeps writing the working tree
+
+**Mitigated in two of three places, and the third is a stated limit.** The ownership fence is
+this project's strongest mechanism and it protects exactly one thing: Memento writes. The two
+ways a Run's *working tree* gets mutated by a process nobody owns were both open until
+`FR-R3-103`.
+
+**A dead extension host orphaned the CLI tree.** Children are spawned detached — deliberately,
+so the terminate ladder reaches descendants — and no process identity was ever persisted. Pids
+existed only in memory, in audit payloads and in temp-file names. So activation resumed every
+persisted in-flight Run with no way to ask whether the previous host's tree was still alive,
+and the resumed phase raced the orphan in one shared checkout. Now each invocation's identity
+(pid, process-group id, start timestamp) is persisted beside its Run record under the fence and
+cleared when the child is reaped; activation checks it and **declines** to resume into a live
+tree, telling the operator the Run is executing elsewhere. It does not kill and does not
+reattach: both are destructive in a way declining is not, and `FR-R3-103` §3.2 calls that
+choice a decision to record rather than to default.
+
+**A superseded window's live child kept writing.** Losing the fence stopped the *state store*
+from committing and did nothing about the child — no path from fence loss reached an
+`AbortController` or a process tree. So a superseded window's subprocess went on mutating the
+shared checkout while its state writes were refused: fencing protected state, not the tree.
+The heartbeat's rejected-beat path now notifies a listener the driver registers, which runs the
+same abort → SIGTERM → SIGKILL group ladder an operator cancel uses. It acts on the
+**invocation** and never on the window-primacy lease, which `AGENTS.md` states as a hard rule
+with FR-028's history behind it.
+
+**What remains, stated rather than implied:**
+
+- **A window between SIGKILL and filesystem quiescence.** Signalling a group is not the same as
+  the group having stopped writing. A write already in flight lands.
+- **The worktree is still shared.** Per-run isolation (`R-16` / `REL-08`) stays deferred by
+  recorded decision; this makes concurrent entry *detectable and refused at the seam*, not
+  impossible.
+- **The liveness check answers `unanswerable` on Windows and resumes anyway.** `detached` is
+  false there, so the recorded group is not probeable, and the job-object gap is a stated
+  permanent limit (`FR-R3-083`). Refusing every resume where the check cannot run would strand
+  Runs exactly where the mechanism is weakest, so the decision is to resume and record the
+  verdict — an operator can see `unanswerable` in the audit trail rather than inferring it from
+  a resume that looks ordinary. This claims no more than POSIX evidence supports, which is the
+  same discipline `FR-R3-054` applies.
+- **A recycled pid is refused, not tolerated.** Liveness is decided by the identity triple, so
+  a pid the OS has handed to an unrelated process reads as `dead` rather than as a live orphan.
+  A bare `kill(pid, 0)` would have produced a false refusal that never clears.
+- **Retried phases still have no side-effect idempotency**, and there is still no in-product
+  checkpoint restore. Both are recorded in the reliability register and neither is touched here.
+
+<!-- Source: src/contracts/spawn-identity.ts -->
+<!-- Source: src/services/process-liveness.ts -->
+<!-- Source: src/services/resume-decision.ts -->
+<!-- Source: src/state/spawn-identity-recorder.ts -->

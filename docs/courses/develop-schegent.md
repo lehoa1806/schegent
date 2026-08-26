@@ -29,15 +29,24 @@ the package engine constraint. From a fresh clone:
 git clone https://github.com/lehoa1806/schegent.git
 cd schegent
 nvm use
-npm install
+npm ci
+npm --prefix webview-ui ci
 npm run build
 npm run test:integration
 ```
 
-The root install also installs `webview-ui`. The build compiles the Svelte
-webviews and bundles the extension host. The integration command is the
-repository-defined automated Extension Development Host path; this checkout
-does not define an interactive F5 launch configuration.
+**The webview install is its own command.** `.npmrc` sets `ignore-scripts=true` in both trees
+(`FR-R3-090`), so the root `postinstall` that used to install `webview-ui` does not run; without
+the second install the build fails. This page previously said the root install also installed
+`webview-ui`, which stopped being true when the hardening landed.
+
+The build compiles the Svelte webviews and bundles the extension host. `test:integration` is the
+repository-defined automated Extension Development Host path.
+
+**There IS an interactive F5 launch configuration**: `.vscode/launch.json`, added by
+`FR-R3-073`. This page previously denied it. What is genuinely absent is
+`.vscode/tasks.json` — the launch configuration names a `preLaunchTask`, and VS Code satisfies
+it from its auto-detected npm tasks rather than from a checked-in task file.
 
 <!-- Source: ../../.nvmrc -->
 <!-- Source: ../../package.json -->

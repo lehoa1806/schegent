@@ -329,7 +329,26 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // taking on a policy rather than making a call. The closure became
   // `src/monitor/drop-reporting-transport.ts`, which is also where the reasoning for
   // wrapping rather than changing the sink lives. What is left here is the seam.
-  { path: 'src/extension.ts', maxLines: 1_459 },
+  { path: 'src/extension.ts', maxLines: 1_486 },
+  //
+  // FR-R3-103 (FR-042, FR-046) — 1459 -> 1471. Nine lines for the dependency wiring of the resume
+  // liveness check plus two imports, three more registering the fence-loss abort, and the
+  // spawn-identity recorder's construction and its two hook calls.
+  //
+  // WHAT IT BUYS. Activation resumed every persisted `running` Run without asking whether the
+  // previous host's process tree was still alive. Children spawn detached and no identity was
+  // ever persisted, so after a host crash the resumed phase and the orphaned CLI both operated
+  // on one shared working tree. The ownership fence protects Memento writes and says nothing
+  // about the tree, which is what the CLI actually mutates.
+  //
+  // WHY NINE AND NOT FORTY. This gate refused two earlier drafts and both refusals were right.
+  // The first inlined the whole decision — probe, verdict, audit append, notification — at 32
+  // lines over; the second still carried the walk. What is left here is a `resumePersistedRuns`
+  // call and its six injected seams, which is activation WIRING rather than policy: the
+  // decision lives in `src/services/resume-decision.ts` and the probing in
+  // `src/services/process-liveness.ts`, both testable without crashing a host. Recording the
+  // two refusals matters more than the number — this file's budget exists precisely to catch
+  // the shape those drafts had.
   // P4 phase-control and lifecycle-auditor extraction ratchet: 1,200 → 730.
   // This file owns only the workflow facade, run dispatch, deletion, retry
   // entry, and persistence.
@@ -557,7 +576,17 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // Extraction was measured and declined: `executionLease` is a local of this
   // constructor, so a helper module would hide a one-line binding behind an
   // import and a call site — the trade the entries above decline by name.
-  { path: 'src/controller/workflow-controller.ts', maxLines: 1_007 },
+  // FR-R3-103 (FR-046, FR-047) — 1007 -> 1025. `abortOnSupersession()`, which fans a window's
+  // lost fence out to every live session's driver.
+  //
+  // Most of the eighteen lines are the docstring, and it is worth them: this method looks like
+  // `cancelActive` and must not become it. It takes no queue argument, because supersession is a
+  // WINDOW-level fact — the fence is per workspace, so losing it means none of this window's Runs
+  // may keep writing the tree, and a per-queue variant would invite terminating one Run while
+  // leaving its siblings unfenced. It also must not release the primacy lease, which AGENTS.md
+  // states as a hard rule with FR-028's history behind it: a window that stopped being primary
+  // while still executing work.
+  { path: 'src/controller/workflow-controller.ts', maxLines: 1_025 },
   // P4 domain-validator extraction ratchet: 1,200 → 775. The registry owns
   // command coverage; phase-log and metrics validators own shape rules.
   // Feature 088 (T032) — 775 → 776 for the two connected-run commands. Both
@@ -619,7 +648,16 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // shape this file holds for every command; the request and response types
   // live in their own module under sidebar-ipc/, exactly as the sibling
   // read-only command's do. Set to what the file measures.
-  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 1_041 },
+  // FR-R3-110 (FR-103) — 1041 -> 1058, for the docstring on `SIDEBAR_IPC_SCHEMA_VERSION`.
+  //
+  // The rename itself is one line. The docstring is the rest, and it earns its place: TWO
+  // constants named `SCHEMA_VERSION` sat on the same host -> webview path with different values
+  // (3 here, 4 in `src/ui/sidebar/snapshot.ts`), so an unqualified import picked a number by
+  // module path — and both numbers are plausible in both places, so a wrong import would not
+  // look wrong. There was a THIRD, `src/state/workspace-state.ts`'s `SCHEMA_VERSION = '1.0.0'`,
+  // a string. Three constants, one name, two types. A reader who arrives at this line needs to
+  // know which of the three they have.
+  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 1058 },
   // Waived, not budgeted. Feature 063's operator decision retired the ceiling
   // on this file and on queue-manager.ts below; it did not set a large one. The
   // entries used to say `maxLines: 10_000` against files of 2,500 and 1,821,
@@ -774,7 +812,7 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // is deliberately NOT taken here — the 2026-08-23 review's warning against wholesale
   // restructuring stands, and the serialized commit point and fencing semantics inside
   // `drive()` are load-bearing enough that moving code around them earns its own change.
-  { path: 'src/services/run-driver.ts', maxLines: 1_263 }
+  { path: 'src/services/run-driver.ts', maxLines: 1_290 }
 ];
 
 function lineCount(path: string): number {

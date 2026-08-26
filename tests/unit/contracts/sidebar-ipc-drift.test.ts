@@ -24,8 +24,11 @@ describe('sidebar-ipc drift guard (FR-024)', () => {
     expect(HostShim.CMD_CANCEL).toBe('CMD_CANCEL');
   });
 
-  it('host shim shares SCHEMA_VERSION with authoritative module', () => {
-    expect(HostShim.SCHEMA_VERSION).toBe(Authoritative.SCHEMA_VERSION);
+  it('host shim shares SIDEBAR_IPC_SCHEMA_VERSION with authoritative module', () => {
+    // FR-R3-110 (FR-103) — renamed from `SCHEMA_VERSION`, which collided with
+    // `src/ui/sidebar/snapshot.ts`'s constant of the same name and a different value (3 vs 4) on
+    // the same host -> webview path. The value did not change.
+    expect(HostShim.SIDEBAR_IPC_SCHEMA_VERSION).toBe(Authoritative.SIDEBAR_IPC_SCHEMA_VERSION);
   });
 
   it('host shim exports the same COMMAND_GUARDS object as authoritative module', () => {
@@ -426,9 +429,9 @@ describe('sidebar-ipc drift guard (FR-024)', () => {
     }
   });
 
-  it('SCHEMA_VERSION is a numeric integer constant', () => {
-    expect(typeof Authoritative.SCHEMA_VERSION).toBe('number');
-    expect(Number.isInteger(Authoritative.SCHEMA_VERSION)).toBe(true);
+  it('SIDEBAR_IPC_SCHEMA_VERSION is a numeric integer constant', () => {
+    expect(typeof Authoritative.SIDEBAR_IPC_SCHEMA_VERSION).toBe('number');
+    expect(Number.isInteger(Authoritative.SIDEBAR_IPC_SCHEMA_VERSION)).toBe(true);
   });
 
   it('webview shim source re-exports the authoritative IPC module via a single export-* statement', () => {

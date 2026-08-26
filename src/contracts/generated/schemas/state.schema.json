@@ -89,6 +89,11 @@
           "type": "number"
         },
         {
+          "name": "spawnIdentity",
+          "optional": true,
+          "type": "SpawnIdentity"
+        },
+        {
           "name": "id",
           "optional": false,
           "type": "string"

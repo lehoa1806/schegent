@@ -20,7 +20,7 @@ import type { PhaseName } from '../contracts/phase-identity';
 import type { HistoryRecorder } from './history-recorder';
 import type { RetryCoordinator } from './retry-coordinator';
 import type { PhaseDef } from '../config/pipeline-config';
-import { RequiredEvidenceUnavailableError } from '../lib/errors';
+import { RequiredEvidenceUnavailableError, errorMessage } from '../lib/errors';
 import { effectiveRunnerKindForPhase } from '../config/pipeline-snapshot';
 import {
   DEFAULT_BACKEND,
@@ -206,6 +206,33 @@ export class RunDriver {
   }
 
   public cancelActive(): void {
+    this.cancellationController?.abort();
+  }
+
+  /**
+   * FR-R3-103 (FR-046, FR-047) — this window lost the execution fence, so its child has no
+   * business still writing the workspace.
+   *
+   * WHAT WAS OPEN. Losing the fence stopped the state store from committing and did nothing
+   * about the child: no path from fence loss reached an `AbortController` or the process tree.
+   * So a superseded window's subprocess kept mutating the shared checkout while its state
+   * writes were refused — fencing protected state, not the tree, and the tree is what the CLI
+   * changes.
+   *
+   * THE SAME LADDER AS A CANCEL, on purpose. `cancelActive()` aborts the controller, which the
+   * runner's own abort handling turns into the SIGTERM → SIGKILL group escalation. Reaching for
+   * the process tree directly from here would be a second termination path, and two paths for
+   * one job is how they come to disagree about what "terminated" means.
+   *
+   * WHAT THIS MUST NOT DO, and it is a hard rule rather than a preference: it does not touch
+   * the window-primacy lease. `AGENTS.md` states that no Run-scoped path releases primacy —
+   * primacy's tenure is activation to disposal, and FR-028's history is a window that stopped
+   * being primary while it was still executing work. This acts on the INVOCATION.
+   *
+   * Idempotent by construction: aborting an already-aborted controller is a no-op, and a
+   * window can lose its fence more than once in a session.
+   */
+  public abortOnSupersession(): void {
     this.cancellationController?.abort();
   }
 
@@ -432,7 +459,7 @@ export class RunDriver {
               });
             } catch (queueError) {
               this.deps.logger.warn(
-                `run-driver: queue.finish (probe failed) failed: ${(queueError as Error).message}`
+                `run-driver: queue.finish (probe failed) failed: ${errorMessage(queueError)}`
               );
             }
             // Feature 072 — emit task-execution-ended. FR-R3-107: one emitter, and the
@@ -812,14 +839,14 @@ export class RunDriver {
             });
           } catch (qErr) {
             this.deps.logger.warn(
-              `run-driver: queue.finish (failed) failed: ${(qErr as Error).message}`
+              `run-driver: queue.finish (failed) failed: ${errorMessage(qErr)}`
             );
           }
           try {
             await this.deps.historyRecorder.record(run, description, 'failed');
           } catch (hErr) {
             this.deps.logger.warn(
-              `run-driver: history record (failed) failed: ${(hErr as Error).message}`
+              `run-driver: history record (failed) failed: ${errorMessage(hErr)}`
             );
           }
           // Feature 072 — emit task-execution-ended (failed). FR-R3-107: one emitter.
@@ -994,14 +1021,14 @@ export class RunDriver {
           await this.deps.queue.finish(run.featureId, 'completed');
         } catch (qErr) {
           this.deps.logger.warn(
-            `run-driver: queue.finish (completed) failed: ${(qErr as Error).message}`
+            `run-driver: queue.finish (completed) failed: ${errorMessage(qErr)}`
           );
         }
         try {
           await this.deps.historyRecorder.record(run, description, 'completed');
         } catch (hErr) {
           this.deps.logger.warn(
-            `run-driver: history record (completed) failed: ${(hErr as Error).message}`
+            `run-driver: history record (completed) failed: ${errorMessage(hErr)}`
           );
         }
         // Feature 072 — emit task-execution-ended (completed). FR-R3-107: one emitter.
@@ -1028,7 +1055,7 @@ export class RunDriver {
             await this.deps.terminalTransitions?.complete(run, description);
           } catch (error) {
             this.deps.logger.warn(
-              `run-driver: terminal transition failed: ${(error as Error).message}`
+              `run-driver: terminal transition failed: ${errorMessage(error)}`
             );
           }
         }
@@ -1036,7 +1063,7 @@ export class RunDriver {
           await this.deps.onRunTerminal?.(run);
         } catch (error) {
           this.deps.logger.warn(
-            `run-driver: terminal retention hook failed: ${(error as Error).message}`
+            `run-driver: terminal retention hook failed: ${errorMessage(error)}`
           );
         }
       }
@@ -1151,14 +1178,14 @@ export class RunDriver {
       });
     } catch (queueError) {
       this.deps.logger.warn(
-        `run-driver: queue.finish (audit unavailable) failed: ${(queueError as Error).message}`
+        `run-driver: queue.finish (audit unavailable) failed: ${errorMessage(queueError)}`
       );
     }
     try {
       await this.deps.historyRecorder.record(failed, description, 'failed');
     } catch (historyError) {
       this.deps.logger.warn(
-        `run-driver: history record (audit unavailable) failed: ${(historyError as Error).message}`
+        `run-driver: history record (audit unavailable) failed: ${errorMessage(historyError)}`
       );
     }
     return failed;
@@ -1247,7 +1274,7 @@ export class RunDriver {
       });
     } catch (err) {
       this.deps.logger.warn(
-        `run-driver: task-execution-ended (${terminalStatus}) audit failed: ${(err as Error).message}`
+        `run-driver: task-execution-ended (${terminalStatus}) audit failed: ${errorMessage(err)}`
       );
     }
   }

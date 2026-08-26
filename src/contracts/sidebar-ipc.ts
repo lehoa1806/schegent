@@ -1,5 +1,22 @@
 // Authoritative sidebar IPC contract; host and webview shims re-export it.
-export const SCHEMA_VERSION = 3 as const;
+/**
+ * FR-R3-110 (FR-103) — renamed from `SCHEMA_VERSION`.
+ *
+ * THE COLLISION. Two constants named `SCHEMA_VERSION` sat on the same host -> webview path with
+ * DIFFERENT values: this one (3, the IPC envelope) and `src/ui/sidebar/snapshot.ts`'s (4, the
+ * snapshot body). An unqualified `import { SCHEMA_VERSION }` picked a number by module path, and
+ * both numbers are plausible in both places — so a wrong import would not look wrong, it would
+ * just version the wrong thing.
+ *
+ * There was a third, and it is why renaming one was not enough on its own to make the class
+ * safe: `src/state/workspace-state.ts` exports `SCHEMA_VERSION = '1.0.0'`, a STRING. Three
+ * constants, one name, two types.
+ *
+ * Renaming this one rather than the snapshot's: it has the fewest importers, and
+ * `SIDEBAR_IPC_SCHEMA_VERSION` says what it versions where the bare name did not. The value is
+ * unchanged — this is a naming fix so the compiler can find every site, not a version bump.
+ */
+export const SIDEBAR_IPC_SCHEMA_VERSION = 3 as const;
 // -- Command literals (webview → host) ---------------------------------------
 
 export const CMD_START = 'CMD_START' as const;

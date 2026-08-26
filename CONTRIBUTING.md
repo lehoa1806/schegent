@@ -159,7 +159,20 @@ The pull-request workflows currently configured for `develop` run the following:
 These are trigger definitions, not proof of remote merge protection.
 <!-- Source: docs/release/actions-terminal-record.md -->
 
-The repository has no `.vscode/launch.json` or `.vscode/tasks.json`; do not claim an exact F5 workflow from the empty `.vscode/settings.json`. Use `npm run test:integration` for the checked-in automated Extension Development Host path.
+**`.vscode/launch.json` exists** — `FR-R3-073` added it, and this sentence denied it until
+2026-08-26 (`FR-R3-101`). Its single `Run Extension` configuration is the interactive F5 path,
+and its `outFiles` names `dist/**` because that is where `esbuild.config.mjs` bundles the host;
+it named `out/**` until the same date, which is the integration-test compile target, so F5
+breakpoints bound against the wrong artifact and never hit.
+
+**`.vscode/tasks.json` genuinely does not exist**, and the launch configuration names a
+`preLaunchTask` of `npm: build` anyway. That works because VS Code auto-detects npm scripts as
+tasks; it is not a checked-in task definition, so a contributor who disables npm task
+auto-detection will see the launch fail to build first. One honest sentence rather than either
+claiming a task file or denying the launch file.
+
+`npm run test:integration` remains the checked-in automated Extension Development Host path,
+and it is the one CI-equivalent route — F5 is a person at a keyboard.
 <!-- Source: .vscode/settings.json -->
 <!-- Source: package.json -->
 <!-- Source: tests/integration/runTest.ts -->

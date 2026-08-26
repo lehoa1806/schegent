@@ -53,12 +53,19 @@ The final command should report `v24.19.0` when nvm has honored `.nvmrc`. Node 2
 From the repository root, run:
 
 ```bash
-npm install
+nvm use
+npm ci
+npm --prefix webview-ui ci
 ```
 
-The root install uses the checked-in npm lockfile. Its `postinstall` script also installs the private `webview-ui` package, so a separate webview install is unnecessary.
+**Two commands, and the second one is the point.** Both installs use the checked-in lockfiles.
+`.npmrc` sets `ignore-scripts=true` in both trees (`FR-R3-090`), a deliberate hardening, so the
+root `postinstall` that used to install the private `webview-ui` package **does not run** — a
+separate webview install is required, not optional. This paragraph previously said the opposite;
+the hardening is not reverted to make a document true. See `CONTRIBUTING.md`, which is the
+authority for the sequence.
 
-`npm install` does not fetch the Chromium build the visual regression suite launches. Install it once:
+Neither install fetches the Chromium build the visual regression suite launches. Install it once:
 
 ```bash
 npx playwright install chromium

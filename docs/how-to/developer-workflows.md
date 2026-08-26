@@ -1,6 +1,12 @@
 # Developer workflows
 
-Run every command in this guide from the repository root unless the command says otherwise. The root `postinstall` installs the nested `webview-ui` dependencies, so a single `npm install` prepares both package trees.
+Run every command in this guide from the repository root unless the command says otherwise.
+
+**Installing takes two commands, not one.** `.npmrc` sets `ignore-scripts=true` in both trees
+(`FR-R3-090`), so the root `postinstall` that used to install the nested `webview-ui`
+dependencies does not run: `npm ci && npm --prefix webview-ui ci`. This guide previously said a
+single install prepared both trees, which stopped being true when the hardening landed. See
+`CONTRIBUTING.md` for the authority on the sequence.
 <!-- Source: package.json -->
 
 ## Check a host-code change

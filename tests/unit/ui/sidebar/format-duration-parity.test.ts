@@ -14,16 +14,18 @@ describe('formatDuration host/webview parity', () => {
   });
 });
 
-describe('messages SCHEMA_VERSION (Wave 5 — authoritative module)', () => {
+describe('messages SIDEBAR_IPC_SCHEMA_VERSION (Wave 5 — authoritative module)', () => {
   // Feature 013 — Wave 5: SCHEMA_VERSION lives in the authoritative IPC
   // contract module. Host and webview shims are single `export *`
   // re-exports, so a parity check across the two shim files is no longer
   // meaningful — the drift guard in
   // `tests/unit/contracts/sidebar-ipc-drift.test.ts` enforces module
   // identity. This test now guards the authoritative declaration.
-  it('the authoritative IPC module declares SCHEMA_VERSION', () => {
+  it('the authoritative IPC module declares SIDEBAR_IPC_SCHEMA_VERSION', () => {
     const AUTHORITATIVE = path.join(REPO_ROOT, 'src', 'contracts', 'sidebar-ipc.ts');
-    const RX = /export const SCHEMA_VERSION = (\d+) as const/;
+    // FR-R3-110 (FR-103) — renamed from the bare `SCHEMA_VERSION`, which collided with
+    // `src/ui/sidebar/snapshot.ts`'s constant of the same name and a different value.
+    const RX = /export const SIDEBAR_IPC_SCHEMA_VERSION = (\d+) as const/;
     const match = RX.exec(fs.readFileSync(AUTHORITATIVE, 'utf8'));
     expect(match, 'authoritative module must declare SCHEMA_VERSION').not.toBeNull();
     expect(Number.parseInt(match![1], 10)).toBeGreaterThan(0);
