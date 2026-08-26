@@ -55,6 +55,14 @@ export function documentFromPhaseDefinition(definition: PhaseDefinition): PhaseY
     ...(definition.timeoutSeconds !== undefined
       ? { timeoutSeconds: definition.timeoutSeconds }
       : {}),
+    // FR-R3-112 — both directions, for the reason `hostVerification` states above: a key in the
+    // writer's order and the reader's grammar is not the same as carrying the value.
+    ...(definition.spendBoundUsd !== undefined
+      ? { spendBoundUsd: definition.spendBoundUsd }
+      : {}),
+    ...(definition.spendBoundTokens !== undefined
+      ? { spendBoundTokens: definition.spendBoundTokens }
+      : {}),
     ...(definition.loopable !== undefined ? { loopable: definition.loopable } : {}),
     ...(definition.isRequired !== undefined ? { isRequired: definition.isRequired } : {}),
     ...(definition.forceContinueOnRetryCap !== undefined
@@ -98,6 +106,8 @@ export function phaseDefinitionFromDocument(document: PhaseYamlDocument): PhaseD
     ...(spec.model !== undefined ? { model: spec.model } : {}),
     ...(spec.effort !== undefined ? { effort: spec.effort } : {}),
     ...(spec.timeoutSeconds !== undefined ? { timeoutSeconds: spec.timeoutSeconds } : {}),
+    ...(spec.spendBoundUsd !== undefined ? { spendBoundUsd: spec.spendBoundUsd } : {}),
+    ...(spec.spendBoundTokens !== undefined ? { spendBoundTokens: spec.spendBoundTokens } : {}),
     ...(spec.loopable !== undefined ? { loopable: spec.loopable } : {}),
     ...(spec.retryCondition !== undefined ? { retryCondition: spec.retryCondition } : {}),
     ...(spec.isRequired !== undefined ? { isRequired: spec.isRequired } : {}),

@@ -5,6 +5,11 @@
 // credentials. This half does the I/O and nothing else.
 
 import { spawnSync } from 'node:child_process';
+import {
+  QUALIFICATION_PATH,
+  buildQualificationRecord,
+  readHeadCommit
+} from './backend-qualification.mjs';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
@@ -231,4 +236,29 @@ const results = BACKENDS.map(({ backend, command }) => {
 });
 
 console.log(formatReport(results));
+
+// FR-R3-104 (FR-051, FR-054, FR-056) — write the machine-readable record beside the printed
+// report, so the release path can read what this run observed.
+//
+// WRITTEN FROM THE OBSERVED PROBES, never from an argument or a default: the versions are the
+// ones this process just executed `--version` for, and `states` is the per-backend verdict, so a
+// run where one backend only managed a version probe cannot leave a record that reads as three
+// qualified backends.
+//
+// Written even when a backend is degraded, and this is deliberate. The record is an observation,
+// not a certificate; the gate reads the versions and the date, and an operator reading the file
+// sees exactly which backends produced a live turn. Writing nothing on partial success would
+// leave the release path with no record at all, which refuses for the wrong reason.
+const qualificationRecord = buildQualificationRecord({
+  versions: Object.fromEntries(
+    results.map((result) => [result.backend, result.observedVersion ?? null])
+  ),
+  states: Object.fromEntries(results.map((result) => [result.backend, result.state])),
+  commit: readHeadCommit(),
+  platform: `${process.platform} ${process.arch} node ${process.versions.node}`,
+  now: new Date().toISOString()
+});
+writeFileSync(QUALIFICATION_PATH, `${JSON.stringify(qualificationRecord, null, 2)}\n`, 'utf8');
+console.log(`[backend-canary] qualification record written to ${QUALIFICATION_PATH}`);
+
 process.exit(canaryExitCode(results));

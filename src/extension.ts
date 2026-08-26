@@ -735,7 +735,9 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     rawTranscript,
     sessionRetention,
     protectedSessionRunIds,
-    evidenceHealth
+    evidenceHealth,
+    auditWriter,
+    notifier
   });
 
   const controller = new SchegentWorkflowController(

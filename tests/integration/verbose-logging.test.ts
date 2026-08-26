@@ -213,6 +213,14 @@ function normalizeAuditLog(raw: string): string {
         delete obj.payload.durationMs;
         delete obj.payload.diagnosticsEnabled;
       }
+      // FR-R3-112 — the hash chain, normalized away for the same reason as `id` and `timestamp`.
+      // `prevDigest` is a function of every preceding byte, so once the two runs differ by the
+      // one flag this test is about, every later digest differs too. Comparing them would make
+      // the claim "differs ONLY by the declared flag" unexpressible: any difference at all would
+      // cascade through the chain. The chain's own correctness is asserted in
+      // `tests/unit/audit/audit-chain-end-to-end.test.ts`, against the bytes on disk.
+      delete obj.prevDigest;
+      delete obj.digestAlg;
       return JSON.stringify(obj);
     })
     .join('\n');

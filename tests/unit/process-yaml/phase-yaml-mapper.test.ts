@@ -55,6 +55,12 @@ const FULL_INSTRUCTION: PhaseDefinition = {
   model: 'opus',
   effort: 'high',
   timeoutSeconds: 120,
+  // FR-R3-112 — distinctive, non-default values for the same reason the two below carry them: a
+  // field dropped anywhere on the path shows up as a changed value rather than a coincidentally
+  // correct one. Both denominations, because carrying only one would let the other be silently
+  // cleared by a round trip.
+  spendBoundUsd: 12.5,
+  spendBoundTokens: 250_000,
   loopable: true,
   retryCondition: 'attempts < 3',
   forceContinueOnRetryCap: true,

@@ -24,6 +24,7 @@ import { runRetryPhaseNow } from '../commands/retry-phase-now';
 import { runSchedule } from '../commands/schedule';
 import { runShowActiveRun } from '../commands/show-active-run';
 import { runShowAuditLog } from '../commands/show-audit';
+import { runVerifyAuditChain } from '../commands/verify-audit-chain';
 import {
   runStartQueueCommand,
   type StartQueueCommandArg
@@ -258,6 +259,15 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
     ),
     vscode.commands.registerCommand('schegent.showAuditLog', () =>
       runShowAuditLog({ workspaceRoot: deps.workspaceRoot, notifier: deps.notifier })
+    ),
+    // FR-R3-112 — the chain verification, from the surface rather than only from a shell.
+    vscode.commands.registerCommand('schegent.verifyAuditChain', () =>
+      runVerifyAuditChain({
+        workspaceRoot: deps.workspaceRoot,
+        notifier: deps.notifier,
+        logger: deps.logger,
+        onBreak: (detail) => deps.auditWriter.noteChainBreak(detail)
+      })
     ),
     vscode.commands.registerCommand('schegent.exportAuditLog', () =>
       runExportAuditLog({ workspaceRoot: deps.workspaceRoot, notifier: deps.notifier })

@@ -135,6 +135,12 @@ export function phaseDefinitionToPhaseDef(definition: PhaseDefinition): PhaseDef
     ...(definition.timeoutSeconds !== undefined
       ? { timeoutSeconds: definition.timeoutSeconds }
       : {}),
+    ...(definition.spendBoundUsd !== undefined
+      ? { spendBoundUsd: definition.spendBoundUsd }
+      : {}),
+    ...(definition.spendBoundTokens !== undefined
+      ? { spendBoundTokens: definition.spendBoundTokens }
+      : {}),
     ...(definition.loopable !== undefined ? { loopable: definition.loopable } : {}),
     ...(definition.retryCondition !== undefined
       ? { retryCondition: definition.retryCondition }

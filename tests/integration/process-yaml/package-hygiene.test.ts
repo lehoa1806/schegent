@@ -1000,19 +1000,55 @@ describe('Feature 086 T070 — a Workflow document carries the definition and no
     expect(documentKeys(planted).filter((key) => !SCHEMA_KEYS.has(key))).toEqual(['sessionId']);
   });
 
+  /**
+   * Schema keys whose leak-word match is a known false positive, each with its reason.
+   *
+   * A DECLARATION, not a hole. `LEAK_WORDS` matches substrings, which is what gives it reach over
+   * names nobody predicted — and the cost is that an ordinary word inside a legitimate field name
+   * matches too. An entry here is a claim about one key, asserted below to actually be in the
+   * schema, so it cannot be used to pre-authorise a key that does not exist yet.
+   */
+  const LEAK_WORD_EXEMPT_KEYS: Readonly<Record<string, string>> = {
+    spendboundtokens:
+      'FR-R3-112 — the per-phase spend bound denominated in MODEL USAGE tokens, which is the ' +
+      'unit `codex` and `agy` report. The leak word `token` guards against credential tokens; ' +
+      'this is a number of tokens consumed, and the field carries a bound an operator authored'
+  };
+
   it('declares no leak-shaped key in the schema itself (FR-060, SC-019)', () => {
     // The whitelist above widens with the serializer, so the denylist runs over the
     // serializer's names as well. Widening the schema is then not a way to make a
     // session id or a path legal — it fails here instead.
     const offenders = [...SCHEMA_KEYS]
       .map((key) => key.toLowerCase())
-      .filter((key) => LEAK_WORDS.some((word) => key.includes(word)));
+      .filter((key) => LEAK_WORDS.some((word) => key.includes(word)))
+      .filter((key) => !(key in LEAK_WORD_EXEMPT_KEYS));
     expect(offenders).toEqual([]);
+  });
+
+  it('exempts no key that is not in the schema, and gives each a reason', () => {
+    // The other direction, so an exemption cannot outlive the key it excuses or stand in for a
+    // key that was never declared.
+    const schemaKeys = new Set([...SCHEMA_KEYS].map((key) => key.toLowerCase()));
+    for (const [key, reason] of Object.entries(LEAK_WORD_EXEMPT_KEYS)) {
+      expect(schemaKeys.has(key), `${key} is exempted but is not a schema key`).toBe(true);
+      expect(
+        LEAK_WORDS.some((word) => key.includes(word)),
+        `${key} is exempted from a match it does not have`
+      ).toBe(true);
+      expect(reason.length, `${key} needs a real reason`).toBeGreaterThan(60);
+    }
   });
 
   it('leaks nothing through a value either (FR-024, FR-060)', async () => {
     const { text } = await exportClosure();
-    const haystack = text.toLowerCase();
+    // KEY NAMES ARE STRIPPED before the scan, because this case is about VALUES. A document that
+    // legitimately declares `spendBoundTokens:` would otherwise fail a scan for the word `token`
+    // on the strength of its own schema — measuring the schema rather than the data, which the
+    // case above already does properly and with a reasoned exemption list.
+    const haystack = text
+      .replace(/^ *(?:- )?[A-Za-z][\w-]*:/gm, '')
+      .toLowerCase();
     expect(LEAK_WORDS.filter((word) => haystack.includes(word))).toEqual([]);
     // And the one installation-state value this path is handed by name. The list
     // above is a denylist of words someone thought of; the store revision is a

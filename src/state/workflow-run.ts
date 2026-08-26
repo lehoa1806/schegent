@@ -240,7 +240,22 @@ export type ManualPauseCause =
   | 'operator-paused'
   | 'queue-paused-mid-run'
   | 'breakpoint-paused'
-  | 'verify-paused';
+  | 'verify-paused'
+  /**
+   * FR-R3-112 (FR-120, FR-120a, FR-121) — the run crossed its spend bound.
+   *
+   * A NEW CAUSE ON THE EXISTING PAUSE, not a new status. The bounds this product had were all time-
+   * and count-shaped — iteration cap 10, retry cap 5, idle 5400 s, absolute 21600 s — and **nothing
+   * bounded spend**. Cost was recorded (the rollup accumulates `costUsd` and validates
+   * non-negativity) and no code path in controller or services read it to refuse, pause or warn, so
+   * a pathological run burned budget at full speed inside every existing cap.
+   *
+   * IT PAUSES; IT NEVER DESTROYS. No terminal transition. An operator returning from lunch to a
+   * paused run has lost time; to a failed one, possibly work. This reuses the operator-resumable
+   * pause the rate-limit path already uses, so the existing resume works unchanged and no status
+   * literal is introduced — which the hard rules forbid outside the pinned projection paths.
+   */
+  | 'spend-bound-reached';
 
 /**
  * Feature 028 — future-phase breakpoint entry. Operator marks a pending

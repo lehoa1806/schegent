@@ -137,8 +137,10 @@ describe('capability-trust-resolver (059, T008) — 16-row ladder matrix', () =>
   ): boolean {
     if (!isTrusted) return false;
     if (user === false || workspace === false) return false;
-    if (workspace === true || workspace === false) return workspace;
-    if (user === true || user === false) return user;
+    // `!== null` rather than the true/false pair: the `=== false` guard above already returned,
+    // so half of each pair was unreachable and read as a ladder rung that does nothing.
+    if (workspace !== null) return workspace;
+    if (user !== null) return user;
     return true;
   }
 
@@ -150,8 +152,10 @@ describe('capability-trust-resolver (059, T008) — 16-row ladder matrix', () =>
     if (!isTrusted) return 'workspace-trust';
     if (user === false) return 'user';
     if (workspace === false) return 'workspace';
-    if (workspace === true || workspace === false) return 'workspace';
-    if (user === true || user === false) return 'user';
+    // Same simplification as the ladder above: the `=== false` guards already returned, so the
+    // second half of each pair was unreachable.
+    if (workspace !== null) return 'workspace';
+    if (user !== null) return 'user';
     return 'workspace-trust';
   }
 

@@ -42,6 +42,10 @@ import {
   PHASE_INSTRUCTION_MAX_LEN,
   PHASE_NAME_MAX_LEN,
   PHASE_SKILL_MAX_LEN,
+  PHASE_SPEND_TOKENS_MAX,
+  PHASE_SPEND_TOKENS_MIN,
+  PHASE_SPEND_USD_MAX,
+  PHASE_SPEND_USD_MIN,
   PHASE_TIMEOUT_MAX,
   PHASE_TIMEOUT_MIN
 } from '../../config/process-definition-validator';
@@ -211,6 +215,44 @@ function readInteger(scalar: YamlScalarNode): number | null {
   if (scalar.quoted || !INTEGER_PATTERN.test(scalar.value)) return null;
   const parsed = Number(scalar.value);
   return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+/**
+ * FR-R3-112 — a bounded numeric field, read once for both spend denominations.
+ *
+ * Written once rather than twice for the reason the catalog validator's twin states: the only
+ * difference between the two fields is whether the figure is a whole number, and two copies of the
+ * same range check is how the USD field and the token field come to disagree about what "out of
+ * range" means. A quoted scalar is text by the author's own hand and never satisfies a numeric
+ * field, exactly as `readInteger` has it.
+ */
+function readBoundedNumber(
+  node: YamlMappingNode,
+  key: 'spendBoundUsd' | 'spendBoundTokens',
+  min: number,
+  max: number,
+  integral: boolean,
+  defects: ImportDefect[]
+): number | undefined {
+  const scalar = optionalScalar(node, key, defects);
+  if (scalar === undefined) return undefined;
+  const parsed = scalar.quoted ? Number.NaN : Number(scalar.value);
+  const valid =
+    Number.isFinite(parsed) &&
+    (!integral || Number.isSafeInteger(parsed)) &&
+    parsed >= min &&
+    parsed <= max;
+  if (!valid) {
+    defects.push(
+      defect(
+        key,
+        'invalid-range',
+        `Phase ${key} must be ${integral ? 'an integer' : 'a number'} from ${min} to ${max}`
+      )
+    );
+    return undefined;
+  }
+  return parsed;
 }
 
 function readBoolean(scalar: YamlScalarNode): boolean | null {
@@ -499,6 +541,27 @@ function validateSpec(section: YamlMappingNode, defects: ImportDefect[]): PhaseY
     }
   }
 
+  // FR-R3-112 — the same bounds the catalog validator applies, imported rather than restated: two
+  // copies of "what is a valid spend bound" is how the import path and the save path come to
+  // disagree, and the disagreement would present as a document accepted by one and refused by the
+  // other on the same field.
+  const spendBoundUsd = readBoundedNumber(
+    section,
+    'spendBoundUsd',
+    PHASE_SPEND_USD_MIN,
+    PHASE_SPEND_USD_MAX,
+    false,
+    defects
+  );
+  const spendBoundTokens = readBoundedNumber(
+    section,
+    'spendBoundTokens',
+    PHASE_SPEND_TOKENS_MIN,
+    PHASE_SPEND_TOKENS_MAX,
+    true,
+    defects
+  );
+
   const loopable = readOptionalBoolean(section, 'loopable', defects);
   const isRequired = readOptionalBoolean(section, 'isRequired', defects);
   const forceContinueOnRetryCap = readOptionalBoolean(
@@ -547,6 +610,8 @@ function validateSpec(section: YamlMappingNode, defects: ImportDefect[]): PhaseY
     ...(model !== undefined ? { model } : {}),
     ...(effort !== undefined ? { effort } : {}),
     ...(timeoutSeconds !== undefined ? { timeoutSeconds } : {}),
+    ...(spendBoundUsd !== undefined ? { spendBoundUsd } : {}),
+    ...(spendBoundTokens !== undefined ? { spendBoundTokens } : {}),
     ...(loopable !== undefined ? { loopable } : {}),
     ...(isRequired !== undefined ? { isRequired } : {}),
     ...(forceContinueOnRetryCap !== undefined ? { forceContinueOnRetryCap } : {}),

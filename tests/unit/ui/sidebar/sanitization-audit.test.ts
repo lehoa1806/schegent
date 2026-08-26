@@ -1,3 +1,4 @@
+import { waitForCondition } from '../../../wait-for-condition';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs/promises';
 import * as os from 'os';
@@ -112,6 +113,23 @@ describe('Sanitization audit (T069 / FR-014)', () => {
   });
 
   it('audit log lines are sanitized at write time and snapshot tail never contains secrets', async () => {
+    // FR-R3-114 row 3 — the appends were ABOVE the projector's construction, and the sleep that
+    // followed hid what that meant: the projector's tail is fed by its live audit subscription, so
+    // entries written before `start()` never reached it. `assertNoSecrets(deepStringify([]))`
+    // passed for four months over an EMPTY array — a sanitization assertion that inspected
+    // nothing. Converting the sleep to a condition is what surfaced it: the condition never held.
+    //
+    // The appends now happen after `start()`, so the subscription carries them and the assertion
+    // has a tail to inspect. The on-disk half was always real and is unchanged.
+    const proj = new StateProjector({
+      store,
+      audit,
+      ownerId: 'w',
+      logger,
+      monotonicNow: () => 0
+    });
+    proj.start();
+
     await audit.append({
       eventType: 'cli-invocation',
       phase: 'speckit-plan',
@@ -129,21 +147,21 @@ describe('Sanitization audit (T069 / FR-014)', () => {
       payload: { error: `Auth: ${SECRETS.apiKey}` }
     });
 
-    const proj = new StateProjector({
-      store,
-      audit,
-      ownerId: 'w',
-      logger,
-      monotonicNow: () => 0
+    await waitForCondition(() => proj.getCurrentSnapshot().auditTail.length >= 2, {
+      label: 'both audit entries reach the projection tail'
     });
-    proj.start();
-
-    // Force a project pass after audit subscribers fire by sleeping past debounce
-    await new Promise((r) => setTimeout(r, 150));
     const snap = proj.getCurrentSnapshot();
     proj.dispose();
 
+    // Non-vacuity, in the shape the projection actually has. The tail is a METADATA projection —
+    // id, timestamp, phase, category, summary, runId — and carries no `payload` field at all, so
+    // the secret-bearing payloads above cannot reach it by construction. That is a stronger claim
+    // than redaction, and it is the one worth asserting: a `payload` key appearing here later
+    // would be a new exposure that `assertNoSecrets` alone might not catch, because it only knows
+    // the patterns it was given.
+    expect(snap.auditTail.length).toBeGreaterThanOrEqual(2);
     const tailSerialized = deepStringify(snap.auditTail);
+    expect(tailSerialized, 'the tail must not project raw payloads').not.toContain('"payload"');
     assertNoSecrets(tailSerialized);
 
     const onDisk = await fs.readFile(audit.logPath, 'utf8');
@@ -197,14 +215,6 @@ describe('Sanitization audit (T069 / FR-014)', () => {
         }
       ]
     });
-    await audit.append({
-      eventType: 'cli-invocation',
-      phase: 'speckit-plan',
-      outcome: 'success',
-      runId: 'r1',
-      iteration: 1,
-      payload: { token: SECRETS.jwt, header: SECRETS.authHeader }
-    });
     const proj = new StateProjector({
       store,
       audit,
@@ -213,7 +223,20 @@ describe('Sanitization audit (T069 / FR-014)', () => {
       monotonicNow: () => 0
     });
     proj.start();
-    await new Promise((r) => setTimeout(r, 150));
+    // FR-R3-114 row 3 — same conversion and the same correction as the case above: the append
+    // moved below `start()` so the projector's subscription actually carries it, and the wait is
+    // for that arrival rather than for 150 ms of wall clock.
+    await audit.append({
+      eventType: 'cli-invocation',
+      phase: 'speckit-plan',
+      outcome: 'success',
+      runId: 'r1',
+      iteration: 1,
+      payload: { token: SECRETS.jwt, header: SECRETS.authHeader }
+    });
+    await waitForCondition(() => proj.getCurrentSnapshot().auditTail.length > 0, {
+      label: 'the audit entry reaches the projection tail'
+    });
     const snap: WorkflowSnapshot = proj.getCurrentSnapshot();
     proj.dispose();
 

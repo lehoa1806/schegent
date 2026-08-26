@@ -1,3 +1,8 @@
+import type {
+  RunQuarantineEntry,
+  RunRecordQuarantinedPayload
+} from '../contracts/audit-events';
+import { createRunQuarantine } from './run-quarantine';
 import { MAX_QUEUES } from '../contracts/queue-bounds';
 import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
 import {
@@ -240,6 +245,11 @@ export const KEYS = {
   queue: 'schegent.queue',
   queueRegistry: 'schegent.queues.registry',
   queueMigrationQuarantine: 'schegent.state.quarantine.v2',
+  // FR-R3-111 (FR-112, FR-114) — the RUN half of the same idea.
+  //
+  // A separate key from the queue quarantine on purpose: the two hold different aggregates and
+  // are bounded independently, so a corruption loop in one cannot evict the other's evidence.
+  runQuarantine: 'schegent.state.runQuarantine.v1',
   queueDefaultId: 'schegent.queue.defaultQueueId',
   queueGlobalConcurrencyCap: 'schegent.queue.globalConcurrencyCap',
   run: 'schegent.run',
@@ -715,6 +725,14 @@ export interface InitializeResult {
 }
 
 export class WorkspaceStateStore {
+  /** FR-R3-111 — the quarantine, in its own module; see `state/run-quarantine.ts`. */
+  private readonly runQuarantine = createRunQuarantine({
+    read: () => this.memento.get<RunQuarantineEntry[]>(KEYS.runQuarantine) ?? [],
+    write: (entries) => this.memento.update(KEYS.runQuarantine, entries),
+    now: () => Date.now(),
+    warn: (reason) => this.logger?.warn('run record quarantine failed', { reason })
+  });
+
   private readonly memento: Memento;
   private readonly chains = new Map<string, Promise<void>>();
   private readonly listeners = new Set<StoreChangeListener>();
@@ -1255,11 +1273,18 @@ export class WorkspaceStateStore {
     if (isRunStateMap(raw)) {
       const events: WorkflowRunRepairedAuditEvent[] = [];
       const next: RunStateMap = {};
+      const quarantined: Array<{ queueId: string; raw: unknown }> = [];
       let changed = applyLegacyMigration;
       for (const [queueId, persisted] of Object.entries(raw)) {
         const migrated = applyLegacyMigration ? migrateLegacyRun(persisted) : persisted;
         if (migrated === null) {
+          // FR-R3-111 (FR-112) — quarantined, not discarded. This branch is currently
+          // UNREACHABLE (`isRunStateMap` and `migrateLegacyRun` have mutually exclusive
+          // requirements); `tests/unit/state/run-record-quarantine.test.ts` explains why and
+          // asserts it, so a divergence in either predicate reports that this became live. The
+          // singular branch below is the one that was losing records.
           changed = true;
+          quarantined.push({ queueId, raw: persisted });
           continue;
         }
         const repair = repairLegacyRunSnapshot(migrated);
@@ -1270,16 +1295,38 @@ export class WorkspaceStateStore {
         }
       }
       if (changed) await this.memento.update(KEYS.run, next);
+      // After the map write, so a quarantine failure cannot cost the records that DID parse.
+      if (quarantined.length > 0) await this.runQuarantine.capture(quarantined);
       return events;
     }
 
     const migrated = applyLegacyMigration ? migrateLegacyRun(raw) : (raw as WorkflowRun);
-    if (migrated === null) return [];
+    if (migrated === null) {
+      // FR-R3-111 (FR-113) — this returned `[]` with no bookkeeping at all, not even the
+      // `changed` flag the map branch set. Silence was the defect, so it is fixed regardless of
+      // what the retention policy should be.
+      await this.runQuarantine.capture([{ queueId: DEFAULT_QUEUE_ID, raw }]);
+      return [];
+    }
     const repair = repairLegacyRunSnapshot(migrated);
     if (applyLegacyMigration || repair.auditEvent !== null) {
       await this.memento.update(KEYS.run, repair.run);
     }
     return repair.auditEvent === null ? [] : [repair.auditEvent];
+  }
+
+  /**
+   * FR-R3-111 — quarantine events awaiting an audit writer.
+   *
+   * `initialize()` runs before the audit writer exists — the same reason the migration events use a
+   * forwarder — so these are buffered and drained here. Dropping them instead would restore the
+   * silence this item removed, one layer further out.
+   */
+  public drainRunQuarantineEvents(): ReadonlyArray<{
+    readonly eventType: 'run-record-quarantined';
+    readonly payload: RunRecordQuarantinedPayload;
+  }> {
+    return this.runQuarantine.drain();
   }
 
   private async migrateQueueRegistryIfNeeded(): Promise<void> {

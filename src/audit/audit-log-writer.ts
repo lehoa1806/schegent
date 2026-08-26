@@ -1,3 +1,5 @@
+import { AUDIT_CHAIN_GENESIS, AUDIT_DIGEST_ALG, cutRecordFor, digestOf } from './audit-chain';
+import { errorMessage } from '../lib/errors';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
@@ -10,7 +12,7 @@ import {
   projectAuditPayload
 } from './audit-payload';
 import { ensureSchegentGitignore } from './schegent-gitignore';
-import { openWithinRoot, type SafeOpenRefusal } from '../lib/safe-open';
+import { openWithinRoot, openWithinRootByPath, type SafeOpenRefusal } from '../lib/safe-open';
 import {
   resolveContainedLink,
   type ContainmentRefusal
@@ -89,6 +91,8 @@ export class AuditPathRefusedError extends Error {
  */
 const SCHEGENT_DIR_NAME = '.schegent';
 const AUDIT_LOG_NAME = 'audit.log';
+/** FR-R3-112 — the cut-record file, beside the log and never one of its archives. */
+const AUDIT_CUTS_NAME = 'audit.log.cuts';
 
 /**
  * The CHAIN's ordering barrier: how long append N+1 waits for append N to
@@ -139,11 +143,23 @@ export interface AuditDisposable {
 }
 
 export class AuditLogWriter {
+  /**
+   * The digest the NEXT entry links to. FR-R3-112 (FR-124).
+   *
+   * Starts at the genesis marker, which is distinct from an empty string on purpose: "the chain
+   * starts here" must not read the same as "someone removed the link". On a writer opened over an
+   * existing log this is re-seeded from the last line by `seedChainFrom`, because a fresh writer
+   * that restarted the chain mid-file would fabricate a break at every host restart.
+   */
+  private lastDigest: string = AUDIT_CHAIN_GENESIS;
+
   private readonly config: AuditLogConfig;
   private readonly logger: SanitizedLogger;
   private writeChain: Promise<void> = Promise.resolve();
   private readonly listeners = new Set<AuditAppendListener>();
   private gitignoreEnsure: Promise<void> | null = null;
+  /** FR-R3-112 — one-shot chain seed; see `ensureChainSeeded`. */
+  private chainSeed: Promise<void> | null = null;
 
   constructor(
     config: Partial<AuditLogConfig> & { workspaceRoot: string },
@@ -204,6 +220,85 @@ export class AuditLogWriter {
     }
   }
 
+  /**
+   * Re-seed the chain from the last line already on disk.
+   *
+   * FR-R3-112. Without this, every host restart would begin a new chain mid-file and a verifier
+   * would report a break at each one — which is the false-positive shape that gets a verifier
+   * turned off. The caller supplies the line because reading the log is the caller's business (it
+   * knows the rotation naming); this class only links.
+   *
+   * An unreadable or absent tail leaves the genesis marker, which is the honest state for a log
+   * this writer has not yet seen.
+   */
+  public seedChainFrom(lastLine: string | null): void {
+    const trimmed = lastLine?.trim() ?? '';
+    this.lastDigest = trimmed.length === 0 ? AUDIT_CHAIN_GENESIS : digestOf(trimmed);
+  }
+
+  /**
+   * FR-R3-112 — seed the chain from the log already on disk, once per writer.
+   *
+   * WITHOUT THIS THE CHAIN BREAKS AT EVERY RESTART, and the break looks exactly like tampering.
+   * A fresh writer starts at the genesis marker; if the file already holds chained entries, the
+   * first append after activation writes `prevDigest: "genesis"` into the middle of the log, and
+   * the verifier reports a break at that entry. `seedChainFrom` existed for precisely this and
+   * nothing called it — the half-wired shape this round has been removing all along, in the
+   * mechanism built to detect a different kind of dishonesty. Found by reading the call graph of
+   * my own code rather than by a test, which is why the test below it now exists.
+   *
+   * READS THE WHOLE FILE and keeps the last non-empty line. A tail read would be cheaper, and it
+   * is not worth the complexity here: the log rotates at 5 MiB by default, this runs once per
+   * activation, and a partial tail read that lands mid-line would seed from a fragment — which
+   * would produce the very break it is here to prevent.
+   *
+   * An unreadable or absent file leaves the genesis marker, which is the honest state for a log
+   * this writer has not seen: a chain that begins now.
+   */
+  private ensureChainSeeded(): Promise<void> {
+    this.chainSeed ??= (async (): Promise<void> => {
+      // Through the canonical walk, like every other access to this file. A raw read would follow
+      // a planted `.schegent` symlink and seed the chain from a log outside the workspace — which
+      // would then make every entry this writer appends verify against someone else's history.
+      const opened = await openWithinRoot(
+        this.config.workspaceRoot,
+        [SCHEGENT_DIR_NAME, AUDIT_LOG_NAME],
+        { flags: 'r' }
+      );
+      if (opened.outcome === 'refused') {
+        this.seedChainFrom(null);
+        return;
+      }
+      try {
+        const body = await opened.handle.readFile('utf8');
+        const lines = body.split('\n').filter((line) => line.trim().length > 0);
+        this.seedChainFrom(lines.length === 0 ? null : (lines[lines.length - 1] as string));
+      } catch {
+        // ENOENT on a fresh workspace is the common case and is not a failure.
+        this.seedChainFrom(null);
+      } finally {
+        await opened.handle.close().catch(() => undefined);
+      }
+    })();
+    return this.chainSeed;
+  }
+
+  /**
+   * FR-R3-112 (FR-125) — report a chain break onto the evidence-health surface.
+   *
+   * ONE DIRECTION ONLY, on purpose. A verified chain says nothing about whether the last
+   * append landed, so there is no `noteChainOk`: clearing a real append failure because a hash
+   * walk passed would be a false all-clear on the one surface an operator consults to decide
+   * whether to trust the record. The reporter stays private; this is the only way in.
+   */
+  public noteChainBreak(detail: string): void {
+    this.logger.warn('audit chain verification found a break', { reasonCode: 'chain-broken' });
+    const shouldWarn = this.evidenceHealth?.reportFailure('audit', 'chain-broken') ?? true;
+    if (shouldWarn) {
+      this.logger.warn('structured evidence cannot be relied on', { detail: detail.slice(0, 240) });
+    }
+  }
+
   public async append(entry: Omit<AuditEntry, 'id' | 'timestamp'>): Promise<AuditEntry> {
     let projectedPayload: Record<string, unknown>;
     try {
@@ -237,7 +332,48 @@ export class AuditLogWriter {
       });
       throw new AuditPayloadValidationError('secret-detected');
     }
-    const line = `${JSON.stringify(sanitized)}\n`;
+    // FR-R3-112 (FR-124, FR-127) — the chain link.
+    //
+    // Added AFTER sanitization and the secret check, so the digest covers exactly the bytes that
+    // reach disk. Hashing the pre-sanitization object would make the chain verify against something
+    // no file contains.
+    //
+    // FAIL-CLOSED, and this is the load-bearing part. A digest failure is an APPEND failure: the
+    // throw below reaches the existing evidence-health machinery, which is what turns an unwritable
+    // audit sink into `unavailable`. What must never happen is an unchained entry — a line with no
+    // `prevDigest`, or one carrying the genesis marker mid-file, would make every later entry
+    // unverifiable while looking ordinary, which is the tampering this exists to detect wearing the
+    // costume of a bug.
+    // Seeded from the log on disk before the first link is computed, so a restart continues the
+    // chain instead of restarting it mid-file. One read per writer, awaited here because the
+    // digest below depends on its result.
+    await this.ensureChainSeeded();
+    //
+    // THE LINK IS COMPLETE BEFORE ANY BYTE IS WRITTEN. Serialization, JSON encoding and hashing all
+    // happen here, and only a line whose successor's link is already computable is handed to the
+    // writer. An earlier shape hashed the line AFTER the write was queued: a hash failure there
+    // would have left the entry on disk and `lastDigest` stale, so the NEXT entry would link to the
+    // wrong predecessor — a broken chain produced by the chain's own error path, indistinguishable
+    // from an edit. Failing before the write cannot do that.
+    let line: string;
+    let nextDigest: string;
+    try {
+      const chained: AuditEntry & { prevDigest: string; digestAlg: string } = {
+        ...sanitized,
+        prevDigest: this.lastDigest,
+        digestAlg: AUDIT_DIGEST_ALG
+      };
+      line = `${JSON.stringify(chained)}\n`;
+      nextDigest = digestOf(line.trimEnd());
+    } catch (err) {
+      this.logger.warn('audit chain link failed', { reasonCode: 'chain-link-failed' });
+      throw err;
+    }
+    // The next entry links to THIS entry's bytes. Advanced before the write is awaited, on purpose:
+    // the write chain is serialized, so the next append's link must already reflect this line even
+    // if this write is still in flight. A digest advanced after the await would give two concurrent
+    // appends the same predecessor.
+    this.lastDigest = nextDigest;
     // Run doWrite regardless of the previous link's outcome so one wedged
     // or rejected append cannot stall the whole chain. The caller still
     // observes this call's outcome via the awaited `next` promise; the
@@ -440,6 +576,12 @@ export class AuditLogWriter {
       if (now - entry.mtimeMs > this.config.retentionMaxArchiveAgeMs) continue;
       keep.add(entry.fullPath);
     }
+    // FR-R3-112 (FR-126a) — a prune is the legitimate operation that looks most like
+    // tampering, so it leaves a record saying what it removed. The lines are read BEFORE the
+    // unlink, because after it the boundary digests are gone and the gap becomes
+    // indistinguishable from a deletion. Best-effort, like the rest of this sweep: an
+    // unreadable archive contributes nothing to the record rather than blocking the prune.
+    const removedLines: string[] = [];
     for (const entry of archives) {
       if (keep.has(entry.fullPath)) continue;
       // Feature FR-R3-005 — the archive list came out of `readdir`, so these
@@ -450,13 +592,90 @@ export class AuditLogWriter {
         this.warnContainmentRefusal('retention', verdict.reason);
         continue;
       }
+      // Read through the same canonical walk as every other access to this directory. The
+      // name came out of `readdir`, so nobody configured it and the enumeration says nothing
+      // about where it leads — the reason FR-R3-053 gave for the unlink below applies
+      // identically to reading it.
+      let body: string | null = null;
+      const reading = await openWithinRootByPath(this.config.workspaceRoot, entry.fullPath, {
+        flags: 'r'
+      });
+      if (reading.outcome === 'refused') {
+        this.logger.warn(
+          `audit retention refused to read an archive before pruning it: containment ` +
+            `${reading.reason}; its range will be absent from the cut record`
+        );
+      } else {
+        try {
+          body = await reading.handle.readFile('utf8');
+        } catch (err) {
+          this.logger.warn(
+            `audit retention could not read ${path.basename(entry.fullPath)} before pruning it; ` +
+              `its range will be absent from the cut record: ${errorMessage(err)}`
+          );
+        } finally {
+          await reading.handle.close().catch(() => undefined);
+        }
+      }
       try {
         await fs.unlink(entry.fullPath);
+        if (body !== null) removedLines.push(...body.split('\n'));
       } catch (err) {
         this.logger.warn(
           `audit retention unlink failed for ${path.basename(entry.fullPath)}: ${(err as Error).message}`
         );
       }
+    }
+    await this.recordCut(removedLines);
+  }
+
+  /**
+   * Write the cut record for one prune pass.
+   *
+   * IN ITS OWN FILE, and the file order is why. A prune removes the OLDEST end of history, so
+   * the surviving entries link past the removed range and the record that explains the gap has
+   * to be read before them. Appending it to the live log would place it at the newest end,
+   * where a verifier walking forward would reach it long after the discontinuity it explains.
+   * `scripts/verify-audit-chain.ts` reads this file first for exactly that reason.
+   *
+   * Not chained itself, and this is a stated limit rather than an omission: the cut file is one
+   * more file on the same disk. It makes a prune DISTINGUISHABLE from a deletion; it does not
+   * make a forged cut record impossible. `docs/security/threat-model.md` T3 says so.
+   */
+  private async recordCut(removedLines: readonly string[]): Promise<void> {
+    const record = cutRecordFor(removedLines, Date.now());
+    if (record === null) return;
+    // Opened through the same canonical-path walk as the live log, not `fs.appendFile`.
+    // FR-R3-053's finding applies here unchanged: `appendFile` follows symlinks, so a planted
+    // `.schegent` or `audit.log.cuts` link would redirect the record that explains a prune out
+    // of the workspace — and a cut record written somewhere else is a verification that reports
+    // tampering for a prune that was recorded correctly.
+    const opened = await openWithinRoot(
+      this.config.workspaceRoot,
+      [SCHEGENT_DIR_NAME, AUDIT_CUTS_NAME],
+      { flags: 'a', createDirs: true, dirMode: 0o700, fileMode: 0o600 }
+    );
+    if (opened.outcome === 'refused') {
+      // Bounded and path-free, like every other refusal warning here. Not thrown: the prune
+      // is best-effort by design and an unwritable cut file must not wedge the write chain —
+      // but it is said loudly, because the archives are already gone.
+      this.logger.warn(
+        `audit cut record refused: containment ${opened.reason} (errno ${opened.errno}); the ` +
+          'next verification will report a break at this boundary'
+      );
+      return;
+    }
+    try {
+      await opened.handle.write(`${JSON.stringify(record)}\n`, null, 'utf8');
+    } catch (err) {
+      // The archives are already gone. Say so loudly: the next verification will report a
+      // break, and an operator needs to know it was this prune and not an edit.
+      this.logger.warn(
+        `audit retention pruned ${record.removedCount} entries but could not write the cut ` +
+          `record; verification will report a break at that boundary: ${errorMessage(err)}`
+      );
+    } finally {
+      await opened.handle.close().catch(() => undefined);
     }
   }
 

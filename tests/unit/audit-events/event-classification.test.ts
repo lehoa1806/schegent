@@ -200,7 +200,11 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   // `process-tree-unconfirmed` records above.
   'run-resumed': 'task',
   'run-resume-declined-orphan-alive': 'task',
-  'run-invocation-aborted-on-supersession': 'task'
+  'run-invocation-aborted-on-supersession': 'task',
+  // FR-R3-111 — task-scoped: it names the queue whose Run record was preserved, and the operator
+  // reading it is asking what happened to THAT Run. System scope would put it in the window feed,
+  // where it would be true and unattributable.
+  'run-record-quarantined': 'task'
 };
 
 function assertExhaustive(value: never): never {
@@ -372,10 +376,10 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'definition-published':
         case 'definition-deactivated':
         case 'definition-restored':
-        // FR-R3-103 — activation's resume decision and the supersession abort.
-        case 'run-resumed':
-        case 'run-resume-declined-orphan-alive':
-        case 'run-invocation-aborted-on-supersession': {
+        case 'run-resumed': // FR-R3-103 — activation's resume decision
+        case 'run-resume-declined-orphan-alive': // FR-R3-103
+        case 'run-invocation-aborted-on-supersession': // FR-R3-103 — the supersession abort
+        case 'run-record-quarantined': { // FR-R3-111 — a corrupt record preserved, not destroyed
           const scope = classifyAuditEvent(evt);
           expect(scope === 'task' || scope === 'system').toBe(true);
           break;

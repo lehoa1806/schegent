@@ -1228,7 +1228,15 @@ export interface QueueRuntime {
   }[];
   readonly manualPause: {
     readonly at: string;
-    readonly cause: 'operator-paused' | 'queue-paused-mid-run' | 'breakpoint-paused';
+    readonly cause:
+      | 'operator-paused'
+      | 'queue-paused-mid-run'
+      | 'breakpoint-paused'
+      // BUG-003 and FR-R3-112 — both were already reaching this field verbatim from
+      // the host's `ManualPauseCause`; the mirror simply had not been widened, so the
+      // two newest causes arrived as values this declaration said were impossible.
+      | 'verify-paused'
+      | 'spend-bound-reached';
   } | null;
   readonly phaseBreakpoints: readonly {
     readonly phaseId: string;

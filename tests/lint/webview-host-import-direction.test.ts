@@ -86,7 +86,9 @@ function hostImports(): readonly HostImport[] {
         module: normalised,
         // `import type { … }` is erased. So is a line whose every binding is `type`-prefixed,
         // which is the other form this codebase uses.
-        typeOnly: match[1] !== undefined || /\{\s*type\s/.test(line)
+        // `match.at(1)`: a capture group that did not participate is genuinely absent, while an
+        // index read into a `RegExpExecArray` is typed as present.
+        typeOnly: match.at(1) !== undefined || /\{\s*type\s/.test(line)
       });
     });
   }

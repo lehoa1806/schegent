@@ -196,6 +196,33 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     scope: 'resource',
     docLabel: 'Per-phase idle timeout (seconds) — deprecated alias'
   },
+  // FR-R3-112 — the spend bound. `null` (default) is NO BOUND, deliberately: a
+  // shipped default would pause existing operators' runs on upgrade, and a bound
+  // arriving as a surprise mid-run is worse than no bound at all. The mechanism
+  // ships enabled and unset, and the operator disclosure says so.
+  //
+  // Two keys because the bound has two denominations and one number cannot carry
+  // both units: `claude` reports cost, `codex` and `agy` report tokens and no cost
+  // (FR-R3-098 left cost absent there rather than derived). Which key is in force
+  // follows from what the backend reports.
+  'schegent.spend.maxUsdPerRun': {
+    key: 'schegent.spend.maxUsdPerRun',
+    type: 'number',
+    default: null,
+    nullable: true,
+    min: 0.01,
+    scope: 'resource',
+    docLabel: 'Per-run spend bound in US dollars (null = no bound)'
+  },
+  'schegent.spend.maxTokensPerRun': {
+    key: 'schegent.spend.maxTokensPerRun',
+    type: 'number',
+    default: null,
+    nullable: true,
+    min: 1,
+    scope: 'resource',
+    docLabel: 'Per-run spend bound in tokens, for backends that report no cost (null = no bound)'
+  },
   'schegent.audit.rotation.sizeMB': {
     key: 'schegent.audit.rotation.sizeMB',
     type: 'number',

@@ -101,9 +101,11 @@ function scanned(): readonly string[] {
 function units(body: string): readonly string[] {
   const blocks = body.split(/\n\s*\n/);
   return blocks.map((block, i) => {
-    const next = blocks[i + 1];
-    const annotated = next !== undefined && next.trimStart().startsWith('>');
-    return annotated ? `${block}\n\n${next as string}` : block;
+    // `.at()` rather than an index read: the array is typed as total, so `blocks[i + 1]` reads as
+    // always-present while the last block genuinely has no neighbour.
+    const next = blocks.at(i + 1);
+    if (next === undefined || !next.trimStart().startsWith('>')) return block;
+    return `${block}\n\n${next}`;
   });
 }
 

@@ -34,6 +34,38 @@ import {
 export const HISTORY_DESCRIPTION_DIR = path.join('.schegent', 'history');
 
 /**
+ * FR-R3-111 (FR-115) — how old an unreferenced description must be before it is swept.
+ *
+ * A description is written BEFORE its history entry is persisted, so a file with no referencing
+ * entry may simply be mid-write. Sweeping on absence alone would delete the description of the
+ * run that is starting right now. Twenty-four hours is far longer than any write window and far
+ * shorter than "forever", which is what these files got before this existed.
+ */
+export const HISTORY_ORPHAN_GRACE_MS = 24 * 60 * 60 * 1_000;
+
+/**
+ * FR-R3-111 (FR-117) — how many orphans one activation may remove.
+ *
+ * Activation walks are bounded (`FR-R3-082`). A directory that somehow accumulated thousands of
+ * orphans is drained over several sessions rather than stalling one, and the count is reported so
+ * a backlog is visible rather than merely slow.
+ */
+export const HISTORY_SWEEP_MAX_REMOVALS = 200;
+
+/**
+ * The run id a description filename encodes, or `null` if the name is not one of ours.
+ *
+ * The inverse of `historyDescriptionRef`, and deliberately as strict: a file this store did not
+ * write is left alone. A sweep that deleted unrecognised files would be a sweep that could delete
+ * anything someone put in that directory.
+ */
+export function runIdFromDescriptionFile(fileName: string): string | null {
+  if (!fileName.endsWith('.txt')) return null;
+  const runId = fileName.slice(0, -'.txt'.length);
+  return SAFE_RUN_ID.test(runId) ? runId : null;
+}
+
+/**
  * The run ids this store will build a path from.
  *
  * Run ids are host-minted, so in practice they are already this shape. The
@@ -183,7 +215,9 @@ export class HistoryDescriptionStore {
    * FR-R3-071 (feature 152) — the nullable this replaces collapsed every
    * unreachable case into one answer, which was defensible while nothing
    * called it and wrong the moment something did: the resolver has to tell an
-   * operator-actionable absence (the retention sweep removed the file) from a
+   * operator-actionable absence (the retention sweep removed the file — a sweep that FR-R3-111
+   * finally made exist; see `reconcile()` below, and note that until 2026-08-26 this sentence
+   * cited a sweep covering only `.schegent/sessions/`) from a
    * refused reference (outside `.schegent/history/` or the workspace) and from
    * an I/O failure, because the replay commands word each differently. The
    * codes stay codes — never the caught message, which names the absolute path.
@@ -255,6 +289,96 @@ export class HistoryDescriptionStore {
    * a stored ref is operator-editable state, and the guard has to answer before
    * the path is used rather than after.
    */
+  /**
+   * Reconcile the description directory against the entries that reference it.
+   *
+   * FR-R3-111 (FR-115, FR-116, FR-117) — the sweep this store's own `read()` docstring already
+   * cited.
+   *
+   * WHAT WAS WRONG. `read()` distinguishes "the retention sweep removed the file" from a refused
+   * reference and an I/O failure, and that distinction was the right one to draw — but **no sweep
+   * covered this directory**. `SessionArtifactRetentionService` walks `.schegent/sessions/`, not
+   * `.schegent/history/`. Eviction-edge removal exists in `history-recorder.ts` and is
+   * best-effort with swallowed failures, so any removal that failed left a file nothing would
+   * ever look at again. Each orphan is up to 32,000 characters of operator-authored text.
+   *
+   * BOUNDED, because activation is bounded (`FR-R3-082`). Three properties make this safe to run
+   * on the activation path:
+   *
+   *   * one `readdir`, never a recursive walk — the directory is flat by construction;
+   *   * a hard cap on removals per activation, so a directory that somehow accumulated thousands
+   *     of orphans is drained over several sessions rather than stalling one;
+   *   * a GRACE PERIOD, which is what separates an orphan from a young file. A description is
+   *     written before its entry is persisted, so a file with no referencing entry may simply be
+   *     mid-write. Sweeping on absence alone would delete the description of the run currently
+   *     starting.
+   *
+   * Returns what it did, so the count can reach the evidence-health surface. A sweep that reports
+   * nothing is indistinguishable from one that did not run.
+   */
+  public async reconcile(args: {
+    readonly referenced: ReadonlySet<string>;
+    readonly nowMs: number;
+    readonly graceMs?: number;
+    readonly maxRemovals?: number;
+  }): Promise<{ readonly examined: number; readonly swept: number; readonly skippedYoung: number }> {
+    const graceMs = args.graceMs ?? HISTORY_ORPHAN_GRACE_MS;
+    const maxRemovals = args.maxRemovals ?? HISTORY_SWEEP_MAX_REMOVALS;
+    let examined = 0;
+    let swept = 0;
+    let skippedYoung = 0;
+
+    let names: readonly string[];
+    try {
+      names = await this.listDescriptionFiles();
+    } catch {
+      // An unreadable directory is not a failure worth surfacing: the common cause is that it
+      // does not exist yet, which is every fresh workspace. `read()` already reports an absent
+      // file as its own outcome.
+      return { examined: 0, swept: 0, skippedYoung: 0 };
+    }
+
+    for (const name of names) {
+      if (swept >= maxRemovals) break;
+      examined += 1;
+      const runId = runIdFromDescriptionFile(name);
+      if (runId === null) continue;
+      if (args.referenced.has(runId)) continue;
+      const ageMs = await this.ageOfDescriptionFile(name, args.nowMs);
+      if (ageMs === null) continue;
+      if (ageMs < graceMs) {
+        // Young and unreferenced is the normal shape of a description being written right now.
+        skippedYoung += 1;
+        continue;
+      }
+      await this.remove(runId);
+      swept += 1;
+    }
+    return { examined, swept, skippedYoung };
+  }
+
+  /** The flat directory listing. One `readdir`, never a recursive walk. */
+  private async listDescriptionFiles(): Promise<readonly string[]> {
+    const dir = path.join(this.workspaceRoot, HISTORY_DESCRIPTION_DIR);
+    return await fs.readdir(dir);
+  }
+
+  /**
+   * How old a description file is, or `null` when it cannot be told.
+   *
+   * `null` rather than a guess: a file whose age is unknown is never swept. `mtime` rather than
+   * `birthtime`, which is not reliable across platforms and filesystems — and mtime is the
+   * conservative choice here, since a rewritten file reads as young and a young file is kept.
+   */
+  private async ageOfDescriptionFile(fileName: string, nowMs: number): Promise<number | null> {
+    try {
+      const stat = await fs.stat(path.join(this.workspaceRoot, HISTORY_DESCRIPTION_DIR, fileName));
+      return nowMs - stat.mtimeMs;
+    } catch {
+      return null;
+    }
+  }
+
   private async containedPathFor(
     ref: string,
     intent: 'read' | 'write' | 'remove'

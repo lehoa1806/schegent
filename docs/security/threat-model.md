@@ -19,7 +19,7 @@ This catalog describes code-resident mitigations and residual risk. It does not 
 |---|---|---|---|
 | [T1](#t1--secret-leakage-to-operator-visible-sinks) | Secret leakage to operator-visible sinks | One `SECRET_PATTERNS` set feeds `SanitizedLogger` sinks. | <!-- Source: src/lib/logger.ts --> |
 | [T2](#t2--untrusted-webview-mutating-host-state) | Crafted webview IPC mutates host state | CSP, runtime payload validation, workspace trust, and primary-window gating. | <!-- Source: src/ui/sidebar/csp.ts --><!-- Source: src/contracts/runtime-validators.ts --><!-- Source: src/ui/sidebar/message-router.ts --> |
-| [T3](#t3--audit-log-tampering-or-non-append-writes) | Audit evidence is truncated or rewritten | The host has one append/rotation writer, but no hash chain or tamper detector. | <!-- Source: src/audit/audit-log-writer.ts --> |
+| [T3](#t3--audit-log-tampering-or-non-append-writes) | Audit evidence is truncated or rewritten | **Mitigated: tamper-evident, chain-verifiable.** Every entry carries the previous entry's digest (`node:crypto`, sha256); `npm run audit:verify` and `Schegent: Verify Audit Chain` name the first break; a retention prune records a cut point. Deletion and truncation remain **detectable, not preventable**. | <!-- Source: src/audit/audit-chain.ts --><!-- Source: src/audit/audit-log-writer.ts --> |
 | [T4](#t4--workspace-path-leakage-into-the-structured-audit-log) | Local paths leak through structured evidence | Audit contracts use bounded identifiers, counts, and selection tuples instead of artifact paths. | <!-- Source: src/contracts/audit-events.ts --><!-- Source: src/contracts/sidebar-ipc/history-evidence.ts --> |
 | [T5](#t5--concurrent-state-mutation-across-multiple-vs-code-windows) | Multiple VS Code windows mutate one workspace | Filesystem-backed fenced ownership plus primary-host gates. | <!-- Source: src/state/ownership-registry.ts --><!-- Source: src/ui/sidebar/message-router.ts --> |
 | [T5b](#t5b--an-output-target-is-judged-once-then-written-later) | A confirmed output target is subverted between validation and the child's write | Every declared target's components are re-walked at dispatch; a refusal fails the Run with a named cause before the runner is called. | <!-- Source: src/services/dispatch-output-guard.ts --><!-- Source: src/lib/output-target-identity.ts --> |
@@ -160,10 +160,21 @@ The webview is not authoritative. Runtime validation precedes routing; the 46 me
 
 ### T3 — Audit-log tampering or non-append writes
 
-The host's audit writer appends JSONL records and owns rotation; Task deletion records an event rather than asking that writer to erase earlier entries. This is an implementation write discipline, not an integrity guarantee. An operator or backend process with workspace access can modify or delete the file, and Schegent has no hash chain, signature, or post-write tamper detection. Ordinary appends also call `fs.appendFile` directly after directory creation; unlike rotation targets, that live-file append is not first passed through the canonical-path oracle, so a planted audit-log symlink remains a redirect risk.
+**Status: mitigated — tamper-evident, chain-verifiable. Deletion and truncation remain detectable, not preventable.**
 
+The host's audit writer appends JSONL records and owns rotation; Task deletion records an event rather than asking that writer to erase earlier entries. Until FR-R3-112 that was a write discipline and nothing more: an operator or backend process with workspace access could modify or delete the file, and there was no chain, signature or post-write detection. Every record this product added was therefore operational telemetry rather than evidence — against the one actor the log describes, since the CLI runs with the OS user's authority and `.schegent/audit.log` is an ordinary 0600 file inside the workspace.
+
+Each entry now carries `prevDigest` — the sha256 of the previous entry's on-disk bytes — and `digestAlg`. The digest is computed over the **sanitized** line that actually reaches disk, and the link is complete before any byte is written, so a hashing failure is an append failure handled by the existing evidence-health machinery rather than a silently unchained line. `npm run audit:verify` and the `Schegent: Verify Audit Chain` command walk the chain across rotated files and report the **first** break; a break also reports the audit sink as failing on the evidence-health surface. A retention prune writes a cut record naming the removed range's boundary digests to `.schegent/audit.log.cuts`, so the legitimate operation that most resembles tampering is distinguishable from tampering — without it, every routine prune would report a break and the verifier would be switched off within a week.
+
+**What this does not establish, stated plainly.** The chain head lives on the same disk as the log. An attacker who can edit the log can recompute every later digest, and can delete the cut file or forge a cut record. What they cannot do is edit or remove one entry and leave the rest consistent. Anchoring the head somewhere the workspace cannot reach — a signature, an external append-only sink, or a periodic digest published elsewhere — is the step that would make tampering *hard* rather than *evident*, and it is not taken here. Entries written before FR-R3-112 carry no link; they are excused only as a leading prefix, counted, and reported by the verifier, so an operator reading "ok" learns how much of their history the chain actually covers.
+
+The live-file append is opened through the canonical-path walk (`openWithinRoot`, FR-R3-053), so a planted `.schegent` or audit-log symlink is refused rather than followed; the rotation and prune paths resolve both ends the same way.
+
+<!-- Source: src/audit/audit-chain.ts -->
 <!-- Source: src/audit/audit-log-writer.ts -->
 <!-- Source: src/contracts/audit-events.ts -->
+<!-- Source: scripts/verify-audit-chain.ts -->
+<!-- Source: src/commands/verify-audit-chain.ts -->
 
 ### T4 — Workspace path leakage into the structured audit log
 

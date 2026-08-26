@@ -47,3 +47,9 @@ empty/
 # a claim about a checkout nobody else has, and the next clone would inherit an
 # attestation it never earned.
 /.gate-attestation.json
+
+# FR-R3-104 — the backend qualification record, untracked for the same reason: it records what
+# three third-party CLIs did on one machine at one moment. The versions a BUILD was qualified
+# against are committed instead, in src/contracts/qualified-backend-versions.ts, because an
+# installed extension has no repository to read this file from.
+/.backend-qualification.json

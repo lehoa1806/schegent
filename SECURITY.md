@@ -82,6 +82,22 @@ which is what a release is bound to. There is no second enforcement point.
 | License check | Root manifest and the license operations record | `scripts/check-licenses.mjs` checks that `LICENSE.md` and `docs/operations/licenses.md` exist and that the manifest has a truthy `license` field; it does not inspect dependency licenses. <!-- Source: package.json --><!-- Source: scripts/check-licenses.mjs --> |
 | Dependabot | Root and `webview-ui` npm manifests; weekly Monday minor/patch updates; major updates ignored | Still configured, and it opens pull requests — but **nothing runs checks on them any more**. A Dependabot pull request now arrives unverified. <!-- Source: .github/dependabot.yml --> |
 
+### Durability of the evidence writes
+
+`.schegent/audit.log` is durable against a **process crash** and not against **power loss**: entries
+written in the seconds before an abrupt power failure may be absent, and the last entry may be
+truncated mid-line. The parser tolerates a truncated final line, so the loss is bounded to recent
+entries rather than to the file.
+
+The gate attestation a release is bound to **does** carry an explicit durability barrier — it is
+written once per gate run, so the cost is negligible against a four-minute gate. The
+terminal-transition journal is a VS Code `Memento` key, so a barrier is **unavailable** there rather
+than declined.
+
+The measurement that split that decision three ways — an `fsync` costs 289× a plain append on this
+machine — and what is deliberately out of scope are recorded in
+[the durability decision](docs/architecture/durability-decision.md).
+
 ### The secret scan: what it is, and what it is not
 
 **What changed, 2026-08-26 (`FR-R3-109`).** Until this date the scan was four regular

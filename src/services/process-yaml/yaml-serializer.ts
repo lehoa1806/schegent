@@ -84,6 +84,12 @@ export const SPEC_KEY_ORDER = Object.freeze([
   'model',
   'effort',
   'timeoutSeconds',
+  // FR-R3-112 — the per-phase spend bound, beside the other authored bound. Both denominations,
+  // because a document that carried only one would come back with the other silently cleared —
+  // and a bound that vanishes through a round trip is the widening this format's key order
+  // exists to prevent.
+  'spendBoundUsd',
+  'spendBoundTokens',
   'loopable',
   'isRequired',
   'forceContinueOnRetryCap',

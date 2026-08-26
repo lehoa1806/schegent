@@ -62,6 +62,12 @@ export const RESERVED_METRIC_KEYS: ReadonlySet<string> = Object.freeze(
     'outcome',
     'schemaVersion',
     'correlationId',
+    // FR-R3-112 — the hash chain's two envelope fields. Added under the mandatory rule above:
+    // they are written on every entry, so an operator-authored metric with either name would
+    // collide with the field the verifier reads — and the collision would present as a broken
+    // chain rather than as a naming clash.
+    'prevDigest',
+    'digestAlg',
     // (b) Well-known payload-field names — recommended co-maintenance.
     'status',
     'model',

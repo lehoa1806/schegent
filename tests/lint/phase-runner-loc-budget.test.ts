@@ -178,6 +178,30 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
 // Recorded rather than absorbed, on the same ground as the +7 above: the reviewer
 // brief's §6 is still asking whether STATE-1 closed the wrong half, and a budget
 // raised without a stated reason is exactly that shape.
+// FR-R3-104 (FR-054) — bumped phase-runner.ts +9, to 1048, for the CLI version this invocation
+// actually ran against.
+//
+// WHAT IT BUYS. The qualification record names the CLI versions a canary observed; nothing on the
+// host observed the version it was DRIVING. So an operator who upgraded `claude` mid-feature
+// crossed the protocol boundary that record vouches for, and when a parse later failed the
+// evidence showed a qualified version while the machine had been running another one — a
+// diagnosis unreachable from the record.
+//
+// WHY IT IS NINE LINES AND NOT TWENTY-EIGHT. An earlier draft carried the probe's null-registry
+// case, its swallowed failure and the reasoning for swallowing it here, and measured 1067. This
+// gate refused it, correctly: that is "how do we observe a version", which is not the shell's
+// question. It moved to `src/runner/cli-version-probe.ts` as `observedVersionOf`, beside the TTL
+// cache and the note on why the cache is neither per-activation nor per-phase. What remains in
+// the shell is a field, one awaited call, one conditional key on the start payload and one spread
+// on the metric payload — a forwarded value, not a policy.
+//
+// A VERSION, NEVER A PATH. `cliPath` is deliberately absent from every audit payload; the probe
+// answers with the version token alone, bounded at 64 characters.
+//
+// +1 more, to 1049: the authored model is read ONCE into a local instead of twice inside the same
+// conditional. Bought by a lint ratchet rather than chosen — the double read was also a double
+// optional chain the compiler calls unnecessary — and the shape is better for the reason the
+// argv-bound test now asserts: one read, one check, no second expression to disagree with it.
 const BUDGETS = [
   // FR-R3-064 — bumped phase-runner.ts +30. The per-run backend-posture record
   // was written inside `run()` first and this gate refused it, correctly: at +123
@@ -213,7 +237,7 @@ const BUDGETS = [
   // The note is the budget: a reader who assumes this is the catalog definition
   // would conclude the enforcement never fires. Nothing to extract — the
   // argument sits in the call it belongs to.
-  { path: 'src/controller/phase-runner.ts', max: 1_039 },
+  { path: 'src/controller/phase-runner.ts', max: 1_049 },
   // FR-R3-052 / H-03 (2026-08-24) — 400 → 415 for the size check that was
   // missing. `stat()` was already called here and only `isFile()` was read, so
   // `readFile()` took a multi-GiB sidecar wholly into memory. The bound, the

@@ -11,7 +11,7 @@
 // It refuses to write over a dirty tree BEFORE spending the gate's wall-clock,
 // because the result would describe a tree nobody can reconstruct.
 import { spawnSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { closeSync, fsyncSync, openSync, writeFileSync } from 'node:fs';
 import {
   ATTESTATION_PATH,
   ATTESTATION_VERSION,
@@ -83,7 +83,27 @@ const attestation = {
   recordedAt: new Date().toISOString()
 };
 
-writeFileSync(ATTESTATION_PATH, `${JSON.stringify(attestation, null, 2)}\n`, 'utf8');
+// FR-R3-111 (FR-110) — an explicit durability barrier on the attestation.
+//
+// WHY HERE AND NOT EVERYWHERE. Measured 2026-08-26: an `fsync` costs **3.9 ms** against 0.014 ms
+// for a plain append — 289x. On the audit log's per-event appends that is a hot-path cost and the
+// decision went the other way (see docs/architecture/durability-decision.md). This file is written
+// **once per gate run**, immediately after a multi-minute gate, and a release is bound to it. 3.9 ms
+// against four minutes is free, and the failure it prevents is specific: a machine that loses power
+// between the gate finishing and the kernel flushing would leave a release bound to an attestation
+// that is absent or truncated — and a truncated JSON record is refused as `unreadable`, which reads
+// as "the gate never ran" for a gate that did.
+//
+// `writeFileSync` + `fsyncSync` rather than a single call, because Node offers no atomic
+// write-and-sync. The window between them is one syscall wide and closes on the same failure this
+// is about.
+const handle = openSync(ATTESTATION_PATH, 'w');
+try {
+  writeFileSync(handle, `${JSON.stringify(attestation, null, 2)}\n`, 'utf8');
+  fsyncSync(handle);
+} finally {
+  closeSync(handle);
+}
 
 if (exitCode === 0) {
   console.log(`record-gate-run: recorded a PASS at ${head} -> ${ATTESTATION_PATH}`);
