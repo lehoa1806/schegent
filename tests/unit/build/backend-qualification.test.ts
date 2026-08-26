@@ -282,6 +282,41 @@ describe('FR-058 / FR-059 — the cadence gates the release path only', () => {
     expect(pkg.scripts['release:preflight']).toContain('require-local-gate');
   });
 
+  it('projects the canary\'s own results into the record, degraded backends included', () => {
+    // The half the qualification log recorded as an unqualified hole when this landed: every arm
+    // of the DECISION was exercised, and the projection that produces the record the decision
+    // reads was covered by nothing. A wrong field name here would leave the gate deciding about
+    // `undefined` while all 23 decision cases stayed green.
+    const record = q.recordFromCanaryResults(
+      [
+        { backend: 'claude', state: 'ok', observedVersion: '2.1.246' },
+        { backend: 'codex', state: 'degraded', observedVersion: '0.149.0' },
+        { backend: 'agy', state: 'unavailable', observedVersion: null }
+      ],
+      { commit: 'abc123', platform: 'darwin arm64 node 24.19.0', now: NOW }
+    );
+    expect(record.versions).toEqual({
+      claude: '2.1.246',
+      codex: '0.149.0',
+      agy: null
+    });
+    // A partially-degraded run must not leave a record that reads as three qualified backends.
+    expect(record.states).toEqual({ claude: 'ok', codex: 'degraded', agy: 'unavailable' });
+    expect(record.commit).toBe('abc123');
+    expect(record.qualifiedAt).toBe(NOW);
+
+    // And the record it produces is one the gate can actually decide on — the two halves driven
+    // into each other rather than each against its own fixture.
+    const verdict = q.decideQualification({
+      record,
+      head: 'abc123',
+      installedVersions: { claude: '2.1.246', codex: '0.149.0', agy: null },
+      changedPaths: [],
+      now: NOW
+    });
+    expect(verdict.ok, verdict.message).toBe(true);
+  });
+
   it('records what the canary observed rather than inferring it', () => {
     const built = q.buildQualificationRecord({
       versions: { claude: '2.1.246', codex: null, agy: '1.1.20' },
