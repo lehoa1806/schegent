@@ -289,8 +289,11 @@ const REGISTRY: readonly CountEntry[] = [
    */
   {
     document: 'repo/tests/evals/README.md',
-    claim: 'deterministic set of **10 cases**',
-    stated: 10,
+    // FR-R3-084 §3.4 added `prompt-injection-in-output`, so the corpus is 11. The
+    // DOCUMENT was corrected first and this entry follows it — the other order is
+    // the habit this gate exists to break.
+    claim: 'deterministic set of **11 cases**',
+    stated: 11,
     producer: 'the `cases` array in repo/tests/evals/fixtures/backend-outcomes.json',
     derive: corpusCases,
     why:
@@ -302,8 +305,13 @@ const REGISTRY: readonly CountEntry[] = [
   },
   {
     document: 'docs/features/round_3/DONE_61_FR-R3-061_behavioral_canaries.md',
-    claim: 'deterministic corpus of **10 cases**',
-    stated: 10,
+    // Corrected to 11 with the corpus, not preserved at 10. The sentence is
+    // PRESENT TENSE — "the eval suite IS a versioned deterministic corpus of N
+    // cases" — so it is a live structural claim, not a dated observation. The
+    // dated-measurement convention protects recorded runs, not descriptions of
+    // what the tree currently contains.
+    claim: 'deterministic corpus of **11 cases**',
+    stated: 11,
     producer: 'the `cases` array in repo/tests/evals/fixtures/backend-outcomes.json',
     derive: corpusCases,
     why:

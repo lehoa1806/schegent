@@ -153,7 +153,11 @@ describe('backend-neutral outcome evaluation corpus', () => {
       'truncated-output',
       'internal-execution-error',
       'session-continuation',
-      'runner-switch'
+      'runner-switch',
+      // FR-R3-084 §3.4 — the injection-shaped scenario. Fixture-based and in the
+      // deterministic corpus by the item's own instruction, so it is exercised on
+      // every `npm run ci` rather than only when a live backend is reachable.
+      'prompt-injection-in-output'
     ]);
   });
 
@@ -232,9 +236,16 @@ describe('the corpus measures parser coverage, not behavioural qualification', (
     const readme = readFileSync(join(__dirname, 'README.md'), 'utf8');
     expect(readme).toContain('not behavioral qualification');
     expect(readme).toContain('backend-canary.yml');
-    // FR-R3-072 — the canary itself qualifies nothing yet either: it is a
-    // version probe plus an honest skip until a live invocation exists.
-    expect(readme).toContain('skipped-no-live-path');
+    // FR-R3-084 (2026-08-26) — this pinned `skipped-no-live-path` on the premise
+    // that "the canary qualifies nothing yet either: a version probe plus an
+    // honest skip until a live invocation exists". A live invocation exists now,
+    // so that string is gone and pinning it would hold the README to an obsolete
+    // claim. What replaces it is what the README must still not omit: the honest
+    // skip state the live phase can report, and the fact that the workflow
+    // declaring it never fires — without which a reader would take a scheduled
+    // canary for a running one.
+    expect(readme).toContain('skipped-not-authenticated');
+    expect(readme).toContain('does not fire');
   });
 
   it("reports the test tally its README states", async () => {
