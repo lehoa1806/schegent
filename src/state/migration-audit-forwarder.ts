@@ -18,9 +18,32 @@ import type { RunStateMigrationAuditEvent } from './run-state-migrator';
 import type { HistoryStateMigrationAuditEvent } from './history-state-migrator';
 import type { WorkflowRunRepairedAuditEvent } from './workflow-run-migrator';
 import type { SanitizedLogger } from '../lib/logger';
+import { errorMessage } from '../lib/errors';
+import type { RunRecordQuarantinedPayload } from '../contracts/audit-events';
 
 type WarnLogger = Pick<SanitizedLogger, 'warn'>;
 type AuditAppender = Pick<AuditLogWriter, 'append'>;
+
+/**
+ * FR-R3-111 — quarantined run records, forwarded the same way the migration events are.
+ *
+ * WHY IT IS HERE AND WHY IT WAS MISSING. `WorkspaceStateStore.initialize()` runs before the audit
+ * writer exists, so a quarantine is buffered and drained afterwards — exactly the arrangement the
+ * five migration kinds above use. The buffer, the drain and the closed payload all shipped; **the
+ * drain was called by nothing but its own test**, so in production a corrupt run record was
+ * quarantined and the audit event that replaces the silent discard was never appended. The item was
+ * about not discarding evidence silently, and its own evidence was being discarded silently.
+ *
+ * Found by measuring public methods with no caller anywhere in `src/` — the same shape as
+ * `seedChainFrom`, in the same batch, three hours apart.
+ */
+export interface QuarantineAuditEvent {
+  readonly eventType: 'run-record-quarantined';
+  // The contract's own payload type, not a widened record: this forwarder must not become a way to
+  // put an unclosed shape into a closed union. `src/contracts/audit-events.ts` owns what may be in
+  // it, and its parity gates check that.
+  readonly payload: RunRecordQuarantinedPayload;
+}
 
 export interface MigrationAuditEvents {
   readonly v6MigrationEvents: readonly StateMigratedV5ToV6AuditEvent[];
@@ -37,6 +60,11 @@ export interface MigrationAuditEvents {
   // activation on an I/O error.
   readonly v12MigrationEvents: readonly HistoryStateMigrationAuditEvent[];
   readonly runRepairEvents: readonly WorkflowRunRepairedAuditEvent[];
+  /**
+   * FR-R3-111 — records quarantined during `initialize()`. Optional so every existing caller and
+   * test constructs this object unchanged; absent means none, which is the common case.
+   */
+  readonly quarantineEvents?: readonly QuarantineAuditEvent[];
 }
 
 /**
@@ -201,6 +229,24 @@ export async function forwardMigrationAuditEvents(
       });
     } catch (err) {
       logger.warn(`workflow-run-repaired audit append failed: ${(err as Error).message}`);
+    }
+  }
+  // FR-R3-111 — the quarantine's audit half. `runId` is empty because a quarantined record is one
+  // whose run identity could not be trusted enough to read; the payload carries the queue, the
+  // reason and the depth, and nothing else. `outcome: 'failure'` because a record that had to be
+  // quarantined is a failure of the state this host was handed, not a routine migration step.
+  for (const event of events.quarantineEvents ?? []) {
+    try {
+      await auditWriter.append({
+        runId: '',
+        phase: 'state-migration',
+        iteration: 0,
+        eventType: event.eventType,
+        payload: { ...event.payload },
+        outcome: 'failure'
+      });
+    } catch (err) {
+      logger.warn(`run-record-quarantined audit append failed: ${errorMessage(err)}`);
     }
   }
 }
