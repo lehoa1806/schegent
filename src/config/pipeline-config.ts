@@ -10,12 +10,15 @@ import { SUPPORTED_BACKENDS, isBackendRunnerKind, type BackendRunnerKind } from 
 export {
   PHASE_SIDE_EFFECTS,
   PHASE_EVIDENCE_POLICIES,
+  EVIDENCE_POLICY_ORIGINS,
   type PhaseSideEffects,
-  type PhaseEvidencePolicy
+  type PhaseEvidencePolicy,
+  type EvidencePolicyOrigin
 } from '../contracts/process-definitions';
 import type {
   PhaseSideEffects,
   PhaseEvidencePolicy,
+  EvidencePolicyOrigin,
   PhaseHostVerification
 } from '../contracts/process-definitions';
 import type {
@@ -48,6 +51,12 @@ export interface PhaseDef {
   readonly runner?: BackendRunnerKind;
   readonly sideEffects?: PhaseSideEffects; // Omission => `workspace` at the freeze.
   readonly evidencePolicy?: PhaseEvidencePolicy;
+  /**
+   * FR-R3-096 — where `evidencePolicy` came from. Written by the freeze, never
+   * authored: an operator document that set it would be forging its own consent.
+   * Absent means `'default'`, which is every snapshot taken before this field.
+   */
+  readonly evidencePolicyDeclaredAt?: EvidencePolicyOrigin;
   /** FR-R3-058 — omission means `model-token`. */
   readonly hostVerification?: PhaseHostVerification;
   readonly promptVersion?: string;

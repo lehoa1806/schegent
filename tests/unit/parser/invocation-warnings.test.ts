@@ -186,9 +186,15 @@ describe('failClosedOnTruncatedOutput preserves warnings (FR-032)', () => {
 // design preference. `pipeline-snapshot.ts` has always resolved omission to
 // `'required'`, so that value is already written into every snapshot ever taken.
 // Giving `'required'` teeth would retroactively tighten all of them, including
-// runs mid-flight. So the field RELAXES from the default and never tightens: it
-// governs how the absence of an audit block is REPORTED, and every branch still
-// advances exactly as it did before.
+// runs mid-flight.
+//
+// FR-R3-096 SUPPLIED THE MISSING HALF, and it is not a relaxation of that limit
+// -- it is the datum the limit was really about. The value alone still cannot
+// tighten anything, and the population described above is still un-enforced. What
+// changed is that `evidencePolicyDeclaredAt` now says whether an author ASKED for
+// `'required'` or whether `?? 'required'` filled it in, and only the first
+// withholds. Absence reads as defaulted, so everything below -- which passes no
+// origin at all -- is exactly the pre-096 behaviour, deliberately.
 describe('evidencePolicy governs how a missing audit block is reported (S12)', () => {
   const MISSING_ON_CLEAN = '[constitution] missing audit log on clean response';
   const RELAXED_ON_CLEAN = '[evidence] audit log absent on clean response, best-effort';
@@ -218,14 +224,66 @@ describe('evidencePolicy governs how a missing audit block is reported (S12)', (
     expect(warningsOf(result)).not.toContain(RELAXED_ON_CLEAN);
   });
 
-  it('advances identically under all three, which is the whole safety property', () => {
-    // The field must not change what follows from the absence, only what is said
-    // about it. If this ever diverges, a persisted `required` has gained teeth.
-    const kinds = (['required', 'best-effort', 'none'] as const).map(
-      (evidencePolicy) => parse(TOKEN, { evidencePolicy }).kind
-    );
-    expect(new Set(kinds).size).toBe(1);
-    expect(kinds[0]).toBe('clean');
+  it('advances identically under all three when nobody declared one (the safety property)', () => {
+    // FR-R3-096 kept this property and made its boundary explicit rather than
+    // deleting it, per that item's §5. It used to read "all three advance
+    // identically, full stop"; it now reads "all three advance identically for
+    // the DEFAULTED population", which is the same guarantee over the same rows
+    // and says out loud which rows they are.
+    //
+    // These calls pass no `evidencePolicyDeclaredAt`, which is exactly what every
+    // snapshot written before that field carries. If this ever diverges, a
+    // persisted `required` has gained teeth by accident -- the failure the whole
+    // provenance design exists to prevent.
+    for (const declaredAt of [undefined, 'default' as const]) {
+      const kinds = (['required', 'best-effort', 'none'] as const).map(
+        (evidencePolicy) =>
+          parse(TOKEN, {
+            evidencePolicy,
+            ...(declaredAt === undefined ? {} : { evidencePolicyDeclaredAt: declaredAt })
+          }).kind
+      );
+      expect(new Set(kinds).size).toBe(1);
+      expect(kinds[0]).toBe('clean');
+    }
+  });
+
+  it('an AUTHORED required withholds the clean advance, and names why (FR-R3-096)', () => {
+    // The other side of the boundary, asserted beside it so the two cannot drift.
+    const result = parse(TOKEN, {
+      evidencePolicy: 'required',
+      evidencePolicyDeclaredAt: 'phase-definition'
+    });
+    expect(result.kind).toBe('remaining_issues');
+    if (result.kind !== 'remaining_issues') throw new Error('unreachable');
+    expect(result.issues[0].tag).toBe('constitution');
+    expect(result.issues[0].summary).toContain('evidencePolicy required');
+    expect(warningsOf(result)).toContain(MISSING_ON_CLEAN);
+  });
+
+  it('an authored required advances normally once the audit block IS present', () => {
+    // Non-vacuity for the assertion above: the refusal must be about the missing
+    // block, not about the setting. A Phase that declares `required` and produces
+    // evidence is the ordinary case and must be untouched.
+    const withBlock = [...block(), TOKEN].join('\n');
+    const result = parse(withBlock, {
+      evidencePolicy: 'required',
+      evidencePolicyDeclaredAt: 'phase-definition'
+    });
+    expect(result.kind).toBe('clean');
+  });
+
+  it('relaxing the SAME phase to best-effort advances it (FR-R3-096 non-vacuity)', () => {
+    // The item's acceptance names this exact comparison: one Phase, one stdout,
+    // one field moved. If `best-effort` also refused, the refusal would be coming
+    // from somewhere other than the policy.
+    for (const evidencePolicy of ['best-effort', 'none'] as const) {
+      const result = parse(TOKEN, {
+        evidencePolicy,
+        evidencePolicyDeclaredAt: 'phase-definition'
+      });
+      expect(result.kind).toBe('clean');
+    }
   });
 
   it('reports the no-contract-block path at the same three volumes', () => {

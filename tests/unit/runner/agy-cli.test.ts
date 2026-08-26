@@ -48,7 +48,7 @@ function silentLogger(): SanitizedLogger {
 }
 
 describe('AgyCliRunner.invoke', () => {
-  it('spawns agy with --dangerously-skip-permissions -p and pipes prompt via stdin', async () => {
+  it('spawns agy with --dangerously-skip-permissions and pipes prompt via stdin', async () => {
     const child = makeFakeChild();
     const seen: { command: string; args: ReadonlyArray<string>; options: SpawnOptions } = {
       command: '',
@@ -73,13 +73,46 @@ describe('AgyCliRunner.invoke', () => {
     });
     expect(seen.command).toBe('agy');
     expect(seen.args).toContain('--dangerously-skip-permissions');
-    expect(seen.args).toContain('-p');
     expect(seen.args).toContain('--output-format');
     expect(seen.args).toContain('stream-json');
     expect(seen.options.shell).toBe(false);
     expect(seen.options.stdio).toEqual(['pipe', 'pipe', 'pipe']);
+    // Was `toContain('-p')` and a raw `'do work'` on stdin. Both PINNED A DEFECT:
+    // `-p` takes the prompt as its value, so `['-p', '-']` prompted agy with `-`
+    // and the stdin bytes were never read. The transport shape is asserted in
+    // full by the stream-json test below; this one keeps to spawn options.
     const captured = (child.stdin as Writable & { __captured: string[] }).__captured;
-    expect(captured.join('')).toBe('do work');
+    expect(captured.join('')).toContain('do work');
+  });
+
+  it('sends the prompt as agy stream-json stdin, never on the command line', async () => {
+    const child = makeFakeChild();
+    const seen: { args: ReadonlyArray<string> } = { args: [] };
+    const spawnFn: SpawnFn = (_command, args, _options) => {
+      seen.args = args;
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
+      return child as unknown as ChildProcess;
+    };
+    const runner = new AgyCliRunner(spawnFn, null, silentLogger());
+    await runner.invoke({
+      phase: 'speckit-specify',
+      iteration: 1,
+      prompt: 'do work',
+      timeoutMs: 5_000,
+      cliPath: 'agy',
+      cwd: '/repo'
+    });
+    // `--print`/`-p` takes the prompt as its VALUE. Passing `-p -` sent the
+    // literal `-` as the prompt and agy answered that, ignoring the stdin bytes
+    // entirely -- it only reads stdin under `--input-format stream-json`.
+    expect(seen.args).toContain('--input-format');
+    expect(seen.args).not.toContain('-p');
+    expect(seen.args).not.toContain('--print');
+    const captured = (child.stdin as Writable & { __captured: string[] }).__captured;
+    expect(JSON.parse(captured.join(''))).toEqual({
+      event: 'user',
+      message: { content: 'do work' }
+    });
   });
 
   it('rejects effort xhigh with an Error', async () => {

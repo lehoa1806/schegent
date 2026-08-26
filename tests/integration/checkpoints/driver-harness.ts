@@ -20,6 +20,7 @@
 // failure mode for a suite whose whole subject is interleaving.
 
 import { vi } from 'vitest';
+import { diagnoseWait } from '../wait-diagnosis';
 import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -416,9 +417,17 @@ export async function makeDriveHarness(): Promise<CheckpointDriveHarness> {
       // 10-worker build it failed while the run it was waiting for was fine.
       //
       // Under the 25s bound below, a real deadlock still fails; a starved one
-      // does not. The round count is kept in the message because the ratio of
-      // rounds to milliseconds is what tells the two apart.
-      const deadline = Date.now() + 25_000;
+      // does not.
+      //
+      // FR-R3-097 — this comment used to end "the round count is kept in the
+      // message because the ratio of rounds to milliseconds is what tells the two
+      // apart." True, and useless without a reference point: 7,644 rounds in
+      // 10,000 ms is 1.31 ms per round, which is a loop running at full speed,
+      // and the 2026-08-23 incident read that same number as proof of starvation.
+      // `diagnoseWait` states the floor and the verdict instead of leaving the
+      // division to a reader who has no baseline.
+      const startedAt = Date.now();
+      const deadline = startedAt + 25_000;
       let rounds = 0;
       while (Date.now() < deadline) {
         if (parked.some((e) => e.runId === runId && (phase === undefined || e.phase === phase))) {
@@ -428,11 +437,13 @@ export async function makeDriveHarness(): Promise<CheckpointDriveHarness> {
         await new Promise((r) => setImmediate(r));
         await new Promise((r) => setTimeout(r, 0));
       }
+      const diagnosis = diagnoseWait({ elapsedMs: Date.now() - startedAt, rounds });
       throw new Error(
         `timed out waiting for ${runId}${phase === undefined ? '' : `:${phase}`} at the gate ` +
           `after 25000ms and ${rounds} round(s) ` +
           `(parked=[${parked.map((p) => `${p.runId}:${p.phase}`).join(', ')}] ` +
-          `invocations=[${invocations.map((i) => `${i.runId}:${i.phase}`).join(', ')}])`
+          `invocations=[${invocations.map((i) => `${i.runId}:${i.phase}`).join(', ')}])` +
+          `\n  ${diagnosis.text}`
       );
     },
     step: (runId) => {

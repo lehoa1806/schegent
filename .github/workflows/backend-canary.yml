@@ -2,7 +2,7 @@ name: Backend canary
 
 # FR-R3-061 (M-08 / R-15) — behavioural qualification, off the PR path.
 #
-# The eval corpus is 10 deterministic fixtures over parser and outcome mapping.
+# The eval corpus is 11 deterministic fixtures over parser and outcome mapping.
 # Real CLI protocol drift, auth changes, prompt/tool regressions and cost drift
 # are invisible to it. This probes the real CLIs on a schedule.
 #
@@ -14,9 +14,19 @@ name: Backend canary
 # `scripts/backend-canary.mjs` always exits 0 unless the canary itself is broken,
 # so a drift cannot become a red gate by accident through an exit code.
 #
-# Credentials are an operator-supplied precondition. Without them the run does the
-# version probe only and says so in its output — a canary that reports success
-# because it did nothing is worse than one that does not run.
+# NO CREDENTIAL IS INVOLVED (corrected 2026-08-26). This block used to call
+# credentials an operator-supplied precondition; that premise was withdrawn, because
+# these CLIs authenticate by SUBSCRIPTION and no `*_API_KEY` exists on the machine
+# this is developed on. A CLI that is not signed in reports `skipped-not-authenticated`,
+# which is an honest skip at exit 0 — a canary that reports success because it did
+# nothing is worse than one that does not run.
+#
+# AND THIS WORKFLOW DOES NOT RUN. This repository does not execute GitHub Actions
+# at all (filed as `S14`), and a runner could not hold a subscription session even
+# if it did. The live phase is therefore a LOCAL qualification step — `npm run
+# canary`, recorded in `docs/release/backend-qualification-log.md`. This file is kept
+# because deleting it would erase the record of the intended cadence, not because
+# anything here executes.
 
 on:
   schedule:
@@ -44,8 +54,8 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
 
-      - name: Probe backend versions and, where credentials allow, one live phase
-        run: node scripts/backend-canary-run.mjs
+      - name: Probe backend versions and attempt one live turn per backend
+        run: npm run canary
 
       - name: Say what this run did and did not qualify
         if: always()

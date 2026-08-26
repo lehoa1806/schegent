@@ -2,7 +2,7 @@ import type { Phase, PhaseOutcome } from './phase';
 import { policyRequestFields } from '../runner/spawn-env';
 import type { BackendRunner } from '../contracts/backend-runner';
 import type { BackendRunnerRegistry } from '../runner/backend-runner-registry';
-import { DEFAULT_BACKEND } from '../contracts/backend-kinds';
+import { DEFAULT_BACKEND, type BackendRunnerKind } from '../contracts/backend-kinds';
 import type { PromptBuilder } from '../runner/prompt-builder';
 import type { ExecutionEnvelope } from '../contracts/run-request';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
@@ -566,6 +566,12 @@ export class PhaseRunner {
       auditEntry: audit.entry,
       auditWarnings: audit.warnings,
       evidencePolicy: inputs.phaseDef?.evidencePolicy, // S12 — its first reader
+      // FR-R3-096 — the provenance that decides whether `required` may withhold.
+      // `phaseDef` here is the frozen pipeline snapshot (`phase-sequencer.ts`
+      // resolves it from `run.pipeline.phases`), which is the only place the
+      // origin is written, so a run started before this field simply passes
+      // `undefined` and behaves exactly as it did.
+      evidencePolicyDeclaredAt: inputs.phaseDef?.evidencePolicyDeclaredAt,
       region: audit.region, // FR-003 — bounds where a token may be read; see T25
       effectiveFatalSignatures,
       apiError: unwrappedStream.apiError,
@@ -600,7 +606,7 @@ export class PhaseRunner {
         exitCode: raw.exitCode,
         terminationReason: 'error',
         warnings: ['stdin-delivery-failed', ...(result.warnings ?? []), ...(raw.diagnosticWarnings ?? [])],
-        ...this.invocationMetricPayload(raw),
+        ...this.invocationMetricPayload(raw, effectiveRunnerKind),
         // The parse was clean, so the audit block WAS read: a run that changed the
         // workspace while answering a truncated prompt must not record {0,0,0}.
         files_created: audit.entry?.filesCreated ?? [],
@@ -637,7 +643,7 @@ export class PhaseRunner {
         outcome: 'deadline',
         terminationReason: 'deadline',
         warnings: raw.diagnosticWarnings,
-        ...this.invocationMetricPayload(raw)
+        ...this.invocationMetricPayload(raw, effectiveRunnerKind)
       });
       return {
         result: { kind: 'malformed', warnings: ['deadline'], auditEntry: null },
@@ -677,7 +683,7 @@ export class PhaseRunner {
         // omission the general way: the code now rides
         // `invocationMetricPayload`, so no arm can omit it again.
         warnings: raw.diagnosticWarnings,
-        ...this.invocationMetricPayload(raw)
+        ...this.invocationMetricPayload(raw, effectiveRunnerKind)
       });
       return {
         result: { kind: 'malformed', warnings: ['timeout'], auditEntry: null },
@@ -725,7 +731,7 @@ export class PhaseRunner {
           exitCode: raw.exitCode,
           terminationReason: 'error',
           warnings: ['host-verification-failed', ...(result.warnings ?? [])],
-          ...this.invocationMetricPayload(raw),
+          ...this.invocationMetricPayload(raw, effectiveRunnerKind),
           files_created: audit.entry?.filesCreated ?? [],
           files_modified: audit.entry?.filesModified ?? [],
           commands_executed: audit.entry?.commandsExecuted ?? []
@@ -825,7 +831,7 @@ export class PhaseRunner {
         outcome,
         exitCode: raw.exitCode,
         terminationReason,
-        ...this.invocationMetricPayload(raw),
+        ...this.invocationMetricPayload(raw, effectiveRunnerKind),
         files_created: audit.entry?.filesCreated ?? [],
         files_modified: audit.entry?.filesModified ?? [],
         commands_executed: audit.entry?.commandsExecuted ?? [],
@@ -938,7 +944,8 @@ export class PhaseRunner {
   }
 
   private invocationMetricPayload(
-    raw: Pick<RawInvocationOutput, 'stdoutBuffer' | 'stderrBuffer' | 'durationMs' | 'exitCode'>
+    raw: Pick<RawInvocationOutput, 'stdoutBuffer' | 'stderrBuffer' | 'durationMs' | 'exitCode'>,
+    backend: BackendRunnerKind
   ): Record<string, unknown> {
     return {
       // Runner timing stays canonical; CLI-reported duration is separate.
@@ -950,7 +957,7 @@ export class PhaseRunner {
       exitCode: raw.exitCode,
       ...(raw.stdoutBuffer.truncated ? { stdoutTruncated: true } : {}),
       ...(raw.stderrBuffer.truncated ? { stderrTruncated: true } : {}),
-      ...(extractInvocationUsageMetrics(raw.stdoutBuffer) ?? {})
+      ...(extractInvocationUsageMetrics(raw.stdoutBuffer, backend) ?? {})
     };
   }
 

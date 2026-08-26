@@ -36,6 +36,21 @@ export function snapshotPhaseDef(
     // frozen contract change shape for no behavioural reason.
     capabilities: phase.capabilities === undefined ? undefined : Object.freeze([...phase.capabilities]),
     evidencePolicy: phase.evidencePolicy ?? 'required',
+    // FR-R3-096 — the provenance the value alone cannot carry. `?? 'required'`
+    // above has filled in every Phase that declared nothing since the field
+    // existed, so the stored value cannot distinguish an author who asked for
+    // enforcement from an author who said nothing. This can, and the parser
+    // enforces only on `'phase-definition'`.
+    //
+    // Carried forward when already present rather than recomputed: re-freezing a
+    // snapshot would see the DEFAULTED `'required'` above as a declaration and
+    // silently grant teeth to a Phase that never asked for them. No caller does
+    // that today — all three pass catalog definitions — and the guard costs one
+    // `??`, where the failure it prevents is a Phase that stops advancing for
+    // reasons nobody authored.
+    evidencePolicyDeclaredAt:
+      phase.evidencePolicyDeclaredAt ??
+      (phase.evidencePolicy === undefined ? 'default' : 'phase-definition'),
     promptVersion: phase.promptVersion ?? 'custom-v1'
   });
 }

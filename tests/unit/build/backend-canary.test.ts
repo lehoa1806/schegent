@@ -248,15 +248,29 @@ describe('FR-R3-084 — the live phase, written after it was run', () => {
       resolve(__dirname, '../../../scripts/backend-canary-run.mjs'),
       'utf8'
     );
-    // One turn, a fixed trivial prompt, and a hard wall-clock deadline. A prompt
-    // built from anything in the workspace would send workspace content to a
-    // provider, which is the failure this pins against.
-    expect(runner).toContain("const CANARY_PROMPT = 'Reply with exactly one word: canary'");
+    const pure = readFileSync(resolve(__dirname, '../../../scripts/backend-canary.mjs'), 'utf8');
+    // One turn, a fixed trivial prompt, and a hard wall-clock deadline. The
+    // prompt moved into the pure module on 2026-08-26 so the canary and the
+    // parity gate name one literal.
+    expect(pure).toContain("export const LIVE_PROMPT = 'Reply with exactly one word: canary'");
     expect(runner).toMatch(/LIVE_TIMEOUT_MS\s*=\s*\d/);
     expect(runner).toContain('timeout: LIVE_TIMEOUT_MS');
     // The prompt is a constant, never interpolated.
-    expect(runner).not.toMatch(/CANARY_PROMPT\s*\+/);
-    expect(runner).not.toMatch(/`[^`]*\$\{[^}]*\}[^`]*`\s*\]\s*\}/);
+    expect(pure).not.toMatch(/LIVE_PROMPT\s*\+/);
+
+    // AND THE WORKING DIRECTORY DISCLOSES NOTHING EITHER, which is the half this
+    // assertion missed until 2026-08-26. A fixed prompt is not enough: these CLIs
+    // load their cwd's `CLAUDE.md`, `AGENTS.md` and git state into the turn on
+    // their own. Run from the repository, one two-token prompt billed 38,101
+    // cache-creation tokens and the model quoted this feature's plan file back
+    // with no tool call in the envelope. A temp dir is what makes "discloses
+    // nothing" true.
+    expect(runner).toContain('mkdtempSync');
+    expect(runner).toContain('tmpdir()');
+    expect(runner).toContain('cwd: LIVE_CWD');
+    expect(runner, 'the live turn must never run in the workspace').not.toMatch(
+      /cwd:\s*process\.cwd\(\)/
+    );
   });
 
   it('reads no API key, because none is what this product uses', () => {
@@ -294,9 +308,14 @@ describe('FR-R3-084 — the live phase, written after it was run', () => {
       'utf8'
     );
     const declared = [...runner.matchAll(/backend: '([a-z]+)'/g)].map((m) => m[1]);
-    const withLivePath = [...runner.matchAll(/backend: '[a-z]+',[^}]*live: \[/g)].length;
     expect(declared.sort()).toEqual(['agy', 'claude', 'codex']);
-    expect(withLivePath, 'every declared backend needs a live path').toBe(declared.length);
+    // Derived from the shared table rather than from the runner's source text:
+    // the argv moved into `LIVE_INVOCATIONS` so the canary and the host could be
+    // compared against each other, and a live path is now an entry there.
+    for (const backend of declared) {
+      expect(canary.liveArgsFor(backend), `${backend} needs a live path`).toBeDefined();
+      expect((canary.liveArgsFor(backend) ?? []).length).toBeGreaterThan(0);
+    }
   });
 
   it('a drift is a finding, never an exit code', async () => {
@@ -307,6 +326,30 @@ describe('FR-R3-084 — the live phase, written after it was run', () => {
     expect(
       canary.canaryExitCode([{ backend: 'agy', state: 'skipped-not-authenticated', detail: 'd' }])
     ).toBe(0);
+  });
+
+  it('the qualification log records a run, and names every backend in it', () => {
+    // The gap this closes: until 2026-08-26 the log was the ONE artifact of this
+    // item that no test read. `00_backlog_verification_gaps_plan.md` declined to
+    // file the canary precisely because "has it ever produced a result" was not
+    // checkable from a checkout; a log nothing checks is that same gap wearing a
+    // filename.
+    //
+    // Deliberately NOT asserting a version string. Pinning the installed version
+    // here is the convenience-as-baseline mistake the item rejects twice, and it
+    // would make a routine CLI update fail a unit test.
+    const log = readFileSync(
+      resolve(__dirname, '../../../docs/release/backend-qualification-log.md'),
+      'utf8'
+    );
+    for (const backend of ['claude', 'codex', 'agy']) {
+      expect(log, `${backend} must appear in a qualification entry`).toContain(`${backend}:`);
+    }
+    // An entry is a dated result, so the log must carry at least one date and say
+    // what its runs do not establish.
+    expect(log).toMatch(/### \d{4}-\d{2}-\d{2}/);
+    expect(log).toContain('does NOT establish');
+    expect(log).toContain('npm run canary');
   });
 
   it('the qualification run is recorded, and no prefix is enforced from it', () => {
