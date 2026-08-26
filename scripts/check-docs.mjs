@@ -1,3 +1,4 @@
+import { GATE_COMMAND } from './gate-attestation.mjs';
 import { readFileSync } from 'node:fs';
 
 const root = JSON.parse(readFileSync('package.json', 'utf8'));
@@ -31,7 +32,21 @@ for (const file of requiredDocs) {
 if (!commandReference.includes('schegent.exportAuditLog')) {
   failures.push('Command Palette reference is stale');
 }
-if (!release.includes('npm run verify:all')) failures.push('RELEASE.md omits verify:all');
+// FR-R3-100 follow-up — RELEASE.md must name the command the release binding actually reads,
+// DERIVED from that binding rather than typed here.
+//
+// This check used to require the literal `npm run verify:all`, which was the pre-tag gate when it
+// was written. `GATE_COMMAND` has since moved to `npm run gate`, and the check went on passing a
+// RELEASE.md that named the old command and never mentioned the new one — a gate pinning the wrong
+// string is worse than no gate, because it reads as coverage. Reading the constant means a future
+// rename moves the requirement with it.
+if (!release.includes(GATE_COMMAND)) {
+  failures.push(
+    `RELEASE.md omits the attested command (${GATE_COMMAND}), which is what the release binding ` +
+      'checks for. Naming a different command in the procedure sends a maintainer to a gate the ' +
+      'release does not read.'
+  );
+}
 if (failures.length) {
   console.error(failures.join('\n'));
   process.exit(1);
