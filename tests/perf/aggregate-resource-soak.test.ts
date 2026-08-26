@@ -17,8 +17,9 @@ import { ZippedStreamBuffer, MAX_STREAM_BUFFER_BYTES } from '../../src/runner/zi
  * cap, and text compresses far below that, so the real figure is a measurement
  * and not a multiplication.
  *
- * `00_escalated_residuals_decision.md` §4 is explicit: "any future mechanism work
- * should be argued from measured resident heap". So this measures, and it
+ * The escalated-residuals decision record (`00_INDEX.md` §7) item 4 is
+ * explicit: "any future mechanism work should be argued from measured resident
+ * heap". So this measures, and it
  * asserts a bound DERIVED FROM THE MEASUREMENT rather than from the arithmetic.
  * A soak whose threshold can be traced back to `MAX_STREAM_BUFFER_BYTES` would
  * be the uncorrected framing wearing a test's clothes.

@@ -1,7 +1,7 @@
 # Backend qualification log
 
 **Purpose**: the answer to *"has the canary ever produced a result, and what did it say?"* — checkable
-from a checkout, which is the question `00_backlog_verification_gaps_plan.md` recorded as unanswerable.
+from a checkout, which is the question `00_INDEX.md` §5 recorded as unanswerable.
 
 **Produced by**: `npm run canary` · **Decided**: `FR-R3-084` §3.5, amended 2026-08-26
 

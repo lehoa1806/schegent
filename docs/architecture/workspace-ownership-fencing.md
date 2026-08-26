@@ -112,7 +112,7 @@ section is stale is worse than one that has none.
 2. **The queue mutation path carries the same fence.** `updateQueue` takes a required
    `QueueCommitClaim` and verifies it inside its own serialized link on `KEYS.queue`. Delivered as a
    separate change *after* the Run commit point's half, which is the order
-   `docs/features/round_3/00_escalated_residuals_decision.md` §2 sets — the Run path is the one the
+   `docs/features/round_3/00_INDEX.md` §7 item 2 sets — the Run path is the one the
    review measured and the one a revived stale host reaches first.
 
 3. **The stamp is no longer opt-in; the claim is required.** What this item recorded was measured

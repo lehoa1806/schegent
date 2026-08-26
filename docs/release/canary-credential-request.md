@@ -35,7 +35,7 @@ turn?"* is to attempt a live turn. That is what the canary does now.
 Every run of the canary that anyone chose to keep is dated and quoted in
 [`backend-qualification-log.md`](backend-qualification-log.md), beside what that run does **not**
 establish. That log is the answer to *"has the canary ever produced a result"*, which
-`00_backlog_verification_gaps_plan.md` recorded as not checkable from a checkout.
+`00_INDEX.md` §5 recorded as not checkable from a checkout.
 
 ## The qualification run
 
@@ -146,7 +146,7 @@ already does. `FR-R3-061` §5 established this and re-deriving it changed nothin
 
 ## The observable result surface — designed, not activated
 
-`00_backlog_verification_gaps_plan.md` recorded that whether the canary has ever produced a result
+`00_INDEX.md` §5 recorded that whether the canary has ever produced a result
 *"is not checkable from a checkout"* and declined to file it. With a live phase, a result becomes
 something to publish.
 

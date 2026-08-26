@@ -15,8 +15,9 @@ import {
  * FR-R3-077b (T1045) — the queue mutation path carries the same fence.
  *
  * The second half, and it lands as its own change after the Run commit point's,
- * which is the order `00_escalated_residuals_decision.md` §2 sets. That
- * sequencing is a requirement rather than a preference: the Run path is the one
+ * which is the order the escalated-residuals decision record (`00_INDEX.md` §7)
+ * item 2 sets. That sequencing is a requirement rather than a preference: the
+ * Run path is the one
  * the 2026-08-24 review measured and the one a revived stale host reaches first,
  * and a single change that moved both would have made the smaller blast radius
  * indistinguishable from the larger one.

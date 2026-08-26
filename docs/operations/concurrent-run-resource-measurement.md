@@ -15,14 +15,14 @@ resource budget from a multiplication:
 MAX_STREAM_BUFFER_BYTES (64 MiB) × 2 streams per run × globalConcurrencyCap max (20) = 2.56 GiB
 ```
 
-`R-06` of the [2026-08-25 verification audit](../../../docs/features/round_3/00_audit_consolidation_plan.md)
+`R-06` of the [2026-08-25 verification audit](../../../docs/features/round_3/00_INDEX.md#9-audit-consolidation-and-the-retired-corpus)
 corrected that **in place**, and the correction is the whole reason this measurement was required
 before any mechanism: `MAX_STREAM_BUFFER_BYTES` is an **accepted-input** bound — how much output the
 buffer will take before it starts discarding — and not resident heap. The head half of each stream is
 retained gzip-compressed at roughly 0.66× the per-stream cap (the figure the buffer's own header
 documents), and ordinary phase output is text, which compresses far below that.
 
-`00_escalated_residuals_decision.md` §4 states the consequence as a rule: *"any future mechanism work
+`00_INDEX.md` §7 item 4 states the consequence as a rule: *"any future mechanism work
 should be argued from measured resident heap"*.
 
 **Do not re-publish 2.56 GiB as a heap number.** It is an accepted-input byte budget. Repeating the
