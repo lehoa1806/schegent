@@ -64,15 +64,36 @@ export type PhaseDefinitionEffort = (typeof PHASE_EFFORT_LEVELS)[number];
 export const PHASE_SIDE_EFFECTS = ['none', 'workspace', 'git', 'unrestricted'] as const;
 export type PhaseSideEffects = (typeof PHASE_SIDE_EFFECTS)[number];
 
+/**
+ * What an author says about the evidence this Phase owes.
+ *
+ * **A DECLARATION, and not yet enforcement.** The value is validated, persisted,
+ * frozen into the plan snapshot and carried through the portable exchange format,
+ * and no code path branches on it: `required`, `best-effort` and `none` classify a
+ * Phase identically today. `tests/lint/authored-fields-have-readers.test.ts` found
+ * that, and holds this note in place — the field cannot quietly gain or lose an
+ * effect without that gate saying so.
+ *
+ * Stated here rather than left to be discovered because the previous wording said
+ * this axis "asks whether an audit block must be present", which reads as a
+ * mechanism. Nothing asks. That gap is the class `R-14`, `D2` and `F-08` all
+ * belong to, and the correction is the same one those took: say what the code
+ * does.
+ *
+ * Enforcing it would change which Phases advance — the most safety-critical
+ * decision the host makes — so it is recorded open rather than implemented in
+ * passing.
+ */
 export const PHASE_EVIDENCE_POLICIES = ['required', 'best-effort', 'none'] as const;
 export type PhaseEvidencePolicy = (typeof PHASE_EVIDENCE_POLICIES)[number];
 
 /**
  * FR-R3-058 (M-07 / R-10) — what evidence may advance this Phase.
  *
- * A separate axis from `evidencePolicy`, which asks whether an audit block must
- * be present. This asks who is believed when the host's own signals and the
- * model's disagree.
+ * A separate axis from `evidencePolicy`, which DECLARES whether an audit block is
+ * owed and is currently enforced by nothing (see above). This one is enforced:
+ * it decides who is believed when the host's own signals and the model's
+ * disagree.
  *
  * `'model-token'` is the default and the historical behaviour, unchanged: a clean
  * termination token advances the Phase even when the process timed out or exited
