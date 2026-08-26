@@ -4,8 +4,8 @@
 cited as such.**
 
 FR-R3-061 added this file because the distinction was being lost. The corpus is a versioned,
-deterministic set of **10 cases** (`fixtures/backend-outcomes.json`), and the suite around it reports
-**18 passing tests** — the extra eight are structural meta-assertions about the corpus itself, not
+deterministic set of **11 cases** (`fixtures/backend-outcomes.json`), and the suite around it reports
+**19 passing tests** — the extra eight are structural meta-assertions about the corpus itself, not
 additional cases. That tally is asserted by the suite against its own test declarations (FR-R3-067), so
 adding a test moves both sides at once; it read 13 for a while because `FR-R3-061` added two
 meta-assertions in the same change that wrote this sentence. Which counts in this corpus are checked, by
@@ -42,10 +42,16 @@ that goes red for reasons unrelated to the change under review.
 
 ## Where behavioral qualification will live
 
-`.github/workflows/backend-canary.yml` — scheduled, off the PR path, and non-blocking by design.
-Today it is a **version probe plus an honest skip**: it probes real CLI versions, and it skips the
-live phase and says so in its output — `skipped-no-credentials` without a credential,
-`skipped-no-live-path` with one — until operator-supplied credentials and a live invocation exist.
+`scripts/backend-canary-run.mjs`, declared by `.github/workflows/backend-canary.yml` — off the PR
+path and non-blocking by design. **The workflow does not fire**: this project does not run GitHub
+Actions, so the canary is a LOCAL QUALIFICATION STEP, run deliberately against a backend release
+before that release is trusted rather than on a schedule.
+
+Since 2026-08-26 it **runs a live phase**: one bounded turn against each backend with a fixed trivial
+prompt, reporting `ok` when the turn completes, `skipped-not-authenticated` when the CLI's own output
+says it is not signed in, and `drifted` for any other failure. There is no credential and no auth
+probe — these backends authenticate by subscription, and attempting the turn is the only non-proxy
+answer to whether one can be completed.
 Its failures are findings to file, not gate reds: making PRs depend on a third-party service is
 exactly what the review warned against.
 
