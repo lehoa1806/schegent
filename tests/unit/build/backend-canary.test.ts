@@ -284,6 +284,21 @@ describe('FR-R3-084 — the live phase, written after it was run', () => {
     expect(runner).not.toContain('authProbe');
   });
 
+  it('skipped-no-live-path is unreachable: every backend has a live path', () => {
+    // FR-R3-084 §4, verbatim: "`skipped-no-live-path` becomes unreachable for a
+    // backend that has one, and the unit table asserts that." All three have one
+    // now, so the state survives only for a backend added without one — which is
+    // exactly when it should fire, and never for the three that ship.
+    const runner = readFileSync(
+      resolve(__dirname, '../../../scripts/backend-canary-run.mjs'),
+      'utf8'
+    );
+    const declared = [...runner.matchAll(/backend: '([a-z]+)'/g)].map((m) => m[1]);
+    const withLivePath = [...runner.matchAll(/backend: '[a-z]+',[^}]*live: \[/g)].length;
+    expect(declared.sort()).toEqual(['agy', 'claude', 'codex']);
+    expect(withLivePath, 'every declared backend needs a live path').toBe(declared.length);
+  });
+
   it('a drift is a finding, never an exit code', async () => {
     const canary = await import('../../../scripts/backend-canary.mjs');
     expect(
