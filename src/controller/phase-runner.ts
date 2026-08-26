@@ -27,6 +27,7 @@ import {
   type BackendPostureAccessor
 } from './backend-posture-recorder';
 import type { CapabilityRefusalEventType } from '../contracts/audit-events';
+import { authoredPhaseTimeoutMs, effectivePhaseTimeoutMs } from './effective-phase-timeout';
 import {
   capabilityRequestFields,
   recordCapabilityDecision
@@ -416,9 +417,8 @@ export class PhaseRunner {
     };
     if (inputs.phaseDef?.model) startPayload.model = inputs.phaseDef.model;
     if (inputs.phaseDef?.effort) startPayload.effort = inputs.phaseDef.effort;
-    if (inputs.phaseDef?.timeoutSeconds) {
-      startPayload.timeoutMs = inputs.phaseDef.timeoutSeconds * 1000;
-    }
+    const authoredStartpayloadTimeoutMs = authoredPhaseTimeoutMs(inputs.phaseDef);
+    if (authoredStartpayloadTimeoutMs !== undefined) startPayload.timeoutMs = authoredStartpayloadTimeoutMs;
     await this.appendAudit(inputs, 'phase-start', 'info', startPayload);
 
     this.logger.info(`phase-start ${inputs.phase} iter=${inputs.iteration}`);
@@ -498,7 +498,9 @@ export class PhaseRunner {
         iteration: inputs.iteration,
         runId: inputs.runId,
         prompt,
-        timeoutMs: inputs.timeoutMs,
+        // The AUTHORED per-phase bound, not the workspace default. This line used
+        // to read `inputs.timeoutMs` while four records claimed the phase value.
+        timeoutMs: effectivePhaseTimeoutMs(inputs),
         ...(inputs.maxDurationMs !== undefined ? { maxDurationMs: inputs.maxDurationMs } : {}),
         cliPath: inputs.cliPath,
         cwd: inputs.cwd,
@@ -929,9 +931,8 @@ export class PhaseRunner {
     };
     if (inputs.phaseDef?.model) meta.model = inputs.phaseDef.model;
     if (inputs.phaseDef?.effort) meta.effort = inputs.phaseDef.effort;
-    if (inputs.phaseDef?.timeoutSeconds) {
-      meta.timeoutMs = inputs.phaseDef.timeoutSeconds * 1000;
-    }
+    const authoredMetaTimeoutMs = authoredPhaseTimeoutMs(inputs.phaseDef);
+    if (authoredMetaTimeoutMs !== undefined) meta.timeoutMs = authoredMetaTimeoutMs;
     return meta;
   }
 
@@ -976,9 +977,8 @@ export class PhaseRunner {
     };
     if (inputs.phaseDef?.model) payload.model = inputs.phaseDef.model;
     if (inputs.phaseDef?.effort) payload.effort = inputs.phaseDef.effort;
-    if (inputs.phaseDef?.timeoutSeconds) {
-      payload.timeoutMs = inputs.phaseDef.timeoutSeconds * 1000;
-    }
+    const authoredTimeoutMs = authoredPhaseTimeoutMs(inputs.phaseDef);
+    if (authoredTimeoutMs !== undefined) payload.timeoutMs = authoredTimeoutMs;
     await this.appendRequiredAudit({
       runId: inputs.runId,
       phase: inputs.phase,

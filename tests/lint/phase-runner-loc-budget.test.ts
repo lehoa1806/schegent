@@ -9,6 +9,22 @@ import { resolve } from 'node:path';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 //
+// Post-155 — phase-runner.ts HELD at 1027, not raised. The seam gate added after
+// the security review found that `phaseDef.timeoutSeconds` was recorded at three
+// sites in this file and applied at none: an authored per-phase bound that four
+// records claimed and no process honoured. The fix routes the EFFECT through
+// `effective-phase-timeout.ts` and leaves each record's shape exactly as it was —
+// still omitted when the phase declares nothing, because `phase-runner.test.ts`
+// pins that shape and changing it would rewrite every built-in phase's payload
+// for no gain.
+//
+// An intermediate draft did collapse the record sites too and briefly measured
+// 1025. That is recorded because the number is not the point: it was bought by
+// changing what the audit says, which was never the defect. The budget is where
+// it was, the defect is closed, and the shell took on no new responsibility —
+// the resolution lives in its own module, as with the three recorder modules
+// above it.
+//
 // FR-R3-086 — bumped phase-runner.ts +1 more, for the SECOND capability audit
 // event (`capability-applied`). The security pass found that a grant left no
 // trace: the bound lives in argv, argv is never written to the structured log,

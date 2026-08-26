@@ -1,3 +1,4 @@
+import { authoredPhaseTimeoutMs } from './effective-phase-timeout';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import { openWithinRootByPath } from '../lib/safe-open';
@@ -414,9 +415,8 @@ const MAX_SIDECAR_BYTES = 8 * 1024 * 1024;
     };
     if (inputs.phaseDef?.model) meta.model = inputs.phaseDef.model;
     if (inputs.phaseDef?.effort) meta.effort = inputs.phaseDef.effort;
-    if (inputs.phaseDef?.timeoutSeconds) {
-      meta.timeoutMs = inputs.phaseDef.timeoutSeconds * 1000;
-    }
+    const authoredTimeoutMs = authoredPhaseTimeoutMs(inputs.phaseDef);
+    if (authoredTimeoutMs !== undefined) meta.timeoutMs = authoredTimeoutMs;
     return meta;
   }
 
