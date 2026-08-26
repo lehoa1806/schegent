@@ -30,6 +30,13 @@ unauthenticated. A false negative one step after fixing a false negative.
 **So there is no auth probe.** The only non-proxy answer to *"can this backend complete a live
 turn?"* is to attempt a live turn. That is what the canary does now.
 
+## Where the results are recorded
+
+Every run of the canary that anyone chose to keep is dated and quoted in
+[`backend-qualification-log.md`](backend-qualification-log.md), beside what that run does **not**
+establish. That log is the answer to *"has the canary ever produced a result"*, which
+`00_backlog_verification_gaps_plan.md` recorded as not checkable from a checkout.
+
 ## The qualification run
 
 Recorded because `FR-R3-084` §3 requires the version pin to be **derived, not guessed**, and because

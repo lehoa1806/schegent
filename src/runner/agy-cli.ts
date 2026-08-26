@@ -22,6 +22,31 @@ function resolveEffort(effort: string | undefined): string | undefined {
   return effort.trim();
 }
 
+/**
+ * The prompt, in the only shape agy actually reads it from stdin.
+ *
+ * WHY THIS EXISTS. `--print`/`-p` takes the prompt as its ARGUMENT VALUE, so the
+ * previous `['-p', '-']` sent the literal string `-` as the prompt and the real
+ * prompt went to a stdin nothing was reading. Agy answered the one-character
+ * prompt -- a generic greeting -- and exited 0, so nothing above this layer could
+ * tell. Measured on agy 1.1.21: `-p -` with the prompt on stdin returns "How can
+ * I help you today?"; this envelope returns the answer to the prompt.
+ *
+ * Agy reads stdin only under `--input-format stream-json`, one NDJSON message per
+ * line, and it refuses the combination outright if a command-line prompt is also
+ * present ("a prompt given on the command line would be ignored"). The field
+ * names are the CLI's, confirmed against its own decode errors: a message
+ * without `event` is rejected as `stream input message is missing the "event"
+ * field`, and `message.text` as `stream input "user" message has no content`.
+ *
+ * ARGV IS NOT AN OPTION for the prompt. `--print <prompt>` would work, but it
+ * publishes operator content to every local process listing and is bounded by
+ * ARG_MAX, and prompts here are neither small nor guaranteed non-sensitive.
+ */
+function encodeAgyStreamInput(prompt: string): string {
+  return `${JSON.stringify({ event: 'user', message: { content: prompt } })}\n`;
+}
+
 /** Agy adapter; shared lifecycle behavior lives in ProcessLifecycleRunner. */
 /**
  * FR-R3-031 / FR-R3-032 — the permission posture, as an unconditional module-scope
@@ -95,7 +120,7 @@ export class AgyCliRunner implements BackendRunner {
     const resume = request.isContinue === true || request.sessionReuse === true;
     const args = [...capabilityArgs('agy', request, UNBOUNDED_PERMISSION_ARGS)];
     if (resume && request.resumeSessionId) args.push('--conversation', request.resumeSessionId);
-    args.push('-p', '-');
+    args.push('--input-format', 'stream-json');
     if (request.model?.trim()) args.push('--model', request.model);
     const effort = resolveEffort(request.effort);
     if (effort) args.push('--effort', effort);
@@ -105,7 +130,8 @@ export class AgyCliRunner implements BackendRunner {
       args,
       env: buildSpawnEnv(request),
       commandDisplay: [request.cliPath, ...args].join(' '),
-      outputSink
+      outputSink,
+      stdinPayload: encodeAgyStreamInput(request.prompt)
     });
     const cliSessionId = extractCliSessionId(output.stdoutBuffer.decompressStream()) ?? undefined;
     return { ...output, cliSessionId };

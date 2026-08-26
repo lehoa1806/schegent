@@ -80,6 +80,21 @@ export class ProcessLifecycleRunner {
     env: NodeJS.ProcessEnv;
     commandDisplay: string;
     outputSink?: InvocationOutputSink;
+    /**
+     * What this backend's stdin expects, when that is not the prompt itself.
+     *
+     * Agy reads a prompt from stdin ONLY under `--input-format stream-json`, as
+     * one NDJSON message per line, so its adapter wraps the prompt in the
+     * envelope the CLI documents. Named separately from `request.prompt`
+     * because the request still carries the operator's text unchanged --
+     * rewriting the prompt on the request to smuggle a transport shape through
+     * would make every reader above this layer see a payload the operator never
+     * wrote.
+     *
+     * Still ONE write site (FR-R3-047 / H-04): this only changes the bytes, not
+     * who writes them.
+     */
+    stdinPayload?: string;
   }): Promise<RawInvocationOutput> {
     const start = Date.now();
     const { request, outputSink } = input;
@@ -114,7 +129,7 @@ export class ProcessLifecycleRunner {
       // before anything is listening, leaving the invocation waiting forever.
       // Observed as a hung suite. The answer is consumed where it is needed,
       // beside the completion result.
-      const deliveryPromise = writePromptToStdin(child, request.prompt);
+      const deliveryPromise = writePromptToStdin(child, input.stdinPayload ?? request.prompt);
       const stdoutBuffer = new ZippedStreamBuffer();
       const stderrBuffer = new ZippedStreamBuffer();
       child.stdout?.setEncoding('utf8');
