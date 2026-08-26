@@ -99,6 +99,33 @@ export const PHASE_EVIDENCE_POLICIES = ['required', 'best-effort', 'none'] as co
 export type PhaseEvidencePolicy = (typeof PHASE_EVIDENCE_POLICIES)[number];
 
 /**
+ * FR-R3-096 — where a Phase's `evidencePolicy` came from.
+ *
+ * **Not an authored field.** It is derived at the freeze and exists because the
+ * value alone cannot answer the only question enforcement needs to ask.
+ * `pipeline-snapshot.ts` has resolved omission to `'required'` since the field
+ * existed, so `'required'` is already written into every snapshot ever taken —
+ * by every Phase that never declared one. Giving that value teeth would
+ * retroactively tighten all of them, on the most safety-critical decision the
+ * host makes, from a population that cannot be read as consent.
+ *
+ * With provenance the two are distinguishable: `'phase-definition'` means an
+ * author asked for it and enforcement applies; `'default'` means nobody said
+ * anything and behaviour is exactly what it was.
+ *
+ * **Absence reads as `'default'`, and that is the migration.** Every snapshot
+ * written before this contract carries no origin at all, so the population that
+ * already exists is un-enforced by construction rather than by a version
+ * comparison someone has to maintain. The same reading makes a caller that has
+ * not been updated — a test, an older code path — safe by omission.
+ *
+ * Modelled on `DeclaredCapabilitySet.declaredAt`, which draws the same
+ * authored-versus-defaulted line for the same reason.
+ */
+export const EVIDENCE_POLICY_ORIGINS = ['phase-definition', 'default'] as const;
+export type EvidencePolicyOrigin = (typeof EVIDENCE_POLICY_ORIGINS)[number];
+
+/**
  * FR-R3-058 (M-07 / R-10) — what evidence may advance this Phase.
  *
  * A separate axis from `evidencePolicy`, which DECLARES whether an audit block is

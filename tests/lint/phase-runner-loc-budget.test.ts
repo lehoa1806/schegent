@@ -183,7 +183,14 @@ const BUDGETS = [
   // resolved in `runInner` for audit attribution, so the five call sites pass a
   // value that was in scope; the import took an inline `type` specifier rather
   // than a line of its own. Nothing to extract — the parameter is the change.
-  { path: 'src/controller/phase-runner.ts', max: 1_029 },
+  // FR-R3-096 — 1029 → 1035. Six lines: one `evidencePolicyDeclaredAt` argument
+  // to `parseInvocation` and the five-line note recording that `phaseDef` here
+  // is the frozen snapshot, which is the only place the origin is written and
+  // therefore the only reason the value that reaches the parser can be trusted.
+  // The note is the budget: a reader who assumes this is the catalog definition
+  // would conclude the enforcement never fires. Nothing to extract — the
+  // argument sits in the call it belongs to.
+  { path: 'src/controller/phase-runner.ts', max: 1_035 },
   // FR-R3-052 / H-03 (2026-08-24) — 400 → 415 for the size check that was
   // missing. `stat()` was already called here and only `isFile()` was read, so
   // `readFile()` took a multi-GiB sidecar wholly into memory. The bound, the

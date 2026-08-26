@@ -1,5 +1,5 @@
 import type { AuditEntryFields } from '../audit/audit-entry';
-import type { PhaseEvidencePolicy } from '../contracts/process-definitions';
+import type { EvidencePolicyOrigin, PhaseEvidencePolicy } from '../contracts/process-definitions';
 import {
   classifyFatal,
   type EffectiveSignature,
@@ -256,6 +256,52 @@ import type { ApiErrorMetadata } from './stream-json-unwrapper';
  * why the field cannot tighten.
  */
 /**
+ * FR-R3-096 — does this Phase's declared evidence policy WITHHOLD a clean
+ * advance when the backend produced no audit block?
+ *
+ * Only when an author asked for it. `'required'` alone is not enough and never
+ * can be: `pipeline-snapshot.ts` wrote that value into every Phase that declared
+ * nothing, so the stored value describes the whole population rather than a
+ * decision. The origin is what separates them, and **absence reads as
+ * defaulted** — which is every snapshot taken before the origin existed, and
+ * every caller that has not been updated to pass one.
+ *
+ * `'best-effort'` and `'none'` withhold nothing however they were declared:
+ * relaxing was always available, and this item added only the tightening half.
+ */
+/**
+ * The refusal itself, in the vocabulary the parser already uses for a
+ * constitution violation.
+ *
+ * `remaining_issues` rather than a failure: `mapOutcome` turns it into
+ * `issues_remain`, which gives the Phase its next iteration to produce the block
+ * and fails only at the cap. The no-contract-block path a few lines below has
+ * classified a missing audit block this way since before the field existed, so
+ * an authored `required` reaches the same place by the same route rather than
+ * inventing a second terminal shape for one setting.
+ */
+function withheldForMissingEvidence(warnings: string[]): InvocationResult {
+  return {
+    kind: 'remaining_issues',
+    issues: [
+      {
+        tag: 'constitution',
+        summary: 'this Phase declares evidencePolicy required and produced no audit block'
+      }
+    ],
+    auditEntry: null,
+    warnings
+  };
+}
+
+function withholdsCleanAdvance(inputs: ParseInputs): boolean {
+  return (
+    (inputs.evidencePolicy ?? 'required') === 'required' &&
+    inputs.evidencePolicyDeclaredAt === 'phase-definition'
+  );
+}
+
+/**
  * One missing-audit warning, at the volume the Phase asked for, or `null` to drop
  * it. Warnings about anything else pass through untouched.
  */
@@ -307,17 +353,25 @@ export interface ParseInputs {
   /**
    * FR-R3-086 follow-up (S12) — the Phase's declared evidence policy.
    *
-   * It governs how the ABSENCE of an audit block is REPORTED. It does not gate
-   * advancement, and the reason is specific rather than an oversight:
-   * `pipeline-snapshot.ts` has always resolved omission to `'required'`, so that
-   * value is already baked into every snapshot ever written. Giving it teeth
-   * would retroactively tighten every one of them, including runs mid-flight.
-   * The field can therefore only relax from the default, never tighten.
+   * It governs how the ABSENCE of an audit block is REPORTED, and — since
+   * FR-R3-096 — whether that absence also WITHHOLDS a clean advance. The second
+   * half applies only when `evidencePolicyDeclaredAt` says an author asked for
+   * it; see that field for why the value alone cannot decide.
    *
    * Optional, defaulting to `'required'`, so every existing caller and every
    * persisted snapshot behaves exactly as before.
    */
   evidencePolicy?: PhaseEvidencePolicy | undefined;
+  /**
+   * FR-R3-096 — whether `evidencePolicy` was authored or defaulted.
+   *
+   * Enforcement reads this and not the value. `'phase-definition'` is the only
+   * setting that withholds advancement; `'default'` and **absence** behave
+   * exactly as the field did before enforcement existed, which is what makes
+   * every already-persisted snapshot and every un-updated caller safe without a
+   * version comparison.
+   */
+  evidencePolicyDeclaredAt?: EvidencePolicyOrigin | undefined;
   apiError?: ApiErrorMetadata | null;
   /**
    * Feature 011 FR-033 — operator-additive fatal signatures merged with
@@ -472,6 +526,9 @@ export function parseInvocation(inputs: ParseInputs): InvocationResult {
   if (blocksPresent > 1) {
     warnings.push('[constitution] multiple contract blocks');
     if (tokenMatched) {
+      if (!inputs.auditEntry && withholdsCleanAdvance(inputs)) {
+        return withheldForMissingEvidence(warnings);
+      }
       return { kind: 'clean', auditEntry: inputs.auditEntry, warnings };
     }
     if (remainingIssues.length > 0) {
@@ -497,6 +554,10 @@ export function parseInvocation(inputs: ParseInputs): InvocationResult {
         inputs.evidencePolicy,
         '[constitution] missing audit log on clean response'
       );
+      // FR-R3-096 — the tightening half. Before this, a Phase that declared
+      // `required` and produced no audit block advanced clean anyway, which made
+      // all three settings mean the same thing.
+      if (withholdsCleanAdvance(inputs)) return withheldForMissingEvidence(warnings);
       return { kind: 'clean', auditEntry: null, warnings };
     }
     return { kind: 'clean', auditEntry: inputs.auditEntry, warnings };

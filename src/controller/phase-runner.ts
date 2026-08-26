@@ -566,6 +566,12 @@ export class PhaseRunner {
       auditEntry: audit.entry,
       auditWarnings: audit.warnings,
       evidencePolicy: inputs.phaseDef?.evidencePolicy, // S12 — its first reader
+      // FR-R3-096 — the provenance that decides whether `required` may withhold.
+      // `phaseDef` here is the frozen pipeline snapshot (`phase-sequencer.ts`
+      // resolves it from `run.pipeline.phases`), which is the only place the
+      // origin is written, so a run started before this field simply passes
+      // `undefined` and behaves exactly as it did.
+      evidencePolicyDeclaredAt: inputs.phaseDef?.evidencePolicyDeclaredAt,
       region: audit.region, // FR-003 — bounds where a token may be read; see T25
       effectiveFatalSignatures,
       apiError: unwrappedStream.apiError,
