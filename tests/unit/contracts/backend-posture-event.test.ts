@@ -23,7 +23,7 @@ import {
   type BackendPostureEventType
 } from '../../../src/contracts/audit-events';
 import { containmentOf } from '../../../src/services/backend-containment-policy';
-import { SUPPORTED_BACKENDS } from '../../../src/runner/backend-runner-factory';
+import { SUPPORTED_BACKENDS } from '../../../src/contracts/backend-kinds';
 
 describe('backend-posture-admitted audit event registration (FR-R3-064)', () => {
   it('registers the event in its own single-member group', () => {

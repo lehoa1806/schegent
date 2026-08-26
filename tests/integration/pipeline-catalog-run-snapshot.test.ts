@@ -25,7 +25,7 @@ import {
 } from '../../src/config/pipeline-config';
 import { SanitizedLogger } from '../../src/lib/logger';
 import { WorkflowRunFactory } from '../../src/services/workflow-run-factory';
-import type { BackendRunnerKind } from '../../src/runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../../src/contracts/backend-kinds';
 import type { WorkflowRunPipeline } from '../../src/state/workflow-run';
 import { migrateV7ToV8 } from '../../src/state/workflow-run-migrator';
 

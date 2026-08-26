@@ -32,7 +32,7 @@
 import type { RunRequestFieldError, RunRequest } from '../../contracts/run-request';
 import type { WorkflowDefinition, WorkflowNode } from '../../contracts/workflow-definitions';
 import type { PipelineCatalog } from '../../config/pipeline-config';
-import type { BackendRunnerKind } from '../../runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../../contracts/backend-kinds';
 import type { ConnectedWorkflowRun } from '../../state/connected-workflow-run';
 import { appendAttempt, resolveBoundQueueId } from '../../state/connected-workflow-run';
 import type { ConnectedRunWriteResult } from '../../state/workspace-state';

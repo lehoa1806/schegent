@@ -10,7 +10,7 @@ import {
   SUPPORTED_BACKENDS,
   isBackendRunnerKind,
   type BackendRunnerKind
-} from '../runner/backend-runner-factory';
+} from '../contracts/backend-kinds';
 import type { ModelCatalogYamlGroup } from '../services/process-yaml/types';
 
 type ModelsConfig = Record<BackendRunnerKind, readonly string[]>;

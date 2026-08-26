@@ -1,3 +1,4 @@
+import type { DeclaredCapabilitySet } from '../contracts/phase-capabilities';
 import type { Phase } from '../controller/phase';
 import type { Effort } from '../config/pipeline-config';
 
@@ -165,6 +166,19 @@ export interface InvocationRequest {
    * values do not trigger the `--resume` append.
    */
   resumeSessionId?: string;
+  /**
+   * FR-R3-086 — the capability set this phase declared, frozen with the plan.
+   *
+   * OPTIONAL on the interface, for the same backwards-compatibility reason
+   * `resumeSessionId` is: every existing construction site keeps working
+   * unchanged. Absent means `DEFAULT_CAPABILITY_SET`, which
+   * `planCapabilityEnforcement` turns into the argv that backend spawns with
+   * today, byte for byte — so a phase that declares nothing changes nothing.
+   *
+   * The adapters do not interpret it. They pass it to the plan and use the argv
+   * the plan returns, so there is one translation site rather than three.
+   */
+  capabilities?: DeclaredCapabilitySet;
   /*
    * Feature 107 (FR-020) — `completionMarker?: string` stood here.
    *

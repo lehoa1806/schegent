@@ -1,4 +1,5 @@
-import type { BackendRunnerKind } from '../runner/backend-runner-factory';
+import type { PhaseCapability } from './phase-capabilities';
+import type { BackendRunnerKind } from './backend-kinds';
 import type { BackendContainment } from '../services/backend-containment-policy';
 import type { TerminationReason } from '../state/workflow-run';
 import type { RunnerLabel, TreeEscalation } from './backend-runner';
@@ -435,6 +436,76 @@ export const METRICS_EVENT_TYPES = ['metrics-view-opened'] as const;
 export const BACKEND_POSTURE_EVENT_TYPES = ['backend-posture-admitted'] as const;
 
 /**
+ * FR-R3-086 (H-01 / SEC-08) — a phase refused because its declared capability
+ * set cannot be enforced.
+ *
+ * DECLARED HERE BEFORE ANY OPERATOR-FACING TEXT CLAIMS IT. `D2` exists because a
+ * manifest promised a record the contract did not declare, and
+ * `tests/lint/capability-text-contract-parity.test.ts` fails when a document
+ * names an event this contract does not carry. The order is the point: contract
+ * first, prose second.
+ *
+ * WHAT THIS IS NOT. It is not a tool-call denial. The host does not observe tool
+ * calls — it narrows the authority the backend grants itself and the backend's
+ * own permission engine refuses at the attempt. This event records the case where
+ * the backend has NO surface that can express a withheld capability, so the phase
+ * is refused before it starts rather than run with the declared set ignored.
+ *
+ * That distinction is the honest half of this mechanism and it is repeated in
+ * `docs/security/threat-model.md` in the same section that states what the
+ * mechanism does bound.
+ */
+export const CAPABILITY_REFUSAL_EVENT_TYPES = [
+  'capability-refused',
+  // FR-R3-086 — the OTHER half, and it was missing.
+  //
+  // The refusal was recorded and the grant was not, so a Run whose phase declared
+  // a narrowed set and ran successfully left nothing in evidence saying which
+  // bound applied. Argv is where the bound actually lives and argv is an OMITTED
+  // key in `audit-payload.ts` — deliberately, because it carries paths — so there
+  // was no second place to look either.
+  //
+  // The point of this mechanism is a bound an operator approved, and evidence is
+  // where approval gets checked after the fact. A control whose effect cannot be
+  // observed is the exact shape this round exists to refuse, so the applied set
+  // is recorded with the same closed-union payload discipline as the refusal.
+  'capability-applied'
+] as const;
+export type CapabilityRefusalEventType = (typeof CAPABILITY_REFUSAL_EVENT_TYPES)[number];
+
+/**
+ * The payload, and every field is a closed union, a number, or an array of
+ * closed-union members.
+ *
+ * NO PATHS, no task description, no operator-authored content — the standing
+ * rules for every audit payload in this contract. `phaseIndex` addresses the
+ * phase by position because a sequence may repeat a phase, which is the same
+ * reason pipeline bindings address by index rather than by id.
+ */
+export interface CapabilityRefusedPayload {
+  readonly kind: BackendRunnerKind;
+  readonly unenforceable: readonly PhaseCapability[];
+  readonly phaseIndex: number;
+}
+
+/**
+ * The set a phase actually ran under, recorded only when the phase DECLARED one.
+ *
+ * A phase that declares nothing runs with today's argv byte for byte, and
+ * recording a default that changed nothing would put a line in every Run's
+ * evidence that says only "unchanged". The event exists to make a NARROWING
+ * observable, so it is emitted exactly when there is a narrowing to observe.
+ *
+ * Same payload discipline as the refusal above: a closed union, an array of
+ * closed-union members, and a number. No paths, no operator-authored content.
+ */
+export interface CapabilityAppliedPayload {
+  readonly kind: BackendRunnerKind;
+  readonly granted: readonly PhaseCapability[];
+  readonly phaseIndex: number;
+}
+
+/**
  * FR-R3-083 / FR-R3-054 §5 — a terminal state that does not lie, in EVIDENCE.
  *
  * When the backend's process group cannot be proven gone within the grace window
@@ -628,6 +699,7 @@ export const ALL_AUDIT_EVENT_TYPES = [
   ...OPTIONAL_PHASE_EVENT_TYPES,
   ...BACKEND_PING_EVENT_TYPES,
   ...BACKEND_POSTURE_EVENT_TYPES,
+  ...CAPABILITY_REFUSAL_EVENT_TYPES,
   ...PROCESS_TREE_EVENT_TYPES,
   ...METRICS_EVENT_TYPES,
   ...PROCESS_EXCHANGE_EVENT_TYPES,

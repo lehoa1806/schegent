@@ -12,7 +12,12 @@ import {
   type PhaseSideEffects
 } from '../contracts/process-definitions';
 import { validate as validateRetryCondition } from '../lib/retry-condition';
-import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../runner/backend-runner-factory';
+import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../contracts/backend-kinds';
+import {
+  ALL_PHASE_CAPABILITIES,
+  isPhaseCapability,
+  type PhaseCapability
+} from '../contracts/phase-capabilities';
 
 export const PHASE_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 export { PHASE_ID_MAX_LEN };
@@ -47,7 +52,8 @@ export const AUTHORED_PHASE_FIELDS: ReadonlySet<string> = new Set([
   // FR-R3-058 — authored, closed with the rest. A Phase accepted by the import
   // path and refused by the save path on the same field is the defect this set
   // exists to prevent.
-  'hostVerification'
+  'hostVerification',
+  'capabilities'
 ]);
 
 const ERROR_MESSAGE_MAX = 512;
@@ -331,6 +337,51 @@ export function validatePhaseDefinition(
     }
   }
 
+  // FR-R3-086 — the declared capability set.
+  //
+  // REJECTED, not silently dropped, when a member is unknown. `declaredCapabilitySet`
+  // filters to known members, so a typo would otherwise yield an EMPTY set — every
+  // capability withheld — and the phase would be refused at run time for a reason
+  // no one could see from the definition. Fail-closed is the right direction and a
+  // silent one is still the wrong report.
+  let capabilities: PhaseCapability[] | undefined;
+  if (value.capabilities !== undefined) {
+    if (!Array.isArray(value.capabilities)) {
+      errors.push(
+        fieldError(phaseId, 'capabilities', 'array-required', 'Phase capabilities must be an array')
+      );
+    } else {
+      const unknown = value.capabilities.filter((entry) => !isPhaseCapability(entry));
+      const members = value.capabilities as unknown[];
+      const repeated = members.filter((entry, index) => members.indexOf(entry) !== index);
+      if (unknown.length > 0) {
+        errors.push(
+          fieldError(
+            phaseId,
+            'capabilities',
+            'invalid-enum',
+            `Phase capabilities must each be one of ${ALL_PHASE_CAPABILITIES.join(', ')}`
+          )
+        );
+      } else if (repeated.length > 0) {
+        // Refused HERE as well as in the exchange format's reader, and the two
+        // must agree: a definition this validator accepts but the reader refuses
+        // is one that cannot survive its own export. The set is what carries
+        // meaning, so a repeat carries none and is an authoring error.
+        errors.push(
+          fieldError(
+            phaseId,
+            'capabilities',
+            'duplicate-member',
+            'Phase capabilities must not repeat a member'
+          )
+        );
+      } else {
+        capabilities = value.capabilities as PhaseCapability[];
+      }
+    }
+  }
+
   if (runner === 'agy' && (effort === 'xhigh' || effort === 'max')) {
     errors.push(
       fieldError(
@@ -461,7 +512,8 @@ export function validatePhaseDefinition(
     ...(runner !== undefined ? { runner } : {}),
     ...(sideEffects !== undefined ? { sideEffects } : {}),
     ...(evidencePolicy !== undefined ? { evidencePolicy } : {}),
-    ...(hostVerification !== undefined ? { hostVerification } : {})
+    ...(hostVerification !== undefined ? { hostVerification } : {}),
+    ...(capabilities !== undefined ? { capabilities } : {})
   };
   const definition: PhaseDefinition = hasInstruction
     ? { ...common, instruction: instruction as string }

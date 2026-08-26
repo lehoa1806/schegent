@@ -10,7 +10,7 @@
 
 import { describe, it, expect } from 'vitest';
 import type { PhaseDefinitionEffort } from '../../../src/contracts/process-definitions';
-import type { BackendRunnerKind } from '../../../src/runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../../../src/contracts/backend-kinds';
 import {
   BINDING_SOURCE_KEY_ORDER,
   DOCUMENT_KEY_ORDER,
@@ -94,6 +94,11 @@ describe('yaml-serializer — property order (FR-017)', () => {
       'evidencePolicy',
       // FR-R3-058 — the second evidence axis, emitted beside the first.
       'hostVerification',
+      // FR-R3-086 — the declared capability set. A scalar, not a list, and the
+      // serializer records why: this format's list convention reads an absent
+      // key as `[]`, which for this field would turn the most restrictive
+      // declaration into the least.
+      'capabilities',
       'model',
       'effort',
       'timeoutSeconds',

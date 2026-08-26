@@ -42,6 +42,11 @@ export function documentFromPhaseDefinition(definition: PhaseDefinition): PhaseY
     ...(definition.hostVerification !== undefined
       ? { hostVerification: definition.hostVerification }
       : {}),
+    // FR-R3-086 — both directions, for the reason stated above: a narrowed phase
+    // that round-trips through YAML must not come back unbounded.
+    ...(definition.capabilities !== undefined
+      ? { capabilities: definition.capabilities }
+      : {}),
     ...(definition.evidencePolicy !== undefined
       ? { evidencePolicy: definition.evidencePolicy }
       : {}),
@@ -104,7 +109,8 @@ export function phaseDefinitionFromDocument(document: PhaseYamlDocument): PhaseD
     ...(spec.evidencePolicy !== undefined ? { evidencePolicy: spec.evidencePolicy } : {}),
     ...(spec.hostVerification !== undefined
       ? { hostVerification: spec.hostVerification }
-      : {})
+      : {}),
+    ...(spec.capabilities !== undefined ? { capabilities: spec.capabilities } : {})
   };
   return spec.instruction !== undefined
     ? { ...common, instruction: spec.instruction }

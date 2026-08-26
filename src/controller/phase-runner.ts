@@ -2,7 +2,7 @@ import type { Phase, PhaseOutcome } from './phase';
 import { policyRequestFields } from '../runner/spawn-env';
 import type { BackendRunner } from '../contracts/backend-runner';
 import type { BackendRunnerRegistry } from '../runner/backend-runner-registry';
-import { DEFAULT_BACKEND } from '../runner/backend-runner-factory';
+import { DEFAULT_BACKEND } from '../contracts/backend-kinds';
 import type { PromptBuilder } from '../runner/prompt-builder';
 import type { ExecutionEnvelope } from '../contracts/run-request';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
@@ -26,6 +26,11 @@ import {
   BackendPostureRecorder,
   type BackendPostureAccessor
 } from './backend-posture-recorder';
+import type { CapabilityRefusalEventType } from '../contracts/audit-events';
+import {
+  capabilityRequestFields,
+  recordCapabilityDecision
+} from './capability-decision-recorder';
 import {
   PhaseSidecarReader,
   composePhaseMessagePath,
@@ -197,6 +202,9 @@ export interface ManualPauseAccessor {
 export class PhaseRunner {
   /** FR-R3-064 — see `BackendPostureRecorder`; this shell only calls it. */
   private readonly postureRecorder: BackendPostureRecorder;
+
+
+
   private readonly sidecarReader: PhaseSidecarReader;
   private readonly retryEvaluator: PhaseRetryEvaluator;
   private readonly runnerRegistry: BackendRunnerRegistry | null;
@@ -388,6 +396,8 @@ export class PhaseRunner {
     // footnote after it. Every route that drives a Run dispatches through this
     // method, which is why the record sits here; see `BackendPostureRecorder`.
     await this.postureRecorder.recordOnce(inputs, effectiveRunnerKind);
+    // FR-R3-086 — refuse before `phase-start`; see `capability-decision-recorder`.
+    await recordCapabilityDecision(inputs, effectiveRunnerKind, this.appendAudit.bind(this));
 
     const startPayload: Record<string, unknown> = {
       ...(inputs.pipelineId === undefined ? {} : { pipelineId: inputs.pipelineId }),
@@ -510,7 +520,9 @@ export class PhaseRunner {
         // runner uses `--resume <id>` instead of `-c`.
         ...(typeof effectiveResumeSessionId === 'string'
           ? { resumeSessionId: effectiveResumeSessionId }
-          : {})
+          : {}),
+        // FR-R3-086 — without this the adapter never sees the declared set.
+        ...capabilityRequestFields(inputs)
       }, rawTranscriptCapture ?? undefined);
     } catch (err) {
       await rawTranscriptCapture?.dispose();
@@ -985,6 +997,7 @@ export class PhaseRunner {
       | 'cancel'
       | 'fatal-signature-matched'
       | 'auto-compact-override-applied'
+      | CapabilityRefusalEventType // FR-R3-086; the contract owns this set
       | 'cli-invocation',
     outcome: 'success' | 'failure' | 'info',
     payload: Record<string, unknown>

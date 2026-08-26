@@ -153,6 +153,12 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   // admitted to and under what posture, so it belongs to that Run's story
   // rather than to the window's. `phase-start`, which it precedes, is task too.
   'backend-posture-admitted': 'task',
+  // FR-R3-086 — task-scoped for the same reason its sibling is: it records what
+  // one Run was allowed to do, not a workspace-level event. An operator
+  // reconstructing why a phase never started reads it beside that Run's other
+  // entries, not in the System tab.
+  'capability-refused': 'task',
+  'capability-applied': 'task',
   // FR-R3-083 / FR-R3-054 §5 — task-scoped. A process group that survived SIGKILL
   // is a fact about the Run whose phase spawned it: the operator reading it is
   // asking why a LATER phase of that Run saw foreign writes. Window-scoped would
@@ -343,6 +349,8 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'phase-optional-failure-continued':
         case 'backend-ping':
         case 'backend-posture-admitted':
+        case 'capability-refused':
+        case 'capability-applied':
         case 'process-tree-unconfirmed':
         case 'metrics-view-opened':
         case 'process-exchange-export':

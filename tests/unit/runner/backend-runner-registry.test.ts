@@ -21,7 +21,7 @@ function makeStub(): BackendRunner {
 
 // Intercept the factory to track construction calls.
 vi.mock('../../../src/runner/backend-runner-factory', async () => {
-  const actual = await vi.importActual<typeof import('../../../src/runner/backend-runner-factory')>(
+  const actual = await vi.importActual<typeof import('../../../src/contracts/backend-kinds')>(
     '../../../src/runner/backend-runner-factory'
   );
   return {

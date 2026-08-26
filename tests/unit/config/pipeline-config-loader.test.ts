@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { loadCatalog, type CatalogConfigReader } from '../../../src/config/pipeline-config-loader';
 import { isPhaseDef } from '../../../src/config/pipeline-config';
-import { SUPPORTED_BACKENDS } from '../../../src/runner/backend-runner-factory';
+import { SUPPORTED_BACKENDS } from '../../../src/contracts/backend-kinds';
 // Feature 098 (T080) — the Pipelines these tests author name `speckit-specify`,
 // `speckit-clarify` and `finalize`, which used to resolve out of the built-in
 // Phase layer. That layer is empty now, so a test about *Pipeline* resolution has

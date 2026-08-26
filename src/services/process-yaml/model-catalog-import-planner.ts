@@ -14,7 +14,7 @@
 // `modelsConfigFromGroups` (`../config/model-catalog.ts`) already drop empty
 // ids the same way, so this is the established convention, not a new one.
 
-import { isBackendRunnerKind, type BackendRunnerKind } from '../../runner/backend-runner-factory';
+import { isBackendRunnerKind, type BackendRunnerKind } from '../../contracts/backend-kinds';
 import type { ImportPlanRow, ModelCatalogYamlDocument } from './types';
 
 type ModelsConfig = Record<BackendRunnerKind, readonly string[]>;

@@ -1,10 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   createBackendRunner,
-  resolveBackendKind,
-  DEFAULT_BACKEND,
-  SUPPORTED_BACKENDS
+  resolveBackendKind
 } from '../../../src/runner/backend-runner-factory';
+import { DEFAULT_BACKEND, SUPPORTED_BACKENDS } from '../../../src/contracts/backend-kinds';
 import { ClaudeCliRunner } from '../../../src/runner/claude-cli';
 import { CodexCliRunner } from '../../../src/runner/codex-cli';
 

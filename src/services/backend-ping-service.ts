@@ -1,5 +1,5 @@
 import type { AuditEventType } from '../contracts/audit-events';
-import type { BackendRunnerKind } from '../runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import type {
   BackendCapabilityService,
   BackendProbeFailureCause

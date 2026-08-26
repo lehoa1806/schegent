@@ -34,7 +34,7 @@ import {
   type TaskDeletionOutcome
 } from './task-deletion';
 import { applyManualRetryOverride } from './manual-retry-override';
-import type { BackendRunnerKind } from '../runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import { resolvePinnedRunnerKind } from '../config/pipeline-snapshot';
 import { PhaseControlService, type MutationResult } from './phase-control-service';
 import { WorkflowLifecycleAuditor } from './workflow-lifecycle-auditor';

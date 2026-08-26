@@ -8,6 +8,35 @@ import { resolve } from 'node:path';
 // budget without updating the spec.
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
+//
+// FR-R3-086 — bumped phase-runner.ts +1 more, for the SECOND capability audit
+// event (`capability-applied`). The security pass found that a grant left no
+// trace: the bound lives in argv, argv is never written to the structured log,
+// so a completed Run could not tell an operator whether its phase ran bounded.
+//
+// The +1 is a type import, and it is the CHEAPER of the two shapes tried. The
+// first added a second string literal to the shell's event union, which would
+// have meant editing this file again for every event the capability contract
+// ever declares. Referencing `CapabilityRefusalEventType` instead moves that
+// authority to `contracts/audit-events.ts`, where the events are declared — so
+// the next one costs zero here. Recorded rather than absorbed, for the reason
+// stated below.
+//
+// FR-R3-086 — bumped phase-runner.ts +7 for the capability refusal: one import,
+// a two-line call site, and one member on the audit eventType union.
+//
+// The MECHANISM is not here, and that is what the +7 buys. `refuseUnenforceable
+// Capabilities` lives in `capability-decision-recorder.ts`, in the shape
+// `backend-posture-recorder.ts` and `process-tree-degradation-recorder.ts`
+// already established: the coordinator shell calls it and does not learn what it
+// does. An earlier draft put the whole method here and cost +27; extracting it
+// took that back to +7, which is the forwarding cost of one more decision the
+// shell coordinates.
+//
+// Recorded rather than absorbed because the reviewer brief's §6 is still open:
+// `STATE-1` was closed on a ratchet and the brief asks whether the wrong half was
+// closed. A budget raised without a stated reason is exactly the shape that
+// question is about.
 
 // Feature 010 BUG-001 (Bugfix 2026-05-22) — bumped phase-runner.ts +10
 // and phase-retry-evaluator.ts +30 to accommodate the FR-028 retry-decision
@@ -86,6 +115,23 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
 // the arm itself and a pointer. No responsibility was added — the file still
 // decides one phase's outcome from one invocation's evidence — so the fix is
 // headroom, not a split, on the same reasoning as phase-outcome-mapper.ts below.
+// FR-R3-086 (security review) — bumped phase-runner.ts a further +5, to 1026.
+//
+// The mechanism shipped HALF-WIRED: the refusal read `inputs.phaseDef.capabilities`
+// while the adapter read `request.capabilities`, and nothing forwarded one to the
+// other. An UNENFORCEABLE set was refused correctly; an ENFORCEABLE one never
+// reached the adapter, so a narrowed phase ran with the unbounded argv while a
+// narrower set had been approved with the plan. Every test passed, because each
+// half was covered against its own input and nothing drove one into the other.
+//
+// The +5 is the forwarding: one import (three lines, multi-name), one spread, one
+// comment. The construction of the fields is NOT here — `capabilityRequestFields`
+// lives beside the refusal in `capability-decision-recorder.ts`, mirroring
+// `policyRequestFields`, so the shell forwards a decision it does not make.
+//
+// Recorded rather than absorbed, on the same ground as the +7 above: the reviewer
+// brief's §6 is still asking whether STATE-1 closed the wrong half, and a budget
+// raised without a stated reason is exactly that shape.
 const BUDGETS = [
   // FR-R3-064 — bumped phase-runner.ts +30. The per-run backend-posture record
   // was written inside `run()` first and this gate refused it, correctly: at +123
@@ -107,7 +153,7 @@ const BUDGETS = [
   // and the fold into the phase-end warnings with the reason the codes are
   // drained rather than read. Nothing to extract: the fold is where the
   // warnings are assembled.
-  { path: 'src/controller/phase-runner.ts', max: 1_014 },
+  { path: 'src/controller/phase-runner.ts', max: 1_027 },
   // FR-R3-052 / H-03 (2026-08-24) — 400 → 415 for the size check that was
   // missing. `stat()` was already called here and only `isFile()` was read, so
   // `readFile()` took a multi-GiB sidecar wholly into memory. The bound, the

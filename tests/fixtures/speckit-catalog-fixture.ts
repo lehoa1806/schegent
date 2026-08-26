@@ -36,7 +36,7 @@ import {
   type PipelineCatalog,
   type PipelineDef
 } from '../../src/config/pipeline-config';
-import type { BackendRunnerKind } from '../../src/runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../../src/contracts/backend-kinds';
 import type { WorkflowRunPipeline } from '../../src/state/workflow-run';
 import { emptyModels } from './process-catalog-fixture';
 

@@ -2,7 +2,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import ts from 'typescript';
-import { SUPPORTED_BACKENDS, DEFAULT_BACKEND } from '../../src/runner/backend-runner-factory';
+import { SUPPORTED_BACKENDS, DEFAULT_BACKEND } from '../../src/contracts/backend-kinds';
 
 const ROOT = resolve(__dirname, '../..');
 const DECISION_DOC = 'docs/concepts/unprompted-agent-not-contained.md';

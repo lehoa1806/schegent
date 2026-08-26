@@ -4,6 +4,11 @@ import { CodexCliRunner } from './codex-cli';
 import { AgyCliRunner } from './agy-cli';
 import { SanitizedLogger } from '../lib/logger';
 import { judgeBackendContainment } from '../services/backend-containment-policy';
+import {
+  DEFAULT_BACKEND,
+  SUPPORTED_BACKENDS,
+  type BackendRunnerKind
+} from '../contracts/backend-kinds';
 
 // Feature 034 Item 050 — backend selection.
 //
@@ -14,27 +19,21 @@ import { judgeBackendContainment } from '../services/backend-containment-policy'
 //   1. Implement `BackendRunner` in `src/runner/<your>-cli.ts` (no
 //      `shell:true`, monitor sidecar events, cancellation/timeout
 //      discipline — see `docs/operations/backends.md`).
-//   2. Extend the union literal below and the `package.json` enum.
+//   2. Extend the union in `src/contracts/backend-kinds.ts` and the
+//      `package.json` enum.
 //   3. Add a `case` here that constructs the new runner.
+//
+// FR-R3-089 — the backend *identity* surface (`BackendRunnerKind`,
+// `SUPPORTED_BACKENDS`, `DEFAULT_BACKEND`, `isBackendRunnerKind`) moved to
+// `src/contracts/backend-kinds.ts`. This module keeps construction. Do not
+// re-export identity from here: `tests/lint/backend-kind-placement.test.ts`
+// forbids both a value import of this module from outside `src/runner/` and a
+// re-export hub anywhere.
 //
 // All runners receive the same monitor hook so the controller's audit
 // pipeline, telemetry sampler, and live-activity projector remain
 // backend-agnostic.
 
-export type BackendRunnerKind = 'claude' | 'codex' | 'agy';
-
-export const SUPPORTED_BACKENDS: ReadonlyArray<BackendRunnerKind> = Object.freeze([
-  'claude',
-  'codex',
-  'agy'
-]);
-
-export const DEFAULT_BACKEND: BackendRunnerKind = 'claude';
-
-export function isBackendRunnerKind(value: unknown): value is BackendRunnerKind {
-  return typeof value === 'string' &&
-    (SUPPORTED_BACKENDS as ReadonlyArray<string>).includes(value);
-}
 
 /**
  * FR-R3-056 — thrown rather than returned, because there is no runner to return.

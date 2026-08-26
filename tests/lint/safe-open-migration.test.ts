@@ -440,6 +440,19 @@ const NOT_A_WORKSPACE_SINK: readonly string[] = [
   'extension.ts',
   // Operator-chosen export destination, deliberately outside the workspace.
   'commands/export-audit.ts',
+  // FR-R3-085 — same shape as `commands/export-audit.ts` above, and listed for
+  // the same reason rather than by analogy: an evidence export WRITES to a
+  // directory the operator names, which is outside the workspace by design, so
+  // `openWithinRoot` (whose whole contract is "within the workspace root") cannot
+  // express it. What must not happen — a write escaping the destination through a
+  // pre-planted link — is checked by `resolveContainedForWrite` against the
+  // destination as its root.
+  //
+  // Its workspace-side READS are not excused by this entry: each resolves through
+  // `resolveContainedTarget` and reads the RESOLVED path, so a symlink planted
+  // under `.schegent/` cannot pull a file from outside the workspace into an
+  // artifact the operator is about to hand to someone else.
+  'services/evidence-export.ts',
   // Reads the extension's own bundled webview asset, not a workspace path.
   'ui/sidebar/html.ts'
 ];

@@ -1,0 +1,193 @@
+{
+  "about": [
+    "FR-R3-091 — accepted WCAG 2.1 AA findings, as a COUNT AND A LIST.",
+    "A count alone can say something got worse; only a list can say WHICH finding is new.",
+    "That is the defect D5 found in the duplicate-authority gate and the one the webview lint",
+    "baseline still had. Ratchets in BOTH directions: above is a regression, below is a stale",
+    "record that must be rewritten in the same change.",
+    "Regenerate with: npm run a11y -- --update-baseline (see tests/a11y/README.md)."
+  ],
+  "target": "WCAG 2.1 Level AA",
+  "accepted": [
+    {
+      "route": "builder",
+      "theme": "dark",
+      "ruleId": "color-contrast",
+      "selector": "#builder-tab-pipelines"
+    },
+    {
+      "route": "builder",
+      "theme": "dark",
+      "ruleId": "color-contrast",
+      "selector": "button[data-testid=\"dashboard-route-builder\"] > .nav-label"
+    },
+    {
+      "route": "builder",
+      "theme": "high-contrast",
+      "ruleId": "color-contrast",
+      "selector": "#builder-tab-pipelines"
+    },
+    {
+      "route": "builder",
+      "theme": "high-contrast",
+      "ruleId": "color-contrast",
+      "selector": "button[data-testid=\"dashboard-route-builder\"] > .nav-label"
+    },
+    {
+      "route": "builder",
+      "theme": "light",
+      "ruleId": "color-contrast",
+      "selector": "#builder-tab-pipelines"
+    },
+    {
+      "route": "builder",
+      "theme": "light",
+      "ruleId": "color-contrast",
+      "selector": "button[data-testid=\"dashboard-route-builder\"] > .nav-label"
+    },
+    {
+      "route": "history",
+      "theme": "dark",
+      "ruleId": "color-contrast",
+      "selector": ".active > .nav-label.svelte-1bzzuab"
+    },
+    {
+      "route": "history",
+      "theme": "dark",
+      "ruleId": "color-contrast",
+      "selector": ".status-completed > .meta.svelte-1qm5dsb > .provenance.svelte-1qm5dsb > .version-badge.not-recorded[aria-label=\"Version: Version not recorded\"]"
+    },
+    {
+      "route": "history",
+      "theme": "dark",
+      "ruleId": "color-contrast",
+      "selector": ".status-running > .meta.svelte-1qm5dsb > .provenance.svelte-1qm5dsb > .version-badge.not-recorded[aria-label=\"Version: Version not recorded\"]"
+    },
+    {
+      "route": "history",
+      "theme": "high-contrast",
+      "ruleId": "color-contrast",
+      "selector": ".active > .nav-label.svelte-1bzzuab"
+    },
+    {
+      "route": "history",
+      "theme": "high-contrast",
+      "ruleId": "color-contrast",
+      "selector": ".status-completed > .meta.svelte-1qm5dsb > .provenance.svelte-1qm5dsb > .version-badge.not-recorded[aria-label=\"Version: Version not recorded\"]"
+    },
+    {
+      "route": "history",
+      "theme": "high-contrast",
+      "ruleId": "color-contrast",
+      "selector": ".status-running > .meta.svelte-1qm5dsb > .provenance.svelte-1qm5dsb > .version-badge.not-recorded[aria-label=\"Version: Version not recorded\"]"
+    },
+    {
+      "route": "history",
+      "theme": "light",
+      "ruleId": "color-contrast",
+      "selector": ".active > .nav-label.svelte-1bzzuab"
+    },
+    {
+      "route": "history",
+      "theme": "light",
+      "ruleId": "color-contrast",
+      "selector": ".status-completed > .meta.svelte-1qm5dsb > .provenance.svelte-1qm5dsb > .version-badge.not-recorded[aria-label=\"Version: Version not recorded\"]"
+    },
+    {
+      "route": "history",
+      "theme": "light",
+      "ruleId": "color-contrast",
+      "selector": ".status-running > .meta.svelte-1qm5dsb > .provenance.svelte-1qm5dsb > .version-badge.not-recorded[aria-label=\"Version: Version not recorded\"]"
+    },
+    {
+      "route": "metrics",
+      "theme": "dark",
+      "ruleId": "color-contrast",
+      "selector": ".active > .nav-label"
+    },
+    {
+      "route": "metrics",
+      "theme": "high-contrast",
+      "ruleId": "color-contrast",
+      "selector": ".active > .nav-label"
+    },
+    {
+      "route": "metrics",
+      "theme": "light",
+      "ruleId": "color-contrast",
+      "selector": ".active > .nav-label"
+    },
+    {
+      "route": "operations",
+      "theme": "dark",
+      "ruleId": "color-contrast",
+      "selector": ".active > .nav-label"
+    },
+    {
+      "route": "operations",
+      "theme": "high-contrast",
+      "ruleId": "color-contrast",
+      "selector": ".active > .nav-label"
+    },
+    {
+      "route": "operations",
+      "theme": "light",
+      "ruleId": "color-contrast",
+      "selector": ".active > .nav-label"
+    },
+    {
+      "route": "settings",
+      "theme": "dark",
+      "ruleId": "color-contrast",
+      "selector": "#settings-tab-general"
+    },
+    {
+      "route": "settings",
+      "theme": "dark",
+      "ruleId": "color-contrast",
+      "selector": "button[data-testid=\"dashboard-route-settings\"] > .nav-label.svelte-1bzzuab"
+    },
+    {
+      "route": "settings",
+      "theme": "high-contrast",
+      "ruleId": "color-contrast",
+      "selector": "#settings-tab-general"
+    },
+    {
+      "route": "settings",
+      "theme": "high-contrast",
+      "ruleId": "color-contrast",
+      "selector": "button[data-testid=\"dashboard-route-settings\"] > .nav-label.svelte-1bzzuab"
+    },
+    {
+      "route": "settings",
+      "theme": "light",
+      "ruleId": "color-contrast",
+      "selector": "#settings-tab-general"
+    },
+    {
+      "route": "settings",
+      "theme": "light",
+      "ruleId": "color-contrast",
+      "selector": "button[data-testid=\"dashboard-route-settings\"] > .nav-label.svelte-1bzzuab"
+    },
+    {
+      "route": "system",
+      "theme": "dark",
+      "ruleId": "color-contrast",
+      "selector": "button[data-testid=\"dashboard-route-system\"] > .nav-label"
+    },
+    {
+      "route": "system",
+      "theme": "high-contrast",
+      "ruleId": "color-contrast",
+      "selector": "button[data-testid=\"dashboard-route-system\"] > .nav-label"
+    },
+    {
+      "route": "system",
+      "theme": "light",
+      "ruleId": "color-contrast",
+      "selector": "button[data-testid=\"dashboard-route-system\"] > .nav-label"
+    }
+  ]
+}

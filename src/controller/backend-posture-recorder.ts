@@ -1,6 +1,6 @@
 import type { AuditEntry } from '../audit/audit-entry';
 import type { BackendPostureAdmittedPayload } from '../contracts/audit-events';
-import type { BackendRunnerKind } from '../runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import { containmentOf } from '../services/backend-containment-policy';
 
 /**

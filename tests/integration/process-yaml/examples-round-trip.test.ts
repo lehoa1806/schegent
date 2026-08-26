@@ -71,7 +71,7 @@ import type {
 } from '../../../src/contracts/sidebar-ipc';
 import type { PipelineDefinition } from '../../../src/contracts/pipeline-definitions';
 import type { PhaseDefinition } from '../../../src/contracts/process-definitions';
-import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../../../src/runner/backend-runner-factory';
+import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../../../src/contracts/backend-kinds';
 import type { YamlNode } from '../../../src/services/process-yaml/types';
 import { parseDocumentText } from '../../../src/services/process-yaml/yaml-parser';
 import { publishDefinitionPackage } from '../../../src/ui/sidebar/commands/cmd-catalog-lifecycle';

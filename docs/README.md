@@ -134,6 +134,10 @@ drifts unnoticed, because the readers who would catch an error never get there.
 
 ### Operations
 
+- [What Schegent keeps on this machine](operations/evidence-retention-disclosure.md) — every artifact
+  retained locally, whether its content is redacted, and the bound on each, derived from the constants
+  that enforce them rather than restated (FR-R3-085)
+
 - [Backends](operations/backends.md)
 - [Built-artifact route diagnosis](operations/built-artifact-route-diagnosis.md)
 - [Configuration](operations/configuration.md)
@@ -168,7 +172,20 @@ drifts unnoticed, because the readers who would catch an error never get there.
 ### Development
 
 - [Coverage measurements](development/coverage-measurements.md)
+- [Gate integrity measurements](development/gate-integrity-measurements.md) — the vacuity detector's
+  false-negative rate, the zero-offender enumeration, the product-versus-suite coverage split, and the
+  re-verified webview dead-code classification (FR-R3-088)
 - [Lint and type-aware rules](development/lint-and-type-aware-rules.md)
+
+### Release
+
+- [Canary credentials: an itemized request](release/canary-credential-request.md) — what the scheduled
+  backend canary would need to run a live phase, per credential, with the cost of a leak (FR-R3-084)
+- [Assistive-technology matrix](release/accessibility-at-matrix.md) — what real screen-reader testing
+  has been done per platform, and where the honest answer is **untested** (FR-R3-091)
+- [Held major dependency upgrades](release/held-major-upgrades.md) — the deliberate holds, why each is
+  held, and when it was last re-examined. A held upgrade with no review date is indistinguishable from a
+  forgotten one (FR-R3-090).
 
 ### Other
 

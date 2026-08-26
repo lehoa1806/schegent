@@ -24,7 +24,7 @@ import type { PipelineCatalog, PhaseDef } from '../../config/pipeline-config';
 import { snapshotPhaseDef, snapshotPipelineContract } from '../../config/pipeline-snapshot';
 import type { CatalogVersionRef } from '../../contracts/catalog-version';
 import type { WorkflowDefinition } from '../../contracts/workflow-definitions';
-import type { BackendRunnerKind } from '../../runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../../contracts/backend-kinds';
 import { createConnectedRun } from '../../state/connected-workflow-run';
 import type { ConnectedWorkflowRun } from '../../state/connected-workflow-run';
 import type { WorkflowRunPipeline } from '../../state/workflow-run';

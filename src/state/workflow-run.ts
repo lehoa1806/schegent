@@ -396,7 +396,7 @@ export interface WorkflowRun {
    * the stable fallback for partially migrated snapshots. Missing on records
    * created before runner pinning; those conservatively fall back to Claude.
    */
-  defaultRunnerKind?: import('../runner/backend-runner-factory').BackendRunnerKind;
+  defaultRunnerKind?: import('../contracts/backend-kinds').BackendRunnerKind;
   /**
    * Feature 011 — total delayed-retry attempts for this run. Starts at 0;
    * incremented per FR-002/FR-003; reset to 0 by FR-007/FR-009.
@@ -468,7 +468,7 @@ export interface WorkflowRun {
    * effective backend of the next dispatch. Missing on legacy records; a
    * missing owner fails closed by starting a fresh backend session.
    */
-  lastCliSessionRunnerKind?: import('../runner/backend-runner-factory').BackendRunnerKind;
+  lastCliSessionRunnerKind?: import('../contracts/backend-kinds').BackendRunnerKind;
   /**
    * Feature 010 — BUG-001 (FR-028). Most recent `phase.retry_evaluated`
    * decision projected onto the operator-visible run. Absent until the

@@ -182,6 +182,39 @@ The full reasoning, the two shapes not chosen, and what remains outstanding are 
 <!-- Source: src/runner/zipped-stream-buffer.ts -->
 <!-- Source: src/controller/phase-runner.ts -->
 
+## Per-phase capability sets (FR-R3-086)
+
+A Phase definition may declare `capabilities` — any subset of `workspace-write`,
+`outside-workspace-write`, `process-spawn`, `network`. The set is frozen into the Run's plan snapshot,
+so what an agent may do is part of the plan the operator approved rather than a property of the machine
+it runs on.
+
+**Omitting it means every capability**, which is what every phase does today: the adapter spawns with
+exactly the argv it spawned with before this existed. Narrowing is opt-in, per phase.
+
+The host does not intercept tool calls. It translates the declared set into the chosen backend's own
+enforcement flags, and the backend's permission engine refuses at the attempt:
+
+| Backend | Capabilities it can withhold | How |
+|---|---|---|
+| `claude` | all four | `--disallowedTools`, `--permission-mode` |
+| `codex` | `workspace-write`, `outside-workspace-write`, `process-spawn` | narrower `--sandbox` modes |
+| `agy` | `process-spawn` only | `--sandbox` |
+
+**A capability a backend cannot express refuses the phase before it starts**, recording a
+`capability-refused` audit event naming every unenforceable capability. It is not run with the declared
+set ignored — an unbounded phase where a narrower set was approved is the failure the mechanism exists
+to prevent.
+
+**Two stated limits**, repeated here because an operator reading this table will otherwise infer more:
+
+- the host trusts the backend to apply the flags it was given; nothing here verifies that;
+- `agy` bounds one of the four, so a narrowed phase on that backend is usually a refusal rather than a
+  bounded run.
+
+<!-- Source: src/contracts/phase-capabilities.ts -->
+<!-- Source: src/services/capability-enforcement-plan.ts -->
+
 ## `sideEffects` and runner eligibility
 
 The Phase `sideEffects` declaration does not restrict a child process. It drives the mutation plan, consent, and rollback checkpoint. A Phase declaring `sideEffects: git` is refused on Codex and must use a Git-capable runner because Codex's workspace-write sandbox keeps `.git` read-only.

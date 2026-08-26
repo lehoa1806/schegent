@@ -129,6 +129,11 @@
           "type": "string"
         },
         {
+          "name": "capabilities",
+          "optional": true,
+          "type": "DeclaredCapabilitySet"
+        },
+        {
           "name": "effectiveFatalSignatures",
           "optional": true,
           "type": "ReadonlyArray<EffectiveSignature>"

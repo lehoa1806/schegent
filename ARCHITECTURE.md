@@ -264,6 +264,56 @@ Output is bounded before it reaches parsers or UI projections. Structured audit
 events do not receive arbitrary subprocess output. Raw transcripts, when
 enabled, are a separate evidence class and may contain sensitive backend output.
 
+**Backend identity is separate from backend construction (FR-R3-089).** The
+backend enum — `BackendRunnerKind`, `SUPPORTED_BACKENDS`, `DEFAULT_BACKEND`,
+`isBackendRunnerKind` — lives in `src/contracts/backend-kinds.ts`, a leaf module
+that imports nothing. The runner family keeps construction. Before the move,
+validators in `config/` and `services/` that only needed to know *which backend
+names exist* imported them from the module that knows *how to build one*, and the
+visible symptom was a module cycle: `services/backend-containment-policy.ts`
+took `SUPPORTED_BACKENDS` from the factory as a value while the factory imported
+`judgeBackendContainment` from the policy.
+
+**The cycle is gone as a consequence of the move**, not as a separate fix: the
+policy now reads identity from contracts, so only the `factory → policy` edge
+remains and it is acyclic. **Stated limit**: this repository ships no dependency-
+cycle checker (`madge` or equivalent is not a dependency, and adding one is not in
+this change's scope), so the claim rests on the one-directional import assertion in
+`tests/lint/backend-kind-placement.test.ts` plus direct inspection of the two
+modules — not on a tool that walks the whole graph. A cycle elsewhere in the tree
+would not be caught by either.
+
+**Agent capability boundary (FR-R3-086).** A Phase may declare a capability set —
+`workspace-write`, `outside-workspace-write`, `process-spawn`, `network` — frozen
+into the Run's plan snapshot. `services/capability-enforcement-plan.ts` translates
+it into the chosen backend's own enforcement flags, so the backend's permission
+engine refuses at the attempt. **Omission means every capability**, and the plan
+turns that into each adapter's current argv byte for byte, so a phase that
+declares nothing spawns exactly as it did before. A capability the backend cannot
+express refuses the phase before it starts, via
+`controller/capability-decision-recorder.ts`, recording `capability-refused` first.
+A set the backend **can** enforce is recorded too, as `capability-applied`: the
+bound lives in argv and `argv` is an omitted key in `audit/audit-payload.ts` by
+design, so without that event a successful narrowing would be indistinguishable
+in evidence from no narrowing at all. The two are mutually exclusive, and a phase
+that declares nothing emits neither.
+The limits — the host does not observe tool calls, and `agy` can express one of
+four — are stated in `docs/security/threat-model.md` beside what it does bound.
+
+**Local evidence controls (FR-R3-085).** `services/retention-disclosure.ts` derives
+the operator-facing retention document from the constants that enforce it;
+`services/evidence-export.ts` produces a manifest checked in both directions with
+an export-side digest chain; `services/evidence-delete.ts` refuses rather than
+races and reports both what it removed and what it retained. All three route
+through the shared containment oracle and act on the resolved path.
+
+<!-- Source: src/contracts/phase-capabilities.ts -->
+<!-- Source: src/services/capability-enforcement-plan.ts -->
+<!-- Source: src/controller/capability-decision-recorder.ts -->
+<!-- Source: src/services/evidence-export.ts -->
+<!-- Source: src/services/evidence-delete.ts -->
+<!-- Source: src/services/retention-disclosure.ts -->
+<!-- Source: src/contracts/backend-kinds.ts -->
 <!-- Source: src/runner/backend-runner-factory.ts -->
 <!-- Source: src/runner/claude-cli.ts -->
 <!-- Source: src/runner/codex-cli.ts -->

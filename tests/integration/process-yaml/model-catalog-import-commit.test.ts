@@ -22,7 +22,7 @@ import type {
   PreflightProcessYamlResult,
   SaveModelsCommand
 } from '../../../src/contracts/sidebar-ipc';
-import type { BackendRunnerKind } from '../../../src/runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../../../src/contracts/backend-kinds';
 import { handler as preflightHandler } from '../../../src/ui/sidebar/commands/cmd-preflight-process-yaml';
 import { handler as saveHandler } from '../../../src/ui/sidebar/commands/cmd-save-models';
 

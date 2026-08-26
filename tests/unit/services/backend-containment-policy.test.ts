@@ -9,10 +9,9 @@ import {
 } from '../../../src/services/backend-containment-policy';
 import {
   createBackendRunner,
-  DEFAULT_BACKEND,
-  SUPPORTED_BACKENDS,
   UncontainedBackendRefusedError
 } from '../../../src/runner/backend-runner-factory';
+import { DEFAULT_BACKEND, SUPPORTED_BACKENDS } from '../../../src/contracts/backend-kinds';
 import { BackendRunnerRegistry } from '../../../src/runner/backend-runner-registry';
 
 /**
@@ -126,5 +125,45 @@ describe('the refusal is enforced where a backend is constructed', () => {
       expect((error as Error).message).toContain(ALLOW_UNCONTAINED_SETTING);
       expect((error as Error).message).toContain('agent-capability-posture.md');
     }
+  });
+});
+
+/**
+ * FR-R3-086 §4 / SC-019 — the default posture is unchanged for anyone who does
+ * not opt in.
+ *
+ * The capability mechanism narrows what an agent may do AFTER it is allowed to
+ * start. It must not touch whether it is allowed to start, and it must not change
+ * what a phase that declares nothing spawns with. Both are asserted here rather
+ * than assumed, because "we did not mean to change that" is not evidence.
+ */
+describe('FR-R3-086 — the refusal default survives the capability mechanism', () => {
+  it('a fresh install still refuses its first uncontained run', () => {
+    // Uses the static import at the top of this file rather than a dynamic one:
+    // a relative dynamic specifier needs an explicit extension under node16
+    // resolution, and there is no reason to reach for one here.
+    const judge = judgeBackendContainment;
+    // No opt-in: the setting is off, which is what a fresh install has.
+    for (const kind of ['claude', 'agy'] as const) {
+      const verdict = judge(kind, false);
+      expect(verdict.outcome).toBe('refused');
+      if (verdict.outcome !== 'refused') throw new Error('unreachable');
+      expect(verdict.reason).toBe('uncontained-backend-not-enabled');
+    }
+    // ...and the contained one is still allowed, so the refusal is targeted
+    // rather than blanket.
+    expect(judge('codex', false).outcome).toBe('allowed');
+  });
+
+  it('the capability mechanism adds no second refusal site for the posture', () => {
+    // FR-R3-056's refusal is enforced at ONE site. A capability check that also
+    // refused on posture grounds would be a second enforcement point for one
+    // rule — the shape the round has removed repeatedly.
+    const plan = readFileSync(
+      resolve(__dirname, '../../../src/services/capability-enforcement-plan.ts'),
+      'utf8'
+    );
+    expect(plan).not.toContain('allowUncontainedBackends');
+    expect(plan).not.toContain('uncontained-backend-not-enabled');
   });
 });

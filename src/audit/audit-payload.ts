@@ -1,6 +1,6 @@
 import type { AuditEventType, CatalogLifecyclePayload } from '../contracts/audit-events';
 import { CATALOG_KINDS, type CatalogKind } from '../contracts/catalog-store';
-import type { BackendRunnerKind } from '../runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../contracts/backend-kinds';
 
 export const AUDIT_PAYLOAD_MAX_BYTES = 32 * 1024;
 export const AUDIT_PAYLOAD_MAX_STRING_LENGTH = 640;

@@ -3,7 +3,7 @@ import type { SanitizedLogger } from '../lib/logger';
 import {
   SUPPORTED_BACKENDS,
   type BackendRunnerKind
-} from '../runner/backend-runner-factory';
+} from '../contracts/backend-kinds';
 
 export const DEFAULT_BACKEND_PROBE_TIMEOUT_SECONDS = 5;
 export const MIN_BACKEND_PROBE_TIMEOUT_SECONDS = 1;

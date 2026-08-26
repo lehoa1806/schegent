@@ -56,7 +56,7 @@ import {
   type PhaseHostVerification,
   type PhaseSideEffects
 } from '../../contracts/process-definitions';
-import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../../runner/backend-runner-factory';
+import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../../contracts/backend-kinds';
 import {
   PHASE_YAML_API_VERSION,
   PHASE_YAML_KIND,
@@ -69,7 +69,17 @@ import {
   type YamlMappingNode,
   type YamlScalarNode
 } from './types';
-import { DOCUMENT_KEY_ORDER, METADATA_KEY_ORDER, SPEC_KEY_ORDER } from './yaml-serializer';
+import {
+  CAPABILITY_SEPARATOR,
+  DOCUMENT_KEY_ORDER,
+  METADATA_KEY_ORDER,
+  SPEC_KEY_ORDER
+} from './yaml-serializer';
+import {
+  ALL_PHASE_CAPABILITIES,
+  isPhaseCapability,
+  type PhaseCapability
+} from '../../contracts/phase-capabilities';
 
 /**
  * How long a defect's field path may be.
@@ -405,6 +415,41 @@ function validateSpec(section: YamlMappingNode, defects: ImportDefect[]): PhaseY
     }
   }
 
+  // FR-R3-086 — the declared capability set, decoded from the joined scalar the
+  // writer produces (`yaml-serializer.ts` `SPEC_KEY_ORDER`, where the reason for
+  // that encoding is recorded). Three distinct readings, and the distinction is
+  // the point: the key ABSENT is the unbounded default, `""` is the empty set --
+  // nothing granted -- and a joined list is that set.
+  //
+  // An unknown member is REFUSED rather than dropped, for the same reason the
+  // catalog validator refuses one: dropping yields a narrower set than the author
+  // wrote, and the phase is then refused at run time for a reason invisible in the
+  // document. A duplicate is refused too, so that every accepted document is the
+  // one the writer would have produced.
+  let capabilities: PhaseCapability[] | undefined;
+  const capabilitiesNode = optionalScalar(section, 'capabilities', defects);
+  if (capabilitiesNode !== undefined) {
+    const raw = capabilitiesNode.value;
+    const members = raw.length === 0 ? [] : raw.split(CAPABILITY_SEPARATOR);
+    const unknown = members.filter((member) => !isPhaseCapability(member));
+    const duplicated = members.filter((member, index) => members.indexOf(member) !== index);
+    if (unknown.length > 0) {
+      defects.push(
+        defect(
+          'capabilities',
+          'invalid-enum',
+          `Phase capabilities must each be one of ${ALL_PHASE_CAPABILITIES.join(', ')}`
+        )
+      );
+    } else if (duplicated.length > 0) {
+      defects.push(
+        defect('capabilities', 'duplicate-member', 'Phase capabilities must not repeat a member')
+      );
+    } else {
+      capabilities = members as PhaseCapability[];
+    }
+  }
+
   let model: string | undefined;
   const modelNode = optionalScalar(section, 'model', defects);
   if (modelNode !== undefined) {
@@ -498,6 +543,7 @@ function validateSpec(section: YamlMappingNode, defects: ImportDefect[]): PhaseY
     ...(sideEffects !== undefined ? { sideEffects } : {}),
     ...(evidencePolicy !== undefined ? { evidencePolicy } : {}),
     ...(hostVerification !== undefined ? { hostVerification } : {}),
+    ...(capabilities !== undefined ? { capabilities } : {}),
     ...(model !== undefined ? { model } : {}),
     ...(effort !== undefined ? { effort } : {}),
     ...(timeoutSeconds !== undefined ? { timeoutSeconds } : {}),

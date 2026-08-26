@@ -19,21 +19,40 @@ The Master Workspace and this execution repository may be separate Git repositor
 
 Use Node `24.19.0` for the repository's pinned development runtime. Node `^22` and `^24` are declared compatible; CI additionally verifies the Node 22 floor.
 
-For a normal local checkout:
+For a local checkout:
 
 ```bash
 nvm use
-npm install
+npm ci
+npm --prefix webview-ui ci
 ```
 
-The root `postinstall` installs `webview-ui` dependencies. For an installation that mirrors GitHub Actions' reduced lifecycle-script exposure, use both explicit commands instead:
+**Two commands, and the second one is the point (FR-R3-090).** `.npmrc` in both trees sets
+`ignore-scripts=true`, so a local install now matches how every CI job installs — `npm ci
+--ignore-scripts` — by default rather than by remembering a flag. Before this, the tree that CI
+scanned, linted and tested was installed differently from the tree a contributor ran, and the
+contributor's was the less hardened of the two. It is also the one that runs an uncontained agent CLI.
 
-```bash
-npm ci --ignore-scripts
-npm --prefix webview-ui ci --ignore-scripts
+**The one lifecycle script this repository needs, named rather than hidden.** `package.json` declares:
+
+```json
+"postinstall": "npm --prefix webview-ui install --no-audit --no-fund"
 ```
 
-The visual regression suite needs a Chromium build that `npm install` does not fetch. Install it once:
+Its only job is to populate `webview-ui/node_modules`. With scripts off it no longer runs, so the
+second command above replaces it — as a **declared step**, per the FR-R3-065 rule that a prerequisite
+hidden inside a gate is not the same as a declared one. That is not a workaround: every CI job has
+always done exactly this, running `npm --prefix webview-ui ci --ignore-scripts` explicitly.
+
+**No third-party postinstall is required by either tree.** If a future dependency needs one, name it
+here with what it does and why, and run it as its own declared step. Do not re-enable scripts globally
+to accommodate one package, and do not auto-install anything inside a gate — `FR-R3-065` declined that
+for the reason `FR-R3-045` declined putting the Electron download in `ci:fast`.
+
+`tests/lint/install-flag-parity.test.ts` fails when the workflows' install flags and these `.npmrc`
+files disagree, so the two authorities on one policy check against each other instead of drifting.
+
+The visual regression suite needs a Chromium build that `npm ci` does not fetch. Install it once:
 
 ```bash
 npx playwright install chromium
@@ -44,6 +63,7 @@ Without it, `npm run test:visual` — and therefore `npm run ci:fast` — fails 
 See [Developer setup](docs/tutorials/developer-setup.md) for the complete build and Extension Development Host check.
 <!-- Source: .nvmrc -->
 <!-- Source: package.json -->
+<!-- Source: .npmrc -->
 <!-- Source: .github/workflows/ci.yml -->
 <!-- Source: scripts/check-playwright-browser.mjs -->
 

@@ -93,7 +93,58 @@ function checkableGates(): readonly { gate: string; pattern: string; paths: stri
   return out;
 }
 
+/**
+ * FR-R3-088 §3 — every path claim in the directory, checkable or not.
+ *
+ * The reviewer brief's measurement: this gate checks **69 of the 316** path
+ * claims made across 62 gates, "because only gates with exactly one fixed-string
+ * pattern can be read unambiguously. A clean run says nothing about the other
+ * 247."
+ *
+ * That is a true and load-bearing limit, and until now it lived only in a
+ * comment. FR-R3-088 requires the fraction **in the gate's own output**, so a
+ * clean run cannot be read as a clean sweep. The numbers below are re-derived on
+ * every run rather than transcribed — the brief first stated "roughly 319" from
+ * a sweep it did not repeat, and re-measuring gave 316. A number stated once and
+ * not re-derived was wrong by three, which is the smallest possible version of
+ * what this whole round is about.
+ */
+function allPathClaims(): number {
+  let total = 0;
+  for (const gate of gateFiles()) {
+    total += [...code(gate).matchAll(ALLOWLIST_PATH)].length;
+  }
+  return total;
+}
+
 describe('an allowlist entry still excuses something', () => {
+  it('prints how many path claims it checked, out of how many exist', () => {
+    const checkable = checkableGates();
+    const checked = checkable.reduce((sum, entry) => sum + entry.paths.length, 0);
+    const total = allPathClaims();
+    const gatesWithClaims = gateFiles().filter(
+      (gate) => [...code(gate).matchAll(ALLOWLIST_PATH)].length > 0
+    ).length;
+
+    process.stdout.write(
+      `\n[allowlist-entries-still-apply] coverage:\n` +
+        `  checked ${checked} of ${total} path claim(s) ` +
+        `(${total === 0 ? '0.0' : ((checked / total) * 100).toFixed(1)}%) ` +
+        `across ${gatesWithClaims} gate(s) that make one\n` +
+        `  readable gates: ${checkable.length} — a gate is readable only when it has EXACTLY ONE\n` +
+        `  fixed-string scan pattern. Gates with several patterns, a computed pattern, or a regex\n` +
+        `  are SKIPPED: a wrong claim about which pattern excuses which file would be worse than\n` +
+        `  no claim.\n` +
+        `  A clean run here does NOT mean no stale exemptions remain. It means none remain among\n` +
+        `  the ${checked} entries this can check.\n`
+    );
+
+    // The fraction is reported, not thresholded. A floor here would create
+    // pressure to shrink the denominator, which is the failure FR-R3-088 names.
+    expect(total).toBeGreaterThan(checked - 1);
+    expect(checked).toBeGreaterThan(0);
+  });
+
   it('finds gates it can check, so an empty sweep cannot read as compliance', () => {
     const gates = checkableGates();
     expect(

@@ -1,4 +1,4 @@
-import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../runner/backend-runner-factory';
+import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../contracts/backend-kinds';
 
 /**
  * FR-R3-056 (H-01) — whether a backend may run at all.

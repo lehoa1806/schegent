@@ -231,6 +231,22 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  clean-install:
+    name: clean install parity
+    runs-on: ubuntu-latest
+    # FR-R3-090 (SC-011) — prove the DOCUMENTED install works from a clean
+    # checkout and runs no lifecycle script. It performs two real installs, so it
+    # lives here on the weekly/dispatch cadence rather than in `test:host`, which
+    # is deliberately hermetic (FR-R3-033), or in the workspace pre-push hook,
+    # which belongs to the other repository.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+      # No install step here on purpose: the script under test IS the install.
+      - run: bash scripts/clean-install-selftest.sh
+
   evidence-soak:
     name: sustained evidence soak
     runs-on: ubuntu-latest

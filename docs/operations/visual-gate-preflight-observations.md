@@ -65,7 +65,9 @@ behaviour this item buys, and the reason eighteen identical launch failures were
 
 **Date**: 2026-08-24 · **Platform**: darwin/arm64
 
-`npx vitest run tests/lint/playwright-install-doc-parity.test.ts`, three seeds, each reverted:
+`npx vitest run tests/lint/procedure-surface-registry.test.ts` (then
+`playwright-install-doc-parity.test.ts`, which FR-R3-088 migrated into that registry), three seeds,
+each reverted:
 
 | Seed | Result |
 |---|---|

@@ -15,7 +15,7 @@
 // a Phase named `finalize` is admitted or refused on exactly the same terms as
 // one named anything else.
 
-import type { BackendRunnerKind } from '../runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import type { PhaseSideEffects } from './pipeline-config';
 
 /**

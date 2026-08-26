@@ -178,3 +178,110 @@ describe('the runner cannot report a pass it did not run', () => {
     }
   });
 });
+
+/**
+ * FR-R3-084 — the blocked live phase, pinned so it stays blocked HONESTLY.
+ *
+ * The item forbids writing a live invocation that has never been run by hand,
+ * and no credential exists in this checkout, so none is written. What CAN be
+ * pinned is that the no-credential behaviour is unchanged and that the reasons
+ * are on record rather than in someone's memory — because the failure mode here
+ * is not a broken canary, it is a canary that quietly starts claiming more than
+ * it ran.
+ */
+describe('FR-R3-084 — the live phase is blocked on an operator action, not omitted', () => {
+  it('behaviour with no credential is unchanged: skipped-no-credentials, exit 0', async () => {
+    const canary = await import('../../../scripts/backend-canary.mjs');
+    for (const backend of ['claude', 'codex', 'agy']) {
+      const result = canary.runnerBackendResult({
+        backend,
+        versionProbe: { ok: true, version: '1.2.3' },
+        credentialValue: undefined
+      });
+      expect(result.state).toBe('skipped-no-credentials');
+    }
+    const results = ['claude', 'codex', 'agy'].map((backend) =>
+      canary.runnerBackendResult({
+        backend,
+        versionProbe: { ok: true, version: '1.2.3' },
+        credentialValue: ''
+      })
+    );
+    // An empty-string credential is ABSENT, not present-and-broken.
+    for (const result of results) expect(result.state).toBe('skipped-no-credentials');
+    expect(canary.canaryExitCode(results)).toBe(0);
+  });
+
+  it('a drift still exits 0 — a finding must not become a red gate by accident', async () => {
+    // FR-R3-084 §4. Non-zero stays reserved for the canary itself being broken.
+    const canary = await import('../../../scripts/backend-canary.mjs');
+    const drifted = canary.decideBackendState({
+      versionProbe: { ok: true, version: '9.9.9' },
+      credentialPresent: false,
+      expectedVersionPrefix: '1.'
+    });
+    expect(canary.canaryExitCode([{ backend: 'claude', ...drifted }])).toBe(0);
+  });
+
+  it('the credential request itemizes every credential with scope, reader and leak cost', () => {
+    const request = readFileSync(
+      resolve(__dirname, '../../../docs/release/canary-credential-request.md'),
+      'utf8'
+    );
+    for (const env of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'AGY_API_KEY']) {
+      expect(request, `${env} must be named`).toContain(env);
+    }
+    expect(request).toContain('Minimum scope needed');
+    expect(request).toContain('What a leak costs');
+    expect(request).toContain('Read by');
+    // The env var names must be the ones the runner ACTUALLY reads, or the
+    // request asks for a secret nothing would consume.
+    const runner = readFileSync(
+      resolve(__dirname, '../../../scripts/backend-canary-run.mjs'),
+      'utf8'
+    );
+    for (const env of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'AGY_API_KEY']) {
+      expect(runner, `${env} must be what the runner reads`).toContain(env);
+    }
+  });
+
+  it('no live invocation was written — the precondition is recorded instead', () => {
+    // The assertion that keeps this honest. If someone later adds a live call
+    // without running it by hand, this is what refuses.
+    const runner = readFileSync(
+      resolve(__dirname, '../../../scripts/backend-canary-run.mjs'),
+      'utf8'
+    );
+    // A live phase would need to spawn the CLI with a prompt. The version probe
+    // is the only spawn, and it passes `--version`.
+    const spawns = [...runner.matchAll(/spawnSync\([^)]*\)/g)].map((match) => match[0]);
+    expect(spawns.length).toBeGreaterThan(0);
+    for (const spawn of spawns) {
+      expect(spawn, 'the only spawn is the version probe').toContain("'--version'");
+    }
+    const request = readFileSync(
+      resolve(__dirname, '../../../docs/release/canary-credential-request.md'),
+      'utf8'
+    );
+    expect(request).toContain('No live invocation');
+    expect(request).toContain('precondition on an operator action');
+  });
+
+  it('the expected-version prefix is still absent, with the reason recorded', () => {
+    const runner = readFileSync(
+      resolve(__dirname, '../../../scripts/backend-canary-run.mjs'),
+      'utf8'
+    );
+    // Nothing supplies a prefix, so drift detection stays structural.
+    expect(runner).not.toMatch(/expectedVersionPrefix:\s*'[^']+'/);
+    const request = readFileSync(
+      resolve(__dirname, '../../../docs/release/canary-credential-request.md'),
+      'utf8'
+    );
+    // Matched on a phrase that survives a line wrap: the document is prose and
+    // a multi-word assertion that spans a wrap point is a brittle test, not a
+    // strict one.
+    expect(request).toContain('qualified baseline');
+    expect(request).toContain('no prefix, structural drift detection');
+  });
+});

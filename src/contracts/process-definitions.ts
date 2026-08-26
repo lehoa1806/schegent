@@ -1,4 +1,5 @@
-import type { BackendRunnerKind } from '../runner/backend-runner-factory';
+import type { PhaseCapability } from './phase-capabilities';
+import type { BackendRunnerKind } from './backend-kinds';
 
 /**
  * How long a Phase id may be (feature 089, FR-037).
@@ -109,6 +110,19 @@ interface PhaseDefinitionBase {
   readonly evidencePolicy?: PhaseEvidencePolicy;
   /** FR-R3-058 — omission means `model-token`, the historical behaviour. */
   readonly hostVerification?: PhaseHostVerification;
+  /**
+   * FR-R3-086 — what this phase's agent may do.
+   *
+   * **Omission means every capability**, which is the historical behaviour and
+   * the overwhelmingly common case: the phase spawns with the argv it spawns
+   * with today, byte for byte. Narrowing is opt-in, per phase.
+   *
+   * The set is frozen into the Run's pipeline snapshot with the rest of the
+   * plan, so what an agent may do is part of the plan the operator approved
+   * rather than a property of the machine it happens to run on — and, like every
+   * other snapshot field, it is never retargeted in flight.
+   */
+  readonly capabilities?: readonly PhaseCapability[];
   readonly timeoutSeconds?: number;
   readonly loopable?: boolean;
   readonly retryCondition?: string;

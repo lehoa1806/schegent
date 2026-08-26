@@ -25,7 +25,7 @@ import { effectiveRunnerKindForPhase } from '../config/pipeline-snapshot';
 import {
   DEFAULT_BACKEND,
   type BackendRunnerKind
-} from '../runner/backend-runner-factory';
+} from '../contracts/backend-kinds';
 import { resolveSessionDispatch } from './session-dispatch-policy';
 import type { BackendAvailabilityProbe } from './backend-capability-service';
 import type {

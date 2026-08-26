@@ -126,6 +126,45 @@ const FILES_SHOWN = 10;
  * @param {{sites: string[]} | undefined} found
  * @returns {string} indented lines, one per file, newline-terminated
  */
+function fileCounts(found) {
+  const counts = {};
+  if (!found) return counts;
+  for (const site of found.sites) {
+    const file = site.slice(0, site.indexOf(':'));
+    counts[file] = (counts[file] ?? 0) + 1;
+  }
+  return counts;
+}
+
+/**
+ * FR-R3-088 — which files gained findings since the record was written.
+ *
+ * The record now carries per-file counts, so a rise can NAME the files that grew
+ * rather than telling a contributor to run the tool twice and diff by hand. The
+ * granularity is deliberate: **files, not lines.** A line number rots the moment
+ * anything above it is edited — the FR-R3-027 lesson, where a citation to
+ * "plan.md lines 26 and 66" was wrong by the next commit — while a file path
+ * survives every edit inside that file. A record whose entries rot is a record
+ * that generates noise until someone stops reading it.
+ *
+ * @param {Record<string, number>} recorded
+ * @param {Record<string, number>} actual
+ * @returns {string} indented lines naming what grew and what appeared
+ */
+function newSites(recorded, actual) {
+  const lines = [];
+  for (const [file, count] of Object.entries(actual).sort((a, b) => b[1] - a[1])) {
+    const was = recorded[file] ?? 0;
+    if (count > was) {
+      lines.push(
+        `        ${String(count - was).padStart(4)} new  ${file}` +
+          (was === 0 ? '  (file had none recorded)\n' : `  (was ${was}, now ${count})\n`)
+      );
+    }
+  }
+  return lines.length > 0 ? lines.join('') : '        (no file gained findings — the rise is inside files already recorded at a higher count)\n';
+}
+
 function byFile(found) {
   if (!found) return '';
   const counts = new Map();
@@ -146,12 +185,15 @@ async function main() {
   const [treeName, ...flags] = process.argv.slice(2);
   const tree = TREES[treeName];
   if (!tree) {
-    process.stderr.write(`usage: node scripts/lint.mjs <host|webview> [--sites] [--census]\n`);
+    process.stderr.write(
+      `usage: node scripts/lint.mjs <host|webview> [--sites] [--census] [--write-baseline]\n`
+    );
     process.exit(2);
   }
 
   const showSites = flags.includes('--sites');
   const censusOnly = flags.includes('--census');
+  const writeBaseline = flags.includes('--write-baseline');
 
   const eslint = new ESLint({
     cwd: tree.cwd,
@@ -165,6 +207,29 @@ async function main() {
   const results = await eslint.lintFiles(targets);
   const { byRule, fatals } = tally(results, tree.cwd);
   const baseline = readBaseline(treeName);
+
+  // FR-R3-088 — regenerate the record's per-file breakdown from this run.
+  //
+  // The record is DERIVED, never typed. A hand-maintained list of hundreds of
+  // files would be wrong within a day, and then the "which sites are new"
+  // message it exists to produce would name the wrong ones — which is worse than
+  // naming none, as the `byFile` comment above already records from experience.
+  if (writeBaseline) {
+    const updated = JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf8'));
+    let touched = 0;
+    for (const ruleId of Object.keys(updated.rules)) {
+      if (!(treeName in updated.rules[ruleId])) continue;
+      const found = byRule.get(ruleId);
+      updated.rules[ruleId][treeName] = found ? found.sites.length : 0;
+      updated.rules[ruleId][`${treeName}Files`] = fileCounts(found);
+      touched += 1;
+    }
+    fs.writeFileSync(BASELINE_PATH, `${JSON.stringify(updated, null, 2)}\n`);
+    process.stdout.write(
+      `[lint:${treeName}] wrote counts and per-file breakdowns for ${touched} baselined rule(s)\n`
+    );
+    return 0;
+  }
 
   if (censusOnly) {
     const ordered = [...byRule.entries()].sort((a, b) => b[1].sites.length - a[1].sites.length);
@@ -198,21 +263,28 @@ async function main() {
     process.stdout.write(`  ${ruleId}: ${actual}/${recorded} baselined\n`);
 
     if (actual > recorded) {
+      const recordedFiles = entry[`${treeName}Files`] ?? null;
       failures.push(
         `${ruleId} rose from ${recorded} to ${actual} in ${treeName}: a regression. ` +
           `Fix the new site(s) or, if they are deliberate, raise the record and say why ` +
           `in its reductionNote.\n` +
-          `      The record holds a count, not a list of sites, so it cannot say which ` +
-          `${actual - recorded} of the ${actual} are new. Where they are:\n` +
-          byFile(found) +
-          `      To pinpoint: node scripts/lint.mjs ${treeName} --sites here and on the ` +
-          `merge base, then diff.`
+          (recordedFiles
+            ? `      The record carries per-file counts, so these are the ${actual - recorded} ` +
+              `new finding(s) by file (FR-R3-088):\n` + newSites(recordedFiles, fileCounts(found))
+            : `      The record holds a count with no per-file breakdown for ${treeName}, so it ` +
+              `cannot say which ${actual - recorded} of the ${actual} are new. Where they all ` +
+              `are:\n` + byFile(found) +
+              `      Regenerate the breakdown: node scripts/lint.mjs ${treeName} --write-baseline\n`) +
+          `      Full current distribution:\n` +
+          byFile(found)
       );
     } else if (actual < recorded) {
       failures.push(
         `${ruleId} fell from ${recorded} to ${actual} in ${treeName}: the record is ` +
           `stale. Write ${actual} into tests/lint/eslint-baseline.json so the next ` +
-          `regression cannot hide behind this fix.`
+          `regression cannot hide behind this fix — ` +
+          `node scripts/lint.mjs ${treeName} --write-baseline updates the count and its ` +
+          `per-file breakdown together, so the two cannot drift.`
       );
     }
     if (showSites && found) {
