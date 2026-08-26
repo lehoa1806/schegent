@@ -172,6 +172,7 @@ export const AUDIT_EVENT_TYPES = [
   "backend-ping",
   "backend-posture-admitted",
   "capability-refused",
+  "capability-applied",
   "process-tree-unconfirmed",
   "metrics-view-opened",
   "process-exchange-export",

@@ -12,7 +12,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { exportRunEvidence, verifyExport } from '../../../src/services/evidence-export';
 
-const RUN = 'run-abc123';
+const RUN = '3f2504e0-4f89-11d3-9a0c-0305e82c3301';
 
 let workspace: string;
 let destination: string;
@@ -128,9 +128,48 @@ describe('FR-R3-085 — evidence export', () => {
   });
 
   it('refuses when the run has no evidence, rather than producing an empty export', async () => {
-    const result = await exportRunEvidence(workspace, 'run-that-never-ran', destination);
+    const result = await exportRunEvidence(workspace, '00000000-0000-4000-8000-000000000000', destination);
     expect(result.outcome).toBe('refused');
     if (result.outcome !== 'refused') throw new Error('unreachable');
     expect(result.reason).toBe('no-evidence');
+  });
+
+  it('SECURITY: refuses a degenerate run id rather than matching by substring', async () => {
+    // `relative.includes(runId)` is how evidence is selected, so `.` or `log` is
+    // a substring of nearly every path — an unvalidated id turns a scoped export
+    // into one that hands over every Run's evidence. Validated at the boundary
+    // because "the caller passes a real id today" is an argument for the check
+    // being cheap, not for omitting it.
+    for (const bad of ['.', '', 'log', 'raw', '../../etc', '%2e%2e']) {
+      const result = await exportRunEvidence(workspace, bad, destination);
+      expect(result.outcome, `run id ${JSON.stringify(bad)} must be refused`).toBe('refused');
+      if (result.outcome !== 'refused') throw new Error('unreachable');
+      expect(result.reason).toBe('invalid-run-id');
+    }
+    // ...and a real UUID is still accepted, so the guard is not refusing everything.
+    expect((await exportRunEvidence(workspace, RUN, destination)).outcome).toBe('exported');
+  });
+
+  it('SECURITY: an oversized artifact is omitted WITH its reason, not read into memory', async () => {
+    // Retention caps each artifact, but rotated siblings accumulate and the
+    // export reads whole files — so without a bound the ceiling is "however much
+    // evidence has piled up", and the failure lands during an operator's privacy
+    // action. Skip-and-record rather than refuse: refusing the whole export
+    // because one artifact is large hands the operator nothing.
+    const huge = path.join(workspace, '.schegent', 'sessions', `raw-${RUN}-huge.log`);
+    await fsp.writeFile(huge, 'x'.repeat(17 * 1024 * 1024));
+
+    const result = await exportRunEvidence(workspace, RUN, destination);
+    expect(result.outcome).toBe('exported');
+    if (result.outcome !== 'exported') throw new Error('unreachable');
+
+    const omission = result.manifest.deliberateOmissions.find((entry) =>
+      entry.path.includes('huge')
+    );
+    expect(omission, 'the oversized artifact must be enumerated as an omission').toBeDefined();
+    expect(omission?.reason).toContain('MiB per-artifact');
+    // ...and the rest of the export still happened.
+    expect(result.manifest.contents.length).toBeGreaterThan(0);
+    expect((await verifyExport(destination)).ok).toBe(true);
   });
 });

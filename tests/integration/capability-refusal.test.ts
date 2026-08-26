@@ -19,6 +19,9 @@ import { AgyCliRunner } from '../../src/runner/agy-cli';
 import { ClaudeCliRunner } from '../../src/runner/claude-cli';
 import { declaredCapabilitySet, DEFAULT_CAPABILITY_SET, ALL_PHASE_CAPABILITIES } from '../../src/contracts/phase-capabilities';
 import { isCapabilityRefusal } from '../../src/services/capability-refusal';
+import { capabilityRequestFields } from '../../src/controller/capability-decision-recorder';
+import { planCapabilityEnforcement } from '../../src/services/capability-enforcement-plan';
+import type { DeclaredCapabilitySet } from '../../src/contracts/phase-capabilities';
 import type { InvocationRequest } from '../../src/runner/invocation-result';
 
 /** What the fake CLI was asked to do, captured for assertion. */
@@ -150,5 +153,37 @@ describe('FR-R3-086 — a declared capability set is enforced or the phase is re
     spawned.length = 0;
     await runner.invoke(request());
     expect(withDefault).toEqual(spawned[0]?.args);
+  });
+
+  it('END TO END: a phase definition\'s declared set reaches the adapter\'s argv', () => {
+    // THE TEST THAT WAS MISSING, and its absence is why the mechanism shipped
+    // half-wired. The refusal read `phaseDef.capabilities`; the adapter read
+    // `request.capabilities`; nothing forwarded one to the other. An
+    // unenforceable set was refused correctly while an ENFORCEABLE one never
+    // reached the adapter, so a narrowed phase ran with the unbounded argv.
+    //
+    // Every test passed, because each half was driven against its own input.
+    // This one drives the seam between them.
+    const narrowed = ALL_PHASE_CAPABILITIES.filter((capability) => capability !== 'process-spawn');
+    const fields = capabilityRequestFields({
+      phaseDef: { capabilities: narrowed },
+      iteration: 0
+    });
+    expect(fields.capabilities, 'the shell must forward the declared set').toBeDefined();
+    expect(fields.capabilities?.declaredAt).toBe('phase-definition');
+
+    // ...and what it forwards produces narrowing argv at the adapter.
+    const plan = planCapabilityEnforcement('claude', fields.capabilities as DeclaredCapabilitySet);
+    expect(plan.outcome).toBe('argv');
+    if (plan.outcome !== 'argv') throw new Error('unreachable');
+    expect(plan.args).toContain('--disallowedTools');
+    expect(plan.args).not.toContain('--dangerously-skip-permissions');
+  });
+
+  it('END TO END: a phase that declares nothing forwards nothing', () => {
+    // The other direction, so the forwarding cannot be "always send a set",
+    // which would change the shape of every existing invocation.
+    expect(capabilityRequestFields({ phaseDef: {}, iteration: 0 })).toEqual({});
+    expect(capabilityRequestFields({ iteration: 0 })).toEqual({});
   });
 });

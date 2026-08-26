@@ -455,7 +455,22 @@ export const BACKEND_POSTURE_EVENT_TYPES = ['backend-posture-admitted'] as const
  * `docs/security/threat-model.md` in the same section that states what the
  * mechanism does bound.
  */
-export const CAPABILITY_REFUSAL_EVENT_TYPES = ['capability-refused'] as const;
+export const CAPABILITY_REFUSAL_EVENT_TYPES = [
+  'capability-refused',
+  // FR-R3-086 — the OTHER half, and it was missing.
+  //
+  // The refusal was recorded and the grant was not, so a Run whose phase declared
+  // a narrowed set and ran successfully left nothing in evidence saying which
+  // bound applied. Argv is where the bound actually lives and argv is an OMITTED
+  // key in `audit-payload.ts` — deliberately, because it carries paths — so there
+  // was no second place to look either.
+  //
+  // The point of this mechanism is a bound an operator approved, and evidence is
+  // where approval gets checked after the fact. A control whose effect cannot be
+  // observed is the exact shape this round exists to refuse, so the applied set
+  // is recorded with the same closed-union payload discipline as the refusal.
+  'capability-applied'
+] as const;
 export type CapabilityRefusalEventType = (typeof CAPABILITY_REFUSAL_EVENT_TYPES)[number];
 
 /**
@@ -470,6 +485,23 @@ export type CapabilityRefusalEventType = (typeof CAPABILITY_REFUSAL_EVENT_TYPES)
 export interface CapabilityRefusedPayload {
   readonly kind: BackendRunnerKind;
   readonly unenforceable: readonly PhaseCapability[];
+  readonly phaseIndex: number;
+}
+
+/**
+ * The set a phase actually ran under, recorded only when the phase DECLARED one.
+ *
+ * A phase that declares nothing runs with today's argv byte for byte, and
+ * recording a default that changed nothing would put a line in every Run's
+ * evidence that says only "unchanged". The event exists to make a NARROWING
+ * observable, so it is emitted exactly when there is a narrowing to observe.
+ *
+ * Same payload discipline as the refusal above: a closed union, an array of
+ * closed-union members, and a number. No paths, no operator-authored content.
+ */
+export interface CapabilityAppliedPayload {
+  readonly kind: BackendRunnerKind;
+  readonly granted: readonly PhaseCapability[];
   readonly phaseIndex: number;
 }
 

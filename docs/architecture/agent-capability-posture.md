@@ -143,8 +143,11 @@ All three carry one. So route A reaches **enforcement at the point of effect** w
 mediator process inside the expansion freeze — and without MCP, which the reviewer brief names as the
 most plausible route to what `SEC-1` lacks and which is explicitly blocked.
 
-**Cost paid:** a per-phase declared set, one translation site, a run-level refusal, an audit event, and
-the gaps below.
+**Cost paid:** a per-phase declared set, one translation site, a run-level refusal, **two** audit events
+— `capability-refused` and `capability-applied` — and the gaps below. Two rather than one because the
+bound itself lives in argv and argv is never written to the structured log: recording only the refusal
+would have left a successful narrowing indistinguishable from no narrowing at all, in exactly the
+evidence an operator checks afterwards.
 
 **What it does NOT bound, stated because a containment claim without its limits is the `R-14` class:**
 

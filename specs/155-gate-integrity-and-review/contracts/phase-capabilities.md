@@ -40,6 +40,32 @@ Declared sets are frozen into the pipeline snapshot with the plan. They are neve
 per the existing hard rule on in-flight pipeline snapshots. Phases are addressed by `phaseIndex`, never
 by `phaseId` — a sequence may repeat a phase.
 
+## Authoring and the exchange format
+
+A phase declares its set in the catalog (`capabilities?: PhaseCapability[]`) and in the portable YAML
+document. Both validators refuse an unknown member and a repeated one rather than dropping it: dropping
+yields a **narrower** set than the author wrote, and the phase is then refused at run time for a reason
+invisible in the definition. The two must agree, or a definition the catalog accepts cannot survive its
+own export.
+
+**Three readings, and the middle one is why the format carries this field as a scalar.**
+
+| Written | Means |
+|---|---|
+| key absent | `DEFAULT_CAPABILITY_SET` — every member granted, today's argv byte for byte |
+| `capabilities: ""` | the empty set — nothing granted |
+| `capabilities: "network,process-spawn"` | exactly those members |
+
+The YAML subset this project emits writes block style only, and its one list convention is that an
+**absent key reads back as `[]`** (`types.ts`, `YamlSequenceNode`). For this field that convention is
+exactly inverted — absent must be the unbounded default — and a block sequence cannot write an empty
+list at all. A list-shaped key would therefore turn the **most** restrictive declaration into the
+**least**: a silent widening of a bound an operator approved, through an export/import path that
+reports success. So the members are joined by `,` into a scalar, and the reader checks each against the
+closed union above. Member order is the document's own and is not canonicalized, so the round trip is
+byte-exact; order carries no meaning, because `declaredCapabilitySet` filters to a canonical order at
+the point of use.
+
 ## The enforcement plan (pure)
 
 ```ts
@@ -84,14 +110,29 @@ it starts**, listing every unenforceable capability rather than the first. The r
 - never a silent downgrade to the full set. Running with the declared set ignored is the fence problem
   again.
 
-## Audit event
+## Audit events
+
+Two, and the second was missing at first. A refusal was recorded and a **grant** was not, so a Run whose
+phase declared a narrowed set and ran successfully left nothing in evidence saying which bound applied.
+The bound lives in argv, and `argv` is an omitted key in `audit-payload.ts` — deliberately, because it
+carries paths — so there was no second place to look. A control whose effect cannot be observed after
+the fact is the shape this round exists to refuse.
 
 ```ts
 { eventType: 'capability-refused',
   kind: BackendRunnerKind,
   unenforceable: readonly PhaseCapability[],
-  phaseIndex: number }
+  phaseIndex: number }              // outcome: 'failure'; the phase does not start
+
+{ eventType: 'capability-applied',
+  kind: BackendRunnerKind,
+  granted: readonly PhaseCapability[],
+  phaseIndex: number }              // outcome: 'success'; emitted only when a set was DECLARED
 ```
+
+They are mutually exclusive per phase. A phase that declares nothing emits neither: its argv is
+unchanged, and a line saying "unchanged" in every Run's evidence would bury the narrowings rather than
+surface them.
 
 Declared in the contract **before** any operator-facing text claims it. No workspace path, no task
 description, no operator-authored content — every field is a closed union, a number, or an array of

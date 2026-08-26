@@ -16,6 +16,7 @@
 // WHAT THIS DOES NOT CHANGE. Errors-only remains the default capture posture.
 // This describes what is retained; it does not alter what is captured.
 import { AUDIT_PAYLOAD_MAX_BYTES } from '../audit/audit-payload';
+import { MAX_ARTIFACT_BYTES } from './evidence-export';
 import { CLI_TRANSPORT_MAX_BYTES } from '../monitor/cli-transport-sink';
 import {
   CHECKPOINT_MAX_AGE_MS,
@@ -78,6 +79,15 @@ export function retentionDisclosure(): readonly RetentionEntry[] {
       redacted: true,
       bound: `bounded at ${mib(CLI_TRANSPORT_MAX_BYTES)} MiB`,
       source: 'CLI_TRANSPORT_MAX_BYTES in src/monitor/cli-transport-sink.ts'
+    },
+    {
+      artifact: 'Export of a run\'s evidence',
+      location: 'the directory you choose when you run the export',
+      redacted: true,
+      bound: `each artifact is carried up to ${mib(
+        MAX_ARTIFACT_BYTES
+      )} MiB; anything larger is omitted and the manifest says which and why`,
+      source: 'MAX_ARTIFACT_BYTES in src/services/evidence-export.ts'
     },
     {
       artifact: 'Private recovery checkpoints',

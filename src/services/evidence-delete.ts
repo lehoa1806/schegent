@@ -12,6 +12,7 @@
 //   what it could not, rather than best-effort silence." A partial delete that
 //   reports success is how an operator comes to believe evidence is gone when it
 //   is not — which, for a privacy control, is the worst available outcome.
+import { isRunId } from '../contracts/run-id';
 import { promises as fsp } from 'node:fs';
 import * as path from 'node:path';
 import { resolveContainedLink } from '../lib/path-containment';
@@ -19,11 +20,13 @@ import { resolveContainedLink } from '../lib/path-containment';
 export type DeleteOutcome =
   | { readonly outcome: 'refused'; readonly reason: 'active-writer'; readonly artifact: string }
   | { readonly outcome: 'refused'; readonly reason: 'no-evidence'; readonly artifact: string }
+  | { readonly outcome: 'refused'; readonly reason: 'invalid-run-id'; readonly artifact: string }
   | {
       readonly outcome: 'completed';
       readonly removed: readonly string[];
       readonly retained: readonly { readonly path: string; readonly reason: string }[];
     };
+
 
 /** Anything under the in-flight spool is, by definition, being written. */
 const ACTIVE_MARKERS = [/(^|\/)\.pending(\/|$)/, /\.lock$/] as const;
@@ -42,6 +45,13 @@ export async function deleteRunEvidence(
   runId: string,
   deps: DeleteDeps
 ): Promise<DeleteOutcome> {
+  if (!isRunId(runId)) {
+    return {
+      outcome: 'refused',
+      reason: 'invalid-run-id',
+      artifact: 'run id is not a UUID; refusing rather than matching evidence by substring'
+    };
+  }
   // The cheapest refusal first: a Run the controller still owns is not a
   // filesystem question at all.
   if (deps.isRunActive(runId)) {

@@ -26,7 +26,11 @@ import {
   BackendPostureRecorder,
   type BackendPostureAccessor
 } from './backend-posture-recorder';
-import { refuseUnenforceableCapabilities } from './capability-refusal-recorder';
+import type { CapabilityRefusalEventType } from '../contracts/audit-events';
+import {
+  capabilityRequestFields,
+  recordCapabilityDecision
+} from './capability-decision-recorder';
 import {
   PhaseSidecarReader,
   composePhaseMessagePath,
@@ -392,8 +396,8 @@ export class PhaseRunner {
     // footnote after it. Every route that drives a Run dispatches through this
     // method, which is why the record sits here; see `BackendPostureRecorder`.
     await this.postureRecorder.recordOnce(inputs, effectiveRunnerKind);
-    // FR-R3-086 — refuse before `phase-start`; see `capability-refusal-recorder`.
-    await refuseUnenforceableCapabilities(inputs, effectiveRunnerKind, this.appendAudit.bind(this));
+    // FR-R3-086 — refuse before `phase-start`; see `capability-decision-recorder`.
+    await recordCapabilityDecision(inputs, effectiveRunnerKind, this.appendAudit.bind(this));
 
     const startPayload: Record<string, unknown> = {
       ...(inputs.pipelineId === undefined ? {} : { pipelineId: inputs.pipelineId }),
@@ -516,7 +520,9 @@ export class PhaseRunner {
         // runner uses `--resume <id>` instead of `-c`.
         ...(typeof effectiveResumeSessionId === 'string'
           ? { resumeSessionId: effectiveResumeSessionId }
-          : {})
+          : {}),
+        // FR-R3-086 — without this the adapter never sees the declared set.
+        ...capabilityRequestFields(inputs)
       }, rawTranscriptCapture ?? undefined);
     } catch (err) {
       await rawTranscriptCapture?.dispose();
@@ -991,7 +997,7 @@ export class PhaseRunner {
       | 'cancel'
       | 'fatal-signature-matched'
       | 'auto-compact-override-applied'
-      | 'capability-refused' // FR-R3-086; declared in the audit contract first
+      | CapabilityRefusalEventType // FR-R3-086; the contract owns this set
       | 'cli-invocation',
     outcome: 'success' | 'failure' | 'info',
     payload: Record<string, unknown>

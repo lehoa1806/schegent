@@ -25,7 +25,9 @@ drifted again.
 | Audit event payload | `inside each audit entry` | redacted | each payload is truncated above 32 KiB | `AUDIT_PAYLOAD_MAX_BYTES in src/audit/audit-payload.ts` |
 | Raw session transcript | `.schegent/sessions/raw-<runId>.log` | **not redacted** | kept for `always`, or promoted for a non-clean Run under `errors-only`; governed by the session-retention settings | `src/audit/raw-transcript-writer.ts; schegent.logging.* settings` |
 | CLI transport generations | `.schegent/sessions/` | redacted | bounded at 5 MiB | `CLI_TRANSPORT_MAX_BYTES in src/monitor/cli-transport-sink.ts` |
+| Export of a run's evidence | `the directory you choose when you run the export` | redacted | each artifact is carried up to 16 MiB; anything larger is omitted and the manifest says which and why | `MAX_ARTIFACT_BYTES in src/services/evidence-export.ts` |
 | Private recovery checkpoints | `the extension's globalStorage — deliberately outside the workspace` | **not redacted** | 14 days and 256 MiB total, with the 10 most recent Run directories protected from the size limit | `CHECKPOINT_MAX_AGE_MS / CHECKPOINT_MAX_TOTAL_BYTES / CHECKPOINT_RECENT_RUN_FLOOR in src/services/run-checkpoint-retention.ts` |
+
 ## The one artifact that is deliberately unredacted
 
 `.schegent/sessions/raw-<runId>.log` holds the backend's output **verbatim**. That is the threat
@@ -34,6 +36,10 @@ scrollback, never read back by the host, never shipped to a webview, and gitigno
 or your repository contain secrets, that file can contain them too.
 
 It is the reason this page exists rather than a reason it does not.
+
+**The export is the exception, and deliberately so.** An export crosses a trust boundary that a local
+file does not — someone else receives it — so every artifact is redacted on the way out, including
+this one. Redacting more than the product's own set is fine; redacting less is not.
 
 ## Errors-only remains the default
 

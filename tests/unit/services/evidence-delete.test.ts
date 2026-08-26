@@ -5,7 +5,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { deleteRunEvidence } from '../../../src/services/evidence-delete';
 
-const RUN = 'run-def456';
+const RUN = '5b8a1c22-7d3e-4f10-9c44-1a2b3c4d5e6f';
 const idle = { isRunActive: () => false };
 const busy = { isRunActive: () => true };
 
@@ -88,9 +88,24 @@ describe('FR-R3-085 — evidence delete', () => {
   });
 
   it('refuses when the run has no evidence at all', async () => {
-    const result = await deleteRunEvidence(workspace, 'run-never-existed', idle);
+    const result = await deleteRunEvidence(workspace, '00000000-0000-4000-8000-000000000000', idle);
     expect(result.outcome).toBe('refused');
     if (result.outcome !== 'refused') throw new Error('unreachable');
     expect(result.reason).toBe('no-evidence');
+  });
+
+  it('SECURITY: refuses a degenerate run id rather than matching by substring', async () => {
+    // The same boundary, and the worse direction: an unvalidated id here removes
+    // every Run's evidence instead of one Run's.
+    for (const bad of ['.', '', 'log', 'raw', '../../etc']) {
+      const result = await deleteRunEvidence(workspace, bad, idle);
+      expect(result.outcome, `run id ${JSON.stringify(bad)} must be refused`).toBe('refused');
+      if (result.outcome !== 'refused') throw new Error('unreachable');
+      expect(result.reason).toBe('invalid-run-id');
+    }
+    // ...and nothing was removed by any of those calls.
+    const remaining = await fsp.readdir(path.join(workspace, '.schegent', 'sessions'));
+    expect(remaining).toContain(`raw-${RUN}.log`);
+    expect(remaining).toContain('raw-other.log');
   });
 });

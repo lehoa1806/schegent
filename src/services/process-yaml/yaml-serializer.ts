@@ -23,7 +23,8 @@ import { chooseScalarStyle, quoteDouble } from './scalar-style';
 import {
   PHASE_YAML_INDENT,
   type PhaseYamlDocument,
-  type PhaseYamlDocumentBody
+  type PhaseYamlDocumentBody,
+  type PhaseYamlSpec
 } from './types';
 
 export const DOCUMENT_KEY_ORDER = Object.freeze([
@@ -61,6 +62,25 @@ export const SPEC_KEY_ORDER = Object.freeze([
   // disagree. Without this key the field would be unauthorable in the shipped
   // format, which would make the whole marking unreachable.
   'hostVerification',
+  // FR-R3-086 — a SET of enum members, which this format has no other example of
+  // and cannot carry as a list. Its one list convention is that an absent key
+  // reads back as `[]` (types.ts `YamlSequenceNode`), and for this field that
+  // convention is exactly inverted: absent must mean the UNBOUNDED default, and
+  // the empty set must mean nothing granted. A block sequence cannot write the
+  // empty set at all, so a list-shaped key would turn the most restrictive
+  // declaration into the least — a silent widening, in the one field where
+  // widening is the whole risk.
+  //
+  // So it is written as a scalar holding the members joined by `,`: absent is
+  // the default, `""` is the empty set, `"a,b"` is that set. The members are a
+  // closed union and the reader checks each against it, so this is a typed field
+  // whose text the validator turns back into values -- the same thing this
+  // format already does for integers and booleans, not free-form text.
+  //
+  // Member order is the document's own, not canonicalized, so the round trip is
+  // byte-exact (FR-017). Order carries no meaning: `declaredCapabilitySet`
+  // filters to a canonical order at the point of use.
+  'capabilities',
   'model',
   'effort',
   'timeoutSeconds',
@@ -353,8 +373,25 @@ export function emitPhaseDocumentBody(indent: string, body: PhaseYamlDocumentBod
     emitKey(indent, 'metadata') +
     emitMapping(fieldIndent, METADATA_KEY_ORDER, body.metadata) +
     emitKey(indent, 'spec') +
-    emitMapping(fieldIndent, SPEC_KEY_ORDER, body.spec)
+    emitMapping(fieldIndent, SPEC_KEY_ORDER, scalarSpecView(body.spec))
   );
+}
+
+/** The separator between capability members. One character, not in any member. */
+export const CAPABILITY_SEPARATOR = ',';
+
+/**
+ * The spec as `emitMapping` needs it: every value a scalar.
+ *
+ * `capabilities` is the only field of the Phase spec that is not already one,
+ * and it is encoded here rather than in `phase-yaml-mapper.ts` so that module
+ * keeps the property it declares -- a rename and a regrouping, every value
+ * carried verbatim. Encoding is a writer concern and lives with the writer.
+ */
+function scalarSpecView(spec: PhaseYamlSpec): object {
+  const { capabilities } = spec;
+  if (capabilities === undefined) return spec;
+  return { ...spec, capabilities: capabilities.join(CAPABILITY_SEPARATOR) };
 }
 
 /**

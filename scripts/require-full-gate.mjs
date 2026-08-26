@@ -87,7 +87,14 @@ export function decideFullGate(payload, sha) {
       ok: true,
       // FR-R3-087 — the run id is returned so stage 2 can query that exact
       // run's jobs. Stage 1 chose the run; stage 2 must not choose a different one.
-      runId: green[0].id,
+      //
+      // Coerced to a NUMBER here, at the boundary, because it is interpolated
+      // into a URL path in `main()`. The value comes from an API response, which
+      // is a trusted source over TLS with our own token — but "trusted today"
+      // is not a property the code carries, and a non-numeric id would build a
+      // request for a path nobody chose. One coercion is cheaper than the
+      // argument about whether it is needed.
+      runId: Number(green[0].id),
       message:
         `run-level gate satisfied at ${sha}: run ${green[0].id} ` +
         `(${green[0].html_url ?? 'no url'}) — now checking its jobs`
@@ -242,6 +249,15 @@ async function main() {
 
   // Stage 2 — the per-job query. Same fail-closed rule as stage 1: an
   // unanswerable check is a refusal, not a pass.
+  if (!Number.isSafeInteger(verdict.runId) || verdict.runId <= 0) {
+    // Fail closed, like every other unanswerable step here: a run whose id the
+    // API did not report as a positive integer is a run this gate cannot query.
+    console.error(
+      'require-full-gate: the run-level match carried no usable run id. ' +
+        'Refusing to release without per-job evidence.'
+    );
+    process.exit(1);
+  }
   let jobsPayload;
   try {
     jobsPayload = await fetchAllJobs(repo, verdict.runId, headers);

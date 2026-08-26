@@ -19,6 +19,7 @@
 // less is forbidden by `AGENTS.md`, and the raw transcript — deliberately
 // unredacted on disk — is redacted on the way OUT, because an export crosses a
 // trust boundary that the local file does not.
+import { isRunId } from '../contracts/run-id';
 import { createHash } from 'node:crypto';
 import { promises as fsp } from 'node:fs';
 import * as path from 'node:path';
@@ -53,7 +54,27 @@ export type ExportResult =
   | { readonly outcome: 'exported'; readonly directory: string; readonly manifest: ExportManifest }
   | { readonly outcome: 'refused'; readonly reason: ExportRefusal; readonly detail: string };
 
-export type ExportRefusal = 'no-evidence' | 'outside-workspace' | 'write-failed';
+export type ExportRefusal = 'no-evidence' | 'outside-workspace' | 'write-failed' | 'invalid-run-id';
+
+
+/**
+ * The largest single artifact the export will read into memory.
+ *
+ * WHY A BOUND AT ALL. Every artifact is already capped by retention — 5 MiB for
+ * the audit log before rotation, 5 MiB for a CLI transport generation — but
+ * rotated siblings accumulate and the export reads whole files. Without a bound
+ * the ceiling on this operation is "however much evidence has piled up", and the
+ * failure mode is the extension host exhausting memory during an operator's
+ * privacy action, which is the worst moment for it.
+ *
+ * WHY SKIP-AND-RECORD RATHER THAN REFUSE. Refusing the whole export because one
+ * artifact is large hands the operator nothing. Omitting that artifact hands them
+ * everything else PLUS a manifest line saying exactly what was left out and why —
+ * which is the manifest doing its job. An export whose contents are not
+ * enumerated is a leak the exporter cannot audit; one whose omissions are not
+ * enumerated is the same defect wearing a different hat.
+ */
+export const MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
 
 const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
 
@@ -148,6 +169,13 @@ export async function exportRunEvidence(
   destination: string,
   now: () => Date = () => new Date()
 ): Promise<ExportResult> {
+  if (!isRunId(runId)) {
+    return {
+      outcome: 'refused',
+      reason: 'invalid-run-id',
+      detail: 'run id is not a UUID; refusing rather than matching evidence by substring'
+    };
+  }
   const logger = new SanitizedLogger();
   const { included, omitted } = await collect(workspaceRoot, runId);
   if (included.length === 0) {
@@ -184,6 +212,16 @@ export async function exportRunEvidence(
     }
     let raw: string;
     try {
+      const stat = await fsp.stat(source.resolved);
+      if (stat.size > MAX_ARTIFACT_BYTES) {
+        omitted.push({
+          path: relative,
+          reason:
+            `larger than the ${Math.round(MAX_ARTIFACT_BYTES / (1024 * 1024))} MiB per-artifact ` +
+            `export bound (${stat.size} bytes); copy it by hand if it is needed`
+        });
+        continue;
+      }
       raw = await fsp.readFile(source.resolved, 'utf8');
     } catch (error) {
       return { outcome: 'refused', reason: 'write-failed', detail: describe(error) };

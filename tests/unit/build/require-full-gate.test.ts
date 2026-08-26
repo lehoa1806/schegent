@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, it, expect, beforeAll } from 'vitest';
 
 /**
@@ -227,5 +229,43 @@ describe('FR-R3-087 — decideJobCoverage', () => {
       SHA
     );
     expect(otherCommit.ok).toBe(false);
+  });
+});
+
+/**
+ * FR-R3-087 — the run id crosses from an API response into a URL path.
+ *
+ * The source is GitHub's own API over TLS with our token, so the trust level is
+ * high. "Trusted today" is not a property the code carries, though, and a
+ * non-numeric id would build a request for a path nobody chose — so it is
+ * coerced at the boundary and the binding refuses when the coercion fails.
+ */
+describe('FR-R3-087 — the run id is bounded before it reaches a URL', () => {
+  it('coerces a numeric run id to a number', () => {
+    const verdict = gate.decideFullGate({ workflow_runs: [run({ id: 4242 })] }, SHA);
+    expect(verdict.ok).toBe(true);
+    expect(typeof verdict.runId).toBe('number');
+    expect(verdict.runId).toBe(4242);
+  });
+
+  it('yields a non-usable id rather than a string when the API reports one', () => {
+    // The refusal itself lives in `main()`, which needs a network; what is
+    // asserted here is that nothing string-shaped survives the decision, so the
+    // guard downstream has a number to judge.
+    const verdict = gate.decideFullGate(
+      { workflow_runs: [run({ id: '77/../../../etc' })] },
+      SHA
+    );
+    expect(typeof verdict.runId).toBe('number');
+    expect(Number.isSafeInteger(verdict.runId)).toBe(false);
+  });
+
+  it('the script refuses a non-usable id rather than building the URL', () => {
+    const source = readFileSync(
+      resolve(__dirname, '../../../scripts/require-full-gate.mjs'),
+      'utf8'
+    );
+    expect(source).toContain('Number.isSafeInteger(verdict.runId)');
+    expect(source).toContain('Refusing to release without per-job evidence');
   });
 });

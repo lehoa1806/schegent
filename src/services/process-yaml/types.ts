@@ -15,6 +15,7 @@
 // See specs/084-phase-yaml-exchange/data-model.md and
 // specs/084-phase-yaml-exchange/contracts/phase-yaml-grammar.ebnf.
 
+import type { PhaseCapability } from '../../contracts/phase-capabilities';
 import type {
   PhaseDefinition,
   PhaseDefinitionEffort,
@@ -96,6 +97,12 @@ interface PhaseYamlSpecBase {
   readonly evidencePolicy?: PhaseEvidencePolicy;
   /** FR-R3-058 — the second evidence axis; see `PhaseHostVerification`. */
   readonly hostVerification?: PhaseHostVerification;
+  /**
+   * FR-R3-086 — the declared capability set, carried through the exchange
+   * format. Without it a narrowed phase round-tripped through YAML comes back
+   * UNBOUNDED, which is a silent widening of a bound the operator approved.
+   */
+  readonly capabilities?: readonly PhaseCapability[];
   readonly model?: string;
   readonly effort?: PhaseDefinitionEffort;
   readonly timeoutSeconds?: number;

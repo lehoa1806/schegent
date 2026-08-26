@@ -291,7 +291,12 @@ engine refuses at the attempt. **Omission means every capability**, and the plan
 turns that into each adapter's current argv byte for byte, so a phase that
 declares nothing spawns exactly as it did before. A capability the backend cannot
 express refuses the phase before it starts, via
-`controller/capability-refusal-recorder.ts`, recording `capability-refused` first.
+`controller/capability-decision-recorder.ts`, recording `capability-refused` first.
+A set the backend **can** enforce is recorded too, as `capability-applied`: the
+bound lives in argv and `argv` is an omitted key in `audit/audit-payload.ts` by
+design, so without that event a successful narrowing would be indistinguishable
+in evidence from no narrowing at all. The two are mutually exclusive, and a phase
+that declares nothing emits neither.
 The limits — the host does not observe tool calls, and `agy` can express one of
 four — are stated in `docs/security/threat-model.md` beside what it does bound.
 
@@ -304,7 +309,7 @@ through the shared containment oracle and act on the resolved path.
 
 <!-- Source: src/contracts/phase-capabilities.ts -->
 <!-- Source: src/services/capability-enforcement-plan.ts -->
-<!-- Source: src/controller/capability-refusal-recorder.ts -->
+<!-- Source: src/controller/capability-decision-recorder.ts -->
 <!-- Source: src/services/evidence-export.ts -->
 <!-- Source: src/services/evidence-delete.ts -->
 <!-- Source: src/services/retention-disclosure.ts -->

@@ -87,13 +87,23 @@ What it bounds and what it does not, in the same paragraph on purpose:
 - **The default is unchanged.** A phase that declares no capability set spawns with exactly the argv it
   spawned with before this existed. `SEC-08` is not closed by this: narrowing is opt-in, per phase, and
   a fresh install still refuses its first uncontained run.
+- **A narrowed phase cannot widen by being exported and re-imported.** The portable YAML format carries
+  the declared set as a scalar, not a list, because that format's list convention reads an absent key as
+  the empty list — for this field exactly backwards, since absent must mean the unbounded default and the
+  empty set must mean nothing granted. A list-shaped key would have turned the most restrictive
+  declaration into the least on a round trip that reports success. Both validators refuse an unknown or
+  repeated member rather than dropping it, so a set is never silently narrowed either.
+  <!-- Source: src/services/process-yaml/yaml-serializer.ts --><!-- Source: src/services/process-yaml/phase-yaml-validator.ts -->
 - **This is not a mediated broker.** The broker — where the host would see each call rather than
   delegating — is recorded as the destination in
   [Agent capability posture](../architecture/agent-capability-posture.md), with the review's own 1–3
   month estimate and the expansion-freeze constraint that blocks its most plausible route.
 
 A refusal is a Run-level outcome with a named cause and a declared `capability-refused` audit event,
-distinguishable from a phase failure. <!-- Source: src/services/capability-enforcement-plan.ts --><!-- Source: src/contracts/phase-capabilities.ts -->
+distinguishable from a phase failure. A set the backend *can* enforce is recorded too, as
+`capability-applied`: the bound itself lives in argv and argv is never written to the structured log, so
+without that event a completed Run could not tell an operator whether its phase ran bounded. Both
+payloads carry closed-union members and a phase index, nothing else. <!-- Source: src/services/capability-enforcement-plan.ts --><!-- Source: src/contracts/phase-capabilities.ts -->
 
 ## Threat anchors
 
