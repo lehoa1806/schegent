@@ -107,21 +107,20 @@ The following names are unit-test canaries, not supported configuration. They de
 <!-- Source: tests/unit/runner/codex-cli.test.ts -->
 <!-- Source: tests/unit/services/run-driver-probe.test.ts -->
 
-## GitHub Actions job variables
+## GitHub Actions job variables — retired 2026-08-26
 
-These names exist inside release or security workflow shells. They are supplied by GitHub Actions or scoped to one step; they are not local product configuration.
+**None of these exist any more.** They were supplied by the release and security workflow shells,
+and all eight workflow files were deleted when Actions was retired by operator decision, for budget
+(`FR-R3-099`). `GITHUB_REF_TYPE`, `TAG_NAME`, `VSIX`, `GH_TOKEN`, `REPOSITORY`, `GITHUB_OUTPUT`,
+`RUNNER_TEMP` and `GITHUB_STEP_SUMMARY` are named here only so a reader who greps one of them
+learns it is gone rather than concluding it is live configuration this page forgot to describe.
 
-| Name | Type | Default | Purpose |
-|---|---|---|---|
-| `GITHUB_REF_TYPE` | string | GitHub-provided ref type | Prevents a non-tag dispatch from performing tag/version parity as if it were a tag. |
-| `TAG_NAME` | string | Current Git ref name in applicable release steps | Carries the tag as data for version parity and GitHub Release creation. |
-| `VSIX` | filesystem path | Resolved single `*.vsix` output | Carries the exact released archive between policy, checksum, and publishing steps. |
-| `GH_TOKEN` | secret string | GitHub workflow token | Authenticates `gh release` operations. |
-| `REPOSITORY` | `owner/name` string | Current GitHub repository | Scopes provenance-verification instructions in release notes. |
-| `GITHUB_OUTPUT` | filesystem path | GitHub-provided | Receives the resolved VSIX step output. |
-| `RUNNER_TEMP` | filesystem path | GitHub-hosted runner temporary directory | Holds the generated GitHub Release body. |
-| `GITHUB_STEP_SUMMARY` | filesystem path | GitHub-provided | Receives the Markdown npm-audit summary in the security workflow. |
+What each workflow was, and what its runs produced, is recorded in
+[the withdrawal record](../release/withdrawn-ci-controls.md) and
+[the terminal record](../release/actions-terminal-record.md). Nothing local replaces them: the
+release path is entirely local now, and [`RELEASE.md`](../../RELEASE.md) describes it.
 
+<!-- Source: ../release/withdrawn-ci-controls.md -->
 <!-- Source: ../release/actions-terminal-record.md -->
 
 ## Core directory tree

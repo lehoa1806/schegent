@@ -117,7 +117,12 @@ npm run security:actions
 npm run license:check
 ```
 
-They check required documentation and local Markdown links, scan tracked content for configured secret patterns, require immutable commit pins for executable GitHub Actions, and validate production dependency licenses.
+They check required documentation and local Markdown links, scan tracked content for configured secret
+patterns, require immutable commit pins for executable GitHub Actions, and validate production
+dependency licenses. Since the workflows were retired (`FR-R3-099`) the pin check has a third
+outcome and reports it: *"no workflows present, nothing to pin"*. It is kept rather than deleted
+precisely so a workflow file reappearing is pinned from its first commit rather than from the day
+somebody notices.
 <!-- Source: package.json -->
 <!-- Source: scripts/check-docs.mjs -->
 <!-- Source: scripts/check-doc-links.mjs -->

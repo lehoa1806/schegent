@@ -325,3 +325,51 @@ describe('the pause survives a host restart, which is the case that matters most
     expect(unknownCause?.manualPauseAt).toBeNull();
   });
 });
+
+describe('the pause reaches the operator surface it was written for', () => {
+  it('projects the spend cause through to the runtime the dashboard reads', async () => {
+    // FR-120's "names the bound and the measured spend" has an operator-facing half, and a cause
+    // that stopped at the store would satisfy every assertion above while the dashboard rendered
+    // "Phase paused". This drives the host projection with a run paused for spend and asserts the
+    // value the webview's badge keys on.
+    const { composeQueueRuntimes } = await import(
+      '../../../src/ui/sidebar/queue-runtime-composer.js'
+    );
+    const pausedForSpend = runFixture({
+      status: 'paused',
+      manualPauseAt: 1_700_000_000_000,
+      manualPauseCause: 'spend-bound-reached'
+    });
+    const runtimes = composeQueueRuntimes({
+      summaries: [{ id: 'default', name: 'Default queue', position: 0 }],
+      runOf: () => ({
+        run: pausedForSpend,
+        status: 'paused',
+        phases: [],
+        activePipeline: null,
+        liveActivity: null,
+        outputs: [],
+        delayedRetry: null,
+        plannedTotal: null
+      }),
+      lifecycleOf: () => 'active-empty',
+      requestsOf: () => []
+    } as never);
+
+    expect(runtimes).toHaveLength(1);
+    expect(runtimes[0]!.manualPause?.cause).toBe('spend-bound-reached');
+    // Non-vacuity: the timestamp travels with the cause, so a projection that dropped the pair
+    // could not pass by carrying only the half this case names.
+    expect(runtimes[0]!.manualPause?.at).toBe(new Date(1_700_000_000_000).toISOString());
+  });
+
+  it('renders the badge the operator actually reads', async () => {
+    // The webview half, driven rather than assumed. `pauseBadgeLabel` is what
+    // `PhaseProgression.svelte` binds, and `RunDetailTier.svelte` passes it
+    // `runtime.manualPause.cause` — the same value the case above produced.
+    const { pauseBadgeLabel } = await import('../../../webview-ui/src/lib/pause-labels.js');
+    expect(pauseBadgeLabel('spend-bound-reached')).toBe('Spend bound reached');
+    // And an unrecognized cause still reads as something rather than blanking the badge.
+    expect(pauseBadgeLabel(undefined)).toBe('Phase paused');
+  });
+});
