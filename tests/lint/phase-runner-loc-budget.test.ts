@@ -176,7 +176,14 @@ const BUDGETS = [
   // and the fold into the phase-end warnings with the reason the codes are
   // drained rather than read. Nothing to extract: the fold is where the
   // warnings are assembled.
-  { path: 'src/controller/phase-runner.ts', max: 1_028 },
+  // FR-R3-098 (T1294) — 1028 → 1029. One line: the `backend` parameter on
+  // `invocationMetricPayload`. The usage extractor is now told which backend
+  // produced the envelope rather than inferring it from the bytes, and this
+  // method is the only site that spreads its result. The kind was already
+  // resolved in `runInner` for audit attribution, so the five call sites pass a
+  // value that was in scope; the import took an inline `type` specifier rather
+  // than a line of its own. Nothing to extract — the parameter is the change.
+  { path: 'src/controller/phase-runner.ts', max: 1_029 },
   // FR-R3-052 / H-03 (2026-08-24) — 400 → 415 for the size check that was
   // missing. `stat()` was already called here and only `isFile()` was read, so
   // `readFile()` took a multi-GiB sidecar wholly into memory. The bound, the
