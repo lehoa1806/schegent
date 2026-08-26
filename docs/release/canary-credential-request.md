@@ -46,6 +46,28 @@ a live phase that has never run is exactly what that item forbids shipping.
 
 `ok` was previously unreachable by construction. This is the first time any backend has reached it.
 
+### The drift path, verified non-vacuous
+
+`FR-R3-084` §4 asks for an induced drift rather than a claim that drift would be detected. Done on the
+real path, both directions, on the same day:
+
+```
+# expectedVersionPrefix injected as '9.9.'
+  claude: drifted — version 2.1.246 does not start with the recorded 9.9.
+  codex:  drifted — version 0.149.0 does not start with the recorded 9.9.
+  agy:    drifted — version 1.1.20 does not start with the recorded 9.9.
+  FINDINGS: 3 backend(s) drifted. File these; they are not gate failures.
+
+# prefix corrected to the observed versions
+  claude: ok — version 2.1.246, live probe passed
+  codex:  ok — version 0.149.0, live probe passed
+  agy:    ok — version 1.1.20, live probe passed
+```
+
+Exit code stayed **0** through the drifted run, which is the item's other requirement: a finding must
+not become a red gate by accident. The injected prefix was then removed — it exists in neither the
+runner nor this record as an enforced value.
+
 **No expected-version prefix is enforced from this run**, and that is deliberate. One observation on
 one machine is not a qualified baseline — it is the versions that happened to be installed, which is
 precisely what §3 warns against — and pinning a prefix from it would make every routine CLI update
