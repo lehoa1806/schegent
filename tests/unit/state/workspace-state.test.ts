@@ -13,7 +13,7 @@ import {
 import { HistoryStore } from '../../../src/state/history-store';
 import { QueueManager } from '../../../src/queue/queue-manager';
 import { MAX_PENDING_TASKS_PER_QUEUE, type FeatureRequest, type QueueState } from '../../../src/queue/feature-request';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import type { WorkflowRun, WorkspaceLock } from '../../../src/state/workflow-run';
 
 class FakeMemento implements Memento {

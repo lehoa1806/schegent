@@ -53,6 +53,16 @@ const PREFLIGHT = 'ci:fast';
  */
 const EXCLUDED: ReadonlyArray<{ readonly script: string; readonly reason: string }> = [
   {
+    script: 'test:coverage',
+    reason:
+      'FR-R3-100 (FR-016) put the host suite under coverage inside `ci`, so the declared ' +
+      'floors finally gate the attested chain. `ci:fast` deliberately reaches the same ' +
+      'tests through `verify:all` -> `test:host` instead: coverage instrumentation is pure ' +
+      'overhead for a fast preflight whose job is to fail early, and the tests it runs are ' +
+      'the identical set. What the preflight cannot catch is a COVERAGE regression, which is ' +
+      'a threshold breach rather than a broken test, and is caught by the gate before release'
+  },
+  {
     script: 'test:e2e',
     reason: 'a separate Vitest project with a 120s per-test timeout; minutes of wall clock per run'
   },
@@ -158,8 +168,14 @@ describe('the preflight chain reaches every gate CI runs', () => {
     );
   });
 
-  it('excludes exactly three scripts, each with a reason', () => {
+  it('excludes exactly four scripts, each with a reason', () => {
+    // The list is asserted by NAME, not by length, so growing it is a visible diff in
+    // the file whose only job is to notice gaps. `test:coverage` joined it under
+    // FR-R3-100: unlike the other three it is not excluded for wall-clock but because
+    // `ci:fast` reaches the identical test set without coverage instrumentation. The
+    // one thing the preflight therefore cannot catch is named in its reason.
     expect(EXCLUDED.map((entry) => entry.script).sort()).toEqual([
+      'test:coverage',
       'test:e2e',
       'test:integration',
       'test:perf'

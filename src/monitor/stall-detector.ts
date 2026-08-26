@@ -24,9 +24,33 @@ export class StallDetector {
     this.armTimer(this.opts.thresholdMs);
   }
 
-  public noteStdoutChunk(): void {
+  /**
+   * Output arrived on a stream that counts as liveness — rearm.
+   *
+   * FR-R3-106 (FR-072) — the detector's only rearm input used to be stdout, from a single
+   * call site inside `onStdoutChunk`. `onStderrChunk` never touched it, so a CLI doing
+   * legitimate stderr-only work was declared stalled at the threshold and **stayed**
+   * declared: the recovery branch that clears a stall existed only on the stdout path too.
+   * A build that logs progress to stderr is a normal program, and the product called it
+   * stuck.
+   *
+   * Named for activity rather than for a stream, because the detector's question is "is
+   * this child doing anything", and which pipe the answer came down is not its business.
+   */
+  public noteActivity(): void {
     this.remainingMs = this.opts.thresholdMs;
     this.armTimer(this.remainingMs);
+  }
+
+  /**
+   * Retained name for the stdout call site.
+   *
+   * Kept as an alias rather than renamed at every caller: the rename would touch files this
+   * item has no other reason to change, and `noteActivity` is the name that says what the
+   * method now means.
+   */
+  public noteStdoutChunk(): void {
+    this.noteActivity();
   }
 
   public pause(): void {

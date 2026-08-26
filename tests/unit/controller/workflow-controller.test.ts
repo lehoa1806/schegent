@@ -14,7 +14,7 @@ import {
   type PhaseDef,
   type PipelineDef
 } from '../../../src/config/pipeline-config';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import type { WorkflowRunPipeline } from '../../../src/state/workflow-run';
 
 // Feature 098 (T080) — the two Pipelines these tests drive, declared here instead

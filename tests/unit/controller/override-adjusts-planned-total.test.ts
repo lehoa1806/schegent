@@ -36,7 +36,7 @@ import type { PhaseResult, WorkflowRun } from '../../../src/state/workflow-run';
 // header for why the ids are the real Spec Kit ones.
 import { SPECKIT_ALL_PHASE_DEFS } from '../../fixtures/speckit-catalog-fixture';
 import type { Memento } from '../../../src/state/workspace-state';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import { projectRunProgress } from '../../../src/ui/sidebar/run-projector';
 
 class FakeMemento implements Memento {

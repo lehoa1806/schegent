@@ -25,9 +25,7 @@ consolidated gate.
 
 <!-- Source: package.json -->
 <!-- Source: scripts/generate-contract-schemas.mjs -->
-<!-- Source: .github/workflows/pr.yml -->
-<!-- Source: .github/workflows/ci.yml -->
-<!-- Source: .github/workflows/release.yml -->
+<!-- Source: ../release/actions-terminal-record.md -->
 
 ## Generated artifacts
 

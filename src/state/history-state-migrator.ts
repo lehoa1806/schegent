@@ -26,7 +26,7 @@
 //     anyway, for every workspace that never opens a build with this migration.
 // ---------------------------------------------------------------------------
 
-import { HISTORY_UNATTRIBUTED_QUEUE_ID } from './history-entry';
+import { HISTORY_UNATTRIBUTED_QUEUE_ID } from '../contracts/queue-identity';
 import { STATE_SCHEMA_VERSION_V12 } from '../contracts/state-schema';
 
 /** The v12 persisted shape of `KEYS.history`. */

@@ -25,7 +25,7 @@ import type { FeatureRequest } from '../../../src/queue/feature-request';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
 import { KEYS, WorkspaceStateStore, type Memento } from '../../../src/state/workspace-state';
 import { STATE_SCHEMA_VERSION_V8 } from '../../../src/contracts/state-schema';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 
 const FIXTURE_PATH = join(__dirname, '../../fixtures/state/pre-082-workspace-state.json');
 

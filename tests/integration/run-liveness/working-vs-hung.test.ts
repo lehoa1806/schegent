@@ -28,7 +28,8 @@ import { ACTIVITY_COALESCE_INTERVAL_MS } from '../../../src/monitor/activity-coa
 import { ClaudeCliMonitor } from '../../../src/monitor/claude-cli-monitor';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import { QueueManager } from '../../../src/queue/queue-manager';
-import { createQueue, DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
+import { createQueue } from '../../../src/queue/queue-registry';
 import { SchegentWorkflowController } from '../../../src/controller/workflow-controller';
 import type { PhaseRunner } from '../../../src/controller/phase-runner';
 import type { Notifier } from '../../../src/ui/notifications';

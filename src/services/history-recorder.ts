@@ -23,11 +23,11 @@
 // not be resolved costs an attribution, and both are recorded rather than
 // raised.
 
+import { HISTORY_UNATTRIBUTED_QUEUE_ID } from '../contracts/queue-identity';
 import type { HistoryStore } from '../state/history-store';
 import {
   buildHistoryEntry,
-  withDescriptionRef,
-  HISTORY_UNATTRIBUTED_QUEUE_ID
+  withDescriptionRef
 } from '../state/history-entry';
 import { HistoryDescriptionStore } from './history/history-description-store';
 import { historyErrorCode } from './history/error-code';

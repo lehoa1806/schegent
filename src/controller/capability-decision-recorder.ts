@@ -33,6 +33,7 @@
 // indistinguishable from a phase nobody scheduled.
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import type {
+  AmbientConfigObservation,
   CapabilityAppliedPayload,
   CapabilityRefusalEventType,
   CapabilityRefusedPayload
@@ -80,7 +81,16 @@ export type CapabilityAuditAppender<TContext> = (
 export async function recordCapabilityDecision<TContext extends CapabilityRefusalContext>(
   context: TContext,
   kind: BackendRunnerKind,
-  append: CapabilityAuditAppender<TContext>
+  append: CapabilityAuditAppender<TContext>,
+  /**
+   * FR-R3-105 (FR-066) — how the ambient configuration is observed, injected.
+   *
+   * Passed in rather than imported so this module keeps holding no state and reaching for
+   * no filesystem of its own, which is the property its docstring above claims. Omitted,
+   * the observation is `null` — the same reading as "no configuration found", which is
+   * what a caller that cannot observe honestly has.
+   */
+  observeAmbient?: (kind: BackendRunnerKind) => Promise<AmbientConfigObservation | null>
 ): Promise<void> {
   const declared = context.phaseDef?.capabilities;
   if (declared === undefined) return;
@@ -91,10 +101,17 @@ export async function recordCapabilityDecision<TContext extends CapabilityRefusa
     // where the bound lives and argv is never written to the structured log, so
     // without this line a completed Run cannot tell an operator whether the phase
     // ran bounded or unbounded. Recorded as `success`: nothing failed here.
+    // Observed BEFORE the event is appended, so the record describes the configuration
+    // that was in force when the bound applied rather than whatever it became later.
+    // A failure to observe is `null`, never a thrown error: an unreadable settings file
+    // must not fail a phase, and "nothing observed" is an honest answer that an operator
+    // can tell apart from "observed and unchanged".
+    const ambientConfig = observeAmbient === undefined ? null : await observeAmbient(kind);
     const applied: CapabilityAppliedPayload = {
       kind,
       granted: set.capabilities,
-      phaseIndex: context.iteration
+      phaseIndex: context.iteration,
+      ambientConfig
     };
     await append(context, 'capability-applied', 'success', { ...applied });
     return;

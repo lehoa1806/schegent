@@ -30,7 +30,8 @@ import {
   ScheduledStartCoordinator,
   type ScheduledStartCoordinatorDeps
 } from '../../../src/services/scheduled-start-coordinator';
-import { MAX_QUEUES, DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
+import { MAX_QUEUES } from '../../../src/contracts/queue-bounds';
 import type { QueueState } from '../../../src/queue/feature-request';
 
 const QUEUE_A = DEFAULT_QUEUE_ID;

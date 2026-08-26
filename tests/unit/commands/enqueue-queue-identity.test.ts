@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { runEnqueue, UnnamedQueueError, type EnqueueCommandArgs } from '../../../src/commands/enqueue';
 import { runAuto } from '../../../src/commands/auto';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 
 // FR-R3-002 (T287) — enqueue routes to the queue the caller named, and refuses
 // a caller that named none.

@@ -16,7 +16,7 @@ import {
   POSTURE_LEDGER_MAX_PAIRS,
   type BackendPostureAccessor
 } from '../../../src/controller/backend-posture-recorder';
-import { MAX_QUEUES } from '../../../src/queue/queue-registry';
+import { MAX_QUEUES } from '../../../src/contracts/queue-bounds';
 import { SUPPORTED_BACKENDS } from '../../../src/contracts/backend-kinds';
 import { RequiredEvidenceUnavailableError } from '../../../src/lib/errors';
 import { ZippedStreamBuffer } from '../../../src/runner/zipped-stream-buffer';

@@ -26,7 +26,8 @@ import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-sta
 import { QueueManager } from '../../src/queue/queue-manager';
 import { ExecutionLeaseManager } from '../../src/state/execution-lease';
 import { AutoDrainCoordinator } from '../../src/services/auto-drain-coordinator';
-import { createQueue, DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
+import { createQueue } from '../../src/queue/queue-registry';
 import type { Clock, Scheduler } from '../../src/state/lock';
 import type { SchegentWorkflowController } from '../../src/controller/workflow-controller';
 import type { FeatureRequest } from '../../src/queue/feature-request';

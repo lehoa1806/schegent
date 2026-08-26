@@ -5,7 +5,7 @@ import type { WorkspaceStateStore } from '../../state/workspace-state';
 import type { WorkflowRun } from '../../state/workflow-run';
 import type { RunStateMap } from '../../state/run-state-migrator';
 import type { FeatureRequest, QueueState } from '../../queue/feature-request';
-import { DEFAULT_QUEUE_ID } from '../../queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../contracts/queue-identity';
 import type { ClaudeCliMonitor } from '../../monitor/claude-cli-monitor';
 import type { HistoryStore } from '../../state/history-store';
 import { projectHistory } from './history-projector';

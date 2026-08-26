@@ -42,8 +42,8 @@ import type {
 import {
   DELAYED_RETRY_CAP,
   TRANSIENT_BACKOFF_MS
-} from '../../src/controller/retry-constants';
-import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+} from '../../src/contracts/retry-bounds';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 import { removeTempRoot } from '../temp-root-cleanup';
 
 class FakeMemento implements Memento {

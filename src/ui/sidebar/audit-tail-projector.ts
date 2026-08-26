@@ -12,7 +12,8 @@ import type { AuditEntry, AuditEventType, AuditOutcome } from '../../audit/audit
 import { classifyAuditEvent } from '../../contracts/audit-events';
 import type { Phase } from '../../controller/phase';
 import { truncateLabel } from './queue-projector';
-import type { AuditCategory, AuditTailEntry, PhaseName } from './snapshot';
+import type { PhaseName } from '../../contracts/phase-identity';
+import type { AuditCategory, AuditTailEntry } from './snapshot';
 
 export function projectAuditEntry(entry: AuditEntry): AuditTailEntry {
   const taskId = extractTaskId(entry.payload);

@@ -29,13 +29,45 @@ import * as path from 'node:path';
 
 import { AUDIT_SCHEMA_VERSION } from '../../src/contracts/audit-events';
 import { STATE_SCHEMA_VERSION } from '../../src/contracts/state-schema';
-import { MAX_QUEUES } from '../../src/queue/queue-registry';
+import { MAX_QUEUES } from '../../src/contracts/queue-bounds';
 import { DEFAULT_GLOBAL_CONCURRENCY_CAP } from '../../src/state/workspace-state';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const ARCH_REL = 'ARCHITECTURE.md';
 const ARCH = fs.readFileSync(path.join(REPO_ROOT, ARCH_REL), 'utf8');
 const ARCH_LINES = ARCH.split('\n');
+
+/**
+ * Every place the document states a number on a line that names a version constant,
+ * and disagrees with it.
+ *
+ * Extracted by FR-R3-102 (FR-034) so the live assertion and its non-vacuity control
+ * run **one** body. Two copies of a detector is how a gate comes to pass while its
+ * control passes for a different reason.
+ */
+function disagreements(lines: readonly string[]): string[] {
+  const wrong: string[] = [];
+  for (const [name, value] of VERSION_CONSTANTS) {
+    const assignment = new RegExp(`${name}\\s*=\\s*(\\d+)`, 'g');
+    lines.forEach((line, index) => {
+      if (!line.includes(name)) return;
+      const stated = [
+        // A bare integer in a code span on the same line — `13`, `3`.
+        ...[...line.matchAll(/`(\d+)`/g)].map((match) => Number(match[1])),
+        // …and the assignment form, whose number sits inside a wider span.
+        ...[...line.matchAll(assignment)].map((match) => Number(match[1]))
+      ];
+      for (const found of stated) {
+        if (found === value) continue;
+        wrong.push(
+          `${ARCH_REL}:${index + 1} states \`${found}\` on a line naming ${name}, ` +
+            `which is \`${value}\``
+        );
+      }
+    });
+  }
+  return wrong;
+}
 
 /**
  * The same text with every run of whitespace collapsed to one space.
@@ -163,30 +195,50 @@ describe('FR-R3-013 — ARCHITECTURE.md schema and defaults parity', () => {
     // The self-contradiction case: `STATE_SCHEMA_VERSION = 11` in the State
     // subsystem prose while the table said `10`. Neither of the two assertions
     // above sees it, because each looks at one place.
-    const wrong: string[] = [];
-    for (const [name, value] of VERSION_CONSTANTS) {
-      const assignment = new RegExp(`${name}\\s*=\\s*(\\d+)`, 'g');
-      ARCH_LINES.forEach((line, index) => {
-        if (!line.includes(name)) return;
-        const stated = [
-          // A bare integer in a code span on the same line — `13`, `3`.
-          ...[...line.matchAll(/`(\d+)`/g)].map((match) => Number(match[1])),
-          // …and the assignment form, whose number sits inside a wider span.
-          ...[...line.matchAll(assignment)].map((match) => Number(match[1]))
-        ];
-        for (const found of stated) {
-          if (found === value) continue;
-          wrong.push(
-            `${ARCH_REL}:${index + 1} states \`${found}\` on a line naming ${name}, ` +
-              `which is \`${value}\``
-          );
-        }
-      });
-    }
+    const wrong = disagreements(ARCH_LINES);
     expect(
       wrong,
       `${ARCH_REL} contradicts a schema constant:\n${wrong.join('\n')}`
     ).toEqual([]);
+  });
+
+  it('NON-VACUITY: a drifted schema version in the document is detected', () => {
+    // FR-R3-102 (FR-034). This gate had no non-vacuity control, and that mattered more
+    // than usual: it is the reason `repo/ARCHITECTURE.md` could be trusted as the
+    // surviving authority when the envelope document was demoted (FR-032). A
+    // machine-pinned document whose pin has never been observed failing is
+    // machine-pinned in name only.
+    //
+    // The mutation runs the REAL detector over the REAL document text with one number
+    // changed, in memory. Nothing is written, and the detector is the same function the
+    // assertion above uses — a hand-written stub would only prove that a regex matches
+    // a string written to be matched.
+    const target = ARCH_LINES.findIndex(
+      (line) => line.includes('STATE_SCHEMA_VERSION') && /`\d+`/.test(line)
+    );
+    expect(
+      target,
+      'no line in the document both names STATE_SCHEMA_VERSION and states a number, so ' +
+        'the assertion above has nothing to check and this gate is vacuous'
+    ).toBeGreaterThanOrEqual(0);
+
+    const mutated = [...ARCH_LINES];
+    mutated[target] = (mutated[target] as string).replace(
+      /`\d+`/,
+      `\`${STATE_SCHEMA_VERSION + 41}\``
+    );
+    expect(mutated[target], 'the mutation changed nothing, so it proves nothing').not.toBe(
+      ARCH_LINES[target]
+    );
+
+    const found = disagreements(mutated);
+    expect(
+      found.length,
+      'the detector did not notice a schema version it was pointed straight at'
+    ).toBeGreaterThan(0);
+    expect(found.join('\n')).toContain('STATE_SCHEMA_VERSION');
+    // ...and the unmutated document is clean, so the detector is not matching everything.
+    expect(disagreements(ARCH_LINES)).toEqual([]);
   });
 
   it('the documented globalConcurrencyCap default matches the code and the contribution', () => {

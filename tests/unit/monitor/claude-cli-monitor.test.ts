@@ -147,13 +147,60 @@ describe('ClaudeCliMonitor state machine', () => {
     expect(mc.audit.entries.find((e) => e.eventType === 'monitor-stall')).toBeDefined();
   });
 
-  it('stderr activity during silence does NOT reset stall timer', () => {
+  // FR-R3-106 (FR-072, FR-074) — REPLACES `stderr activity during silence does NOT reset
+  // stall timer`, which asserted the defect as behaviour and carried no rationale.
+  //
+  // The stall detector had exactly one rearm call site and it was on stdout, and the
+  // recovery branch that clears a stall existed only there too. So a CLI doing legitimate
+  // stderr-only work — a build logging progress, a tool writing diagnostics — was declared
+  // stalled at 90 s and **stayed** declared however long it kept writing. A program that
+  // logs to stderr is a normal program, and the product called it stuck.
+  //
+  // THE TRADE THIS ACCEPTS, stated rather than discovered later: a child that emits stderr
+  // forever while genuinely hung is now never declared stalled. That is the cost of not
+  // lying about the legitimate case, and it is bounded elsewhere — the absolute run timeout
+  // is the outer limit, and it is not this detector's job.
+  it('stderr activity resets the stall timer, because a stderr-only child is working', () => {
     mc.monitor.onStart('run-1', 'speckit-specify', 1);
     mc.monitor.onStdoutChunk('run-1', 'hi\n');
     mc.advance(50_000);
     mc.monitor.onStderrChunk('run-1', 'warn\n');
     mc.advance(40_000);
+    expect(
+      mc.monitor.getCurrentState()!.status,
+      '40s after stderr activity is inside the 90s threshold, so this child is not stalled'
+    ).toBe('running');
+  });
+
+  it('a genuinely silent child still stalls at the threshold — the other direction', () => {
+    // The rearm must not become "never stall". Both directions are asserted, because a
+    // detector that cannot fire is as useless as one that fires wrongly.
+    mc.monitor.onStart('run-1', 'speckit-specify', 1);
+    mc.monitor.onStderrChunk('run-1', 'warn\n');
+    mc.advance(90_000);
     expect(mc.monitor.getCurrentState()!.status).toBe('stalled');
+  });
+
+  it('stderr after a stall CLEARS it — recovery, not only rearm', () => {
+    // The recovery half. Before this, a stall declared during a stderr-only stretch could
+    // never be withdrawn by the very output that disproved it.
+    mc.monitor.onStart('run-1', 'speckit-specify', 1);
+    mc.monitor.onStdoutChunk('run-1', 'hi\n');
+    mc.advance(90_000);
+    expect(mc.monitor.getCurrentState()!.status).toBe('stalled');
+    mc.monitor.onStderrChunk('run-1', 'still working\n');
+    expect(mc.monitor.getCurrentState()!.status).toBe('running');
+  });
+
+  it('a stderr-only child runs far past the threshold without a stall verdict', () => {
+    // The realistic shape: a long build that only ever writes to stderr. Three minutes at
+    // the 90s threshold, so a single missed rearm would show up as a stall.
+    mc.monitor.onStart('run-1', 'speckit-specify', 1);
+    for (let i = 0; i < 6; i++) {
+      mc.monitor.onStderrChunk('run-1', `step ${i}\n`);
+      mc.advance(30_000);
+    }
+    expect(mc.monitor.getCurrentState()!.status).toBe('running');
   });
 
   it('stdout chunk after stalled returns to running', () => {

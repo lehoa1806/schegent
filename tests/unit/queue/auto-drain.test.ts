@@ -80,7 +80,7 @@ describe('queue auto-drain prerequisites (US1 / T028)', () => {
 // ---------------------------------------------------------------------------
 
 import { AutoDrainCoordinator } from '../../../src/services/auto-drain-coordinator';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import type { QueueLifecycle } from '../../../src/queue/feature-request';
 import { vi } from 'vitest';
 

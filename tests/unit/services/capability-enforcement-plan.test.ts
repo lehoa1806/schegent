@@ -5,6 +5,7 @@
 // or a clock. That is the difference between a mechanism and a claim about one —
 // and the reason a table like this belongs in a unit test rather than in an
 // integration run that samples three of them.
+import { observeAmbientConfig } from '../../../src/services/ambient-config-observer';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -292,11 +293,81 @@ describe('FR-R3-086 — an applied bound is observable, not just an enforced one
   it('carries no path and no operator-authored content in the payload', async () => {
     // Same discipline the refusal payload is held to: closed-union members, a
     // number, and nothing else that could carry a workspace path or a secret.
+    //
+    // FR-R3-105 (FR-066) added `ambientConfig`, and it is held to the same rule rather
+    // than exempted from it. The observation is a DIGEST plus the NAMES of the keys read —
+    // never the config path (AGENTS.md forbids workspace paths in the structured log, and
+    // a home-directory path additionally carries the operator's username) and never the
+    // values (a settings file can hold an API key). The assertion below is on the key set,
+    // so a future field that did carry a path would fail here.
     const { recorded } = await runWith(['network', 'workspace-write'], 'claude');
     const payload = recorded[0].payload;
-    expect(Object.keys(payload).sort()).toEqual(['granted', 'kind', 'phaseIndex']);
+    expect(Object.keys(payload).sort()).toEqual([
+      'ambientConfig',
+      'granted',
+      'kind',
+      'phaseIndex'
+    ]);
     for (const member of payload.granted as readonly string[]) {
       expect(ALL_PHASE_CAPABILITIES).toContain(member);
     }
+    // No observer is injected by this harness, so the honest value is `null` — "nothing
+    // observed", which an operator can tell apart from "observed and unchanged".
+    expect(payload.ambientConfig).toBeNull();
+  });
+
+  it('the ambient observation carries a digest and key NAMES, never a path or a value', async () => {
+    // FR-R3-105 (FR-066, FR-086). The shape is asserted against a real observation rather
+    // than the null one above, because the null case cannot show what a populated one
+    // would leak.
+    const observed = await observeAmbientConfig('claude', {
+      readFile: async () =>
+        JSON.stringify({
+          permissions: { allow: ['Bash'] },
+          apiKeyHelper: '/Users/someone/secrets/get-key.sh',
+          unrelated: 'ignored'
+        })
+    });
+    expect(observed).not.toBeNull();
+    if (observed === null) return;
+
+    expect(Object.keys(observed).sort()).toEqual(['digest', 'keysObserved']);
+    // Only keys that could WIDEN a bound are read; `apiKeyHelper` is not among them, and
+    // its VALUE — a path under a home directory — must not appear anywhere.
+    expect(observed.keysObserved).toEqual(['permissions']);
+    expect(JSON.stringify(observed)).not.toContain('/Users/');
+    expect(JSON.stringify(observed)).not.toContain('get-key.sh');
+    expect(observed.digest).toMatch(/^[0-9a-f]{64}$/);
+
+    // Same content digests the same, different content differs — which is the only
+    // property a reader comparing two Runs needs.
+    const again = await observeAmbientConfig('claude', {
+      readFile: async () => JSON.stringify({ permissions: { allow: ['Bash'] } })
+    });
+    expect(again?.digest).toBe(observed.digest);
+    const changed = await observeAmbientConfig('claude', {
+      readFile: async () => JSON.stringify({ permissions: { allow: ['Bash', 'WebFetch'] } })
+    });
+    expect(changed?.digest).not.toBe(observed.digest);
+  });
+
+  it('an absent or unreadable ambient config is null, and does not fail the phase', async () => {
+    const missing = await observeAmbientConfig('claude', {
+      readFile: async () => {
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      }
+    });
+    expect(missing).toBeNull();
+
+    // A backend with no known configuration location is `null` without reading anything.
+    let read = false;
+    const none = await observeAmbientConfig('agy', {
+      readFile: async () => {
+        read = true;
+        return '{}';
+      }
+    });
+    expect(none).toBeNull();
+    expect(read, 'a backend with no config location must not be read at all').toBe(false);
   });
 });

@@ -8,7 +8,7 @@ import type { SchegentWorkflowController } from '../../../src/controller/workflo
 import type { AuditLogWriter } from '../../../src/audit/audit-log-writer';
 import type { Notifier } from '../../../src/ui/notifications';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();

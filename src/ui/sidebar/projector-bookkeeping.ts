@@ -9,10 +9,10 @@ import {
 } from './activity-timing';
 import { computeSubProgressForTile } from './phase-projector';
 import { mapRunStatus } from './run-projector';
+import type { PhaseName } from '../../contracts/phase-identity';
 import type {
   AuditTailEntry,
   LiveActivity,
-  PhaseName,
   PhaseTile,
   WorkflowStatus
 } from './snapshot';

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { RunDriver } from '../../../src/services/run-driver';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
 
 describe('RunDriver Probing (Feature 074)', () => {

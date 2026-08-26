@@ -35,6 +35,28 @@ export interface ProjectorTimer {
   clearTimeout: (handle: unknown) => void;
 }
 
+/**
+ * FR-R3-106 (FR-069) — the longest the sidebar may show a stale frame while events keep
+ * arriving.
+ *
+ * WHY 500 ms, and why it is not the 100 ms debounce. The debounce coalesces: it exists so
+ * eight event sources firing at once produce one projection rather than eight. The deadline
+ * bounds the coalescing, and it only ever takes effect under a stream sustained faster than
+ * 100 ms — which is a busy run, exactly when the display matters most.
+ *
+ * The number is chosen from the measured cost of one `project()` pass. `tests/perf/
+ * render-budget.test.ts` measures that pass at the queue scale the product permits; at
+ * 500 ms the worst case is 2 projections per second, which is comfortably inside the
+ * measured budget and still fast enough that no operator perceives the display as stuck.
+ * Lower would spend more of a saturated run's budget on projection; higher would leave the
+ * frame visibly stale, and "visibly" starts around a second.
+ *
+ * It is deliberately NOT derived from `tickIntervalMs` (1 s). The tick is a liveness
+ * heartbeat for elapsed counters; this is a staleness bound on the whole frame. Tying them
+ * would make one number answer two questions.
+ */
+export const DEFAULT_MAX_WAIT_MS = 500;
+
 export interface StateProjectorDeps {
   // Feature 093 (T025) — `getRunMap` replaces `getRun` in the projector's slice
   // of the store. The projection is the pattern-D aggregate case: it wants every
@@ -50,6 +72,13 @@ export interface StateProjectorDeps {
   readonly sanitize?: (value: string | null | undefined) => string;
   readonly debounceMs?: number;
   readonly tickIntervalMs?: number;
+  /**
+   * FR-R3-106 (FR-069) — the max-wait deadline on the projection debounce.
+   *
+   * Injectable for tests only. The default is `DEFAULT_MAX_WAIT_MS`, declared beside it,
+   * and production does not pass this.
+   */
+  readonly maxWaitMs?: number;
   readonly timer?: ProjectorTimer;
   readonly now?: () => Date;
   readonly monotonicNow?: () => number;

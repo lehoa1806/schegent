@@ -13,13 +13,26 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 82
+    vacuity-census-denominator: 83
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **82** |
+| Gates the detector calls **controlled** (the denominator) | **83** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
+
+**Denominator movement during feature 156 (2026-08-26).** Every change to the census is recorded with
+its cause, because a denominator that moves without explanation is how a measured rate gets improved by
+narrowing its sample — the exact failure this measurement exists to prevent.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **−1** | `install-flag-parity.test.ts` | Left the controlled set. It walked `.github/workflows/` and asserted a floor of five files — that walk was its vacuity control, since an empty walk would have let its parity assertions pass over nothing. `FR-R3-099` deleted all eight workflows, so the gate was rewritten to read two `.npmrc` files and the documents that teach the install sequence. It scans no directory now, so there is no scan whose emptiness could hide a pass, and the detector correctly stops classifying it. **A reclassification, not a regression**: it kept a non-vacuity test (it mutates the real `.npmrc`) and gained one the old form could not make — that no workflow directory has reappeared to become a second authority on the install policy |
+| **+1** | `actions-retirement-claims.test.ts` | Joined. Scans both trees' Markdown for the falsehood `FR-R3-099` repaired, and carries a floor asserting the scan found documents in *both* trees, so a directory rename cannot empty it into a silent pass |
+| **+1** | `reference-doc-claims.test.ts` | Joined. Covers `repo/docs/reference/`, the directory two independent reviews found uncovered, and carries a page-count floor plus a check that its own per-file exemption list is truthful |
+
+Net **82 → 83**. The false-negative rate is **0.0%** at every intermediate state; no gate was removed
+from the census and none was added to move the number.
 
 **Method.** Every gate the detector classifies as controlled — a **full census**, no sampling and no
 seed, so the denominator cannot be narrowed to improve the number. Each gate's source is neutered *in

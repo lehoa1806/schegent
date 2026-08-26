@@ -1,7 +1,7 @@
 import type { Disposable } from '../state/workspace-state';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { Phase } from '../controller/phase';
-import type { PhaseName } from '../ui/sidebar/snapshot';
+import type { PhaseName } from '../contracts/phase-identity';
 import type { SanitizedLogger } from '../lib/logger';
 import type { CliMonitorState, MonitorStatus } from './monitor-state';
 import { projectTransportAggregate } from './monitor-state';
@@ -259,6 +259,15 @@ export class ClaudeCliMonitor {
     if (state.status === 'starting') {
       state.status = 'running';
       detector?.start();
+    } else if (state.status === 'stalled') {
+      // FR-R3-106 (FR-072) — RECOVERY, not only rearm.
+      //
+      // This branch existed on the stdout path and not here, so a stall declared during a
+      // stderr-only stretch could never be cleared by the output that disproved it: the
+      // child kept writing, the detector kept being rearmed by nothing, and the operator
+      // kept seeing "stalled". Recovery and rearm are separate things and both were
+      // missing — rearm prevents the verdict, recovery withdraws one already made.
+      state.status = 'running';
     }
     const monotonic = this.opts.monotonicNow();
     const nowDate = this.opts.now();
@@ -285,6 +294,9 @@ export class ClaudeCliMonitor {
       });
       this.checkRateLimit(state, line, monotonic);
     }
+    // FR-R3-106 (FR-072) — stderr rearms the stall timer. Its absence here was the whole
+    // defect: `stall-detector.ts` had exactly one rearm call site and it was on stdout.
+    detector?.noteActivity();
     this.noteActivity(state, nowDate);
     this.notify();
   }
@@ -540,7 +552,25 @@ export class ClaudeCliMonitor {
     const sinceMs = state.lastStdoutMonotonic !== null
       ? monotonic - state.lastStdoutMonotonic
       : monotonic - state.startedAtMonotonic;
-    this.appendAudit(runId, 'monitor-stall', { msSinceLastStdout: sinceMs }, 'failure');
+    // FR-R3-106 (FR-073) — BOTH staleness figures.
+    //
+    // `lastStderrMonotonic` was tracked on every stderr chunk and then never read, while
+    // this payload hardcoded the stdout figure alone. So the one event whose whole job is
+    // explaining a stall said nothing about the stream the child may have been using — an
+    // operator reading it could not tell "silent on both pipes" from "chatty on stderr",
+    // which are different situations with different remedies.
+    //
+    // A payload widening of an existing closed-union member, not a new event: the
+    // vocabulary stays closed and the parity gates cover the addition.
+    const sinceStderrMs = state.lastStderrMonotonic !== null
+      ? monotonic - state.lastStderrMonotonic
+      : null;
+    this.appendAudit(
+      runId,
+      'monitor-stall',
+      { msSinceLastStdout: sinceMs, msSinceLastStderr: sinceStderrMs },
+      'failure'
+    );
     this.notify();
   }
 

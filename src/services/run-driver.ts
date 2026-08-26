@@ -16,7 +16,7 @@ import {
   type WorkflowRun
 } from '../state/workflow-run';
 import type { ClaudeCliMonitor } from '../monitor/claude-cli-monitor';
-import type { PhaseName } from '../ui/sidebar/snapshot';
+import type { PhaseName } from '../contracts/phase-identity';
 import type { HistoryRecorder } from './history-recorder';
 import type { RetryCoordinator } from './retry-coordinator';
 import type { PhaseDef } from '../config/pipeline-config';
@@ -435,22 +435,9 @@ export class RunDriver {
                 `run-driver: queue.finish (probe failed) failed: ${(queueError as Error).message}`
               );
             }
-            // Feature 072 — emit task-execution-ended
-            try {
-              if (this.deps.emitTaskLifecycleAudit) {
-                await this.deps.emitTaskLifecycleAudit('task-execution-ended', run, {
-                  taskId: run.featureId,
-                  runId: run.id,
-                  terminalStatus: 'failed',
-                  phasesCompleted: 0,
-                  phasesSkipped: 0,
-                  phasesTotal: run.pipeline?.phases.length || 0,
-                  lastErrorSummary: failureMessage
-                });
-              }
-            } catch (auditErr) {
-              this.deps.logger.warn(`run-driver: task-execution-ended (failed) audit failed: ${(auditErr as Error).message}`);
-            }
+            // Feature 072 — emit task-execution-ended. FR-R3-107: one emitter, and the
+            // statistics are DERIVED here rather than hand-written as zeros.
+            await this.emitTerminalOutcome(run, 'failed', { lastErrorSummary: failureMessage });
               
             await this.deps.emitRunEndedBreakpointAudit(run);
             await this.deps.historyRecorder.record(run, description, 'failed');
@@ -835,21 +822,8 @@ export class RunDriver {
               `run-driver: history record (failed) failed: ${(hErr as Error).message}`
             );
           }
-          // Feature 072 — emit task-execution-ended (failed).
-          try {
-            await this.deps.emitTaskLifecycleAudit('task-execution-ended', run, {
-              taskId: run.featureId,
-              runId: run.id,
-              terminalStatus: 'failed',
-              durationMs: Date.now() - run.startedAt,
-              ...this.computePhaseStats(run),
-              lastErrorSummary: sanitized.message
-            });
-          } catch (err) {
-            this.deps.logger.warn(
-              `run-driver: task-execution-ended (failed) audit failed: ${(err as Error).message}`
-            );
-          }
+          // Feature 072 — emit task-execution-ended (failed). FR-R3-107: one emitter.
+          await this.emitTerminalOutcome(run, 'failed', { lastErrorSummary: sanitized.message });
           break;
         }
 
@@ -1030,20 +1004,8 @@ export class RunDriver {
             `run-driver: history record (completed) failed: ${(hErr as Error).message}`
           );
         }
-        // Feature 072 — emit task-execution-ended (completed).
-        try {
-          await this.deps.emitTaskLifecycleAudit('task-execution-ended', run, {
-            taskId: run.featureId,
-            runId: run.id,
-            terminalStatus: 'completed',
-            durationMs: Date.now() - run.startedAt,
-            ...this.computePhaseStats(run)
-          });
-        } catch (err) {
-          this.deps.logger.warn(
-            `run-driver: task-execution-ended (completed) audit failed: ${(err as Error).message}`
-          );
-        }
+        // Feature 072 — emit task-execution-ended (completed). FR-R3-107: one emitter.
+        await this.emitTerminalOutcome(run, 'completed');
       }
     } catch (error) {
       const auditUnavailable =
@@ -1246,6 +1208,48 @@ export class RunDriver {
   // a total depend on which range a run fell in.
   private computePhaseStats(run: WorkflowRun): RunPhaseStats {
     return computeRunPhaseStats(run);
+  }
+
+  /**
+   * FR-R3-107 (FR-077, FR-078) — the ONE place `task-execution-ended` is emitted.
+   *
+   * WHY THIS EXISTS. `drive()` had three copies of this emission, and they had already
+   * drifted three ways. The CLI-probe-failure copy hand-wrote `phasesCompleted: 0,
+   * phasesSkipped: 0` instead of deriving them, omitted the `durationMs` the other two
+   * carried, and guarded `if (this.deps.emitTaskLifecycleAudit)` while the others called it
+   * unguarded — so the same event left three shapes, and one terminal path emitted nothing
+   * at all where the others logged a warning.
+   *
+   * THE ZERO STATS WERE A LATENT BUG, NOT A DELIBERATE SHAPE. They were *correct* — a CLI
+   * probe fails before any phase runs — but correct **by position**, and nothing pinned the
+   * position. `computeRunPhaseStats` returns zeros for a Run with no phase records, so
+   * deriving preserves today's values byte-for-byte while making a future reordering visible
+   * instead of silently wrong.
+   *
+   * The try/catch stays per-emission, with a warning naming the terminal status, because an
+   * audit failure must not turn a completed Run into a failed one. That discipline was in all
+   * three copies and is the part worth keeping.
+   */
+  private async emitTerminalOutcome(
+    run: WorkflowRun,
+    terminalStatus: 'completed' | 'failed',
+    extra: { readonly lastErrorSummary?: string } = {}
+  ): Promise<void> {
+    try {
+      if (!this.deps.emitTaskLifecycleAudit) return;
+      await this.deps.emitTaskLifecycleAudit('task-execution-ended', run, {
+        taskId: run.featureId,
+        runId: run.id,
+        terminalStatus,
+        durationMs: Date.now() - run.startedAt,
+        ...this.computePhaseStats(run),
+        ...extra
+      });
+    } catch (err) {
+      this.deps.logger.warn(
+        `run-driver: task-execution-ended (${terminalStatus}) audit failed: ${(err as Error).message}`
+      );
+    }
   }
 }
 

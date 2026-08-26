@@ -60,7 +60,7 @@ import { WorkspaceStateStore } from '../../src/state/workspace-state';
 import { runCancel } from '../../src/commands/cancel';
 import { AuditLogWriter } from '../../src/audit/audit-log-writer';
 import type { Notifier } from '../../src/ui/notifications';
-import { RETRY_BUFFER_MS } from '../../src/controller/retry-constants';
+import { RETRY_BUFFER_MS } from '../../src/contracts/retry-bounds';
 import { isTerminalRunStatus, type WorkflowRun } from '../../src/state/workflow-run';
 
 let tmpRoot: string;

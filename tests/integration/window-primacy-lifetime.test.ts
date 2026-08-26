@@ -28,7 +28,7 @@ import { WorkspaceLockManager, type Clock, type Scheduler } from '../../src/stat
 import { SanitizedLogger } from '../../src/lib/logger';
 import type { PhaseRunOutput } from '../../src/controller/phase-runner';
 import type { WorkflowRun } from '../../src/state/workflow-run';
-import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 
 const T0 = 1_700_000_000_000;
 

@@ -21,7 +21,7 @@ import { HistoryStore } from '../../../src/state/history-store';
 import { buildHistoryEntry, withDescriptionRef } from '../../../src/state/history-entry';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import { parseAuditLogLine } from '../../../src/parser/audit-log-parser';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();

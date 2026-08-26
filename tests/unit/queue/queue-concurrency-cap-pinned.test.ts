@@ -29,7 +29,7 @@ import {
   type Memento,
   QueueMutationRejected
 } from '../../../src/state/workspace-state';
-import { MAX_QUEUES } from '../../../src/queue/queue-registry';
+import { MAX_QUEUES } from '../../../src/contracts/queue-bounds';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();

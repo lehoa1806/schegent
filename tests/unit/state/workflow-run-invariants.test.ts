@@ -9,7 +9,7 @@ import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { WorkspaceStateStore, type Memento } from '../../../src/state/workspace-state';
 import type { WorkflowRun, PhaseBreakpoint, PhaseOverride } from '../../../src/state/workflow-run';
 import type { PhaseDef } from '../../../src/config/pipeline-config';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();

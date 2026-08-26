@@ -30,12 +30,15 @@ describe('complete test-source typecheck gate', () => {
     }
   });
 
-  it.each(['.github/workflows/ci.yml', '.github/workflows/pr.yml', '.github/workflows/full-gate.yml'])(
-    '%s runs the complete test typecheck',
-    (workflow) => {
-      expect(readFileSync(resolve(ROOT, workflow), 'utf8')).toContain(
-        'npm run typecheck:tests'
-      );
-    }
-  );
+  // FR-R3-099 — this assertion named three workflow files until the Actions
+  // retirement deleted all eight. What it was protecting is that the complete
+  // test-source typecheck is actually RUN, not merely configured, so its subject
+  // moves to the command a release is attested against. Narrower coverage, stated:
+  // one machine, one platform, once. See docs/release/withdrawn-ci-controls.md.
+  it('the attested chain runs the complete test typecheck', () => {
+    const pkg = readJson('package.json') as { scripts: Record<string, string> };
+    expect(pkg.scripts['gate'], 'the attested chain must exist').toBeTruthy();
+    expect(pkg.scripts['gate']).toContain('npm run ci');
+    expect(pkg.scripts['ci']).toContain('npm run typecheck:tests');
+  });
 });

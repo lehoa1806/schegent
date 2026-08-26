@@ -24,7 +24,7 @@ import { SanitizedLogger } from '../../../../src/lib/logger';
 import type { PhaseResult, WorkflowRun } from '../../../../src/state/workflow-run';
 import type { Phase } from '../../../../src/controller/phase';
 import type { FeatureRequest } from '../../../../src/queue/feature-request';
-import { DEFAULT_QUEUE_ID } from '../../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../../src/contracts/queue-identity';
 import { runOf, runtimeOf, statusOf } from './queue-runtime-read.helpers';
 import { SPECKIT_RUN_PIPELINE } from '../../../fixtures/speckit-catalog-fixture';
 

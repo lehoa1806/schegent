@@ -11,7 +11,7 @@ import { SanitizedLogger } from '../../../../src/lib/logger';
 import type { WorkflowRun } from '../../../../src/state/workflow-run';
 import type { LiveActivity, PhaseTile, WorkflowSnapshot } from '../../../../src/ui/sidebar/snapshot';
 import { runOf, runtimeOf } from './queue-runtime-read.helpers';
-import { DEFAULT_QUEUE_ID } from '../../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../../src/contracts/queue-identity';
 import { SPECKIT_RUN_PIPELINE } from '../../../fixtures/speckit-catalog-fixture';
 
 class FakeMemento implements Memento {

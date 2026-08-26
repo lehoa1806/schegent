@@ -32,11 +32,17 @@
  * `src/lib/schedule-parser.ts`; this module only stores the parsed shape.
  */
 
-export const DEFAULT_QUEUE_ID = 'default' as const;
-// Feature 092 — restored to the v5 cap. Feature 030 reduced it to 1 for the
-// single-queue collapse; the bound itself never changed meaning.
-export const MAX_QUEUES = 20;
-export const MAX_QUEUE_NAME_LENGTH = 64;
+import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
+import { MAX_QUEUES, MAX_QUEUE_NAME_LENGTH } from '../contracts/queue-bounds';
+
+// FR-R3-110 — `DEFAULT_QUEUE_ID` moved to `src/contracts/queue-identity.ts` and
+// `MAX_QUEUES` / `MAX_QUEUE_NAME_LENGTH` to `src/contracts/queue-bounds.ts`. The id
+// moved because two webview modules imported it as a runtime value, which shipped
+// this whole module into the untrusted bundle for one string literal; the bounds
+// moved because `contracts/validators/queue-management.ts` value-imported them from
+// here, which had the contract layer depending on the layer it describes. The
+// values and the preconditions on changing them are unchanged and are documented at
+// the new sites.
 export const MIN_QUEUE_NAME_LENGTH = 1;
 
 /**

@@ -25,7 +25,7 @@
 // host declaration here would make this file the one place the boundary leaks.
 // The host's `HISTORY_UNATTRIBUTED_QUEUE_ID` is a value and cannot be mirrored
 // without a second copy of the constant, so it stays.
-import { HISTORY_UNATTRIBUTED_QUEUE_ID } from '../../../src/state/history-entry.js';
+import { HISTORY_UNATTRIBUTED_QUEUE_ID } from '../../../src/contracts/queue-identity.js';
 import type {
   CatalogVersionRef,
   HistoryEntry,

@@ -59,7 +59,14 @@ describe('release qualification', () => {
     expect(manifest.scripts['verify:all']).toContain('security:secrets');
     expect(manifest.scripts['verify:all']).toContain('security:actions');
     expect(manifest.scripts['contracts:check']).toBeTruthy();
-    expect(existsSync('.github/workflows/release.yml')).toBe(true);
+    // FR-R3-099 — `release.yml` and its Actions-run binding were withdrawn by
+    // operator decision; `docs/release/withdrawn-ci-controls.md` records what they
+    // were. The auditable release surface is now wholly local, so this asserts the
+    // two things that carry it: the attested gate command, and the record the
+    // release path refuses without.
+    expect(manifest.scripts['gate'], 'the attested chain must exist').toBeTruthy();
+    expect(existsSync('scripts/gate-attestation.mjs')).toBe(true);
+    expect(existsSync('docs/release/actions-terminal-record.md')).toBe(true);
     expect(existsSync('src/commands/export-audit.ts')).toBe(true);
   });
 

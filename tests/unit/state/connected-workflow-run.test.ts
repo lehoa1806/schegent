@@ -9,7 +9,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { describe, expect, it } from 'vitest';
 import type { WorkflowDefinition } from '../../../src/contracts/workflow-definitions';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import type { WorkflowRunPipeline } from '../../../src/state/workflow-run';
 import {
   COMPARED_MAX_LENGTH,

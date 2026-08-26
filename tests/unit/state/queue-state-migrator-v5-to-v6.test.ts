@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { migrateV5ToV6, type V5State } from '../../../src/state/queue-state-migrator';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import type { QueueRegistry, QueueRegistryEntry } from '../../../src/queue/queue-registry';
 import type { FeatureRequest, QueueState } from '../../../src/queue/feature-request';
 

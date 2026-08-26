@@ -1,9 +1,9 @@
+import type { PhaseName } from '../../contracts/phase-identity';
 import { computeFreshness } from './freshness';
 import {
   IDLE_LIVE_ACTIVITY,
   type AuditCategory,
   type LiveActivity,
-  type PhaseName,
   type WorkflowStatus
 } from './snapshot';
 

@@ -1,87 +1,75 @@
-// FR-R3-090 (SUP-01) — the local install and the CI install are one policy, so
-// they check against each other rather than drifting.
+// FR-R3-090 (SUP-01), amended by FR-R3-099 and FR-R3-101 — the install hardening,
+// and the documents that teach it, check against each other.
 //
-// THE GAP THIS CLOSES. Every job in `full-gate.yml`, `ci.yml` and `pr.yml`
-// installs with `npm ci --ignore-scripts`. There was no `.npmrc` in either tree,
-// so a contributor's plain `npm ci` ran third-party lifecycle scripts. The
-// hardened posture was a property of the WORKFLOW FILES, not of the repository —
-// which means the tree CI scanned was installed differently from the tree a
-// contributor ran, and the contributor's was the less hardened of the two. It is
-// also the one that runs an uncontained agent CLI.
+// WHAT THIS GATE WAS. FR-R3-090 found the hardened install posture living in the
+// workflow files rather than in the repository: every CI job ran `npm ci
+// --ignore-scripts` while a contributor's plain `npm ci` ran third-party lifecycle
+// scripts, so the tree CI scanned was installed differently from the tree a
+// contributor ran — and the contributor's was the less hardened of the two, on the
+// machine that runs an uncontained agent CLI. The fix was an `.npmrc` in both trees,
+// and this gate existed because there were then TWO authorities on one policy (npm
+// reads `.npmrc`, Actions read the flags) which could only be made to check each
+// other, not derived from one another.
 //
-// TWO AUTHORITIES ON ONE POLICY is the recurring defect FR-R3-066 exists to
-// remove. The `.npmrc` files and the workflow flags are both real and neither
-// can be derived from the other — npm reads one, Actions reads the other — so
-// the remedy available here is the second-best one: make them CHECK against each
-// other, in both directions.
-import { readFileSync, existsSync, readdirSync } from 'node:fs';
+// WHAT CHANGED. FR-R3-099 retired GitHub Actions by operator decision and deleted
+// all eight workflow files. The dual authority is therefore **structurally gone**:
+// `.npmrc` is the only authority on how this repository installs, which is the
+// outcome FR-R3-066 would have preferred all along. The workflow-flag half of this
+// gate has no subject any more and is withdrawn; `docs/release/
+// withdrawn-ci-controls.md` records that.
+//
+// WHAT REPLACES IT. The remaining drift risk moved: it is no longer local-versus-CI
+// but hardening-versus-DOCUMENTATION. `.npmrc` disables the postinstall that used to
+// install `webview-ui`, so every setup surface that still teaches a bare `npm
+// install` hands a new contributor a checkout whose first build fails. FR-R3-101
+// found four such surfaces. So this gate now checks the hardening against the
+// documents that teach it, and `tests/lint/setup-surface-parity.test.ts` covers the
+// full registered set.
+import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
-const WORKFLOW_DIR = resolve(REPO_ROOT, '.github/workflows');
 const NPMRC_FILES = ['.npmrc', 'webview-ui/.npmrc'] as const;
 const SELFTEST = 'scripts/clean-install-selftest.sh';
 
 const read = (relPath: string): string => readFileSync(resolve(REPO_ROOT, relPath), 'utf8');
 
-/** Every `npm ci` / `npm install` command a workflow executes. */
-function installCommands(source: string): readonly string[] {
-  const found: string[] = [];
-  for (const rawLine of source.split('\n')) {
-    const match = /^\s*(?:-\s+)?run:\s*(\S.*)$/.exec(rawLine);
-    if (match === null) continue;
-    for (const command of (match[1] as string).split('&&')) {
-      const trimmed = command.trim();
-      if (/^npm\s+(?:--prefix\s+\S+\s+)?(?:ci|install)\b/.test(trimmed)) found.push(trimmed);
-    }
-  }
-  return found;
-}
+/** `.npmrc` with comments stripped, so a commented-out setting reads as absent. */
+const settings = (relPath: string): string =>
+  read(relPath)
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('#'))
+    .join('\n');
 
-const workflows = readdirSync(WORKFLOW_DIR)
-  .filter((file) => file.endsWith('.yml'))
-  .map((file) => [file, readFileSync(resolve(WORKFLOW_DIR, file), 'utf8')] as const);
-
-describe('FR-R3-090 — the local install matches the hardened CI install', () => {
-  it('scanned a non-empty set of workflows that actually install', () => {
-    // Without this floor, a rename of the workflow directory would empty the
-    // scan and make every assertion below pass over nothing.
-    expect(workflows.length).toBeGreaterThanOrEqual(5);
-    const total = workflows.reduce((sum, [, source]) => sum + installCommands(source).length, 0);
-    expect(total).toBeGreaterThanOrEqual(10);
-  });
-
+describe('FR-R3-090 — the install hardening, and the documents that teach it', () => {
   it('both trees configure ignore-scripts=true', () => {
     for (const file of NPMRC_FILES) {
       expect(existsSync(resolve(REPO_ROOT, file)), `${file} must exist`).toBe(true);
-      const body = read(file)
-        .split('\n')
-        .filter((line) => !line.trimStart().startsWith('#'))
-        .join('\n');
-      expect(body, `${file} must set ignore-scripts=true`).toMatch(/^\s*ignore-scripts\s*=\s*true\s*$/m);
+      expect(settings(file), `${file} must set ignore-scripts=true`).toMatch(
+        /^\s*ignore-scripts\s*=\s*true\s*$/m
+      );
     }
   });
 
-  it('every workflow install command carries --ignore-scripts', () => {
-    const offenders: string[] = [];
-    for (const [file, source] of workflows) {
-      for (const command of installCommands(source)) {
-        if (!command.includes('--ignore-scripts')) offenders.push(`${file}: ${command}`);
-      }
-    }
+  it('no workflow reintroduces a second authority on the install policy', () => {
+    // Actions are retired by decision, not by impossibility. If a workflow file
+    // reappears, the dual authority reappears with it — and the last time that
+    // happened the repository was the less hardened of the two. This is the one
+    // workflow-shaped assertion worth keeping: it guards the ABSENCE.
     expect(
-      offenders,
-      'A workflow that installs without --ignore-scripts is installing differently from every ' +
-        'local checkout, which is the drift .npmrc was added to end.'
-    ).toEqual([]);
+      existsSync(resolve(REPO_ROOT, '.github/workflows')),
+      'A workflow directory reappeared. Either delete it, or restore the flag-parity ' +
+        'assertions this gate withdrew — an installing workflow is a second authority ' +
+        'on how this repository installs, and .npmrc cannot constrain it.'
+    ).toBe(false);
   });
 
   it('the declared webview install step is documented, since .npmrc disables the postinstall that did it', () => {
-    // The substance of FR-R3-090: `.npmrc` is one line, and the enumeration is
-    // the work. The root postinstall populated `webview-ui/node_modules`; with
-    // scripts off it does not run, so the replacement must be a DECLARED step
-    // rather than a surprise.
+    // The substance of FR-R3-090: `.npmrc` is one line, and the enumeration is the
+    // work. The root postinstall populated `webview-ui/node_modules`; with scripts
+    // off it does not run, so the replacement must be a DECLARED step rather than a
+    // surprise.
     const manifest = JSON.parse(read('package.json')) as { scripts?: Record<string, string> };
     expect(
       manifest.scripts?.postinstall,
@@ -95,36 +83,27 @@ describe('FR-R3-090 — the local install matches the hardened CI install', () =
     expect(contributing).toContain('ignore-scripts=true');
   });
 
-  it('the clean-install self-test exists and CONTRIBUTING points at the policy it proves', () => {
-    // The self-test runs a real install into a temporary clone. It is
-    // deliberately NOT spawned from here: that would put a network `npm ci`
-    // inside `test:host`, the suite vitest.config.ts documents as hermetic under
-    // FR-R3-033. It runs as its own full-gate.yml job, where a slow network
-    // install belongs, beside perf, integration and evidence-soak.
+  it('the clean-install self-test exists, is invocable by name, and CONTRIBUTING says when to run it', () => {
+    // FR-R3-099 left this script with NO caller: its only runner was a
+    // `full-gate.yml` job, chosen because a slow network install belongs beside perf
+    // and integration rather than inside the hermetic unit tier. Deleting the
+    // workflow made it a script nobody runs — the exact shape FR-R3-109 objects to
+    // in the unwired scanner.
+    //
+    // It is still not spawned from here, for the original reason: that would put a
+    // network `npm ci` inside `test:host`, which vitest.config.ts documents as
+    // hermetic under FR-R3-033. What it gains instead is a name and a stated
+    // occasion, which is the most an offline gate can honestly give it.
     expect(existsSync(resolve(REPO_ROOT, SELFTEST)), `${SELFTEST} must exist`).toBe(true);
-    const fullGate = readFileSync(resolve(WORKFLOW_DIR, 'full-gate.yml'), 'utf8');
-    expect(fullGate, 'the self-test must run somewhere, or it is a script nobody runs').toContain(
-      'clean-install-selftest.sh'
-    );
-  });
-
-  it('NON-VACUITY: a workflow install without --ignore-scripts is detected', () => {
-    // Derived from a real workflow's real text, not a hand-written stub: the
-    // flag is stripped from the file the gate actually reads.
-    const [, realSource] = workflows.find(([file]) => file === 'full-gate.yml') as readonly [
-      string,
-      string
-    ];
-    const mutated = realSource.replace(/npm ci --ignore-scripts/, 'npm ci');
-    expect(mutated).not.toBe(realSource);
-    const offenders = installCommands(mutated).filter(
-      (command) => !command.includes('--ignore-scripts')
-    );
-    expect(offenders.length).toBeGreaterThan(0);
-    // ...and the unmutated file is clean, so the detector is not matching everything
+    const manifest = JSON.parse(read('package.json')) as { scripts?: Record<string, string> };
     expect(
-      installCommands(realSource).filter((command) => !command.includes('--ignore-scripts'))
-    ).toEqual([]);
+      manifest.scripts?.['selftest:install'],
+      'the clean-install self-test must be invocable by name, or it is a script nobody runs'
+    ).toContain('clean-install-selftest.sh');
+    expect(
+      read('CONTRIBUTING.md'),
+      'CONTRIBUTING must say when to run it, since no schedule does any more'
+    ).toContain('selftest:install');
   });
 
   it('NON-VACUITY: an .npmrc without the setting is detected', () => {

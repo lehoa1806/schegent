@@ -18,7 +18,7 @@
 // registry into a function that runs before the registry is loaded.
 // ---------------------------------------------------------------------------
 
-import { DEFAULT_QUEUE_ID } from '../queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
 import { STATE_SCHEMA_VERSION_V11 } from '../contracts/state-schema';
 import type { WorkflowRun, WorkflowRunStatus } from './workflow-run';
 

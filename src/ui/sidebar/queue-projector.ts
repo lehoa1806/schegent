@@ -11,17 +11,18 @@
 // for the projector-side cap; the validator file pins its own constant
 // at the same numeric value (with a comment cross-reference).
 
+import type { PhaseName } from '../../contracts/phase-identity';
 import type {
   FeatureRequest,
   QueueState,
   ScheduledStartSource
 } from '../../queue/feature-request';
-import { DEFAULT_QUEUE_ID, type ProjectedQueueRegistry } from '../../queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../contracts/queue-identity';
+import { type ProjectedQueueRegistry } from '../../queue/queue-registry';
 import type { ManualPauseCause } from '../../state/workflow-run';
 import { projectQueues } from './queue-summary-projector';
 import {
   RECENT_QUEUE_MAX,
-  type PhaseName,
   type QueueItem,
   type QueueSummary
 } from './snapshot';

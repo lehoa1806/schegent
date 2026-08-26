@@ -32,6 +32,29 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
 // the resolution lives in its own module, as with the three recorder modules
 // above it.
 //
+// FR-R3-105 — bumped phase-runner.ts +4, for the DEFENSIVE half of the argv bound
+// (1035 -> 1039). One type import and a three-line comment; the guard itself replaced an
+// existing line rather than adding one.
+//
+// WHAT IT BUYS. `phaseDef.model` is pushed as its own argv token at all three backends,
+// and it was validated as a non-empty string only — so an operator-imported pipeline
+// document supplying `model: "--dangerously-skip-permissions"` put that literal flag into
+// the child's argv. Spawns are `shell: false`, so this is flag injection rather than shell
+// injection: the exact authority the capability plan exists to narrow, granted through a
+// field the narrowing never sees.
+//
+// WHY IT LANDS HERE AND NOT ONLY AT THE VALIDATOR. The validator closes the ingress, and
+// a `FrozenRunPlan` persisted before that rule existed still carries whatever its document
+// said. Re-resolving a frozen plan is forbidden — the freeze is the point of the freeze —
+// so the value arrives at this request construction and is checked here. Same two-halves
+// shape as `resolveRunOutputs`.
+//
+// WHY IT IS NOT CHEAPER. An earlier draft carried the whole argument at the call site and
+// measured 1053. The reasoning moved to `src/contracts/argv-value.ts`, which is also the
+// single authority both halves read — so the shell gained a guard and a pointer, not a
+// policy. The alternative of inlining the pattern here would have put a second copy of
+// "what is a safe argv value" in the file most likely to disagree with the validator.
+
 // FR-R3-086 — bumped phase-runner.ts +1 more, for the SECOND capability audit
 // event (`capability-applied`). The security pass found that a grant left no
 // trace: the bound lives in argv, argv is never written to the structured log,
@@ -190,7 +213,7 @@ const BUDGETS = [
   // The note is the budget: a reader who assumes this is the catalog definition
   // would conclude the enforcement never fires. Nothing to extract — the
   // argument sits in the call it belongs to.
-  { path: 'src/controller/phase-runner.ts', max: 1_035 },
+  { path: 'src/controller/phase-runner.ts', max: 1_039 },
   // FR-R3-052 / H-03 (2026-08-24) — 400 → 415 for the size check that was
   // missing. `stat()` was already called here and only `isFile()` was read, so
   // `readFile()` took a multi-GiB sidecar wholly into memory. The bound, the

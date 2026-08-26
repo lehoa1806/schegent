@@ -31,7 +31,8 @@ import {
   WorkspaceStateStore,
   type Memento
 } from '../../src/state/workspace-state';
-import { DEFAULT_QUEUE_ID, makeDefaultRegistry } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
+import { makeDefaultRegistry } from '../../src/queue/queue-registry';
 import type { QueueRegistry } from '../../src/queue/queue-registry';
 import type { FeatureRequest, QueueState } from '../../src/queue/feature-request';
 import { STATE_SCHEMA_VERSION } from '../../src/contracts/state-schema';

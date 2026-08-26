@@ -36,7 +36,7 @@ import { RunDriver, type RunDriverDeps } from '../../../src/services/run-driver'
 import { HistoryRecorder } from '../../../src/services/history-recorder';
 import { HistoryStore } from '../../../src/state/history-store';
 import { WorkspaceStateStore, type Memento } from '../../../src/state/workspace-state';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import { isTerminalRunStatus, type WorkflowRun } from '../../../src/state/workflow-run';
 import type { PhaseRunOutput } from '../../../src/controller/phase-runner';
 import { removeTempRoot } from '../../temp-root-cleanup';

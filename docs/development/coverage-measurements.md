@@ -61,7 +61,7 @@ The ratchet never edits configuration. Lowering a floor remains a deliberate cod
 `npm run verify:all` includes the default host tests and webview coverage. The main CI workflow also runs the host `test:coverage` target on Linux. Evaluation, performance, browser-visual, E2E, and Extension Host integration suites are separate targets; their presence in CI does not add their execution to the V8 coverage sets above.
 
 <!-- Source: package.json -->
-<!-- Source: .github/workflows/ci.yml -->
+<!-- Source: ../release/actions-terminal-record.md -->
 <!-- Source: vitest.config.ts -->
 <!-- Source: vitest.evals.config.ts -->
 <!-- Source: vitest.perf.config.ts -->

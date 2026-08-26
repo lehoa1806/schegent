@@ -316,7 +316,20 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // launch is now registered on `disposables` so a verdict cannot surface against a
   // workspace this window has left, which needs a two-line comment rather than one.
   // Set to exactly what the file measures.
-  { path: 'src/extension.ts', maxLines: 1_457 },
+  // FR-R3-106 (FR-075) — 1457 -> 1459. Two lines: one import, and one line of the wrapped
+  // `transport` construction.
+  //
+  // WHAT IT BUYS. `CliTransportSink` counted lines and bytes refused under backpressure
+  // from FR-R3-052 onward, and the only readers of that counter were two unit tests — so the
+  // operator question "did the transport log lose lines?" was answerable by the code and
+  // answered nowhere. The counts now reach the evidence-health surface.
+  //
+  // WHY IT IS ONLY TWO LINES. The first draft put the reporting closure inline here and
+  // measured 1478 — 21 over — and this gate refused it, correctly: the activation shell was
+  // taking on a policy rather than making a call. The closure became
+  // `src/monitor/drop-reporting-transport.ts`, which is also where the reasoning for
+  // wrapping rather than changing the sink lives. What is left here is the seam.
+  { path: 'src/extension.ts', maxLines: 1_459 },
   // P4 phase-control and lifecycle-auditor extraction ratchet: 1,200 → 730.
   // This file owns only the workflow facade, run dispatch, deletion, retry
   // entry, and persistence.
@@ -737,7 +750,31 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // entries (the max-duration default's reasoning lives beside its entry).
   // The four-surface lock-step means this file grows exactly when the manifest
   // does; nothing movable was added. Set to what the file measures.
-  { path: 'src/config/general-settings.ts', maxLines: 712 }
+  { path: 'src/config/general-settings.ts', maxLines: 712 },
+  // FR-R3-107 (FR-079) — `run-driver.ts` enters the ratchet at its measured size.
+  //
+  // WHY IT WAS NOT HERE BEFORE, which is the finding rather than an oversight. The
+  // 2026-08-26 adversarial pass CLEARED the other god-file suspects: `workspace-state.ts`
+  // is a delegating facade with extracted migrators, `Pick<>` consumers, a dated waiver and
+  // a two-directional ratchet — governed debt. `wireStage2` and `runInner` are budget-pinned
+  // shells with extraction history. What survived was `RunDriver.drive()`: **744 lines**, the
+  // centre of the control flow, with no size governance of any kind. This list had ten entries
+  // and none of them was the control-flow centre.
+  //
+  // The hazard was already visible rather than theoretical: `task-execution-ended` was emitted
+  // from three places inside `drive()` and the first copy had drifted — hand-written zero
+  // statistics, no `durationMs`, and a guard the others lacked. FR-R3-107 collapsed the three
+  // into one emitter, which is why this entry arrives WITH a reduction rather than as a note
+  // about future intent.
+  //
+  // THE MARK IS A HIGH-WATER MARK, not a target. The extraction candidates the review names
+  // are the per-outcome handlers: the completed path, the failed path and the probe-failure
+  // path each own a distinct terminal sequence, and each could become its own leaf the way the
+  // three recorder modules did for `phase-runner.ts`. That is the recorded next split, and it
+  // is deliberately NOT taken here — the 2026-08-23 review's warning against wholesale
+  // restructuring stands, and the serialized commit point and fencing semantics inside
+  // `drive()` are load-bearing enough that moving code around them earns its own change.
+  { path: 'src/services/run-driver.ts', maxLines: 1_263 }
 ];
 
 function lineCount(path: string): number {

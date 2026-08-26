@@ -26,7 +26,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { RetryHandler, type RetryHandlerDeps } from '../../src/controller/retry-handler';
-import { RETRY_BUFFER_MS } from '../../src/controller/retry-constants';
+import { RETRY_BUFFER_MS } from '../../src/contracts/retry-bounds';
 import { SCHEDULED_START_MAX_HORIZON_MS } from '../../src/services/guarded-run-service';
 import type { WorkflowRun, PhaseResult } from '../../src/state/workflow-run';
 import { makeHarness, type Harness } from './enqueue-start-separation.helpers';

@@ -30,7 +30,7 @@ import {
   STATE_SCHEMA_VERSION,
   STATE_SCHEMA_VERSION_V10
 } from '../../../src/contracts/state-schema';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import type { QueueState } from '../../../src/queue/feature-request';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
 import {

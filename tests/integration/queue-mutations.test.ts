@@ -18,7 +18,7 @@ import {
   CMD_SAVE_QUEUE_SETTINGS,
   CMD_MOVE_TASK
 } from '../../src/ui/sidebar/messages';
-import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 import {
   appendAttempt,
   createConnectedRun,

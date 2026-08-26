@@ -30,7 +30,7 @@ import {
   type RunStateMap,
   type RunStateMigrationAuditEvent
 } from '../../../src/state/run-state-migrator';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import { STATE_SCHEMA_VERSION_V11 } from '../../../src/contracts/state-schema';
 import {
   FIXTURE_NOW,

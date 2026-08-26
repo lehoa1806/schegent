@@ -16,8 +16,8 @@ import type { Notifier } from '../../../src/ui/notifications';
 import type { Memento } from '../../../src/state/workspace-state';
 import type { WorkspaceLockManager } from '../../../src/state/lock';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
-import { TRANSIENT_BACKOFF_MS } from '../../../src/controller/retry-constants';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { TRANSIENT_BACKOFF_MS } from '../../../src/contracts/retry-bounds';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();

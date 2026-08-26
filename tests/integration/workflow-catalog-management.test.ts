@@ -79,7 +79,7 @@ import { deriveWorkflowPorts } from '../../src/config/workflow-derived-ports';
 import type { WorkflowDefinition } from '../../src/contracts/workflow-definitions';
 import { SanitizedLogger } from '../../src/lib/logger';
 import { QueueManager } from '../../src/queue/queue-manager';
-import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
 import { MessageRouter, type RouterDeps } from '../../src/ui/sidebar/message-router';
 import {

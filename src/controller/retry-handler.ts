@@ -37,7 +37,7 @@ import { backoffForCause } from './rate-limit-backoff';
 import type { GuardedRunService } from '../services/guarded-run-service';
 import { SCHEDULED_START_MAX_HORIZON_MS } from '../services/guarded-run-service';
 import { extractResetTimestamp } from '../parser/rate-limit-reset-extractor';
-import { RETRY_BUFFER_MS } from './retry-constants';
+import { RETRY_BUFFER_MS } from '../contracts/retry-bounds';
 
 export interface DelayedRetryWatchdog {
   pauseAndPoll(

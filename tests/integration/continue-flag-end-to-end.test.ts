@@ -48,7 +48,7 @@ import type {
   DelayedRetryWatchdog,
   WorkflowControllerDeps
 } from '../../src/controller/workflow-controller';
-import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 import { removeTempRoot } from '../temp-root-cleanup';
 
 class FakeMemento implements Memento {

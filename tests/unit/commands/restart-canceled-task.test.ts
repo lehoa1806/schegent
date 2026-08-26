@@ -3,7 +3,7 @@ import { runRestartCanceledTask } from '../../../src/commands/restart-canceled-t
 import { WorkspaceStateStore, type Memento } from '../../../src/state/workspace-state';
 import { QueueManager } from '../../../src/queue/queue-manager';
 import { SanitizedLogger } from '../../../src/lib/logger';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import { MAX_PENDING_TASKS_PER_QUEUE } from '../../../src/queue/feature-request';
 import type { AuditLogWriter } from '../../../src/audit/audit-log-writer';
 import type { Notifier } from '../../../src/ui/notifications';

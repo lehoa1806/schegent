@@ -22,7 +22,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { RunRequest } from '../../src/contracts/run-request';
-import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 import { resolveBoundQueueId } from '../../src/state/connected-workflow-run';
 import type { ChildRunFacts } from '../../src/services/workflow-execution/connected-run-coordinator';
 import { recordChildTerminal } from '../../src/services/workflow-execution/connected-run-coordinator';

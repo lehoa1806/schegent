@@ -184,6 +184,4 @@ Pull-request, main-branch CI, and release qualification all invoke
 `package:smoke`. The release workflow additionally runs the checker against the
 single VSIX selected for publication, so the uploaded artifact—not only the
 temporary smoke package—must satisfy the same policy.
-<!-- Source: .github/workflows/pr.yml -->
-<!-- Source: .github/workflows/ci.yml -->
-<!-- Source: .github/workflows/release.yml -->
+<!-- Source: ../release/actions-terminal-record.md -->

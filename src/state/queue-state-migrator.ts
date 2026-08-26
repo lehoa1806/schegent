@@ -10,8 +10,8 @@
  * metadata for the activation path to persist through the normal writer.
  */
 
+import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
 import {
-  DEFAULT_QUEUE_ID,
   type QueueRegistry,
   type QueueRegistryEntry,
   type QueueRegistryState,

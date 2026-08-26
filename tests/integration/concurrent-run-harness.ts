@@ -42,7 +42,7 @@ import { RunCheckpointService } from '../../src/services/run-checkpoint-service'
 import { RunMutationLedger } from '../../src/services/run-mutation-ledger';
 import { ExecutionLeaseManager } from '../../src/state/execution-lease';
 import { WorkspaceLockManager, type Clock, type Scheduler } from '../../src/state/lock';
-import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 import { isTerminalRunStatus, type WorkflowRun } from '../../src/state/workflow-run';
 import type { ClaudeCliRunner } from '../../src/runner/claude-cli';
 import type { RawInvocationOutput, InvocationRequest } from '../../src/runner/invocation-result';

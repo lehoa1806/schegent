@@ -84,9 +84,16 @@ describe('release-gate scripts (US6 / T048 / FR-033)', () => {
     const scripts = readScripts();
     const ci = scripts.ci;
     // The documented chain is typecheck → typecheck:webview → typecheck:tests →
-    // lint → build:webview → test:host → test:webview:coverage → … → build →
+    // lint → build:webview → test:coverage → test:webview:coverage → … → build →
     // package:smoke → test:integration. We assert presence and ordering of the
     // load-bearing steps, not exact whitespace.
+    //
+    // FR-R3-100 (FR-016) replaced the host leg's `test:host` with `test:coverage`.
+    // Same tests, same single run, coverage instrumentation on -- because
+    // vitest.config.ts declared statement/branch/function/line floors that NO command
+    // enforced, under a comment claiming CI failed on regression. The floors now gate
+    // the attested chain, so the position asserted here is the same one `test:host`
+    // held: after `build:webview`, before `build`.
     //
     // FR-R3-027 split the single `test` step into its two legs, because the
     // webview leg now runs under coverage thresholds and `verify:all` must not
@@ -96,7 +103,7 @@ describe('release-gate scripts (US6 / T048 / FR-033)', () => {
     const idxTestTypecheck = stepIndex(ci, 'typecheck:tests');
     const idxLint = stepIndex(ci, 'lint');
     const idxBuildWebview = stepIndex(ci, 'build:webview');
-    const idxHostSuite = stepIndex(ci, 'test:host');
+    const idxHostSuite = stepIndex(ci, 'test:coverage');
     const idxWebviewSuite = stepIndex(ci, 'test:webview:coverage');
     const idxTestFirst = Math.min(idxHostSuite, idxWebviewSuite);
     const idxTestLast = Math.max(idxHostSuite, idxWebviewSuite);

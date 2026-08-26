@@ -1,8 +1,7 @@
 # Contributing to Schegent
 
 Schegent accepts changes through pull requests targeting `develop`; the checked-in PR and CI workflows are configured for that base branch. No branch-protection or repository-ruleset file is present, so this repository can describe the checks GitHub is configured to run, but it cannot prove which status checks the remote repository requires for merge.
-<!-- Source: .github/workflows/pr.yml -->
-<!-- Source: .github/workflows/ci.yml -->
+<!-- Source: docs/release/actions-terminal-record.md -->
 
 ## Start with the governing context
 
@@ -28,10 +27,26 @@ npm --prefix webview-ui ci
 ```
 
 **Two commands, and the second one is the point (FR-R3-090).** `.npmrc` in both trees sets
-`ignore-scripts=true`, so a local install now matches how every CI job installs — `npm ci
---ignore-scripts` — by default rather than by remembering a flag. Before this, the tree that CI
-scanned, linted and tested was installed differently from the tree a contributor ran, and the
-contributor's was the less hardened of the two. It is also the one that runs an uncontained agent CLI.
+`ignore-scripts=true`, so a plain `npm ci` does not run third-party lifecycle scripts. That disables
+the root `postinstall` which used to install `webview-ui`, which is why the second command exists —
+without it the first build fails, and it fails somewhere that does not mention installing.
+
+Since **2026-08-26 this is the only authority on how the repository installs.** The hardening used to
+live in the workflow files as `npm ci --ignore-scripts`, so the tree CI scanned was installed
+differently from the tree a contributor ran — the contributor's being the less hardened of the two, on
+the machine that runs an uncontained agent CLI. `FR-R3-099` retired Actions by operator decision and
+deleted those files, so the dual authority is gone rather than reconciled.
+
+**When you change the install policy, run the self-test:**
+
+```bash
+npm run selftest:install    # a real npm ci into a temporary clone; needs a network, takes minutes
+```
+
+It is not in `npm run gate` and never was: a network install inside the hermetic unit tier is what
+`FR-R3-033` forbids. Its previous home was a `full-gate.yml` job, which no longer exists, so running
+it is now a judgement call rather than a schedule — make it whenever `.npmrc`, the `postinstall`, or
+any documented setup sequence changes.
 
 **The one lifecycle script this repository needs, named rather than hidden.** `package.json` declares:
 
@@ -64,7 +79,7 @@ See [Developer setup](docs/tutorials/developer-setup.md) for the complete build 
 <!-- Source: .nvmrc -->
 <!-- Source: package.json -->
 <!-- Source: .npmrc -->
-<!-- Source: .github/workflows/ci.yml -->
+<!-- Source: docs/release/actions-terminal-record.md -->
 <!-- Source: scripts/check-playwright-browser.mjs -->
 
 ## Keep the change scoped
@@ -142,10 +157,7 @@ The pull-request workflows currently configured for `develop` run the following:
 - `CodeQL`: analyzes JavaScript and TypeScript on pull requests, pushes to `develop`, and weekly, but its workflow explicitly says findings do not fail the build by default.
 
 These are trigger definitions, not proof of remote merge protection.
-<!-- Source: .github/workflows/pr.yml -->
-<!-- Source: .github/workflows/ci.yml -->
-<!-- Source: .github/workflows/dependency-review.yml -->
-<!-- Source: .github/workflows/codeql.yml -->
+<!-- Source: docs/release/actions-terminal-record.md -->
 
 The repository has no `.vscode/launch.json` or `.vscode/tasks.json`; do not claim an exact F5 workflow from the empty `.vscode/settings.json`. Use `npm run test:integration` for the checked-in automated Extension Development Host path.
 <!-- Source: .vscode/settings.json -->

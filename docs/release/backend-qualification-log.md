@@ -102,3 +102,69 @@ what makes the canary's "discloses nothing about the workspace" claim true rathe
 cost for codex or agy, which is the gap above; whether the agent's work is correct, which is the
 corpus's standing disclaimer and is unchanged; and nothing about any date, machine or CLI version other
 than these.
+
+---
+
+## 2026-08-26 — FR-R3-105: the duplicate-flag merge scenario, authored and UNQUALIFIED
+
+**State: `unqualified`.** No live turn was spent. This entry exists so the gap is a recorded state
+rather than an absence, per `FR-R3-104` §5: *where a live turn is not affordable, the honest state is
+"unqualified", displayed, never a fabricated pass.*
+
+### What was found, and fixed, without a live turn
+
+`planCapabilityEnforcement` de-duplicated emitted flags by their joined token
+(`flags.join(' ')`), which only ever collapsed two capabilities whose flag **and value** were
+identical. Claude's surface has **three** rows on `--disallowedTools`:
+
+| Capability withheld | Flag and value |
+|---|---|
+| `process-spawn` | `--disallowedTools Bash` |
+| `network` | `--disallowedTools WebFetch,WebSearch` |
+| `workspace-write` | `--disallowedTools Edit,Write,NotebookEdit` |
+
+So withholding any two emitted the flag twice, and withholding all three emitted it three times. The
+host does not control the child's argument parser. **If that parser is last-wins, the most restrictive
+set anyone can request silently re-granted `Bash`** — the stricter the operator's ask, the more likely
+it was to be defeated. The fix merges values into one flag, which is the CLI's own documented
+comma-list form, and `tests/unit/services/capability-argv-single-flag.test.ts` asserts the emitted argv
+**literally** across every capability subset on all three backends. The defect was invisible to every
+test that checked behaviour rather than bytes.
+
+### What only a live turn can establish, and is therefore NOT established
+
+**Which merge semantics the real parsers actually use.** Three answers are possible for a repeated
+flag — last-wins, first-wins, or accumulate — and they differ in whether the old code was a live
+security hole or merely untidy. This log does not claim to know which.
+
+What the fix does establish without knowing: **the host no longer depends on the answer.** One flag,
+one value, no repetition, on any subset. That is why the item is closable while this scenario stays
+unqualified — the correctness of the emitted argv does not rest on the parser's disambiguation rule.
+
+### The scenario, authored and ready to run
+
+Costed at roughly **$0.13** for one claude turn, on the empty-temp-repo shape the 2026-08-25 entry
+established (running it inside the workspace cost $0.38 and disclosed the tree, which is why it does
+not).
+
+1. Run a canary phase declaring `capabilities: [outside-workspace-write]` — withholding
+   `process-spawn`, `network` and `workspace-write`, the three-way collision.
+2. Capture the argv actually spawned, and assert `--disallowedTools` appears exactly once.
+3. In the live turn, prompt the model to attempt a `Bash` command and a `WebFetch`. Both must be
+   refused by the CLI's own permission engine.
+4. Record the observed refusals. **A refusal of `Bash` is what falsifies last-wins re-granting** on
+   the merged form.
+5. Repeat step 1 against the *pre-fix* argv shape (the flag emitted three times) if the operator wants
+   the historical question answered too. This is the only step that establishes whether the old code
+   was exploitable, and it is optional — the fix does not depend on it.
+
+### Also unqualified, and named rather than left implicit
+
+- **The adapters' flag sets have still not been read against the CLIs' `--help` output.**
+  `tests/evals/README.md` has recorded this gap since before the agy incident, and the agy incident is
+  what it predicts: an adapter answered the wrong prompt for 24 days at exit 0 under 9,312 green tests.
+  Reading three help outputs costs no quota — it needs the three CLIs installed and one operator
+  session — so this is *unspent effort*, not an unaffordable one, and it is the cheapest remaining
+  control in this area.
+- **The ambient-configuration pinning decision** (`--settings`), which `FR-R3-105` deferred because the
+  flag's stability cannot be established without a live turn. The observation shipped instead.

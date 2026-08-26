@@ -24,7 +24,7 @@ import { SanitizedLogger } from '../../src/lib/logger';
 import { PhaseRunner } from '../../src/controller/phase-runner';
 import { QueueManager } from '../../src/queue/queue-manager';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
-import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 import type { ClaudeCliRunner } from '../../src/runner/claude-cli';
 import type { AuditLogWriter } from '../../src/audit/audit-log-writer';
 import type {

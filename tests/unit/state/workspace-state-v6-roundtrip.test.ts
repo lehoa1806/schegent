@@ -1,3 +1,4 @@
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import { describe, it, expect } from 'vitest';
 import {
   KEYS,
@@ -7,7 +8,6 @@ import {
 } from '../../../src/state/workspace-state';
 import { STATE_SCHEMA_VERSION } from '../../../src/contracts/state-schema';
 import {
-  DEFAULT_QUEUE_ID,
   type QueueRegistry,
   type QueueRegistryEntry
 } from '../../../src/queue/queue-registry';

@@ -128,7 +128,25 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
   private handleInbound(raw: unknown): void {
     const result = validateInboundMessage(raw);
     if (!result.ok) {
-      this.logger.debug(`sidebar: dropping invalid message (${result.reason})`);
+      // FR-R3-102 (FR-037) — `warn`, not `debug`.
+      //
+      // This is a TRUST BOUNDARY rejection: the webview is the untrusted side, and a
+      // message that fails validation is either a defect or a probe. The default
+      // runtime log level is INFO (`settings-schema.ts` `runtimeLogLevel`), so at
+      // `debug` a probing webview was **invisible at default settings** — the host
+      // dropped the message correctly and told nobody. `ARCHITECTURE.md` had claimed
+      // for a year that these were "audited as `audit.invalid_command`"; no such
+      // event has ever existed, and the claim is corrected there rather than here.
+      //
+      // `warn` is the floor, not the destination. An audit event is the shape the
+      // document always promised and is the stronger answer, recorded as the
+      // destination in `ARCHITECTURE.md` rather than built here — the audit
+      // vocabulary is a closed union with parity gates on both sides of the boundary,
+      // so adding a member is its own change with its own tests.
+      //
+      // `result.reason` is a closed reason code from the validator, never
+      // operator-authored text, so it is safe on this path.
+      this.logger.warn(`sidebar: rejected invalid message (${result.reason})`);
       return;
     }
     const view = this.view;

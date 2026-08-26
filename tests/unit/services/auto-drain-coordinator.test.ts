@@ -16,7 +16,7 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import { AutoDrainCoordinator } from '../../../src/services/auto-drain-coordinator';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import type { QueueLifecycle } from '../../../src/queue/feature-request';
 
 // FR-R3-011 — `paused` is gone from this fixture, not merely unset. It was the

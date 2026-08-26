@@ -55,7 +55,8 @@ import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-sta
 import { QueueManager } from '../../src/queue/queue-manager';
 import { WorkspaceLockManager, type Clock, type Scheduler } from '../../src/state/lock';
 import { ExecutionLeaseManager } from '../../src/state/execution-lease';
-import { createQueue, DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
+import { createQueue } from '../../src/queue/queue-registry';
 import { SanitizedLogger } from '../../src/lib/logger';
 import type { ClaudeCliRunner } from '../../src/runner/claude-cli';
 import type { RawInvocationOutput, InvocationRequest } from '../../src/runner/invocation-result';

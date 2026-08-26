@@ -15,7 +15,7 @@
 // migrator, and the sidebar projector alike.
 
 import type { WorkflowDefinition } from '../contracts/workflow-definitions';
-import { DEFAULT_QUEUE_ID } from '../queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
 import type { WorkflowRunPipeline } from './workflow-run';
 
 /**

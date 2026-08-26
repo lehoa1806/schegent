@@ -692,6 +692,7 @@ export const workflowSnapshot = {
   },
   "evidenceHealth": {
     "overall": "healthy",
+    "transportDrops": { "lines": 0, "bytes": 0 },
     "audit": {
       "status": "healthy",
       "continuationPolicy": "fail-closed",

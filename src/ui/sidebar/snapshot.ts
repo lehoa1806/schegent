@@ -1,3 +1,4 @@
+import type { PhaseName } from '../../contracts/phase-identity';
 import type { DebugLogEntry } from '../../lib/webview-log-sink';
 import type { BackendPingState } from '../../services/backend-ping-service';
 import type { PhaseDefinition, PhaseSourceStatus } from '../../contracts/process-definitions';
@@ -114,7 +115,10 @@ export interface BuilderLifecycle {
 // the resolved catalog produced, so a fixed union of seven could only ever be
 // wrong about an operator's catalog; `PhaseName` was already `string` for that
 // reason, and it is the type the wire has always actually used.
-export type PhaseName = string;
+// FR-R3-110 — `PhaseName` moved to `src/contracts/phase-identity.ts`, because
+// `src/monitor/` and `src/services/run-driver.ts` imported it from this UI
+// projection module. Re-exported as a type here would leave two import paths for
+// one name, so it is not.
 
 export interface PhaseCatalogFieldErrorProjection {
   readonly field: string;

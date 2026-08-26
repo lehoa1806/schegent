@@ -19,7 +19,7 @@ import { describe, it, expect } from 'vitest';
 import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { WorkspaceStateStore, type Memento } from '../../../src/state/workspace-state';
 import { QueueManager } from '../../../src/queue/queue-manager';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
 
 class SpyMemento implements Memento {

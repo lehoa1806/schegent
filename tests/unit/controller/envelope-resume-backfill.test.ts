@@ -29,7 +29,7 @@ import { SchegentWorkflowController } from '../../../src/controller/workflow-con
 import { WorkspaceStateStore, type Memento } from '../../../src/state/workspace-state';
 import { QueueManager } from '../../../src/queue/queue-manager';
 import { SanitizedLogger } from '../../../src/lib/logger';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import { snapshotPhaseDef, snapshotPipelineContract } from '../../../src/config/pipeline-snapshot';
 import type { PhaseDef, PipelineDef } from '../../../src/config/pipeline-config';
 import type { FrozenRunPlan } from '../../../src/contracts/run-request';

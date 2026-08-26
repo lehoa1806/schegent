@@ -1,3 +1,5 @@
+import { MAX_QUEUES } from '../contracts/queue-bounds';
+import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
 import {
   MAX_PENDING_TASKS_PER_QUEUE,
   ensureExtendedFeatureRequest,
@@ -6,8 +8,6 @@ import {
   type QueueState
 } from '../queue/feature-request';
 import {
-  DEFAULT_QUEUE_ID,
-  MAX_QUEUES,
   findQueue,
   makeDefaultRegistry,
   projectQueueRegistry,
@@ -50,8 +50,8 @@ import {
   type RunStateMap,
   type RunStateMigrationAuditEvent
 } from './run-state-migrator';
-import { DELAYED_RETRY_CAP } from '../controller/retry-constants';
-import { HISTORY_UNATTRIBUTED_QUEUE_ID } from './history-entry';
+import { DELAYED_RETRY_CAP } from '../contracts/retry-bounds';
+import { HISTORY_UNATTRIBUTED_QUEUE_ID } from '../contracts/queue-identity';
 import {
   migrateV11ToV12,
   type HistoryStateMigrationAuditEvent

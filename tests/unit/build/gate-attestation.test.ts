@@ -11,9 +11,13 @@ import { describe, it, expect, beforeAll } from 'vitest';
  * exists.
  *
  * The decision is pure over a parsed record, so every refusal below is exercised
- * without git, without a gate run and without cutting a release — the reasoning
- * `require-full-gate.test.ts` states for `decideFullGate`. A release gate that can
- * only be exercised by releasing is a gate nobody exercises.
+ * without git, without a gate run and without cutting a release. A release gate
+ * that can only be exercised by releasing is a gate nobody exercises.
+ *
+ * FR-R3-099 withdrew the sibling this note used to cite (`require-full-gate.mjs`
+ * and its test) along with the Actions it read; `docs/release/
+ * withdrawn-ci-controls.md` records what it was. This attestation is no longer one
+ * of two release bindings — it is the only one.
  *
  * Loaded dynamically for the same TS1479 reason its sibling records.
  */
@@ -33,7 +37,7 @@ const OTHER = 'b'.repeat(40);
 /** A record of the shape `record-gate-run.mjs` writes on a green run. */
 const passing = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
   version: 1,
-  command: 'npm run ci',
+  command: gate.GATE_COMMAND,
   head: HEAD,
   treeClean: true,
   exitCode: 0,
@@ -155,8 +159,28 @@ describe('FR-R3-095 — the recorder observes the gate rather than vouching for 
     // One authority. A second copy of the command string in the checker is the
     // duplicate-authority shape `FR-082` and `FR-R3-066` both exist to remove —
     // and here it would drift into a binding that passes on the wrong evidence.
-    expect(gate.GATE_COMMAND).toBe('npm run ci');
+    // FR-R3-100 (FR-014) — the attested command is `gate`, not `ci`. `ci` omitted
+    // the secret scan, the workflow-pin check, the license check, the docs check and
+    // contracts:check, so a release could be attested past a failing secret scan.
+    // Widening `ci` in place would have left this string unchanged and every stale
+    // attestation still matching by name, so the perimeter moved AND the name did.
+    expect(gate.GATE_COMMAND).toBe('npm run gate');
     expect(decide({ attestation: passing({ command: gate.GATE_COMMAND }) }).ok).toBe(true);
+  });
+
+  it('refuses an attestation produced by the OLD, narrower command (FR-R3-100 ratchet)', () => {
+    // This is the ratchet working as designed, not an edge case to special-case.
+    // Every attestation recorded before FR-R3-100 names `npm run ci`, a command whose
+    // perimeter omitted five checks -- including the secret scan. Those records
+    // describe a weaker gate than the one a release is now bound to, so they are
+    // refused by name. The remedy is to re-record, which costs one gate run.
+    const verdict = decide({ attestation: passing({ command: 'npm run ci' }) });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reason).toBe('wrong-command');
+    // The refusal must name BOTH commands: "wrong command" with only one of them
+    // sends the reader to guess which end moved.
+    expect(verdict.message).toContain('npm run ci');
+    expect(verdict.message).toContain('npm run gate');
   });
 
   it('keeps the record out of the repository, and PROVES git agrees', () => {

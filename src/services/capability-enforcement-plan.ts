@@ -119,18 +119,55 @@ export function planCapabilityEnforcement(
     return { outcome: 'refused', reason: 'capability-not-enforceable', kind, unenforceable };
   }
 
-  // Emit in capability order so the argv is deterministic, de-duplicating flags
-  // two capabilities happen to share (codex's sandbox modes overlap by design).
+  // Emit in capability order so the argv is deterministic, merging capabilities that
+  // share a FLAG NAME rather than de-duplicating identical token strings.
+  //
+  // FR-R3-105 (FR-064) — the previous form de-duplicated by `flags.join(' ')`, which
+  // only ever collapsed two capabilities whose flag AND value were identical (codex's
+  // overlapping sandbox modes). Claude has three rows that share `--disallowedTools`
+  // with different values — `process-spawn` -> `Bash`, `network` ->
+  // `WebFetch,WebSearch`, `workspace-write` -> `Edit,Write,NotebookEdit` — so
+  // withholding any two emitted the same flag twice and all three emitted it three
+  // times.
+  //
+  // WHY THAT WAS A SECURITY DEFECT AND NOT UNTIDINESS. The host does not control the
+  // child's argument parser. If that parser is last-wins — the common shape — then
+  // `--disallowedTools Bash --disallowedTools WebFetch,WebSearch` silently **re-grants
+  // Bash**, on precisely the most restrictive set anyone can request. The stricter the
+  // operator's request, the more likely it was to be defeated.
+  //
+  // Merging values into one flag is the CLI's own documented comma-list form, so this
+  // asks nothing new of the parser. The merge is only defined for flags whose value is a
+  // comma list; a future flag that repeats with independent values would need a
+  // different answer, which is why `mergeableFlag` is explicit rather than assumed.
   const args: string[] = [];
-  const seen = new Set<string>();
+  /** flag name -> the values collected for it, in capability order, de-duplicated. */
+  const merged = new Map<string, string[]>();
+  /** Flags with no value, kept in order and emitted once. */
+  const bare: string[] = [];
+
   for (const capability of withheld) {
     const flags = surface.withhold[capability];
     if (flags === undefined) continue;
-    const token = flags.join(' ');
-    if (seen.has(token)) continue;
-    seen.add(token);
-    args.push(...flags);
+    const [flag, ...values] = flags;
+    if (flag === undefined) continue;
+    if (values.length === 0) {
+      if (!bare.includes(flag)) bare.push(flag);
+      continue;
+    }
+    const existing = merged.get(flag);
+    const incoming = values.flatMap((value) => value.split(','));
+    if (existing === undefined) {
+      merged.set(flag, [...new Set(incoming)]);
+      continue;
+    }
+    for (const value of incoming) {
+      if (!existing.includes(value)) existing.push(value);
+    }
   }
+
+  for (const flag of bare) args.push(flag);
+  for (const [flag, values] of merged) args.push(flag, values.join(','));
   return { outcome: 'argv', args };
 }
 

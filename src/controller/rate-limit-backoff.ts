@@ -32,7 +32,7 @@ import {
   RETRY_BUFFER_MS,
   RETRY_FLOOR_MS,
   TRANSIENT_BACKOFF_MS
-} from './retry-constants';
+} from '../contracts/retry-bounds';
 
 /**
  * Rate-limit family — every label that maps to the `rate_limit`

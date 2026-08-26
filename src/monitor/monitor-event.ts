@@ -1,4 +1,4 @@
-import type { PhaseName } from '../ui/sidebar/snapshot';
+import type { PhaseName } from '../contracts/phase-identity';
 
 interface BaseFields {
   readonly runId: string;

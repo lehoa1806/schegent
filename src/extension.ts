@@ -13,7 +13,7 @@ import { resolveCliPath } from './config/cli-path-accessor';
 import { maybeShowMultiRootWarning } from './state/multi-root-warning';
 import { initCapabilityTrustResolver } from './state/capability-trust-resolver';
 import { QueueManager } from './queue/queue-manager';
-import { DEFAULT_QUEUE_ID } from './queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from './contracts/queue-identity';
 import { resolveBackendKind } from './runner/backend-runner-factory';
 import { BackendRunnerRegistry } from './runner/backend-runner-registry';
 import { resolveProcessEnvironmentPolicy } from './runner/spawn-env';
@@ -63,6 +63,7 @@ import { MessageRouter } from './ui/sidebar/message-router';
 import { PlaceholderProjector } from './ui/sidebar/placeholder-projector';
 import { ClaudeCliMonitor } from './monitor/claude-cli-monitor';
 import { createCliTransportSink } from './monitor/cli-transport-sink';
+import { withDropReporting } from './monitor/drop-reporting-transport';
 import type { RunActivityObservation } from './monitor/activity-coalescer';
 import { TelemetrySamplerImpl } from './telemetry/telemetry-sampler';
 import { psShellOut } from './telemetry/platform/platform-ps';
@@ -537,9 +538,10 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     // The root is re-read per emit rather than closed over: a host outlives one
     // folder, and the destination and its containment root are derived together
     // so the two cannot disagree.
-    transport: createCliTransportSink(
-      () => getCanonicalWorkspaceRoot()?.uri.fsPath ?? null,
-      logger
+    // FR-R3-106 — wrapped so backpressure refusals reach evidence health.
+    transport: withDropReporting(
+      createCliTransportSink(() => getCanonicalWorkspaceRoot()?.uri.fsPath ?? null, logger),
+      evidenceHealth
     ),
     activity: {
       record: (observation) => {

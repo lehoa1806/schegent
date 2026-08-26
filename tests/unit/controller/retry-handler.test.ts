@@ -34,7 +34,7 @@ import {
   DELAYED_RETRY_CAP,
   RATE_LIMIT_BACKOFF_MS,
   TRANSIENT_BACKOFF_MS
-} from '../../../src/controller/retry-constants';
+} from '../../../src/contracts/retry-bounds';
 
 function makeRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
   return {

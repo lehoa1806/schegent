@@ -18,9 +18,9 @@
 //     precedence: an operator pause that fires while a cascade pause is active
 //     wins; the matching cascade-resume is a no-op.
 
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
-  DEFAULT_QUEUE_ID,
   makeDefaultRegistry,
   projectQueueRegistry,
   type QueuePauseView

@@ -1,4 +1,4 @@
-import { DEFAULT_QUEUE_ID } from '../../../queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../contracts/queue-identity';
 import type { StartCommand } from '../messages';
 import type { CommandHandler } from './handler-contract';
 import { ack } from './handler-helpers';

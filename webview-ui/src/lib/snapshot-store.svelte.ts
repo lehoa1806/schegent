@@ -231,9 +231,23 @@ class SnapshotStore {
       return;
     }
     this._snapshot = snap;
-    if (this._pending.size > 0) {
-      this._pending = new Set();
-    }
+    // FR-R3-106 (FR-071) — a snapshot clears NOTHING by itself.
+    //
+    // THE DEFECT. This used to be `if (this._pending.size > 0) this._pending = new Set();`
+    // — any accepted snapshot wiped the ENTIRE pending set, with no correlation filtering.
+    // Snapshots arrive on a 1 Hz tick as well as on real state changes, so a tick unrelated
+    // to any in-flight command re-enabled its button before the mutation landed. The
+    // operator sees a control go live again and reasonably clicks it twice.
+    //
+    // The targeted clear already existed, eight lines above, and this path did not use it.
+    //
+    // WHY NOTHING IS CLEARED HERE AT ALL. A pending command is resolved by its
+    // ACKNOWLEDGEMENT (`applyAck`), which carries the correlation id that identifies it. A
+    // snapshot carries no correlation id, so it cannot say which command it resolves — and
+    // guessing from "the state now looks like the mutation happened" is exactly the
+    // inference that made an unrelated tick clear a live command. If a mutation lands and
+    // its ack is lost, the pending entry is cleared by the ack timeout, not by a snapshot
+    // that happens to arrive afterwards.
   }
 
   private applyAck(msg: CommandAckMessage): void {

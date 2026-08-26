@@ -3,7 +3,7 @@ import type { SanitizedLogger } from '../lib/logger';
 import type { GuardedRunService } from '../services/guarded-run-service';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { WorkspaceStateStore } from '../state/workspace-state';
-import { DEFAULT_QUEUE_ID } from '../queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
 import { runEnqueue, type EnqueueCommandArgs, type RunEnqueueResult } from './enqueue';
 
 /**

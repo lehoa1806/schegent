@@ -29,7 +29,7 @@ import { QueueManager } from '../../src/queue/queue-manager';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
 import { AutoDrainCoordinator } from '../../src/services/auto-drain-coordinator';
 import { SanitizedLogger, type LogSink } from '../../src/lib/logger';
-import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();

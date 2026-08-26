@@ -503,6 +503,42 @@ export interface CapabilityAppliedPayload {
   readonly kind: BackendRunnerKind;
   readonly granted: readonly PhaseCapability[];
   readonly phaseIndex: number;
+  /**
+   * FR-R3-105 (FR-066) — what the backend's own configuration said, observed.
+   *
+   * WHY EVIDENCE OF A BOUND IS NOT ENOUGH WITHOUT THIS. A narrowed argv defers to
+   * whatever the CLI's ambient configuration says. The host neither pins nor read
+   * that file, so `granted` above answered "which bound did the host apply" while
+   * leaving "and was that bound the operative one" unanswerable. The threat model
+   * discloses the trust anchor — the backend CLI honouring its own flags — but not
+   * that a *local config file* can widen a narrowed set without any flag being
+   * dishonoured.
+   *
+   * `null` when no configuration was found, which is itself an answer.
+   *
+   * NO PATH, deliberately, and this is the hard rule rather than a preference:
+   * workspace paths may not be serialized into the structured audit log, and a
+   * home-directory path is worse — it carries the operator's username. So the
+   * observation is a digest of the values plus the NAMES of the keys read. A
+   * reader comparing two Runs can tell whether the ambient configuration changed
+   * between them, which is the question evidence needs to answer, without the log
+   * carrying the configuration itself.
+   */
+  readonly ambientConfig: AmbientConfigObservation | null;
+}
+
+/**
+ * An observation of the backend CLI's own configuration at the moment a bound was
+ * applied.
+ *
+ * Deliberately not the configuration. `digest` is a hex digest over the observed
+ * values, so two Runs can be compared for sameness; `keysObserved` names which keys
+ * were read, so a reader knows the digest's scope rather than trusting it. Neither
+ * carries a path, a value, or anything operator-authored.
+ */
+export interface AmbientConfigObservation {
+  readonly digest: string;
+  readonly keysObserved: readonly string[];
 }
 
 /**

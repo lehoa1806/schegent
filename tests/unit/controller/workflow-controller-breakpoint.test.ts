@@ -18,7 +18,7 @@ import type { WorkflowRun, WorkflowRunStatus } from '../../../src/state/workflow
 // now; the fixture supplies the same definitions under the same ids. See its
 // header for why the ids are the real Spec Kit ones.
 import { SPECKIT_ALL_PHASE_DEFS } from '../../fixtures/speckit-catalog-fixture';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();

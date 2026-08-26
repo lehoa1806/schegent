@@ -45,7 +45,7 @@
  *     single migration-style home.
  */
 
-import { DELAYED_RETRY_CAP } from '../controller/retry-constants';
+import { DELAYED_RETRY_CAP } from '../contracts/retry-bounds';
 import { buildMutationPlan } from '../services/mutation-plan';
 import type {
   DelayedRetryCause,

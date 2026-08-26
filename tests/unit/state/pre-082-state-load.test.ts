@@ -22,7 +22,7 @@ import { STATE_SCHEMA_VERSION, STATE_SCHEMA_VERSION_V8 } from '../../../src/cont
 import type { WorkflowRun } from '../../../src/state/workflow-run';
 import { snapshotPipelineContract } from '../../../src/config/pipeline-snapshot';
 import type { PhaseDef, PipelineDef } from '../../../src/config/pipeline-config';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 
 const FIXTURE_PATH = join(__dirname, '../../fixtures/state/pre-082-workspace-state.json');
 

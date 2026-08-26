@@ -46,9 +46,7 @@ and release workflows. A passing consolidated gate therefore proves the three
 facts above and no broader legal compatibility claim.
 
 <!-- Source: package.json -->
-<!-- Source: .github/workflows/pr.yml -->
-<!-- Source: .github/workflows/ci.yml -->
-<!-- Source: .github/workflows/release.yml -->
+<!-- Source: ../release/actions-terminal-record.md -->
 
 ## Dependency records in scope
 
@@ -118,7 +116,7 @@ tool.
 
 <!-- Source: package.json -->
 <!-- Source: scripts/check-licenses.mjs -->
-<!-- Source: .github/workflows/dependency-review.yml -->
+<!-- Source: ../release/actions-terminal-record.md -->
 
 ## Pull-request dependency controls
 
@@ -129,7 +127,7 @@ on failure. It does not configure `allow-licenses` or `deny-licenses`, so this
 repository's workflow file contains no project-specific license compatibility
 policy.
 
-<!-- Source: .github/workflows/dependency-review.yml -->
+<!-- Source: ../release/actions-terminal-record.md -->
 
 Dependabot opens weekly root and webview npm update pull requests and groups
 several related toolchains; major updates are ignored for manual handling. A
@@ -139,7 +137,7 @@ vulnerabilities. They complement, but do not perform, the manual license review
 above.
 
 <!-- Source: .github/dependabot.yml -->
-<!-- Source: .github/workflows/security-audit.yml -->
+<!-- Source: ../release/actions-terminal-record.md -->
 
 ## What ships
 
@@ -158,7 +156,7 @@ also generates a CycloneDX SBOM and checksums for the release bundle. The SBOM
 is a dependency inventory artifact; its existence does not waive or satisfy a
 license or notice obligation by itself.
 
-<!-- Source: .github/workflows/release.yml -->
+<!-- Source: ../release/actions-terminal-record.md -->
 <!-- Source: scripts/package-vsix-smoke.mjs -->
 <!-- Source: scripts/check-vsix-smoke.mjs -->
 
@@ -179,4 +177,4 @@ Before publishing a dependency-bearing release, confirm:
 <!-- Source: package.json -->
 <!-- Source: scripts/check-licenses.mjs -->
 <!-- Source: scripts/check-vsix-smoke.mjs -->
-<!-- Source: .github/workflows/release.yml -->
+<!-- Source: ../release/actions-terminal-record.md -->

@@ -17,11 +17,11 @@
 // `emptyCatalogGuidance(pipelines.length)` there. Threading it through the
 // projection instead would put it on the snapshot, across the IPC boundary and
 // into the parity tests, to deliver a constant both ends can already import.
+import type { PhaseName } from '../../contracts/phase-identity';
 import { isLoopPhase, type Phase, type PhaseOutcome } from '../../controller/phase';
 import { DEFAULT_ITERATION_CAP } from '../../services/run-planned-total';
 import type { WorkflowRun } from '../../state/workflow-run';
 import {
-  type PhaseName,
   type PhaseResultState,
   type PhaseTile,
   type SubProgress

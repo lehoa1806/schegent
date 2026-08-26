@@ -22,7 +22,7 @@ import {
   WorkspaceStateStore,
   type Memento
 } from '../../../src/state/workspace-state';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import { migrateV10ToV11 } from '../../../src/state/run-state-migrator';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
 import { buildQueueRegistry, buildWorkflowRun, fixtureQueueId } from '../../fixtures/state/queue-fixtures';

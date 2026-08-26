@@ -61,7 +61,7 @@ import {
   WorkspaceStateStore,
   type Memento
 } from '../../../src/state/workspace-state';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 
 const { showInformationMessage, showWarningMessage, showErrorMessage } = mocks;
 

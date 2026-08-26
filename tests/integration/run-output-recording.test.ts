@@ -38,7 +38,7 @@ import { HistoryStore } from '../../src/state/history-store';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
 import type { PhaseRunOutput } from '../../src/controller/phase-runner';
 import type { WorkflowRun } from '../../src/state/workflow-run';
-import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 
 const NOW = 1_700_000_000_000;
 

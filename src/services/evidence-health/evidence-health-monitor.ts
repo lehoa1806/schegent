@@ -45,6 +45,38 @@ export interface EvidenceHealthSnapshot {
    * `fail-closed` status that governs writes.
    */
   readonly historyPointer: EvidenceSinkHealth;
+  /**
+   * FR-R3-106 (FR-075) — transport lines refused because the sink's pending queue was
+   * already at its bound.
+   *
+   * WHY IT BELONGS HERE. `CliTransportSink` has counted these since `FR-R3-052` and exposed
+   * them on a getter whose only readers were two unit tests. So the operator question "did
+   * the transport log lose lines?" was answerable by the code and answered nowhere — the
+   * bound was real, the loss was real, and the evidence said nothing. Same class as a
+   * declared threshold no command enforces.
+   *
+   * A COUNT, not a status, and it deliberately does not feed `overall`. A drop is not a sink
+   * failure: the cap did its job and the run continued. What it means is that the transcript
+   * is **incomplete**, which matters when someone later reads that transcript to explain a
+   * run. Folding it into `overall` would put the whole surface amber for a working system,
+   * which is how a status people learn to ignore gets made.
+   *
+   * Zero is the common value and is reported as zero rather than omitted — "no drops" and
+   * "nobody looked" must not read the same.
+   */
+  readonly transportDrops: TransportDropCounts;
+}
+
+/**
+ * Lines and bytes the transport sink refused under backpressure.
+ *
+ * Both, because they answer different questions: a thousand dropped short lines and one
+ * dropped megabyte-long line are the same number to a line counter, and only one of them
+ * loses a meaningful amount of a transcript.
+ */
+export interface TransportDropCounts {
+  readonly lines: number;
+  readonly bytes: number;
 }
 
 export interface EvidenceHealthReporter {
@@ -119,6 +151,8 @@ function healthySinks(): Record<EvidenceSinkName, EvidenceSinkHealth> {
  * availability-preserving.
  */
 export class EvidenceHealthMonitor implements EvidenceHealthReporter {
+  private transportDrops: TransportDropCounts = { lines: 0, bytes: 0 };
+
   /** FR-R3-080 — refusal codes awaiting a phase end to report them. */
   private readonly pathRefusals = new Set<string>();
 
@@ -183,7 +217,31 @@ export class EvidenceHealthMonitor implements EvidenceHealthReporter {
           this.sinks.historyPointer.status === 'degraded'
         ? 'degraded'
         : 'healthy';
-    return Object.freeze({ overall, ...this.sinks });
+    // FR-R3-106 (FR-075) — the drop counts ride along, and deliberately do NOT feed
+    // `overall`. A drop means the transcript is incomplete, not that a sink is failing: the
+    // cap did its job and the run continued. Folding it into `overall` would put the whole
+    // surface amber for a working system, which is how a status people learn to ignore gets
+    // made.
+    return Object.freeze({ overall, ...this.sinks, transportDrops: this.transportDrops });
+  }
+
+  /**
+   * Record the transport sink's current refusal counts.
+   *
+   * Absolute values rather than a delta, because the sink already keeps a cumulative total
+   * and two counters that must be kept in step is how they come to disagree. Called from
+   * wherever the sink is observed; until then the reported value is zero, which is the
+   * truthful reading of "the sink has refused nothing that anyone has told us about".
+   */
+  public noteTransportDrops(counts: TransportDropCounts): void {
+    if (
+      counts.lines === this.transportDrops.lines &&
+      counts.bytes === this.transportDrops.bytes
+    ) {
+      return;
+    }
+    this.transportDrops = { lines: counts.lines, bytes: counts.bytes };
+    this.notify();
   }
 
   public subscribe(listener: EvidenceHealthListener): EvidenceHealthDisposable {

@@ -94,6 +94,41 @@ What it bounds and what it does not, in the same paragraph on purpose:
   declaration into the least on a round trip that reports success. Both validators refuse an unknown or
   repeated member rather than dropping it, so a set is never silently narrowed either.
   <!-- Source: src/services/process-yaml/yaml-serializer.ts --><!-- Source: src/services/process-yaml/phase-yaml-validator.ts -->
+- **Withholding `network` does not withhold network access.** Stated plainly because the capability's
+  name implies otherwise. `network` maps to `--disallowedTools WebFetch,WebSearch` — it withholds a
+  **vocabulary**, not an ability. A phase that withholds `network` while granting `process-spawn` keeps
+  `Bash`, and `Bash` reaches the network: `curl`, `wget`, a script, a package manager. So the honest
+  reading of that combination is *"the model cannot use the fetch tools"*, not *"the phase cannot reach
+  the network"*. **`Bash` ⊃ `network`.** Withholding both is what actually removes network reach on this
+  backend, and the destination that would close the gap properly is a mediated broker or a CLI-side
+  network sandbox — neither of which exists here.
+- **The ambient CLI configuration can widen a narrowed set without any flag being dishonoured.** The
+  trust anchor above says the backend honours its own flags. It does — and it also honours its own
+  configuration file, which the host neither pins nor controls. A narrowed argv defers to whatever
+  `~/.claude/settings.json` (or the codex equivalent) says, so an operator-local file can loosen a bound
+  the plan applied, with every flag respected. As of `FR-R3-105` this is **observed rather than
+  pinned**: `capability-applied` carries a digest of the relevant keys and the names of the keys read,
+  so evidence can answer *was the ambient configuration the same on these two Runs* — never the path
+  (workspace paths may not enter the structured log, and a home path additionally carries the
+  operator's username) and never the values (a settings file can hold an API key). Pinning with
+  `--settings` is the stronger answer and is the recorded destination; taking it needs the flag's
+  stability established against a live CLI, which costs operator quota and has not been spent.
+- **An authored field can no longer inject a flag.** `phaseDef.model` reaches the child as its own argv
+  token at all three backends and was validated as a non-empty string only, so an imported pipeline
+  document supplying `model: "--dangerously-skip-permissions"` put that flag into argv — granting
+  exactly the authority this mechanism exists to narrow, through a field the narrowing never saw.
+  Spawns are `shell: false` throughout, so this was flag injection rather than shell injection.
+  `FR-R3-105` bounds every authored field that reaches argv by charset and length and refuses a leading
+  dash, at the validator **and again at dispatch** for plans frozen before the rule existed. The value
+  is refused, never rewritten. `tests/lint/argv-field-partition.test.ts` fails if a future authored
+  field reaches argv unclassified. <!-- Source: src/contracts/argv-value.ts -->
+- **Each enforcement flag is emitted exactly once.** The plan used to de-duplicate by joined token, so
+  Claude's three `--disallowedTools` rows emitted the flag two or three times on a narrowed set. If the
+  CLI's parser is last-wins, that **silently re-granted `Bash` on the most restrictive set anyone can
+  request** — the stricter the ask, the more likely it was defeated. Values are now merged into one
+  flag, which is the CLI's own comma-list form. What this cannot establish without a live turn is which
+  merge semantics the real parser uses; what it establishes is that the host no longer depends on the
+  answer. <!-- Source: src/services/capability-enforcement-plan.ts -->
 - **This is not a mediated broker.** The broker — where the host would see each call rather than
   delegating — is recorded as the destination in
   [Agent capability posture](../architecture/agent-capability-posture.md), with the review's own 1–3
@@ -103,7 +138,9 @@ A refusal is a Run-level outcome with a named cause and a declared `capability-r
 distinguishable from a phase failure. A set the backend *can* enforce is recorded too, as
 `capability-applied`: the bound itself lives in argv and argv is never written to the structured log, so
 without that event a completed Run could not tell an operator whether its phase ran bounded. Both
-payloads carry closed-union members and a phase index, nothing else. <!-- Source: src/services/capability-enforcement-plan.ts --><!-- Source: src/contracts/phase-capabilities.ts -->
+payloads carry closed-union members, a phase index, and — since `FR-R3-105` — the ambient-configuration
+observation described above, which is a digest and a list of key names rather than any content. Nothing
+else. <!-- Source: src/services/capability-enforcement-plan.ts --><!-- Source: src/contracts/phase-capabilities.ts -->
 
 ## Threat anchors
 

@@ -1,5 +1,15 @@
 # Observe the merge gates
 
+> **Withdrawn, 2026-08-26.** The controls this runbook observes are gone: GitHub
+> Actions were retired by operator decision, for budget, and all eight workflow files
+> were deleted (`FR-R3-099`). This page is kept as a **dated historical record** of
+> how those controls were observed while they ran — the observations were true when
+> made and are not rewritten here — but every procedure below is now inert. What the
+> workflows actually produced over fourteen weeks is read once in
+> [the terminal record](../release/actions-terminal-record.md); what each withdrawn
+> control was is recorded in
+> [withdrawn CI controls](../release/withdrawn-ci-controls.md).
+
 This runbook separates three questions that are easy to collapse into one:
 
 1. Does the checked-in workflow declare a trigger for the integration branch?
@@ -9,8 +19,7 @@ This runbook separates three questions that are easy to collapse into one:
 The source tree can establish the first question and provides local equivalents
 for much of the work. Only evidence from the remote repository can establish
 the second and third.
-<!-- Source: .github/workflows/pr.yml -->
-<!-- Source: .github/workflows/ci.yml -->
+<!-- Source: ../release/actions-terminal-record.md -->
 <!-- Source: CONTRIBUTING.md -->
 
 ## Current trigger surface
@@ -25,18 +34,14 @@ The four workflows relevant to pull-request observation are:
 | `CodeQL` | pull request against `develop` | push to `develop`; weekly schedule; manual dispatch | `analyze (javascript-typescript)` |
 | `Dependency review` | opened, synchronized, reopened, or made ready for review against `develop` | none | `dependency-review` |
 
-<!-- Source: .github/workflows/pr.yml -->
-<!-- Source: .github/workflows/ci.yml -->
-<!-- Source: .github/workflows/codeql.yml -->
-<!-- Source: .github/workflows/dependency-review.yml -->
+<!-- Source: ../release/actions-terminal-record.md -->
 
 The `PR` matrix installs both dependency trees without lifecycle scripts, then
 runs the test typecheck, `verify:all`, deterministic evaluations, the build,
 Linux-only visual regression, and VSIX package smoke. The `CI` matrix adds
 Linux coverage, E2E, performance, and extension-host integration; it also has a
 separate Ubuntu/Node 22 job that runs the test typecheck and `verify:all`.
-<!-- Source: .github/workflows/pr.yml -->
-<!-- Source: .github/workflows/ci.yml -->
+<!-- Source: ../release/actions-terminal-record.md -->
 
 Dependency review evaluates pull-request dependency changes at a `high`
 severity floor and comments on failure. CodeQL runs the
@@ -44,15 +49,12 @@ severity floor and comments on failure. CodeQL runs the
 workflow records that findings surface for triage and do not fail the build by
 default, so a completed CodeQL job is not evidence that every finding was
 resolved.
-<!-- Source: .github/workflows/dependency-review.yml -->
-<!-- Source: .github/workflows/codeql.yml -->
+<!-- Source: ../release/actions-terminal-record.md -->
 
 `Full gate` and `Security audit` are scheduled/manual workflows, not
 pull-request triggers. The release workflow is tag/manual driven. Their absence
 from a pull request is therefore not a missing merge-trigger observation.
-<!-- Source: .github/workflows/full-gate.yml -->
-<!-- Source: .github/workflows/security-audit.yml -->
-<!-- Source: .github/workflows/release.yml -->
+<!-- Source: ../release/actions-terminal-record.md -->
 
 ## Verify the checked-in definitions locally
 
@@ -106,8 +108,7 @@ npm run ci
 Local success establishes only that the checked-out code passes those commands.
 It does not demonstrate that GitHub received an event, selected the intended
 workflow revision, ran every matrix leg, or enforced any result at merge time.
-<!-- Source: .github/workflows/pr.yml -->
-<!-- Source: .github/workflows/ci.yml -->
+<!-- Source: ../release/actions-terminal-record.md -->
 <!-- Source: CONTRIBUTING.md -->
 
 ## Observe one pull request
@@ -123,34 +124,24 @@ inspect the remote run list for that exact SHA and record, for each workflow:
 | `CodeQL` run URL or identifier | One pull-request run with the `javascript-typescript` analysis leg accounted for. |
 | `Dependency review` run URL or identifier | One pull-request run with the `dependency-review` job accounted for. |
 
-<!-- Source: .github/workflows/pr.yml -->
-<!-- Source: .github/workflows/ci.yml -->
-<!-- Source: .github/workflows/codeql.yml -->
-<!-- Source: .github/workflows/dependency-review.yml -->
+<!-- Source: ../release/actions-terminal-record.md -->
 
 Match by commit SHA and event, not merely by workflow display name. Both `CI`
 and `CodeQL` also run on pushes to `develop`, and CodeQL has scheduled/manual
 runs; a nearby successful run from another event does not observe the pull
 request path.
-<!-- Source: .github/workflows/ci.yml -->
-<!-- Source: .github/workflows/codeql.yml -->
+<!-- Source: ../release/actions-terminal-record.md -->
 
 The workflows cancel superseded pull-request work through their concurrency
 settings. A canceled older SHA is expected after a new synchronization, but it
 does not qualify the new head SHA; wait for and record the replacement runs.
-<!-- Source: .github/workflows/pr.yml -->
-<!-- Source: .github/workflows/ci.yml -->
-<!-- Source: .github/workflows/codeql.yml -->
-<!-- Source: .github/workflows/dependency-review.yml -->
+<!-- Source: ../release/actions-terminal-record.md -->
 
 After merge, separately observe the merge commit on `develop`. `CI` and
 `CodeQL` declare push triggers for that branch; `PR` and `Dependency review` do
 not. Record the push-run identifiers and the merge SHA rather than carrying the
 pull-request run forward as push evidence.
-<!-- Source: .github/workflows/ci.yml -->
-<!-- Source: .github/workflows/codeql.yml -->
-<!-- Source: .github/workflows/pr.yml -->
-<!-- Source: .github/workflows/dependency-review.yml -->
+<!-- Source: ../release/actions-terminal-record.md -->
 
 ## Confirm enforcement separately
 
@@ -171,10 +162,7 @@ Inspect the remote protection or ruleset applying to `develop` and record:
 Compare the required contexts with the actual job/check names from the current
 workflow runs. Workflow and job renames can change those contexts even when the
 underlying commands are unchanged.
-<!-- Source: .github/workflows/pr.yml -->
-<!-- Source: .github/workflows/ci.yml -->
-<!-- Source: .github/workflows/codeql.yml -->
-<!-- Source: .github/workflows/dependency-review.yml -->
+<!-- Source: ../release/actions-terminal-record.md -->
 
 Use precise conclusions in the observation record:
 

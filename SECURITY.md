@@ -6,7 +6,7 @@ This repository does not declare a supported-version window, long-term-support l
 
 <!-- Source: package.json -->
 <!-- Source: .github/SECURITY.md -->
-<!-- Source: .github/workflows/release.yml -->
+<!-- Source: docs/release/actions-terminal-record.md -->
 
 ## Report a vulnerability
 
@@ -58,19 +58,84 @@ The detailed operator threat catalog covers T1–T25 in [the threat model](docs/
 
 ## Automated security checks
 
+> **GitHub Actions were retired on 2026-08-26 by operator decision, for budget**
+> (`FR-R3-099`). Every scheduled and pull-request-triggered control below is
+> therefore **withdrawn**, and the eight workflow files are deleted from the tree.
+> They are not dormant and they are not pending a restart: the run history they
+> produced is read once, in
+> [`docs/release/actions-terminal-record.md`](docs/release/actions-terminal-record.md),
+> and what each control was is recorded in
+> [`docs/release/withdrawn-ci-controls.md`](docs/release/withdrawn-ci-controls.md).
+> The single-platform, single-machine limit that follows is **permanent**, not a
+> state awaiting a push.
+
+### What runs
+
+Every control here runs locally, inside the attested gate command (`npm run gate`),
+which is what a release is bound to. There is no second enforcement point.
+
 | Control | Coverage and trigger | Enforcement |
 |---|---|---|
-| Dependabot | Root and `webview-ui` npm manifests; weekly Monday minor/patch updates; major updates ignored | Opens grouped dependency pull requests, up to 10 per manifest. <!-- Source: .github/dependabot.yml --> |
-| CodeQL | JavaScript/TypeScript on pushes and pull requests targeting `develop`, plus Tuesday 04:00 UTC | Uploads `security-extended` findings; the workflow states findings do not fail the build by default. <!-- Source: .github/workflows/codeql.yml --> |
-| Dependency review | Lockfile changes in pull requests targeting `develop` | Fails on newly introduced vulnerabilities of high severity or above. <!-- Source: .github/workflows/dependency-review.yml --> |
-| npm audit | Root and `webview-ui` lockfiles, Monday 03:00 UTC or manual dispatch | Runs `npm audit --audit-level=low`; it does not auto-fix or commit. <!-- Source: .github/workflows/security-audit.yml --> |
-| Secret scan | Git-tracked files except `tests/**` and `package-lock.json`, checked for four code-resident private-key/token signatures in `verify:all` | `scripts/scan-secrets.mjs` is run by `npm run security:secrets`; it is a narrow signature check, not a general secret scanner. <!-- Source: package.json --><!-- Source: scripts/scan-secrets.mjs --> |
-| Workflow pin check | GitHub Actions references in `verify:all` | `scripts/check-workflow-pins.mjs` requires immutable action pins. <!-- Source: package.json --><!-- Source: scripts/check-workflow-pins.mjs --> |
-| License check | Root manifest and license operations record in `verify:all` | `scripts/check-licenses.mjs` checks that `LICENSE.md` and `docs/operations/licenses.md` exist and that the manifest has a truthy `license` field; it does not inspect dependency licenses. <!-- Source: package.json --><!-- Source: scripts/check-licenses.mjs --> |
-| Release provenance | Tagged or manually dispatched release builds | Builds the VSIX, emits a CycloneDX SBOM and checksums, attests the VSIX and SBOM, and publishes a GitHub Release only for tags. <!-- Source: .github/workflows/release.yml --> |
+| Secret scan | Every git-tracked file, **including `tests/**`**, scanned by secretlint's recommended ruleset plus the dotenv rule | `scripts/scan-secrets.mjs` via `npm run security:secrets`, inside `npm run gate`. Findings are exempted per entry with a stated reason in `.secretlintignore`, never by excluding a directory. Measured **≈39 s** over 1,947 tracked files. <!-- Source: package.json --><!-- Source: scripts/scan-secrets.mjs --> |
+| npm audit | Root and `webview-ui` lockfiles, **operator-invoked** (`npm run security:audit`) | `npm audit --audit-level=low`; it does not auto-fix or commit. **Not in the attested gate**, and the reason is stated rather than left to inference: it queries the npm registry, so a gate containing it would fail for want of a network — and a gate that fails for reasons unrelated to the tree is a gate people learn to bypass with `--no-verify`. Before this item it had no local home at all: the deleted `security-audit.yml` was its only caller. <!-- Source: package.json --> |
+| Workflow pin check | Any workflow file that reappears | `scripts/check-workflow-pins.mjs` requires immutable 40-character SHA pins. With no workflows present it reports *nothing to pin* rather than *passed* — a latent guard against a re-added, unpinned workflow. <!-- Source: package.json --><!-- Source: scripts/check-workflow-pins.mjs --> |
+| License check | Root manifest and the license operations record | `scripts/check-licenses.mjs` checks that `LICENSE.md` and `docs/operations/licenses.md` exist and that the manifest has a truthy `license` field; it does not inspect dependency licenses. <!-- Source: package.json --><!-- Source: scripts/check-licenses.mjs --> |
+| Dependabot | Root and `webview-ui` npm manifests; weekly Monday minor/patch updates; major updates ignored | Still configured, and it opens pull requests — but **nothing runs checks on them any more**. A Dependabot pull request now arrives unverified. <!-- Source: .github/dependabot.yml --> |
+
+### The secret scan: what it is, and what it is not
+
+**What changed, 2026-08-26 (`FR-R3-109`).** Until this date the scan was four regular
+expressions — a PEM header, `AKIA…`, `gh[pousr]_…`, `sk-ant-…` — over tracked files
+**with `tests/**` and `package-lock.json` filtered out**. Meanwhile `@secretlint/node`
+sat in `devDependencies` wired to nothing, so anyone inventorying the toolchain saw a
+real scanner and reasonably concluded it scanned. It did not.
+
+Wiring it found **23 findings the four expressions never saw**, every one in the test
+tree the old scan excluded. That is the exclusion's cost, stated as a number: a real
+credential pasted into a test file was invisible **by construction** rather than
+missed.
+
+**What it does now.** secretlint's `preset-recommend` plus `no-dotenv`, over
+`git ls-files`, **including `tests/**`**. Roughly **39 seconds** for 1,947 files. Scoped
+to tracked files so an untracked scratch file is not read and `node_modules` is never
+walked; the previous scan used the same scope and the measurement is why it was kept.
+
+**What it does not do**, because an honest small control beats an implied large one:
+
+- **It is not a general credential detector.** It matches the patterns its ruleset
+  carries. A bespoke internal token format is not among them.
+- **The AWS rule wants a pair.** A lone `AKIA…` access key id was not flagged in
+  testing; a GitHub `ghp_…` token in the same file was. Do not read a green scan as
+  "no AWS key here".
+- **Four files are exempt at file scope**, listed with reasons in `.secretlintignore`:
+  the private-key **redaction** fixtures. The rule matches the PEM *header*, and a real
+  key's header is byte-identical to a fixture's, so there is no value to allow that
+  would not allow every real key everywhere. The hole is covered from the other side by
+  `tests/lint/key-fixture-bodies-are-filler.test.ts`, which asserts those files carry no
+  base64 run long enough to be key material.
+- **Two values are allowed by pattern** rather than by file, which is the granularity to
+  prefer: `https://user:pass@example.com` and a sequential-alphabet `ghp_` dummy. A real
+  credential does not match either.
+- **It scans the tree, not history.** A credential committed and later removed is still
+  in the git history, and rotating it is the only remedy.
+- **It is not a defence against the operator.** Anyone who can run the gate can edit
+  `.secretlintignore`.
+
+**If it ever finds a real one**, that is an incident with its own procedure — rotate
+immediately, then audit for similar exposure. It is not a line item to allowlist.
+
+### What no longer runs, and what it cost
+
+| Withdrawn control | Last observed | Local substitute |
+|---|---|---|
+| **CodeQL** static analysis (`security-extended`, JS/TS) | **green at `2a885187`, 2026-08-26** | **None.** There is no static-analysis equivalent in this repository. This is a real reduction in coverage, and wiring the secret scan to a real scanner (`FR-R3-109`) does not replace it — a secret scanner finds credentials, not injection or taint |
+| Dependency review on pull requests | failure, 2026-08-23 | `npm run security:audit`, operator-invoked. Narrower in two ways: it sees the lockfile rather than the diff, and nothing forces anyone to run it |
+| Scheduled `npm audit` (Monday 03:00 UTC) | green at `b6993e80`, 2026-08-24 | The same audit, run by the gate instead of by a clock |
+| Release provenance (SBOM, checksums, attestation, GitHub Release) | never ran — no `v*` tag was ever pushed | None. The local release path packages a VSIX; it emits no SBOM and no attestation |
+| Three-OS matrix and the Node version-floor job | `ci.yml` red at `2a885187` on the **Windows** leg | None. Windows remains a stated permanent limit |
 
 No Snyk or Semgrep configuration or invocation exists in the repository.
 
 <!-- Source: package.json -->
-<!-- Source: .github/workflows/codeql.yml -->
-<!-- Source: .github/workflows/security-audit.yml -->
+<!-- Source: docs/release/actions-terminal-record.md -->
+<!-- Source: docs/release/withdrawn-ci-controls.md -->

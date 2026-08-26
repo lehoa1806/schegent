@@ -24,7 +24,7 @@ import {
   migrateV9ToV10,
   type QueueStateMap
 } from '../../../src/state/queue-state-migrator';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import {
   STATE_SCHEMA_VERSION,
   STATE_SCHEMA_VERSION_V10

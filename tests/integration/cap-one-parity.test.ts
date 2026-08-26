@@ -58,7 +58,7 @@ import { QueueManager } from '../../src/queue/queue-manager';
 import { SanitizedLogger } from '../../src/lib/logger';
 import { createPhaseBreakpointAccessor } from '../../src/controller/breakpoint-accessor';
 import { TerminalTransitionCoordinator } from '../../src/services/terminal-transition-coordinator';
-import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 import type { ClaudeCliRunner } from '../../src/runner/claude-cli';
 import type { RawInvocationOutput, InvocationRequest } from '../../src/runner/invocation-result';
 import type { SchegentStatusBar } from '../../src/ui/status-bar';

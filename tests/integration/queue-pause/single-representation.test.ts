@@ -31,7 +31,8 @@ import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { WorkspaceStateStore, KEYS, type Memento } from '../../../src/state/workspace-state';
 import { QueueManager } from '../../../src/queue/queue-manager';
 import { AutoDrainCoordinator } from '../../../src/services/auto-drain-coordinator';
-import { findQueue, DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
+import { findQueue } from '../../../src/queue/queue-registry';
 import type { SchegentWorkflowController } from '../../../src/controller/workflow-controller';
 import type { FeatureRequest } from '../../../src/queue/feature-request';
 

@@ -18,7 +18,8 @@ import {
   CMD_SAVE_QUEUE_SETTINGS,
   type SidebarCommand
 } from '../sidebar-ipc';
-import { MAX_QUEUES, MAX_QUEUE_NAME_LENGTH } from '../../queue/queue-registry';
+import { MAX_QUEUES } from '../queue-bounds';
+import { MAX_QUEUE_NAME_LENGTH } from '../queue-bounds';
 import { QUEUE_ID_MAX, fail, hasUnexpectedKeys, ok, type IpcValidationResult } from './shared';
 
 type QueueCommandType =

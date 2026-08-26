@@ -1,15 +1,27 @@
-// FR-R3-095 (S14) — the release binding, for the release path this project
-// actually has.
+// FR-R3-095 (S14), amended by FR-R3-099 and FR-R3-100 — the release binding. As of
+// 2026-08-26 it is the ONLY one this project has.
 //
-// `require-full-gate.mjs` binds a release to a VERIFIED gate result for the exact
-// commit, and that shape is right. What it reads is workflow run records, and
-// this project does not run GitHub Actions, so its data source is empty
-// regardless of who calls it. The binding was sound and the evidence did not
-// exist.
+// This module was written beside `require-full-gate.mjs`, which bound a release to a
+// verified GitHub Actions run for the exact commit. The note here used to say that
+// binding had no data source because "this project does not run GitHub Actions".
+// **That was false**: the remote had 185 runs, including runs at the then-current
+// HEAD, none of which any record ever read. The operator has since retired Actions
+// entirely, for budget, and both `require-full-gate.mjs` and `release.yml` are
+// deleted — see `docs/release/withdrawn-ci-controls.md` for what they were and
+// `docs/release/actions-terminal-record.md` for what they produced.
 //
-// This is the same shape over evidence that does exist: a local record that
-// `npm run ci` was observed to pass, at a named commit, on a named platform, over
-// a clean tree. The release path refuses unless such a record names `HEAD`.
+// So this is no longer "the same shape over evidence that does exist" as a second
+// binding beside a first. It is the whole release gate: a local record that the
+// attested command was observed to pass, at a named commit, on a named platform,
+// over a clean tree. The release path refuses unless such a record names `HEAD`.
+//
+// FR-R3-100 widened what that command covers. `GATE_COMMAND` was `npm run ci`,
+// which omitted the secret scan, the workflow-pin check, the license check, the docs
+// check and `contracts:check` — so a release could be attested past a failing secret
+// scan. It is now `npm run gate`, which runs all five and then `ci`. Changing the
+// NAME as well as the perimeter is deliberate: the refusal below is an exact string
+// match, so every attestation recorded under the narrower command is now refused
+// rather than silently honoured.
 //
 // WHAT THIS IS NOT. A local attestation is not tamper-evident against the
 // operator whose machine wrote it — anyone who can run the release can also edit
@@ -64,7 +76,7 @@ export const ATTESTATION_PATH = resolve(REPO_ROOT, '.gate-attestation.json');
  * something cheaper is not a record of this gate, and the refusal names the
  * mismatch rather than accepting it.
  */
-export const GATE_COMMAND = 'npm run ci';
+export const GATE_COMMAND = 'npm run gate';
 
 export const ATTESTATION_VERSION = 1;
 

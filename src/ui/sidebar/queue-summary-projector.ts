@@ -11,7 +11,8 @@
 // This projection is UI-only and never persisted.
 
 import type { FeatureRequest } from '../../queue/feature-request';
-import { DEFAULT_QUEUE_ID, type ProjectedQueueRegistry } from '../../queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../contracts/queue-identity';
+import { type ProjectedQueueRegistry } from '../../queue/queue-registry';
 import type { QueueSummary } from './snapshot';
 
 export function projectQueues(

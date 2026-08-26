@@ -126,8 +126,14 @@ export class DashboardPanel {
       // without source-level inspection. Both fields pass through
       // `SanitizedLogger` unchanged (command names and UUID
       // correlation ids are not secret).
-      this.logger.debug(
-        `dashboard: dropping invalid message (reason=${result.reason} type=${result.type ?? 'unknown'} correlationId=${result.correlationId ?? 'unknown'})`
+      //
+      // FR-R3-102 (FR-037) — raised from `debug` to `warn`, for the reason stated at
+      // the sibling site in `sidebar-view-provider.ts`: the default runtime log level
+      // is INFO, so a trust-boundary rejection at `debug` was invisible to an
+      // operator at default settings. The fields this comment already argued for were
+      // being assembled and then filtered out.
+      this.logger.warn(
+        `dashboard: rejected invalid message (reason=${result.reason} type=${result.type ?? 'unknown'} correlationId=${result.correlationId ?? 'unknown'})`
       );
       return;
     }

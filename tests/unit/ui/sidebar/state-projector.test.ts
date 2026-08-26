@@ -11,7 +11,7 @@ import { STALENESS_THRESHOLD_MS } from '../../../../src/state/lock';
 import type { WorkflowRun, WorkspaceLock } from '../../../../src/state/workflow-run';
 import type { QueueState, FeatureRequest } from '../../../../src/queue/feature-request';
 import type { WorkflowSnapshot } from '../../../../src/ui/sidebar/snapshot';
-import { DEFAULT_QUEUE_ID } from '../../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../../src/contracts/queue-identity';
 import { resolvePhaseCatalog } from '../../../../src/config/process-catalog';
 import { runOf, runtimeOf, statusOf } from './queue-runtime-read.helpers';
 import { SPECKIT_RUN_PIPELINE } from '../../../fixtures/speckit-catalog-fixture';

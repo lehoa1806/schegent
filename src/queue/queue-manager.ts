@@ -18,6 +18,7 @@
 //   - cascade pause/resume:  `cascadedPause`, `cascadedResume`
 //     (cascade is overridden by an explicit operator pause; cascadedResume
 //      is a strict no-op when the entry's `pauseSource !== 'cascade'`.)
+import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
 import { randomUUID } from 'crypto';
 import {
   MAX_GLOBAL_CONCURRENCY_CAP,
@@ -31,7 +32,6 @@ import type { SanitizedLogger } from '../lib/logger';
 import {
   createQueue,
   deleteQueue,
-  DEFAULT_QUEUE_ID,
   findQueue,
   renameQueue,
   setQueueSchedule,

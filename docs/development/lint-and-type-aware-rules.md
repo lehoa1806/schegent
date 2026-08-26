@@ -73,4 +73,4 @@ When fixing a baselined site:
 
 <!-- Source: package.json -->
 <!-- Source: tests/lint/lint-gates-are-hermetic.test.ts -->
-<!-- Source: .github/workflows/ci.yml -->
+<!-- Source: ../release/actions-terminal-record.md -->

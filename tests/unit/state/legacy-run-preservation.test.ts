@@ -41,7 +41,7 @@ import {
 } from '../../../src/state/workspace-state';
 import { STATE_SCHEMA_VERSION, STATE_SCHEMA_VERSION_V8 } from '../../../src/contracts/state-schema';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();

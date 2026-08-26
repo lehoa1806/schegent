@@ -18,6 +18,7 @@ import {
   isPhaseCapability,
   type PhaseCapability
 } from '../contracts/phase-capabilities';
+import { ARGV_VALUE_MAX_LEN, ARGV_VALUE_PATTERN } from '../contracts/argv-value';
 
 export const PHASE_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 export { PHASE_ID_MAX_LEN };
@@ -27,6 +28,44 @@ export const PHASE_INSTRUCTION_MAX_LEN = 8192;
 export const PHASE_SKILL_MAX_LEN = 256;
 export const PHASE_TIMEOUT_MIN = 1;
 export const PHASE_TIMEOUT_MAX = 3600;
+
+/**
+ * FR-R3-105 — the argv boundary. Every authored field falls in exactly one of three
+ * classes, and `tests/lint/argv-field-partition.test.ts` asserts the three cover
+ * `AUTHORED_PHASE_FIELDS` exactly.
+ *
+ * WHY A PARTITION RATHER THAN A BOUND ON TWO NAMED FIELDS. A pipeline document is
+ * operator-imported, **untrusted** content. `model` was validated as a non-empty string
+ * and pushed as its own argv token at all three backends, so a document supplying
+ * `model: "--dangerously-skip-permissions"` put that literal flag into the child's argv.
+ * Spawns are `shell: false` throughout, so this is not shell injection — it is **flag
+ * injection**, and the authority it grants is exactly the authority the capability plan
+ * exists to narrow, through a field the narrowing never sees.
+ *
+ * Naming `model` and `effort` and stopping would leave the same hole open for the next
+ * argv-reaching field someone authors. The partition makes that impossible to add
+ * silently: a new authored field must be classified or the gate fails.
+ *
+ * The three classes, and why `effort` is in the second rather than the first: the source
+ * item states that `effort` "has the same shape" as `model`. Its *emission* does, but its
+ * *validation* does not — it is already closed to `PHASE_EFFORT_LEVELS`, a five-value
+ * enum, so a leading dash cannot survive validation. Adding a charset bound to it would
+ * be a redundant second check on a field that is already closed, and recording it as
+ * enum-covered is more honest than pretending it was fixed here.
+ */
+export const ARGV_FREE_FORM_FIELDS: ReadonlySet<string> = new Set(['model']);
+
+/** Reaches argv, but already closed to an enum, so no charset bound is owed. */
+export const ARGV_ENUM_CLOSED_FIELDS: ReadonlySet<string> = new Set(['effort']);
+
+/**
+ * The charset bound is NOT declared here. `src/contracts/argv-value.ts` owns it, and both
+ * this freeze-site check and the dispatch-time defensive check read that one authority —
+ * two copies of "what does a safe argv value look like" is how a validator and a
+ * dispatcher come to disagree, and the disagreement would present as a run that executed
+ * rather than a refusal.
+ */
+export { ARGV_VALUE_PATTERN, ARGV_VALUE_MAX_LEN } from '../contracts/argv-value';
 
 export const AUTHORED_PHASE_FIELDS: ReadonlySet<string> = new Set([
   'id',
@@ -233,7 +272,34 @@ export function validatePhaseDefinition(
     if (typeof value.model !== 'string' || value.model.trim().length === 0) {
       errors.push(fieldError(phaseId, 'model', 'non-empty-required', 'Phase model must be non-empty'));
     } else {
-      model = value.model.trim();
+      const candidate = value.model.trim();
+      // FR-R3-105 — REFUSED, never rewritten. A leading `-` is not stripped and an
+      // out-of-charset value is not sanitised: the `catalogVersion` rule's reasoning
+      // applies, because laundering an untrusted value into a legitimate-looking one is
+      // worse than declining it. The refusal names the field so the operator knows which
+      // row of their document to fix.
+      if (candidate.length > ARGV_VALUE_MAX_LEN) {
+        errors.push(
+          fieldError(
+            phaseId,
+            'model',
+            'invalid-length',
+            `Phase model must be at most ${ARGV_VALUE_MAX_LEN} characters`
+          )
+        );
+      } else if (!ARGV_VALUE_PATTERN.test(candidate)) {
+        errors.push(
+          fieldError(
+            phaseId,
+            'model',
+            'invalid-charset',
+            'Phase model reaches the backend command line, so it must start with a letter ' +
+              'or digit and use only letters, digits and . _ : / -'
+          )
+        );
+      } else {
+        model = candidate;
+      }
     }
   }
 

@@ -7,7 +7,7 @@ import type { Memento } from '../../../src/state/workspace-state';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import type { PhaseRunOutput } from '../../../src/controller/phase-runner';
 import { RequiredEvidenceUnavailableError } from '../../../src/lib/errors';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 
 function makeLock(): any {
   return {

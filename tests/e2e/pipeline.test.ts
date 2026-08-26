@@ -13,7 +13,7 @@ import { ClaudeCliRunner } from '../../src/runner/claude-cli';
 import type { SchegentStatusBar } from '../../src/ui/status-bar';
 import type { Notifier } from '../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../src/state/lock';
-import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 import { buildSpeckitCatalog } from '../fixtures/speckit-catalog-fixture';
 
 // Feature 034 Item 055 — deterministic Speckit pipeline E2E test.

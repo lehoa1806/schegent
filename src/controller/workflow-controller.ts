@@ -12,7 +12,7 @@ import type { SanitizedError, WorkflowRun } from '../state/workflow-run';
 import type { RunActivityObservation } from '../monitor/activity-coalescer';
 import { recordRunLiveness } from './run-liveness-recorder';
 import type { FeatureRequest } from '../queue/feature-request';
-import { DEFAULT_QUEUE_ID } from '../queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
 import type { ClaudeCliMonitor } from '../monitor/claude-cli-monitor';
 import type { HistoryStore } from '../state/history-store';
 import { createHistoryRecorder, type HistoryRecorder } from '../services/history-recorder';
@@ -22,7 +22,7 @@ import { releaseExecutionLeaseForTerminalRun } from '../services/execution-lease
 import { ExecutionLeaseManager } from '../state/execution-lease';
 import { EMPTY_CATALOG, type PipelineCatalog } from '../config/pipeline-config';
 import { LockHeldError } from '../lib/errors';
-import { DELAYED_RETRY_CAP } from './retry-constants';
+import { DELAYED_RETRY_CAP } from '../contracts/retry-bounds';
 import type { DelayedRetryWatchdog } from './retry-handler';
 import { RunDriver } from '../services/run-driver';
 import { RetryCoordinator, type RateLimitHandler } from '../services/retry-coordinator';

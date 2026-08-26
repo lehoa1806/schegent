@@ -18,7 +18,7 @@
 //   - `drainAll()` sweeps the registry, and it does so from a round-robin
 //     cursor so a saturated ceiling does not let position 0 win every sweep.
 
-import { DEFAULT_QUEUE_ID } from '../queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
 import type { FeatureRequest } from '../queue/feature-request';
 import type { QueueManager } from '../queue/queue-manager';
 import type { OwnershipClaim, WorkspaceStateStore } from '../state/workspace-state';

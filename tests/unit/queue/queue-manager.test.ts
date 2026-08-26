@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { QueueManager } from '../../../src/queue/queue-manager';
-import { createQueue, DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
+import { createQueue } from '../../../src/queue/queue-registry';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
 import type { Memento } from '../../../src/state/workspace-state';
 

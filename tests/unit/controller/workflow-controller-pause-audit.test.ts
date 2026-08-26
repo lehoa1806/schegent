@@ -5,7 +5,7 @@ import { WorkspaceStateStore } from '../../../src/state/workspace-state';
 import type { Memento } from '../../../src/state/workspace-state';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import type { WorkflowControllerDeps } from '../../../src/controller/workflow-controller';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();

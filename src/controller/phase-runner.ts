@@ -1,3 +1,4 @@
+import { isSafeArgvValue } from '../contracts/argv-value';
 import type { Phase, PhaseOutcome } from './phase';
 import { policyRequestFields } from '../runner/spawn-env';
 import type { BackendRunner } from '../contracts/backend-runner';
@@ -508,7 +509,10 @@ export class PhaseRunner {
         // FR-R3-049 — via the shared helper; see its docstring for why.
         ...policyRequestFields(inputs),
         cancellationSignal: inputs.cancellationSignal,
-        ...(inputs.phaseDef?.model ? { model: inputs.phaseDef.model } : {}),
+        // FR-R3-105 (FR-063) — the defensive half; a frozen plan can predate the bound.
+        // Dropped, never rewritten; `contracts/argv-value.ts` states why. `effort` needs
+        // no check: it is enum-closed at every validator.
+        ...(isSafeArgvValue(inputs.phaseDef?.model) ? { model: inputs.phaseDef?.model } : {}),
         ...(inputs.phaseDef?.effort ? { effort: inputs.phaseDef.effort } : {}),
         ...(verboseDiagnostics ? { verboseDiagnostics } : {}),
         // Feature 032 — forward the controller's session-continuation

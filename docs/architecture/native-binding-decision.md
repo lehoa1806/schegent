@@ -32,7 +32,7 @@ native binding — they would. It is whether this product should have one.
   every Electron bump. `docs/operations/vsix-allowlist-derivation.md` describes a package whose
   contents are derived and asserted; six-plus opaque binaries are the opposite of that.
 - **A supply-chain surface the product has deliberately not had.** Installs run
-  `npm ci --ignore-scripts` in [`ci.yml`](../../.github/workflows/ci.yml), and `FR-R3-090` exists to
+  `npm ci --ignore-scripts` in `.github/workflows/ci.yml` (deleted 2026-08-26, `FR-R3-099`), and `FR-R3-090` exists to
   bring local installs to that same posture. A native module's whole install mechanism is the
   lifecycle script that `--ignore-scripts` suppresses. Adopting one means either abandoning that
   posture or shipping prebuilt binaries — which moves the trust from a build step to an artifact

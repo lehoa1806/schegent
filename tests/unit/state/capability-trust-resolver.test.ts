@@ -9,6 +9,9 @@
 // The ladder itself is untouched, so every case below is the same case over the
 // two capabilities that gate document CONTENT rather than layering.
 //
+// FR-R3-108 (2026-08-26) — the ladder itself is no longer untouched. Deny now takes
+// precedence at either scope; see the note on `expectedAllowed` below.
+//
 // Mock pattern mirrors `workspace-folder-picker.test.ts`: a `vi.hoisted`
 // state record carrying `isTrusted`, a per-key `inspect()` map, and two
 // listener sets (one for `onDidGrantWorkspaceTrust`, one for
@@ -112,12 +115,28 @@ describe('capability-trust-resolver (059, T008) — 16-row ladder matrix', () =>
   const settingValues = [true, false, null] as const;
   const capabilities: TrustCapability[] = ['phases', 'retryConditions'];
 
+  // FR-R3-108 — DENY-PRECEDENCE. These two functions encoded the ladder as feature 059
+  // shipped it: workspace scope consulted first, user scope only if the workspace was
+  // silent. That was inverted for the case a trust control exists for — a repository's
+  // checked-in `true` defeated a user's explicit `false` — so four rows of this matrix
+  // were asserting the defect.
+  //
+  // The rows are not deleted and the matrix is not narrowed; the POLICY changed and the
+  // expectation follows it. Two rows change verdict (`workspace=true, user=false` now
+  // denies) and two change reported scope (`workspace=false, user=false` now reports
+  // `user`, because the deny check reads user scope first and the reporter must name the
+  // scope that actually decided).
+  //
+  // `tests/unit/state/capability-trust-matrix.test.ts` states the same policy as a
+  // hand-written table rather than as logic, which is the better artifact for reading
+  // the rule; this one keeps the exhaustive cross product including `isTrusted=false`.
   function expectedAllowed(
     isTrusted: boolean,
     workspace: boolean | null,
     user: boolean | null
   ): boolean {
     if (!isTrusted) return false;
+    if (user === false || workspace === false) return false;
     if (workspace === true || workspace === false) return workspace;
     if (user === true || user === false) return user;
     return true;
@@ -129,6 +148,8 @@ describe('capability-trust-resolver (059, T008) — 16-row ladder matrix', () =>
     user: boolean | null
   ): 'user' | 'workspace' | 'workspace-trust' {
     if (!isTrusted) return 'workspace-trust';
+    if (user === false) return 'user';
+    if (workspace === false) return 'workspace';
     if (workspace === true || workspace === false) return 'workspace';
     if (user === true || user === false) return 'user';
     return 'workspace-trust';

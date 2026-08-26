@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { TerminalTransitionCoordinator } from '../../../src/services/terminal-transition-coordinator';
 import { SanitizedLogger } from '../../../src/lib/logger';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import type { TerminalTransitionIntent, WorkflowRun } from '../../../src/state/workflow-run';
 
 function terminalRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {

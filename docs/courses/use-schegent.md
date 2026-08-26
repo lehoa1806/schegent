@@ -44,7 +44,7 @@ source-build fallback, not for ordinary use of an already-built VSIX.
 
 <!-- Source: ../../RELEASE.md -->
 <!-- Source: ../../package.json -->
-<!-- Source: ../../.github/workflows/release.yml -->
+<!-- Source: ../release/actions-terminal-record.md -->
 
 Open a folder whose current state you can restore, grant Workspace Trust, open
 the **Schegent** view from the Activity Bar, and select **Open Dashboard**. The

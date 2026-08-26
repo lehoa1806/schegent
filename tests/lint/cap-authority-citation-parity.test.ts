@@ -181,10 +181,18 @@ describe('re-evaluation trigger premises still hold', () => {
   }> = [
     {
       premise: 'MAX_QUEUES',
-      source: 'src/queue/queue-registry.ts',
+      // FR-R3-110 (FR-104) moved the declaration from `src/queue/queue-registry.ts`
+      // to here, because `contracts/validators/queue-management.ts` value-imported
+      // it from the queue layer — a backwards edge the dependency-direction gate
+      // refuses. The **value did not change**: it was 20 before the move and is 20
+      // after, so this trigger fired on the premise's *location*, not on its
+      // content, and the record's criterion 3 reasons from the same number it
+      // always did. Re-pointing the reader is therefore the whole fix; no
+      // disposition needed re-evaluating.
+      source: 'src/contracts/queue-bounds.ts',
       read: () =>
         /export const MAX_QUEUES\s*=\s*(\d+)/.exec(
-          fs.readFileSync(path.join(REPO_ROOT, 'src/queue/queue-registry.ts'), 'utf8')
+          fs.readFileSync(path.join(REPO_ROOT, 'src/contracts/queue-bounds.ts'), 'utf8')
         )?.[1],
       expected: '20',
     },

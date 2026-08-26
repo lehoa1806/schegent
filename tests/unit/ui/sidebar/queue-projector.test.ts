@@ -15,7 +15,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { projectQueue } from '../../../../src/ui/sidebar/queue-projector';
-import { DEFAULT_QUEUE_ID } from '../../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../../src/contracts/queue-identity';
 import type { FeatureRequest, QueueState } from '../../../../src/queue/feature-request';
 
 function makeRequest(overrides: Partial<FeatureRequest> & Pick<FeatureRequest, 'id'>): FeatureRequest {

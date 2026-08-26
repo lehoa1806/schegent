@@ -21,8 +21,8 @@ import {
   RETRY_BUFFER_MS,
   RETRY_FLOOR_MS,
   TRANSIENT_BACKOFF_MS
-} from '../../../src/controller/retry-constants';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+} from '../../../src/contracts/retry-bounds';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();

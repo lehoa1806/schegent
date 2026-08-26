@@ -17,7 +17,7 @@ import { KEYS, SCHEMA_VERSION, WorkspaceStateStore, type Memento } from '../../.
 import { STATE_SCHEMA_VERSION_V10 } from '../../../src/contracts/state-schema';
 import { forwardMigrationAuditEvents } from '../../../src/state/migration-audit-forwarder';
 import { isKnownAuditEventType } from '../../../src/contracts/audit-events';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import type { QueueState } from '../../../src/queue/feature-request';
 import type { AuditEntry } from '../../../src/audit/audit-entry';
 import type { WorkflowRun } from '../../../src/state/workflow-run';

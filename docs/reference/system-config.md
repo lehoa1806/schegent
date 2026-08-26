@@ -98,7 +98,7 @@ These variables are implementation controls, not extension-user configuration.
 <!-- Source: tests/integration/matrix-c-real-cli.test.ts -->
 <!-- Source: tests/perf/sustained-evidence-path.test.ts -->
 <!-- Source: tests/global-temp-root.ts -->
-<!-- Source: .github/workflows/full-gate.yml -->
+<!-- Source: ../release/actions-terminal-record.md -->
 
 The following names are unit-test canaries, not supported configuration. They default to absent: `SCHEGENT_ENV_ALLOWED_TEST` demonstrates an explicitly forwarded name; `SCHEGENT_ENV_BLOCKED_TEST` and `SCHEGENT_SECRET_TEST` demonstrate blocked ambient values; `LC_SCHEGENT_TEST` demonstrates dynamic locale forwarding.
 
@@ -122,8 +122,7 @@ These names exist inside release or security workflow shells. They are supplied 
 | `RUNNER_TEMP` | filesystem path | GitHub-hosted runner temporary directory | Holds the generated GitHub Release body. |
 | `GITHUB_STEP_SUMMARY` | filesystem path | GitHub-provided | Receives the Markdown npm-audit summary in the security workflow. |
 
-<!-- Source: .github/workflows/release.yml -->
-<!-- Source: .github/workflows/security-audit.yml -->
+<!-- Source: ../release/actions-terminal-record.md -->
 
 ## Core directory tree
 

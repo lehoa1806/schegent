@@ -3,7 +3,7 @@ import { FakeMemento } from '../enqueue-start-separation.helpers';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
 import { QueueManager } from '../../../src/queue/queue-manager';
 import { createConnectedRunService } from '../../../src/activation/ui-wiring';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import type { HistoryStore } from '../../../src/state/history-store';
 import type { HistoryRecord } from '../../../src/state/history-entry';
 

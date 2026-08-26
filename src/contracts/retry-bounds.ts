@@ -1,3 +1,17 @@
+// FR-R3-110 (FR-104) — the retry and backoff bounds, moved out of `controller/`
+// so the modules that only need to know a bound do not import the layer that
+// applies it.
+//
+// The values and their reasoning are unchanged, and one of them is load-bearing
+// enough that `AGENTS.md` states it as a hard rule: the dynamic-backoff floor
+// (`RETRY_FLOOR_MS`) MUST NOT be applied for `out-of-credits` causes when the
+// reported reset timestamp is in the past — that path falls back to
+// `RATE_LIMIT_BACKOFF_MS`, so a depleted-credits account does not retry every
+// minute. The rule is enforced in `src/controller/rate-limit-backoff.ts`; moving
+// the numbers does not move the enforcement, and must not.
+//
+// This module imports nothing, on purpose. It is a leaf.
+
 /**
  * Feature 011 — delayed-retry backoff constants.
  *

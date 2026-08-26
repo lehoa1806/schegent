@@ -24,7 +24,7 @@
 // Extensioned specifiers, matching `history-rows.ts` — see its header. The
 // default queue id is a value, so it is imported rather than mirrored: a second
 // copy of `'default'` is a second thing to keep true.
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry.js';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity.js';
 import type { HistoryRow } from './history-rows.js';
 import type { Launchable, LaunchProjection, LaunchSection, QueueRuntime } from './snapshot-types.js';
 

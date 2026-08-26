@@ -27,7 +27,9 @@ export type HistoryTerminalStatus = 'completed' | 'failed' | 'canceled';
  * The double underscores keep it outside the id space `queue-registry.ts`
  * mints, so a queue can never be created that collides with it.
  */
-export const HISTORY_UNATTRIBUTED_QUEUE_ID = '__unattributed__';
+// `HISTORY_UNATTRIBUTED_QUEUE_ID` moved to `src/contracts/queue-identity.ts`
+// (FR-R3-110). `src/contracts/state-schema.ts` imported it from here, which had the
+// contract layer depending on the state layer it describes.
 
 /**
  * FR-R3-010 (T407) — the one place the `auditLogPointer` format is decided.

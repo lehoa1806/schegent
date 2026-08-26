@@ -4,7 +4,7 @@ import type { Notifier } from '../ui/notifications';
 import type { SanitizedLogger } from '../lib/logger';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import type { FeatureRequest } from '../queue/feature-request';
-import { DEFAULT_QUEUE_ID } from '../queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
 import { MAX_PENDING_TASKS_PER_QUEUE } from '../queue/feature-request';
 
 export type RestartCanceledResult = { ok: true } | { ok: false; reason: string };

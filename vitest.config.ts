@@ -116,8 +116,16 @@ export default defineConfig({
       // and the full run is recorded in
       // docs/development/coverage-measurements.md.
       //
-      // The 80% line matches the service-level target in CLAUDE.md. CI
-      // fails on regression.
+      // The 80% line matches the service-level target in CLAUDE.md.
+      //
+      // FR-R3-100 (FR-016) — this comment used to end "CI fails on regression",
+      // which was false in two directions at once: `ci` ran `test:host` (`vitest
+      // run`, no coverage), so these thresholds were applied by nothing, and after
+      // FR-R3-099 there is no CI to fail. Both halves are now true instead: `ci`
+      // runs `test:coverage`, so the attested chain -- and therefore every release
+      // -- is refused when any floor below regresses. A declared threshold no
+      // command enforces is this round's signature defect; it was here.
+
       thresholds: {
         statements: 80,
         branches: 75,
