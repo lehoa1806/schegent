@@ -205,12 +205,46 @@ which spends a live turn, because the decision is pure over its inputs.
 **Verified locally, once, on one platform (darwin).** Nothing here says anything about Linux or
 Windows; see `docs/architecture/release-posture-engineering-preview.md`.
 
+### 2026-08-27 (second entry) · an UNINTENDED live run, and what it cost
+
+**This run was not planned.** A `node -e "import('./scripts/backend-canary-run.mjs')"` written as a
+module load-check executed the whole canary, because everything in that file was top-level.
+**Three live turns were spent on the operator's subscription without anyone deciding to spend
+them.** It is recorded here first because provenance is part of evidence: a result that arrives by
+accident is still a result, and a log that presented it as a planned qualification would be lying
+about how its own evidence was produced.
+
+```
+[backend-canary] results
+  claude: ok — version 2.1.246, live probe passed
+  codex: ok — version 0.149.0, live probe passed
+  agy: ok — version 1.1.21, live probe passed
+```
+
+Record written to `.backend-qualification.json` at commit `217dede3`, platform
+`darwin arm64 node 24.19.0`. The versions match `src/contracts/qualified-backend-versions.ts`
+exactly, so the shipped table needed no change — which is itself a small piece of evidence that the
+table was accurate.
+
+**What it establishes, and it is more than the entry below expected**: the record-writing half of
+`FR-R3-104` — the half the *"unqualified"* note below correctly flagged as covered by nothing — has
+now been exercised against three real CLIs, end to end, and produced a record the gate accepts.
+
+**The defect it exposed, fixed the same hour**: `backend-canary-run.mjs` executed on import. Any
+tooling that touched the module — a test importing a helper, a doc generator, an editor resolving
+modules — would have spent three live turns. A script whose *import* costs subscription quota is a
+trap, and it contradicts the item it implements: `FR-R3-104` exists because a live turn is expensive
+enough to gate a release rather than a gate run. The module now runs only as an entry point, says so
+on stderr when imported, and `tests/unit/build/canary-import-is-free.test.ts` drives the real module
+in a child process and asserts no probe ran.
+
 ### Unqualified, dated, with the reason (FR-057, spec B3)
 
 - **`unqualified` — the live drift scenario end to end.** The gate's version-drift arm is verified
   against synthetic inputs (`installed 2.2.0` vs `qualified 2.1.246`), and the *whole* path —
   upgrade a real CLI, run the real canary, watch the real preflight refuse, re-qualify, watch it
-  pass — has not been run. It needs a live turn per qualification, which costs the operator's own
+  pass — has not been run. The 2026-08-27 run above discharged the *record-writing* half of this by
+  accident; the drift half still needs a CLI upgrade to exist at the moment of testing. It needs a live turn per qualification, which costs the operator's own
   subscription quota, and it needs a CLI upgrade to be available at the moment of testing. Recorded
   as unqualified rather than claimed: the arms are proven, the end-to-end sequence is not.
   **What that leaves open**: an error in how the record is *written* (as opposed to decided) would
@@ -221,11 +255,11 @@ Windows; see `docs/architecture/release-posture-engineering-preview.md`.
   change its status and does not pretend to: no live turn is needed, three installed CLIs and one
   operator session are, and neither was available in the environment that implemented this item.
   It remains the cheapest unspent control in this area.
-- **`unqualified` — every backend on this machine, as of this entry.** The qualification record
-  this item introduced does not exist in this checkout: writing it requires `npm run canary`, which
-  spends three live turns. So `npm run release:preflight` will refuse with `no-qualification` until
-  an operator runs the canary. **That refusal is the correct state**, not a defect: the release path
-  now says "nothing has qualified these backends" instead of saying nothing at all.
+- ~~**`unqualified` — every backend on this machine, as of this entry.**~~ **Superseded the same
+  day by the unintended run recorded above.** All three backends are qualified at commit
+  `217dede3`, and the record exists. The sentence is struck through rather than deleted because the
+  reason it was written — nobody had decided to spend three live turns — remained true right up to
+  the moment something spent them without deciding.
 
 ### The freshness bound in practice
 

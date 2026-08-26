@@ -4,11 +4,12 @@
 // Separated so the decisions are unit-testable without a CLI, a network, or
 // credentials. This half does the I/O and nothing else.
 
+import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import {
   QUALIFICATION_PATH,
-  buildQualificationRecord,
-  readHeadCommit
+  readHeadCommit,
+  recordFromCanaryResults
 } from './backend-qualification.mjs';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -226,6 +227,29 @@ function recordInjectionScenario(backend, command) {
   );
 }
 
+/**
+ * Run only when this file is the entry point.
+ *
+ * WHY THIS GUARD EXISTS, and it is not hypothetical: on 2026-08-27 a `node -e "import(...)"`
+ * load-check of this module SPENT THREE LIVE TURNS, because everything below was top-level. Any
+ * tooling that touches the module — a test that imports a helper from it, a doc generator, an
+ * editor resolving modules — would have done the same. A script whose import costs the operator's
+ * subscription quota is a trap, and the cost is invisible until the bill.
+ *
+ * The whole point of `FR-R3-104` is that a live turn is expensive enough to gate a RELEASE on
+ * rather than a gate run. A module that spends three of them on import contradicts its own item.
+ */
+const isEntryPoint = process.argv[1] !== undefined
+  && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (!isEntryPoint) {
+  // Importable for its exports, silent about it. Nothing below runs.
+  console.error(
+    '[backend-canary] imported rather than executed; no probe was run. ' +
+      'Run `npm run canary` to spend the live turns deliberately.'
+  );
+} else {
+
 const results = BACKENDS.map(({ backend, command }) => {
   const version = versionProbe(command);
   // A CLI that is not installed is never asked for a turn. Beyond that there is
@@ -249,11 +273,9 @@ console.log(formatReport(results));
 // not a certificate; the gate reads the versions and the date, and an operator reading the file
 // sees exactly which backends produced a live turn. Writing nothing on partial success would
 // leave the release path with no record at all, which refuses for the wrong reason.
-const qualificationRecord = buildQualificationRecord({
-  versions: Object.fromEntries(
-    results.map((result) => [result.backend, result.observedVersion ?? null])
-  ),
-  states: Object.fromEntries(results.map((result) => [result.backend, result.state])),
+// The projection lives in `backend-qualification.mjs` so it can be tested without spending three
+// live turns; this file keeps the I/O and the two values only a running process can supply.
+const qualificationRecord = recordFromCanaryResults(results, {
   commit: readHeadCommit(),
   platform: `${process.platform} ${process.arch} node ${process.versions.node}`,
   now: new Date().toISOString()
@@ -262,3 +284,5 @@ writeFileSync(QUALIFICATION_PATH, `${JSON.stringify(qualificationRecord, null, 2
 console.log(`[backend-canary] qualification record written to ${QUALIFICATION_PATH}`);
 
 process.exit(canaryExitCode(results));
+
+}

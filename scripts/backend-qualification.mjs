@@ -293,6 +293,31 @@ function describeVersions(versions) {
   return entries.map(([backend, version]) => `${backend} ${versionToken(version) ?? '?'}`).join(', ');
 }
 
+/**
+ * FR-R3-104 — the canary's results, projected into the record the gate reads.
+ *
+ * EXTRACTED FROM THE SCRIPT so it can be tested without spending three live turns. The
+ * qualification log recorded this as an unqualified hole on the day it was written: every arm of
+ * the DECISION is exercised against synthetic inputs, and the projection that produces the record
+ * the decision reads was covered by nothing. A wrong field name here would leave the gate deciding
+ * about `undefined` while every decision test stayed green — the two-correct-halves shape this
+ * round keeps finding.
+ *
+ * A backend that only managed a version probe records `null` for its version and its real state,
+ * so a partially-degraded run cannot leave a record that reads as three qualified backends.
+ */
+export function recordFromCanaryResults(results, { commit, platform, now }) {
+  return buildQualificationRecord({
+    versions: Object.fromEntries(
+      results.map((result) => [result.backend, result.observedVersion ?? null])
+    ),
+    states: Object.fromEntries(results.map((result) => [result.backend, result.state])),
+    commit,
+    platform,
+    now
+  });
+}
+
 /** The record the canary writes. Shape stated once, so the writer and the gate cannot disagree. */
 export function buildQualificationRecord({ versions, commit, platform, now, states }) {
   return {

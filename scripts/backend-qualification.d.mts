@@ -70,3 +70,19 @@ export declare function buildQualificationRecord(inputs: {
 };
 
 export declare function readHeadCommit(): string | null;
+
+export declare function recordFromCanaryResults(
+  results: ReadonlyArray<{
+    backend: string;
+    state: string;
+    observedVersion?: string | null;
+  }>,
+  context: { commit: string | null; platform: string; now: string }
+): {
+  version: number;
+  qualifiedAt: string;
+  commit: string | null;
+  platform: string;
+  versions: Record<string, string | null>;
+  states: Record<string, string>;
+};
