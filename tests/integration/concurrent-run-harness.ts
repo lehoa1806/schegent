@@ -22,6 +22,7 @@ import { vi, type Mock } from 'vitest';
 import * as path from 'path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { diagnoseWait } from './wait-diagnosis';
 import { ZippedStreamBuffer } from '../../src/runner/zipped-stream-buffer';
 import { SchegentWorkflowController } from '../../src/controller/workflow-controller';
 // Feature 098 (T080) — the controller no longer carries a compiled-in catalog,
@@ -210,7 +211,8 @@ export async function drainUntil(
   what: string | (() => string),
   timeoutMs = DRAIN_TIMEOUT_MS
 ): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
   let rounds = 0;
   while (Date.now() < deadline) {
     if (settled()) return;
@@ -219,9 +221,15 @@ export async function drainUntil(
     await new Promise((r) => setTimeout(r, 0));
   }
   if (!settled()) {
+    // FR-R3-097 — the round count used to be reported raw, under a comment
+    // claiming the ratio of rounds to milliseconds "is what tells the two
+    // apart". It does, and nothing stated a floor to divide against, so the one
+    // time anyone applied the rule they read a full-speed loop as a starved one.
+    // `diagnoseWait` supplies the floor and states the verdict.
+    const diagnosis = diagnoseWait({ elapsedMs: Date.now() - startedAt, rounds });
     throw new Error(
       `drainUntil gave up after ${timeoutMs}ms and ${rounds} round(s) waiting for: ` +
-        `${typeof what === 'function' ? what() : what}`
+        `${typeof what === 'function' ? what() : what}\n  ${diagnosis.text}`
     );
   }
 }

@@ -15,9 +15,25 @@
 // waiting for was perfectly healthy; on an idle machine the same code passed.
 //
 // Its own error message said so and nobody read it that way: "gave up after
-// 10000ms and 7644 round(s)". 7,644 event-loop rounds is not a stalled run, it
-// is a starved one — and keeping the round count *alongside* an elapsed-time
-// bound is what lets a reader tell those apart.
+// 10000ms and 7644 round(s)".
+//
+// FR-R3-097 CORRECTED THIS PARAGRAPH, and the correction is the more useful
+// half. It used to end: "7,644 event-loop rounds is not a stalled run, it is a
+// starved one — and keeping the round count alongside an elapsed-time bound is
+// what lets a reader tell those apart." The second clause is true and the first
+// is **backwards**. A round yields with `setImmediate` and then `setTimeout(…, 0)`,
+// which Node clamps to one millisecond, so a round cannot cost less than ~1 ms —
+// measured at 1.24 ms idle on a 10-core darwin box, and 2.23-2.34 ms with forty
+// CPU workers running. 7,644 rounds in 10,000 ms is **1.31 ms per round**: that
+// poller was running at full speed, not starving.
+//
+// So the round count discriminates only against a stated floor, and no file
+// stated one — which is how the tree's single worked example came out inverted in
+// three places at once. The floor and the verdict now live in
+// `tests/integration/wait-diagnosis.ts`, and both harnesses report the
+// classification instead of leaving the division to a reader with no baseline.
+// This gate is unchanged: keeping the count is still right, and it is now worth
+// something.
 //
 // WHAT IS ALLOWED. Loops that do N units of work (build 30 fixtures, feed 64
 // chunks, drain 5 microtasks) are untouched — they are not waits, they cannot
