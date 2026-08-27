@@ -27,6 +27,8 @@ This is the manifest-parity index for every command Schegent contributes to the 
 | `schegent.openDashboard` | Schegent: Open Dashboard | Open the singleton Dashboard for the current workspace. | <!-- Source: package.json --><!-- Source: src/commands/open-dashboard.ts --> |
 | `schegent.retryActiveRun` | Schegent: Retry Active Run | Retry the best eligible active, queued, or historical Run. | <!-- Source: package.json --><!-- Source: src/commands/retry-active-run.ts --> |
 | `schegent.redetectClaudeTransport` | Schegent: Re-detect Claude CLI prompt transport | Report that Claude prompt transport is fixed to stdin streaming. | <!-- Source: package.json --><!-- Source: src/activation/ui-wiring.ts --> |
+| `schegent.exportRunEvidence` | Schegent: Export Run Evidence | Write one Run's evidence to a folder you choose, with a manifest of what it contains and what it omits. Refuses a destination inside `.schegent/`. | <!-- Source: package.json --><!-- Source: src/commands/evidence-commands.ts --> |
+| `schegent.deleteRunEvidence` | Schegent: Delete Run Evidence | Remove one Run's local evidence after a modal confirmation. Refuses rather than racing a live writer, and reports what it could not remove. | <!-- Source: package.json --><!-- Source: src/commands/evidence-commands.ts --> |
 
 The manifest contributes no command menus, keybindings, or `enablement` clauses. Activation and successful Stage 2 initialization still determine which registrations are available at runtime.
 

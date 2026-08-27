@@ -191,6 +191,11 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   'definition-published': 'system',
   'definition-deactivated': 'system',
   'definition-restored': 'system',
+  // FR-R3-127 — an operator removed or exported a Run's evidence. `task`: both
+  // name a Run in the envelope, and a reader asking "what happened to this Run's
+  // evidence?" is asking a per-Run question.
+  'evidence-deleted': 'task',
+  'evidence-exported': 'task',
   // FR-R3-103 — all three name a Run, so all three are task-scoped.
   //
   // `run-resume-declined-orphan-alive` is the one worth arguing about: it is a decision made
@@ -379,6 +384,8 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'run-resumed': // FR-R3-103 — activation's resume decision
         case 'run-resume-declined-orphan-alive': // FR-R3-103
         case 'run-invocation-aborted-on-supersession': // FR-R3-103 — the supersession abort
+        case 'evidence-deleted': // FR-R3-127 — an operator action on a Run's evidence
+        case 'evidence-exported': // FR-R3-127
         case 'run-record-quarantined': { // FR-R3-111 — a corrupt record preserved, not destroyed
           const scope = classifyAuditEvent(evt);
           expect(scope === 'task' || scope === 'system').toBe(true);

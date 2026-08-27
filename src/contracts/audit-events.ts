@@ -817,6 +817,29 @@ export const CATALOG_LIFECYCLE_EVENT_TYPES = [
   'definition-restored'
 ] as const;
 
+/**
+ * FR-R3-127 (FR-006) — an operator removed or exported evidence.
+ *
+ * ADDITIVE. No `AUDIT_SCHEMA_VERSION` bump, on the FR-R3-064 precedent: the
+ * warn-and-preserve parser tolerates an unknown type, and no historical log
+ * contains these.
+ *
+ * WHY THEY ARE AUDITED AT ALL, since `FR-R3-085` shipped the services without an
+ * audit dependency. Deleting a Run's evidence removes the artifacts an
+ * investigation would read. It does NOT remove `.schegent/audit.log` — that is a
+ * different artifact with its own retention — so a record of the removal survives
+ * the removal, which is the only arrangement under which "evidence was deleted" is
+ * answerable later. An operator action on evidence that leaves no trace is the gap,
+ * not the audit.
+ *
+ * WHAT THE PAYLOADS MAY NOT CARRY: a path inside the evidence store, a run id
+ * beyond the envelope's own, an artifact name, or a destination directory. The
+ * envelope already names the run; a destination is an operator's filesystem layout
+ * and is not this log's business. Counts and a refusal reason are the whole
+ * payload, on the `CATALOG_LIFECYCLE` closure discipline.
+ */
+export const EVIDENCE_LIFECYCLE_EVENT_TYPES = ['evidence-deleted', 'evidence-exported'] as const;
+
 export const ALL_AUDIT_EVENT_TYPES = [
   ...PHASE_EVENT_TYPES,
   ...RUNNER_EVENT_TYPES,
@@ -857,7 +880,9 @@ export const ALL_AUDIT_EVENT_TYPES = [
   ...PROCESS_EXCHANGE_EVENT_TYPES,
   ...CONCURRENCY_EVENT_TYPES,
   ...POINT_OF_EFFECT_EVENT_TYPES,
-  ...CATALOG_LIFECYCLE_EVENT_TYPES
+  ...CATALOG_LIFECYCLE_EVENT_TYPES,
+  // FR-R3-127 — an operator removed or exported a Run's evidence.
+  ...EVIDENCE_LIFECYCLE_EVENT_TYPES
 ] as const;
 
 export type PhaseEventType = (typeof PHASE_EVENT_TYPES)[number];
@@ -893,6 +918,22 @@ export type OptionalPhaseEventType = (typeof OPTIONAL_PHASE_EVENT_TYPES)[number]
 export type MetricsEventType = (typeof METRICS_EVENT_TYPES)[number];
 export type ProcessExchangeEventType = (typeof PROCESS_EXCHANGE_EVENT_TYPES)[number];
 export type CatalogLifecycleEventType = (typeof CATALOG_LIFECYCLE_EVENT_TYPES)[number];
+export type EvidenceLifecycleEventType = (typeof EVIDENCE_LIFECYCLE_EVENT_TYPES)[number];
+
+/**
+ * FR-R3-127 — the closed payload for both evidence-lifecycle events.
+ *
+ * Counts and one refusal reason. No path, no artifact name, no destination: see the
+ * docblock on `EVIDENCE_LIFECYCLE_EVENT_TYPES` for why each is absent, and note
+ * that the way to keep them out is to give the payload nowhere to put them.
+ */
+export interface EvidenceLifecyclePayload {
+  /** Artifacts removed or carried. */
+  readonly artifacts: number;
+  /** Artifacts the operation could not touch, and why it stopped, if it did. */
+  readonly retained?: number;
+  readonly refusedReason?: string;
+}
 
 /**
  * Feature 084 — the closed payload for a process exchange audit entry, widened

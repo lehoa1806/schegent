@@ -129,6 +129,14 @@
         "title": "Schegent: Retry Active Run"
       },
       {
+        "command": "schegent.exportRunEvidence",
+        "title": "Schegent: Export Run Evidence"
+      },
+      {
+        "command": "schegent.deleteRunEvidence",
+        "title": "Schegent: Delete Run Evidence"
+      },
+      {
         "command": "schegent.redetectClaudeTransport",
         "title": "Schegent: Re-detect Claude CLI prompt transport"
       }

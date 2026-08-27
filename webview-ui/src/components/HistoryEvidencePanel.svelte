@@ -23,9 +23,45 @@
 
   interface Props {
     runId: string;
+    /**
+     * FR-R3-127 (FR-004) — the Run's terminal status, the capture mode, and the
+     * window. Together they decide whether an unredacted transcript is being held
+     * for THIS Run, which is the question an operator looking at a failed Run has
+     * and which a settings page cannot answer.
+     */
+    runStatus?: string;
+    rawTranscriptMode?: 'always' | 'errors-only' | 'off';
+    retentionMaxAgeDays?: number;
   }
 
-  const { runId }: Props = $props();
+  const {
+    runId,
+    runStatus = '',
+    rawTranscriptMode = 'errors-only',
+    retentionMaxAgeDays = 30
+  }: Props = $props();
+
+  /**
+   * Whether this Run retains an unredacted raw transcript right now.
+   *
+   * The condition is `(mode, outcome)` and NOT the mode alone. Under the shipped
+   * `errors-only` a successful Run retains nothing raw, and a panel that announced
+   * a retention window anyway would be noise attached to the majority case — which
+   * is how a real warning gets ignored.
+   *
+   *   off          -> never
+   *   always       -> every Run
+   *   errors-only  -> failed, canceled or paused Runs, which is exactly where the
+   *                   audit of 2026-08-27 found the concentration: "where prompts
+   *                   and output are most likely to contain sensitive debugging
+   *                   context".
+   */
+  const RAW_RETAINING_OUTCOMES = ['failed', 'canceled', 'cancelled', 'paused'];
+  const retainsRawTranscript = $derived.by(() => {
+    if (rawTranscriptMode === 'off') return false;
+    if (rawTranscriptMode === 'always') return true;
+    return RAW_RETAINING_OUTCOMES.includes(runStatus.toLowerCase());
+  });
 
   let result = $state<ResolveAuditPointerResult | null>(null);
 
@@ -112,6 +148,27 @@
   <h3>Evidence</h3>
   <p class="message" data-testid="history-evidence-message">{message}</p>
 
+  <!--
+    FR-R3-127 (FR-004) — the retention consequence, at the Run.
+
+    The audit of 2026-08-27 found the tiers correctly separated and then found a
+    concentration: failed, paused and canceled Runs retain UNREDACTED transcripts,
+    which is exactly where prompts and output are most likely to carry sensitive
+    debugging context. An operator looking at such a Run should not have to open a
+    settings page to learn that, or to find the way to remove it.
+
+    Silent when the Run retains nothing raw — see `retainsRawTranscript`.
+  -->
+  {#if retainsRawTranscript}
+    <p class="raw-retention" data-testid="history-evidence-raw-retention">
+      <strong>An unredacted raw transcript is held for this run</strong> — operator prompts,
+      source, and model output — for up to {retentionMaxAgeDays}
+      day{retentionMaxAgeDays === 1 ? '' : 's'} or until the session-artifact byte budget evicts it.
+      To remove it now, run <code>Schegent: Delete Run Evidence</code> from the Command Palette; to
+      keep a copy elsewhere first, <code>Schegent: Export Run Evidence</code>.
+    </p>
+  {/if}
+
   {#if resolved}
     {#if resolved.truncated}
       <!-- T055 — a truncated read that says nothing reads as a complete one. -->
@@ -147,6 +204,17 @@
 </section>
 
 <style>
+  .raw-retention {
+    margin: 0 0 var(--schegent-space-2, 8px);
+    padding: 6px 8px;
+    border-left: 3px solid var(--vscode-editorWarning-foreground);
+    /* Theme tokens only: FR-R3-131 baselined 30 contrast violations and this adds
+       no new hard-coded colour. */
+    color: var(--vscode-foreground);
+    background: var(--vscode-editorWidget-background);
+    font-size: 0.95em;
+  }
+
   .evidence-panel {
     display: flex;
     flex-direction: column;

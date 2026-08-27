@@ -20,7 +20,7 @@
 // **Why there is no `onCommand:` or `onView:` entry.** At `engines.vscode
 // the declared floor` both are implicit: since 1.74 VS Code activates an extension when one
 // of its contributed commands is invoked or one of its contributed views is
-// revealed, whether or not the manifest says so. This extension contributes 19
+// revealed, whether or not the manifest says so. This extension contributes 22
 // commands and one view; spelling any of them out here would add 20 lines that
 // change no behaviour, and the list would then have to be kept in step with
 // `contributes` by hand. So the rule is: activation events are for triggers VS

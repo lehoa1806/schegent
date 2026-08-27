@@ -38,6 +38,13 @@ export interface GeneralSettingsPayload {
   readonly 'logging.runtimeLogLevel'?: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
   readonly 'logging.runtimeLogFilePath'?: string;
   readonly 'logging.rawTranscriptMode'?: 'always' | 'errors-only' | 'off';
+  // FR-R3-127 — both keys were already saveable: `GeneralSettingsTab.svelte`
+  // posts them through this helper with a COMPUTED key, which TypeScript does not
+  // check, and the host's `KEY_SPECS` has always accepted them. They were missing
+  // from this interface only, so the one caller that names a key literally — the
+  // privacy-profile apply — was the first to notice.
+  readonly 'logging.sessionRetentionMaxAgeDays'?: number;
+  readonly 'logging.sessionRetentionMaxBytes'?: number;
 }
 
 export type SaveResult =

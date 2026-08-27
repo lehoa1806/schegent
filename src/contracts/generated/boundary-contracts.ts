@@ -187,7 +187,9 @@ export const AUDIT_EVENT_TYPES = [
   "output-target-refused-at-dispatch",
   "definition-published",
   "definition-deactivated",
-  "definition-restored"
+  "definition-restored",
+  "evidence-deleted",
+  "evidence-exported"
 ] as const;
 
 export const SETTINGS_KEYS = [

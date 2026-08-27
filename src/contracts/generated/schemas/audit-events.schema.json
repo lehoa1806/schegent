@@ -136,7 +136,9 @@
           "output-target-refused-at-dispatch",
           "definition-published",
           "definition-deactivated",
-          "definition-restored"
+          "definition-restored",
+          "evidence-deleted",
+          "evidence-exported"
         ]
       },
       "uniqueItems": true

@@ -60,4 +60,11 @@ retention is `errors-only`, and nothing in `FR-R3-085` alters it.
   its recipient is a different party — that is where a chain means something.
 - **Nothing here is encrypted at rest.** `FR-R3-085` stage 1 declined optional encryption for a
   stated reason: this product has no key store, and inventing one is a larger change than that item.
+  `FR-R3-127` turned that into a record with a reversal trigger —
+  [the evidence-encryption declination](../architecture/evidence-encryption-declination.md) — so the
+  question is answered rather than re-asked. The short version: encryption's hard part is the key
+  lifecycle, and the actor it would stop is one that already has the authority to read the key.
+- **Which posture you are in is a choice with a name.** `FR-R3-127` publishes three privacy profiles
+  — `ephemeral`, `diagnostic` (these defaults) and `forensic` — each stating what it keeps, who it is
+  for, and what it does **not** change. See [the settings reference](../reference/settings.md).
   The decline is recorded with its reason rather than omitted.

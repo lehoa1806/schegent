@@ -33,6 +33,16 @@
     onBack: () => void;
     catalogNames?: CatalogNames;
     /**
+     * FR-R3-127 (FR-004) — the two facts the evidence panel needs to say whether
+     * this Run's unredacted transcript is being kept, and for how long.
+     *
+     * Defaulted to the shipped values rather than made required: every existing
+     * mount would otherwise break, and the shipped default is the correct reading
+     * when a caller has no snapshot to read from.
+     */
+    rawTranscriptMode?: 'always' | 'errors-only' | 'off';
+    retentionMaxAgeDays?: number;
+    /**
      * Feature 103 (T065, FR-033) — open the trigger form for this run.
      *
      * Optional, and absent means the control is not rendered rather than
@@ -46,7 +56,14 @@
     onRerun?: () => void;
   }
 
-  const { row, onBack, catalogNames = NO_CATALOG_NAMES, onRerun }: Props = $props();
+  const {
+    row,
+    onBack,
+    catalogNames = NO_CATALOG_NAMES,
+    onRerun,
+    rawTranscriptMode = 'errors-only',
+    retentionMaxAgeDays = 30
+  }: Props = $props();
 
   /**
    * The metrics join, as three states and not two.
@@ -278,7 +295,12 @@
   <!-- The derived id, not `row.runId`: passing the raw property makes the prop
        a getter that re-reads `row`, which is the subscription the panel's own
        derived then has to absorb. Cheaper to not create it. -->
-  <HistoryEvidencePanel {runId} />
+  <HistoryEvidencePanel
+    {runId}
+    runStatus={row.status}
+    rawTranscriptMode={rawTranscriptMode}
+    retentionMaxAgeDays={retentionMaxAgeDays}
+  />
 </article>
 
 <style>

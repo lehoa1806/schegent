@@ -40,7 +40,7 @@ Before a run containing a Phase with `sideEffects: git` or unrestricted permissi
 
 ## Contributed VS Code commands
 
-These 19 commands appear in the Command Palette. A question mark means that the field or whole argument is optional.
+These 22 commands appear in the Command Palette. A question mark means that the field or whole argument is optional.
 
 | Command and title | Accepted argument | Behavior and guard | Source |
 |---|---|---|---|
@@ -63,6 +63,9 @@ These 19 commands appear in the Command Palette. A question mark means that the 
 | `schegent.openDashboard` — Schegent: Open Dashboard | any value; ignored | Refuses when no workspace folder is open, otherwise opens the Dashboard. No trust/primacy guard. | <!-- Source: package.json --><!-- Source: src/commands/open-dashboard.ts --> |
 | `schegent.retryActiveRun` — Schegent: Retry Active Run | any value; ignored | Requires primacy. Prefers the sole paused/failed active Run, then a recent retryable queue item, then eligible history. | <!-- Source: package.json --><!-- Source: src/commands/retry-active-run.ts --> |
 | `schegent.redetectClaudeTransport` — Schegent: Re-detect Claude CLI prompt transport | none | Informational no-op: the current Claude path always streams its prompt over stdin. No trust/primacy guard. | <!-- Source: package.json --><!-- Source: src/activation/ui-wiring.ts --> |
+| `schegent.verifyAuditChain` — Schegent: Verify Audit Chain | none | Walks `.schegent/audit.log`'s per-entry digest chain and names the first break. Detection, not prevention: the chain head sits on the same disk as the log. No trust/primacy guard. **Omitted from this table until FR-R3-127**, which is why `tests/lint/documented-commands-exist.test.ts` now holds this page in both directions. | <!-- Source: package.json --><!-- Source: src/commands/verify-audit-chain.ts --> |
+| `schegent.exportRunEvidence` — Schegent: Export Run Evidence | `runId?: string` | Prompts for the Run id when none is passed, then for a destination folder, and refuses a destination inside `.schegent/`. Writes an archive plus a manifest of what it contains and what it omits. No trust/primacy guard. | <!-- Source: package.json --><!-- Source: src/commands/evidence-commands.ts --><!-- Source: src/services/evidence-export.ts --> |
+| `schegent.deleteRunEvidence` — Schegent: Delete Run Evidence | `runId?: string` | Prompts for the Run id when none is passed, then confirms modally. Refuses rather than racing a live writer, and reports what it removed **and** what it could not. Audited as `evidence-deleted`. No trust/primacy guard. | <!-- Source: package.json --><!-- Source: src/commands/evidence-commands.ts --><!-- Source: src/services/evidence-delete.ts --> |
 
 <!-- Source: package.json -->
 <!-- Source: src/activation/ui-wiring.ts -->

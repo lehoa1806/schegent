@@ -47,6 +47,12 @@ import {
 } from '../ui/sidebar/connected-run-projector';
 import type { ConnectedRunPort } from '../ui/sidebar/commands/router-types';
 import type { StateProjector } from '../ui/sidebar/state-projector';
+import { isTerminalRunStatus } from '../state/workflow-run';
+import {
+  runDeleteRunEvidenceCommand,
+  runExportRunEvidenceCommand,
+  type EvidenceCommandDeps
+} from '../commands/evidence-commands';
 
 interface Stage2UiWiringDeps {
   readonly extensionRoot: string;
@@ -176,6 +182,73 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
     notifier: deps.notifier,
     logger: deps.logger
   };
+  /**
+   * FR-R3-127 — the three inputs a palette invocation has to supply, assembled in
+   * one place so both evidence commands read the same answers.
+   *
+   * `isRunActive` is the SAME probe `run-safety-wiring.ts` wires for checkpoint
+   * attribution — the non-terminal count over the store's Run map. Two definitions
+   * of "still executing" is how one of them comes to permit a delete the other
+   * would refuse.
+   */
+  const evidenceCommandDeps = (d: typeof deps): EvidenceCommandDeps => ({
+    workspaceRoot: d.workspaceRoot,
+    isRunActive: (runId) =>
+      Object.values(d.store.getRunMap()).some(
+        (run) => run.id === runId && !isTerminalRunStatus(run.status)
+      ),
+    promptForRunId: async () =>
+      vscode.window.showInputBox({
+        title: 'Run id',
+        prompt: 'The UUID shown in the run detail and in history',
+        ignoreFocusOut: true
+      }),
+    promptForDestination: async () => {
+      const picked = await vscode.window.showOpenDialog({
+        canSelectFiles: false,
+        canSelectFolders: true,
+        canSelectMany: false,
+        openLabel: 'Export here'
+      });
+      return picked?.[0]?.fsPath;
+    },
+    // The modal pattern already used by `run-safety-wiring.ts` for the mutation
+    // approval, rather than a second one. A destructive command reachable from the
+    // palette by fuzzy match is not an operator decision unless they are asked.
+    confirmDelete: async (runId) => {
+      const approve = 'Delete evidence';
+      const answer = await vscode.window.showWarningMessage(
+        `Delete all local evidence held for run ${runId}?`,
+        {
+          modal: true,
+          detail:
+            'Removes this run\'s raw transcript, verbose diagnostics and session artifacts from ' +
+            'the workspace. It refuses rather than racing a live writer, and reports anything it ' +
+            'could not remove. This cannot be undone.'
+        },
+        approve
+      );
+      return answer === approve;
+    },
+    notifier: d.notifier,
+    logger: d.logger,
+    auditDeletion: async (runId, outcome) => {
+      await d.auditWriter.append({
+        runId,
+        phase: 'operator',
+        iteration: 0,
+        eventType: 'evidence-deleted',
+        // `info` for a refusal too: the refusal is the mechanism working, not a
+        // failure of it, and `AuditOutcome` has no third word for that.
+        outcome: 'info',
+        payload:
+          outcome.outcome === 'completed'
+            ? { artifacts: outcome.removed.length, retained: outcome.retained.length }
+            : { artifacts: 0, refusedReason: outcome.reason }
+      });
+    }
+  });
+
   const commands: vscode.Disposable[] = [
     vscode.commands.registerCommand('schegent.auto', (args) =>
       runAuto(args, {
@@ -374,7 +447,18 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
       deps.notifier.info(
         'Schegent: Claude CLI now natively streams prompts over stdin. No transport redetection is necessary.'
       );
-    })
+    }),
+    // FR-R3-127 (FR-006) — the two commands
+    // `docs/operations/evidence-retention-disclosure.md` has promised since
+    // FR-R3-085. The services existed, tested, with no caller; nothing declared
+    // them, so a reader following that page found an empty palette.
+    // `tests/lint/documented-commands-exist.test.ts` is what stops that recurring.
+    vscode.commands.registerCommand('schegent.exportRunEvidence', (runId?: unknown) =>
+      runExportRunEvidenceCommand(evidenceCommandDeps(deps), runId)
+    ),
+    vscode.commands.registerCommand('schegent.deleteRunEvidence', (runId?: unknown) =>
+      runDeleteRunEvidenceCommand(evidenceCommandDeps(deps), runId)
+    )
   ];
 
   return {

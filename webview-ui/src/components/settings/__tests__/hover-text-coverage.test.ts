@@ -186,7 +186,16 @@ const FOCUSABLE_SELECTOR =
 function describedStatus(el: Element, container: ParentNode): 'inline' | 'popover' | 'none' {
   const ariaDescribedBy = el.getAttribute('aria-describedby');
   if (ariaDescribedBy) {
-    const target = container.querySelector(`#${CSS.escape(ariaDescribedBy)}`);
+    // FR-R3-127 — `CSS` is not defined in this test environment, and this branch had
+    // never run: no control in either tab used `aria-describedby` until the privacy
+    // profile buttons did, so the helper crashed rather than reporting. A latent
+    // bug that only a new inline description could reveal.
+    //
+    // `getElementById`-by-hand rather than a polyfill: the ids here are authored
+    // constants, and escaping is only needed for ids this project does not produce.
+    const target = Array.from(container.querySelectorAll('[id]')).find(
+      (node) => node.getAttribute('id') === ariaDescribedBy
+    ) ?? null;
     if (target && target.tagName.toLowerCase() === 'p') return 'inline';
   }
   if (el.getAttribute('data-hover-text-anchored') === 'true') return 'popover';
