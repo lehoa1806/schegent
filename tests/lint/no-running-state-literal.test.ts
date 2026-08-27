@@ -80,6 +80,8 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'src/controller/task-deletion.ts',
   'src/controller/workflow-controller.ts',
   'src/extension.ts',
+  // FR-R3-119 — the clock-driven work moved to `src/activation/scheduled-work-wiring.ts`.
+  'src/activation/scheduled-work-wiring.ts',
   'src/monitor/claude-cli-monitor.ts',
   'src/monitor/monitor-state.ts',
   'src/queue/queue-manager.ts',

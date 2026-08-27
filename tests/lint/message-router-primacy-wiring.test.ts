@@ -32,7 +32,11 @@ const ROUTER_WIRING_PATH = resolve(REPO_ROOT, 'src', 'activation', 'sidebar-rout
  * left the schedule watchdog in the entry file, so the count is across the pair.
  * Counting per-file would let one site vanish while the other doubled.
  */
-const WIRING_SOURCES = [EXTENSION_PATH, ROUTER_WIRING_PATH] as const;
+// FR-R3-119 — the schedule watchdog's authoritative read moved to
+// `scheduled-work-wiring.ts` with the watchdog itself. The COUNT is the rule and
+// is unchanged at two; the pair of files holding them is not.
+const SCHEDULED_WORK_PATH = resolve(REPO_ROOT, 'src', 'activation', 'scheduled-work-wiring.ts');
+const WIRING_SOURCES = [EXTENSION_PATH, ROUTER_WIRING_PATH, SCHEDULED_WORK_PATH] as const;
 const TEST_ROOT = resolve(REPO_ROOT, 'tests');
 
 /**

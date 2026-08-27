@@ -253,3 +253,52 @@ ordering guarantee the gate exists for.
 step. `src/extension.ts` 1,489 → 1,046; `src/activation/` 11 modules → 15.
 
 Remaining: 823 of a 400-line target.
+
+
+## Fifth decrement — 2026-08-27
+
+**`wireStage2` 823 → 695; `src/extension.ts` 1,046 → 916.**
+`src/activation/scheduled-work-wiring.ts` took 168 lines: the three things that act on a clock —
+scheduled starts, the credit watchdog, the queue-schedule watchdog. Seventeen bindings in, three
+out; the best remaining ratio.
+
+This is where the regions stop being obvious. The four before it were "everything between these two
+declarations"; this one is *what shares a reason to exist* — each of the three wakes on its own
+schedule and decides whether this window may act.
+
+### The recovery landmark deliberately did not move
+
+The region contained `await scheduledStartCoordinator.reArm()`, one of three recovery landmarks
+`elect-before-recovering` reasons about: it asserts each is preceded by the election and gated on
+`lockResult.acquired`, **in the composition root**.
+
+Moving a landmark into the module that builds its coordinator would not have made it safer. It
+would have made it **unwatched**, and the gate would have gone quiet rather than red. So the module
+builds the coordinator and returns it, and the caller decides when to act on a primacy result —
+the same split `openWorkspaceSession` makes with `lockResult`.
+
+A useful by-product: `lockResult` then stopped being a dependency of this module at all. The first
+draft took it; the only use was that one decision, and once the decision stayed behind, so did the
+argument. **Construction needs no verdict.**
+
+### Six gates followed the construction; one rule was re-sited rather than relaxed
+
+`no-direct-run-start`, `no-running-state-literal`, `primacy-predicate-split`,
+`message-router-primacy-wiring` and `source-loc-budget` were declarations or path updates —
+`no-direct-run-start` in particular fired exactly as designed: *"A new file reaches the start path.
+Declare it."* It was declared, not widened.
+
+`elect-before-recovering`'s **rule 3** needed re-siting: the watchdog resume sweep must re-read
+`hasPrimacy()` before claiming elapsed retries, because it fires long after activation. That
+ordering is the whole rule and is unchanged; the sweep now lives in the new module, so the check
+reads it there.
+
+### Trajectory
+
+**1,221 → 1,010 → 894 → 871 → 823 → 695**, five decrements in one session, no behavioural change at
+any step. `src/extension.ts` 1,489 → 916 — **it has lost 573 lines and is now below the 950 ceiling
+that was 1,490 this morning.** `src/activation/` 11 modules → 16.
+
+Remaining: 695 of a 400-line target. The next candidates are `projector + phaseLogTail` (143 lines,
+27 bindings in) and `auditWriter + retention` (97 lines, 16 in) — both meaningfully more coupled
+than anything taken so far, which is the expected shape as a composition root drains.

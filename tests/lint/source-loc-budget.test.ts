@@ -366,15 +366,16 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // ratchets. The largest cohesion problem in the tree was the one the waiver
   // machinery never saw.
   //
-  // The file is 1,046 after four extractions: `sidebar-router-wiring.ts` (240
+  // The file is 916 after five extractions: `sidebar-router-wiring.ts` (240
   // lines of `MessageRouter` construction), `backend-execution-wiring.ts` (148
   // lines of monitor, sampler and runner-registry construction),
   // `workspace-settings.ts` (36 lines of configuration resolution) and
-  // `workspace-session.ts` (77 lines of catalog, leases and UI shell). 1,080 is set
+  // `workspace-session.ts` (77 lines of catalog, leases and UI shell) and
+  // `scheduled-work-wiring.ts` (168 lines of clock-driven work). 950 is set
   // deliberately rather than pinned to the measurement: 34 lines is room for an
   // ordinary edit, and it is outside the 25-line margin, so this stays a budget
   // rather than a high-water mark. Lower it when the next extraction earns it.
-  { path: 'src/extension.ts', maxLines: 1_080 },
+  { path: 'src/extension.ts', maxLines: 950 },
   //
   // FR-R3-103 (FR-042, FR-046) — 1459 -> 1471. Nine lines for the dependency wiring of the resume
   // liveness check plus two imports, three more registering the fence-loss abort, and the
@@ -1052,7 +1053,7 @@ describe('large source file LOC budgets', () => {
    * delete the entry and the exemption with it.
    */
   const LEGACY_FUNCTION_EXEMPTIONS: Readonly<Record<string, number>> = {
-    'src/extension.ts:wireStage2': 823
+    'src/extension.ts:wireStage2': 695
   };
 
   /** Top-level function declarations and their extents, brace-counted. */
@@ -1122,7 +1123,7 @@ describe('large source file LOC budgets', () => {
     //
     // The two numbers being equal is the point. Lowering the exemption is a
     // two-line edit that shows up in review as a pair; raising it fails here.
-    const CEILING: Readonly<Record<string, number>> = { 'src/extension.ts:wireStage2': 823 };
+    const CEILING: Readonly<Record<string, number>> = { 'src/extension.ts:wireStage2': 695 };
     for (const [key, allowed] of Object.entries(LEGACY_FUNCTION_EXEMPTIONS)) {
       expect(allowed, `${key}: an exemption may be lowered, never raised`).toBeLessThanOrEqual(
         CEILING[key] ?? 0
