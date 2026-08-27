@@ -41,6 +41,99 @@ parenthetical says *by injection* is **Asserted by unit table only** — that ph
 | That report reaches the audit record | `FR-R3-054` §5 | `tests/unit/controller/process-tree-degradation.test.ts`, `tests/lint/tree-degradation-emission-funnel.test.ts` | **Observed here** — the recorder runs against a real append, and the wiring between the runner's hook and the audit writer is gated. |
 | The same, on Windows | `FR-R3-054` §5 | — | **Not implemented, deliberately.** There is no group to probe, so the only available check answers for the direct child — and a recycled pid inside the confirmation window would file an entry against a Run whose tree had died. The runtime-log warning is what Windows has. See [Backend operations](backends.md) step 6. |
 
+## Route taken — 2026-08-27
+
+**Decision: rows 1-3 are declined, dated, and the declared support surface narrows
+to match. No measurement was obtained, and none is expected under current
+constraints.**
+
+`FR-R3-115` offered four routes and required one to be chosen on the record. Three
+of them are **unavailable**, which is a different statement from unattractive, and
+each reason is observed rather than assumed:
+
+| Route | Status | Why |
+|---|---|---|
+| **A** — a Windows and a Linux contributor each run `npm run test:host` | Unavailable | This is a single-operator project. `.github/CODEOWNERS` names one person, and `FR-R3-115` row 5 makes that fact the premise of a different finding in the same item. There is no contributor to ask. |
+| **B** — a local container or VM on the operator's machine | Unavailable | **Observed 2026-08-27**: `docker`, `podman`, `colima`, `lima` and `orbstack` are all absent from this machine, and no container daemon is running. Route B was the cheapest route to closing row 3 and it is not open. |
+| **C** — a public-repository free tier | Not a verification decision | It is a repository-visibility decision, as the item says itself. Recorded, not taken here. |
+| **D** — decline explicitly and permanently | **Taken, in part** | See below. |
+
+### D was taken in halves, because its two halves are not the same proposal
+
+`FR-R3-115` T1409 phrases D as *decline, and delete the four `win32` branches or gate
+them behind an unsupported-platform refusal*. Those are two separable claims and only
+one of them is right.
+
+**The honesty half is taken.** The tree stops implying verified support for a
+platform on which it has never executed. See the support-surface change below.
+
+**The deletion half is refused, and this is the substantive decision.** `taskkill /T`
+is the only process-tree termination Windows has. Deleting it does not remove an
+unverified branch; it removes the *mitigation* and leaves the unverified path as a
+bare `kill(pid)` that reaches no descendant. The exposure row 1 describes — a
+cancelled Run whose descendants keep writing to the operator's checkout — would
+become **certain** rather than unmeasured. Deleting untested safety code because it
+is untested inverts the finding.
+
+**The runtime-refusal variant is also refused**, for a narrower reason: a refusal on
+startup asserts that Schegent is *broken* on Windows. The evidence says *unmeasured*.
+Shipping a stronger negative claim than the evidence supports is the same error as
+shipping a stronger positive one, and this round has spent itself removing the
+positive version.
+
+`FR-R3-115` §3 sets the standard this has to meet — *"Shipping a platform with no
+evidence and shipping no platform are both honest; only the first-without-saying-so
+is not."* A kept branch with a declared `unverified` tier is the first, with the
+saying-so.
+
+### What would change this
+
+Any one of these, and this heading is rewritten rather than amended:
+
+- A Windows machine or VM becomes available to the operator (closes rows 1 and 2).
+- A container runtime is installed (closes row 3; **not** row 1 — process-group
+  semantics are the thing under test and a Linux container cannot answer for them).
+- A contributor on either platform runs `npm run test:host` unedited and reports what
+  they saw, pass or fail. Both fixtures are written to need no edit, so this costs
+  them one command.
+
+### Rows 1-3 under this decision
+
+Their **evidence class is unchanged** — they remain *Unrun here*, because no
+measurement was taken and reclassifying them would be the exact conflation this page
+exists to prevent. What changes is that their status is now a **dated decision**
+rather than an open intention:
+
+| Row | Class | Disposition |
+|---|---|---|
+| Windows process-tree termination via `taskkill /T` | **Unrun here** | Declined 2026-08-27. Branch kept. |
+| Windows reparse-point refusal at a safe-open leaf | **Unrun here** | Declined 2026-08-27. Branch kept. |
+| Linux path case-sensitivity in `output-target-identity.ts:40` | **Unrun here** | Declined 2026-08-27. Route B was the way in and is unavailable. |
+
+**Observed / relied on / inferred**, kept apart as `FR-R3-099` had to learn to do:
+*observed* — the five container runtimes are absent, and the fixtures skip with their
+platform named; *relied on* — that `taskkill /T` is Windows' process-tree mechanism
+and that a container does not reproduce Windows process-group semantics; *inferred* —
+that rows 1-3 will stay unmeasured until one of the conditions above changes. Nothing
+here is an observation of Windows or Linux behaviour, because none was made.
+
+## The declared support surface
+
+This table **is** the support claim. Any other document that names a platform defers
+to it, and `tests/lint/platform-branch-has-record-row.test.ts` refuses a
+`process.platform` comparison in `src/` naming a platform that is not here.
+
+| Platform | Tier | Evidence |
+|---|---|---|
+| **macOS** (darwin, arm64) | **Verified** | The full host suite runs here every cycle. This record's header names the date and the platform. |
+| **Linux** | **Unverified** | Ships, and is branched for (`src/lib/output-target-identity.ts:40`). Has never executed here. Route B unavailable — see *Route taken*. |
+| **Windows** (win32) | **Unverified** | Ships, and is branched for in four production files, two of them safety paths. Has never executed here. Both fixtures are *Unrun here*. |
+
+**"Unverified" is a claim about evidence, not about quality.** It does not say the
+platform is broken, and it does not say it works. It says nobody has run it and this
+project will not pretend otherwise. A defect on an unverified platform is not a
+regression against a promise, because no promise was made.
+
 ## What this record does not claim
 
 - **No NFS, SMB, 9p or virtiofs mount was used.** `FR-R3-083` §4 allows the
