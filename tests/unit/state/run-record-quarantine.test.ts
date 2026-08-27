@@ -238,7 +238,10 @@ describe('FR-R3-111 — the quarantine reaches the audit log, not just the buffe
     const { readFileSync } = await import('node:fs');
     const { resolve } = await import('node:path');
     const activation = readFileSync(
-      resolve(__dirname, '..', '..', '..', 'src', 'extension.ts'),
+      // FR-R3-119 — the drain moved with the audit writer into
+      // `src/activation/evidence-wiring.ts`. The property this asserts — that
+      // activation drains the quarantine, not only this test — is unchanged.
+      resolve(__dirname, '..', '..', '..', 'src', 'activation', 'evidence-wiring.ts'),
       'utf8'
     );
     expect(activation).toContain('quarantineEvents: store.drainRunQuarantineEvents()');

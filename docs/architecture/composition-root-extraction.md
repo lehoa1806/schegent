@@ -302,3 +302,42 @@ that was 1,490 this morning.** `src/activation/` 11 modules → 16.
 Remaining: 695 of a 400-line target. The next candidates are `projector + phaseLogTail` (143 lines,
 27 bindings in) and `auditWriter + retention` (97 lines, 16 in) — both meaningfully more coupled
 than anything taken so far, which is the expected shape as a composition root drains.
+
+
+## Sixth decrement — 2026-08-27
+
+**`wireStage2` 695 → 630; `src/extension.ts` 916 → 846.**
+`src/activation/evidence-wiring.ts` took 91 lines: the audit writer, the session-artifact retention
+sweep, and the two thunks that tell them what is still live.
+
+**The migration events are parameters, not a re-derivation.** `v6`/`v7`/`v11`/`v12` and the
+run-repair events come from `store.initialize()` at the very top of activation and are consumed
+here, because the audit writer is the first thing that exists which can record them. Asking the
+store again would return nothing the second time — or re-run a migration. Their types are derived
+from the forwarder's own signature (`Parameters<typeof forwardMigrationAuditEvents>[0]`) rather than
+restated, so a change to the event shapes cannot drift past this module.
+
+**The two readers stay thunks**, unchanged: both re-read per call so a catalog reload reaches the
+next decision and `protectedSessionRunIds` sees runs that started after this wiring ran. Freezing
+either into a value at construction is the bug they exist to avoid — the third distinct deferred-read
+shape in six extractions.
+
+### Two gates followed
+
+`no-running-state-literal` (a declared-file list) and `run-record-quarantine`, which asserts that
+**activation** drains the quarantine rather than only its own test. The drain moved with the audit
+writer; the property is unchanged.
+
+### Trajectory
+
+**1,221 → 1,010 → 894 → 871 → 823 → 695 → 630**, six decrements, no behavioural change at any step.
+`src/extension.ts` 1,489 → 846 — it has lost **643 lines, 43% of the file**. `src/activation/`
+11 modules → 17.
+
+Remaining: 630 of a 400-line target.
+
+**What is left is the coupled core**, and the numbers say so: `projector + phaseLogTail` (143 lines,
+27 bindings in), `uiWiring` (67, 22), the phase-runner accessors (70, 17) and the controller itself
+(91, 18). Every region taken so far had a boundary of nine to eighteen; the remainder starts at
+seventeen and rises. That is the expected shape — a composition root drains from the edges inward,
+and what stays is what genuinely composes.
