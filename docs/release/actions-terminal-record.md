@@ -110,40 +110,49 @@ reasoning about it.**
 Observed with `git ls-remote` over the configured SSH remote — a read-only query, no API credential
 involved:
 
-| Fact | Value |
-|---|---|
-| Default branch (`HEAD` symref) | `refs/heads/develop` |
-| `refs/heads/develop` | the same commit as the local `develop` |
-| Workflow files on `develop` | **none** |
-| Workflow files on `refs/heads/master` | **seven** — `ci`, `codeql`, `dependency-review`, `full-gate`, `pr`, `release`, `security-audit` |
+| Fact | Value | Checked |
+|---|---|---|
+| Default branch (`HEAD` symref) | `refs/heads/develop` | 2026-08-27 |
+| Workflow files on `refs/heads/develop` | **none** | 2026-08-27 |
+| Workflow files on `refs/heads/master` | **none** — seven deleted by `ce6cb180` | 2026-08-27, after the fast-forward |
+| Workflow files on `refs/heads/retire-actions-on-master` | **none** | 2026-08-27 |
+| Workflow files at `refs/tags/v0.1.0` | **six** — see the note below | 2026-08-27 |
 
-**Scheduled workflows fire from the default branch only.** `develop` is the default branch and
-carries no workflow files, so the weekly `full-gate` and the scheduled `security-audit` **do not
-run**. That is what makes the retirement effective today.
+**No branch on the remote carries a workflow file.** Every trigger reads the workflow files from a
+ref: `schedule` from the default branch, `push` and `pull_request` from the ref involved,
+`workflow_dispatch` from the default branch. With none anywhere on a branch, **nothing can run.**
 
-### 1. The `master` residual (in-tree, prepared and pushed; merge outstanding)
+**The `v0.1.0` tag still carries six of them, and it is inert.** A tag triggers a workflow only when
+the tag is *pushed*, and that tag already exists — re-pushing an existing tag is a no-op. A new tag
+would be cut from a branch that has none. So the files at that tag are historical content with no
+path to execution, and they are left alone deliberately: rewriting a published tag to tidy a file
+that cannot run would be worse than the residual. It is the clearest remaining argument for the
+settings flip below, which closes the class rather than the instances.
 
-The deletion landed on `develop`. It never reached `master`, which still carries seven workflow
-files with `push`, `pull_request` and `schedule` triggers. Their schedules are inert — not the
-default branch — but **a push to `master`, or a pull request targeting it, would run them and bill
-for them**. `FR-R3-099` said the tree must own the deletion; it owns it on one branch.
+### 1. The `master` residual — CLOSED 2026-08-27
 
-The fix is one commit deleting `.github/workflows/` and nothing else. **It is on the remote**, as
-`refs/heads/retire-actions-on-master` (`ce6cb180`), a direct descendant of `master` — so merging it
-is a fast-forward that drags no other history onto that branch.
+The deletion had landed on `develop` and never reached `master`, which carried seven workflow files
+with `push`, `pull_request` and `schedule` triggers. Their schedules were inert — not the default
+branch — but a push to `master`, or a pull request targeting it, would have run them and billed for
+them. `FR-R3-099` said the tree must own the deletion; it owned it on one branch for a day.
+
+`ce6cb180` deletes `.github/workflows/` and nothing else. It was committed on
+`retire-actions-on-master`, a direct descendant of `master`, pushed, and then fast-forwarded onto
+`master` with the operator's approval:
 
 ```bash
-git -C repo push origin retire-actions-on-master:master   # fast-forward; deletes the seven files
+git push origin retire-actions-on-master               # branch, triggered nothing
+git push origin retire-actions-on-master:master        # fast-forward, triggered nothing
 ```
 
-Pushing the branch triggered nothing, as expected: for a push event GitHub reads the workflow files
-**at the pushed commit**, and that commit has none.
+Neither push triggered a run, as predicted: a push event reads the workflow files **at the pushed
+commit**, and that commit has none.
 
-**The `master` update itself was attempted from this session and refused by the environment's
-guardrail on outward actions.** Pushing a new branch was permitted; updating a shared branch was
-not, which is a distinction worth keeping — it is the same line `FR-R3-099` drew for the settings
-flip, drawn by tooling rather than by judgement. The commit is on the remote and reviewable; moving
-`master` onto it is the operator's.
+**Recorded because the sequence matters.** The branch push was permitted by this environment's
+outward-action guardrail; the `master` update was refused, and went through only after the operator
+approved it explicitly. That is the same line `FR-R3-099` drew for the settings flip — outward
+mutations are the operator's — enforced by tooling rather than by judgement, and then lifted by the
+operator rather than worked around.
 
 ### 2. Repository settings (outward, the operator's)
 
@@ -157,11 +166,13 @@ remote is unreachable", and it is not.
 3. Save, and confirm `https://api.github.com/repos/lehoa1806/schegent/actions/runs` records no run
    dated after the disable.
 
-This is belt-and-braces rather than the thing standing between the operator and a bill: with the
-default branch carrying no workflows, nothing is scheduled to run. It closes the class — a restored
-file on any branch, or a pull request targeting `master` — which the two tree-side deletions cannot.
+This is now the **only** outstanding step, and it is belt-and-braces rather than the thing standing
+between the operator and a bill: no branch on the remote carries a workflow file, so nothing can
+run. What the setting closes is the **class** — a file restored on any branch by any means, and the
+six files still sitting at the `v0.1.0` tag — which no amount of deleting can, because deletion
+addresses instances and the setting addresses the capability.
 
-Nothing in this repository claims either step is done.
+This repository does not claim the setting is flipped.
 
 ## What was not rewritten
 
