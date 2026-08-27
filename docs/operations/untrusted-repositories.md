@@ -25,6 +25,27 @@ Schegent already enforces the first half of this by default: `claude` and `agy` 
 unless you name them in `schegent.backend.uncontainedBackends`. This page is about the decision you
 are making when you do.
 
+<!-- executable-example: uncontained-grant-scope -->
+
+```
+| backend | granted   | outcome  |
+|---------|-----------|----------|
+| claude  | (none)    | refused  |
+| agy     | (none)    | refused  |
+| codex   | (none)    | allowed  |
+| claude  | agy       | refused  |
+| agy     | agy       | allowed  |
+| claude  | claude    | allowed  |
+| agy     | claude    | refused  |
+| codex   | claude    | allowed  |
+| claude  | claude,agy| allowed  |
+```
+
+These rows are read by `tests/lint/documented-defaults-are-executable.test.ts` and fed through
+`judgeBackendContainment` in `src/services/backend-containment-policy.ts`. The rows that matter are
+rows 4 and 7: **a grant applies to the backend it names and no other** (`FR-R3-125`). Row 3 is the
+one an operator most often misreads — `codex` was never refused, so it needs no grant.
+
 ## Why the untrusted case is different
 
 `claude` and `agy` are spawned with `--dangerously-skip-permissions`. Their approval prompts are off,

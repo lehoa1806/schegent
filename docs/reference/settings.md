@@ -105,6 +105,35 @@ Unredacted transcripts and verbose diagnostics can contain prompts, source code,
 <!-- Source: src/state/confirmations-config.ts -->
 <!-- Source: src/state/capability-trust-resolver.ts -->
 
+## The trust-capability ladder
+
+`schegent.trust.allowCustomPhases` and `schegent.trust.allowCustomRetryConditions` are three-state:
+`true`, `false`, or `null` (the declared default, meaning *follow Workspace Trust*). They resolve
+against `vscode.workspace.isTrusted` through a four-step ladder, and the rule is **any deny wins** —
+an explicit `false` at either scope decides before any `true` is consulted (`FR-R3-108`).
+
+<!-- executable-example: trust-deny-precedence -->
+
+```
+| isTrusted | workspace | user      | allowed |
+|-----------|-----------|-----------|---------|
+| false     | true      | true      | no      |
+| true      | (unset)   | (unset)   | yes     |
+| true      | false     | true      | no      |
+| true      | true      | false     | no      |
+| true      | true      | (unset)   | yes     |
+| true      | (unset)   | true      | yes     |
+| true      | false     | (unset)   | no      |
+| true      | (unset)   | false     | no      |
+| true      | null      | null      | yes     |
+```
+
+These rows are read by `tests/lint/documented-defaults-are-executable.test.ts` and fed through
+`resolveCapabilityDecision` in `src/state/capability-trust-decision.ts`. Rows 3 and 4 are the ones
+`FR-R3-108` changed: before it, the ladder consulted the workspace scope first, so a repository's
+checked-in `true` defeated an operator's explicit `false`. Row 1 is the ceiling — an untrusted
+workspace denies regardless of overrides.
+
 ## The capability posture setting
 
 `schegent.backend.uncontainedBackends` — array of backend ids, default **`[]`**, `application` scope.

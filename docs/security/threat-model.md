@@ -62,8 +62,29 @@ The controls common to all six reduce malformed-input and confused-deputy risk; 
 ## What Schegent cannot prevent
 
 - Claude and Agy run with approval prompts disabled, so they can act without asking under the operator's local permissions. `schegent.backend.runner` **defaults to `claude`**, so this is the default path, not an opt-in one — and as of FR-R3-056 **it is refused by default**: an uncontained backend does not run until it is named in `schegent.backend.uncontainedBackends`, and the refusal is enforced where the backend would be constructed rather than disclosed in prose. As of FR-R3-125 the grant is **per backend**, so allowing Agy does not allow Claude. What containment is actually available per backend and platform is qualified in [Backend containment qualification](../architecture/backend-containment-qualification.md); when naming a backend there is and is not acceptable is owned by [Running Schegent on a repository you do not trust](../operations/untrusted-repositories.md), which this document does not paraphrase. Disclosure alone changed informed consent, not reachability; this changes reachability. The decision, the shapes not chosen, and what remains outstanding are in [Agent capability posture](../architecture/agent-capability-posture.md). Codex's `workspace-write` sandbox is the only adapter-level filesystem bound documented by its argv. None of these facts make generated actions correct. <!-- Source: src/runner/claude-cli.ts --><!-- Source: src/runner/codex-cli.ts --><!-- Source: src/runner/agy-cli.ts -->
+<!-- executable-example: phase-verdict-basis -->
+
+```
+| declared   | sideEffects  | producesOutput | resolves to |
+|------------|--------------|----------------|-------------|
+| (omitted)  | (omitted)    | no             | exit-code   |
+| (omitted)  | workspace    | no             | exit-code   |
+| (omitted)  | git          | no             | exit-code   |
+| (omitted)  | unrestricted | no             | exit-code   |
+| (omitted)  | none         | no             | model-token |
+| (omitted)  | none         | yes            | exit-code   |
+| model-token| workspace    | no             | model-token |
+| exit-code  | none         | no             | exit-code   |
+```
+
+The rows above are read by `tests/lint/documented-defaults-are-executable.test.ts` and fed through
+`resolveHostVerification` in `src/config/phase-runner-policy.ts`. If this table and that function
+disagree, the gate fails and names both sides. It is here, in the document a security reviewer opens
+first, because the two sentences below it stated the **inverse** of the shipped default from
+`FR-R3-117` until 2026-08-27 while every documentation gate passed — `FR-R3-126`.
+
 - Prompt injection in repository files, task text, imported instructions, or prior output is not classified by the host. <!-- Source: src/runner/prompt-builder.ts -->
-- A Phase outcome is self-certification **unless the Phase declares `hostVerification: 'exit-code'`** (FR-R3-058). By default, classification uses the model's own account of its work: a timed-out process whose output parsed clean is treated as success, and a non-zero exit alongside a clean termination token is logged and advanced. A Phase marked `exit-code` is judged on the process's exit status instead, and a clean token cannot override a non-zero exit or a timeout — so for a Phase that runs tests or claims a side effect, the agent whose work is judged is no longer the author of the evidence that advances it. The marking is opt-in, so an unmarked Phase behaves exactly as this paragraph described before. The bounded control sentinel prevents arbitrary content from becoming process control, but a well-formed model report can still be false. `resolveRunOutputs` checks whether a declared output exists; it does not prove correctness. Authors should mark verification Phases `exit-code` and, as before, write an independent verification Phase as described in [Custom Phases](../features/custom-phases.md). <!-- Source: src/parser/stdout-parser.ts --><!-- Source: src/services/run-driver.ts --><!-- Source: tests/lint/no-content-driven-process-control.test.ts -->
+- A Phase outcome is judged on **the process's exit status** whenever the Phase's claim is load-bearing, and `hostVerification: 'model-token'` is the explicit **opt-out** (FR-R3-058 built the mechanism opt-in; **FR-R3-117 inverted the default**, and this paragraph stated the inverse of what shipped until FR-R3-126 corrected it). Load-bearing means anything other than a resolved `sideEffects: 'none'`, or a Phase that produces a declared output — and because omitted `sideEffects` resolves to `'workspace'`, a Phase that declares nothing is exit-code-judged. A clean termination token cannot override a non-zero exit or a timeout, so for a Phase that runs tests or claims a side effect the agent whose work is judged is no longer the author of the evidence that advances it. **Self-certification is what remains for the advisory case**: a Phase resolving to `sideEffects: 'none'` with no declared output, or one that opts out with `model-token`, is classified from the model's own account of its work — a timed-out process whose output parsed clean is treated as success, and a non-zero exit alongside a clean token is logged and advanced. Definitions written before v14 keep their semantics: the resolved verdict basis and its provenance are stamped into each Phase at snapshot time rather than re-derived later. The bounded control sentinel prevents arbitrary content from becoming process control, but a well-formed model report can still be false. `resolveRunOutputs` checks whether a declared output exists; it does not prove correctness. Authors should mark verification Phases `exit-code` and, as before, write an independent verification Phase as described in [Custom Phases](../features/custom-phases.md). <!-- Source: src/parser/stdout-parser.ts --><!-- Source: src/services/run-driver.ts --><!-- Source: tests/lint/no-content-driven-process-control.test.ts -->
 - Concurrent Runs share one checkout and can interleave edits. Lowering `schegent.queue.globalConcurrencyCap` to `1` narrows simultaneous execution but is not rollback or file locking. <!-- Source: src/services/auto-drain-coordinator.ts --><!-- Source: package.json -->
 - Local raw transcripts are intentionally unredacted, and Claude verbose diagnostics are unredacted when enabled. Recovery checkpoints can contain an unredacted binary Git diff. These artifacts must remain local and unshared. <!-- Source: src/audit/raw-transcript-writer.ts --><!-- Source: src/audit/verbose-diagnostic-writer.ts --><!-- Source: src/services/run-checkpoint-service.ts -->
 - The sanitized CLI transport log can still contain local paths, and a saved full Task description can retain sensitive operator text that does not match the sanitizer's secret patterns. <!-- Source: src/monitor/cli-transport-sink.ts --><!-- Source: src/services/history/history-description-store.ts --><!-- Source: src/lib/logger.ts -->
@@ -231,8 +252,25 @@ Execution leases heartbeat and become reclaimable only after the shared 15-secon
 
 Mutating IPC fails closed when the trust callback is missing, throws, or returns anything but `true`. Workspace-bound activation is also separated from the restricted stage.
 
+**The intent is now declared, not inferred** (`FR-R3-126`). `package.json` carries
+`capabilities.untrustedWorkspaces` with `supported: "limited"`. Until 2026-08-27 the manifest carried
+no `capabilities` key at all, so VS Code applied its conservative default: the behaviour was safe and
+the *intent* was left to a reader's inference, which is not the same thing in a document reviewers
+read to decide what this extension does.
+
+**Why `limited` and not `false`.** `false` would claim the extension does not run in an untrusted
+window. It does: it activates, and it serves the read-only view above — state, history, audit and logs
+are visible, which is deliberate and useful. Declaring `false` would be a false claim about our own
+behaviour, in the manifest, which is the class of defect this item exists to close. `limited` states
+what is true: it runs, and the mutating set is refused while the workspace is untrusted.
+
+Adding a capability block is exactly the kind of edit that quietly enables something, so the check is
+the VS Code 1.107 Electron integration suite rather than this paragraph — 13 modules across two
+launches, green with the block present.
+
 <!-- Source: src/ui/sidebar/message-router.ts -->
 <!-- Source: src/extension.ts -->
+<!-- Source: package.json -->
 
 ### T8 — Prompt injection via spec, plan, task, or instruction content
 
@@ -370,7 +408,7 @@ Outcome classification accepts a termination token only in the trailing region a
 
 Process control is stronger: Claude grace termination arms on the parsed stream-json `{"type":"result"}` harness record, not on model-content substrings. The mechanism is pinned by `tests/lint/no-content-driven-process-control.test.ts`.
 
-This does not make the model's evidence truthful. It separates a bounded control sentinel from the Phase's self-reported outcome, which remains subject to the limit documented above — **except where a Phase declares `hostVerification: 'exit-code'`, in which case the host's own exit status decides and the model's token cannot override it** (FR-R3-058). FR-R3-023 verified evidence *shape* and FR-R3-038 *disclosed* this self-certification; the marking is where it is now *enforced*.
+This does not make the model's evidence truthful. It separates a bounded control sentinel from the Phase's self-reported outcome — and for a **load-bearing** Phase the self-reported outcome does not decide at all: **the host's own exit status does, by default, and the model's token cannot override it** (FR-R3-058 shipped the mechanism opt-in; FR-R3-117 made it the default; `hostVerification: 'model-token'` is the opt-out). The limit documented above therefore applies to the advisory case — a Phase resolving to `sideEffects: 'none'` with no declared output, or one that has opted out. FR-R3-023 verified evidence *shape* and FR-R3-038 *disclosed* the self-certification; the resolved default is where it is now *enforced*.
 
 <!-- Source: src/parser/audit-log-parser.ts -->
 <!-- Source: src/parser/stdout-parser.ts -->

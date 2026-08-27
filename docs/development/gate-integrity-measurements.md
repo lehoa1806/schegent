@@ -816,3 +816,75 @@ back at 89. But the lesson generalises past this refactor:
 
 That is also the honest verdict on the two earlier deferrals: the caution was right, the stated
 *reason* was wrong twice, and only attempting the work found out.
+
+## FR-R3-126 — the fifth form-versus-truth instance, and the gate class it needed (2026-08-27)
+
+**Produced by**: `repo/tests/lint/documented-defaults-are-executable.test.ts`
+
+    executable-example-blocks: 4
+    inverted-claim-phrases-refused: 4
+
+### What was found
+
+`FR-R3-117` inverted the phase verdict default on 2026-08-26: a Phase whose claim is load-bearing is
+judged on its process's **exit status**, and `hostVerification: 'model-token'` is the explicit opt-out.
+`repo/docs/security/threat-model.md` kept stating the **inverse** at two lines — *"A Phase outcome is
+self-certification unless the Phase declares `hostVerification: 'exit-code'`"* and *"The marking is
+opt-in"*.
+
+**Where it hid.** Inside a document that passed every check pointed at it:
+
+| Check | Verdict over the drift |
+|---|---|
+| `check-doc-links.mjs` | green — every link resolved |
+| `check-docs.mjs` (version/heading) | green |
+| source-marker gates | green — the markers named real files |
+| `doc-duplicate-authority.test.ts` | green — one document said it, once |
+| `document-mechanism-consistency.test.ts` | green |
+| `npm run docs:check`, `npm run gate` | green, end to end |
+
+Every one of those verifies **form**. None asks whether the sentence is true. This is the fifth
+instance of that class this round: `FR-R3-116` (a mechanism the documents denied), `FR-R3-122` (three
+records that were not true), `FR-R3-123` (58 statuses that were not true), `FR-R3-124` (a
+`git worktree` ban whose prescribed home never held it), and this one — which is the worst placed of
+the five, because a threat model is the document a security reviewer opens first, and applying
+model-self-certification to a load-bearing Phase is the wrong conclusion about what advances a Run.
+
+### The gate class, and its direction
+
+The audit of 2026-08-27 recommends against generic prose validation and asks instead for *"small
+executable semantic examples"*. The class has two halves and the direction of the first is the whole
+point:
+
+1. **Worked examples authored in the document**, under an `<!-- executable-example: <id> -->` marker,
+   read by the gate and fed through the owning resolver. A gate holding its own copy of the pairs
+   would be a unit test: green while the document says the opposite, which is exactly the relationship
+   the gates in the table above had to this finding.
+2. **A named list of inverted claims** refused by phrase in the one document. Added during
+   implementation, because reverting the prose sentence while leaving the block correct left the gate
+   green — and the sentence is what a reviewer reads.
+
+Four defaults carry a block: the phase verdict basis (`resolveHostVerification`), the
+uncontained-backend grant scope (`judgeBackendContainment`), the trust-ladder deny-precedence
+(`resolveCapabilityDecision`), and the session-retention defaults (`SETTINGS_SCHEMA`).
+
+### What this measurement does NOT establish
+
+- **Prose truth is not verified.** Four defaults have executable examples. Every other sentence in the
+  corpus is unchecked, and the gate says so in its own file and in its failure message.
+- **The inverted-claim list is literal.** A newly-invented paraphrase of a false claim will pass it.
+  That residual is smaller than the one that shipped, and it is stated rather than papered over.
+- **One default's example is scoped.** Session retention's block checks the values and their units,
+  not the sweep — the block says which claim it checks and which it does not.
+
+### An honest neighbour
+
+**§1 of this same file was found drifted on this same day.** `FR-R3-124` discovered that the
+vacuity-census denominator read **86** in §1's prose table while its machine-readable line — the one a
+live run asserts against — read **89**: three unrecorded movements across feature 157, inside the
+measurement that exists to measure record-versus-tree divergence. It was reconciled to 90 there, with
+the three movements back-filled by commit.
+
+Recording that beside this entry is the point. A document about the fifth instance of a class that did
+not mention the instance found in its own §1 on the same afternoon would be a small version of the
+thing it is recording.

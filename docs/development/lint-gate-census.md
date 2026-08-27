@@ -19,8 +19,8 @@ predicted it: its author sampled the set and found every gate well motivated.
 
 | Figure | Value | Date | Method |
 |---|---|---|---|
-| Gate files | **153** | 2026-08-27 | `*.test.ts` under `tests/lint/` recursively |
-| Marked `unique` | 141 | 2026-08-27 | hand verdict |
+| Gate files | **154** | 2026-08-27 | `*.test.ts` under `tests/lint/` recursively |
+| Marked `unique` | 142 | 2026-08-27 | hand verdict |
 | Marked `partially redundant` | 12 | 2026-08-27 | hand verdict |
 | Marked `redundant` | 0 | 2026-08-27 | hand verdict |
 
@@ -172,6 +172,7 @@ changing one means updating that machinery in the same commit.
 | `doc-orphan-pages.test.ts` | every documentation page is reachable by reading (FR-R3-063) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `doc-references-outside-markdown.test.ts` | documentation paths cited outside Markdown resolve (FR-R3-063) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `document-mechanism-consistency.test.ts` | no shipped document denies a mechanism the tree exports (FR-R3-116) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
+| `documented-defaults-are-executable.test.ts` | FR-R3-126 — four security-critical defaults' worked examples are read FROM their owning documents and fed through the owning resolvers | `document-mechanism-consistency.test.ts`, `reference-doc-claims.test.ts` (both check form, not resolved value) | unique | the sibling gates check that a document's links resolve, its version matches, its source markers exist and its setting keys are declared. All four were green while `docs/security/threat-model.md` stated the INVERSE of the shipped phase-verdict default at two lines. This gate is the first that compares a documented default against the function that resolves it, in the direction that matters: the document is the input |
 | `elect-before-recovering.test.ts` | FR-R3-070 — activation elects before it recovers | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `empty-catch-declares-intent.test.ts` | Feature 112 empty catches declare intent | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `eslint-baseline.test.ts` | Feature 112 eslint baseline shape | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
