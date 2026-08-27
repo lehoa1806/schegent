@@ -118,16 +118,34 @@ involved:
 | Workflow files on `refs/heads/retire-actions-on-master` | **none** | 2026-08-27 |
 | Workflow files at `refs/tags/v0.1.0` | **six** — see the note below | 2026-08-27 |
 
-**No branch on the remote carries a workflow file.** Every trigger reads the workflow files from a
-ref: `schedule` from the default branch, `push` and `pull_request` from the ref involved,
-`workflow_dispatch` from the default branch. With none anywhere on a branch, **nothing can run.**
+**No branch on the remote carries a workflow file.** That row is the load-bearing one, and it is an
+observation: `git ls-tree` against each fetched ref, counted.
 
-**The `v0.1.0` tag still carries six of them, and it is inert.** A tag triggers a workflow only when
-the tag is *pushed*, and that tag already exists — re-pushing an existing tag is a no-op. A new tag
-would be cut from a branch that has none. So the files at that tag are historical content with no
-path to execution, and they are left alone deliberately: rewriting a published tag to tidy a file
-that cannot run would be worse than the residual. It is the clearest remaining argument for the
-settings flip below, which closes the class rather than the instances.
+**What follows from it is reasoning, and is labelled as reasoning.** GitHub resolves a trigger's
+workflow files from a ref — `schedule` from the default branch, `push` and `pull_request` from the
+ref involved, `workflow_dispatch` from the default branch. That is GitHub's **documented behaviour,
+relied on here and not verified here**: this checkout holds no API credential, so the Actions API
+cannot be queried and no run list can be read. The conclusion *"nothing can run"* is therefore an
+inference from a documented mechanism over an observed state, not a report of an empty run list.
+
+**The same distinction applies to the two pushes below.** What was observed is that the pushed
+commits carry no workflow files. That neither push *started a run* is inferred, not seen — for the
+same reason. Saying so matters here more than most places: this record exists because `FR-R3-099`
+found 185 runs that every document in the tree said were not happening, and the failure was
+reasoning about the remote instead of querying it. The reasoning below is sound and it is still
+reasoning.
+
+**The one query that would settle it** is `GET /repos/lehoa1806/schegent/actions/runs`, which needs a
+token. It is listed as step 3 of the settings flip precisely so the operator, who can run it, closes
+the loop.
+
+**The `v0.1.0` tag still carries six of them, and it is inert** — on the same documented mechanism. A
+tag triggers a workflow only when the tag is *pushed*; that tag already exists, re-pushing an
+existing tag is a no-op, and a new tag would be cut from a branch that has none. So the files at
+that tag are historical content with no path to execution, and they are left alone deliberately:
+rewriting a published tag to tidy a file that cannot run would be worse than the residual. It is the
+clearest remaining argument for the settings flip below, which closes the class rather than the
+instances.
 
 ### 1. The `master` residual — CLOSED 2026-08-27
 
@@ -145,8 +163,9 @@ git push origin retire-actions-on-master               # branch, triggered nothi
 git push origin retire-actions-on-master:master        # fast-forward, triggered nothing
 ```
 
-Neither push triggered a run, as predicted: a push event reads the workflow files **at the pushed
-commit**, and that commit has none.
+Neither push is believed to have triggered a run, on the mechanism above — the pushed commits carry
+no workflow files. **Believed, not observed**: reading the run list needs the API credential this
+checkout does not hold.
 
 **Recorded because the sequence matters.** The branch push was permitted by this environment's
 outward-action guardrail; the `master` update was refused, and went through only after the operator
