@@ -1111,7 +1111,17 @@ describe('large source file LOC budgets', () => {
   it('every legacy exemption only shrinks, and none is stale', () => {
     // The ratchet's own guard. Without it "shrink-only" is a comment, and the
     // cheapest way past a red gate is to edit the number it compares against.
-    const CEILING: Readonly<Record<string, number>> = { 'src/extension.ts:wireStage2': 1_010 };
+    //
+    // FR-R3-119 — this ceiling MUST be lowered in step with the exemption above.
+    // It sat at the original 1,010 through three decrements, which meant the
+    // exemption could have been raised from 871 all the way back to 1,010 without
+    // failing anything: a ratchet that only refuses going backwards past where it
+    // STARTED is not a ratchet, it is a memory of one. Found while reviewing the
+    // third decrement.
+    //
+    // The two numbers being equal is the point. Lowering the exemption is a
+    // two-line edit that shows up in review as a pair; raising it fails here.
+    const CEILING: Readonly<Record<string, number>> = { 'src/extension.ts:wireStage2': 871 };
     for (const [key, allowed] of Object.entries(LEGACY_FUNCTION_EXEMPTIONS)) {
       expect(allowed, `${key}: an exemption may be lowered, never raised`).toBeLessThanOrEqual(
         CEILING[key] ?? 0

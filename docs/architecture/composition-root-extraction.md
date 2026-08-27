@@ -181,3 +181,27 @@ Measured after this cut, by input boundary rather than size:
 | projector | 71 | 17 | |
 
 None has a late-binding hazard. The next decrement is the catalog/ownership region.
+
+
+## The ratchet's own guard was not ratcheting — 2026-08-27
+
+Found while reviewing the third decrement, and worth more than the decrement itself.
+
+The exemption came down 1,010 → 894 → 871. The **never-raise guard beside it stayed at 1,010**
+the whole time, because it was written once as a literal and nothing tied the two together. So for
+three decrements the exemption could have been raised from 871 all the way back to 1,010 without
+failing anything.
+
+> A ratchet that only refuses going backwards past where it *started* is not a ratchet. It is a
+> memory of one.
+
+Every part of the mechanism looked right in isolation: a shrink-only exemption, a guard asserting
+it, a mutation test proving the guard fires. The mutation test proved it fires **above 1,010** —
+which was true, and useless once the number had moved.
+
+Fixed by lowering the ceiling in step with the exemption, and by recording that the two must move
+together. Verified: raising the exemption to 900 now fails where before it passed.
+
+The general shape, since this is not specific to LoC budgets: **a ratchet needs its guard tied to
+its current value, not to its initial one**, and a mutation test that only probes far past the
+current value cannot tell the difference.
