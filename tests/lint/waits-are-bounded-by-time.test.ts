@@ -75,6 +75,18 @@ const BODY_LINES = 16;
  * defect to silence it, so it stops reading prose. String bodies are blanked rather than
  * removed so nothing on either side of them accidentally joins up into a new token.
  */
+/**
+ * Comments removed, STRING BODIES KEPT.
+ *
+ * The spawned-fixture check below needs the opposite of `codeOnly`: the loop it hunts lives
+ * *inside* a shell command string, so blanking string bodies makes the check vacuous. Found by
+ * mutation — reintroducing the exact unbounded loop that leaked for eight hours did not turn the
+ * gate red, because `codeOnly` had already erased it.
+ */
+function withoutComments(body: string): string {
+  return body.replaceAll(/\/\*[\s\S]*?\*\//g, ' ').replaceAll(/\/\/[^\n]*/g, ' ');
+}
+
 function codeOnly(body: string): string {
   return body
     .replaceAll(/\/\*[\s\S]*?\*\//g, ' ')
@@ -312,6 +324,38 @@ describe('a wait is bounded by elapsed time', () => {
       ).toContain(entry.ms);
       expect(entry.reason.length, `${entry.file} needs a real reason`).toBeGreaterThan(40);
     }
+  });
+
+  it('no spawned shell fixture loops without a bound', () => {
+    // FR-R3-114 follow-up, and the only case here found by finding the corpses rather than by
+    // reading. `process-tree.test.ts` spawned `( while true; do printf 'x' >> file; sleep 0.025;
+    // done ) &` to demonstrate that killing a child leaves its grandchild alive — then cleaned up
+    // with `process.kill(-child.pid)` on a child deliberately spawned WITHOUT its own process
+    // group. The negative pid named a group that does not exist, the `catch` swallowed the
+    // `ESRCH`, and every run of the file leaked one shell appending to a file forty times a
+    // second, forever. Two were found alive on the development machine aged 8h22m and 3h24m.
+    //
+    // They are a plausible contributor to the load sensitivity this repository documents and
+    // attributes to the machine: the timeouts a handful of runaway loops cause look exactly like
+    // a busy laptop, and a day of development leaves a handful.
+    //
+    // An unbounded loop inside a spawned shell is therefore forbidden. A bounded one is fine —
+    // the bound is what makes a missed cleanup survivable instead of permanent.
+    const offenders: string[] = [];
+    for (const file of scanFiles()) {
+      const lines = readFileSync(resolve(REPO_ROOT, file), 'utf8').split('\n');
+      lines.forEach((line, index) => {
+        // `withoutComments`, not `codeOnly`: the loop lives inside a shell string.
+        if (!/while\s+(true|:)\b/.test(withoutComments(line))) return;
+        offenders.push(`${file}:${index + 1}`);
+      });
+    }
+    expect(
+      offenders,
+      'A shell fixture spawned with an unbounded loop outlives the test that made it. Bound the ' +
+        'loop (`i=0; while [ $i -lt N ]`) AND capture its pid for cleanup — the pid is the ' +
+        'mechanism, the bound is what makes a missed cleanup survivable.'
+    ).toEqual([]);
   });
 
   it('no loop waits by counting event-loop turns', () => {
