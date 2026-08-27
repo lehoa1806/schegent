@@ -481,3 +481,102 @@ passed the function bound's first draft, and that is the only reason the flat-ma
 defect was found — it was invisible to reading and to review. An observation that
 fails to reproduce the expected failure is evidence too, and worth more here than the
 five that behaved.
+
+## FR-R3-121 — the governance surface, measured (2026-08-27)
+
+`FR-R3-121` filed the aggregate, not any individual gate: *"gate for gate, the best
+thing about this repository"*, against an entry cost nothing had ever added up.
+
+### Standing figures — with their method, because all three move
+
+Recorded so the next round reads **direction of travel** rather than re-deriving from
+zero. Every figure carries the rule that produced it: `FR-R3-121` reported 141 gates
+where this measured 150, and the difference was **not** drift — the item counted a
+subdirectory's seven *files*, two of which are not gates, and this counts gate files
+recursively. Two correct numbers, one units mismatch. A figure without its method
+cannot be compared to the next one, and that near-miss is why this table has four
+columns instead of three.
+
+| Figure | Value | Date | Method |
+|---|---|---|---|
+| Lint gate files | **151** | 2026-08-27 | `find repo/tests/lint -name '*.test.ts'`, recursive; includes `gate-integrity/` |
+| Envelope Markdown | **1,387 files, 16.2 MB** | 2026-08-27 | `find docs specs -name '*.md'` from the workspace root |
+| `AGENTS.md` | **981 lines, 749 in the hard-rules section, 64 rules** | 2026-08-27 | `wc -l`; section extent by `^## ` boundaries; rules by `^- \*\*Never\*\*` |
+| Envelope gate set (the push cost) | **39 s** | 2026-08-27 | the six `scripts/*.sh` gates `pre-push` runs, timed end to end |
+| Liveness self-test alone | **51 s** | 2026-08-27 | `scripts/envelope-doc-liveness-selftest.sh`, run separately — it is not in the push path |
+
+**Before and after, and the honest answer is: unchanged.** The push cost was ~45 s in
+the 2026-08-26 measurement the envelope README records and is 39 s here. This feature
+**retired no gate** (see below), so nothing was expected to come down, and nothing
+did. The variation is machine load, not a reduction, and reporting it as one would be
+the kind of claim this round exists to remove.
+
+### The census, and why it retired nothing
+
+`docs/development/lint-gate-census.md` now carries **one row per gate** — invariant,
+what else holds it, a verdict, and the evidence. Generated for its structure, written
+by hand for its verdicts, and gated on completeness by
+`tests/lint/lint-gate-census-complete.test.ts` so the next gate added cannot arrive
+without a row.
+
+**Verdicts: 138 unique, 13 partially redundant, 0 redundant. Zero retirements.**
+
+FR-021 permits a retirement only when a named control now holds the invariant — a
+type, a generated contract, a compiler flag, or a named sibling gate. *Seems covered*
+and *the code moved* are not successors. **No gate met that bar**, and `FR-R3-121` §5
+predicted it: its author sampled the set and found every gate well motivated.
+
+**What the census found instead, and it is a real result.** The thirteen
+`no-inline-*` gates are **one rule implemented thirteen times, across 1,009 lines**.
+Diffing two of them leaves the command constant, the allowlist, and the prose;
+several say in their own headers that they *"mirror the established pattern at"* a
+named sibling. And `no-inline-backend-ping-ipc.test.ts` does the same job in **15
+lines**, which is what makes this evidence rather than an impression.
+
+That is redundant **machinery**, not a redundant **rule** — the distinction
+`FR-R3-121` §3 opens with. Each gate pins a *different* command's single call site,
+and retiring any of them deletes a guarantee nothing else holds. So the census
+recommends **consolidation into one table-driven gate with thirteen rows**, saving
+roughly 900 lines while keeping every rule — recorded as a named follow-up, not taken
+here, because an allowlist transcribed wrong silently widens a command's call sites.
+
+### The entry cost
+
+- `repo/CONTRIBUTING.md` now opens with **ten documents, in order**, and states that
+  everything else is reference. Ten counted honestly: there is no optional eleventh,
+  because a list of eleven with one marked optional is a list of eleven.
+- `AGENTS.md`'s hard-rules section gained a **subsystem index** routing a contributor
+  to the rules their change touches. **No rule moved**: all 64 are byte-identical and
+  in their original order, verified by diffing the rule-bearing lines before and
+  after. Sub-headings between the bullets were considered and rejected — the existing
+  order does not cluster cleanly, so headings would have meant reordering all 64 by
+  hand, and a rule lost in that shuffle is worse than a flat list with an index.
+
+### What this does not claim
+
+A `unique` verdict means *no sibling gate, type, generated contract or compiler flag
+was found asserting the same invariant* by the four mechanical signals the census
+documents. It does **not** mean a human read all 151 gates against each other and
+proved independence. That stronger claim would need per-gate review this cycle did
+not do, and the census says so in its own Method section rather than leaving a reader
+to assume otherwise.
+
+### FR-R3-120..122 — the changed verdicts, observed red (2026-08-27)
+
+FR-041 required each new or changed verdict driven red by mutation before it counted.
+Four gates, six observations:
+
+| Check | Mutation | Observed |
+|---|---|---|
+| `audit-baseline-status` empty verdict | a corpus present with no `.md` | red before the change (`ok`), green after (`nothing-to-verify`, exit 0) — selftest case 23a, asserting the **code as hard as the word** |
+| …its non-vacuity control | a corpus **with** one document | reports `ok`, so a change returning `nothing-to-verify` unconditionally cannot pass — case 23c |
+| `check-manifest-versions` | `webview-ui/package.json` bumped to `0.2.1` | red, naming every one of the six version sites and both values; green on revert |
+| `lint-gate-census-complete` | a gate file with no census row | red, naming the file |
+| …the other direction | a census row naming a deleted gate | red, naming the row |
+| VSIX content allowlist | the SBOM added to the package | **red without being asked** — the allowlist gate caught a deliberate new packaged file and required a deliberate entry, which is the behaviour it exists for |
+
+The last row is worth keeping. Nothing in this feature planned to test that gate; it
+fired on its own the first time `npm run package` emitted a new file into the archive,
+and refused until the addition was written down with a reason. A gate that catches
+your own intended change and makes you justify it is the one you find out is working
+without designing an experiment.

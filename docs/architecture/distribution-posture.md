@@ -1,7 +1,7 @@
 # Distribution posture
 
 **Decided 2026-08-27** · `FR-R3-120` · Companion to
-[release posture, engineering preview](release-posture-engineering-preview.md)
+[release posture, engineering preview](../../../docs/architecture/release-posture-engineering-preview.md) (envelope-side)
 
 ## The decision
 

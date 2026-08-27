@@ -52,6 +52,16 @@ export const ALLOWED_VSIX_ENTRIES = Object.freeze([
   'extension/assets/logo.png',
   'extension/assets/sidebar-icon.svg',
   'extension/dist/extension.js',
+  // FR-R3-120 — the SBOM ships INSIDE the VSIX, not only beside it. A recipient is
+  // handed one file, and an SBOM left on the builder's disk describes the artifact
+  // to nobody, which is the gap FR-R3-120 row 1 named. It is generated at package
+  // time by `scripts/generate-sbom.mjs` from the two lockfiles; its strongest
+  // statement is that this extension declares zero runtime dependencies.
+  //
+  // Listed by name rather than by a `*.json` shape, deliberately: this list guards
+  // the ABSENCE of everything not on it, and a shape rule for JSON would admit any
+  // future stray config or fixture that happened to be one.
+  'extension/schegent-sbom.cdx.json',
   // Feature 106 (T590, FR-007 to FR-010) — generated webview output is no
   // longer pinned. Twenty-five literal entries lived here: 15 code-split chunks
   // and 10 numbered stylesheets. They went stale five times, three of them in
