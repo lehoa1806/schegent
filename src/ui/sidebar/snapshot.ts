@@ -904,6 +904,8 @@ export interface WorkflowSnapshot {
    */
   readonly generalSettings: GeneralSettings;
   readonly sessionArtifacts: SessionArtifactsProjection;
+  /** FR-R3-130 (T1496) — live aggregate stream pressure. */
+  readonly streamPressure: StreamPressureProjection;
   readonly evidenceHealth: EvidenceHealthSnapshot;
   // Feature 099 (T491, FR-041) — `phasePrecedence` is gone. It reported, per Phase
   // field, which of `workspace | user | built-in` supplied the effective value. With
@@ -1015,6 +1017,36 @@ export interface WorkflowSnapshot {
   readonly confirmationsEnabled?: boolean;
 }
 
+/**
+ * FR-R3-130 (T1496) — aggregate stream pressure, as it stands right now.
+ *
+ * The audit of 2026-08-27's point about the cap-20 ceiling was that an operator can
+ * accept it without ever seeing it. `stream-pressure-advice.ts` warns at the moment
+ * the cap is chosen; this makes a loaded configuration observable while it is loaded.
+ *
+ * `ceilingBytes` is what the SAME live buffers could grow to under their own caps —
+ * not the product's theoretical maximum. A projection showing 2.56 GiB while two
+ * buffers hold 3 MiB would be the arithmetic ceiling `FR-R3-081` corrected, restated
+ * on a dashboard.
+ */
+export interface StreamPressureProjection {
+  readonly liveBuffers: number;
+  readonly retainedBytes: number;
+  readonly ceilingBytes: number;
+  /**
+   * `os.totalmem()`, carried so the surface that WARNS can reach it.
+   *
+   * FR-R3-130 (T1495) — the cap warning's threshold is machine-derived, and the
+   * point of configuration is a webview dialog with no `os`. It rides with this
+   * projection rather than acquiring a field of its own: both facts are about what
+   * the machine can hold, and one host read serves both.
+   *
+   * `0` when unavailable, which `adviseStreamPressure` reads as "do not warn" —
+   * a warning derived from an absent fact is worse than silence.
+   */
+  readonly machineMemoryBytes: number;
+}
+
 export interface SessionArtifactsProjection {
   readonly artifactCount: number;
   readonly totalBytes: number;
@@ -1114,6 +1146,7 @@ export function buildIdleSnapshot(opts: {
     backendPingState: Object.freeze({ status: 'idle' as const }),
     generalSettings: IDLE_GENERAL_SETTINGS,
     sessionArtifacts: IDLE_SESSION_ARTIFACTS,
+    streamPressure: IDLE_STREAM_PRESSURE,
     evidenceHealth: IDLE_EVIDENCE_HEALTH,
     // Feature 033 — telemetry is ephemeral and absent on idle snapshots.
     telemetry: null,
@@ -1128,6 +1161,14 @@ export const IDLE_DELAYED_RETRY: DelayedRetryState = Object.freeze({
   pendingRetryAt: null,
   pendingRetryCause: null,
   delayedRetryCount: 0
+});
+
+/** FR-R3-130 — nothing in flight is nothing held, which is the honest idle value. */
+export const IDLE_STREAM_PRESSURE: StreamPressureProjection = Object.freeze({
+  liveBuffers: 0,
+  retainedBytes: 0,
+  ceilingBytes: 0,
+  machineMemoryBytes: 0
 });
 
 export const IDLE_SESSION_ARTIFACTS: SessionArtifactsProjection = Object.freeze({

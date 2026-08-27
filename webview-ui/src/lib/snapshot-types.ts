@@ -1297,6 +1297,8 @@ export interface WorkflowSnapshot {
    */
   readonly generalSettings?: GeneralSettings;
   readonly sessionArtifacts?: SessionArtifactsProjection;
+  /** FR-R3-130 (T1496) — live aggregate stream pressure. Optional, as its neighbour is. */
+  readonly streamPressure?: StreamPressureProjection;
   readonly evidenceHealth?: EvidenceHealthProjection;
   /** Feature 081 — absent means the authoritative catalog is still loading. */
   readonly phaseCatalog?: PhaseCatalogProjection;
@@ -1383,6 +1385,31 @@ export interface WorkflowSnapshot {
   readonly confirmationsEnabled?: boolean;
 }
 
+/**
+ * FR-R3-130 (T1496) — mirrored from `src/ui/sidebar/snapshot.ts`.
+ *
+ * `ceilingBytes` is what the LIVE buffers could grow to, not the product's
+ * theoretical maximum: showing 2.56 GiB while two buffers hold 3 MiB would be the
+ * arithmetic ceiling `FR-R3-081` corrected, restated on a dashboard.
+ */
+export interface StreamPressureProjection {
+  readonly liveBuffers: number;
+  readonly retainedBytes: number;
+  readonly ceilingBytes: number;
+  /**
+   * `os.totalmem()`, carried so the surface that WARNS can reach it.
+   *
+   * FR-R3-130 (T1495) — the cap warning's threshold is machine-derived, and the
+   * point of configuration is a webview dialog with no `os`. It rides with this
+   * projection rather than acquiring a field of its own: both facts are about what
+   * the machine can hold, and one host read serves both.
+   *
+   * `0` when unavailable, which `adviseStreamPressure` reads as "do not warn" —
+   * a warning derived from an absent fact is worse than silence.
+   */
+  readonly machineMemoryBytes: number;
+}
+
 export interface SessionArtifactsProjection {
   readonly artifactCount: number;
   readonly totalBytes: number;
@@ -1439,6 +1466,13 @@ export const IDLE_EVIDENCE_HEALTH: EvidenceHealthProjection = Object.freeze({
   runtimeLog: HEALTHY_OPTIONAL_EVIDENCE,
   metricsRollup: HEALTHY_OPTIONAL_EVIDENCE,
   historyPointer: HEALTHY_OPTIONAL_EVIDENCE
+});
+
+export const IDLE_STREAM_PRESSURE: StreamPressureProjection = Object.freeze({
+  liveBuffers: 0,
+  retainedBytes: 0,
+  ceilingBytes: 0,
+  machineMemoryBytes: 0
 });
 
 export const IDLE_SESSION_ARTIFACTS: SessionArtifactsProjection = Object.freeze({

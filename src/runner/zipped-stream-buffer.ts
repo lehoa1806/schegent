@@ -18,6 +18,61 @@ import * as zlib from 'zlib';
  */
 export const MAX_STREAM_BUFFER_BYTES = 64 * 1024 * 1024;
 
+// ---------------------------------------------------------------------------
+// FR-R3-130 (T1496) — live aggregate stream pressure.
+// ---------------------------------------------------------------------------
+//
+// WHAT WAS MISSING. `docs/operations/large-workspace-resource-measurement.md`
+// establishes what a loaded configuration COSTS, and
+// `stream-pressure-advice.ts` warns about it at the point an operator sets the cap.
+// Neither says what is happening right now. The audit of 2026-08-27's point about
+// the 2.56 GiB ceiling was that an operator can accept it without ever seeing it —
+// and a projection is what makes a configuration observable while it is loaded
+// rather than only while it is being chosen.
+//
+// WHY A MODULE-LEVEL REGISTRY, which is a shape this codebase is otherwise careful
+// about. The buffers are constructed inside the runners, per invocation, and are not
+// reachable from the host: `claude-cli.ts` news them up in a closure. Threading a
+// registry down through three adapters, the phase runner and the invocation request
+// would touch every backend to publish one number. A live buffer registering itself
+// is the smaller change, and its two risks are handled rather than accepted:
+//
+//   * a leak, if a buffer never deregisters — closed by `finalize()`, which is the
+//     buffer's own end-of-life and which all five adapter call sites already invoke
+//     exactly once. A buffer that is never finalized is a buffer whose output was
+//     never read, which is a different bug and would show as a stuck count;
+//   * cross-test bleed, since module state outlives a test — closed by
+//     `resetStreamPressure()`, and by the registry storing NUMBERS rather than
+//     buffers, so nothing is retained alive by being counted.
+
+let liveBufferCount = 0;
+let liveRetainedBytes = 0;
+
+/** The aggregate, as the projection reads it. */
+export interface StreamPressureReading {
+  /** Buffers currently holding output. Two per in-flight Run. */
+  readonly liveBuffers: number;
+  /** Bytes those buffers retain right now. */
+  readonly retainedBytes: number;
+  /** What the same buffers could grow to under their own caps. */
+  readonly ceilingBytes: number;
+}
+
+export function readStreamPressure(): StreamPressureReading {
+  return {
+    liveBuffers: liveBufferCount,
+    retainedBytes: liveRetainedBytes,
+    ceilingBytes: liveBufferCount * MAX_STREAM_BUFFER_BYTES
+  };
+}
+
+/** Test-only: module state outlives a test, and a bled number is a false reading. */
+export function resetStreamPressure(): void {
+  liveBufferCount = 0;
+  liveRetainedBytes = 0;
+}
+
+
 /**
  * FR-R3-081 (T1085) — why `gzipSync`/`gunzipSync` stay synchronous.
  *
@@ -84,6 +139,8 @@ export class ZippedStreamBuffer {
     }
     this.flushThreshold = flushThresholdBytes;
     this.maxBytes = maxBytes;
+    // FR-R3-130 (T1496) — see the registry docblock above.
+    liveBufferCount += 1;
     this.headLimit = Math.floor(maxBytes / 2);
     // Four bytes is the longest valid UTF-8 sequence. Keeping the staging
     // segment at least that large lets appendTail avoid splitting a code point
@@ -115,7 +172,25 @@ export class ZippedStreamBuffer {
     );
   }
 
+  /** FR-R3-130 — guards the registry against a second `finalize()`. */
+  private deregistered = false;
+
+  /**
+   * FR-R3-130 (T1496) — the aggregate is maintained incrementally around the real
+   * append rather than by summing live buffers on read: a projection composed on
+   * every host push must not walk a list whose length is the cap times two.
+   *
+   * A wrapper rather than accounting sprinkled through `appendInternal`'s branches,
+   * because that method has five paths that move bytes and an accounting line in
+   * four of them is the fifth one being wrong.
+   */
   public append(chunk: string): void {
+    const retainedBefore = this.headBytes + this.tailBytes;
+    this.appendInternal(chunk);
+    liveRetainedBytes += this.headBytes + this.tailBytes - retainedBefore;
+  }
+
+  private appendInternal(chunk: string): void {
     if (chunk.length === 0) return;
     const bytes = Buffer.from(chunk, 'utf8');
     this.observedBytes += bytes.length;
@@ -250,8 +325,22 @@ export class ZippedStreamBuffer {
   }
 
   /** Finalize pending compression and return true when no bytes were seen. */
+  /**
+   * End of life. Every adapter calls this exactly once, which is why FR-R3-130's
+   * live-pressure registry deregisters here rather than needing a `dispose()` the
+   * runners would have to learn to call.
+   *
+   * Idempotent for the registry's purposes: a second call would double-subtract, so
+   * the flag guards it. A second call is not expected and is not an error — the
+   * buffer's own behaviour is unchanged by one.
+   */
   public finalize(): boolean {
     this.flushActiveHead();
+    if (!this.deregistered) {
+      this.deregistered = true;
+      liveBufferCount -= 1;
+      liveRetainedBytes -= this.headBytes + this.tailBytes;
+    }
     return this.observedBytes === 0;
   }
 

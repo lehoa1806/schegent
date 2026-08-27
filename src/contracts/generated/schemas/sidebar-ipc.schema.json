@@ -217,6 +217,11 @@
           "type": "SessionArtifactsProjection"
         },
         {
+          "name": "streamPressure",
+          "optional": false,
+          "type": "StreamPressureProjection"
+        },
+        {
           "name": "evidenceHealth",
           "optional": false,
           "type": "EvidenceHealthSnapshot"

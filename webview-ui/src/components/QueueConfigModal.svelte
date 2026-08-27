@@ -16,6 +16,7 @@
   import { onMount, tick } from 'svelte';
 
   import { refusalText, saveQueueSettings } from '../lib/queue-control-ipc';
+  import { adviseStreamPressure } from '../../../src/contracts/stream-pressure-advice';
   import type { GeneralSettings, QueueRuntime } from '../lib/snapshot-types';
 
   interface Props {
@@ -26,9 +27,23 @@
     onClose: () => void;
     /** Focus returns here on unmount, as `ConfirmDialog` does. */
     originatingElement?: HTMLElement | null;
+    /**
+     * FR-R3-130 (T1495) — `os.totalmem()`, from the stream-pressure projection.
+     *
+     * Defaulted to `0` rather than made required, and `adviseStreamPressure` reads 0
+     * as "do not warn": a caller with no snapshot should show no warning rather than
+     * a warning computed from nothing.
+     */
+    machineMemoryBytes?: number;
   }
 
-  const { generalSettings, queues, onClose, originatingElement = null }: Props = $props();
+  const {
+    generalSettings,
+    queues,
+    onClose,
+    originatingElement = null,
+    machineMemoryBytes = 0
+  }: Props = $props();
 
   // Suggested bounds only. `schegent.queue.globalConcurrencyCap` is [1, 20]; the
   // host is what enforces it.
@@ -45,6 +60,29 @@
   // `untrack` does not silence it (see `settings/RetryConditionEditor.svelte`),
   // and that component's lazy `$effect` seed would render the modal blank for a
   // frame, so the value is captured synchronously here instead.
+  /**
+   * FR-R3-130 (T1495) — what this cap will cost, at the moment it is typed.
+   *
+   * The audit of 2026-08-27's point about the cap-20 ceiling was that an operator can
+   * accept it without ever seeing it. The threshold is machine-derived and the
+   * coefficient comes from `docs/operations/large-workspace-resource-measurement.md`
+   * — not from a constant chosen at the keyboard, which is the arithmetic `FR-R3-081`
+   * ruled out.
+   *
+   * It WARNS. It does not disable Save: the cap's range is ratified, and an operator
+   * on a large machine raising it is making a legitimate choice. What was missing is
+   * that the choice was invisible.
+   */
+  const pressureAdvice = $derived.by(() => {
+    const parsed = Number(cap);
+    if (!Number.isInteger(parsed) || parsed < 1) return null;
+    const advice = adviseStreamPressure({
+      cap: parsed,
+      machineMemoryBytes: machineMemoryBytes
+    });
+    return advice.level === 'warn' ? advice.message : null;
+  });
+
   const initialCap = (): string => String(generalSettings.queueGlobalConcurrencyCap);
   const initialDefaultQueue = (): string => generalSettings.queueDefaultQueueId;
 
@@ -140,6 +178,12 @@
     {/each}
   </select>
 
+  {#if pressureAdvice !== null}
+    <p class="pressure-advice" role="status" data-testid="queue-config-pressure-advice">
+      {pressureAdvice}
+    </p>
+  {/if}
+
   {#if refusal !== null}
     <p class="refusal" role="alert" data-testid="queue-config-refusal">{refusal}</p>
   {/if}
@@ -157,6 +201,15 @@
 </div>
 
 <style>
+  .pressure-advice {
+    margin: 0;
+    padding: 6px 8px;
+    border-left: 3px solid var(--vscode-editorWarning-foreground);
+    background: var(--vscode-editorWidget-background);
+    color: var(--vscode-foreground);
+    font-size: 0.9em;
+  }
+
   .disclosure {
     margin: 0;
     font-size: 0.9em;

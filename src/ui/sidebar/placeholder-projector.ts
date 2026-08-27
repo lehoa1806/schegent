@@ -6,6 +6,7 @@ import {
   IDLE_EVIDENCE_HEALTH,
   IDLE_GENERAL_SETTINGS,
   IDLE_SESSION_ARTIFACTS,
+  IDLE_STREAM_PRESSURE,
   IDLE_TRUST_PROJECTION,
   SCHEMA_VERSION,
   type AuditTailEntry,
@@ -84,6 +85,7 @@ export class PlaceholderProjector implements ProjectorHandle {
       backendPingState: Object.freeze({ status: 'idle' as const }),
       generalSettings: IDLE_GENERAL_SETTINGS,
       sessionArtifacts: IDLE_SESSION_ARTIFACTS,
+      streamPressure: IDLE_STREAM_PRESSURE,
       evidenceHealth: IDLE_EVIDENCE_HEALTH,
       // Feature 033 — telemetry is ephemeral; placeholder is always null.
       telemetry: null,

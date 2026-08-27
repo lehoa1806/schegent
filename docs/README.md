@@ -153,6 +153,7 @@ drifts unnoticed, because the readers who would catch an error never get there.
 - [Licenses](operations/licenses.md)
 - [Concurrent-run resource measurement](operations/concurrent-run-resource-measurement.md)
 - [Concurrent-run isolation measurement](operations/concurrent-run-isolation-measurement.md) — attribution outcomes at concurrency 1/2/4/8, and the recommended cap of 2
+- [Large-workspace resource measurement](operations/large-workspace-resource-measurement.md) — **measured 2026-08-27**: resident/retained, descriptors and Git behaviour at concurrency 1/2/4/8 on 2,000 tracked files, plus activation percentiles and the release-claim floor they establish
 - [Live-canary cadence](operations/live-canary-cadence.md) — **declared 2026-08-27**: when the live backend canary must run, who owns it, and the cost bound. The first run under it is owed, with its trigger
 - [Merge-gate observation](operations/merge-gate-observation.md)
 - [Multi-queue concurrency](operations/multi-queue-concurrency.md)

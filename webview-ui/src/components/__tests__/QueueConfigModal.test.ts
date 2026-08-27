@@ -264,3 +264,63 @@ describe('QueueConfigModal — the shared-tree disclosure', () => {
     expect(getByTestId('queue-config-cap-disclosure').id).toBe(describedBy);
   });
 });
+
+/**
+ * FR-R3-130 (T1495) — what the cap will cost, said at the moment it is typed.
+ *
+ * The audit of 2026-08-27's point about the cap-20 ceiling was that an operator can
+ * accept it without ever seeing it. Both directions are asserted, because a warning
+ * that fires at the shipped default is furniture and furniture is what an operator
+ * stops reading.
+ */
+describe('QueueConfigModal — the stream-pressure warning', () => {
+  const GIB = 1024 * 1024 * 1024;
+
+  function mountWithMemory(cap: number, machineMemoryBytes: number) {
+    return render(QueueConfigModal, {
+      props: {
+        generalSettings: { ...SETTINGS, queueGlobalConcurrencyCap: cap },
+        queues: QUEUES,
+        machineMemoryBytes,
+        onClose: () => {}
+      }
+    });
+  }
+
+  it('is silent at the shipped default', () => {
+    const { queryByTestId } = mountWithMemory(1, 8 * GIB);
+    expect(queryByTestId('queue-config-pressure-advice')).toBeNull();
+  });
+
+  it('warns when the cap projects past a quarter of machine memory', () => {
+    const { getByTestId } = mountWithMemory(20, 8 * GIB);
+    const advice = getByTestId('queue-config-pressure-advice');
+    expect(advice.textContent).toMatch(/cap of 20/);
+    expect(advice.textContent).toMatch(/% of this machine/);
+    // The operator's next move is the record, and a warning that cannot be checked
+    // gets dismissed.
+    expect(advice.textContent).toMatch(/large-workspace-resource-measurement\.md/);
+    // And it must say the cap is still allowed: this warns, it does not refuse.
+    expect(advice.textContent).toMatch(/still permitted/);
+  });
+
+  it('is silent for the same cap on a machine with headroom', () => {
+    // The threshold is machine-derived, which is the whole point.
+    const { queryByTestId } = mountWithMemory(20, 128 * GIB);
+    expect(queryByTestId('queue-config-pressure-advice')).toBeNull();
+  });
+
+  it('is silent when the machine did not answer', () => {
+    const { queryByTestId } = mountWithMemory(20, 0);
+    expect(queryByTestId('queue-config-pressure-advice')).toBeNull();
+  });
+
+  it('does not disable Save — it warns, it does not refuse', () => {
+    // The cap's range is ratified; an operator on a large machine raising it is
+    // making a legitimate choice, and a dialog that refused would be this component
+    // overruling `local-queue-parallelism-ratification.md`.
+    const { getByTestId } = mountWithMemory(20, 4 * GIB);
+    expect(getByTestId('queue-config-pressure-advice')).toBeTruthy();
+    expect((getByTestId('queue-config-save') as HTMLButtonElement).disabled).toBe(false);
+  });
+});
