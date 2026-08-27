@@ -366,18 +366,19 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // ratchets. The largest cohesion problem in the tree was the one the waiver
   // machinery never saw.
   //
-  // The file is 735 after seven extractions: `sidebar-router-wiring.ts` (240
+  // The file is 684 after eight extractions: `sidebar-router-wiring.ts` (240
   // lines of `MessageRouter` construction), `backend-execution-wiring.ts` (148
   // lines of monitor, sampler and runner-registry construction),
   // `workspace-settings.ts` (36 lines of configuration resolution) and
   // `workspace-session.ts` (77 lines of catalog, leases and UI shell) and
   // `scheduled-work-wiring.ts` (168 lines of clock-driven work) and
   // `evidence-wiring.ts` (91 lines of audit writer and retention) and
-  // `live-picture-wiring.ts` (140 lines of projector and phase-log tail). 770 is set
+  // `live-picture-wiring.ts` (140 lines of projector and phase-log tail) and
+  // `phase-execution-wiring.ts` (69 lines of runner accessors). 715 is set
   // deliberately rather than pinned to the measurement: 34 lines is room for an
   // ordinary edit, and it is outside the 25-line margin, so this stays a budget
   // rather than a high-water mark. Lower it when the next extraction earns it.
-  { path: 'src/extension.ts', maxLines: 770 },
+  { path: 'src/extension.ts', maxLines: 715 },
   //
   // FR-R3-103 (FR-042, FR-046) — 1459 -> 1471. Nine lines for the dependency wiring of the resume
   // liveness check plus two imports, three more registering the fence-loss abort, and the
@@ -1055,7 +1056,7 @@ describe('large source file LOC budgets', () => {
    * delete the entry and the exemption with it.
    */
   const LEGACY_FUNCTION_EXEMPTIONS: Readonly<Record<string, number>> = {
-    'src/extension.ts:wireStage2': 525
+    'src/extension.ts:wireStage2': 480
   };
 
   /** Top-level function declarations and their extents, brace-counted. */
@@ -1125,7 +1126,7 @@ describe('large source file LOC budgets', () => {
     //
     // The two numbers being equal is the point. Lowering the exemption is a
     // two-line edit that shows up in review as a pair; raising it fails here.
-    const CEILING: Readonly<Record<string, number>> = { 'src/extension.ts:wireStage2': 525 };
+    const CEILING: Readonly<Record<string, number>> = { 'src/extension.ts:wireStage2': 480 };
     for (const [key, allowed] of Object.entries(LEGACY_FUNCTION_EXEMPTIONS)) {
       expect(allowed, `${key}: an exemption may be lowered, never raised`).toBeLessThanOrEqual(
         CEILING[key] ?? 0
