@@ -13,26 +13,20 @@ import { resolveCliPath } from './config/cli-path-accessor';
 import { maybeShowMultiRootWarning } from './state/multi-root-warning';
 import { initCapabilityTrustResolver } from './state/capability-trust-resolver';
 import { QueueManager } from './queue/queue-manager';
-import { resolveBackendKind } from './runner/backend-runner-factory';
-import { BackendRunnerRegistry } from './runner/backend-runner-registry';
 import { resolveProcessEnvironmentPolicy } from './runner/spawn-env';
-import { PromptBuilder } from './runner/prompt-builder';
 import { PhaseRunner } from './controller/phase-runner';
 import { SchegentWorkflowController } from './controller/workflow-controller';
 import { QueueScheduleWatchdog } from './controller/schedule-watchdog';
 import { CreditWatchdog } from './watchdog/credit-watchdog';
 import { AuditLogWriter } from './audit/audit-log-writer';
-import { RawTranscriptWriter } from './audit/raw-transcript-writer';
 import { SessionArtifactRetentionService } from './services/session-retention/session-artifact-retention-service';
 import { SanitizedLogger } from './lib/logger';
 import {
   createRuntimeEvidenceWiring,
-  createBackendDiagnosticsWiring,
   warnIfEnvironmentIsUnrestricted,
   type RuntimeEvidenceWiring
 } from './activation/backend-wiring';
 import { startMountCapabilityProbe } from './activation/mount-capability-wiring';
-import { ProcessTreeDegradationRecorder } from './controller/process-tree-degradation-recorder';
 import { warnIfScaffoldingMissing } from './activation/workspace-scaffolding';
 import { createConnectedRunService, registerStage2Ui } from './activation/ui-wiring';
 import { SchegentOutputChannel } from './ui/output-channel';
@@ -58,19 +52,8 @@ import { createAutoCompactOverrideAccessor } from './lib/auto-compact-override';
 import { createPhaseBreakpointAccessor } from './controller/breakpoint-accessor';
 import { SidebarViewProvider } from './ui/sidebar/sidebar-view-provider';
 import { PlaceholderProjector } from './ui/sidebar/placeholder-projector';
-import { ClaudeCliMonitor } from './monitor/claude-cli-monitor';
-import { createCliTransportSink } from './monitor/cli-transport-sink';
-import { withDropReporting } from './monitor/drop-reporting-transport';
 import { checkLiveness, createLivenessProbe } from './services/process-liveness';
 import { resumePersistedRuns } from './services/resume-decision';
-import { createSpawnIdentityRecorder } from './state/spawn-identity-recorder';
-import type { RunActivityObservation } from './monitor/activity-coalescer';
-import { TelemetrySamplerImpl } from './telemetry/telemetry-sampler';
-import { psShellOut } from './telemetry/platform/platform-ps';
-import { windowsShellOut } from './telemetry/platform/platform-windows';
-import type { TelemetrySnapshot } from './telemetry/telemetry-snapshot';
-import { RATE_LIMIT_MATCHERS } from './parser/credit-error-detector';
-import { HistoryStore } from './state/history-store';
 import { createRunSafetyWiring } from './activation/run-safety-wiring';
 import { isConfirmationsEnabled } from './state/confirmations-config';
 import type { CatalogConfigReader } from './config/pipeline-config-loader';
@@ -89,6 +72,7 @@ import { ScheduledStartCoordinator } from './services/scheduled-start-coordinato
 import { resolveRunOrigin } from './services/run-origin-resolver';
 import { createPhaseLogTailWiring } from './activation/phase-log-tail-wiring';
 import { createSidebarRouter } from './activation/sidebar-router-wiring';
+import { wireBackendExecution } from './activation/backend-execution-wiring';
 
 interface Stage2Wiring {
   readonly disposables: readonly vscode.Disposable[];
@@ -514,154 +498,38 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     auditWriter,
     notifier
   });
-  // FR-R3-008 (T377) — the monitor observes activity long before the controller
-  // that persists it exists, so the recorder is late-bound in the same shape as
-  // `telemetryProjector` below. Until the controller is constructed there is no
-  // Run to stamp, and a dropped observation costs at most one coalescing
-  // interval of resolution.
-  let livenessRecorder: { recordRunActivity: (o: RunActivityObservation) => void } | null = null;
-  const monitor = new ClaudeCliMonitor({
-    stallThresholdMs: 90_000,
-    rateLimitMatchers: RATE_LIMIT_MATCHERS,
-    monotonicNow: () => {
-      const perf = (globalThis as { performance?: { now: () => number } }).performance;
-      return perf ? perf.now() : Date.now();
-    },
-    now: () => new Date(),
-    audit: auditWriter,
-    // Feature FR-R3-007 — CLI output goes to the bounded sink, not `audit.log`.
-    // The root is re-read per emit rather than closed over: a host outlives one
-    // folder, and the destination and its containment root are derived together
-    // so the two cannot disagree.
-    // FR-R3-106 — wrapped so backpressure refusals reach evidence health.
-    transport: withDropReporting(
-      createCliTransportSink(() => getCanonicalWorkspaceRoot()?.uri.fsPath ?? null, logger),
-      evidenceHealth
-    ),
-    activity: {
-      record: (observation) => {
-        livenessRecorder?.recordRunActivity(observation);
-      }
-    },
-    logger
-  });
-  // Sampler is created before its late-bound projector and runner hooks.
-  const telemetryShellOut =
-    process.platform === 'win32' ? windowsShellOut : psShellOut;
-  let telemetryProjector: { updateTelemetry: (snap: TelemetrySnapshot | null) => void } | null =
-    null;
-  const sampler = new TelemetrySamplerImpl({
-    shellOutFn: telemetryShellOut,
+  // FR-R3-119 — extracted to `src/activation/backend-execution-wiring.ts`. 148
+  // lines constructing the monitor, sampler, runner registry and their
+  // collaborators, behind the narrowest input boundary of any candidate region:
+  // nine bindings, against 22 and 30 for the two alternatives.
+  //
+  // The three `bind*` calls below replace three `let x = null` declarations that
+  // were captured by closures in that region and reassigned ~280 lines further
+  // down. Returning them as values would have left those closures holding `null`
+  // — no compile error, no failing test, and the monitor silently stops
+  // recording activity. The binding is named at both ends now.
+  const backend = wireBackendExecution({
+    workspaceRoot,
+    cliPath,
     logger,
-    onSample: (snap) => {
-      telemetryProjector?.updateTelemetry(snap);
-    }
-  });
-  /** FR-R3-081 — run id → sampled pid, so an exit can name its own series. */
-  const samplerPidByRun = new Map<string, number>();
-  disposables.push({
-    dispose: () => {
-      samplerPidByRun.clear();
-      sampler.dispose();
-    }
-  });
-  // Invocation runners are lazy and share one monitor hook.
-  const backendKind = resolveBackendKind(
-    vscode.workspace.getConfiguration('schegent.backend').get<string>('runner'),
-    logger
-  );
-  // FR-R3-064 — one reader, two tenures. The literals stay spelled out here
-  // because FR-R3-056's `uncontained-backend-not-hardcoded` gate asserts this
-  // file reads `getConfiguration('schegent.backend')` for the posture: the wiring
-  // site is where an auditor sees it enter the system.
-  const readUncontainedAllowed = (): boolean =>
-    vscode.workspace
-      .getConfiguration('schegent.backend')
-      .get<boolean>('allowUncontainedBackends') === true;
-  // FR-R3-083 — a runner reports; this records. Gate: tree-degradation-emission-funnel.
-  const treeDegradationRecorder = new ProcessTreeDegradationRecorder((e) => auditWriter.append(e));
-  const spawnIdentityRecorder = createSpawnIdentityRecorder({
     store,
-    now: () => Date.now(),
-    log: (message) => logger.info(message)
+    auditWriter,
+    disposables,
+    evidenceHealth,
+    processEnvironmentPolicy
   });
-  const runnerRegistry = new BackendRunnerRegistry({
-    // FR-R3-056 (H-01) — the shipped posture. Unset reads as the manifest default
-    // (`false`), so a fresh install refuses an uncontained backend. See
-    // docs/architecture/agent-capability-posture.md.
-    allowUncontained: readUncontainedAllowed(),
-    // Feature 093 (T046) — forward each event to the Run that produced it.
-    // The hook stays one window-level function; only the addressing changes.
-    monitorHook: (event) => {
-      if (event.kind === 'started') {
-        monitor.onSpawnPid(event.runId, event.pid);
-        // FR-R3-103 (FR-041) — persist the tree's identity so a later host can ask
-        // whether it is still alive before resuming into the same worktree.
-        void spawnIdentityRecorder.recordSpawn(event.runId, event.pid);
-        if (event.pid !== null) {
-          // FR-R3-081 — remembered so the exit can name WHICH child it was. The
-          // `'exited'` event carries the run id and not the pid, and with more
-          // than one run sampled a sampler that has to guess stops the wrong
-          // series: the survivor goes unsampled and the dead pid is polled until
-          // the window closes.
-          if (event.runId !== null) samplerPidByRun.set(event.runId, event.pid);
-          sampler.start(event.pid, Date.now());
-        }
-      } else if (event.kind === 'stdout-chunk') {
-        monitor.onStdoutChunk(event.runId, event.chunk);
-      } else if (event.kind === 'stderr-chunk') {
-        monitor.onStderrChunk(event.runId, event.chunk);
-      } else if (event.kind === 'exited') {
-        // FR-R3-103 — cleared at reaped exit, so a finished Run does not read as an orphan.
-        void spawnIdentityRecorder.clearOnExit(event.runId);
-        monitor.onExit(event.runId, {
-          exitCode: event.exitCode,
-          signal: event.signal,
-          killed: event.killed,
-          timedOut: event.timedOut
-        });
-        const exitedPid = event.runId === null ? undefined : samplerPidByRun.get(event.runId);
-        if (event.runId !== null) samplerPidByRun.delete(event.runId);
-        sampler.stop({
-          signal: event.signal as NodeJS.Signals | null,
-          ...(exitedPid === undefined ? {} : { pid: exitedPid })
-        });
-      } else if (event.kind === 'tree-unconfirmed') {
-        // FR-R3-083 — best-effort by design; arrives after the phase has ended.
-        void treeDegradationRecorder.record(event);
-      }
-    },
-    probeTransport: true,
-    logger
-  }, backendKind);
-  // Stage 2 teardown cancels workspace-bound subprocesses.
-  disposables.push({ dispose: () => runnerRegistry.cancelAll() });
-  let capabilityProjector: Pick<StateProjector, 'kick'> | null = null;
-  const backendDiagnostics = createBackendDiagnosticsWiring({
-    workspaceRoot,
-    claudePath: cliPath,
-    environmentPolicy: processEnvironmentPolicy,
-    audit: auditWriter,
-    logger,
-    onDidChange: () => capabilityProjector?.kick()
-  });
-  const backendCapabilities = backendDiagnostics.capabilities;
-  const backendPing = backendDiagnostics.ping;
-  disposables.push(backendDiagnostics);
-  const historyStore = new HistoryStore(store);
-  const promptBuilder = new PromptBuilder();
-  const rawTranscript = new RawTranscriptWriter(
-    workspaceRoot,
-    logger,
-    undefined,
-    evidenceHealth
-  );
-  const verboseAccessor = {
-    isVerboseDiagnosticsEnabled: () =>
-      vscode.workspace
-        .getConfiguration('schegent', vscode.Uri.file(workspaceRoot))
-        .get<boolean>('logging.verbose', false)
-  };
+  const {
+    monitor,
+    runnerRegistry,
+    historyStore,
+    promptBuilder,
+    rawTranscript,
+    backendKind,
+    backendCapabilities,
+    backendPing,
+    readUncontainedAllowed,
+    verboseAccessor
+  } = backend;
   const fatalSignaturesAccessor = {
     readOperatorAdditions: () =>
       readFatalSignaturesSetting(
@@ -801,7 +669,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   );
 
   // FR-R3-008 (T377) — close the late binding opened above the monitor.
-  livenessRecorder = controller;
+  backend.bindLivenessRecorder(controller);
 
   const guardedRunService = new GuardedRunService({
     lock,
@@ -1030,7 +898,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     // Feature 103 (T031, FR-003) — both callers and both cadences: see `resolveRunOrigin`.
     getRunOrigin: (taskId) => resolveRunOrigin(store.getConnectedRuns(), taskId)
   });
-  capabilityProjector = projector;
+  backend.bindCapabilityProjector(projector);
   projector.start();
   // Background-only: activation is not blocked on installed CLI processes.
   void backendCapabilities.scan();
@@ -1042,7 +910,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   // Feature 033 — bind the deferred telemetry projector reference now that
   // the projector exists. The sampler's `onSample` closure consults this
   // pointer on every emission (and is a no-op until binding).
-  telemetryProjector = projector;
+  backend.bindTelemetryProjector(projector);
 
   // Feature 059 (US1, T012) — wire the per-capability trust resolver. The
   // resolver re-reads `workspace.isTrusted` + the three `schegent.trust.*`

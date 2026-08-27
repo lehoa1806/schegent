@@ -51,7 +51,13 @@ const rel = (abs: string): string => relative(REPO_ROOT, abs).replaceAll('\\', '
 /**
  * The one enumerated exemption, with its reason inline.
  *
- * `src/extension.ts` is the composition root. It takes `resolveBackendKind` — a
+ * FR-R3-119 — the construction moved. `wireStage2()` in `src/extension.ts` was 1,221
+ * lines; its backend-execution collaborators are now built in
+ * `src/activation/backend-execution-wiring.ts`, which is `src/activation/` — the
+ * directory ARCHITECTURE.md calls the composition root. This gate follows the
+ * construction rather than the filename.
+ *
+ * `src/activation/backend-execution-wiring.ts` is the composition root. It takes `resolveBackendKind` — a
  * *construction* export, not an identity one — at activation to decide which
  * runner the registry should build. Reaching construction is what a composition
  * root is for, and routing it through another module would put a second
@@ -65,7 +71,7 @@ const rel = (abs: string): string => relative(REPO_ROOT, abs).replaceAll('\\', '
  */
 const CONSTRUCTION_ALLOWLIST: ReadonlyArray<{ file: string; reason: string }> = [
   {
-    file: 'src/extension.ts',
+    file: 'src/activation/backend-execution-wiring.ts',
     reason: 'composition root: resolves the backend kind at activation to seed the runner registry'
   }
 ];

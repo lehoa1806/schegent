@@ -96,3 +96,55 @@ pinned to the measurement, which is what makes it a budget again.
 `compiler-strictness-ratchet.test.ts` uses on 1,279 pinned diagnostics: lower the
 exemption whenever an edit earns it, and when it reaches 400 delete the entry and the
 `ARCHITECTURE.md` qualification with it.
+
+
+## Second decrement — 2026-08-27
+
+**`wireStage2` 1,010 → 894; `src/extension.ts` 1,270 → 1,138.**
+`src/activation/backend-execution-wiring.ts` took 148 lines: the monitor, the telemetry sampler,
+the runner registry, and the collaborators they need.
+
+**Why this region.** Of the three candidates measured, it had by far the narrowest input boundary —
+**nine** bindings in, against 22 for the watchdog region and 30 for the projector region — while
+producing a coherent bundle. Coupling, not size, chose it.
+
+### The part that would have broken silently
+
+Three of the region's bindings are the deliberate late-binding pattern: declared `null`, **captured
+by closures inside the region**, and assigned ~280 lines later once the controller and projector
+exist.
+
+| Binding | Captured by | Assigned |
+|---|---|---|
+| `livenessRecorder` | the monitor's activity callback | `controller` |
+| `telemetryProjector` | the sampler's snapshot callback | `projector` |
+| `capabilityProjector` | backend-diagnostics `onDidChange` | `projector` |
+
+Returning these as plain values and letting the caller reassign its own destructured copy would
+leave every closure inside the module still holding `null`. **Nothing would fail to compile and no
+test asserts the wiring directly** — the monitor would quietly stop recording activity, the sampler
+would stop reaching the UI, and the capability panel would stop refreshing.
+
+So the module returns `bindLivenessRecorder`, `bindTelemetryProjector` and
+`bindCapabilityProjector`. That is strictly clearer than the `let x = null` reassigned 280 lines
+away that it replaces: the dependency is now named at both ends, and the compiler sees it.
+
+Recorded because it is the failure mode of *every* extraction out of a composition root, and the
+one a typechecker cannot catch.
+
+### Four gates followed the construction
+
+`backend-kind-placement`, `tree-degradation-emission-funnel`, `uncontained-backend-not-hardcoded`
+and `source-loc-budget` all pinned `src/extension.ts` as the site. Each now reads
+`src/activation/backend-execution-wiring.ts` — which is `src/activation/`, the directory
+`ARCHITECTURE.md` calls the composition root, so the gates are closer to their own premise than
+they were. **None was suppressed**; each follows the construction rather than the filename.
+
+### The ratchet worked as designed
+
+Nothing filed this. Nobody scheduled it. The number came down because the bound makes the debt
+visible every time somebody opens the file, and 894 is now the mark. That is the whole argument for
+a shrink-only ratchet over a one-off decision: **it is still there when the next person has ten
+minutes.**
+
+Remaining: 894 of a 400-line target.
