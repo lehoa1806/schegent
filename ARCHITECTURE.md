@@ -70,8 +70,20 @@ VS Code commands / sidebar / Dashboard
      state, audit, transcript, runtime log
 ```
 
-`src/activation/` is the composition root. Domain modules do not construct VS
-Code adapters themselves. `src/host-services/` wraps host-owned behavior such
+`src/activation/` is the composition root, **together with `wireStage2()` in
+`src/extension.ts`, which is still part of it.** Domain modules do not construct VS
+Code adapters themselves.
+
+That sentence used to stop at the first clause, and it overstated the shipped shape:
+`src/activation/` was twelve focused modules totalling ~2,200 lines while
+`wireStage2` was a single 1,221-line function doing the same kind of work in the
+entry file. `FR-R3-119` reconciled the two by moving, not by rewording — the largest
+independent span became `src/activation/sidebar-router-wiring.ts` — and by pinning
+the remainder under a shrink-only bound in `tests/lint/source-loc-budget.test.ts`, so
+the sentence becomes unqualifiedly true by extraction rather than by editing. Until
+it does, the qualification stays. The measurements, the waive-or-extract decision and
+the mutation that corrected the bound's first draft are in
+[Composition root extraction](docs/architecture/composition-root-extraction.md). `src/host-services/` wraps host-owned behavior such
 as configuration, filesystem and notification seams. `src/headless/` exposes
 process validation/import/export and run-launch entrypoints over the same
 services without importing `vscode`.
@@ -361,9 +373,15 @@ applied only below that ceiling.
 
 The audit writer serializes metadata-only JSON-line events with a schema version
 and correlation ID, rotates the active file, and prunes archives by bounded
-retention rules. Its append-only behavior is an application write pattern, not
-a tamper-evident guarantee: the local operator, backend process, or another
-process with filesystem authority may alter or delete local evidence.
+retention rules. Its append-only behavior is an application write pattern; the
+tamper-evidence is separate and real. Since FR-R3-112 every entry carries the
+previous entry's digest, so a local operator, backend process, or any process
+with filesystem authority may still alter or delete local evidence, but not
+without the break becoming detectable — `npm run audit:verify` names the first
+one. Evident, not impossible: the chain head sits on the same disk, so an actor
+who can edit the log can recompute every later digest; what they cannot do is
+edit one entry and leave the rest consistent.
+<!-- Source: src/audit/audit-chain.ts -->
 
 Raw transcripts are separately configurable and written below
 `.schegent/sessions`. They preserve backend streams for diagnosis and can hold
@@ -427,7 +445,7 @@ their constant rows.
 
 | Store | Constant | Current | Migrators |
 |---|---|---|---|
-| Workspace state | `STATE_SCHEMA_VERSION` | `13` | 1→2, 2→3, 3→4, 4→5, 5→6, 6→7, 7→8, 8→9, 9→10, 10→11, 11→12, 12→13 |
+| Workspace state | `STATE_SCHEMA_VERSION` | `14` | 1→2, 2→3, 3→4, 4→5, 5→6, 6→7, 7→8, 8→9, 9→10, 10→11, 11→12, 12→13, 13→14 |
 | Audit event envelope | `AUDIT_SCHEMA_VERSION` | `3` | Additive event types and payload fields retain the current envelope version; readers preserve unknown historical event types. |
 
 Workspace migration history includes the legacy Run lift, queue-registry lift,

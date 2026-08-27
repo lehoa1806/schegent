@@ -96,9 +96,15 @@ describe('a pre-feature history entry survives this feature untouched (Feature 1
   });
 
   it('does not move STATE_SCHEMA_VERSION', () => {
-    // 13 is where feature 102 left it. This feature adds two optional fields to
-    // a record and nothing to the state shape, so there is no migrator to run
-    // and no version to bump. Changing this literal is a decision, not a typo.
-    expect(STATE_SCHEMA_VERSION).toBe(13);
+    // Feature 102 adds two optional fields to a record and nothing to the state
+    // shape, so there is no migrator to run and no version to bump BY THIS
+    // FEATURE. That is what this asserts, and it is still true.
+    //
+    // The literal was `13` and is now `14`: FR-R3-117 moved the head with a real
+    // migrator of its own. Re-pinning rather than deleting keeps the "this feature
+    // bumped nothing" claim asserted somewhere, which is the whole point of the
+    // check. Changing this literal is a decision, not a typo — and the decision
+    // here is that feature 102's own footprint is unchanged.
+    expect(STATE_SCHEMA_VERSION).toBe(14);
   });
 });

@@ -18,7 +18,21 @@ import { resolve } from 'node:path';
 import { filesMatching } from './source-scan';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
+// FR-R3-119 — the production wiring moved. `new MessageRouter({...})` was 240
+// lines inside `wireStage2()` in `src/extension.ts`; it is now
+// `src/activation/sidebar-router-wiring.ts`, which is where `src/activation/` is
+// the composition root says it should have been. This gate reads the wiring, not
+// the entry file, so it follows the construction rather than the filename.
 const EXTENSION_PATH = resolve(REPO_ROOT, 'src', 'extension.ts');
+const ROUTER_WIRING_PATH = resolve(REPO_ROOT, 'src', 'activation', 'sidebar-router-wiring.ts');
+
+/**
+ * Both composition-root sites, read together. The two authoritative reads used to
+ * sit in one file; FR-R3-119 moved the sidebar router into `src/activation/` and
+ * left the schedule watchdog in the entry file, so the count is across the pair.
+ * Counting per-file would let one site vanish while the other doubled.
+ */
+const WIRING_SOURCES = [EXTENSION_PATH, ROUTER_WIRING_PATH] as const;
 const TEST_ROOT = resolve(REPO_ROOT, 'tests');
 
 /**
@@ -60,12 +74,16 @@ function listMessageRouterTests(): readonly string[] {
 
 describe('MessageRouter primary-window wiring', () => {
   it('production wiring reads the authoritative predicate, in both places', () => {
-    const src = readFileSync(EXTENSION_PATH, 'utf8');
-    const authoritative = src.split('isPrimary: () => lock.hasPrimacy()').length - 1;
-    // Two: the sidebar IPC router and the schedule watchdog. Both decide
-    // whether this window may act on shared workspace state.
+    const sources = WIRING_SOURCES.map((path) => readFileSync(path, 'utf8'));
+    const authoritative = sources.reduce(
+      (total, src) => total + src.split('isPrimary: () => lock.hasPrimacy()').length - 1,
+      0
+    );
+    // Two: the sidebar IPC router (src/activation/sidebar-router-wiring.ts) and
+    // the schedule watchdog (src/extension.ts). Both decide whether this window
+    // may act on shared workspace state.
     expect(authoritative).toBe(2);
-    expect(src).not.toContain('isPrimary: () => lock.isHeld()');
+    for (const src of sources) expect(src).not.toContain('isPrimary: () => lock.isHeld()');
   });
 
   it('every router test states its primacy posture', () => {

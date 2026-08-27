@@ -16,6 +16,7 @@
 // one named anything else.
 
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
+import type { PhaseHostVerification } from '../contracts/process-definitions';
 import type { PhaseSideEffects } from './pipeline-config';
 
 /**
@@ -46,4 +47,61 @@ export function assertPhaseRunnerPolicy(
 ): void {
   const error = phaseRunnerPolicyError(phaseId, sideEffects, runner);
   if (error !== null) throw new Error(error);
+}
+
+// ---------------------------------------------------------------------------
+// FR-R3-117 — the verdict basis, and why omission changed meaning.
+// ---------------------------------------------------------------------------
+//
+// FR-R3-058 built the mechanism that stops a Phase advancing on its own account
+// and shipped it OPT-IN: `hostVerification: 'exit-code'` is judged on the
+// process's exit status, and a clean termination token cannot override a
+// non-zero exit or a timeout. A Phase that declared nothing was judged on the
+// model's own report — so a failed build, a failed test run or a crashed tool
+// reported success, which the threat model stated in its own words.
+//
+// That default is now inverted for the Phases whose claims are load-bearing.
+//
+// WHY THE TRIGGER READS THE RESOLVED VALUE. `FR-R3-117` phrased it as "any Phase
+// that DECLARES `sideEffects`". Against this codebase that is not well defined:
+// `sideEffects` is optional on the wire and `snapshotPhaseDef` resolves omission
+// to `'workspace'` (FR-005), so every Phase has a resolved value and none can be
+// said to have declared nothing by the time anything reads it. Reading wire
+// presence would make the verdict depend on whether an author typed a field
+// whose omission already means something. So the trigger is the RESOLVED class.
+//
+// THE BLAST RADIUS, STATED RATHER THAN DISCOVERED. Because `'workspace'` is the
+// resolved default, most existing Phases become exit-code-judged. That is the
+// intent — those are exactly the Phases whose claims matter — and it is why
+// RELEASE.md records this as breaking and names the opt-out.
+
+/**
+ * Is this Phase's claim load-bearing — does it touch anything, or promise an
+ * output?
+ *
+ * `'none'` is the only class that is not. A Phase declaring `'none'` neither
+ * writes the workspace nor Git nor anything outside, so its report is advisory
+ * and judging it on exit status would break purely-advisory Phases for no gain.
+ */
+export function claimIsLoadBearing(
+  sideEffects: PhaseSideEffects | undefined,
+  producesOutput = false
+): boolean {
+  return (sideEffects ?? 'workspace') !== 'none' || producesOutput;
+}
+
+/**
+ * The verdict basis for a Phase, resolved.
+ *
+ * Omission means the default this computes. Explicit `'model-token'` is the
+ * OPT-OUT — the only way to get self-report on a load-bearing Phase — and needs
+ * no new enum value, because the closed set already holds both members.
+ */
+export function resolveHostVerification(
+  declared: PhaseHostVerification | undefined,
+  sideEffects: PhaseSideEffects | undefined,
+  producesOutput = false
+): PhaseHostVerification {
+  if (declared !== undefined) return declared;
+  return claimIsLoadBearing(sideEffects, producesOutput) ? 'exit-code' : 'model-token';
 }

@@ -19,27 +19,32 @@ included:
         version: 1
       spec:
         instruction: /speckit-bugfix-report
+        hostVerification: exit-code
     - metadata:
         phaseId: bugfix-patch
         name: Spec-kit Bugfix Patch
         version: 1
       spec:
         instruction: /speckit-bugfix-patch
+        hostVerification: exit-code
     - metadata:
         phaseId: bugfix-verify-pre
         name: Spec-kit Bugfix Verify (pre)
         version: 1
       spec:
         instruction: /speckit-bugfix-verify
+        hostVerification: exit-code
     - metadata:
         phaseId: bugfix-implement
         name: Spec-kit Implement (bugfix)
         version: 1
       spec:
         instruction: /speckit-implement
+        hostVerification: exit-code
     - metadata:
         phaseId: bugfix-verify-post
         name: Spec-kit Bugfix Verify (post)
         version: 1
       spec:
         instruction: /speckit-bugfix-verify
+        hostVerification: exit-code

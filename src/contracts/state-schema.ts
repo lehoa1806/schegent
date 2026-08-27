@@ -161,8 +161,23 @@
  *       overwrites on every read. Migrator: `migrateV12ToV13()` in
  *       `src/state/queue-state-migrator.ts`. Forward-only: a persisted version
  *       above 13 is refused rather than silently unpausing queues.
+ *
+ *  14 — FR-R3-117. `hostVerification` changed what an ABSENT value means: it used
+ *       to mean `model-token` (self-report) and now means the resolved default,
+ *       which is `exit-code` for any Phase whose resolved `sideEffects` is other
+ *       than `'none'`. A snapshot written at v13 or earlier stores the value the
+ *       old rule produced, and reading it under the new rule would guess. So the
+ *       migrator stamps the RESOLVED value and its provenance into every phase of
+ *       every persisted plan snapshot. Migrator: `migrateV13ToV14()` in
+ *       `src/state/host-verification-migrator.ts`. Forward-only.
+ *
+ *       Note the direction carefully: a v<=13 snapshot's absent `hostVerification`
+ *       meant self-report, so the migration PRESERVES that Run's original verdict
+ *       basis rather than retroactively tightening a plan the operator already
+ *       approved. A frozen plan is never retargeted in flight; the new default
+ *       applies to plans frozen after the upgrade.
  */
-export const STATE_SCHEMA_VERSION = 13 as const;
+export const STATE_SCHEMA_VERSION = 14 as const;
 
 export const STATE_SCHEMA_VERSION_V2 = 2 as const;
 export const STATE_SCHEMA_VERSION_V3 = 3 as const;
@@ -176,6 +191,7 @@ export const STATE_SCHEMA_VERSION_V10 = 10 as const;
 export const STATE_SCHEMA_VERSION_V11 = 11 as const;
 export const STATE_SCHEMA_VERSION_V12 = 12 as const;
 export const STATE_SCHEMA_VERSION_V13 = 13 as const;
+export const STATE_SCHEMA_VERSION_V14 = 14 as const;
 
 export interface VersionedRecord {
   readonly schemaVersion: number;

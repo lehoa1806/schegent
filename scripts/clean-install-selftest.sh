@@ -19,9 +19,19 @@
 #     would hang off the wrong repository. And a full install on every push is
 #     the same weight objection relocated.
 #
-# It runs as its own job in `.github/workflows/full-gate.yml`, on that workflow's
-# weekly/dispatch cadence, beside the other jobs that are slow on purpose: perf,
-# integration and evidence-soak.
+# It therefore runs BY HAND, and nothing schedules it. It used to run as its own
+# job in `.github/workflows/full-gate.yml`, beside the other jobs that were slow on
+# purpose — perf, integration and evidence-soak — and FR-R3-099 deleted every
+# workflow file when GitHub Actions was retired for budget. The cadence went with
+# them.
+#
+# Recorded rather than quietly dropped (FR-R3-116): this header claimed a runner
+# that no longer exists for the interval between that deletion and now, which is
+# the same mechanism/claim drift FR-R3-116 found in five documents about the audit
+# chain. Run it before a release, or when CONTRIBUTING.md's install instructions
+# change:
+#
+#     bash scripts/clean-install-selftest.sh
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

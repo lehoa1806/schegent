@@ -438,6 +438,12 @@ const NOT_A_WORKSPACE_SINK: readonly string[] = [
   'lib/path-containment.ts',
   // VS Code global-storage and extension-install paths, outside any workspace.
   'extension.ts',
+  // FR-R3-119 — the same paths, in the span that moved. `wireStage2()` was 1,221
+  // lines in `extension.ts`; its `MessageRouter` construction is now here. Listed
+  // for the reason `extension.ts` is listed above, not by analogy: the calls are
+  // byte-identical and address the same global-storage and extension-install
+  // locations, which are outside any workspace by construction.
+  'activation/sidebar-router-wiring.ts',
   // Operator-chosen export destination, deliberately outside the workspace.
   'commands/export-audit.ts',
   // FR-R3-085 — same shape as `commands/export-audit.ts` above, and listed for
@@ -633,6 +639,7 @@ describe('safe-open migration (FR-R3-053)', () => {
     // supplying `appendFile`/`mkdir`/`writeFile`/`readFile` fails here, by name.
     const wiring = [
       'activation/backend-wiring.ts',
+      'activation/sidebar-router-wiring.ts', // FR-R3-119 — the span that left extension.ts
       'monitor/cli-transport-sink.ts',
       'extension.ts'
     ];

@@ -22,7 +22,7 @@
   ],
   "rules": {
     "@typescript-eslint/no-unnecessary-condition": {
-      "host": 342,
+      "host": 341,
       "webview": 271,
       "owner": {
         "decision": "D9 — Six baseline entries, each owned",
@@ -47,7 +47,7 @@
         "src/controller/phase-runner.ts": 1,
         "src/controller/phase.ts": 2,
         "src/controller/workflow-lifecycle-auditor.ts": 1,
-        "src/extension.ts": 3,
+        "src/extension.ts": 1,
         "src/headless/pipeline-run-api.ts": 1,
         "src/headless/process-yaml-api.ts": 2,
         "src/headless/workflow-run-api.ts": 1,
@@ -147,6 +147,7 @@
         "tests/integration/run-request/pipeline-enqueue.test.ts": 9,
         "tests/lint/catalog-purity.test.ts": 1,
         "tests/lint/no-envelope-reconstruction.test.ts": 1,
+        "tests/lint/platform-branch-has-record-row.test.ts": 1,
         "tests/lint/process-yaml-grammar-frozen.test.ts": 1,
         "tests/lint/process-yaml-purity.test.ts": 1,
         "tests/lint/run-request-purity.test.ts": 1,

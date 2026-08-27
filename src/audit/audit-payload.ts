@@ -37,6 +37,22 @@ export interface CliInvocationPayloadV3 {
 
 export interface PhaseEndPayloadV3 {
   readonly outcome: 'clean' | 'failed' | 'timeout' | 'rate-limited' | 'malformed';
+  /**
+   * FR-R3-117 — WHICH BASIS judged this Phase: the process's exit status, or the
+   * model's own account of its work.
+   *
+   * Evidence could previously say a Phase advanced, but not on what authority. That
+   * mattered little while `exit-code` was opt-in and rare; it matters now that it is
+   * the default for any Phase whose claims are load-bearing, because the two are
+   * different strengths of statement and a reader auditing a Run cannot otherwise
+   * tell which one they have.
+   *
+   * ADDITIVE — `AUDIT_SCHEMA_VERSION` does NOT bump, following the 028 / 030 / 031 /
+   * 032 precedent recorded at the top of `src/contracts/audit-events.ts`. Absent on
+   * every record written before this feature, which is exactly what absence should
+   * mean: the basis was not recorded, rather than the basis was self-report.
+   */
+  readonly verdictBasis?: 'exit-code' | 'model-token';
   readonly exitCode: number | null;
   readonly terminationReason: string;
   readonly metrics: Readonly<Record<string, number>>;
@@ -381,8 +397,14 @@ function projectPhaseEnd(payload: Record<string, unknown>): PhaseEndPayloadV3 {
   const deleted = countArray(payload.filesDeleted ?? payload.files_deleted);
   const omittedTools = countArray(payload.commandsExecuted ?? payload.commands_executed);
   const warnings = projectPhaseEndWarnings(payload.warnings);
+  // FR-R3-117 — closed set, and omitted rather than defaulted when absent or
+  // unrecognised. Defaulting would assert a basis nobody recorded.
+  const rawBasis = payload.verdictBasis;
+  const verdictBasis =
+    rawBasis === 'exit-code' || rawBasis === 'model-token' ? rawBasis : undefined;
   return Object.freeze({
     outcome: outcome as PhaseEndPayloadV3['outcome'],
+    ...(verdictBasis !== undefined ? { verdictBasis } : {}),
     exitCode: payload.exitCode === null ? null : numberValue(payload.exitCode, 0),
     terminationReason: boundedMetadataString(
       payload.terminationReason ?? payload.reason ?? payload.cause,

@@ -144,6 +144,42 @@ describe('phase-yaml-mapper — bijection over the portable field set', () => {
     expect(roundTrip(definition)).toEqual(definition);
   });
 
+  // FR-R3-117 — omission and explicit 'model-token' were INTERCHANGEABLE before
+  // this feature: omission meant model-token, so collapsing one into the other was
+  // lossless and nothing here could have caught it. They are now different
+  // instructions -- omission means "resolve the default", explicit 'model-token'
+  // means "opt out of it" -- and on a load-bearing Phase they produce opposite
+  // verdicts. The mapper already emits the key only when the DEFINITION carries
+  // it, which is the correct behaviour; these assertions exist because an untested
+  // invariant is one refactor from being untrue, and this is the refactor that
+  // made it matter.
+  it('FR-R3-117 — an authored model-token opt-out survives the round trip', () => {
+    const definition: PhaseDefinition = {
+      ...MINIMAL,
+      sideEffects: 'workspace',
+      hostVerification: 'model-token'
+    };
+    const document = documentFromPhaseDefinition(definition);
+    expect(document.spec.hostVerification).toBe('model-token');
+    expect(roundTrip(definition).hostVerification).toBe('model-token');
+  });
+
+  it('FR-R3-117 — a Phase that declared nothing still declares nothing afterwards', () => {
+    // The direction that would silently convert a resolved default into an
+    // author's opt-out. If export emitted the resolved value, re-importing would
+    // pin every Phase to whatever the rule said on the day it was exported.
+    const definition: PhaseDefinition = { ...MINIMAL, sideEffects: 'workspace' };
+    const document = documentFromPhaseDefinition(definition);
+    expect(document.spec.hostVerification).toBeUndefined();
+    expect(roundTrip(definition).hostVerification).toBeUndefined();
+  });
+
+  it('FR-R3-117 — omission and explicit model-token do not collapse into each other', () => {
+    const omitted: PhaseDefinition = { ...MINIMAL, sideEffects: 'workspace' };
+    const optedOut: PhaseDefinition = { ...omitted, hostVerification: 'model-token' };
+    expect(roundTrip(omitted)).not.toEqual(roundTrip(optedOut));
+  });
+
   it('is a fixpoint on the document side as well', () => {
     const once = documentFromPhaseDefinition(FULL_INSTRUCTION);
     expect(documentFromPhaseDefinition(phaseDefinitionFromDocument(once))).toEqual(once);

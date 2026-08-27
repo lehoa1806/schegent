@@ -16,6 +16,48 @@ for budget, by operator decision**, and all eight workflow files are deleted fro
 > does](#what-a-release-no-longer-does), because a maintainer who remembers the old process needs to
 > know which parts are gone rather than merely to stop finding them.
 
+## Breaking changes not yet released
+
+### FR-R3-117 — a Phase is judged on its exit status by default (2026-08-27)
+
+**What changed.** `hostVerification` used to resolve to `'model-token'` when a Phase
+declared nothing: the Phase advanced on the model's own account of its work, so a
+non-zero exit alongside a clean termination token was logged and advanced, and a
+timed-out process whose buffered output parsed clean was treated as success.
+
+It now resolves to **`'exit-code'`** for any Phase whose resolved `sideEffects` is
+other than `'none'`, or which produces a declared output. Such a Phase does not advance
+on a non-zero exit or a timeout, whatever its output says.
+
+**How wide this is.** `sideEffects` itself resolves to `'workspace'` when omitted, so
+**most existing Phases are affected**. A Phase is unaffected only if it explicitly
+declares `sideEffects: 'none'`.
+
+**What an operator must do to keep the old behaviour.** Add the opt-out to the Phase:
+
+```yaml
+spec:
+  hostVerification: model-token
+```
+
+That is the only way to get self-report on a Phase that touches anything. It is worth
+taking deliberately for a Phase that legitimately exits non-zero — a linter used as a
+probe, a diff check that reports difference by exit code — and worth not taking
+otherwise.
+
+**Persisted plans are not retargeted.** `STATE_SCHEMA_VERSION` moves 13 → 14 and
+`migrateV13ToV14()` stamps each existing plan snapshot with the verdict basis it was
+frozen under, which is the OLD one. A Run created before the upgrade keeps the meaning
+its operator approved; the new default applies to plans frozen after it.
+
+**Where to look.** The decision, the two shapes not taken, and why shape 3
+(unconditional) is the recorded destination:
+[`docs/architecture/phase-verdict-default.md`](docs/architecture/phase-verdict-default.md).
+
+**New evidence.** `phase-end` now carries `verdictBasis` (`exit-code` or `model-token`),
+so a completed Run's evidence answers which basis judged each Phase. Additive —
+`AUDIT_SCHEMA_VERSION` is unchanged at 3.
+
 ## Release boundary
 
 The boundary is `npm run release`, which is `release:preflight && package`. It refuses to package

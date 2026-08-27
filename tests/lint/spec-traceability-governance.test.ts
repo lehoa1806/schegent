@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
+import { resolveGovernanceScope } from './envelope-presence';
 
 const EXECUTION_REPO_ROOT = resolve(__dirname, '..', '..');
 const ENVELOPE_ROOT = resolve(EXECUTION_REPO_ROOT, '..');
 const SPECS_ROOT = resolve(ENVELOPE_ROOT, 'specs');
+
+const SCOPE = resolveGovernanceScope();
+const ENVELOPE_HERE = SCOPE.kind === 'envelope';
 
 const ALLOWED_STATUSES = new Set([
   'Draft',
@@ -25,6 +29,9 @@ interface SpecArtifact {
 }
 
 function readArtifacts(): readonly SpecArtifact[] {
+  // FR-R3-118 — guarded. `SPECS_ROOT` is `../specs`, which does not exist in a
+  // standalone clone.
+  if (!ENVELOPE_HERE) return [];
   return readdirSync(SPECS_ROOT, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && /^\d{3}-/.test(entry.name))
     .map((entry) => {
@@ -56,7 +63,7 @@ describe('spec traceability governance', () => {
   // `../specs`, into the planning envelope — which makes an empty scan the
   // likely state rather than the unlikely one: a checkout of repo/ alone, or a
   // renamed envelope directory, yields zero artifacts and a fully green suite.
-  it('reads the spec artifacts it governs', () => {
+  it.skipIf(!ENVELOPE_HERE)('reads the spec artifacts it governs', () => {
     expect(
       artifacts.length,
       `No NNN-prefixed spec directory was found under ${SPECS_ROOT}. Every assertion ` +
@@ -109,7 +116,11 @@ describe('spec traceability governance', () => {
     expect(invalid).toEqual([]);
   });
 
-  it('does not leave a completed or superseded feature as the AGENTS active plan', () => {
+  it.skipIf(!ENVELOPE_HERE)(
+    'does not leave a completed or superseded feature as the AGENTS active plan',
+    () => {
+    // FR-R3-118 — guarded by the same predicate. `AGENTS.md` is the envelope's,
+    // not the execution repository's.
     const agents = readFileSync(resolve(ENVELOPE_ROOT, 'AGENTS.md'), 'utf8');
     const active = /^Active plan:\s*(.+?)\s*$/m.exec(agents)?.[1] ?? '';
     if (/^none\.?$/i.test(active)) return;
@@ -120,5 +131,20 @@ describe('spec traceability governance', () => {
     const artifact = artifacts.find((candidate) => candidate.directory === directory);
     expect(artifact, `missing spec for active plan ${relativePlan}`).toBeDefined();
     expect(['Complete', 'Superseded']).not.toContain(artifact!.status);
+    }
+  );
+
+  // FR-R3-118 — the skip is REPORTED, not silent. Without this, a standalone
+  // clone and a broken envelope path look identical from the outside: both are
+  // a green suite with fewer tests.
+  it('reports why it skipped when no planning envelope is present', () => {
+    if (ENVELOPE_HERE) {
+      expect(SCOPE.kind).toBe('envelope');
+      return;
+    }
+    // Narrowed by the early return above, so a second `kind` comparison here is
+    // dead. Assert on the reason directly.
+    expect(SCOPE.kind).toBe('skipped');
+    expect(SCOPE.reason).toContain('no planning envelope');
   });
 });

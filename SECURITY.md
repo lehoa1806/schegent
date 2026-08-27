@@ -152,6 +152,33 @@ immediately, then audit for similar exposure. It is not a line item to allowlist
 
 No Snyk or Semgrep configuration or invocation exists in the repository.
 
+#### The static-analysis class is permanently absent — decided 2026-08-27
+
+`FR-R3-115` required this disposition to be taken rather than left open: either name a
+local substitute and wire it into the attested chain, or record that the class is gone.
+**It is recorded as gone.**
+
+The class CodeQL provided is **taint and dataflow security analysis** — tracking an
+untrusted value from a source to a dangerous sink across function and module
+boundaries. Nothing in this repository does that, and nothing is planned to.
+
+**What partially overlaps, and why none of it is a substitute:**
+
+| Present | Overlaps | Why it is not the class |
+|---|---|---|
+| `eslint` + `typescript-eslint` (type-aware rules) | catches some unsafe-`any` flows and floating promises within a file | no cross-procedural taint tracking, no source-to-sink model, no security rule pack |
+| `secretlint` (`npm run security:secrets`, wired by `FR-R3-109`) | finds credentials in tracked files | a secret scanner finds credentials, not injection or taint |
+| ~148 repository lint gates | enforce boundaries, contracts and shapes | they check structure, not data flow |
+
+Naming any of these a CodeQL substitute would assert coverage that does not exist.
+Adding a real one (Semgrep, or CodeQL locally) was considered and **not taken**: it is
+a new dependency, a new gate, and a new maintenance surface, and it belongs to whoever
+decides the security budget rather than to a documentation-correction cycle.
+
+**What would change this:** a decision to add a local SAST tool, or a CI budget that
+makes hosted analysis available again. Until then this is a stated, dated hole and not
+an oversight.
+
 <!-- Source: package.json -->
 <!-- Source: docs/release/actions-terminal-record.md -->
 <!-- Source: docs/release/withdrawn-ci-controls.md -->

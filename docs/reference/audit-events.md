@@ -90,10 +90,15 @@ which indicates secret-like content reached the boundary.
 <!-- Source: src/audit/audit-payload.ts -->
 <!-- Source: src/audit/audit-log-writer.ts -->
 
-These controls reduce accidental disclosure; they do not make the local file a
-tamper-evident ledger. Anyone or any process with sufficient filesystem access
-can alter or delete local evidence, and the format has no signature or hash
-chain.
+These controls reduce accidental disclosure. Tamper-evidence is provided
+separately, by the hash chain FR-R3-112 added: each entry carries the previous
+entry's sha256 digest, and `npm run audit:verify` names the first break. Anyone
+or any process with sufficient filesystem access can still alter or delete local
+evidence — the chain makes that **evident, not impossible**, because the chain
+head sits on the same disk and an actor who can edit the log can recompute every
+later digest. What they cannot do is edit one entry and leave the rest
+consistent. There is no signature, and no anchor outside the workspace.
+<!-- Source: src/audit/audit-chain.ts -->
 
 <!-- Source: src/audit/audit-log-writer.ts -->
 

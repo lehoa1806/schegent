@@ -13,7 +13,7 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 86
+    vacuity-census-denominator: 89
 
 | Measure | Value |
 |---|---|
@@ -216,3 +216,268 @@ Every one of these is emitted at run time rather than recorded here, so it canno
 | the accessibility scan | target, surface count, exclusion list (including when empty), and that a scan is not conformance |
 | `docs/release/accessibility-at-matrix.md` | every supported platform, recorded **untested** |
 | `tests/unit/audit/platform-permission-modes.test.ts` | the platform it did not exercise |
+
+## FR-R3-118 — the envelope-reaching gates, swept by running them (2026-08-27)
+
+`FR-R3-118` reported one defect: `spec-traceability-governance.test.ts` read the
+planning envelope unguarded, raised `ENOENT` in a standalone execution-repository
+clone, and so made `npm run gate` unreachable — and a release uncuttable — from a
+clone that `README.md:22` and `repo/AGENTS.md` both promise can build and test. It
+recorded nine siblings as already correct, "one file out of ten".
+
+**The sweep was performed by cloning the repository into an envelope-free parent
+and running the suite there, not by searching for the guard.** That distinction
+produced the finding, because the register undercounted in two independent ways.
+
+### What was measured
+
+| Gate | Reaches parent as | Behaviour in an envelope-free clone, **before** | Now |
+|---|---|---|---|
+| `spec-traceability-governance.test.ts` | `ENVELOPE_ROOT` | **threw** `ENOENT` on `readdirSync(../specs)` and `readFileSync(../AGENTS.md)` | reported skip |
+| `eslint-baseline.test.ts` | `ENVELOPE_ROOT` | **6 false accusations**: `an owner that cannot be resolved is an unowned entry` | reported skip |
+| `source-loc-budget.test.ts` | `ENVELOPE_ROOT` | **1 false accusation**: `waiver needs ... a reference that resolves on disk` | resolvability defers; decision text and ISO date stay checked |
+| `actions-retirement-claims.test.ts` | `ENVELOPE` | **threw** `ENOENT` on `scandir ../docs`; its vacuity floor also demanded both trees | scans repo-only; the floor is per-tree |
+| `source-marker-targets.test.ts` | `ENVELOPE` | **8 false accusations** — markers that resolve only into the envelope reported as broken | reported skip |
+| `capability-text-contract-parity.test.ts` | `ENVELOPE_ROOT` | correct — `existsSync` branch, absence asserted explicitly | unchanged |
+| `threat-id-anchor-parity.test.ts` | `WORKSPACE_ROOT` | correct — `required: false` | unchanged |
+| `agents-claude-parity.test.ts` | `WORKSPACE_ROOT` | correct — `existsSync` + `skipIf` | unchanged |
+| `no-tryAutoDrain-doc-references.test.ts` | `WORKSPACE_ROOT` | correct — five `existsSync` guards | unchanged |
+| `a11y-policy-parity.test.ts` | `ENVELOPE_ROOT` | correct | unchanged |
+| `scripts/check-doc-links.mjs` | `WS_ROOT` | correct — `envelopePresent()`, the shape the others now share | unchanged |
+
+**Eleven gates, not ten. Four misbehaved, not one.**
+
+### The two things searching could not have found
+
+**1. The count was wrong because the search term was.** `source-marker-targets` and
+`actions-retirement-claims` name their root `ENVELOPE`, not `ENVELOPE_ROOT`. A
+search for the latter — which is how the register was built, and how this feature's
+own research restated it — misses both. `no-unguarded-parent-read.test.ts`
+therefore matches on **the resolved path**, not on the name of the constant: it
+resolves each root declaration against the file's real directory and flags only
+those landing strictly above `REPO_ROOT`. An earlier draft matched
+`resolve(X, '..')` textually and flagged `LINT_DIR = resolve(__dirname, '..')`,
+which is `tests/lint`. Textual depth is not depth.
+
+**2. A guarded read can still be wrong, in a worse shape than a throw.**
+`eslint-baseline` and `source-loc-budget` both guarded their reads. Neither crashed.
+Both then judged the missing envelope as a defect **in the repository** — seven
+confident, actionable, wrong accusations against provenance that is in fact
+correct. A crash announces itself as a rig problem and gets diagnosed as one; a
+false accusation announces itself as a repo problem and someone acts on it. Grep
+sees a guard and stops; only running the thing distinguishes *guarded* from
+*correct under absence*.
+
+### What now covers it
+
+`tests/lint/no-unguarded-parent-read.test.ts` fails when a file under `repo/tests/`
+declares a root above `REPO_ROOT`, reads through it, and contains no envelope
+check. It carries its own vacuity control (the parent-reaching set must not come
+back empty — an empty match is how the two `ENVELOPE`-named gates went unnoticed).
+
+**Observed red**: a probe file reading `../AGENTS.md` with no guard was added, the
+gate failed naming it, and the probe was removed and the gate passed.
+
+The rule it enforces is deliberately narrower than the lesson. "Do not judge an
+absence you cannot see" is the real rule and is not mechanically checkable; the
+gate checks the mechanical half, and this entry records the other half so it is
+written down somewhere even though nothing enforces it.
+
+## FR-R3-116 — semantic claim consistency: a gate class that did not exist (2026-08-27)
+
+### The blind spot
+
+`FR-R3-112` landed the audit hash chain. `src/audit/audit-chain.ts` shipped, it was
+wired into `audit-log-writer.ts`, and `npm run audit:verify` shipped with it. **Five
+documents went on saying the log had no chain**, and one of them —
+`docs/security/threat-model.md` — asserted the chain at line 22, denied it at line
+70, and asserted it again at line 163. All three sentences were in the shipped
+threat model. Only two were true.
+
+Roughly 141 lint gates were green for the whole interval between the merge and the
+review that found it, and a pre-push liveness check resolved every backticked source
+path in both envelope documents.
+
+**None of that could have caught it.** The machinery checks **path liveness** (does a
+cited path exist?) and **constant parity** (do two copies of a literal agree?). It had
+no instrument for **semantic claim consistency**: whether a document asserts something
+the tree contradicts. A sentence saying a mechanism is absent cites nothing, so path
+liveness has no opinion; it duplicates no constant, so parity has none either.
+
+### How it was found
+
+By a human reading the threat model end to end and noticing it disagreed with itself
+two paragraphs apart. That is not a repeatable detection method, which is the
+argument for the gate.
+
+### What now covers it, and what does not
+
+`tests/lint/document-mechanism-consistency.test.ts` fails when a document under
+`repo/` denies a mechanism the tree exports. Three seeded pairs:
+
+| Seed | Mechanism | Chosen because |
+|---|---|---|
+| `audit-chain` | `src/audit/audit-chain.ts` exports `digestOf` | the pair that produced the finding |
+| `process-tree` | `src/runner/process-tree.ts` exports `signalProcessTree` | its true statement is **platform-qualified** — POSIX kills the group, Windows uses `taskkill /T`, and the degradation report is deliberately absent on Windows. An unqualified denial is a real defect; a qualified one is correct prose. It is the seed that tests whether the denial-versus-limit distinction actually holds |
+| `ownership-fence` | `src/state/ownership-registry.ts` exports `OwnershipRegistry` | a state-layer mechanism, so the three seeds are not three instances of one shape |
+
+Three design decisions worth recording, because each is a place the gate could have
+gone wrong:
+
+1. **A denial is not a limit.** Every document this feature corrected states the
+   mechanism's limit — *tampering is evident, not impossible; the chain head sits on
+   the same disk*. Those sentences must pass. The corrected tree is the gate's own
+   negative fixture: if it flags corrected text, the regex is wrong, not the text.
+2. **A dated historical statement is not a denial.** The T3 anchor's *"Until
+   FR-R3-112 that was a write discipline and nothing more: ... there was no chain,
+   signature or post-write detection"* is both true and the clearest explanation of
+   the mechanism in the tree. A gate that forced it out would destroy the
+   documentation it exists to protect. The qualifier must be in the **same sentence**,
+   not the same paragraph — a paragraph-scoped rule lets one dated clause excuse an
+   unrelated live denial three sentences later.
+3. **Scope is the execution repository, not the envelope.** `docs/audits/` and
+   `docs/features/` exist to *quote* claims. The review that produced this item quotes
+   all five denials verbatim; scanning it would make the gate fail on the document
+   that asked for the gate.
+
+**What it is not**: a seeded-pair detector, and its docblock says so. It cannot detect
+arbitrary contradiction, it does not parse prose, and it will not notice a denial
+phrased outside its regexes. A general contradiction detector is not proposed and
+pretending otherwise would be the overclaim this whole class is about.
+
+### Non-vacuity, measured
+
+A regex gate over prose has FR-R3-114's exact failure mode — a pattern matching
+nothing is indistinguishable from a tree with nothing to match — and no natural
+symptom. `scripts/document-mechanism-consistency-selftest.sh` drives **each of the
+three seeds** red against the real tree and back to green, and additionally proves
+the two carve-outs are not loopholes:
+
+```
+9 passed, 0 failed
+  audit-chain      row 1's exact sentence restored -> red, names the seed -> removed -> green
+  process-tree     unqualified denial planted      -> red, names the seed -> removed -> green
+  ownership-fence  denial planted                  -> red, names the seed -> removed -> green
+  a correctly-stated limit          -> green (not read as a denial)
+  an explicitly historical denial   -> green (not read as a live claim)
+```
+
+It restores the tree on every exit path via `trap ... EXIT INT TERM`, because a
+self-test that leaves a planted falsehood in a security document when it fails is
+worse than no self-test.
+
+### What the gate found that the register did not
+
+A **sixth** live denial: `docs/security/whitepaper.md:102` — *"That is a write-path
+convention, not tamper evidence: there is no signature or hash chain"*. `FR-R3-116`
+enumerated five. The gate found the sixth on its first run, before it had ever been
+committed, which is the most direct evidence available that the class was real and
+under-counted rather than fully known and merely unenforced.
+
+## FR-R3-119 — the composition root, and a ratchet that licensed what it forbade (2026-08-27)
+
+### What was measured
+
+`src/extension.ts` held **1,489 lines, 77 imports, three top-level functions** — one of
+which, `wireStage2()`, spanned lines 263–1483: **1,221 lines**, ~245 top-level
+statements. `src/activation/`, which `ARCHITECTURE.md` called the composition root, was
+1,863 lines across 11 focused modules, largest `ui-wiring.ts` at 387.
+
+Its LOC entry was `{ path: 'src/extension.ts', maxLines: 1_490 }` — a plain number, one
+line above the file. Its two **larger** peers, `workspace-state.ts` (2,768) and
+`queue-manager.ts` (1,841), both carried dated waivers with quoted decisions,
+resolvable references and shrink-only high-water marks.
+
+**The finding is that pairing.** The largest cohesion problem in the tree was the one
+the waiver machinery never saw, and nobody ever had to write down why.
+
+### What changed
+
+`sidebar-router-wiring.ts` took 240 lines of `MessageRouter` construction out of
+`wireStage2`. **1,221 → 1,010** for the function, **1,489 → 1,270** for the file,
+eleven imports dead and removed, no behavioural change (`FR-059`).
+
+Three of the twenty-eight bindings the span closed over — `context`, `output`,
+`config` — turned out not to be dependencies at all: the router reads none of them.
+They were in scope, which is not the same thing, and only the extraction made the
+difference visible. That is a small result worth recording, because "what does this
+actually depend on" is unanswerable while everything is in one function.
+
+### What the gate now catches that it did not — two things
+
+**1. A tight ceiling.** `WAIVER_FACTOR` refuses a ceiling set at a large multiple of
+its file. It has no opinion on a ceiling set one line above it, and cannot have one by
+construction — yet that is the shape a god file naturally produces, because every edit
+raises the number by exactly what the edit added. The gate now reports a plain ceiling
+within `max(25, 2%)` of its file as **un-decided debt**.
+
+Adding the check found **eight** files in that shape, not one. The pattern is systemic,
+which is itself the finding. Seven are a recorded shrink-only baseline — failing all
+eight inside a feature scoped to one of them is how a useful gate gets reverted — and a
+ninth cannot arrive. `src/extension.ts` is absent from the baseline: that is what
+coming off the list looks like.
+
+**2. A function-level bound.** The file-level number did not catch a 1,221-line
+function inside a 1,489-line file. There is now a 400-line bound over
+`src/extension.ts` and `src/activation/`; 400 is observed, not invented — it is
+`ui-wiring.ts` rounded up.
+
+### The mutation that killed the first draft, recorded because it looked right
+
+The bound's first version enforced **a single flat mark of 1,010** — the
+post-extraction size of `wireStage2` — across the whole scope, on the ordinary ratchet
+reasoning that you record where you are and forbid going backwards.
+
+Mutation testing killed it. A **new 407-line function** added to `src/activation/`
+**passed**, because 407 < 1,010.
+
+> A ratchet set to the worst offender licenses every newcomer up to the worst offender.
+
+That is the exact inverse of its purpose, and the flat form reads like good practice.
+The corrected shape separates the two: a **400-line bound every function is held to**,
+plus a **named, shrink-only legacy exemption** — `src/extension.ts:wireStage2` at 1,010,
+the only entry, list closed. The exemption's own guard asserts it may be lowered and
+never raised, and that the exempted function still exists and is still over the bound,
+so a stale entry cannot linger.
+
+Recorded at length because the defect was invisible to reading and to review. Only
+driving the gate red found it, and the same shape is available to any ratchet that
+pins a single number for a whole scope.
+
+### Non-vacuity, measured
+
+| Mutation | Result |
+|---|---|
+| a 407-line function in `src/activation/` | red — over the 400-line bound |
+| the exemption raised 1,010 → 1,500 | red — "an exemption may be lowered, never raised" |
+| `extension.ts` ceiling set to 1,271 against a 1,270-line file | red — un-decided debt |
+
+Each was reverted and the gate returned green.
+
+## FR-R3-115..119 — every gate this batch added, observed red (2026-08-27)
+
+FR-070 required each new gate to be driven red by mutation of the real tree before it
+counted. A gate that has never failed is a gate nobody has evidence for, and
+`FR-R3-114` measured one that read as coverage for months while matching nothing.
+
+**Five gates, six observations** — the semantic-consistency gate is driven twice, once
+across all three seeds and once against the specific sentence `FR-R3-116` row 1 names.
+
+| Gate | Mutation | Observed |
+|---|---|---|
+| `document-mechanism-consistency` | each of three seeds' denial sentences planted in a document in its scope | red, naming the seed, then green on restore — by `scripts/document-mechanism-consistency-selftest.sh`, 9 passed / 0 failed |
+| `document-mechanism-consistency` | `threat-model.md:70`'s exact original sentence restored | red — the FR-026 case, specifically |
+| `no-unguarded-parent-read` | a probe file reading `../AGENTS.md` with no envelope check | red, naming the probe, then green on removal |
+| `platform-branch-has-record-row` | `process.platform === 'freebsd'` added under `src/` | red, naming `freebsd`, then green on revert |
+| `source-loc-budget` function bound | a 407-line function added to `src/activation/` | red — and this one **changed the design**: it passed against the first draft, which is how the flat-mark defect was found |
+| `source-loc-budget` tight ceiling | `extension.ts` ceiling set to 1,271 against a 1,270-line file | red — un-decided debt |
+
+Two further non-vacuity checks were driven in the opposite direction, to prove the
+carve-outs are not loopholes: a correctly-stated **limit** and an explicitly
+**historical** denial both leave `document-mechanism-consistency` green.
+
+**The one that mattered most was the one that did NOT go red.** The 407-line function
+passed the function bound's first draft, and that is the only reason the flat-mark
+defect was found — it was invisible to reading and to review. An observation that
+fails to reproduce the expected failure is evidence too, and worth more here than the
+five that behaved.

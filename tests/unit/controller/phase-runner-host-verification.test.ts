@@ -69,6 +69,26 @@ const ORDINARY: PhaseDef = {
   name: 'Ordinary phase'
 } as PhaseDef;
 
+/**
+ * FR-R3-117 — a Phase that declares nothing is LOAD-BEARING, because `sideEffects`
+ * resolves to `'workspace'`. `ORDINARY` is therefore exit-code-judged now.
+ */
+
+/** Declares `'none'`: purely advisory, so the historical self-report survives. */
+const ADVISORY: PhaseDef = {
+  id: 'speckit-specify',
+  name: 'Advisory phase',
+  sideEffects: 'none'
+} as PhaseDef;
+
+/** Load-bearing, and explicitly opts OUT — the FR-R3-117 escape hatch. */
+const OPTED_OUT: PhaseDef = {
+  id: 'speckit-specify',
+  name: 'Opted-out phase',
+  sideEffects: 'workspace',
+  hostVerification: 'model-token'
+} as PhaseDef;
+
 async function runWith(
   overrides: Partial<RawInvocationOutput>,
   phaseDef?: PhaseDef
@@ -108,10 +128,31 @@ async function runWith(
 }
 
 describe('a sensitive phase is not advanced by its own claim (FR-R3-058)', () => {
-  it('advances a clean token over a non-zero exit when the phase is not marked', async () => {
-    // The historical behaviour, pinned. Every existing definition depends on it,
-    // and this feature must not change it.
+  it('FR-R3-117 — does NOT advance an unmarked phase over a non-zero exit', async () => {
+    // THE INVERSION. Until FR-R3-117 this asserted the opposite, and the comment
+    // above it read "the historical behaviour, pinned ... this feature must not
+    // change it" -- true of FR-R3-058, which shipped the mechanism opt-in
+    // deliberately to avoid breaking existing catalogs. FR-R3-117 is the migration
+    // that opt-in deferred.
+    //
+    // An unmarked phase resolves `sideEffects` to 'workspace', so its claim is
+    // load-bearing and it is judged on exit status. A failed build reporting
+    // success was the single highest-consequence default in the product.
     const { output } = await runWith({ exitCode: 3 }, ORDINARY);
+    expect(output.outcome).toBe('failed');
+  });
+
+  it("FR-R3-117 — advances a clean token over a non-zero exit when sideEffects is 'none'", async () => {
+    // The carve-out. A purely advisory Phase touches nothing, so judging it on
+    // exit status would break advisory Phases for no gain.
+    const { output } = await runWith({ exitCode: 3 }, ADVISORY);
+    expect(output.outcome).not.toBe('failed');
+  });
+
+  it('FR-R3-117 — an explicit model-token opt-out still advances', async () => {
+    // The escape hatch RELEASE.md names. A load-bearing Phase whose author chose
+    // self-report keeps it, and this is the only way to have it.
+    const { output } = await runWith({ exitCode: 3 }, OPTED_OUT);
     expect(output.outcome).not.toBe('failed');
   });
 
@@ -136,10 +177,17 @@ describe('a sensitive phase is not advanced by its own claim (FR-R3-058)', () =>
     expect(output.outcome).toBe('timeout');
   });
 
-  it('still treats a hung-but-clean UNMARKED phase as success', async () => {
-    // BUG-002 / FR-025, unchanged. This is the behaviour the marking opts out of,
-    // not one it replaces.
+  it('FR-R3-117 — a hung-but-clean UNMARKED phase is now a timeout', async () => {
+    // Also inverted. An agent killed at the idle bound could be recorded as having
+    // completed its phase, because the buffered output parsed clean. The timeout
+    // decides now, not the token.
     const { output } = await runWith({ timedOut: true }, ORDINARY);
+    expect(output.outcome).toBe('timeout');
+  });
+
+  it("still treats a hung-but-clean 'none' phase as success", async () => {
+    // BUG-002 / FR-025, preserved exactly where it still applies.
+    const { output } = await runWith({ timedOut: true }, ADVISORY);
     expect(output.outcome).not.toBe('timeout');
   });
 

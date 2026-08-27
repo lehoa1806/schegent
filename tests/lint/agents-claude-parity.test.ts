@@ -216,14 +216,33 @@ describe.skipIf(!envelopePresent)('AGENTS.md ↔ CLAUDE.md parity guard', () => 
     ).toBe(claudeBlock);
   });
 
-  it('the active plan named by the SPECKIT pointer exists', () => {
+  it('the active plan named by the SPECKIT pointer exists, or is explicitly none', () => {
     // A pointer at a deleted or renamed spec directory fails the same way a
     // stale one does: the reader follows it and learns nothing. Read the
     // authoritative file's block — the two are already asserted equal above.
+    //
+    // FR-R3-119 closeout — `Active plan: none.` is a VALID state and this gate did
+    // not know it. `spec-traceability-governance.test.ts` has accepted `none` since
+    // it was written, and refuses a pointer at a Complete spec; so between a
+    // feature closing and the next one opening, the two gates demanded opposite
+    // things and the tree could not satisfy both. Discovered by reaching that state
+    // rather than by reading them side by side, which is the same shape FR-R3-116
+    // found in prose: two rules about one field, disagreeing, both green until
+    // something exercised the case.
+    //
+    // The vocabulary is now shared: a specs/ link that resolves, or an explicit
+    // `none`. Silence is still a failure — the point of the field is that somebody
+    // answered.
     const block = speckitBlock(ENVELOPE_AGENTS_MD) ?? '';
-    const target = /\]\((specs\/[A-Za-z0-9._/-]+\.md)\)/.exec(block);
+    const active = /^Active plan:\s*(.+?)\s*$/m.exec(block)?.[1] ?? '';
+    expect(active, `the SPECKIT block names no active plan at all: ${block}`).not.toBe('');
+    if (/^none\.?$/i.test(active)) return;
 
-    expect(target, `no specs/… link found in the SPECKIT block: ${block}`).not.toBeNull();
+    const target = /\]\((specs\/[A-Za-z0-9._/-]+\.md)\)/.exec(block);
+    expect(
+      target,
+      `no specs/… link and not "none" in the SPECKIT block: ${block}`
+    ).not.toBeNull();
     const planPath = path.join(WORKSPACE_ROOT, target![1]);
     expect(fs.existsSync(planPath), `active plan does not exist: ${target![1]}`).toBe(true);
   });
