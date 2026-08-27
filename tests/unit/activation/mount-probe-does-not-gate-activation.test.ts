@@ -31,7 +31,18 @@ import type { ExclusiveCreateObservation } from '../../../src/state/mount-capabi
 const LAUNCHER = resolve(
   __dirname, '..', '..', '..', 'src', 'activation', 'mount-capability-wiring.ts'
 );
-const EXTENSION = resolve(__dirname, '..', '..', '..', 'src', 'extension.ts');
+// FR-R3-119 — the probe is pushed from `src/activation/workspace-session.ts`
+// now: it moved with the notifier it warns through. The fire-and-forget property
+// this asserts is unchanged; only the file holding the call is different.
+const EXTENSION = resolve(
+  __dirname,
+  '..',
+  '..',
+  '..',
+  'src',
+  'activation',
+  'workspace-session.ts'
+);
 
 describe('the mount probe does not gate activation (FR-R3-083)', () => {
   it('is called fire-and-forget, with a rejection handler', () => {

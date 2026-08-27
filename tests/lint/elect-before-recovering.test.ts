@@ -40,7 +40,25 @@ const EXTENSION = 'src/extension.ts';
 const CONTROLLER = 'src/controller/workflow-controller.ts';
 const COORDINATOR = 'src/services/scheduled-start-coordinator.ts';
 
+/**
+ * FR-R3-119 — the election moved, and rule 1's premise had to move with it.
+ *
+ * `lock.tryAcquire()` now runs inside `openWorkspaceSession()`
+ * (`src/activation/workspace-session.ts`), so "the election textually precedes
+ * every recovery landmark" is no longer a statement about one file. The PROPERTY
+ * is unchanged — the session is awaited before any recovery installer runs — so
+ * the check is split rather than dropped:
+ *
+ *   * the election lives in `workspace-session.ts` (asserted below, so it cannot
+ *     quietly move somewhere unordered), and
+ *   * the awaited call to it precedes every landmark in `extension.ts`.
+ *
+ * Weakening this to "the election exists somewhere" would have been the cheap
+ * edit and would have retired the ordering guarantee the gate exists for.
+ */
 const ELECTION = 'const lockResult = await lock.tryAcquire()';
+const SESSION = 'src/activation/workspace-session.ts';
+const SESSION_CALL = 'await openWorkspaceSession(';
 
 /**
  * Every recovery entry point reachable from activation stage 2. Adding a new
@@ -108,8 +126,8 @@ const COORDINATOR_SOURCE = stripComments(read(COORDINATOR));
 describe('FR-R3-070 — activation elects before it recovers', () => {
   it('finds the election and every pinned recovery landmark (non-vacuity)', () => {
     expect(
-      EXTENSION_SOURCE.indexOf(ELECTION),
-      `${EXTENSION} must elect via ${ELECTION}`
+      read(SESSION).indexOf(ELECTION),
+      `${SESSION} must elect via ${ELECTION}`
     ).toBeGreaterThanOrEqual(0);
     for (const landmark of RECOVERY_LANDMARKS) {
       expect(
@@ -121,7 +139,8 @@ describe('FR-R3-070 — activation elects before it recovers', () => {
   });
 
   it('performs the election before every recovery entry point', () => {
-    const election = EXTENSION_SOURCE.indexOf(ELECTION);
+    // The awaited session call stands for the election it contains.
+    const election = EXTENSION_SOURCE.indexOf(SESSION_CALL);
     for (const landmark of RECOVERY_LANDMARKS) {
       const at = EXTENSION_SOURCE.indexOf(landmark);
       expect(
