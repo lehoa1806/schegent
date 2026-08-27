@@ -148,3 +148,36 @@ a shrink-only ratchet over a one-off decision: **it is still there when the next
 minutes.**
 
 Remaining: 894 of a 400-line target.
+
+
+## Third decrement — 2026-08-27
+
+**`wireStage2` 894 → 871; `src/extension.ts` 1,138 → 1,114.**
+`src/activation/workspace-settings.ts` took the 36 lines that resolve workspace configuration.
+
+The cleanest cut available and likely the cleanest that remains: **two** bindings in
+(`workspaceRoot`, `logger`), nine values out, **no side effects, no construction, no late binding**.
+It is configuration resolution, which lived in the composition root only because that is where it
+was first written — not because anything about it belongs there.
+
+Worth noting against the two before it: this one needed no design decision at all. The first
+extraction needed a parameter object for 28 bindings; the second needed setters to preserve late
+binding that would otherwise have broken silently. This one is a function that reads settings and
+returns them. **The regions get easier as the coupling drains out**, which is the argument for
+taking them in coupling order rather than size order.
+
+Remaining: **871 of a 400-line target**, across three decrements in one session — 1,221 → 1,010 →
+894 → 871.
+
+### What the remaining regions look like
+
+Measured after this cut, by input boundary rather than size:
+
+| Region | Lines | Bindings in | Notes |
+|---|---|---|---|
+| catalog + ownership + UI shell | ~105 | 10 | next best; constructs collaborators, so it needs a returned bundle |
+| controller construction | 91 | 18 | the coupling hub — most things reach it |
+| watchdogs + scheduled start | 111 | 25 | |
+| projector | 71 | 17 | |
+
+None has a late-binding hazard. The next decrement is the catalog/ownership region.
