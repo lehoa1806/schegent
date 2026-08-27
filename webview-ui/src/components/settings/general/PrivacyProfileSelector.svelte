@@ -132,6 +132,40 @@
     margin-left: 8px;
   }
 
+  /* FR-R3-131 (T1498) — `.btn` was a borrowed name, not a style.
+   *
+   * FR-R3-127 gave these buttons `class="btn"` on the assumption that a shared
+   * sheet styled it. The only `.btn` rules in the webview are scoped under `.pb`
+   * (pipeline-builder.css), which never reaches here, so all three buttons rendered
+   * with the user-agent default -- `ButtonFace`/`ButtonText` -- and failed contrast
+   * in all three themes. The a11y scan needs Playwright and runs in the deferred
+   * whole-suite tier, so the nine findings were not visible in FR-R3-127's own
+   * verification; this cycle is where they surfaced.
+   *
+   * Styled with the secondary button pair: these apply a profile, but the primary
+   * action of the settings surface is Save. */
+  .profile-actions .btn {
+    padding: 4px 10px;
+    border: 1px solid var(--vscode-button-border, transparent);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: inherit;
+    background: var(--vscode-button-secondaryBackground, var(--vscode-button-background));
+    color: var(--vscode-button-secondaryForeground, var(--vscode-button-foreground));
+  }
+
+  .profile-actions .btn:hover:not(:disabled) {
+    background: var(
+      --vscode-button-secondaryHoverBackground,
+      var(--vscode-button-hoverBackground)
+    );
+  }
+
+  .profile-actions .btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
   .profile-refusal {
     margin: 4px 0 0;
     color: var(--vscode-errorForeground);

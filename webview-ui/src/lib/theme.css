@@ -42,6 +42,28 @@
   --schegent-color-system: var(--vscode-disabledForeground, #858585);
   --schegent-color-disabled: var(--vscode-charts-purple, #b180d7);
   --schegent-warning-fg: var(--vscode-editorWarning-foreground, #cca700);
+  /* FR-R3-131 (T1498) — the saturated accent may draw a border, an underline or a
+   * bar, but it may not be small TEXT. `--schegent-color-active` is
+   * `--vscode-charts-blue`, and blue text on the blue-tinted active surface failed
+   * WCAG AA contrast in every shipped theme: **24 of the 30 findings**
+   * `tests/a11y/a11y-baseline.json` had accepted since FR-R3-091 are this one
+   * mistake, repeated across four components. (The other 6 were `opacity` on a
+   * history badge; see `HistoryRunRow.svelte`.)
+   *
+   * The fix is at the TOKEN, not at the baseline, and it is the same pattern
+   * `--schegent-error-text` below already established for the saturated red: the
+   * colour that carries MEANING stays on the border and the underline, and the text
+   * uses the theme's own foreground, which VS Code guarantees against its own
+   * surfaces. Colour is therefore not the only indicator of an active tab either,
+   * which WCAG 1.4.1 asks for independently.
+   *
+   * A theme with no `--vscode-foreground` falls back to the same value
+   * `--schegent-fg` does; nothing here invents a colour.
+   *
+   * USE IT WHEREVER THE ACCENT CARRIES TEXT. The rule is not "the four sites the
+   * baseline named" — `.elapsed-pill` in `StatusBar.svelte` had the same pair and
+   * was never baselined, because it lives in the sidebar webview. */
+  --schegent-color-active-fg: var(--vscode-foreground, #cccccc);
   /* Error borders may use the saturated theme red, but small text needs a
    * contrast-safe foreground in both the VS Code host and local previews. */
   --schegent-error-text: var(

@@ -19,7 +19,12 @@
 </script>
 
 <div class="status-row status-{status}" data-testid="sidebar-status-row">
-  <span class="dot" aria-label={`Status: ${status}`}></span>
+  <!-- FR-R3-131 — `aria-label` is PROHIBITED on a generic span, and axe says so
+       (`aria-prohibited-attr`) now that the scan reaches this webview. The dot is
+       decorative twice over: the status is already text three elements along
+       (`.status-word`), so labelling the dot made a screen reader announce the
+       status twice. Hidden rather than given `role="img"` for that reason. -->
+  <span class="dot" aria-hidden="true"></span>
   {#if featureLabel}
     <span class="feature-label" title={featureLabel}>{featureLabel}</span>
   {:else}
@@ -86,7 +91,11 @@
     margin-left: auto;
     font-family: var(--schegent-mono-font);
     font-size: var(--schegent-text-caption);
-    color: var(--schegent-color-active);
+    /* FR-R3-131 (T1498) — the same pair as the 24 baselined dashboard findings:
+       the accent as small text on a tint of itself. Measured at 3 findings, one
+       per theme, the first time the scan was pointed at this webview. The tinted
+       background stays; only the text moves to the safe foreground. */
+    color: var(--schegent-color-active-fg);
     background: color-mix(in srgb, var(--schegent-color-active) 12%, var(--schegent-surface));
     font-variant-numeric: tabular-nums;
     border-radius: var(--schegent-radius-sm);

@@ -39,6 +39,22 @@ const baseline = JSON.parse(read(resolve(REPO_ROOT, 'tests/a11y/a11y-baseline.js
   accepted: ReadonlyArray<{ route: string; theme: string; ruleId: string; selector: string }>;
 };
 
+/**
+ * The ceiling the shrink-only ratchet asserts, read from its source rather than
+ * restated here. Restating it would create the third copy of a number two gates
+ * already share — the drift shape this file exists to prevent.
+ */
+function ratchetCeiling(): number {
+  const source = read(resolve(REPO_ROOT, 'tests/lint/a11y-baseline-shrinks.test.ts'));
+  const match = /const MAX_ACCEPTED_ENTRIES = (\d+);/.exec(source);
+  expect(
+    match,
+    'tests/lint/a11y-baseline-shrinks.test.ts must declare MAX_ACCEPTED_ENTRIES as a literal; ' +
+      'this gate reads it so the ceiling is not stated twice'
+  ).not.toBeNull();
+  return Number(match?.[1]);
+}
+
 /** The envelope statements, when the envelope is present. */
 const ENVELOPE_STATEMENTS = ['PRODUCT.md', 'docs/prd-metrics-dashboard.md'] as const;
 
@@ -57,12 +73,26 @@ describe('FR-R3-091 — the conformance target is one claim, not three', () => {
     expect(baseline.target).toBe(TARGET);
     // A baseline is a count AND a list. An entry missing either half is a record
     // that can say something got worse without saying which.
+    //
+    // FR-R3-131 — THIS LOOP IS EMPTY BY DESIGN, and that is not the same as
+    // vacuous. `FR-R3-131` cleared all 30 entries at the colour source, so the
+    // shape check now applies to nothing. Rather than keep an entry alive to
+    // feed it, the count is pinned to the ceiling the shrink-only ratchet owns:
+    // if the two ever disagree, one of the two gates is judging a file the other
+    // is not. That is what makes the emptiness a fact this gate asserts instead
+    // of a silence it hides.
     for (const finding of baseline.accepted) {
       expect(finding.route.length).toBeGreaterThan(0);
       expect(finding.theme.length).toBeGreaterThan(0);
       expect(finding.ruleId.length).toBeGreaterThan(0);
       expect(finding.selector.length).toBeGreaterThan(0);
     }
+    expect(
+      baseline.accepted.length,
+      'the accepted list must match the ceiling asserted by ' +
+        'tests/lint/a11y-baseline-shrinks.test.ts. Two gates reading one file may not disagree ' +
+        'about what it holds.'
+    ).toBe(ratchetCeiling());
   });
 
   it('the scan states that an automated scan is not conformance', () => {

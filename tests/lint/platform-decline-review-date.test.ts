@@ -29,26 +29,23 @@
 // that is checkable, and the record states the other half as the operator's to
 // watch. Saying so is the point: a gate that implied it watched all three would be
 // the overclaim this round exists to remove.
+//
+// THE PREDICATE IS SHARED, THE DATE IS NOT. `FR-R3-131` needed the same mechanism
+// for the assistive-technology matrix's owed VoiceOver rows, so the comparison
+// moved to `tests/lint/review-dates.ts`. The marker name and the document stay
+// here; a second copy of "is it the 27th yet" is how two gates come to disagree.
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { readReviewDate as readMarkedDate, reviewIsDue } from './review-dates';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const RECORD = 'docs/operations/platform-observation-record.md';
 
 /** The marker the date is authored under. Parsed, never restated. */
-const MARKER = /<!--\s*decline-review-date:\s*(\d{4}-\d{2}-\d{2})\s*-->/;
+const MARKER = 'decline-review-date';
 
-export function readReviewDate(body: string): string | null {
-  return MARKER.exec(body)?.[1] ?? null;
-}
-
-/** True when `today` is on or after the review date. */
-export function reviewIsDue(reviewDate: string, today: Date): boolean {
-  // Compared as ISO strings on purpose: a `Date` comparison drags a timezone into a
-  // question about a calendar day, and "is it the 27th yet" has no timezone.
-  return today.toISOString().slice(0, 10) >= reviewDate;
-}
+const readReviewDate = (body: string): string | null => readMarkedDate(body, MARKER);
 
 describe('the platform decline carries a review date (FR-R3-129)', () => {
   const body = readFileSync(resolve(REPO_ROOT, RECORD), 'utf8');

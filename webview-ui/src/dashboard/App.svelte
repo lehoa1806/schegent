@@ -203,7 +203,14 @@
     background: var(--schegent-surface-hover);
   }
   .nav-btn.active {
-    color: var(--schegent-color-active);
+    /* FR-R3-131 (T1498) — the accent stays on the underline below; the LABEL uses a
+       contrast-safe foreground. EIGHTEEN of the thirty baselined findings were this
+       one rule: six dashboard routes x three themes. axe reports the shortest unique
+       selector, so on the route it is active for this button appears in the record as
+       `button[data-testid="dashboard-route-system"] > .nav-label` with no `.active` in
+       it — which is how a first reading of the baseline mistook nine of them for
+       INACTIVE labels and changed a colour nothing had measured. */
+    color: var(--schegent-color-active-fg);
     background: var(--schegent-surface-active);
   }
   .nav-btn.active::after {
