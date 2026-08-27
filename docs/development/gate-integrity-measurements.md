@@ -373,3 +373,83 @@ convention, not tamper evidence: there is no signature or hash chain"*. `FR-R3-1
 enumerated five. The gate found the sixth on its first run, before it had ever been
 committed, which is the most direct evidence available that the class was real and
 under-counted rather than fully known and merely unenforced.
+
+## FR-R3-119 — the composition root, and a ratchet that licensed what it forbade (2026-08-27)
+
+### What was measured
+
+`src/extension.ts` held **1,489 lines, 77 imports, three top-level functions** — one of
+which, `wireStage2()`, spanned lines 263–1483: **1,221 lines**, ~245 top-level
+statements. `src/activation/`, which `ARCHITECTURE.md` called the composition root, was
+1,863 lines across 11 focused modules, largest `ui-wiring.ts` at 387.
+
+Its LOC entry was `{ path: 'src/extension.ts', maxLines: 1_490 }` — a plain number, one
+line above the file. Its two **larger** peers, `workspace-state.ts` (2,768) and
+`queue-manager.ts` (1,841), both carried dated waivers with quoted decisions,
+resolvable references and shrink-only high-water marks.
+
+**The finding is that pairing.** The largest cohesion problem in the tree was the one
+the waiver machinery never saw, and nobody ever had to write down why.
+
+### What changed
+
+`sidebar-router-wiring.ts` took 240 lines of `MessageRouter` construction out of
+`wireStage2`. **1,221 → 1,010** for the function, **1,489 → 1,270** for the file,
+eleven imports dead and removed, no behavioural change (`FR-059`).
+
+Three of the twenty-eight bindings the span closed over — `context`, `output`,
+`config` — turned out not to be dependencies at all: the router reads none of them.
+They were in scope, which is not the same thing, and only the extraction made the
+difference visible. That is a small result worth recording, because "what does this
+actually depend on" is unanswerable while everything is in one function.
+
+### What the gate now catches that it did not — two things
+
+**1. A tight ceiling.** `WAIVER_FACTOR` refuses a ceiling set at a large multiple of
+its file. It has no opinion on a ceiling set one line above it, and cannot have one by
+construction — yet that is the shape a god file naturally produces, because every edit
+raises the number by exactly what the edit added. The gate now reports a plain ceiling
+within `max(25, 2%)` of its file as **un-decided debt**.
+
+Adding the check found **eight** files in that shape, not one. The pattern is systemic,
+which is itself the finding. Seven are a recorded shrink-only baseline — failing all
+eight inside a feature scoped to one of them is how a useful gate gets reverted — and a
+ninth cannot arrive. `src/extension.ts` is absent from the baseline: that is what
+coming off the list looks like.
+
+**2. A function-level bound.** The file-level number did not catch a 1,221-line
+function inside a 1,489-line file. There is now a 400-line bound over
+`src/extension.ts` and `src/activation/`; 400 is observed, not invented — it is
+`ui-wiring.ts` rounded up.
+
+### The mutation that killed the first draft, recorded because it looked right
+
+The bound's first version enforced **a single flat mark of 1,010** — the
+post-extraction size of `wireStage2` — across the whole scope, on the ordinary ratchet
+reasoning that you record where you are and forbid going backwards.
+
+Mutation testing killed it. A **new 407-line function** added to `src/activation/`
+**passed**, because 407 < 1,010.
+
+> A ratchet set to the worst offender licenses every newcomer up to the worst offender.
+
+That is the exact inverse of its purpose, and the flat form reads like good practice.
+The corrected shape separates the two: a **400-line bound every function is held to**,
+plus a **named, shrink-only legacy exemption** — `src/extension.ts:wireStage2` at 1,010,
+the only entry, list closed. The exemption's own guard asserts it may be lowered and
+never raised, and that the exempted function still exists and is still over the bound,
+so a stale entry cannot linger.
+
+Recorded at length because the defect was invisible to reading and to review. Only
+driving the gate red found it, and the same shape is available to any ratchet that
+pins a single number for a whole scope.
+
+### Non-vacuity, measured
+
+| Mutation | Result |
+|---|---|
+| a 407-line function in `src/activation/` | red — over the 400-line bound |
+| the exemption raised 1,010 → 1,500 | red — "an exemption may be lowered, never raised" |
+| `extension.ts` ceiling set to 1,271 against a 1,270-line file | red — un-decided debt |
+
+Each was reverted and the gate returned green.

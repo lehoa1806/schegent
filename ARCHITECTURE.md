@@ -70,8 +70,20 @@ VS Code commands / sidebar / Dashboard
      state, audit, transcript, runtime log
 ```
 
-`src/activation/` is the composition root. Domain modules do not construct VS
-Code adapters themselves. `src/host-services/` wraps host-owned behavior such
+`src/activation/` is the composition root, **together with `wireStage2()` in
+`src/extension.ts`, which is still part of it.** Domain modules do not construct VS
+Code adapters themselves.
+
+That sentence used to stop at the first clause, and it overstated the shipped shape:
+`src/activation/` was twelve focused modules totalling ~2,200 lines while
+`wireStage2` was a single 1,221-line function doing the same kind of work in the
+entry file. `FR-R3-119` reconciled the two by moving, not by rewording — the largest
+independent span became `src/activation/sidebar-router-wiring.ts` — and by pinning
+the remainder under a shrink-only bound in `tests/lint/source-loc-budget.test.ts`, so
+the sentence becomes unqualifiedly true by extraction rather than by editing. Until
+it does, the qualification stays. The measurements, the waive-or-extract decision and
+the mutation that corrected the bound's first draft are in
+[Composition root extraction](docs/architecture/composition-root-extraction.md). `src/host-services/` wraps host-owned behavior such
 as configuration, filesystem and notification seams. `src/headless/` exposes
 process validation/import/export and run-launch entrypoints over the same
 services without importing `vscode`.

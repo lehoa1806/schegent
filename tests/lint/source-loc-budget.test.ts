@@ -82,6 +82,18 @@ function isWaived(entry: BudgetEntry): entry is WaivedEntry {
  */
 const WAIVER_FACTOR = 3;
 
+/**
+ * FR-R3-119 — how close to its ceiling a file may sit before the ceiling stops
+ * being a decision. Two parts, because one does not fit both ends of the range:
+ * 2% alone would give a 250-line file five lines of slack, which is ordinary
+ * editing; 25 lines alone would give a 2,700-line file less than 1%, which is
+ * noise. `max` of the two catches the one-line-of-headroom shape without flagging
+ * small files where a little headroom is normal.
+ */
+function tightMargin(maxLines: number): number {
+  return Math.max(25, Math.floor(maxLines * 0.02));
+}
+
 const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // P4 activation extraction ratchet: 1,500 → 1,305. Backend/evidence
   // composition and Stage-2 dashboard/command lifecycle now have focused
@@ -347,7 +359,19 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // `activation/run-safety-wiring.ts`. What activation gained is two arguments to a
   // call it already made. That is the shape this budget is meant to permit: the shell
   // hands over a dependency, the behaviour lives in a leaf.
-  { path: 'src/extension.ts', maxLines: 1_490 },
+  // FR-R3-119 — 1,490 -> 1,300 after the composition-root extraction. The old
+  // entry was the shape the tight-ceiling check now reports: a 1,490 ceiling on a
+  // 1,489-line file, one line of headroom, a plain number with no recorded
+  // decision — while its two LARGER peers both carried dated waivers with
+  // ratchets. The largest cohesion problem in the tree was the one the waiver
+  // machinery never saw.
+  //
+  // The file is 1,270 after `sidebar-router-wiring.ts` took 240 lines of
+  // `MessageRouter` construction out of `wireStage2`. 1,300 is set deliberately
+  // rather than pinned to the measurement: 30 lines is room for an ordinary edit,
+  // and it is outside the 25-line margin, so this entry is a budget again instead
+  // of a high-water mark. Lower it when the next extraction earns it.
+  { path: 'src/extension.ts', maxLines: 1_300 },
   //
   // FR-R3-103 (FR-042, FR-046) — 1459 -> 1471. Nine lines for the dependency wiring of the resume
   // liveness check plus two imports, three more registering the fence-loss abort, and the
@@ -883,6 +907,242 @@ describe('large source file LOC budgets', () => {
           `that retired it — a ceiling this far above the file has stopped being a forcing function`
       );
     expect(offenders).toEqual([]);
+  });
+
+  /**
+   * FR-R3-119 / FR-055 — the blind spot `WAIVER_FACTOR` cannot see by construction.
+   *
+   * The check above correctly refuses a LOOSE ceiling pretending to be a budget: a
+   * number set at a large multiple of its file has stopped being a forcing
+   * function. It has no opinion on a TIGHT ceiling on a file that should not be
+   * that size at all — and that is the shape a god file naturally produces,
+   * because every edit ratchets the ceiling up by exactly what the edit added.
+   *
+   * `src/extension.ts` was the instance: a 1,490 ceiling on a 1,489-line file, one
+   * line of headroom, a plain number with no recorded decision — while its two
+   * LARGER peers, `workspace-state.ts` (2,768) and `queue-manager.ts` (1,841),
+   * both carried dated waivers with ratchets. The largest cohesion problem in the
+   * tree was the one the waiver machinery never saw, and nobody had to write down
+   * why.
+   *
+   * A file sitting at its ceiling is not necessarily wrong. It is UN-DECIDED, and
+   * this reports it so that it becomes decided either way — tighten it after a
+   * real reduction, or convert it to a waiver that says why the size is accepted.
+   * A waived file is exempt: it is already decided.
+   */
+  /**
+   * THE BASELINE, and why this is a ratchet rather than a hard zero.
+   *
+   * Adding the check found EIGHT files at their ceilings, not one. The shape is
+   * systemic, not a property of `extension.ts`, which is itself the finding —
+   * every one of these was arrived at the same way, by an edit raising the number
+   * by what the edit added.
+   *
+   * Failing all six at once would force six architectural decisions inside a
+   * feature scoped to one of them, which is how a useful gate gets reverted. So
+   * this is the shape `compiler-strictness-ratchet.test.ts` already uses on 1,279
+   * pinned diagnostics: the existing set is recorded, it may only SHRINK, and a
+   * seventh cannot arrive. `src/extension.ts` is absent from this list because
+   * FR-R3-119 decided it — that is what coming off this list looks like.
+   */
+  const UNDECIDED_CEILING_BASELINE: readonly string[] = [
+    'src/controller/workflow-controller.ts', // 1025 / 1025 — no headroom
+    'src/contracts/runtime-validators.ts', //   752 /  776 — 24 lines
+    'src/contracts/sidebar-ipc.ts', //          1058 / 1058 — no headroom
+    'src/ui/sidebar/state-projector-runtime.ts', // 285 / 300 — 15 lines
+    'src/ui/sidebar/snapshot-composer.ts', //    307 /  308 — 1 line
+    'src/config/general-settings.ts', //         710 /  712 — 2 lines
+    'src/services/run-driver.ts' //             1289 / 1290 — 1 line
+  ];
+
+  function undecidedCeilings(): readonly string[] {
+    return BUDGETS.filter((entry): entry is CeilingEntry => !isWaived(entry))
+      .map((entry) => ({ ...entry, actual: lineCount(entry.path) }))
+      .filter((entry) => entry.maxLines - entry.actual <= tightMargin(entry.maxLines))
+      .map((entry) => entry.path);
+  }
+
+  it('no NEW plain ceiling sits at its file (FR-R3-119)', () => {
+    const arrivals = undecidedCeilings().filter(
+      (path) => !UNDECIDED_CEILING_BASELINE.includes(path)
+    );
+    expect(
+      arrivals,
+      `A ceiling this close to its file is not a budget, it is a high-water mark nobody ` +
+        `decided on: the next edit raises it by exactly what the edit added, which is how a ` +
+        `god file grows without anyone choosing. Either reduce the file and tighten the ` +
+        `ceiling, or replace maxLines with a waiver carrying a quoted decision, an ISO date, ` +
+        `a resolvable reference and a high-water mark — the form its larger peers use. Do ` +
+        `not add it to UNDECIDED_CEILING_BASELINE; that list is shrink-only.`
+    ).toEqual([]);
+  });
+
+  it('the un-decided baseline only shrinks', () => {
+    const stillUndecided = undecidedCeilings();
+    const departed = UNDECIDED_CEILING_BASELINE.filter(
+      (path) => !stillUndecided.includes(path)
+    );
+    expect(
+      departed,
+      `These files no longer sit at their ceilings — the debt was paid. Remove them from ` +
+        `UNDECIDED_CEILING_BASELINE so the list keeps measuring something, which is the only ` +
+        `way a ratchet stays a ratchet.`
+    ).toEqual([]);
+  });
+
+  /**
+   * FR-R3-119 / FR-056 — a function-level bound for the composition root.
+   *
+   * The file-level number did not catch a **1,221-line function inside a
+   * 1,489-line file**. `wireStage2` spanned lines 263–1483 of `src/extension.ts`,
+   * roughly 245 top-level statements, while `ARCHITECTURE.md` stated that
+   * `src/activation/` is the composition root — a directory of eleven focused
+   * modules totalling 1,863 lines, whose largest is `ui-wiring.ts` at 387. The
+   * boundary was documented and one function in the entry file substantially
+   * bypassed it.
+   *
+   * A RATCHET, NOT A CLIFF — and the distinction is the whole design.
+   *
+   * The DESTINATION is 400 lines. That is observed, not invented: it is
+   * `src/activation/`'s own largest module (`ui-wiring.ts`, 387) rounded up, so it
+   * is this tree's demonstrated idea of a focused module rather than a number
+   * someone liked.
+   *
+   * The BOUND ENFORCED TODAY is the high-water mark below, and it may only ever be
+   * lowered. FR-R3-119 extracted the largest independent span in `wireStage2` —
+   * 240 lines of `MessageRouter` construction, now
+   * `src/activation/sidebar-router-wiring.ts` — taking the function from 1,221 to
+   * 1,010 with no behavioural change. Reaching 400 in the same cycle would have
+   * meant four to six further extractions of tightly interdependent construction
+   * on the extension's activation path, where each region's outputs feed the next.
+   * That is a single-change risk this feature's plan explicitly refused to take,
+   * and shipping a bound nobody can meet is how a gate gets deleted.
+   *
+   * So the shape is `compiler-strictness-ratchet.test.ts`'s, which governs 1,279
+   * pinned diagnostics the same way: record where you are, forbid going backwards,
+   * graduate at the target. The ratchet is the plan; this extraction is its first
+   * decrement. Lower `MAX_FUNCTION_LINES` whenever an edit earns it — and when it
+   * reaches 400, this comment and the two numbers collapse into one.
+   */
+  const FUNCTION_BOUND_SCOPE = ['src/extension.ts', 'src/activation'] as const;
+
+  /**
+   * The bound EVERY function in the composition root is held to — including every
+   * new one. `src/activation/`'s twelve modules already comply; nothing may arrive
+   * that does not.
+   */
+  const MAX_FUNCTION_LINES = 400;
+
+  /**
+   * The one legacy exemption, named rather than folded into the bound.
+   *
+   * An earlier draft enforced a single flat mark of 1,010 — the post-extraction
+   * size of `wireStage2` — across the whole scope. Mutation testing killed it: a
+   * NEW 407-line function in `src/activation/` passed, because 407 < 1,010. A
+   * ratchet set to the worst offender licenses every newcomer up to the worst
+   * offender, which is the opposite of what a ratchet is for.
+   *
+   * So the exemption is per-function and shrink-only. `wireStage2` is 1,010 after
+   * FR-R3-119 took 240 lines of `MessageRouter` construction into
+   * `src/activation/sidebar-router-wiring.ts` (1,221 -> 1,010, no behavioural
+   * change). Lower this number whenever an edit earns it; when it reaches 400,
+   * delete the entry and the exemption with it.
+   */
+  const LEGACY_FUNCTION_EXEMPTIONS: Readonly<Record<string, number>> = {
+    'src/extension.ts:wireStage2': 1_010
+  };
+
+  /** Top-level function declarations and their extents, brace-counted. */
+  function topLevelFunctions(relPath: string): ReadonlyArray<{ name: string; lines: number }> {
+    const body = readFileSync(resolve(REPO_ROOT, relPath), 'utf8').split('\n');
+    const found: Array<{ name: string; lines: number }> = [];
+    for (let index = 0; index < body.length; index += 1) {
+      const opener = /^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/.exec(body[index] ?? '');
+      if (opener === null) continue;
+      let depth = 0;
+      let started = false;
+      let end = index;
+      for (let scan = index; scan < body.length; scan += 1) {
+        const line = body[scan] ?? '';
+        for (const ch of line) {
+          if (ch === '{') {
+            depth += 1;
+            started = true;
+          } else if (ch === '}') depth -= 1;
+        }
+        if (started && depth <= 0) {
+          end = scan;
+          break;
+        }
+      }
+      found.push({ name: opener[1]!, lines: end - index + 1 });
+      index = end;
+    }
+    return found;
+  }
+
+  function scopedFiles(): readonly string[] {
+    const files: string[] = [];
+    for (const entry of FUNCTION_BOUND_SCOPE) {
+      const absolute = resolve(REPO_ROOT, entry);
+      if (entry.endsWith('.ts')) {
+        files.push(entry);
+        continue;
+      }
+      for (const name of readdirSync(absolute)) {
+        if (name.endsWith('.ts')) files.push(`${entry}/${name}`);
+      }
+    }
+    return files;
+  }
+
+  it('finds the composition-root functions it governs', () => {
+    // Vacuity control: a detector that stops matching passes the bound silently.
+    const total = scopedFiles().reduce((sum, file) => sum + topLevelFunctions(file).length, 0);
+    expect(
+      total,
+      'no top-level function was found in the composition root — the detector no longer ' +
+        'matches how this tree declares them, so the bound below is measuring nothing'
+    ).toBeGreaterThan(10);
+  });
+
+  it('every legacy exemption only shrinks, and none is stale', () => {
+    // The ratchet's own guard. Without it "shrink-only" is a comment, and the
+    // cheapest way past a red gate is to edit the number it compares against.
+    const CEILING: Readonly<Record<string, number>> = { 'src/extension.ts:wireStage2': 1_010 };
+    for (const [key, allowed] of Object.entries(LEGACY_FUNCTION_EXEMPTIONS)) {
+      expect(allowed, `${key}: an exemption may be lowered, never raised`).toBeLessThanOrEqual(
+        CEILING[key] ?? 0
+      );
+      const [file, name] = key.split(':');
+      const actual = topLevelFunctions(file!).find((fn) => fn.name === name);
+      expect(actual, `${key}: exempted but no longer present — delete the entry`).toBeDefined();
+      expect(
+        actual!.lines,
+        `${key} is ${actual!.lines} lines against an exemption of ${allowed}. Lower the ` +
+          `exemption to what it measures, or delete it if it is now under ${MAX_FUNCTION_LINES}.`
+      ).toBeGreaterThan(MAX_FUNCTION_LINES);
+    }
+  });
+
+  it(`no composition-root function exceeds ${MAX_FUNCTION_LINES} lines (FR-R3-119)`, () => {
+    const over = scopedFiles().flatMap((file) =>
+      topLevelFunctions(file)
+        .filter(
+          (fn) =>
+            fn.lines > (LEGACY_FUNCTION_EXEMPTIONS[`${file}:${fn.name}`] ?? MAX_FUNCTION_LINES)
+        )
+        .map(
+          (fn) =>
+            `${file}: ${fn.name}() is ${fn.lines} lines, over the ${MAX_FUNCTION_LINES}-line ` +
+            `composition-root bound. The file-level ceiling did not catch a 1,221-line function ` +
+            `inside a 1,489-line file, which is why this bound exists. Extract cohesive spans ` +
+            `into src/activation/*-wiring.ts modules, following the twelve already there. Do ` +
+            `NOT add an entry to LEGACY_FUNCTION_EXEMPTIONS: that list is shrink-only and ` +
+            `closed — it holds the one function that predates the bound.`
+        )
+    );
+    expect(over).toEqual([]);
   });
 
   // A waiver is a decision on the record, so the record has to be reachable.
