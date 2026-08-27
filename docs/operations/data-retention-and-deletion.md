@@ -34,7 +34,7 @@ The session age/byte settings cover raw transcripts and verbose diagnostic trees
 1. Stop or cancel active Runs before manually removing evidence. Active session artifacts are deliberately protected from the normal sweep.
 2. Use the Settings UI to reduce `schegent.logging.sessionRetentionMaxAgeDays` or `schegent.logging.sessionRetentionMaxBytes` when the intent is to prune inactive session artifacts; the sweep runs on activation, after terminal Runs, and when those settings change.
 3. Treat `globalStorage/checkpoints` separately. Checkpoints may contain unredacted binary Git diffs and are managed by their fixed retention service rather than workspace settings.
-4. Treat `.schegent/audit.log` as evidence, not a cleanup proxy for the whole `.schegent` directory. Host code rotates and prunes archives, but the log is not tamper-evident and local processes can modify or delete it.
+4. Treat `.schegent/audit.log` as evidence, not a cleanup proxy for the whole `.schegent` directory. Host code rotates and prunes archives. Local processes can still modify or delete the log — the hash chain (`src/audit/audit-chain.ts`) makes that **evident, not impossible**: each entry carries the previous entry's digest, so `npm run audit:verify` names the first break, and a retention prune records a cut point rather than silently orphaning the chain. An actor who can edit the log can recompute every later digest; what they cannot do is edit one entry and leave the rest consistent.
 5. If you manually delete a history description, its history row can remain but byte-identical rerun input becomes unavailable.
 
 <!-- Source: src/extension.ts -->

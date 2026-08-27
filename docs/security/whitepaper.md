@@ -99,7 +99,7 @@ Environment forwarding defaults to `allowlist`, which includes bootstrap variabl
 
 ## Evidence boundary
 
-`SanitizedLogger` owns one `SECRET_PATTERNS` set for operator-visible logs. The structured audit writer emits schema-v3 JSONL, and host code appends through one writer and rotates by configured size/age. That is a write-path convention, not tamper evidence: there is no signature or hash chain, an operator or backend process can alter the workspace file, and the live append path is not passed through the canonical-path oracle before `fs.appendFile`.
+`SanitizedLogger` owns one `SECRET_PATTERNS` set for operator-visible logs. The structured audit writer emits schema-v3 JSONL, and host code appends through one writer and rotates by configured size/age. The write path is a convention; the tamper evidence is separate and real. Since FR-R3-112 each entry carries the previous entry's sha256 digest, so an alteration that does not recompute every later digest is named by `npm run audit:verify`. It is evident, not impossible: there is no signature and no anchor outside the workspace, the chain head sits on the same disk, and an operator or backend process that can alter the file can recompute the digests that follow — what it cannot do is change one entry and leave the rest consistent. The live append path is still not passed through the canonical-path oracle before `fs.appendFile`.
 
 <!-- Source: src/lib/logger.ts -->
 <!-- Source: src/audit/audit-log-writer.ts -->

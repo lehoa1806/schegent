@@ -13,7 +13,7 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 87
+    vacuity-census-denominator: 88
 
 | Measure | Value |
 |---|---|
@@ -282,3 +282,94 @@ The rule it enforces is deliberately narrower than the lesson. "Do not judge an
 absence you cannot see" is the real rule and is not mechanically checkable; the
 gate checks the mechanical half, and this entry records the other half so it is
 written down somewhere even though nothing enforces it.
+
+## FR-R3-116 — semantic claim consistency: a gate class that did not exist (2026-08-27)
+
+### The blind spot
+
+`FR-R3-112` landed the audit hash chain. `src/audit/audit-chain.ts` shipped, it was
+wired into `audit-log-writer.ts`, and `npm run audit:verify` shipped with it. **Five
+documents went on saying the log had no chain**, and one of them —
+`docs/security/threat-model.md` — asserted the chain at line 22, denied it at line
+70, and asserted it again at line 163. All three sentences were in the shipped
+threat model. Only two were true.
+
+Roughly 141 lint gates were green for the whole interval between the merge and the
+review that found it, and a pre-push liveness check resolved every backticked source
+path in both envelope documents.
+
+**None of that could have caught it.** The machinery checks **path liveness** (does a
+cited path exist?) and **constant parity** (do two copies of a literal agree?). It had
+no instrument for **semantic claim consistency**: whether a document asserts something
+the tree contradicts. A sentence saying a mechanism is absent cites nothing, so path
+liveness has no opinion; it duplicates no constant, so parity has none either.
+
+### How it was found
+
+By a human reading the threat model end to end and noticing it disagreed with itself
+two paragraphs apart. That is not a repeatable detection method, which is the
+argument for the gate.
+
+### What now covers it, and what does not
+
+`tests/lint/document-mechanism-consistency.test.ts` fails when a document under
+`repo/` denies a mechanism the tree exports. Three seeded pairs:
+
+| Seed | Mechanism | Chosen because |
+|---|---|---|
+| `audit-chain` | `src/audit/audit-chain.ts` exports `digestOf` | the pair that produced the finding |
+| `process-tree` | `src/runner/process-tree.ts` exports `signalProcessTree` | its true statement is **platform-qualified** — POSIX kills the group, Windows uses `taskkill /T`, and the degradation report is deliberately absent on Windows. An unqualified denial is a real defect; a qualified one is correct prose. It is the seed that tests whether the denial-versus-limit distinction actually holds |
+| `ownership-fence` | `src/state/ownership-registry.ts` exports `OwnershipRegistry` | a state-layer mechanism, so the three seeds are not three instances of one shape |
+
+Three design decisions worth recording, because each is a place the gate could have
+gone wrong:
+
+1. **A denial is not a limit.** Every document this feature corrected states the
+   mechanism's limit — *tampering is evident, not impossible; the chain head sits on
+   the same disk*. Those sentences must pass. The corrected tree is the gate's own
+   negative fixture: if it flags corrected text, the regex is wrong, not the text.
+2. **A dated historical statement is not a denial.** The T3 anchor's *"Until
+   FR-R3-112 that was a write discipline and nothing more: ... there was no chain,
+   signature or post-write detection"* is both true and the clearest explanation of
+   the mechanism in the tree. A gate that forced it out would destroy the
+   documentation it exists to protect. The qualifier must be in the **same sentence**,
+   not the same paragraph — a paragraph-scoped rule lets one dated clause excuse an
+   unrelated live denial three sentences later.
+3. **Scope is the execution repository, not the envelope.** `docs/audits/` and
+   `docs/features/` exist to *quote* claims. The review that produced this item quotes
+   all five denials verbatim; scanning it would make the gate fail on the document
+   that asked for the gate.
+
+**What it is not**: a seeded-pair detector, and its docblock says so. It cannot detect
+arbitrary contradiction, it does not parse prose, and it will not notice a denial
+phrased outside its regexes. A general contradiction detector is not proposed and
+pretending otherwise would be the overclaim this whole class is about.
+
+### Non-vacuity, measured
+
+A regex gate over prose has FR-R3-114's exact failure mode — a pattern matching
+nothing is indistinguishable from a tree with nothing to match — and no natural
+symptom. `scripts/document-mechanism-consistency-selftest.sh` drives **each of the
+three seeds** red against the real tree and back to green, and additionally proves
+the two carve-outs are not loopholes:
+
+```
+9 passed, 0 failed
+  audit-chain      row 1's exact sentence restored -> red, names the seed -> removed -> green
+  process-tree     unqualified denial planted      -> red, names the seed -> removed -> green
+  ownership-fence  denial planted                  -> red, names the seed -> removed -> green
+  a correctly-stated limit          -> green (not read as a denial)
+  an explicitly historical denial   -> green (not read as a live claim)
+```
+
+It restores the tree on every exit path via `trap ... EXIT INT TERM`, because a
+self-test that leaves a planted falsehood in a security document when it fails is
+worse than no self-test.
+
+### What the gate found that the register did not
+
+A **sixth** live denial: `docs/security/whitepaper.md:102` — *"That is a write-path
+convention, not tamper evidence: there is no signature or hash chain"*. `FR-R3-116`
+enumerated five. The gate found the sixth on its first run, before it had ever been
+committed, which is the most direct evidence available that the class was real and
+under-counted rather than fully known and merely unenforced.

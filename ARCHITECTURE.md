@@ -361,9 +361,15 @@ applied only below that ceiling.
 
 The audit writer serializes metadata-only JSON-line events with a schema version
 and correlation ID, rotates the active file, and prunes archives by bounded
-retention rules. Its append-only behavior is an application write pattern, not
-a tamper-evident guarantee: the local operator, backend process, or another
-process with filesystem authority may alter or delete local evidence.
+retention rules. Its append-only behavior is an application write pattern; the
+tamper-evidence is separate and real. Since FR-R3-112 every entry carries the
+previous entry's digest, so a local operator, backend process, or any process
+with filesystem authority may still alter or delete local evidence, but not
+without the break becoming detectable — `npm run audit:verify` names the first
+one. Evident, not impossible: the chain head sits on the same disk, so an actor
+who can edit the log can recompute every later digest; what they cannot do is
+edit one entry and leave the rest consistent.
+<!-- Source: src/audit/audit-chain.ts -->
 
 Raw transcripts are separately configurable and written below
 `.schegent/sessions`. They preserve backend streams for diagnosis and can hold
