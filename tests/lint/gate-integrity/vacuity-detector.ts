@@ -23,7 +23,15 @@
 // how often it happens.
 
 /** Walks a tree, or resolves a file set from one. */
-export const SCANS = /filesMatching|filesUnder|linesMatching|readdirSync|collect\w*Files|walk\(/;
+// FR-R3-121 follow-up (2026-08-27) — `matchingRelativePaths` added. Ten
+// inline-IPC gates moved to it when their private `listMatchingFiles` copies
+// were removed, and without this name they stopped matching here: the
+// classifiable-gate count fell 89 -> 79 and ten gates silently left the vacuity
+// census. The census caught it, which is the census working; the lesson is that
+// a shared idiom is load-bearing for the meta-gates that read it, and changing
+// one means updating them in the same commit.
+export const SCANS =
+  /filesMatching|matchingRelativePaths|filesUnder|linesMatching|readdirSync|collect\w*Files|walk\(/;
 
 /** Asserts that a collected set of offenders is empty. */
 export const ASSERTS_EMPTY = /\.toEqual\(\s*\[\s*\]\s*\)/;

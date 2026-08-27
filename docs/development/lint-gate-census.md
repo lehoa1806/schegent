@@ -30,6 +30,7 @@ predicted it: its author sampled the set and found every gate well motivated.
 
 
 
+
 ## Method, and what it does and does not establish
 
 **Assigned 2026-08-27 (`FR-R3-121` / FR-020).** `FR-R3-121` §5 records that its author *"sampled
@@ -107,9 +108,31 @@ line-count reduction.
 control, so an empty or truncated scan fails the gate rather than passing it — verified for all
 eight. The divergence is a maintainability defect, not a live hole.
 
-**Recorded rather than acted on**, because the earlier entry here said *"one rule, twelve
-implementations"* — true about the rule, wrong about the implementations. A consolidation trusting
-it would have unified three failure behaviours into one without anyone deciding which.
+**Then acted on, once the divergence was understood — 2026-08-27.**
+
+Reading further killed the premise a second time. `filesMatching` **does not shell out**; neither
+does `scanWebviewSources`. Both are `node:fs` walks, and `filesMatching` catches its own read errors
+internally. So `err.status` is *always* `undefined`, every variant's conditions are always false, and
+**every variant falls through to the same `throw err`.**
+
+The three "failure semantics" were three flavours of **unreachable code** — `grep`/`rg` exit-code
+handling left behind when the scan stopped being a subprocess. There was never a behavioural
+difference to preserve.
+
+It mattered anyway: reading those branches is what made a reviewer conclude the gates diverged and
+defer this twice. **Dead error handling for a mechanism that is gone does not merely take up room —
+it answers questions wrongly.**
+
+**What shipped**: one shared `matchingRelativePaths` in `source-scan.ts`; the ten private
+`listMatchingFiles` copies deleted; **156 lines removed**; errors now propagate, which is what all
+twelve already did. Every allowlist verified **byte-identical to `HEAD`**, every `toContain` vacuity
+control intact, and a planted offender still turns the gate red.
+
+**The cost, which is the part worth remembering**: removing the shared idiom made ten gates
+invisible to the meta-gates that read them. The classifiable-gate count fell **89 → 79** and
+`allowlist-entries-still-apply` found 2 gates where it expects 3. Both caught it and both were
+taught the new call — but a shared idiom is load-bearing for the machinery that reads it, and
+changing one means updating that machinery in the same commit.
 
 ## The census
 

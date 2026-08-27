@@ -756,5 +756,44 @@ correction came from acting on the entry rather than reading it.
 
 > A census is a hypothesis until somebody tries to use it.
 
-The entry now records the divergence, names `C` as the semantics to converge on, and says plainly
-that adopting it is a behavioural change to verify rather than a line count to reduce.
+### And then the premise died a second time — the divergence was unreachable
+
+Reading one level further: **`filesMatching` does not shell out.** Neither does
+`scanWebviewSources`. Both are `node:fs` walks, and `filesMatching` catches its own read errors
+internally and returns `false` for an unreadable file. So `err.status` is **always `undefined`**,
+every variant's conditions are always false, and every variant falls through to the same
+`throw err`.
+
+The three "failure semantics" were three flavours of **dead code** — `grep`/`rg` exit-code handling
+left behind when the scan stopped being a subprocess. There was never a runtime difference.
+
+> Dead error handling for a mechanism that is gone does not merely take up room. It answers
+> questions wrongly — twice, to a reader who was being careful.
+
+### What shipped
+
+One `matchingRelativePaths` in `source-scan.ts`; ten private `listMatchingFiles` copies deleted;
+**156 lines removed**. Errors propagate, which is what all twelve already did.
+
+Verified, because the original objection deserved an answer rather than a dismissal:
+
+| Check | Result |
+|---|---|
+| every allowlist byte-identical to `HEAD` | **12 of 12 SAME** |
+| every `toContain` vacuity control intact | 12 of 12 |
+| a planted offender still turns a gate red | yes — `__probe/Offender.svelte` caught and named |
+| no `e.status` / `e.stdout` left in the family | none |
+
+### The cost, which is the part worth remembering
+
+Removing the shared idiom made ten gates **invisible to the meta-gates that read them**. The
+classifiable-gate count fell **89 → 79**, and `allowlist-entries-still-apply` found 2 gates where it
+requires at least 3 — and said so rather than passing over the smaller set.
+
+Both meta-gates caught it. Both were taught the new call in the same commit, and the denominator is
+back at 89. But the lesson generalises past this refactor:
+
+> A shared idiom is load-bearing for the machinery that reads it. Changing one is not a local edit.
+
+That is also the honest verdict on the two earlier deferrals: the caution was right, the stated
+*reason* was wrong twice, and only attempting the work found out.
