@@ -14,7 +14,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { resolve } from 'node:path';
-import { filesMatching } from './source-scan';
+import { matchingRelativePaths } from './source-scan';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const SCAN_ROOT = resolve(REPO_ROOT, 'webview-ui', 'src');
@@ -29,30 +29,13 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'webview-ui/src/lib/catalog-history-ipc.ts'
 ]);
 
-function listMatchingFiles(pattern: string): readonly string[] {
-  let out: string;
-  try {
-    out = filesMatching(SCAN_ROOT, pattern, { fixed: true }).join('\n');
-  } catch (err: unknown) {
-    const e = err as { status?: number; stdout?: string };
-    if (e.status === 1 && (!e.stdout || e.stdout.trim() === '')) {
-      return [];
-    }
-    if (e.status === 2) {
-      return [];
-    }
-    throw err;
-  }
-  return out
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .map((abs) => (abs.startsWith(REPO_ROOT + '/') ? abs.slice(REPO_ROOT.length + 1) : abs));
-}
+
+const matchRel = (pattern: string): readonly string[] =>
+  matchingRelativePaths(REPO_ROOT, SCAN_ROOT, pattern, { fixed: true });
 
 describe('Feature 101 T055 — no inline CMD_READ_DEFINITION_VERSION references', () => {
   it('only the allowlisted files reference CMD_READ_DEFINITION_VERSION', () => {
-    const matched = listMatchingFiles('CMD_READ_DEFINITION_VERSION');
+    const matched = matchRel('CMD_READ_DEFINITION_VERSION');
     const offenders = matched.filter((rel) => !ALLOWED_FILES.has(rel));
     expect(
       offenders,
@@ -66,7 +49,7 @@ describe('Feature 101 T055 — no inline CMD_READ_DEFINITION_VERSION references'
     // thing doing the validating. A helper that stopped calling the validator
     // would still satisfy the grep and would hand an unvalidated body to the
     // panel — so the gate checks for the validator by name, not just the file.
-    const helper = listMatchingFiles('isValidReadDefinitionVersionResponse');
+    const helper = matchRel('isValidReadDefinitionVersionResponse');
     expect(helper).toContain('webview-ui/src/lib/catalog-history-ipc.ts');
   });
 });

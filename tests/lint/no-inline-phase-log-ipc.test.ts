@@ -9,7 +9,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { resolve } from 'node:path';
-import { filesMatching } from './source-scan';
+import { matchingRelativePaths } from './source-scan';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const SCAN_ROOT = resolve(REPO_ROOT, 'webview-ui', 'src');
@@ -34,26 +34,14 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'webview-ui/src/lib/phase-log-store.svelte.ts'
 ]);
 
-function listMatchingFiles(pattern: string): readonly string[] {
-  let out: string;
-  try {
-    out = filesMatching(SCAN_ROOT, pattern, { fixed: true }).join('\n');
-  } catch (err: unknown) {
-    const e = err as { status?: number; stdout?: string };
-    if (e.status === 1 && (!e.stdout || e.stdout.trim() === '')) return [];
-    throw err;
-  }
-  return out
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .map((abs) => (abs.startsWith(REPO_ROOT + '/') ? abs.slice(REPO_ROOT.length + 1) : abs));
-}
+
+const matchRel = (pattern: string): readonly string[] =>
+  matchingRelativePaths(REPO_ROOT, SCAN_ROOT, pattern, { fixed: true });
 
 describe('Feature 020 T010 — no inline phase-log IPC imports in webview', () => {
   for (const constant of PHASE_LOG_IPC_CONSTANTS) {
     it(`${constant} is referenced only by the shared helper and the messages shim`, () => {
-      const matched = listMatchingFiles(constant);
+      const matched = matchRel(constant);
       // Vacuity control, asserted BEFORE the offender filter. A renamed or
       // deleted constant matches nothing, therefore offends nothing, and the
       // assertion below passes while proving the opposite of what it claims.

@@ -15,7 +15,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { resolve } from 'node:path';
-import { filesMatching } from './source-scan';
+import { matchingRelativePaths } from './source-scan';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const SCAN_ROOT = resolve(REPO_ROOT, 'webview-ui', 'src');
@@ -46,30 +46,14 @@ const HELPER_BY_COMMAND: Record<string, string> = {
   CMD_SAVE_MODELS: 'webview-ui/src/lib/save-models.ts'
 };
 
-function listMatchingFiles(pattern: string): readonly string[] {
-  let out: string;
-  try {
-    out = filesMatching(SCAN_ROOT, pattern, { fixed: true }).join('\n');
-  } catch (err: unknown) {
-    const e = err as { status?: number; stdout?: string };
-    if (e.status === 1 && (!e.stdout || e.stdout.trim() === '')) {
-      return [];
-    }
-    throw err;
-  }
-  return out
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .map((abs) =>
-      abs.startsWith(REPO_ROOT + '/') ? abs.slice(REPO_ROOT.length + 1) : abs
-    );
-}
+
+const matchRel = (pattern: string): readonly string[] =>
+  matchingRelativePaths(REPO_ROOT, SCAN_ROOT, pattern, { fixed: true });
 
 describe('no inline Model Catalog save IPC calls', () => {
   for (const [command, allowlist] of Object.entries(ALLOWED_BY_COMMAND)) {
     it(`only allowlisted files reference ${command}`, () => {
-      const matched = listMatchingFiles(command);
+      const matched = matchRel(command);
       // The scan found the sole call site, so an empty offender list means the
       // allowlist held rather than that the grep matched nothing.
       expect(matched, `${command} must be sent from its helper`).toContain(
@@ -83,7 +67,7 @@ describe('no inline Model Catalog save IPC calls', () => {
     });
 
     it(`no component invokes postCommand(${command}, ...) inline`, () => {
-      const matched = listMatchingFiles(`postCommand(${command}`);
+      const matched = matchRel(`postCommand(${command}`);
       const componentOffenders = matched.filter(
         (rel) =>
           rel.startsWith('webview-ui/src/components/') && !rel.includes('__tests__')

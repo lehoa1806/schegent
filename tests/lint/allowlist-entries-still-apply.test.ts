@@ -52,8 +52,15 @@ const ALLOWLIST_PATH = /['"]((?:src|webview-ui)\/[\w./-]+\.(?:ts|svelte))['"]/g;
  * quote styles, because this suite uses both and an earlier version of this
  * regex read only single quotes — which silently halved the set it checked and
  * would have reported compliance over the smaller half.
+ *
+ * FR-R3-121 follow-up (2026-08-27) — two more shapes, for the same reason. Ten
+ * inline-IPC gates now reach the scan through `matchingRelativePaths(repoRoot,
+ * root, 'LITERAL')` or the thin local `matchRel('LITERAL')` that wraps it. Read
+ * only the original form, this check found 2 gates where it expects at least 3
+ * and said so — an idiom change is invisible to a regex that predates it.
  */
-const FIXED_SCAN = /(?:files|lines)Matching\([^,]+,\s*['"]([^'"]{4,60})['"]/g;
+const FIXED_SCAN =
+  /(?:(?:files|lines)Matching\([^,]+,|matchingRelativePaths\([^,]+,[^,]+,|\bmatchRel\()\s*['"]([^'"]{4,60})['"]/g;
 
 /** Characters that make a pattern a regex rather than a literal. */
 const REGEX_CHARS = /[[\]()\\|*+^$]/;
