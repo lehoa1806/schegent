@@ -580,3 +580,91 @@ fired on its own the first time `npm run package` emitted a new file into the ar
 and refused until the addition was written down with a reason. A gate that catches
 your own intended change and makes you justify it is the one you find out is working
 without designing an experiment.
+
+## FR-R3-123 — the status field that stopped meaning anything (2026-08-27)
+
+### The class
+
+`spec-traceability-governance.test.ts` enforced two rules about a spec's status and enforced them
+correctly: the word must come from a closed vocabulary, and `Complete` may not be claimed while a
+task is unchecked. **Neither asks whether the word is true.** `Draft` is always in the vocabulary,
+so a shipped, merged, fully-ticked feature labelled `Draft` passed everything.
+
+Measured before the rule existed, across 155 spec directories: **58 said they were unfinished and
+their own task lists said otherwise** — 48 `Draft` and 10 `In Progress`.
+
+This is the fourth instance in two days of the shape `FR-R3-116` named: machinery that checks
+*form* and *parity* exhaustively, with no instrument for whether a claim is *true*.
+
+### Two corrections to the filed item, found before implementation
+
+The item was filed at the end of another cycle, from a measurement. Verifying it at source changed
+two of its three claims, and both are recorded because an item about untrue records cannot be
+repaired by quietly editing it.
+
+1. **The three specs with unchecked tasks were completed features, not abandoned ones.** The item
+   said their tasks were *"generated and never started"* with *"no recorded disposition"*. Both
+   halves were wrong: each corresponds to a `DONE_` feature record carrying a `## Closure` section,
+   and each one's deliverables are in the tree — `src/ui/sidebar/commands/primacy-gate.ts`
+   (FR-R3-024), `tests/lint/capability-argv-parity.test.ts` (FR-R3-032),
+   `tests/lint/lint-gates-are-hermetic.test.ts` (FR-R3-033). A **two-record divergence**, not an
+   absence.
+2. **An unchecked box is not evidence of undone work in this tree.** 35 of 188 `DONE_` feature
+   files carry unchecked boxes — 18.6%. `DONE_24` has 8 unchecked and **0 checked** while its
+   substance is demonstrably shipped. The FR files are specifications; ticking, when it happened,
+   happened elsewhere.
+
+### Two findings the analysis phase caught before the gate shipped
+
+**The sweep was 58, not 48.** The item framed this as a `Draft` problem. Ten of the eleven
+`In Progress` specs were fully ticked too — so a rule saying *"a fully-ticked spec may not say
+`Draft`"* would have left the identical defect one word over, ten times. The shipped rule is a
+table over (task state × status).
+
+**The scan had to be case-insensitive, and this nearly shipped wrong.** **80 specs mark their tasks
+`- [X]` with a capital X.** A scan matching only `- [x]` reads every one as having no tasks — which
+the "no task state" exemption then excuses — so the gate would have passed over more than half of
+`specs/` while reporting green.
+
+> A vacuous gate, inside the gate written to close vacuous gates.
+
+Caught by analyze rather than by review. Both spellings are now pinned by a fixture beside the rule.
+
+### What the exemptions are for
+
+`Verification Pending` means done-and-awaiting-verification, so unchecked tasks *agree* with it —
+one spec is legitimately in that state. `Deferred` and `Superseded` describe dispositions decoupled
+from task counts and already carry their own requirements in the same gate. A spec with no
+`tasks.md` has no task state; judging it would mean inventing one.
+
+### What was reconciled, and what it means
+
+- **58 specs** to `Complete`, one commit, gate-verified.
+- **Three specs** (`108`, `116`, `118`) had their 68 boxes ticked in one pass, each `tasks.md`
+  carrying a header saying **exactly what the tick means**: reconciled months later against the
+  `DONE_` closure record and re-verified at source, *not* checked as the work happened. A tick
+  normally carries the second claim and here it does not.
+- **Twelve specs** with no `tasks.md` derived from their `DONE_` records, each carrying a note that
+  `Complete` comes from that record rather than from a task list the directory never had.
+- **One spec** (`080-release-qualification`) moved `In Progress` → **`Deferred`**. Its four
+  residual tasks all need macOS/Windows/Linux lifecycle evidence or interactive dev-host matrices —
+  the evidence `FR-R3-115` declined on the record after establishing no contributor, container
+  runtime or CI budget exists. `In Progress` was the wrong word: nothing had been in flight since
+  2026-08-22. `Deferred` obliges a rationale and an owner, which is the information a reader needs.
+
+### Non-vacuity, measured
+
+| Mutation | Observed |
+|---|---|
+| a fully-ticked spec set to `Draft` | red, naming it and the reason |
+| a fully-ticked spec set to `In Progress` | red — the hole one word over |
+| a spec with 4 unchecked tasks set to `Complete` | red — **the pre-existing rule, proving this feature added beside it rather than loosening it** |
+
+A first mutation attempt targeted a spec with **no `tasks.md`** and correctly did **not** fail. That
+is recorded because it looked like a broken gate for a minute and was the exemption working.
+
+### What is out of scope, with its measurement preserved
+
+The 35 `DONE_` files with unchecked boxes were **counted, not read**. Whether any hides real undone
+work is **unknown**, and reconciling 188 feature files is a different item. The count is here so
+the question can be filed rather than assumed either way.
