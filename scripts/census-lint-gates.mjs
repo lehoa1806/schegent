@@ -27,6 +27,9 @@ import { fileURLToPath } from 'node:url';
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const LINT_ROOT = resolve(REPO_ROOT, 'tests', 'lint');
 const CENSUS_PATH = resolve(REPO_ROOT, 'docs', 'development', 'lint-gate-census.md');
+/** Everything between these two markers is hand-written and is carried through. */
+const PROSE_START = '<!-- census:prose -->';
+const TABLE_HEADING = '## The census';
 
 export function gateFiles(root = LINT_ROOT) {
   const out = [];
@@ -52,6 +55,24 @@ export function invariantOf(relPath, root = LINT_ROOT) {
   const match = /^\s*describe\(\s*(['"`])([\s\S]*?)\1/m.exec(body);
   if (match === null) return '(no describe title)';
   return match[2].replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Hand-written prose between the generated header and the table.
+ *
+ * BUG FOUND BY USING IT (2026-08-27): the first version preserved the per-row
+ * hand columns and nothing else, so regenerating the census silently deleted the
+ * Method and Retirements sections — the entire analysis the census exists to
+ * carry. It rewrote 151 rows faithfully and threw away the only part a human
+ * wrote. Preserving rows but not reasoning is the worse half to keep.
+ */
+export function readCensusProse(path = CENSUS_PATH) {
+  if (!existsSync(path)) return '';
+  const body = readFileSync(path, 'utf8');
+  const start = body.indexOf(PROSE_START);
+  const end = body.indexOf(TABLE_HEADING);
+  if (start === -1 || end === -1 || end < start) return '';
+  return body.slice(start + PROSE_START.length, end);
 }
 
 /** Rows already written, keyed by gate path, so hand-written columns survive. */
@@ -81,7 +102,7 @@ export function reconcile({ files, rows }) {
   };
 }
 
-function render(files, rows) {
+function render(files, rows, prose) {
   const verdictCount = (v) =>
     files.filter((f) => (rows.get(f)?.verdict ?? 'unique') === v).length;
 
@@ -110,6 +131,9 @@ predicted it: its author sampled the set and found every gate well motivated.
 | Marked \`unique\` | ${verdictCount('unique')} | 2026-08-27 | hand verdict |
 | Marked \`partially redundant\` | ${verdictCount('partially redundant')} | 2026-08-27 | hand verdict |
 | Marked \`redundant\` | ${verdictCount('redundant')} | 2026-08-27 | hand verdict |
+
+<!-- census:prose -->
+${prose}## The census
 
 | Gate | Invariant | Also held by | Verdict | Evidence |
 |---|---|---|---|---|
@@ -144,7 +168,7 @@ function main() {
     return;
   }
 
-  writeFileSync(CENSUS_PATH, render(files, rows), 'utf8');
+  writeFileSync(CENSUS_PATH, render(files, rows, readCensusProse()), 'utf8');
   console.log(
     `lint-gate census: wrote ${files.length} row(s) to ${relative(REPO_ROOT, CENSUS_PATH)}` +
       `${missingRows.length > 0 ? ` — ${missingRows.length} new row(s) need verdicts` : ''}.`

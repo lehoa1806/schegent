@@ -668,3 +668,48 @@ is recorded because it looked like a broken gate for a minute and was the exempt
 The 35 `DONE_` files with unchecked boxes were **counted, not read**. Whether any hides real undone
 work is **unknown**, and reconciling 188 feature files is a different item. The count is here so
 the question can be filed rather than assumed either way.
+
+## FR-R3-121 follow-up — two corrections found by acting on the census (2026-08-27)
+
+The census recommended consolidating the `no-inline-*` gates. Starting that work found two defects,
+neither of which a reader would have seen.
+
+### 1. The cluster was twelve, not thirteen
+
+`no-inline-queue-item-template.test.ts` is **not** an IPC single-call-site gate. It pins the single
+render path of a Svelte row template and shares only the filename prefix. The census generalised
+from diffing two files and a name.
+
+**A consolidation that had trusted "thirteen" would have folded a Svelte template gate into an IPC
+allowlist table.** The census's own Method section states this limit — verdicts assigned by
+mechanical signal, not by reading each gate against every other — so the correction is left visible
+there rather than edited away. It is what the limit looks like when it bites.
+
+### 2. The generator silently destroyed the analysis it was written to carry
+
+`census-lint-gates.mjs` preserved each row's hand-written columns across regeneration, which was the
+whole point of making it a generator. It did **not** preserve hand-written *sections*. So
+regenerating after adding one gate rewrote 151 rows faithfully and **deleted the Method and
+Retirements sections entirely** — the only part a human wrote, and the only part carrying the
+reasoning.
+
+Found by regenerating and noticing the file had got shorter.
+
+> Preserving the rows but not the reasoning is the worse half to keep.
+
+Fixed with a `<!-- census:prose -->` marker: everything between it and `## The census` is carried
+through untouched. Verified idempotent — two consecutive regenerations leave both sections intact.
+
+**Why this is recorded and not just fixed.** A generator that quietly discards hand-written analysis
+is the same defect class as a stale record: the file still looks authoritative afterwards. It was
+introduced *by this round*, in the tooling built to close that class, and it survived one review.
+
+### The consolidation was not taken
+
+Each of the twelve carries a distinct allowlist of files permitted to reference its command. An
+allowlist transcribed wrong during consolidation silently **widens** what may call a mutating IPC
+command — a security-relevant regression with no failing test to announce it. The upside is ~900
+lines of duplication that cost nothing at runtime and catch everything they should today.
+
+A refactor whose upside is tidiness and whose downside is a silent authorisation widening gets
+scheduled deliberately. It stays a named follow-up.
