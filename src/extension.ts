@@ -6,7 +6,6 @@ import {
   disposeWorkspaceFolderPicker
 } from './state/workspace-folder-picker';
 import { resolveCliPath } from './config/cli-path-accessor';
-import { PhaseRunner } from './controller/phase-runner';
 import { SchegentWorkflowController } from './controller/workflow-controller';
 import { SanitizedLogger } from './lib/logger';
 import {
@@ -21,16 +20,10 @@ import {
   createResetStageSupport,
 } from './commands/reset-wiring';
 import { StateProjector } from './ui/sidebar/state-projector';
-import {
-  readFatalSignaturesSetting,
-} from './config/general-settings';
-import { createAutoCompactOverrideAccessor } from './lib/auto-compact-override';
-import { createPhaseBreakpointAccessor } from './controller/breakpoint-accessor';
 import { SidebarViewProvider } from './ui/sidebar/sidebar-view-provider';
 import { PlaceholderProjector } from './ui/sidebar/placeholder-projector';
 import { checkLiveness, createLivenessProbe } from './services/process-liveness';
 import { resumePersistedRuns } from './services/resume-decision';
-import { createRunSafetyWiring } from './activation/run-safety-wiring';
 import { GuardedRunService } from './services/guarded-run-service';
 import { createSidebarRouter } from './activation/sidebar-router-wiring';
 import { wireBackendExecution } from './activation/backend-execution-wiring';
@@ -39,6 +32,7 @@ import { openWorkspaceSession } from './activation/workspace-session';
 import { wireScheduledWork } from './activation/scheduled-work-wiring';
 import { wireEvidence } from './activation/evidence-wiring';
 import { wireLivePicture } from './activation/live-picture-wiring';
+import { wirePhaseExecution } from './activation/phase-execution-wiring';
 
 interface Stage2Wiring {
   readonly disposables: readonly vscode.Disposable[];
@@ -360,74 +354,29 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     readUncontainedAllowed,
     verboseAccessor
   } = backend;
-  const fatalSignaturesAccessor = {
-    readOperatorAdditions: () =>
-      readFatalSignaturesSetting(
-        vscode.workspace.getConfiguration('schegent', vscode.Uri.file(workspaceRoot))
-      )
-  };
-  const autoCompactOverrideAccessor = createAutoCompactOverrideAccessor(
-    () => vscode.workspace.getConfiguration('schegent', vscode.Uri.file(workspaceRoot)),
-    logger
-  );
-  // Feature 093 (T037) — C-3, bind at construction. The accessor is handed a
-  // resolver rather than an ambient thunk: its own method names the Run by id,
-  // and this binding answers that id from the whole record — the C-4 aggregate
-  // SC-012 exempts, not a Run reached without a queue. T041 rebinds the same
-  // resolver per session, where the queue is known and only that queue is read.
-  const phaseBreakpointAccessor = createPhaseBreakpointAccessor(
-    (runId) => Object.values(store.getRunMap()).find((run) => run.id === runId) ?? null
-  );
-  const lastRetryDecisionSink = async (
-    runId: string,
-    decision: import('./state/workflow-run').LastRetryDecision
-  ) => {
-    // Feature 093 (T047) — the decision names its Run, so the write names that
-    // Run's queue. T037's interim binding had no identity to work from and so
-    // declined whenever more than one Run existed, which is the same defect
-    // read defensively: a decision that belonged to a real Run went nowhere.
-    // Run ids are unique across queues, so this resolves to exactly one entry —
-    // the C-4 aggregate read SC-012 exempts, not a Run reached without a queue.
-    const entry = Object.entries(store.getRunMap()).find(([, run]) => run.id === runId);
-    if (entry === undefined) return;
-    const [queueId, current] = entry;
-    await store.setRun(queueId, { ...current, lastRetryDecision: decision }, store.runCommitClaim(queueId));
-  };
-  // FR-R3-064 — the posture accessor: the same reader, called per emission
-  // instead of once at activation. The difference between the two uses is WHEN,
-  // not WHAT; passing the registry's captured boolean here would record an
-  // activation-time posture for a Run happening now.
-  const backendPostureAccessor = { isUncontainedAllowed: readUncontainedAllowed };
-  const phaseRunner = new PhaseRunner(
-    runnerRegistry,
-    promptBuilder,
-    auditWriter,
-    logger,
-    rawTranscript,
-    verboseAccessor,
-    fatalSignaturesAccessor,
-    autoCompactOverrideAccessor,
-    null,
-    phaseBreakpointAccessor,
-    lastRetryDecisionSink,
-    backendPostureAccessor,
-    // FR-R3-080 (T1075) — the refused-write drain. Without it a refusal reaches
-    // the log and stops there, which is the state this item exists to leave.
-    evidenceHealth
-  );
-  const runSafety = await createRunSafetyWiring({
+  // FR-R3-119 — extracted to `src/activation/phase-execution-wiring.ts`: the four
+  // call-time setting accessors, the retry-decision sink, the phase runner and the
+  // run-safety net. The accessors are grouped because they share one reason —
+  // `AGENTS.md` carries four separate "never cache the X setting on long-lived
+  // runner state" rules, one per accessor, and they read better as one rule
+  // applied four times than as four unrelated options.
+  const { phaseRunner, runSafety } = await wirePhaseExecution({
     context,
     workspaceRoot,
+    logger,
     store,
     queue,
+    notifier,
+    auditWriter,
     historyStore,
-    logger,
     rawTranscript,
+    promptBuilder,
+    runnerRegistry,
+    evidenceHealth,
     sessionRetention,
     protectedSessionRunIds,
-    evidenceHealth,
-    auditWriter,
-    notifier
+    readUncontainedAllowed,
+    verboseAccessor
   });
 
   const controller = new SchegentWorkflowController(

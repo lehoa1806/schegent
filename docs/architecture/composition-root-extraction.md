@@ -385,3 +385,45 @@ any step. `src/extension.ts` 1,489 → 735 — **it has lost 754 lines, just ove
 
 Remaining: 525 of a 400-line target. What is left is the controller construction, the phase-runner
 accessors, `uiWiring`, and the dispose/reset tail — the parts that genuinely compose.
+
+
+## Eighth decrement — 2026-08-27
+
+**`wireStage2` 525 → 480; `src/extension.ts` 735 → 684.**
+`src/activation/phase-execution-wiring.ts` took 69 lines: the four call-time setting accessors, the
+retry-decision sink, the phase runner, and the run-safety net.
+
+**The four accessors are the point of the grouping.** Each reads its setting at *call* time rather
+than construction time, and each exists because caching it was a defect — `AGENTS.md` carries four
+separate rules of the form *"never cache the X setting on long-lived runner state"*, one per
+accessor. Sitting apart they read as four unrelated options; together they read as one rule applied
+four times, which is what they are.
+
+Gate passed on the first run again — the second in a row, and consistent with the observation from
+the seventh: the enforcement layer was pinned to the *edges* of this function, not its core.
+
+### Trajectory
+
+**1,221 → 1,010 → 894 → 871 → 823 → 695 → 630 → 525 → 480**, eight decrements, no behavioural change
+at any step. `src/extension.ts` 1,489 → 684 — **it has lost 805 lines, 54% of the file**.
+`src/activation/` 11 modules → 19.
+
+Remaining: 480 of a 400-line target.
+
+### Where this stops, and why
+
+What is left is `controller + guardedRunService` at **36 bindings in** — by a wide margin the most
+coupled region in the function, and the only one whose parameter object would be larger than the
+code it replaces. That is not a region that has failed to be extracted; **it is the composition
+itself.** Moving it would relocate the composition root rather than reduce it.
+
+Beside it sit `uiWiring` (67 lines, 22 in) and the `dispose`/`resetSupport` tail (34 lines, 14 in) —
+the latter being this function's own teardown contract, which belongs with the function that
+allocated the things it releases.
+
+So the honest reading of the remaining 80 lines over target: the next extraction is available
+(`uiWiring`), and the one after that is not. **400 may not be the right destination any more** — it
+was derived from `ui-wiring.ts`'s 387 lines when `wireStage2` was 1,221 and nothing about its shape
+was known. A composition root that has shed 61% of itself and holds only what genuinely composes is
+the outcome that was wanted; the number was the instrument. That judgement is for whoever takes the
+ninth decrement, with the evidence above.
