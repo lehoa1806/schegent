@@ -13,7 +13,6 @@ import { resolveCliPath } from './config/cli-path-accessor';
 import { maybeShowMultiRootWarning } from './state/multi-root-warning';
 import { initCapabilityTrustResolver } from './state/capability-trust-resolver';
 import { QueueManager } from './queue/queue-manager';
-import { resolveProcessEnvironmentPolicy } from './runner/spawn-env';
 import { PhaseRunner } from './controller/phase-runner';
 import { SchegentWorkflowController } from './controller/workflow-controller';
 import { QueueScheduleWatchdog } from './controller/schedule-watchdog';
@@ -47,7 +46,6 @@ import {
   readFatalSignaturesSetting,
   type GeneralSettingsConfig
 } from './config/general-settings';
-import { validateWorkspaceSettings } from './config/settings-schema-validator';
 import { createAutoCompactOverrideAccessor } from './lib/auto-compact-override';
 import { createPhaseBreakpointAccessor } from './controller/breakpoint-accessor';
 import { SidebarViewProvider } from './ui/sidebar/sidebar-view-provider';
@@ -73,6 +71,7 @@ import { resolveRunOrigin } from './services/run-origin-resolver';
 import { createPhaseLogTailWiring } from './activation/phase-log-tail-wiring';
 import { createSidebarRouter } from './activation/sidebar-router-wiring';
 import { wireBackendExecution } from './activation/backend-execution-wiring';
+import { resolveWorkspaceSettings } from './activation/workspace-settings';
 
 interface Stage2Wiring {
   readonly disposables: readonly vscode.Disposable[];
@@ -294,42 +293,19 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     return null;
   }
 
-  const config = vscode.workspace.getConfiguration('schegent', vscode.Uri.file(workspaceRoot));
-  // Feature 056 follow-on — one-shot drift guard. Compares every layer
-  // (workspace folder / workspace / global) against SETTINGS_SCHEMA and
-  // emits a sanitized warn per finding. Operator typos (e.g. a hand-set
-  // `loop.maxIterations: 0`) surface in the runtime log at activation
-  // instead of producing a confusing downstream reject. Sync, no I/O.
-  validateWorkspaceSettings(config, logger, new Set());
-  const cliPath = config.get<string>('cli.path', 'claude');
-  const processEnvironmentPolicy = resolveProcessEnvironmentPolicy({
-    inheritEnvironment: config.get<boolean>('cli.inheritEnvironment', true),
-    // Feature 098 (PRIV-02) — fallback mirrors the manifest default, which
-    // moved `inherit` -> `allowlist`. An absent contribution must not
-    // silently restore full ambient-environment forwarding.
-    mode: config.get<unknown>('cli.environmentMode', 'allowlist'),
-    allowlist: config.get<unknown>('cli.environmentAllowlist', [])
-  });
-  const iterationCap = config.get<number>('loop.maxIterations', 10);
-  const pollIntervalMinutes = config.get<number>('watchdog.pollIntervalMinutes', 30);
-  // FR-R3-075 — the idle window, renamed to say what it is. The old key is
-  // honored as a fallback when the operator set it explicitly and has not yet
-  // adopted the new name; `inspect` distinguishes an explicit value from the
-  // manifest default, which plain `get` cannot.
-  const idleInspect = config.inspect<number>('invocation.idleTimeoutSeconds');
-  const idleExplicit =
-    idleInspect?.workspaceFolderValue ?? idleInspect?.workspaceValue ?? idleInspect?.globalValue;
-  const legacyInspect = config.inspect<number>('invocation.timeoutSeconds');
-  const legacyExplicit =
-    legacyInspect?.workspaceFolderValue ??
-    legacyInspect?.workspaceValue ??
-    legacyInspect?.globalValue;
-  const timeoutSeconds = idleExplicit ?? legacyExplicit ?? 5400;
-  // FR-R3-075 — the absolute per-invocation bound; reasoning beside the
-  // default's declaration in general-settings.ts.
-  const maxDurationSeconds = config.get<number>('invocation.maxDurationSeconds', 21600);
-  const rotationSizeMB = config.get<number>('audit.rotation.sizeMB', 5);
-  const rotationMaxAgeDays = config.get<number>('audit.rotation.maxAgeDays', 30);
+  // FR-R3-119 — extracted to `src/activation/workspace-settings.ts`. Two bindings
+  // in, nine values out, no side effects: configuration resolution that lived in
+  // the composition root only because that is where it was first written.
+  const {
+    cliPath,
+    processEnvironmentPolicy,
+    iterationCap,
+    pollIntervalMinutes,
+    timeoutSeconds,
+    maxDurationSeconds,
+    rotationSizeMB,
+    rotationMaxAgeDays
+  } = resolveWorkspaceSettings({ workspaceRoot, logger });
   const catalogReader: CatalogConfigReader = createCatalogReader(workspaceRoot);
   // Feature 099 (T493b, FR-051, FR-052) — `null` in an untrusted workspace, where
   // no catalog activates at all. The snapshot still has to exist for the resolvers,
