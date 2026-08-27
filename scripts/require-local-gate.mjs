@@ -7,6 +7,7 @@
 // same reason: an unanswerable check is a refusal, not a pass.
 import { readFileSync } from 'node:fs';
 import { ATTESTATION_PATH, decideRelease, readTreeState } from './gate-attestation.mjs';
+import { checkManifestVersions } from './check-manifest-versions.mjs';
 import {
   DRIFT_OVERRIDE_ENV,
   changedQualificationPaths,
@@ -78,3 +79,29 @@ if (!qualificationVerdict.ok) {
   process.exit(1);
 }
 console.log(`require-local-gate: ${qualificationVerdict.message}`);
+
+
+// FR-R3-120 (FR-014) — the third binding: the tree agrees with itself about what
+// version it is, and any `v*` tag on HEAD agrees with it too.
+//
+// `RELEASE.md` §1 said the gap plainly — "Nothing mechanically checks the tag
+// against the manifest any more" — because that check lived in the tag job
+// `FR-R3-099` retired with the rest of Actions. This restores it where every
+// release now happens.
+//
+// HERE, AND NOT AS A SECOND COMMAND CHAINED IN package.json, so a release refuses
+// for one reason at a time, in one shape, from one script. The two bindings above
+// fail closed; a third that only warned would be the odd one out and would teach
+// the wrong thing about what a preflight is for.
+const manifestVerdict = checkManifestVersions();
+if (!manifestVerdict.ok) {
+  console.error(
+    `require-local-gate: REFUSED (${manifestVerdict.reason})\n  ${manifestVerdict.detail}`
+  );
+  for (const problem of manifestVerdict.problems) console.error(`    ${problem}`);
+  process.exit(1);
+}
+console.log(
+  `require-local-gate: manifests agree at ${manifestVerdict.version}` +
+    `${manifestVerdict.tagged ? `, matching tag ${manifestVerdict.tagged}` : ' (no v* tag on HEAD)'}.`
+);

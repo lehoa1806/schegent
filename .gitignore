@@ -53,3 +53,8 @@ empty/
 # against are committed instead, in src/contracts/qualified-backend-versions.ts, because an
 # installed extension has no repository to read this file from.
 /.backend-qualification.json
+
+# FR-R3-120 — generated at package time from the lockfiles, and packaged inside the
+# VSIX. Not tracked: it is a build output whose content is fully derived, and
+# committing it would put a timestamp in every release diff.
+schegent-sbom.cdx.json

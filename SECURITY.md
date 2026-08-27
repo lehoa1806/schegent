@@ -182,3 +182,34 @@ an oversight.
 <!-- Source: package.json -->
 <!-- Source: docs/release/actions-terminal-record.md -->
 <!-- Source: docs/release/withdrawn-ci-controls.md -->
+
+
+## Who reviews security-sensitive changes
+
+**One person. Recorded 2026-08-27 (`FR-R3-120`) as an accepted limit, not as an oversight.**
+
+`.github/CODEOWNERS` routes every path to `@lehoa1806`, and the security-sensitive paths that
+follow the catch-all — `src/lib/logger.ts`, `src/audit/`, `src/headless/`, `src/telemetry/`,
+`src/runner/claude-cli.ts`, `docs/security/` and this file — resolve to the same reviewer. Since
+`FR-R3-099` retired GitHub Actions, that person is also the only enforcement and the only platform
+the code has been observed on.
+
+**What this means concretely.** A four-eyes rule and an unbypassable gate are two independent
+controls. This project currently has **neither**:
+
+- there is no second reader on any path, so no change is reviewed by someone who did not write it;
+- every surviving gate is a `pre-push` hook, which `git push --no-verify` skips and which a clone
+  that never ran the `core.hooksPath` command does not have at all.
+
+**Why this is recorded rather than fixed.** There is no second reviewer to name, and naming an
+absent one would be worse than stating the fact. `FR-R3-120` T1445 offers "an accepted limit with
+its rationale" as a legitimate completion; that is what this is. The failure being closed here is
+the *unstated* version — a reader could previously infer from `CODEOWNERS` that review existed
+without being told it was one person reviewing their own work.
+
+**What would change it**: a second contributor with commit rights, or a budget for a runner that
+enforces without depending on the author choosing to be enforced. `FR-R3-121` treats the first as
+partly a documentation problem — a contributor base cannot grow past one person while the entry
+cost is 16.6 MB of Markdown with no reading path — and that is why the two items share a cause.
+<!-- Source: .github/CODEOWNERS -->
+<!-- Source: docs/architecture/distribution-posture.md -->

@@ -480,7 +480,8 @@
     "gate": "npm run contracts:check && npm run docs:check && npm run security:secrets && npm run security:actions && npm run license:check && npm run ci",
     "gate:record": "node scripts/record-gate-run.mjs",
     "release:preflight": "node scripts/require-local-gate.mjs",
-    "package": "vsce package --no-dependencies",
+    "sbom": "node scripts/generate-sbom.mjs",
+    "package": "npm run sbom && vsce package --no-dependencies",
     "release": "npm run release:preflight && npm run package",
     "package:smoke": "node scripts/package-vsix-smoke.mjs",
     "postinstall": "npm --prefix webview-ui install --no-audit --no-fund"
