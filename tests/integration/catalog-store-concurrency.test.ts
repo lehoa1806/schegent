@@ -37,7 +37,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { CatalogStore } from '../../src/catalog';
 import type { CatalogKind } from '../../src/contracts/catalog-store';
-import { createCatalogFsAdapter } from '../../src/lib/catalog-fs-adapter';
+import { createCatalogFsAdapter } from '../../src/host-services/catalog-fs-adapter';
 import {
   activate,
   createWorkspace,

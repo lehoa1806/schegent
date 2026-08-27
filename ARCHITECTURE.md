@@ -288,12 +288,25 @@ took `SUPPORTED_BACKENDS` from the factory as a value while the factory imported
 
 **The cycle is gone as a consequence of the move**, not as a separate fix: the
 policy now reads identity from contracts, so only the `factory → policy` edge
-remains and it is acyclic. **Stated limit**: this repository ships no dependency-
-cycle checker (`madge` or equivalent is not a dependency, and adding one is not in
-this change's scope), so the claim rests on the one-directional import assertion in
-`tests/lint/backend-kind-placement.test.ts` plus direct inspection of the two
-modules — not on a tool that walks the whole graph. A cycle elsewhere in the tree
-would not be caught by either.
+remains and it is acyclic.
+
+**The stated limit is retired (`FR-R3-128`, 2026-08-27).** This paragraph used to
+end by admitting that the repository shipped no dependency-cycle checker, so the
+claim rested on one directional assertion plus inspection, and *"a cycle elsewhere
+in the tree would not be caught by either"*. That admission was honest and is now
+false, which is the one way a true statement goes wrong.
+`tests/lint/import-graph-acyclic.test.ts` walks the whole first-party graph — 673
+modules and 1,484 value edges as of 2026-08-27 — and fails on any cycle. No
+`madge`-class dependency was added: it reads relative static imports with one
+regex per file, excludes type-only edges (erased at compile time, and legitimately
+circular in a recursive type model) and dynamic imports (a deliberate deferral, and
+the technique used to break a cycle).
+
+It found one on its first run, which is the argument for having built it:
+`ui/sidebar/state-projector.ts` and `state-projector-runtime.ts` imported each
+other over a single constant, and neither existing gate could see it — both files
+are in `ui/`, so `dependency-direction.test.ts`'s leaf-to-acting rule never looked.
+The constant moved to the module that consumes it as a default.
 
 **Agent capability boundary (FR-R3-086).** A Phase may declare a capability set —
 `workspace-write`, `outside-workspace-write`, `process-spawn`, `network` — frozen

@@ -224,7 +224,7 @@ FR-R3-078 and FR-R3-080 close the check-to-use window on the sinks that still ha
 
 The residual is stated rather than implied: the walk `lstat`s each component and opens the leaf with `O_NOFOLLOW`, which closes the no-race hole and does not close the window between one component's `lstat` and the next syscall. Closing that needs a handle-relative walk, which needs a native binding; the migration ledger records it, with the sites where a `rename` cannot be made handle-relative at all.
 
-<!-- Source: src/lib/catalog-fs-adapter.ts -->
+<!-- Source: src/host-services/catalog-fs-adapter.ts -->
 <!-- Source: src/state/ownership-fs.ts -->
 <!-- Source: src/lib/safe-open.ts -->
 <!-- Source: src/audit/raw-transcript-writer.ts -->

@@ -35,27 +35,20 @@ export interface ProjectorTimer {
   clearTimeout: (handle: unknown) => void;
 }
 
-/**
- * FR-R3-106 (FR-069) — the longest the sidebar may show a stale frame while events keep
- * arriving.
- *
- * WHY 500 ms, and why it is not the 100 ms debounce. The debounce coalesces: it exists so
- * eight event sources firing at once produce one projection rather than eight. The deadline
- * bounds the coalescing, and it only ever takes effect under a stream sustained faster than
- * 100 ms — which is a busy run, exactly when the display matters most.
- *
- * The number is chosen from the measured cost of one `project()` pass. `tests/perf/
- * render-budget.test.ts` measures that pass at the queue scale the product permits; at
- * 500 ms the worst case is 2 projections per second, which is comfortably inside the
- * measured budget and still fast enough that no operator perceives the display as stuck.
- * Lower would spend more of a saturated run's budget on projection; higher would leave the
- * frame visibly stale, and "visibly" starts around a second.
- *
- * It is deliberately NOT derived from `tickIntervalMs` (1 s). The tick is a liveness
- * heartbeat for elapsed counters; this is a staleness bound on the whole frame. Tying them
- * would make one number answer two questions.
- */
-export const DEFAULT_MAX_WAIT_MS = 500;
+// FR-R3-128 (T1486) — `DEFAULT_MAX_WAIT_MS` moved to `state-projector-runtime.ts`.
+//
+// It was declared here and imported BY the runtime, while this module value-imports
+// `StateProjectorRuntime` — a two-module import cycle over one constant, which
+// `tests/lint/import-graph-acyclic.test.ts` reported on its first run. That gate did
+// not exist before this feature, and nothing else could see the cycle:
+// `dependency-direction.test.ts` only looks at leaf-to-acting edges and both files
+// are in `ui/`.
+//
+// Moved to the module that CONSUMES it as a default, which reverses the one edge and
+// leaves the type-only edge alone — type edges are erased and cannot cycle at
+// runtime. Re-exported below so the existing importers, including
+// `tests/unit/ui/sidebar/projection-starvation.test.ts`, are unchanged.
+export { DEFAULT_MAX_WAIT_MS } from './state-projector-runtime';
 
 export interface StateProjectorDeps {
   // Feature 093 (T025) — `getRunMap` replaces `getRun` in the projector's slice

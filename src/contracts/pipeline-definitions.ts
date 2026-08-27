@@ -4,6 +4,30 @@ import type { PhaseDefinitionEffort } from './process-definitions';
 export const PIPELINE_ID_MAX_LEN = 64;
 
 /**
+ * FR-R3-128 (T1485) — moved here from `src/services/process-yaml/types.ts`.
+ *
+ * `src/contracts/sidebar-ipc/process-yaml.ts` imported it from a **services**
+ * module, which `dependency-direction.test.ts` carried as a dated exception:
+ * "a bound is contract-shaped". It is, and it now sits beside
+ * `PIPELINE_ID_MAX_LEN`, which bounds the same kind of thing for the same
+ * consumers. The exception is deleted rather than renewed.
+ *
+ * MOVED, NOT COPIED. A second copy of a bound is how two copies come to disagree
+ * about what a valid model id is.
+ *
+ * Longer than the other kinds' uniform 64 on purpose: a model id is a free-form
+ * provider string, not a slug.
+ *
+ * NOT THE SAME CONSTANT as the module-private `MODEL_ID_MAX_LEN = 64` in
+ * `src/config/pipeline-catalog.ts`. Two constants share the name and bound
+ * different things — that one truncates a model id for a warning MESSAGE, this one
+ * validates a Model Catalog document. FR-R3-128 recorded the collision rather than
+ * tidying it into agreement, because making them equal would change one of the two
+ * behaviours to make a name look consistent.
+ */
+export const MODEL_ID_MAX_LEN = 128;
+
+/**
  * Closed union of session-input port types (FR-012). `pipeline-output` is the
  * declared type an input port uses when an earlier Phase's output feeds it
  * rather than the operator at session start.

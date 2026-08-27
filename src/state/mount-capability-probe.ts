@@ -126,7 +126,7 @@ export interface MountProbeDeps {
  *
  *   - `lib/safe-open.ts`, `runner/process-tree.ts` -- any string `code`, unbounded,
  *     fallback `'unknown'`
- *   - `lib/catalog-fs-adapter.ts` -- any string `code`, unbounded, fallback
+ *   - `host-services/catalog-fs-adapter.ts` -- any string `code`, unbounded, fallback
  *     `'EUNKNOWN'`, and callers compare against that literal
  *   - `runner/child-stdin.ts` -- shape-checked, not length-checked, fallback
  *     `FALLBACK_CODE`

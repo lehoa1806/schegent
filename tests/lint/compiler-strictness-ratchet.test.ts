@@ -49,8 +49,13 @@ const RATCHET: ReadonlyArray<{
 }> = [
   {
     flag: 'noUncheckedIndexedAccess',
-    total: 1_279,
-    src: 175,
+    // FR-R3-128 (T1487) — 1,279 -> 1,277 and 175 -> 173. Both sites were in
+    // `catalog-fs-adapter.ts`, which this feature moved out of `src/lib/`: an indexed
+    // read of a list the type does not say is non-empty. Fixed by narrowing, not by a
+    // non-null assertion — the ratchet satisfied by silencing is the ratchet not
+    // satisfied.
+    total: 1_277,
+    src: 173,
     why:
       'core state is Record<queueId, …>; this flag is what turns map[id].field from a runtime ' +
       'undefined into a compile error. The 342-entry no-unnecessary-condition baseline is part ' +
@@ -58,6 +63,18 @@ const RATCHET: ReadonlyArray<{
   },
   {
     flag: 'exactOptionalPropertyTypes',
+    // FR-R3-128 (T1487) — 142 -> 142 in `src/`, and the ONE this feature could have
+    // added was avoided: `run-terminal-effects.ts` first restated the queue-failure
+    // shape by hand, whose `phase: string | undefined` is not assignable to
+    // `FeatureRequestFailure`'s `phase?: string`. It now uses the contract type, so
+    // the extraction's destination is outside this ratchet.
+    //
+    // `run-driver.ts`'s NINE remain, and they are named rather than paid down: every
+    // one is a `WorkflowRun` spread where an optional field carries an explicit
+    // `undefined`. Clearing them means widening `WorkflowRun`'s optional fields across
+    // the state schema and its migrators — a bulk refactor to satisfy a flag, which
+    // `FR-106` forbids and which this decrement's blast radius does not include. The
+    // count is the residual, stated so the next decrement inherits a number.
     total: 142,
     src: 71,
     why:

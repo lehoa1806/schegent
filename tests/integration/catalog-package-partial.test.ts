@@ -48,7 +48,7 @@ import type {
   PackagePublishRequest
 } from '../../src/contracts/catalog-lifecycle';
 import type { CatalogManifest, CatalogSnapshot } from '../../src/contracts/catalog-store';
-import { createCatalogFsAdapter } from '../../src/lib/catalog-fs-adapter';
+import { createCatalogFsAdapter } from '../../src/host-services/catalog-fs-adapter';
 import { phaseBody, pipelineBody } from '../fixtures/catalog-lifecycle-harness';
 import {
   createWorkspace,

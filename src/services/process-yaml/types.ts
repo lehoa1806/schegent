@@ -317,8 +317,12 @@ export interface WorkflowYamlDocument {
 
 export const MODEL_CATALOG_YAML_KIND = 'ModelCatalog';
 
-/** Longer than the other three kinds' uniform 64 — a model id is a free-form string, not a slug. */
-export const MODEL_ID_MAX_LEN = 128;
+// FR-R3-128 (T1485) — `MODEL_ID_MAX_LEN` moved to `src/contracts/pipeline-definitions.ts`,
+// beside `PIPELINE_ID_MAX_LEN`. It was imported from here by
+// `src/contracts/sidebar-ipc/process-yaml.ts`, which `dependency-direction.test.ts`
+// carried as a dated exception; a bound is contract-shaped. Re-exported below so
+// this module's own consumers are unchanged, and re-exported rather than copied.
+export { MODEL_ID_MAX_LEN } from '../../contracts/pipeline-definitions';
 
 /**
  * One backend's group in a Model Catalog document (data-model.md §2).

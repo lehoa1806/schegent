@@ -38,7 +38,7 @@ Schegent has no database, ORM, or remote persistence service. Durable product st
 
 The tree is demand-created. In particular, an absent `.schegent/catalog/manifest.json` is the healthy empty catalog, not corruption, and a fresh extension ships no Phase, Pipeline, or Workflow definitions.
 
-<!-- Source: src/lib/catalog-fs-adapter.ts -->
+<!-- Source: src/host-services/catalog-fs-adapter.ts -->
 <!-- Source: src/catalog/catalog-paths.ts -->
 <!-- Source: src/catalog/catalog-manifest.ts -->
 <!-- Source: src/config/pipeline-config.ts -->
@@ -113,7 +113,7 @@ There is no down-migration command or database migration directory. On read, seq
 Security-sensitive filesystem adapters generally perform a containment check appropriate to the operation before reading, writing, renaming, or removing a path. The shared canonical-path oracle distinguishes following a target from manipulating a directory entry; the catalog, transcript, ownership, history, checkpoint, and runtime-log adapters refuse when containment cannot be proved. The live audit append is included rather than excepted: `doWrite()` opens through the safe walk on every write instead of joining a path and appending, so a `.schegent` symlink planted in the workspace cannot redirect the append-only record. It re-walks per append rather than holding a descriptor, because rotation replaces the file underneath a retained handle. (An earlier revision of this page recorded that append as a residual symlink risk; FR-R3-053 closed it and the sentence outlived the code — found by the 2026-08-25 criterion-8 review, `docs/audits/criterion-8-review-2026-08-25.md` F1.) Lexical validation is additional defense for IDs and stored references, not a substitute for resolving filesystem links.
 
 <!-- Source: src/lib/path-containment.ts -->
-<!-- Source: src/lib/catalog-fs-adapter.ts -->
+<!-- Source: src/host-services/catalog-fs-adapter.ts -->
 <!-- Source: src/audit/raw-transcript-writer.ts -->
 <!-- Source: src/state/ownership-fs.ts -->
 <!-- Source: src/services/history/history-description-store.ts -->

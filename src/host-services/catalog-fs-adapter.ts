@@ -31,13 +31,13 @@ import type {
   StoreWritability
 } from '../catalog/ports';
 import { tempNameFor } from '../catalog/atomic-write';
-import { resolveContainedLink, resolveContainedTarget } from './path-containment';
+import { resolveContainedLink, resolveContainedTarget } from '../lib/path-containment';
 import {
   ensureAnchorWithinRoot,
   openWithinRootByPath,
   segmentsUnderRoot,
   type SafeOpenResult
-} from './safe-open';
+} from '../lib/safe-open';
 
 /** The store's directory, under the workspace's `.schegent/`. */
 export const CATALOG_DIRECTORY_SEGMENTS = ['.schegent', 'catalog'] as const;
@@ -162,7 +162,20 @@ export function createCatalogFsAdapter(
    * root falls back to the link form so the first write into a fresh workspace
    * is judged against where its chain will actually land.
    */
-  const storeRoots = async (): Promise<readonly string[] | null> => {
+  /**
+   * The store's contained root, as a ONE-ELEMENT tuple or null.
+   *
+   * FR-R3-128 (T1487) — the return type was `readonly string[] | null`, and every
+   * caller then read `[0]`. Under `noUncheckedIndexedAccess` that is `string |
+   * undefined` and needs a guard; without the flag the same guard is dead code and
+   * `no-unnecessary-condition` reports it. The type is the actual defect: this
+   * function returns null or exactly one root, and said neither.
+   *
+   * A non-empty tuple says it, so both configs agree and no caller needs a guard —
+   * which is the ratchet paid down by making the type true rather than by silencing
+   * a check.
+   */
+  const storeRoots = async (): Promise<readonly [string] | null> => {
     if (workspaceRoot === null || storeRoot === null) return null;
     const target = await resolveContainedTarget(storeRoot, roots);
     if (target.outcome === 'contained') return [target.resolved];

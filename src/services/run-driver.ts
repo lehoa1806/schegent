@@ -8,6 +8,7 @@ import type { SanitizedLogger } from '../lib/logger';
 import type { WorkspaceLockManager } from '../state/lock';
 import type { IsContinueGate } from '../controller/is-continue-gate';
 import { PhaseSequencer, nextOverridesAfterSkip } from '../controller/phase-sequencer';
+import { terminalSettler } from './run-terminal-effects';
 import {
   computeRunPhaseStats,
   type PhaseResult,
@@ -821,36 +822,27 @@ export class RunDriver {
             lastError: sanitized
           };
           run = await this.deps.persistTransition(run, failed);
-          await this.deps.emitRunEndedBreakpointAudit(run);
-          this.deps.statusBar.update(run.id, {
-            kind: 'failed',
-            phase: run.currentPhase,
-            detail: sanitized.message
-          });
-          this.deps.notifier.warn(
-            `Schegent: ${run.currentPhase} failed — ${sanitized.message}. Run "Schegent: Resume" to retry.`
-          );
-          try {
-            await this.deps.queue.finish(run.featureId, 'failed', {
+          // FR-R3-128 (T1484) — the terminal effect sequence, in one place. The
+          // ORDER is unchanged and is load-bearing; see `run-terminal-effects.ts`.
+          await this.settle({
+            run,
+            description,
+            terminalStatus: 'failed',
+            presentation: {
+              statusBar: { kind: 'failed', phase: run.currentPhase, detail: sanitized.message },
+              notify: {
+                level: 'warn',
+                message: `Schegent: ${run.currentPhase} failed — ${sanitized.message}. Run "Schegent: Resume" to retry.`
+              }
+            },
+            queueError: {
               code: sanitized.code,
               message: sanitized.message,
               phase: sanitized.phase ?? undefined,
               correlationId: run.id
-            });
-          } catch (qErr) {
-            this.deps.logger.warn(
-              `run-driver: queue.finish (failed) failed: ${errorMessage(qErr)}`
-            );
-          }
-          try {
-            await this.deps.historyRecorder.record(run, description, 'failed');
-          } catch (hErr) {
-            this.deps.logger.warn(
-              `run-driver: history record (failed) failed: ${errorMessage(hErr)}`
-            );
-          }
-          // Feature 072 — emit task-execution-ended (failed). FR-R3-107: one emitter.
-          await this.emitTerminalOutcome(run, 'failed', { lastErrorSummary: sanitized.message });
+            },
+            auditExtra: { lastErrorSummary: sanitized.message }
+          });
           break;
         }
 
@@ -1014,25 +1006,16 @@ export class RunDriver {
           ...(runOutputs.length > 0 ? { runOutputs } : {})
         };
         run = await this.deps.persistTransition(run, completed);
-        await this.deps.emitRunEndedBreakpointAudit(run);
-        this.deps.statusBar.update(run.id, { kind: 'completed' });
-        this.deps.notifier.info(`Schegent: workflow ${run.featureId} completed.`);
-        try {
-          await this.deps.queue.finish(run.featureId, 'completed');
-        } catch (qErr) {
-          this.deps.logger.warn(
-            `run-driver: queue.finish (completed) failed: ${errorMessage(qErr)}`
-          );
-        }
-        try {
-          await this.deps.historyRecorder.record(run, description, 'completed');
-        } catch (hErr) {
-          this.deps.logger.warn(
-            `run-driver: history record (completed) failed: ${errorMessage(hErr)}`
-          );
-        }
-        // Feature 072 — emit task-execution-ended (completed). FR-R3-107: one emitter.
-        await this.emitTerminalOutcome(run, 'completed');
+        // FR-R3-128 (T1484) — same sequence as the failure arm, same order.
+        await this.settle({
+          run,
+          description,
+          terminalStatus: 'completed',
+          presentation: {
+            statusBar: { kind: 'completed' },
+            notify: { level: 'info', message: `Schegent: workflow ${run.featureId} completed.` }
+          }
+        });
       }
     } catch (error) {
       const auditUnavailable =
@@ -1257,6 +1240,20 @@ export class RunDriver {
    * audit failure must not turn a completed Run into a failed one. That discipline was in all
    * three copies and is the part worth keeping.
    */
+  private settleTerminalFn: ReturnType<typeof terminalSettler> | null = null;
+
+  /**
+   * FR-R3-128 (T1484) — the terminal effect sequence; `run-terminal-effects.ts` owns
+   * the order and the reasoning. Bound lazily because `deps` is a parameter property
+   * and a field initializer would read it before assignment.
+   */
+  private get settle(): ReturnType<typeof terminalSettler> {
+    this.settleTerminalFn ??= terminalSettler(this.deps, (run, status, extra) =>
+      this.emitTerminalOutcome(run, status, extra)
+    );
+    return this.settleTerminalFn;
+  }
+
   private async emitTerminalOutcome(
     run: WorkflowRun,
     terminalStatus: 'completed' | 'failed',

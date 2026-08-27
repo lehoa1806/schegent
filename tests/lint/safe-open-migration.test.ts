@@ -146,7 +146,7 @@ const UNMIGRATED: readonly string[] = [
   // descriptor-read discipline that comment describes is unchanged. A link at
   // any depth now reports `path-symlink-redirect`, which the leaf-only ELOOP
   // branch used to report for the leaf alone.
-  // `lib/catalog-fs-adapter.ts` struck 2026-08-25 (FR-R3-069, feature 152) —
+  // `host-services/catalog-fs-adapter.ts` struck 2026-08-25 (FR-R3-069, feature 152) —
   // fully migrated: reads and writes go through `openWithinRootByPath`, the
   // store chain is created by `ensureAnchorWithinRoot` beneath the workspace
   // root, and judgments anchor at the workspace rather than at the store.
@@ -233,7 +233,7 @@ const UNMIGRATED: readonly string[] = [
  * `catalog/catalog-manifest.ts` and `catalog/version-record.ts` were on
  * `UNMIGRATED` because they contain `fs.readFile(...)`. They do — but `fs` there
  * is a PARAMETER of type `CatalogFsPort`, whose `readFile` takes path SEGMENTS
- * and whose adapter (`lib/catalog-fs-adapter.ts`) was migrated to the checked
+ * and whose adapter (`host-services/catalog-fs-adapter.ts`) was migrated to the checked
  * walk by feature 152. Neither module imports node's filesystem at all.
  *
  * So the entries were never work; they were a false positive the ledger had been
@@ -284,7 +284,7 @@ const READS_THROUGH_MIGRATED_PORT: readonly string[] = [
  * had never looked at. None of them is a new sink and none was written since the
  * migration: each is `write temp through the checked walk` → `fs.rename(temp,
  * final)` inside a directory the walk already proved. Two of the three
- * (`lib/catalog-fs-adapter.ts`, `state/ownership-fs.ts`) were STRUCK from
+ * (`host-services/catalog-fs-adapter.ts`, `state/ownership-fs.ts`) were STRUCK from
  * `UNMIGRATED` by feature 152, and they were struck honestly — against a
  * detector that could not see a rename. That is a finding about the gate, and it
  * is recorded here rather than repaired by narrowing the regex back.
@@ -305,7 +305,7 @@ const READS_THROUGH_MIGRATED_PORT: readonly string[] = [
  */
 const ATOMIC_PUBLISH_RENAME_RESIDUAL: readonly string[] = [
   'audit/audit-log-writer.ts',
-  'lib/catalog-fs-adapter.ts',
+  'host-services/catalog-fs-adapter.ts',
   // FR-R3-082 (T1098) — added by the trim, which publishes a compacted rollup
   // through a rename. The temp file it renames FROM is written through the
   // checked walk; the publish itself cannot be, for the reason this list exists.

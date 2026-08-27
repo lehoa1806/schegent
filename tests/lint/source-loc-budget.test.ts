@@ -879,7 +879,34 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // is deliberately NOT taken here — the 2026-08-23 review's warning against wholesale
   // restructuring stands, and the serialized commit point and fencing semantics inside
   // `drive()` are load-bearing enough that moving code around them earns its own change.
-  { path: 'src/services/run-driver.ts', maxLines: 1_290 }
+  // FR-R3-128 (T1484) — HELD at 1,290, and the arithmetic is the point.
+  //
+  // `RunDriver.drive()` went from **708 lines to 688**: two of the three terminal
+  // arms performed the same effect sequence character-for-character and now share
+  // `run-terminal-effects.ts`. (The 744 this file recorded above, and the audit's
+  // 744, were both stale by 36 — corrected rather than inherited, because a target
+  // computed from a stale baseline is not a target.)
+  //
+  // THE FILE DID NOT SHRINK, and the ceiling therefore did not move. Extracting to a
+  // new module costs the binding: an import, a lazily-bound accessor, and the call
+  // shape at each site. Trimming twenty-four lines of comment to manufacture a
+  // file-level decrement would be exactly the number-chasing this file exists to
+  // refuse — so the file is held and the METHOD is governed instead, by
+  // `tests/lint/drive-loop-loc-budget.test.ts`, which is what `FR-R3-128` actually
+  // asks for.
+  //
+  // The remainder is named so the next decrement starts from a number: the four
+  // pause arms (breakpoint, delayed-retry, rate-limit, verify) are ~230 lines
+  // between them and are the next candidates. The probe-failure arm stays where it
+  // is — its audit emission order differs from the other two, and unifying it is an
+  // observable change.
+  { path: 'src/services/run-driver.ts', maxLines: 1_290 },
+  // FR-R3-128 — the extraction's destination is governed in the same change. An
+  // extraction that shrinks one method and adds an ungoverned file has moved the
+  // debt, not reduced it. 182 lines measured; 210 carries the 25-line margin this
+  // file requires of a plain ceiling, so it is a budget rather than a high-water mark
+  // the next edit raises by exactly what it added.
+  { path: 'src/services/run-terminal-effects.ts', maxLines: 210 }
 ];
 
 function lineCount(path: string): number {
