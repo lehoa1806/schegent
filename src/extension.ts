@@ -6,12 +6,9 @@ import {
   disposeWorkspaceFolderPicker
 } from './state/workspace-folder-picker';
 import { resolveCliPath } from './config/cli-path-accessor';
-import { maybeShowMultiRootWarning } from './state/multi-root-warning';
 import { initCapabilityTrustResolver } from './state/capability-trust-resolver';
 import { PhaseRunner } from './controller/phase-runner';
 import { SchegentWorkflowController } from './controller/workflow-controller';
-import { AuditLogWriter } from './audit/audit-log-writer';
-import { SessionArtifactRetentionService } from './services/session-retention/session-artifact-retention-service';
 import { SanitizedLogger } from './lib/logger';
 import {
   createRuntimeEvidenceWiring,
@@ -19,16 +16,13 @@ import {
 } from './activation/backend-wiring';
 import { createConnectedRunService, registerStage2Ui } from './activation/ui-wiring';
 import { SchegentOutputChannel } from './ui/output-channel';
-import { forwardMigrationAuditEvents } from './state/migration-audit-forwarder';
 import { runReset, type ResetHost, type ResetStageSupport } from './commands/reset';
 import {
   completeInterruptedResetOnActivation,
   createResetStageSupport,
-  recordCompletedInterruptedReset
 } from './commands/reset-wiring';
 import { StateProjector } from './ui/sidebar/state-projector';
 import { buildBuilderLifecycleByKind } from './ui/sidebar/builder-lifecycle';
-import { createWorkflowPipelineRefReader } from './ui/sidebar/workflow-pipeline-ref-source';
 import {
   readGeneralSettings,
   readFatalSignaturesSetting,
@@ -50,6 +44,7 @@ import { wireBackendExecution } from './activation/backend-execution-wiring';
 import { resolveWorkspaceSettings } from './activation/workspace-settings';
 import { openWorkspaceSession } from './activation/workspace-session';
 import { wireScheduledWork } from './activation/scheduled-work-wiring';
+import { wireEvidence } from './activation/evidence-wiring';
 
 interface Stage2Wiring {
   readonly disposables: readonly vscode.Disposable[];
@@ -313,96 +308,31 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     notifier,
     queue
   } = session;
-  // Feature 083 (US6, FR-041) — the single source of "which Workflows consume a
-  // Pipeline?" for both the Library list (FR-002) and gate 13 (FR-022a). The
-  // callbacks re-read on every call so a Workflow catalog reload, which
-  // reassigns `catalogSession.workflowCatalog`, reaches the next gate decision.
-  const collectAllWorkflowPipelineRefs = createWorkflowPipelineRefReader({
-    listRequests: () => queue.list(),
-    listWorkflowRecords: () => catalogSession.workflowCatalog.records
-  });
-  const auditWriter = new AuditLogWriter(
-    {
-      workspaceRoot,
-      rotationSizeBytes: rotationSizeMB * 1024 * 1024,
-      rotationMaxAgeMs: rotationMaxAgeDays * 24 * 60 * 60 * 1000
-    },
-    logger,
-    evidenceHealth
-  );
-
-  // Forward all state-migration audit events (v5→v6, v6→v7, v10→v11, v11→v12,
-  // workflow-run repair) through the sanitized audit writer. Helper preserves
-  // the append-error best-effort semantics — never blocks activation.
-  await forwardMigrationAuditEvents(
-    {
-      v6MigrationEvents,
-      v7MigrationEvents,
-      v11MigrationEvents,
-      v12MigrationEvents,
-      runRepairEvents,
-      // FR-R3-111 — drained where the writer exists; `initialize()` buffers it before that.
-      quarantineEvents: store.drainRunQuarantineEvents()
-    },
+  // FR-R3-119 — extracted to `src/activation/evidence-wiring.ts`: the audit
+  // writer, the retention sweep, and the two thunks that tell them what is still
+  // live. The migration events are passed rather than re-derived — the store
+  // reports them once, and asking twice returns nothing or re-runs a migration.
+  const {
     auditWriter,
-    logger
-  );
-
-  // Feature FR-R3-006 (T346, T348) — record the interrupted reset this
-  // activation finished, now that there is a writer to record it with.
-  if (completedResetGeneration !== null) {
-    await recordCompletedInterruptedReset(auditWriter, logger, completedResetGeneration);
-  }
-
-  const sessionRetention = new SessionArtifactRetentionService({
+    sessionRetention,
+    collectAllWorkflowPipelineRefs,
+    protectedSessionRunIds
+  } = await wireEvidence({
     workspaceRoot,
     logger,
-    audit: auditWriter,
-    policy: () => {
-      const settings = readGeneralSettings(
-        vscode.workspace.getConfiguration(
-          'schegent',
-          vscode.Uri.file(workspaceRoot)
-        ) as unknown as GeneralSettingsConfig
-      );
-      return {
-        maxAgeMs: settings.sessionRetentionMaxAgeDays * 24 * 60 * 60 * 1000,
-        maxBytes: settings.sessionRetentionMaxBytes
-      };
-    }
-  });
-  const protectedSessionRunIds = (): ReadonlySet<string> => {
-    // Feature 093 (T037/T039) — C-4 aggregate. Retention protects the session
-    // directory of *every* Run still in flight, which is what the sweep needed
-    // all along; the ambient read could only ever name one, so under N Runs it
-    // would have left N-1 session groups eligible for deletion while their Runs
-    // were still writing into them.
-    const protectedIds = new Set<string>();
-    for (const run of Object.values(store.getRunMap())) {
-      if (run.status === 'running' || run.status === 'paused') protectedIds.add(run.id);
-    }
-    return protectedIds;
-  };
-  // Sweep once at activation. The service is fail-soft and restricts deletion
-  // to exact inactive run groups below `.schegent/sessions`; `audit.log` lives
-  // outside that root and is never a candidate.
-  await sessionRetention.sweep(protectedSessionRunIds());
-
-  // Feature 058 — one-shot activation guard for multi-root workspaces.
-  // Emits `multi-root.warning-shown` (folder count + canonical folder
-  // NAME only, NEVER fsPath) and a non-blocking informational toast.
-  // The helper is internally one-shot per activation and respects
-  // `schegent.multiRoot.suppressWarning` (window-scope). Window-scope
-  // reads omit the resource URI so VS Code resolves the value from
-  // the active `.code-workspace`.
-  void maybeShowMultiRootWarning({
-    workspaceFolders: vscode.workspace.workspaceFolders,
-    canonicalFolder: getCanonicalWorkspaceRoot(),
-    suppressWarning: vscode.workspace
-      .getConfiguration('schegent')
-      .get<boolean>('multiRoot.suppressWarning', false),
-    auditWriter,
-    notifier
+    store,
+    queue,
+    notifier,
+    evidenceHealth,
+    catalogSession,
+    rotationSizeMB,
+    rotationMaxAgeDays,
+    completedResetGeneration,
+    v6MigrationEvents,
+    v7MigrationEvents,
+    v11MigrationEvents,
+    v12MigrationEvents,
+    runRepairEvents
   });
   // FR-R3-119 — extracted to `src/activation/backend-execution-wiring.ts`. 148
   // lines constructing the monitor, sampler, runner registry and their

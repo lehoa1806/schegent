@@ -80,6 +80,8 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'src/controller/task-deletion.ts',
   'src/controller/workflow-controller.ts',
   'src/extension.ts',
+  // FR-R3-119 — the audit writer and its quarantine drain moved to `src/activation/evidence-wiring.ts`.
+  'src/activation/evidence-wiring.ts',
   // FR-R3-119 — the clock-driven work moved to `src/activation/scheduled-work-wiring.ts`.
   'src/activation/scheduled-work-wiring.ts',
   'src/monitor/claude-cli-monitor.ts',
