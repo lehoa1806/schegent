@@ -121,9 +121,12 @@
   </header>
 
   {#if configuring}
+    <!-- FR-R3-130 (T1495) — the machine's memory, so the dialog can say what the
+         cap will cost at the moment it is typed. -->
     <QueueConfigModal
       generalSettings={snapshotStore.generalSettings}
       {queues}
+      machineMemoryBytes={snapshotStore.snapshot?.streamPressure?.machineMemoryBytes ?? 0}
       onClose={closeConfig}
       originatingElement={configOpener}
     />

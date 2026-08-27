@@ -357,6 +357,26 @@ Install or smoke-test the VSIX in a second VS Code host before handing it to any
 exercises the build before packaging; it does not install the final archive.
 <!-- Source: scripts/package-vsix-smoke.mjs -->
 
+### The performance claims a release may make (`FR-R3-130`, 2026-08-27)
+
+Two figures are measured and dated, and a release may cite them **as written and no further**:
+
+| Claim | Floor | Source |
+|---|---|---|
+| The workspace-scaling part of activation completes in **under 100 ms at p95** on a workspace of ~2,000 tracked files | measured 45 ms p95, ~2× headroom | [large-workspace resource measurement](docs/operations/large-workspace-resource-measurement.md) §5a |
+| Concurrency does not slow the working tree: `git status` is **flat at 23–27 ms** from cap 1 to cap 8 with up to 64 MiB of stream output held | measured, all four levels | same record, §4 |
+
+**What a release may NOT claim from them**: activation end to end (that is the extension-host chain
+under its own 5 s budget), a cold cache, a network or remote filesystem, or any platform other than
+darwin/arm64 — Windows and Linux remain in the declared `unverified` tier
+([platform observation record](docs/operations/platform-observation-record.md)).
+
+**And the cost an operator should be told, not claimed away**: buffers retain what they accept,
+roughly 1:1, below the per-stream cap. The 0.66× compression discount an earlier record credits does
+not apply at a few MiB per stream. The product warns about this at the point the cap is set; a release
+note that implied a discount would be undoing that warning.
+<!-- Source: docs/operations/large-workspace-resource-measurement.md -->
+
 ## 7. Marketplace publication is manual and unspecified
 
 No npm script runs `vsce publish`, `ovsx publish`, or another Marketplace deployment command. No

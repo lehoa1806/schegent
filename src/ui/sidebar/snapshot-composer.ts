@@ -29,6 +29,9 @@ import { composeWorkflowCatalogProjection } from './workflow-catalog-projector';
 import { buildLaunchProjection } from './launch-projection';
 import { composeTrustProjection } from './trust-projection';
 import type { StateProjectorDeps } from './state-projector';
+import { totalmem } from 'node:os';
+
+import { readStreamPressure } from '../../runner/zipped-stream-buffer';
 import {
   IDLE_EVIDENCE_HEALTH,
   IDLE_GENERAL_SETTINGS,
@@ -289,6 +292,8 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     backendPingState: deps.getBackendPingState?.() ?? Object.freeze({ status: 'idle' as const }),
     generalSettings: deps.getGeneralSettings?.() ?? IDLE_GENERAL_SETTINGS,
     sessionArtifacts: deps.getSessionArtifacts?.() ?? IDLE_SESSION_ARTIFACTS,
+    // FR-R3-130 — read per composition, never cached; `totalmem()` rides with it.
+    streamPressure: { ...readStreamPressure(), machineMemoryBytes: totalmem() },
     evidenceHealth: deps.getEvidenceHealth?.() ?? IDLE_EVIDENCE_HEALTH,
     telemetry: ctx.telemetry,
     workspaceTrust: trust.workspaceTrust,

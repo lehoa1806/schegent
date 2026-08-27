@@ -9,6 +9,35 @@
   const activeLine = $derived(formatActiveLine(active));
   const health = $derived(deriveOperatorHealth(snapshotStore.snapshot));
 
+  /**
+   * FR-R3-130 (T1496) — aggregate stream pressure, beside the health projection.
+   *
+   * The audit of 2026-08-27's point about the cap-20 ceiling was that an operator can
+   * accept it without ever seeing it. `stream-pressure-advice.ts` warns at the moment
+   * the cap is chosen; this is the other half — a loaded configuration observable
+   * WHILE it is loaded.
+   *
+   * Rendered only when something is in flight. A permanent "0 MiB" would be furniture,
+   * and furniture is what an operator stops reading.
+   */
+  const pressure = $derived(snapshotStore.snapshot?.streamPressure ?? null);
+  const pressureLine = $derived.by(() => {
+    if (pressure === null || pressure.liveBuffers === 0) return null;
+    const mib = (bytes: number): string => `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
+    return `${mib(pressure.retainedBytes)} buffered · ${pressure.liveBuffers} stream${
+      pressure.liveBuffers === 1 ? '' : 's'
+    }`;
+  });
+  const pressureTitle = $derived.by(() => {
+    if (pressure === null) return '';
+    return (
+      `${(pressure.retainedBytes / 1024 / 1024).toFixed(1)} MiB retained across ` +
+      `${pressure.liveBuffers} live stream buffer(s); those same buffers could reach ` +
+      `${(pressure.ceilingBytes / 1024 / 1024).toFixed(0)} MiB under their own caps. ` +
+      'Measured 2026-08-27: buffers retain what they accept, roughly 1:1, below the cap.'
+    );
+  });
+
   function formatActiveLine(a: ReturnType<typeof deriveActivePhase>): string {
     if (a === null) return 'no active phase';
     const name = formatPhaseLabel(a.name, a.displayName).toLowerCase();
@@ -35,6 +64,11 @@
   </div>
   <div class="phase-line">
     <div class="active-phase" data-testid="sidebar-active-phase" title={activeLine}>{activeLine}</div>
+    {#if pressureLine !== null}
+      <div class="pressure" data-testid="sidebar-stream-pressure" title={pressureTitle}>
+        {pressureLine}
+      </div>
+    {/if}
     <div
       class={`health health-${health.level}`}
       data-testid="sidebar-health"
@@ -46,6 +80,16 @@
 </div>
 
 <style>
+  .pressure {
+    /* Theme token only: FR-R3-131 baselined 30 contrast violations and this adds no
+       new hard-coded colour. */
+    color: var(--vscode-descriptionForeground);
+    font-size: 0.9em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
   .stats-strip {
     display: flex;
     flex-direction: column;

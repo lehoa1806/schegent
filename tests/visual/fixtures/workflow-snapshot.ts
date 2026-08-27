@@ -690,6 +690,12 @@ export const workflowSnapshot = {
     "lastSweepAt": "2026-08-01T06:00:00.000Z",
     "lastSweepFailures": 0
   },
+  "streamPressure": {
+    "liveBuffers": 4,
+    "retainedBytes": 5242880,
+    "ceilingBytes": 268435456,
+    "machineMemoryBytes": 17179869184
+  },
   "evidenceHealth": {
     "overall": "healthy",
     "transportDrops": { "lines": 0, "bytes": 0 },

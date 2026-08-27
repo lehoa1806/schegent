@@ -809,7 +809,16 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // the alternative to recording this is a ceiling that quietly absorbs
   // explanation, which is the opposite of what the entries above are for. Set
   // to exactly what the file measures.
-  { path: 'src/ui/sidebar/snapshot-composer.ts', maxLines: 308 },
+  // FR-R3-130 (T1496) — 308 -> 312, for the live stream-pressure projection: one
+  // import of `readStreamPressure`, one of `totalmem`, one composed field and its
+  // one-line reason. The composer's job is composing a snapshot from projections and
+  // this is a projection; nothing was moved here that belongs elsewhere.
+  //
+  // Prose trimmed before raising, per this file's convention: the first draft carried
+  // a four-line comment on the field, which said what
+  // `src/ui/sidebar/snapshot.ts`'s `StreamPressureProjection` docblock already says
+  // at length. Set to exactly what the file measures.
+  { path: 'src/ui/sidebar/snapshot-composer.ts', maxLines: 312 },
   // The second file of the same 2026-05-22 decision; see the waiver above.
   {
     path: 'src/queue/queue-manager.ts',
@@ -984,7 +993,7 @@ describe('large source file LOC budgets', () => {
     'src/contracts/runtime-validators.ts', //   752 /  776 — 24 lines
     'src/contracts/sidebar-ipc.ts', //          1058 / 1058 — no headroom
     'src/ui/sidebar/state-projector-runtime.ts', // 285 / 300 — 15 lines
-    'src/ui/sidebar/snapshot-composer.ts', //    307 /  308 — 1 line
+    'src/ui/sidebar/snapshot-composer.ts', //    311 /  312 — 1 line
     'src/config/general-settings.ts', //         710 /  712 — 2 lines
     'src/services/run-driver.ts' //             1289 / 1290 — 1 line
   ];
