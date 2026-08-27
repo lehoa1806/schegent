@@ -21,7 +21,7 @@ import {
   type RunVersionCarrier
 } from '../catalog';
 import { createDefinitionSemantics } from '../config/definition-semantics';
-import { CATALOG_DIRECTORY_SEGMENTS, createCatalogFsAdapter } from '../lib/catalog-fs-adapter';
+import { CATALOG_DIRECTORY_SEGMENTS, createCatalogFsAdapter } from '../host-services/catalog-fs-adapter';
 import { getCanonicalWorkspaceRoot } from '../state/workspace-folder-picker';
 
 /** Epoch milliseconds, the store's one time representation (FR-021a). */

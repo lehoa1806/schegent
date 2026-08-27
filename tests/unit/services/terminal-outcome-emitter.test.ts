@@ -33,6 +33,16 @@ import { resolve } from 'node:path';
 const ROOT = resolve(__dirname, '../../..');
 const SOURCE = readFileSync(resolve(ROOT, 'src/services/run-driver.ts'), 'utf8');
 
+/**
+ * FR-R3-128 — the module the shared terminal sequence moved to. Read here because
+ * two of the three terminal paths now reach the emitter through it, and a gate that
+ * only read the driver would report a property it could no longer see.
+ */
+const EFFECTS = readFileSync(
+  resolve(__dirname, '../../../src/services/run-terminal-effects.ts'),
+  'utf8'
+);
+
 describe('FR-R3-107 — the terminal outcome has one emitter', () => {
   it('exactly one call to emitTaskLifecycleAudit names task-execution-ended', () => {
     const emissions = [
@@ -68,12 +78,26 @@ describe('FR-R3-107 — the terminal outcome has one emitter', () => {
   });
 
   it('no call site hand-writes the payload any more', () => {
-    // Each of the three now passes only what it alone knows: the status, and an error
+    // Each terminal path passes only what it alone knows: the status, and an error
     // summary where it has one.
-    const calls = [...SOURCE.matchAll(/this\.emitTerminalOutcome\(([^;]*?)\);/gs)];
-    expect(calls.length, 'all three terminal paths must route through the emitter').toBe(3);
-    for (const call of calls) {
-      const args = call[1] as string;
+    //
+    // FR-R3-128 — this used to assert THREE `this.emitTerminalOutcome(...)` calls in
+    // `run-driver.ts`. Two of the three moved into `run-terminal-effects.ts` when the
+    // shared terminal sequence was extracted, so `run-driver.ts` now holds the probe
+    // path's direct call plus the one delegation, and the effects module holds the
+    // call the other two share. The GATE FOLLOWS THE CODE: the property it protects
+    // — no hand-written payload at any site — is asserted across both files rather
+    // than the code being contorted to keep a source-text count at three.
+    const sites = [
+      ...SOURCE.matchAll(/this\.emitTerminalOutcome\(([^;]*?)\);/gs),
+      ...EFFECTS.matchAll(/deps\.emitTerminalOutcome\(([^;]*?)\);/gs)
+    ];
+    expect(
+      sites.length,
+      'every terminal path must reach the one emitter, in the driver or in the effects module'
+    ).toBeGreaterThanOrEqual(3);
+    for (const site of sites) {
+      const args = site[1] as string;
       expect(args).not.toContain('taskId');
       expect(args).not.toContain('phasesTotal');
       expect(args).not.toContain('computePhaseStats');
@@ -99,16 +123,23 @@ describe('FR-R3-107 — the terminal outcome has one emitter', () => {
 
   it('the persistence chain was not reordered by the extraction (FR-081)', () => {
     // The extraction moved code; it must not have moved an await relative to the
-    // serialized commit point. The ordering that matters at the failed path is: queue
-    // finish, then history record, then the audit — the audit last, because it is the only
-    // one whose failure is tolerated.
-    const failedRegion = SOURCE.slice(
-      SOURCE.indexOf('history record (failed)'),
-      SOURCE.indexOf('history record (failed)') + 800
-    );
-    const historyAt = failedRegion.indexOf('history record (failed)');
-    const auditAt = failedRegion.indexOf('emitTerminalOutcome');
-    expect(historyAt).toBeGreaterThanOrEqual(0);
-    expect(auditAt).toBeGreaterThan(historyAt);
+    // serialized commit point. The ordering that matters is: queue finish, then
+    // history record, then the audit — the audit LAST, because it is the only one
+    // whose failure is not tolerated.
+    //
+    // FR-R3-128 — the sequence moved to `run-terminal-effects.ts`, so the ordering is
+    // asserted there. That module is where the order is now decided, and asserting it
+    // anywhere else would be asserting a copy.
+    const queueAt = EFFECTS.indexOf('queue.finish(');
+    const historyAt = EFFECTS.indexOf('historyRecorder.record(');
+    const auditAt = EFFECTS.indexOf('deps.emitTerminalOutcome(');
+    expect(queueAt, 'the effects module must call queue.finish').toBeGreaterThanOrEqual(0);
+    expect(historyAt, 'then record history').toBeGreaterThan(queueAt);
+    expect(auditAt, 'and emit the audit record last').toBeGreaterThan(historyAt);
+
+    // And the swallow/no-swallow split, which is the reason the order matters: the two
+    // best-effort records are in `try`/`catch`, the required one is not.
+    const auditRegion = EFFECTS.slice(auditAt);
+    expect(auditRegion).not.toMatch(/^\s*\}\s*catch/m);
   });
 });

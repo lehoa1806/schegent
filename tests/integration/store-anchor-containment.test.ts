@@ -16,7 +16,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { createCatalogFsAdapter, CATALOG_DIRECTORY_SEGMENTS } from '../../src/lib/catalog-fs-adapter';
+import { createCatalogFsAdapter, CATALOG_DIRECTORY_SEGMENTS } from '../../src/host-services/catalog-fs-adapter';
 import { createDiskOwnershipFs } from '../../src/state/ownership-fs';
 import { OwnershipRegistry, PRIMACY_RESOURCE } from '../../src/state/ownership-registry';
 import { STALENESS_THRESHOLD_MS } from '../../src/state/lock';

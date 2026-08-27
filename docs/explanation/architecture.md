@@ -207,7 +207,7 @@ The host keeps raw process output away from the webview boundary. `PhaseRunner`,
 
 Filesystem storage owns data with different integrity or retention needs: immutable catalog versions under `.schegent/catalog`, authoritative fencing under `.schegent/ownership`, structured audit and session evidence, full rerun descriptions under `.schegent/history`, cumulative metrics, and transport/runtime logs. Private pre-Git recovery checkpoints live under extension `globalStorage`, outside the repository they recover. See [File layout](../reference/file-layout.md) for exact paths.
 
-<!-- Source: src/lib/catalog-fs-adapter.ts -->
+<!-- Source: src/host-services/catalog-fs-adapter.ts -->
 <!-- Source: src/state/ownership-fs.ts -->
 <!-- Source: src/audit/audit-log-writer.ts -->
 <!-- Source: src/services/history/history-description-store.ts -->

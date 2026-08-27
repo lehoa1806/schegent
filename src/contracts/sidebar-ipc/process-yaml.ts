@@ -10,7 +10,7 @@
 // See specs/084-phase-yaml-exchange/contracts/process-yaml-ipc.md and
 // specs/085-pipeline-package-exchange/contracts/process-yaml-ipc.md.
 
-import { PIPELINE_ID_MAX_LEN } from '../pipeline-definitions';
+import { MODEL_ID_MAX_LEN, PIPELINE_ID_MAX_LEN } from '../pipeline-definitions';
 import { PHASE_ID_MAX_LEN } from '../process-definitions';
 import { WORKFLOW_ID_MAX_LEN } from '../workflow-definitions';
 import type {
@@ -18,7 +18,6 @@ import type {
   CMD_PREFLIGHT_PROCESS_YAML,
   CommandBase
 } from '../sidebar-ipc';
-import { MODEL_ID_MAX_LEN } from '../../services/process-yaml/types';
 import type { DocumentRefusal, ImportPlan, ProcessYamlResourceKind } from '../../services/process-yaml/types';
 
 // The plan types have exactly one definition, in the service module that also

@@ -3,11 +3,25 @@ import type { TelemetrySnapshot } from '../../telemetry/telemetry-snapshot';
 import type { SanitizedLogger } from '../../lib/logger';
 import type { Disposable, StoreChangeListener } from '../../state/workspace-state';
 import type { StateProjectorDeps, ProjectorListener, ProjectorTimer } from './state-projector';
-import { DEFAULT_MAX_WAIT_MS } from './state-projector';
 import { buildIdleSnapshot, type AuditTailEntry, type WorkflowSnapshot } from './snapshot';
 import { AuditTailState } from './audit-tail-state';
 import { ProjectorBookkeepingRegistry } from './projector-bookkeeping-registry';
 import { composeWorkflowSnapshot } from './snapshot-composer';
+
+/**
+ * The staleness bound on a projected frame, in ms.
+ *
+ * Deliberately NOT derived from `tickIntervalMs` (1 s): the tick is a liveness
+ * heartbeat for elapsed counters, this is a staleness bound on the whole frame, and
+ * tying them would make one number answer two questions.
+ *
+ * FR-R3-128 — moved here from `state-projector.ts`, which value-imported this
+ * module while this module imported the constant back: a two-file cycle over one
+ * number, reported by `tests/lint/import-graph-acyclic.test.ts` on its first run.
+ * It lives with the consumer that applies it as a default; `state-projector.ts`
+ * re-exports it so existing importers are unchanged.
+ */
+export const DEFAULT_MAX_WAIT_MS = 500;
 
 const STUB_STORE: NonNullable<StateProjectorDeps['store']> = Object.freeze({
   getRunMap: () => ({}),

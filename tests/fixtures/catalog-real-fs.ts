@@ -32,7 +32,7 @@ import { createCatalogStore, createQueueRunProvenance, type CatalogStore } from 
 import type { RunProvenance } from '../../src/catalog';
 import { draftTokenOf, type ExpectedDraftVersion } from '../../src/contracts/catalog-lifecycle';
 import type { CatalogKind, LifecycleWriteOutcome } from '../../src/contracts/catalog-store';
-import { CATALOG_DIRECTORY_SEGMENTS, createCatalogFsAdapter } from '../../src/lib/catalog-fs-adapter';
+import { CATALOG_DIRECTORY_SEGMENTS, createCatalogFsAdapter } from '../../src/host-services/catalog-fs-adapter';
 
 /** Everything under the workspace root, relative and sorted. */
 export interface Tree {

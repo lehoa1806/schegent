@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { ACTING_LAYERS, LEAF_LAYERS } from './architecture-layers';
 
 /**
  * FR-R3-110 (FR-104) — the documented layering, enforced by something.
@@ -37,30 +38,9 @@ const SRC = resolve(REPO_ROOT, 'src');
  * Not a full dependency graph. These two are the ones whose inversion was actually observed, and
  * a rule that names what was broken is easier to defend than a rule that names everything.
  */
-const LEAF_LAYERS: ReadonlyArray<{ readonly dir: string; readonly role: string }> = [
-  { dir: 'contracts', role: 'describes the shapes both sides agree on; it may not depend on either' },
-  { dir: 'lib', role: 'small helpers with no domain knowledge' }
-];
-
-/** The layers that ACT. A leaf reaching one of these is the inversion. */
-const ACTING_LAYERS = [
-  'activation',
-  'catalog',
-  'commands',
-  'controller',
-  'headless',
-  'host-services',
-  'metrics',
-  'monitor',
-  'parser',
-  'queue',
-  'runner',
-  'services',
-  'state',
-  'telemetry',
-  'ui',
-  'watchdog'
-] as const;
+// FR-R3-128 (T1486) — the two lists moved to `architecture-layers.ts` so
+// `import-graph-acyclic.test.ts` reads the same declaration instead of a copy.
+// Nothing about them changed.
 
 /**
  * Dated allowlist, each entry with the reason it has not been fixed.
@@ -69,23 +49,19 @@ const ACTING_LAYERS = [
  * one is a constant or helper that belongs in the leaf.
  */
 const ALLOWLIST: ReadonlyArray<{ readonly from: string; readonly into: string; readonly reason: string }> = [
-  {
-    from: 'src/lib/catalog-fs-adapter.ts',
-    into: 'catalog',
-    reason:
-      '2026-08-26 — the adapter implements ports the catalog layer declares, so it is arguably ' +
-      'in the wrong directory rather than making a wrong import: an adapter FOR the catalog is ' +
-      'catalog code. Moving the file is the fix and it is not this item; recorded so it is ' +
-      'visible rather than forgotten'
-  },
-  {
-    from: 'src/contracts/sidebar-ipc/process-yaml.ts',
-    into: 'services',
-    reason:
-      '2026-08-26 — imports MODEL_ID_MAX_LEN from services/process-yaml/types. A bound is ' +
-      'contract-shaped and belongs in contracts; the move is mechanical and deferred to keep ' +
-      'this gate landing green rather than bundling an unrelated change into it'
-  }
+  // FR-R3-128 (T1485) — EMPTY, and both entries were deleted rather than renewed.
+  //
+  //   * `src/lib/catalog-fs-adapter.ts` -> `src/host-services/catalog-fs-adapter.ts`. The
+  //     entry itself said the file was in the wrong directory rather than making a
+  //     wrong import, and it was right: an adapter FOR the catalog is catalog code.
+  //   * `MODEL_ID_MAX_LEN` moved from `services/process-yaml/types.ts` into
+  //     `contracts/pipeline-definitions.ts`, beside `PIPELINE_ID_MAX_LEN`. The entry
+  //     said a bound is contract-shaped; it is. Moved, not copied.
+  //
+  // An exception list is a QUEUE, not a state. Keeping it empty is the point, and
+  // the truthfulness assertion below is what makes an entry that outlives its
+  // inversion fail rather than linger — which is how these two came to be deleted:
+  // the gate reported them stale within seconds of the moves.
 ];
 
 function tsFiles(dir: string, out: string[] = []): string[] {
