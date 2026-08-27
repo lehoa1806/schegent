@@ -142,7 +142,9 @@ describe('spec traceability governance', () => {
       expect(SCOPE.kind).toBe('envelope');
       return;
     }
+    // Narrowed by the early return above, so a second `kind` comparison here is
+    // dead. Assert on the reason directly.
     expect(SCOPE.kind).toBe('skipped');
-    expect(SCOPE.kind === 'skipped' && SCOPE.reason).toContain('no planning envelope');
+    expect(SCOPE.reason).toContain('no planning envelope');
   });
 });

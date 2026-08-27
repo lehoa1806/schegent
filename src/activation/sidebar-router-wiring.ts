@@ -293,7 +293,7 @@ return new MessageRouter({
     } catch (err) {
       logger.warn(
         `extension: phase export write failed: ${logger.sanitize(
-          (err as Error).message ?? 'unknown error'
+          err instanceof Error ? err.message : 'unknown error'
         )}`
       );
       return { outcome: 'failed' as const, message: 'Could not write the document.' };
@@ -320,7 +320,7 @@ return new MessageRouter({
     } catch (err) {
       logger.warn(
         `extension: phase import read failed: ${logger.sanitize(
-          (err as Error).message ?? 'unknown error'
+          err instanceof Error ? err.message : 'unknown error'
         )}`
       );
       return { outcome: 'failed' as const, message: 'Could not read the document.' };

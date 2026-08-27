@@ -86,7 +86,12 @@ function classifiedPlatforms(): ReadonlySet<string> {
   // the lowercase platform string.
   for (const match of body.matchAll(/^\|\s*\*\*([A-Za-z]+)\*\*(?:\s*\(([a-z0-9, ]+)\))?\s*\|\s*\*\*(?:Verified|Unverified)\*\*/gm)) {
     named.add(match[1]!.toLowerCase());
-    for (const token of (match[2] ?? '').split(',')) {
+    // The parenthesised group is OPTIONAL in the pattern, so it is absent at
+    // runtime for a row like `| **Linux** | **Unverified** |`. The declaration says
+    // so; without it `noUncheckedIndexedAccess` being off types it `string` and the
+    // guard below reads as dead code.
+    const platformToken: string | undefined = match[2];
+    for (const token of (platformToken ?? '').split(',')) {
       const trimmed = token.trim();
       if (trimmed.length > 0) named.add(trimmed);
     }

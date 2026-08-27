@@ -453,3 +453,31 @@ pins a single number for a whole scope.
 | `extension.ts` ceiling set to 1,271 against a 1,270-line file | red — un-decided debt |
 
 Each was reverted and the gate returned green.
+
+## FR-R3-115..119 — every gate this batch added, observed red (2026-08-27)
+
+FR-070 required each new gate to be driven red by mutation of the real tree before it
+counted. A gate that has never failed is a gate nobody has evidence for, and
+`FR-R3-114` measured one that read as coverage for months while matching nothing.
+
+**Five gates, six observations** — the semantic-consistency gate is driven twice, once
+across all three seeds and once against the specific sentence `FR-R3-116` row 1 names.
+
+| Gate | Mutation | Observed |
+|---|---|---|
+| `document-mechanism-consistency` | each of three seeds' denial sentences planted in a document in its scope | red, naming the seed, then green on restore — by `scripts/document-mechanism-consistency-selftest.sh`, 9 passed / 0 failed |
+| `document-mechanism-consistency` | `threat-model.md:70`'s exact original sentence restored | red — the FR-026 case, specifically |
+| `no-unguarded-parent-read` | a probe file reading `../AGENTS.md` with no envelope check | red, naming the probe, then green on removal |
+| `platform-branch-has-record-row` | `process.platform === 'freebsd'` added under `src/` | red, naming `freebsd`, then green on revert |
+| `source-loc-budget` function bound | a 407-line function added to `src/activation/` | red — and this one **changed the design**: it passed against the first draft, which is how the flat-mark defect was found |
+| `source-loc-budget` tight ceiling | `extension.ts` ceiling set to 1,271 against a 1,270-line file | red — un-decided debt |
+
+Two further non-vacuity checks were driven in the opposite direction, to prove the
+carve-outs are not loopholes: a correctly-stated **limit** and an explicitly
+**historical** denial both leave `document-mechanism-consistency` green.
+
+**The one that mattered most was the one that did NOT go red.** The 407-line function
+passed the function bound's first draft, and that is the only reason the flat-mark
+defect was found — it was invisible to reading and to review. An observation that
+fails to reproduce the expected failure is evidence too, and worth more here than the
+five that behaved.
