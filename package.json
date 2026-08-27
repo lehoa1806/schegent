@@ -21,6 +21,12 @@
     "orchestration"
   ],
   "main": "./dist/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Schegent activates in an untrusted window and serves a read-only view: state, history, audit and logs are visible. Every command in the mutating set is refused at the sidebar message router while VS Code reports the workspace untrusted, so enqueueing or starting a Run and publishing a process definition are unavailable until the folder is trusted \u2014 and because a Run is what spawns a backend CLI, no CLI is spawned either. Declared explicitly rather than left to VS Code's default (FR-R3-126) so the intent is on the record; the behaviour is unchanged and the VS Code integration suite is what shows it."
+    }
+  },
   "activationEvents": [
     "workspaceContains:.specify/",
     "workspaceContains:.schegent/"

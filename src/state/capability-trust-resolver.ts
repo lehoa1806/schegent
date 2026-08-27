@@ -44,6 +44,11 @@
 
 import * as vscode from 'vscode';
 
+import {
+  isExplicitBoolean,
+  resolveCapabilityDecision
+} from './capability-trust-decision';
+
 // Feature 099 (T492, FR-046) — `pipelineOverrides` and `workflowOverrides` are
 // gone with the layer tier. Both asked which layer was permitted to redefine
 // another's row; one layer has no such question. The two survivors gate document
@@ -66,35 +71,14 @@ const SETTING_KEYS: Record<TrustCapability, string> = {
   retryConditions: 'schegent.trust.allowCustomRetryConditions'
 };
 
-function isExplicitBoolean(value: unknown): value is boolean {
-  return value === true || value === false;
-}
+
 
 /**
- * What a capability resolves to when NEITHER scope has an opinion.
- *
- * FR-R3-108 forced this into the open rather than leaving it as a bare `return true` at
- * the bottom of a ladder. It stays **allow**, and the reasoning is recorded because the
- * review's framing — a control named "trust", default-on and workspace-overridable —
- * argues for deny:
- *
- *   - Workspace trust is already the outer gate, so the remaining exposure needs BOTH a
- *     trusted-but-hostile workspace AND operator silence. The inversion above is the
- *     part that was actually broken, and it is fixed regardless of this default.
- *   - Flipping it would stop custom phases loading for every existing operator on
- *     upgrade, and custom phases are what this product runs. That is a first-run
- *     behaviour change for everyone, to close a case an explicit `false` already closes.
- *
- * The manifest keeps `null` as its declared default, which is NOT the same as leaving
- * this implicit: `null` is a documented third state meaning "follow Workspace Trust",
- * and it is what lets `getResolvedScope` distinguish "nobody spoke" from "someone said
- * yes". Replacing it with `true` would erase that distinction in a trust control.
- *
- * The flip to deny remains available as an operator-facing decision. Taking it would
- * carry a migration story with it — an operator whose phases stop loading must be told
- * why, by name, in the refusal — which is why it is not taken in passing.
+ * FR-R3-126 — the ladder and its silent default moved to
+ * `capability-trust-decision.ts`, a pure module, so the decision is reachable
+ * without `vscode`. Nothing about it changed; read that file for the reasoning
+ * behind `SILENT_DEFAULT`, which is where it now lives.
  */
-const SILENT_DEFAULT = true;
 
 function readInspect(
   capability: TrustCapability
@@ -108,16 +92,19 @@ function readInspect(
   };
 }
 
+/**
+ * FR-R3-126 — this is now the vscode-READING half. The decision is
+ * `resolveCapabilityDecision`; this function's whole job is invariant I-1, which
+ * is that every public call re-reads `isTrusted` and `inspect()` rather than
+ * caching either.
+ */
 export function isCapabilityAllowed(capability: TrustCapability): boolean {
-  if (vscode.workspace.isTrusted !== true) return false;
   const { workspaceValue, globalValue } = readInspect(capability);
-  // Deny-precedence: an explicit `false` at EITHER scope decides, before any `true` is
-  // consulted. Ordering the checks this way rather than ordering the SCOPES is what
-  // makes the rule "any deny wins" instead of "the first scope with an opinion wins".
-  if (globalValue === false || workspaceValue === false) return false;
-  if (isExplicitBoolean(workspaceValue)) return workspaceValue;
-  if (isExplicitBoolean(globalValue)) return globalValue;
-  return SILENT_DEFAULT;
+  return resolveCapabilityDecision({
+    isTrusted: vscode.workspace.isTrusted === true,
+    workspaceValue,
+    globalValue
+  });
 }
 
 export function getResolvedScope(capability: TrustCapability): ResolvedScope {

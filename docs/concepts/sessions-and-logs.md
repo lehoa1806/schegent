@@ -188,7 +188,27 @@ MiB and three generations, or at most four files per workspace.
 
 Session retention groups `raw-<runId>.log` and the matching `<runId>/`
 diagnostic tree as one artifact group. The defaults are 30 days and 512 MiB,
-configurable from one day to 3650 days and from 1 MiB to 10 GiB. The sweep
+configurable from one day to 3650 days and from 1 MiB to 10 GiB.
+
+<!-- executable-example: session-retention-defaults -->
+
+```
+| setting                                     | default   | min | max        |
+|---------------------------------------------|-----------|-----|------------|
+| schegent.logging.sessionRetentionMaxAgeDays | 30        | 1   | 3650       |
+| schegent.logging.sessionRetentionMaxBytes   | 536870912 | 1048576 | 10737418240 |
+```
+
+These rows are read by `tests/lint/documented-defaults-are-executable.test.ts` and checked against
+`SETTINGS_SCHEMA` in `src/config/settings-schema.ts`, which is where these values are declared.
+
+**What this example checks, and what it does not.** It checks the **values and their units** — the
+figures in the paragraph above, which are what an operator reads when deciding whether the defaults
+suit their repository. It does **not** check the sweep: whether a 31-day-old group is actually
+removed lives in `SessionArtifactRetentionService`, inside a private asynchronous pass over the
+filesystem with its own containment checks, and making that document-driven would be a large
+refactor justified by a small claim. `FR-R3-126` recorded that as a scoped choice rather than as
+coverage. The sweep
 removes expired inactive groups first, then the oldest inactive groups until
 the byte budget is met. Running and paused Run IDs are protected. Sweeps run at
 activation, after terminal transitions, and when either retention setting

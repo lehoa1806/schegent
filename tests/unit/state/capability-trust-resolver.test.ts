@@ -68,6 +68,7 @@ import {
   initCapabilityTrustResolver,
   type TrustCapability
 } from '../../../src/state/capability-trust-resolver';
+import { resolveCapabilityDecision } from '../../../src/state/capability-trust-decision';
 
 const KEYS: Record<TrustCapability, string> = {
   phases: 'schegent.trust.allowCustomPhases',
@@ -158,6 +159,74 @@ describe('capability-trust-resolver (059, T008) — 16-row ladder matrix', () =>
     if (user !== null) return 'user';
     return 'workspace-trust';
   }
+
+  // FR-R3-126 — the pure ladder, over the SAME oracle and one dimension wider.
+  //
+  // `resolveCapabilityDecision` is the extraction of this ladder out of the
+  // vscode-reading wrapper (`src/state/capability-trust-decision.ts`). It is
+  // asserted against `expectedAllowed` above rather than against a second oracle:
+  // two ladder tables would be a trust control with two answers, which is the
+  // duplicate-authority shape this round has removed repeatedly.
+  //
+  // ONE DIMENSION WIDER, and this is why the extraction earns its own rows: the
+  // mock's `inspect()` can only produce `true`, `false` or `null`, while the real
+  // API returns `undefined` for a key nobody has set. The wrapper cannot
+  // distinguish them and the pure function can be asked directly, so the
+  // `undefined` column is coverage the mocked rows above cannot reach.
+  describe('resolveCapabilityDecision — the same ladder, without vscode', () => {
+    const pureValues = [true, false, null, undefined] as const;
+    for (const isTrusted of trustValues) {
+      for (const workspace of pureValues) {
+        for (const user of pureValues) {
+          // `undefined` and `null` both mean "no override" (invariant I-3), so the
+          // oracle is fed the `null` form for either.
+          const asOracle = (value: boolean | null | undefined): boolean | null =>
+            value === undefined ? null : value;
+          const expected = expectedAllowed(isTrusted, asOracle(workspace), asOracle(user));
+          it(`isTrusted=${isTrusted}, workspace=${String(workspace)}, user=${String(user)} → ${expected}`, () => {
+            expect(
+              resolveCapabilityDecision({
+                isTrusted,
+                workspaceValue: workspace,
+                globalValue: user
+              })
+            ).toBe(expected);
+          });
+        }
+      }
+    }
+
+    it('treats undefined exactly as null — no override, either way', () => {
+      // Stated as its own assertion because the whole point of the wider column is
+      // that the two absences must not diverge.
+      for (const isTrusted of trustValues) {
+        for (const other of pureValues) {
+          expect(
+            resolveCapabilityDecision({
+              isTrusted,
+              workspaceValue: undefined,
+              globalValue: other
+            })
+          ).toBe(
+            resolveCapabilityDecision({ isTrusted, workspaceValue: null, globalValue: other })
+          );
+        }
+      }
+    });
+
+    it('is what the wrapper delegates to, so the extraction cannot stop being called', () => {
+      // T014a. The mocked rows above exercise `isCapabilityAllowed`; this asserts
+      // the two agree on a case that would diverge if the wrapper grew its own copy
+      // of the ladder — an explicit deny at user scope against an explicit allow at
+      // workspace scope, which is the pair FR-R3-108 re-expected.
+      mocks.state.isTrusted = true;
+      setScope('phases', true, false);
+      expect(isCapabilityAllowed('phases')).toBe(
+        resolveCapabilityDecision({ isTrusted: true, workspaceValue: true, globalValue: false })
+      );
+      expect(isCapabilityAllowed('phases')).toBe(false);
+    });
+  });
 
   for (const capability of capabilities) {
     for (const isTrusted of trustValues) {
