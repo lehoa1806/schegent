@@ -74,8 +74,14 @@ function makeRecordingAuditWriter(
   return { writer, entries };
 }
 
+/**
+ * FR-R3-125 — the accessor takes the backend kind now, because the setting is a
+ * list. These stubs answer the same for every kind; the per-kind behaviour is
+ * asserted in `backend-containment-policy.test.ts` against `resolveUncontainedGrant`,
+ * which is where the setting is actually read.
+ */
 function postureAccessor(read: () => boolean): BackendPostureAccessor {
-  return { isUncontainedAllowed: read };
+  return { isUncontainedAllowed: () => read() };
 }
 
 function makeRunner(
@@ -126,6 +132,10 @@ describe('PhaseRunner — backend posture record (FR-R3-064)', () => {
     expect(posture[0].payload).toEqual({
       runner: 'claude',
       containment: 'none',
+      // FR-R3-125 — `none` is a VALUE. An absent field is what a pre-FR-R3-125
+      // log looks like, and "uncontained" must stay distinguishable from
+      // "not recorded".
+      containmentMechanism: 'none',
       uncontainedAllowed: true
     });
     expect(posture[0].outcome).toBe('info');
@@ -224,7 +234,12 @@ describe('PhaseRunner — backend posture record (FR-R3-064)', () => {
     await makeRunner(writer, postureAccessor(() => true)).run(baseInputs);
 
     const payload = postureEntries(entries)[0].payload as Record<string, unknown>;
-    expect(Object.keys(payload).sort()).toEqual(['containment', 'runner', 'uncontainedAllowed']);
+    expect(Object.keys(payload).sort()).toEqual([
+      'containment',
+      'containmentMechanism',
+      'runner',
+      'uncontainedAllowed'
+    ]);
     for (const value of Object.values(payload)) {
       expect(['string', 'boolean']).toContain(typeof value);
     }

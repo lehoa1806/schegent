@@ -71,14 +71,14 @@ service.
 Even for the default case—Claude is authenticated and `claude` is on
 `PATH`—one setting is required: the default runner is uncontained, so a fresh
 install **refuses its first run** until you enable
-`schegent.backend.allowUncontainedBackends` (or select Codex, which carries its
+`schegent.backend.uncontainedBackends` (or select Codex, which carries its
 own sandbox). That refusal is the shipped capability posture, not a fault —
 see [Agent capability posture](../architecture/agent-capability-posture.md).
 Configure it, plus only the differences in your environment:
 
 | Need | Setting | Required when |
 |---|---|---|
-| Allow an uncontained backend | `schegent.backend.allowUncontainedBackends` | Always for Claude or Agy — a fresh install refuses its first run without it. Application-scoped, default `false`. |
+| Allow an uncontained backend | `schegent.backend.uncontainedBackends` | Name each backend you accept — a fresh install refuses its first run until you do. Per backend since FR-R3-125, so allowing `agy` does not allow `claude`. Application-scoped (it applies to every workspace in this installation), default `[]`. Before naming one, read [Running Schegent on a repository you do not trust](../operations/untrusted-repositories.md). |
 | Select the backend | `schegent.backend.runner` | You use Codex or Agy instead of the default Claude runner. |
 | Locate Claude | `schegent.cli.path` | `claude` is not available on `PATH`. |
 | Locate Codex | `schegent.codex.path` | `codex` is not available on `PATH`. |

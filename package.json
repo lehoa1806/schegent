@@ -174,11 +174,19 @@
           "scope": "application",
           "description": "Backend runner used to drive each phase invocation. **Permission posture differs by runner and this is the largest privilege choice in the product.** `claude` (default) spawns the Claude CLI (`schegent.cli.path`) with `--dangerously-skip-permissions`: its approval prompts are off and it acts without asking. `agy` spawns the Agy CLI the same way, adding `--output-format stream-json`. `codex` is the exception \u2014 it spawns the Codex CLI in non-interactive `exec --json` mode with `--sandbox workspace-write`, an OS-enforced bound that keeps `.git` read-only, which is also why a phase declaring `sideEffects: git` is refused on it. The prompt is piped over stdin for all backends. Per-phase overrides are part of a Phase definition in the catalog. See docs/concepts/unprompted-agent-not-contained.md for the permission decision and docs/operations/backends.md for the contract any backend must honor."
         },
-        "schegent.backend.allowUncontainedBackends": {
-          "type": "boolean",
-          "default": false,
+        "schegent.backend.uncontainedBackends": {
+          "type": "array",
+          "default": [],
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "claude",
+              "agy"
+            ]
+          },
           "scope": "application",
-          "markdownDescription": "Allow a backend that runs with **no OS-enforced bound** on what it can reach. `claude` and `agy` are spawned with `--dangerously-skip-permissions`: their approval prompts are off and they act under your local permissions. `codex` carries a `workspace-write` sandbox and is unaffected by this setting.\n\n**Default `false`, and a run using an uncontained backend is refused until you set this** (FR-R3-056). Enabling it is an explicit acceptance of that posture. Every run that reaches a backend records which backend it used, whether that backend carries an OS-enforced bound, and whether this setting was enabled at the time, in the audit log \u2014 once per run, not once per phase (FR-R3-064).\n\nThis is a machine-level safety posture, so it is `application`-scoped: a workspace cannot grant it to itself. See `repo/docs/architecture/agent-capability-posture.md`."
+          "markdownDescription": "Backends you allow to run with **no OS-enforced bound** on what they can reach, named one at a time. `claude` and `agy` are spawned with `--dangerously-skip-permissions`: their approval prompts are off, and model-generated actions execute with your local user authority — which means content in a repository you open can act with that authority through the backend's own legitimate tools. `codex` carries a `workspace-write` sandbox, is already contained, and is unaffected by this setting.\n\n**Default `[]`, and a run using an uncontained backend is refused until you name it here** (FR-R3-056). Naming a backend is an explicit acceptance of that authority **for that backend only** — allowing `agy` does not allow `claude` (FR-R3-125).\n\nEvery run that reaches a backend records which backend it used, whether that backend carries an OS-enforced bound, which containment mechanism actually applied, and whether it was allowed at the time, in the audit log — once per run, not once per phase (FR-R3-064, FR-R3-125).\n\nThis is a **machine-level** safety posture, so it is `application`-scoped: it applies to every workspace you open in this installation, not just the one you granted it from, and a workspace cannot grant it to itself.\n\n**Replaces the removed boolean `schegent.backend.allowUncontainedBackends`.** A stale `true` grants nothing: the migration fails closed on purpose, so name the backends you actually want. See `repo/docs/architecture/agent-capability-posture.md`, `repo/docs/architecture/backend-containment-qualification.md`, and `repo/docs/operations/untrusted-repositories.md`."
         },
         "schegent.backend.probeTimeoutSeconds": {
           "type": "integer",

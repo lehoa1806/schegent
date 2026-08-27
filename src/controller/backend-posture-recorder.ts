@@ -1,7 +1,7 @@
 import type { AuditEntry } from '../audit/audit-entry';
 import type { BackendPostureAdmittedPayload } from '../contracts/audit-events';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
-import { containmentOf } from '../services/backend-containment-policy';
+import { containmentOf, mechanismOf } from '../services/backend-containment-policy';
 
 /**
  * FR-R3-064 — the per-run record of which backend a Run was admitted to.
@@ -32,8 +32,15 @@ import { containmentOf } from '../services/backend-containment-policy';
  * deleted a runner held across a posture the operator can change.
  */
 export interface BackendPostureAccessor {
-  /** `schegent.backend.allowUncontainedBackends` as it reads right now. */
-  isUncontainedAllowed(): boolean;
+  /**
+   * Whether `schegent.backend.uncontainedBackends` names THIS backend, as the
+   * setting reads right now.
+   *
+   * FR-R3-125 — the parameter is the change. The setting was one boolean meaning
+   * "all uncontained backends"; it is now a list, so the recorded fact is about
+   * the backend this Run was admitted to and not about the host's mood.
+   */
+  isUncontainedAllowed(kind: BackendRunnerKind): boolean;
 }
 
 /** The envelope fields an entry needs, and nothing more. */
@@ -134,8 +141,12 @@ export class BackendPostureRecorder {
       // Derived from the policy, never passed in, so the recorded classification
       // cannot disagree with the one the refusal enforces.
       containment: containmentOf(runner),
-      // Read now. See `BackendPostureAccessor` for why not the registry's value.
-      uncontainedAllowed: this.accessor.isUncontainedAllowed()
+      // FR-R3-125 — WHICH boundary, from the same table `containmentOf` derives
+      // from, so the two cannot disagree and the qualification record can be
+      // checked against both. Derived here, never passed in.
+      containmentMechanism: mechanismOf(runner),
+      // Read now, for this backend. See `BackendPostureAccessor`.
+      uncontainedAllowed: this.accessor.isUncontainedAllowed(runner)
     };
     await this.appendRequired({
       runId: context.runId,

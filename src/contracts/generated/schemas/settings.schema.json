@@ -145,18 +145,6 @@
           "itemPattern": null
         },
         {
-          "key": "schegent.backend.allowUncontainedBackends",
-          "type": "boolean",
-          "default": false,
-          "scope": "application",
-          "enum": null,
-          "minimum": null,
-          "maximum": null,
-          "pattern": null,
-          "itemType": null,
-          "itemPattern": null
-        },
-        {
           "key": "schegent.backend.probeTimeoutSeconds",
           "type": "integer",
           "default": 5,
@@ -182,6 +170,18 @@
           "maximum": null,
           "pattern": null,
           "itemType": null,
+          "itemPattern": null
+        },
+        {
+          "key": "schegent.backend.uncontainedBackends",
+          "type": "array",
+          "default": [],
+          "scope": "application",
+          "enum": null,
+          "minimum": null,
+          "maximum": null,
+          "pattern": null,
+          "itemType": "string",
           "itemPattern": null
         },
         {

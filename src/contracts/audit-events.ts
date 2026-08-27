@@ -1,6 +1,9 @@
 import type { PhaseCapability } from './phase-capabilities';
 import type { BackendRunnerKind } from './backend-kinds';
-import type { BackendContainment } from '../services/backend-containment-policy';
+import type {
+  BackendContainment,
+  BackendContainmentMechanism
+} from '../services/backend-containment-policy';
 import type { TerminationReason } from '../state/workflow-run';
 import type { RunnerLabel, TreeEscalation } from './backend-runner';
 // Feature FR-R3-006 — the reset transaction's phase and refusal literals are
@@ -705,7 +708,28 @@ export interface BackendPostureAdmittedPayload {
    */
   readonly containment: BackendContainment;
   /**
-   * `schegent.backend.allowUncontainedBackends` as it read at THIS emission.
+   * FR-R3-125 (FR-002) — WHICH boundary, where `containment` says only whether
+   * there is one.
+   *
+   * ADDITIVE. No `AUDIT_SCHEMA_VERSION` bump, on the same reasoning FR-R3-064
+   * recorded for this payload's original three fields: the warn-and-preserve
+   * parser tolerates a payload without it, and a historical entry that lacks it is
+   * a pre-FR-R3-125 log rather than a malformed one.
+   *
+   * `'none'` IS A VALUE. An absent field means "not recorded"; `'none'` means
+   * "recorded, and there was no boundary". Collapsing the two would make the
+   * uncontained case indistinguishable from the un-instrumented one, which is the
+   * distinction FR-R3-064 built this event to preserve.
+   *
+   * The value set is closed and comes from one table in
+   * `services/backend-containment-policy`, which `containmentOf` also derives
+   * from; `tests/lint/containment-qualification-parity.test.ts` asserts the
+   * qualification record names the same mechanism for every backend.
+   */
+  readonly containmentMechanism: BackendContainmentMechanism;
+  /**
+   * Whether `schegent.backend.uncontainedBackends` named THIS backend at THIS
+   * emission.
    *
    * Never a cached value. `extension.ts` reads the setting once at activation
    * for the registry's construction-time refusal; reusing that would record an

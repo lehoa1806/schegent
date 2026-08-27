@@ -4,15 +4,31 @@
 after this record had been filed with the analysis and a recommendation and the decision was returned
 for a call to be made.
 
-**What ships:** `schegent.backend.allowUncontainedBackends`, `application`-scoped, **default
-`false`**. A backend with no OS-enforced bound is refused at the point it would be constructed. The
-mechanism is in `src/services/backend-containment-policy.ts` and enforced in
-`createBackendRunner`; it is asserted by test, not by manifest prose.
+**What ships:** `schegent.backend.uncontainedBackends`, `application`-scoped, **default `[]`**. A
+backend with no OS-enforced bound is refused at the point it would be constructed. The mechanism is in
+`src/services/backend-containment-policy.ts` and enforced in `createBackendRunner`; it is asserted by
+test, not by manifest prose.
+
+**Amended 2026-08-27 (`FR-R3-125`, T1471): the consent surface is per backend.** It shipped as one
+boolean, `schegent.backend.allowUncontainedBackends`, default `false`. That granted full local-user
+authority to *every* uncontained backend at once, which the repository audit of 2026-08-27 made its
+first top finding. The setting is now a **list of backend ids**, default empty: allowing `agy` does
+not allow `claude`. The old key is **removed and read by nothing** — reading both would be two
+authorities for one safety decision, and the fallback branch that mishandles the old boolean is the
+one that fails *open* — so a stale `true` grants nothing. Shape 3 itself is unchanged, and so is the
+enforcement point; what changed is the granularity of the grant.
+
+Two records were added beside this one and neither is paraphrased here:
+[Backend containment qualification](backend-containment-qualification.md) states what OS-enforced
+containment is actually available per backend and platform (including that `agy` exposes a
+`--sandbox` flag Schegent does not request, and why), and
+[Running Schegent on a repository you do not trust](../operations/untrusted-repositories.md) owns the
+untrusted-repository rule.
 
 **This changes the default install.** `backend.runner` defaults to `claude`, which is uncontained, so
-a fresh install refuses its first run until the operator either sets this setting or selects a
-backend that carries a sandbox. That is the intended effect of shape 3, and it is reversible with one
-setting.
+a fresh install refuses its first run until the operator either names `claude` in this setting or
+selects a backend that carries a sandbox. That is the intended effect of shape 3, and it is reversible
+with one setting.
 
 ## The finding
 
@@ -22,7 +38,7 @@ H-01 of the 2026-08-23 principal architecture review — its largest strategic f
 | backend | argv | OS-enforced bound |
 |---|---|---|
 | `claude` (**the default**) | `--dangerously-skip-permissions` | none |
-| `agy` | `--dangerously-skip-permissions` | none |
+| `agy` | `--dangerously-skip-permissions` | none — and `FR-R3-125` found the CLI has a `--sandbox` flag Schegent does not request; see [the qualification record](backend-containment-qualification.md) §4 |
 | `codex` | `exec --json --sandbox workspace-write` | filesystem, `.git` read-only |
 
 `schegent.backend.runner` defaults to `claude`. So a fresh install's default run path reaches
@@ -247,7 +263,7 @@ or restate the containment classification, which is proven against each adapter'
 `backend-containment-policy.test.ts`.
 
 **The posture is read fresh at each emission.** `extension.ts` reads
-`allowUncontainedBackends` once at activation for the runner registry's construction-time refusal; the
+`uncontainedBackends` once at activation for the runner registry's construction-time refusal; the
 emitter deliberately does **not** reuse that value, because a posture cached across the window is the
 defect finding 1 of this item removed when it deleted a runner held across a posture the operator can
 change. The emitter reads through an accessor, on the same never-cached pattern as the

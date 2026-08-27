@@ -121,12 +121,19 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
   // FR-R3-056 (H-01) — `application`-scoped deliberately: this is a machine-level
   // safety posture, and a workspace must not be able to grant itself the right to
   // run an unbounded agent.
-  'schegent.backend.allowUncontainedBackends': {
-    key: 'schegent.backend.allowUncontainedBackends',
-    type: 'boolean',
-    default: false,
+  // FR-R3-125 (FR-004) — one boolean became a list of backend ids. The old key
+  // `schegent.backend.allowUncontainedBackends` is REMOVED, not read as a
+  // fallback: two keys answering one safety question is the duplicate-authority
+  // shape FR-R3-066 removed, and the fallback branch that mishandles `true` fails
+  // OPEN. A stale `true` therefore grants nothing, which is the fail-closed
+  // direction and is stated in the refusal message and the settings reference.
+  'schegent.backend.uncontainedBackends': {
+    key: 'schegent.backend.uncontainedBackends',
+    type: 'array',
+    default: [],
+    itemType: 'string',
     scope: 'application',
-    docLabel: 'Allow backends with no OS-enforced bound'
+    docLabel: 'Backends allowed to run with no OS-enforced bound'
   },
   'schegent.backend.probeTimeoutSeconds': {
     key: 'schegent.backend.probeTimeoutSeconds',

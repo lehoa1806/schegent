@@ -36,7 +36,15 @@ const PAYLOAD = 'BackendPostureAdmittedPayload';
 const ALLOWED_UNIONS: ReadonlyArray<{ name: string; file: string }> = [
   // FR-R3-089 — identity moved out of the factory; the factory keeps construction.
   { name: 'BackendRunnerKind', file: 'src/contracts/backend-kinds.ts' },
-  { name: 'BackendContainment', file: 'src/services/backend-containment-policy.ts' }
+  { name: 'BackendContainment', file: 'src/services/backend-containment-policy.ts' },
+  // FR-R3-125 — WHICH boundary, added deliberately and stated here as the gate
+  // asks. It is a closed union of two literals declared beside `BackendContainment`
+  // in the same module, derived from the same table, and it can carry no path, no
+  // argv and no operator string — which is the property this gate exists to keep.
+  {
+    name: 'BackendContainmentMechanism',
+    file: 'src/services/backend-containment-policy.ts'
+  }
 ];
 
 const parse = (relPath: string): ts.SourceFile =>

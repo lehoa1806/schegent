@@ -3,7 +3,11 @@ import { ClaudeCliRunner } from './claude-cli';
 import { CodexCliRunner } from './codex-cli';
 import { AgyCliRunner } from './agy-cli';
 import { SanitizedLogger } from '../lib/logger';
-import { judgeBackendContainment } from '../services/backend-containment-policy';
+import {
+  ALLOW_UNCONTAINED_SETTING,
+  judgeBackendContainment
+} from '../services/backend-containment-policy';
+import type { ProcessEnvironmentMode } from './spawn-env';
 import {
   DEFAULT_BACKEND,
   SUPPORTED_BACKENDS,
@@ -52,10 +56,21 @@ export class UncontainedBackendRefusedError extends Error {
 
 export interface BackendRunnerFactoryOptions {
   /**
-   * FR-R3-056 — whether this host accepts a backend that has no OS-enforced
-   * bound. Required: see `createBackendRunner`.
+   * FR-R3-056, reshaped by FR-R3-125 — the backends this host accepts WITHOUT an
+   * OS-enforced bound. Required: see `createBackendRunner`.
+   *
+   * A set, not a boolean: allowing `agy` must not allow `claude`. Resolved from
+   * `schegent.backend.uncontainedBackends` by `resolveUncontainedGrant`, which
+   * also reports the entries that grant nothing.
    */
-  readonly allowUncontained: boolean;
+  readonly uncontainedGranted: ReadonlySet<BackendRunnerKind>;
+  /**
+   * FR-R3-125 (FR-007) — the environment policy mode, so the compounding case can
+   * be stated where both facts are known. Optional and defaulting to `undefined`
+   * ONLY because a caller that cannot know it must not be forced to guess; a
+   * missing mode suppresses the compound warning rather than fabricating one.
+   */
+  readonly environmentMode?: ProcessEnvironmentMode;
   readonly monitorHook?: MonitorSidecarHook | null;
   /**
    * Probe `<cli> --help` once per activation to pick the safest available
@@ -106,17 +121,21 @@ export function resolveBackendKind(
  * check placed at admission alone would be bypassed by every path that does not
  * go through admission, which is most of them.
  *
- * `allowUncontained` is a REQUIRED option, not an optional one defaulting to
+ * `uncontainedGranted` is a REQUIRED option, not an optional one defaulting to
  * permissive. An optional gate is a gate omitted at the one call site nobody
  * revisits; making it required means `tsc` enumerates every construction site
  * and no new one can be added without stating its posture. Same reasoning as the
  * required `environmentPolicy` on `WatchdogOptions` (FR-R3-049).
+ *
+ * FR-R3-125 (FR-008) — the enforcement point does NOT move. This is still the
+ * last place before an uncontained backend exists as an object, and the change is
+ * to the shape of what is granted, not to where the grant is checked.
  */
 export function createBackendRunner(
   kind: BackendRunnerKind,
   options: BackendRunnerFactoryOptions
 ): BackendRunner {
-  const verdict = judgeBackendContainment(kind, options.allowUncontained);
+  const verdict = judgeBackendContainment(kind, options.uncontainedGranted);
   if (verdict.outcome === 'refused') {
     throw new UncontainedBackendRefusedError(verdict.kind, verdict.message);
   }
@@ -127,13 +146,39 @@ export function createBackendRunner(
     // setting they may have set months ago; the run it applies to is now.
     //
     // Once per constructed runner, not once per run: the registry caches by
-    // kind, so this cannot claim to be a per-run record and does not. A genuine
-    // per-run entry belongs at admission and needs its own audit event; recorded
-    // as outstanding in the decision record rather than implied here.
+    // kind, so this cannot claim to be a per-run record and does not. The
+    // per-run record is `backend-posture-admitted` (FR-R3-064), which also
+    // carries the mechanism as of FR-R3-125.
     logger.warn(
       `backend '${kind}' has no OS-enforced bound; permitted by ` +
-        'schegent.backend.allowUncontainedBackends'
+        `${ALLOW_UNCONTAINED_SETTING} naming '${kind}'`
     );
+    // FR-R3-125 (FR-007) — the COMPOUNDING case, said once, as one fact.
+    //
+    // `warnIfEnvironmentIsUnrestricted` in `activation/backend-wiring.ts` already
+    // warns about `inherit`, once per workspace at activation. It is correct and
+    // is deliberately left alone: it is about the environment policy ON ITS OWN,
+    // and it does not know which backend is spawning. This warning is about the
+    // conjunction, and this is the only place both facts are in hand.
+    //
+    // It fires on ONE of four combinations. The other three are silent by
+    // construction and asserted so — a warning that fires on three of four is
+    // noise, and noise gets filtered, which is how the one that mattered is lost.
+    //
+    // Once per CONSTRUCTED RUNNER, like the warning above it: the registry caches
+    // by kind, so this is not a per-run record and does not claim to be. The
+    // per-run record is `backend-posture-admitted`, which carries the containment
+    // and the mechanism; the environment mode is deliberately NOT in that payload,
+    // which is closed to three bounded primitives plus the mechanism (FR-R3-064).
+    if (options.environmentMode === 'inherit') {
+      logger.warn(
+        `backend '${kind}' has no OS-enforced bound AND schegent.cli.environmentMode is ` +
+          "'inherit', so it receives the full ambient environment: credentials in the shell " +
+          'that launched this window are reachable by model-generated actions. Set ' +
+          'schegent.cli.environmentMode to allowlist or minimal, or use a contained backend. ' +
+          'See docs/operations/untrusted-repositories.md.'
+      );
+    }
   }
   switch (kind) {
     case 'codex':

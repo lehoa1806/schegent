@@ -22,6 +22,7 @@
 // whose only interesting half is this one.
 import { describe, expect, it, vi } from 'vitest';
 import { BackendRunnerRegistry } from '../../../src/runner/backend-runner-registry';
+import type { BackendRunnerKind } from '../../../src/contracts/backend-kinds';
 
 /** The teardown contract stage 2 relies on: dispose every disposable, in order, regardless. */
 async function disposeAll(disposables: ReadonlyArray<{ dispose: () => unknown }>): Promise<string[]> {
@@ -41,7 +42,7 @@ describe('FR-R3-114 row 7 — the last workspace folder is removed mid-run', () 
     // The registry is the thing that holds the children. `cancelAll` is what stage-2 teardown
     // calls, and this asserts it reaches every cached runner rather than the first one.
     const cancelled: string[] = [];
-    const registry = new BackendRunnerRegistry({ allowUncontained: false });
+    const registry = new BackendRunnerRegistry({ uncontainedGranted: new Set<BackendRunnerKind>() });
     const runners = new Map(
       (['claude', 'codex'] as const).map((kind) => [
         kind,
@@ -76,7 +77,7 @@ describe('FR-R3-114 row 7 — the last workspace folder is removed mid-run', () 
   it('is idempotent, because teardown can be reached twice', async () => {
     // `tearDownStage2` nulls its reference first and reset composes with the same lifecycle, so a
     // second call must be harmless rather than throwing into an already-disposed registry.
-    const registry = new BackendRunnerRegistry({ allowUncontained: false });
+    const registry = new BackendRunnerRegistry({ uncontainedGranted: new Set<BackendRunnerKind>() });
     expect(() => registry.cancelAll()).not.toThrow();
     expect(() => registry.cancelAll()).not.toThrow();
   });

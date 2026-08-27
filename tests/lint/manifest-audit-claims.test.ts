@@ -118,7 +118,7 @@ const AUDIT_CLAIM_REGISTRY: ReadonlyArray<{
   readonly why: string;
 }> = [
   {
-    setting: 'schegent.backend.allowUncontainedBackends',
+    setting: 'schegent.backend.uncontainedBackends',
     claim: 'records which backend it used',
     events: ['backend-posture-admitted'],
     why:
@@ -311,13 +311,13 @@ describe('manifest audit claims resolve to declared events (FR-R3-064)', () => {
     // and an internal identifier in that sentence makes the decision harder to
     // read, not easier to audit. The registry carries the identifier instead.
     const setting = readSettings().find(
-      (s) => s.key === 'schegent.backend.allowUncontainedBackends'
+      (s) => s.key === 'schegent.backend.uncontainedBackends'
     );
     expect(setting).toBeDefined();
     for (const type of ALL_AUDIT_EVENT_TYPES as readonly string[]) {
       expect(
         setting?.text.includes(type),
-        `the allowUncontainedBackends description names '${type}'; state the fact in operator ` +
+        `the uncontainedBackends description names '${type}'; state the fact in operator ` +
           'language and let the registry entry carry the identifier'
       ).toBe(false);
     }

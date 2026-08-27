@@ -1,4 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
   createBackendRunner,
   resolveBackendKind
@@ -6,6 +8,8 @@ import {
 import { DEFAULT_BACKEND, SUPPORTED_BACKENDS } from '../../../src/contracts/backend-kinds';
 import { ClaudeCliRunner } from '../../../src/runner/claude-cli';
 import { CodexCliRunner } from '../../../src/runner/codex-cli';
+import type { SanitizedLogger } from '../../../src/lib/logger';
+import type { BackendRunnerKind } from '../../../src/contracts/backend-kinds';
 
 describe('resolveBackendKind', () => {
   it('returns the default when the value is undefined / null / empty', () => {
@@ -41,24 +45,131 @@ describe('resolveBackendKind', () => {
 
 describe('createBackendRunner', () => {
   it('constructs a ClaudeCliRunner for kind=claude', () => {
-    const runner = createBackendRunner('claude', { allowUncontained: true });
+    const runner = createBackendRunner('claude', { uncontainedGranted: new Set<BackendRunnerKind>(['claude', 'agy']) });
     expect(runner).toBeInstanceOf(ClaudeCliRunner);
     expect(runner.hasActiveProcess).toBe(false);
   });
 
   it('constructs a CodexCliRunner for kind=codex', () => {
-    const runner = createBackendRunner('codex', { allowUncontained: false });
+    const runner = createBackendRunner('codex', { uncontainedGranted: new Set<BackendRunnerKind>() });
     expect(runner).toBeInstanceOf(CodexCliRunner);
     expect(runner.hasActiveProcess).toBe(false);
   });
 
   it('forwards the monitor hook into the concrete runner', () => {
     const hook = vi.fn();
-    const claude = createBackendRunner('claude', { allowUncontained: true, monitorHook: hook });
-    const codex = createBackendRunner('codex', { allowUncontained: false, monitorHook: hook });
+    const claude = createBackendRunner('claude', { uncontainedGranted: new Set<BackendRunnerKind>(['claude', 'agy']), monitorHook: hook });
+    const codex = createBackendRunner('codex', { uncontainedGranted: new Set<BackendRunnerKind>(), monitorHook: hook });
     // The hooks aren't observable from outside, but neither construction
     // should throw — that's the contract.
     expect(claude).toBeInstanceOf(ClaudeCliRunner);
     expect(codex).toBeInstanceOf(CodexCliRunner);
+  });
+});
+
+/**
+ * FR-R3-125 (FR-007, T1019/T1020) — the compounding case, said once.
+ *
+ * `warnIfEnvironmentIsUnrestricted` in `src/activation/backend-wiring.ts` already
+ * warns about `inherit`, once per workspace at activation. It is correct on its own
+ * and is deliberately untouched; what it cannot say is which backend is spawning,
+ * so the conjunction — no OS bound AND the full ambient environment — was never
+ * stated as one fact anywhere.
+ *
+ * All four combinations are asserted. A warning that fires on three of four is
+ * noise, and noise gets filtered, which is how the one that mattered is lost.
+ */
+describe('createBackendRunner — the uncontained + inherit compound warning', () => {
+  const GRANT_ALL = new Set<BackendRunnerKind>(['claude', 'agy']);
+  const compound = (calls: readonly string[]): readonly string[] =>
+    calls.filter((message) => message.includes("'inherit'"));
+
+  function build(
+    kind: BackendRunnerKind,
+    environmentMode: 'inherit' | 'allowlist' | 'minimal'
+  ): readonly string[] {
+    const warn = vi.fn();
+    const logger = { warn, info: vi.fn(), error: vi.fn(), debug: vi.fn() };
+    createBackendRunner(kind, {
+      uncontainedGranted: GRANT_ALL,
+      environmentMode,
+      logger: logger as unknown as SanitizedLogger
+    });
+    return warn.mock.calls.map((call) => String(call[0]));
+  }
+
+  it('fires for an uncontained backend with environmentMode=inherit', () => {
+    const messages = compound(build('claude', 'inherit'));
+    expect(messages).toHaveLength(1);
+    // Both facts named, and what it means, so the operator does not have to
+    // assemble the consequence from two log lines.
+    expect(messages[0]).toContain('no OS-enforced bound');
+    expect(messages[0]).toContain('schegent.cli.environmentMode');
+    expect(messages[0]).toContain('credentials');
+    expect(messages[0]).toContain('untrusted-repositories.md');
+  });
+
+  it('is silent for an uncontained backend with a restricted environment', () => {
+    expect(compound(build('claude', 'allowlist'))).toEqual([]);
+    expect(compound(build('agy', 'minimal'))).toEqual([]);
+  });
+
+  it('is silent for a contained backend, whatever the environment mode', () => {
+    // Codex is bounded by the OS; `inherit` is a separate concern the
+    // activation-time warning already covers, and repeating it here would make
+    // this warning fire on a case where the conjunction does not hold.
+    expect(compound(build('codex', 'inherit'))).toEqual([]);
+    expect(compound(build('codex', 'minimal'))).toEqual([]);
+  });
+
+  it('is silent when the environment mode is not supplied', () => {
+    // A caller that cannot know the mode must not be forced to guess, and a
+    // missing mode suppresses the warning rather than fabricating one.
+    const warn = vi.fn();
+    createBackendRunner('claude', {
+      uncontainedGranted: GRANT_ALL,
+      logger: { warn, info: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as SanitizedLogger
+    });
+    expect(compound(warn.mock.calls.map((call) => String(call[0])))).toEqual([]);
+  });
+});
+
+/**
+ * FR-R3-125 (FR-008, T020a) — the enforcement point did not move.
+ *
+ * The setting's shape changed and its signature changed with it. That is exactly
+ * the kind of change under which a refusal quietly relocates or acquires a second
+ * home, so the three properties `FR-R3-056` relies on are asserted here rather
+ * than assumed.
+ */
+describe('the refusal is still enforced at construction and nowhere else', () => {
+  it('refuses at createBackendRunner, the last point before the object exists', () => {
+    expect(() =>
+      createBackendRunner('claude', { uncontainedGranted: new Set<BackendRunnerKind>() })
+    ).toThrow(/without an OS-enforced bound/);
+  });
+
+  it('keeps the posture option required, so tsc enumerates construction sites', () => {
+    // Read from source: the property must not be optional. An optional gate is a
+    // gate omitted at the one call site nobody revisits.
+    const source = readFileSync(
+      resolve(__dirname, '../../../src/runner/backend-runner-factory.ts'),
+      'utf8'
+    );
+    expect(source).toMatch(/readonly uncontainedGranted: ReadonlySet<BackendRunnerKind>;/);
+    expect(source).not.toMatch(/uncontainedGranted\?/);
+  });
+
+  it('has exactly one call to the policy judge in production code', () => {
+    // A second enforcement site for one rule is the shape this round has removed
+    // repeatedly: two sites drift, and the one that drifts permissive is the one
+    // that matters.
+    const files = ['src/runner/backend-runner-factory.ts', 'src/activation/backend-execution-wiring.ts'];
+    const calls = files
+      .map((rel) => readFileSync(resolve(__dirname, '../../../', rel), 'utf8'))
+      .join('\n')
+      .match(/judgeBackendContainment\s*\(/g);
+    expect(calls, 'the judge must be called at least once').not.toBeNull();
+    expect(calls).toHaveLength(1);
   });
 });

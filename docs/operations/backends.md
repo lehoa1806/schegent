@@ -80,7 +80,7 @@ approval prompts are off and they act under the operator's local permissions. `c
 `--sandbox workspace-write`, an OS-enforced filesystem bound that leaves `.git` read-only.
 
 Since `schegent.backend.runner` defaults to `claude`, **a fresh install refuses its first run** until
-the operator either sets `schegent.backend.allowUncontainedBackends` to `true` or selects a backend
+the operator either names that backend in `schegent.backend.uncontainedBackends` or selects a backend
 that carries a sandbox. The refusal names both options and happens at the point the backend would be
 constructed, so no route reaches an unbounded agent without it — not admission, not a resume, not an
 auto-drain, not a continuation.
@@ -110,7 +110,7 @@ interval:
 So for the enabled uncontained runners the dispatch check is a strong narrowing and not a guarantee,
 and this is the honest statement of it rather than an implication drawn from the table above. The
 asymmetry itself is not new and is not this item's to change; it is the one FR-R3-032 established and
-the reason `allowUncontainedBackends` exists as a deliberate, application-scoped decision.
+the reason `schegent.backend.uncontainedBackends` exists as a deliberate, application-scoped, per-backend decision. Which containment each backend actually has is qualified in [Backend containment qualification](../architecture/backend-containment-qualification.md); the untrusted-repository rule is owned by [Running Schegent on a repository you do not trust](untrusted-repositories.md).
 
 The full reasoning, the two shapes not chosen, and what remains outstanding are in
 [Agent capability posture](../architecture/agent-capability-posture.md).
