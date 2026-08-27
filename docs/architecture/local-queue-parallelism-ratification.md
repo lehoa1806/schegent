@@ -315,10 +315,22 @@ it does not claim perfect process isolation.
 These risks are acceptable for one informed local operator choosing an opt-in
 cap. They are not acceptable evidence for remote or multi-user expansion.
 
+**Retiring the first residual (added 2026-08-27, `FR-R3-124`).** "Concurrent Runs
+share one worktree" is a residual this record *accepted*; it is not one it
+intended to keep forever. `run-isolation-decision.md` chooses the per-Run Git
+worktree as the shape that retires it, lifts the project rule that forbade
+`git worktree`, and puts entry conditions and a 2026-11-27 review trigger on
+building it. **It is not built.** Until it is, the residual above stands exactly
+as written, and `concurrent-run-isolation-measurement.md` records what the
+attribution machinery does at concurrency 1, 2, 4 and 8 — including that one
+contested path costs every Run that declared it its recovery checkpoint.
+
 <!-- Source: src/services/run-checkpoint-service.ts -->
 <!-- Source: src/services/run-mutation-ledger.ts -->
 <!-- Source: src/queue/queue-manager.ts -->
 <!-- Source: package.json -->
+<!-- Source: docs/architecture/run-isolation-decision.md -->
+<!-- Source: docs/operations/concurrent-run-isolation-measurement.md -->
 
 ## Decision outcome
 

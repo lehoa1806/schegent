@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 89
+    vacuity-census-denominator: 90
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **86** |
+| Gates the detector calls **controlled** (the denominator) | **90** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -46,6 +46,25 @@ there is no scan whose emptiness could hide a pass and nothing for a vacuity con
 that may legitimately be absent (`dist/webview/` before a build), and it reports that as a
 **skip** rather than a pass — which is the property the detector looks for, expressed by a
 console warning rather than by the idiom the detector recognises.
+
+**Denominator movement after feature 156, and a reconciliation (2026-08-27, `FR-R3-124`).** The
+machine-readable line above is asserted against a live run by
+`vacuity-false-negative-census.test.ts`; the table beside it is prose, and the two had **drifted**.
+The line reached 89 across three features while the table still read 86 — the record-versus-tree
+divergence this round has now closed five times, sitting inside the measurement that exists to
+measure exactly that class. Both now read 90, and the three unrecorded movements are named:
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | (86 → 87, `062b26fb`, feature 157) | Joined during "the execution repository verifies alone, and four gates were wrong not one". Not recorded here at the time; identified by `git log -S` on this line. |
+| **+1** | (87 → 88, `32c963a1`, feature 157) | Joined during "one answer per mechanism, and the gate class that was missing". Same omission. |
+| **+1** | (88 → 89, `1a33112d`, feature 157) | Joined during "the platform claim matches the platform evidence". Same omission. |
+| **+1** | `concurrency-isolation-disclosure.test.ts` (89 → 90) | Joined. `FR-R3-124` — asserts the shared-tree disclosure is present at the five surfaces a human reads it, and that no live document sells a cap above one as isolation. Two controls: the surface list is pinned at five with every path resolved on disk, and the live-prose corpus carries a floor, so neither a rename nor a moved directory can empty a scan into a silent pass. |
+
+The three back-filled rows carry the commit rather than the gate name, because identifying which
+gate joined at each step would mean re-running the detector at three historical revisions; the
+movement is recorded and attributable, and inventing a gate name for it would be worse than
+naming the commit. **The rate was 0.0% before and after**, so no gate was added to move the number.
 
 **Method.** Every gate the detector classifies as controlled — a **full census**, no sampling and no
 seed, so the denominator cannot be narrowed to improve the number. Each gate's source is neutered *in

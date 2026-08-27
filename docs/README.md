@@ -152,6 +152,7 @@ drifts unnoticed, because the readers who would catch an error never get there.
 - [Inspect raw transcripts](operations/inspect-raw-transcripts.md)
 - [Licenses](operations/licenses.md)
 - [Concurrent-run resource measurement](operations/concurrent-run-resource-measurement.md)
+- [Concurrent-run isolation measurement](operations/concurrent-run-isolation-measurement.md) — attribution outcomes at concurrency 1/2/4/8, and the recommended cap of 2
 - [Merge-gate observation](operations/merge-gate-observation.md)
 - [Multi-queue concurrency](operations/multi-queue-concurrency.md)
 - [Phase and task management](operations/phase-task-management.md)
@@ -170,6 +171,7 @@ drifts unnoticed, because the readers who would catch an error never get there.
 - [Agent capability posture](architecture/agent-capability-posture.md) — **decided, shipped 2026-08-24** (shape 3: uncontained backends refused by default, `schegent.backend.allowUncontainedBackends` is the opt-in)
 - [Native binding decision](architecture/native-binding-decision.md) — **decided 2026-08-25: no** (the `openat`, `renameat`, Job Object and reparse-tag residuals are permanent stated limits)
 - [Local queue parallelism ratification](architecture/local-queue-parallelism-ratification.md)
+- [Per-Run execution isolation decision](architecture/run-isolation-decision.md) — **shape accepted 2026-08-27: per-Run Git worktree; implementation gated** (§9 carries the entry conditions and the 2026-11-27 review trigger)
 - [Remote multi-user expansion gate](architecture/remote-multi-user-expansion-gate.md)
 - [Workspace ownership fencing](architecture/workspace-ownership-fencing.md)
 

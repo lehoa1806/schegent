@@ -10,10 +10,19 @@ import * as path from 'node:path';
  * be the destination of this link would add a maintenance burden and no
  * information. See `docs/operations/recovery-checkpoints.md` for the operator
  * view of checkpoints.
- * The short version: a checkpoint is a diff of one shared working tree, and this
- * project forbids `git worktree`, so a patch is only attributable if something
- * knows who wrote what. Two sources are available and this ledger uses both, in
- * different roles.
+ * The short version: a checkpoint is a diff of one shared working tree, so a
+ * patch is only attributable if something knows who wrote what. Two sources are
+ * available and this ledger uses both, in different roles.
+ *
+ * FR-R3-124 (2026-08-27) — this docblock used to say "this project forbids
+ * `git worktree`". The flat ban is gone: `AGENTS.md` now permits it narrowly, for
+ * Schegent-provisioned per-Run execution roots only, and
+ * `docs/architecture/run-isolation-decision.md` chose that as the shape of
+ * execution isolation. **The mechanism does not exist** — §9 of that record gates
+ * building it — so everything below is unchanged and remains the operative
+ * behaviour. When it does exist, §8b Q1 is the position this file inherits: a
+ * Run whose worktree is its own takes the cap-1 path and this ledger is not
+ * consulted for its checkpoint, moving to make merge-back reviewable instead.
  *
  * **The declaration is the attribution source.** Each phase's audit record names
  * the files it created, modified, and deleted, and those paths — canonicalised

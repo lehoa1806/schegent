@@ -236,3 +236,31 @@ describe('QueueConfigModal — dialog conventions', () => {
     expect(postCommandSpy).not.toHaveBeenCalled();
   });
 });
+
+// FR-R3-124 (FR-003, T010) — the shared-tree consequence, at the point of decision.
+//
+// The sentence existed in four places before this feature and in none of them was
+// it on screen while the number was being typed. Two properties, because the
+// second is the one that is easy to ship broken: a paragraph next to a number
+// input is not announced with the input, so without `aria-describedby` a screen
+// reader user changes the cap having heard "Concurrent runs, 7" and nothing else.
+describe('QueueConfigModal — the shared-tree disclosure', () => {
+  it('states that concurrent Runs share one working tree and may conflict', () => {
+    const { getByTestId } = mount();
+
+    const disclosure = getByTestId('queue-config-cap-disclosure');
+    expect(disclosure.textContent).toMatch(/share one working tree/i);
+    expect(disclosure.textContent).toMatch(/conflict/i);
+  });
+
+  it('associates the disclosure with the cap input for assistive technology', () => {
+    const { getByTestId } = mount();
+
+    const input = getByTestId('queue-config-cap');
+    const describedBy = input.getAttribute('aria-describedby');
+    expect(describedBy).toBe('queue-config-cap-shared-tree');
+    // Resolved, not just asserted as a string: an id pointing at nothing reads to
+    // assistive technology exactly like no id at all.
+    expect(getByTestId('queue-config-cap-disclosure').id).toBe(describedBy);
+  });
+});

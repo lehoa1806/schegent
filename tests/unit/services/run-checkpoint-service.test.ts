@@ -1,7 +1,7 @@
 // Feature 093 (T053, T054, US1) — FR-022a / SC-015.
 //
 // A checkpoint is a `git diff --binary HEAD` of the one shared worktree, and
-// this project forbids `git worktree`. So the moment a second Run holds
+// Runs share one worktree today. So the moment a second Run holds
 // uncommitted work, a snapshot taken for Run A necessarily contains Run B's
 // in-progress edits, and applying it later reverts B's work. There is no
 // in-product restore path — an operator restores by applying the patch file by
@@ -20,6 +20,14 @@
 // residual unattributable case, so these Runs still decline; only the recorded
 // *reason* moved from `concurrent-runs-share-one-worktree` to
 // `attribution-evidence-incomplete`.
+//
+// FR-R3-124 (2026-08-27) — the header used to say "this project forbids
+// `git worktree`". That flat ban is gone: `AGENTS.md` now permits it narrowly, for
+// Schegent-provisioned per-Run execution roots only, and
+// `docs/architecture/run-isolation-decision.md` chose the per-Run worktree as the
+// shape of execution isolation. **The mechanism does not exist** — §9 of that
+// record gates building it — so every property below is unchanged and remains the
+// operative behaviour of a shared tree.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { execFile } from 'node:child_process';

@@ -101,10 +101,33 @@
     type="number"
     min={CAP_HINT_MIN}
     max={CAP_HINT_MAX}
+    aria-describedby="queue-config-cap-shared-tree"
     data-testid="queue-config-cap"
     bind:this={capInputEl}
     bind:value={cap}
   />
+  <!--
+    FR-R3-124 (FR-003) — the consequence, at the point of decision.
+
+    The sentence already existed in the manifest description, the operator guide
+    and two architecture documents. None of them is on screen at the moment the
+    number changes, which is the only moment it matters. The audit of 2026-08-27
+    named shared-tree parallelism one of three dominating risks; per-Run isolation
+    is DECIDED and GATED in `repo/docs/architecture/run-isolation-decision.md`, not
+    shipped, so above one this text is the whole boundary.
+
+    It is `aria-describedby` rather than loose text so assistive technology
+    announces it as the field's description; a paragraph merely sitting next to a
+    number input is not announced with it.
+
+    `tests/lint/concurrency-isolation-disclosure.test.ts` asserts both this text
+    and the association, and fails if either is removed.
+  -->
+  <p class="disclosure" id="queue-config-cap-shared-tree" data-testid="queue-config-cap-disclosure">
+    Above one, concurrent Runs share one working tree. They may edit the same files, so semantic
+    conflicts between Runs are possible and a recovery checkpoint may be declined as
+    unattributable.
+  </p>
 
   <label for="queue-config-default-queue">Default queue</label>
   <select
@@ -134,6 +157,15 @@
 </div>
 
 <style>
+  .disclosure {
+    margin: 0;
+    font-size: 0.9em;
+    /* Theme tokens only: FR-R3-131 baselined 30 contrast violations and no new
+       hard-coded colour is added here. `descriptionForeground` is the token VS
+       Code uses for exactly this role. */
+    color: var(--vscode-descriptionForeground);
+  }
+
   .queue-config-modal {
     display: flex;
     flex-direction: column;
