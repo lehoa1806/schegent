@@ -258,7 +258,10 @@ describe('FR-R3-005 — destructive filesystem calls route through the containme
     // property is the same back-reference it always was: the adapter's store
     // directory and the registry's directory are one identifier read twice,
     // with `workspaceRoot` named as the separate trusted anchor.
-    const source = stripComments(read('src/extension.ts'));
+    // FR-R3-119 — the ownership wiring moved with the leases into
+    // `src/activation/workspace-session.ts`. The back-reference property this
+    // asserts is unchanged; only the file holding the call is different.
+    const source = stripComments(read('src/activation/workspace-session.ts'));
     const call = /useOwnershipStorage\s*\(([\s\S]*?)\)\s*;/.exec(source);
     expect(call, 'the useOwnershipStorage call must be readable').not.toBeNull();
     expect(

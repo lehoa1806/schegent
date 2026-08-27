@@ -205,3 +205,51 @@ together. Verified: raising the exemption to 900 now fails where before it passe
 The general shape, since this is not specific to LoC budgets: **a ratchet needs its guard tied to
 its current value, not to its initial one**, and a mutation test that only probes far past the
 current value cannot tell the difference.
+
+
+## Fourth decrement — 2026-08-27
+
+**`wireStage2` 871 → 823; `src/extension.ts` 1,114 → 1,046.**
+`src/activation/workspace-session.ts` took 77 lines: what this window owns — the catalog, both
+leases, the primacy claim — and the status bar and notifier that report it.
+
+`lockResult` is **returned rather than acted on**. What a failed claim *means* is a decision for the
+composition root; making it was never this region's job.
+
+### The lazy read that had to survive
+
+`catalogStore`'s retained-history enumerator reads `historyStore` inside a thunk, and
+`historyStore` is built ~180 lines further down by `backend-execution-wiring.ts`. The original
+comment says so in as many words: *"the store is built here, `queue` below it and `historyStore`
+further down still, so both enumerators close over their sources and re-read per question."*
+
+Taking the value would have forced the caller to build the history store first — **reordering
+activation to suit an extraction**, which is the tail wagging the dog and which `FR-059` forbids.
+The module takes `getHistoryStore: () => HistoryStore` instead, and the lazy read is preserved
+exactly.
+
+Second extraction in a row where the hazard was a deferred read, and the second different shape of
+it: the backend module needed *setters* so late assignment reached its closures; this one needed a
+*getter* so an early closure could reach a late value. Worth naming as a pair, because a composition
+root is mostly deferred reads and each direction fails differently.
+
+### Five gates followed the construction, one of which needed real thought
+
+`ownership-registry-wiring`, `destructive-fs-requires-containment`,
+`mount-probe-does-not-gate-activation` and `source-loc-budget` were path updates.
+
+**`elect-before-recovering` was not.** Its rule 1 asserted that the election textually precedes
+every recovery landmark — a statement about ordering *within one file*, and the election had just
+left that file. The property still held (the session is awaited before any recovery installer
+runs), so the check was **split** rather than dropped: the election must live in
+`workspace-session.ts`, and the awaited call to it must precede every landmark in `extension.ts`.
+
+Weakening it to "the election exists somewhere" would have been one line and would have retired the
+ordering guarantee the gate exists for.
+
+### Trajectory
+
+**1,221 → 1,010 → 894 → 871 → 823**, four decrements in one session, no behavioural change at any
+step. `src/extension.ts` 1,489 → 1,046; `src/activation/` 11 modules → 15.
+
+Remaining: 823 of a 400-line target.

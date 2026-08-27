@@ -1,10 +1,6 @@
 import * as vscode from 'vscode';
 import { randomUUID } from 'crypto';
-import * as path from 'node:path';
 import { WorkspaceStateStore } from './state/workspace-state';
-import { WorkspaceLockManager } from './state/lock';
-import { ExecutionLeaseManager } from './state/execution-lease';
-import { createDiskOwnershipFs } from './state/ownership-fs';
 import {
   getCanonicalWorkspaceRoot,
   disposeWorkspaceFolderPicker
@@ -12,7 +8,6 @@ import {
 import { resolveCliPath } from './config/cli-path-accessor';
 import { maybeShowMultiRootWarning } from './state/multi-root-warning';
 import { initCapabilityTrustResolver } from './state/capability-trust-resolver';
-import { QueueManager } from './queue/queue-manager';
 import { PhaseRunner } from './controller/phase-runner';
 import { SchegentWorkflowController } from './controller/workflow-controller';
 import { QueueScheduleWatchdog } from './controller/schedule-watchdog';
@@ -22,15 +17,10 @@ import { SessionArtifactRetentionService } from './services/session-retention/se
 import { SanitizedLogger } from './lib/logger';
 import {
   createRuntimeEvidenceWiring,
-  warnIfEnvironmentIsUnrestricted,
   type RuntimeEvidenceWiring
 } from './activation/backend-wiring';
-import { startMountCapabilityProbe } from './activation/mount-capability-wiring';
-import { warnIfScaffoldingMissing } from './activation/workspace-scaffolding';
 import { createConnectedRunService, registerStage2Ui } from './activation/ui-wiring';
 import { SchegentOutputChannel } from './ui/output-channel';
-import { SchegentStatusBar } from './ui/status-bar';
-import { Notifier } from './ui/notifications';
 import { forwardMigrationAuditEvents } from './state/migration-audit-forwarder';
 import { runReset, type ResetHost, type ResetStageSupport } from './commands/reset';
 import {
@@ -54,17 +44,6 @@ import { checkLiveness, createLivenessProbe } from './services/process-liveness'
 import { resumePersistedRuns } from './services/resume-decision';
 import { createRunSafetyWiring } from './activation/run-safety-wiring';
 import { isConfirmationsEnabled } from './state/confirmations-config';
-import type { CatalogConfigReader } from './config/pipeline-config-loader';
-import { CatalogSession, } from './activation/catalog-loading';
-import {
-  createCatalogReader,
-} from './activation/catalog-settings-wiring';
-import {
-  createHostCatalogLifecycle,
-  createHostCatalogStore,
-  nodeDigest
-} from './activation/catalog-store-wiring';
-import { liveRunPlans, retainedHistoryPlans } from './activation/run-provenance-enumeration';
 import { GuardedRunService } from './services/guarded-run-service';
 import { ScheduledStartCoordinator } from './services/scheduled-start-coordinator';
 import { resolveRunOrigin } from './services/run-origin-resolver';
@@ -72,6 +51,7 @@ import { createPhaseLogTailWiring } from './activation/phase-log-tail-wiring';
 import { createSidebarRouter } from './activation/sidebar-router-wiring';
 import { wireBackendExecution } from './activation/backend-execution-wiring';
 import { resolveWorkspaceSettings } from './activation/workspace-settings';
+import { openWorkspaceSession } from './activation/workspace-session';
 
 interface Stage2Wiring {
   readonly disposables: readonly vscode.Disposable[];
@@ -306,83 +286,35 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     rotationSizeMB,
     rotationMaxAgeDays
   } = resolveWorkspaceSettings({ workspaceRoot, logger });
-  const catalogReader: CatalogConfigReader = createCatalogReader(workspaceRoot);
-  // Feature 099 (T493b, FR-051, FR-052) — `null` in an untrusted workspace, where
-  // no catalog activates at all. The snapshot still has to exist for the resolvers,
-  // so the two facts stay apart: no store, and the empty catalog it resolves to.
-  // Feature 102 (T051, FR-037) and 103 (T078, FR-040, FR-042) — the store is built
-  // here, `queue` below it and `historyStore` further down still, so both enumerators
-  // close over their sources and re-read per question; `createHostCatalogStore`
-  // documents why each `list()` has to stay inside its thunk.
-  const catalogStore = createHostCatalogStore(
-    () => liveRunPlans(queue.listAll(), Object.values(store.getRunMap())),
-    () => retainedHistoryPlans(historyStore.list())
-  );
-  // Feature 099 (T493b, T496f, FR-027a, FR-042) — the store is read once, here,
-  // before anything is composed, and the session owns that snapshot together with
-  // everything resolved from it. See `CatalogSession` for why the five bindings
-  // this replaced are one fact.
-  const catalogSession = await CatalogSession.open({
-    store: catalogStore,
-    reader: catalogReader,
-    digest: nodeDigest,
-    logger
+  // FR-R3-119 — extracted to `src/activation/workspace-session.ts`: what this
+  // window owns (catalog, both leases, the primacy claim) and the UI shell that
+  // reports it. Six bindings in, ten out.
+  //
+  // `getHistoryStore` is a getter because `catalogStore`'s retained-history
+  // enumerator reads it inside a thunk and the store is built ~180 lines below.
+  // Passing the value would reorder activation to suit an extraction; the getter
+  // preserves the lazy read the original comment describes.
+  const session = await openWorkspaceSession({
+    workspaceRoot,
+    ownerId,
+    logger,
+    store,
+    disposables,
+    processEnvironmentPolicy,
+    getHistoryStore: () => historyStore
   });
-  // Feature 100 (T509c, FR-047) — the six lifecycle commands' one dependency,
-  // built once beside the store it operates on. The default is read through the
-  // session rather than captured, so the FR-059 advisory sees the value in force
-  // at the moment of a deactivation; `refreshCatalog` already re-resolves the
-  // session when `schegent.defaultPipelineId` changes.
-  const catalogLifecycle = createHostCatalogLifecycle(
+  const {
+    catalogReader,
     catalogStore,
-    () => catalogSession.catalog.defaultPipelineId
-  );
-  // Feature FR-R3-003 (T295) — point both leases at storage two extension hosts
-  // can both see, now that the workspace root is known. Until this call the store
-  // arbitrates through a `Memento`-backed adapter, which is correct for one host
-  // and is exactly the assumption finding REL-01 was about. `.schegent/` is
-  // covered by its own `.gitignore` (`*`), and an ownership record carries owner
-  // ids and timestamps only — never a workspace path.
-  // Feature FR-R3-005 (T330) — one expression, read twice: the adapter's store
-  // directory and the registry's directory are the same path by construction,
-  // so they cannot drift into a guard that proves membership of a tree the
-  // registry does not write to. FR-R3-069 (feature 152) splits the TRUST role
-  // out of that expression: judgments anchor at `workspaceRoot`, which a
-  // checkout cannot choose, while paths still compose from `ownershipDir` — so
-  // a `.schegent/ownership` symlinked out of the workspace refuses instead of
-  // authorizing its own target.
-  const ownershipDir = path.join(workspaceRoot, '.schegent', 'ownership');
-  store.useOwnershipStorage(createDiskOwnershipFs({ workspaceRoot, ownershipDir }), ownershipDir);
-  const lock = new WorkspaceLockManager(store, ownerId);
-  // Feature 092 (T049, FR-031) — the execution half of the lock split. Same
-  // owner id as the workspace lock so a crash strands both together, but a
-  // separate manager over a separate key: holding a queue's execution lease
-  // must never make this window primary.
-  const executionLeases = new ExecutionLeaseManager(store, ownerId);
-  // FR-R3-070 — elect BEFORE recovering. The recovery installers below used to
-  // run ahead of this call, so a window about to lose the election could still
-  // resume and drive a Run the primary already owned. Primacy is decided here,
-  // once; every installer is gated on the result, and a non-primary window
-  // leaves persisted deadlines addressable for the primary — the decline-and-
-  // retain shape fire() models. See plan.md "Activation Lifecycle", FR-041(c).
-  const lockResult = await lock.tryAcquire();
-  const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-  disposables.push(statusBarItem);
-  const statusBar = new SchegentStatusBar(statusBarItem);
-  const notifier = new Notifier({
-    showInformationMessage: (m) => vscode.window.showInformationMessage(m),
-    showWarningMessage: (m) => vscode.window.showWarningMessage(m),
-    showErrorMessage: (m) => vscode.window.showErrorMessage(m)
-  });
-  warnIfEnvironmentIsUnrestricted(processEnvironmentPolicy, workspaceRoot, logger);
-  // FR-R3-083 (`PORT-01`) — bounded, never awaited, and dropped on teardown so a
-  // verdict cannot surface against a workspace this window has left.
-  disposables.push(startMountCapabilityProbe(workspaceRoot, logger, notifier));
-  // The extension also activates via the implicit `onView:schegent.sidebar` event,
-  // so `workspaceContains:.specify/` does not imply the directory is there.
-  warnIfScaffoldingMissing(workspaceRoot, logger, notifier);
-
-  const queue = new QueueManager(store, logger);
+    catalogSession,
+    catalogLifecycle,
+    lock,
+    executionLeases,
+    lockResult,
+    statusBar,
+    notifier,
+    queue
+  } = session;
   // Feature 083 (US6, FR-041) — the single source of "which Workflows consume a
   // Pipeline?" for both the Library list (FR-002) and gate 13 (FR-022a). The
   // callbacks re-read on every call so a Workflow catalog reload, which

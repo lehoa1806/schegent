@@ -16,7 +16,7 @@
 //
 // Four rules, each naming the specific regression it forbids:
 //
-//   1. `extension.ts` calls `useOwnershipStorage` exactly once, and passes
+//   1. `workspace-session.ts` calls `useOwnershipStorage` exactly once, and passes
 //      `createDiskOwnershipFs()`. Once, because a second call would repoint the
 //      registry after managers have taken fences from the first, silently
 //      invalidating every live claim.
@@ -40,7 +40,11 @@ import { describe, expect, it } from 'vitest';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 
-const EXTENSION = 'src/extension.ts';
+// FR-R3-119 — `useOwnershipStorage` moved with the leases into
+// `src/activation/workspace-session.ts`, which is `src/activation/` — the
+// directory ARCHITECTURE.md calls the composition root. This gate follows the
+// call, not the filename.
+const EXTENSION = 'src/activation/workspace-session.ts';
 const LOCK = 'src/state/lock.ts';
 const LEASE = 'src/state/execution-lease.ts';
 
