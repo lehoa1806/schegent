@@ -165,9 +165,27 @@ Review every generated difference. Do not hand-edit `src/contracts/generated/` t
 
 ## Verify before opening a pull request
 
+**Three tiers, cheapest first** (`FR-R3-132`) — full detail, and what each one does *not* establish,
+in [Verification tiers](docs/development/verification-tiers.md):
+
+```bash
+npm run verify:edit      # typechecks + both unit suites — after a small change
+npm run verify:push      # + lint, contracts, docs, security, licences — before you push
+npm run verify:release   # everything, including the browser-backed suites — releases and CI
+```
+
+Each tier runs everything the tier below it runs; `repo/tests/lint/verification-tiers.test.ts` proves
+that as a set relation, so a cheap tier is never a shortcut. No tier reuses a build artifact: a
+ratchet that reads source cannot go stale, and a reused `dist/` can.
+
+There is deliberately **no devcontainer**: parity comes from `.nvmrc` plus the two lockfiles, and the
+reasoning and reopening conditions are recorded in
+[the devcontainer declination](docs/development/devcontainer-declination.md) rather than left as a gap.
+
 At minimum, run the checks relevant to the changed tree. The broad repository gates are:
 
-The review preflight `npm run ci:fast` invokes these manifest targets in order: `typecheck:tests`, `lint`, `verify:all`, `test:evals`, `test:visual`, `test:perf`, `build:host`, and `package:smoke`. It therefore includes browser-backed visual testing and a VSIX package smoke build, not only typechecking and unit tests. The visual step needs the Chromium build declared under [Prepare a checkout](#prepare-a-checkout) — `npx playwright install chromium`, re-run after a Playwright version bump. A missing or stale browser fails the preflight with a single setup message rather than a wall of red specs.
+`npm run ci:fast` is **not** one of the tiers, despite the name — see the tier document. The review
+preflight `npm run ci:fast` invokes these manifest targets in order: `typecheck:tests`, `lint`, `verify:all`, `test:evals`, `test:visual`, `test:perf`, `build:host`, and `package:smoke`. It therefore includes browser-backed visual testing and a VSIX package smoke build, not only typechecking and unit tests. The visual step needs the Chromium build declared under [Prepare a checkout](#prepare-a-checkout) — `npx playwright install chromium`, re-run after a Playwright version bump. A missing or stale browser fails the preflight with a single setup message rather than a wall of red specs.
 
 <!-- Source: package.json -->
 

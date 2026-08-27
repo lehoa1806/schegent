@@ -140,7 +140,10 @@ describe('the shipped example documents after the two fields are admitted', () =
     // `defects` lives on the `invalid` arm alone, so the arm IS the assertion —
     // there is no defect-carrying `import` or `skip` row to also check for.
     const withDefects = result.plan.rows.filter((row) => row.outcome === 'invalid');
-    expect(withDefects, `rows carrying defects in ${name}`).toEqual([]);
+    expect(
+      withDefects,
+      `rows carrying defects in ${name}: ${JSON.stringify(withDefects, null, 1)}`
+    ).toEqual([]);
   });
 
   it('still ships a document that declares neither new field', () => {

@@ -1,6 +1,259 @@
 export const SCHEMA_VERSION = 4 as const;
 
-export type BackendRunnerKind = 'claude' | 'codex' | 'agy';
+import type {
+  ActiveFeatureSummary,
+  ActivePipelineSummary,
+  CliMonitorState,
+  DelayedRetryState,
+  LaunchProjection,
+  LiveActivity,
+  PhaseTile,
+  QueueItemStatus,
+  RunLivenessProjection,
+  RunProgressProjection,
+  SessionArtifactsProjection,
+  StreamPressureProjection,
+  WorkflowCatalogFieldErrorProjection,
+  WorkflowStatus,
+  BuilderLifecycle,
+} from '../../../src/contracts/snapshot-projections.js';
+import type {
+  BackendRunnerKind,
+} from '../../../src/contracts/backend-kinds.js';
+import type {
+  PhaseName,
+} from '../../../src/contracts/phase-identity.js';
+import type {
+  ConnectedRunProjection,
+} from '../../../src/contracts/sidebar-ipc/workflow-run.js';
+import type {
+  PhaseSourceStatus,
+} from '../../../src/contracts/process-definitions.js';
+import type {
+  PipelineInputPortType,
+  PipelineOutputPortType,
+  PipelineSourceStatus
+} from '../../../src/contracts/pipeline-definitions.js';
+import type {
+  WorkflowSourceStatus,
+} from '../../../src/contracts/workflow-definitions.js';
+
+import type { CatalogKind, CatalogVersionId } from '../../../src/contracts/catalog-store.js';
+import type { HistoryTerminalStatus } from '../../../src/contracts/history-identity.js';
+import type { PhaseDefinitionEffort } from '../../../src/contracts/process-definitions.js';
+
+// FR-R3-132 (T1502, FR-001) — WHAT IS STILL HAND-WRITTEN HERE, AND WHY.
+//
+// The measurement that opened this file's cleanup found 97 declarations in three
+// classes. 51 were byte-identical to a host declaration and are gone. What is left
+// is deliberate, and each class says so:
+//
+//   OPTIONALITY WIDENED AT THE RECEIVER (F3). `QueueItem.queueId`,
+//   `QueueProjection.queues`, `.pausedReason`, `.lifecycle`, `.scheduledStartAt`
+//   and `.scheduledStartSource` are required on the host and optional here. That
+//   is a real decision: a webview may be asked to render a snapshot published by a
+//   host one version behind, and a required field it has never seen is a crash
+//   rather than a degraded panel. It was previously undocumented, which made it
+//   indistinguishable from drift.
+//
+//   THE `Portable*` EDITOR SHAPES (F4). `PortablePhaseDefinition`,
+//   `PortablePipelineDefinition` and their neighbours describe what the BUILDER
+//   edits and what the YAML boundary exchanges — `id`/`phases`, not
+//   `pipelineId`/`phaseIds`, and an interface rather than the host's discriminated
+//   union. Four of them used to carry the runtime shapes' names, which made two
+//   different concepts look like one drifting concept: the most expensive kind of
+//   duplication, because every reader has to rediscover that it is not one.
+//
+//   THE 26 WEBVIEW-LOCAL DECLARATIONS. View state. Nothing to import.
+//
+// `tests/lint/snapshot-mirror-census.test.ts` holds the first class at zero and
+// checks every union in the second as a superset of the host's, so a deliberate
+// difference cannot quietly become a missing member.
+
+import type {
+  AuditTailEntry,
+  QueueSummary
+} from '../../../src/contracts/snapshot-projections.js';
+import type {
+  IpcScheduledStartSource as ScheduledStartSource
+} from '../../../src/contracts/start-intent-types.js';
+
+import type { RunOutputRecord } from '../../../src/contracts/run-results.js';
+import type {
+  PipelineDefinition as PortablePipelineDefinition
+} from '../../../src/contracts/pipeline-definitions.js';
+import type {
+  WorkflowDefinition as PortableWorkflowDefinition
+} from '../../../src/contracts/workflow-definitions.js';
+
+// FR-R3-132 (T1502, FR-001) — THE SECOND WAVE, which the first gate could not see.
+//
+// The name-keyed census found 51 copies. Fixing the two drifted declarations then
+// made five MORE identical — a copy whose only difference was the defect. And a
+// name-independent comparison found three the first pass structurally could not:
+// the webview's word for a host shape is not the host's word, so
+// `PortablePipelineDefinition` and host `PipelineDefinition` were the same
+// declaration under two names, invisible to a lookup keyed on the name.
+//
+// Aliased at the re-export rather than renamed at the call sites. `Portable*` is
+// the right word HERE — it distinguishes the definition the builder edits and the
+// YAML boundary exchanges from the snapshot's selection-list projection, which is a
+// genuinely different shape that keeps the plain name in this file. Renaming 60-odd
+// component references to make one import shorter would have traded a real
+// distinction for a shorter line.
+export type {
+  AuditTailEntry,
+  BuilderLifecycle,
+  BuilderVersionEntry,
+  QueueSummary
+} from '../../../src/contracts/snapshot-projections.js';
+export type { RunOutputRecord } from '../../../src/contracts/run-results.js';
+export type {
+  PipelineDefinition as PortablePipelineDefinition
+} from '../../../src/contracts/pipeline-definitions.js';
+export type {
+  WorkflowDefinition as PortableWorkflowDefinition
+} from '../../../src/contracts/workflow-definitions.js';
+export type {
+  IpcScheduledStartSource as ScheduledStartSource
+} from '../../../src/contracts/start-intent-types.js';
+
+// FR-R3-132 (T1502) — two more the STRUCTURAL half of the census found: the same
+// declarations under different names, which a name-keyed lookup cannot see. The
+// webview's words are kept at the alias, because they are the better words HERE —
+// `PipelineDefinition` is what the snapshot's selection list holds, and
+// `EvidenceSinkHealthProjection` says it is a projection.
+import type {
+  EvidenceSinkHealth as EvidenceSinkHealthProjection,
+  PipelineDef as PipelineDefinition
+} from '../../../src/contracts/snapshot-vocabulary.js';
+
+export type {
+  EvidenceSinkHealthProjection,
+  PipelineDefinition
+};
+
+// FR-R3-132 (T1502) — the THIRD wave, and the one that says most about gates.
+// A first census walked three host directories and reported zero copies. A review
+// pointed at four byte-identical declarations in `src/services/`; widening the
+// walk to `src/` turned zero into thirteen. All thirteen moved to
+// `src/contracts/snapshot-vocabulary.ts` and are imported here.
+import type {
+  ChangedCollectionField,
+  ChangedField,
+  ChangedFieldSummary,
+  ChangedScalarField,
+  DebugLogEntry,
+  EvidenceContinuationPolicy,
+  EvidenceOverallStatus,
+  EvidenceSinkStatus,
+  QueueLifecycle,
+  RuntimeLogLevel,
+  SettingScope,
+  TelemetrySnapshot,
+  TelemetryStatus
+} from '../../../src/contracts/snapshot-vocabulary.js';
+
+export type {
+  ChangedCollectionField,
+  ChangedField,
+  ChangedFieldSummary,
+  ChangedScalarField,
+  DebugLogEntry,
+  EvidenceContinuationPolicy,
+  EvidenceOverallStatus,
+  EvidenceSinkStatus,
+  QueueLifecycle,
+  RuntimeLogLevel,
+  SettingScope,
+  TelemetrySnapshot,
+  TelemetryStatus
+};
+
+// FR-R3-132 (T1502, FR-001) — RE-EXPORTED, NOT RETYPED.
+//
+// 51 declarations in this file were byte-identical to a host declaration: 315
+// lines of copy kept in step by hand, deciding nothing. They are gone, and the
+// types below come from the host contracts they always described.
+//
+// A TYPE IMPORT IS ERASED at compile time, so none of this reaches the webview
+// bundle — the distinction `webview-host-import-direction.test.ts` draws between
+// types (from anywhere) and values (from `contracts/` only). Everything here is a
+// type and everything here is in `src/contracts/`.
+//
+// THE COST OF THE COPY WAS MEASURED, not assumed: the mirror's
+// `QueueSummary.pauseSource` had lost `'retry-cap'`, a value the host can send
+// and the webview's type said could not exist. No parity test covered it.
+// `tests/lint/snapshot-mirror-census.test.ts` now holds the identical count at
+// zero and checks every remaining hand-written union as a superset of the host's.
+export type {
+  ActiveFeatureSummary,
+  ActivePipelineSummary,
+  AuditCategory,
+  CliMonitorState,
+  DelayedRetryCauseProjection,
+  DelayedRetryState,
+  FreshnessState,
+  LaunchProjection,
+  LaunchSection,
+  Launchable,
+  LaunchablePort,
+  LiveActivity,
+  MonitorStatus,
+  PhaseResultState,
+  PhaseState,
+  PhaseTile,
+  QueueItemStatus,
+  RunLivenessProjection,
+  RunProgressProjection,
+  SessionArtifactsProjection,
+  StreamPressureProjection,
+  SubProgress,
+  WorkflowCatalogFieldErrorProjection,
+  WorkflowStatus
+} from '../../../src/contracts/snapshot-projections.js';
+export type {
+  BackendRunnerKind
+} from '../../../src/contracts/backend-kinds.js';
+export type {
+  PhaseName
+} from '../../../src/contracts/phase-identity.js';
+export type {
+  ConnectedNodeAction,
+  ConnectedNodeProjection,
+  ConnectedNodeState,
+  ConnectedRunProjection
+} from '../../../src/contracts/sidebar-ipc/workflow-run.js';
+export type {
+  PhaseSourceStatus
+} from '../../../src/contracts/process-definitions.js';
+export type {
+  DefinitionState
+} from '../../../src/contracts/catalog-lifecycle.js';
+export type {
+  PhaseBinding,
+  PhaseInputBinding,
+  PhaseOutputBinding,
+  PipelineCatalogMutation,
+  PipelineInputPort,
+  PipelineInputPortType,
+  PipelineOutputPort,
+  PipelineOutputPortType,
+  PipelineSourceStatus
+} from '../../../src/contracts/pipeline-definitions.js';
+export type {
+  WorkflowCatalogMutation,
+  WorkflowCondition,
+  WorkflowConditionLiteral,
+  WorkflowConditionOperand,
+  WorkflowConditionOperator,
+  WorkflowConnection,
+  WorkflowNode,
+  WorkflowNodeTerminalStatus,
+  WorkflowSelectionRule,
+  WorkflowSourceStatus
+} from '../../../src/contracts/workflow-definitions.js';
+
 export type BackendPingFailureCause =
   | 'not-found'
   | 'not-executable'
@@ -13,109 +266,6 @@ export type BackendPingState =
   | { readonly status: 'running'; readonly runner: BackendRunnerKind; readonly startedAt: number; readonly timeoutSeconds: number }
   | { readonly status: 'success'; readonly runner: BackendRunnerKind; readonly startedAt: number; readonly completedAt: number; readonly latencyMs: number; readonly timeoutSeconds: number }
   | { readonly status: 'failure'; readonly runner: BackendRunnerKind; readonly startedAt: number; readonly completedAt: number; readonly latencyMs: number; readonly timeoutSeconds: number; readonly cause: BackendPingFailureCause; readonly exitCode?: number };
-
-// Feature 098 (T040, FR-020) — the webview's half of the deleted literal pair.
-// `BUILT_IN_PHASE_NAMES`, `PHASE_NAMES` and `BuiltInPhaseName` mirrored
-// `src/ui/sidebar/snapshot.ts` name-for-name (T039), which is the parity this
-// file exists to hold; with no built-in Phases there is nothing to mirror.
-// `PhaseName` stays `string` on both sides, and that parity still holds.
-export type PhaseName = string;
-
-export type PhaseState = 'not-started' | 'active' | 'completed' | 'skipped' | 'disabled';
-
-export type PhaseResultState =
-  | 'clean'
-  | 'ambiguities-remain'
-  | 'issues-remain'
-  | 'failed'
-  | 'timed-out';
-
-export type WorkflowStatus =
-  | 'idle'
-  | 'running'
-  | 'paused'
-  | 'completed'
-  | 'failed'
-  | 'canceled';
-
-export type QueueItemStatus =
-  | 'pending'
-  | 'in-flight'
-  | 'paused'
-  | 'completed'
-  | 'canceled'
-  | 'failed';
-
-export type AuditCategory =
-  | 'phase-transition'
-  | 'file-write'
-  | 'cli-invocation'
-  | 'error'
-  | 'warning'
-  | 'system';
-
-/** Debug log entry projected from the host's WebviewLogSink ring buffer. */
-export interface DebugLogEntry {
-  readonly id: number;
-  readonly timestamp: string;
-  readonly level: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
-  readonly message: string;
-}
-
-export type FreshnessState = 'live' | 'slowing' | 'stalled' | 'paused' | 'idle';
-
-export type MonitorStatus =
-  | 'starting'
-  | 'running'
-  | 'stalled'
-  | 'completed'
-  | 'failed'
-  | 'timed_out'
-  | 'canceled'
-  | 'paused';
-
-export interface SubProgress {
-  readonly current: number;
-  readonly total: number;
-  readonly label: 'task' | 'iteration';
-}
-
-export interface PhaseTile {
-  readonly name: PhaseName;
-  readonly order: number;
-  readonly state: PhaseState;
-  readonly iteration: number;
-  readonly lastResult: PhaseResultState | null;
-  readonly elapsedMs: number;
-  readonly subProgress: SubProgress | null;
-  /**
-   * Feature 061 — operator-configured display name from `PhaseDef.name`.
-   * Purely cosmetic; MUST NOT be used as a lookup key. When undefined or
-   * empty, consumers fall back to `formatPhaseLabel(tile.name)`.
-   */
-  readonly displayName?: string;
-  readonly isRequired?: boolean;
-  readonly phaseMessage?: {
-    readonly fromPhaseId: string;
-    readonly entryCount: number;
-    readonly byteSize: number;
-    readonly truncated: boolean;
-    readonly invalidReason: string | null;
-  } | null;
-  /**
-   * Feature 010 (FR-028) — operator-visible projection of the most recent
-   * retryCondition evaluation's missing keys.
-   */
-  readonly lastRetryDecision?: {
-    readonly missingKeys: readonly string[];
-  };
-}
-
-export interface ActiveFeatureSummary {
-  readonly id: string;
-  readonly label: string;
-  readonly startedAt: string;
-}
 
 export interface QueueItem {
   readonly id: string;
@@ -159,41 +309,6 @@ export interface QueueItem {
   };
 }
 
-export interface QueueSummary {
-  readonly id: string;
-  readonly name: string;
-  readonly position: number;
-  readonly state: 'active' | 'manually-paused';
-  /**
-   * Feature 028 — `'cascade'` when the queue was paused as a side effect
-   * of a phase pause (or breakpoint fire); `'operator'` when the operator
-   * paused the queue directly; `null` when the queue is active.
-   */
-  readonly pauseSource: 'operator' | 'cascade' | null;
-  readonly schedule: {
-    readonly expression: string;
-    readonly kind: 'relative' | 'absolute';
-    readonly targetAt: string;
-  } | null;
-  readonly taskCount: number;
-}
-
-// Feature 065 — webview mirror of the host `QueueLifecycle` / `ScheduledStartSource`
-// literals. Kept in sync with repo/src/queue/feature-request.ts.
-export type QueueLifecycle =
-  | 'running'
-  | 'operator-paused'
-  | 'idle-pending'
-  | 'active-empty';
-
-export type ScheduledStartSource =
-  | 'operator-chooser'
-  | 'operator-restart'
-  | 'programmatic-now'
-  | 'programmatic-scheduled'
-  | 'migration-default'
-  | 'system-rate-limit-recovery';
-
 export interface QueueProjection {
   readonly inFlight: QueueItem | null;
   readonly pending: readonly QueueItem[];
@@ -219,48 +334,6 @@ export interface QueueProjection {
   readonly migrationNotice?: 'pending' | 'dismissed';
 }
 
-export interface AuditTailEntry {
-  readonly id: string;
-  readonly timestamp: string;
-  readonly phase: PhaseName | null;
-  readonly category: AuditCategory;
-  readonly summary: string;
-  // --- Feature 064 additive fields ---
-  readonly runId: string;
-  readonly scope: 'task' | 'system';
-  // --- Feature 068 additive fields ---
-  readonly taskId?: string;
-  readonly phaseId?: string;
-  readonly outcome?: 'success' | 'error' | 'pending';
-  readonly runner?: string;
-}
-
-export interface LiveActivity {
-  readonly summary: string | null;
-  readonly category: AuditCategory | null;
-  readonly lastEventAt: string | null;
-  readonly freshness: FreshnessState;
-  readonly staleSeconds: number | null;
-}
-
-export interface CliMonitorState {
-  readonly runId: string;
-  readonly phase: PhaseName;
-  readonly status: MonitorStatus;
-  readonly pid: number | null;
-  readonly startedAt: string;
-  readonly lastStdoutAt: string | null;
-  readonly lastStderrAt: string | null;
-  readonly lastProgressAt: string | null;
-  readonly stdoutLines: number;
-  readonly stderrLines: number;
-  readonly exitCode: number | null;
-  readonly signal: string | null;
-  readonly detectedIssues: ReadonlyArray<'rate_limited' | 'stall'>;
-  readonly msSinceLastStdout: number | null;
-  readonly msSinceLastStderr: number | null;
-}
-
 /**
  * Feature 103 (FR-009, FR-011) — the published version a run's plan froze,
  * mirroring the host's `contracts/catalog-version.ts`.
@@ -282,10 +355,10 @@ export interface CatalogVersionRef {
    * `tests/integration/history/in-flight-not-persisted.test.ts` does when it
    * feeds the real projector into the real fold.
    */
-  readonly kind: 'phase' | 'pipeline' | 'workflow';
+  readonly kind: CatalogKind;
   readonly id: string;
   /** Never `''`. Absence of the whole record means "not recorded". */
-  readonly versionId: string;
+  readonly versionId: CatalogVersionId;
 }
 
 /**
@@ -307,7 +380,7 @@ export interface HistoryEntry {
   readonly runId: string;
   readonly featureId: string;
   readonly descriptionPreview: string;
-  readonly terminalStatus: 'completed' | 'failed' | 'canceled';
+  readonly terminalStatus: HistoryTerminalStatus;
   readonly startedAt: string;
   readonly completedAt: string;
   readonly durationMs: number;
@@ -344,72 +417,12 @@ export interface HistoryEntry {
   readonly descriptionLength?: number;
 }
 
-export interface ActivePipelineSummary {
-  readonly id: string;
-  readonly name: string;
-}
-
-/**
- * Feature 087 (FR-040, FR-040a, FR-042) — one declared output of a completed
- * Run, mirroring the host's `contracts/run-results.ts`.
- *
- * `reference` is a workspace-relative **location**; artifact content never
- * enters the snapshot. An `unresolved` entry has no reference and is shown
- * beside the resolved ones rather than hidden.
- */
-export interface RunOutputRecord {
-  readonly name: string;
-  readonly status: 'resolved' | 'unresolved';
-  readonly reference?: string;
-}
-
-/**
- * Feature 088 (FR-055, FR-055a, FR-057, FR-058) — the connected-run read model,
- * mirroring the host's `contracts/sidebar-ipc/workflow-run.ts`.
- *
- * Derived on read and never stored: the first four node states are readings of
- * the node's most recent child run, and the last three are a fold over the
- * recorded routing decisions. `actions` is what the host would accept at this
- * `revision` — the view renders controls from it rather than inferring them, so
- * a stale view offers nothing the host would refuse (FR-057).
- *
- * `in-flight` is the vocabulary of this family deliberately: the pinned
- * `'running'` status literal belongs to the per-task projection paths and this
- * feature does not widen that allowlist.
- */
-export type ConnectedNodeState =
-  | 'completed'
-  | 'in-flight'
-  | 'failed'
-  | 'canceled'
-  | 'available'
-  | 'blocked'
-  | 'unvisited';
-
-export type ConnectedNodeAction = 'start' | 'restart';
-
-export interface ConnectedNodeProjection {
-  readonly nodeId: string;
-  readonly pipelineId: string;
-  readonly state: ConnectedNodeState;
-  readonly actions: readonly ConnectedNodeAction[];
-  readonly attemptCount: number;
-  /** The most recent attempt's queue item, so the existing Run surfaces can be reused (FR-056). */
-  readonly latestQueueItemId?: string;
-}
-
-export interface ConnectedRunProjection {
-  readonly connectedRunId: string;
-  readonly workflowId: string;
-  /** The compare-and-set token to echo back on the next continuation (FR-046). */
-  readonly revision: number;
-  /** True until the aggregate and every referenced child run have loaded (FR-058). */
-  readonly hydrating: boolean;
-  readonly nodes: readonly ConnectedNodeProjection[];
-}
-
-export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
-export type Effort = (typeof EFFORT_LEVELS)[number];
+// FR-R3-132 (T1502) — `EFFORT_LEVELS` was declared identically here and in
+// `src/contracts/process-definitions.ts` as `PHASE_EFFORT_LEVELS`. This is a VALUE,
+// not a type, and `webview-host-import-direction.test.ts` permits values from
+// `contracts/` — which is where it already was.
+export { PHASE_EFFORT_LEVELS as EFFORT_LEVELS } from '../../../src/contracts/process-definitions.js';
+export type Effort = PhaseDefinitionEffort;
 
 export interface PhaseDefinition {
   readonly id: string;
@@ -427,33 +440,6 @@ export interface PhaseDefinition {
   readonly runner?: BackendRunnerKind;
 }
 
-export interface PipelineDefinition {
-  readonly id: string;
-  readonly name: string;
-  readonly phases: readonly string[];
-  /**
-   * Feature 082 — contract fields carried by the runtime selection list. Every
-   * one is optional so a pre-082 snapshot deserializes unchanged.
-   */
-  readonly description?: string;
-  readonly version?: number;
-  readonly inputs?: readonly PipelineInputPort[];
-  readonly outputs?: readonly PipelineOutputPort[];
-  readonly bindings?: readonly PhaseBinding[];
-  readonly executionDefaults?: PipelineExecutionDefaults;
-  readonly recommendedNext?: readonly string[];
-}
-
-/**
- * Feature 099 (T494a, FR-040) — two arms, because there is one layer.
- *
- * `shadowed` described a definition a higher-precedence layer hid; with a single
- * layer nothing can hide anything, so the arm is deleted rather than kept
- * unreachable. `PhasePrecedenceLayer`, `PhasePrecedenceProjection`, and the three
- * `*DefinitionScope` families went the same way and for the same reason.
- */
-export type PhaseSourceStatus = 'effective' | 'invalid';
-
 export interface PortablePhaseDefinition {
   readonly phaseId: string;
   readonly name: string;
@@ -468,85 +454,6 @@ export interface PortablePhaseDefinition {
   readonly retryCondition?: string;
   readonly isRequired?: boolean;
   readonly runner?: BackendRunnerKind;
-}
-
-// Feature 101 (FR-R3-017) T018 — the Builder's lifecycle chrome, mirrored from
-// `src/ui/sidebar/snapshot.ts`. Structural copies, as everything in this file is:
-// the webview does not import host modules, and `tests/contract/` pins the two
-// together so a drift is a failing test rather than a silently missing badge.
-
-/** One of a definition's lifecycle states, derived by the host and only there (FR-005). */
-export type DefinitionState = 'draft' | 'active' | 'active-with-draft';
-
-/** A scalar field whose value differs between the draft and the active version. */
-export interface ChangedScalarField {
-  readonly field: string;
-  readonly change: 'differs';
-}
-
-/**
- * An ordered collection field, described by what moved into, out of, and around it.
- *
- * All three lists empty means an entry changed in place — there is no `modified`
- * bucket, because an entry that was edited is neither added nor removed and the
- * summary's job is to say *which field* to look at, not to diff it.
- */
-export interface ChangedCollectionField {
-  readonly field: string;
-  readonly change: 'collection';
-  readonly added: readonly string[];
-  readonly removed: readonly string[];
-  readonly reordered: readonly string[];
-}
-
-export type ChangedField = ChangedScalarField | ChangedCollectionField;
-
-/**
- * What publishing this draft would change (FR-008, FR-011).
- *
- * `no-prior-version` is a first publish and `unchanged` a draft that canonicalises
- * to the active body; neither carries fields, because in both cases there is
- * nothing for the operator to review before confirming.
- */
-export type ChangedFieldSummary =
-  | { readonly kind: 'no-prior-version' }
-  | { readonly kind: 'unchanged' }
-  | { readonly kind: 'changed'; readonly fields: readonly ChangedField[] };
-
-/** One retained version, as the history panel lists it (FR-027). */
-export interface BuilderVersionEntry {
-  readonly versionId: string;
-  readonly createdAt: number;
-  readonly publishedAt: number | null;
-  readonly isActive: boolean;
-  readonly note: string | null;
-}
-
-/**
- * The lifecycle facts for one definition.
- *
- * Optional on every record and nested rather than flattened: a host with no
- * catalog store wired has no honest value for `state`, `versions`, or
- * `activeVersionId`, and six flat fields would force one to be invented. Present
- * together or not at all is the invariant, so the shape enforces it.
- */
-export interface BuilderLifecycle {
-  readonly state: DefinitionState;
-  readonly createdAt: number;
-  readonly updatedAt: number;
-  /** Absent, never `''`, when nothing is published yet (FR-006). */
-  readonly activeVersionId?: string;
-  /**
-   * The token every lifecycle write echoes back as `expectedDraftVersion` (FR-012).
-   *
-   * Opaque. The host folded the absent draft into it already; parsing it here, or
-   * comparing it to `'no-draft'`, re-creates the fold this field exists to remove.
-   */
-  readonly expectedDraftVersion: string;
-  /** Newest first, already ordered by the host (FR-012). */
-  readonly versions: readonly BuilderVersionEntry[];
-  /** Present only for `active-with-draft` (FR-011). */
-  readonly changedFields?: ChangedFieldSummary;
 }
 
 export interface PhaseCatalogSourceRecord {
@@ -575,15 +482,6 @@ export interface PhaseCatalogProjection {
   readonly error?: { readonly code: string; readonly message: string };
 }
 
-/*
- * Feature 082 — webview mirror of the portable Pipeline contract in
- * `src/contracts/pipeline-definitions.ts`. Types and closed unions only; the
- * host remains the sole authority for validation and resolution.
- */
-
-/** Feature 099 (FR-040) — two arms. See `PhaseSourceStatus` for why `shadowed` is gone. */
-export type PipelineSourceStatus = 'effective' | 'invalid';
-
 /**
  * Session-input port types (FR-012). `pipeline-output` is the declared type an
  * input port uses when an earlier Phase's output feeds it rather than the
@@ -599,7 +497,6 @@ export const PIPELINE_INPUT_PORT_TYPES = [
   'pipeline-output',
   'repository-context'
 ] as const;
-export type PipelineInputPortType = (typeof PIPELINE_INPUT_PORT_TYPES)[number];
 
 /** Declared artifact types a Pipeline produces (FR-013). */
 export const PIPELINE_OUTPUT_PORT_TYPES = [
@@ -610,44 +507,6 @@ export const PIPELINE_OUTPUT_PORT_TYPES = [
   'run-request',
   'external-reference'
 ] as const;
-export type PipelineOutputPortType = (typeof PIPELINE_OUTPUT_PORT_TYPES)[number];
-
-export interface PipelineInputPort {
-  readonly portId: string;
-  readonly label: string;
-  readonly type: PipelineInputPortType;
-  readonly required?: boolean;
-  readonly description?: string;
-}
-
-export interface PipelineOutputPort {
-  readonly portId: string;
-  readonly label: string;
-  readonly type: PipelineOutputPortType;
-  readonly description?: string;
-}
-
-/**
- * Bindings address a Phase *position* rather than a bare phase id because a
- * Pipeline's `phaseIds` may repeat the same Phase.
- */
-export interface PhaseInputBinding {
-  readonly kind: 'input';
-  readonly phaseIndex: number;
-  readonly inputKey: string;
-  readonly source:
-    | { readonly from: 'pipeline-input'; readonly portId: string }
-    | { readonly from: 'phase-output'; readonly phaseIndex: number; readonly portId: string };
-}
-
-export interface PhaseOutputBinding {
-  readonly kind: 'output';
-  readonly phaseIndex: number;
-  readonly portId: string;
-  readonly outputKey: string;
-}
-
-export type PhaseBinding = PhaseInputBinding | PhaseOutputBinding;
 
 /** Advisory Run-creation defaults; host-owned runtime policy is not authorable. */
 export interface PipelineExecutionDefaults {
@@ -656,37 +515,6 @@ export interface PipelineExecutionDefaults {
   readonly effort?: Effort;
   readonly timeoutSeconds?: number;
 }
-
-export interface PortablePipelineDefinition {
-  readonly pipelineId: string;
-  readonly name: string;
-  readonly description?: string;
-  readonly version: number;
-  readonly phaseIds: readonly string[];
-  readonly inputs: readonly PipelineInputPort[];
-  readonly outputs: readonly PipelineOutputPort[];
-  readonly bindings: readonly PhaseBinding[];
-  readonly executionDefaults?: PipelineExecutionDefaults;
-  readonly recommendedNext: readonly string[];
-}
-
-export type PipelineCatalogMutation =
-  | { readonly kind: 'create'; readonly pipelineId: string }
-  /**
-   * Feature 085 (FR-043) — the Pipeline half of a package import, written after
-   * the Phase layer (FR-038) and gated on its own expected revision. Mirrored
-   * `PhaseCatalogMutation`'s arm of the same name; Feature 101 (T030) deleted
-   * the transport both were declared to, so neither reaches the host any more.
-   */
-  | { readonly kind: 'import-package'; readonly pipelineIds: readonly string[] }
-  | { readonly kind: 'edit'; readonly pipelineId: string }
-  | {
-      readonly kind: 'duplicate';
-      readonly sourcePipelineId: string;
-      readonly pipelineId: string;
-    }
-  | { readonly kind: 'remove'; readonly pipelineId: string }
-  | { readonly kind: 'reset' };
 
 export interface PipelineCatalogSourceRecord {
   readonly key: string;
@@ -720,24 +548,8 @@ export interface PipelineCatalogProjection {
   readonly error?: { readonly code: string; readonly message: string };
 }
 
-/*
- * Feature 083 — webview mirror of the portable Workflow contract in
- * `src/contracts/workflow-definitions.ts` and the projection in
- * contracts/workflow-catalog-snapshot.md. Types and closed unions only; the
- * host remains the sole authority for validation and resolution.
- *
- * "Workflow" here is the *definition* sense — a reusable acyclic graph of
- * Pipeline nodes. The run-side sense (`WorkflowSnapshot`, `workflowId` on a
- * queued request) keeps every surface it already owns in this file; neither
- * vocabulary is renamed.
- */
-
-/** Feature 099 (FR-040) — two arms. See `PhaseSourceStatus` for why `shadowed` is gone. */
-export type WorkflowSourceStatus = 'effective' | 'invalid';
-
 /** Collection selection rules; `exactlyOne` fails at run time on any size but one. */
 export const WORKFLOW_SELECTION_RULES = ['first', 'last', 'exactlyOne'] as const;
-export type WorkflowSelectionRule = (typeof WORKFLOW_SELECTION_RULES)[number];
 
 /**
  * Closed comparison operator set. Adding a member is a contract change, not a
@@ -754,96 +566,9 @@ export const WORKFLOW_CONDITION_OPERATORS = [
   'lessThan',
   'lessThanOrEqual'
 ] as const;
-export type WorkflowConditionOperator = (typeof WORKFLOW_CONDITION_OPERATORS)[number];
 
 /** Terminal run statuses a `node-status` operand may be compared against. */
 export const WORKFLOW_NODE_TERMINAL_STATUSES = ['completed', 'failed', 'canceled'] as const;
-export type WorkflowNodeTerminalStatus = (typeof WORKFLOW_NODE_TERMINAL_STATUSES)[number];
-
-/**
- * A condition is structured data, never an expression string. The Builder edits
- * these fields directly; there is no text to compile, evaluate, or sandbox.
- */
-export type WorkflowConditionOperand =
-  | { readonly source: 'node-output'; readonly nodeId: string; readonly field: string }
-  | { readonly source: 'node-status'; readonly nodeId: string };
-
-export type WorkflowConditionLiteral = string | number | boolean;
-
-export interface WorkflowCondition {
-  readonly left: WorkflowConditionOperand;
-  readonly operator: WorkflowConditionOperator;
-  readonly right?: WorkflowConditionLiteral | readonly WorkflowConditionLiteral[];
-}
-
-/**
- * `nodeId` is the address, not `pipelineId`: two nodes may reference the same
- * Pipeline and are distinguished solely by `nodeId`. Reorder, insert, and remove
- * preserve every surviving `nodeId`, so no connection endpoint needs remapping —
- * deliberately unlike Pipeline bindings, which address a Phase by position.
- */
-export interface WorkflowNode {
-  readonly nodeId: string;
-  readonly pipelineId: string;
-  readonly label?: string;
-}
-
-/**
- * A connection carries no identifier of its own: defects address it by position
- * in the authored list (`connections[2].to`), while its endpoints address nodes
- * by `nodeId`. It carries no fan-out marker either — several outgoing
- * connections on one node are mutually exclusive alternatives.
- */
-export interface WorkflowConnection {
-  readonly from: { readonly nodeId: string; readonly portId: string };
-  readonly to: { readonly nodeId: string; readonly portId: string };
-  readonly condition?: WorkflowCondition;
-  /** Integer; ascending evaluation order, then authored order for ties. */
-  readonly priority?: number;
-  /** At most one per source node; considered last. */
-  readonly isDefault?: boolean;
-  readonly selection?: WorkflowSelectionRule;
-}
-
-export interface PortableWorkflowDefinition {
-  readonly workflowId: string;
-  readonly name: string;
-  readonly description?: string;
-  readonly version: number;
-  /** Authored order preserved; carries no execution semantics. */
-  readonly nodes: readonly WorkflowNode[];
-  /** Authored order preserved; the equal-priority tie-break only. */
-  readonly connections: readonly WorkflowConnection[];
-  /** Non-empty; every entry names an existing node. */
-  readonly startNodeIds: readonly string[];
-}
-
-export type WorkflowCatalogMutation =
-  | { readonly kind: 'create'; readonly workflowId: string }
-  /**
-   * Feature 086 (FR-045) — the Workflow half of a package import, written last
-   * because its nodes only resolve once the Pipelines they name are effective,
-   * and gated on its own expected revision. Mirrors
-   * `PipelineCatalogMutation['import-package']`. There is no single-id `import`
-   * kind to mirror: the Workflow catalog has no standalone import form, so every
-   * Workflow import is a package write, even one carrying a single Workflow.
-   */
-  | { readonly kind: 'import-package'; readonly workflowIds: readonly string[] }
-  | { readonly kind: 'edit'; readonly workflowId: string }
-  | {
-      readonly kind: 'duplicate';
-      readonly sourceWorkflowId: string;
-      readonly workflowId: string;
-    }
-  | { readonly kind: 'remove'; readonly workflowId: string }
-  | { readonly kind: 'reset' };
-
-/** `field` is wider than the Pipeline cap so it can hold `connections[12].to`. */
-export interface WorkflowCatalogFieldErrorProjection {
-  readonly field: string;
-  readonly code: string;
-  readonly message: string;
-}
 
 /**
  * Derived at projection time and absent from the persisted row: a Workflow's
@@ -880,137 +605,11 @@ export interface WorkflowCatalogProjection {
   readonly error?: { readonly code: string; readonly message: string };
 }
 
-/**
- * Feature 102 — webview mirror of the launch projection in
- * `src/ui/sidebar/snapshot.ts`. This mirror is hand-maintained: field names,
- * optionality, and arm names are character-identical to the host declaration so
- * the two cannot drift.
- */
-export interface LaunchablePort {
-  readonly portId: string;
-  readonly label: string;
-  readonly type: PipelineInputPortType;
-  /**
-   * FR-009 — what the definition itself declares, never what the surface infers.
-   * Present for a Pipeline; **absent for a Workflow**, whose derived ports do not
-   * carry requiredness through. Absent means "not declared required"; the surface
-   * does not reconstruct it.
-   */
-  readonly required?: boolean;
-  readonly description?: string;
-  /** Workflows only — which node in the graph asks for this port. */
-  readonly nodeId?: string;
-}
-
-/** One entry Runs offers. Identity is `(kind, id)`, never `id` alone (FR-014). */
-export interface Launchable {
-  readonly kind: 'pipeline' | 'workflow';
-  readonly id: string;
-  readonly name: string;
-  readonly description?: string;
-  /** Required: a launchable exists because its definition has an active version (FR-003). */
-  readonly activeVersionId: string;
-  /** Pipelines: the declared input ports. Workflows: the derived, unsatisfied ones. */
-  readonly inputs: readonly LaunchablePort[];
-  /** Workflows only; non-empty when present. Drives the start-node question (FR-043). */
-  readonly startNodeIds?: readonly string[];
-}
-
-/**
- * What one section is showing.
- *
- * **`loading` is not an arm** — it is the absence of `launchables`, the same way
- * absence already signals "still loading" for the three catalog projections
- * above. Do not add a fourth arm; it would give one fact two representations.
- */
-export type LaunchSection =
-  | { readonly state: 'entries'; readonly entries: readonly Launchable[] }
-  | { readonly state: 'no-definitions' }
-  | { readonly state: 'none-active' };
-
-export interface LaunchProjection {
-  readonly pipelines: LaunchSection;
-  readonly workflows: LaunchSection;
-}
-
-/**
- * Feature 011 — webview mirror of `DelayedRetryState` in
- * src/ui/sidebar/snapshot.ts. The host always emits this object (even
- * idle); the field is marked optional here for legacy-tolerance per
- * contracts/general-settings-ipc.md — a host running an older bundle
- * will not include it, and the webview must fall back to the IDLE
- * defaults.
- */
-export type DelayedRetryCauseProjection = 'transient_error' | 'rate_limit' | null;
-
-export interface DelayedRetryState {
-  readonly pendingRetryAt: string | null;
-  readonly pendingRetryCause: DelayedRetryCauseProjection;
-  readonly delayedRetryCount: number;
-}
-
 export const IDLE_DELAYED_RETRY: DelayedRetryState = Object.freeze({
   pendingRetryAt: null,
   pendingRetryCause: null,
   delayedRetryCount: 0
 });
-
-/**
- * FR-R3-008 (T379) — webview mirror of `RunLivenessProjection` in
- * src/ui/sidebar/snapshot.ts.
- *
- * Distinct from `LiveActivity`, which the host derives from the audit tail and
- * from in-memory monitor state and which therefore says nothing after a window
- * reload. This one comes from the persisted Run record, so it survives one.
- *
- * `null` on the Run projection means **unknown** — a record written before the
- * feature, or a Run whose phase has not produced output yet — and a renderer
- * must show that as unknown rather than as a zero or as the start time.
- */
-export interface RunLivenessProjection {
-  /** ISO-8601, converted host-side from the record's epoch ms. */
-  readonly lastActivityAt: string;
-  readonly stdoutLines: number;
-  readonly stderrLines: number;
-}
-
-/**
- * FR-R3-008 (T379) — webview mirror of `RunProgressProjection` in
- * src/ui/sidebar/snapshot.ts.
- *
- * `percent` is already rounded and clamped to 0..100 by the host, so no renderer
- * recomputes the fraction: `phasesCompleted` and `phaseCount` exclude the same
- * override set host-side, and dividing them again here is how the two sides come
- * to disagree. `iterationCap` is the bound this Run froze at creation, which an
- * operator who has since changed `loop.maxIterations` needs to see.
- *
- * `null` means unknown; render it as unknown, never as 0%.
- */
-export interface RunProgressProjection {
-  readonly phasesCompleted: number;
-  readonly phaseCount: number;
-  readonly iterationCap: number;
-  readonly maxPhaseInvocations: number;
-  /** 0..100, integer. `100` when the plan has no phases left to run. */
-  readonly percent: number;
-}
-
-/**
- * Feature 011 — webview mirror of `GeneralSettings` in
- * src/config/general-settings.ts. Each scalar `schegent.*` key is
- * surfaced as a typed field; the `scopes` map indicates the source
- * (workspace > user > default). The Settings surface reads this and
- * dispatches CMD_SAVE_GENERAL_SETTINGS to persist edits.
- */
-export type SettingScope = 'workspace' | 'user' | 'default';
-
-/**
- * Feature 019 — runtime debug log severity floor. Mirrors
- * `RuntimeLogLevel` in src/lib/runtime-log/runtime-log-level.ts; kept as
- * a local union here because the webview bundle cannot import from the
- * host `src/lib/` tree.
- */
-export type RuntimeLogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
 
 export interface GeneralSettings {
   readonly cliPath: string;
@@ -1147,30 +746,6 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
     retryForceContinueOnCap: 'default'
   })
 });
-
-
-/**
- * Feature 033 — webview mirror of `TelemetryStatus` /
- * `TelemetrySnapshot` in src/telemetry/telemetry-snapshot.ts. Kept as a
- * local definition here because the webview bundle cannot import host
- * source. The shape is closed and matches the host emit exactly.
- */
-export type TelemetryStatus =
-  | 'active'
-  | 'sleeping'
-  | 'zombie'
-  | 'exited'
-  | 'killed'
-  | 'unavailable';
-
-export interface TelemetrySnapshot {
-  readonly pid: number;
-  readonly status: TelemetryStatus;
-  readonly cpuPercent: number | null;
-  readonly memoryRssBytes: number | null;
-  readonly uptimeMs: number | null;
-  readonly sampledAt: string;
-}
 
 /**
  * Feature 092 (FR-048, FR-049) — the Run one queue owns, folded under that
@@ -1385,50 +960,6 @@ export interface WorkflowSnapshot {
   readonly confirmationsEnabled?: boolean;
 }
 
-/**
- * FR-R3-130 (T1496) — mirrored from `src/ui/sidebar/snapshot.ts`.
- *
- * `ceilingBytes` is what the LIVE buffers could grow to, not the product's
- * theoretical maximum: showing 2.56 GiB while two buffers hold 3 MiB would be the
- * arithmetic ceiling `FR-R3-081` corrected, restated on a dashboard.
- */
-export interface StreamPressureProjection {
-  readonly liveBuffers: number;
-  readonly retainedBytes: number;
-  readonly ceilingBytes: number;
-  /**
-   * `os.totalmem()`, carried so the surface that WARNS can reach it.
-   *
-   * FR-R3-130 (T1495) — the cap warning's threshold is machine-derived, and the
-   * point of configuration is a webview dialog with no `os`. It rides with this
-   * projection rather than acquiring a field of its own: both facts are about what
-   * the machine can hold, and one host read serves both.
-   *
-   * `0` when unavailable, which `adviseStreamPressure` reads as "do not warn" —
-   * a warning derived from an absent fact is worse than silence.
-   */
-  readonly machineMemoryBytes: number;
-}
-
-export interface SessionArtifactsProjection {
-  readonly artifactCount: number;
-  readonly totalBytes: number;
-  readonly lastSweepAt: string | null;
-  readonly lastSweepFailures: number;
-}
-
-export type EvidenceSinkStatus = 'healthy' | 'degraded' | 'unavailable';
-export type EvidenceOverallStatus = 'healthy' | 'degraded' | 'unavailable';
-export type EvidenceContinuationPolicy = 'fail-closed' | 'continue-degraded';
-
-export interface EvidenceSinkHealthProjection {
-  readonly status: EvidenceSinkStatus;
-  readonly continuationPolicy: EvidenceContinuationPolicy;
-  readonly failureCount: number;
-  readonly lastFailureAt: string | null;
-  readonly cause: string | null;
-}
-
 export interface EvidenceHealthProjection {
   readonly overall: EvidenceOverallStatus;
   readonly audit: EvidenceSinkHealthProjection;
@@ -1495,3 +1026,4 @@ export const IDLE_LIVE_ACTIVITY: LiveActivity = Object.freeze({
 // projected on the snapshot, so this side never had to decide whether a Phase
 // loops. It is gone on both sides — the host's copy because a Phase loops by its
 // `retryCondition` rather than by its id, and this one because it was dead.
+

@@ -51,8 +51,19 @@ const CATALOG_DIR = join(SRC_DIR, 'catalog');
  * A guard that quietly admitted new callers would guard nothing.
  */
 const PERMITTED_IMPORTERS: readonly string[] = [
+  // FR-R3-132 (T1502) — `ui/sidebar/snapshot.ts` was on this list for a PROSE
+  // mention, not a call: the check is `code.includes('deriveWorkflowPorts')`, and
+  // the only occurrence in that file was a JSDoc sentence explaining where the
+  // derivation happens. When the declaration carrying that sentence moved to
+  // `src/contracts/snapshot-projections.ts`, the mention moved with it and the
+  // entry moved too. Neither file calls the function.
+  //
+  // Worth saying rather than silently swapping: a textual check cannot tell a
+  // mention from a call, so this list has always mixed the two. It still holds the
+  // invariant it exists for — the derivation reaches no storage path — because a
+  // module of type declarations has no storage path to reach.
+  'contracts/snapshot-projections.ts',
   'ui/sidebar/launch-projection.ts',
-  'ui/sidebar/snapshot.ts',
   'ui/sidebar/workflow-catalog-projector.ts'
 ];
 

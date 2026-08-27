@@ -54,6 +54,8 @@ vi.mock('../../../src/state/workspace-folder-picker', () => ({
 }));
 
 import { resolvePipelineCatalog } from '../../../src/config/pipeline-catalog';
+import { resolveWorkflowCatalog } from '../../../src/config/workflow-catalog';
+import type { WorkflowDefinition } from '../../../src/contracts/workflow-definitions';
 import { resolvePhaseCatalog } from '../../../src/config/process-catalog';
 import {
   CMD_PREFLIGHT_PROCESS_YAML,
@@ -140,6 +142,29 @@ function declaredKeys(name: string, text: string): readonly DeclaredKey[] {
       `phase::${required(scalarOf(entryOf(entryOf(phase, 'metadata'), 'phaseId')), 'included phase id', name)}`
     );
     return [`pipeline::${pipelineId}`, ...phaseKeys];
+  }
+
+  // FR-R3-132 (T1504) — the Workflow arm. `examples/` carried only Pipelines
+  // until this cycle, so this function had never needed one, and the throw below
+  // is what said so: the gate refused to let a new kind ship uncovered rather
+  // than silently passing over it. A Workflow package includes its pipelines AND
+  // their phases, so all three levels are declared here.
+  if (kind === 'Workflow') {
+    const workflowId = required(
+      scalarOf(entryOf(entryOf(root, 'metadata'), 'id')),
+      'metadata.id',
+      name
+    );
+    const included = entryOf(root, 'included');
+    const pipelineKeys = itemsOf(entryOf(included, 'pipelines')).map(
+      (pipeline) =>
+        `pipeline::${required(scalarOf(entryOf(entryOf(pipeline, 'metadata'), 'id')), 'included pipeline id', name)}`
+    );
+    const phaseKeys = itemsOf(entryOf(included, 'phases')).map(
+      (phase) =>
+        `phase::${required(scalarOf(entryOf(entryOf(phase, 'metadata'), 'phaseId')), 'included phase id', name)}`
+    );
+    return [`workflow::${workflowId}`, ...pipelineKeys, ...phaseKeys];
   }
 
   if (kind === 'ModelCatalog') {
@@ -257,7 +282,7 @@ async function planFor(inst: Installation, text: string): Promise<ImportPlan> {
   return result.plan;
 }
 
-function imported<T>(plan: ImportPlan, kind: 'phase' | 'pipeline'): readonly T[] {
+function imported<T>(plan: ImportPlan, kind: 'phase' | 'pipeline' | 'workflow'): readonly T[] {
   const definitions: T[] = [];
   for (const row of plan.rows) {
     if (row.outcome === 'import' && row.resourceKind === kind) {
@@ -275,6 +300,20 @@ function phaseRow(definition: PhaseDefinition): Record<string, unknown> {
 function pipelineRow(definition: PipelineDefinition): Record<string, unknown> {
   const { pipelineId, phaseIds, ...declared } = definition;
   return { id: pipelineId, phases: [...phaseIds], ...declared };
+}
+
+/**
+ * FR-R3-132 (T1504) — the Workflow layer, added with the first Workflow document
+ * in `examples/`.
+ *
+ * The harness published `phase` and `pipeline` layers only, because for as long as
+ * this directory carried nothing else there was nothing to publish. `declaredKeys`
+ * refusing an unknown kind is what surfaced it, and the layer ordering is the
+ * host's concern (feature 100, T514), so appending here is enough.
+ */
+function workflowRow(definition: WorkflowDefinition): Record<string, unknown> {
+  const { workflowId, ...declared } = definition;
+  return { id: workflowId, ...declared };
 }
 
 /** The `import`-outcome model rows grouped by backend — never a pre-merged catalog. */
@@ -351,6 +390,20 @@ async function commit(inst: Installation, plan: ImportPlan): Promise<readonly Co
     });
   }
 
+  const workflows = imported<WorkflowDefinition>(plan, 'workflow');
+  if (workflows.length > 0) {
+    const revision = plan.computedAgainstWorkflowRevision;
+    expect(revision).toBeDefined();
+    layers.push({
+      kind: 'workflow',
+      expectedRevision: revision!,
+      definitions: workflows.map((definition) => ({
+        id: definition.workflowId,
+        body: workflowRow(definition)
+      }))
+    });
+  }
+
   if (layers.length > 0) {
     await publishDefinitionPackage(ctx, {
       type: CMD_PUBLISH_PACKAGE,
@@ -400,6 +453,23 @@ function pipelineCatalog(inst: Installation) {
  * model resolves effective exactly when the config holds it under the backend it
  * was declared with.
  */
+/**
+ * FR-R3-132 (T1504) — the Workflow catalog, resolved on top of the pipeline one.
+ *
+ * Added with the first Workflow document in `examples/`. Its absence was not
+ * noticed before because the directory carried only Pipelines; the throw in
+ * `declaredKeys()` is what surfaced it, which is the behaviour that arm was
+ * written for.
+ */
+function workflowCatalog(inst: Installation) {
+  const pipelines = pipelineCatalog(inst);
+  return resolveWorkflowCatalog({
+    rows: inst.store.rowsOf('workflow'),
+    revision: inst.store.revisionOf('workflow'),
+    pipelineCatalog: { effective: pipelines.effective, records: pipelines.records }
+  });
+}
+
 function effectiveKeys(inst: Installation): ReadonlySet<DeclaredKey> {
   const keys = new Set<DeclaredKey>();
   for (const record of phaseCatalog(inst).records) {
@@ -407,6 +477,9 @@ function effectiveKeys(inst: Installation): ReadonlySet<DeclaredKey> {
   }
   for (const record of pipelineCatalog(inst).records) {
     if (record.status === 'effective') keys.add(`pipeline::${record.pipelineId}`);
+  }
+  for (const record of workflowCatalog(inst).records) {
+    if (record.status === 'effective') keys.add(`workflow::${record.workflowId}`);
   }
   for (const [backend, models] of Object.entries(inst.models)) {
     for (const modelId of models) keys.add(`model::${backend}::${modelId}`);

@@ -1,22 +1,24 @@
 // Feature 011 — typed read/write surface for scalar `schegent.*` keys.
 //
 // Two responsibilities:
-//   1. `readGeneralSettings(config)` projects the current effective
-//      values into a typed `GeneralSettings` snapshot for the webview,
-//      including a per-key `scopes` map (workspace > user > default).
-//   2. `writeGeneralSettings(config, updates)` validates a batch of
-//      updates transactionally — every key must be in the allowlist
-//      AND every value must match the declared runtime type — and then
-//      writes each accepted key at the configuration target its MANIFEST
-//      SCOPE requires — `Global` for an `application`-scoped key, which has
-//      no workspace layer, and `Workspace` otherwise (FR-R3-051 / M-05,
-//      superseding the original FR-020 "Workspace only"). On validation
-//      failure no key is written; on a later persistence failure, keys
-//      already written by the batch are restored at the same layer they
-//      were written to.
+//   1. `readGeneralSettings(config)` projects the current effective values into a
+//      typed `GeneralSettings` snapshot for the webview, including a per-key
+//      `scopes` map (workspace > user > default).
+//   2. `writeGeneralSettings(config, updates)` validates a batch transactionally —
+//      every key in the allowlist, every value matching its declared runtime type —
+//      then writes each accepted key at the target its MANIFEST SCOPE requires:
+//      `Global` for an `application`-scoped key, which has no workspace layer, and
+//      `Workspace` otherwise (FR-R3-051 / M-05, superseding FR-020's "Workspace
+//      only"). On validation failure no key is written; on a later persistence
+//      failure, keys already written are restored at the layer they went to.
 //
-// The host adds the `schegent.` prefix; payload keys are unprefixed
-// scalar setting names. See contracts/general-settings-ipc.md.
+// The host adds the `schegent.` prefix; payload keys are unprefixed scalar setting
+// names. See contracts/general-settings-ipc.md.
+//
+// FR-R3-132 (T1502) — `SettingScope` moved to `src/contracts/snapshot-vocabulary.ts`,
+// so the webview imports it rather than restating it. Re-exported unchanged.
+import type { SettingScope } from '../contracts/snapshot-vocabulary';
+export type { SettingScope };
 
 /**
  * Minimal slice of `vscode.WorkspaceConfiguration` that this surface
@@ -54,8 +56,7 @@ export function configurationTargetFor(scope: ManifestSettingScope): number {
   return scope === 'application' ? CONFIGURATION_TARGET_GLOBAL : CONFIGURATION_TARGET_WORKSPACE;
 }
 
-/** Setting scope as projected to the webview. */
-export type SettingScope = 'workspace' | 'user' | 'default';
+
 
 export interface GeneralSettings {
   readonly cliPath: string;

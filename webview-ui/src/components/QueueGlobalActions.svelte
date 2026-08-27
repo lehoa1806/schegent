@@ -8,7 +8,7 @@
     CMD_CLEAR_FAILED,
     CMD_OPEN_DASHBOARD
   } from '../lib/messages';
-  import type { QueueLifecycle } from '../lib/snapshot-types';
+  import type { QueueLifecycle, QueueSummary } from '../lib/snapshot-types';
 
   interface Props {
     paused: boolean;
@@ -23,8 +23,17 @@
      * Feature 028 — `'cascade'` when the pause is a side effect of a phase
      * pause (or breakpoint fire); `'operator'` when the operator paused the
      * queue directly; `null` when the queue is active.
+     *
+     * FR-R3-132 (T1502) — `'retry-cap'` was MISSING from this union, and from
+     * the snapshot mirror above it. `src/contracts/queue-snapshot.ts` has
+     * declared it since Feature 030 BUG-001 and says in the same breath that
+     * *"UI uses this to label the queue badge as 'cascaded' / 'retry-cap'"* —
+     * the label did not exist. A retry-handler pause therefore reached this
+     * component as a value its own type said was impossible and rendered as an
+     * unexplained pause. The type is now the contract's, and the badge below is
+     * the label the contract promised.
      */
-    pauseSource?: 'operator' | 'cascade' | null;
+    pauseSource?: QueueSummary['pauseSource'];
     /**
      * Feature 065 BUG-007 / FR-018 — when `queueLifecycle === 'idle-pending'`,
      * the `action === 'start'` branch is suppressed so the FR-018 chooser
@@ -47,6 +56,7 @@
   }: Props = $props();
 
   const showCascadedBadge = $derived(paused && pauseSource === 'cascade');
+  const showRetryCapBadge = $derived(paused && pauseSource === 'retry-cap');
 
   const primaryDisabled = $derived(!isPrimary);
   const clearCompletedDisabled = $derived(primaryDisabled || completedCount === 0);
@@ -131,6 +141,13 @@
         data-testid="queue-cascade-badge"
         title="Paused as a side effect of a phase pause. Resuming the phase will resume the queue."
       >cascaded</span>
+    {/if}
+    {#if showRetryCapBadge}
+      <span
+        class="cascade-badge"
+        data-testid="queue-retry-cap-badge"
+        title="Paused by the retry handler: the delayed-retry budget for this queue is exhausted. Resuming retries the next item immediately."
+      >retry cap</span>
     {/if}
   {/if}
   <button

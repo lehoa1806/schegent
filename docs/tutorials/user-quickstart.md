@@ -102,6 +102,15 @@ The dashboard opens on **Queues** and also exposes **Runs**, **History**, **Metr
 5. Select **Confirm import**.
 
 The document is a package: it defines the pipeline and includes all five phase definitions it references. A successful confirmed import publishes the complete set so that the pipeline is launchable; the implementation first stages draft records and then publishes them as one import operation.
+
+**The other files in that folder** (`FR-R3-132`): `examples/speckit-new-feature.pipeline.yaml` is the
+same shape for the feature process, and `examples/example-two-node.workflow.yaml` is a two-node
+Workflow that carries its own pipelines and phases, so it imports on its own. Its single edge is
+conditional — the second node runs only if the first failed — which is the smallest graph in which a
+condition does real work. See
+[`examples/README.md`](../../examples/README.md). Every file there is parsed and validated by
+`repo/tests/integration/examples-import.test.ts`, so an example cannot rot into a broken first
+experience.
 <!-- Source: webview-ui/src/components/PipelineBuilder.svelte -->
 <!-- Source: webview-ui/src/components/Builder/BuilderTabs.svelte -->
 <!-- Source: webview-ui/src/components/Builder/CatalogEmptyState.svelte -->

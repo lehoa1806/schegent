@@ -17,16 +17,14 @@
 
 import type { LogSink } from './logger';
 
-export interface DebugLogEntry {
-  /** Monotonic counter — unique within the sink's lifetime. */
-  readonly id: number;
-  /** ISO 8601 timestamp parsed from the SanitizedLogger line prefix. */
-  readonly timestamp: string;
-  /** Log level parsed from the SanitizedLogger line prefix. */
-  readonly level: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
-  /** Sanitized message body (secrets already redacted by SanitizedLogger). */
-  readonly message: string;
-}
+// FR-R3-132 (T1502) — moved to `src/contracts/snapshot-vocabulary.ts` so the webview
+// imports it instead of restating it. Re-exported unchanged.
+import type { DebugLogEntry } from '../contracts/snapshot-vocabulary';
+
+export type { DebugLogEntry };
+
+
+
 
 const VALID_LEVELS = new Set(['DEBUG', 'INFO', 'WARN', 'ERROR']);
 

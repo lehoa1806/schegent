@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 92
+    vacuity-census-denominator: 93
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **92** |
+| Gates the detector calls **controlled** (the denominator) | **93** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -191,6 +191,9 @@ gate with an unproven failure path.
 | `tests/unit/audit/platform-permission-modes.test.ts` | a loosened mode is detected | yes |
 | `tests/a11y/a11y-scan.spec.ts` | axe scoped to `document.head` instead of `document` → the leanest combination gave **1** node/rule pair against the floor, named; restored → green at **3,660 pairs over 24 combinations**, leanest `sidebar|light` at 41 (2026-08-28, `FR-R3-131`) | yes, by live mutation |
 | `tests/lint/a11y-baseline-shrinks.test.ts` | one probe entry appended to the empty baseline → `accepts 1 finding(s), over its recorded ceiling of 0`; removed → green (2026-08-28) | yes, by live mutation |
+| `tests/lint/snapshot-mirror-census.test.ts` | landed red against 51 byte-identical declarations; its union half independently rediscovered `QueueSummary.pauseSource` missing `'retry-cap'`; its structural half found five renamed copies a name-keyed comparison cannot see; **widening its walk from three host directories to `src/` found fifteen more it had been reporting as "webview-local"** (2026-08-28, `FR-R3-132`) | yes, by live mutation |
+| `tests/lint/verification-tiers.test.ts` | four mutations: `test:perf` dropped from the release tier; `--cache` appended to a tier; a tier renamed in its document; a tier pointed at a target `package.json` does not define (2026-08-28, `FR-R3-132`) | yes, by live mutation |
+| `tests/lint/devcontainer-declination-review-date.test.ts` | a past date, and a removed marker (2026-08-28, `FR-R3-132`) | yes, by live mutation |
 | `tests/lint/at-matrix-honesty.test.ts` | three mutations: a `**PASS**` result with no date; an `UNTESTED` row whose trigger cell was `—`; `Schegent conforms to WCAG 2.1 Level AA.` appended to `RELEASE.md` (2026-08-28) | yes, by live mutation |
 | `tests/lint/a11y-policy-parity.test.ts` | a drifted statement and a widened tag set | yes |
 | `tests/unit/services/capability-enforcement-plan.test.ts` | withholding a capability changes the argv — the plan is not a no-op | yes |
@@ -226,7 +229,13 @@ The floor itself was first set to 40 — one below the leanest measurement, whic
 than a floor, and would have failed on the removal of any decorative element. It is 20: the number
 separates *rendered* from *blank* (measured 41 against a mutated 1), not *big* from *small*.
 
-The two new gates are outside the **vacuity denominator** (still 92) and that is not an omission:
+**93 as of 2026-08-28 (`FR-R3-132`)**, up one: `snapshot-mirror-census.test.ts` walks the host tree
+and asserts an empty result set, so it is a scanning gate and the detector classifies it as
+controlled. Its control is the pair of floors on what the walk found — 20 mirror declarations and 200
+host declarations — because every assertion in it is a per-declaration loop and a parser that matched
+nothing would report green over a deleted file.
+
+The `FR-R3-131` gates are outside the **vacuity denominator** and that is not an omission:
 the detector's denominator is gates that walk a tree and assert emptiness, and neither of these
 does — one reads a JSON count, the other parses a fixed table. Both were nonetheless driven red by
 live mutation, recorded above.
