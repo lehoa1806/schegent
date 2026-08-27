@@ -366,12 +366,13 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // ratchets. The largest cohesion problem in the tree was the one the waiver
   // machinery never saw.
   //
-  // The file is 1,270 after `sidebar-router-wiring.ts` took 240 lines of
-  // `MessageRouter` construction out of `wireStage2`. 1,300 is set deliberately
-  // rather than pinned to the measurement: 30 lines is room for an ordinary edit,
-  // and it is outside the 25-line margin, so this entry is a budget again instead
-  // of a high-water mark. Lower it when the next extraction earns it.
-  { path: 'src/extension.ts', maxLines: 1_300 },
+  // The file is 1,138 after two extractions: `sidebar-router-wiring.ts` (240
+  // lines of `MessageRouter` construction) and `backend-execution-wiring.ts` (148
+  // lines of monitor, sampler and runner-registry construction). 1,170 is set
+  // deliberately rather than pinned to the measurement: 32 lines is room for an
+  // ordinary edit, and it is outside the 25-line margin, so this stays a budget
+  // rather than a high-water mark. Lower it when the next extraction earns it.
+  { path: 'src/extension.ts', maxLines: 1_170 },
   //
   // FR-R3-103 (FR-042, FR-046) — 1459 -> 1471. Nine lines for the dependency wiring of the resume
   // liveness check plus two imports, three more registering the fence-loss abort, and the
@@ -1049,7 +1050,7 @@ describe('large source file LOC budgets', () => {
    * delete the entry and the exemption with it.
    */
   const LEGACY_FUNCTION_EXEMPTIONS: Readonly<Record<string, number>> = {
-    'src/extension.ts:wireStage2': 1_010
+    'src/extension.ts:wireStage2': 894
   };
 
   /** Top-level function declarations and their extents, brace-counted. */

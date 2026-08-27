@@ -20,9 +20,70 @@ predicted it: its author sampled the set and found every gate well motivated.
 | Figure | Value | Date | Method |
 |---|---|---|---|
 | Gate files | **151** | 2026-08-27 | `*.test.ts` under `tests/lint/` recursively |
-| Marked `unique` | 138 | 2026-08-27 | hand verdict |
-| Marked `partially redundant` | 13 | 2026-08-27 | hand verdict |
+| Marked `unique` | 139 | 2026-08-27 | hand verdict |
+| Marked `partially redundant` | 12 | 2026-08-27 | hand verdict |
 | Marked `redundant` | 0 | 2026-08-27 | hand verdict |
+
+<!-- census:prose -->
+
+
+
+## Method, and what it does and does not establish
+
+**Assigned 2026-08-27 (`FR-R3-121` / FR-020).** `FR-R3-121` §5 records that its author *"sampled
+rather than read all 141"*, so this section is explicit about how far the verdicts below reach.
+
+**Observed.** Every gate file was enumerated and its `describe` title read. Four mechanical
+redundancy signals were computed across the whole set: gates whose subject is a **generated
+contract**; gates naming a **compiler flag** under the strictness ratchet; **near-duplicate
+implementations** sharing a scan helper and differing only by a constant and an allowlist; and
+**name-cluster overlap**.
+
+**What that found.** One cluster, evidenced rather than suspected: **twelve** of the thirteen
+`no-inline-*` gates are one rule implemented twelve times, across roughly 930 lines. Diffing two of
+them leaves the command constant, the allowlist and the prose; several say in their own headers
+that they *"mirror the established pattern at"* a named sibling. And
+`no-inline-backend-ping-ipc.test.ts` does the same job in **15 lines**, which is what makes this
+evidence rather than an impression.
+
+> **Corrected 2026-08-27**, while acting on this census's own recommendation. The original entry
+> said **thirteen**. `no-inline-queue-item-template.test.ts` is **not** in the family: it pins the
+> single render path of a Svelte row template and shares only the filename prefix. The first pass
+> generalised from diffing two files and a name; checking all thirteen found the exception.
+>
+> Left visible rather than edited away, because it is exactly the limit this section states — and
+> because a consolidation that had trusted "thirteen" would have folded a Svelte template gate into
+> an IPC allowlist table.
+
+**Relied on.** That a gate's `describe` title describes its rule.
+
+**Inferred, and this is the limit.** A `unique` verdict means *no sibling gate, type, generated
+contract or compiler flag was found asserting the same invariant by the four signals above*. It
+does **not** mean a human read all 151 gates against each other and proved independence. The
+correction above is what that limit looks like when it bites.
+
+## Retirements: none
+
+**Zero, and that is the finding rather than an empty section.**
+
+FR-021 permits a retirement only when a specific control now holds the invariant. No gate met that
+bar. The one cluster with real redundancy is redundant in *machinery*, not in *rule* — retiring any
+of the twelve would delete a command's single-call-site guarantee that nothing else holds.
+
+**The recommendation the census produces instead** is consolidation: the twelve could become one
+table-driven gate with twelve rows, on the shape `no-inline-backend-ping-ipc.test.ts` already
+demonstrates, saving roughly 900 lines while keeping every rule.
+`no-inline-queue-item-template.test.ts` stays as it is.
+
+**Not taken, deliberately, and the reason is worth more than the saving.** Each of the twelve
+carries a distinct allowlist of files permitted to reference its command. An allowlist transcribed
+wrong during consolidation silently **widens** what may call a mutating IPC command — a
+security-relevant regression with no failing test to announce it. The upside is ~900 lines of
+duplication that cost nothing at runtime and catch everything they should today. A refactor whose
+upside is tidiness and whose downside is a silent authorisation widening gets scheduled
+deliberately, not folded into the end of another cycle.
+
+## The census
 
 | Gate | Invariant | Also held by | Verdict | Evidence |
 |---|---|---|---|---|
@@ -95,19 +156,19 @@ predicted it: its author sampled the set and found every gate well motivated.
 | `no-html-interpolation-in-activity-feed.test.ts` | Feature 029 T044 — no {@html} in Activity Feed components (FR-017) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `no-identity-less-cancel.test.ts` | Feature 017 BUG-001 — every CMD_CANCEL dispatch carries a taskId | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `no-implicit-default-queue.test.ts` | FR-R3-002 — the implicit Default queue does not grow back | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
-| `no-inline-backend-ping-ipc.test.ts` | CMD_PING_BACKEND single webview call site | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 13 implementations, 1,009 lines: "this command has one call site, here is its allowlist". Each file names the sibling it was copied from. The RULE per command is unique and stays; the MACHINERY is 13 copies |
-| `no-inline-catalog-history-ipc.test.ts` | Feature 101 T055 — no inline CMD_READ_DEFINITION_VERSION references | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 13 implementations, 1,009 lines: "this command has one call site, here is its allowlist". Each file names the sibling it was copied from. The RULE per command is unique and stays; the MACHINERY is 13 copies |
-| `no-inline-phase-breakpoint-ipc.test.ts` | Feature 028 T043 — no inline phase-breakpoint IPC imports in webview | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 13 implementations, 1,009 lines: "this command has one call site, here is its allowlist". Each file names the sibling it was copied from. The RULE per command is unique and stays; the MACHINERY is 13 copies |
-| `no-inline-phase-control.test.ts` | Feature 017 — no inline phase-control command dispatch | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 13 implementations, 1,009 lines: "this command has one call site, here is its allowlist". Each file names the sibling it was copied from. The RULE per command is unique and stays; the MACHINERY is 13 copies |
-| `no-inline-phase-log-ipc.test.ts` | Feature 020 T010 — no inline phase-log IPC imports in webview | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 13 implementations, 1,009 lines: "this command has one call site, here is its allowlist". Each file names the sibling it was copied from. The RULE per command is unique and stays; the MACHINERY is 13 copies |
-| `no-inline-process-yaml-ipc.test.ts` | Phase exchange single webview call site | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 13 implementations, 1,009 lines: "this command has one call site, here is its allowlist". Each file names the sibling it was copied from. The RULE per command is unique and stays; the MACHINERY is 13 copies |
-| `no-inline-queue-item-template.test.ts` | Feature 065 BUG-009 T079 — single-render-path queue row template | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 13 implementations, 1,009 lines: "this command has one call site, here is its allowlist". Each file names the sibling it was copied from. The RULE per command is unique and stays; the MACHINERY is 13 copies |
-| `no-inline-read-metrics-ipc.test.ts` | Feature 073 T005 — no inline CMD_READ_METRICS references | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 13 implementations, 1,009 lines: "this command has one call site, here is its allowlist". Each file names the sibling it was copied from. The RULE per command is unique and stays; the MACHINERY is 13 copies |
-| `no-inline-reorder-ipc.test.ts` | Feature 030 T030 — no inline reorder IPC references | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 13 implementations, 1,009 lines: "this command has one call site, here is its allowlist". Each file names the sibling it was copied from. The RULE per command is unique and stays; the MACHINERY is 13 copies |
-| `no-inline-run-launcher-ipc.test.ts` | Feature 087 T059 — no inline CMD_LAUNCH_PIPELINE references | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 13 implementations, 1,009 lines: "this command has one call site, here is its allowlist". Each file names the sibling it was copied from. The RULE per command is unique and stays; the MACHINERY is 13 copies |
-| `no-inline-save-catalog.test.ts` | no inline Model Catalog save IPC calls | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 13 implementations, 1,009 lines: "this command has one call site, here is its allowlist". Each file names the sibling it was copied from. The RULE per command is unique and stays; the MACHINERY is 13 copies |
-| `no-inline-save-general-settings.test.ts` | Feature 012 T052 — no inline CMD_SAVE_GENERAL_SETTINGS references | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 13 implementations, 1,009 lines: "this command has one call site, here is its allowlist". Each file names the sibling it was copied from. The RULE per command is unique and stays; the MACHINERY is 13 copies |
-| `no-inline-workflow-run-ipc.test.ts` | Feature 088 T042 — no inline connected-run command references | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 13 implementations, 1,009 lines: "this command has one call site, here is its allowlist". Each file names the sibling it was copied from. The RULE per command is unique and stays; the MACHINERY is 13 copies |
+| `no-inline-backend-ping-ipc.test.ts` | CMD_PING_BACKEND single webview call site | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 12 implementations, ~930 lines: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
+| `no-inline-catalog-history-ipc.test.ts` | Feature 101 T055 — no inline CMD_READ_DEFINITION_VERSION references | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 12 implementations, ~930 lines: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
+| `no-inline-phase-breakpoint-ipc.test.ts` | Feature 028 T043 — no inline phase-breakpoint IPC imports in webview | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 12 implementations, ~930 lines: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
+| `no-inline-phase-control.test.ts` | Feature 017 — no inline phase-control command dispatch | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 12 implementations, ~930 lines: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
+| `no-inline-phase-log-ipc.test.ts` | Feature 020 T010 — no inline phase-log IPC imports in webview | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 12 implementations, ~930 lines: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
+| `no-inline-process-yaml-ipc.test.ts` | Phase exchange single webview call site | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 12 implementations, ~930 lines: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
+| `no-inline-queue-item-template.test.ts` | Feature 065 BUG-009 T079 — single-render-path queue row template | — | unique | NOT part of the no-inline-*-ipc family despite the prefix: it pins the single render path of a Svelte row template, not a command's call sites. Corrected 2026-08-27 — see Method |
+| `no-inline-read-metrics-ipc.test.ts` | Feature 073 T005 — no inline CMD_READ_METRICS references | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 12 implementations, ~930 lines: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
+| `no-inline-reorder-ipc.test.ts` | Feature 030 T030 — no inline reorder IPC references | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 12 implementations, ~930 lines: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
+| `no-inline-run-launcher-ipc.test.ts` | Feature 087 T059 — no inline CMD_LAUNCH_PIPELINE references | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 12 implementations, ~930 lines: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
+| `no-inline-save-catalog.test.ts` | no inline Model Catalog save IPC calls | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 12 implementations, ~930 lines: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
+| `no-inline-save-general-settings.test.ts` | Feature 012 T052 — no inline CMD_SAVE_GENERAL_SETTINGS references | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 12 implementations, ~930 lines: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
+| `no-inline-workflow-run-ipc.test.ts` | Feature 088 T042 — no inline connected-run command references | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 12 implementations, ~930 lines: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
 | `no-legacy-pause-mirror-write.test.ts` | FR-R3-011 — the legacy queue-pause mirror is never written by live code | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `no-legacy-setpaused.test.ts` | Feature 030 BUG-001 T056 (SC-008) — no legacy setPaused | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `no-legacy-surface-name.test.ts` | Feature 101 FR-002 — the retired surface name appears on no surface | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |

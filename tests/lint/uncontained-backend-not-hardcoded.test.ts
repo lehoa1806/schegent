@@ -54,7 +54,12 @@ describe('the uncontained posture is never hardcoded in production code', () => 
   });
 
   it('reads the value from configuration in the one place that supplies it', () => {
-    const wiring = files.find((f) => f.path === 'extension.ts');
+    // FR-R3-119 — the construction moved. `wireStage2()` in `src/extension.ts` was 1,221
+    // lines; its backend-execution collaborators are now built in
+    // `src/activation/backend-execution-wiring.ts`, which is `src/activation/` — the
+    // directory ARCHITECTURE.md calls the composition root. This gate follows the
+    // construction rather than the filename.
+    const wiring = files.find((f) => f.path === 'activation/backend-execution-wiring.ts');
     expect(wiring).toBeDefined();
     expect(wiring?.body).toMatch(/allowUncontainedBackends/);
     // Read per construction, never stored: the hard rule against caching settings

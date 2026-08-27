@@ -35,7 +35,12 @@ function read(relPath: string): string {
 }
 
 describe('the degraded-tree report reaches the audit writer (FR-R3-083)', () => {
-  const extension = read('src/extension.ts');
+  // FR-R3-119 — the construction moved. `wireStage2()` in `src/extension.ts` was 1,221
+  // lines; its backend-execution collaborators are now built in
+  // `src/activation/backend-execution-wiring.ts`, which is `src/activation/` — the
+  // directory ARCHITECTURE.md calls the composition root. This gate follows the
+  // construction rather than the filename.
+  const extension = read('src/activation/backend-execution-wiring.ts');
 
   it('constructs the recorder against the audit writer', () => {
     // Against `auditWriter.append`, and not some other sink: the append-only writer
