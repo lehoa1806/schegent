@@ -433,7 +433,7 @@ their constant rows.
 
 | Store | Constant | Current | Migrators |
 |---|---|---|---|
-| Workspace state | `STATE_SCHEMA_VERSION` | `13` | 1→2, 2→3, 3→4, 4→5, 5→6, 6→7, 7→8, 8→9, 9→10, 10→11, 11→12, 12→13 |
+| Workspace state | `STATE_SCHEMA_VERSION` | `14` | 1→2, 2→3, 3→4, 4→5, 5→6, 6→7, 7→8, 8→9, 9→10, 10→11, 11→12, 12→13, 13→14 |
 | Audit event envelope | `AUDIT_SCHEMA_VERSION` | `3` | Additive event types and payload fields retain the current envelope version; readers preserve unknown historical event types. |
 
 Workspace migration history includes the legacy Run lift, queue-registry lift,

@@ -35,7 +35,7 @@ The new-feature example declares Pipeline `speckit-new-feature` and includes nin
 | `effort` | Optional `low`, `medium`, `high`, `xhigh`, or `max`; Agy rejects the last two. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/runner/agy-cli.ts --> |
 | `timeoutSeconds` | Optional integer validated against the Phase timeout bounds. When present it **bounds this Phase's invocation**, overriding the workspace-wide `schegent.timeoutSeconds` default; when absent the workspace value applies. <!-- Source: src/config/process-definition-validator.ts --><!-- Source: src/controller/effective-phase-timeout.ts --> |
 | `spendBoundUsd` / `spendBoundTokens` | Optional per-Phase spend bound, overriding the workspace default while this Phase runs. `spendBoundUsd` is a number from 0.01 to 10000; `spendBoundTokens` is an integer from 1 to 1000000000. Two fields because one number cannot carry two units: `claude` reports a cost, while `codex` and `agy` report tokens and no cost at all, so the bound in force follows what the backend reports. Precedence is **per denomination**: declaring only one leaves the operator's other bound in place. Crossing the bound pauses the run; it never fails or cancels it. <!-- Source: src/config/process-definition-validator.ts --><!-- Source: src/services/spend-bound.ts --> |
-| `hostVerification` | Optional `model-token` or `exit-code`; decides who is believed when the host and the model disagree about the outcome. Omission resolves to `model-token`. <!-- Source: src/contracts/process-definitions.ts --> |
+| `hostVerification` | Optional `model-token` or `exit-code`; decides who is believed when the host and the model disagree about the outcome. **Omission resolves to `exit-code` for any Phase whose `sideEffects` is other than `none`, or which produces a declared output** — and `sideEffects` itself resolves to `workspace` when omitted, so a Phase that declares nothing is judged on its process's exit status (`FR-R3-117`). Explicit `model-token` is the opt-out. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/config/phase-runner-policy.ts --> |
 | `capabilities` | Optional list of `workspace-write`, `outside-workspace-write`, `process-spawn`, `network`. **Omission grants every capability** and produces exactly the argv the Phase spawned with before this field existed; naming a subset withholds the rest by translating them into the chosen backend's own permission flags. A capability the backend cannot express refuses the Phase before it starts rather than running it unbounded. Enforcement is the backend CLI's, not the host's — see the threat model for that limit. <!-- Source: src/contracts/phase-capabilities.ts --><!-- Source: src/services/capability-enforcement-plan.ts --> |
 | `sideEffects` | Optional `none`, `workspace`, `git`, or `unrestricted`; omission resolves to `workspace`. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/config/process-catalog.ts --> |
 | `evidencePolicy` | Optional `required`, `best-effort`, or `none`. **Declaring `required` withholds advancement**: a Phase that declares it and produces no audit block does not advance clean, and the record names the missing block as the cause. `best-effort` records an expectation not met and advances; `none` expects no block and says nothing. **Omission still resolves to `required` and still advances**, and that asymmetry is deliberate rather than a bug: the resolved default was written into every snapshot taken before the setting meant anything, so enforcing on it would retroactively change what advances for authors who said nothing. Enforcement follows the declaration, never the resolved value — so declaring `required` explicitly is not the same as leaving the field out. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/config/pipeline-snapshot.ts --><!-- Source: src/parser/stdout-parser.ts --> |
@@ -119,3 +119,28 @@ Phase authoring additionally requires the `phases` capability. A newly supplied 
 
 <!-- Source: src/ui/sidebar/commands/cmd-catalog-lifecycle.ts -->
 <!-- Source: src/state/capability-trust-resolver.ts -->
+
+## The verdict basis, and why it still is not verification
+
+Since `FR-R3-117` a Phase making a load-bearing claim is judged on its **process's exit
+status** rather than on the model's account of its work: a clean termination token
+cannot override a non-zero exit or a timeout. The shipped example,
+`examples/speckit-new-feature.pipeline.yaml`, writes `hostVerification: exit-code` out
+explicitly on every Phase that makes a verifiable claim, even though those Phases would
+resolve to it anyway — an example is what an operator copies, and a Phase should say
+what judges it rather than inherit it silently.
+
+**A Phase that legitimately exits non-zero** — a linter used as a probe, a diff check
+that reports difference by exit code — needs `hostVerification: model-token` to opt out.
+That is the only way to get self-report on a load-bearing Phase, and choosing it is a
+decision worth a comment in your document.
+
+**This does not replace an independent verification Phase, and the advice above stands.**
+Exit status proves the process did not report failure. It does not prove the work is
+correct, and `resolveRunOutputs` checks that a declared output *exists*, not that it is
+right. A Phase that runs the tests still tells you more than a Phase that says it did.
+
+Every completed Run's evidence names which basis judged each Phase: `phase-end` carries
+`verdictBasis`, so an audit can answer "was this believed, or checked?" per Phase.
+<!-- Source: src/config/phase-runner-policy.ts -->
+<!-- Source: docs/architecture/phase-verdict-default.md -->

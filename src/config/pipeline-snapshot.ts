@@ -3,7 +3,7 @@ import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import { DEFAULT_BACKEND } from '../contracts/backend-kinds';
 import type { WorkflowRunPipeline } from '../state/workflow-run';
 import type { PhaseDef, PipelineDef } from './pipeline-config';
-import { writesGitMetadata } from './phase-runner-policy';
+import { resolveHostVerification, writesGitMetadata } from './phase-runner-policy';
 
 /**
  * Freeze one phase with its effective backend persisted for the run lifetime.
@@ -22,7 +22,16 @@ import { writesGitMetadata } from './phase-runner-policy';
  */
 export function snapshotPhaseDef(
   phase: PhaseDef,
-  defaultRunner?: BackendRunnerKind
+  defaultRunner?: BackendRunnerKind,
+  /**
+   * FR-R3-117 — does a pipeline binding take an output from this Phase position?
+   * Output bindings live on the PipelineDef and are addressed by phase index, so
+   * a bare PhaseDef cannot see them; the caller that holds the pipeline passes it.
+   * Defaulting to `false` is safe: the only Phase whose answer it changes is one
+   * that explicitly declared `sideEffects: 'none'` AND is bound to an output,
+   * which is a contradiction in the authoring rather than a common shape.
+   */
+  producesOutput = false
 ): PhaseDef {
   return Object.freeze({
     ...phase,
@@ -51,6 +60,23 @@ export function snapshotPhaseDef(
     evidencePolicyDeclaredAt:
       phase.evidencePolicyDeclaredAt ??
       (phase.evidencePolicy === undefined ? 'default' : 'phase-definition'),
+    // FR-R3-117 — the verdict basis, frozen with the rest of the plan rather than
+    // recomputed at read time. A Run's frozen plan must not change meaning if the
+    // resolution rule later changes; that is the same "never retargeted in flight"
+    // rule the capability set already states.
+    hostVerification: resolveHostVerification(
+      phase.hostVerification,
+      phase.sideEffects,
+      producesOutput
+    ),
+    // Carried forward when present, exactly as `evidencePolicyDeclaredAt` above and
+    // for the reason its comment gives -- re-freezing must not read the resolver's
+    // own output as a declaration. Here the consequence is sharper: a defaulted
+    // `'model-token'` misread as an opt-out leaves a load-bearing Phase judged on
+    // its own account, which is the whole defect FR-R3-117 exists to close.
+    hostVerificationDeclaredAt:
+      phase.hostVerificationDeclaredAt ??
+      (phase.hostVerification === undefined ? 'default' : 'phase-definition'),
     promptVersion: phase.promptVersion ?? 'custom-v1'
   });
 }

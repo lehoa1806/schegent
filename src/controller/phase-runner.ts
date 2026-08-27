@@ -46,6 +46,7 @@ import {
   mapTerminationReason,
   summarize
 } from './phase-outcome-mapper';
+import { resolveHostVerification } from '../config/phase-runner-policy';
 import { compactClaudeSession } from './session-compactor';
 import { RequiredEvidenceUnavailableError } from '../lib/errors';
 // Compatibility re-export; canonical owner is phase-sidecar-reader.
@@ -53,11 +54,25 @@ export { composePhaseMessagePath };
 export type { PhaseMessageResult };
 
 /**
- * FR-R3-058 — does this Phase require the host's own evidence to advance? Read on
- * every call, never cached: a definition can be re-published mid-run.
+ * FR-R3-058 / FR-R3-117 — does this Phase require the host's own evidence to
+ * advance, and which basis judged it? Read on every call, never cached: a
+ * definition can be re-published mid-run.
+ *
+ * FR-R3-117 changed what an ABSENT field means, and the freeze resolves it, so a
+ * phase from a frozen plan arrives explicit. `resolveHostVerification` runs anyway
+ * for a definition that did not come through a freeze, so the two paths cannot
+ * disagree. `verdictBasisOf` reads the same call, so the RECORDED basis cannot
+ * disagree with the applied one; no definition records `model-token`, because
+ * nothing was declared to resolve.
  */
 function requiresHostVerification(inputs: PhaseRunInputs): boolean {
-  return inputs.phaseDef?.hostVerification === 'exit-code';
+  const def = inputs.phaseDef;
+  if (def === undefined) return false;
+  return resolveHostVerification(def.hostVerification, def.sideEffects) === 'exit-code';
+}
+
+function verdictBasisOf(inputs: PhaseRunInputs): 'exit-code' | 'model-token' {
+  return requiresHostVerification(inputs) ? 'exit-code' : 'model-token';
 }
 
 export interface PhaseRunInputs {
@@ -613,6 +628,7 @@ export class PhaseRunner {
       const auditEntry = await this.appendAudit(inputs, 'phase-end', 'failure', {
         ...this.pipelineMeta(inputs),
         outcome: 'failed',
+        verdictBasis: verdictBasisOf(inputs),
         // Explicit: the projection defaults an absent `exitCode` to 0, recording
         // a clean exit for a killed (`null`) or failed run.
         exitCode: raw.exitCode,
@@ -653,6 +669,7 @@ export class PhaseRunner {
       const auditEntry = await this.appendAudit(inputs, 'phase-end', 'failure', {
         ...this.pipelineMeta(inputs),
         outcome: 'deadline',
+        verdictBasis: verdictBasisOf(inputs),
         terminationReason: 'deadline',
         warnings: raw.diagnosticWarnings,
         ...this.invocationMetricPayload(raw, effectiveRunnerKind)
@@ -683,6 +700,7 @@ export class PhaseRunner {
       const auditEntry = await this.appendAudit(inputs, 'phase-end', 'failure', {
         ...this.pipelineMeta(inputs),
         outcome: 'timeout',
+        verdictBasis: verdictBasisOf(inputs),
         terminationReason: 'timeout',
         // FR-R3-047 — this feature's own recording channel, and the ONLY change
         // it makes to a pre-existing arm. The contract claims a delivery failure
@@ -740,6 +758,7 @@ export class PhaseRunner {
         const verificationEntry = await this.appendAudit(inputs, 'phase-end', 'failure', {
           ...this.pipelineMeta(inputs),
           outcome: 'failed',
+          verdictBasis: verdictBasisOf(inputs),
           exitCode: raw.exitCode,
           terminationReason: 'error',
           warnings: ['host-verification-failed', ...(result.warnings ?? [])],
@@ -841,6 +860,7 @@ export class PhaseRunner {
       {
         ...this.pipelineMeta(inputs),
         outcome,
+        verdictBasis: verdictBasisOf(inputs),
         exitCode: raw.exitCode,
         terminationReason,
         ...this.invocationMetricPayload(raw, effectiveRunnerKind),

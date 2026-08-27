@@ -20,7 +20,7 @@
   "properties": {
     "stateSchemaVersion": {
       "type": "integer",
-      "const": 13
+      "const": 14
     },
     "workflowRunStatuses": {
       "type": "array",

@@ -9,7 +9,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   STATE_SCHEMA_VERSION,
   STATE_SCHEMA_VERSION_V9,
-  STATE_SCHEMA_VERSION_V13
+  STATE_SCHEMA_VERSION_V14
 } from '../../../src/contracts/state-schema';
 import { migrateConnectedRuns } from '../../../src/state/connected-run-migrator';
 import {
@@ -67,9 +67,10 @@ describe('connected-run migration (v8 → v9)', () => {
     // forward-only ratchet asserted somewhere. Feature 093 moved the head
     // again, to v11, for the same reason and by the same edit; FR-R3-010's
     // per-queue history reshape moves it to v12 by that same edit once more, and
-    // FR-R3-011's queue-pause collapse to v13.
+    // FR-R3-011's queue-pause collapse to v13, and FR-R3-117's host-verification
+    // stamp to v14 -- each by this same edit, for this same reason.
     expect(STATE_SCHEMA_VERSION_V9).toBe(9);
-    expect(STATE_SCHEMA_VERSION).toBe(STATE_SCHEMA_VERSION_V13);
+    expect(STATE_SCHEMA_VERSION).toBe(STATE_SCHEMA_VERSION_V14);
     expect(STATE_SCHEMA_VERSION).toBeGreaterThan(STATE_SCHEMA_VERSION_V9);
   });
 

@@ -24,6 +24,11 @@ included:
       spec:
         instruction: /speckit-specify
         runner: claude
+        # FR-R3-117 — stated explicitly, though it is now also the default for any
+        # Phase whose sideEffects is other than `none`. Written out because this
+        # example is what an operator copies: a Phase making a verifiable claim
+        # should say what judges it, not inherit it silently.
+        hostVerification: exit-code
         sideEffects: git
         model: claude-sonnet-5
         effort: high
@@ -60,6 +65,7 @@ included:
       spec:
         instruction: /speckit-plan
         model: claude-sonnet-5
+        hostVerification: exit-code
         effort: xhigh
     - metadata:
         phaseId: speckit-tasks
@@ -68,6 +74,7 @@ included:
       spec:
         instruction: /speckit-tasks
         model: claude-sonnet-5
+        hostVerification: exit-code
         effort: xhigh
     - metadata:
         phaseId: speckit-checklist
@@ -130,6 +137,7 @@ included:
 
           REQUIRED METRIC OUTPUT: Inside the SCHEGENT AUDIT LOG block, you MUST emit `pending_tasks: <N>` as a top-level integer metric line (NOT nested under Notes: or any other heading). This line MUST appear even when the count is 0. The controller uses this metric to decide whether to re-loop.
         model: claude-sonnet-5
+        hostVerification: exit-code
         effort: high
         retryCondition: pending_tasks > 0
     - metadata:
@@ -161,6 +169,7 @@ included:
 
           Inside the SCHEGENT AUDIT LOG block, emit `code_review_findings: <N>`, `security_review_findings: <N>`, and `pending_tasks: <N>` as top-level integer metric lines.
         model: claude-sonnet-5
+        hostVerification: exit-code
         effort: xhigh
         retryCondition: pending_tasks > 0 || code_review_findings > 0 || security_review_findings > 0
     - metadata:
@@ -188,6 +197,11 @@ included:
 
           Inside the SCHEGENT AUDIT LOG block, emit `checks_passing: <N>` and `checks_failing: <N>` as top-level integer metric lines.
         runner: claude
+        # FR-R3-117 — stated explicitly, though it is now also the default for any
+        # Phase whose sideEffects is other than `none`. Written out because this
+        # example is what an operator copies: a Phase making a verifiable claim
+        # should say what judges it, not inherit it silently.
+        hostVerification: exit-code
         sideEffects: git
         model: claude-sonnet-5
         effort: medium

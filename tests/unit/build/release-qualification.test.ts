@@ -80,7 +80,7 @@ describe('release qualification', () => {
     // collapse. The pin is the point: a version that changed without anyone
     // editing this line is a migration nobody wrote.
     expect(readFileSync('src/contracts/state-schema.ts', 'utf8'))
-      .toContain('STATE_SCHEMA_VERSION = 13');
+      .toContain('STATE_SCHEMA_VERSION = 14');
     expect(existsSync('src/services/terminal-transition-coordinator.ts')).toBe(true);
     expect(existsSync('Cargo.toml')).toBe(false);
     expect(existsSync('src/engine/index.ts')).toBe(false);

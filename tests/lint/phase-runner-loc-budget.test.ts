@@ -237,7 +237,26 @@ const BUDGETS = [
   // The note is the budget: a reader who assumes this is the catalog definition
   // would conclude the enforcement never fires. Nothing to extract — the
   // argument sits in the call it belongs to.
-  { path: 'src/controller/phase-runner.ts', max: 1_049 },
+  // FR-R3-117 — bumped phase-runner.ts +20 (1049 -> 1069) for the verdict-default
+  // inversion. What the twenty lines buy:
+  //
+  //   * FIVE of them are one `verdictBasis:` property on each of the five
+  //     `phase-end` emissions. Folding them into `pipelineMeta()` would have cost
+  //     one line instead of five and was rejected: that helper also feeds
+  //     `phase-start`, where a terminal verdict is not a fact yet, and buying
+  //     four lines by recording a basis before the phase has been judged is the
+  //     kind of trade this budget exists to refuse.
+  //   * The rest is the resolution call and the docblock explaining that an
+  //     ABSENT `hostVerification` no longer means `model-token`. That inversion is
+  //     the single highest-consequence default change this product has made, and a
+  //     reader who assumes the old meaning is exactly the failure mode the
+  //     phase-outcome-mapper entry below was written about.
+  //
+  // NO RESPONSIBILITY WAS ADDED. The rule itself lives in
+  // `src/config/phase-runner-policy.ts` beside `writesGitMetadata`; the shell
+  // calls it and forwards the answer, which is what a shell should do. That is
+  // why this is headroom rather than a split.
+  { path: 'src/controller/phase-runner.ts', max: 1_069 },
   // FR-R3-052 / H-03 (2026-08-24) — 400 → 415 for the size check that was
   // missing. `stat()` was already called here and only `isFile()` was read, so
   // `readFile()` took a multi-GiB sidecar wholly into memory. The bound, the

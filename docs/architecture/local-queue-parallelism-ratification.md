@@ -254,8 +254,20 @@ an invitation to update the number in prose.
 | 7 | Window-primacy lease cardinality | one holder per workspace | `WorkspaceLockManager` |
 | 8 | Execution lease tenure | per queue, admission through terminal transition | `ExecutionLeaseManager` and terminal release service |
 | 9 | Working trees shared by concurrent Runs | one, operator-owned | the canonical workspace passed to every runner |
-| 10 | State schema version | 13, forward-only, downgrade refused | `src/contracts/state-schema.ts` |
+| 10 | State schema version | 14, forward-only, downgrade refused | `src/contracts/state-schema.ts` |
 | 11 | Content provenance across queues | one operator and one workspace trust level | the local host boundary |
+
+**Row ten moved 13 → 14 on 2026-08-27 (FR-R3-117), and the ratification survives.**
+The trigger fired and the re-evaluation was done rather than the number edited.
+v14 stamps a resolved `hostVerification` and its provenance into each phase of a
+persisted plan snapshot: a forward-only rewrite **within** a record, adding two
+fields to an object that already existed. It reshapes no record map, and it
+touches none of the cardinalities this decision actually rests on — operators,
+hosts, filesystem owners, network surface, queue count, lease tenure, or shared
+working trees are all unchanged. The downgrade refusal still compares against the
+runtime `STATE_SCHEMA_VERSION` rather than a literal, so it tightened with the
+bump automatically. The shape of the argument is unchanged, for the same reason
+v12 and v13 left it unchanged.
 
 Rows five, six, and ten are mechanically compared with their source constants.
 The other rows describe the deployment shape and must be checked during design

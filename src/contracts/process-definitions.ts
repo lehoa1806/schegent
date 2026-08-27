@@ -167,8 +167,31 @@ interface PhaseDefinitionBase {
    */
   readonly sideEffects?: PhaseSideEffects;
   readonly evidencePolicy?: PhaseEvidencePolicy;
-  /** FR-R3-058 — omission means `model-token`, the historical behaviour. */
+  /**
+   * FR-R3-117 — **omission no longer means `model-token`.** It means the resolved
+   * default: `exit-code` for a Phase whose resolved `sideEffects` is other than
+   * `'none'` or which produces an output, and `model-token` otherwise. Because
+   * `sideEffects` resolves to `'workspace'` when omitted, a Phase that declares
+   * nothing is judged on its process's exit status.
+   *
+   * Explicit `'model-token'` is the **opt-out**, and after this change it is no
+   * longer interchangeable with omission — see `hostVerificationDeclaredAt`.
+   *
+   * `src/config/phase-runner-policy.ts` owns the rule.
+   */
   readonly hostVerification?: PhaseHostVerification;
+  /**
+   * FR-R3-117 — was `hostVerification` authored, or supplied by the resolver?
+   *
+   * The same provenance FR-R3-096 added for `evidencePolicy`, for the same reason
+   * and in a sharper direction. A Phase with `sideEffects: 'none'` resolves to a
+   * stored `'model-token'`. Without this field, re-freezing that snapshot after
+   * its `sideEffects` changed to `'workspace'` would read the resolver's own
+   * output as an author's opt-out — leaving a load-bearing Phase self-reporting
+   * on a decision **nobody made**. Set on the snapshot only; a catalog definition
+   * keeps omission as omission.
+   */
+  readonly hostVerificationDeclaredAt?: 'default' | 'phase-definition';
   /**
    * FR-R3-086 — what this phase's agent may do.
    *

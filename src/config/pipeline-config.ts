@@ -61,8 +61,18 @@ export interface PhaseDef {
    * Absent means `'default'`, which is every snapshot taken before this field.
    */
   readonly evidencePolicyDeclaredAt?: EvidencePolicyOrigin;
-  /** FR-R3-058 — omission means `model-token`. */
+  /**
+   * FR-R3-117 — omission means the RESOLVED default (`exit-code` for a Phase whose
+   * resolved `sideEffects` is other than `'none'`, or which produces an output),
+   * not `model-token`. Explicit `'model-token'` is the opt-out.
+   */
   readonly hostVerification?: PhaseHostVerification;
+  /**
+   * FR-R3-117 — where `hostVerification` came from. Written by the freeze, never
+   * authored, exactly as `evidencePolicyDeclaredAt` above. Absent means
+   * `'default'`, which is every snapshot taken before this field.
+   */
+  readonly hostVerificationDeclaredAt?: EvidencePolicyOrigin;
   readonly promptVersion?: string;
   /**
    * FR-R3-086 — what this phase's agent may do.
