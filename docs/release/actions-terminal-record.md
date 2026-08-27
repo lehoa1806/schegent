@@ -121,26 +121,29 @@ involved:
 carries no workflow files, so the weekly `full-gate` and the scheduled `security-audit` **do not
 run**. That is what makes the retirement effective today.
 
-### 1. The `master` residual (in-tree, not yet done)
+### 1. The `master` residual (in-tree, prepared and pushed; merge outstanding)
 
 The deletion landed on `develop`. It never reached `master`, which still carries seven workflow
 files with `push`, `pull_request` and `schedule` triggers. Their schedules are inert — not the
 default branch — but **a push to `master`, or a pull request targeting it, would run them and bill
 for them**. `FR-R3-099` said the tree must own the deletion; it owns it on one branch.
 
-The fix is one commit deleting `.github/workflows/`, **prepared and committed locally** on the branch
-`retire-actions-on-master` (based on the remote `master`, changing nothing else, so merging it drags
-no other history onto that branch):
+The fix is one commit deleting `.github/workflows/` and nothing else. **It is on the remote**, as
+`refs/heads/retire-actions-on-master` (`ce6cb180`), a direct descendant of `master` — so merging it
+is a fast-forward that drags no other history onto that branch.
 
 ```bash
-git -C repo push origin retire-actions-on-master   # then merge it into master
+git -C repo push origin retire-actions-on-master:master   # fast-forward; deletes the seven files
 ```
 
-Pushing it triggers nothing: for a push event GitHub reads the workflow files **at the pushed
-commit**, and that commit has none. The push was attempted from this session and **refused by the
-environment's guardrail on outward actions** — which is the same line `FR-R3-099` drew for the
-settings flip, applied by the tooling rather than by judgement. The commit exists; sending it is
-the operator's.
+Pushing the branch triggered nothing, as expected: for a push event GitHub reads the workflow files
+**at the pushed commit**, and that commit has none.
+
+**The `master` update itself was attempted from this session and refused by the environment's
+guardrail on outward actions.** Pushing a new branch was permitted; updating a shared branch was
+not, which is a distinction worth keeping — it is the same line `FR-R3-099` drew for the settings
+flip, drawn by tooling rather than by judgement. The commit is on the remote and reviewable; moving
+`master` onto it is the operator's.
 
 ### 2. Repository settings (outward, the operator's)
 
