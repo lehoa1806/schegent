@@ -427,3 +427,68 @@ was derived from `ui-wiring.ts`'s 387 lines when `wireStage2` was 1,221 and noth
 was known. A composition root that has shed 61% of itself and holds only what genuinely composes is
 the outcome that was wanted; the number was the instrument. That judgement is for whoever takes the
 ninth decrement, with the evidence above.
+
+
+## The extraction is finished — decided 2026-08-27
+
+A ninth decrement was attempted and there is nothing left to take. `registerStage2Ui` turned out to
+be **19 lines** at the call site — already its own module since before this work started — and
+profiling the remaining function found no other region worth extracting.
+
+### What the 480 lines actually are
+
+| Part | Lines | Reducible? |
+|---|---|---|
+| Comments (house style) | 110 | no — this codebase records reasoning at the site |
+| Blank | 20 | no |
+| **Call sites into the eleven extracted modules** | **148** | **no — this is the composition** |
+| Controller construction, teardown, recovery, the rest | 202 | only by relocating the root |
+
+The 148 is destructuring what each module returns and naming what it takes. It cannot be reduced by
+extracting further — only by *merging* modules, which trades a shorter root for larger and less
+cohesive pieces. That is the opposite of what this work was for.
+
+The largest remaining region is `controller + guardedRunService` at **36 bindings in**: the only one
+whose parameter object would be larger than the code it replaces. It is not a region that failed to
+be extracted. It is the composition itself.
+
+### The target was the instrument, not the goal
+
+**400 was derived from `ui-wiring.ts`'s 387 lines** when `wireStage2` was 1,221 and nothing about its
+internal shape was known. It did its job — it made the debt visible every time somebody opened the
+file, and the number came down eight times without anyone scheduling it.
+
+Now the shape is measured, and 400 would require cutting 80 lines from comments, from the
+composition, or from the controller. All three make the codebase worse.
+
+So the entry becomes a **waiver in the `FR-R3-027` sense** — a decision on the record, with a quoted
+rationale, an ISO date, a resolvable reference and a shrink-only high-water mark — instead of a
+ceiling waiting to be met. That is exactly the ceiling/waiver distinction `FR-R3-027` drew for
+files, applied to a function.
+
+### This is not the number being raised to make a gate green
+
+Worth stating plainly, because it is the shape of a bad decision and this session already caught one
+like it (the guard that had stopped ratcheting):
+
+- the gate was **already green** at 480 — nothing was failing;
+- the shrink-only guard **still refuses any increase**, verified by mutation (480 → 520 fails);
+- the **400 bound is untouched for every other function** in scope, verified by mutation (a
+  407-line function in `src/activation/` still fails);
+- the exemption list is **still closed** to new entries;
+- and the entry now has to carry a decision, a date and a resolvable reference, checked by its own
+  assertion — **more** than it had to before, not less.
+
+What changed is the entry's character, and the change is argued rather than asserted.
+
+### Final measurements
+
+| | Before | After | Change |
+|---|---|---|---|
+| `wireStage2` | 1,221 | **480** | −61% |
+| `src/extension.ts` | 1,489 | **684** | −54% |
+| `src/extension.ts` ceiling | 1,490 | 715 | decided, not accreted |
+| `src/activation/` modules | 11 | **19** | +8 |
+| Behavioural changes | — | **none** | eight extractions, `npm run gate` 0 at each |
+
+Eight decrements: 1,221 → 1,010 → 894 → 871 → 823 → 695 → 630 → 525 → 480.
