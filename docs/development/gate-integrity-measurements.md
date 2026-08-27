@@ -713,3 +713,48 @@ lines of duplication that cost nothing at runtime and catch everything they shou
 
 A refactor whose upside is tidiness and whose downside is a silent authorisation widening gets
 scheduled deliberately. It stays a named follow-up.
+
+## FR-R3-121 follow-up 2 — the consolidation, attempted (2026-08-27)
+
+The census recommended consolidating the `no-inline-*` gates and this cycle deferred it on a stated
+risk: *an allowlist transcribed wrong silently widens what may call a mutating IPC command*. The
+attempt was made specifically to test whether that risk could be removed mechanically.
+
+**It can.** The allowlists are separable from the duplicated scan helper, so the ~25-line
+`listMatchingFiles` boilerplate could be consolidated without a single allowlist moving. The
+original reason to defer did not survive contact.
+
+**A better one replaced it.** Normalising the twelve helper bodies — stripping whitespace and
+comments, then hashing — found **six distinct variants collapsing to three failure semantics**:
+
+| On a partly-unreadable tree | Gates | Effect |
+|---|---|---|
+| return `[]` | 2 | discards matches the scan did find |
+| unhandled → throw | 6 | fails closed, loudly |
+| return the matches found | 2 | most complete — and the only variant carrying a written rationale |
+
+Plus two already migrated to the shared `filesReferencing`, one of which does the whole job in
+**15 lines**.
+
+So the consolidation is **not** a tidying. It is choosing one failure semantics for twelve
+IPC-authority gates, which changes what eight of them do when the tree cannot be fully read.
+
+**Nothing is unsafe today** — all eight carry a positive `toContain` vacuity control, verified, so a
+truncated scan fails the gate rather than passing it.
+
+### Why this is recorded at length
+
+The census's own entry said *"one rule, twelve implementations."* That was **true about the rule and
+wrong about the implementations**, and it was written from diffing two files. A consolidation
+trusting it would have unified three failure behaviours into one without anyone deciding which —
+and the resulting gate would have looked cleaner while quietly having changed how eight
+authority checks fail.
+
+This is the **third** correction to the same census entry in one day: thirteen → twelve (a Svelte
+template gate shares the prefix), then "twelve identical" → "twelve with three semantics". Each
+correction came from acting on the entry rather than reading it.
+
+> A census is a hypothesis until somebody tries to use it.
+
+The entry now records the divergence, names `C` as the semantics to converge on, and says plainly
+that adopting it is a behavioural change to verify rather than a line count to reduce.
