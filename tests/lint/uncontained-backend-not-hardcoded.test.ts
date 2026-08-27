@@ -5,22 +5,33 @@ import { join, relative, resolve } from 'node:path';
 /**
  * FR-R3-056 (H-01) — the posture must come from the operator, not from a literal.
  *
- * `allowUncontained` is a required option so `tsc` enumerates every construction
+ * `uncontainedGranted` is a required option so `tsc` enumerates every construction
  * site. That stops a site being *added* without stating a posture; it does not
- * stop one stating `true`. A single `allowUncontained: true` in production code
- * re-opens the default path and nothing else would notice, because the type is
- * satisfied and every test still passes.
+ * stop one stating the grant inline. A single production site writing
+ * `uncontainedGranted: new Set(['claude'])` re-opens the default path and nothing
+ * else would notice, because the type is satisfied and every test still passes.
+ *
+ * FR-R3-125 — the option was `allowUncontained: boolean` and the forbidden shape
+ * was the literal `true`. It is now a set of backend ids, so the forbidden shape
+ * is a set built from an id literal. The empty set is fine and is what a caller
+ * with nothing granted passes.
  *
  * Tests may hardcode it freely — that is what a test double is for — so only
  * `src/` is scanned.
  */
 const SRC = resolve(__dirname, '..', '..', 'src');
 
-/** A literal acceptance, in any spacing. */
-const HARDCODED_TRUE = /allowUncontained\s*:\s*true\b/;
+/**
+ * A literal acceptance: a grant naming a backend id inline, in any spacing.
+ *
+ * `SUPPORTED_BACKENDS` is included because "grant everything the product has" is
+ * the same defect spelled without a quote.
+ */
+const HARDCODED_GRANT =
+  /uncontainedGranted\s*:[^;\n]*(['"`](?:claude|agy|codex)['"`]|SUPPORTED_BACKENDS)/;
 
 /** Any mention, so the gate can prove it is looking at something. */
-const ANY_MENTION = /allowUncontained/;
+const ANY_MENTION = /uncontainedGranted|uncontainedBackends/;
 
 function sources(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -48,9 +59,21 @@ describe('the uncontained posture is never hardcoded in production code', () => 
       .toBeGreaterThan(1);
   });
 
-  it('has no literal `allowUncontained: true` under src/', () => {
-    const offenders = files.filter((f) => HARDCODED_TRUE.test(f.body)).map((f) => f.path);
+  it('has no inline grant naming a backend under src/', () => {
+    const offenders = files.filter((f) => HARDCODED_GRANT.test(f.body)).map((f) => f.path);
     expect(offenders).toEqual([]);
+  });
+
+  it('catches the shape it forbids — proved, not assumed', () => {
+    // The predicate is "no offender", which passes over an empty scan or a regex
+    // that matches nothing. Both spellings of the offence are driven through it,
+    // and the legitimate empty grant is driven through too.
+    expect(HARDCODED_GRANT.test("uncontainedGranted: new Set<BackendRunnerKind>(['claude'])")).toBe(
+      true
+    );
+    expect(HARDCODED_GRANT.test('uncontainedGranted: new Set(SUPPORTED_BACKENDS)')).toBe(true);
+    expect(HARDCODED_GRANT.test('uncontainedGranted: grant.granted')).toBe(false);
+    expect(HARDCODED_GRANT.test('uncontainedGranted: new Set()')).toBe(false);
   });
 
   it('reads the value from configuration in the one place that supplies it', () => {
@@ -61,7 +84,7 @@ describe('the uncontained posture is never hardcoded in production code', () => 
     // construction rather than the filename.
     const wiring = files.find((f) => f.path === 'activation/backend-execution-wiring.ts');
     expect(wiring).toBeDefined();
-    expect(wiring?.body).toMatch(/allowUncontainedBackends/);
+    expect(wiring?.body).toMatch(/uncontainedBackends/);
     // Read per construction, never stored: the hard rule against caching settings
     // on long-lived objects, and an operator who turns it off mid-session means it.
     expect(wiring?.body).toMatch(/getConfiguration\('schegent\.backend'\)/);

@@ -10,6 +10,11 @@ import { resolveBackendKind } from '../runner/backend-runner-factory';
 import { BackendRunnerRegistry } from '../runner/backend-runner-registry';
 import { PromptBuilder } from '../runner/prompt-builder';
 import type { ProcessEnvironmentPolicy } from '../runner/spawn-env';
+import {
+  resolveUncontainedGrant,
+  type GrantedUncontainedBackends
+} from '../services/backend-containment-policy';
+import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import { HistoryStore } from '../state/history-store';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import { TelemetrySamplerImpl } from '../telemetry/telemetry-sampler';
@@ -89,7 +94,12 @@ export interface BackendExecutionWiring {
   readonly backendKind: ReturnType<typeof resolveBackendKind>;
   readonly backendCapabilities: BackendDiagnosticsWiring['capabilities'];
   readonly backendPing: BackendDiagnosticsWiring['ping'];
-  readonly readUncontainedAllowed: () => boolean;
+  /**
+   * FR-R3-125 — per backend, not per host. Re-resolves the setting on each call
+   * for the reason `BackendPostureAccessor` gives: a value cached at activation
+   * would record an activation-time posture for a Run happening now.
+   */
+  readonly readUncontainedAllowed: (kind: BackendRunnerKind) => boolean;
   readonly verboseAccessor: { isVerboseDiagnosticsEnabled: () => boolean };
   /** Late binding — see the docblock. Without these the closures keep `null`. */
   readonly bindLivenessRecorder: (r: {
@@ -175,10 +185,14 @@ const backendKind = resolveBackendKind(
 // because FR-R3-056's `uncontained-backend-not-hardcoded` gate asserts this
 // file reads `getConfiguration('schegent.backend')` for the posture: the wiring
 // site is where an auditor sees it enter the system.
-const readUncontainedAllowed = (): boolean =>
-  vscode.workspace
-    .getConfiguration('schegent.backend')
-    .get<boolean>('allowUncontainedBackends') === true;
+// FR-R3-125 (FR-004, FR-004a) — the value is a list now, so reading it means
+// resolving it: unsupported entries and already-contained entries grant nothing
+// and are reported rather than silently dropped. Anything that is not an array
+// yields an empty grant, which is the fail-closed direction.
+const readUncontainedGrant = (): GrantedUncontainedBackends =>
+  resolveUncontainedGrant(
+    vscode.workspace.getConfiguration('schegent.backend').get<unknown>('uncontainedBackends')
+  );
 // FR-R3-083 — a runner reports; this records. Gate: tree-degradation-emission-funnel.
 const treeDegradationRecorder = new ProcessTreeDegradationRecorder((e) => auditWriter.append(e));
 const spawnIdentityRecorder = createSpawnIdentityRecorder({
@@ -186,11 +200,20 @@ const spawnIdentityRecorder = createSpawnIdentityRecorder({
   now: () => Date.now(),
   log: (message) => logger.info(message)
 });
+const uncontainedGrant = readUncontainedGrant();
+// FR-R3-125 (FR-004a) — an entry that grants nothing says why, once, at the
+// wiring site. Never thrown: a malformed safety setting fails closed and leaves
+// the product usable, and an operator whose extension will not start does not
+// read the reason.
+for (const problem of uncontainedGrant.problems) logger.warn(problem.message);
 const runnerRegistry = new BackendRunnerRegistry({
-  // FR-R3-056 (H-01) — the shipped posture. Unset reads as the manifest default
-  // (`false`), so a fresh install refuses an uncontained backend. See
-  // docs/architecture/agent-capability-posture.md.
-  allowUncontained: readUncontainedAllowed(),
+  // FR-R3-056 (H-01), reshaped by FR-R3-125 — the shipped posture. Unset reads as
+  // the manifest default (`[]`), so a fresh install refuses every uncontained
+  // backend. See docs/architecture/agent-capability-posture.md.
+  uncontainedGranted: uncontainedGrant.granted,
+  // FR-R3-125 (FR-007) — so the factory can state the compounding case
+  // (no OS bound AND the full ambient environment) where both facts are known.
+  environmentMode: processEnvironmentPolicy.mode,
   // Feature 093 (T046) — forward each event to the Run that produced it.
   // The hook stays one window-level function; only the addressing changes.
   monitorHook: (event) => {
@@ -273,7 +296,7 @@ const verboseAccessor = {
     backendKind,
     backendCapabilities,
     backendPing,
-    readUncontainedAllowed,
+    readUncontainedAllowed: (kind) => readUncontainedGrant().granted.has(kind),
     verboseAccessor,
     bindLivenessRecorder: (r) => {
       livenessRecorder = r;

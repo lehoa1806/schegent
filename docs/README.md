@@ -168,7 +168,8 @@ drifts unnoticed, because the readers who would catch an error never get there.
 
 ### Architecture and decisions
 
-- [Agent capability posture](architecture/agent-capability-posture.md) — **decided, shipped 2026-08-24** (shape 3: uncontained backends refused by default, `schegent.backend.allowUncontainedBackends` is the opt-in)
+- [Agent capability posture](architecture/agent-capability-posture.md) — **decided, shipped 2026-08-24** (shape 3: uncontained backends refused by default, `schegent.backend.uncontainedBackends` is the opt-in, per backend since FR-R3-125)
+- [Backend containment qualification](architecture/backend-containment-qualification.md) — **qualified 2026-08-27**: what OS-enforced containment is actually available per backend and platform, and why Agy's `--sandbox` is available and not requested
 - [Native binding decision](architecture/native-binding-decision.md) — **decided 2026-08-25: no** (the `openat`, `renameat`, Job Object and reparse-tag residuals are permanent stated limits)
 - [Local queue parallelism ratification](architecture/local-queue-parallelism-ratification.md)
 - [Per-Run execution isolation decision](architecture/run-isolation-decision.md) — **shape accepted 2026-08-27: per-Run Git worktree; implementation gated** (§9 carries the entry conditions and the 2026-11-27 review trigger)

@@ -283,7 +283,13 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
       // general-settings IPC surface: a workspace must not be able to grant
       // itself the right to run an unbounded agent, and a webview write path
       // would be exactly that.
-      'backend.allowUncontainedBackends'
+      //
+      // FR-R3-125 — one boolean became a list of backend ids so a grant applies to
+      // the backend it names and no other. Read through
+      // `resolveUncontainedGrant`, which validates entries rather than filtering
+      // them and fails closed on anything that is not a list of strings — a stale
+      // `true` from the removed key therefore grants nothing.
+      'backend.uncontainedBackends'
     ]);
     // Application-scoped CLI spawn hardening toggle. It is read once at
     // activation and intentionally not writable through the workspace-scoped

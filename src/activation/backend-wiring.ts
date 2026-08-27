@@ -126,7 +126,22 @@ export function createRuntimeEvidenceWiring(
   return { runtimeLogAccessor, runtimeLogSink, evidenceHealth, webviewLogSink };
 }
 
-/** Warn once per workspace without ever logging environment values. */
+/**
+ * Warn once per workspace without ever logging environment values.
+ *
+ * FR-R3-125 (FR-007) — this stays exactly as it is, and the reason is worth
+ * stating so it is not "consolidated" with the newer one. This warning is about
+ * the environment policy ON ITS OWN: `inherit` widens the ambient credential
+ * surface for every spawn, contained or not, and that is true and worth saying
+ * once per workspace at activation. It cannot say more, because at activation
+ * nothing knows which backend will spawn.
+ *
+ * `createBackendRunner` carries a SECOND warning about the CONJUNCTION — no
+ * OS-enforced bound *and* the full ambient environment — which is a different
+ * fact, fires on one of four combinations, and is only knowable where the backend
+ * kind and the policy meet. Two warnings, two facts. Merging them would either
+ * lose the general one or make the compound one fire when it does not apply.
+ */
 export function warnIfEnvironmentIsUnrestricted(
   policy: ProcessEnvironmentPolicy,
   workspaceRoot: string,

@@ -22,8 +22,9 @@ import {
   type BackendPostureAdmittedPayload,
   type BackendPostureEventType
 } from '../../../src/contracts/audit-events';
-import { containmentOf } from '../../../src/services/backend-containment-policy';
+import { containmentOf, mechanismOf } from '../../../src/services/backend-containment-policy';
 import { SUPPORTED_BACKENDS } from '../../../src/contracts/backend-kinds';
+import { parseAuditLogLine } from '../../../src/parser/audit-log-parser';
 
 describe('backend-posture-admitted audit event registration (FR-R3-064)', () => {
   it('registers the event in its own single-member group', () => {
@@ -40,6 +41,35 @@ describe('backend-posture-admitted audit event registration (FR-R3-064)', () => 
     expect(classifyAuditEvent('backend-posture-admitted')).toBe('task');
   });
 
+  it('reads a historical payload that predates containmentMechanism', () => {
+    // FR-R3-125 (FR-002, A3) — additive means additive. Entries written before this
+    // field existed are on operator disks, and a reader that required the field
+    // would turn a pre-FR-R3-125 log into a parse failure. The absence means
+    // "not recorded"; `'none'` means "recorded, and there was no boundary".
+    const historical = {
+      runner: 'claude',
+      containment: 'none',
+      uncontainedAllowed: true
+    };
+    const parsed = parseAuditLogLine(
+      JSON.stringify({
+        id: 'audit-1',
+        timestamp: '2026-08-24T00:00:00Z',
+        runId: 'run-1',
+        phase: 'speckit-implement',
+        iteration: 0,
+        eventType: 'backend-posture-admitted',
+        outcome: 'info',
+        payload: historical
+      })
+    );
+    expect(parsed, 'a historical posture entry must still parse').not.toBeNull();
+    expect(
+      (parsed?.payload as Record<string, unknown> | undefined)?.containmentMechanism,
+      'absent, not defaulted — the reader must be able to tell "not recorded" from "none"'
+    ).toBeUndefined();
+  });
+
   it('leaves AUDIT_SCHEMA_VERSION unchanged', () => {
     // Additive, following the 028 / 030 / 031 / 032 precedent this contract file
     // records in place. A bump here would force every reader to migrate for an
@@ -52,14 +82,20 @@ describe('backend-posture-admitted audit event registration (FR-R3-064)', () => 
       const payload: BackendPostureAdmittedPayload = {
         runner,
         containment: containmentOf(runner),
+        // FR-R3-125 — which boundary, not only whether there is one.
+        containmentMechanism: mechanismOf(runner),
         uncontainedAllowed: true
       };
       expect(Object.keys(payload).sort()).toEqual([
         'containment',
+        'containmentMechanism',
         'runner',
         'uncontainedAllowed'
       ]);
       expect(['none', 'os-enforced']).toContain(payload.containment);
+      // The mechanism agrees with the classification in both directions, so the
+      // pair can never read "no boundary, and here is which one".
+      expect(payload.containmentMechanism === 'none').toBe(payload.containment === 'none');
     }
   });
 

@@ -31,46 +31,47 @@ vi.mock('../../../src/runner/backend-runner-factory', async () => {
 });
 
 import { createBackendRunner } from '../../../src/runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../../../src/contracts/backend-kinds';
 
 describe('BackendRunnerRegistry', () => {
   it('lazily constructs runners on first getOrCreate()', () => {
-    const registry = new BackendRunnerRegistry({ allowUncontained: true }, 'claude');
+    const registry = new BackendRunnerRegistry({ uncontainedGranted: new Set<BackendRunnerKind>(['claude', 'agy']) }, 'claude');
     // No construction yet.
     expect(createBackendRunner).not.toHaveBeenCalled();
 
     const runner = registry.getOrCreate('claude');
     expect(runner).toBeDefined();
-    expect(createBackendRunner).toHaveBeenCalledWith('claude', { allowUncontained: true });
+    expect(createBackendRunner).toHaveBeenCalledWith('claude', { uncontainedGranted: new Set<BackendRunnerKind>(['claude', 'agy']) });
   });
 
   it('returns the same runner on repeated getOrCreate() calls', () => {
-    const registry = new BackendRunnerRegistry({ allowUncontained: true }, 'claude');
+    const registry = new BackendRunnerRegistry({ uncontainedGranted: new Set<BackendRunnerKind>(['claude', 'agy']) }, 'claude');
     const a = registry.getOrCreate('claude');
     const b = registry.getOrCreate('claude');
     expect(a).toBe(b);
   });
 
   it('creates separate runners for different kinds', () => {
-    const registry = new BackendRunnerRegistry({ allowUncontained: true }, 'claude');
+    const registry = new BackendRunnerRegistry({ uncontainedGranted: new Set<BackendRunnerKind>(['claude', 'agy']) }, 'claude');
     const claude = registry.getOrCreate('claude');
     const agy = registry.getOrCreate('agy');
     expect(claude).not.toBe(agy);
   });
 
   it('falls back to globalDefault when kind is undefined', () => {
-    const registry = new BackendRunnerRegistry({ allowUncontained: true }, 'agy');
+    const registry = new BackendRunnerRegistry({ uncontainedGranted: new Set<BackendRunnerKind>(['claude', 'agy']) }, 'agy');
     const runner = registry.getOrCreate(undefined);
-    expect(createBackendRunner).toHaveBeenCalledWith('agy', { allowUncontained: true });
+    expect(createBackendRunner).toHaveBeenCalledWith('agy', { uncontainedGranted: new Set<BackendRunnerKind>(['claude', 'agy']) });
     expect(runner).toBeDefined();
   });
 
   it('getGlobalDefault() returns the configured default', () => {
-    const registry = new BackendRunnerRegistry({ allowUncontained: true }, 'codex');
+    const registry = new BackendRunnerRegistry({ uncontainedGranted: new Set<BackendRunnerKind>(['claude', 'agy']) }, 'codex');
     expect(registry.getGlobalDefault()).toBe('codex');
   });
 
   it('cancelAll() calls cancelActive() on every cached runner', () => {
-    const registry = new BackendRunnerRegistry({ allowUncontained: true }, 'claude');
+    const registry = new BackendRunnerRegistry({ uncontainedGranted: new Set<BackendRunnerKind>(['claude', 'agy']) }, 'claude');
     const r1 = registry.getOrCreate('claude');
     const r2 = registry.getOrCreate('agy');
     registry.cancelAll();
@@ -79,7 +80,7 @@ describe('BackendRunnerRegistry', () => {
   });
 
   it('hasAnyActiveProcess() returns true when any runner is active', () => {
-    const registry = new BackendRunnerRegistry({ allowUncontained: true }, 'claude');
+    const registry = new BackendRunnerRegistry({ uncontainedGranted: new Set<BackendRunnerKind>(['claude', 'agy']) }, 'claude');
     const runner = registry.getOrCreate('claude');
     expect(registry.hasAnyActiveProcess()).toBe(false);
     // Simulate an active process.

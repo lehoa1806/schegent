@@ -3,6 +3,11 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import ts from 'typescript';
 import { SUPPORTED_BACKENDS, DEFAULT_BACKEND } from '../../src/contracts/backend-kinds';
+import {
+  ALLOW_UNCONTAINED_SETTING,
+  REMOVED_ALLOW_UNCONTAINED_SETTING,
+  judgeBackendContainment
+} from '../../src/services/backend-containment-policy';
 
 const ROOT = resolve(__dirname, '../..');
 const DECISION_DOC = 'docs/concepts/unprompted-agent-not-contained.md';
@@ -409,7 +414,12 @@ describe('backend permission posture', () => {
     // setting" while the shipped posture refuses a fresh install's first run
     // until this one is set. The two onboarding surfaces a first run passes
     // through must name the setting and say what happens without it.
-    const FIRST_RUN_GATE_SETTING = 'schegent.backend.allowuncontainedbackends';
+    // FR-R3-125 — the key, lowercased because these surfaces are read case-folded.
+    // It was `schegent.backend.allowuncontainedbackends` until 2026-08-27, when one
+    // boolean became a list of backend ids so a grant applies to the backend it
+    // names and no other. Taken from the policy module rather than retyped, so a
+    // future rename fails at the source of truth instead of here.
+    const FIRST_RUN_GATE_SETTING = ALLOW_UNCONTAINED_SETTING.toLowerCase();
     for (const surface of ['README.md', 'docs/courses/use-schegent.md']) {
       const text = collapse(read(surface));
       expect(
@@ -933,5 +943,113 @@ describe('the historical-record exemption list is live', () => {
       (relative) => !existsSync(resolve(ROOT, relative))
     );
     expect(missing).toEqual([]);
+  });
+});
+
+/**
+ * FR-R3-125 (FR-005a, T017/T018) — the consent surface says what is being granted.
+ *
+ * `schegent.backend.uncontainedBackends` is the whole consent mechanism: shape 3's
+ * recorded decision is that the setting IS the consent surface, not a prompt. So
+ * the text of that setting and the text of the refusal an operator hits before
+ * setting it are the two places the authority is described, and both are asserted
+ * here.
+ *
+ * THREE SUBSTANCES, each because omitting it produced a real misunderstanding the
+ * audit of 2026-08-27 recorded as an edge case:
+ *
+ *   - **the authority** — that model-generated actions run with the operator's own
+ *     local user authority, in the threat model's terms rather than a euphemism
+ *     like "reduced sandboxing";
+ *   - **the application scope** — that the grant applies to every workspace in the
+ *     installation. The audit's edge-case list names the operator who enables it in
+ *     one trusted workspace and assumes it is workspace-local;
+ *   - **the per-backend shape** — that naming one backend does not name the others,
+ *     which is the entire change FR-R3-125 made and is invisible from the type.
+ */
+describe('the uncontained-backend consent surface states what it grants (FR-R3-125)', () => {
+  /** The setting's rendered description, from the manifest. */
+  const description = (): string => {
+    const manifest = JSON.parse(read('package.json')) as {
+      contributes?: {
+        configuration?: { properties?: Record<string, { markdownDescription?: string }> };
+      };
+    };
+    const text =
+      manifest.contributes?.configuration?.properties?.[ALLOW_UNCONTAINED_SETTING]
+        ?.markdownDescription;
+    expect(
+      text,
+      `${ALLOW_UNCONTAINED_SETTING} is not declared at contributes.configuration.properties, so ` +
+        'there is no consent surface to check. If the key moved, point this gate at it.'
+    ).toBeTypeOf('string');
+    return text as string;
+  };
+
+  /** The refusal an operator meets before they have granted anything. */
+  const refusal = (): string => {
+    const verdict = judgeBackendContainment('claude', new Set());
+    expect(verdict.outcome).toBe('refused');
+    return verdict.outcome === 'refused' ? verdict.message : '';
+  };
+
+  /**
+   * Markdown is formatting, not substance. The manifest description writes
+   * "`application`-scoped" with the word fenced, and a pattern that could not see
+   * past the backticks would report a missing substance that is plainly present —
+   * a gate failing on punctuation teaches contributors to edit the gate.
+   */
+  const substance = (text: string): string => text.replace(/[`*_]/g, '');
+
+  const SUBSTANCES: ReadonlyArray<{ what: string; pattern: RegExp }> = [
+    { what: 'the authority being granted', pattern: /local user authority/i },
+    { what: 'the application scope of the grant', pattern: /application[- ]scoped/i },
+    { what: 'the per-backend shape', pattern: /this backend only|one at a time|does not allow/i }
+  ];
+
+  it('states all three substances in the setting description', () => {
+    const text = substance(description());
+    const missing = SUBSTANCES.filter((s) => !s.pattern.test(text)).map((s) => s.what);
+    expect(
+      missing,
+      'This is the text an operator reads while deciding whether to permit an unbounded agent. ' +
+        'A euphemism here is worse than silence, because it reads as a considered description.'
+    ).toEqual([]);
+  });
+
+  it('states all three substances in the refusal message', () => {
+    const text = substance(refusal());
+    const missing = SUBSTANCES.filter((s) => !s.pattern.test(text)).map((s) => s.what);
+    expect(
+      missing,
+      'The refusal is the surface most operators actually meet — they hit it before they read the ' +
+        'setting. A refusal that does not say what accepting it means is a refusal they will ' +
+        'work around without understanding.'
+    ).toEqual([]);
+  });
+
+  it('names the removed key in the refusal, so a stale grant is explicable', () => {
+    // FR-R3-125 removed a boolean rather than reading it as a fallback, so an
+    // operator who had accepted the posture months ago now hits a refusal they did
+    // not expect. Without this sentence that reads as a regression.
+    expect(refusal()).toContain(REMOVED_ALLOW_UNCONTAINED_SETTING);
+    expect(description()).toContain('allowUncontainedBackends');
+  });
+
+  it('is red on a euphemism and green on the real text — proved, not assumed', () => {
+    // T018. Every assertion above is "the missing list is empty", which passes over
+    // a pattern that matches anything. Each substance is driven against a plausible
+    // euphemistic rewrite of the same sentence.
+    const euphemism =
+      'Allow backends that run with reduced sandboxing. Enabling this permits advanced ' +
+      'automation features for the selected runners.';
+    const missing = SUBSTANCES.filter((s) => !s.pattern.test(substance(euphemism))).map(
+      (s) => s.what
+    );
+    expect(
+      missing.length,
+      'the substance patterns must reject a euphemism that mentions none of the three'
+    ).toBe(SUBSTANCES.length);
+    expect(SUBSTANCES).toHaveLength(3);
   });
 });

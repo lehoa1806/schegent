@@ -107,21 +107,40 @@ Unredacted transcripts and verbose diagnostics can contain prompts, source code,
 
 ## The capability posture setting
 
-`schegent.backend.allowUncontainedBackends` — boolean, default **`false`**, `application` scope.
+`schegent.backend.uncontainedBackends` — array of backend ids, default **`[]`**, `application` scope.
 
-Allows a backend that runs with **no OS-enforced bound** on what it can reach. `claude` and `agy` are
-spawned with `--dangerously-skip-permissions`; `codex` carries a `workspace-write` sandbox and is
-unaffected by this setting.
+The backends you allow to run with **no OS-enforced bound** on what they can reach, **named one at a
+time**. `claude` and `agy` are spawned with `--dangerously-skip-permissions`; `codex` carries a
+`workspace-write` sandbox, is already contained, and is unaffected by this setting.
 
 Because `schegent.backend.runner` defaults to `claude`, **a fresh install refuses its first run**
-until this is set to `true` or a sandboxed backend is selected (FR-R3-056). Enabling it is an explicit
-acceptance of the posture, not a convenience toggle.
+until `claude` is named here or a sandboxed backend is selected (FR-R3-056). Naming a backend is an
+explicit acceptance of that authority **for that backend only** — allowing `agy` does not allow
+`claude` (FR-R3-125).
+
+Entries are validated rather than filtered, and neither case throws: an id that is not a backend
+names the ids that are, and an id naming an already-contained backend says it grants nothing because
+that backend was never refused. Anything that is not a list of strings grants nothing.
 
 `application`-scoped on purpose: a workspace must not be able to grant itself the right to run an
-unbounded agent. It is also deliberately **not** writable through the workspace-scoped
-general-settings IPC surface, for the same reason.
+unbounded agent, and the grant therefore applies to **every workspace you open in this
+installation**, not only the one you granted it from. It is also deliberately **not** writable
+through the workspace-scoped general-settings IPC surface, for the same reason.
 
-See [Agent capability posture](../architecture/agent-capability-posture.md).
+**Replaces the removed boolean schegent.backend.allowUncontainedBackends, and the migration fails
+closed on purpose.** That old key is written here without backticks deliberately: a backticked
+setting key on a reference page is a control an operator can reach, and
+`reference-doc-claims.test.ts` refuses one that the manifest does not declare — which is correct, and
+this key is genuinely gone. It is read by nothing, so a stale `true` grants nothing:
+name the backends you actually want. Reading both keys was considered and rejected — two keys
+answering one safety question is the duplicate-authority defect this project has removed repeatedly,
+and the fallback branch that mishandles the old boolean is the one that fails *open*.
+
+See [Agent capability posture](../architecture/agent-capability-posture.md),
+[Backend containment qualification](../architecture/backend-containment-qualification.md) for what
+containment is actually available per backend and platform, and
+[Running Schegent on a repository you do not trust](../operations/untrusted-repositories.md) for when
+naming a backend here is and is not acceptable.
 
 ## Run request budgets (not configurable)
 
