@@ -4,7 +4,9 @@
 .pb .builder-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--schegent-divider); }
 .pb .tab-btn { position: relative; min-height: 38px; background: transparent; border: none; color: var(--schegent-muted-fg); padding: 7px 14px; border-radius: 0; cursor: pointer; font-weight: 500; }
 .pb .tab-btn:hover { color: var(--schegent-fg); background: var(--schegent-surface-hover); }
-.pb .tab-btn.active { color: var(--schegent-color-active); box-shadow: inset 0 -2px 0 var(--schegent-color-active); background: var(--schegent-surface-active); }
+/* FR-R3-131 (T1498) — accent on the inset underline, contrast-safe foreground on
+   the label. `#builder-tab-pipelines` was three of the thirty baselined findings. */
+.pb .tab-btn.active { color: var(--schegent-color-active-fg); box-shadow: inset 0 -2px 0 var(--schegent-color-active); background: var(--schegent-surface-active); }
 .pb .builder-canvas { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; }
 .pb .toolbar { display: flex; gap: 8px; }
 .pb .split-pane { display: flex; gap: 0; flex: 1; overflow: hidden; border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); }

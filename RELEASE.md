@@ -377,6 +377,57 @@ not apply at a few MiB per stream. The product warns about this at the point the
 note that implied a discount would be undoing that warning.
 <!-- Source: docs/operations/large-workspace-resource-measurement.md -->
 
+### The manual accessibility pass a release must run (`FR-R3-131`, 2026-08-28)
+
+The automated scan (`npm run a11y`) and the pixel snapshots both pass over a rendered tree and
+neither of them asserts that an operator can *finish anything*. A screenshot proves the pixels did
+not move; it cannot express whether the focus order makes the surface usable. So one manual pass,
+per route, keyboard only, before a hand-off:
+
+| Check | What counts as a pass |
+|---|---|
+| Task completion | Enqueue a run, follow it, pause it, resume it and read one phase verdict — mouse untouched |
+| Focus order | Tab moves through each route in the order the surface reads in; focus is always visible; no control is reachable only by mouse |
+| Escape route | `Esc` leaves every modal, and focus returns to the control that opened it |
+
+A failure here is a release blocker only if it removes the last keyboard path to a task; anything
+else is filed as an item and named in the release notes. Record the result — the routes you walked
+and the ones you did not — the same way the assistive-technology matrix records its rows.
+<!-- Source: docs/release/accessibility-at-matrix.md -->
+
+### The accessibility claims a release may NOT make (`FR-R3-131`, 2026-08-28)
+
+**No conformance claim**, and it is written as four sentences rather than one list because the gate
+below reads a negation as governing only the clause it sits in — prose that satisfies the rule is
+prose a reader cannot misparse either. A release may not say the product conforms to WCAG 2.1
+Level AA. It may not say the product is compliant with WCAG 2.1 Level AA. It may not say the product
+meets WCAG 2.1 Level AA. It may not publish an accessibility conformance report. As of 2026-08-28
+the automated scan is clean — 0 findings over **24** surface/theme combinations, covering **both**
+shipped webviews, with the 30 baselined contrast violations fixed at the colour source rather than
+re-accepted — and that is **not conformance**. AA is not a contrast ratio: every row of the
+[assistive-technology matrix](docs/release/accessibility-at-matrix.md) is still **UNTESTED**, so
+nobody has established that a screen-reader user can complete a single task.
+
+**What lifts the prohibition**, both halves, not either:
+
+1. the automated scan clean and its baseline empty — **done**, and gated shrink-only by
+   `repo/tests/lint/a11y-baseline-shrinks.test.ts`; and
+2. the macOS/VoiceOver rows of the matrix executed and dated — **not done**, reviewed on or before
+   2026-11-27, procedure written out in that document.
+
+**What a release MAY say**, and this is the distinction the gate enforces: that the product is
+*built against* WCAG 2.1 Level AA, that the automated scan covers every shipped route and theme, and
+that it currently reports no findings — each with the scan's own qualifier attached. `PRODUCT.md` and
+`docs/prd-metrics-dashboard.md` state the level as a **target**, which is required:
+`repo/tests/lint/a11y-policy-parity.test.ts` pins those statements so the scan's tag set cannot drift
+from the level the product aims at. Those statements are not the claim being forbidden here. A target
+says what the work is measured against; a conformance claim says the measurement came back clean from
+an evaluation nobody has performed.
+
+`repo/tests/lint/at-matrix-honesty.test.ts` fails if a conformance assertion appears in a release
+document while any matrix row is untested.
+<!-- Source: docs/release/accessibility-at-matrix.md -->
+
 ## 7. Marketplace publication is manual and unspecified
 
 No npm script runs `vsce publish`, `ovsx publish`, or another Marketplace deployment command. No

@@ -19,12 +19,13 @@ predicted it: its author sampled the set and found every gate well motivated.
 
 | Figure | Value | Date | Method |
 |---|---|---|---|
-| Gate files | **158** | 2026-08-27 | `*.test.ts` under `tests/lint/` recursively |
-| Marked `unique` | 146 | 2026-08-27 | hand verdict |
+| Gate files | **160** | 2026-08-27 | `*.test.ts` under `tests/lint/` recursively |
+| Marked `unique` | 148 | 2026-08-27 | hand verdict |
 | Marked `partially redundant` | 12 | 2026-08-27 | hand verdict |
 | Marked `redundant` | 0 | 2026-08-27 | hand verdict |
 
 <!-- census:prose -->
+
 
 
 
@@ -138,6 +139,7 @@ changing one means updating that machinery in the same commit.
 
 | Gate | Invariant | Also held by | Verdict | Evidence |
 |---|---|---|---|---|
+| `a11y-baseline-shrinks.test.ts` | FR-R3-131 — the a11y baseline shrinks or stays put | partly by `a11y-policy-parity.test.ts`, which now reads this gate's `MAX_ACCEPTED_ENTRIES` and pins the accepted count to it | unique | the ceiling and its no-slack half are asserted only here; the sibling checks the two gates agree about the file, not that the ratchet exists. Driven red 2026-08-28 by appending one probe entry: `accepts 1 finding(s), over its recorded ceiling of 0` |
 | `a11y-policy-parity.test.ts` | FR-R3-091 — the conformance target is one claim, not three | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `actions-retirement-claims.test.ts` | FR-R3-099 — the retired claims are historical, never present-tense | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `activation-events-declared.test.ts` | the activation surface is declared and bounded (111, FR-016, FR-017) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
@@ -147,6 +149,7 @@ changing one means updating that machinery in the same commit.
 | `architecture-md-parity.test.ts` | ARCHITECTURE.md parity | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `argv-field-partition.test.ts` | FR-R3-105 — the authored-field argv partition holds | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `asserted-counts.test.ts` | counts a document asserts are counts something checks (FR-R3-067) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
+| `at-matrix-honesty.test.ts` | FR-R3-131 — the AT matrix records observation, not inference | — | unique | no sibling gate asserts either half. Driven red 2026-08-28 three ways: a `**PASS**` result with no date; an `UNTESTED` row whose trigger cell was `—`; and `Schegent conforms to WCAG 2.1 Level AA.` appended to `RELEASE.md`. The prohibition's own sentences contain the forbidden phrasings and are excluded by marker, which the green run proves |
 | `authored-fields-are-documented.test.ts` | every authored Phase field reaches the operator documentation | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `authored-fields-have-readers.test.ts` | every authored Phase field has a reader, or says why not | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `autonomy-bounds-disclosure-parity.test.ts` | FR-R3-112 — the autonomy-bounds disclosure derives from the bounds | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |

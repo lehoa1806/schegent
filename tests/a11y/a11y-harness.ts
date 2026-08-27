@@ -48,6 +48,25 @@ function inlineJson(value: unknown): string {
 }
 
 /**
+ * The two webviews this extension ships. FR-R3-131: the scan covered only the
+ * dashboard, and printed `excluded routes: (none)` while an entire webview went
+ * unscanned — an undeclared limit read as full coverage, which is the exact
+ * failure `EXCLUDED_ROUTES` was created to prevent one level down. The sidebar's
+ * `.elapsed-pill` was carrying the same accent-as-small-text pair as the 24
+ * baselined dashboard findings, and nothing had ever looked.
+ *
+ * The viewport widths are the visual suite's, for the same reason the fixtures
+ * are shared: the sidebar is a narrow panel in the real product, and a contrast
+ * scan at dashboard width would measure a layout nobody sees.
+ */
+export const WEBVIEWS = {
+  dashboard: { path: '/dashboard.html', viewport: { width: 1440, height: 960 } },
+  sidebar: { path: '/index.html', viewport: { width: 360, height: 720 } }
+} as const;
+
+export type WebviewName = keyof typeof WEBVIEWS;
+
+/**
  * Serve the built dashboard, in one theme, with the shared fixture published.
  *
  * External requests are refused rather than allowed to hang: a scan waiting on a
@@ -55,7 +74,16 @@ function inlineJson(value: unknown): string {
  * refuse them anyway.
  */
 export async function openDashboard(page: Page, theme: ThemeName): Promise<void> {
-  await page.setViewportSize({ width: 1440, height: 960 });
+  await openWebview(page, theme, 'dashboard');
+}
+
+/** The sidebar panel, the extension's other webview. Same fixture, same themes. */
+export async function openSidebar(page: Page, theme: ThemeName): Promise<void> {
+  await openWebview(page, theme, 'sidebar');
+}
+
+async function openWebview(page: Page, theme: ThemeName, webview: WebviewName): Promise<void> {
+  await page.setViewportSize(WEBVIEWS[webview].viewport);
   await page.emulateMedia({
     colorScheme: theme === 'light' ? 'light' : 'dark',
     reducedMotion: 'reduce',
@@ -69,7 +97,7 @@ export async function openDashboard(page: Page, theme: ThemeName): Promise<void>
     }
     await route.fulfill({ status: 200, contentType: 'text/css', body: '' });
   });
-  await page.goto('/dashboard.html');
+  await page.goto(WEBVIEWS[webview].path);
   await page.evaluate(`
     document.body.classList.remove(
       'vscode-light',

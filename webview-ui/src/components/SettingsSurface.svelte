@@ -152,7 +152,10 @@
     background: var(--schegent-surface-subtle);
   }
   .tab-btn.active {
-    color: var(--schegent-color-active);
+    /* FR-R3-131 (T1498) — accent on the border, contrast-safe foreground on the
+       text. The border still carries the state, so colour is not the only
+       indicator. */
+    color: var(--schegent-color-active-fg);
     border-color: var(--schegent-color-active);
     background: var(--schegent-surface-active);
   }

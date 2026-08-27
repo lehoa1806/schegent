@@ -189,7 +189,9 @@ gate with an unproven failure path.
 | `tests/lint/retention-disclosure-parity.test.ts` | a perturbed constant makes the rendered table differ from the document | yes |
 | `tests/unit/services/evidence-export.test.ts` | an unlisted file added to the artifact → red; removed → green | yes |
 | `tests/unit/audit/platform-permission-modes.test.ts` | a loosened mode is detected | yes |
-| `tests/a11y/a11y-scan.test.ts` (spec) | a baseline entry removed → `new: 1`, named; restored → green | yes, by live mutation |
+| `tests/a11y/a11y-scan.spec.ts` | axe scoped to `document.head` instead of `document` → the leanest combination gave **1** node/rule pair against the floor, named; restored → green at **3,660 pairs over 24 combinations**, leanest `sidebar|light` at 41 (2026-08-28, `FR-R3-131`) | yes, by live mutation |
+| `tests/lint/a11y-baseline-shrinks.test.ts` | one probe entry appended to the empty baseline → `accepts 1 finding(s), over its recorded ceiling of 0`; removed → green (2026-08-28) | yes, by live mutation |
+| `tests/lint/at-matrix-honesty.test.ts` | three mutations: a `**PASS**` result with no date; an `UNTESTED` row whose trigger cell was `—`; `Schegent conforms to WCAG 2.1 Level AA.` appended to `RELEASE.md` (2026-08-28) | yes, by live mutation |
 | `tests/lint/a11y-policy-parity.test.ts` | a drifted statement and a widened tag set | yes |
 | `tests/unit/services/capability-enforcement-plan.test.ts` | withholding a capability changes the argv — the plan is not a no-op | yes |
 | `tests/integration/capability-refusal.test.ts` | narrowed set → refused at the attempt; widened set → same operation succeeds | yes |
@@ -204,6 +206,30 @@ accessibility baseline entry — rather than by an in-memory fixture. Where a li
 tree was restored and re-verified green in the same step.
 
 ---
+
+
+### The a11y scan's recorded mutation was replaced, not amended (2026-08-28, `FR-R3-131`)
+
+The row above used to read *"a baseline entry removed → `new: 1`, named; restored → green"*. That
+mutation is **no longer performable**: `FR-R3-131` cleared all 30 accepted entries at the colour
+source, so there is no entry to remove. The recorded proof would have survived as text describing an
+experiment nobody could run — the `FR-R3-126` class, prose outliving the fact, inside the batch that
+closed it.
+
+What replaced it is a stronger control, and the substitution is why the scan needed one at all: with
+30 accepted entries a harness that rendered nothing failed on 30 *fallen* entries, so `findings: 0`
+was impossible. At zero accepted, a scan of a blank tree reports exactly what a clean sweep reports.
+Measured: scoping axe to `document.head` produced `findings: 0` and **passed both baseline
+assertions**. Only `MIN_NODES_EXAMINED` caught it.
+
+The floor itself was first set to 40 — one below the leanest measurement, which is a tripwire rather
+than a floor, and would have failed on the removal of any decorative element. It is 20: the number
+separates *rendered* from *blank* (measured 41 against a mutated 1), not *big* from *small*.
+
+The two new gates are outside the **vacuity denominator** (still 92) and that is not an omission:
+the detector's denominator is gates that walk a tree and assert emptiness, and neither of these
+does — one reads a JSON count, the other parses a fixed table. Both were nonetheless driven red by
+live mutation, recorded above.
 
 ## 6. Single-authority audit (FR-082)
 

@@ -304,7 +304,12 @@
   .version-badge.not-recorded {
     max-width: none;
     border-style: dashed;
-    opacity: 0.75;
+    /* FR-R3-131 (T1498) — was `opacity: 0.75`, which dimmed the text below AA and
+       was six of the thirty baselined findings. The dashed border and the italic
+       already say "a stated absence, not a value"; the opacity was saying it a
+       third time at the cost of legibility. The muted foreground is the theme's own
+       token for secondary text and is contrast-safe against the surface. */
+    color: var(--schegent-muted-fg);
     font-style: italic;
   }
   .status-completed .status-badge {

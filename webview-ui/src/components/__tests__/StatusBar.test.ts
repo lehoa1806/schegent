@@ -76,12 +76,33 @@ describe('StatusBar', () => {
     expect(container.querySelector('[data-testid="sidebar-status-row"]')).not.toBeNull();
   });
 
-  it.each(STATUSES)('status dot has aria-label="Status: %s"', (status) => {
+  // FR-R3-131 — the dot used to carry `aria-label="Status: <status>"`. Two things
+  // were wrong with it, and the a11y scan found the first only once it was pointed
+  // at this webview: `aria-label` is PROHIBITED on a generic `span`
+  // (axe `aria-prohibited-attr`), and the status is already rendered as text three
+  // elements along, so the label made a screen reader announce it twice.
+  //
+  // The assertion moved rather than being deleted: what matters is that the status
+  // reaches a screen reader exactly once, from the text, and that the decorative
+  // dot is hidden. A test that only checked `aria-hidden` would pass on a dot with
+  // no status anywhere.
+  it.each(STATUSES)('the status reaches AT once, as text, with the dot hidden (%s)', (status) => {
     applySnap(buildSnapshot({ status }));
     const { container } = render(StatusBar);
-    const dot = container.querySelector('[data-testid="sidebar-status-row"] [aria-label^="Status:"]');
-    expect(dot).not.toBeNull();
-    expect(dot!.getAttribute('aria-label')).toBe(`Status: ${status}`);
+    const row = container.querySelector('[data-testid="sidebar-status-row"]');
+    expect(row).not.toBeNull();
+
+    const dot = row!.querySelector('.dot');
+    expect(dot, 'the dot is still rendered').not.toBeNull();
+    expect(dot!.getAttribute('aria-hidden')).toBe('true');
+    expect(
+      dot!.getAttribute('aria-label'),
+      'aria-label is prohibited on a generic span — axe aria-prohibited-attr'
+    ).toBeNull();
+
+    // Exactly once: the text node, not the dot and not both.
+    expect(row!.textContent).toContain(status);
+    expect(row!.querySelectorAll('[aria-label^="Status:"]').length).toBe(0);
   });
 
   it('active feature label renders italic placeholder when activeFeatureLabel is null', () => {
