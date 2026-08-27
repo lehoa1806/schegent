@@ -3,6 +3,38 @@
 Schegent accepts changes through pull requests targeting `develop`; the checked-in PR and CI workflows are configured for that base branch. No branch-protection or repository-ruleset file is present, so this repository can describe the checks GitHub is configured to run, but it cannot prove which status checks the remote repository requires for merge.
 <!-- Source: docs/release/actions-terminal-record.md -->
 
+## Read these ten, in this order — then stop
+
+**`FR-R3-121`, 2026-08-27.** This repository carries **16.6 MB of Markdown across 1,377 files**
+and **151 lint gates** against a 99k-line implementation. Almost all of it is reference, and
+nothing said so. A contributor who tried to read their way in had no way to know where the
+bottom was, which is a real entry cost and the mechanical half of the single-reviewer problem
+recorded in [`SECURITY.md`](SECURITY.md).
+
+This is the bounded list. **Everything not on it is reference — reach for it when a task sends
+you there, not before.**
+
+| # | Read | Why it is on a ten-item list |
+|---|---|---|
+| 1 | [`README.md`](README.md) | what the product is, and what it deliberately is not |
+| 2 | this file, to the end | how to get a checkout that builds, and what a PR is expected to carry |
+| 3 | [`../AGENTS.md`](../AGENTS.md) — the **index** at the head of its hard-rules section, then only the subsystems your change touches | the authority on host-code invariants. It is 872 lines and you are not expected to read all of them; the index exists to route you |
+| 4 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | the module boundaries a change is judged against, including which directory is the composition root |
+| 5 | [`docs/security/threat-model.md`](docs/security/threat-model.md) | what this product claims to prevent and what it explicitly does not. Read before touching audit, logging, IPC or process execution |
+| 6 | [`docs/development/lint-gate-census.md`](docs/development/lint-gate-census.md) | one line per gate. You will trip one; this is how you find out what it wanted without reading 151 files |
+| 7 | [`docs/features/custom-phases.md`](docs/features/custom-phases.md) | the Phase model, which most feature work touches |
+| 8 | [`RELEASE.md`](RELEASE.md) | what a release is here — entirely local, three binding refusals — so you do not assume a pipeline that does not exist |
+| 9 | [`SECURITY.md`](SECURITY.md) | how to report a vulnerability, and who reviews security-sensitive paths |
+| 10 | [`docs/development/gate-integrity-measurements.md`](docs/development/gate-integrity-measurements.md) | why the gates are shaped the way they are. Read it when a gate seems excessive — it usually records the incident that produced it |
+
+**Ten, counted honestly.** There is no optional eleventh: a list of eleven with one marked
+optional is a list of eleven, and the point of a bound is that it binds.
+
+**What is deliberately not here**: `specs/` (1,145 files — Spec-Driven Development output, kept as
+provenance, read only when tracing a decision), the rest of `docs/` (reference), and the 151 gate
+files themselves (item 6 is the index into them). None of that is waste; it is simply not an
+entry path.
+
 ## Start with the governing context
 
 Before changing code, read `../AGENTS.md`, the workspace-level source of truth for host-code invariants. Its rules are especially important for IPC mutations, audit and redaction behavior, workspace/window locks, forward-only state migration, process execution, catalog publication, and run-plan validation.

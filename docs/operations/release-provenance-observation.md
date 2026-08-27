@@ -10,11 +10,26 @@
 > control was is recorded in
 > [withdrawn CI controls](../release/withdrawn-ci-controls.md).
 
-Use this runbook to verify that a published VSIX is the artifact produced by
-Schegent's checked-in release workflow for a specific tag and commit. Treat
-checksum integrity, workflow provenance, package policy, and Marketplace
-publication as separate claims: the current automation establishes different
-evidence for each one.
+> **FR-R3-120 note, 2026-08-27.** The banner above has said "withdrawn" since
+> 2026-08-26, and every paragraph below it went on reading as present-tense
+> instruction — *"Use this runbook to verify…"*, *"Then verify each attested
+> subject…"* — over a workflow file that does not exist. A reader who skimmed the
+> banner and followed the commands got `gh attestation verify --signer-workflow
+> …/release.yml` against a `release.yml` that was deleted. A withdrawal notice and
+> a live imperative in the same document is the same defect `FR-R3-116` found in
+> the threat model, and it is repaired the same way: the record stands, the
+> instruction stops instructing.
+>
+> **What a recipient can actually check is in [§ What is checkable
+> today](#what-is-checkable-today), at the foot of this page.**
+
+This runbook **described** how to verify that a published VSIX was the artifact
+produced by Schegent's checked-in release workflow for a specific tag and commit.
+It treated checksum integrity, workflow provenance, package policy, and Marketplace
+publication as separate claims, because the automation of the time established
+different evidence for each one. **None of those procedures can be run now**, and
+they are preserved unrewritten because the observations were true when made
+(`FR-R3-067`).
 <!-- Source: ../release/actions-terminal-record.md -->
 <!-- Source: RELEASE.md -->
 
@@ -139,7 +154,10 @@ file; it does not by itself authenticate who produced either file.
 <!-- Source: ../release/actions-terminal-record.md -->
 
 Then verify each attested subject using the repository identity and the exact
-signer workflow:
+signer workflow. **This command cannot be run today** — `.github/workflows/release.yml`
+was deleted with the other seven workflow files, so there is no signer workflow to
+name and no attestation to verify against. It is reproduced as a record of what the
+procedure was:
 
 ```bash
 gh attestation verify <downloaded-vsix> \
@@ -240,3 +258,36 @@ attestations verified against the repository and workflow identity.
   new version; the workflow refuses to update the existing release.
 
 <!-- Source: ../release/actions-terminal-record.md -->
+
+
+## What is checkable today
+
+Written 2026-08-27 (`FR-R3-120`), because a page that only says what *used to* be
+verifiable teaches a recipient nothing.
+
+**Distribution posture: private-to-author.** The VSIX is built and installed by the
+person who built it and is not passed to anyone. See
+[Distribution posture](../architecture/distribution-posture.md) for the dated
+decision and the condition that would change it. The rest of this section describes
+what would be available to a recipient *if that changed*, and is honest about how
+little that is.
+
+| Claim | Checkable? | By what |
+|---|---|---|
+| "this VSIX contains component X at version Y" | **yes** | `schegent-sbom.cdx.json`, emitted at package time beside the VSIX and packaged inside it — CycloneDX 1.5, generated from the lockfiles |
+| "the extension ships no runtime dependencies" | **yes** | the same SBOM; this is its strongest statement and it is verifiable by unzipping the VSIX |
+| "the manifests and any version tag agree" | **yes, at build time** | `scripts/check-manifest-versions.mjs`, which `release:preflight` refuses on |
+| "the tree was green when this was built" | **yes, at build time** | `.gate-attestation.json`, which `release:preflight` refuses without |
+| "this file was built by the person who claims it" | **no** | there is no signature. `FR-R3-120` recorded that decline against the private-to-author posture, with its reversal condition |
+| "this file was built from commit C" | **no, transferably** | the gate attestation names the commit, but it stays on the builder's machine; nothing binds it to the artifact a recipient holds |
+| "a third party observed the build" | **no** | there is no third party. This is what the retired workflows provided and nothing replaced them |
+
+**Observed / relied on / inferred**, kept apart: *observed* — the workflow files are
+absent from every ref (`FR-R3-099`'s terminal record), and the SBOM and manifest
+checks run locally on demand; *relied on* — that `gh attestation verify` requires a
+resolvable signer workflow; *inferred* — that no attestation for any Schegent
+artifact can therefore be verified. No attestation was queried, because there is no
+credential in this checkout to query with.
+<!-- Source: scripts/generate-sbom.mjs -->
+<!-- Source: scripts/check-manifest-versions.mjs -->
+<!-- Source: ../architecture/distribution-posture.md -->

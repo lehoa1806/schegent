@@ -61,12 +61,15 @@ so a completed Run's evidence answers which basis judged each Phase. Additive �
 ## Release boundary
 
 The boundary is `npm run release`, which is `release:preflight && package`. It refuses to package
-unless **two** local bindings both answer at the current commit:
+unless **three** local bindings all answer at the current commit:
 
 1. **A gate attestation** naming `HEAD` over a clean tree (`FR-R3-095`, widened by `FR-R3-100`).
 2. **A backend qualification record** that is fresh, taken against the installed CLI versions, and
    not older than the last change under `src/runner/`, `src/parser/` or
    `src/contracts/backend-kinds.ts` (`FR-R3-104`).
+3. **Manifest and tag agreement** — the six version sites across the four manifests agree, and any
+   `v*` tag on `HEAD` agrees with them (`FR-R3-120`). Two disagreeing `v*` tags refuse as ambiguous
+   rather than picking one.
 <!-- Source: package.json -->
 <!-- Source: scripts/require-local-gate.mjs -->
 
@@ -91,8 +94,11 @@ npm --prefix webview-ui version <version> --no-git-tag-version
 ```
 
 Replace `<version>` with the exact version string without a leading `v`. Review all four resulting
-diffs. **Nothing mechanically checks the tag against the manifest any more** — that check lived in
-the retired tag job — so local review is the only thing that catches lockfile or webview drift.
+diffs. **`release:preflight` now checks this** (`FR-R3-120`): it refuses when the six version sites
+across those four files disagree, or when a `v*` tag on `HEAD` disagrees with them, and it names
+every disagreeing site rather than the first. This restores locally what the retired tag job did.
+Untagged commits are checked too — mutual drift is introduced on an ordinary commit, not on the
+tag.
 <!-- Source: package.json -->
 <!-- Source: package-lock.json -->
 <!-- Source: webview-ui/package.json -->
@@ -273,6 +279,15 @@ the same reason. Both are named in `SECURITY.md` and `CONTRIBUTING.md` with the 
 <!-- Source: package.json -->
 
 ## 3. Package the extension
+
+`npm run package` is `npm run sbom && vsce package --no-dependencies`. It emits
+`schegent-sbom.cdx.json` (CycloneDX 1.5) beside the VSIX **and packages it inside**, because a
+recipient is handed one file and an SBOM on the builder's disk describes the artifact to nobody
+(`FR-R3-120`). Its strongest statement is the short one: this extension declares **zero runtime
+dependencies**, and the SBOM now says so verifiably rather than by assertion. What it asserts and
+what it does not — it reads the lockfiles and has not opened the archive — is stated in the
+document's own metadata.
+<!-- Source: scripts/generate-sbom.mjs -->
 
 ```bash
 npm run release          # release:preflight, then package
