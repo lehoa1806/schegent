@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 90
+    vacuity-census-denominator: 91
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **90** |
+| Gates the detector calls **controlled** (the denominator) | **91** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -59,6 +59,7 @@ measure exactly that class. Both now read 90, and the three unrecorded movements
 | **+1** | (86 → 87, `062b26fb`, feature 157) | Joined during "the execution repository verifies alone, and four gates were wrong not one". Not recorded here at the time; identified by `git log -S` on this line. |
 | **+1** | (87 → 88, `32c963a1`, feature 157) | Joined during "one answer per mechanism, and the gate class that was missing". Same omission. |
 | **+1** | (88 → 89, `1a33112d`, feature 157) | Joined during "the platform claim matches the platform evidence". Same omission. |
+| **+1** | `documented-commands-exist.test.ts` (90 → 91) | Joined. `FR-R3-127` — refuses a document that names a command the manifest does not contribute, and holds `api-and-cli.md` in both directions because that page claims completeness. Three controls: a floor on manifest commands, a floor on documents walked, and a floor on distinct `Schegent: <Title>` occurrences found — the third because the first version of its matcher truncated real titles at connectors and hyphens, and a matcher that stops matching would report green over exactly the defect that shipped. |
 | **+1** | `concurrency-isolation-disclosure.test.ts` (89 → 90) | Joined. `FR-R3-124` — asserts the shared-tree disclosure is present at the five surfaces a human reads it, and that no live document sells a cap above one as isolation. Two controls: the surface list is pinned at five with every path resolved on disk, and the live-prose corpus carries a floor, so neither a rename nor a moved directory can empty a scan into a silent pass. |
 
 The three back-filled rows carry the commit rather than the gate name, because identifying which

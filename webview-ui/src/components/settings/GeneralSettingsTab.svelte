@@ -5,6 +5,7 @@
   import { GENERAL_SETTINGS_DESCRIPTIONS } from './GeneralSettingsTab.descriptions';
   import { hoverTextAnchor } from '../hover-text/hover-text-anchor-action';
   import GeneralSettingFieldRow from './general/GeneralSettingFieldRow.svelte';
+  import PrivacyProfileSelector from './general/PrivacyProfileSelector.svelte';
   import BackendHealthSection from './BackendHealthSection.svelte';
 
   interface Props {
@@ -337,6 +338,12 @@
         Usage is {sessionBudgetPercent}% of the configured byte budget.
       {/if}
     </div>
+    <PrivacyProfileSelector
+      loggingVerbose={currentSettings.loggingVerbose}
+      rawTranscriptMode={currentSettings.rawTranscriptMode}
+      sessionRetentionMaxAgeDays={currentSettings.sessionRetentionMaxAgeDays}
+      sessionRetentionMaxBytes={currentSettings.sessionRetentionMaxBytes}
+    />
     <div class="toolbar">
       <button
         type="button"

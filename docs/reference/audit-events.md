@@ -141,7 +141,7 @@ instead of creating an empty file.
 <!-- Source: src/commands/show-audit.ts -->
 <!-- Source: package.json -->
 
-Run `Schegent: Export Metadata-only Audit` (`schegent.exportAuditLog`) to choose
+Run `Schegent: Export Metadata-Only Audit` (`schegent.exportAuditLog`) to choose
 a JSONL destination. Export includes only valid schema-v3 records and keeps the
 envelope's identity, timestamp, event type, phase, iteration, outcome, and
 schema version. Payload export is restricted to counts and structural result

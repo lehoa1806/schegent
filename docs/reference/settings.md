@@ -105,6 +105,50 @@ Unredacted transcripts and verbose diagnostics can contain prompts, source code,
 <!-- Source: src/state/confirmations-config.ts -->
 <!-- Source: src/state/capability-trust-resolver.ts -->
 
+## Evidence privacy profiles
+
+`FR-R3-127`. The evidence store's posture is four settings — `schegent.logging.verbose`,
+`schegent.logging.rawTranscriptMode`, `schegent.logging.sessionRetentionMaxAgeDays` and
+`schegent.logging.sessionRetentionMaxBytes`. Deriving a safe combination from them one at a time is
+the problem the repository audit of 2026-08-27 named, so they are also published as **three named
+profiles** in `src/contracts/privacy-profiles.ts`. The Settings tab shows which profile the current
+values are, or `custom` with the fields that differ, and applies one in a single action.
+
+| Profile | verbose | rawTranscriptMode | retention age | retention bytes | Who it is for |
+|---|---|---|---|---|---|
+| `ephemeral` | `false` | `off` | 1 day | 1 MiB | A shared account, a managed endpoint, or a home directory that is backed up or synchronized off the machine. Keeps the least unredacted evidence this product can keep. |
+| `diagnostic` | *the shipped default* | *the shipped default* | *the shipped default* | *the shipped default* | A single informed local operator debugging their own Runs on a machine they control. **These are the defaults**, named so that keeping them is a decision rather than an absence of one. |
+| `forensic` | `true` | `always` | 365 days | 4 GiB | An incident you expect to investigate later, on a machine whose disk you are willing to treat as holding the material. |
+
+**`diagnostic`'s values are not written here on purpose.** They are read from the shipped defaults, so
+a moved default moves the profile rather than leaving a second copy behind — the drift this project has
+closed repeatedly. Look them up in the two retention rows above and in
+[the retention disclosure](../operations/evidence-retention-disclosure.md), which derives every bound
+from the constant that enforces it.
+
+### What a profile does not change
+
+Every profile carries these residuals, and they are stated on the profile rather than once here,
+because an operator reads the profile they are choosing:
+
+- **Recovery checkpoints keep unredacted binary Git diffs for 14 days and 256 MiB.** That bound is a
+  constant, not a setting, and **no profile changes it** — `FR-R3-012` decided that deliberately,
+  because a wrong value is silent data loss in a directory an operator never opens. To reduce it, run
+  `Schegent: Delete Run Evidence`.
+- **The structured audit log is retained, and is redacted.** A profile decides how much *unredacted*
+  evidence is kept; it does not turn evidence off.
+- **`.gitignore` keeps evidence out of commits and does nothing about backup, sync, or
+  endpoint-management tooling** copying it off the machine. That is the reason to pick `ephemeral` at
+  all.
+- **A profile is not a permission boundary.** An uncontained backend runs under your local authority
+  and can read the evidence store whatever profile is selected (`FR-R3-125`).
+
+`ephemeral` also gives up the thing `diagnostic` exists for: with raw capture `off`, a failed Run
+leaves no transcript to diagnose from.
+
+Nothing here is encrypted at rest, and that is a recorded decision rather than an omission — see
+[the evidence-encryption declination](../architecture/evidence-encryption-declination.md).
+
 ## The trust-capability ladder
 
 `schegent.trust.allowCustomPhases` and `schegent.trust.allowCustomRetryConditions` are three-state:

@@ -178,9 +178,14 @@
          The surface is one column wide in the sidebar, and a run understood in
          full is the whole answer to the question the operator just asked. -->
     <section class="history-ledger" aria-label="Run detail">
+      <!-- FR-R3-127 (FR-004) — the retention consequence belongs on the Run, not
+           only on a settings page. Threaded from here because the panel is two
+           levels down and the facts live on the snapshot. -->
       <HistoryRunDetail
         row={selectedRow}
         {catalogNames}
+        rawTranscriptMode={snapshot.generalSettings?.rawTranscriptMode ?? 'errors-only'}
+        retentionMaxAgeDays={snapshot.generalSettings?.sessionRetentionMaxAgeDays ?? 30}
         onBack={closeDetail}
         onRerun={isPrimary ? () => openRerun(selectedRow.runId) : undefined}
       />
