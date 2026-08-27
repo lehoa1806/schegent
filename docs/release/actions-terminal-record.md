@@ -102,19 +102,63 @@ Every local claim it bears on, named:
 
 ## Still owed to the operator — the half the tree cannot do
 
-**The workflow files are deleted from the tree. Repository *settings* are not changed**, and cannot be
-from here: flipping them is an outward action on a remote, and this checkout holds no credential for
-it. Until the operator does the following, a workflow file restored by any means would run again, and
-scheduled billing would resume:
+**Two things are owed, and the second was discovered on 2026-08-27 by checking the remote instead of
+reasoning about it.**
+
+### What is verified, as of 2026-08-27
+
+Observed with `git ls-remote` over the configured SSH remote — a read-only query, no API credential
+involved:
+
+| Fact | Value |
+|---|---|
+| Default branch (`HEAD` symref) | `refs/heads/develop` |
+| `refs/heads/develop` | the same commit as the local `develop` |
+| Workflow files on `develop` | **none** |
+| Workflow files on `refs/heads/master` | **seven** — `ci`, `codeql`, `dependency-review`, `full-gate`, `pr`, `release`, `security-audit` |
+
+**Scheduled workflows fire from the default branch only.** `develop` is the default branch and
+carries no workflow files, so the weekly `full-gate` and the scheduled `security-audit` **do not
+run**. That is what makes the retirement effective today.
+
+### 1. The `master` residual (in-tree, not yet done)
+
+The deletion landed on `develop`. It never reached `master`, which still carries seven workflow
+files with `push`, `pull_request` and `schedule` triggers. Their schedules are inert — not the
+default branch — but **a push to `master`, or a pull request targeting it, would run them and bill
+for them**. `FR-R3-099` said the tree must own the deletion; it owns it on one branch.
+
+The fix is one commit deleting `.github/workflows/`, **prepared and committed locally** on the branch
+`retire-actions-on-master` (based on the remote `master`, changing nothing else, so merging it drags
+no other history onto that branch):
+
+```bash
+git -C repo push origin retire-actions-on-master   # then merge it into master
+```
+
+Pushing it triggers nothing: for a push event GitHub reads the workflow files **at the pushed
+commit**, and that commit has none. The push was attempted from this session and **refused by the
+environment's guardrail on outward actions** — which is the same line `FR-R3-099` drew for the
+settings flip, applied by the tooling rather than by judgement. The commit exists; sending it is
+the operator's.
+
+### 2. Repository settings (outward, the operator's)
+
+**Repository settings are not changed**, and cannot be from here: this checkout holds an SSH key that
+can push, and **no API credential and no `gh` CLI**, which is what flipping a setting needs. The
+distinction matters — an earlier version of this note said only "no credential", which reads as "the
+remote is unreachable", and it is not.
 
 1. Open `https://github.com/lehoa1806/schegent/settings/actions`.
 2. Under **Actions permissions**, select **Disable actions**.
 3. Save, and confirm `https://api.github.com/repos/lehoa1806/schegent/actions/runs` records no run
    dated after the disable.
 
-Nothing in this repository claims those steps are done. Deleting the files removes the *tree's*
-invitation to run them, which is the half the item says the tree must own — settings are out-of-tree
-and reversible by anyone with admin, which is precisely why the files had to go too.
+This is belt-and-braces rather than the thing standing between the operator and a bill: with the
+default branch carrying no workflows, nothing is scheduled to run. It closes the class — a restored
+file on any branch, or a pull request targeting `master` — which the two tree-side deletions cannot.
+
+Nothing in this repository claims either step is done.
 
 ## What was not rewritten
 
