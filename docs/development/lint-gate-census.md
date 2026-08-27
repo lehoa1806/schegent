@@ -19,8 +19,8 @@ predicted it: its author sampled the set and found every gate well motivated.
 
 | Figure | Value | Date | Method |
 |---|---|---|---|
-| Gate files | **151** | 2026-08-27 | `*.test.ts` under `tests/lint/` recursively |
-| Marked `unique` | 139 | 2026-08-27 | hand verdict |
+| Gate files | **152** | 2026-08-27 | `*.test.ts` under `tests/lint/` recursively |
+| Marked `unique` | 140 | 2026-08-27 | hand verdict |
 | Marked `partially redundant` | 12 | 2026-08-27 | hand verdict |
 | Marked `redundant` | 0 | 2026-08-27 | hand verdict |
 
@@ -161,6 +161,7 @@ changing one means updating that machinery in the same commit.
 | `catalog-lifecycle-dispatch.test.ts` | Feature 100 T509d — the six lifecycle commands have one dispatch surface | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `catalog-purity.test.ts` | Feature 099 — the catalog store imports nothing impure | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `compiler-strictness-ratchet.test.ts` | FR-R3-110 — compiler strictness is adopted under a ratchet | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
+| `concurrency-isolation-disclosure.test.ts` | FR-R3-124 — the shared-tree disclosure has content, and no live document sells a cap above one as isolation | `cap-authority-citation-parity.test.ts` (citation only) | unique | that gate asserts each cap definition site *cites* `docs/architecture/local-queue-parallelism-ratification.md`; it never reads what the site says. On 2026-08-27 every shared-tree sentence in the tree could be deleted with the whole gate set staying green, which is the hole this gate closes |
 | `contracts-module-reachability.test.ts` | every contract module has a consumer outside itself and the barrel | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `dependency-change-scope.test.ts` | FR-R3-090 §5 — no dependency is bumped, and the scanners are untouched | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `dependency-direction.test.ts` | FR-R3-110 — leaf layers do not value-import layers that act | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |

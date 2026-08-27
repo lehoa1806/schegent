@@ -15,8 +15,14 @@ The per-Queue capacity is fixed at one. The workspace-wide `schegent.queue.globa
 
 Raising the global cap enables simultaneous Runs in one checkout. It does not create separate worktrees, file locks, or merge isolation. Tasks in different Queues may edit the same files, so use a value above one only when the selected Pipelines can safely share the working tree.
 
+**Recommended value: `2`, and the reason is measured rather than cautious** (`FR-R3-124`, 2026-08-27; [concurrent-run isolation measurement](concurrent-run-isolation-measurement.md)). Disjoint concurrent work is fully attributable at every level tested — at 8 Runs every Run still receives a patch containing only its own work. But a **single** path written by two Runs costs *every* Run that declared it its recovery checkpoint, with no partial result: at 8 Runs sharing one file, the measurement recorded 8 declines and 0 patches. Nothing degrades between 2 and 8; what grows is the number of Run pairs that could contest a path — 1 at a cap of 2, 6 at 4, 28 at 8 — and being wrong about any one of them is total for its participants. Two Runs is what an operator can actually verify in advance.
+
+The permitted maximum stays 20 and the default stays 1. Per-Run working-tree isolation would retire this recommendation rather than raise it; its shape is decided and its implementation is gated in [the run-isolation decision record](../architecture/run-isolation-decision.md).
+
 <!-- Source: src/services/auto-drain-coordinator.ts -->
 <!-- Source: src/state/execution-lease.ts -->
+<!-- Source: docs/operations/concurrent-run-isolation-measurement.md -->
+<!-- Source: docs/architecture/run-isolation-decision.md -->
 
 ## Admission order
 
