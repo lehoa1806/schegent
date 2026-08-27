@@ -19,12 +19,14 @@ predicted it: its author sampled the set and found every gate well motivated.
 
 | Figure | Value | Date | Method |
 |---|---|---|---|
-| Gate files | **160** | 2026-08-27 | `*.test.ts` under `tests/lint/` recursively |
-| Marked `unique` | 148 | 2026-08-27 | hand verdict |
+| Gate files | **163** | 2026-08-27 | `*.test.ts` under `tests/lint/` recursively |
+| Marked `unique` | 151 | 2026-08-27 | hand verdict |
 | Marked `partially redundant` | 12 | 2026-08-27 | hand verdict |
 | Marked `redundant` | 0 | 2026-08-27 | hand verdict |
 
 <!-- census:prose -->
+
+
 
 
 
@@ -171,6 +173,7 @@ changing one means updating that machinery in the same commit.
 | `dependency-direction.test.ts` | FR-R3-110 — leaf layers do not value-import layers that act | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `destructive-actions.lint.test.ts` | Feature 063 T046 — destructive command sites must be useConfirm-gated | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `destructive-fs-requires-containment.test.ts` | FR-R3-005 — destructive filesystem calls route through the containment oracle | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
+| `devcontainer-declination-review-date.test.ts` | the devcontainer decline carries a review date (FR-R3-132) | shares its predicate with `platform-decline-review-date.test.ts` via `tests/lint/review-dates.ts`; neither holds the other's date or document | unique | Driven red 2026-08-28 both ways: a past date, and a removed marker. The record's three EVENT conditions — a second maintainer, a contributor report, a platform leaving `unverified` — are stated as unwatched, because no gate can observe them |
 | `doc-duplicate-authority.test.ts` | no two documents share a body (FR-R3-063, widened by FR-R3-066) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `doc-orphan-pages.test.ts` | every documentation page is reachable by reading (FR-R3-063) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `doc-references-outside-markdown.test.ts` | documentation paths cited outside Markdown resolve (FR-R3-063) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
@@ -276,6 +279,7 @@ changing one means updating that machinery in the same commit.
 | `scanning-gates-prove-they-scanned.test.ts` | a scanning gate proves it scanned something | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `security-override-parity.test.ts` | security overrides are applied to every workspace | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `self-certification-disclosed.test.ts` | self-certification is disclosed | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
+| `snapshot-mirror-census.test.ts` | FR-R3-132 — the snapshot mirror imports what it does not decide | partly by `webview-host-import-direction.test.ts`, which decides WHERE the webview may import from; nothing else asks whether it imported at all | unique | the parity tests compare specific fields on specific shapes; none counts duplication or checks a union for a missing member. Landed red 2026-08-28 against 51 byte-identical declarations, and its union half independently rediscovered the live defect the measurement had found — `QueueSummary.pauseSource` omitting `'retry-cap'`. **Its own first version walked three host directories and reported zero remaining copies; a review pointed at four in `src/services/`, and widening the walk to `src/` turned zero into fifteen.** Two earlier drafts were wrong in the other direction too: one read string literals out of JSDoc, one read a module specifier as a union member. All four corrections are recorded in the source |
 | `source-loc-budget.test.ts` | large source file LOC budgets | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `source-marker-targets.test.ts` | provenance markers name a real file (FR-R3-063) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `spec-traceability-envelope-absence.test.ts` | spec traceability governance: the envelope-absent path | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
@@ -292,6 +296,7 @@ changing one means updating that machinery in the same commit.
 | `threat-id-anchor-parity.test.ts` | Threat-id anchor parity | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `tree-degradation-emission-funnel.test.ts` | the degraded-tree report reaches the audit writer (FR-R3-083) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `uncontained-backend-not-hardcoded.test.ts` | the uncontained posture is never hardcoded in production code | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
+| `verification-tiers.test.ts` | FR-R3-132 — the verification tiers are ordered, not merely named | — | unique | nothing else compares the tiers. Driven red 2026-08-28 three ways: `test:perf` removed from `verify:release`; `--cache` appended to `verify:push`; `verify:edit` renamed in the tier document. Compares LEAF commands, not script names — a first draft compared names and failed because `verify:release` runs everything `ci` runs without invoking the name |
 | `visual-route-coverage.test.ts` | visual route coverage | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `vscode-floor-claim.test.ts` | the declared VS Code floor is the API the host compiles against | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `waits-are-bounded-by-time.test.ts` | a wait is bounded by elapsed time | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |

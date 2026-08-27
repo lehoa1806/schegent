@@ -28,6 +28,7 @@ function defaultProps(overrides: Partial<{
   failedCount: number;
   pendingCount: number;
   hasInFlight: boolean;
+  pauseSource: 'operator' | 'cascade' | 'retry-cap' | null;
 }> = {}) {
   return {
     paused: false,
@@ -196,5 +197,52 @@ describe('QueueGlobalActions', () => {
     });
     await fireEvent.click(getByTestId('queue-clear-completed-button'));
     expect(postCommandSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('FR-R3-132 (T1502) — the queue pause says WHY it paused', () => {
+  // THE DEFECT THIS PINS. `src/contracts/queue-snapshot.ts` has declared
+  // `pauseSource: 'retry-cap'` since Feature 030 BUG-001, and says in the same
+  // comment that *"UI uses this to label the queue badge as 'cascaded' /
+  // 'retry-cap'"*. The label did not exist, and both this component's prop type
+  // and the snapshot mirror above it omitted the value — so a retry-handler pause
+  // arrived as something the type said could not happen and rendered as an
+  // unexplained pause. Found by measuring the host/webview mirror, not by a test.
+  //
+  // All three sources are asserted here rather than only the new one: a badge test
+  // that covered `retry-cap` alone would leave the neighbouring case that HAS
+  // shipped for features unpinned, and the two share one derivation.
+  const cases = [
+    { pauseSource: 'retry-cap' as const, visible: 'queue-retry-cap-badge', hidden: 'queue-cascade-badge' },
+    { pauseSource: 'cascade' as const, visible: 'queue-cascade-badge', hidden: 'queue-retry-cap-badge' }
+  ];
+
+  it.each(cases)('paused with pauseSource=$pauseSource shows only its own badge', ({
+    pauseSource,
+    visible,
+    hidden
+  }) => {
+    const { getByTestId, queryByTestId } = render(QueueGlobalActions, {
+      props: defaultProps({ paused: true, pauseSource })
+    });
+    expect(getByTestId(visible)).toBeTruthy();
+    expect(queryByTestId(hidden)).toBeNull();
+  });
+
+  it('shows neither badge when the operator paused it directly', () => {
+    const { queryByTestId } = render(QueueGlobalActions, {
+      props: defaultProps({ paused: true, pauseSource: 'operator' })
+    });
+    expect(queryByTestId('queue-retry-cap-badge')).toBeNull();
+    expect(queryByTestId('queue-cascade-badge')).toBeNull();
+  });
+
+  it('shows neither badge when the queue is not paused at all', () => {
+    // The half that makes the assertions above mean something: a badge that
+    // rendered whenever `pauseSource` was set would pass every case above.
+    const { queryByTestId } = render(QueueGlobalActions, {
+      props: defaultProps({ paused: false, pauseSource: 'retry-cap' })
+    });
+    expect(queryByTestId('queue-retry-cap-badge')).toBeNull();
   });
 });

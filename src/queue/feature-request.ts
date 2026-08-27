@@ -1,6 +1,13 @@
 import type { FrozenRunPlan } from '../contracts/run-request';
 import type { QueuePauseSource } from './queue-registry';
 
+// FR-R3-132 (T1502) — moved to `src/contracts/snapshot-vocabulary.ts` so the webview
+// imports it instead of restating it. Re-exported unchanged.
+import type { QueueLifecycle } from '../contracts/snapshot-vocabulary';
+
+export type { QueueLifecycle };
+
+
 export type FeatureRequestStatus =
   | 'pending'
   | 'in-flight'
@@ -28,25 +35,7 @@ export function isTerminalRequestStatus(status: FeatureRequestStatus | string): 
   return (TERMINAL_REQUEST_STATUSES as readonly string[]).includes(status);
 }
 
-/**
- * Queue lifecycle discriminator. Single source of truth for whether
- * `AutoDrainCoordinator` may promote the next pending task.
- *
- * - `running`         — `inFlightId !== null`; an in-flight task is draining.
- * - `operator-paused` — operator paused the queue; auto-drain is suppressed.
- * - `idle-pending`    — entered from `active-empty` via an enqueue without an
- *                       explicit start. May carry a scheduled trigger.
- * - `active-empty`    — no in-flight, no operator pause, no pending start
- *                       intent — the steady-state default.
- *
- * Transition graph and lockstep invariants live in
- * [data-model.md §QueueLifecycle](../../specs/065-enqueue-start-separation/data-model.md).
- */
-export type QueueLifecycle =
-  | 'running'
-  | 'operator-paused'
-  | 'idle-pending'
-  | 'active-empty';
+
 
 /**
  * Why the queue is currently (or was previously) in `idle-pending`. Used as the

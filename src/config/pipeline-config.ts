@@ -21,14 +21,15 @@ import type {
   EvidencePolicyOrigin,
   PhaseHostVerification
 } from '../contracts/process-definitions';
-import type {
-  PhaseBinding,
-  PipelineExecutionDefaults,
-  PipelineInputPort,
-  PipelineOutputPort
-} from '../contracts/pipeline-definitions';
 import { AUTHORED_PHASE_FIELDS, validatePhaseDefinition } from './process-definition-validator';
 import { validatePipelineDefinition } from './pipeline-definition-validator';
+
+// FR-R3-132 (T1502) — moved to `src/contracts/snapshot-vocabulary.ts` so the webview
+// imports it instead of restating it. Re-exported unchanged.
+import type { PipelineDef } from '../contracts/snapshot-vocabulary';
+
+export type { PipelineDef };
+
 export interface PhaseDef {
   readonly id: string;
   readonly name: string;
@@ -84,22 +85,7 @@ export interface PhaseDef {
    */
   readonly capabilities?: readonly PhaseCapability[];
 }
-// Feature 082 — the runtime Pipeline shape. `id`, `name`, and `phases` are the
-// legacy required trio; every contract field added by the Pipeline Builder is
-// optional and normalizes on parse so a row authored before those fields existed
-// keeps resolving without a rewrite (research R2).
-export interface PipelineDef {
-  readonly id: string;
-  readonly name: string;
-  readonly phases: readonly string[];
-  readonly description?: string;
-  readonly version?: number;
-  readonly inputs?: readonly PipelineInputPort[];
-  readonly outputs?: readonly PipelineOutputPort[];
-  readonly bindings?: readonly PhaseBinding[];
-  readonly executionDefaults?: PipelineExecutionDefaults;
-  readonly recommendedNext?: readonly string[];
-}
+
 export interface PipelineCatalog {
   readonly phases: readonly PhaseDef[];
   readonly pipelines: readonly PipelineDef[];

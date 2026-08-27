@@ -19,59 +19,20 @@
 
 import { canonicalJson } from './canonical-json';
 
-/**
- * A top-level field that differs and has no entry-level story to tell.
- *
- * Deliberately carries nothing but its name (FR-008). The old and new values are
- * not projected: they are the definition body, and the projection contract holds
- * that no body crosses the boundary.
- */
-export interface ChangedScalarField {
-  readonly field: string;
-  readonly change: 'differs';
-}
+// FR-R3-132 (T1502) — moved to `src/contracts/snapshot-vocabulary.ts` so the webview
+// imports them instead of restating them. Re-exported unchanged.
+import type { ChangedScalarField, ChangedCollectionField, ChangedField, ChangedFieldSummary } from '../contracts/snapshot-vocabulary';
 
-/**
- * One of the four ordered collections, with its entries accounted for.
- *
- * All three lists empty is a real and meaningful result: it says an entry changed
- * in place, keeping its identity while its content moved. There is no fourth
- * `modified` bucket, so this is how that case reads, and it is never wrong —
- * the field is only present at all because something in it differs.
- */
-export interface ChangedCollectionField {
-  readonly field: string;
-  readonly change: 'collection';
-  /** Entry identities the draft has and the active version does not. */
-  readonly added: readonly string[];
-  /** Entry identities the active version has and the draft does not. */
-  readonly removed: readonly string[];
-  /**
-   * Entries in both whose position **among the shared entries** moved.
-   *
-   * Relative order, not absolute index. An insertion at the front shifts every
-   * absolute index behind it, and reporting all of those as reorderings buries
-   * the one change that matters under its own consequences (FR-008). An entry
-   * already named in `added` or `removed` is excluded — with a repeated entry
-   * both can otherwise be true of the same name at once.
-   */
-  readonly reordered: readonly string[];
-}
+export type { ChangedScalarField, ChangedCollectionField, ChangedField, ChangedFieldSummary };
 
-export type ChangedField = ChangedScalarField | ChangedCollectionField;
 
-/**
- * What a publish would change (FR-008, FR-009).
- *
- * `no-prior-version` is its own arm rather than "everything was added" because
- * those are different facts: the second tells an operator publishing for the
- * first time that their entire definition changed, which is true and tells them
- * nothing they can act on.
- */
-export type ChangedFieldSummary =
-  | { readonly kind: 'no-prior-version' }
-  | { readonly kind: 'unchanged' }
-  | { readonly kind: 'changed'; readonly fields: readonly ChangedField[] };
+
+
+
+
+
+
+
 
 /**
  * The four collections whose entries are accounted for individually.

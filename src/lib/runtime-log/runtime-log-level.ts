@@ -1,15 +1,4 @@
-// Feature 019 — Runtime log level severity helpers.
-//
-// The runtime-log severity ladder mirrors the existing `SanitizedLogger`
-// method set (info/warn/error) plus the new `debug()` level added in
-// T010. Ordering: DEBUG < INFO < WARN < ERROR.
-//
-// `shouldEmit(record, configured)` is the gate used by the sink: it
-// allows the record if its severity is ≥ the configured filter, so
-// configuring `WARN` admits both WARN and ERROR records and rejects
-// DEBUG / INFO.
 
-export type RuntimeLogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
 
 export const RUNTIME_LOG_LEVELS: ReadonlyArray<RuntimeLogLevel> = Object.freeze([
   'DEBUG',
@@ -17,6 +6,13 @@ export const RUNTIME_LOG_LEVELS: ReadonlyArray<RuntimeLogLevel> = Object.freeze(
   'WARN',
   'ERROR'
 ]);
+
+// FR-R3-132 (T1502) — moved to `src/contracts/snapshot-vocabulary.ts` so the webview
+// imports it instead of restating it. Re-exported unchanged.
+import type { RuntimeLogLevel } from '../../contracts/snapshot-vocabulary';
+
+export type { RuntimeLogLevel };
+
 
 const SEVERITY: Readonly<Record<RuntimeLogLevel, number>> = Object.freeze({
   DEBUG: 10,

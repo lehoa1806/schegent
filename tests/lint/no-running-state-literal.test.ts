@@ -125,7 +125,16 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'src/telemetry/platform/platform-windows.ts',
   'src/ui/sidebar/phase-projector.ts',
   'src/ui/sidebar/run-projector.ts',
-  'src/ui/sidebar/snapshot.ts',
+  // FR-R3-132 (T1502) — the status unions moved from `src/ui/sidebar/snapshot.ts`
+  // to `src/contracts/snapshot-projections.ts` so the webview could import them
+  // rather than restate them. The literals travelled with the declarations; the
+  // entry moved with them rather than being added beside a stale one.
+  'src/contracts/snapshot-projections.ts',
+  // FR-R3-132 (T1502) — the second and third waves: `QueueLifecycle`,
+  // `TelemetryStatus` and their neighbours moved here from seven host modules so
+  // the webview could import them rather than restate them. Their literals came
+  // with them.
+  'src/contracts/snapshot-vocabulary.ts',
   'src/ui/sidebar/projector-bookkeeping.ts',
   'src/ui/status-bar.ts',
   'webview-ui/src/components/ControlPanel.svelte',

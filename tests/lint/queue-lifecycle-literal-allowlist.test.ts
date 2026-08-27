@@ -38,7 +38,12 @@ const LIFECYCLE_ALLOWLIST: ReadonlySet<string> = new Set([
   // split, so the reconciler is deleted and the lift is the only emission left.
   // The test below pins that: one occurrence, and no reconciler.
   'src/state/workspace-state.ts',
-  'src/ui/sidebar/snapshot.ts',
+  // FR-R3-132 (T1502) — the lifecycle literals moved with their declarations from
+  // `src/ui/sidebar/snapshot.ts` to `src/contracts/snapshot-projections.ts`, so the
+  // webview could import the shapes rather than restate them. The entry moved with
+  // them; `allowlist-entries-still-apply.test.ts` is what noticed the old one had
+  // stopped excusing anything.
+  'src/contracts/snapshot-projections.ts',
   'src/extension.ts',
   // Feature 092 — derives the next lifecycle for the *resumed queue* from that
   // queue's own contents (`hasInFlight ? 'running' : …`). Feature 065 could read

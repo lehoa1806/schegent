@@ -4,17 +4,22 @@ export type EvidenceSinkName =
   | 'runtimeLog'
   | 'metricsRollup'
   | 'historyPointer';
-export type EvidenceSinkStatus = 'healthy' | 'degraded' | 'unavailable';
-export type EvidenceOverallStatus = 'healthy' | 'degraded' | 'unavailable';
-export type EvidenceContinuationPolicy = 'fail-closed' | 'continue-degraded';
 
-export interface EvidenceSinkHealth {
-  readonly status: EvidenceSinkStatus;
-  readonly continuationPolicy: EvidenceContinuationPolicy;
-  readonly failureCount: number;
-  readonly lastFailureAt: string | null;
-  readonly cause: string | null;
-}
+// FR-R3-132 (T1502) — moved to `src/contracts/snapshot-vocabulary.ts` so the webview
+// imports them instead of restating them. Re-exported unchanged.
+import type {
+  EvidenceContinuationPolicy,
+  EvidenceOverallStatus,
+  EvidenceSinkHealth,
+  EvidenceSinkStatus
+} from '../../contracts/snapshot-vocabulary';
+
+export type {
+  EvidenceContinuationPolicy,
+  EvidenceOverallStatus,
+  EvidenceSinkHealth,
+  EvidenceSinkStatus
+};
 
 export interface EvidenceHealthSnapshot {
   readonly overall: EvidenceOverallStatus;

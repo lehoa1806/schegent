@@ -1,0 +1,95 @@
+apiVersion: schegent/v1
+kind: Workflow
+metadata:
+  id: example-conditional-graph
+  name: Draft, then revise if it failed
+  version: 1
+  description: |-
+    A self-contained example Workflow. Two nodes, one conditional edge: the
+    revise node runs only when the draft node does NOT complete. That is the
+    smallest graph in which a condition does real work -- delete the condition
+    and the second node runs unconditionally, which demonstrates a different
+    product. Everything it references is included below, so it is one import.
+spec:
+  startNodeIds:
+    - draft
+  nodes:
+    - nodeId: draft
+      pipelineId: example-draft
+      label: Draft
+    - nodeId: revise
+      pipelineId: example-revise
+      label: Revise the draft
+  connections:
+    - from:
+        nodeId: draft
+        portId: draft-document
+      to:
+        nodeId: revise
+        portId: draft-document
+      condition:
+        left:
+          source: node-status
+          nodeId: draft
+        operator: in
+        right:
+          - failed
+included:
+  pipelines:
+    - metadata:
+        id: example-draft
+        name: Draft
+        version: 1
+      spec:
+        phaseIds:
+          - example-write-draft
+        outputs:
+          - portId: draft-document
+            label: Draft document
+            type: markdown
+        bindings:
+          - kind: output
+            phaseIndex: 0
+            portId: draft-document
+            outputKey: draft
+    - metadata:
+        id: example-revise
+        name: Revise
+        version: 1
+      spec:
+        phaseIds:
+          - example-revise-draft
+        inputs:
+          - portId: draft-document
+            label: Draft document
+            type: text
+            required: true
+        bindings:
+          - kind: input
+            phaseIndex: 0
+            inputKey: draft
+            source:
+              from: pipeline-input
+              portId: draft-document
+  phases:
+    - metadata:
+        phaseId: example-write-draft
+        name: Write the draft
+        version: 1
+      spec:
+        instruction: |-
+          Read README.md and the top level of this repository. Write
+          DRAFT-SUMMARY.md containing what the project is in two sentences, its
+          main directories one line each, and how to run its tests. Change no
+          other file.
+        hostVerification: exit-code
+    - metadata:
+        phaseId: example-revise-draft
+        name: Revise the draft
+        version: 1
+      spec:
+        instruction: |-
+          Read DRAFT-SUMMARY.md. Append a section titled "Revision" listing what
+          the draft got wrong or left out, one line per point. If it is accurate
+          and complete, say so in one line. Change no other file.
+        hostVerification: exit-code

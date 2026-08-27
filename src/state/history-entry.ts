@@ -6,7 +6,12 @@ import { isRunOutputStatus, type RunOutputRecord } from '../contracts/run-result
 import { isCatalogVersionRef, type CatalogVersionRef } from '../contracts/catalog-version';
 import { isRunOriginRef, type RunOriginRef } from '../contracts/run-origin';
 
-export type HistoryTerminalStatus = 'completed' | 'failed' | 'canceled';
+// FR-R3-132 (T1502) — moved to `src/contracts/history-identity.ts` so the webview
+// can import it rather than restate it. Re-exported unchanged: every existing
+// import of this name still resolves here.
+import type { HistoryTerminalStatus } from '../contracts/history-identity';
+
+export type { HistoryTerminalStatus };
 
 /**
  * FR-R3-010 (T406) — the partition a history entry lands in when nothing can
