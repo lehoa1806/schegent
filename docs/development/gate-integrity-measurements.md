@@ -13,7 +13,7 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 86
+    vacuity-census-denominator: 87
 
 | Measure | Value |
 |---|---|
@@ -216,3 +216,69 @@ Every one of these is emitted at run time rather than recorded here, so it canno
 | the accessibility scan | target, surface count, exclusion list (including when empty), and that a scan is not conformance |
 | `docs/release/accessibility-at-matrix.md` | every supported platform, recorded **untested** |
 | `tests/unit/audit/platform-permission-modes.test.ts` | the platform it did not exercise |
+
+## FR-R3-118 — the envelope-reaching gates, swept by running them (2026-08-27)
+
+`FR-R3-118` reported one defect: `spec-traceability-governance.test.ts` read the
+planning envelope unguarded, raised `ENOENT` in a standalone execution-repository
+clone, and so made `npm run gate` unreachable — and a release uncuttable — from a
+clone that `README.md:22` and `repo/AGENTS.md` both promise can build and test. It
+recorded nine siblings as already correct, "one file out of ten".
+
+**The sweep was performed by cloning the repository into an envelope-free parent
+and running the suite there, not by searching for the guard.** That distinction
+produced the finding, because the register undercounted in two independent ways.
+
+### What was measured
+
+| Gate | Reaches parent as | Behaviour in an envelope-free clone, **before** | Now |
+|---|---|---|---|
+| `spec-traceability-governance.test.ts` | `ENVELOPE_ROOT` | **threw** `ENOENT` on `readdirSync(../specs)` and `readFileSync(../AGENTS.md)` | reported skip |
+| `eslint-baseline.test.ts` | `ENVELOPE_ROOT` | **6 false accusations**: `an owner that cannot be resolved is an unowned entry` | reported skip |
+| `source-loc-budget.test.ts` | `ENVELOPE_ROOT` | **1 false accusation**: `waiver needs ... a reference that resolves on disk` | resolvability defers; decision text and ISO date stay checked |
+| `actions-retirement-claims.test.ts` | `ENVELOPE` | **threw** `ENOENT` on `scandir ../docs`; its vacuity floor also demanded both trees | scans repo-only; the floor is per-tree |
+| `source-marker-targets.test.ts` | `ENVELOPE` | **8 false accusations** — markers that resolve only into the envelope reported as broken | reported skip |
+| `capability-text-contract-parity.test.ts` | `ENVELOPE_ROOT` | correct — `existsSync` branch, absence asserted explicitly | unchanged |
+| `threat-id-anchor-parity.test.ts` | `WORKSPACE_ROOT` | correct — `required: false` | unchanged |
+| `agents-claude-parity.test.ts` | `WORKSPACE_ROOT` | correct — `existsSync` + `skipIf` | unchanged |
+| `no-tryAutoDrain-doc-references.test.ts` | `WORKSPACE_ROOT` | correct — five `existsSync` guards | unchanged |
+| `a11y-policy-parity.test.ts` | `ENVELOPE_ROOT` | correct | unchanged |
+| `scripts/check-doc-links.mjs` | `WS_ROOT` | correct — `envelopePresent()`, the shape the others now share | unchanged |
+
+**Eleven gates, not ten. Four misbehaved, not one.**
+
+### The two things searching could not have found
+
+**1. The count was wrong because the search term was.** `source-marker-targets` and
+`actions-retirement-claims` name their root `ENVELOPE`, not `ENVELOPE_ROOT`. A
+search for the latter — which is how the register was built, and how this feature's
+own research restated it — misses both. `no-unguarded-parent-read.test.ts`
+therefore matches on **the resolved path**, not on the name of the constant: it
+resolves each root declaration against the file's real directory and flags only
+those landing strictly above `REPO_ROOT`. An earlier draft matched
+`resolve(X, '..')` textually and flagged `LINT_DIR = resolve(__dirname, '..')`,
+which is `tests/lint`. Textual depth is not depth.
+
+**2. A guarded read can still be wrong, in a worse shape than a throw.**
+`eslint-baseline` and `source-loc-budget` both guarded their reads. Neither crashed.
+Both then judged the missing envelope as a defect **in the repository** — seven
+confident, actionable, wrong accusations against provenance that is in fact
+correct. A crash announces itself as a rig problem and gets diagnosed as one; a
+false accusation announces itself as a repo problem and someone acts on it. Grep
+sees a guard and stops; only running the thing distinguishes *guarded* from
+*correct under absence*.
+
+### What now covers it
+
+`tests/lint/no-unguarded-parent-read.test.ts` fails when a file under `repo/tests/`
+declares a root above `REPO_ROOT`, reads through it, and contains no envelope
+check. It carries its own vacuity control (the parent-reaching set must not come
+back empty — an empty match is how the two `ENVELOPE`-named gates went unnoticed).
+
+**Observed red**: a probe file reading `../AGENTS.md` with no guard was added, the
+gate failed naming it, and the probe was removed and the gate passed.
+
+The rule it enforces is deliberately narrower than the lesson. "Do not judge an
+absence you cannot see" is the real rule and is not mechanically checkable; the
+gate checks the mechanical half, and this entry records the other half so it is
+written down somewhere even though nothing enforces it.

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { envelopePresent } from './envelope-presence';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const ENVELOPE_ROOT = resolve(REPO_ROOT, '..');
@@ -891,12 +892,20 @@ describe('large source file LOC budgets', () => {
     const waived = BUDGETS.filter(isWaived);
     expect(waived.length, 'the waiver path must stay exercised').toBeGreaterThan(0);
 
+    // FR-R3-118 — the reference resolves INTO THE PLANNING ENVELOPE. In a
+    // standalone execution-repository clone there is none, and checking it there
+    // does not report a missing envelope: it reports that a waiver this repository
+    // authored correctly `needs ... a reference that resolves on disk`. That is a
+    // false accusation, which is worse than a crash, because it is actionable and
+    // wrong. The quoted decision and the ISO date are properties of the entry
+    // itself and stay checked either way; only resolvability defers.
+    const envelopeHere = envelopePresent();
     const malformed = waived
       .filter(
         (entry) =>
           entry.waiver.decision.trim().length < 20 ||
           !/^\d{4}-\d{2}-\d{2}$/.test(entry.waiver.decidedOn) ||
-          !existsSync(resolve(ENVELOPE_ROOT, entry.waiver.reference))
+          (envelopeHere && !existsSync(resolve(ENVELOPE_ROOT, entry.waiver.reference)))
       )
       .map(
         (entry) =>

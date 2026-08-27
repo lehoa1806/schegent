@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
+import { envelopePresent } from './envelope-presence';
 import { describe, expect, it } from 'vitest';
 
 /**
@@ -66,17 +67,27 @@ function markdownFiles(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-/** Both trees: the falsehood reached the envelope and the implementation repo alike. */
+/**
+ * Both trees: the falsehood reached the envelope and the implementation repo alike.
+ *
+ * FR-R3-118 — but only when there IS an envelope. `markdownFiles(resolve(ENVELOPE,
+ * 'docs'))` raised ENOENT in a standalone execution-repository clone and took the
+ * whole file down with it. Scanning repo-only is the correct degraded answer: the
+ * claims this gate polices are still policed everywhere they can be read.
+ */
 function scanned(): readonly string[] {
+  const envelopeHere = envelopePresent(ENVELOPE);
   const files = [
     ...markdownFiles(resolve(REPO_ROOT, 'docs')),
-    ...markdownFiles(resolve(ENVELOPE, 'docs')),
+    ...(envelopeHere ? markdownFiles(resolve(ENVELOPE, 'docs')) : []),
     ...readdirSync(REPO_ROOT)
       .filter((f) => f.endsWith('.md'))
       .map((f) => resolve(REPO_ROOT, f)),
-    ...readdirSync(ENVELOPE)
-      .filter((f) => f.endsWith('.md'))
-      .map((f) => resolve(ENVELOPE, f))
+    ...(envelopeHere
+      ? readdirSync(ENVELOPE)
+          .filter((f) => f.endsWith('.md'))
+          .map((f) => resolve(ENVELOPE, f))
+      : [])
   ];
   return [...new Set(files)];
 }
@@ -112,13 +123,23 @@ function units(body: string): readonly string[] {
 describe('FR-R3-099 — the retired claims are historical, never present-tense', () => {
   const files = scanned();
 
-  it('scanned a non-empty set of documents in BOTH trees', () => {
+  it('scanned a non-empty set of documents in every tree that is present', () => {
     // Without this floor a directory rename would empty the scan and make the
     // assertion below pass over nothing -- which is the vacuity defect this
     // repository measures rather than assumes.
-    expect(files.length).toBeGreaterThan(80);
+    //
+    // FR-R3-118 -- the floor is per-tree, because "BOTH trees" is not a property of
+    // every checkout. A standalone execution-repository clone has one tree, and a
+    // vacuity control that demands two turns a correct degraded scan into a
+    // failure. The control still does its whole job: each tree that IS here must
+    // contribute, and a rename inside either one still empties its half and fails.
+    const envelopeHere = envelopePresent(ENVELOPE);
     expect(files.some((f) => f.startsWith(resolve(REPO_ROOT, 'docs')))).toBe(true);
-    expect(files.some((f) => f.startsWith(resolve(ENVELOPE, 'docs')))).toBe(true);
+    expect(files.length).toBeGreaterThan(60);
+    if (envelopeHere) {
+      expect(files.some((f) => f.startsWith(resolve(ENVELOPE, 'docs')))).toBe(true);
+      expect(files.length).toBeGreaterThan(80);
+    }
   });
 
   it('every occurrence of a retired claim sits in a dated or citing paragraph', () => {

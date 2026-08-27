@@ -32,6 +32,7 @@
 // `verify:all` (FR-019a).
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { extname, join, relative, resolve } from 'node:path';
+import { envelopePresent } from './envelope-presence';
 import { pathToFileURL } from 'node:url';
 import { ESLint } from 'eslint';
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -262,7 +263,17 @@ describe('Feature 112 eslint baseline shape', () => {
     }
   });
 
-  it.each(ENTRIES)('%s is owned by a decision that still exists', (ruleId, entry) => {
+  // FR-R3-118 — every owner reference resolves INTO THE PLANNING ENVELOPE, which a
+  // standalone execution-repository clone does not have. This read was already
+  // guarded, so it did not throw; it did something worse. It reported the missing
+  // envelope as `an owner that cannot be resolved is an unowned entry` — six
+  // confident accusations that the repository's own baseline was unowned, when the
+  // only true statement available was that the evidence was elsewhere. A gate that
+  // crashes rather than reports is the defect FR-R3-063 named; a gate that
+  // ACCUSES rather than reports is the same defect wearing a verdict.
+  it.skipIf(!envelopePresent()).each(ENTRIES)(
+    '%s is owned by a decision that still exists',
+    (ruleId, entry) => {
     const reference = resolve(ENVELOPE_ROOT, entry.owner.reference);
     let text: string;
     try {
@@ -279,7 +290,8 @@ describe('Feature 112 eslint baseline shape', () => {
       `${ruleId} quotes the decision "${entry.owner.decision}", which no longer appears ` +
         `in ${entry.owner.reference}. Requote it or record the decision that replaced it.`
     ).toBe(true);
-  });
+    }
+  );
 
   it.each(ENTRIES)('%s says how the count comes down', (ruleId, entry) => {
     const note = entry.reductionNote.trim();
