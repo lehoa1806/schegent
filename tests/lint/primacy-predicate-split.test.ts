@@ -28,7 +28,8 @@ import { PRIMACY_GATED_READ_HANDLERS } from '../../src/ui/sidebar/commands/prima
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const SRC_ROOT = resolve(REPO_ROOT, 'src');
 const COMMANDS_DIR = resolve(SRC_ROOT, 'ui', 'sidebar', 'commands');
-const EXTENSION_PATH = resolve(SRC_ROOT, 'extension.ts');
+// FR-R3-119 — the projection consumer moved with the watchdog.
+const EXTENSION_PATH = resolve(SRC_ROOT, 'activation', 'scheduled-work-wiring.ts');
 
 /**
  * The two modules that DEFINE an `isHeld` member and may reference it: the

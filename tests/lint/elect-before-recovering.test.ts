@@ -164,10 +164,17 @@ describe('FR-R3-070 — activation elects before it recovers', () => {
   });
 
   it('re-checks primacy at fire time inside the watchdog resume sweep', () => {
-    const primacy = EXTENSION_SOURCE.indexOf('await lock.hasPrimacy()');
-    const claim = EXTENSION_SOURCE.indexOf('controller.claimElapsedDelayedRetries()');
-    expect(primacy, `${EXTENSION} must re-check hasPrimacy() in the resume sweep`).toBeGreaterThanOrEqual(0);
-    expect(claim, `${EXTENSION} must still claim elapsed retries in the sweep`).toBeGreaterThanOrEqual(0);
+    // FR-R3-119 — the resume sweep moved with the watchdog into
+    // `src/activation/scheduled-work-wiring.ts`. The ORDER this asserts is the
+    // whole rule and is unchanged: the sweep fires long after activation, so it
+    // must re-read `hasPrimacy()` before claiming anything, rather than trusting
+    // the activation-era `lockResult`. Only the file holding the sweep differs.
+    const SWEEP = 'src/activation/scheduled-work-wiring.ts';
+    const sweepSource = read(SWEEP);
+    const primacy = sweepSource.indexOf('await lock.hasPrimacy()');
+    const claim = sweepSource.indexOf('controller.claimElapsedDelayedRetries()');
+    expect(primacy, `${SWEEP} must re-check hasPrimacy() in the resume sweep`).toBeGreaterThanOrEqual(0);
+    expect(claim, `${SWEEP} must still claim elapsed retries in the sweep`).toBeGreaterThanOrEqual(0);
     expect(
       primacy,
       'the sweep must check primacy before claiming elapsed retries — the sweep fires ' +
