@@ -28,6 +28,8 @@ predicted it: its author sampled the set and found every gate well motivated.
 
 
 
+
+
 ## Method, and what it does and does not establish
 
 **Assigned 2026-08-27 (`FR-R3-121` / FR-020).** `FR-R3-121` §5 records that its author *"sampled
@@ -75,13 +77,39 @@ table-driven gate with twelve rows, on the shape `no-inline-backend-ping-ipc.tes
 demonstrates, saving roughly 900 lines while keeping every rule.
 `no-inline-queue-item-template.test.ts` stays as it is.
 
-**Not taken, deliberately, and the reason is worth more than the saving.** Each of the twelve
-carries a distinct allowlist of files permitted to reference its command. An allowlist transcribed
-wrong during consolidation silently **widens** what may call a mutating IPC command — a
-security-relevant regression with no failing test to announce it. The upside is ~900 lines of
-duplication that cost nothing at runtime and catch everything they should today. A refactor whose
-upside is tidiness and whose downside is a silent authorisation widening gets scheduled
-deliberately, not folded into the end of another cycle.
+**Not taken, and the reason changed on inspection — 2026-08-27.**
+
+The consolidation was attempted, specifically to test whether the risk that blocked it — an
+allowlist transcribed wrong, silently widening what may call a mutating IPC command — could be
+removed mechanically. **It can.** The allowlists are separable from the duplicated scan helper, so
+the helper could be consolidated with no allowlist moving at all.
+
+**The attempt found a better reason not to.** The twelve do not share one implementation. Their
+`listMatchingFiles` helpers carry **three different failure semantics**, invisible until the bodies
+are normalised and compared:
+
+| Behaviour when the tree is partly unreadable (`status 2`) | Gates | Effect |
+|---|---|---|
+| **A** — return `[]` | `catalog-history`, `read-metrics` | discards matches the scan *did* find |
+| **B** — unhandled, so it throws | `phase-breakpoint`, `phase-control`, `phase-log`, `reorder`, `save-catalog`, `save-general-settings` | fails closed, loudly |
+| **C** — return the matches found | `run-launcher`, `workflow-run` | most complete, and the only variant that explains itself: *"grep still writes the matches it did find to stdout, and the positive control below fails loudly if the scan came back empty"* |
+
+Two more — `backend-ping` and `process-yaml` — have already migrated to the shared
+`filesReferencing` and carry no local helper; `backend-ping` does the whole job in **15 lines**.
+
+**So consolidation is not a tidying. It is choosing one failure semantics for twelve gates** — a
+behavioural decision about how an IPC-authority gate behaves when the tree cannot be fully read.
+`C` is the best-reasoned and is what to converge on, but adopting it changes what eight gates do
+under that condition. That is a change to make deliberately and verify, not to fold into a
+line-count reduction.
+
+**Nothing is currently unsafe.** All eight `A`/`B` gates carry a positive `toContain` vacuity
+control, so an empty or truncated scan fails the gate rather than passing it — verified for all
+eight. The divergence is a maintainability defect, not a live hole.
+
+**Recorded rather than acted on**, because the earlier entry here said *"one rule, twelve
+implementations"* — true about the rule, wrong about the implementations. A consolidation trusting
+it would have unified three failure behaviours into one without anyone deciding which.
 
 ## The census
 
