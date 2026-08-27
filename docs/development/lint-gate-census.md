@@ -19,8 +19,8 @@ predicted it: its author sampled the set and found every gate well motivated.
 
 | Figure | Value | Date | Method |
 |---|---|---|---|
-| Gate files | **157** | 2026-08-27 | `*.test.ts` under `tests/lint/` recursively |
-| Marked `unique` | 145 | 2026-08-27 | hand verdict |
+| Gate files | **158** | 2026-08-27 | `*.test.ts` under `tests/lint/` recursively |
+| Marked `unique` | 146 | 2026-08-27 | hand verdict |
 | Marked `partially redundant` | 12 | 2026-08-27 | hand verdict |
 | Marked `redundant` | 0 | 2026-08-27 | hand verdict |
 
@@ -248,6 +248,7 @@ changing one means updating that machinery in the same commit.
 | `phase-removal-confirmation.test.ts` | Definition removal confirmation boundary | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `phase-runner-loc-budget.test.ts` | feature 057 LoC budgets | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `platform-branch-has-record-row.test.ts` | every platform branch has a row in the observation record (FR-R3-115) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
+| `platform-decline-review-date.test.ts` | FR-R3-129 — the platform decline carries a review date, and the gate fails once it has passed | none | unique | no gate in this tree had a TIME-based failure before. `FR-R3-115`'s decline carried three reopening conditions and no date, so it would have become a permanent posture by nobody deciding. The date lives in the record, not in the gate — a gate holding its own copy would go stale with the document it guards, which is the failure it exists to prevent one level up |
 | `playwright-browser-preflight.test.ts` | visual preflight — a missing browser reports once (FR-R3-065) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `primacy-predicate-split.test.ts` | the advisory/authoritative primacy split (FR-R3-024) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `procedure-surface-registry.test.ts` | FR-R3-088 — registered procedure surfaces agree with their producer | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |

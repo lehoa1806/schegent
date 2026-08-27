@@ -86,6 +86,28 @@ evidence and shipping no platform are both honest; only the first-without-saying
 is not."* A kept branch with a declared `unverified` tier is the first, with the
 saying-so.
 
+### Review date and trigger
+
+<!-- decline-review-date: 2026-11-27 -->
+
+**This decline is reviewed on or before 2026-11-27**, and
+`repo/tests/lint/platform-decline-review-date.test.ts` fails on that day until someone re-reads it.
+`FR-R3-129` added both, for the reason the item states: *a dated decline is only honest while someone
+re-reads it.* Without a date and a check, the three conditions below expire quietly and a temporary
+decline becomes a permanent posture by nobody deciding.
+
+**What the check can and cannot see.** It reads the date above. It cannot notice that a Windows
+machine appeared, that a container runtime was installed, or that a contributor ran the suite — those
+are facts about the world, and no gate in a repository sees them. Those stay the operator's to watch,
+and they are the reason the date is a *ceiling* rather than a schedule: any one of them arriving
+reopens this before 2026-11-27.
+
+**When the date arrives**, one of two things happens and both are edits to this file: a route became
+available and the decline is **retired**, or nothing changed and the decline is **re-dated** with a
+sentence recording what was re-read. Deleting the marker to make the gate pass is the one response
+that is not available — it converts the decline into the permanent posture this date exists to
+prevent.
+
 ### What would change this
 
 Any one of these, and this heading is rewritten rather than amended:
@@ -142,6 +164,29 @@ regression against a promise, because no promise was made.
   three mount rows above are classification coverage, not field evidence. What has
   been established is that the probe reaches a verdict and cleans up after itself
   on every path; what has not is how a particular remote filesystem behaves.
+
+### Filesystem classes, each with a verdict (`FR-R3-129` T1493, 2026-08-27)
+
+The audit of 2026-08-27 listed seven filesystem classes among its unresolved unknowns. Four were
+already named above; **three were named nowhere**, and they are the three most likely to be true of a
+real operator's machine. `FR-R3-129` extends the **declaration** rather than the test matrix — the
+item's own instruction, and the right one: a matrix row that claims a class nobody can run is worse
+than a declaration that excludes it.
+
+| Class | Verdict | Basis |
+|---|---|---|
+| **NFS** | Inside the boundary, **classification-tested only** | The mount-capability probe reaches a verdict and cleans up; how NFS behaves is unobserved. |
+| **SMB** | Inside the boundary, **classification-tested only** | As NFS. |
+| **9p** | Inside the boundary, **classification-tested only** | As NFS. Relevant to WSL2, which is also `Unverified`. |
+| **virtiofs** | Inside the boundary, **classification-tested only** | As NFS. |
+| **Cloud-sync** (Dropbox, iCloud Drive, OneDrive, Google Drive) | **Explicitly outside the boundary** | Not a mount class the probe can classify. These filesystems reorder, delay and duplicate writes to satisfy a sync protocol, and two of this product's guarantees rest on write ordering an operator can reason about: the append-only audit chain (`FR-R3-112`) and the ownership lease's heartbeat (`FR-R3-070`). A synchroniser that resurrects a deleted lease file or reorders two audit appends breaks both, and no amount of probing at startup detects a behaviour that happens later. **Do not place a workspace inside a cloud-synced directory.** This is a declaration, not a refusal: nothing enforces it, and `FR-R3-129` did not add enforcement because a heuristic that guessed wrong would refuse legitimate workspaces. |
+| **Endpoint-security / anti-malware filtered** | **Inside the boundary, with a stated failure mode** | These filters hold or deny opens on files a scanner is inspecting. The safe-open layer (`FR-R3-053`) refuses rather than retries on an unexpected errno, so the observable outcome is a refused operation with a reason — not a corrupted one. That is the correct behaviour and it is also a real source of spurious refusals, which an operator seeing one should suspect. Unobserved here. |
+| **Quota-constrained** | **Inside the boundary, with a stated failure mode** | `ENOSPC`/`EDQUOT` on an evidence write is handled as a snapshot or sink failure, and the retention sweeps bound growth (`FR-R3-012`, `FR-R3-050`). What is **not** claimed is graceful degradation under a quota reached mid-Run: the Run fails at the write, which is visible, and no test exercises it. |
+
+**What this table is.** A declaration of where the support boundary sits, class by class, so that
+"unknown" is replaced by a verdict a reader can act on. **What it is not**: field evidence for any
+row. Four rows say classification-only, two say inside-with-a-failure-mode, and one says outside — and
+none of the seven has been observed on this host.
 - **No Windows checkout ran this suite.** Both Windows rows are unrun. They are
   written to run without edits — `tests/unit/platform/` is inside the configured
   test globs, and both fixtures skip with the platform named in the skip reason —

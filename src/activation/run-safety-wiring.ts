@@ -20,6 +20,11 @@ import { RunCheckpointRetentionService } from '../services/run-checkpoint-retent
 import { RunMutationLedger } from '../services/run-mutation-ledger';
 import type { SessionArtifactRetentionService } from '../services/session-retention/session-artifact-retention-service';
 import { TerminalTransitionCoordinator } from '../services/terminal-transition-coordinator';
+import { recordChildTerminal } from '../services/workflow-execution/connected-run-coordinator';
+import { makeChildRunFactsReader } from '../services/workflow-execution/child-run-facts-reader';
+import type { ConnectedWorkflowRun } from '../state/connected-workflow-run';
+import type { ConnectedRunWriteResult } from '../state/workspace-state';
+import type { WorkflowRun } from '../state/workflow-run';
 
 export async function createRunSafetyWiring(input: {
   context: vscode.ExtensionContext;
@@ -164,6 +169,91 @@ export async function createRunSafetyWiring(input: {
       if (run.status !== 'paused') {
         await input.sessionRetention.sweep(input.protectedSessionRunIds());
       }
+      await recordConnectedWorkflowTransition(input, run);
     }
   };
+}
+
+/**
+ * FR-R3-129 (T1491 wiring, FR-005) — append the routing decision for a connected
+ * Workflow whose node just finished.
+ *
+ * WHAT WAS MISSING. `recordChildTerminal` — *"evaluate and record one node's
+ * outgoing connections (FR-020, FR-030)"* — had **no production caller**. A whole
+ * -tree sweep found it in two test files and nowhere in `src/`. So a connected
+ * Workflow's node could reach a terminal state and no decision was appended, which
+ * left the append-only trail that exists to answer *"why was this branch not
+ * offered"* empty in every real Run.
+ *
+ * THIS IS NOT A SCHEDULER, and the distinction is exact. `recordChildTerminal`
+ * evaluates the outgoing connections and RECORDS what it evaluated;
+ * `continueConnectedRun` starts the next node and stays operator-invoked.
+ * `FR-R3-088` refused a workflow scheduler deliberately (FR-039/FR-040: the
+ * operator submits the continuation), and that refusal is untouched — recording
+ * what was evaluated is what makes the manual offer explicable rather than
+ * arbitrary. `tests/e2e/connected-workflow.test.ts` asserts that no node starts on
+ * its own.
+ *
+ * BEST-EFFORT, on the same reasoning `settleTerminalRun` gives for `queue.finish`
+ * and the history record: a Run that reached a terminal state has reached it, and a
+ * failure to append a routing decision must not throw out of the terminal handler
+ * and leave the rest of a Run's bookkeeping undone.
+ *
+ * A NO-OP FOR ALMOST EVERY RUN. Most Runs belong to no connected Workflow. The
+ * guard is a lookup over the connected-run records before anything is constructed,
+ * so an ordinary Run pays one map scan.
+ */
+async function recordConnectedWorkflowTransition(
+  input: {
+    readonly store: {
+      getConnectedRuns(): Readonly<Record<string, ConnectedWorkflowRun>>;
+      getRunMap(): Readonly<Record<string, WorkflowRun | undefined>>;
+      getHistory(): readonly object[];
+      compareAndSetConnectedRun(
+        next: ConnectedWorkflowRun,
+        expectedRevision: number
+      ): Promise<ConnectedRunWriteResult>;
+    };
+    readonly logger: SanitizedLogger;
+  },
+  run: import('../state/workflow-run').WorkflowRun
+): Promise<void> {
+  try {
+    const connected: readonly ConnectedWorkflowRun[] = Object.values(
+      input.store.getConnectedRuns()
+    );
+    if (connected.length === 0) return;
+    for (const workflowRun of connected) {
+      for (const record of Object.values(workflowRun.nodes)) {
+        const attemptIndex = record.attempts.findIndex(
+          (attempt: { readonly queueItemId: string }) => attempt.queueItemId === run.featureId
+        );
+        if (attemptIndex < 0) continue;
+        await recordChildTerminal(
+          {
+            connectedRuns: input.store,
+            readChildFacts: makeChildRunFactsReader({
+              runsByQueue: () => input.store.getRunMap(),
+              history: () => input.store.getHistory()
+            }),
+            logger: input.logger
+          },
+          {
+            run: workflowRun,
+            nodeId: record.nodeId,
+            attemptIndex,
+            decidedAt: Date.now()
+          }
+        );
+        return;
+      }
+    }
+  } catch (error) {
+    // See the docblock: best-effort by design.
+    input.logger.warn(
+      `run-safety-wiring: connected-workflow routing record failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+  }
 }
