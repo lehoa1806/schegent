@@ -6,7 +6,6 @@ import {
   disposeWorkspaceFolderPicker
 } from './state/workspace-folder-picker';
 import { resolveCliPath } from './config/cli-path-accessor';
-import { initCapabilityTrustResolver } from './state/capability-trust-resolver';
 import { PhaseRunner } from './controller/phase-runner';
 import { SchegentWorkflowController } from './controller/workflow-controller';
 import { SanitizedLogger } from './lib/logger';
@@ -14,7 +13,7 @@ import {
   createRuntimeEvidenceWiring,
   type RuntimeEvidenceWiring
 } from './activation/backend-wiring';
-import { createConnectedRunService, registerStage2Ui } from './activation/ui-wiring';
+import { registerStage2Ui } from './activation/ui-wiring';
 import { SchegentOutputChannel } from './ui/output-channel';
 import { runReset, type ResetHost, type ResetStageSupport } from './commands/reset';
 import {
@@ -22,11 +21,8 @@ import {
   createResetStageSupport,
 } from './commands/reset-wiring';
 import { StateProjector } from './ui/sidebar/state-projector';
-import { buildBuilderLifecycleByKind } from './ui/sidebar/builder-lifecycle';
 import {
-  readGeneralSettings,
   readFatalSignaturesSetting,
-  type GeneralSettingsConfig
 } from './config/general-settings';
 import { createAutoCompactOverrideAccessor } from './lib/auto-compact-override';
 import { createPhaseBreakpointAccessor } from './controller/breakpoint-accessor';
@@ -35,16 +31,14 @@ import { PlaceholderProjector } from './ui/sidebar/placeholder-projector';
 import { checkLiveness, createLivenessProbe } from './services/process-liveness';
 import { resumePersistedRuns } from './services/resume-decision';
 import { createRunSafetyWiring } from './activation/run-safety-wiring';
-import { isConfirmationsEnabled } from './state/confirmations-config';
 import { GuardedRunService } from './services/guarded-run-service';
-import { resolveRunOrigin } from './services/run-origin-resolver';
-import { createPhaseLogTailWiring } from './activation/phase-log-tail-wiring';
 import { createSidebarRouter } from './activation/sidebar-router-wiring';
 import { wireBackendExecution } from './activation/backend-execution-wiring';
 import { resolveWorkspaceSettings } from './activation/workspace-settings';
 import { openWorkspaceSession } from './activation/workspace-session';
 import { wireScheduledWork } from './activation/scheduled-work-wiring';
 import { wireEvidence } from './activation/evidence-wiring';
+import { wireLivePicture } from './activation/live-picture-wiring';
 
 interface Stage2Wiring {
   readonly disposables: readonly vscode.Disposable[];
@@ -557,146 +551,41 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     logger.info('scheduled-start re-arm skipped: window is not primary');
   }
 
-  const connectedRuns = createConnectedRunService(store, historyStore);
-  const projector = new StateProjector({
-    store,
-    audit: auditWriter,
+  // FR-R3-119 — extracted to `src/activation/live-picture-wiring.ts`: the state
+  // projector, the connected-run service it reads, and the phase-log tail.
+  //
+  // The first region taken from the coupled core rather than the edges, and the
+  // binding count says so — 22, where every earlier region ran nine to eighteen.
+  // Two of them are `backend`'s setters passed individually rather than the whole
+  // bundle: the projector is built in there, so the calls that bind it belong
+  // there too, and naming the two functions is narrower than handing over an
+  // object to reach them.
+  const { projector, connectedRuns, phaseLogTail, refreshCatalog } = wireLivePicture({
+    context,
+    workspaceRoot,
     ownerId,
     logger,
-    monitor,
-    history: historyStore,
-    getCatalog: () => catalogSession.catalog,
-    defaultRunnerKind: backendKind,
-    // Re-read scalar settings on each projection.
-    getGeneralSettings: () =>
-      readGeneralSettings(
-        vscode.workspace.getConfiguration('schegent', vscode.Uri.file(workspaceRoot)) as unknown as GeneralSettingsConfig
-      ),
-    getSessionArtifacts: () => sessionRetention.getUsage(),
-    getEvidenceHealth: () => evidenceHealth.getSnapshot(),
-    getPhaseCatalog: () => catalogSession.phaseCatalog,
-    // Feature 082 — authoritative Pipeline catalog for the Library and Builder.
-    getPipelineCatalog: () => catalogSession.pipelineCatalog,
-    // Feature 082 (FR-002) — the Workflows each Pipeline still resolves for,
-    // so the Library can show what a change would affect. Feature 100 (T513b)
-    // left this as the collector's only consumer: the Pipeline removal gate it
-    // used to share went with the whole-array save, and the deactivate blocker
-    // that replaced it reads active stored definitions instead (FR-025b).
-    getWorkflowPipelineRefs: collectAllWorkflowPipelineRefs,
-    // Feature 083 — authoritative Workflow catalog (the definition sense) for
-    // the Library and Builder. Re-resolved with the Pipeline catalog it was
-    // validated against, so a Pipeline catalog change refreshes both.
-    getWorkflowCatalog: () => catalogSession.workflowCatalog,
-    // Feature 101 (FR-005, FR-007) — the lifecycle facts behind those three
-    // resolutions. Rebuilt on every compose from the session's current snapshot,
-    // which is the same read the resolutions came from, so a row and its badge
-    // cannot describe two different states of the store.
-    getBuilderLifecycle: () => buildBuilderLifecycleByKind(catalogSession.definitions),
-    // Feature 063 — surface `schegent.ui.confirmations.enable` into the
-    // snapshot so the webview's `useConfirm` helper can short-circuit
-    // without an IPC round-trip. Re-read on every projection; the
-    // `onDidChangeConfiguration` listener below already kicks the
-    // projector for any `schegent.*` change.
-    getConfirmationsEnabled: () => isConfirmationsEnabled(),
-    getDebugLogTail: () => webviewLogSink.getEntries(),
-    getAvailableModels: () => backendCapabilities.getAvailableModels(),
-    getAvailableBackends: () => backendCapabilities.getAvailableBackends(),
-    getBackendPingState: () => backendPing.getState(),
-    getConnectedRuns: () => connectedRuns.listProjections(),
-    // Feature 103 (T031, FR-003) — both callers and both cadences: see `resolveRunOrigin`.
-    getRunOrigin: (taskId) => resolveRunOrigin(store.getConnectedRuns(), taskId)
-  });
-  backend.bindCapabilityProjector(projector);
-  projector.start();
-  // Background-only: activation is not blocked on installed CLI processes.
-  void backendCapabilities.scan();
-  disposables.push(evidenceHealth.subscribe((health) => {
-    statusBar.setEvidenceHealth(health.overall);
-    projector.kick();
-  }));
-  webviewLogSink.setOnAppend(() => projector.kick());
-  // Feature 033 — bind the deferred telemetry projector reference now that
-  // the projector exists. The sampler's `onSample` closure consults this
-  // pointer on every emission (and is a no-op until binding).
-  backend.bindTelemetryProjector(projector);
-
-  // Feature 059 (US1, T012) — wire the per-capability trust resolver. The
-  // resolver re-reads `workspace.isTrusted` + the three `schegent.trust.*`
-  // settings on every call (no cache); its only stateful surface is a
-  // pair of disposables that fire `projector.kick()` when the operator
-  // grants workspace trust or edits any of the three trust keys.
-  // Contract: specs/059-fine-grained-trust-scopes/contracts/
-  // capability-trust-resolver-contract.md.
-  initCapabilityTrustResolver(context, () => projector.kick());
-
-  /**
-   * Re-read the store, re-resolve, and tell the two consumers that cache it.
-   *
-   * Feature 099 (T493b, FR-054) — wired in as `refreshCatalog` on the save router;
-   * `CatalogSession.refresh` carries why a store write is what triggers it.
-   */
-  async function refreshCatalog(): Promise<void> {
-    await catalogSession.refresh();
-    controller.setCatalog(catalogSession.catalog);
-    projector.kick();
-  }
-
-  if (typeof vscode.workspace.onDidChangeConfiguration === 'function') {
-    disposables.push(
-      vscode.workspace.onDidChangeConfiguration((event) => {
-        if (event.affectsConfiguration('schegent.watchdog.pollIntervalMinutes')) {
-          const updatedConfig = vscode.workspace.getConfiguration(
-            'schegent',
-            vscode.Uri.file(workspaceRoot)
-          );
-          const updatedMinutes = updatedConfig.get<number>('watchdog.pollIntervalMinutes', 30);
-          watchdog.setPollInterval(updatedMinutes * 60 * 1000, 'config-change');
-        }
-        if (
-          event.affectsConfiguration('schegent.logging.sessionRetentionMaxAgeDays') ||
-          event.affectsConfiguration('schegent.logging.sessionRetentionMaxBytes')
-        ) {
-          void sessionRetention.sweep(protectedSessionRunIds()).then(() => projector.kick());
-        }
-        // Feature 099 (T493b, FR-054) — the three retired definition settings
-        // keys are gone, so the three arms that reloaded on
-        // them are gone with them; a definition change now arrives as a store
-        // write and re-resolves through `refreshCatalog` below. The two survivors
-        // are still configuration and still reload here.
-        if (
-          event.affectsConfiguration('schegent.defaultPipelineId') ||
-          event.affectsConfiguration('schegent.models') // 096 — reload models
-        ) {
-          void refreshCatalog();
-        }
-        if (
-          event.affectsConfiguration('schegent.cli.path') ||
-          event.affectsConfiguration('schegent.codex.path') ||
-          event.affectsConfiguration('schegent.agy.path') ||
-          event.affectsConfiguration('schegent.backend.probeTimeoutSeconds')
-        ) {
-          void backendCapabilities.scan();
-        }
-        // Feature 011 — any schegent.* change triggers a re-projection
-        // so the Settings surface reflects the new value within FR-017.
-        if (event.affectsConfiguration('schegent')) {
-          projector.kick();
-        }
-      })
-    );
-  }
-
-  // Feature 020 — phase-log tail wiring (T049). Registry, task-leave
-  // subscription and snapshot-validating adapter all live in the wiring module;
-  // the reasoning for each is recorded there.
-  const phaseLogTail = createPhaseLogTailWiring({
-    workspaceRoot,
-    projector,
+    store,
     queue,
+    controller,
+    historyStore,
     auditWriter,
-    logger
+    statusBar,
+    monitor,
+    watchdog,
+    catalogSession,
+    evidenceHealth,
+    sessionRetention,
+    webviewLogSink,
+    disposables,
+    backendKind,
+    backendCapabilities,
+    backendPing,
+    protectedSessionRunIds,
+    collectAllWorkflowPipelineRefs,
+    bindCapabilityProjector: backend.bindCapabilityProjector,
+    bindTelemetryProjector: backend.bindTelemetryProjector
   });
-  disposables.push(phaseLogTail);
 
   // Feature 073 — constructed once per activation so its lifetime matches
   // "session" per contracts/metrics-view-opened-event.md.

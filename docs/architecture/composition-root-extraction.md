@@ -341,3 +341,47 @@ Remaining: 630 of a 400-line target.
 (91, 18). Every region taken so far had a boundary of nine to eighteen; the remainder starts at
 seventeen and rises. That is the expected shape — a composition root drains from the edges inward,
 and what stays is what genuinely composes.
+
+
+## Seventh decrement — 2026-08-27
+
+**`wireStage2` 630 → 525; `src/extension.ts` 846 → 735.**
+`src/activation/live-picture-wiring.ts` took 140 lines: the state projector, the connected-run
+service it reads, and the phase-log tail that feeds it.
+
+**The first region taken from the coupled core**, and the binding count says so: **22 in**, where
+every earlier region ran nine to eighteen.
+
+### Two of the twenty-two are narrowings, not dependencies
+
+`backend-execution-wiring.ts` returns `bindCapabilityProjector` and `bindTelemetryProjector` so its
+closures can reach a projector built later — and the projector is built *here*, so the calls that
+bind it belong here too. Passing the whole `backend` bundle to reach two setters would have made
+this module depend on everything that bundle holds; the two functions are passed individually
+instead.
+
+That is the third time an extraction has *reduced* a dependency by forcing it to be named
+(`context`/`output`/`config` in the first, `lockResult` in the fifth, these two here). The parameter
+list is the honest measure of coupling, and writing it down keeps shrinking it.
+
+### `refreshCatalog` is returned, not duplicated
+
+It moved with the region because the catalog-settings save path here calls it directly — but the
+sidebar router calls it too. It is returned rather than re-created, because two functions that
+re-resolve the catalog differently is precisely the drift this codebase keeps closing.
+
+### No gate needed re-siting
+
+The first decrement in the series where `npm run gate` passed on the first run. Six of the seven
+required a gate to follow the construction — this one moved nothing any gate was pinning, which is
+a small piece of evidence that the remaining core is less entangled with the enforcement layer than
+the edges were.
+
+### Trajectory
+
+**1,221 → 1,010 → 894 → 871 → 823 → 695 → 630 → 525**, seven decrements, no behavioural change at
+any step. `src/extension.ts` 1,489 → 735 — **it has lost 754 lines, just over half the file**.
+`src/activation/` 11 modules → 18.
+
+Remaining: 525 of a 400-line target. What is left is the controller construction, the phase-runner
+accessors, `uiWiring`, and the dispose/reset tail — the parts that genuinely compose.
