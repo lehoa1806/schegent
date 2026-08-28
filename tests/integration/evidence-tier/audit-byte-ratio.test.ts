@@ -56,8 +56,22 @@ import {
   type CliTransportRecord,
   type CliTransportRecorder
 } from '../../../src/monitor/cli-transport-sink';
+import { expectNoDescriptorWarnings } from '../../setup/descriptor-warnings';
 import { clearMetricsCache, readMetrics } from '../../../src/metrics/metrics-service';
 import type { TaskRecord } from '../../../src/contracts/sidebar-ipc';
+
+/**
+ * FR-R3-137 (T1531c, FR-012) — the sinks this fixture builds, disposed before the
+ * `afterAll` below removes the trees they write into. This arm writes with the
+ * real `fs`, so it is the one file outside the sink's own suite that genuinely
+ * holds an append descriptor; it emitted no warning only because the fixture runs
+ * once and the process exits soon after.
+ */
+const live: CliTransportSink[] = [];
+function track<T extends CliTransportSink>(sink: T): T {
+  live.push(sink);
+  return sink;
+}
 
 const RUN_COUNT = 10;
 const PHASES = ['speckit-specify', 'speckit-plan', 'speckit-implement'] as const;
@@ -188,7 +202,7 @@ async function driveFixture(mode: Mode): Promise<ArmResult> {
     mode === 'legacy-per-line-writer' ? new LegacyPerLineAuditWriter(audit) : null;
   const sink =
     mode === 'transport-sink'
-      ? new CliTransportSink({
+      ? track(new CliTransportSink({
           settings: {
             read: () => ({
               root,
@@ -199,7 +213,7 @@ async function driveFixture(mode: Mode): Promise<ArmResult> {
           },
           sanitize: (line) => logger.sanitize(line),
           logger
-        })
+        }))
       : null;
 
   // One clock for both arms. The monitor's payloads carry durations and activity
@@ -409,11 +423,15 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
+  // Descriptors first, then the trees: a handle outliving its file is how a
+  // warning gets attributed to whichever suite runs next.
+  await Promise.all(live.splice(0).map((sink) => sink.flushAndDispose()));
   for (const arm of [after, before]) {
     if (!arm) continue;
     clearMetricsCache(arm.root);
     await rm(arm.root, { recursive: true, force: true });
   }
+  expectNoDescriptorWarnings();
 });
 
 describe('FR-R3-007 — audit bytes per run', () => {

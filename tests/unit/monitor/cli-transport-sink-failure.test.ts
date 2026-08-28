@@ -26,7 +26,7 @@
 // drops the record without marking the path seeded), and a single always-throws
 // double would collapse them into one assertion.
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as realFs from 'node:fs/promises';
@@ -38,6 +38,31 @@ import {
   type CliTransportRecord,
   type CliTransportSettings
 } from '../../../src/monitor/cli-transport-sink';
+import { expectNoDescriptorWarnings } from '../../setup/descriptor-warnings';
+
+/**
+ * FR-R3-137 (T1531c, FR-012) — every sink this file builds is disposed, and the
+ * run is asserted to have produced no descriptor warning.
+ *
+ * This file emitted zero warnings before the item, because its sinks inject
+ * `appendFile` and so never reach `appendHandleFor`. That is an accident of the
+ * doubles, not a property of the code: FR-012 is a property of every construction
+ * site, and a file that leaks nothing only because of its injected ports is one
+ * refactor away from leaking.
+ */
+const live: CliTransportSink[] = [];
+function track<T extends CliTransportSink>(sink: T): T {
+  live.push(sink);
+  return sink;
+}
+afterEach(async () => {
+  // Descriptors before any temp tree the case removes: a handle outliving its
+  // file is how the warning gets attributed to the wrong test.
+  await Promise.all(live.splice(0).map((sink) => sink.flushAndDispose()));
+});
+afterAll(() => {
+  expectNoDescriptorWarnings();
+});
 
 const ROOT = path.join(os.tmpdir(), 'schegent-transport-failure-root');
 const TARGET = path.join(ROOT, CLI_TRANSPORT_DIRECTORY, CLI_TRANSPORT_FILE_NAME);
@@ -88,7 +113,7 @@ function harness(
   const created: string[] = [];
   const mkdirs: string[] = [];
   const renames: Array<[string, string]> = [];
-  const sink = new CliTransportSink({
+  const sink = track(new CliTransportSink({
     settings: {
       read: (): CliTransportSettings => ({
         root: ROOT,
@@ -129,7 +154,7 @@ function harness(
     unlink: injections.unlink ?? (async () => {}),
     stat: injections.stat ?? (async () => ({ size: 0 })),
     readdir: async () => []
-  });
+  }));
   return { sink, warnings, appended, created, mkdirs, renames };
 }
 
@@ -360,7 +385,7 @@ describe('CliTransportSink — a failed write does not fail the phase', () => {
   });
 
   it('reports nothing and writes nothing when there is no destination', async () => {
-    const sink = new CliTransportSink({
+    const sink = track(new CliTransportSink({
       settings: { read: () => null },
       sanitize: (line) => line,
       logger: {
@@ -372,7 +397,7 @@ describe('CliTransportSink — a failed write does not fail the phase', () => {
         throw new Error('must not be reached');
       },
       realpath: async (target: string) => target
-    });
+    }));
 
     expect(() => sink.record(LINE)).not.toThrow();
     await sink.flushPendingWrites();
@@ -402,13 +427,13 @@ describe('CliTransportSink — real filesystem, real permissions', () => {
       await realFs.chmod(target, 0o444);
 
       const warnings: string[] = [];
-      const sink = new CliTransportSink({
+      const sink = track(new CliTransportSink({
         settings: {
           read: () => ({ root, path: target, maxBytes: 1024, maxGenerations: 2 })
         },
         sanitize: (line) => line,
         logger: { warn: (message: string) => warnings.push(message) }
-      });
+      }));
 
       for (let index = 0; index < 5; index += 1) sink.record(LINE);
       await sink.flushPendingWrites();

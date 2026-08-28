@@ -24,7 +24,7 @@
 // used to evict every workflow event from that tail before an operator could
 // read one. Those tests measure the improvement instead of asserting stasis.
 
-import { describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { AuditEntry } from '../../../src/audit/audit-entry';
@@ -33,6 +33,7 @@ import { SanitizedLogger } from '../../../src/lib/logger';
 import { WebviewLogSink, type DebugLogEntry } from '../../../src/lib/webview-log-sink';
 import { ClaudeCliMonitor } from '../../../src/monitor/claude-cli-monitor';
 import { CliTransportSink, type CliTransportRecorder } from '../../../src/monitor/cli-transport-sink';
+import { expectNoDescriptorWarnings } from '../../setup/descriptor-warnings';
 import type { QueueState } from '../../../src/queue/feature-request';
 import { AuditTailState } from '../../../src/ui/sidebar/audit-tail-state';
 import { ProjectorBookkeepingRegistry } from '../../../src/ui/sidebar/projector-bookkeeping-registry';
@@ -171,8 +172,27 @@ function workflowEntry(id: string, eventType: AuditEntry['eventType']): AuditEnt
 }
 
 /** A sink whose every append fails, so the failure path lands in the log tail. */
+/**
+ * FR-R3-137 (T1531c, FR-012) — the sink this file builds is disposed, and the run
+ * is asserted to have produced no descriptor warning. It emitted none before the
+ * item because `failingSink` injects an `appendFile` that always rejects and so
+ * never reaches `appendHandleFor` — an accident of the double, not a property of
+ * the code.
+ */
+const live: CliTransportSink[] = [];
+function track<T extends CliTransportSink>(sink: T): T {
+  live.push(sink);
+  return sink;
+}
+afterEach(async () => {
+  await Promise.all(live.splice(0).map((sink) => sink.flushAndDispose()));
+});
+afterAll(() => {
+  expectNoDescriptorWarnings();
+});
+
 function failingSink(logger: SanitizedLogger, target: string, root: string): CliTransportSink {
-  return new CliTransportSink({
+  return track(new CliTransportSink({
     settings: { read: () => ({ root, path: target, maxBytes: 1024 * 1024, maxGenerations: 3 }) },
     sanitize: (line) => logger.sanitize(line),
     logger,
@@ -183,7 +203,7 @@ function failingSink(logger: SanitizedLogger, target: string, root: string): Cli
     mkdir: async () => undefined,
     stat: async () => ({ size: 0 }),
     realpath: async (candidate: string) => candidate
-  });
+  }));
 }
 
 describe('FR-R3-007 — the monitor projection is unchanged', () => {

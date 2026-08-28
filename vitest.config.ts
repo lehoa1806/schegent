@@ -42,6 +42,19 @@ export default defineConfig({
       'tests/integration/index.ts'
     ],
     environment: 'node',
+    // FR-R3-137 (T1531b) — the descriptor-leak detector.
+    //
+    // Registers one `process.on('warning')` listener per worker and exposes an
+    // OPT-IN `expectNoDescriptorWarnings()` a file calls in its own `afterAll`.
+    // Opt-in rather than global on purpose: a listener that failed the run on any
+    // descriptor warning would fail on a leak an unrelated suite has been
+    // emitting all along, which is a different item's defect arriving as this
+    // one's red tree. The module's header carries the rest.
+    //
+    // Not added to `vitest.perf.config.ts`: that config is FR-R3-042's, and the
+    // perf suite asserts `openDescriptorCount` returning to baseline, which is a
+    // stronger claim than the absence of a GC warning.
+    setupFiles: ['./tests/setup/descriptor-warnings.ts'],
     // Vitest's default is 5s for both, and 5s was never a number anyone chose
     // for this suite — it is what you get by not setting it.
     //

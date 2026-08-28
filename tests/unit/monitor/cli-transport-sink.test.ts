@@ -21,10 +21,12 @@
 // including nothing, so the redaction assertion is only worth making against the
 // set the host actually uses.
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
+
+import { expectNoDescriptorWarnings } from '../../setup/descriptor-warnings';
 
 import {
   CliTransportSink,
@@ -73,16 +75,33 @@ function countingAccessor(
   return accessor;
 }
 
+/**
+ * FR-R3-137 (T1531c, FR-012) — every sink this file constructs is disposed.
+ *
+ * Registered at construction rather than disposed per test, because this file
+ * has 26 construction sites across three constructors and the property is "every
+ * one", not "the ones somebody remembered". Before this, the run emitted 14
+ * `Closing file descriptor N on garbage collection` lines and one `DEP0137`: GC
+ * was the sink's finalizer, in the suite that was supposed to be proving the
+ * sink's behaviour.
+ */
+const live: CliTransportSink[] = [];
+
+function track<T extends CliTransportSink>(sink: T): T {
+  live.push(sink);
+  return sink;
+}
+
 function makeSink(
   settings: CliTransportSettingsAccessor,
   sanitize: (line: string) => string = (line) => line
 ): CliTransportSink {
-  return new CliTransportSink({
+  return track(new CliTransportSink({
     settings,
     sanitize,
     logger,
     now: () => new Date('2026-05-10T12:00:00.000Z')
-  });
+  }));
 }
 
 async function listTransportFiles(): Promise<readonly string[]> {
@@ -104,7 +123,17 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  // Descriptors before the tree: a handle held open across the `rm` is the
+  // shape that leaves an unlinked inode alive on POSIX and fails the delete
+  // outright on Windows.
+  for (const sink of live.splice(0)) {
+    await sink.flushAndDispose();
+  }
   await fs.rm(workspaceRoot, { recursive: true, force: true });
+});
+
+afterAll(() => {
+  expectNoDescriptorWarnings();
 });
 
 describe('CliTransportSink — the record it writes', () => {
@@ -233,13 +262,13 @@ describe('CliTransportSink — sanitization', () => {
 
   it('suppresses a key that arrives one line at a time', async () => {
     const redactor = new KeyBlockLineRedactor((input) => realLogger.sanitize(input));
-    const sink = new CliTransportSink({
+    const sink = track(new CliTransportSink({
       settings: countingAccessor(),
       sanitize: (line) => realLogger.sanitize(line),
       sanitizeStreamLine: (line) => redactor.sanitizeLine(line),
       logger,
       now: () => new Date('2026-05-10T12:00:00.000Z')
-    });
+    }));
     for (const line of SPLIT_KEY) {
       sink.record({ runId: 'run-1', phase: 'speckit-implement', stream: 'stdout', line });
     }
@@ -256,10 +285,10 @@ describe('CliTransportSink — sanitization', () => {
   });
 
   it('wires the stateful sanitizer in the production factory', async () => {
-    const sink = createCliTransportSink(() => workspaceRoot, {
+    const sink = track(createCliTransportSink(() => workspaceRoot, {
       sanitize: (line) => realLogger.sanitize(line),
       warn: (message: string) => warnings.push(message)
-    });
+    }));
     for (const line of SPLIT_KEY) {
       sink.record({ runId: 'run-1', phase: 'speckit-implement', stream: 'stdout', line });
     }
@@ -285,10 +314,10 @@ describe('CliTransportSink — sanitization', () => {
   // are private to the factory, so these two cases drive the production factory
   // and read the outcome off the log.
   it('evicts a closed entry rather than a live open block (FR-015)', async () => {
-    const sink = createCliTransportSink(() => workspaceRoot, {
+    const sink = track(createCliTransportSink(() => workspaceRoot, {
       sanitize: (line) => realLogger.sanitize(line),
       warn: (message: string) => warnings.push(message)
-    });
+    }));
     // The long-lived Run: oldest by insertion order, and mid-block. Dropping this
     // one is the single case where discarding state releases a tail, which is why
     // eviction has to prefer a closed entry over the oldest-inserted one.
@@ -326,10 +355,10 @@ describe('CliTransportSink — sanitization', () => {
   });
 
   it('still bounds the map when every tracked entry is open (SC-004)', async () => {
-    const sink = createCliTransportSink(() => workspaceRoot, {
+    const sink = track(createCliTransportSink(() => workspaceRoot, {
       sanitize: (line) => realLogger.sanitize(line),
       warn: (message: string) => warnings.push(message)
-    });
+    }));
     // The pathological shape: every tracked (run, stream) pair mid-block, so there
     // is no closed entry to prefer. The cap still holds and the oldest is dropped
     // — a recorded trade, because an unbounded map is the worse failure and a cap
@@ -617,7 +646,7 @@ describe('CliTransportSink — containment', () => {
     const escapePath = path.join(workspaceRoot, '..', 'escaped.log');
     const makeCountingSink = (): { sink: CliTransportSink; calls: () => number } => {
       let realpathCalls = 0;
-      const sink = new CliTransportSink({
+      const sink = track(new CliTransportSink({
         settings: {
           read: () => ({
             root: workspaceRoot,
@@ -632,7 +661,7 @@ describe('CliTransportSink — containment', () => {
           realpathCalls += 1;
           return fs.realpath(target);
         }
-      });
+      }));
       return { sink, calls: () => realpathCalls };
     };
 
@@ -662,13 +691,13 @@ describe('CliTransportSink — redaction state is per run, phase and stream (FR-
     // span phases (each is a separate process whose stdout ends at exit), so the
     // boundary reset abandons state that is necessarily unterminated.
     const lines: string[] = [];
-    const sink = createCliTransportSink(
+    const sink = track(createCliTransportSink(
       () => null,
       {
         sanitize: (s: string) => s,
         warn: () => undefined
       } as unknown as Parameters<typeof createCliTransportSink>[1]
-    );
+    ));
     const deps = sink as unknown as {
       sanitizeStreamLine?: (l: string, r: string, p: string, s: string) => string;
     };
@@ -698,7 +727,7 @@ describe('CliTransportSink — the pending-byte high-water mark (FR-R3-052)', ()
       release = resolve;
     });
     const accessor = countingAccessor();
-    const sink = new CliTransportSink({
+    const sink = track(new CliTransportSink({
       settings: accessor,
       sanitize: (line) => line,
       logger,
@@ -709,7 +738,7 @@ describe('CliTransportSink — the pending-byte high-water mark (FR-R3-052)', ()
       },
       mkdir: async () => undefined,
       stat: async () => ({ size: 0 })
-    });
+    }));
 
     // 4 MiB of lines, well past the 16 MiB bound when repeated.
     const line = 'x'.repeat(64 * 1024);
@@ -731,7 +760,7 @@ describe('CliTransportSink — the pending-byte high-water mark (FR-R3-052)', ()
   it('drops nothing when the writer keeps up', async () => {
     // The bound must not cost a healthy sink anything.
     const accessor = countingAccessor();
-    const sink = new CliTransportSink({
+    const sink = track(new CliTransportSink({
       settings: accessor,
       sanitize: (line) => line,
       logger,
@@ -739,11 +768,275 @@ describe('CliTransportSink — the pending-byte high-water mark (FR-R3-052)', ()
       appendFile: async () => undefined,
       mkdir: async () => undefined,
       stat: async () => ({ size: 0 })
-    });
+    }));
     for (let i = 0; i < 200; i += 1) {
       sink.record({ runId: 'r', phase: 'implement', stream: 'stdout', line: `line ${i}` } as never);
       await sink.flushPendingWrites();
     }
     expect(sink.droppedForBackpressure.lines).toBe(0);
   }, 30_000);
+});
+
+// -- FR-R3-137 (T1529a, FR-001 – FR-006) ------------------------------------
+//
+// The lifecycle. Before this feature the sink held one append descriptor per
+// destination in a map whose own header said "NOT dropped on disposal, because
+// there is no disposal" — so the only thing that ever closed one was the
+// garbage collector, and Node said so on stderr 14 times per run of this file.
+//
+// These cases run against the REAL append path deliberately. An injected
+// `appendFile` port short-circuits `appendHandleFor`, so a suite that injects
+// one never opens a descriptor and cannot witness a descriptor being closed;
+// that is exactly why the three sibling transport files emitted zero warnings
+// while this one emitted fifteen lines of them.
+describe('CliTransportSink — the disposal it never had (FR-R3-137)', () => {
+  it('resolves on a sink that never recorded, holding nothing (FR-001)', async () => {
+    const sink = makeSink(countingAccessor());
+
+    await expect(sink.flushAndDispose()).resolves.toBeUndefined();
+    expect(sink.openDescriptorCount).toBe(0);
+  });
+
+  it('closes the descriptor the append path opened (FR-001, FR-006)', async () => {
+    const sink = makeSink(countingAccessor());
+    sink.record({ runId: 'run-1', phase: 'implement', stream: 'stdout', line: 'hello' });
+    await sink.flushPendingWrites();
+    // The precondition is the point: without a real open handle the assertion
+    // below passes vacuously, which is the FR-R3-114 failure mode.
+    expect(sink.openDescriptorCount, 'the fixture must actually hold a descriptor').toBe(1);
+
+    await sink.flushAndDispose();
+
+    expect(sink.openDescriptorCount).toBe(0);
+    expect(sink.inFlight).toEqual({ chains: 0, writes: 0, bytes: 0 });
+  });
+
+  it('is idempotent, and the second call is the same settlement (FR-002)', async () => {
+    const sink = makeSink(countingAccessor());
+    sink.record({ runId: 'run-1', phase: 'implement', stream: 'stdout', line: 'hello' });
+    await sink.flushPendingWrites();
+
+    const first = sink.flushAndDispose();
+    const second = sink.flushAndDispose();
+    // One promise, not two that happen to agree: a second drain could close a
+    // handle a third call had just re-opened.
+    expect(second).toBe(first);
+    await first;
+    await expect(sink.flushAndDispose()).resolves.toBeUndefined();
+
+    expect(sink.openDescriptorCount).toBe(0);
+    expect(warnings, 'disposal is not a failure and warns nothing').toEqual([]);
+  });
+
+  it('collapses concurrent callers into one drain (FR-002)', async () => {
+    const sink = makeSink(countingAccessor());
+    sink.record({ runId: 'run-1', phase: 'implement', stream: 'stdout', line: 'hello' });
+
+    const [a, b, c] = [sink.flushAndDispose(), sink.flushAndDispose(), sink.flushAndDispose()];
+    expect(b).toBe(a);
+    expect(c).toBe(a);
+    await Promise.all([a, b, c]);
+
+    expect(sink.openDescriptorCount).toBe(0);
+  });
+
+  it('never rejects the caller when a write fails mid-drain (FR-005)', async () => {
+    // The absorbed-failure half. An injected port is the only way to make a
+    // write fail on demand — the close half is `closeAppendHandle`'s own
+    // `.catch(() => undefined)`, exercised by every case above it.
+    const sink = track(new CliTransportSink({
+      settings: countingAccessor(),
+      sanitize: (line) => line,
+      logger,
+      now: () => new Date('2026-05-10T12:00:00.000Z'),
+      appendFile: async () => {
+        throw Object.assign(new Error('device is on fire'), { code: 'EIO' });
+      },
+      mkdir: async () => undefined,
+      stat: async () => ({ size: 0 })
+    }));
+    sink.record({ runId: 'run-1', phase: 'implement', stream: 'stdout', line: 'hello' });
+
+    await expect(sink.flushAndDispose()).resolves.toBeUndefined();
+
+    expect(sink.openDescriptorCount).toBe(0);
+    expect(sink.inFlight.writes).toBe(0);
+    expect(warnings.filter((w) => w.includes('EIO')).length).toBe(1);
+  });
+
+  it('counts and warns a record that arrives after disposal began (FR-003)', async () => {
+    const sink = makeSink(countingAccessor());
+    sink.record({ runId: 'run-1', phase: 'implement', stream: 'stdout', line: 'first' });
+    await sink.flushPendingWrites();
+    const before = sink.droppedForBackpressure;
+
+    // Not awaited: the `closed` flag must be set synchronously, before the
+    // first await inside the disposal, or a line racing shutdown is accepted
+    // into a chain nothing will drain.
+    const closing = sink.flushAndDispose();
+    sink.record({ runId: 'run-1', phase: 'implement', stream: 'stdout', line: 'too late' });
+    sink.record({ runId: 'run-1', phase: 'implement', stream: 'stdout', line: 'also late' });
+    await closing;
+
+    const dropped = sink.droppedForBackpressure;
+    expect(dropped.lines).toBe(before.lines + 2);
+    expect(dropped.bytes).toBeGreaterThan(before.bytes);
+    expect(
+      warnings.filter((w) => w.includes('sink-closed')).length,
+      'once per path, not once per line'
+    ).toBe(1);
+    expect(sink.openDescriptorCount).toBe(0);
+  });
+
+  it('reaches the redactor before it refuses a post-disposal line (FR-003, FR-R3-048)', async () => {
+    // The guard's POSITION, not its existence. FR-R3-048 made the injected
+    // sanitizer stateful, so a line withheld from `format()` is a line the key
+    // -block state machine never sees — and a BEGIN it misses leaves the
+    // redactor open over every body line that follows.
+    const seen: string[] = [];
+    const sink = makeSink(countingAccessor(), (line) => {
+      seen.push(line);
+      return line;
+    });
+
+    const closing = sink.flushAndDispose();
+    sink.record({ runId: 'run-1', phase: 'implement', stream: 'stdout', line: 'after close' });
+    await closing;
+
+    expect(seen, 'the dropped line still reached the sanitizer').toContain('after close');
+  });
+
+  it('closes anyway when the grace expires, counting the abandoned bytes once (FR-004, FR-005)', async () => {
+    // One real descriptor open on path A, one write that will never settle on
+    // path B. The hang is driven through `stat`, which `seedBytes` calls once
+    // per path — the only seam that can stall a write without also preventing
+    // the descriptor this case needs held.
+    let target = livePath();
+    const hung = new Set<string>();
+    const sink = track(new CliTransportSink({
+      settings: {
+        read: (): CliTransportSettings => ({
+          root: workspaceRoot,
+          path: target,
+          maxBytes: CLI_TRANSPORT_MAX_BYTES,
+          maxGenerations: CLI_TRANSPORT_MAX_GENERATIONS
+        })
+      },
+      sanitize: (line) => line,
+      logger,
+      now: () => new Date('2026-05-10T12:00:00.000Z'),
+      drainGraceMs: 25,
+      stat: async (candidate: string) => {
+        if (hung.has(candidate)) return new Promise<{ size: number }>(() => undefined);
+        return { size: 0 };
+      }
+    }));
+
+    sink.record({ runId: 'run-1', phase: 'implement', stream: 'stdout', line: 'landed' });
+    await sink.flushPendingWrites();
+    expect(sink.openDescriptorCount).toBe(1);
+
+    const second = path.join(workspaceRoot, CLI_TRANSPORT_DIRECTORY, 'other.log');
+    hung.add(second);
+    target = second;
+    const stranded = 'never written';
+    sink.record({ runId: 'run-1', phase: 'implement', stream: 'stdout', line: stranded });
+    expect(sink.inFlight.writes, 'the fixture must leave a write in flight').toBe(1);
+    const abandoned = sink.inFlight.bytes;
+    expect(abandoned).toBeGreaterThan(0);
+
+    const before = sink.droppedForBackpressure;
+    await sink.flushAndDispose();
+
+    // The descriptor is gone even though the drain never finished: an unbounded
+    // wait for a stalled disk is a host that will not shut down.
+    expect(sink.openDescriptorCount).toBe(0);
+    const dropped = sink.droppedForBackpressure;
+    expect(dropped.lines).toBe(before.lines + 1);
+    expect(dropped.bytes).toBe(before.bytes + abandoned);
+    expect(warnings.filter((w) => w.includes('drain-incomplete')).length).toBe(1);
+  });
+
+  it('does not double-count the abandoned bytes on a second call (FR-002, FR-004)', async () => {
+    let target = livePath();
+    const hung = new Set<string>();
+    const sink = track(new CliTransportSink({
+      settings: {
+        read: (): CliTransportSettings => ({
+          root: workspaceRoot,
+          path: target,
+          maxBytes: CLI_TRANSPORT_MAX_BYTES,
+          maxGenerations: CLI_TRANSPORT_MAX_GENERATIONS
+        })
+      },
+      sanitize: (line) => line,
+      logger,
+      now: () => new Date('2026-05-10T12:00:00.000Z'),
+      drainGraceMs: 25,
+      stat: async (candidate: string) => {
+        if (hung.has(candidate)) return new Promise<{ size: number }>(() => undefined);
+        return { size: 0 };
+      }
+    }));
+
+    const second = path.join(workspaceRoot, CLI_TRANSPORT_DIRECTORY, 'other.log');
+    hung.add(second);
+    target = second;
+    sink.record({ runId: 'run-1', phase: 'implement', stream: 'stdout', line: 'stranded' });
+
+    await sink.flushAndDispose();
+    const afterFirst = sink.droppedForBackpressure;
+    await sink.flushAndDispose();
+    await sink.flushAndDispose();
+
+    expect(sink.droppedForBackpressure).toEqual(afterFirst);
+    expect(warnings.filter((w) => w.includes('drain-incomplete')).length).toBe(1);
+  });
+
+  it('opens nothing for a write that resumes after the close sweep (FR-005)', async () => {
+    // The expiry path's tail, and the one case the two above cannot reach: they
+    // stall `stat` forever, so the stranded write never resumes. The grace
+    // bounds the WAIT, not the write. A write stalled past it does resume
+    // eventually, and if it can still acquire an append handle at that point it
+    // opens one AFTER the last close sweep — with `flushAndDispose()` memoized,
+    // nothing is left to close it. That is precisely the GC finalizer this item
+    // removed, reintroduced on the timeout path.
+    let release = (): void => undefined;
+    const resumed = new Promise<void>((resolve) => {
+      release = () => resolve();
+    });
+    let stalling = true;
+    const sink = track(new CliTransportSink({
+      settings: countingAccessor(),
+      sanitize: (line) => line,
+      logger,
+      now: () => new Date('2026-05-10T12:00:00.000Z'),
+      drainGraceMs: 25,
+      // Released by the test, not by a timer: the resumption has to land after
+      // the drain has returned, and a race decided by a sleep is not a proof.
+      stat: async () => {
+        if (stalling) {
+          stalling = false;
+          await resumed;
+        }
+        return { size: 0 };
+      }
+    }));
+
+    sink.record({ runId: 'run-1', phase: 'implement', stream: 'stdout', line: 'slow disk' });
+    expect(sink.inFlight.writes, 'the fixture must leave a write in flight').toBe(1);
+
+    await sink.flushAndDispose();
+    expect(sink.openDescriptorCount, 'the sweep ran, and it held nothing').toBe(0);
+
+    // The disk comes back after the host has finished shutting down.
+    release();
+    await sink.flushPendingWrites();
+
+    expect(
+      sink.openDescriptorCount,
+      'no owner is left to close a descriptor opened here'
+    ).toBe(0);
+    expect(warnings.filter((w) => w.includes('drain-incomplete')).length).toBe(1);
+  });
 });

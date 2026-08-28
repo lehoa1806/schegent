@@ -41,7 +41,11 @@ function fakeSink(acceptFirst: number) {
     flushPendingWrites: async (): Promise<void> => {},
     get droppedForBackpressure() {
       return { lines, bytes };
-    }
+    },
+    // FR-R3-137 — the interface's fourth member. Required rather than optional,
+    // because a lifecycle a caller may omit is one a caller will omit; this fake
+    // holds no descriptor, so the whole cost of that decision is this line.
+    flushAndDispose: async (): Promise<void> => {}
   };
 }
 

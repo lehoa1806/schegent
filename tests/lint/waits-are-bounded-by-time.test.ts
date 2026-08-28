@@ -231,6 +231,16 @@ const ELAPSED_TIME_SLEEPS: ReadonlyArray<{ file: string; ms: number; reason: str
     reason:
       'lets a 50 ms retention age threshold actually elapse; an age bound cannot be polled into ' +
       'being reached sooner'
+  },
+  {
+    file: 'tests/unit/setup/descriptor-leak-control.test.ts',
+    ms: 100,
+    reason:
+      'FR-R3-137 — not a wait in this process: the line is inside the source string of a spawned ' +
+      'child, and it is that child\'s lifetime. Node emits the descriptor warning on a tick AFTER ' +
+      'the collector runs, so a child that exits the instant it drops the handle leaks silently — ' +
+      'measured, five runs, zero warnings without it. Nothing here polls a condition; the ' +
+      'assertions read the exited child\'s stderr'
   }
 ];
 
