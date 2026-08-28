@@ -19,12 +19,13 @@ predicted it: its author sampled the set and found every gate well motivated.
 
 | Figure | Value | Date | Method |
 |---|---|---|---|
-| Gate files | **163** | 2026-08-27 | `*.test.ts` under `tests/lint/` recursively |
-| Marked `unique` | 151 | 2026-08-27 | hand verdict |
+| Gate files | **162** | 2026-08-27 | `*.test.ts` under `tests/lint/` recursively |
+| Marked `unique` | 150 | 2026-08-27 | hand verdict |
 | Marked `partially redundant` | 12 | 2026-08-27 | hand verdict |
 | Marked `redundant` | 0 | 2026-08-27 | hand verdict |
 
 <!-- census:prose -->
+
 
 
 
@@ -169,11 +170,11 @@ changing one means updating that machinery in the same commit.
 | `concurrency-isolation-disclosure.test.ts` | FR-R3-124 — the shared-tree disclosure has content, and no live document sells a cap above one as isolation | `cap-authority-citation-parity.test.ts` (citation only) | unique | that gate asserts each cap definition site *cites* `docs/architecture/local-queue-parallelism-ratification.md`; it never reads what the site says. On 2026-08-27 every shared-tree sentence in the tree could be deleted with the whole gate set staying green, which is the hole this gate closes |
 | `containment-qualification-parity.test.ts` | FR-R3-125 — the containment qualification record and the product name the same mechanism for every backend | `backend-containment-policy.test.ts` (classification only), `backend-permission-posture.test.ts` (onboarding surfaces name the setting) | unique | neither sibling compares the product against the qualification RECORD: the policy test asserts the classification against each adapter's argv, and the posture test asserts a setting key appears on onboarding pages. A record naming a boundary the product does not implement — the direction that misleads an operator — was unguarded before this |
 | `contracts-module-reachability.test.ts` | every contract module has a consumer outside itself and the barrel | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
+| `dated-review-records.test.ts` | FR-R3-134 — every dated deferral is watched, and the registry is complete | supersedes `platform-decline-review-date.test.ts` and `devcontainer-declination-review-date.test.ts`, both retired into it; the shared predicate stays in `review-dates.ts` | unique | it is the only reader of the review-date markers, and the only thing that answers *which* records carry one. Landed red 2026-08-28 two ways: `live-canary-cadence.md` had no marker at all (the deferral this three-file arrangement let through), and an unregistered marker planted in a fourth document was named by the completeness scan. Retirement rule (FR-021) satisfied for both predecessors: a named successor asserting the same shape over a superset of their subjects |
 | `dependency-change-scope.test.ts` | FR-R3-090 §5 — no dependency is bumped, and the scanners are untouched | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `dependency-direction.test.ts` | FR-R3-110 — leaf layers do not value-import layers that act | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `destructive-actions.lint.test.ts` | Feature 063 T046 — destructive command sites must be useConfirm-gated | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `destructive-fs-requires-containment.test.ts` | FR-R3-005 — destructive filesystem calls route through the containment oracle | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
-| `devcontainer-declination-review-date.test.ts` | the devcontainer decline carries a review date (FR-R3-132) | shares its predicate with `platform-decline-review-date.test.ts` via `tests/lint/review-dates.ts`; neither holds the other's date or document | unique | Driven red 2026-08-28 both ways: a past date, and a removed marker. The record's three EVENT conditions — a second maintainer, a contributor report, a platform leaving `unverified` — are stated as unwatched, because no gate can observe them |
 | `doc-duplicate-authority.test.ts` | no two documents share a body (FR-R3-063, widened by FR-R3-066) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `doc-orphan-pages.test.ts` | every documentation page is reachable by reading (FR-R3-063) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `doc-references-outside-markdown.test.ts` | documentation paths cited outside Markdown resolve (FR-R3-063) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
@@ -254,7 +255,6 @@ changing one means updating that machinery in the same commit.
 | `phase-removal-confirmation.test.ts` | Definition removal confirmation boundary | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `phase-runner-loc-budget.test.ts` | feature 057 LoC budgets | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `platform-branch-has-record-row.test.ts` | every platform branch has a row in the observation record (FR-R3-115) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
-| `platform-decline-review-date.test.ts` | FR-R3-129 — the platform decline carries a review date, and the gate fails once it has passed | none | unique | no gate in this tree had a TIME-based failure before. `FR-R3-115`'s decline carried three reopening conditions and no date, so it would have become a permanent posture by nobody deciding. The date lives in the record, not in the gate — a gate holding its own copy would go stale with the document it guards, which is the failure it exists to prevent one level up |
 | `playwright-browser-preflight.test.ts` | visual preflight — a missing browser reports once (FR-R3-065) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `primacy-predicate-split.test.ts` | the advisory/authoritative primacy split (FR-R3-024) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `procedure-surface-registry.test.ts` | FR-R3-088 — registered procedure surfaces agree with their producer | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |

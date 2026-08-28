@@ -91,7 +91,7 @@ saying-so.
 <!-- decline-review-date: 2026-11-27 -->
 
 **This decline is reviewed on or before 2026-11-27**, and
-`repo/tests/lint/platform-decline-review-date.test.ts` fails on that day until someone re-reads it.
+`repo/tests/lint/dated-review-records.test.ts` fails on that day until someone re-reads it.
 `FR-R3-129` added both, for the reason the item states: *a dated decline is only honest while someone
 re-reads it.* Without a date and a check, the three conditions below expire quietly and a temporary
 decline becomes a permanent posture by nobody deciding.

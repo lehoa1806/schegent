@@ -7,6 +7,13 @@
 // second copy of the comparison is how the two would eventually disagree about
 // what "on the day" means.
 //
+// FR-R3-134 finished the job. Extracting the predicate left three GATE FILES each
+// hard-coding one document and one marker, so nothing could answer "which records
+// carry a dated review?" — and a fourth deferral, written the same week, got three
+// event triggers and no date at all. The single reader is now
+// `dated-review-records.test.ts`, which holds the registry and scans `docs/` for
+// markers no entry names.
+//
 // The MARKER NAME stays per-gate and the DATE stays in the document. Only the
 // predicate is shared — this module holds no dates.
 export function readReviewDate(body: string, marker: string): string | null {

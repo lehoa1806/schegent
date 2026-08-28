@@ -66,11 +66,40 @@ assert something, which is exactly when it should cost something.
 spends the operator's subscription quota; the repository audit of 2026-08-27 deliberately did not spend
 it, and this cycle did not either.
 
+<!-- canary-review-date: 2026-11-27 -->
+
 **Trigger for the first run**: whichever of these comes first —
 
-1. the next `npm run release:preflight`, which will demand it;
-2. the next backend-version qualification claim, per §3;
-3. the next upgrade of an installed backend CLI.
+1. the next backend-version qualification claim, per §3;
+2. the next upgrade of an installed backend CLI;
+3. **2026-11-27**, whether or not either has happened.
+
+**A trigger was wrong here, and correcting it is worth more than the correction.** This list used to
+open with *"the next `npm run release:preflight`, which will demand it"*. It does not.
+`scripts/require-local-gate.mjs` contains **zero** occurrences of "canary" — the sentence described a
+mechanism that was never built, in a document whose entire subject is recording an obligation
+honestly. That is the class this round closed seven times in `FR-R3-124`…`132`, written by the cycle
+that closed one of them.
+
+**What the preflight actually does**, which covers two of the three triggers under a different name:
+`decideQualification` refuses a release on `version-drift` (an installed CLI moved),
+`runner-changed-since-qualification`, `stale-qualification` (the record aged past its freshness
+bound) and `no-qualification`, each with a named override that prints `RELEASING UNQUALIFIED`. So
+triggers 1 and 2 above **are** enforced at release time; they were simply attributed to the wrong
+script.
+
+**A fourth preflight binding was considered and declined.** Making the preflight refuse specifically
+on a missing canary would be redundant with a refusal that already fires on the same events, and it
+would spend the operator's live quota on **every** release — the cost this round twice declined to
+spend. The date above is what covers the residue, on the same reasoning `FR-R3-129` used for the
+platform decline: three event triggers and no date is a deferral that expires quietly, because no
+gate in a repository can observe an event.
+
+**This deferral is reviewed on or before 2026-11-27**, and
+`repo/tests/lint/dated-review-records.test.ts` fails on that day until someone re-reads it. It is one
+of four dated records that gate registers; before `FR-R3-134` there were three gate files each
+hard-coding one document, which is how this page came to carry no date at all while its three
+siblings from the same week each carried one.
 
 **Where it lands**: [the qualification log](../release/backend-qualification-log.md), which is the
 existing record and the answer to *"has the canary ever produced a result, and what did it say?"*
@@ -79,6 +108,8 @@ Nothing new is created for it.
 ## 6. What this page does not claim
 
 - It does not claim a canary run happened. §5.
+- It does not claim the preflight demands one. §5 corrects a sentence that did, and names what the
+  preflight refuses on instead.
 - It does not claim the monthly row is enforced. §4 says why it is not, and a recommendation stated as
   a recommendation is not a gap.
 - It does not restate the freshness bound. §1 cites the constant, because a second copy of a number
