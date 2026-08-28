@@ -2,7 +2,7 @@
 
 **Decided**: 2026-08-28 (`FR-R3-132`, T1505) · **Gate**: `repo/tests/lint/verification-tiers.test.ts`
 does not read this file; the review date below is read by
-`repo/tests/lint/devcontainer-declination-review-date.test.ts`
+`repo/tests/lint/dated-review-records.test.ts`
 
 <!-- devcontainer-review-date: 2027-02-28 -->
 
@@ -59,7 +59,7 @@ Any one of these, and the review below is the mechanism that makes somebody look
    exposing it to contributors is near zero, and the argument in point 3 inverts.
 
 **This decline is reviewed on or before 2027-02-28**, and
-`repo/tests/lint/devcontainer-declination-review-date.test.ts` fails on that day until someone re-reads
+`repo/tests/lint/dated-review-records.test.ts` fails on that day until someone re-reads
 it. Six months rather than the three-month horizon the platform decline carries: nothing here changes
 on its own, and the reopening conditions are events rather than dates.
 

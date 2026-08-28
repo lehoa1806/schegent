@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 93
+    vacuity-census-denominator: 94
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **93** |
+| Gates the detector calls **controlled** (the denominator) | **94** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -193,7 +193,7 @@ gate with an unproven failure path.
 | `tests/lint/a11y-baseline-shrinks.test.ts` | one probe entry appended to the empty baseline → `accepts 1 finding(s), over its recorded ceiling of 0`; removed → green (2026-08-28) | yes, by live mutation |
 | `tests/lint/snapshot-mirror-census.test.ts` | landed red against 51 byte-identical declarations; its union half independently rediscovered `QueueSummary.pauseSource` missing `'retry-cap'`; its structural half found five renamed copies a name-keyed comparison cannot see; **widening its walk from three host directories to `src/` found fifteen more it had been reporting as "webview-local"** (2026-08-28, `FR-R3-132`) | yes, by live mutation |
 | `tests/lint/verification-tiers.test.ts` | four mutations: `test:perf` dropped from the release tier; `--cache` appended to a tier; a tier renamed in its document; a tier pointed at a target `package.json` does not define (2026-08-28, `FR-R3-132`) | yes, by live mutation |
-| `tests/lint/devcontainer-declination-review-date.test.ts` | a past date, and a removed marker (2026-08-28, `FR-R3-132`) | yes, by live mutation |
+| `tests/lint/dated-review-records.test.ts` | a past date, and a removed marker (2026-08-28, `FR-R3-132`, as `devcontainer-declination-review-date.test.ts`); then, consolidated (`FR-R3-134`): a record with no marker at all — `live-canary-cadence.md`, the deferral the three-file arrangement let through — and an unregistered marker planted in a fourth document, named by the completeness scan | yes, by live mutation |
 | `tests/lint/at-matrix-honesty.test.ts` | three mutations: a `**PASS**` result with no date; an `UNTESTED` row whose trigger cell was `—`; `Schegent conforms to WCAG 2.1 Level AA.` appended to `RELEASE.md` (2026-08-28) | yes, by live mutation |
 | `tests/lint/a11y-policy-parity.test.ts` | a drifted statement and a widened tag set | yes |
 | `tests/unit/services/capability-enforcement-plan.test.ts` | withholding a capability changes the argv — the plan is not a no-op | yes |
@@ -210,6 +210,37 @@ tree was restored and re-verified green in the same step.
 
 ---
 
+
+### Is a narrow gate scope a class? Measured, and it is one instance (2026-08-28, `FR-R3-133`)
+
+`FR-R3-132` found `snapshot-mirror-census.test.ts` reporting **0** duplicated declarations while
+walking three host directories out of twelve; the true number was 15. That was written up as a
+finding about gates in general — *"a gate's scope is part of its verdict, and nothing was checking the
+scope"* — and a meta-gate was the obvious next move. **It was measured first, and declined.**
+
+**Method.** All `tests/lint/*.test.ts` were scanned for a scope constant (`*_ROOTS`, `*_DIRS`,
+`SCAN_ROOTS`, `SCANNED_DIRS`). **17** gates declare one. Most omit a code area, and almost every
+omission is correct: a gate about Svelte components has no business in `scripts/`. A rule requiring
+every gate to name every area would be noise, so the omissions were not the measurement.
+
+The measurement is the one that actually caught the census bug: **does the thing the gate forbids
+occur outside the scope it declares?** That question has no false positives — a hit means either the
+scope is wrong or an exclusion is undeclared. Two candidates where a hit would be a real defect:
+
+| Gate | Omits | Does the forbidden thing occur there? |
+|---|---|---|
+| `no-legacy-surface-name.test.ts` — *"the retired surface name appears on no surface"* | `scripts`, `tests` | **No.** `'Process Library'` occurs outside `src/` and `webview-ui/src/` in exactly one file: the gate itself, in its own docblock |
+| `waits-are-bounded-by-time.test.ts` — a wait must be bounded by elapsed time | `webview-ui/src` | **No.** Zero occurrences of `setImmediate` in the whole webview tree. The browser has no `setImmediate`; the omission is the scope being correct, not narrow |
+
+**One instance, in a gate written the same day, fixed at the source.** A meta-gate for a class of one
+would be the shape this repository refuses elsewhere: `FR-R3-121`'s governance census found nothing
+retirable and said so, because **zero is a valid outcome**. Recording the count is what stops the next
+author re-deriving it, and it is cheaper than a control with a false-positive budget and no measured
+subject.
+
+**What would reopen it**: a second instance. The signal is specific and cheap to check — a gate
+reporting a count that a wider walk of the same forbidden pattern contradicts. If one appears, the
+denominator for the meta-gate is 17 and the method is written above.
 
 ### The a11y scan's recorded mutation was replaced, not amended (2026-08-28, `FR-R3-131`)
 
@@ -228,6 +259,11 @@ assertions**. Only `MIN_NODES_EXAMINED` caught it.
 The floor itself was first set to 40 — one below the leanest measurement, which is a tripwire rather
 than a floor, and would have failed on the removal of any decorative element. It is 20: the number
 separates *rendered* from *blank* (measured 41 against a mutated 1), not *big* from *small*.
+
+**94 as of 2026-08-28 (`FR-R3-134`)**, net up one over 93: `dated-review-records.test.ts` walks
+`docs/` and asserts an empty unregistered set, so it is a scanning gate and the detector classifies it
+as controlled — its control is the floor on documents scanned (>50) plus the registry-size floor.
+The two gates it retired were not in the denominator: neither walked a tree, each read one named file.
 
 **93 as of 2026-08-28 (`FR-R3-132`)**, up one: `snapshot-mirror-census.test.ts` walks the host tree
 and asserts an empty result set, so it is a scanning gate and the detector classifies it as
