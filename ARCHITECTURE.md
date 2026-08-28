@@ -102,8 +102,14 @@ the remainder under a shrink-only bound in `tests/lint/source-loc-budget.test.ts
 the sentence becomes unqualifiedly true by extraction rather than by editing. Until
 it does, the qualification stays. The measurements, the waive-or-extract decision and
 the mutation that corrected the bound's first draft are in
-[Composition root extraction](docs/architecture/composition-root-extraction.md). `src/host-services/` wraps host-owned behavior such
-as configuration, filesystem and notification seams. `src/headless/` exposes
+[Composition root extraction](docs/architecture/composition-root-extraction.md). `src/host-services/` holds one
+adapter, the catalog filesystem adapter; configuration, storage, notification,
+command, trust and lifecycle facilities are resolved at the composition root by
+the module that needs them, which is the only composition model that ships. It
+once also held a nine-member `HostServices` facade over those facilities, reached
+by nothing but its own unit test; the measurement that retired it is in
+[HostServices facade removal](docs/architecture/host-services-facade-removal.md).
+`src/headless/` exposes
 process validation/import/export and run-launch entrypoints over the same
 services without importing `vscode`.
 
@@ -130,7 +136,7 @@ table is an ownership map, not permission for cross-layer shortcuts.
 | `src/contracts/` | Shared host/webview, runner, state, audit, and catalog types plus validators. |
 | `src/controller/` | Run and Phase orchestration, retries, pause/resume controls, and terminal transitions. |
 | `src/headless/` | VS Code-independent public adapters over process and run services. |
-| `src/host-services/` | Explicit adapters for facilities owned by the VS Code host. |
+| `src/host-services/` | The catalog filesystem adapter, on the checked `safe-open` path. Not a general host facade: every other host facility is constructed where it is used. |
 | `src/lib/` | Cross-cutting redaction, path-safety, runtime-log, and small utility modules. |
 | `src/metrics/` | Read-only derivation of task, phase, cost, and coverage metrics from retained evidence. |
 | `src/monitor/` | Bounded subprocess activity, transport, and progress observation. |

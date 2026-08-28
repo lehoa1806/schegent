@@ -19,12 +19,13 @@ predicted it: its author sampled the set and found every gate well motivated.
 
 | Figure | Value | Date | Method |
 |---|---|---|---|
-| Gate files | **167** | 2026-08-28 | `*.test.ts` under `tests/lint/` recursively |
-| Marked `unique` | 155 | 2026-08-28 | hand verdict |
+| Gate files | **168** | 2026-08-29 | `*.test.ts` under `tests/lint/` recursively |
+| Marked `unique` | 156 | 2026-08-29 | hand verdict |
 | Marked `partially redundant` | 12 | 2026-08-28 | hand verdict |
 | Marked `redundant` | 0 | 2026-08-28 | hand verdict |
 
 <!-- census:prose -->
+
 
 
 
@@ -151,6 +152,7 @@ changing one means updating that machinery in the same commit.
 | `actions-retirement-claims.test.ts` | FR-R3-099 — the retired claims are historical, never present-tense | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `activation-events-declared.test.ts` | the activation surface is declared and bounded (111, FR-016, FR-017) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `activation-trust-classification.test.ts` | src/activation trust classification (FR-R3-136 T1525a) | `command-trust-dispositions.test.ts` (the command surface only) | unique | its siblings assert what a trust gate DOES once someone has written one — that every command id carries a disposition, that the router is handed a posture. This one asserts that every module under `src/activation/` has been CLASSIFIED at all: one of four verdicts, in the file, saying where its acts are gated or why it has none. That sweep is what found the two producer acts no task list had named — the ownership election and the phase-log-tail audit append — and the module count is derived from the directory listing, so a module added without a verdict fails here and nowhere else |
+| `adapter-module-reachability.test.ts` | FR-R3-139 — every adapter module has a consumer in the shipped extension | `contracts-module-reachability.test.ts`, over `src/contracts/` and with the opposite corpus rule | unique | the sibling is the model this was built from, and the two differ in exactly the way that matters: the contracts gate counts `tests/` and `scripts/` as consumers, this one does not, because the facade it retired had its own unit test as its only consumer. It also computes reachedness as a least fixed point rather than one pass — measured before the deletion, the three dead facade modules all read as reached under a plain rule by naming each other's symbols. Neither behaviour exists anywhere else. Driven red on eight fixture trees rather than on this tree: after the deletion the scanned directory holds one module, which is also the positive control, so the real-tree scan is prospective. Stated in the gate header and in `docs/architecture/host-services-facade-removal.md` |
 | `agents-claude-parity.test.ts` | (no describe title) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `allowlist-entries-still-apply.test.ts` | an allowlist entry still excuses something | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `architecture-doc-schema-parity.test.ts` | FR-R3-013 — ARCHITECTURE.md schema and defaults parity | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |

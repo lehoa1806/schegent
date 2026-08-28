@@ -13,7 +13,7 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 97
+    vacuity-census-denominator: 98
 
 | Measure | Value |
 |---|---|
@@ -278,6 +278,26 @@ assertions**. Only `MIN_NODES_EXAMINED` caught it.
 The floor itself was first set to 40 — one below the leanest measurement, which is a tripwire rather
 than a floor, and would have failed on the removal of any decorative element. It is 20: the number
 separates *rendered* from *blank* (measured 41 against a mutated 1), not *big* from *small*.
+
+**98 as of 2026-08-29 (`FR-R3-139`)**, up one over 97: `adapter-module-reachability.test.ts` walks
+`src/host-services/`, collects the symbols its modules export, scans `src/` and `webview-ui/src/`
+for consumers and asserts an empty offender set, so it is a scanning gate and the detector
+classifies it as controlled. Its controls are a floor on modules scanned (>0), a floor on exported
+symbols matched (>0), a floor on production corpus files walked (>400, against 831 measured) and a
+positive control asserting `catalog-fs-adapter.ts` lands in the **seed** set rather than merely in
+the closure — the stronger claim, because a closure bug that quietly reached everything would
+satisfy the weaker one.
+
+Worth recording honestly rather than letting the denominator imply more than it should: **this
+gate's real-tree scan is the weakest in the census.** After `FR-R3-139`'s deletion the scanned
+directory holds exactly one module, and that module is the positive control, so an empty offender
+set is close to guaranteed by construction and the control is not independent of the scanned set.
+Its liveness is carried by eight fixture trees built under `os.tmpdir()` — a self-certifying cycle
+of three dead modules that must be reported, a module consumed only from `tests/` that must be
+reported, a module two hops from production that must not be, and both self-cleaning directions of
+the allowlist. The vacuity detector cannot see that distinction; it reads floors and an emptiness
+assertion, and both are present. Counted in the denominator because the detector counts it, and
+annotated here because the count alone would overstate it.
 
 **97 as of 2026-08-29 (`FR-R3-138`)**, up one over 96: `current-control-claims.test.ts` walks
 `docs/`, the root Markdown, `.github/` and the two `.npmrc` files and asserts an empty offender set,
