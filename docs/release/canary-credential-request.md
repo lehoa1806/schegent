@@ -1,5 +1,7 @@
 # Canary credentials: a request WITHDRAWN, and the live phase that replaced it
 
+<!-- doc-class: record -->
+
 **Raised**: 2026-08-25 · **Withdrawn**: 2026-08-26 · **Feature**: 155 (`FR-R3-084`)
 · **Decision owner**: the repository operator
 

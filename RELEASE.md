@@ -371,14 +371,16 @@ Everything in this section was performed by GitHub Actions and is **gone**. It i
 maintainer who remembers the old process knows what is missing rather than assuming it still happens
 silently. What each withdrawn thing *was* is recorded in
 [the withdrawal record](docs/release/withdrawn-ci-controls.md); what its runs produced is in
-[the terminal record](docs/release/actions-terminal-record.md).
+[the terminal record](docs/release/actions-terminal-record.md); and what exists *now* is derived
+from the tree into [current release controls](docs/release/current-release-controls.md), which is
+the single present-tense authority the table below must not contradict.
 
 | No longer happens | What it was | Local substitute |
 |---|---|---|
 | A durable GitHub Release | Created by the tag job, containing the VSIX, SBOM and checksums | **None.** The VSIX exists only on the machine that packaged it |
 | Build provenance attestation | GitHub OIDC attestation over the VSIX and SBOM, verifiable with `gh attestation verify --signer-workflow` | **None.** A consumer cannot verify who built a Schegent VSIX |
-| `schegent-sbom.cdx.json` | `npm sbom --sbom-format cyclonedx` in the tag job | Run it by hand if an SBOM is needed; nothing generates one |
-| `SHA256SUMS` | `sha256sum` over the VSIX and SBOM | Run it by hand |
+| `schegent-sbom.cdx.json` | `npm sbom --sbom-format cyclonedx` in the tag job | **Replaced, and improved.** `npm run package` reaches `npm run sbom`, so §3 above emits the SBOM beside the VSIX *and packages it inside* — which the tag job never did |
+| `SHA256SUMS` | `sha256sum` over the VSIX and SBOM | **None.** No script in this repository writes a digest, so "run it by hand" is the whole procedure and nothing will remind you |
 | A three-OS verification matrix | `ci.yml` on ubuntu, macOS and Windows | **None.** Single-platform is now a permanent stated limit, not a pending state |
 | A weekly whole-tree gate | `full-gate.yml`, run weekly, red for fourteen weeks unread | `npm run gate`, run deliberately and attested at a commit |
 | Code scanning | CodeQL | **None.** Recorded in `SECURITY.md` |

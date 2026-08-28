@@ -154,7 +154,7 @@ the nearby source; ignore the other branches until your scope reaches them.
 | Backend invocation or environment | [Backend operations](../operations/backends.md), [Settings](../reference/settings.md) | `src/runner/`, `src/config/` |
 | Ownership, state, or migrations | [Workspace lock](../concepts/workspace-lock.md), [Workspace ownership fencing](../architecture/workspace-ownership-fencing.md), [File layout](../reference/file-layout.md) | `src/state/`, `src/queue/` |
 | Audit, transcripts, logging, or security | [Audit events](../reference/audit-events.md), [Runtime log](../operations/runtime-log.md), [Threat model](../security/threat-model.md) | `src/audit/`, `src/lib/`, `src/parser/` |
-| Packaging or release | [Release process](../../RELEASE.md), [VSIX allowlist derivation](../operations/vsix-allowlist-derivation.md) | `package.json`, `.github/workflows/`, `scripts/` |
+| Packaging or release | [Release process](../../RELEASE.md), [VSIX allowlist derivation](../operations/vsix-allowlist-derivation.md) | `package.json`, `scripts/` |
 
 If the change crosses several rows, write down why before widening the scope.
 That reason tells reviewers which additional invariants and tests must follow.

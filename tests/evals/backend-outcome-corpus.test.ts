@@ -235,17 +235,22 @@ describe('the corpus measures parser coverage, not behavioural qualification', (
     const { join } = await import('node:path');
     const readme = readFileSync(join(__dirname, 'README.md'), 'utf8');
     expect(readme).toContain('not behavioral qualification');
-    expect(readme).toContain('backend-canary.yml');
+    // FR-R3-138 — this pinned the string `backend-canary.yml`, so the README could
+    // not stop naming a file `FR-R3-099` had deleted without turning this suite
+    // red. An assertion that holds a document to a deleted file does not keep the
+    // document true; it enforces the falsehood, which is the worse of the two
+    // failure modes because nobody re-reads a green test. What the README must
+    // still say is how the canary is actually invoked.
+    expect(readme).toContain('npm run canary');
     // FR-R3-084 (2026-08-26) — this pinned `skipped-no-live-path` on the premise
     // that "the canary qualifies nothing yet either: a version probe plus an
     // honest skip until a live invocation exists". A live invocation exists now,
     // so that string is gone and pinning it would hold the README to an obsolete
     // claim. What replaces it is what the README must still not omit: the honest
-    // skip state the live phase can report, and the fact that the workflow
-    // declaring it never fires — without which a reader would take a scheduled
-    // canary for a running one.
+    // skip state the live phase can report, and the fact that nothing schedules
+    // the canary — without which a reader would take it for a running one.
     expect(readme).toContain('skipped-not-authenticated');
-    expect(readme).toContain('does not fire');
+    expect(readme).toContain('No workflow declares it');
   });
 
   it("reports the test tally its README states", async () => {

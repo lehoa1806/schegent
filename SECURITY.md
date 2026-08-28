@@ -71,8 +71,13 @@ The detailed operator threat catalog covers T1–T25 in [the threat model](docs/
 
 ### What runs
 
-Every control here runs locally, inside the attested gate command (`npm run gate`),
-which is what a release is bound to. There is no second enforcement point.
+Three of the five controls below — the secret scan, the workflow-pin check and the
+license check — run inside the attested gate command (`npm run gate`), which is what a
+release is bound to. The other two do not, and the difference matters more than the
+count: `npm audit` runs locally but only when an operator invokes it, for the reason its
+row states; Dependabot does not run here at all, it runs on GitHub, and it opens pull
+requests that nothing then checks. There is no remote enforcement point, so a control
+outside the gate is a control nothing runs for you.
 
 > **This sentence was false for ~32 hours, from 2026-08-27 00:15 +0700 to 2026-08-28, and
 > `FR-R3-135` is why it is true now.** The controls were inside the `gate` script chain the
@@ -167,11 +172,16 @@ immediately, then audit for similar exposure. It is not a line item to allowlist
 |---|---|---|
 | **CodeQL** static analysis (`security-extended`, JS/TS) | **green at `2a885187`, 2026-08-26** | **None.** There is no static-analysis equivalent in this repository. This is a real reduction in coverage, and wiring the secret scan to a real scanner (`FR-R3-109`) does not replace it — a secret scanner finds credentials, not injection or taint |
 | Dependency review on pull requests | failure, 2026-08-23 | `npm run security:audit`, operator-invoked. Narrower in two ways: it sees the lockfile rather than the diff, and nothing forces anyone to run it |
-| Scheduled `npm audit` (Monday 03:00 UTC) | green at `b6993e80`, 2026-08-24 | The same audit, run by the gate instead of by a clock |
-| Release provenance (SBOM, checksums, attestation, GitHub Release) | never ran — no `v*` tag was ever pushed | None. The local release path packages a VSIX; it emits no SBOM and no attestation |
+| Scheduled `npm audit` (Monday 03:00 UTC) | green at `b6993e80`, 2026-08-24 | The same audit as `npm run security:audit`, operator-invoked. **Not in the attested gate** and on no schedule, so it runs only when someone remembers |
+| Release provenance (SBOM, checksums, attestation, GitHub Release) | never ran — no `v*` tag was ever pushed | Partial. `npm run package` reaches `npm run sbom`, so packaging does emit `schegent-sbom.cdx.json`. It emits no digest and no signature a consumer could check; `.gate-attestation.json` records that a gate ran on the releasing machine, which is a local record rather than provenance |
 | Three-OS matrix and the Node version-floor job | `ci.yml` red at `2a885187` on the **Windows** leg | None. Windows remains a stated permanent limit |
 
 No Snyk or Semgrep configuration or invocation exists in the repository.
+
+What runs *today*, as opposed to what was withdrawn, is generated from the tree
+into [current release controls](docs/release/current-release-controls.md). That
+page is the single present-tense authority; this section is the security-facing
+reading of it, and if the two ever disagree the generated one is right.
 
 #### The static-analysis class is permanently absent — decided 2026-08-27
 

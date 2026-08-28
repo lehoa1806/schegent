@@ -180,8 +180,10 @@ npm run package:smoke
 <!-- Source: tests/unit/build/vsix-archive-assertions.test.ts -->
 <!-- Source: scripts/package-vsix-smoke.mjs -->
 
-Pull-request, main-branch CI, and release qualification all invoke
-`package:smoke`. The release workflow additionally runs the checker against the
-single VSIX selected for publication, so the uploaded artifact—not only the
-temporary smoke package—must satisfy the same policy.
+`npm run gate` reaches `package:smoke` through `ci`, and that is now the only
+caller: the pull-request, CI and release jobs that also invoked it were retired
+on 2026-08-26 (`FR-R3-099`). The checker no longer runs against a single VSIX
+selected for publication, because nothing publishes one — a release is packaged
+locally, so the artifact a recipient gets is the one the smoke package checked
+only if the operator ran the gate on the same tree.
 <!-- Source: ../release/actions-terminal-record.md -->

@@ -58,7 +58,7 @@ The ratchet never edits configuration. Lowering a floor remains a deliberate cod
 
 ## Where coverage runs
 
-`npm run verify:all` includes the default host tests and webview coverage. The main CI workflow also runs the host `test:coverage` target on Linux. Evaluation, performance, browser-visual, E2E, and Extension Host integration suites are separate targets; their presence in CI does not add their execution to the V8 coverage sets above.
+`npm run verify:all` includes the default host tests and webview coverage. `npm run ci` runs the host `test:coverage` target, and since hosted CI was retired on 2026-08-26 (`FR-R3-099`) that local run is the only one — the Linux job that also ran it is gone, so these figures are measured on whatever platform the operator used. Evaluation, performance, browser-visual, E2E, and Extension Host integration suites are separate targets; running them does not add their execution to the V8 coverage sets above.
 
 <!-- Source: package.json -->
 <!-- Source: ../release/actions-terminal-record.md -->

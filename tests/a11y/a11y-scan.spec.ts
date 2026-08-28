@@ -1,7 +1,9 @@
 // FR-R3-091 — the whole-app accessibility scan.
 //
 // TARGET: **WCAG 2.1 Level AA**, over every shipped dashboard route in every
-// shipped theme. Seven routes x three themes = 21 combinations. The level is not
+// shipped theme. Seven routes plus the sidebar surface, x three themes = 24
+// combinations -- the sidebar was added 2026-08-28 (`FR-R3-131`), and this line
+// and the test title below both went on saying 21. The level is not
 // chosen here; the product already claims AA in `PRODUCT.md` and 2.1 AA in
 // `docs/prd-metrics-dashboard.md`, and `tests/lint/a11y-policy-parity.test.ts`
 // binds all three so the restored policy statement cannot drift back into an
@@ -151,7 +153,7 @@ async function scanSidebar(page: Page, theme: ThemeName): Promise<ScanResult> {
 }
 
 test.describe('FR-R3-091 — WCAG 2.1 AA scan over every route and theme', () => {
-  test('scans 21 combinations and holds them to the ratcheting baseline', async ({ page }) => {
+  test('scans 24 combinations and holds them to the ratcheting baseline', async ({ page }) => {
     test.setTimeout(180_000);
 
     const routes = Object.keys(ROUTE_MOUNT_TARGETS).filter(

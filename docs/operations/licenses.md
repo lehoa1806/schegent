@@ -41,9 +41,11 @@ dependency may be distributed in the VSIX.
 <!-- Source: scripts/check-licenses.mjs -->
 <!-- Source: package.json -->
 
-`license:check` is part of `verify:all`, which is run by the pull-request, CI,
-and release workflows. A passing consolidated gate therefore proves the three
-facts above and no broader legal compatibility claim.
+`license:check` is a step of `npm run gate`, and of `verify:all` and `verify:push`
+besides. Nothing runs any of them for you — the workflows that used to were retired
+2026-08-26 by operator decision (`FR-R3-099`) — so a maintainer running the gate before
+merging is the whole of the enforcement. A passing gate proves the three facts above and
+no broader legal compatibility claim.
 
 <!-- Source: package.json -->
 <!-- Source: ../release/actions-terminal-record.md -->
@@ -120,21 +122,23 @@ tool.
 
 ## Pull-request dependency controls
 
-Pull requests targeting `develop` run GitHub's pinned
-`actions/dependency-review-action`. The workflow explicitly fails on newly
-introduced vulnerabilities at `high` severity or above and comments a summary
-on failure. It does not configure `allow-licenses` or `deny-licenses`, so this
-repository's workflow file contains no project-specific license compatibility
-policy.
+Nothing runs on a pull request. A pinned `actions/dependency-review-action` used
+to refuse newly introduced `high`-severity dependencies, and it was retired with
+every other hosted control on 2026-08-26 (`FR-R3-099`). It never carried an
+`allow-licenses` or `deny-licenses` policy, so its withdrawal cost this page
+nothing in license coverage — but it did remove the only automatic check on a
+new dependency, and the manual review below is now the whole of it.
 
 <!-- Source: ../release/actions-terminal-record.md -->
 
 Dependabot opens weekly root and webview npm update pull requests and groups
-several related toolchains; major updates are ignored for manual handling. A
-separate weekly security workflow runs `npm audit --audit-level=low` against
-both lockfiles. Those controls address dependency freshness and known
-vulnerabilities. They complement, but do not perform, the manual license review
-above.
+several related toolchains; major updates are ignored for manual handling. It is
+GitHub-native and needs no workflow, so it survived the retirement — but nothing
+checks what it opens. The weekly `npm audit --audit-level=low` against both
+lockfiles was retired with the workflows; the same audit is now
+`npm run security:audit`, operator-invoked, on no schedule and outside the
+attested gate. These address dependency freshness and known vulnerabilities.
+They complement, but do not perform, the manual license review above.
 
 <!-- Source: .github/dependabot.yml -->
 <!-- Source: ../release/actions-terminal-record.md -->
@@ -150,11 +154,14 @@ MIT text itself does.
 <!-- Source: scripts/check-vsix-smoke.mjs -->
 <!-- Source: .vscodeignore -->
 
-The release workflow runs `verify:all`, builds, runs package smoke, packages the
-release, and checks the actual released archive with the same VSIX policy. It
-also generates a CycloneDX SBOM and checksums for the release bundle. The SBOM
-is a dependency inventory artifact; its existence does not waive or satisfy a
-license or notice obligation by itself.
+Releasing is local: `npm run release` refuses to proceed without a recorded gate
+run, then packages the extension. Packaging emits a CycloneDX SBOM beside the
+VSIX and inside it. No digest is written for the bundle — the hosted job that
+produced one was retired on 2026-08-26 (`FR-R3-099`) and nothing replaced it. The
+SBOM is a dependency inventory artifact; its existence does not waive or satisfy
+a license or notice obligation by itself. What the release path does and does not
+produce is derived from the tree into
+[current release controls](../release/current-release-controls.md).
 
 <!-- Source: ../release/actions-terminal-record.md -->
 <!-- Source: scripts/package-vsix-smoke.mjs -->
