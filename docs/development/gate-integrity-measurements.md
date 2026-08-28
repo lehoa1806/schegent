@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 94
+    vacuity-census-denominator: 96
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **94** |
+| Gates the detector calls **controlled** (the denominator) | **96** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -67,6 +67,25 @@ The three back-filled rows carry the commit rather than the gate name, because i
 gate joined at each step would mean re-running the detector at three historical revisions; the
 movement is recorded and attributable, and inventing a gate name for it would be worse than
 naming the commit. **The rate was 0.0% before and after**, so no gate was added to move the number.
+
+**Denominator movement 92 → 96 (2026-08-28, `FR-R3-136`).** Four more steps, two of them
+unrecorded when they happened — the same omission the reconciliation above names, which is the
+second time this section has had to be back-filled rather than kept. Attribution is by `git log -S`
+on the machine-readable line, the method that section established.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | (92 → 93, `799cb72d`, feature 197) | Joined during "stop retyping the host contract, tier the gate, ship a graph example". Not recorded here at the time. |
+| **+1** | (93 → 94, `a2f97115`, feature 198) | Joined during "one reader for every dated deferral, and a trigger that named nothing". Same omission. |
+| **+1** | `command-trust-dispositions.test.ts` (94 → 95) | Joined. `FR-R3-136` — refuses a command registration that carries no trust disposition, and refuses any registration outside the guarded helper. Three controls: a floor on source files walked, a floor on registrations found, and two demonstrations the gate can fail — `requireDisposition` driven with an unclassified id, and the raw-registration detector driven against a synthetic source containing one. |
+| **+1** | `activation-trust-classification.test.ts` (95 → 96) | Joined. `FR-R3-136` — refuses a module under `src/activation/` that carries no trust-classification verdict. Its control is the denominator itself: the module count is derived from the directory listing and floored, so a listing that stopped finding modules fails rather than passing over nothing, and the four verdicts are a closed set so an unrecognised one is an offender too. |
+
+**The rate is 0.0% at every step**, so no gate was added to move the number.
+
+**Why this keeps happening, said plainly.** Two authorities on one figure — a line a test asserts
+against a live run, and a table a human maintains — will drift unless something reads both. Nothing
+does. The line is gated; the table is prose beside it. That is a real gap in this document and it is
+recorded here rather than repaired in a feature about Workspace Trust.
 
 **Method.** Every gate the detector classifies as controlled — a **full census**, no sampling and no
 seed, so the denominator cannot be narrowed to improve the number. Each gate's source is neutered *in

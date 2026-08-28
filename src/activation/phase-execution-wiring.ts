@@ -1,3 +1,8 @@
+// FR-R3-136 (T1525a) — TRUST CLASSIFICATION: NO PRODUCER ACT.
+// Four accessors that read a setting at call time, and two sinks. Each sink
+// writes when the phase runner calls it, during a Run, and no Run starts in an
+// untrusted window.
+
 import * as vscode from 'vscode';
 
 import type { AuditLogWriter } from '../audit/audit-log-writer';

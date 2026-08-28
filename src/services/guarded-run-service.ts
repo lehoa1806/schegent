@@ -16,6 +16,7 @@
 //
 // See `specs/007-principal-review-remediation/contracts/guarded-run-service.md`.
 
+import { decideEntry } from '../state/entry-trust-decision';
 import type { QueueManager } from '../queue/queue-manager';
 import type { SchegentWorkflowController } from '../controller/workflow-controller';
 import type { WorkspaceLockManager } from '../state/lock';
@@ -96,7 +97,12 @@ export interface GuardedScheduleResult {
     | 'rejected-foreign-lock'
     | 'rejected-paused'
     | 'rejected-validation'
-    | 'rejected-horizon-exceeded';
+    | 'rejected-horizon-exceeded'
+    // FR-R3-136 (FR-008) — a distinct outcome, not folded into
+    // `rejected-validation`. The request was well-formed; the workspace was not
+    // trusted, and a caller that cannot tell those apart cannot tell the
+    // operator what to do about it.
+    | 'rejected-untrusted';
   reason?: string;
   queueItemId?: string;
   // Feature 065 — `'now'` when the host coerced or routed to `running`;
@@ -105,6 +111,22 @@ export interface GuardedScheduleResult {
 }
 
 export interface GuardedRunServiceDeps {
+  /**
+   * FR-R3-136 (FR-008) — Workspace Trust, read fresh on every admission.
+   *
+   * REQUIRED, AND DELIBERATELY NOT OPTIONAL. Every other trust-shaped
+   * dependency in this file is optional with a benign default, and that is the
+   * wrong shape here: an omitted reader would have to default to *trusted* to
+   * keep existing callers working, so the one construction site that forgot it
+   * would silently admit runs in an untrusted workspace — the exact defect this
+   * requirement closes, reintroduced as a default. Six test call sites and one
+   * production call site is a small price for a compile error instead.
+   *
+   * A THUNK, NOT A BOOLEAN, for the same reason `registerGuardedCommand` takes
+   * one: this service outlives the moment it was built, and
+   * `onDidGrantWorkspaceTrust` can fire between construction and admission.
+   */
+  readonly isWorkspaceTrusted: () => boolean;
   readonly lock: WorkspaceLockManager;
   readonly queue: QueueManager;
   readonly controller: Pick<SchegentWorkflowController, 'getCatalog'>;
@@ -135,6 +157,23 @@ export class GuardedRunService {
   public async scheduleOrEnqueue(
     req: GuardedScheduleRequest
   ): Promise<GuardedScheduleResult> {
+    // FR-R3-136 (FR-008) — FIRST, before validation. This service is the single
+    // admission point for every run-starting and queue-mutating path, so it
+    // refuses on its own account rather than trusting that a command wrapper
+    // already did: the wrapper covers the palette and the sidebar covers IPC,
+    // but `scheduled-work-wiring`'s timers and the drain reach this method with
+    // no wrapper above them at all.
+    //
+    // It shares the decision function with `registerGuardedCommand` instead of
+    // re-implementing the comparison, following `judgeBackendContainment` —
+    // "so both the admission check and the spawn-time check read the same
+    // answer instead of each implementing it".
+    const trust = this.checkWorkspaceTrust();
+    if (trust) {
+      await this.emitRejection('schedule', 'rejected-untrusted', trust, req.via);
+      return { outcome: 'rejected-untrusted', reason: trust };
+    }
+
     const validated = this.validateDescription(req.description);
     if (validated.kind === 'invalid') {
       await this.emitRejection('schedule', 'rejected-validation', validated.reason, req.via);
@@ -232,6 +271,16 @@ export class GuardedRunService {
    * `extractResetTimestamp` and to have validated it is in the future and
    * within the 7-day horizon. If validation fails the caller MUST fall back
    * to `system-pause-restore-unavailable` + legacy `operator-paused`.
+   *
+   * FR-R3-136 — NOT trust-guarded, and that is the deliberate boundary. The two
+   * methods above are admission points, reachable with nothing running; this one
+   * is downstream of a run that was already admitted, and its only caller is the
+   * retry handler. It returns `void`, so a refusal here could not be reported —
+   * it would drop a scheduled restore the retry handler believes it arranged,
+   * leaving a queue paused with no deadline and no record of why. A window that
+   * has a run to recover was trusted when the run started, and trust cannot be
+   * revoked mid-window (spec C1), so the case a guard would catch does not
+   * arise; a guard that cannot report is worse than the absent one.
    */
   public async transitionToScheduledRestore(args: {
     scheduledStartAt: number;
@@ -309,7 +358,18 @@ export class GuardedRunService {
   public async applyStartQueueIntent(
     intent: { startMode: 'now' | 'scheduled' | 'cancel-schedule'; scheduledStartAt?: number; source: 'operator-restart' },
     opts: { queueId?: string } = {}
-  ): Promise<{ outcome: 'applied' | 'rejected-horizon' | 'noop'; lifecycleAfter?: QueueLifecycle; requestedScheduledStartAt?: number }> {
+  ): Promise<{ outcome: 'applied' | 'rejected-horizon' | 'rejected-untrusted' | 'noop'; lifecycleAfter?: QueueLifecycle; requestedScheduledStartAt?: number }> {
+    // FR-R3-136 (FR-008) — the second admission surface. Every branch below
+    // ends in `store.updateQueue`, which is a persisted workspace write, so the
+    // trust check belongs here and not only on `scheduleOrEnqueue`. The
+    // `cancel-schedule` branch is included even though it only clears fields:
+    // clearing a persisted deadline is still writing the workspace's state.
+    const untrusted = this.checkWorkspaceTrust();
+    if (untrusted) {
+      await this.emitRejection('schedule', 'rejected-untrusted', untrusted, 'webview');
+      return { outcome: 'rejected-untrusted' };
+    }
+
     const queueId = opts.queueId ?? 'default';
     const current = this.deps.store.getQueue(queueId);
     const now = this.clock();
@@ -756,6 +816,22 @@ export class GuardedRunService {
       };
     }
     return { kind: 'ok' };
+  }
+
+  /**
+   * FR-R3-136 (FR-008) — a refusal reason when the workspace is untrusted, or
+   * `null` when admission may proceed.
+   *
+   * Shaped as `checkForeignFreshLock` below is — reason-or-null rather than a
+   * boolean — because the two are the same kind of check at the same gate, and
+   * the outcome each produces has to name why it refused.
+   */
+  private checkWorkspaceTrust(): string | null {
+    const decision = decideEntry({
+      disposition: 'mutating',
+      workspaceTrusted: this.deps.isWorkspaceTrusted()
+    });
+    return decision.allowed ? null : decision.reason;
   }
 
   private checkForeignFreshLock(): string | null {

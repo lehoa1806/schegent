@@ -167,6 +167,7 @@ drifts unnoticed, because the readers who would catch an error never get there.
 - [Single-task queue migration](operations/single-task-queue-migration.md)
 - [Trust scopes](operations/trust-scopes.md)
 - [VSIX allowlist derivation](operations/vsix-allowlist-derivation.md)
+- [Workspace Trust](operations/workspace-trust.md) — what stays available, what refuses, and what granting trust runs, in a window VS Code has not trusted
 
 ### Architecture and decisions
 

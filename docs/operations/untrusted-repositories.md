@@ -95,7 +95,8 @@ Not sufficient, in any combination:
 - `schegent.cli.environmentMode=minimal`. It removes ambient environment variables from the spawn,
   which is worth doing and is not a filesystem boundary. Files on disk are still reachable.
 - VS Code's Workspace Trust prompt. It gates *Schegent's* mutating operations, not what a backend
-  process does once spawned.
+  process does once spawned. What it does gate, exactly, is owned by
+  [Workspace Trust](workspace-trust.md).
 
 ## The compounding case: `environmentMode=inherit`
 

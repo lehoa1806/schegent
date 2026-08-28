@@ -1,3 +1,6 @@
+// FR-R3-136 (T1525a) — TRUST CLASSIFICATION: NO PRODUCER ACT.
+// Two configuration reads and no I/O.
+
 // Feature 099 (T496f, FR-054, FR-056) — the settings half of the catalog wiring.
 //
 // `catalog-store-wiring.ts` pairs the versioned store with VS Code; this pairs

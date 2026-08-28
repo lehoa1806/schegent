@@ -1,7 +1,12 @@
+// FR-R3-136 (T1525a) — TRUST CLASSIFICATION: NO PRODUCER ACT.
+// Command registrations, all through `registerGuardedCommand`. A registration
+// performs nothing; each mutating handler re-checks trust at the point of effect,
+// which is the programmatic-invocation case VS Code's guidance warns about.
+
 import * as vscode from 'vscode';
 
 import type { AuditLogWriter } from '../audit/audit-log-writer';
-import { runAuto } from '../commands/auto';
+import { runAuto, type AutoCommandArgs } from '../commands/auto';
 import { runCancel } from '../commands/cancel';
 import { runClearAll } from '../commands/clear-all';
 import { runEnqueue, type EnqueueCommandArgs } from '../commands/enqueue';
@@ -21,7 +26,7 @@ import { runRestartCanceledTask } from '../commands/restart-canceled-task';
 import { runResume } from '../commands/resume';
 import { runRetryActiveRun } from '../commands/retry-active-run';
 import { runRetryPhaseNow } from '../commands/retry-phase-now';
-import { runSchedule } from '../commands/schedule';
+import { runSchedule, type ScheduleCommandArgs } from '../commands/schedule';
 import { runShowActiveRun } from '../commands/show-active-run';
 import { runShowAuditLog } from '../commands/show-audit';
 import { runVerifyAuditChain } from '../commands/verify-audit-chain';
@@ -32,6 +37,10 @@ import {
 import type { PipelineCatalog } from '../config/pipeline-config';
 import type { SchegentWorkflowController } from '../controller/workflow-controller';
 import type { SanitizedLogger } from '../lib/logger';
+import {
+  registerGuardedCommand,
+  type GuardedCommandDeps
+} from './guarded-command-registration';
 import type { QueueManager } from '../queue/queue-manager';
 import type { GuardedRunService } from '../services/guarded-run-service';
 import type { HistoryStore } from '../state/history-store';
@@ -249,8 +258,25 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
     }
   });
 
+  // FR-R3-136 (FR-005, FR-006) — the trust guard every registration below goes
+  // through. `isWorkspaceTrusted` is a thunk, not a captured boolean: a command
+  // outlives its registration and can be invoked programmatically at any later
+  // time, including after `onDidGrantWorkspaceTrust` has fired. Reading vscode
+  // directly here matches `sidebar-router-wiring.ts`, which passes the same shape
+  // to the message router — one idiom for this in the codebase, not two.
+  const guard: GuardedCommandDeps = {
+    isWorkspaceTrusted: () => vscode.workspace.isTrusted,
+    notifier: deps.notifier,
+    logger: deps.logger
+  };
+
   const commands: vscode.Disposable[] = [
-    vscode.commands.registerCommand('schegent.auto', (args) =>
+    // The argument annotations on the handlers below are new with the guard, and
+    // they are a tightening rather than noise: `vscode.commands.registerCommand`
+    // types its handler as `(...args: any[]) => any`, so every one of these
+    // parameters was implicitly `any` and the palette could hand a command the
+    // wrong shape without a compile error.
+    registerGuardedCommand(guard, 'schegent.auto', (args: AutoCommandArgs | undefined) =>
       runAuto(args, {
         guardedRunService: deps.guardedRunService,
         store: deps.store,
@@ -259,7 +285,7 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
         logger: deps.logger
       })
     ),
-    vscode.commands.registerCommand('schegent.enqueue', async (args: EnqueueCommandArgs) => {
+    registerGuardedCommand(guard, 'schegent.enqueue', async (args: EnqueueCommandArgs) => {
       const result = await runEnqueue(args, {
         guardedRunService: deps.guardedRunService,
         store: deps.store,
@@ -280,7 +306,7 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
       }
       return result;
     }),
-    vscode.commands.registerCommand('schegent.schedule', (args) =>
+    registerGuardedCommand(guard, 'schegent.schedule', (args: ScheduleCommandArgs | undefined) =>
       runSchedule(args, {
         guardedRunService: deps.guardedRunService,
         getCatalog: deps.getCatalog,
@@ -288,7 +314,7 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
         logger: deps.logger
       })
     ),
-    vscode.commands.registerCommand('schegent.resume', (prompt?: string) =>
+    registerGuardedCommand(guard, 'schegent.resume', (prompt?: string) =>
       runResume({
         store: deps.store,
         controller: deps.controller,
@@ -298,7 +324,7 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
         prompt
       })
     ),
-    vscode.commands.registerCommand(
+    registerGuardedCommand(guard, 
       'schegent.startQueue',
       (arg?: StartQueueCommandArg) =>
         runStartQueueCommand(arg, {
@@ -307,7 +333,7 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
           logger: deps.logger
         })
     ),
-    vscode.commands.registerCommand('schegent.cancel', (arg?: { taskId?: string }) =>
+    registerGuardedCommand(guard, 'schegent.cancel', (arg?: { taskId?: string }) =>
       runCancel({
         controller: deps.controller,
         store: deps.store,
@@ -318,7 +344,7 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
         taskId: typeof arg?.taskId === 'string' ? arg.taskId : undefined
       })
     ),
-    vscode.commands.registerCommand(
+    registerGuardedCommand(guard, 
       'schegent.restartCanceledTask',
       (arg?: { taskId?: string }) =>
         runRestartCanceledTask({
@@ -330,11 +356,11 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
           taskId: typeof arg?.taskId === 'string' ? arg.taskId : ''
         })
     ),
-    vscode.commands.registerCommand('schegent.showAuditLog', () =>
+    registerGuardedCommand(guard, 'schegent.showAuditLog', () =>
       runShowAuditLog({ workspaceRoot: deps.workspaceRoot, notifier: deps.notifier })
     ),
     // FR-R3-112 — the chain verification, from the surface rather than only from a shell.
-    vscode.commands.registerCommand('schegent.verifyAuditChain', () =>
+    registerGuardedCommand(guard, 'schegent.verifyAuditChain', () =>
       runVerifyAuditChain({
         workspaceRoot: deps.workspaceRoot,
         notifier: deps.notifier,
@@ -342,19 +368,19 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
         onBreak: (detail) => deps.auditWriter.noteChainBreak(detail)
       })
     ),
-    vscode.commands.registerCommand('schegent.exportAuditLog', () =>
+    registerGuardedCommand(guard, 'schegent.exportAuditLog', () =>
       runExportAuditLog({ workspaceRoot: deps.workspaceRoot, notifier: deps.notifier })
     ),
-    vscode.commands.registerCommand('schegent.retryQueuedItem', (arg) =>
+    registerGuardedCommand(guard, 'schegent.retryQueuedItem', (arg) =>
       runRetryQueuedItem(arg, queueOpsCtx)
     ),
-    vscode.commands.registerCommand('schegent.moveQueuedItemUp', (arg) =>
+    registerGuardedCommand(guard, 'schegent.moveQueuedItemUp', (arg) =>
       runMoveQueuedItemUp(arg, queueOpsCtx)
     ),
-    vscode.commands.registerCommand('schegent.moveQueuedItemDown', (arg) =>
+    registerGuardedCommand(guard, 'schegent.moveQueuedItemDown', (arg) =>
       runMoveQueuedItemDown(arg, queueOpsCtx)
     ),
-    vscode.commands.registerCommand('schegent.clearAll', () =>
+    registerGuardedCommand(guard, 'schegent.clearAll', () =>
       runClearAll({
         controller: deps.controller,
         store: deps.store,
@@ -365,19 +391,19 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
         logger: deps.logger
       })
     ),
-    vscode.commands.registerCommand('schegent.clearCompleted', () =>
+    registerGuardedCommand(guard, 'schegent.clearCompleted', () =>
       runClearCompleted(queueOpsCtx)
     ),
-    vscode.commands.registerCommand('schegent.clearFailed', () =>
+    registerGuardedCommand(guard, 'schegent.clearFailed', () =>
       runClearFailed(queueOpsCtx)
     ),
-    vscode.commands.registerCommand('schegent.pauseQueue', (arg) =>
+    registerGuardedCommand(guard, 'schegent.pauseQueue', (arg) =>
       runPauseQueue(arg, queueOpsCtx)
     ),
-    vscode.commands.registerCommand('schegent.resumeQueue', () =>
+    registerGuardedCommand(guard, 'schegent.resumeQueue', () =>
       runResumeQueue(queueOpsCtx)
     ),
-    vscode.commands.registerCommand('schegent.rerunFromHistory', (arg) =>
+    registerGuardedCommand(guard, 'schegent.rerunFromHistory', (arg) =>
       runRerunFromHistory(arg, {
         guarded: deps.guardedRunService,
         history: deps.historyStore,
@@ -387,10 +413,10 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
         logger: deps.logger
       })
     ),
-    vscode.commands.registerCommand('schegent.showActiveRun', (arg) =>
+    registerGuardedCommand(guard, 'schegent.showActiveRun', (arg) =>
       runShowActiveRun(arg, { notifier: deps.notifier, logger: deps.logger })
     ),
-    vscode.commands.registerCommand('schegent.openDashboard', (arg) =>
+    registerGuardedCommand(guard, 'schegent.openDashboard', (arg) =>
       runOpenDashboard(arg, {
         bridge: dashboardBridge,
         notifier: deps.notifier,
@@ -398,7 +424,7 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
         getWorkspaceFolders: deps.getWorkspaceFolders
       })
     ),
-    vscode.commands.registerCommand('schegent.retryActiveRun', (arg) =>
+    registerGuardedCommand(guard, 'schegent.retryActiveRun', (arg) =>
       runRetryActiveRun(arg, {
         store: deps.store,
         controller: deps.controller,
@@ -411,7 +437,7 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
         logger: deps.logger
       })
     ),
-    vscode.commands.registerCommand('schegent.retryPhaseNow', (arg) =>
+    registerGuardedCommand(guard, 'schegent.retryPhaseNow', (arg) =>
       runRetryPhaseNow(arg, {
         controller: deps.controller,
         lock: deps.lock,
@@ -422,13 +448,13 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
     // Feature 093 (FR-018 / T080) — the sidebar always passes the addressed
     // queue; a human invoking these from the palette passes nothing and the
     // controller resolves a sole Run, refusing when N are in flight.
-    vscode.commands.registerCommand('schegent.pausePhase', async (queueId?: string) => {
+    registerGuardedCommand(guard, 'schegent.pausePhase', async (queueId?: string) => {
       const result = await deps.controller.pauseActivePhase(queueId);
       if (!result.ok) {
         deps.notifier.warn(`Schegent: pause phase rejected (${result.reason}).`);
       }
     }),
-    vscode.commands.registerCommand(
+    registerGuardedCommand(guard, 
       'schegent.resumePhase',
       async (prompt?: string, queueId?: string) => {
         const result = await deps.controller.resumeActivePhase(prompt, queueId);
@@ -437,13 +463,13 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
         }
       }
     ),
-    vscode.commands.registerCommand('schegent.restartPhase', async (queueId?: string) => {
+    registerGuardedCommand(guard, 'schegent.restartPhase', async (queueId?: string) => {
       const result = await deps.controller.restartActivePhase(queueId);
       if (!result.ok) {
         deps.notifier.warn(`Schegent: restart phase rejected (${result.reason}).`);
       }
     }),
-    vscode.commands.registerCommand('schegent.redetectClaudeTransport', () => {
+    registerGuardedCommand(guard, 'schegent.redetectClaudeTransport', () => {
       deps.notifier.info(
         'Schegent: Claude CLI now natively streams prompts over stdin. No transport redetection is necessary.'
       );
@@ -453,10 +479,10 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
     // FR-R3-085. The services existed, tested, with no caller; nothing declared
     // them, so a reader following that page found an empty palette.
     // `tests/lint/documented-commands-exist.test.ts` is what stops that recurring.
-    vscode.commands.registerCommand('schegent.exportRunEvidence', (runId?: unknown) =>
+    registerGuardedCommand(guard, 'schegent.exportRunEvidence', (runId?: unknown) =>
       runExportRunEvidenceCommand(evidenceCommandDeps(deps), runId)
     ),
-    vscode.commands.registerCommand('schegent.deleteRunEvidence', (runId?: unknown) =>
+    registerGuardedCommand(guard, 'schegent.deleteRunEvidence', (runId?: unknown) =>
       runDeleteRunEvidenceCommand(evidenceCommandDeps(deps), runId)
     )
   ];

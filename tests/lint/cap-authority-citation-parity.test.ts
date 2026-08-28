@@ -84,6 +84,12 @@ const NON_DEFINITION_MENTIONS: ReadonlySet<string> = new Set([
   // `settings-schema.ts`, which is a definition site and carries the citation.
   'src/contracts/generated/boundary-contracts.ts',
   'src/contracts/generated/schemas/settings.schema.json',
+  // FR-R3-136 — a trust disposition table. It names the setting KEY, once, as a
+  // row saying whether a workspace may set it while the folder is untrusted; it
+  // holds no bound and no default, so deleting every other site would leave it
+  // answering nothing about the range. Reading it tells you who may write the
+  // cap, never what the cap is.
+  'src/contracts/configuration-trust-dispositions.ts',
   // Command handlers — pass an already-validated value through.
   'src/commands/cancel.ts',
   'src/ui/sidebar/commands/cmd-cancel.ts',

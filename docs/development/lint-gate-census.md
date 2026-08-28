@@ -19,12 +19,15 @@ predicted it: its author sampled the set and found every gate well motivated.
 
 | Figure | Value | Date | Method |
 |---|---|---|---|
-| Gate files | **162** | 2026-08-27 | `*.test.ts` under `tests/lint/` recursively |
-| Marked `unique` | 150 | 2026-08-27 | hand verdict |
-| Marked `partially redundant` | 12 | 2026-08-27 | hand verdict |
-| Marked `redundant` | 0 | 2026-08-27 | hand verdict |
+| Gate files | **166** | 2026-08-28 | `*.test.ts` under `tests/lint/` recursively |
+| Marked `unique` | 154 | 2026-08-28 | hand verdict |
+| Marked `partially redundant` | 12 | 2026-08-28 | hand verdict |
+| Marked `redundant` | 0 | 2026-08-28 | hand verdict |
 
 <!-- census:prose -->
+
+
+
 
 
 
@@ -146,6 +149,7 @@ changing one means updating that machinery in the same commit.
 | `a11y-policy-parity.test.ts` | FR-R3-091 — the conformance target is one claim, not three | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `actions-retirement-claims.test.ts` | FR-R3-099 — the retired claims are historical, never present-tense | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `activation-events-declared.test.ts` | the activation surface is declared and bounded (111, FR-016, FR-017) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
+| `activation-trust-classification.test.ts` | src/activation trust classification (FR-R3-136 T1525a) | `command-trust-dispositions.test.ts` (the command surface only) | unique | its siblings assert what a trust gate DOES once someone has written one — that every command id carries a disposition, that the router is handed a posture. This one asserts that every module under `src/activation/` has been CLASSIFIED at all: one of four verdicts, in the file, saying where its acts are gated or why it has none. That sweep is what found the two producer acts no task list had named — the ownership election and the phase-log-tail audit append — and the module count is derived from the directory listing, so a module added without a verdict fails here and nowhere else |
 | `agents-claude-parity.test.ts` | (no describe title) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `allowlist-entries-still-apply.test.ts` | an allowlist entry still excuses something | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `architecture-doc-schema-parity.test.ts` | FR-R3-013 — ARCHITECTURE.md schema and defaults parity | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
@@ -166,6 +170,7 @@ changing one means updating that machinery in the same commit.
 | `capability-text-contract-parity.test.ts` | FR-R3-086 — operator-facing text cannot name an event the contract lacks | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `catalog-lifecycle-dispatch.test.ts` | Feature 100 T509d — the six lifecycle commands have one dispatch surface | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `catalog-purity.test.ts` | Feature 099 — the catalog store imports nothing impure | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
+| `command-trust-dispositions.test.ts` | FR-R3-136 — every command entry point carries a trust disposition, and mutating ones are guarded | `message-router-trust-wiring.test.ts` (the webview IPC surface only) | unique | that gate reads `src/activation/sidebar-router-wiring.ts` and asserts the router is *handed* a trust posture; it says nothing about `vscode.commands.registerCommand`, which is the other way to reach the same services and the one that had no classification at all. The two surfaces were asymmetric for eleven features — IPC refused since Feature 059, thirty command registrations never asking — so a gate holding one is evidence about that one. Landed red: every mutating id was unguarded when this gate was first run |
 | `compiler-strictness-ratchet.test.ts` | FR-R3-110 — compiler strictness is adopted under a ratchet | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `concurrency-isolation-disclosure.test.ts` | FR-R3-124 — the shared-tree disclosure has content, and no live document sells a cap above one as isolation | `cap-authority-citation-parity.test.ts` (citation only) | unique | that gate asserts each cap definition site *cites* `docs/architecture/local-queue-parallelism-ratification.md`; it never reads what the site says. On 2026-08-27 every shared-tree sentence in the tree could be deleted with the whole gate set staying green, which is the hole this gate closes |
 | `containment-qualification-parity.test.ts` | FR-R3-125 — the containment qualification record and the product name the same mechanism for every backend | `backend-containment-policy.test.ts` (classification only), `backend-permission-posture.test.ts` (onboarding surfaces name the setting) | unique | neither sibling compares the product against the qualification RECORD: the policy test asserts the classification against each adapter's argv, and the posture test asserts a setting key appears on onboarding pages. A record naming a boundary the product does not implement — the direction that misleads an operator — was unguarded before this |
@@ -203,6 +208,7 @@ changing one means updating that machinery in the same commit.
 | `lint-gates-are-hermetic.test.ts` | lint gates depend on no undeclared binary | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `localization-posture.test.ts` | localization posture | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `manifest-audit-claims.test.ts` | manifest audit claims resolve to declared events (FR-R3-064) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
+| `manifest-untrusted-claims.test.ts` | FR-R3-136 — the manifest untrusted-workspace claim agrees with the tree | `manifest-audit-claims.test.ts` (same shape, different claim), `restricted-configurations-parity.test.ts` (the restricted list only) | unique | `manifest-audit-claims.test.ts` is this gate's shape over the manifest's audit-event claims and says nothing about `untrustedWorkspaces`; the parity gate compares the restricted LIST to the classification table and reads no prose. What lands only here: `supported: 'limited'` against the command dispositions, and the four counts `docs/operations/workspace-trust.md` states about a window an operator has not trusted — derived from the tree, and a pattern matching nothing is an offender too, so the page's numbers cannot rot away from what they describe |
 | `message-router-primacy-wiring.test.ts` | MessageRouter primary-window wiring | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `message-router-trust-wiring.test.ts` | MessageRouter workspace-trust wiring | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `mutating-command-name-gate.test.ts` | MUTATING_COMMANDS naming-convention gate | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
@@ -268,6 +274,7 @@ changing one means updating that machinery in the same commit.
 | `readme-command-parity.test.ts` | command indexes cover every contributed command | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `redaction-labels-single-source.test.ts` | redaction-labels-single-source (FR-020, FR-021, SC-008) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `reference-doc-claims.test.ts` | FR-R3-102 — reference pages do not name settings or events that do not exist | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
+| `restricted-configurations-parity.test.ts` | restrictedConfigurations parity (FR-R3-136 T1526c) | `manifest-untrusted-claims.test.ts` (the list's length only) | unique | the sibling reads the list's LENGTH into a count a document states, so a manifest naming fourteen of the wrong keys passes there. This gate is the bijection in both directions between `restrictedConfigurations` and the sensitivity classes it is derived from — every workspace-settable property classified, every classified property still present and still settable, no ghost entry that reads like protection — plus the nine executable-authority keys still `application`-scoped, which is the one guarantee here that holds in a trusted window too |
 | `retention-disclosure-parity.test.ts` | FR-R3-085 — the retention disclosure derives from the retention constants | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `retired-definition-keys-absent.test.ts` | retired definition settings keys | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `retired-identifiers.test.ts` | the historical exemption list is live | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |

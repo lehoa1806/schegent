@@ -330,6 +330,9 @@ async function makeHarness(
  */
 async function startParityNode(harness: Harness): Promise<string> {
   const guardedRun = new GuardedRunService({
+    // FR-R3-136 (FR-008) — this suite exercises a trusted workspace; the
+    // untrusted rows live in the trust-specific describe block.
+    isWorkspaceTrusted: () => true,
     lock: harness.lock,
     queue: harness.queue,
     controller: harness.controller,

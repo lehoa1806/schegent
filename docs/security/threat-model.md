@@ -250,25 +250,69 @@ Execution leases heartbeat and become reclaimable only after the shared 15-secon
 
 ### T7 — Untrusted workspace executing extension capabilities
 
-Mutating IPC fails closed when the trust callback is missing, throws, or returns anything but `true`. Workspace-bound activation is also separated from the restricted stage.
+Three surfaces reach extension capability, and each is gated on the same read of the same trust
+state:
 
-**The intent is now declared, not inferred** (`FR-R3-126`). `package.json` carries
+- **Mutating IPC** fails closed when the trust callback is missing, throws, or returns anything but
+  `true`.
+- **Commands** (`FR-R3-136`). Every one of the 23 mutating command ids is registered through
+  `registerGuardedCommand`, which re-reads `vscode.workspace.isTrusted` **at the point of effect**.
+  Until 2026-08-28 the 30 registrations were bare `vscode.commands.registerCommand` calls and the
+  sidebar router was the only gate — so the palette, a task, and any other installed extension
+  reached every mutation directly. Contributed visibility is not authorization, and this manifest
+  has no `enablement` clauses that could have stood in for one.
+- **Activation** — see the election below.
+
+**The election is itself a write** (`FR-R3-136`). `store.ownership.acquire` writes a generation file
+under `.schegent/ownership/`, so acquiring the workspace resource is a filesystem write to a
+workspace-influenced path in the same sense a Run's output is, and being the primary window is what
+subsequently authorizes replaying transitions, re-arming a scheduled start, reattaching the watchdog
+and resuming a persisted Run. Before FR-R3-136 an untrusted window elected: Stage 2 was split by
+construction, and everything workspace-bound that ran was on the *built* side. It is now split by
+**act**. The graph is still built eagerly in an untrusted window — that is what keeps the read-only
+surfaces working — and the acts moved behind the gate, together with the capability probe that spawns
+`<cli> --help`. Granting trust runs that half exactly once, through a single
+`onDidGrantWorkspaceTrust` subscriber.
+
+**An untrusted window is not write-free, and the distinction is the point.** The Stage-1 runtime log
+sink is attached before any trust decision this feature makes, so `<workspaceRoot>/.schegent/syslog`
+is created and appended to in a window nobody trusted — which is exactly how a refusal becomes
+observable, and why `logging.runtimeLogFilePath` and its two bounds are `restrictedConfigurations`
+entries rather than left to the workspace to name. What the gate withholds is the *acts*: no
+election, no replay, no re-arm, no reattach, no resume, no probe. A claim that an untrusted window
+touches nothing would be both false and weaker than the one that holds.
+
+**The intent is declared, not inferred** (`FR-R3-126`). `package.json` carries
 `capabilities.untrustedWorkspaces` with `supported: "limited"`. Until 2026-08-27 the manifest carried
 no `capabilities` key at all, so VS Code applied its conservative default: the behaviour was safe and
 the *intent* was left to a reader's inference, which is not the same thing in a document reviewers
-read to decide what this extension does.
+read to decide what this extension does. `false` would be the opposite error — a claim the extension
+does not run in an untrusted window, when it activates and serves reads deliberately.
 
-**Why `limited` and not `false`.** `false` would claim the extension does not run in an untrusted
-window. It does: it activates, and it serves the read-only view above — state, history, audit and logs
-are visible, which is deliberate and useful. Declaring `false` would be a false claim about our own
-behaviour, in the manifest, which is the class of defect this item exists to close. `limited` states
-what is true: it runs, and the mutating set is refused while the workspace is untrusted.
+**Settings are the fourth surface** (`FR-R3-136`). A workspace `.vscode/settings.json` could vote on
+a capability, silence an operator signal, or redirect and truncate evidence without invoking
+anything. The 14 `restrictedConfigurations` entries are the properties where it could, derived from
+the sensitivity classes in `src/contracts/configuration-trust-dispositions.ts`; the nine
+executable-authority properties are `application`-scoped instead, which is stronger because it holds
+in a trusted window too.
 
-Adding a capability block is exactly the kind of edit that quietly enables something, so the check is
-the VS Code 1.107 Electron integration suite rather than this paragraph — 13 modules across two
-launches, green with the block present.
+**What checks it.** `tests/integration/trust-untrusted-workspace.host.test.ts` drives 28 of the 30
+command ids through `executeCommand` in a real untrusted window and asserts one refusal each for the
+mutating ids, none for the read-only ones, no ownership generation file, and no spawn against a
+user-scope sentinel; `trust-granted-workspace.host.test.ts` is the same fixture with trust granted and
+turns every one of those absences into a presence.
+
+This paragraph previously claimed the check was "the VS Code 1.107 Electron integration suite — 13
+modules across two launches". **That claim was unsound, and worth recording rather than quietly
+replacing.** `@vscode/test-electron`'s `runTests` appends `--disable-workspace-trust` to every launch,
+so `workspace.isTrusted` was unconditionally `true` and no host assertion this repository had ever
+made could observe an untrusted window. The suite is now 15 modules across four launches, two of
+which set the trust posture explicitly.
 
 <!-- Source: src/ui/sidebar/message-router.ts -->
+<!-- Source: src/activation/guarded-command-registration.ts -->
+<!-- Source: src/activation/stage2-producers.ts -->
+<!-- Source: src/contracts/configuration-trust-dispositions.ts -->
 <!-- Source: src/extension.ts -->
 <!-- Source: package.json -->
 

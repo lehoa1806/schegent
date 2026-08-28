@@ -1,3 +1,7 @@
+// FR-R3-136 (T1525a) — TRUST CLASSIFICATION: NO PRODUCER ACT.
+// Returns a requester. The modal is shown and the decision recorded when a Run
+// asks, and no Run starts in an untrusted window.
+
 // Feature 098 (SEC-02) — operator consent for Git-mutating runs.
 //
 // This module exists because the production wiring used to show a warning

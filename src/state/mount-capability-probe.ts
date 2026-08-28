@@ -287,11 +287,17 @@ export async function probeMountCapability(
   // and therefore owes it.
   //
   // It is NOT the first writer, and an earlier version of this comment claimed it
-  // was. `extension.ts` awaits `lock.tryAcquire()` twelve lines earlier, and that
-  // goes through `ownership-fs`'s `ensureAnchorWithinRoot` and creates
-  // `.schegent/ownership/` without calling the helper. So on a fresh workspace the
-  // directory already exists, un-ignored, before this runs — a residual that
-  // belongs to the ownership path, not here.
+  // was. `stage2-producers.ts` awaits `lock.tryAcquire()` as its first statement
+  // and starts this probe a few lines later, and that election goes through
+  // `ownership-fs`'s `ensureAnchorWithinRoot` and creates `.schegent/ownership/`
+  // without calling the helper. So on a fresh workspace the directory already
+  // exists, un-ignored, before this runs — a residual that belongs to the
+  // ownership path, not here.
+  //
+  // FR-R3-136 moved both calls out of `extension.ts`, which is where this comment
+  // used to point. The ORDER is what the claim depends on, and it survived the
+  // move intact: the election is still first, and both are now behind the trust
+  // gate, so neither writes in an untrusted window.
   //
   // What this call still buys is that the ignore file lands at ACTIVATION rather
   // than at the first audit append, which is what keeps an abandoned

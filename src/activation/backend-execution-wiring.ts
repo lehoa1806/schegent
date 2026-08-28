@@ -1,3 +1,9 @@
+// FR-R3-136 (T1525a) — TRUST CLASSIFICATION: NO PRODUCER ACT.
+// Constructs the CLI monitor, the telemetry sampler and the runner registry, and
+// returns three late-binding setters. `new RunnerRegistry(...)` spawns nothing;
+// the spawn happens when a Run starts, and no Run starts in an untrusted window.
+// The one `disposables.push` here is `cancelAll` at teardown.
+
 import * as vscode from 'vscode';
 
 import type { AuditLogWriter } from '../audit/audit-log-writer';

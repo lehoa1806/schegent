@@ -31,6 +31,10 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { filesUnder } from './source-scan';
+import {
+  MUTATING_COMMAND_ID_LIST,
+  READ_ONLY_COMMAND_ID_LIST
+} from '../../src/contracts/entry-point-dispositions';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const read = (rel: string): string => readFileSync(resolve(REPO_ROOT, rel), 'utf8');
@@ -163,6 +167,68 @@ describe('a document may not name a command that does not exist (FR-R3-127)', ()
         'was removed deliberately, remove this assertion in the same change.'
     ).not.toBeNull();
     expect(Number(claim![1])).toBe(commands.length);
+  });
+
+  it('every count the reference page asserts about the command set is derived, not remembered', () => {
+    // FR-R3-136 (T1528d-2) — CLOSING THE CLASS, not the instance.
+    //
+    // The assertion above reads one sentence on one page, and its own comment
+    // records the failure it caught: 19 against a manifest of 20. That is a class,
+    // and a gate scoped to a single sentence leaves every other count in the corpus
+    // exactly as unchecked as that one was. `api-and-cli.md` carried "the other 26
+    // commands require successful workspace-bound Stage 2 initialization" while the
+    // tree registered 29 — wrong by three, on the page that calls itself the
+    // exhaustive reference, and nothing noticed.
+    //
+    // Every number below is derived from the tree. `ui-wiring.ts` is Stage 2 and
+    // `extension.ts` is Stage 1, which is the split the sentence describes; the
+    // registration/declaration parity behind these counts is
+    // `tests/lint/command-trust-dispositions.test.ts`.
+    const guardedIn = (rel: string): number =>
+      read(rel).split('registerGuardedCommand(').length - 1;
+    const stage2 = guardedIn('src/activation/ui-wiring.ts');
+    const stage1 = guardedIn('src/extension.ts');
+    expect(stage1, 'Stage 1 registers no command through the guard helper').toBeGreaterThan(0);
+    expect(stage2, 'Stage 2 registers no command through the guard helper').toBeGreaterThan(15);
+
+    const total = MUTATING_COMMAND_ID_LIST.length + READ_ONLY_COMMAND_ID_LIST.length;
+    expect(
+      stage1 + stage2,
+      'the guarded call sites and the disposition maps disagree, so the counts below would be ' +
+        'derived from the wrong denominator'
+    ).toBe(total);
+
+    const body = read(COMPLETENESS_PAGE);
+    const claims: readonly { readonly pattern: RegExp; readonly actual: number }[] = [
+      { pattern: /the other (\d+) commands require successful workspace-bound Stage 2/, actual: stage2 },
+      { pattern: /All (\d+) go through `registerGuardedCommand`/, actual: total },
+      { pattern: /registers the (\d+) read-only IDs unwrapped/, actual: READ_ONLY_COMMAND_ID_LIST.length },
+      { pattern: /wraps each of the (\d+) mutating ones/, actual: MUTATING_COMMAND_ID_LIST.length },
+      { pattern: /every one of the (\d+) registrations goes through `registerGuardedCommand`/, actual: total },
+      { pattern: /The (\d+) `mutating` IDs are/, actual: MUTATING_COMMAND_ID_LIST.length },
+      { pattern: /The (\d+) `read-only` IDs are registered unwrapped/, actual: READ_ONLY_COMMAND_ID_LIST.length }
+    ];
+
+    const offenders: string[] = [];
+    for (const claim of claims) {
+      const match = claim.pattern.exec(body);
+      if (match === null) {
+        offenders.push(`${claim.pattern} matches nothing on the page`);
+        continue;
+      }
+      if (Number(match[1]) !== claim.actual) {
+        offenders.push(`"${match[0]}" against a tree of ${claim.actual}`);
+      }
+    }
+    expect(
+      offenders,
+      `${COMPLETENESS_PAGE} makes a numeric claim about the command set that the tree does not ` +
+        'support. A count in prose is the one kind of documentation defect that arrives without ' +
+        'anybody editing the sentence — someone adds a command, and the number is silently wrong ' +
+        'on the page a reviewer trusts most. If a sentence was deliberately reworded, update the ' +
+        'pattern here in the same change; a pattern that matches nothing fails too, so this gate ' +
+        'cannot rot into silence.'
+    ).toEqual([]);
   });
 
   it('catches a title the manifest lacks and spares one it has — proved', () => {

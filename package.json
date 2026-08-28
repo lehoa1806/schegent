@@ -24,7 +24,23 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
-      "description": "Schegent activates in an untrusted window and serves a read-only view: state, history, audit and logs are visible. Every command in the mutating set is refused at the sidebar message router while VS Code reports the workspace untrusted, so enqueueing or starting a Run and publishing a process definition are unavailable until the folder is trusted \u2014 and because a Run is what spawns a backend CLI, no CLI is spawned either. Declared explicitly rather than left to VS Code's default (FR-R3-126) so the intent is on the record; the behaviour is unchanged and the VS Code integration suite is what shows it."
+      "description": "Schegent activates in an untrusted window and serves reads. What stays available: state, history, the audit log and the runtime log, and the 7 read-only commands \u2014 showAuditLog, showActiveRun, openDashboard, verifyAuditChain, redetectClaudeTransport, and the two exports, whose destination an operator confirms in a modal no workspace content can answer. What is refused: the 23 commands in the mutating set \u2014 starting, resuming, cancelling and retrying a Run, every queue mutation, every phase override, and deleting run evidence. Refused at the point of effect, not at registration, so the refusal holds for an invocation from the palette, from the sidebar, from a task, and from another extension alike; VS Code's own guidance is that contributed visibility is not authorization. The sidebar message router refuses the mutating IPC set on the same read of the same trust state, which is what makes publishing a process definition unavailable too. FR-R3-136 also stopped the untrusted window ACTING at activation: it does not acquire the workspace ownership lock, replay terminal transitions, re-arm a scheduled start, reattach the watchdog, resume a persisted Run, or probe backend capabilities \u2014 so no backend CLI is spawned, and nothing is written under .schegent/ by that half. Granting trust runs it once, through the onDidGrantWorkspaceTrust subscriber. The 14 restrictedConfigurations below are the properties whose workspace value could vote on a capability, silence an operator signal, or redirect and truncate evidence, so while the folder is untrusted VS Code hands Schegent the operator's own value for each of them instead; the list is derived from the sensitivity classes in src/contracts/configuration-trust-dispositions.ts, not hand-kept. What shows all of this is tests/integration/trust-untrusted-workspace.host.test.ts, in a launch where Workspace Trust is genuinely live \u2014 until FR-R3-136 every host-leg launch passed --disable-workspace-trust, so no assertion this repository had ever made observed an untrusted window.",
+      "restrictedConfigurations": [
+        "schegent.audit.rotation.maxAgeDays",
+        "schegent.audit.rotation.sizeMB",
+        "schegent.logging.rawTranscriptMode",
+        "schegent.logging.runtimeLogFilePath",
+        "schegent.logging.runtimeLogLevel",
+        "schegent.logging.runtimeLogMaxBytes",
+        "schegent.logging.runtimeLogMaxGenerations",
+        "schegent.logging.sessionRetentionMaxAgeDays",
+        "schegent.logging.sessionRetentionMaxBytes",
+        "schegent.logging.verbose",
+        "schegent.multiRoot.suppressWarning",
+        "schegent.trust.allowCustomPhases",
+        "schegent.trust.allowCustomRetryConditions",
+        "schegent.ui.confirmations.enable"
+      ]
     }
   },
   "activationEvents": [

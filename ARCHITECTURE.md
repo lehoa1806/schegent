@@ -9,6 +9,7 @@ Remote, multi-user, or service-hosted operation remains behind the expansion arc
 
 <!-- Source: package.json -->
 <!-- Source: src/extension.ts -->
+<!-- Source: src/activation/stage2-producers.ts -->
 <!-- Source: src/activation/ui-wiring.ts -->
 
 ## Runtime shape
@@ -20,8 +21,26 @@ workflow controller, and finally registers operator commands and webviews. A
 workspace-less window receives only the reduced UI and evidence wiring that can
 operate without a project root.
 
-Election precedes recovery (FR-R3-070): the primacy claim is taken immediately
-after the lock and lease managers are constructed, and every recovery
+Stage 2 splits on the ACT, not on construction (FR-R3-136). The graph is built
+eagerly whether or not the workspace is trusted — that is what keeps the
+read-only surfaces working in an untrusted window — and everything that *does*
+something moved into `src/activation/stage2-producers.ts`: the election, the
+terminal-transition replay, the evidence-backlog replay, the catalog refresh, the
+four recovery installers, and the backend capability probe. The producer half
+runs when the workspace is trusted, and exactly once more if trust is granted
+later, through a single `onDidGrantWorkspaceTrust` subscriber. The criterion for
+the split is stated at the top of that module: a unit is a producer if it writes
+to a workspace-influenced path, spawns a child process, or arms a timer that
+fires one of those. Read-side timers stay on the eager side.
+
+The election moved with them, because acquiring the resource *is* a write:
+`store.ownership.acquire` creates `.schegent/` and writes a generation file, and
+being primary is what authorizes the four installers behind it. Before FR-R3-136
+an untrusted window elected.
+
+Election precedes recovery (FR-R3-070): the primacy claim is the producer half's
+first statement, taken immediately after the lock and lease managers are
+constructed, and every recovery
 installer — the scheduled-start re-arm, the credit-watchdog reattach, the
 delayed-retry resume, and the persisted-run sweep — is gated on its result. A
 non-primary window installs no recovery timers and leaves persisted deadlines

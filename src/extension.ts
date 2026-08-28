@@ -13,6 +13,8 @@ import {
   type RuntimeEvidenceWiring
 } from './activation/backend-wiring';
 import { registerStage2Ui } from './activation/ui-wiring';
+import { registerGuardedCommand } from './activation/guarded-command-registration';
+import { Notifier } from './ui/notifications';
 import { SchegentOutputChannel } from './ui/output-channel';
 import { runReset, type ResetHost, type ResetStageSupport } from './commands/reset';
 import {
@@ -22,8 +24,6 @@ import {
 import { StateProjector } from './ui/sidebar/state-projector';
 import { SidebarViewProvider } from './ui/sidebar/sidebar-view-provider';
 import { PlaceholderProjector } from './ui/sidebar/placeholder-projector';
-import { checkLiveness, createLivenessProbe } from './services/process-liveness';
-import { resumePersistedRuns } from './services/resume-decision';
 import { GuardedRunService } from './services/guarded-run-service';
 import { createSidebarRouter } from './activation/sidebar-router-wiring';
 import { wireBackendExecution } from './activation/backend-execution-wiring';
@@ -33,6 +33,15 @@ import { wireScheduledWork } from './activation/scheduled-work-wiring';
 import { wireEvidence } from './activation/evidence-wiring';
 import { wireLivePicture } from './activation/live-picture-wiring';
 import { wirePhaseExecution } from './activation/phase-execution-wiring';
+import { createStage2Producers, type Stage2Producers } from './activation/stage2-producers';
+import { wireTrustGrant } from './activation/trust-grant-wiring';
+
+/**
+ * FR-R3-136 (FR-005) — the one live read of Workspace Trust in this file, and a
+ * function rather than a value so every taker re-decides when it acts. Four
+ * inline copies were four places for one to become a captured boolean.
+ */
+const isWorkspaceTrusted = (): boolean => vscode.workspace.isTrusted;
 
 interface Stage2Wiring {
   readonly disposables: readonly vscode.Disposable[];
@@ -43,9 +52,14 @@ interface Stage2Wiring {
    * talks to whichever stage 2 is current.
    */
   readonly reset: ResetStageSupport;
+  /**
+   * FR-R3-136 (FR-010) — what a later trust grant calls. On the wiring for the
+   * same reason `reset` is: a reload replaces the graph, and a grant arriving
+   * after one must reach the CURRENT producers, not a disposed lock.
+   */
+  readonly producers: Stage2Producers;
   dispose(): Promise<void>;
 }
-
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const logger = new SanitizedLogger();
@@ -142,10 +156,29 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     reload: ensureStage2
   };
 
+  // FR-R3-136 — why the guard helper depends on nothing from Stage 2.
+  // `schegent.reset` is registered here and stays reachable with no folder open,
+  // so a guard needing a store or a lock could not be applied to it. This
+  // `Notifier` is not a second notification path: it is a stateless wrapper over
+  // three `vscode.window.show*Message` calls, available before `wireStage2`.
+  const stage1Notifier = new Notifier(vscode.window);
+
   context.subscriptions.push(
-    vscode.commands.registerCommand('schegent.reset', () =>
-      runReset({ store, logger, host: resetHost })
+    registerGuardedCommand(
+      {
+        isWorkspaceTrusted,
+        notifier: stage1Notifier,
+        logger
+      },
+      'schegent.reset',
+      () => runReset({ store, logger, host: resetHost })
     )
+  );
+
+  // FR-R3-136 (FR-010) — a later grant reaches the CURRENT producers, which is
+  // why the thunk and not the value: `wireTrustGrant` carries the rest.
+  context.subscriptions.push(
+    wireTrustGrant({ logger, getProducers: () => stage2?.producers ?? null })
   );
 
   context.subscriptions.push(
@@ -284,18 +317,8 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     processEnvironmentPolicy,
     getHistoryStore: () => historyStore
   });
-  const {
-    catalogReader,
-    catalogStore,
-    catalogSession,
-    catalogLifecycle,
-    lock,
-    executionLeases,
-    lockResult,
-    statusBar,
-    notifier,
-    queue
-  } = session;
+  const { catalogReader, catalogStore, catalogSession, catalogLifecycle, lock,
+    executionLeases, statusBar, notifier, queue, startMountProbe } = session;
   // FR-R3-119 — extracted to `src/activation/evidence-wiring.ts`: the audit
   // writer, the retention sweep, and the two thunks that tell them what is still
   // live. The migration events are passed rather than re-derived — the store
@@ -304,7 +327,8 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     auditWriter,
     sessionRetention,
     collectAllWorkflowPipelineRefs,
-    protectedSessionRunIds
+    protectedSessionRunIds,
+    replayEvidenceBacklog
   } = await wireEvidence({
     workspaceRoot,
     logger,
@@ -451,6 +475,9 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   backend.bindLivenessRecorder(controller);
 
   const guardedRunService = new GuardedRunService({
+    // FR-R3-136 (FR-008) — admission is re-decided at the moment of the write,
+    // not at the moment this service was built.
+    isWorkspaceTrusted,
     lock,
     queue,
     controller,
@@ -484,22 +511,8 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     processEnvironmentPolicy
   });
 
-  // FR-R3-119 — the `reArm()` recovery landmark stays HERE, with the other two,
-  // rather than moving into the module that builds its coordinator.
-  // `elect-before-recovering` reasons about the order of the landmarks in this
-  // file; a landmark moved out of it is not safer, it is unwatched.
-  if (lockResult.acquired) {
-    try {
-      await scheduledStartCoordinator.reArm();
-    } catch (err) {
-      logger.warn(`scheduled-start re-arm failed: ${(err as Error).message}`);
-    }
-  } else {
-    // FR-R3-070 — non-primary: no re-arm. Persisted schedules stay exactly as
-    // they are, addressable by the primary window's coordinator and watchdog.
-    logger.info('scheduled-start re-arm skipped: window is not primary');
-  }
-
+  // FR-R3-136 — the four recovery landmarks moved to `stage2-producers.ts` with
+  // the election gating them; `elect-before-recovering` reads them there now.
   // FR-R3-119 — extracted to `src/activation/live-picture-wiring.ts`: the state
   // projector, the connected-run service it reads, and the phase-log tail.
   //
@@ -514,6 +527,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     workspaceRoot,
     ownerId,
     logger,
+    isWorkspaceTrusted,
     store,
     queue,
     controller,
@@ -592,52 +606,28 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   phaseLogTail.bindDashboardBridge(uiWiring.dashboardBridge);
   output.log(`activated; cli=${cliPath}, cap=${iterationCap}, pollIntervalMin=${pollIntervalMinutes}`);
 
-  if (lockResult.acquired) {
-    await watchdog.reattachOnActivation();
-  } else {
-    // FR-R3-070 — non-primary: the persisted poll deadline remains for the
-    // primary window to reattach.
-    logger.info('watchdog reattach skipped: window is not primary');
-  }
-
-  // Feature 011 FR-013 — restart handshake. If the persisted run has a
-  // pending delayed-retry deadline, re-arm the watchdog (or resume
-  // immediately if it has already elapsed).
-  if (lockResult.acquired) {
-    await controller.resumeExistingFromActivation();
-  } else {
-    // FR-R3-070 — the path that used to fire setImmediate(resumeExisting)
-    // before the election was decided; the elapsed deadline stays persisted.
-    logger.info('delayed-retry re-arm skipped: window is not primary');
-  }
-
-  // FR-R3-070 — the election itself moved above the recovery installers.
-  // Primary-window status stays decoupled from run-resumption: even with no
-  // run persisted, this window must be primary so the sidebar mounts enabled.
-  // Feature 093 (T037/T039) — C-4 aggregate. A window that crashed mid-
-  // concurrency persisted several Runs, and each is re-armed on the queue that
-  // owns it. With one entry this is the previous behavior exactly.
   // FR-R3-103 (FR-046) — a lost fence terminates this window's children.
   context.subscriptions.push(lock.onFenceLost(() => controller.abortOnSupersession()));
 
-  if (lockResult.acquired) {
-    // FR-R3-103 — ask whether the previous host's tree is still alive before resuming.
-    const probe = createLivenessProbe();
-    void resumePersistedRuns({
-      // Filtered HERE: this file is on the status-literal allowlist and
-      // `resume-decision.ts` is not, which is the right way round — the policy module
-      // should not know the status vocabulary.
-      runs: () =>
-        Object.entries(store.getRunMap()).filter(([, run]) => run.status === 'running'),
-      liveness: (identity) => checkLiveness(identity, probe),
-      appendAudit: async (entry) => {
-        await auditWriter.append({ ...entry, payload: { ...entry.payload } });
-      },
-      resume: (queueId) => void controller.resumeExisting(queueId),
-      notify: (message) => void vscode.window.showWarningMessage(message),
-      log: (message) => logger.info(message)
-    });
-  }
+  // FR-R3-136 (FR-009…FR-012) — THE TRUST GATE. Everything above constructs or
+  // subscribes and writes nothing, which is why the fence line stays on this side;
+  // `stage2-producers.ts` carries why the split falls on the act, not construction.
+  const producers = createStage2Producers({
+    isWorkspaceTrusted,
+    logger,
+    store,
+    auditWriter,
+    lock,
+    controller,
+    watchdog,
+    scheduledStartCoordinator,
+    replayEvidenceBacklog,
+    runSafety,
+    backendCapabilities,
+    startMountProbe,
+    refreshCatalog
+  });
+  await producers.run();
 
   const dispose = async (): Promise<void> => {
     uiWiring.dispose();
@@ -668,7 +658,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   });
 
   return {
-    stage2: { disposables, reset: resetSupport, dispose },
+    stage2: { disposables, reset: resetSupport, producers, dispose },
     projector,
     dispatch: (cmd, ack) => sidebarRouter.dispatch(cmd, ack),
     output

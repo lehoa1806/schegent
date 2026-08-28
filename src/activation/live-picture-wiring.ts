@@ -1,3 +1,18 @@
+// FR-R3-136 (T1525a) — TRUST CLASSIFICATION: GATED HERE, plus one deferral.
+// Three acts were found in this module and all three are named at their sites:
+// the wiring-time backend probe (deferred to `stage2-producers.ts`), the
+// configuration-change retention sweep, and the configuration-change backend
+// probe (both gated in place, because a settings edit is a third way in beside
+// commands and IPC and there is nothing to hand over).
+//
+// `projector.start()` STAYS, and it is the reason T1523a's "arms a timer" clause
+// needs a reading rather than a match. The tick it arms calls
+// `scheduleProjection()` and nothing else: it recomputes a snapshot from state
+// already in memory and posts it to the webview. That is a read on a timer, not a
+// timer that acts, and suppressing it would freeze the state, history, audit and
+// log views the manifest's `limited` claim promises keep working. The clause is
+// about timers whose callback writes, spawns, or resumes.
+
 import * as vscode from 'vscode';
 
 import type { AuditLogWriter } from '../audit/audit-log-writer';
@@ -68,6 +83,15 @@ export interface LivePictureWiringDeps {
   readonly backendPing: BackendExecutionWiring['backendPing'];
   readonly protectedSessionRunIds: EvidenceWiring['protectedSessionRunIds'];
   readonly collectAllWorkflowPipelineRefs: EvidenceWiring['collectAllWorkflowPipelineRefs'];
+  /**
+   * FR-R3-136 (FR-005, FR-011) — read on every configuration change, never
+   * captured. The retention arm below deletes under `.schegent/sessions`, and a
+   * settings edit is a way to reach a workspace write in an untrusted window
+   * that has nothing to do with a command or an IPC message. Phase D restricts
+   * the workspace-scoped half of these keys; this closes the user-scope half,
+   * which no manifest declaration can.
+   */
+  readonly isWorkspaceTrusted: () => boolean;
   /** See the docblock: two setters, not the bundle that owns them. */
   readonly bindCapabilityProjector: BackendExecutionWiring['bindCapabilityProjector'];
   readonly bindTelemetryProjector: BackendExecutionWiring['bindTelemetryProjector'];
@@ -96,6 +120,7 @@ export function wireLivePicture(deps: LivePictureWiringDeps): LivePictureWiring 
     controller,
     historyStore,
     auditWriter,
+    isWorkspaceTrusted,
     statusBar,
     monitor,
     watchdog,
@@ -163,9 +188,22 @@ const projector = new StateProjector({
   getRunOrigin: (taskId) => resolveRunOrigin(store.getConnectedRuns(), taskId)
 });
 bindCapabilityProjector(projector);
+// FR-R3-136 (T1525a) — `start()` subscribes and arms the re-projection tick, and
+// the tick only re-renders. See this module's classification banner for why a
+// read-side timer is not the timer T1523a's criterion means.
 projector.start();
-// Background-only: activation is not blocked on installed CLI processes.
-void backendCapabilities.scan();
+// FR-R3-136 (FR-011) — the backend probe is NOT started here any more, and this
+// was the second find of T1525a's pass. `scan()` spawns `<cliPath> --help` for
+// each supported backend with `cwd` set to the workspace root, which is a child
+// process at wiring time — the least arguable half of T1523a's criterion, and
+// the one thing an untrusted window must not do on the workspace's behalf.
+//
+// The three path keys are `scope: application`, so the BINARY is the operator's
+// and not the folder's; that is why this is a deferral and not a vulnerability
+// report. What the folder does supply is the cwd, and a CLI that reads
+// project-level configuration on startup makes `--help` less inert than it
+// looks. Deferring costs an untrusted window a backend list it cannot act on
+// anyway: no Run can start, and the grant re-runs the producers.
 disposables.push(evidenceHealth.subscribe((health) => {
   statusBar.setEvidenceHealth(health.overall);
   projector.kick();
@@ -212,7 +250,14 @@ if (typeof vscode.workspace.onDidChangeConfiguration === 'function') {
         event.affectsConfiguration('schegent.logging.sessionRetentionMaxAgeDays') ||
         event.affectsConfiguration('schegent.logging.sessionRetentionMaxBytes')
       ) {
-        void sessionRetention.sweep(protectedSessionRunIds()).then(() => projector.kick());
+        // FR-R3-136 (FR-011) — a settings change is a third way in, beside
+        // commands and webview IPC, and this arm writes to `.schegent/sessions`.
+        // Re-read here rather than captured, per FR-005.
+        if (isWorkspaceTrusted()) {
+          void sessionRetention.sweep(protectedSessionRunIds()).then(() => projector.kick());
+        } else {
+          logger.info('session retention sweep skipped on config change: workspace is not trusted');
+        }
       }
       // Feature 099 (T493b, FR-054) — the three retired definition settings
       // keys are gone, so the three arms that reloaded on
@@ -231,7 +276,14 @@ if (typeof vscode.workspace.onDidChangeConfiguration === 'function') {
         event.affectsConfiguration('schegent.agy.path') ||
         event.affectsConfiguration('schegent.backend.probeTimeoutSeconds')
       ) {
-        void backendCapabilities.scan();
+        // FR-R3-136 (FR-011) — same act, same gate as the deferral above: a
+        // settings edit must not be the way a spawn happens in an untrusted
+        // window. Re-read here rather than captured, per FR-005.
+        if (isWorkspaceTrusted()) {
+          void backendCapabilities.scan();
+        } else {
+          logger.info('backend capability scan skipped on config change: workspace is not trusted');
+        }
       }
       // Feature 011 — any schegent.* change triggers a re-projection
       // so the Settings surface reflects the new value within FR-017.
@@ -250,6 +302,9 @@ const phaseLogTail = createPhaseLogTailWiring({
   projector,
   queue,
   auditWriter,
+  // FR-R3-136 (FR-011) — the tail's audit append is a workspace write on a
+  // message the IPC gate does not cover; the gate is in the wiring module.
+  isWorkspaceTrusted,
   logger
 });
 disposables.push(phaseLogTail);

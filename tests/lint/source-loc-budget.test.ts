@@ -378,7 +378,13 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // deliberately rather than pinned to the measurement: 34 lines is room for an
   // ordinary edit, and it is outside the 25-line margin, so this stays a budget
   // rather than a high-water mark. Lower it when the next extraction earns it.
-  { path: 'src/extension.ts', maxLines: 715 },
+  // FR-R3-136 — 715 → 709, the next extraction having earned it.
+  // `trust-grant-wiring.ts` took the `onDidGrantWorkspaceTrust` subscription and
+  // its two arguments out of the composition root (23 lines), which is what put
+  // the file back outside the margin: this feature's trust wiring had pushed it
+  // to within 25 lines of 715, and the gate below caught that before review did.
+  // Same rule as the line above — measurement plus 34.
+  { path: 'src/extension.ts', maxLines: 709 },
   //
   // FR-R3-103 (FR-042, FR-046) — 1459 -> 1471. Nine lines for the dependency wiring of the resume
   // liveness check plus two imports, three more registering the fence-loss abort, and the
@@ -1120,6 +1126,12 @@ describe('large source file LOC budgets', () => {
    * still closed. What changed is the CHARACTER of the entry, and that change is
    * argued rather than asserted — which is the distinction FR-R3-027 drew between
    * a ceiling and a waiver, applied to a function instead of a file.
+   *
+   * FR-R3-136 — 480 → 437. The twelfth extraction, `stage2-producers.ts`, took the
+   * election and the four recovery landmarks out of the root, because they had to
+   * move behind Workspace Trust and a trust gate has to be one place. The waiver's
+   * argument is untouched by it: what left was ACTS, not composition, so the 148
+   * call-site lines the decision quotes are unchanged and the 202 shrank.
    */
   const EXEMPTION_DECISION =
     'The composition root holds only composition: 148 of its 480 lines are call ' +
@@ -1129,7 +1141,7 @@ describe('large source file LOC budgets', () => {
   const EXEMPTION_REFERENCE = 'docs/architecture/composition-root-extraction.md';
 
   const LEGACY_FUNCTION_EXEMPTIONS: Readonly<Record<string, number>> = {
-    'src/extension.ts:wireStage2': 480
+    'src/extension.ts:wireStage2': 437
   };
 
   /** Top-level function declarations and their extents, brace-counted. */
@@ -1212,7 +1224,7 @@ describe('large source file LOC budgets', () => {
     //
     // The two numbers being equal is the point. Lowering the exemption is a
     // two-line edit that shows up in review as a pair; raising it fails here.
-    const CEILING: Readonly<Record<string, number>> = { 'src/extension.ts:wireStage2': 480 };
+    const CEILING: Readonly<Record<string, number>> = { 'src/extension.ts:wireStage2': 437 };
     for (const [key, allowed] of Object.entries(LEGACY_FUNCTION_EXEMPTIONS)) {
       expect(allowed, `${key}: an exemption may be lowered, never raised`).toBeLessThanOrEqual(
         CEILING[key] ?? 0

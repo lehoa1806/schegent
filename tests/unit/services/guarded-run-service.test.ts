@@ -123,12 +123,20 @@ interface Harness {
   service: GuardedRunService;
   clock: MutableClock;
   ownerId: string;
+  /**
+   * FR-R3-136 (FR-008) — a mutable box rather than the boolean the service was
+   * built with, so a test can flip trust *after* construction. That is the case
+   * that distinguishes a re-read from a captured value, and it is the only way
+   * the requirement can be asserted at all.
+   */
+  trust: { value: boolean };
 }
 
 async function makeHarness(opts?: {
   ownerId?: string;
   controllerRunning?: boolean;
   catalog?: PipelineCatalog;
+  trusted?: boolean;
 }): Promise<Harness> {
   const ownerId = opts?.ownerId ?? 'self-window';
   const controller = makeController(opts?.controllerRunning ?? false, opts?.catalog);
@@ -142,7 +150,13 @@ async function makeHarness(opts?: {
   const logger = makeLogger();
   const audit = makeAudit();
 
+  // FR-R3-136 (FR-008) — trusted unless a test says otherwise, which keeps
+  // every pre-existing row in this file exercising the behaviour it was written
+  // for. The untrusted rows live in the trust-specific describe block.
+  const trust = { value: opts?.trusted ?? true };
+
   const service = new GuardedRunService({
+    isWorkspaceTrusted: () => trust.value,
     lock,
     queue,
     controller: controller as unknown as import('../../../src/controller/workflow-controller').SchegentWorkflowController,
@@ -162,7 +176,8 @@ async function makeHarness(opts?: {
     audit,
     service,
     clock,
-    ownerId
+    ownerId,
+    trust
   };
 }
 
@@ -433,5 +448,125 @@ describe('GuardedRunService — sanitization', () => {
     expect(result.outcome).toBe('rejected-foreign-lock');
     expect(result.reason).toContain('[REDACTED]');
     expect(result.reason).not.toContain('sk-secret');
+  });
+});
+
+// FR-R3-136 (FR-008) — admission refuses on its own account.
+//
+// The point of these rows is that there is no command wrapper anywhere in them.
+// `registerGuardedCommand` covers the palette and `message-router` covers the
+// sidebar, but the drain and the scheduled-start timers call this service
+// directly, so a trust check that lived only in the wrappers would leave the
+// timer path — the recovery path, the one that fires without an operator present
+// — admitting runs in an untrusted workspace.
+describe('GuardedRunService — workspace trust (FR-R3-136)', () => {
+  it('refuses a well-formed enqueue while untrusted, with a named reason', async () => {
+    const h = await makeHarness({ trusted: false });
+    const result = await h.service.scheduleOrEnqueue({
+      description: 'a perfectly valid feature request',
+      scheduledAt: h.clock.now(),
+      via: 'command-palette',
+      pipelineId: 'speckit-default'
+    });
+    // Not `rejected-validation`: the request was fine.
+    expect(result.outcome).toBe('rejected-untrusted');
+    expect(result.reason).toBe('workspace-untrusted');
+  });
+
+  it('persists nothing when it refuses', async () => {
+    // The assertion that makes the refusal worth having. An outcome string with
+    // a queued row behind it would be a refusal in name only.
+    const h = await makeHarness({ trusted: false });
+    const before = h.store.getQueue('default');
+    await h.service.scheduleOrEnqueue({
+      description: 'a perfectly valid feature request',
+      scheduledAt: h.clock.now(),
+      via: 'auto-drain'
+    });
+    const after = h.store.getQueue('default');
+    expect(after.requests.length).toBe(before.requests.length);
+    expect(after.queueLifecycle).toBe(before.queueLifecycle);
+    expect(after.scheduledStartAt).toBe(before.scheduledStartAt);
+  });
+
+  it('refuses before validation, so a bad request still reports the trust reason', async () => {
+    // Ordering, asserted. If the description validator ran first, an untrusted
+    // window would be told its description was empty — sending the operator to
+    // fix the wrong thing, and reporting an outcome the well-formed request
+    // would not have produced.
+    const h = await makeHarness({ trusted: false });
+    const result = await h.service.scheduleOrEnqueue({
+      description: '   ',
+      scheduledAt: h.clock.now(),
+      via: 'webview'
+    });
+    expect(result.outcome).toBe('rejected-untrusted');
+  });
+
+  it('refuses every applyStartQueueIntent mode while untrusted', async () => {
+    const h = await makeHarness({ trusted: false });
+    for (const startMode of ['now', 'scheduled', 'cancel-schedule'] as const) {
+      const result = await h.service.applyStartQueueIntent({
+        startMode,
+        scheduledStartAt: h.clock.now() + 60_000,
+        source: 'operator-restart'
+      });
+      expect(result.outcome, `startMode=${startMode}`).toBe('rejected-untrusted');
+    }
+    // `cancel-schedule` would have returned `noop` on an unscheduled queue even
+    // without a guard, so the persisted state is checked too rather than trusting
+    // three outcome strings.
+    expect(h.store.getQueue('default').queueLifecycle).toBe('active-empty');
+  });
+
+  it('re-reads trust on every admission, in both directions', async () => {
+    // The same property `registerGuardedCommand` carries, asserted at the
+    // service. A boolean captured in the constructor passes the first row and
+    // fails the second.
+    const h = await makeHarness({ trusted: false });
+    const req = {
+      description: 'a perfectly valid feature request',
+      scheduledAt: h.clock.now(),
+      via: 'command-palette' as const,
+      pipelineId: 'speckit-default'
+    };
+    expect((await h.service.scheduleOrEnqueue(req)).outcome).toBe('rejected-untrusted');
+
+    h.trust.value = true;
+    expect((await h.service.scheduleOrEnqueue(req)).outcome).toBe('enqueued');
+
+    h.trust.value = false;
+    expect((await h.service.scheduleOrEnqueue(req)).outcome).toBe('rejected-untrusted');
+  });
+
+  it('admits a trusted enqueue — the control for every row above', async () => {
+    // Without this, every assertion above is satisfied by a service that
+    // refuses unconditionally.
+    const h = await makeHarness();
+    const result = await h.service.scheduleOrEnqueue({
+      description: 'a perfectly valid feature request',
+      scheduledAt: h.clock.now(),
+      via: 'command-palette',
+      pipelineId: 'speckit-default'
+    });
+    expect(result.outcome).toBe('enqueued');
+  });
+
+  it('logs the refusal once and audits it, with no description in either', async () => {
+    const h = await makeHarness({ trusted: false });
+    await h.service.scheduleOrEnqueue({
+      description: 'a-description-that-must-not-be-logged',
+      scheduledAt: h.clock.now(),
+      via: 'webview'
+    });
+    expect(h.logger.warn).toHaveBeenCalledTimes(1);
+    expect(h.audit.append).toHaveBeenCalledTimes(1);
+    // CLAUDE.md: never log request payloads. The description is operator text.
+    const written = JSON.stringify([
+      h.logger.warn.mock.calls,
+      h.audit.append.mock.calls
+    ]);
+    expect(written).not.toContain('a-description-that-must-not-be-logged');
+    expect(written).toContain('workspace-untrusted');
   });
 });

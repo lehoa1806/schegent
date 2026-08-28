@@ -1,3 +1,9 @@
+// FR-R3-136 (T1525a) — TRUST CLASSIFICATION: NO PRODUCER ACT.
+// Constructs the three clock-driven collaborators and arms none of them. `reArm()`
+// is the producers' call, behind the trust gate and behind the election; the queue
+// write lives in `promoteScheduledQueue`, which only a fired schedule reaches, and
+// no schedule is armed in an untrusted window.
+
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import type { SchegentWorkflowController } from '../controller/workflow-controller';

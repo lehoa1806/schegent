@@ -1,3 +1,18 @@
+// FR-R3-136 (T1525a) — TRUST CLASSIFICATION: NO PRODUCER ACT, WITH ONE NAMED
+// EXCEPTION THAT PHASE D CLOSES.
+// Composes the capability service, the operator Ping and the Stage-1 log sinks;
+// every probe those services can perform is called from somewhere else, and the
+// wiring-time one is deferred (see `stage2-producers.ts`).
+//
+// The exception is `createRuntimeEvidenceWiring`, which adds a sink that appends
+// to `schegent.logging.runtimeLogFilePath` — `scope: resource`, so a workspace
+// can name it, which is the criterion's first clause. It is NOT gated here and
+// must not be: the runtime log is the one surface that explains why everything
+// else in an untrusted window was refused, and a sink that goes quiet takes the
+// explanation with it. The closure is Phase D's `restrictedConfigurations`
+// (T1526a) plus the containment `FR-R3-005` already applies at the syscall — a
+// setting the folder cannot set is a path the folder cannot name.
+
 import * as os from 'node:os';
 import * as vscode from 'vscode';
 

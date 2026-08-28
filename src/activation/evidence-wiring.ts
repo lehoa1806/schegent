@@ -1,3 +1,8 @@
+// FR-R3-136 (T1525a) — TRUST CLASSIFICATION: DEFERRED.
+// The migration audit appends and the `.schegent/sessions` retention sweep ran at
+// construction. They are returned as `replayEvidenceBacklog` and run inside the
+// trust gate; nothing here writes any more.
+
 import * as vscode from 'vscode';
 
 import { AuditLogWriter } from '../audit/audit-log-writer';
@@ -62,6 +67,24 @@ export interface EvidenceWiring {
   readonly sessionRetention: SessionArtifactRetentionService;
   readonly collectAllWorkflowPipelineRefs: ReturnType<typeof createWorkflowPipelineRefReader>;
   readonly protectedSessionRunIds: () => ReadonlySet<string>;
+  /**
+   * FR-R3-136 (FR-011) — the four things this module used to DO at construction,
+   * returned as a thunk instead: forward the migration audit events, record a
+   * finished interrupted reset, sweep `.schegent/sessions`, and warn about a
+   * multi-root workspace.
+   *
+   * All four write inside the workspace folder — three append to `audit.log` and
+   * one deletes session directories — so none may run before Workspace Trust is
+   * established. Constructing the writer and the retention service still happens
+   * eagerly, because construction writes nothing and the sidebar's audit and
+   * evidence views need both objects to render in an untrusted window.
+   *
+   * The caller runs this from `stage2-producers.ts`, which is the one place that
+   * decides when producing is allowed. Returning a thunk rather than taking an
+   * `isWorkspaceTrusted` dependency keeps that decision in one module: two
+   * modules each reading trust is how a gate ends up half-applied.
+   */
+  readonly replayEvidenceBacklog: () => Promise<void>;
 }
 
 export async function wireEvidence(deps: EvidenceWiringDeps): Promise<EvidenceWiring> {
@@ -101,29 +124,6 @@ const auditWriter = new AuditLogWriter(
   evidenceHealth
 );
 
-// Forward all state-migration audit events (v5→v6, v6→v7, v10→v11, v11→v12,
-// workflow-run repair) through the sanitized audit writer. Helper preserves
-// the append-error best-effort semantics — never blocks activation.
-await forwardMigrationAuditEvents(
-  {
-    v6MigrationEvents,
-    v7MigrationEvents,
-    v11MigrationEvents,
-    v12MigrationEvents,
-    runRepairEvents,
-    // FR-R3-111 — drained where the writer exists; `initialize()` buffers it before that.
-    quarantineEvents: store.drainRunQuarantineEvents()
-  },
-  auditWriter,
-  logger
-);
-
-// Feature FR-R3-006 (T346, T348) — record the interrupted reset this
-// activation finished, now that there is a writer to record it with.
-if (completedResetGeneration !== null) {
-  await recordCompletedInterruptedReset(auditWriter, logger, completedResetGeneration);
-}
-
 const sessionRetention = new SessionArtifactRetentionService({
   workspaceRoot,
   logger,
@@ -153,26 +153,60 @@ const protectedSessionRunIds = (): ReadonlySet<string> => {
   }
   return protectedIds;
 };
-// Sweep once at activation. The service is fail-soft and restricts deletion
-// to exact inactive run groups below `.schegent/sessions`; `audit.log` lives
-// outside that root and is never a candidate.
-await sessionRetention.sweep(protectedSessionRunIds());
+// FR-R3-136 (FR-011) — the four writes, deferred. Every line below ran at this
+// point in the function before this requirement; only the WHEN changed, so the
+// bodies and their comments are unedited.
+const replayEvidenceBacklog = async (): Promise<void> => {
+  // Forward all state-migration audit events (v5→v6, v6→v7, v10→v11, v11→v12,
+  // workflow-run repair) through the sanitized audit writer. Helper preserves
+  // the append-error best-effort semantics — never blocks activation.
+  await forwardMigrationAuditEvents(
+    {
+      v6MigrationEvents,
+      v7MigrationEvents,
+      v11MigrationEvents,
+      v12MigrationEvents,
+      runRepairEvents,
+      // FR-R3-111 — drained where the writer exists; `initialize()` buffers it before that.
+      quarantineEvents: store.drainRunQuarantineEvents()
+    },
+    auditWriter,
+    logger
+  );
 
-// Feature 058 — one-shot activation guard for multi-root workspaces.
-// Emits `multi-root.warning-shown` (folder count + canonical folder
-// NAME only, NEVER fsPath) and a non-blocking informational toast.
-// The helper is internally one-shot per activation and respects
-// `schegent.multiRoot.suppressWarning` (window-scope). Window-scope
-// reads omit the resource URI so VS Code resolves the value from
-// the active `.code-workspace`.
-void maybeShowMultiRootWarning({
-  workspaceFolders: vscode.workspace.workspaceFolders,
-  canonicalFolder: getCanonicalWorkspaceRoot(),
-  suppressWarning: vscode.workspace
-    .getConfiguration('schegent')
-    .get<boolean>('multiRoot.suppressWarning', false),
-  auditWriter,
-  notifier
-});
-  return { auditWriter, sessionRetention, collectAllWorkflowPipelineRefs, protectedSessionRunIds };
+  // Feature FR-R3-006 (T346, T348) — record the interrupted reset this
+  // activation finished, now that there is a writer to record it with.
+  if (completedResetGeneration !== null) {
+    await recordCompletedInterruptedReset(auditWriter, logger, completedResetGeneration);
+  }
+
+  // Sweep once at activation. The service is fail-soft and restricts deletion
+  // to exact inactive run groups below `.schegent/sessions`; `audit.log` lives
+  // outside that root and is never a candidate.
+  await sessionRetention.sweep(protectedSessionRunIds());
+
+  // Feature 058 — one-shot activation guard for multi-root workspaces.
+  // Emits `multi-root.warning-shown` (folder count + canonical folder
+  // NAME only, NEVER fsPath) and a non-blocking informational toast.
+  // The helper is internally one-shot per activation and respects
+  // `schegent.multiRoot.suppressWarning` (window-scope). Window-scope
+  // reads omit the resource URI so VS Code resolves the value from
+  // the active `.code-workspace`.
+  void maybeShowMultiRootWarning({
+    workspaceFolders: vscode.workspace.workspaceFolders,
+    canonicalFolder: getCanonicalWorkspaceRoot(),
+    suppressWarning: vscode.workspace
+      .getConfiguration('schegent')
+      .get<boolean>('multiRoot.suppressWarning', false),
+    auditWriter,
+    notifier
+  });
+};
+  return {
+    auditWriter,
+    sessionRetention,
+    collectAllWorkflowPipelineRefs,
+    protectedSessionRunIds,
+    replayEvidenceBacklog
+  };
 }
