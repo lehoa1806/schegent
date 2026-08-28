@@ -1,5 +1,7 @@
 # Withdrawn CI-dependent controls
 
+<!-- doc-class: record -->
+
 **Date**: 2026-08-26 · **Item**: [`FR-R3-099`](../../../docs/features/round_3/DONE_99_FR-R3-099_actions_retired_by_decision.md)
 **Cause**: Actions retired by operator decision, for budget. See
 [the terminal record](actions-terminal-record.md).
@@ -17,8 +19,8 @@ statement that the withdrawn control was wrong.
 | `.github/workflows/full-gate.yml` | The weekly ten-job whole-tree gate the binding read | Same. Its 14 red runs are recorded in the terminal record |
 | `.github/workflows/ci.yml` | Three-OS matrix plus a Node version-floor job, on push and pull request | Same. Its red Windows leg is live evidence, recorded |
 | `.github/workflows/codeql.yml` | GitHub code scanning | Same. **No local substitute exists**; recorded in `SECURITY.md` |
-| `.github/workflows/security-audit.yml` | Scheduled `npm audit` | The audit itself is local and stays in the attested chain; only the schedule went |
-| `.github/workflows/dependency-review.yml` | Dependency-diff review on pull requests | Reduces to `npm audit`, already local |
+| `.github/workflows/security-audit.yml` | Scheduled `npm audit` | The audit itself is local as `npm run security:audit`, but it is **not** in the attested gate — it queries the registry, and a gate that fails for want of a network is a gate people bypass. So the schedule went and nothing took its place: it runs when someone remembers |
+| `.github/workflows/dependency-review.yml` | Dependency-diff review on pull requests | Reduces to `npm audit`, which is local but operator-invoked and reads the lockfile rather than the diff |
 | `.github/workflows/backend-canary.yml` | The canary's only scheduled vehicle | Replaced by a local declared cadence — [`FR-R3-104`](../../../docs/features/round_3/DONE_104_FR-R3-104_backend_qualification_that_gates.md) |
 | `.github/workflows/pr.yml` | Pull-request checks | Same |
 | `tests/unit/build/require-full-gate.test.ts` | Unit coverage of `decideFullGate` — the pure decision behind the binding, tested without cutting a release | Tested a function that no longer exists |

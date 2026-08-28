@@ -1,5 +1,7 @@
 # Observe release provenance
 
+<!-- doc-class: record -->
+
 > **Withdrawn, 2026-08-26.** The controls this runbook observes are gone: GitHub
 > Actions were retired by operator decision, for budget, and all eight workflow files
 > were deleted (`FR-R3-099`). This page is kept as a **dated historical record** of

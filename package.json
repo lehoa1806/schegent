@@ -1,7 +1,7 @@
 {
   "name": "schegent",
   "displayName": "Schegent",
-  "description": "Autonomously orchestrates the Claude Code CLI to drive the spec-driven development pipeline.",
+  "description": "Orchestrates installed Claude, Codex, or Agy CLIs inside the workspace to drive the spec-driven development pipeline.",
   "version": "0.2.0",
   "icon": "assets/logo.png",
   "publisher": "schegent",
@@ -16,6 +16,8 @@
   "keywords": [
     "speckit",
     "claude",
+    "codex",
+    "agy",
     "spec-driven",
     "automation",
     "orchestration"

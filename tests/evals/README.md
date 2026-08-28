@@ -42,10 +42,12 @@ that goes red for reasons unrelated to the change under review.
 
 ## Where behavioral qualification will live
 
-`scripts/backend-canary-run.mjs`, declared by `.github/workflows/backend-canary.yml` — off the PR
-path and non-blocking by design. **The workflow does not fire**: this project does not run GitHub
-Actions, so the canary is a LOCAL QUALIFICATION STEP, run deliberately against a backend release
-before that release is trusted rather than on a schedule.
+`scripts/backend-canary-run.mjs`, invoked as `npm run canary` — off the PR path and non-blocking by
+design. **No workflow declares it.** A `backend-canary.yml` did until 2026-08-26, when `FR-R3-099`
+retired Actions by operator decision and deleted it, so the canary is a LOCAL QUALIFICATION STEP,
+run deliberately against a backend release before that release is trusted rather than on a schedule.
+The cadence that replaced the schedule is declared in
+[live canary cadence](../../docs/operations/live-canary-cadence.md).
 
 Since 2026-08-26 it **runs a live phase**: one bounded turn against each backend with a fixed trivial
 prompt, reporting `ok` when the turn completes, `skipped-not-authenticated` when the CLI's own output

@@ -1,6 +1,6 @@
 # Contributing to Schegent
 
-Schegent accepts changes through pull requests targeting `develop`; the checked-in PR and CI workflows are configured for that base branch. No branch-protection or repository-ruleset file is present, so this repository can describe the checks GitHub is configured to run, but it cannot prove which status checks the remote repository requires for merge.
+Schegent accepts changes through pull requests targeting `develop`. Nothing checks them on the remote: hosted CI was retired 2026-08-26 by operator decision (`FR-R3-099`), which deleted `.github/workflows/`, and no branch-protection or repository-ruleset file is present. Verification is local and the whole of it — run `npm run gate` before you open a pull request, because no second enforcement point will catch what you skip. The current state of every release control is generated into [current release controls](docs/release/current-release-controls.md).
 <!-- Source: docs/release/actions-terminal-record.md -->
 
 ## Read these ten, in this order — then stop
@@ -48,7 +48,7 @@ The Master Workspace and this execution repository may be separate Git repositor
 
 ## Prepare a checkout
 
-Use Node `24.19.0` for the repository's pinned development runtime. Node `^22` and `^24` are declared compatible; CI additionally verifies the Node 22 floor.
+Use Node `24.19.0` for the repository's pinned development runtime. Node `^22` and `^24` are declared compatible in `package.json`, and that declaration is the whole of the floor: the job that used to exercise Node 22 was retired with the workflows on 2026-08-26 (`FR-R3-099`), `.npmrc` does not set `engine-strict`, and no check reads `engines`. A change that breaks Node 22 will not be caught here.
 
 For a local checkout:
 
@@ -96,8 +96,11 @@ here with what it does and why, and run it as its own declared step. Do not re-e
 to accommodate one package, and do not auto-install anything inside a gate — `FR-R3-065` declined that
 for the reason `FR-R3-045` declined putting the Electron download in `ci:fast`.
 
-`tests/lint/install-flag-parity.test.ts` fails when the workflows' install flags and these `.npmrc`
-files disagree, so the two authorities on one policy check against each other instead of drifting.
+`tests/lint/install-flag-parity.test.ts` reads the two `.npmrc` files and the documents that teach
+the install sequence. It used to check them against the install flags in the workflow files; those
+were deleted when Actions were retired on 2026-08-26 (`FR-R3-099`), so the dual authority is gone
+rather than reconciled, and what the gate now adds is that no workflow directory has reappeared to
+become a second one.
 
 The visual regression suite needs a Chromium build that `npm ci` does not fetch. Install it once:
 
@@ -199,14 +202,16 @@ npm run ci
 **If `test:host` dies with `Segmentation fault: 11` and zero test failures, it is not your change.** Diagnosed 2026-08-24 from two macOS crash reports (2026-08-23 05:56 and 2026-08-24 18:31, both during `test:host`, Node `24.19.0` arm64): `EXC_BAD_ACCESS`, `KERN_INVALID_ADDRESS at 0x1`, on a `V8Worker` platform thread inside V8's concurrent Sparkplug JIT — `ConcurrentBaselineCompiler::JobDispatcher::Run` → `BaselineCompilerTask::Compile` → `BaselineCompiler::GenerateCode` → `AssemblerBase::AddEmbeddedObject`. No JavaScript frame appears in the faulting stack, so no test is implicated; the `npm` wrapper then kills itself propagating the child's signal, which is the line the shell prints. Confirm your own case the same way: `ls -lt ~/Library/Logs/DiagnosticReports/node-*.ips` and read the faulting thread. Re-running is the correct response, and the crash is not currently worked around: `--concurrent-sparkplug` is on by default and is rejected by both `NODE_OPTIONS` and worker `execArgv`, so disabling it would mean replacing `vitest run` with a raw `node` invocation permanently — a standing cost against a rare upstream fault. If it starts recurring in CI rather than locally, that trade is worth revisiting. Several of its checks decided their rules by measurement rather than by choosing a number, and each records how — among them the [duplicate-authority threshold](docs/operations/duplicate-authority-threshold-measurement.md), the [counts the round-3 documents assert](docs/operations/asserted-counts-sweep.md), the [lazy-route wait budget](docs/operations/lazy-route-wait-budget.md) and the [webview coverage floors](docs/development/coverage-measurements.md). `ci` covers the broad build/test/package path but does not invoke `verify:all`; use both for a release-sized change. More focused commands and their exact scopes are documented in [Developer workflows](docs/how-to/developer-workflows.md).
 <!-- Source: package.json -->
 
-The pull-request workflows currently configured for `develop` run the following:
+Nothing runs on a pull request. Four workflows were configured for `develop` until they were retired
+on 2026-08-26 (`FR-R3-099`) — `PR` and `CI` across three operating systems, a dependency review that
+refused new `high`-severity dependencies, and a CodeQL scan whose findings never failed the build.
+What each one did, and what did and did not replace it, is the subject of
+[the terminal record](docs/release/actions-terminal-record.md) and
+[withdrawn CI controls](docs/release/withdrawn-ci-controls.md).
 
-- `PR`: Node `24.19.0` on Ubuntu, macOS, and Windows; test typecheck, `verify:all`, evals, build, package smoke, and Linux visual regression.
-- `CI`: the same three-OS base plus Linux host coverage, E2E and performance tests, package smoke, and Extension Development Host integration; a separate Ubuntu job runs `verify:all` on Node `22.23.2`.
-- `Dependency review`: refuses newly introduced dependencies at `high` severity or above.
-- `CodeQL`: analyzes JavaScript and TypeScript on pull requests, pushes to `develop`, and weekly, but its workflow explicitly says findings do not fail the build by default.
-
-These are trigger definitions, not proof of remote merge protection.
+The practical consequence for a contributor: the three-OS matrix is gone and single-platform is a
+stated permanent limit, so a Windows-only or macOS-only regression will reach `develop`. Run
+`npm run gate` locally; it is the only gate there is.
 <!-- Source: docs/release/actions-terminal-record.md -->
 
 **`.vscode/launch.json` exists** — `FR-R3-073` added it, and this sentence denied it until

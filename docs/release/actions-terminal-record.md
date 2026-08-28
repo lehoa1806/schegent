@@ -1,5 +1,7 @@
 # GitHub Actions — Terminal Record
 
+<!-- doc-class: record -->
+
 **Status**: terminal. Actions are **retired by operator decision, 2026-08-26**, for budget.
 **Recorded**: 2026-08-26 · **Item**: [`FR-R3-099`](../../../docs/features/round_3/DONE_99_FR-R3-099_actions_retired_by_decision.md)
 **Repository at the time of capture**: `repo/` HEAD `2a885187`

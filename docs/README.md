@@ -105,6 +105,34 @@ Historical decisions, deep operations notes, and feature-specific pages remain
 available because maintainers need evidence and exact contracts. Their presence
 does not make them onboarding material.
 
+## How current a page is
+
+Document *type* above says when to read a page. This says whether to believe its
+present tense. The two are independent: a reference page and a runbook can each be
+current or a record.
+
+| Class | Marker | The test a page must pass to claim it |
+|---|---|---|
+| **Current authority** | none — this is the default | Every present-tense sentence is true of the tree at `HEAD`. A claim about what runs must match what an executable script actually does. |
+| **Historical / terminal record** | `<!-- doc-class: record -->` | It describes something that ran, or was formally proposed, and no longer holds. It carries a dated withdrawal banner saying what went and when. It is never cited as present authority, and its observations are **not** rewritten to agree with today's tree — a recorded observation with a date is evidence, and correcting it is falsification. |
+| **Proposal / decision with trigger** | `<!-- doc-class: proposal -->` | It describes a state that does not exist yet, or a decision not to build one. It names the trigger and the review date that would revisit it. |
+
+One marker is machine-read, and only one: `tests/lint/current-control-claims.test.ts`
+checks live pages against facts derived from the tree, and skips a page classified as
+a **record**. It does not skip a proposal, because a proposal describes a state that
+does not exist in the conditional voice that says so — `would`, `if`, `on approval` —
+and a proposal written in the present indicative is making a claim, not a proposal.
+Marking a page `proposal` therefore exempts it from nothing.
+
+The prose banner is the half a reader sees; the marker is the half the gate sees, and
+a record needs both. A page that keeps present-tense description of a retired control
+must say why in the page itself — an unexplained exception is a defect, not an
+exemption.
+
+Which controls are current is not restated here, because restating it is how four
+documents came to disagree. One generated table answers it:
+[current release controls](release/current-release-controls.md).
+
 ## Complete index
 
 Every page in this tree, so that none is reachable only by knowing it exists.
@@ -190,8 +218,12 @@ drifts unnoticed, because the readers who would catch an error never get there.
 
 ### Release
 
-- [Canary credentials: an itemized request](release/canary-credential-request.md) — what the scheduled
-  backend canary would need to run a live phase, per credential, with the cost of a leak (FR-R3-084)
+- [Current release controls](release/current-release-controls.md) — what actually runs today, derived
+  from the tree rather than written down. The single present-tense authority; four pages used to answer
+  this question independently and all four were wrong (FR-R3-138)
+- [Canary credentials: an itemized request](release/canary-credential-request.md) — what *a* scheduled
+  backend canary would need to run a live phase, per credential, with the cost of a leak. A record: the
+  schedule it was written for went with the workflows on 2026-08-26 (FR-R3-084, FR-R3-099)
 - [Assistive-technology matrix](release/accessibility-at-matrix.md) — what real screen-reader testing
   has been done per platform, and where the honest answer is **untested** (FR-R3-091)
 - [Held major dependency upgrades](release/held-major-upgrades.md) — the deliberate holds, why each is

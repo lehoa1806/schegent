@@ -19,12 +19,13 @@ predicted it: its author sampled the set and found every gate well motivated.
 
 | Figure | Value | Date | Method |
 |---|---|---|---|
-| Gate files | **166** | 2026-08-28 | `*.test.ts` under `tests/lint/` recursively |
-| Marked `unique` | 154 | 2026-08-28 | hand verdict |
+| Gate files | **167** | 2026-08-28 | `*.test.ts` under `tests/lint/` recursively |
+| Marked `unique` | 155 | 2026-08-28 | hand verdict |
 | Marked `partially redundant` | 12 | 2026-08-28 | hand verdict |
 | Marked `redundant` | 0 | 2026-08-28 | hand verdict |
 
 <!-- census:prose -->
+
 
 
 
@@ -175,6 +176,7 @@ changing one means updating that machinery in the same commit.
 | `concurrency-isolation-disclosure.test.ts` | FR-R3-124 — the shared-tree disclosure has content, and no live document sells a cap above one as isolation | `cap-authority-citation-parity.test.ts` (citation only) | unique | that gate asserts each cap definition site *cites* `docs/architecture/local-queue-parallelism-ratification.md`; it never reads what the site says. On 2026-08-27 every shared-tree sentence in the tree could be deleted with the whole gate set staying green, which is the hole this gate closes |
 | `containment-qualification-parity.test.ts` | FR-R3-125 — the containment qualification record and the product name the same mechanism for every backend | `backend-containment-policy.test.ts` (classification only), `backend-permission-posture.test.ts` (onboarding surfaces name the setting) | unique | neither sibling compares the product against the qualification RECORD: the policy test asserts the classification against each adapter's argv, and the posture test asserts a setting key appears on onboarding pages. A record naming a boundary the product does not implement — the direction that misleads an operator — was unguarded before this |
 | `contracts-module-reachability.test.ts` | every contract module has a consumer outside itself and the barrel | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
+| `current-control-claims.test.ts` | FR-R3-138 — live pages state the controls this repository actually has | `actions-retirement-claims.test.ts` (negative claims only), `document-mechanism-consistency.test.ts` (denials of a named export), `retired-identifiers.test.ts` (retired identifiers used as live config) | unique | the three siblings share the territory and none share the proof method, which is where the boundary was drawn: they check a claim's *wording* against a qualifier list, a registry, or a module's exports, and this one checks a claim against the npm-script closure and the filesystem. The distinction is not academic — `docs/operations/licenses.md` cites `actions-terminal-record.md`, which discharges the retirement gate, in the same paragraph as three false present-tense claims. Landed red 2026-08-29 on 24 sites across 12 files, five of which a hand-read of 36 surfaces had missed |
 | `dated-review-records.test.ts` | FR-R3-134 — every dated deferral is watched, and the registry is complete | supersedes `platform-decline-review-date.test.ts` and `devcontainer-declination-review-date.test.ts`, both retired into it; the shared predicate stays in `review-dates.ts` | unique | it is the only reader of the review-date markers, and the only thing that answers *which* records carry one. Landed red 2026-08-28 two ways: `live-canary-cadence.md` had no marker at all (the deferral this three-file arrangement let through), and an unregistered marker planted in a fourth document was named by the completeness scan. Retirement rule (FR-021) satisfied for both predecessors: a named successor asserting the same shape over a superset of their subjects |
 | `dependency-change-scope.test.ts` | FR-R3-090 §5 — no dependency is bumped, and the scanners are untouched | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `dependency-direction.test.ts` | FR-R3-110 — leaf layers do not value-import layers that act | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |

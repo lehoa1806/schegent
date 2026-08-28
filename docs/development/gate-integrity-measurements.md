@@ -13,7 +13,7 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 96
+    vacuity-census-denominator: 97
 
 | Measure | Value |
 |---|---|
@@ -279,6 +279,15 @@ The floor itself was first set to 40 — one below the leanest measurement, whic
 than a floor, and would have failed on the removal of any decorative element. It is 20: the number
 separates *rendered* from *blank* (measured 41 against a mutated 1), not *big* from *small*.
 
+**97 as of 2026-08-29 (`FR-R3-138`)**, up one over 96: `current-control-claims.test.ts` walks
+`docs/`, the root Markdown, `.github/` and the two `.npmrc` files and asserts an empty offender set,
+so it is a scanning gate and the detector classifies it as controlled. Its controls are a floor on
+pages scanned (>60) and a floor on the units those pages were carved into (>3000) — the second
+because files read is not text examined, and a unit-splitting regression would have left the
+assertion iterating an empty list over a full scan set. The registry's own liveness is not a floor
+on tree matches, deliberately: see the FR-R3-138 entry below for why that floor had to be thrown
+away.
+
 **94 as of 2026-08-28 (`FR-R3-134`)**, net up one over 93: `dated-review-records.test.ts` walks
 `docs/` and asserts an empty unregistered set, so it is a scanning gate and the detector classifies it
 as controlled — its control is the floor on documents scanned (>50) plus the registry-size floor.
@@ -299,14 +308,15 @@ live mutation, recorded above.
 
 | Fact | Authority | Derives from / checks against it |
 |---|---|---|
-| Full-gate job set | `.github/workflows/full-gate.yml` | `REQUIRED_JOB_NAMES` + the drift assertion in `full-gate-parity.test.ts` |
+| Gate command | `GATE_COMMAND_SPEC` in `scripts/gate-attestation.mjs` | the recorder spawns it and `check-gate-coverage-parity.mjs` derives `RELEASE.md` §2a from it (`FR-R3-135`). It took over from the retired `.github/workflows/full-gate.yml`, whose parity test went with it on 2026-08-26 |
+| Current release controls | the tree, read by `scripts/current-control-facts.mjs` | `current-control-claims.test.ts` checks live pages against it and generates `docs/release/current-release-controls.md` |
 | Backend containment asymmetry | `repo/docs/security/threat-model.md` | envelope threat model, checked by `envelope-doc-liveness.sh` |
 | Backend identity | `repo/src/contracts/backend-kinds.ts` | every importer; `backend-kind-placement.test.ts` |
 | Vacuity control idioms | `tests/lint/gate-integrity/vacuity-detector.ts` | the gate and the census both import it |
 | Run-id validity | `repo/src/contracts/run-id.ts` | the evidence export and the evidence delete both import it. Extracted during security review, which found the rule COPIED into both — a second authority introduced by the security fix itself, and the way it goes wrong is that one is tightened and the other is not, so a delete accepts an id an export refuses |
 | Retention bounds | the retention constants in `src/audit/`, `src/services/`, `src/monitor/` | `retention-disclosure.ts` reads them; `retention-disclosure-parity.test.ts` gates the rendered document |
 | Held major upgrades | `docs/release/held-major-upgrades.md` | `held-major-staleness.test.ts` resolves every row against the two manifests |
-| Install-script policy | the workflow files **and** the two `.npmrc` files | neither derives from the other — npm reads one, Actions the other — so `install-flag-parity.test.ts` checks them against each other in both directions |
+| Install-script policy | the two `.npmrc` files | the second authority was the workflow files, deleted on 2026-08-26; `install-flag-parity.test.ts` was rewritten to read the `.npmrc` files and the documents that teach the install sequence, and to fail if a workflow directory reappears to become a second one again |
 | Accessibility target | `PRODUCT.md` and `docs/prd-metrics-dashboard.md` | the scan's tag set; `a11y-policy-parity.test.ts` binds all three |
 | Capability audit events | `src/contracts/audit-events.ts` | operator-facing text; `capability-text-contract-parity.test.ts`, checked contract-first |
 | Default backend argv | the `UNBOUNDED_PERMISSION_ARGS` literal in each adapter | `unboundedArgs()` in the plan; `capability-argv-parity.test.ts`. **Two authorities on purpose**: four gates read the adapter source to prove the posture, and the plan needs the value to answer "what does the default produce?" — neither can be derived from the other without losing what the other provides. |
@@ -980,3 +990,154 @@ the three movements back-filled by commit.
 Recording that beside this entry is the point. A document about the fifth instance of a class that did
 not mention the instance found in its own §1 on the same afternoon would be a small version of the
 thing it is recording.
+
+## FR-R3-138 — the documents that outlived the controls they described (2026-08-29)
+
+`FR-R3-099` retired every hosted workflow by operator decision and deleted `.github/workflows/`.
+Twelve documents went on describing what those workflows do, in the present tense, for three days.
+This entry records the gate written instead of a correction, and both halves of its evidence.
+
+### The one-time classification of the surfaces
+
+`tests/lint/current-control-claims.test.ts` states its scope predicate as an `rg` invocation in its
+own docblock rather than as a list of paths, so running the gate re-enumerates the surfaces and a new
+document cannot fall outside a list nobody updated. The predicate was derived by classifying **36**
+surfaces that mention a hosted control by hand; that read produced 17 sites. The gate, run once
+against the same tree, produced 24.
+
+`--hidden` in that predicate is load-bearing and was found by the classification, not by design:
+without it `rg` silently skips `.github/`, which still exists. `dependabot.yml`, `CODEOWNERS`,
+`ISSUE_TEMPLATE/` and `PULL_REQUEST_TEMPLATE.md` all survived `FR-R3-099` — only `workflows/` was
+deleted — and a pull-request template is exactly where "CI will check this" lives.
+
+### The live half — 24 offenders on unmodified `HEAD`
+
+This is the stronger claim of the two, and the one that cannot be reproduced after the corrections
+in this change, so it is recorded here in full count rather than described:
+
+| Pattern | Sites |
+|---|---|
+| `workflow-acts` | 7 |
+| `workflow-path-live` | 5 |
+| `workflow-as-authority` | 3 |
+| `workflow-configured` | 2 |
+| `sbom-denied` | 2 |
+| `github-action-live` | 2 |
+| `node-floor-executed` | 1 |
+| `checksums-produced` | 1 |
+| `audit-in-gate` | 1 |
+
+Across 12 files: `CONTRIBUTING.md`, `SECURITY.md`, `RELEASE.md`, `.npmrc`, `webview-ui/.npmrc`,
+`docs/courses/develop-schegent.md`, `docs/development/coverage-measurements.md`, this file,
+`docs/operations/contract-generation.md`, `docs/operations/licenses.md`,
+`docs/operations/vsix-allowlist-derivation.md`, `docs/release/canary-credential-request.md`.
+
+**Five of them the hand-read had missed** — `SECURITY.md:102`, `coverage-measurements.md:61`,
+`contract-generation.md:23`, `vsix-allowlist-derivation.md:184` and
+`canary-credential-request.md:100`. That is the one-line argument for the gate: a careful reader
+working through a stated 36-surface inventory found 17 of 22 real defects, and would have left the
+other five for the next reader.
+
+Two of the four *expected* reds were also missing on the first run, and the cause is worth keeping.
+The unit was a paragraph, and a Markdown table is one paragraph — so the dated first row of
+`RELEASE.md` §"what was withdrawn" discharged every other row in the table, including
+`RELEASE.md:380` ("nothing generates one"), and the same shape hid `SECURITY.md:170`. A table row is
+now its own unit. A gate whose unit is larger than its claim reports green over the defect it was
+written for.
+
+### The synthetic half — four mutations and a negative control
+
+The live half proves the gate fired once. These prove it still fires against the corrected tree.
+Each mutation was appended to a live page, observed, and reverted by file copy (never by
+`git checkout`, with the corrections uncommitted):
+
+| # | Mutation | Page | Result |
+|---|---|---|---|
+| M1 | "The CI workflow runs the full gate on every pull request." | `CONTRIBUTING.md` | **red** — `workflow-acts`; the planted claim was false, `workflowsExist=false` |
+| M2 | "The weekly dependency audit is now run by the attested gate." | `SECURITY.md` | **red** — `audit-in-gate`; the planted claim was false, `auditInGateClosure=false` |
+| M3 | "No SBOM is produced by the release path." | `RELEASE.md` | **red** — `sbom-denied`; the planted claim was false, `releaseReachesSbom=true` |
+| M4 | "Build provenance is signed for every tagged release." | `docs/operations/licenses.md` | **red** — `provenance-produced`; the planted claim was false, `emitsIndependentProvenance=false` |
+| M5 | "Workflows compose multiple Pipeline Runs, and the workflow-run event carries provenance on its ExecutionEnvelope." | `docs/explanation/domain-model.md` | **green** — the negative control |
+
+Each red named the file, the line, the pattern and the derived fact with its derivation, which is
+what makes the failure actionable without opening the test.
+
+M5 is the mutation that matters most, and the reason the patterns are assertion-shaped rather than
+noun-shaped. `Workflow` is a Schegent domain type and `provenance` a field on `ExecutionEnvelope`; an
+unqualified sweep for those words returns 661 files, and the first draft of this registry flagged
+about thirty passages of the product's own architecture prose. A gate that cries wolf over the domain
+model gets a blanket exemption bolted onto it within a release, and the exemption is what fails next
+— so every pattern now requires a CI-specific word inside the matched phrase, and M5 is a permanent
+test rather than a one-time observation.
+
+### The vacuity control, and the floor that had to be thrown away
+
+Measured 2026-08-29: **103 pages, 4997 units**. Both floors sit near 60% of that.
+`MIN_UNITS_SCANNED` is the interesting one — files *read* is not text *examined*, and the
+`unitsOf` regression above would have shown up as roughly 103 units, one per page.
+
+The first draft also carried a floor on **registry matches in the working tree**, and it was wrong
+in a way worth recording because it is an easy thing to write. A count of hits against the tree can
+only be met by claims that are still there: it was satisfiable before the corrections in this change
+and unsatisfiable after them, and the only way to keep it green would have been to leave defects
+standing. It failed at exactly `expected 5 to be greater than or equal to 8` — the gate's own success
+breaking its own liveness proof. A gate whose vacuity control requires the defect to persist is not a
+gate. Each registry entry now carries a `probe` — a sentence of the shape it exists to catch, several
+of them the real defects quoted verbatim — and a test asserts every probe still matches, through the
+same unit-splitting and qualifier path the tree goes through.
+
+### What this gate cannot see
+
+A page marked `<!-- doc-class: record -->` is skipped entirely, so a live claim written onto a record
+page is invisible here; `docs/release/withdrawn-ci-controls.md:20` was one, and was corrected by hand.
+The skip is per-page because the alternative is a per-sentence exemption list, and this repository has
+removed two of those. The generated block in `docs/release/current-release-controls.md` is also
+skipped, for a different reason: it is checked by exact parity against a fresh render of the facts,
+which is stricter than any pattern, and reading a generator's output back through the patterns that
+produced it is circular.
+
+**Four defects in the gate were found after it first went green, and all four were found by
+reviewing it rather than by running it.** That is the honest shape of the evidence: a green scanning
+gate is a claim about ground it looked at, and each of these was ground it did not.
+
+**It could only see a claim that fitted on one source line.** Every pattern excludes `\n` — `.` and
+`|` stop a match at a sentence end and a table-cell edge, and `\n` had been added alongside them
+without the question being asked. This repository hard-wraps its prose at about 95 columns, so any
+claim that wrapped was invisible. It cost one live false claim:
+`docs/operations/licenses.md:45` said `license:check` "is run by the pull-request, CI,⏎and release
+workflows" — the sentence was false, `workflowFileCount=0` — and the line broke between the verb
+and its subject, which is the only reason it survived. The unit is now matched with its
+newlines flattened to spaces before the patterns run — length-preserving, so `hit.index` still
+indexes the original text and the reported line number is the real one. Flattening surfaced exactly
+one new offender and no false positives, which is the measurement worth recording: the qualifiers
+were carrying the specificity, not the line breaks.
+
+**The same sentence was in the passive, which the registry had no entry for.** `workflow-acts` reads
+verb-after-noun — "the CI workflow runs X" — and was blind to "X is run by the … workflows", though
+the two shapes say the same thing and in this tree that thing was false, `workflowFileCount=0`. Two
+independent blind spots on one sentence is not bad luck; it is what a registry of hand-written
+patterns is, and it is the argument for the `probe` fixtures rather than for trusting a green run.
+
+**The skip test was the third, and it was found by writing this entry.**
+The check was `body.includes('<!-- doc-class: record -->')`, which reads as obviously correct. It
+means a page is exempt when it *mentions* the marker, not when it *carries* one — so
+`docs/README.md`, the page that defines the taxonomy, had been silently outside the scan since the
+gate was written, and this file dropped out of the scan the moment the paragraph above quoted the
+marker to explain it. A document could opt itself out of the gate by describing the opt-out, and
+would do so silently, because a skipped page reports nothing. The check is now: the marker on a line
+of its own, within the first ten lines, which is where all five record pages put it. Re-running with
+the fix immediately turned this section red on the four sentences quoted in the mutation table above
+— they are quoted claims, not asserted ones, so each row now says so in the row.
+
+**The fourth was in the derivation rather than the registry, and it pointed the dangerous way.**
+`nodeFloorIsExecuted` asked whether any executed file reads `engines`, and `\.engines\b` is
+satisfied by a read of `engines.vscode`. That is a floor on the editor, and three files in this tree
+already read it — `tests/integration/runTest.ts`, `tests/lint/vscode-floor-claim.test.ts`,
+`tests/lint/asserted-counts.test.ts`. None is in the candidate set today, so the fact was right by
+luck of location, and one refactor moving that logic into `scripts/` would have made the generated
+page state that something enforces the Node floor when nothing does. Every other fact here fails
+safe: a missed checksum producer understates the repository. This one overstates it, which is the
+direction a control page must never take. The pattern now requires `node` within forty characters of
+the field read, and three tests build a tree per direction — `engines.vscode` must not flip it,
+`engines.node` must, and `>=22.11.0` must read as floor 22 rather than the **0** that a minimum over
+every digit in the string returned before review.

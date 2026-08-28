@@ -20,8 +20,10 @@ npm run contracts:check
 `contracts:generate` writes the current generated set. `contracts:check` runs
 the same derivation with `--check`, writes nothing, and exits non-zero if any
 artifact is missing or byte-for-byte stale. The check is the first target in
-`verify:all`, and the pull-request, CI, and release workflows run that
-consolidated gate.
+`verify:all`, and the first step of `npm run gate` as well. Nothing runs it
+remotely — the workflows that once did were retired on 2026-08-26
+(`FR-R3-099`) — so a stale contract reaches `develop` unless someone ran the
+gate before pushing.
 
 <!-- Source: package.json -->
 <!-- Source: scripts/generate-contract-schemas.mjs -->
