@@ -23,13 +23,22 @@
  * not list is an undeclared check; a stage the document lists that the chain does not
  * reach is a false claim. The second is the worse one and is why this is not a
  * one-directional "document mentions everything" test.
+ *
+ * FR-R3-135 — the entry point is now taken from `GATE_COMMAND_SPEC`, not written here as
+ * `'gate'`. This check was the other half of the same defect: it derived `RELEASE.md`'s
+ * coverage block from the script name `gate` while `record-gate-run.mjs` spawned
+ * `npm run ci`, so the document accurately described the closure of a command that no
+ * attestation had ever observed. The derivation was sound and its subject was wrong. Sharing
+ * one authority means a future change to what the gate is moves both at once; the value is
+ * still `'gate'`, so no block regenerates on this change.
  */
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { GATE_COMMAND_SPEC } from './gate-attestation.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-export const GATE_SCRIPT = 'gate';
+export const GATE_SCRIPT = GATE_COMMAND_SPEC.script;
 
 /** The markers that fence the derived block in RELEASE.md. */
 export const BLOCK_START = '<!-- BEGIN DERIVED: gate-coverage -->';

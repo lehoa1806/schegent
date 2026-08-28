@@ -34,10 +34,19 @@ beforeAll(async () => {
 const HEAD = 'a'.repeat(40);
 const OTHER = 'b'.repeat(40);
 
-/** A record of the shape `record-gate-run.mjs` writes on a green run. */
+/**
+ * A record of the shape `record-gate-run.mjs` writes on a green run.
+ *
+ * FR-R3-135 — version is read from the module rather than pinned to a literal, so a future
+ * schema bump does not silently turn every case here into a `stale-version` refusal and hide
+ * whatever it was actually asserting. `commandArgv` is the label's witness and is part of the
+ * shape now; a record without one is refused.
+ */
 const passing = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
-  version: 1,
+  version: gate.ATTESTATION_VERSION,
   command: gate.GATE_COMMAND,
+  commandExecutable: 'npm',
+  commandArgv: ['run', 'gate'],
   head: HEAD,
   treeClean: true,
   exitCode: 0,
@@ -112,9 +121,99 @@ describe('FR-R3-095 — a release is bound to a verified gate result for THIS co
   });
 
   it('refuses a record it may not understand rather than guessing', () => {
-    const verdict = decide({ attestation: passing({ version: 99 }) });
+    // FR-R3-135 split this refusal in two. `unreadable` is now the shape that is not a record
+    // at all — a version that is absent or not a number, which is what
+    // `require-local-gate.mjs` synthesises (`{ version: 'unparseable' }`) for a file that did
+    // not parse. The remedy is to look at the file.
+    const verdict = decide({ attestation: passing({ version: 'unparseable' }) });
     expect(verdict.ok).toBe(false);
     expect(verdict.reason).toBe('unreadable');
+  });
+
+  it('refuses a numerically superseded record by VERSION, not by name (FR-R3-135)', () => {
+    // The case this exists for is the one the label ratchet cannot see. Until FR-R3-135 the
+    // recorder printed and serialized `npm run gate` while spawning `npm run ci`, so a
+    // version-1 record with a correct-looking command field may describe a run that never
+    // observed the secret scan, the workflow-pin check, the license check, the docs check or
+    // contracts:check. An honest version-1 record and a misstated one are byte-identical —
+    // there is nothing in the record to tell them apart — so the version is what separates
+    // them, and every version-1 record is refused regardless of what its label says.
+    const verdict = decide({
+      attestation: passing({ version: 1, command: 'npm run gate', exitCode: 0 })
+    });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reason).toBe('stale-version');
+    // Both versions, or the reader is left guessing which end moved.
+    expect(verdict.message).toContain('version 1');
+    expect(verdict.message).toContain(`version ${gate.ATTESTATION_VERSION}`);
+    // And the remedy, which is one gate run rather than an edit to the old record.
+    expect(verdict.message).toContain('gate:record');
+  });
+
+  it('accepts the current version and refuses a label its own argv does not witness', () => {
+    // The identity check is what gives the `wrong-command` comparison a witness. A label is a
+    // claim; a label that must equal the rendering of a recorded argv is a claim with evidence
+    // behind it, and a hand-edited record cannot present a strong label over a weak vector.
+    expect(decide().ok).toBe(true);
+
+    const mismatched = decide({
+      attestation: passing({ command: 'npm run gate', commandArgv: ['run', 'ci'] })
+    });
+    expect(mismatched.ok).toBe(false);
+    expect(mismatched.reason).toBe('command-identity-mismatch');
+    expect(mismatched.message).toContain('npm run ci');
+    expect(mismatched.message).toContain('npm run gate');
+  });
+
+  it('refuses a current-version record that carries no argv to witness its label', () => {
+    const verdict = decide({ attestation: passing({ commandArgv: undefined }) });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reason).toBe('command-identity-mismatch');
+  });
+
+  it('refuses a re-split argv that renders correctly but witnesses nothing (FR-R3-135 review)', () => {
+    // `join(' ')` is not injective, and the first version of the identity check did not account
+    // for it: `['run gate']` renders to `npm run gate` exactly, so a label-versus-rendering
+    // comparison accepts it. What it attests to is one argument containing a space — which
+    // `spawnSync` with `shell: false` passes to `npm` as a single opaque word, and `npm` does
+    // not read as `run gate`. So the vector must also equal this gate's vector element-wise.
+    const verdict = decide({ attestation: passing({ commandArgv: ['run gate'] }) });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reason).toBe('command-identity-mismatch');
+    // The message must not claim the label and rendering disagree, because they do not.
+    expect(verdict.message).toContain('render to the same text');
+    expect(verdict.message).toContain('["run gate"]');
+  });
+
+  it('refuses an argv whose elements are not strings, before rendering it', () => {
+    // `join(' ')` coerces anything. A record with `commandArgv: [1, 2]` would render `npm 1 2`
+    // — harmless here, but the guard is what lets `renderGateCommandLabel` keep its
+    // `readonly string[]` contract while reading a file an operator can edit.
+    for (const argv of [[1, 2], ['run', null], 'run gate', {}]) {
+      const verdict = decide({ attestation: passing({ commandArgv: argv }) });
+      expect(verdict.reason, `argv ${JSON.stringify(argv)}`).toBe('command-identity-mismatch');
+    }
+  });
+
+  it('the unreadable refusal names the file, not a re-record', () => {
+    // The two version refusals must not converge on the same advice. A superseded record needs
+    // a gate run; a file whose `version` is not a number is not a record, and re-recording over
+    // it would destroy the evidence of why it was corrupt without explaining anything.
+    const verdict = decide({ attestation: passing({ version: 'unparseable' }) });
+    expect(verdict.reason).toBe('unreadable');
+    expect(verdict.message).toContain(gate.ATTESTATION_PATH);
+    expect(verdict.message).toContain('not a version number');
+    expect(verdict.message).not.toContain('npm run gate:record');
+  });
+
+  it('checks the version BEFORE command identity, so a v1 record is not sent to the wrong field', () => {
+    // Ordering is deliberate: a version-1 record legitimately has no `commandArgv`, and
+    // reporting an identity mismatch for it would send an operator to inspect a field that did
+    // not exist at that version. The remedy it needs is "re-record", not "your argv is wrong".
+    const verdict = decide({
+      attestation: passing({ version: 1, commandArgv: undefined })
+    });
+    expect(verdict.reason).toBe('stale-version');
   });
 
   it('refuses a record that says the tree was dirty when the gate ran', () => {
@@ -128,14 +227,17 @@ describe('FR-R3-095 — a release is bound to a verified gate result for THIS co
 
   it('every refusal names a distinct cause, because they have distinct remedies', () => {
     // A gate that says only "refused" sends someone to read the gate instead of
-    // fixing the cause. Six causes, six reasons, all different.
+    // fixing the cause. FR-R3-135 took this from six causes to eight: `stale-version` split
+    // from `unreadable`, and `command-identity-mismatch` is new.
     const reasons = [
       decide({ attestation: null }),
       decide({ attestation: passing({ head: OTHER }) }),
       decide({ treeClean: false }),
       decide({ attestation: passing({ exitCode: 1 }) }),
       decide({ attestation: passing({ command: 'npm run lint' }) }),
-      decide({ attestation: passing({ version: 99 }) })
+      decide({ attestation: passing({ version: 'unparseable' }) }),
+      decide({ attestation: passing({ version: 1 }) }),
+      decide({ attestation: passing({ commandArgv: ['run', 'ci'] }) })
     ].map((v) => v.reason);
     expect(new Set(reasons).size).toBe(reasons.length);
     for (const reason of reasons) expect(reason).not.toBe('verified');

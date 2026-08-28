@@ -74,6 +74,27 @@ The detailed operator threat catalog covers T1–T25 in [the threat model](docs/
 Every control here runs locally, inside the attested gate command (`npm run gate`),
 which is what a release is bound to. There is no second enforcement point.
 
+> **This sentence was false for ~32 hours, from 2026-08-27 00:15 +0700 to 2026-08-28, and
+> `FR-R3-135` is why it is true now.** The controls were inside the `gate` script chain the
+> whole time, but the commit that pointed the release binding at `npm run gate` left the
+> recorder spawning `npm run ci` — and `ci` reaches none of the four controls below that
+> the five release-only stages provide. So "inside the attested gate command" named a
+> command no attestation had ever observed, and a release could have been attested past a
+> failing secret scan even though the scan was in the chain. The recorder now spawns one
+> frozen argument vector from which the recorded label is *rendered*, every record carries
+> that vector as its own witness, and the release check refuses both a label the vector
+> does not support and a vector that is not this gate's. The attestation schema moved to
+> version 2, so every record written in that window is refused by version rather than by
+> name.
+>
+> **The window is not the reassuring part.** It was short because the defect was found by a
+> code audit within a day, not because anything detected it: the label was a free constant
+> the recorder wrote unconditionally, so no test and no gate stage could have. One
+> attestation was written inside it. The control that now exists is the argument vector
+> being asserted in the suite, which is what makes the short window repeatable rather than
+> fortunate.
+> <!-- Source: scripts/gate-attestation.mjs --><!-- Source: scripts/gate-recorder.mjs -->
+
 | Control | Coverage and trigger | Enforcement |
 |---|---|---|
 | Secret scan | Every git-tracked file, **including `tests/**`**, scanned by secretlint's recommended ruleset plus the dotenv rule | `scripts/scan-secrets.mjs` via `npm run security:secrets`, inside `npm run gate`. Findings are exempted per entry with a stated reason in `.secretlintignore`, never by excluding a directory. Measured **≈39 s** over 1,947 tracked files. <!-- Source: package.json --><!-- Source: scripts/scan-secrets.mjs --> |
