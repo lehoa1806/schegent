@@ -52,9 +52,25 @@ describe('the degraded-tree report reaches the audit writer (FR-R3-083)', () => 
 
   it('routes the sidecar arm into it', () => {
     // The arm and the call, together. Either one alone is a disconnected half.
-    expect(extension).toContain("event.kind === 'tree-unconfirmed'");
-    const arm = extension.slice(extension.indexOf("event.kind === 'tree-unconfirmed'"));
-    expect(arm.slice(0, 400)).toContain('treeDegradationRecorder.record(event);');
+    //
+    // COMMENTS STRIPPED FIRST, and that is not tidiness. This gate used to read the
+    // raw file for `event.kind === 'tree-unconfirmed'`, and FR-R3-137 left exactly
+    // that string in a COMMENT — one explaining why the code no longer tests it,
+    // because the four branches above exhaust the union and
+    // `no-unnecessary-condition` reports the re-test as always true. The gate went
+    // green off the prose while the arm it pins had changed shape underneath. A
+    // source-reading gate a comment can satisfy is the FR-R3-114 shape.
+    const code = extension
+      .split('\n')
+      .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
+      .join('\n');
+    // One expression, so the arm and the call cannot drift apart the way a
+    // 400-character window would have allowed. The `satisfies` is what now
+    // addresses this arm to the tree-unconfirmed event: it is also the compile-time
+    // pin that a sixth event kind must not silently land here.
+    expect(code).toMatch(
+      /treeDegradationRecorder\.record\(event satisfies \{ kind: 'tree-unconfirmed' \}\)/
+    );
   });
 
   it('keeps that the ONLY place the recorder is driven', () => {

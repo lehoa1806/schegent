@@ -1141,7 +1141,10 @@ describe('large source file LOC budgets', () => {
   const EXEMPTION_REFERENCE = 'docs/architecture/composition-root-extraction.md';
 
   const LEGACY_FUNCTION_EXEMPTIONS: Readonly<Record<string, number>> = {
-    'src/extension.ts:wireStage2': 437
+    // FR-R3-137 (T1530d) — 437 -> 433. Stage 2's resource teardown moved to
+    // `src/activation/stage2-teardown.ts`; the two releases below it stayed,
+    // because AGENTS.md rule 4 puts primacy's release in the composition root.
+    'src/extension.ts:wireStage2': 433
   };
 
   /** Top-level function declarations and their extents, brace-counted. */
@@ -1224,7 +1227,7 @@ describe('large source file LOC budgets', () => {
     //
     // The two numbers being equal is the point. Lowering the exemption is a
     // two-line edit that shows up in review as a pair; raising it fails here.
-    const CEILING: Readonly<Record<string, number>> = { 'src/extension.ts:wireStage2': 437 };
+    const CEILING: Readonly<Record<string, number>> = { 'src/extension.ts:wireStage2': 433 };
     for (const [key, allowed] of Object.entries(LEGACY_FUNCTION_EXEMPTIONS)) {
       expect(allowed, `${key}: an exemption may be lowered, never raised`).toBeLessThanOrEqual(
         CEILING[key] ?? 0

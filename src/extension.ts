@@ -35,6 +35,7 @@ import { wireLivePicture } from './activation/live-picture-wiring';
 import { wirePhaseExecution } from './activation/phase-execution-wiring';
 import { createStage2Producers, type Stage2Producers } from './activation/stage2-producers';
 import { wireTrustGrant } from './activation/trust-grant-wiring';
+import { closeStage2Resources } from './activation/stage2-teardown';
 
 /**
  * FR-R3-136 (FR-005) — the one live read of Workspace Trust in this file, and a
@@ -42,6 +43,9 @@ import { wireTrustGrant } from './activation/trust-grant-wiring';
  * inline copies were four places for one to become a captured boolean.
  */
 const isWorkspaceTrusted = (): boolean => vscode.workspace.isTrusted;
+
+// FR-R3-137 (FR-010) — the host teardown, module-scoped so `deactivate()` can await it.
+let hostTeardown: (() => Promise<void>) | null = null;
 
 interface Stage2Wiring {
   readonly disposables: readonly vscode.Disposable[];
@@ -192,13 +196,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     })
   );
 
-  context.subscriptions.push({
-    dispose() {
-      void stage2?.dispose();
-      activeOutput?.dispose();
-      activePlaceholder.dispose();
-    }
-  });
+  // FR-R3-137 (FR-010) — published so `deactivate()` can AWAIT it. This entry
+  // opened `void stage2?.dispose()`, and VS Code disposes `context.subscriptions`
+  // synchronously: the promise carrying the transport flush, the lease release and
+  // the lock release was discarded at the one moment the three had to finish. It
+  // nulls itself, so whichever of the two paths fires second is a no-op.
+  hostTeardown = async (): Promise<void> => {
+    hostTeardown = null;
+    const output = activeOutput; // read first: `tearDownStage2` clears it
+    await tearDownStage2();
+    output?.dispose();
+    activePlaceholder.dispose();
+  };
+  context.subscriptions.push({ dispose: () => void hostTeardown?.() });
 
   // Stage 2 — workspace-bound wiring. Only proceeds when a workspace folder is open.
   await ensureStage2();
@@ -363,6 +373,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     store,
     auditWriter,
     disposables,
+    hostSubscriptions: context.subscriptions,
     evidenceHealth,
     processEnvironmentPolicy
   });
@@ -630,21 +641,16 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   await producers.run();
 
   const dispose = async (): Promise<void> => {
-    uiWiring.dispose();
-    projector.dispose();
-    watchdog.dispose();
-    queueScheduleWatchdog.dispose();
-    statusBar.dispose();
-    for (const d of disposables) {
-      try {
-        d.dispose();
-      } catch {
-        // ignore disposal errors
-      }
-    }
+    // FR-R3-137 (T1530c) — the resources, transport descriptor included; why in the module.
+    await closeStage2Resources({
+      sync: [uiWiring, projector, watchdog, queueScheduleWatchdog, statusBar],
+      disposables,
+      transport: backend.transport
+    });
     // Feature 092 (T049) — drop every queue lease this window holds before the
     // workspace lock, so a window that is shutting down never leaves a queue
-    // claimed while advertising itself as no longer primary.
+    // claimed while advertising itself as no longer primary. Both releases stay
+    // in THIS file: AGENTS.md rule 4 puts primacy's release at `dispose()` here.
     await executionLeases.releaseAll();
     await lock.release();
   };
@@ -665,8 +671,10 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   };
 }
 
-export function deactivate(): void {
-  // disposables registered to context.subscriptions will run automatically.
+export async function deactivate(): Promise<void> {
+  // FR-R3-137 (FR-010) — awaited, which is the whole point: VS Code awaits a
+  // `Thenable` returned from `deactivate`, and does not await a `Disposable`.
+  await hostTeardown?.();
   // Feature 058 — release the workspace-folder-picker subscription and clear
   // its memoized canonical folder so a fresh activation rebuilds from a clean
   // state. Idempotent and never throws.

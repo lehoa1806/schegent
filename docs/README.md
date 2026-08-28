@@ -154,6 +154,7 @@ drifts unnoticed, because the readers who would catch an error never get there.
 - [Concurrent-run resource measurement](operations/concurrent-run-resource-measurement.md)
 - [Concurrent-run isolation measurement](operations/concurrent-run-isolation-measurement.md) — attribution outcomes at concurrency 1/2/4/8, and the recommended cap of 2
 - [Large-workspace resource measurement](operations/large-workspace-resource-measurement.md) — **measured 2026-08-27**: resident/retained, descriptors and Git behaviour at concurrency 1/2/4/8 on 2,000 tracked files, plus activation percentiles and the release-claim floor they establish
+- [Transport-sink descriptor measurement](operations/transport-descriptor-measurement.md) — **measured 2026-08-28**: the sink's own append-handle count across 200 build/teardown cycles, 200 repoint/rotation cycles and 2,000 sustained records, and how it relates to the flat process-wide delta the large-workspace record reports
 - [Live-canary cadence](operations/live-canary-cadence.md) — **declared 2026-08-27**: when the live backend canary must run, who owns it, and the cost bound. The first run under it is owed, with its trigger
 - [Merge-gate observation](operations/merge-gate-observation.md)
 - [Multi-queue concurrency](operations/multi-queue-concurrency.md)

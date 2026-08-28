@@ -22,11 +22,21 @@
 // one comparison per line and notifies nobody.
 import type { CliTransportRecord } from './cli-transport-sink';
 
-/** What this needs from the sink — narrower than the sink, so a fake is two methods. */
+/**
+ * What this needs from the sink — narrower than the sink, so a fake is a handful
+ * of members.
+ *
+ * FR-R3-137 — `flushAndDispose` is REQUIRED, not optional, and that is the whole
+ * point of putting it here. This interface is what the wiring retains and what
+ * every consumer sees, so a lifecycle member a caller may omit is a lifecycle
+ * member a caller will omit: the descriptor leak this closed existed precisely
+ * because the type between the owner and the sink had no close on it.
+ */
 export interface BoundedTransport {
   readonly record: (entry: CliTransportRecord) => void;
   readonly flushPendingWrites: () => Promise<void>;
   readonly droppedForBackpressure: { readonly lines: number; readonly bytes: number };
+  readonly flushAndDispose: () => Promise<void>;
 }
 
 /** What this needs from the health surface. */
@@ -38,14 +48,28 @@ export function withDropReporting(
   sink: BoundedTransport,
   reporter: DropReporter
 ): BoundedTransport {
+  // FR-R3-137 — the wrapper goes quiet after the sink is disposed.
+  //
+  // A drop reported during shutdown would push a count at a health surface whose
+  // own disposal is a step or two away in the same teardown. So the final counts
+  // are reported ONCE, after the sink settles — which is the only report that
+  // includes lines the drain abandoned — and nothing is reported after that.
+  let reporting = true;
   return {
     record: (entry: CliTransportRecord): void => {
       sink.record(entry);
-      reporter.noteTransportDrops(sink.droppedForBackpressure);
+      if (reporting) reporter.noteTransportDrops(sink.droppedForBackpressure);
     },
     flushPendingWrites: () => sink.flushPendingWrites(),
     get droppedForBackpressure() {
       return sink.droppedForBackpressure;
+    },
+    flushAndDispose: async (): Promise<void> => {
+      await sink.flushAndDispose();
+      if (reporting) {
+        reporting = false;
+        reporter.noteTransportDrops(sink.droppedForBackpressure);
+      }
     }
   };
 }

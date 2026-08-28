@@ -154,6 +154,14 @@ type TransportFailureCause =
   // was refused rather than queued. Not an I/O failure: the disk may be fine and
   // simply slower than the CLI is producing.
   | 'pending-bytes-exceeded'
+  // FR-R3-137 — the line arrived after `flushAndDispose()` began. Not a failure
+  // of anything: the host is shutting down and this sink has already promised
+  // its caller that nothing further will be queued.
+  | 'sink-closed'
+  // FR-R3-137 — the disposal's grace expired with writes still in flight, so
+  // those bytes were abandoned and the descriptor closed anyway. The disk is
+  // stalled, not broken; an unbounded wait here is a host that will not exit.
+  | 'drain-incomplete'
   | 'unknown';
 
 /**
@@ -161,6 +169,17 @@ type TransportFailureCause =
  * Generous for a transport log at any real rate, and finite, which is the point.
  */
 const MAX_PENDING_BYTES = 16 * 1024 * 1024;
+
+/**
+ * FR-R3-137 — how long `flushAndDispose()` waits for in-flight writes before it
+ * closes the descriptor regardless.
+ *
+ * 2,000 ms because that is this repository's IO-teardown grace, four times over:
+ * `STDIO_CLOSE_GRACE_MS`, `TERMINATION_GRACE_MS`, `OUTPUT_PROBE_TIMEOUT_MS` and
+ * `MOUNT_PROBE_TIMEOUT_MS`. Nothing was invented here, and no test waits it out —
+ * the bound is injectable through `drainGraceMs` for exactly that reason.
+ */
+export const TRANSPORT_DRAIN_GRACE_MS = 2_000;
 
 interface AppendFn {
   (target: string, data: string): Promise<void>;
@@ -223,6 +242,12 @@ export interface CliTransportSinkDeps {
   readonly stat?: StatFn;
   readonly readdir?: ReaddirFn;
   readonly realpath?: (target: string) => Promise<string>;
+  /**
+   * FR-R3-137 — `flushAndDispose()`'s grace, defaulting to
+   * `TRANSPORT_DRAIN_GRACE_MS`. Injected only so a test can prove the expiry
+   * path without spending two seconds; production supplies nothing.
+   */
+  readonly drainGraceMs?: number;
 }
 
 /**
@@ -388,12 +413,36 @@ export class CliTransportSink implements CliTransportRecorder {
    * `settings.path` (handled in `appendHandleFor`, because this sink has no
    * settings-save signal to hang it off).
    *
-   * NOT dropped on disposal, because there is no disposal: nothing disposes this
-   * sink, so at most one descriptor — the current destination's — is held for
-   * the host's lifetime. Said plainly rather than left implied; the previous
-   * wording claimed a disposal hook that does not exist.
+   * FR-R3-137 — and on disposal. `flushAndDispose()` is the owner's release, and
+   * until it existed this comment said "NOT dropped on disposal, because there is
+   * no disposal": the only thing that ever closed one of these was the garbage
+   * collector, which announced itself on stderr (`DEP0137`) fifteen lines at a
+   * time in the sink's own test file. A handle whose finalizer is GC is a handle
+   * with no lifetime at all — its close is unordered against the shutdown it is
+   * supposed to be part of.
    */
   private readonly appendHandles = new Map<string, { handle: FileHandle; root: string }>();
+
+  /**
+   * FR-R3-137 — the disposal's two fields.
+   *
+   * `closed` is set synchronously, before the first await inside
+   * `flushAndDispose()`, so a line racing shutdown is refused rather than queued
+   * onto a chain nothing will drain. `closing` memoizes the drain so concurrent
+   * and repeated callers share one settlement: a second drain could close a
+   * descriptor a third caller had just re-opened.
+   *
+   * `descriptorsReleased` is the third, and it is deliberately NOT `closed`:
+   * `closed` is true for the whole drain, and the drain's entire purpose is to
+   * let the writes already in flight finish — including the ones that still need
+   * to open a handle. This flag goes up only at the final close sweep, after
+   * which no descriptor may be opened again, because the sweep is the last one
+   * that will ever run.
+   */
+  private closed = false;
+  private closing: Promise<void> | null = null;
+  private descriptorsReleased = false;
+  private readonly drainGraceMs: number;
 
   constructor(deps: CliTransportSinkDeps) {
     this.settings = deps.settings;
@@ -412,6 +461,7 @@ export class CliTransportSink implements CliTransportRecorder {
     });
     this.readdir = deps.readdir ?? (async (target: string) => fs.readdir(target));
     this.containmentFs = { realpath: deps.realpath ?? fs.realpath };
+    this.drainGraceMs = deps.drainGraceMs ?? TRANSPORT_DRAIN_GRACE_MS;
   }
 
   /**
@@ -445,6 +495,22 @@ export class CliTransportSink implements CliTransportRecorder {
     }
     if (!settings) return;
     if (this.refused.has(settings.path)) return;
+
+    // FR-R3-137 — refuse anything that arrives once disposal has begun, and
+    // count it, because a silent drop is the cap this repository keeps removing.
+    //
+    // The POSITION is load-bearing and this is the fifth thing `record()` does,
+    // not the first. FR-R3-048's comment above explains why: every line the sink
+    // is handed must reach the stateful redactor whether or not it reaches the
+    // file, so guarding before `format()` would hide a shutdown-race line from
+    // the key-block state machine — and a BEGIN it never sees leaves the redactor
+    // open over every body line after it.
+    if (this.closed) {
+      this.droppedLines += 1;
+      this.droppedBytes += data.length;
+      this.warn(settings.path, 'sink-closed');
+      return;
+    }
 
     // FR-R3-052 (H-03) — a pending-byte high-water mark.
     //
@@ -496,6 +562,116 @@ export class CliTransportSink implements CliTransportRecorder {
   public async flushPendingWrites(): Promise<void> {
     while (this.pending.size > 0) {
       await Promise.allSettled(Array.from(this.pending));
+    }
+  }
+
+  /**
+   * FR-R3-137 (FR-006) — how many append descriptors this sink holds.
+   *
+   * Derived, never tracked: a counter maintained beside the map is a second
+   * truth that can disagree with it, and "the map is empty" is the property a
+   * disposal test actually wants to assert. The sink's own count rather than the
+   * process's, because `/dev/fd` includes descriptors this sink does not own —
+   * that number corroborates, it cannot assert.
+   */
+  public get openDescriptorCount(): number {
+    return this.appendHandles.size;
+  }
+
+  /**
+   * FR-R3-137 (FR-006) — what a disposal would have to wait for. Readable so a
+   * test can establish its own precondition instead of assuming one.
+   */
+  public get inFlight(): { readonly chains: number; readonly writes: number; readonly bytes: number } {
+    return { chains: this.chains.size, writes: this.pending.size, bytes: this.pendingBytes };
+  }
+
+  /**
+   * FR-R3-137 (FR-001, FR-002, FR-004, FR-005) — flush what is in flight, then
+   * close every descriptor. The owner's release; nothing else closes these.
+   *
+   * Never rejects. It is called from a `dispose()` chain during shutdown, where a
+   * rejection would abandon the steps after it — and the steps after it release
+   * the workspace lock. Every failure inside goes to `warn()`.
+   *
+   * Deliberately NOT `async`, so every caller receives the *same* promise object
+   * rather than a fresh wrapper around it. That makes "one drain, however many
+   * callers" a property a test can assert by identity instead of by counting side
+   * effects, and it costs one microtask less per call on the shutdown path.
+   * `drainThenClose` is `async` and so cannot throw synchronously into a caller.
+   */
+  public flushAndDispose(): Promise<void> {
+    // Synchronous, before the first await: see the `closed` field's header.
+    this.closed = true;
+    this.closing ??= this.drainThenClose();
+    return this.closing;
+  }
+
+  /**
+   * The drain, bounded. Runs exactly once per sink — `flushAndDispose()`
+   * memoizes it.
+   */
+  private async drainThenClose(): Promise<void> {
+    let expired = false;
+    // The handle is created OUTSIDE the promise executor, and that is not style:
+    // assigned inside a callback, TypeScript cannot see the assignment from the
+    // `finally` below and reads the handle as always-`undefined` there — so the
+    // clear was guarded by an `if` the compiler had already decided was false
+    // (`no-unnecessary-condition` reports both that and the `?.` on `unref`). The
+    // executor runs synchronously, so `onGraceElapsed` is the real `resolve` by
+    // the time the timer can fire.
+    let onGraceElapsed = (): void => undefined;
+    const graceElapsed = new Promise<void>((resolve) => {
+      onGraceElapsed = resolve;
+    });
+    const timer = setTimeout(() => {
+      expired = true;
+      onGraceElapsed();
+    }, this.drainGraceMs);
+    // Unref'd so a sink disposed early in a short-lived process does not hold the
+    // event loop open for the length of the grace.
+    timer.unref();
+
+    try {
+      await Promise.race([this.flushPendingWrites(), graceElapsed]);
+    } catch {
+      // `flushPendingWrites` uses `allSettled` and cannot reject; this is here
+      // so a future change to it cannot turn shutdown into an unhandled throw.
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (expired) this.countAbandoned();
+
+    // Closed regardless. A stalled disk must not be able to hold a descriptor
+    // past the shutdown that asked for it back.
+    //
+    // The flag goes up BEFORE the loop, not after: the loop awaits per handle,
+    // and the keys are snapshotted, so a write resuming between two of those
+    // awaits could otherwise insert a handle this sweep will not revisit.
+    this.descriptorsReleased = true;
+    for (const targetPath of Array.from(this.appendHandles.keys())) {
+      await this.closeAppendHandle(targetPath);
+    }
+  }
+
+  /**
+   * FR-R3-137 (FR-004) — bytes still in flight when the grace expired.
+   *
+   * Counted once, here, at the boundary, and NOT by touching `pendingBytes`:
+   * `record()`'s `finally` remains the only decrement, so if a stalled write
+   * does eventually settle the arithmetic lands on zero rather than going
+   * negative. The line count is the number of writes abandoned, and the warn is
+   * one per path with a chain still open — the same one-per-path discipline
+   * every other cause here uses.
+   */
+  private countAbandoned(): void {
+    const { writes, bytes } = this.inFlight;
+    if (writes === 0 && bytes === 0) return;
+    this.droppedLines += writes;
+    this.droppedBytes += bytes;
+    for (const targetPath of this.chains.keys()) {
+      this.warn(targetPath, 'drain-incomplete');
     }
   }
 
@@ -771,6 +947,14 @@ export class CliTransportSink implements CliTransportRecorder {
    * writing under a handle proved against the old one.
    */
   private async appendHandleFor(targetPath: string, root: string): Promise<FileHandle | null> {
+    // FR-R3-137 (FR-005) — the close sweep has already run, so this is the one
+    // caller that must be refused: a write stalled past the drain grace still
+    // resumes eventually, and a handle opened now has no owner left to close it
+    // (`flushAndDispose()` memoizes, so the sweep does not run twice). Its bytes
+    // were already counted by `countAbandoned()` at the grace boundary, so this
+    // neither counts nor warns again — `write()` treats a null handle as a
+    // dropped record, which is exactly what the abandoned count already says.
+    if (this.descriptorsReleased) return null;
     // Any handle held for a DIFFERENT destination is stale. `settings.path` is
     // read fresh per record and this sink has no settings-save signal to drop a
     // cache on (its twin `RuntimeLogSink` is wired to one; this one is not, as

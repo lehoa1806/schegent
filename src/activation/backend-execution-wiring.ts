@@ -28,7 +28,7 @@ import type { TelemetrySnapshot } from '../telemetry/telemetry-snapshot';
 import type { StateProjector } from '../ui/sidebar/state-projector';
 import type { EvidenceHealthMonitor } from '../services/evidence-health/evidence-health-monitor';
 import { RATE_LIMIT_MATCHERS } from '../parser/credit-error-detector';
-import { withDropReporting } from '../monitor/drop-reporting-transport';
+import { withDropReporting, type BoundedTransport } from '../monitor/drop-reporting-transport';
 import { createCliTransportSink } from '../monitor/cli-transport-sink';
 import { getCanonicalWorkspaceRoot } from '../state/workspace-folder-picker';
 import { windowsShellOut } from '../telemetry/platform/platform-windows';
@@ -86,12 +86,26 @@ export interface BackendExecutionWiringDeps {
   readonly store: WorkspaceStateStore;
   readonly auditWriter: AuditLogWriter;
   readonly disposables: vscode.Disposable[];
+  /**
+   * FR-R3-137 (FR-009, C5) — `context.subscriptions`, for the partial-construction
+   * net registered beside the sink below. Distinct from `disposables`, and the
+   * distinction is the requirement: `disposables` is private to `wireStage2` and
+   * is never swept when `wireStage2` throws, so it cannot carry a net.
+   */
+  readonly hostSubscriptions: { dispose(): unknown }[];
   readonly evidenceHealth: EvidenceHealthMonitor;
   readonly processEnvironmentPolicy: ProcessEnvironmentPolicy;
 }
 
 export interface BackendExecutionWiring {
   readonly monitor: ClaudeCliMonitor;
+  /**
+   * FR-R3-137 (FR-008) — the transport, so the composition root's teardown has
+   * something to close. Carried on the wiring rather than reached for through a
+   * module-level reference, for the reason `Stage2Wiring.reset` records: a reload
+   * replaces the graph, and a teardown must reach the CURRENT sink.
+   */
+  readonly transport: BoundedTransport;
   readonly sampler: TelemetrySamplerImpl;
   readonly runnerRegistry: BackendRunnerRegistry;
   readonly historyStore: HistoryStore;
@@ -127,9 +141,49 @@ export function wireBackendExecution(
     store,
     auditWriter,
     disposables,
+    hostSubscriptions,
     evidenceHealth,
     processEnvironmentPolicy
   } = deps;
+
+// FR-R3-137 (FR-008) — hoisted out of the monitor's option literal, because the
+// thing that owns a descriptor has to be reachable by the thing that closes it.
+//
+// Constructed inline as a constructor argument, this reference existed for one
+// expression and then only the monitor held it — narrowed to `CliTransportRecorder`,
+// one method, no close on it. Nothing in the host could dispose the sink because
+// nothing in the host could name it. It is returned on the wiring below, so the
+// composition root's teardown has an owner to call.
+//
+// FR-R3-007 — the root is re-read per emit rather than closed over: a host
+// outlives one folder, and the destination and its containment root are derived
+// together so the two cannot disagree.
+// FR-R3-106 — wrapped so backpressure refusals reach evidence health.
+const transport: BoundedTransport = withDropReporting(
+  createCliTransportSink(() => getCanonicalWorkspaceRoot()?.uri.fsPath ?? null, logger),
+  evidenceHealth
+);
+// FR-R3-137 (FR-009, C5) — the partial-construction net, registered HERE, at the
+// moment the sink exists, rather than at the end of a successful `wireStage2`.
+//
+// The window it covers: `wireStage2` throws somewhere between this line and its
+// return. The ordered teardown in `stage2-teardown.ts` was never built, and
+// `disposables` — the array `wireStage2` sweeps on its one existing failure path
+// — is private to it and unswept on a throw. So on that path nobody could close
+// this sink, and the monitor is already recording into it by then (FR-R3-008's
+// late binding): exactly the case C5 names, a record reaching a sink whose Stage 2
+// never became reachable.
+//
+// It goes on the HOST's subscriptions because that is the only list a failed
+// activation disposes. Ordering is by construction: `extension.ts` pushes its
+// awaited `hostTeardown` entry during stage 1, before any of this runs, so the
+// ordered teardown always precedes this net in the array. Firing second is free
+// — `flushAndDispose` memoises its drain, so both await the same promise.
+//
+// Accepted cost: a folder change builds a new Stage 2 and leaves this entry
+// behind holding a settled sink whose maps are empty. One small object per folder
+// change, released when the window closes.
+hostSubscriptions.push({ dispose: () => void transport.flushAndDispose() });
 
 // FR-R3-008 (T377) — the monitor observes activity long before the controller
 // that persists it exists, so the recorder is late-bound in the same shape as
@@ -147,14 +201,10 @@ const monitor = new ClaudeCliMonitor({
   now: () => new Date(),
   audit: auditWriter,
   // Feature FR-R3-007 — CLI output goes to the bounded sink, not `audit.log`.
-  // The root is re-read per emit rather than closed over: a host outlives one
-  // folder, and the destination and its containment root are derived together
-  // so the two cannot disagree.
-  // FR-R3-106 — wrapped so backpressure refusals reach evidence health.
-  transport: withDropReporting(
-    createCliTransportSink(() => getCanonicalWorkspaceRoot()?.uri.fsPath ?? null, logger),
-    evidenceHealth
-  ),
+  // The monitor's own field stays `CliTransportRecorder`: one method, no
+  // lifecycle. That narrowing is correct — a stream handler has no business
+  // closing anything — which is why the owner is the wiring, not the monitor.
+  transport,
   activity: {
     record: (observation) => {
       livenessRecorder?.recordRunActivity(observation);
@@ -256,9 +306,16 @@ const runnerRegistry = new BackendRunnerRegistry({
         signal: event.signal as NodeJS.Signals | null,
         ...(exitedPid === undefined ? {} : { pid: exitedPid })
       });
-    } else if (event.kind === 'tree-unconfirmed') {
+    } else {
       // FR-R3-083 — best-effort by design; arrives after the phase has ended.
-      void treeDegradationRecorder.record(event);
+      //
+      // `else`, not `else if (event.kind === 'tree-unconfirmed')`: the four
+      // branches above exhaust the event union, so that re-test is a comparison
+      // the compiler has already made — `no-unnecessary-condition` reports it as
+      // always true. The `satisfies` keeps what the removed comparison implied: a
+      // sixth event kind stops compiling on this line instead of silently
+      // arriving in the tree-unconfirmed branch and being recorded as one.
+      void treeDegradationRecorder.record(event satisfies { kind: 'tree-unconfirmed' });
     }
   },
   probeTransport: true,
@@ -294,6 +351,7 @@ const verboseAccessor = {
 };
   return {
     monitor,
+    transport,
     sampler,
     runnerRegistry,
     historyStore,
