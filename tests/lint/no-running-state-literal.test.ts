@@ -151,22 +151,22 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'src/contracts/snapshot-vocabulary.ts',
   'src/ui/sidebar/projector-bookkeeping.ts',
   'src/ui/status-bar.ts',
-  'webview-ui/src/components/ControlPanel.svelte',
   // Feature 065 — comment-only references to the `running` queue lifecycle
   // describing the chooser dispatch rules. No pinned status literal.
   'webview-ui/src/components/QueueInputForm.svelte',
-  'webview-ui/src/components/MonitorPill.svelte',
   'webview-ui/src/components/StatusBar.svelte',
-  'webview-ui/src/components/StatusHeader.svelte',
   // Feature 103 — one CSS selector, `.status-running .status-badge`, one of the
   // six that colour a row's status badge from the `status-{row.status}` class
   // the row already carries. Character-identical in kind to the
-  // `.status-running .dot` rules the three entries above are listed for, and
+  // `.status-running .dot` rule `StatusBar.svelte` above is listed for, and
   // reached for the same reason: FR-003 folds runs that are still going into
   // history, so a history row now renders the live statuses as well as the
-  // terminal ones. No TypeScript in this file names the literal — the status
-  // reaches it as data, and the outcome filter that does name it lives in
-  // `webview-ui/src/lib/format.ts`, with the rest of the status vocabulary.
+  // terminal ones. That comparison used to name three entries; FR-R3-140
+  // deleted two of them, `MonitorPill.svelte` and `StatusHeader.svelte`, along
+  // with `ControlPanel.svelte` from the line above. No TypeScript in this file
+  // names the literal — the status reaches it as data, and the outcome filter
+  // that does name it lives in `webview-ui/src/lib/format.ts`, with the rest of
+  // the status vocabulary.
   'webview-ui/src/components/HistoryRunRow.svelte',
   'webview-ui/src/lib/format.ts',
   // Feature 063 — UI copy strings ("currently running and will be

@@ -2,42 +2,15 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { resolve, join } from 'node:path';
-import MonitorPill from '../MonitorPill.svelte';
-import QueueGlobalActions from '../QueueGlobalActions.svelte';
 import QueueItemActions from '../QueueItemActions.svelte';
 import HistorySection from '../HistorySection.svelte';
 import QueueDetailRows from '../drilldown/QueueDetailRows.svelte';
 import { buildQueueRuntime } from '../../lib/__tests__/queue-runtime-fixture';
 import { IDLE_GENERAL_SETTINGS } from '../../lib/snapshot-types';
 import type { HistoryRow } from '../../lib/history-rows';
-import type {
-  CliMonitorState,
-  QueueItem,
-  QueueSummary,
-  WorkflowSnapshot
-} from '../../lib/snapshot-types';
+import type { QueueItem, QueueSummary, WorkflowSnapshot } from '../../lib/snapshot-types';
 
 afterEach(() => cleanup());
-
-function buildMonitor(): CliMonitorState {
-  return Object.freeze({
-    runId: 'r',
-    phase: 'speckit-plan',
-    status: 'running',
-    pid: 1,
-    startedAt: '2026-05-10T00:00:00.000Z',
-    lastStdoutAt: null,
-    lastStderrAt: null,
-    lastProgressAt: null,
-    stdoutLines: 0,
-    stderrLines: 0,
-    exitCode: null,
-    signal: null,
-    detectedIssues: Object.freeze([]),
-    msSinceLastStdout: 100,
-    msSinceLastStderr: null
-  });
-}
 
 function buildQueueItem(): QueueItem {
   return Object.freeze({
@@ -125,18 +98,6 @@ function buildHistoryRow(overrides: Partial<HistoryRow> = {}): HistoryRow {
 }
 
 describe('Accessibility verification (T070 / FR-022)', () => {
-  it('all interactive buttons in QueueGlobalActions expose aria-label', () => {
-    const { container } = render(QueueGlobalActions, {
-      props: { paused: false, isPrimary: true, completedCount: 1, failedCount: 1, pendingCount: 0, hasInFlight: true }
-    });
-    const buttons = Array.from(container.querySelectorAll('button'));
-    expect(buttons.length).toBeGreaterThan(0);
-    for (const b of buttons) {
-      const hasLabel = !!b.getAttribute('aria-label') || !!b.textContent?.trim();
-      expect(hasLabel, `button without label: ${b.outerHTML}`).toBe(true);
-    }
-  });
-
   it('all action buttons in QueueItemActions are keyboard-focusable and labeled', () => {
     const { container } = render(QueueItemActions, {
       props: { item: { ...buildQueueItem(), status: 'failed' }, isPrimary: true }
@@ -151,14 +112,6 @@ describe('Accessibility verification (T070 / FR-022)', () => {
       // Default tabindex is 0 (focusable) — make sure nothing went tabindex=-1
       expect(b.getAttribute('tabindex')).not.toBe('-1');
     }
-  });
-
-  it('MonitorPill exposes data-status + aria-label for SR announcement', () => {
-    const { container } = render(MonitorPill, { props: { monitor: buildMonitor() } });
-    const pill = container.querySelector('[data-testid="monitor-pill"]') as HTMLElement;
-    expect(pill).not.toBeNull();
-    expect(pill.getAttribute('data-status')).toBeTruthy();
-    expect(pill.getAttribute('aria-label')).toBeTruthy();
   });
 
   it('HistorySection keeps rows structural and exposes explicit selection buttons', () => {
@@ -223,15 +176,32 @@ describe('Accessibility verification (T070 / FR-022)', () => {
     expect(moveSelect?.getAttribute('aria-label')).toBeTruthy();
   });
 
+  // FR-R3-140 repointed this. Its render array was `MonitorPill` and
+  // `QueueGlobalActions` and nothing else, both of which that feature deleted as
+  // unreachable — so the obvious edit, dropping the two renders, would have left
+  // this looping over an empty array: green forever and asserting nothing. The
+  // requirement is about shipped behaviour, so it moved to shipped components.
+  // `QueueItemActions` and `HistorySection` both render buttons and both are
+  // mounted, which is what the property needs to be worth checking.
   it('rendered DOM does not embed inline animation/transition CSS that could bypass prefers-reduced-motion', () => {
     const renders = [
-      render(MonitorPill, { props: { monitor: { ...buildMonitor(), status: 'stalled' } } }),
-      render(QueueGlobalActions, {
-        props: { paused: false, isPrimary: true, completedCount: 0, failedCount: 0, pendingCount: 0, hasInFlight: false }
+      render(QueueItemActions, {
+        props: { item: { ...buildQueueItem(), status: 'failed' }, isPrimary: true }
+      }),
+      render(HistorySection, {
+        props: {
+          rows: [buildHistoryRow({ status: 'completed' })] as readonly HistoryRow[],
+          isPrimary: true,
+          onTaskSelect: vi.fn()
+        }
       })
     ];
+    // A repointed subject is only as good as its subject: an empty render array,
+    // or one whose components emit no elements, passes this vacuously.
+    expect(renders.length).toBeGreaterThan(0);
     for (const r of renders) {
       const all = r.container.querySelectorAll('*');
+      expect(all.length).toBeGreaterThan(0);
       for (const el of Array.from(all)) {
         const inline = el.getAttribute('style') ?? '';
         expect(inline).not.toMatch(/animation\s*:/i);

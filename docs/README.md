@@ -207,6 +207,7 @@ drifts unnoticed, because the readers who would catch an error never get there.
 - [Local queue parallelism ratification](architecture/local-queue-parallelism-ratification.md)
 - [Per-Run execution isolation decision](architecture/run-isolation-decision.md) — **shape accepted 2026-08-27: per-Run Git worktree; implementation gated** (§9 carries the entry conditions and the 2026-11-27 review trigger)
 - [Remote multi-user expansion gate](architecture/remote-multi-user-expansion-gate.md)
+- [Webview dead surface removal](architecture/webview-dead-surface-removal.md) — **decided 2026-08-29: deleted** (ten Svelte components, 1,685 lines, each measured unreachable from both bundle entry points; the gate that allowlisted them is retired and `tests/lint/svelte-surface-reachability.test.ts` now needs an owner and an expiry date for any new exemption)
 - [Workspace ownership fencing](architecture/workspace-ownership-fencing.md)
 
 ### Development

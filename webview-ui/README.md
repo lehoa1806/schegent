@@ -23,13 +23,16 @@ webview-ui/
 │   ├── dashboard/        — dashboard entry, routes, and dashboard shell CSS
 │   ├── components/       — shared Svelte 5 components (StatusBar, StatsStrip,
 │   │                       CurrentTask, DashboardLink, plus dashboard-only:
-│   │                       PhaseTracker, ControlPanel, QueueList,
-│   │                       HistorySection, ConfirmDeleteDialog, MonitorPill,
-│   │                       etc. Feature 030 removed the multi-queue
+│   │                       HistorySection, ConfirmDeleteDialog, etc.
+│   │                       Feature 030 removed the multi-queue
 │   │                       QueueManagementPanel and QueueDeleteModal
 │   │                       surfaces; Feature 092 reinstated multi-queue
 │   │                       operation as OperationsSurface + drilldown/,
-│   │                       not by restoring either removed component.)
+│   │                       not by restoring either removed component.
+│   │                       FR-R3-140 deleted PhaseTracker, ControlPanel,
+│   │                       QueueList and MonitorPill, which this list still
+│   │                       named after they had stopped being reachable
+│   │                       from either entry point.)
 │   │   ├── drilldown/    — QueuesTier / QueueDetailTier / RunDetailTier,
 │   │   │                   the three tiers OperationsSurface routes between
 │   │   └── Runs/         — the launch surface RunsSurface mounts: the two
@@ -152,9 +155,12 @@ start — which writes `QueueState.scheduledStartAt`, is paired with
 future start.
 
 Per-queue **pause and resume** are not part of the five: `CMD_PAUSE_QUEUE` /
-`CMD_RESUME_QUEUE` take an optional `queueId`. `QueueGlobalActions.svelte`
-posts them unscoped; `drilldown/QueueDetailTier.svelte` posts them scoped to
-its own `queueId`.
+`CMD_RESUME_QUEUE` take an optional `queueId`. `drilldown/QueueDetailTier.svelte`
+posts them scoped to its own `queueId`, and that is now the only sender.
+`QueueGlobalActions.svelte` posted them unscoped; FR-R3-140 deleted it, so the
+optional `queueId` currently has no caller that omits it — the host contract
+still accepts one, and the parameter stays optional rather than being narrowed
+on the strength of a single deletion.
 
 ### Per-queue Run projection (spec 093)
 
@@ -187,9 +193,12 @@ right one — the churn is entirely on the host side of the boundary:
 - **Every lifecycle control names its queue.** `lib/phase-control.ts` and
   `lib/phase-breakpoint-ipc.ts` take a required `queueId` — the host refuses an
   unaddressed control at the IPC boundary, so a component that cannot say which
-  Run it is acting on has no business posting the command. Retry-now stays
-  inline in `PhaseTracker.svelte` under the `useConfirm` gate rather than moving
-  into the lib module.
+  Run it is acting on has no business posting the command. Retry-now stays out
+  of the lib module: its `postCommand` must share a scope with the `useConfirm`
+  that gates it, which needs component-level context. It was dispatched inline
+  in `PhaseTracker.svelte`, which FR-R3-140 deleted as unreachable, so no
+  webview component sends it today — the rule for where it would live is
+  unchanged, and only the example is gone.
 
 **The aggregate status bar is a host surface, not this app's `StatusBar`.**
 `src/ui/status-bar.ts` owns the VS Code window status bar item and, since 093,
@@ -315,11 +324,13 @@ imported rather than restated, and both call sites go through
 zero — so the empty state is derived from the projection and never stored as a
 second flag to keep in step.
 
-**This zone is the only operator-visible instance.** `PhaseTracker.svelte`
-renders the same text from the same source
-(`data-testid="phase-tracker-empty-catalog"`), but that component sits in the
-reachability `ALLOWLIST` above as *"Superseded by RunDetailTier's phase list"* —
-it was retired before feature 098 and no panel root imports it. The live phase
+**This zone is the only instance, full stop.** It used to be only the only
+*operator-visible* one: `PhaseTracker.svelte` rendered the same text from the
+same source (`data-testid="phase-tracker-empty-catalog"`) while sitting in the
+reachability `ALLOWLIST` as *"Superseded by RunDetailTier's phase list"*,
+retired before feature 098 and imported by no panel root. FR-R3-140 deleted the
+component and emptied that allowlist, so the qualifier has nothing left to
+exclude. The live phase
 strip is `drilldown/RunDetailTier.svelte`, which reads `runtime?.phases` and is
 reachable only once a run exists, so it has no empty-catalog case to answer. The
 host side is what makes the idle surface honest: `buildPhasesFromRun(null)`
@@ -412,10 +423,17 @@ deterministically from `description.body.length`:
   pointer can transit into the popover without flickering it shut.
 
 The cutoff is enforced at action-attach time so a single description
-payload can shift surface as the copy is tuned. The `<HoverText>`
-component remains exported from
-[`components/hover-text/HoverText.svelte`](src/components/hover-text/HoverText.svelte)
-as the advanced/secondary form — most call sites should use the action.
+payload can shift surface as the copy is tuned. The action is the only
+form. `<HoverText>` was the advanced/secondary component this paragraph
+used to point at, and FR-R3-140 deleted it: no shipping call site
+imported it from either bundle entry point, so the old advice that "most
+call sites should use the action" was already describing a tree where
+every call site did. What remains under
+[`components/hover-text/`](src/components/hover-text/) is the action's own
+machinery — the anchor action, the positioning helper, the shared types,
+and
+[`HoverTextPortal.svelte`](src/components/hover-text/HoverTextPortal.svelte),
+which the action mounts to render the popover.
 
 Descriptions live in per-tab sibling modules —
 `GeneralSettingsTab.descriptions.ts` and
@@ -837,10 +855,11 @@ first. Feature 098 ships neither: the selector lists whatever
 document. `defaultSelectedPipelineId` preselects `defaultPipelineId` when it
 names a Pipeline in the list and the first available one otherwise; `''` names
 none, so an unset default preselects the first row rather than an id the
-operator cannot see. The shortcut form in
-[`ControlPanel.svelte`](src/components/ControlPanel.svelte) does NOT
-include the selector and falls back to the controller's default
-pipeline (research Decision 6).
+operator cannot see. There was a second, shortcut form in
+`ControlPanel.svelte` that did NOT include the selector and fell back to the
+controller's default pipeline (research Decision 6). FR-R3-140 deleted that
+component as unreachable, so the selector-less path is gone with it and the
+composer above is the only form that starts a task.
 
 ### IPC additions (spec 028 — Advanced phase pausing)
 
@@ -1125,15 +1144,25 @@ rather than a cancellation the host knows about.
 
 ### Audit surfaces
 
-The Dashboard exposes the audit tail through **two complementary
-surfaces**, both reading from the same `snapshot.auditTail` array:
+The Dashboard exposes the audit tail through **one surface**, reading
+`snapshot.auditTail`:
 
 | Surface | Component | Visibility filter | Empty-state copy |
 |---|---|---|---|
-| **Activity Feed** (under Operations) | [`src/components/AuditTail.svelte`](src/components/AuditTail.svelte) | `entry.scope === 'task' && knownRunIds.has(entry.runId)` (legacy tolerance: `scope ?? 'task'`) | "No active task activity. System events appear in the System tab." |
 | **System tab** (peer route) | [`src/components/SystemTab.svelte`](src/components/SystemTab.svelte) | `entry.scope === 'system'` (no runId gate) | "No system events yet." |
 
-Both surfaces order entries newest-first. The on-disk
+There were **two complementary surfaces**. The second was an **Activity Feed**
+under Operations, rendered by `AuditTail.svelte`, filtering
+`entry.scope === 'task' && knownRunIds.has(entry.runId)` with the legacy
+tolerance `scope ?? 'task'`, and telling an empty tail "No active task activity.
+System events appear in the System tab." FR-R3-140 deleted it: no route or panel
+imported it, only its own tests did, so the operator had no way to reach the
+feed the empty-state copy was pointing away from. Nothing replaced it — the
+task-scoped half of the split is currently unrendered. `PhaseLogFeed.svelte`
+also reads `snapshot.auditTail`, but only to recover which runner started a
+phase; it is not an audit surface.
+
+The surface orders entries newest-first. The on-disk
 `.schegent/audit.log` is untouched — the split is purely the webview's
 read-side classification of an existing append-only log. The
 disk-integrity regression at
