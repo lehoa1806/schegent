@@ -9,7 +9,31 @@ export declare const REPO_ROOT: string;
 /** Where the untracked attestation lives. */
 export declare const ATTESTATION_PATH: string;
 
-/** The command whose observed exit code is the evidence. Stated once. */
+/**
+ * FR-R3-135 — the gate's spawn identity, and the single construction site for what the gate is.
+ *
+ * `args` is the vector the recorder passes to `npm`; `GATE_COMMAND` is its rendering. Typed
+ * `readonly` throughout to match the runtime `Object.freeze`, so a caller that tries to edit the
+ * authority fails at the typecheck rather than silently at runtime.
+ */
+export interface GateCommandSpec {
+  readonly script: string;
+  readonly args: readonly string[];
+  readonly cwd: string;
+  /** `npm.cmd` on win32, `npm` elsewhere. A function so a POSIX test can ask for either. */
+  readonly executableFor: (platform: string) => string;
+}
+
+export declare const GATE_COMMAND_SPEC: GateCommandSpec;
+
+/**
+ * Render an argument vector as the command an operator would type.
+ *
+ * Platform-neutral: always `npm`, never `npm.cmd`, so two machines' records stay comparable.
+ */
+export declare function renderGateCommandLabel(args: readonly string[]): string;
+
+/** The command whose observed exit code is the evidence. Derived from the spec's argv. */
 export declare const GATE_COMMAND: string;
 
 export declare const ATTESTATION_VERSION: number;
@@ -17,15 +41,20 @@ export declare const ATTESTATION_VERSION: number;
 /**
  * Why a release was refused, or `verified`.
  *
- * Six distinct refusals because they have six distinct remedies: a gate that
- * says only "refused" sends someone to read the gate instead of fixing the cause.
+ * Eight distinct refusals because they have distinct remedies: a gate that says only "refused"
+ * sends someone to read the gate instead of fixing the cause. FR-R3-135 added two — `stale-version`
+ * split from `unreadable` (a superseded record needs a gate run; a file whose `version` is not a
+ * number needs looking at), and `command-identity-mismatch` for a label its own recorded argv does
+ * not witness.
  */
 export type ReleaseVerdictReason =
   | 'verified'
   | 'dirty-tree'
   | 'no-attestation'
+  | 'stale-version'
   | 'unreadable'
   | 'wrong-command'
+  | 'command-identity-mismatch'
   | 'wrong-commit'
   | 'recorded-dirty'
   | 'gate-failed';

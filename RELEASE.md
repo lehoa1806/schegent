@@ -63,7 +63,9 @@ so a completed Run's evidence answers which basis judged each Phase. Additive �
 The boundary is `npm run release`, which is `release:preflight && package`. It refuses to package
 unless **three** local bindings all answer at the current commit:
 
-1. **A gate attestation** naming `HEAD` over a clean tree (`FR-R3-095`, widened by `FR-R3-100`).
+1. **A gate attestation** naming `HEAD` over a clean tree, at the current schema version, whose
+   recorded argument vector witnesses the command it names (`FR-R3-095`, widened by `FR-R3-100`,
+   made truthful by `FR-R3-135`).
 2. **A backend qualification record** that is fresh, taken against the installed CLI versions, and
    not older than the last change under `src/runner/`, `src/parser/` or
    `src/contracts/backend-kinds.ts` (`FR-R3-104`).
@@ -174,12 +176,46 @@ npm run release          # refuses unless a recorded PASS names HEAD over a clea
 
 `gate:record` **spawns** the gate and records the exit code it observed, at the commit, on the platform, with the tree confirmed clean before and after. The writer sits outside the thing the record vouches for, so it cannot record a pass it did not see — a gate step that wrote its own attestation would prove only that the step ran. A red run is recorded too, so a failure leaves anti-evidence instead of leaving an older commit's pass as the newest record anyone finds.
 
-`release` runs the check and then packages. It refuses, naming which of six causes applies, when: the tree is dirty, no record exists, the record names another commit, it records a different command, it records a failing gate, or it is a version this checker does not read. The record is untracked — it describes one machine's observation of one tree, and a committed one would travel to a clone that never earned it.
+`release` runs the check and then packages. It refuses, naming which of **eight** causes applies, when: the tree is dirty, no record exists, the record is at a superseded schema version, its version is absent or unparseable, it records a different command, its recorded argument vector does not witness the command it names, it names another commit, it says the tree was dirty when the gate ran, or it records a failing gate. The record is untracked — it describes one machine's observation of one tree, and a committed one would travel to a clone that never earned it.
 
-**The command name is part of the evidence.** `GATE_COMMAND` moved from `npm run ci` to
-`npm run gate` when `FR-R3-100` widened the perimeter, and the check is an exact string match. Every
-attestation recorded under the narrower command is therefore **refused** rather than silently
-honoured — the rename is what makes the widening retroactive.
+**The command name was not evidence, and FR-R3-135 is why this section says so.** `GATE_COMMAND`
+moved from `npm run ci` to `npm run gate` when `FR-R3-100` widened the perimeter, and the exact-string
+refusal below is real — but the same commit that moved the name left the recorder's argument vector
+at `['run', 'ci']`. For the **~32 hours** between `d0b7f2cc` (2026-08-27 00:15 +0700) and this item,
+the recorder announced `npm run gate`, serialized `npm run gate`, and **spawned `npm run ci`**. A
+record written in that window is internally consistent and describes a run that never observed the
+secret scan, the workflow-pin check, the license check, the docs check or `contracts:check`. Exactly
+one such record exists on the machine that wrote it, and the run it describes is the one recorded in
+[the posture record](../docs/architecture/release-posture-engineering-preview.md), corrected there by
+this item.
+
+The window was short, and that is luck rather than a control: the defect was found by a read of the
+code, not by the gate, and nothing in the suite could have found it. What follows is the structural
+part.
+
+Two things changed as a result:
+
+- **The name is derived, not stated.** There is one editable authority — `GATE_COMMAND_SPEC` in
+  `scripts/gate-attestation.mjs` — carrying the argument vector the recorder passes to `npm`.
+  `GATE_COMMAND` is that vector rendered. A label that disagrees with what runs is now unwritable
+  rather than merely untested, and the same authority supplies the entry point for the derived
+  coverage inventory below, which had been deriving the closure of a command no attestation had
+  observed.
+- **The record carries its own witness.** Every attestation now states `commandArgv` — the vector
+  that was actually spawned — and `commandExecutable`. The release check refuses when the label is
+  not that vector's rendering, and refuses again when the vector is not this gate's vector
+  element-wise. Both are needed: rendering alone accepts `["run gate"]`, one argument containing a
+  space, which reads correctly and runs nothing of the kind. A strong name over a weak vector is
+  now a refusal rather than a pass.
+
+The attestation schema is therefore at **version 2**, and every version-1 record is refused **by
+version rather than by name**, whatever its label says. Not as a precaution against an
+indistinguishable minority — it is the exact set: the label `npm run gate` and the wrong vector
+arrived in the same commit and never coexisted with a correct one, so a version-1 record naming
+`npm run gate` is necessarily a record of a `ci` run. Version-1 records naming `npm run ci` are
+honest records of `ci`, and those the `wrong-command` refusal already rejects by name. The remedy is
+one gate run. The rename is what made FR-R3-100's widening retroactive; the version is what makes
+this one retroactive.
 
 ### 2b. The second binding: backend qualification (FR-R3-104)
 
@@ -219,6 +255,14 @@ workflow-pin check, the license check, the docs check or `contracts:check`. A re
 be attested past a failing secret scan. `GATE_COMMAND` now names `npm run gate`, which runs those five
 and then `ci`; the host coverage floors moved inside it too, by `ci` running `test:coverage` rather
 than `test:host`.
+
+**Naming it was not sufficient, and this block was affected from the other side.** Until FR-R3-135
+the parity check derived its closure from the script name `gate` while the recorder spawned
+`npm run ci`, so the list below accurately described a command no attestation had ever observed —
+the document was right about the chain and the chain was not what ran. The entry point is now taken
+from the same `GATE_COMMAND_SPEC` the recorder spawns, so a future change to what the gate *is* moves
+this list and the recorded argument vector together. The list did not change on that repoint,
+because the derivation had always been sound; its subject had not.
 
 <!-- BEGIN DERIVED: gate-coverage -->
 
@@ -275,6 +319,7 @@ the same reason. Both are named in `SECURITY.md` and `CONTRIBUTING.md` with the 
 
 **What this is not.** A local attestation is not tamper-evident against the operator whose machine wrote it: anyone who can run the release can also edit the file it reads. It reduces the risk of releasing a commit whose gate never ran, or whose gate ran on a different tree. It is not a substitute for independent verification, and the success message says so along with the single platform the gate ran on.
 <!-- Source: scripts/gate-attestation.mjs -->
+<!-- Source: scripts/gate-recorder.mjs -->
 <!-- Source: scripts/record-gate-run.mjs -->
 <!-- Source: package.json -->
 
