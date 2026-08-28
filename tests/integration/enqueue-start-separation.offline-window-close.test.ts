@@ -93,6 +93,9 @@ async function openWorkspace(memento: FakeMemento, clock: MutableClock): Promise
     clearTimer: fakeTimer.clearTimer
   });
   const service = new GuardedRunService({
+    // FR-R3-136 (FR-008) — this suite exercises a trusted workspace; the
+    // untrusted rows live in the trust-specific describe block.
+    isWorkspaceTrusted: () => true,
     lock,
     queue,
     controller: controller as unknown as SchegentWorkflowController,

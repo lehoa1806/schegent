@@ -79,11 +79,25 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // reasons and a single shared comment would misdescribe one of them.
   'src/controller/task-deletion.ts',
   'src/controller/workflow-controller.ts',
-  'src/extension.ts',
+  // `src/extension.ts` was struck 2026-08-28 (FR-R3-136): the composition root
+  // held two occurrences and this feature moved both out. The resume sweep's
+  // `run.status === 'running'` filter went to `stage2-producers.ts` (listed
+  // below), and extracting `wireTrustGrant` into `trust-grant-wiring.ts` took the
+  // last one — a log line, since reworded there. Recorded rather than deleted
+  // silently, same as the `process-lifecycle-runner.ts` strike above: the file
+  // has no occurrence left, so an entry for it would have been the exemption
+  // outliving its reason that the staleness check below exists to catch.
   // FR-R3-119 — the audit writer and its quarantine drain moved to `src/activation/evidence-wiring.ts`.
   'src/activation/evidence-wiring.ts',
   // FR-R3-119 — the clock-driven work moved to `src/activation/scheduled-work-wiring.ts`.
   'src/activation/scheduled-work-wiring.ts',
+  // FR-R3-136 — the persisted-run resume sweep moved out of `src/extension.ts`
+  // (struck above) into `src/activation/stage2-producers.ts`, taking the
+  // `run.status === 'running'` filter with it. Listed for exactly the reason
+  // `extension.ts` used to be: the filter belongs on THIS side of the boundary
+  // because `services/resume-decision.ts` must not know the status vocabulary,
+  // and the comment beside the call says so.
+  'src/activation/stage2-producers.ts',
   'src/monitor/claude-cli-monitor.ts',
   'src/monitor/monitor-state.ts',
   'src/queue/queue-manager.ts',

@@ -1,3 +1,6 @@
+// FR-R3-136 (T1525a) — TRUST CLASSIFICATION: NO PRODUCER ACT.
+// Configuration resolution. No I/O, no collaborators constructed, no side effects.
+
 import * as vscode from 'vscode';
 
 import type { SanitizedLogger } from '../lib/logger';

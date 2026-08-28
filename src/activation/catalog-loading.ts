@@ -1,3 +1,9 @@
+// FR-R3-136 (T1525a) — TRUST CLASSIFICATION: NO PRODUCER ACT.
+// One store read at the boundary: `CatalogSession.open` awaits a snapshot and
+// every resolver below it is synchronous. `refresh()` is another read. The write
+// that triggers a refresh is the operator's, through a `MUTATING_COMMAND_TYPES`
+// save that the router's trust gate refuses while untrusted.
+
 // Catalog loading for activation. Extracted from `extension.ts` so the resolved
 // Phase/Pipeline/Workflow catalog and the loader diagnostics have a focused owner
 // alongside the other Stage-2 wiring modules.

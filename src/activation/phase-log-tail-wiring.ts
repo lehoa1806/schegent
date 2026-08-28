@@ -1,3 +1,9 @@
+// FR-R3-136 (T1525a) — TRUST CLASSIFICATION: GATED HERE.
+// The tail itself is a read and stays available untrusted. The
+// `phase-log-tail-started` / `-stopped` audit appends are writes, on a message
+// the IPC gate deliberately does not cover; the gate is inside `appendAudit`
+// below, which carries the whole argument.
+
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { SanitizedLogger } from '../lib/logger';
 import type { QueueManager } from '../queue/queue-manager';
@@ -62,9 +68,14 @@ export function createPhaseLogTailWiring(input: {
   readonly projector: Pick<StateProjector, 'getCurrentSnapshot' | 'subscribe'>;
   readonly queue: Pick<QueueManager, 'findById'>;
   readonly auditWriter: Pick<AuditLogWriter, 'append'>;
+  /**
+   * FR-R3-136 (FR-005, FR-011) — read on every append, never captured. See the
+   * gate inside `appendAudit` for why a tail needs this at all.
+   */
+  readonly isWorkspaceTrusted: () => boolean;
   readonly logger: SanitizedLogger;
 }): PhaseLogTailWiring {
-  const { workspaceRoot, projector, queue, auditWriter, logger } = input;
+  const { workspaceRoot, projector, queue, auditWriter, isWorkspaceTrusted, logger } = input;
 
   let previousInFlightTaskId: string | null =
     projector.getCurrentSnapshot().queue.inFlight?.id ?? null;
@@ -99,6 +110,35 @@ export function createPhaseLogTailWiring(input: {
     },
     sanitize: (s) => logger.sanitize(s),
     appendAudit: async (event: PhaseLogTailRegistryAuditEvent) => {
+      // FR-R3-136 (FR-011) — THE TAIL IS A READ; RECORDING IT IS NOT.
+      //
+      // Found by T1525a's classification pass, not by the task list, and it is
+      // the one producer act neither Phase A nor Phase B could have caught.
+      // `CMD_START_PHASE_LOG_TAIL` is deliberately absent from
+      // `MUTATING_COMMAND_TYPES`, so the router's trust gate never sees it — a
+      // log view is exactly what the manifest's `limited` claim promises keeps
+      // working in an untrusted window. But `PhaseLogTailRegistry.start()`
+      // appends `phase-log-tail-started` here, and that append writes
+      // `.schegent/audit.log`. So the message stays admitted and the write does
+      // not happen: the operator still reads the log, and the untrusted folder
+      // is still not written to.
+      //
+      // Reachable without this window having started anything, which is the part
+      // worth spelling out: `start()` demands that the requested phase be in
+      // flight, and "in flight" is a projection of PERSISTED state. A
+      // `.schegent/` that arrives with the checkout — or a primary window
+      // mid-drive right now — satisfies it in a window that has elected nothing
+      // and spawned nothing.
+      //
+      // Losing the record costs little. No Run can start here, so the events are
+      // "someone opened a log", and the append was already best-effort — the
+      // catch below warns and continues. The info line keeps it observable.
+      if (!isWorkspaceTrusted()) {
+        logger.info(
+          `phase-log-tail: audit append skipped, workspace is not trusted (${event.type})`
+        );
+        return;
+      }
       const p = event.payload;
       const auditPayload: Record<string, unknown> = {
         sessionId: p.sessionId,

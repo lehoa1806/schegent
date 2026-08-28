@@ -44,7 +44,15 @@ const LIFECYCLE_ALLOWLIST: ReadonlySet<string> = new Set([
   // them; `allowlist-entries-still-apply.test.ts` is what noticed the old one had
   // stopped excusing anything.
   'src/contracts/snapshot-projections.ts',
-  'src/extension.ts',
+  // `src/extension.ts` was struck 2026-08-28 (FR-R3-136). The composition root's
+  // last two occurrences left in this feature: the resume sweep's
+  // `run.status === 'running'` filter went to `src/activation/stage2-producers.ts`,
+  // and extracting `wireTrustGrant` into `src/activation/trust-grant-wiring.ts`
+  // took a log line that has since been reworded. Neither successor derives or
+  // carries a *lifecycle*, so neither inherits this entry — they are listed in
+  // `no-running-state-literal.test.ts`, the broader pinned-status guard, and this
+  // set shrinks by one. Same reason the `snapshot-projections.ts` note above
+  // exists: `allowlist-entries-still-apply.test.ts` is what noticed.
   // Feature 092 — derives the next lifecycle for the *resumed queue* from that
   // queue's own contents (`hasInFlight ? 'running' : …`). Feature 065 could read
   // the singleton, so the derivation was not a per-queue one and this file was

@@ -10,10 +10,8 @@
 //
 // Four rules:
 //
-//   1. In `extension.ts`, the election (`lock.tryAcquire()`) textually precedes
-//      every recovery entry point named in RECOVERY_LANDMARKS. A new recovery
-//      installer must be added to that list to be reachable from activation at
-//      all — an unlisted one fails rule 2's floor.
+//   1. In `stage2-producers.ts`, the election (`lock.tryAcquire()`) textually
+//      precedes every recovery entry point named in RECOVERY_LANDMARKS.
 //   2. Each recovery landmark is gated: `lockResult.acquired` appears in the
 //      code window immediately before it. (Comments are stripped first, so the
 //      gate condition cannot be satisfied by prose.)
@@ -25,10 +23,27 @@
 //      scheduled-start coordinator's offline-elapsed branch consults the
 //      foreign-lock probe the way `fire()` does.
 //
-// The pinned landmark list is deliberate: with it, adding a fourth recovery
-// entry point without naming it here leaves it invisible to rule 1, and the
-// count assertion below fails, forcing the author to decide how the new
-// installer is gated.
+// FR-R3-136 — TWO CORRECTIONS TO THIS FILE, both found while moving the election
+// behind Workspace Trust.
+//
+// First, the paragraph that used to stand here claimed "adding a fourth recovery
+// entry point without naming it here ... the count assertion below fails". There
+// was no count assertion, and there WAS an unlisted fourth landmark:
+// `resumePersistedRuns`, gated on `lockResult.acquired` and never held to rule 1
+// or rule 2. A gate that describes a check it does not perform is worse than one
+// that admits the gap, because the description is what the next author reads. Both
+// are fixed: the landmark is listed, and `GATE_COUNT` is the assertion — every
+// `lockResult.acquired` gate in the module must belong to a listed landmark, so a
+// fifth installer cannot arrive unlisted.
+//
+// Second, the chain now has a link above the election. `stage2-producers.ts` reads
+// Workspace Trust and returns before electing, because `store.ownership.acquire`
+// is an exclusive-create under `.schegent/` and an untrusted window must not
+// perform it. The ordered claim is therefore "trust, then elect, then recover",
+// and it is asserted whole here rather than split, because it is one chain in one
+// file. What FR-R3-136 gates separately is a different question — whether any
+// producer act exists OUTSIDE this module — and that belongs with the requirement
+// that introduced it, not here.
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -36,39 +51,43 @@ import { describe, expect, it } from 'vitest';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 
-const EXTENSION = 'src/extension.ts';
 const CONTROLLER = 'src/controller/workflow-controller.ts';
 const COORDINATOR = 'src/services/scheduled-start-coordinator.ts';
 
 /**
- * FR-R3-119 — the election moved, and rule 1's premise had to move with it.
+ * FR-R3-136 — the election moved again, and rule 1 got its single file back.
  *
- * `lock.tryAcquire()` now runs inside `openWorkspaceSession()`
- * (`src/activation/workspace-session.ts`), so "the election textually precedes
- * every recovery landmark" is no longer a statement about one file. The PROPERTY
- * is unchanged — the session is awaited before any recovery installer runs — so
- * the check is split rather than dropped:
+ * FR-R3-119 had split this check in two: the election lived in
+ * `openWorkspaceSession()` and the landmarks in `extension.ts`, so "the election
+ * precedes every landmark" had to be argued through an awaited call standing in
+ * for the election it contained. The election and all four landmarks are now in
+ * `stage2-producers.ts`, so the ordering is once more a direct statement about one
+ * file — a stronger check than the one it replaces, not a weaker one.
  *
- *   * the election lives in `workspace-session.ts` (asserted below, so it cannot
- *     quietly move somewhere unordered), and
- *   * the awaited call to it precedes every landmark in `extension.ts`.
- *
- * Weakening this to "the election exists somewhere" would have been the cheap
- * edit and would have retired the ordering guarantee the gate exists for.
+ * The reason they moved is trust, not tidiness: `tryAcquire()` writes a
+ * generation-numbered file under `.schegent/`, and every landmark is already gated
+ * on its result, so putting the election behind the trust check suppresses all four
+ * by construction. A landmark left behind in the composition root would have been
+ * gated only by primacy, and the primacy-implies-trust coupling would have been
+ * invisible. `TRUST_CHECK` below is what keeps that from silently regressing.
  */
+const PRODUCERS = 'src/activation/stage2-producers.ts';
 const ELECTION = 'const lockResult = await lock.tryAcquire()';
-const SESSION = 'src/activation/workspace-session.ts';
-const SESSION_CALL = 'await openWorkspaceSession(';
+const TRUST_CHECK = 'if (!isWorkspaceTrusted())';
 
 /**
  * Every recovery entry point reachable from activation stage 2. Adding a new
- * installer to `wireStage2` means adding it here and gating it, or rule 2's
- * per-landmark window check has nothing to hold it to.
+ * installer means adding it here and gating it, or rule 2's per-landmark window
+ * check has nothing to hold it to — and `GATE_COUNT` fails until it is listed.
  */
 const RECOVERY_LANDMARKS = [
   'scheduledStartCoordinator.reArm()',
   'watchdog.reattachOnActivation()',
-  'controller.resumeExistingFromActivation()'
+  'controller.resumeExistingFromActivation()',
+  // FR-R3-136 — the fourth, present and gated since feature 093 but unlisted
+  // until now, which is what made the missing count assertion consequential
+  // rather than merely untidy.
+  'resumePersistedRuns({'
 ] as const;
 
 /** How far back a landmark's gate condition may sit, in stripped-source chars. */
@@ -119,30 +138,29 @@ function methodBody(source: string, signature: string, file: string): string {
   return next === -1 ? rest : rest.slice(0, next);
 }
 
-const EXTENSION_SOURCE = stripComments(read(EXTENSION));
+const PRODUCERS_SOURCE = stripComments(read(PRODUCERS));
 const CONTROLLER_SOURCE = stripComments(read(CONTROLLER));
 const COORDINATOR_SOURCE = stripComments(read(COORDINATOR));
 
 describe('FR-R3-070 — activation elects before it recovers', () => {
   it('finds the election and every pinned recovery landmark (non-vacuity)', () => {
     expect(
-      read(SESSION).indexOf(ELECTION),
-      `${SESSION} must elect via ${ELECTION}`
+      PRODUCERS_SOURCE.indexOf(ELECTION),
+      `${PRODUCERS} must elect via ${ELECTION}`
     ).toBeGreaterThanOrEqual(0);
     for (const landmark of RECOVERY_LANDMARKS) {
       expect(
-        EXTENSION_SOURCE.indexOf(landmark),
-        `${EXTENSION} must still contain recovery landmark ${landmark}; if it was ` +
+        PRODUCERS_SOURCE.indexOf(landmark),
+        `${PRODUCERS} must still contain recovery landmark ${landmark}; if it was ` +
           'renamed or removed, update RECOVERY_LANDMARKS so the ordering rule keeps holding it'
       ).toBeGreaterThanOrEqual(0);
     }
   });
 
   it('performs the election before every recovery entry point', () => {
-    // The awaited session call stands for the election it contains.
-    const election = EXTENSION_SOURCE.indexOf(SESSION_CALL);
+    const election = PRODUCERS_SOURCE.indexOf(ELECTION);
     for (const landmark of RECOVERY_LANDMARKS) {
-      const at = EXTENSION_SOURCE.indexOf(landmark);
+      const at = PRODUCERS_SOURCE.indexOf(landmark);
       expect(
         at,
         `${landmark} must appear after the election; recovery before primacy is the ` +
@@ -153,14 +171,53 @@ describe('FR-R3-070 — activation elects before it recovers', () => {
 
   it('gates each recovery landmark on the election result', () => {
     for (const landmark of RECOVERY_LANDMARKS) {
-      const at = EXTENSION_SOURCE.indexOf(landmark);
-      const window = EXTENSION_SOURCE.slice(Math.max(0, at - GATE_WINDOW), at);
+      const at = PRODUCERS_SOURCE.indexOf(landmark);
+      const window = PRODUCERS_SOURCE.slice(Math.max(0, at - GATE_WINDOW), at);
       expect(
         window.includes('lockResult.acquired'),
         `${landmark} must sit behind an if (lockResult.acquired) gate within ` +
           `${GATE_WINDOW} chars; an ungated installer runs in a non-primary window`
       ).toBe(true);
     }
+  });
+
+  // FR-R3-136 — THE COUNT ASSERTION the header used to promise and not perform.
+  //
+  // The three checks above are per-landmark: they hold each listed installer to
+  // the ordering and the gate. None of them can see an installer that was never
+  // listed, which is exactly how `resumePersistedRuns` sat gated-but-unwatched
+  // through two features. This one closes that from the other direction — it
+  // counts the gates rather than the landmarks, so an unlisted installer shows up
+  // as a gate with no owner and fails here.
+  //
+  // It is a `toBe`, not a `>=`: an installer REMOVED without being delisted also
+  // has to be noticed, or the list decays into a description of the past.
+  it('has exactly one election gate per pinned landmark, and no unlisted installer', () => {
+    const gates = PRODUCERS_SOURCE.match(/if \(lockResult\.acquired\)/g) ?? [];
+    expect(
+      gates.length,
+      `${PRODUCERS} has ${gates.length} if (lockResult.acquired) gates against ` +
+        `${RECOVERY_LANDMARKS.length} pinned landmarks. A gate with no landmark is a ` +
+        'recovery installer this file does not hold to rule 1 or rule 2 — add it to ' +
+        'RECOVERY_LANDMARKS. A landmark with no gate means one was removed; delist it.'
+    ).toBe(RECOVERY_LANDMARKS.length);
+  });
+
+  // FR-R3-136 — the link above the election. Ordering is the whole content of
+  // this gate, and trust is now the first step of the order.
+  it('reads Workspace Trust before it elects', () => {
+    const trust = PRODUCERS_SOURCE.indexOf(TRUST_CHECK);
+    const election = PRODUCERS_SOURCE.indexOf(ELECTION);
+    expect(
+      trust,
+      `${PRODUCERS} must refuse to produce in an untrusted workspace via ${TRUST_CHECK}`
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      trust,
+      'the trust check must precede the election: acquiring ownership writes a ' +
+        'generation-numbered file under .schegent/, which is the workspace write ' +
+        'trust is being withheld over'
+    ).toBeLessThan(election);
   });
 
   it('re-checks primacy at fire time inside the watchdog resume sweep', () => {

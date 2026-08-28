@@ -1,3 +1,11 @@
+// FR-R3-136 (T1525a) — TRUST CLASSIFICATION: NO PRODUCER ACT HERE; THE PROBE IT
+// STARTS IS ONE.
+// This module formats and reports a verdict. `startMountCapabilityProbe` calls
+// `probeMountCapability`, which creates `.schegent/`, drops the local ignore file
+// and exclusive-creates then removes `.schegent/.mount-probe.<pid>.<n>.<t>` —
+// three writes. `openWorkspaceSession` owns that call and defers it; see
+// `startMountProbe` there.
+
 import type { SanitizedLogger } from '../lib/logger';
 
 /**

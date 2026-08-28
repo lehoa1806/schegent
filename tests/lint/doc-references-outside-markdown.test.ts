@@ -18,6 +18,34 @@ import { join, relative, resolve } from 'node:path';
  */
 const ROOT = resolve(__dirname, '..', '..');
 
+/**
+ * Where a bare `docs/...` citation may resolve, in order.
+ *
+ * FR-R3-136 — THIS WORKSPACE IS TWO REPOSITORIES. The execution repo (`repo/`,
+ * where this gate runs) and the envelope above it each carry their own `docs/`
+ * tree, and `AGENTS.md` treats both as first-class. `scripts/gate-attestation.mjs`
+ * cites `docs/architecture/release-posture-engineering-preview.md`, which is real
+ * and envelope-side, and this gate called it broken. The citation was true; the
+ * resolution model had one tree in it. That is worth stating plainly because the
+ * failure looks identical to the dead references FR-R3-062 found, and reading it
+ * as one would have deleted a working citation.
+ *
+ * REPO-SIDE WINS, so a citation meant for the execution repo is never satisfied
+ * by an envelope file that happens to share its relative path — the order here is
+ * load-bearing, not cosmetic.
+ *
+ * A `repo/docs/...` citation names the execution repo explicitly and is resolved
+ * only there. The fallback is for the bare form, which in a two-tree workspace
+ * genuinely names either.
+ *
+ * IN A STANDALONE `repo/` CHECKOUT the second root does not exist and an
+ * envelope-side citation goes red here. That is the right outcome and not a
+ * portability bug: the standalone clone is not a supported layout of this
+ * project, and a fallback that quietly passed when the tree it needs is missing
+ * would be the vacuous-gate failure this item is about.
+ */
+const RESOLUTION_ROOTS = [ROOT, resolve(ROOT, '..')] as const;
+
 /** Where a doc path can be cited from. */
 const SCANNED_DIRS = ['src', 'webview-ui/src', 'scripts'] as const;
 const SCANNED_FILES = ['package.json'] as const;
@@ -84,6 +112,24 @@ interface Citation {
   readonly from: string;
   readonly line: number;
   readonly target: string;
+  /**
+   * Whether the citation wrote the `repo/` prefix. Kept because it is the
+   * difference between "this file, in the execution repo" and "this file, in
+   * whichever tree holds it".
+   */
+  readonly repoSide: boolean;
+}
+
+/**
+ * Whether a reader could follow the citation.
+ *
+ * A named function taking the two fields rather than an inline `existsSync`, so
+ * the control below can drive it against paths it fully controls. A resolver that
+ * can only be run over the real tree cannot be shown to resolve anything.
+ */
+export function resolvesForReader(target: string, repoSide: boolean): boolean {
+  if (repoSide) return existsSync(resolve(ROOT, target));
+  return RESOLUTION_ROOTS.some((root) => existsSync(resolve(root, target)));
 }
 
 function citations(): readonly Citation[] {
@@ -97,7 +143,8 @@ function citations(): readonly Citation[] {
           line: index + 1,
           // `repo/docs/...` and `docs/...` name the same file from different
           // vantage points; both appear in the tree.
-          target: match[1]!.replace(/^repo\//, '')
+          target: match[1]!.replace(/^repo\//, ''),
+          repoSide: match[1]!.startsWith('repo/')
         });
       }
     });
@@ -123,10 +170,15 @@ describe('documentation paths cited outside Markdown resolve (FR-R3-063)', () =>
 
   it('resolves every cited path, or names it as knowingly absent with a reason', () => {
     const broken = all
-      .filter((c) => !existsSync(resolve(ROOT, c.target)))
+      .filter((c) => !resolvesForReader(c.target, c.repoSide))
       .filter((c) => !KNOWN_ABSENT.has(c.target))
       .map((c) => `${c.from}:${c.line} -> ${c.target}`);
-    expect(broken).toEqual([]);
+    expect(
+      broken,
+      'Each of these names a file that exists in neither the execution repo nor ' +
+        'the envelope above it. Retarget the citation, or add it to KNOWN_ABSENT ' +
+        'with a reason (FR-R3-063).'
+    ).toEqual([]);
   });
 
   it('keeps the knowingly-absent list live', () => {
@@ -141,5 +193,36 @@ describe('documentation paths cited outside Markdown resolve (FR-R3-063)', () =>
     for (const [path, why] of KNOWN_ABSENT) {
       expect(why.length, `${path} needs a reason`).toBeGreaterThan(20);
     }
+  });
+
+  // ---- controls: the widened resolver's own failure modes, demonstrated ----
+
+  it('CONTROL: the resolver still refuses a path absent from both trees', () => {
+    // The hazard in widening resolution is that it stops refusing anything. This
+    // is the assertion that says otherwise, and it is the one to read first if
+    // this gate ever goes quiet.
+    expect(resolvesForReader('docs/no-such-file-for-this-control.md', false)).toBe(false);
+    expect(resolvesForReader('docs/no-such-file-for-this-control.md', true)).toBe(false);
+  });
+
+  it('CONTROL: it finds a file in each tree, and a repo-side citation does not reach the envelope', () => {
+    // One real file per tree, so a broken root shows up here rather than as a
+    // clean run. Both are load-bearing documents that will not quietly vanish.
+    expect(resolvesForReader('docs/development/lint-gate-census.md', true)).toBe(true);
+    expect(
+      resolvesForReader('docs/architecture/release-posture-engineering-preview.md', false)
+    ).toBe(true);
+    // And the envelope-side one is NOT reachable as a repo-side citation, which
+    // is the precision the ordered roots exist to keep.
+    expect(
+      resolvesForReader('docs/architecture/release-posture-engineering-preview.md', true)
+    ).toBe(false);
+  });
+
+  it('CONTROL: the scan records the repo/ prefix it was given', () => {
+    // `repoSide` is what selects between the two behaviours above, so a scan that
+    // stopped setting it would silently turn the precision off.
+    expect(all.some((c) => c.repoSide)).toBe(true);
+    expect(all.some((c) => !c.repoSide)).toBe(true);
   });
 });

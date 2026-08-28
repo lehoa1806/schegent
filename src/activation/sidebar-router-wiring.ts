@@ -1,3 +1,8 @@
+// FR-R3-136 (T1525a) — TRUST CLASSIFICATION: NO PRODUCER ACT.
+// One `new MessageRouter({...})`. The trust gate it is wired with is Phase B's
+// enforcement site: `message-router.ts` refuses every `MUTATING_COMMAND_TYPES`
+// message while untrusted, fail-closed on a missing callback.
+
 import * as vscode from 'vscode';
 
 import { storedLayerReaders } from './catalog-loading';

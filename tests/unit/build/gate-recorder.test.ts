@@ -78,6 +78,42 @@ function stripComments(source: string): string {
 }
 
 /**
+ * A value something was supposed to supply, or a failure saying what was missing.
+ *
+ * FR-R3-136 — WHY THE PARAMETER CARRIES THE `| undefined` AND THE CALL SITES DO NOT. Two
+ * programs read this file and they disagree about the type of an index read:
+ * `noUncheckedIndexedAccess` is off in the lint program and on in the one the `FR-R3-110`
+ * ratchet measures. Annotating the read at the call site does not settle it — an annotated
+ * `const` is narrowed by its initializer, so the guard would read as dead code to the linter
+ * while still being the thing that keeps this file out of the ratchet's baseline. A parameter's
+ * declared type is not narrowed that way, so one check here is live in both programs and there
+ * are no `=== undefined` comparisons left in the body of the file at all.
+ */
+function present<T>(value: T | undefined, missing: string): T {
+  if (value === undefined) throw new Error(missing);
+  return value;
+}
+
+/**
+ * The first recorded call, or a failure naming what was missing.
+ *
+ * FR-R3-136 — WHY THIS EXISTS AND NOT `spawns[0]`. This file was added with fourteen raw
+ * indexed reads, each of which `noUncheckedIndexedAccess` types as `| undefined`. The
+ * `FR-R3-110` ratchet pins that flag's diagnostic count at 1,277 and refuses growth, and these
+ * fourteen sites were exactly the eighteen diagnostics that pushed it to 1,295 — a new baseline
+ * entry per assertion, in a file written the same week the ratchet was being cited elsewhere.
+ * Nobody noticed because the ratchet is not in the fast tier.
+ *
+ * A `!` on each read would have satisfied the compiler and told the reader nothing. This fails
+ * with the name of the thing that was not there — so a harness that silently stopped recording
+ * reads as "recorded no spawn" rather than "Object is possibly undefined".
+ */
+function first<T>(items: readonly T[], what: string): T {
+  const [head] = items;
+  return present(head, `the harness recorded no ${what}`);
+}
+
+/**
  * A recorder harness over injected seams.
  *
  * Every dependency the recorder touches is captured, so a case can assert not only what came
@@ -116,7 +152,14 @@ function harness(
       };
     },
     platform: over.platform ?? 'darwin',
-    readTreeState: () => treeStates[Math.min(treeReads++, treeStates.length - 1)],
+    readTreeState: () => {
+      // The last state repeats: the recorder reads the tree twice (before and after the gate)
+      // and most cases care about only one answer.
+      return present(
+        treeStates[Math.min(treeReads++, treeStates.length - 1)],
+        'the harness was given no tree states'
+      );
+    },
     writeAttestation: (attestation: Record<string, unknown>) => void writes.push(attestation),
     log: (message: string) => void logs.push(message),
     error: (message: string) => void errors.push(message),
@@ -130,11 +173,11 @@ describe('FR-R3-135 — the recorder spawns the specification, not a literal', (
   it('spawns `npm run gate` on a POSIX platform', () => {
     const { spawns } = harness({ platform: 'darwin' });
     expect(spawns).toHaveLength(1);
-    expect(spawns[0].executable).toBe('npm');
+    expect(first(spawns, 'spawn').executable).toBe('npm');
     // The whole argument vector, not a `toContain`. The defect was a vector that was wrong in
     // its second element while the first was right, so an assertion that only looked for
     // `'run'` would have passed against `['run', 'ci']`.
-    expect(spawns[0].args).toEqual(['run', 'gate']);
+    expect(first(spawns, 'spawn').args).toEqual(['run', 'gate']);
   });
 
   it('resolves `npm.cmd` on win32 with an identical argument vector', () => {
@@ -143,15 +186,15 @@ describe('FR-R3-135 — the recorder spawns the specification, not a literal', (
     // inline, where no test could reach the Windows answer without a Windows runner — and a
     // release-path portability failure surfaces at the worst possible moment.
     const { spawns } = harness({ platform: 'win32' });
-    expect(spawns[0].executable).toBe('npm.cmd');
-    expect(spawns[0].args).toEqual(['run', 'gate']);
+    expect(first(spawns, 'spawn').executable).toBe('npm.cmd');
+    expect(first(spawns, 'spawn').args).toEqual(['run', 'gate']);
   });
 
   it('never passes `shell: true`, and runs in the repository root', () => {
     const { spawns } = harness();
-    expect(spawns[0].options.shell).toBe(false);
-    expect(spawns[0].options.stdio).toBe('inherit');
-    expect(spawns[0].options.cwd).toBe(gate.GATE_COMMAND_SPEC.cwd);
+    expect(first(spawns, 'spawn').options.shell).toBe(false);
+    expect(first(spawns, 'spawn').options.stdio).toBe('inherit');
+    expect(first(spawns, 'spawn').options.cwd).toBe(gate.GATE_COMMAND_SPEC.cwd);
   });
 
   it('POSITIVE CONTROL — the argv assertion fails when the spec says `ci` (FR-010)', () => {
@@ -186,8 +229,8 @@ describe('FR-R3-135 — the recorder spawns the specification, not a literal', (
     // differed by platform would make two operators' attestations incomparable for a difference
     // that says nothing about what ran.
     const { writes } = harness({ platform: 'win32' });
-    expect(writes[0].commandExecutable).toBe('npm.cmd');
-    expect(writes[0].command).toBe('npm run gate');
+    expect(first(writes, 'attestation').commandExecutable).toBe('npm.cmd');
+    expect(first(writes, 'attestation').command).toBe('npm run gate');
   });
 });
 
@@ -195,7 +238,7 @@ describe('FR-R3-135 — the record states what was executed', () => {
   it('writes the argv and executable beside the derived label', () => {
     const { writes, result } = harness();
     expect(writes).toHaveLength(1);
-    const record = writes[0];
+    const record = first(writes, 'attestation');
     expect(record.version).toBe(gate.ATTESTATION_VERSION);
     expect(record.commandArgv).toEqual(['run', 'gate']);
     expect(record.commandExecutable).toBe('npm');
@@ -210,7 +253,7 @@ describe('FR-R3-135 — the record states what was executed', () => {
     // seam between them: each half was well covered on its own side of it.
     const { writes } = harness();
     const verdict = gate.decideRelease({
-      attestation: writes[0],
+      attestation: first(writes, 'attestation'),
       head: HEAD,
       treeClean: true
     });
@@ -225,15 +268,15 @@ describe('FR-R3-135 — the record states what was executed', () => {
     const { writes, result } = harness({ status: 1 });
     expect(result.exitCode).toBe(1);
     expect(result.reason).toBe('gate-failed');
-    expect(writes[0].exitCode).toBe(1);
-    const verdict = gate.decideRelease({ attestation: writes[0], head: HEAD, treeClean: true });
+    expect(first(writes, 'attestation').exitCode).toBe(1);
+    const verdict = gate.decideRelease({ attestation: first(writes, 'attestation'), head: HEAD, treeClean: true });
     expect(verdict.ok).toBe(false);
     expect(verdict.reason).toBe('gate-failed');
   });
 
   it('records a signal termination distinguishably from an exit code', () => {
     const { writes } = harness({ status: null, signal: 'SIGKILL' });
-    expect(writes[0].exitCode).toBe('signal:SIGKILL');
+    expect(first(writes, 'attestation').exitCode).toBe('signal:SIGKILL');
   });
 });
 
@@ -304,6 +347,12 @@ describe('FR-R3-135 — the attested command reaches all five release-only stage
   const liveScripts = (): Record<string, string> =>
     JSON.parse(readFileSync(resolve(repoRoot(), 'package.json'), 'utf8')).scripts;
 
+  /** The named script, or a failure saying the manifest has no such entry. */
+  const liveScript = (name: string): string => {
+    const scripts = liveScripts();
+    return present(scripts[name], `package.json declares no '${name}' script`);
+  };
+
   it('static parity: every one of the five is in the specification command closure (FR-011)', () => {
     // Derived from `GATE_COMMAND_SPEC.script`, through the closure walker that already exists in
     // `check-gate-coverage-parity.mjs`. A second walker here would be a second authority on what
@@ -320,11 +369,12 @@ describe('FR-R3-135 — the attested command reaches all five release-only stage
     // map would satisfy "all five present" vacuously, and the way to know it would not is to
     // remove one and watch it notice.
     const scripts = liveScripts();
+    const gateBody = liveScript(gate.GATE_COMMAND_SPEC.script);
     const withoutSecrets = {
       ...scripts,
-      gate: scripts.gate.replace('npm run security:secrets && ', '')
+      [gate.GATE_COMMAND_SPEC.script]: gateBody.replace('npm run security:secrets && ', '')
     };
-    expect(withoutSecrets.gate).not.toBe(scripts.gate);
+    expect(withoutSecrets[gate.GATE_COMMAND_SPEC.script]).not.toBe(gateBody);
     const reachable = parity.reachableScripts(withoutSecrets, gate.GATE_COMMAND_SPEC.script);
     expect(reachable).not.toContain('security:secrets');
     // The other four are untouched, so the control is specific rather than a blanket failure.

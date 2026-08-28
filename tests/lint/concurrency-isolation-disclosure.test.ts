@@ -121,6 +121,10 @@ const EXEMPT: ReadonlyMap<string, string> = new Map([
   ['src/contracts/validators/queue-management.ts', 'enforces the bound; no operator-facing prose'],
   ['src/config/settings-schema.ts', 'schema table: docLabel and four numbers, no prose'],
   ['src/config/general-settings.ts', 'typed accessor table, no prose'],
+  [
+    'src/contracts/configuration-trust-dispositions.ts',
+    'trust disposition table: names the setting key, states no bound and no prose'
+  ],
   ['src/contracts/sidebar-ipc.ts', 'contract surface, carries the field'],
   ['src/contracts/sidebar-ipc/queue.ts', 'contract surface, carries the field'],
   ['src/contracts/generated/boundary-contracts.ts', 'generated from the schema'],

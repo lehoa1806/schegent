@@ -1,3 +1,12 @@
+// FR-R3-136 (T1525a) — TRUST CLASSIFICATION: NO PRODUCER ACT, AND ALREADY GATED
+// BY AN OLDER CONTROL.
+// The store's writes are methods the save router calls, and every `CMD_SAVE_*` /
+// `CMD_PUBLISH_*` id it serves is in `MUTATING_COMMAND_TYPES`. Feature 099 got
+// there first from the other direction: `isCatalogActivationTrusted()` below
+// returns `vscode.workspace.isTrusted` and `createHostCatalogStore` returns
+// `null` while untrusted, so an untrusted window has no store to write with. That
+// is the one place this feature found a trust gate it did not have to add.
+
 // Feature 099 (FR-R3-015) T493 — the store's four ports, built once for the host.
 //
 // This is the only module that pairs the store with VS Code. It holds the

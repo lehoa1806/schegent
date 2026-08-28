@@ -1,3 +1,12 @@
+// FR-R3-136 (T1525a) — TRUST CLASSIFICATION: DEFERRED.
+// Two acts ran at wiring time and neither was on T1525d's list:
+// `terminalTransitions.replay()` (four workspace writes per journalled intent)
+// and `checkpointRetention.sweep()` (global-storage deletes chosen by workspace
+// state). Both are handed to `stage2-producers.ts` as thunks — see
+// `replayTerminalTransitions` and `sweepCheckpointRetention` below. The
+// `git diff` spawn in this module runs inside a requester the controller calls
+// during a Run, not at wiring time.
+
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import * as vscode from 'vscode';
@@ -65,7 +74,21 @@ export async function createRunSafetyWiring(input: {
       workspaceRoot: input.workspaceRoot
     })
   );
-  await terminalTransitions.replay();
+  // FR-R3-136 (FR-011) — NOT called here any more, and this was a find rather
+  // than a listed task. `replay()` walks the journalled terminal-transition
+  // intents and calls `complete()` on each, which finishes a queue item, records
+  // history and writes the metrics rollup — four workspace writes, performed at
+  // wiring time, in a function whose name says nothing about acting. T1525d's
+  // suppression list named the audit append, the catalog write and the retention
+  // sweep; it did not name this one, because nobody had read for producer acts in
+  // the modules the composition root calls. That is what T1525a's classification
+  // pass is for.
+  //
+  // Handed over rather than moved: the coordinator belongs here beside its single
+  // append site, and `stage2-producers.ts` runs it in the same relative position
+  // it held before — ahead of the recovery installers, which read the run map
+  // this reconciles.
+  const replayTerminalTransitions = (): Promise<void> => terminalTransitions.replay();
   // Feature 093 (T053, FR-022a) — Runs that could hold uncommitted work in the
   // shared worktree. Counted as **non-terminal**, which is wider than
   // "currently executing" on purpose: a paused Run's edits are still sitting in
@@ -136,12 +159,22 @@ export async function createRunSafetyWiring(input: {
     globalStorageRoot: input.context.globalStorageUri.fsPath,
     logger: input.logger
   });
-  void checkpointRetention.sweep();
+  // FR-R3-136 (FR-011) — deferred with the same reasoning, and it needs its own
+  // sentence because the writes are NOT under the workspace: the sweep deletes
+  // checkpoint archives under `context.globalStorageUri`. It is still a producer
+  // act under T1523a's criterion, which is about paths the workspace or persisted
+  // state can INFLUENCE rather than paths inside the folder — every candidate is
+  // selected from run ids read out of `.schegent/state.json`. An untrusted folder
+  // therefore gets to name what a global-storage sweep deletes, which reaches
+  // further than the folder that supplied the names.
+  const sweepCheckpointRetention = (): Promise<unknown> => checkpointRetention.sweep();
   return {
     terminalTransitions,
     mutationLedger,
     spendWatcher,
     checkpointRetention,
+    replayTerminalTransitions,
+    sweepCheckpointRetention,
     checkpoints: new RunCheckpointService(
       input.context.globalStorageUri.fsPath,
       input.workspaceRoot,

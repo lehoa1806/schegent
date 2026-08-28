@@ -1,3 +1,9 @@
+// FR-R3-136 (T1525a) — TRUST CLASSIFICATION: DEFERRED.
+// Two acts left this module. T1525c moved the election (`lock.tryAcquire()`, an
+// exclusive-create under `.schegent/`), and the classification pass found the
+// mount probe still in flight at wiring time — see `startMountProbe` on the
+// returned interface. What remains is construction and one store read.
+
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 
@@ -31,14 +37,16 @@ import { SchegentStatusBar } from '../ui/status-bar';
  *
  * WHY THESE BELONG TOGETHER. Each one answers "what does this window own, and how
  * does it say so": the catalog it reads, the two leases it holds (`FR-R3-003`
- * pointed both at storage two extension hosts can see), the primacy claim it
- * either wins or does not, and the status bar and notifier that report the
- * outcome. `lockResult` is returned rather than acted on here, because what a
- * failed claim MEANS is a decision for the composition root, not for the module
- * that made the claim.
+ * pointed both at storage two extension hosts can see), the lock manager that
+ * will make the primacy claim, and the status bar and notifier that report the
+ * outcome.
  *
- * It is `async` for two reasons and only two: opening the catalog session, and
- * `lock.tryAcquire()`. Both are genuinely I/O.
+ * FR-R3-136 — the claim ITSELF is not made here any more. Building the manager
+ * writes nothing; `tryAcquire()` writes a file, and an untrusted window may not.
+ * The call moved to `stage2-producers.ts` along with every other act that touches
+ * the workspace, so this module returns the manager and no result.
+ *
+ * It is `async` for one reason only now: opening the catalog session.
  */
 export interface WorkspaceSessionDeps {
   readonly workspaceRoot: string;
@@ -69,10 +77,26 @@ export interface WorkspaceSession {
   readonly catalogLifecycle: ReturnType<typeof createHostCatalogLifecycle>;
   readonly lock: WorkspaceLockManager;
   readonly executionLeases: ExecutionLeaseManager;
-  readonly lockResult: Awaited<ReturnType<WorkspaceLockManager['tryAcquire']>>;
   readonly statusBar: SchegentStatusBar;
   readonly notifier: Notifier;
   readonly queue: QueueManager;
+  /**
+   * FR-R3-136 (FR-011, T1525a) — the mount probe, handed over rather than run.
+   *
+   * `probeMountCapability` creates `.schegent/`, drops the local ignore file,
+   * exclusive-creates `.schegent/.mount-probe.<pid>.<n>.<t>` and removes it
+   * again: three writes inside the folder whose contents are the reason trust is
+   * being withheld. It ran at wiring time and T1525d's suppression list did not
+   * name it, which is what the classification pass is for.
+   *
+   * A thunk that pushes onto the same `disposables` array the call site used, so
+   * teardown behaviour is byte-for-byte what it was — a verdict for a torn-down
+   * stage is still dropped. It has to run on a GRANT as well as on a trusted
+   * activation, which is why it is a producer act and not a gate in place: a
+   * folder trusted after the fact would otherwise get no mount verdict at all,
+   * and the operator would learn about an unsupported mount from a failing Run.
+   */
+  readonly startMountProbe: () => void;
 }
 
 export async function openWorkspaceSession(
@@ -134,13 +158,20 @@ const lock = new WorkspaceLockManager(store, ownerId);
 // separate manager over a separate key: holding a queue's execution lease
 // must never make this window primary.
 const executionLeases = new ExecutionLeaseManager(store, ownerId);
-// FR-R3-070 — elect BEFORE recovering. The recovery installers below used to
-// run ahead of this call, so a window about to lose the election could still
-// resume and drive a Run the primary already owned. Primacy is decided here,
-// once; every installer is gated on the result, and a non-primary window
-// leaves persisted deadlines addressable for the primary — the decline-and-
-// retain shape fire() models. See plan.md "Activation Lifecycle", FR-041(c).
-const lockResult = await lock.tryAcquire();
+// FR-R3-136 (FR-009) — THE ELECTION IS NO LONGER HERE. It moved to
+// `stage2-producers.ts`, and the reason is C2: `store.ownership.acquire` is an
+// exclusive-create on a generation-numbered file under `.schegent/`, which is a
+// write inside the folder whose contents are exactly why trust is being
+// withheld. An untrusted window must not perform it, and a grant that arrives
+// later must — so the call belongs with the other producer acts, in the one
+// module that runs on both paths, rather than in a session that opens once.
+//
+// FR-R3-070's property is unchanged and still gated by
+// `tests/lint/elect-before-recovering.test.ts`: the election precedes every
+// recovery installer, which is now a statement about a single file rather than
+// two. This function is trust-agnostic as a result — it reads no trust value and
+// takes no trust dependency, which is the correct amount for a module that only
+// opens what the window owns.
 const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
 disposables.push(statusBarItem);
 const statusBar = new SchegentStatusBar(statusBarItem);
@@ -152,7 +183,11 @@ const notifier = new Notifier({
 warnIfEnvironmentIsUnrestricted(processEnvironmentPolicy, workspaceRoot, logger);
 // FR-R3-083 (`PORT-01`) — bounded, never awaited, and dropped on teardown so a
 // verdict cannot surface against a workspace this window has left.
-disposables.push(startMountCapabilityProbe(workspaceRoot, logger, notifier));
+// FR-R3-136 (FR-011) — NOT started here any more; see `startMountProbe` on the
+// returned interface for what it writes and why the grant needs it too.
+const startMountProbe = (): void => {
+  disposables.push(startMountCapabilityProbe(workspaceRoot, logger, notifier));
+};
 // The extension also activates via the implicit `onView:schegent.sidebar` event,
 // so `workspaceContains:.specify/` does not imply the directory is there.
 warnIfScaffoldingMissing(workspaceRoot, logger, notifier);
@@ -165,9 +200,9 @@ const queue = new QueueManager(store, logger);
     catalogLifecycle,
     lock,
     executionLeases,
-    lockResult,
     statusBar,
     notifier,
-    queue
+    queue,
+    startMountProbe
   };
 }

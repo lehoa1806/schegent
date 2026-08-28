@@ -124,7 +124,11 @@ describe('spec traceability governance', () => {
    *
    * THE EXEMPTIONS ARE LOAD-BEARING, not convenience:
    *   * `Verification Pending` means done-and-awaiting-verification, so unchecked
-   *     tasks AGREE with it. One spec is legitimately fully ticked and pending.
+   *     tasks AGREE with it — and so does a fully ticked list whose last acceptance
+   *     step needs a commit that does not exist yet. (This line used to state how
+   *     many specs sat there. It was one when written, is two now, and stating a
+   *     count beside a population the gate recomputes is the drift `FR-R3-136`
+   *     removed from the census generator. The exemption does not depend on it.)
    *   * `Deferred` and `Superseded` describe dispositions decoupled from how far the
    *     tasks got, and each already carries its own requirement below.
    *   * A spec with no `tasks.md` has no task state to compare. Judging it would mean
