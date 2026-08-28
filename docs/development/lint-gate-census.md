@@ -19,8 +19,8 @@ predicted it: its author sampled the set and found every gate well motivated.
 
 | Figure | Value | Date | Method |
 |---|---|---|---|
-| Gate files | **168** | 2026-08-29 | `*.test.ts` under `tests/lint/` recursively |
-| Marked `unique` | 156 | 2026-08-29 | hand verdict |
+| Gate files | **167** | 2026-08-28 | `*.test.ts` under `tests/lint/` recursively |
+| Marked `unique` | 155 | 2026-08-28 | hand verdict |
 | Marked `partially redundant` | 12 | 2026-08-28 | hand verdict |
 | Marked `redundant` | 0 | 2026-08-28 | hand verdict |
 
@@ -198,7 +198,6 @@ changing one means updating that machinery in the same commit.
 | `gate-integrity/coverage-split.test.ts` | FR-R3-088 — product coverage is reported separately from suite coverage | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `gate-integrity/mutation-controls.test.ts` | FR-R3-088 — mutation controls, derived from real source files | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `gate-integrity/vacuity-false-negative-census.test.ts` | FR-R3-088 — the vacuity detector, measured | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
-| `gate-integrity/webview-dead-code-reverification.test.ts` | FR-R3-088 — the webview dead-code classification, re-derived | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `gate-integrity/zero-offender-census.test.ts` | FR-R3-088 — gates with no in-tree offender, enumerated | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `held-major-staleness.test.ts` | FR-R3-090 — every held major upgrade carries a reason and a fresh review date | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `import-graph-acyclic.test.ts` | FR-R3-128 — the whole first-party import graph has no cycles | `dependency-direction.test.ts` (leaf->acting edges only), `backend-kind-placement.test.ts` (one directional assertion) | unique | neither sibling walks the graph. `dependency-direction` checks two leaf layers against a list of acting ones and cannot see a cycle that stays inside one layer; `backend-kind-placement` asserts one edge's direction. `ARCHITECTURE.md` admitted the gap in its own words until this gate replaced the admission. It found a real cycle on its first run — `ui/sidebar/state-projector.ts` and `state-projector-runtime.ts` over one constant, invisible to both siblings because both files are in `ui/` |

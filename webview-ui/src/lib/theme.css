@@ -127,17 +127,13 @@
 }
 
 /* Feature 018 — Hover-text primitives.
- * Global styles so both inline-render (HoverText.svelte wrapper) and
- * portal-render (HoverTextPortal.svelte mounted by the hoverTextAnchor
- * action into document.body) share the same visual contract. */
-
-.hover-text-container {
-  display: inline-flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  position: relative;
-}
+ * Global styles for portal-render: HoverTextPortal.svelte, mounted into
+ * document.body by the hoverTextAnchor action.
+ *
+ * FR-R3-140 deleted the inline-render half. `HoverText.svelte` was unreachable
+ * from either bundle entry point, and `.hover-text-container` — the wrapper it
+ * alone applied — went with it. `.hover-text-inline-help` stays: the action
+ * writes it at `hover-text-anchor-action.ts`, and a live test asserts it. */
 
 .hover-text-inline-help {
   margin: 0;

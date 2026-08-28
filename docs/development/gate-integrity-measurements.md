@@ -159,32 +159,40 @@ it: **a number stated once and not re-derived drifts, every time.**
 
 ---
 
-## 4. Webview dead-code classification — **RE-VERIFIED**
+## 4. Webview dead-code classification — **RETIRED, because the code was deleted**
 
-**Produced by**: `repo/tests/lint/gate-integrity/webview-dead-code-reverification.test.ts`
+**Produced by**: nothing. `repo/tests/lint/gate-integrity/webview-dead-code-reverification.test.ts`
+was deleted by `FR-R3-140` on 2026-08-29.
 
-The reviewer brief's objection was the right one: *"If that classification is wrong, the real figure
-is worse."* Re-reading a classification reproduces whatever its first author concluded, mistakes
-included — so this re-derives it.
+This section used to carry a six-row table re-deriving the 407-of-461 zero-coverage classification
+and the verdict *"the 407-of-461 figure holds."* Both are gone, and not because the measurement was
+wrong. **The six components it classified were deleted.** All six — `HoverText.svelte` (179
+statements), `ControlPanel.svelte` (104), `QueueList.svelte` (41), `PhaseTracker.svelte` (36),
+`LiveActivityHeader.svelte` (33) and `StatusHeader.svelte` (14) — were measured unreachable from both
+bundle entry points and removed along with four more, 1,685 lines in total. A gate re-verifying that
+they are still unimported has no subject.
 
-| Component | Statements | Importers outside `__tests__` |
-|---|---|---|
-| `HoverText.svelte` | 179 | **0** |
-| `ControlPanel.svelte` | 104 | **0** |
-| `QueueList.svelte` | 41 | **0** |
-| `PhaseTracker.svelte` | 36 | **0** |
-| `LiveActivityHeader.svelte` | 33 | **0** |
-| `StatusHeader.svelte` | 14 | **0** |
-| **Total** | **407** | — |
+Per `FR-R3-138`, current-state documentation must not describe a control that no longer runs, which
+is why this section is replaced rather than quietly deleted: the retirement is a fact a reader of
+this page needs, and the section number is load-bearing in the numbering above and below it.
 
-**Verdict: the 407-of-461 figure holds.** All six are unimported outside tests, and the per-component
-counts sum to 407. *Dead* means unimported; the statement count is what it costs, not what makes it
-dead.
+**The gate was not repointed at what remains.** The zero-coverage inventory is now two bootstrap
+entry points, `webview-ui/src/main.ts` and `webview-ui/src/dashboard/main.ts`, which have no
+importer *by design*. A gate asking whether an entry point is imported outside tests is the wrong question, and
+`FR-R3-139` refused the identical shape for `src/headless/` one item earlier. Inventing a claim so a
+gate can outlive its subject is a defect, not a save.
 
-The test re-derives this on every run against a scan asserted non-empty, and pins the config's own
-inventory against the same numbers so neither can drift alone. **If a component gains an importer the
-test goes red — and that is the good outcome**: it means 407 is wrong and the webview coverage figure
-should be read as a testing gap rather than a dead-code inventory.
+**What replaced its protective value is stronger, stated so nobody restores it believing coverage was
+lost.** The retired gate re-verified that a standing inventory of dead code was still accurately
+classified. `svelte-surface-reachability.test.ts` now stops that inventory re-accumulating: its
+allowlist is empty, and an entry requires a named owner, a reason and a `reviewBy` date, failing on a
+missing owner, an empty reason, a malformed or impossible date, an expired date, an entry naming a
+file that no longer exists, or an entry naming a file that has become reachable. All six rules are
+demonstrated against synthetic in-memory entries, because an empty allowlist offers no real example
+of any of them. A gate confirming dead code is still dead is worth less than a policy under which it
+cannot sit there indefinitely.
+
+Full reasoning and the reachability evidence: [`../architecture/webview-dead-surface-removal.md`](../architecture/webview-dead-surface-removal.md).
 
 ---
 

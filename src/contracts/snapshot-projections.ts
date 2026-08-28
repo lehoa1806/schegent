@@ -370,7 +370,9 @@ export interface QueueSummary {
    * pause; `'operator'` when an operator paused the queue directly;
    * `'retry-cap'` (Feature 030 BUG-001) when the retry-handler paused
    * the queue after exhausting the delayed-retry cap; `null` when the
-   * queue is active. Drives the cascade badge in QueueGlobalActions.svelte.
+   * queue is active. Read by `QueueItem.svelte` and `QueueItemMeta.svelte`;
+   * FR-R3-140 deleted `QueueGlobalActions.svelte`, the cascade-badge renderer
+   * this comment used to name, as unreachable.
    */
   readonly pauseSource: 'operator' | 'cascade' | 'retry-cap' | null;
   readonly schedule: {

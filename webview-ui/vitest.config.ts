@@ -29,44 +29,42 @@ export default defineConfig({
       exclude: ['src/**/*.test.ts', 'src/**/__tests__/**'],
       // What the provider counts, recorded where a reader of the numbers
       // will find it:
-      //   * 189 source files are instrumented — 107 `.svelte` and 82
+      //   * 189 source files are instrumented — 104 `.svelte` and 85
       //     non-test `.ts` — so un-imported components are counted at 0%
       //     rather than omitted. No shipping `.svelte` path is excluded;
       //     excluding the component majority would make the percentage a
       //     statement about the `lib/` helpers only, over roughly half the
       //     statements.
+      //
+      //     Taken from the coverage run below, not from a `find`: the two are
+      //     different questions that produce similar-looking numbers. The
+      //     previous triple read 189 / 107 / 82 and was already wrong before
+      //     FR-R3-140 touched it — that feature deleted ten `.svelte` files,
+      //     which cannot take 107 to 104. The total landing on 189 again is a
+      //     coincidence and means something different now.
       //   * Under v8, `lines` and `statements` are the same measure, which
       //     is why those two percentages are identical (as they are in the
       //     host config).
-      //   * Nine files measure 0% today, 461 statements between them. FR-R3-044
-      //     classified all nine, and the number reads as a testing gap when it
-      //     is almost entirely a dead-code inventory:
+      //   * The dead-code inventory that used to sit here is gone, because the
+      //     code is. FR-R3-140 deleted the six Svelte components it enumerated
+      //     — 407 of what were then 461 zero-coverage statements — after
+      //     measuring each unreachable from both bundle entry points. The
+      //     reachability gate no longer excuses them; its allowlist is empty and
+      //     an entry now needs an owner and an expiry date. See
+      //     ../docs/architecture/webview-dead-surface-removal.md.
       //
-      //       - SIX Svelte components, 407 of the 461 statements, are already
-      //         recorded as knowingly unreachable by
-      //         `tests/lint/svelte-surface-reachability.test.ts`, each with its
-      //         reason — HoverText.svelte (179, superseded by the
-      //         hover-text-anchor directive and HoverTextPortal),
-      //         ControlPanel.svelte (104), QueueList.svelte (41, superseded by
-      //         QueuesTier), PhaseTracker.svelte (36, superseded by
-      //         RunDetailTier's phase list), LiveActivityHeader.svelte (33) and
-      //         StatusHeader.svelte (14). None has an importer outside tests.
-      //       - TWO are bootstrap entry points, 27 statements: `src/main.ts` and
-      //         `src/dashboard/main.ts`. What they do is mount the app, and a
-      //         unit test that mounts the mounter asserts nothing the visual and
-      //         integration suites do not already cover better.
-      //       - ONE was live, untested library code: `lib/copy-text.ts`, 27
-      //         statements, now covered by `lib/__tests__/copy-text.test.ts`
-      //         including the branch its own header calls out — reporting a
-      //         success it did not have.
-      //
-      //     They stay inside the measured set. Excluding them would raise the
-      //     percentage and lose the inventory, and the inventory is the useful
-      //     part: it says 407 statements of this webview are dead rather than
-      //     untested. Two further files report 0% with no executable statements
-      //     at all — `PipelineBuilderEditors/types.ts` and
-      //     `activity-feed/types.ts` — which is v8 describing type-only modules,
-      //     not a gap.
+      //     What still measures 0% is small and classified. TWO bootstrap entry
+      //     points, 27 statements: `src/main.ts` and `src/dashboard/main.ts`.
+      //     What they do is mount the app, and a unit test that mounts the
+      //     mounter asserts nothing the visual and integration suites do not
+      //     already cover better. They are not a dead-code inventory and must
+      //     not be governed as one — asking whether an entry point has an
+      //     importer is the wrong question, which is why FR-R3-140 retired the
+      //     gate that would have been repointed at them rather than inventing a
+      //     claim for it to hold. Two further files report 0% with no executable
+      //     statements at all — `PipelineBuilderEditors/types.ts` and
+      //     `activity-feed/types.ts` — which is v8 describing type-only
+      //     modules, not a gap.
       //
       // Floors are `floor(measured) − 5` per metric, ratcheted by
       // `scripts/check-coverage-headroom.mjs`, which runs after every coverage
@@ -77,20 +75,28 @@ export default defineConfig({
       // floor remains possible and remains deliberate — an edit in a diff, which
       // is where a decision to accept less coverage belongs.
       //
-      // Measured against
-      // taken 2026-08-22 on darwin, branch
-      // 110-coverage-and-budget-gate-completeness: 84.97% statements
-      // (12466/14671) / 79.60% branches (4747/5963) / 81.06% functions
-      // (865/1067) / 84.97% lines. Five points of headroom is room for a
-      // legitimate
-      // refactor; pinning a floor to what the tree happens to measure today
-      // makes the next one red for nothing. Full run recorded in
+      // Measured 2026-08-29 on darwin, branch
+      // 204-delete-unreachable-webview, after FR-R3-140's deletion:
+      // 87.75% statements (13366/15232) / 79.46% branches (4878/6139) /
+      // 81.42% functions (881/1082) / 87.75% lines.
+      //
+      // All four floors are re-derived from that one run. Deleting whole files
+      // moves the four denominators by different amounts and not all in the
+      // same direction — statements rose 84.97 → 87.75 as 407 zero-coverage
+      // statements left the denominator, functions rose 81.06 → 81.42, and
+      // branches *fell* slightly, 79.60 → 79.46. No floor may be inferred from
+      // another. Branches and functions land on the same floors they had, which
+      // is a measured result and not an untouched line.
+      //
+      // Five points of headroom is room for a legitimate refactor; pinning a
+      // floor to what the tree happens to measure today makes the next one red
+      // for nothing. Full run recorded in
       // ../docs/development/coverage-measurements.md.
       thresholds: {
-        statements: 79,
+        statements: 82,
         branches: 74,
         functions: 76,
-        lines: 79
+        lines: 82
       }
     }
   }

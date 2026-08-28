@@ -13,9 +13,13 @@ const PHASE_CONTROL_CONSTANTS = [
   // it is a destructive command, and `destructive-actions.lint.test.ts` requires
   // its dispatch to share a scope with the `useConfirm` that gates it. Routing
   // it through the shared helper would put the two in different modules and
-  // defeat that gate, which is the stronger of the two invariants. Its queue
-  // cannot go missing regardless — `PhaseTracker.svelte` takes it as a required
-  // prop and the payload type demands it.
+  // defeat that gate, which is the stronger of the two invariants. That reason
+  // is unchanged; the example given for it is gone. `PhaseTracker.svelte` was
+  // named here as the dispatcher that takes the queue as a required prop, and
+  // FR-R3-140 deleted it as unreachable from either bundle entry point. The
+  // webview dispatches this command from nowhere now, so the constant's absence
+  // from the list above is currently moot — it earns its place back the moment
+  // a reachable component sends it.
 ] as const;
 
 /**

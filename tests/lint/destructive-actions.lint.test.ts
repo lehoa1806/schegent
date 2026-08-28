@@ -20,15 +20,23 @@
 // and the deferred-callback pattern
 // (`function onClick() { useConfirm(...).then((ok) => { if (ok) postCommand(...) }); }`).
 //
-// LEGACY_FILES allows orphaned components that still carry ungated
-// destructive calls but are no longer reachable from any live UI
-// surface; their deletion is parked behind a follow-up cleanup spec
-// (the active code path moved to Dashboard.svelte + QueueControls.svelte
-// post-053). The lint test asserts each entry still exists on disk so
-// the allowlist can never silently rot once the file is removed.
+// LEGACY_FILES is empty. It held orphaned components that still carried
+// ungated destructive calls but were reachable from no live UI surface,
+// parked behind a cleanup spec that has since run: FR-R3-140 deleted its
+// last entry, `QueueGlobalActions.svelte`, with the rest of the
+// unreachable webview surface. The active code path had already moved to
+// Dashboard.svelte + QueueControls.svelte post-053. See
+// ../../docs/architecture/webview-dead-surface-removal.md.
+//
+// Two assertions used to police the entries: one that each still existed
+// on disk, one that each still had an ungated call site left to excuse.
+// Both were deleted with the entry they guarded rather than left
+// iterating an empty set, which is green forever and proves nothing. An
+// empty allowlist needs no self-cleaning. A repopulated one needs both
+// blocks back, and an entry added without them should not pass review.
 
 import { describe, expect, it } from 'vitest';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { filesUnder } from './source-scan';
 
@@ -68,16 +76,12 @@ const DESTRUCTIVE_COMMANDS: readonly string[] = [
   'CMD_DISCARD_DEFINITION_DRAFT'
 ];
 
-// Dead-code components that still carry ungated destructive call sites
-// but are no longer reachable from any live UI surface. The follow-up
-// cleanup spec will delete them; until then, the allowlist prevents
-// noise while still pinning real regressions in live code.
-const LEGACY_FILES: ReadonlySet<string> = new Set<string>([
-  // Replaced post-053 by `QueueControls.svelte` + `Dashboard.svelte`
-  // handler bodies. Its only consumer (`QueueList.svelte`) is itself
-  // orphaned (no Dashboard import).
-  'webview-ui/src/components/QueueGlobalActions.svelte'
-]);
+// Empty since FR-R3-140. The exemption stays declared because the filter
+// below still consults it and a future orphan may earn one, but nothing
+// is exempt today: every ungated destructive call site under
+// `webview-ui/src` is a failure of the scan below, with no escape hatch
+// already open for it.
+const LEGACY_FILES: ReadonlySet<string> = new Set<string>();
 
 interface CallSite {
   readonly file: string;
@@ -222,18 +226,83 @@ describe('Feature 063 T046 — destructive command sites must be useConfirm-gate
     expect(allSites.length).toBeGreaterThan(0);
   });
 
-  it('discovers each of the 15 destructive commands at least once in webview source', () => {
-    // We accept matches from either live or legacy files so the sanity
-    // check stays meaningful even when a destructive command has been
-    // subsumed by another (e.g., `CMD_CLEAR_FAILED` is no longer wired
-    // up from any live component — `CMD_CLEAR_ALL` covers it — but the
-    // constant must still be handed to a sender somewhere in the webview tree).
-    const seen = new Set(allSites.map((s) => s.command));
-    const missing = DESTRUCTIVE_COMMANDS.filter((cmd) => !seen.has(cmd));
+  // This used to read "discovers each of the 15", and accepted matches from
+  // legacy files so it would keep holding for commands no live component wired
+  // up. FR-R3-140 deleted the legacy files, and with them the last webview
+  // sender of three commands the host still accepts. The choice was to weaken
+  // the check or to name the three; naming them keeps the control at full
+  // strength for the twelve that do have a sender, and turns "no sender" from
+  // something the gate tolerated into something it states.
+  //
+  // Every entry here is a command the HOST still handles. The webview simply has
+  // nowhere to send it from, so there is no call site to gate and the useConfirm
+  // rule below has nothing to say about it.
+  const NO_WEBVIEW_SENDER: ReadonlyMap<string, string> = new Map([
+    [
+      'CMD_CLEAR_FAILED',
+      'Subsumed by CMD_CLEAR_ALL. Its last sender was ControlPanel.svelte, deleted by FR-R3-140 as unreachable.'
+    ],
+    [
+      'CMD_RETRY_PHASE_NOW',
+      'Its only sender was PhaseTracker.svelte, deleted by FR-R3-140 as unreachable. See webview-ui/src/lib/phase-control.ts for why it was never routed through the shared helper.'
+    ],
+    [
+      'CMD_RESET',
+      'Its only sender was ControlPanel.svelte, deleted by FR-R3-140 as unreachable. The host command survives; the sidebar IPC handler is src/ui/sidebar/commands/cmd-reset.ts.'
+    ]
+  ]);
+
+  // Both directions below read the same set, so they cannot disagree about what
+  // the scan found.
+  const sentCommands = new Set(allSites.map((s) => s.command));
+
+  // A reason here is the whole record — there is no owner and no review date to
+  // fall back on, unlike the reachability allowlist, where an expiry does the
+  // real work and an empty-string check is only a floor. So the bar is a
+  // sentence, not a non-empty string.
+  const MIN_REASON_LENGTH = 20;
+
+  it('discovers every destructive command that has a webview sender', () => {
+    const missing = DESTRUCTIVE_COMMANDS.filter(
+      (cmd) => !sentCommands.has(cmd) && !NO_WEBVIEW_SENDER.has(cmd)
+    );
     expect(
       missing,
-      `Destructive commands handed to no sender anywhere in webview source:\n${missing.join('\n')}`
+      `Destructive commands handed to no sender anywhere in webview source. Either a ` +
+        `sender was removed — wire it back or add the command to NO_WEBVIEW_SENDER with ` +
+        `the reason — or the scan is broken:\n${missing.join('\n')}`
     ).toEqual([]);
+  });
+
+  it('every NO_WEBVIEW_SENDER entry really has no sender (the list cannot rot)', () => {
+    // The other direction, and the one that matters: a command that gains a
+    // sender must leave this list, or its call sites go ungated with no gate
+    // noticing. Three entries today, so this iterates something.
+    const resurrected = [...NO_WEBVIEW_SENDER.keys()].filter((cmd) => sentCommands.has(cmd));
+    expect(
+      resurrected,
+      `These commands are listed as having no webview sender, but the scan found ` +
+        `one. Remove them from NO_WEBVIEW_SENDER so their call sites are gated:\n` +
+        resurrected.join('\n')
+    ).toEqual([]);
+    expect(
+      NO_WEBVIEW_SENDER.size,
+      'NO_WEBVIEW_SENDER is empty, so the assertion above iterates nothing. ' +
+        'Delete both this list and the check if every destructive command has a sender again.'
+    ).toBeGreaterThan(0);
+  });
+
+  it('every NO_WEBVIEW_SENDER entry is a destructive command and carries a reason', () => {
+    // This loop is only non-vacuous because the test above pins the list
+    // non-empty. Keep that assertion if this one is ever moved or renamed.
+    for (const [command, reason] of NO_WEBVIEW_SENDER) {
+      expect(DESTRUCTIVE_COMMANDS, `${command} is not a destructive command`).toContain(command);
+      expect(
+        reason.trim().length,
+        `${command} needs a reason of at least ${MIN_REASON_LENGTH} characters saying which ` +
+          `sender went away and why it was not replaced`
+      ).toBeGreaterThan(MIN_REASON_LENGTH);
+    }
   });
 
   it('every destructive command sent from live code is gated by useConfirm in an enclosing scope (FR-016)', () => {
@@ -250,13 +319,6 @@ describe('Feature 063 T046 — destructive command sites must be useConfirm-gate
         ? ''
         : `Destructive command call sites missing useConfirm gate:\n${rendered}`
     ).toEqual([]);
-  });
-
-  it('every entry in LEGACY_FILES still exists on disk (allowlist is not stale)', () => {
-    for (const rel of LEGACY_FILES) {
-      const abs = resolve(REPO_ROOT, rel);
-      expect(existsSync(abs), `legacy allowlist entry no longer exists on disk: ${rel}`).toBe(true);
-    }
   });
 
   // Feature 082 (US7, T055) — catalog removals used to be invisible to the scan
@@ -359,23 +421,6 @@ describe('Feature 063 T046 — destructive command sites must be useConfirm-gate
     expect(
       exchangeKeys,
       `Exchange actions must not register a confirmation action:\n${exchangeKeys.join('\n')}`
-    ).toEqual([]);
-  });
-
-  it('every LEGACY_FILES entry has at least one ungated destructive call site (otherwise it should leave the allowlist)', () => {
-    const offendersByFile = new Map<string, number>();
-    for (const site of allSites) {
-      if (!site.guarded && LEGACY_FILES.has(site.file)) {
-        offendersByFile.set(site.file, (offendersByFile.get(site.file) ?? 0) + 1);
-      }
-    }
-    const stale: string[] = [];
-    for (const rel of LEGACY_FILES) {
-      if (!offendersByFile.has(rel)) stale.push(rel);
-    }
-    expect(
-      stale,
-      `Stale legacy allowlist entries (no ungated destructive call site found):\n${stale.join('\n')}`
     ).toEqual([]);
   });
 });

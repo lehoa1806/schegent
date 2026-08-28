@@ -44,8 +44,13 @@ export function enablePhase(phaseId: string, queueId: string): void {
 // requires its `postCommand` to sit in the same scope as the `useConfirm` that
 // gates it — and that confirm needs component-level context (the originating
 // element and the active phase's display label) which does not belong in a lib
-// module. It dispatches from `PhaseTracker.svelte`, where the queue arrives as
-// a required prop, so the payload cannot lose its address.
+// module. That reason is unchanged.
+//
+// What has changed: FR-R3-140 deleted `PhaseTracker.svelte`, the component this
+// comment used to name as the dispatcher. It was unreachable from either bundle
+// entry point, so no operator could reach the control either — the webview has
+// no retry-now dispatcher now, and did not effectively have one before. Stated
+// rather than left implied by a filename that no longer resolves.
 
 // Phase removal addresses a queued Task by id, not an in-flight Run, so it
 // stays queue-free: the host resolves the owning queue from the Task row.

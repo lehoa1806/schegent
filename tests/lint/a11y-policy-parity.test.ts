@@ -178,6 +178,15 @@ describe('FR-R3-091 — the conformance target is one claim, not three', () => {
 describe('FR-R3-091 — the credited accessibility controls are not weakened', () => {
   const WEBVIEW_SRC = resolve(REPO_ROOT, 'webview-ui/src');
 
+  // `.css` was added by FR-R3-140, and the reason is worth keeping. The scan
+  // used to read only `.svelte` and `.ts`, so the sole file it ever matched
+  // `prefers-reduced-motion` in was `MonitorPill.svelte` — a component no route
+  // imported, that FR-R3-140 deleted as unreachable. The real reduced-motion
+  // support was in `webview-ui/src/lib/theme.css` the whole time, in two blocks
+  // this scan could not see. The control was never weakened; the gate was
+  // reading its evidence off dead code and would have gone red for a deletion
+  // that removed nothing an operator could reach. Stylesheets are where a
+  // media-query control lives, so the scan now looks there.
   const sources = (() => {
     const out: string[] = [];
     const walk = (dir: string): void => {
@@ -185,7 +194,7 @@ describe('FR-R3-091 — the credited accessibility controls are not weakened', (
         if (entry.name === 'node_modules' || entry.name === '__tests__') continue;
         const full = resolve(dir, entry.name);
         if (entry.isDirectory()) walk(full);
-        else if (/\.(svelte|ts)$/.test(entry.name)) out.push(readFileSync(full, 'utf8'));
+        else if (/\.(svelte|ts|css)$/.test(entry.name)) out.push(readFileSync(full, 'utf8'));
       }
     };
     walk(WEBVIEW_SRC);
