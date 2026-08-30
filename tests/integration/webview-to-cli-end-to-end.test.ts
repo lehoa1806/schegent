@@ -19,8 +19,8 @@
 //
 //   raw JSON  ->  validateInboundMessage (the real runtime validator)
 //             ->  MessageRouter.dispatch (the real router, real trust and primacy gates)
-//             ->  the real command handler for CMD_RESUME
-//             ->  SchegentWorkflowController.resumeExisting (the real controller)
+//             ->  the real command handler for CMD_RESUME_PHASE
+//             ->  SchegentWorkflowController.resumeActivePhase -> .resumeExisting (the real controller)
 //             ->  PhaseRunner (the real runner) -> a fake CLI
 //             ->  the real audit log and the real WorkspaceStateStore
 //
@@ -28,9 +28,20 @@
 // per-run gate; `FR-R3-104`'s canary is where a real backend is exercised, deliberately off this
 // path. Everything between the JSON and the spawn is production code.
 //
-// WHY CMD_RESUME. It is the shortest validated command that reaches a CLI invocation through the
-// controller, so the test is about the SEAM rather than about queue admission policy — which
+// WHY CMD_RESUME_PHASE. It is the shortest validated command that reaches a CLI invocation through
+// the controller, so the test is about the SEAM rather than about queue admission policy — which
 // `guarded-run-service` and the enqueue tests already cover from both sides.
+//
+// It used to be `CMD_RESUME`, the queue-less ancestor. The lifecycle round-check of 2026-08-30
+// (finding D) deleted that command: no webview surface had sent it since FR-R3-140 removed
+// `ControlPanel.svelte`, so the longest path this test drove was a path only this test took —
+// which is the one thing an end-to-end test must not be. `CMD_RESUME_PHASE` is what the product
+// actually sends, and it reaches the same controller entry point one hop further along.
+//
+// That hop is asynchronous, and deliberately so: `resumeActivePhase` clears the pause, writes the
+// run, and hands the resume to `setImmediate` rather than awaiting it, because the operator's
+// acknowledgement must not wait on a CLI turn. So the assertions below wait for the invocation
+// instead of assuming it has already happened by the time `dispatch` resolves.
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import * as fs from 'fs/promises';
 import * as os from 'os';
@@ -148,11 +159,14 @@ async function buildHarness(overrides: { isPrimary?: boolean; isTrusted?: boolea
   const deps: RouterDeps = {
     // THE SEAM. The router names a VS Code command id; activation binds that id to the
     // controller. Binding it here is what makes this test end-to-end rather than two halves:
-    // a handler that stopped calling `schegent.resume` would show up as a missing invocation.
+    // a handler that stopped calling `schegent.resumePhase` would show up as a missing invocation.
     executeCommand: (async (id: string, ...args: unknown[]) => {
       executed.push(id);
-      if (id === 'schegent.resume') {
-        return controller.resumeExisting(DEFAULT_QUEUE_ID, args[0] as string | undefined);
+      if (id === 'schegent.resumePhase') {
+        return controller.resumeActivePhase(
+          args[0] as string | undefined,
+          args[1] as string | undefined
+        );
       }
       return undefined;
     }) as unknown as RouterDeps['executeCommand'],
@@ -182,6 +196,34 @@ async function buildHarness(overrides: { isPrimary?: boolean; isTrusted?: boolea
 /** Exactly what a webview posts: JSON, parsed, of unknown shape. */
 function postedFromWebview(raw: unknown): unknown {
   return JSON.parse(JSON.stringify(raw));
+}
+
+/** How long the scheduled resume gets to finish before we give up on it. */
+const RESUME_SETTLE_MS = 5_000;
+
+/**
+ * Wait for something the scheduled resume produces, or give up.
+ *
+ * `resumeActivePhase` hands the actual resume to `setImmediate` rather than
+ * awaiting it, so `dispatch` resolves while the CLI turn is still ahead. Every
+ * assertion about what the path reached therefore has to wait for it. This
+ * returns rather than asserts: the caller says what it expected to find, so a
+ * timeout fails on the real claim instead of on "waited too long".
+ */
+async function settle(done: () => boolean | Promise<boolean>): Promise<void> {
+  const deadline = Date.now() + RESUME_SETTLE_MS;
+  while (!(await done()) && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
+/** The audit log the path writes, or `''` before the first event lands. */
+async function readAuditLog(h: Harness): Promise<string> {
+  try {
+    return await fs.readFile(path.join(h.workspaceRoot, '.schegent', 'audit.log'), 'utf8');
+  } catch {
+    return '';
+  }
 }
 
 describe('FR-R3-114 row 5 — webview -> IPC -> controller -> CLI, once, end to end', () => {
@@ -267,11 +309,12 @@ describe('FR-R3-114 row 5 — webview -> IPC -> controller -> CLI, once, end to 
     );
 
     const posted = postedFromWebview({
-      type: 'CMD_RESUME',
-      correlationId: 'c-1'
-      // No payload: the real validator refuses `CMD_RESUME` WITH one
-      // (`validateNoPayload`), which is itself a small thing this test learned by driving the
-      // real validator instead of a typed object.
+      type: 'CMD_RESUME_PHASE',
+      correlationId: 'c-1',
+      // The queue is mandatory and the prompt is not: the real validator refuses a
+      // `CMD_RESUME_PHASE` that does not say which Run it resumes, which is itself a small thing
+      // this test learned by driving the real validator instead of a typed object.
+      payload: { queueId: DEFAULT_QUEUE_ID }
     });
 
     // 1. The real validator, on the real posted bytes.
@@ -283,16 +326,20 @@ describe('FR-R3-114 row 5 — webview -> IPC -> controller -> CLI, once, end to 
     await harness!.router.dispatch(validated.command, harness!.postAck);
 
     expect(harness!.executed, 'the handler must reach the command activation binds').toContain(
-      'schegent.resume'
+      'schegent.resumePhase'
     );
+    // The whole turn, not just its start: `phase-end` is the last thing the path
+    // writes, so waiting for it is waiting for every step in between.
+    await settle(async () => (await readAuditLog(harness!)).includes('phase-end'));
+
     expect(
       harness!.invocations.length,
-      'a validated CMD_RESUME must reach the CLI through the controller'
+      'a validated CMD_RESUME_PHASE must reach the CLI through the controller'
     ).toBeGreaterThan(0);
     expect(harness!.invocations[0]!.cliPath).toBe('fake-cli');
 
     // The evidence half: the path wrote a real audit log through the real writer.
-    const log = await fs.readFile(path.join(harness!.workspaceRoot, '.schegent', 'audit.log'), 'utf8');
+    const log = await readAuditLog(harness!);
     const events = log
       .trim()
       .split('\n')
@@ -306,10 +353,11 @@ describe('FR-R3-114 row 5 — webview -> IPC -> controller -> CLI, once, end to 
     // a webview hands it whatever it happens to send.
     harness = await buildHarness();
     for (const bad of [
-      { type: 'CMD_RESUME' }, // no correlationId
+      { type: 'CMD_RESUME_PHASE', payload: { queueId: DEFAULT_QUEUE_ID } }, // no correlationId
+      { type: 'CMD_RESUME_PHASE', correlationId: 'c-2a' }, // no queue named
       { type: 'NOT_A_COMMAND', correlationId: 'c-2' },
       { correlationId: 'c-3', payload: {} }, // no type
-      'CMD_RESUME',
+      'CMD_RESUME_PHASE',
       null
     ]) {
       const validated = validateInboundMessage(postedFromWebview(bad));
@@ -325,11 +373,23 @@ describe('FR-R3-114 row 5 — webview -> IPC -> controller -> CLI, once, end to 
     // reach the controller at all.
     harness = await buildHarness({ isPrimary: false });
     const validated = validateInboundMessage(
-      postedFromWebview({ type: 'CMD_RESUME', correlationId: 'c-4' })
+      postedFromWebview({
+        type: 'CMD_RESUME_PHASE',
+        correlationId: 'c-4',
+        payload: { queueId: DEFAULT_QUEUE_ID }
+      })
     );
     expect(validated.ok).toBe(true);
     if (!validated.ok) return;
     await harness!.router.dispatch(validated.command, harness!.postAck);
+
+    // The gate refuses ahead of `executeCommand`, so nothing was scheduled and
+    // there is nothing to wait for — which is the claim, not an assumption: an
+    // empty `executed` is what makes the empty `invocations` below meaningful
+    // rather than merely early. One macrotask turn is enough to show that a
+    // `setImmediate` the gate failed to prevent would already have run.
+    await new Promise((r) => setImmediate(r));
+    expect(harness!.executed, 'a secondary window must not reach a command').toEqual([]);
     expect(harness!.invocations, 'a secondary window must not reach the CLI').toEqual([]);
     expect(harness!.acks.some((ack) => ack.status === 'rejected')).toBe(true);
   });

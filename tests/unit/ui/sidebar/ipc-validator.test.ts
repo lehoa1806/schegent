@@ -15,7 +15,7 @@ describe('validateInboundMessage', () => {
     }
   });
 
-  it.each(['CMD_RESUME', 'CMD_OPEN_AUDIT_LOG'])('accepts no-payload command %s', (type) => {
+  it.each(['CMD_OPEN_AUDIT_LOG'])('accepts no-payload command %s', (type) => {
     const result = validateInboundMessage({ type, correlationId: 'cid' });
     expect(result.ok).toBe(true);
   });
@@ -63,18 +63,23 @@ describe('validateInboundMessage', () => {
     ).toBe(false);
   });
 
-  it('accepts CMD_RESET only when confirmed=true', () => {
-    expect(validateInboundMessage({ type: 'CMD_RESET', correlationId: 'c', payload: { confirmed: true } }).ok).toBe(true);
-    expect(validateInboundMessage({ type: 'CMD_RESET', correlationId: 'c', payload: { confirmed: false } }).ok).toBe(false);
-    expect(validateInboundMessage({ type: 'CMD_RESET', correlationId: 'c', payload: {} }).ok).toBe(false);
-  });
-
-  it('accepts CMD_REMOVE_QUEUE_ITEM with non-empty id', () => {
+  // `CMD_RESET` held the confirmation-gate assertion here until the lifecycle
+  // round-check of 2026-08-30 (finding D) deleted it — no webview had sent it
+  // since FR-R3-140 removed `ControlPanel.svelte`, and reset survives as the
+  // palette command `schegent.reset` with its own host-side prompt. The
+  // property it proved does not leave with it: the `confirmed: false` case
+  // below is the half `CMD_RESET` was carrying that `CMD_REMOVE_QUEUE_ITEM`
+  // was not, moved rather than dropped, because "an explicit refusal is not a
+  // confirmation" is the rule and not a fact about one command.
+  it('accepts CMD_REMOVE_QUEUE_ITEM with non-empty id, only when confirmed=true', () => {
     expect(
       validateInboundMessage({ type: 'CMD_REMOVE_QUEUE_ITEM', correlationId: 'c', payload: { id: 'q1', confirmed: true } }).ok
     ).toBe(true);
     expect(
       validateInboundMessage({ type: 'CMD_REMOVE_QUEUE_ITEM', correlationId: 'c', payload: { id: '', confirmed: true } }).ok
+    ).toBe(false);
+    expect(
+      validateInboundMessage({ type: 'CMD_REMOVE_QUEUE_ITEM', correlationId: 'c', payload: { id: 'q1', confirmed: false } }).ok
     ).toBe(false);
     expect(
       validateInboundMessage({ type: 'CMD_REMOVE_QUEUE_ITEM', correlationId: 'c', payload: { id: 'q1' } }).ok
@@ -136,11 +141,12 @@ describe('validateInboundMessage', () => {
     expect(validateInboundMessage(42).ok).toBe(false);
   });
 
+  // `CMD_OPEN_QUEUE_ITEM_DETAILS` left this list in the lifecycle round-check of
+  // 2026-08-30 (finding D). The four that remain assert the same id rule.
   it.each([
     'CMD_RETRY_QUEUE_ITEM',
     'CMD_MOVE_QUEUE_ITEM_UP',
     'CMD_MOVE_QUEUE_ITEM_DOWN',
-    'CMD_OPEN_QUEUE_ITEM_DETAILS',
     'CMD_OPEN_HISTORY_ITEM_DETAILS'
   ])('%s requires a non-empty id', (type) => {
     expect(validateInboundMessage({ type, correlationId: 'c', payload: { id: 'q1' } }).ok).toBe(true);
@@ -160,15 +166,32 @@ describe('validateInboundMessage', () => {
     expect(validateInboundMessage({ type, correlationId: 'c', payload: {} }).ok).toBe(false);
   });
 
+  // `CMD_CLEAR_FAILED` and `CMD_RETRY_ACTIVE_RUN` left this list in the lifecycle
+  // round-check of 2026-08-30 (finding D). Both capabilities survive as palette
+  // commands (`schegent.clearFailed`, `schegent.retryActiveRun`); what went was
+  // the IPC surface no webview had sent to since FR-R3-140.
   it.each([
     'CMD_PAUSE_QUEUE',
     'CMD_RESUME_QUEUE',
     'CMD_CLEAR_COMPLETED',
-    'CMD_CLEAR_FAILED',
-    'CMD_OPEN_DASHBOARD',
-    'CMD_RETRY_ACTIVE_RUN'
+    'CMD_OPEN_DASHBOARD'
   ])('%s accepts no payload', (type) => {
     expect(validateInboundMessage({ type, correlationId: 'c' }).ok).toBe(true);
+  });
+
+  // The mirror of the four above, and the reason this file can shrink safely: a
+  // deleted command must become UNKNOWN, not merely untested. Without this, the
+  // removals above would read as coverage quietly withdrawn.
+  it.each([
+    'CMD_RESUME',
+    'CMD_RESET',
+    'CMD_CLEAR_FAILED',
+    'CMD_RETRY_ACTIVE_RUN',
+    'CMD_OPEN_QUEUE_ITEM_DETAILS'
+  ])('%s was deleted by the lifecycle round-check and no longer validates', (type) => {
+    expect(validateInboundMessage({ type, correlationId: 'c' }).ok).toBe(false);
+    expect(validateInboundMessage({ type, correlationId: 'c', payload: { confirmed: true } }).ok).toBe(false);
+    expect(validateInboundMessage({ type, correlationId: 'c', payload: { id: 'q1' } }).ok).toBe(false);
   });
 
   // Feature 100 (T509) — the revisioned complete-layer envelopes for

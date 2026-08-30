@@ -27,7 +27,12 @@ export function buildMutationPlan(
   return Object.freeze({
     fingerprint: createHash('sha256').update(canonical).digest('hex'),
     gitCapablePhaseIds: Object.freeze(gitCapablePhaseIds),
-    capturedAt
+    capturedAt,
+    // FR-R3-146 (FR-012) — recorded, not only hashed. It is already the first
+    // field of `canonical` above; carrying it out lets a durable grant name the
+    // pipeline it covers. It is not part of the identity: the fingerprint is
+    // computed from `canonical` and this assignment cannot change it.
+    pipelineId: pipeline.id
   });
 }
 

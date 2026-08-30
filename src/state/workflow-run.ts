@@ -115,6 +115,21 @@ export interface MutationPlanSnapshot {
   readonly fingerprint: string;
   readonly gitCapablePhaseIds: readonly string[];
   readonly capturedAt: number;
+  /**
+   * FR-R3-146 (FR-012) — the pipeline the plan was built from, recorded rather
+   * than only hashed.
+   *
+   * `buildMutationPlan` has always fed `pipeline.id` into the fingerprint, so a
+   * snapshot could identify its plan but not name it. A durable Git grant is
+   * stored under the fingerprint and has to be legible to the operator who
+   * granted it, and a hex digest names nothing.
+   *
+   * Optional because a Run created before this field existed carries a snapshot
+   * without it, and `workflow-controller.ts:780` resumes such a Run from the
+   * persisted value rather than rebuilding. Absent means unrecorded, never
+   * "no pipeline"; see `UNRECORDED_PIPELINE_ID`.
+   */
+  readonly pipelineId?: string;
 }
 
 export interface TerminalTransitionIntent {

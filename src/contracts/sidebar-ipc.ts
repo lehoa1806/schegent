@@ -21,21 +21,16 @@ export const SIDEBAR_IPC_SCHEMA_VERSION = 3 as const;
 
 export const CMD_START = 'CMD_START' as const;
 export const CMD_CANCEL = 'CMD_CANCEL' as const;
-export const CMD_RESUME = 'CMD_RESUME' as const;
-export const CMD_RESET = 'CMD_RESET' as const;
 export const CMD_REMOVE_QUEUE_ITEM = 'CMD_REMOVE_QUEUE_ITEM' as const;
 export const CMD_OPEN_AUDIT_LOG = 'CMD_OPEN_AUDIT_LOG' as const;
 export const CMD_RETRY_QUEUE_ITEM = 'CMD_RETRY_QUEUE_ITEM' as const;
 export const CMD_MOVE_QUEUE_ITEM_UP = 'CMD_MOVE_QUEUE_ITEM_UP' as const;
 export const CMD_MOVE_QUEUE_ITEM_DOWN = 'CMD_MOVE_QUEUE_ITEM_DOWN' as const;
 export const CMD_CLEAR_COMPLETED = 'CMD_CLEAR_COMPLETED' as const;
-export const CMD_CLEAR_FAILED = 'CMD_CLEAR_FAILED' as const;
 export const CMD_PAUSE_QUEUE = 'CMD_PAUSE_QUEUE' as const;
 export const CMD_RESUME_QUEUE = 'CMD_RESUME_QUEUE' as const;
 export const CMD_OPEN_DASHBOARD = 'CMD_OPEN_DASHBOARD' as const;
-export const CMD_RETRY_ACTIVE_RUN = 'CMD_RETRY_ACTIVE_RUN' as const;
 export const CMD_RERUN_FROM_HISTORY = 'CMD_RERUN_FROM_HISTORY' as const;
-export const CMD_OPEN_QUEUE_ITEM_DETAILS = 'CMD_OPEN_QUEUE_ITEM_DETAILS' as const;
 export const CMD_OPEN_HISTORY_ITEM_DETAILS = 'CMD_OPEN_HISTORY_ITEM_DETAILS' as const;
 // Feature 011 — the Model Catalog save, the last catalog written through
 // configuration. Feature 100 (T509) retired its three siblings — `SAVE_PIPELINES`,
@@ -80,10 +75,14 @@ export const CMD_MOVE_TASK = 'CMD_MOVE_TASK' as const;
 export const CMD_MODIFY_TASK = 'CMD_MODIFY_TASK' as const;
 export const CMD_REORDER_TASK = 'CMD_REORDER_TASK' as const;
 // Feature 017 — BUG-001. Transition a `canceled` `FeatureRequest` back
-// to `pending` by id so the queue dequeue pump picks it up again on the
-// next tick. Distinct from `CMD_RETRY_QUEUE_ITEM` (which already
-// generalizes to `canceled` via FR-034) so the dashboard "Restart"
-// affordance for canceled rows has a single, taxonomy-correct command.
+// to `pending` by id; the host command behind it then asks the queue to
+// drain, which is what starts the Task. (This used to say "so the queue
+// dequeue pump picks it up again on the next tick". There is no dequeue
+// pump — `AutoDrainCoordinator` is edge-triggered — and this was the
+// third and last site repeating that claim.) Distinct from
+// `CMD_RETRY_QUEUE_ITEM` (which already generalizes to `canceled` via
+// FR-034) so the dashboard "Restart" affordance for canceled rows has a
+// single, taxonomy-correct command.
 export const CMD_RESTART_CANCELED_TASK = 'CMD_RESTART_CANCELED_TASK' as const;
 
 // Feature 020 — phase log read + tail commands. All READ-ONLY; they
@@ -115,8 +114,11 @@ export const CMD_CLEAR_PHASE_BREAKPOINT = 'CMD_CLEAR_PHASE_BREAKPOINT' as const;
 // pending task to in-flight via `controller.drainQueuedWork()`. Member of
 // `MUTATING_COMMANDS` and gated by the primary-host check.
 export const CMD_START_QUEUE = 'CMD_START_QUEUE' as const;
-// Feature 063 — Clean All atomic queue reset. Replaces the separate
-// CMD_CLEAR_COMPLETED and CMD_CLEAR_FAILED commands. Mutating: drops
+// Feature 063 — Clean All atomic queue reset. Subsumes the separate
+// CMD_CLEAR_COMPLETED and CMD_CLEAR_FAILED commands; the lifecycle
+// round-check of 2026-08-30 (finding D) deleted the latter, which had
+// carried a handler, a guard and a validator arm for a route no webview
+// surface took after FR-R3-140 removed ControlPanel.svelte. Mutating: drops
 // every queue item (pending, in-flight, paused), cancels the active
 // runner if any, and clears the watchdog backoff window in a single
 // batched memento write. Member of `MUTATING_COMMAND_REASONS` and
@@ -170,21 +172,16 @@ export const MSG_PHASE_LOG_ENTRY = 'MSG_PHASE_LOG_ENTRY' as const;
 export const COMMAND_TYPES = [
   CMD_START,
   CMD_CANCEL,
-  CMD_RESUME,
-  CMD_RESET,
   CMD_REMOVE_QUEUE_ITEM,
   CMD_OPEN_AUDIT_LOG,
   CMD_RETRY_QUEUE_ITEM,
   CMD_MOVE_QUEUE_ITEM_UP,
   CMD_MOVE_QUEUE_ITEM_DOWN,
   CMD_CLEAR_COMPLETED,
-  CMD_CLEAR_FAILED,
   CMD_PAUSE_QUEUE,
   CMD_RESUME_QUEUE,
   CMD_OPEN_DASHBOARD,
-  CMD_RETRY_ACTIVE_RUN,
   CMD_RERUN_FROM_HISTORY,
-  CMD_OPEN_QUEUE_ITEM_DETAILS,
   CMD_OPEN_HISTORY_ITEM_DETAILS,
   CMD_SAVE_MODELS,
   CMD_SAVE_DEFINITION_DRAFT,
@@ -389,14 +386,6 @@ export interface StartCommand extends CommandBase<typeof CMD_START> {
 export interface CancelCommand extends CommandBase<typeof CMD_CANCEL> {
   readonly payload: { readonly taskId: string };
 }
-export interface ResumeCommand extends CommandBase<typeof CMD_RESUME> {
-  readonly payload?: { readonly prompt?: string };
-}
-
-export interface ResetCommand extends CommandBase<typeof CMD_RESET> {
-  readonly payload: { readonly confirmed: true };
-}
-
 export interface RemoveQueueItemCommand extends CommandBase<typeof CMD_REMOVE_QUEUE_ITEM> {
   readonly payload: { readonly id: string; readonly confirmed: true };
 }
@@ -416,7 +405,6 @@ export interface MoveQueueItemDownCommand extends CommandBase<typeof CMD_MOVE_QU
 }
 
 export interface ClearCompletedCommand extends CommandBase<typeof CMD_CLEAR_COMPLETED> {}
-export interface ClearFailedCommand extends CommandBase<typeof CMD_CLEAR_FAILED> {}
 
 // Feature 063 — Clean All atomic queue reset. Empty payload object so the
 // router can distinguish "operator confirmed" from a malformed message
@@ -450,7 +438,6 @@ export interface ResumeQueueCommand extends CommandBase<typeof CMD_RESUME_QUEUE>
   readonly payload?: { readonly queueId?: string; readonly prompt?: string };
 }
 export interface OpenDashboardCommand extends CommandBase<typeof CMD_OPEN_DASHBOARD> {}
-export interface RetryActiveRunCommand extends CommandBase<typeof CMD_RETRY_ACTIVE_RUN> {}
 
 export interface RerunFromHistoryCommand extends CommandBase<typeof CMD_RERUN_FROM_HISTORY> {
   // Feature 013 — Wave 6 (US6, FR-031): `force` is the operator opt-in for
@@ -458,10 +445,6 @@ export interface RerunFromHistoryCommand extends CommandBase<typeof CMD_RERUN_FR
   // When `force === true`, the rerun proceeds with the truncated preview;
   // otherwise the command rejects with a sanitized warning.
   readonly payload: { readonly runId: string; readonly force?: boolean };
-}
-
-export interface OpenQueueItemDetailsCommand extends CommandBase<typeof CMD_OPEN_QUEUE_ITEM_DETAILS> {
-  readonly payload: { readonly id: string };
 }
 
 export interface OpenHistoryItemDetailsCommand extends CommandBase<typeof CMD_OPEN_HISTORY_ITEM_DETAILS> {
@@ -583,21 +566,16 @@ export interface StartQueueCommand extends CommandBase<typeof CMD_START_QUEUE> {
 export type SidebarCommand =
   | StartCommand
   | CancelCommand
-  | ResumeCommand
-  | ResetCommand
   | RemoveQueueItemCommand
   | OpenAuditLogCommand
   | RetryQueueItemCommand
   | MoveQueueItemUpCommand
   | MoveQueueItemDownCommand
   | ClearCompletedCommand
-  | ClearFailedCommand
   | PauseQueueCommand
   | ResumeQueueCommand
   | OpenDashboardCommand
-  | RetryActiveRunCommand
   | RerunFromHistoryCommand
-  | OpenQueueItemDetailsCommand
   | OpenHistoryItemDetailsCommand
   | SaveModelsCommand
   | SaveDefinitionDraftCommand
@@ -664,12 +642,6 @@ export function isCmdStart(value: unknown): value is StartCommand {
 export function isCmdCancel(value: unknown): value is CancelCommand {
   return isObjectWithType(value, CMD_CANCEL);
 }
-export function isCmdResume(value: unknown): value is ResumeCommand {
-  return isObjectWithType(value, CMD_RESUME);
-}
-export function isCmdReset(value: unknown): value is ResetCommand {
-  return isObjectWithType(value, CMD_RESET);
-}
 export function isCmdRemoveQueueItem(value: unknown): value is RemoveQueueItemCommand {
   return isObjectWithType(value, CMD_REMOVE_QUEUE_ITEM);
 }
@@ -688,9 +660,6 @@ export function isCmdMoveQueueItemDown(value: unknown): value is MoveQueueItemDo
 export function isCmdClearCompleted(value: unknown): value is ClearCompletedCommand {
   return isObjectWithType(value, CMD_CLEAR_COMPLETED);
 }
-export function isCmdClearFailed(value: unknown): value is ClearFailedCommand {
-  return isObjectWithType(value, CMD_CLEAR_FAILED);
-}
 export function isCmdPauseQueue(value: unknown): value is PauseQueueCommand {
   return isObjectWithType(value, CMD_PAUSE_QUEUE);
 }
@@ -700,14 +669,8 @@ export function isCmdResumeQueue(value: unknown): value is ResumeQueueCommand {
 export function isCmdOpenDashboard(value: unknown): value is OpenDashboardCommand {
   return isObjectWithType(value, CMD_OPEN_DASHBOARD);
 }
-export function isCmdRetryActiveRun(value: unknown): value is RetryActiveRunCommand {
-  return isObjectWithType(value, CMD_RETRY_ACTIVE_RUN);
-}
 export function isCmdRerunFromHistory(value: unknown): value is RerunFromHistoryCommand {
   return isObjectWithType(value, CMD_RERUN_FROM_HISTORY);
-}
-export function isCmdOpenQueueItemDetails(value: unknown): value is OpenQueueItemDetailsCommand {
-  return isObjectWithType(value, CMD_OPEN_QUEUE_ITEM_DETAILS);
 }
 export function isCmdOpenHistoryItemDetails(value: unknown): value is OpenHistoryItemDetailsCommand {
   return isObjectWithType(value, CMD_OPEN_HISTORY_ITEM_DETAILS);
@@ -994,21 +957,16 @@ export const COMMAND_GUARDS: Readonly<
 > = Object.freeze({
   [CMD_START]: isCmdStart,
   [CMD_CANCEL]: isCmdCancel,
-  [CMD_RESUME]: isCmdResume,
-  [CMD_RESET]: isCmdReset,
   [CMD_REMOVE_QUEUE_ITEM]: isCmdRemoveQueueItem,
   [CMD_OPEN_AUDIT_LOG]: isCmdOpenAuditLog,
   [CMD_RETRY_QUEUE_ITEM]: isCmdRetryQueueItem,
   [CMD_MOVE_QUEUE_ITEM_UP]: isCmdMoveQueueItemUp,
   [CMD_MOVE_QUEUE_ITEM_DOWN]: isCmdMoveQueueItemDown,
   [CMD_CLEAR_COMPLETED]: isCmdClearCompleted,
-  [CMD_CLEAR_FAILED]: isCmdClearFailed,
   [CMD_PAUSE_QUEUE]: isCmdPauseQueue,
   [CMD_RESUME_QUEUE]: isCmdResumeQueue,
   [CMD_OPEN_DASHBOARD]: isCmdOpenDashboard,
-  [CMD_RETRY_ACTIVE_RUN]: isCmdRetryActiveRun,
   [CMD_RERUN_FROM_HISTORY]: isCmdRerunFromHistory,
-  [CMD_OPEN_QUEUE_ITEM_DETAILS]: isCmdOpenQueueItemDetails,
   [CMD_OPEN_HISTORY_ITEM_DETAILS]: isCmdOpenHistoryItemDetails,
   [CMD_SAVE_MODELS]: isCmdSaveModels,
   [CMD_SAVE_DEFINITION_DRAFT]: isCmdSaveDefinitionDraft,

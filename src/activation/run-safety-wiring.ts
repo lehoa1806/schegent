@@ -16,7 +16,9 @@ import type { SanitizedLogger } from '../lib/logger';
 import type { HistoryStore } from '../state/history-store';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import { isTerminalRunStatus } from '../state/workflow-run';
-import { createGitApprovalRequester } from './git-approval';
+import { createGitApprovalRequester, createPersistentGitApproval } from './git-approval';
+import { UNRECORDED_PIPELINE_ID } from '../state/git-plan-grants';
+import { createUncontainedConsentRequester } from './uncontained-consent';
 import { createHistoryRecorder } from '../services/history-recorder';
 import { MetricsRollupWriter } from '../metrics/metrics-rollup-writer';
 import { TerminalRunRollupRecorder } from '../metrics/terminal-run-rollup-recorder';
@@ -186,11 +188,48 @@ export async function createRunSafetyWiring(input: {
     // the mutation fingerprint. `showWarningMessage` with `modal: true` adds
     // its own Cancel button and resolves `undefined` on dismissal, so the only
     // value that grants is the explicit approve label.
-    requestGitApproval: createGitApprovalRequester({
+    //
+    // FR-R3-146 (FR-006, FR-007) — wrapped in the durable grant. The lookup and
+    // the write both live here rather than in `git-approval.ts` because this is
+    // where the store already is, which keeps that module a pure decision and
+    // leaves `workflow-run-factory.ts` untouched (plan A7).
+    requestGitApproval: createPersistentGitApproval({
+      request: createGitApprovalRequester({
+        confirm: (message, detail, actions) =>
+          Promise.resolve(
+            vscode.window.showWarningMessage(message, { modal: true, detail }, ...actions)
+          ),
+        logger: input.logger
+      }),
+      // Both thunks read the store when the question is asked, not when the
+      // wiring is built — the rule stated for the spend bound above.
+      isGranted: (fingerprint) => input.store.hasGitPlanGrant(fingerprint),
+      persist: (plan) =>
+        input.store.recordGitPlanGrant({
+          fingerprint: plan.fingerprint,
+          grantedAt: Date.now(),
+          phaseIds: plan.gitCapablePhaseIds,
+          pipelineId: plan.pipelineId ?? UNRECORDED_PIPELINE_ID
+        }),
+      logger: input.logger
+    }),
+    // FR-R3-146 (FR-002) — the same seam, the same modal shape, for the same
+    // reason: only the explicit action grants, and dismissal resolves `undefined`.
+    //
+    // `getConfiguration()` with no section, so the requester writes the one full
+    // key it owns. Called per prompt rather than captured, because the value it
+    // appends to must be the value as it stands when the operator answers.
+    requestUncontainedConsent: createUncontainedConsentRequester({
       confirm: (message, detail, approveLabel) =>
         Promise.resolve(
           vscode.window.showWarningMessage(message, { modal: true, detail }, approveLabel)
         ),
+      config: {
+        get: <T,>(key: string): T | undefined =>
+          vscode.workspace.getConfiguration().get<T>(key),
+        update: (key, value, target) =>
+          vscode.workspace.getConfiguration().update(key, value, target)
+      },
       logger: input.logger
     }),
     onRunTerminal: async (run: import('../state/workflow-run').WorkflowRun) => {

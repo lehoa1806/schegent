@@ -5,6 +5,7 @@ import {
   createBackendRunner,
   resolveBackendKind
 } from '../../../src/runner/backend-runner-factory';
+import { BackendRunnerRegistry } from '../../../src/runner/backend-runner-registry';
 import { DEFAULT_BACKEND, SUPPORTED_BACKENDS } from '../../../src/contracts/backend-kinds';
 import { ClaudeCliRunner } from '../../../src/runner/claude-cli';
 import { CodexCliRunner } from '../../../src/runner/codex-cli';
@@ -45,21 +46,21 @@ describe('resolveBackendKind', () => {
 
 describe('createBackendRunner', () => {
   it('constructs a ClaudeCliRunner for kind=claude', () => {
-    const runner = createBackendRunner('claude', { uncontainedGranted: new Set<BackendRunnerKind>(['claude', 'agy']) });
+    const runner = createBackendRunner('claude', { uncontainedGranted: () => new Set<BackendRunnerKind>(['claude', 'agy']) });
     expect(runner).toBeInstanceOf(ClaudeCliRunner);
     expect(runner.hasActiveProcess).toBe(false);
   });
 
   it('constructs a CodexCliRunner for kind=codex', () => {
-    const runner = createBackendRunner('codex', { uncontainedGranted: new Set<BackendRunnerKind>() });
+    const runner = createBackendRunner('codex', { uncontainedGranted: () => new Set<BackendRunnerKind>() });
     expect(runner).toBeInstanceOf(CodexCliRunner);
     expect(runner.hasActiveProcess).toBe(false);
   });
 
   it('forwards the monitor hook into the concrete runner', () => {
     const hook = vi.fn();
-    const claude = createBackendRunner('claude', { uncontainedGranted: new Set<BackendRunnerKind>(['claude', 'agy']), monitorHook: hook });
-    const codex = createBackendRunner('codex', { uncontainedGranted: new Set<BackendRunnerKind>(), monitorHook: hook });
+    const claude = createBackendRunner('claude', { uncontainedGranted: () => new Set<BackendRunnerKind>(['claude', 'agy']), monitorHook: hook });
+    const codex = createBackendRunner('codex', { uncontainedGranted: () => new Set<BackendRunnerKind>(), monitorHook: hook });
     // The hooks aren't observable from outside, but neither construction
     // should throw — that's the contract.
     expect(claude).toBeInstanceOf(ClaudeCliRunner);
@@ -80,7 +81,7 @@ describe('createBackendRunner', () => {
  * noise, and noise gets filtered, which is how the one that mattered is lost.
  */
 describe('createBackendRunner — the uncontained + inherit compound warning', () => {
-  const GRANT_ALL = new Set<BackendRunnerKind>(['claude', 'agy']);
+  const GRANT_ALL = (): ReadonlySet<BackendRunnerKind> => new Set<BackendRunnerKind>(['claude', 'agy']);
   const compound = (calls: readonly string[]): readonly string[] =>
     calls.filter((message) => message.includes("'inherit'"));
 
@@ -145,18 +146,23 @@ describe('createBackendRunner — the uncontained + inherit compound warning', (
 describe('the refusal is still enforced at construction and nowhere else', () => {
   it('refuses at createBackendRunner, the last point before the object exists', () => {
     expect(() =>
-      createBackendRunner('claude', { uncontainedGranted: new Set<BackendRunnerKind>() })
+      createBackendRunner('claude', { uncontainedGranted: () => new Set<BackendRunnerKind>() })
     ).toThrow(/without an OS-enforced bound/);
   });
 
   it('keeps the posture option required, so tsc enumerates construction sites', () => {
     // Read from source: the property must not be optional. An optional gate is a
     // gate omitted at the one call site nobody revisits.
+    //
+    // FR-R3-146 (FR-003) — the declared type is a THUNK now, not a set. A set is a
+    // value a caller can resolve once and freeze on an object that outlives the
+    // setting; `tests/lint/uncontained-backend-not-hardcoded.test.ts` forbids that
+    // shape, and this assertion is what keeps the declaration in step with it.
     const source = readFileSync(
       resolve(__dirname, '../../../src/runner/backend-runner-factory.ts'),
       'utf8'
     );
-    expect(source).toMatch(/readonly uncontainedGranted: ReadonlySet<BackendRunnerKind>;/);
+    expect(source).toMatch(/readonly uncontainedGranted: \(\) => ReadonlySet<BackendRunnerKind>;/);
     expect(source).not.toMatch(/uncontainedGranted\?/);
   });
 
@@ -171,5 +177,76 @@ describe('the refusal is still enforced at construction and nowhere else', () =>
       .match(/judgeBackendContainment\s*\(/g);
     expect(calls, 'the judge must be called at least once').not.toBeNull();
     expect(calls).toHaveLength(1);
+  });
+});
+
+/**
+ * FR-R3-146 (FR-003, SC-001) — the grant is read at judgement time, not at wiring.
+ *
+ * This is what makes a mid-session grant take effect without a window reload, and
+ * it is the whole reason the option became a thunk. Asserted through the registry
+ * as well as the factory, because the registry is the object with the long life:
+ * it is built once at activation and lives as long as the window, and the defect
+ * this replaces was a set resolved once and frozen onto it.
+ */
+describe('the grant is re-read per construction, so a mid-session grant takes effect', () => {
+  it('refuses, then allows, when the setting changes between calls', () => {
+    // Stands in for `schegent.backend.uncontainedBackends` moving from `[]` to
+    // `["claude"]` — an operator editing settings, or the consent modal writing.
+    const granted = new Set<BackendRunnerKind>();
+    const options = { uncontainedGranted: (): ReadonlySet<BackendRunnerKind> => granted };
+
+    expect(() => createBackendRunner('claude', options)).toThrow(/without an OS-enforced bound/);
+    granted.add('claude');
+    expect(createBackendRunner('claude', options)).toBeInstanceOf(ClaudeCliRunner);
+  });
+
+  it('does not require the registry to be rebuilt for the new grant to be seen', () => {
+    const granted = new Set<BackendRunnerKind>();
+    // The real factory, not the mock: the point is the judgement, not the call.
+    const registry = new BackendRunnerRegistry(
+      { uncontainedGranted: (): ReadonlySet<BackendRunnerKind> => granted },
+      'claude'
+    );
+
+    expect(() => registry.getOrCreate('claude')).toThrow(/without an OS-enforced bound/);
+    granted.add('claude');
+    // Same registry instance, no re-wiring, no reload.
+    expect(registry.getOrCreate('claude')).toBeInstanceOf(ClaudeCliRunner);
+  });
+
+  it('still states the compounding case when the grant arrived mid-session', () => {
+    // FR-R3-146 (FR-014) — a grant written by the consent modal must not become a
+    // route that skips FR-R3-125's warning. The construction that SUCCEEDS is the one
+    // that warns, and it is reached only after the grant exists, so the warning has
+    // to fire on that second call or it never fires for a prompted operator at all.
+    const granted = new Set<BackendRunnerKind>();
+    const logger = { warn: vi.fn(), info: vi.fn() } as unknown as SanitizedLogger;
+    const options = {
+      uncontainedGranted: (): ReadonlySet<BackendRunnerKind> => granted,
+      environmentMode: 'inherit' as const,
+      logger
+    };
+
+    expect(() => createBackendRunner('claude', options)).toThrow(/without an OS-enforced bound/);
+    // Non-vacuity: nothing was warned while the backend was refused, because nothing ran.
+    expect(vi.mocked(logger.warn)).not.toHaveBeenCalled();
+
+    granted.add('claude');
+    createBackendRunner('claude', options);
+    const warnings = vi.mocked(logger.warn).mock.calls.map((call) => String(call[0]));
+    expect(warnings.join('\n')).toContain('schegent.cli.environmentMode');
+    expect(warnings.join('\n')).toContain('full ambient environment');
+  });
+
+  it('keeps refusing a kind the grant does not name, however many times it is asked', () => {
+    // The converse: a live read must not become "the first answer wins".
+    const granted = new Set<BackendRunnerKind>(['agy']);
+    const registry = new BackendRunnerRegistry(
+      { uncontainedGranted: (): ReadonlySet<BackendRunnerKind> => granted },
+      'claude'
+    );
+    expect(() => registry.getOrCreate('claude')).toThrow(/without an OS-enforced bound/);
+    expect(() => registry.getOrCreate('claude')).toThrow(/without an OS-enforced bound/);
   });
 });

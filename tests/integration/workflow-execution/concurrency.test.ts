@@ -27,12 +27,17 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { PipelineCatalog } from '../../../src/config/pipeline-config';
 import { makeHarness, type Harness } from '../enqueue-start-separation.helpers';
-import type { ConnectedRunCoordinatorDeps } from '../../../src/services/workflow-execution/connected-run-coordinator';
+import {
+  recordChildTerminal,
+  type ConnectedRunCoordinatorDeps
+} from '../../../src/services/workflow-execution/connected-run-coordinator';
 import type { WorkflowLauncherDeps } from '../../../src/services/workflow-execution/workflow-launcher';
 import {
   FakeChildRuns,
+  NOW,
   ROLLBACK_REQUEST,
   SHIP_REQUEST,
+  TRIAGE_REQUEST,
   VERDICT_OUTPUT,
   continueAt,
   launchRelease,
@@ -168,6 +173,88 @@ describe('a connected run under repeat and overlapping starts', () => {
     const admitted = await continueAt(launcher, harness, 'n-rollback', ROLLBACK_REQUEST);
     expect(admitted.outcome).toBe('started');
     expect(storedRun(harness).nodes['n-rollback']!.attempts).toHaveLength(1);
+  });
+
+  /**
+   * Lifecycle round-check of 2026-08-30 (T1613) — the window between the queue
+   * finish and the routing record.
+   *
+   * WHY THERE IS A WINDOW AT ALL. `run-driver.ts` awaits
+   * `terminalTransitions.complete()` — which finishes the queue row, so
+   * `readChildState` reads the child as terminal — and only then awaits
+   * `onRunTerminal`, which is where `run-safety-wiring.ts` records the routing
+   * decision. Two filesystem awaits sit between them (the raw-transcript
+   * finalize and the session-retention sweep), so this is not a microtask gap.
+   * For its whole width the projection already offers this node a `restart` and
+   * gate 3 already reads the child as settled, so an operator can submit inside
+   * it.
+   *
+   * WHAT COULD GO WRONG, AND DOES NOT. `recordChildTerminal`'s own docblock says
+   * a stale compare-and-set is for *"the caller to re-read and call again"*, and
+   * the one production caller does neither — it calls once and drops the result.
+   * That is safe only because the caller re-reads `getConnectedRuns()` AFTER
+   * those awaits and nothing between that read and the compare-and-set is
+   * asynchronous. This test is what makes that reasoning executable: put a real
+   * write in the window and require the decision to land anyway.
+   *
+   * AND ON REAL FACTS. The restart appends attempt 1, which has no terminal
+   * facts. A record that routed on absent status would resolve the `n-triage`
+   * operand unresolved, take no explicit branch, and fall to `isDefault` — so it
+   * would offer `n-rollback` and set `defaultApplied`. The branch assertion
+   * below discriminates that outcome from the right one, which is why it is here
+   * and not just `outcome: 'recorded'`.
+   *
+   * The graph is this suite's `RELEASE`, whose first connection is conditional
+   * (`n-triage` completed -> `n-ship`) and whose second is the default to
+   * `n-rollback`. A matched condition means the default is never reached, so the
+   * correct answer is the single branch below — not the two-way offer
+   * `manual-continuation.test.ts` asserts, which is a different graph.
+   */
+  it('records the finished attempt when a restart lands in the routing window (T1613)', async () => {
+    const launched = await launchRelease(launcher, harness, catalog);
+    expect(launched.outcome).toBe('started');
+    if (launched.outcome !== 'started') throw new Error('unreachable');
+
+    // The child reaches a terminal state. In the host the queue row is finished
+    // by now; the routing record has not run.
+    children.settle(launched.queueItemId, VERDICT_OUTPUT);
+
+    // The operator restarts the node inside the window. Gate 3 admits it — the
+    // child really has settled — so this is not a race the launcher refuses.
+    const restarted = await continueAt(launcher, harness, 'n-triage', TRIAGE_REQUEST);
+    expect(restarted.outcome, 'gate 3 must admit a restart once the child is terminal').toBe(
+      'started'
+    );
+    const moved = storedRun(harness);
+    expect(moved.nodes['n-triage']!.attempts).toHaveLength(2);
+
+    // Now the routing record catches up, reading the run as the host does.
+    const routed = await recordChildTerminal(coordinator, {
+      run: moved,
+      nodeId: 'n-triage',
+      attemptIndex: 0,
+      decidedAt: NOW
+    });
+
+    expect(
+      routed.outcome,
+      'the routing decision was dropped as stale. The operator write in the window moved the ' +
+        'revision, so the record only survives while the caller re-reads and nothing awaits ' +
+        'between that read and the compare-and-set — see this case`s docblock.'
+    ).toBe('recorded');
+    if (routed.outcome !== 'recorded') throw new Error('unreachable');
+
+    // Routed on attempt 0's facts, not on the empty attempt 1.
+    expect(routed.decision.attemptIndex).toBe(0);
+    const offered = routed.decision.eligible.map(
+      (index) => moved.graph.connections[index]!.to.nodeId
+    );
+    expect(
+      offered,
+      'expected the branch attempt 0`s `completed` status matches. `n-rollback` here would mean ' +
+        'the record routed on absent facts and fell through to the default connection'
+    ).toEqual(['n-ship']);
+    expect(routed.decision.defaultApplied).toBe(false);
   });
 
   it('counts an unresolvable child as settled rather than as running (FR-044)', async () => {

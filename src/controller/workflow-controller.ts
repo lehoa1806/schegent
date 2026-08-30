@@ -21,7 +21,9 @@ import type { ExecutionLeasePort } from '../services/auto-drain-coordinator';
 import { releaseExecutionLeaseForTerminalRun } from '../services/execution-lease-release';
 import { ExecutionLeaseManager } from '../state/execution-lease';
 import { EMPTY_CATALOG, type PipelineCatalog } from '../config/pipeline-config';
-import { LockHeldError } from '../lib/errors';
+import { classifyStartFailure } from './start-failure-classification';
+import { UncontainedConsentGate, recoverOrReport } from './uncontained-consent-gate';
+import type { UncontainedConsentPort } from './uncontained-consent-gate';
 import { DELAYED_RETRY_CAP } from '../contracts/retry-bounds';
 import type { DelayedRetryWatchdog } from './retry-handler';
 import { RunDriver } from '../services/run-driver';
@@ -89,6 +91,8 @@ export interface WorkflowControllerDeps {
   backendCapabilities?: BackendAvailabilityProbe;
   terminalTransitions?: Pick<TerminalTransitionCoordinator, 'begin' | 'complete'>;
   requestGitApproval?: (plan: MutationPlanSnapshot) => Promise<boolean>;
+  /** FR-R3-146 (FR-002) — asked once when a backend is refused for want of a grant. */
+  requestUncontainedConsent?: UncontainedConsentPort;
   checkpoints?: Pick<RunCheckpointService, 'checkpoint'>;
   /**
    * FR-R3-004 — passed straight to the driver, which brackets every phase
@@ -151,6 +155,8 @@ export class SchegentWorkflowController {
   private readonly lifecycleAuditor: WorkflowLifecycleAuditor;
   private readonly terminalTransitions: WorkflowControllerDeps['terminalTransitions'];
   private readonly requestGitApproval: WorkflowControllerDeps['requestGitApproval'];
+  /** FR-R3-146 — window-lived, because its bound is one grant per kind per window. */
+  private readonly consent: UncontainedConsentGate;
   private readonly runFactory: WorkflowRunFactory;
 
   constructor(
@@ -176,6 +182,9 @@ export class SchegentWorkflowController {
     this.sessionCleanup = deps.sessionCleanup ?? cleanupSessionArtifacts;
     this.terminalTransitions = deps.terminalTransitions;
     this.requestGitApproval = deps.requestGitApproval;
+    this.consent = new UncontainedConsentGate(deps.requestUncontainedConsent, (raw) =>
+      logger.sanitize(raw)
+    );
     this.runFactory = new WorkflowRunFactory({
       getCatalog: () => this.catalog,
       defaultRunnerKind: options.defaultRunnerKind,
@@ -504,9 +513,16 @@ export class SchegentWorkflowController {
       // covering it — attached synchronously, so a rejection is never briefly
       // unhandled while the caller decides whether to await.
       const admitted = run;
+      const drive = (): Promise<void> => this.driveSession(queueId, admitted, feature.description);
       return {
-        completed: this.driveSession(queueId, admitted, feature.description).catch((err) =>
-          this.handleUnexpectedStartFailure(feature, admitted, feature.description, err)
+        // FR-R3-146 (FR-002) — the containment refusal is thrown from `resolveRunner`
+        // during the drive, so this is where a first run on an ungranted machine
+        // arrives. The gate asks once and re-drives; the admission catch below is
+        // left alone because no runner is constructed there.
+        completed: drive().catch((err) =>
+          recoverOrReport(err, this.consent, drive, (failure) =>
+            this.handleUnexpectedStartFailure(feature, admitted, feature.description, failure)
+          )
         )
       };
     } catch (err) {
@@ -547,11 +563,14 @@ export class SchegentWorkflowController {
     description: string,
     err: unknown
   ): Promise<void> {
-    const isLockHeld = err instanceof LockHeldError;
-    const message = isLockHeld 
-      ? `Another VS Code window holds the workspace lock`
-      : this.sanitizeUnexpectedError(err).slice(0, 240);
-      
+    // FR-R3-146 (FR-005) — what kind of event this is, decided once.
+    //
+    // The code, the message, the log level and its wording, the status-bar detail
+    // and the operator notification were five separate ternaries over one question.
+    // They are now one answer, in `start-failure-classification.ts`, which is also
+    // where the reasoning for each shape lives.
+    const report = classifyStartFailure(err, feature.id, (raw) => this.logger.sanitize(raw));
+
     // Feature 093 (T023) — pattern B, the failing Task names its own queue.
     //
     // The id comparison **survives** the conversion, and is not the one-slot
@@ -567,18 +586,14 @@ export class SchegentWorkflowController {
         ? latestRun
         : startedRun;
     const lastError: SanitizedError = {
-      code: isLockHeld ? 'lock-held' : 'unexpected-controller-error',
-      message,
+      code: report.code,
+      message: report.message,
       phase: activeRun?.currentPhase ?? null,
       iteration: activeRun?.currentIteration ?? null,
       at: Date.now()
     };
 
-    if (isLockHeld) {
-      this.logger.warn(`workflow ${feature.id} rejected: workspace lock held by ${this.logger.sanitize((err as LockHeldError).ownerId)}`);
-    } else {
-      this.logger.error(`workflow ${feature.id} failed unexpectedly: ${message}`);
-    }
+    this.logger[report.level](report.logLine);
 
     let terminalRun: WorkflowRun | null = null;
     if (activeRun && (activeRun.status === 'running' || activeRun.status === 'paused')) {
@@ -608,9 +623,9 @@ export class SchegentWorkflowController {
     this.statusBar.update(terminalRun?.id ?? startedRun?.id ?? feature.id, {
       kind: 'failed',
       ...(lastError.phase ? { phase: lastError.phase } : {}),
-      detail: message
+      detail: report.statusDetail
     });
-    this.notifier.warn(`Schegent: workflow failed unexpectedly — ${message}.`);
+    this.notifier.warn(report.announcement);
 
     try {
       await this.queue.finish(feature.id, 'failed', {
@@ -625,7 +640,7 @@ export class SchegentWorkflowController {
       );
     }
 
-    if (terminalRun && !isLockHeld) {
+    if (terminalRun && report.kind !== 'lock-held') {
       try {
         await this.historyRecorder.record(terminalRun, description, 'failed');
       } catch (historyErr) {

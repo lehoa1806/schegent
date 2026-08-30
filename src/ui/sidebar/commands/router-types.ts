@@ -38,7 +38,9 @@ export interface QueueOps {
   moveUp(id: string): Promise<{ ok: boolean; reason?: string }>;
   moveDown(id: string): Promise<{ ok: boolean; reason?: string }>;
   clearCompleted(): Promise<{ removed: number }>;
-  clearFailed(): Promise<{ removed: number }>;
+  // `clearFailed` left this port with `CMD_CLEAR_FAILED` in the lifecycle
+  // round-check of 2026-08-30 (finding D). `QueueManager` still implements it
+  // for `schegent.clearFailed`; the router just has nothing that calls it.
   setQueuePausedState(
     paused: boolean,
     queueId?: string,

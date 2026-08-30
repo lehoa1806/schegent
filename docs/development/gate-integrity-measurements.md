@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 98
+    vacuity-census-denominator: 102
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **96** |
+| Gates the detector calls **controlled** (the denominator) | **102** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -81,6 +81,51 @@ on the machine-readable line, the method that section established.
 | **+1** | `activation-trust-classification.test.ts` (95 → 96) | Joined. `FR-R3-136` — refuses a module under `src/activation/` that carries no trust-classification verdict. Its control is the denominator itself: the module count is derived from the directory listing and floored, so a listing that stopped finding modules fails rather than passing over nothing, and the four verdicts are a closed set so an unrecognised one is an offender too. |
 
 **The rate is 0.0% at every step**, so no gate was added to move the number.
+
+**Denominator movement 96 → 99 (2026-08-30, lifecycle round-check).** Three steps. The first two
+had gone unrecorded — a third back-fill, by the same `git log -S` method the reconciliation above
+established — and the summary table at the head of this section had been left at 96 while the
+machine-readable line moved to 98, which is the two-authorities drift the note below predicts.
+Both now read 99.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | `current-control-claims.test.ts` (96 → 97, `cadbe737`, feature 202) | Joined during "current-state documentation must not resurrect retired controls". Not recorded here at the time. |
+| **+1** | `adapter-module-reachability.test.ts` (97 → 98, `aa5559fc`, feature 139) | Joined during "the HostServices facade must be runtime code or stop pretending to be". Same omission. |
+| **+1** | `pending-transition-drain-trigger.test.ts` (98 → 99) | Joined. The lifecycle round-check of 2026-08-30 (finding A) — refuses a `status: 'pending'` writer whose command registration does not drain the queue the row landed on. Two controls: a floor asserting the pending-write literal was found in source at all, so a renamed literal fails rather than reporting a clean gate over a tree it never read; and a mirror direction refusing a classification for a file that no longer writes the transition, so the table cannot outlive what it describes. |
+
+**The rate is 0.0% at every step here too**, so no gate was added to move the number.
+
+**Denominator movement 99 → 102 (2026-08-30, same round-check, T1615). A blind spot in the
+detector, not three new gates.** Nothing joined `tests/lint/` here. Three gates that had been
+scanning and asserting emptiness all along were invisible to `isScanningGate`, and widening `SCANS`
+brought them back under measurement. This is recorded as a movement with its cause like every other
+row, because a denominator that grows for a reason nobody wrote down is indistinguishable from one
+that was tuned.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | `command-has-a-dispatcher.test.ts` (99 → 100) | Added by this round-check (finding C) and outside the census from birth. |
+| **+1** | `no-inline-backend-ping-ipc.test.ts` (100 → 101) | Outside since `FR-R3-033`, three rounds. |
+| **+1** | `no-inline-process-yaml-ipc.test.ts` (101 → 102) | Same, same commit. |
+
+All three walk `webview-ui/src` and assert `toEqual([])`, and `looksControlled` was already `true` of
+each — but `isScanningGate` was `false`, because they delegate the walk to
+`tests/lint/webview-source-scan.ts` and so their own source text carried no name in `SCANS`. **This
+is the `FR-R3-121` failure repeating one helper later**: that note records ten gates silently leaving
+the census when their private `listMatchingFiles` copies were replaced by a shared
+`matchingRelativePaths`, and its stated lesson is that a shared scan idiom is load-bearing for the
+meta-gates that read it. `FR-R3-033` extracted the ripgrep spawn into a shared helper for a good
+reason and took three gates out of this measurement doing it, unnoticed, and the census could not
+report the loss because a gate that leaves the denominator leaves the printed output with it.
+
+**The rate is 0.0% over the wider set**: the mutation was run across all 102, including the three
+entrants, and none survived — so the three were genuinely controlled and not merely detected as such,
+which is the claim `T1615` was held open to make rather than assert. `scanning-gates-prove-they-scanned`
+also reads `isScanningGate`, so all three now fall under it too; `WITHOUT_A_CONTROL` stays empty.
+
+The residual is unchanged and is the note below: the detector reads for scanning **by name**, so the
+next extraction of a walk into a helper will do this again. Nothing gates that.
 
 **Why this keeps happening, said plainly.** Two authorities on one figure — a line a test asserts
 against a live run, and a table a human maintains — will drift unless something reads both. Nothing

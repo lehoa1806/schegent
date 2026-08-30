@@ -30,8 +30,19 @@
 // census. The census caught it, which is the census working; the lesson is that
 // a shared idiom is load-bearing for the meta-gates that read it, and changing
 // one means updating them in the same commit.
+// Lifecycle round-check of 2026-08-30 (T1615) — `scanWebviewSources` and
+// `filesReferencing` added, and the FR-R3-121 lesson above repeated verbatim one
+// helper later. `tests/lint/webview-source-scan.ts` walks `webview-ui/src` for
+// three gates, so those three carry no scanning name in their OWN source text
+// and sat outside the census: `command-has-a-dispatcher` (added by that
+// round-check), and `no-inline-backend-ping-ipc` / `no-inline-process-yaml-ipc`,
+// outside since FR-R3-033 moved them onto the shared helper — silently, for
+// three rounds. Denominator 99 -> 102; all three are `looksControlled` and none
+// survives the census mutation, so the measured rate stays 0.0% over the wider
+// set. The rule this keeps re-teaching: extracting a walk into a helper removes
+// the caller from every meta-gate that reads for the walk by name.
 export const SCANS =
-  /filesMatching|matchingRelativePaths|filesUnder|linesMatching|readdirSync|collect\w*Files|walk\(/;
+  /filesMatching|matchingRelativePaths|filesUnder|linesMatching|readdirSync|collect\w*Files|walk\(|scanWebviewSources|filesReferencing/;
 
 /** Asserts that a collected set of offenders is empty. */
 export const ASSERTS_EMPTY = /\.toEqual\(\s*\[\s*\]\s*\)/;

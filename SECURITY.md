@@ -51,7 +51,7 @@ Claude is the default backend. Claude and Agy are launched with their CLI approv
 <!-- Source: src/config/phase-runner-policy.ts -->
 <!-- Source: src/activation/git-approval.ts -->
 
-The detailed operator threat catalog covers T1–T25 in [the threat model](docs/security/threat-model.md). It records mitigations and residual risk; it is not a claim that local autonomous execution is safe against every input.
+The detailed operator threat catalog covers T1–T27 in [the threat model](docs/security/threat-model.md). It records mitigations and residual risk; it is not a claim that local autonomous execution is safe against every input.
 
 <!-- Source: tests/lint/threat-id-anchor-parity.test.ts -->
 <!-- Source: src/runner/prompt-builder.ts -->

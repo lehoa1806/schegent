@@ -641,7 +641,24 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // leaving its siblings unfenced. It also must not release the primacy lease, which AGENTS.md
   // states as a hard rule with FR-028's history behind it: a window that stopped being primary
   // while still executing work.
-  { path: 'src/controller/workflow-controller.ts', maxLines: 1_025 },
+  // FR-R3-146 (feature 179) — 1,025 -> 1,040, and the extraction was taken FIRST.
+  //
+  // Two responsibilities arrived: how a start failure is reported (FR-005) and the consent
+  // recovery above a containment refusal (FR-002/FR-003). The reporting one was what pushed
+  // this file to 1,068 against a ceiling with one line to give, and this entry's own message
+  // asked for the split; `controller/start-failure-classification.ts` now owns the five
+  // ternaries that decided the code, the message, the log level, the status detail and the
+  // announcement, and the file came back to 1,024. `controller/uncontained-consent-gate.ts`
+  // owns the second: the port, the one-grant-per-kind bound, and the retry routing.
+  //
+  // The fifteen lines are what is left when both are gone, and every one of them is a
+  // binding this file cannot delegate: the import, the optional dep, the window-lived field
+  // and its construction, and the `drive()` local the catch needs so the retry re-drives the
+  // same Run rather than a second copy of the expression. The four-line comment at that catch
+  // is deliberate and is not prose to trim — it records why the admission catch beside it is
+  // left alone (no runner is constructed there), which is the question the next reader will
+  // have. Set to exactly what the file measures.
+  { path: 'src/controller/workflow-controller.ts', maxLines: 1_040 },
   // P4 domain-validator extraction ratchet: 1,200 → 775. The registry owns
   // command coverage; phase-log and metrics validators own shape rules.
   // Feature 088 (T032) — 775 → 776 for the two connected-run commands. Both
@@ -773,7 +790,26 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // The remaining 33 are that seam plus imports. Raised rather than compressed further,
       // because the next compression available was deleting the pointers that tell a reader where
       // the mechanism went.
-      highWaterMark: 2769
+      //
+      // FR-R3-146 (FR-006, FR-011) — 2769 → 2815: durable Git-plan consent.
+      //
+      // A drain of twenty tasks over one pipeline showed twenty byte-identical modals, because
+      // the consent unit was the mutation plan and the storage unit was the Run. The fix is a
+      // record keyed by fingerprint, which needs a key and a way to read and write it.
+      //
+      // The mechanism is NOT here. `src/state/git-plan-grants.ts` holds the whole narrowing —
+      // the total reader, its per-entry rejections, the bounded problem echo, the immutable
+      // writer — with its own tests, following the `confirm-suppression.ts` precedent one entry
+      // above. What is left in this file is the seam that has to be here because the memento is:
+      // the `KEYS` entry, the imports, the warn-once set, and three accessors of one to three
+      // statements each.
+      //
+      // The first draft was +69 and this forcing function refused it, correctly: it was comment,
+      // not code. The `hasOwnProperty` rationale is now one clause instead of a docblock, and the
+      // reasoning about re-reading through the narrowing reader moved to the tests that assert
+      // it. What survives is why the key is its own key, which is the one thing a reader of
+      // `KEYS` cannot recover from anywhere else.
+      highWaterMark: 2815
     }
   },
   // Feature 077 — public facade and every state-projection collaborator have
@@ -837,7 +873,22 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // FR-R3-077 (feature 153) — 1821 → 1842: five Run commit points and ten
       // queue mutation points in this file now name the claim they commit
       // under. One line each, no new responsibility.
-      highWaterMark: 1842
+      //
+      // 1842 → 1844: the `queueLifecycle` writer the terminal and promotion
+      // paths never had. The behaviour itself went to `queue-lifecycle-refresh.ts`
+      // — this file's share is the import and one local for the repositioned
+      // rows in `retry`; the five mapper call sites are each still one line.
+      //
+      // 1844 → 1850 (lifecycle round-check of 2026-08-30): six comment lines and
+      // no code. The header called `peekNextPending`/`hasCapacity`/`markInFlight`/
+      // `finish` the "pump helpers", and nothing pumps — `AutoDrainCoordinator` is
+      // edge-triggered. That word is the round-check's finding A: three separate
+      // implementations returned a Task to `pending` and waited for a tick that
+      // does not exist, two of them citing the pump in a comment. This header is
+      // where a reader forms the model, so the correction belongs here and being
+      // six lines rather than one is the point — a one-word fix is what left the
+      // belief intact the first three times.
+      highWaterMark: 1850
     }
   },
   // Speckit-auto alignment (2026-07-30) — bumped 700 → 800 to absorb two new
@@ -994,10 +1045,16 @@ describe('large source file LOC budgets', () => {
    * seventh cannot arrive. `src/extension.ts` is absent from this list because
    * FR-R3-119 decided it — that is what coming off this list looks like.
    */
+  // `runtime-validators.ts` and `sidebar-ipc.ts` came off this list on
+  // 2026-08-30. Not by an architectural decision — by deletion: the lifecycle
+  // round-check (finding D) removed five IPC commands that no webview surface
+  // could send, taking their constants, interfaces, type guards, guard-map
+  // entries, `case` arms and union members with them. 776 - 717 and 1058 - 1011
+  // is what five dead commands were costing two of the tree's largest files.
+  // Their ceilings are left where they are: real headroom on a file that shrank
+  // is a budget, which is the state this list exists to move files into.
   const UNDECIDED_CEILING_BASELINE: readonly string[] = [
     'src/controller/workflow-controller.ts', // 1025 / 1025 — no headroom
-    'src/contracts/runtime-validators.ts', //   752 /  776 — 24 lines
-    'src/contracts/sidebar-ipc.ts', //          1058 / 1058 — no headroom
     'src/ui/sidebar/state-projector-runtime.ts', // 285 / 300 — 15 lines
     'src/ui/sidebar/snapshot-composer.ts', //    311 /  312 — 1 line
     'src/config/general-settings.ts', //         710 /  712 — 2 lines

@@ -2,8 +2,14 @@
 //
 // The unified workspace queue is the canonical `'default'` queue defined
 // in `queue-registry`. The manager exposes pause/resume + task-level
-// mutators (reorder, modify, remove, retry, clear) plus the headless
-// pump helpers (peekNextPending, hasCapacity, markInFlight, finish).
+// mutators (reorder, modify, remove, retry, clear) plus the helpers a
+// drain pass calls (peekNextPending, hasCapacity, markInFlight, finish).
+//
+// Those four were called "pump helpers" until the lifecycle round-check of
+// 2026-08-30. Nothing pumps. `AutoDrainCoordinator` is edge-triggered, and a
+// caller that returns a row to `pending` and waits will wait forever — which is
+// the bug that round-check was opened on. The word is avoided here because this
+// header is where a reader forms the model.
 //
 // Multi-queue management surface (create/rename/delete/move-between/save
 // queue settings) was removed in Feature 030; the v6 migration coalesced
@@ -46,6 +52,7 @@ import {
   type FeatureRequestStatus,
   validateDescription
 } from './feature-request';
+import { withRefreshedLifecycle } from './queue-lifecycle-refresh';
 
 export interface MutationResult {
   ok: boolean;
@@ -407,7 +414,7 @@ export class QueueManager {
           : r
       );
       return {
-        queue: { ...queue, requests, inFlightId: featureId },
+        queue: withRefreshedLifecycle({ ...queue, requests, inFlightId: featureId }),
         result: requests.find((request) => request.id === featureId)
       };
     }, ownerQueueId,
@@ -467,7 +474,7 @@ export class QueueManager {
     const now = Date.now();
     await this.store.updateQueue(
       (queue) => ({
-        queue: {
+        queue: withRefreshedLifecycle({
           ...queue,
           requests: queue.requests.map((r) =>
             r.id === featureId
@@ -481,7 +488,7 @@ export class QueueManager {
               : r
           ),
           inFlightId: queue.inFlightId === featureId ? null : queue.inFlightId
-        },
+        }),
         result: undefined
       }),
       this.queueIdForTask(featureId),
@@ -521,7 +528,7 @@ export class QueueManager {
         queue.inFlightId === featureId && !preserveInFlightForRestore
           ? null
           : queue.inFlightId;
-      return { queue: { ...queue, requests, inFlightId }, result: true };
+      return { queue: withRefreshedLifecycle({ ...queue, requests, inFlightId }), result: true };
     }, this.queueIdForTask(featureId),
       this.store.runCommitClaim(this.queueIdForTask(featureId))
     );
@@ -539,7 +546,7 @@ export class QueueManager {
           ? { ...r, status: 'canceled' as FeatureRequestStatus, completedAt: now, updatedAt: now }
           : r
       );
-      return { queue: { ...queue, requests }, result: true };
+      return { queue: withRefreshedLifecycle({ ...queue, requests }), result: true };
     }, this.queueIdForTask(featureId),
       this.store.runCommitClaim(this.queueIdForTask(featureId))
     );
@@ -1376,8 +1383,9 @@ export class QueueManager {
       const inFlightIdx = without.findIndex((r) => r.status === 'in-flight');
       const insertAt = inFlightIdx === -1 ? 0 : inFlightIdx + 1;
       const reordered = [...without.slice(0, insertAt), updated, ...without.slice(insertAt)];
+      const repositioned = reordered.map((r, i) => ({ ...r, position: i }));
       return {
-        queue: { ...queue, requests: reordered.map((r, i) => ({ ...r, position: i })) },
+        queue: withRefreshedLifecycle({ ...queue, requests: repositioned }),
         result: { ok: true }
       };
     }, this.queueIdForTask(featureId), this.store.runCommitClaim(this.queueIdForTask(featureId)));

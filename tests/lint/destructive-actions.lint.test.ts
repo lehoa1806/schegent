@@ -3,12 +3,14 @@
 // wrapped by `useConfirm(actionKey)` so the operator-facing confirmation
 // flow gates the destructive side effect.
 //
-// The 15 destructive commands are the ones that mutate persisted queue,
+// The 13 destructive commands are the ones that mutate persisted queue,
 // run, workspace, or catalog state in a user-visible way. Each has an
 // `ActionKey` entry in `webview-ui/src/lib/action-copy.ts`, but the table is a
 // superset: it also carries keys for destructive decisions that are not commands
-// of their own (the output overwrite confirmed inside a run launch).
-// `workspace.reset` is the lone non-suppressible action.
+// of their own (the output overwrite confirmed inside a run launch, and
+// `workspace.reset`, whose command was deleted while its host-side prompt in
+// `src/commands/reset.ts` stayed). `workspace.reset` is the lone
+// non-suppressible action.
 //
 // For each call site that hands a destructive command constant to a sender —
 // `<sender>(CMD_DESTRUCTIVE, ...)` — under `webview-ui/src/**/*.{svelte,ts}`
@@ -43,14 +45,19 @@ import { filesUnder } from './source-scan';
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const SCAN_ROOT = resolve(REPO_ROOT, 'webview-ui', 'src');
 
-// The 15 commands that the action-copy table gates. Adding a new
+// The 13 commands that the action-copy table gates. Adding a new
 // destructive command means adding it here AND to ACTION_COPY (the
 // pinned-key unit test at `webview-ui/src/lib/__tests__/action-copy.test.ts`
 // keeps the latter honest).
+//
+// `CMD_CLEAR_FAILED` and `CMD_RESET` were the 14th and 15th until the lifecycle
+// round-check of 2026-08-30 (finding D) deleted both from the IPC contract. They
+// are gone from here rather than parked in an exemption because a command that
+// does not exist cannot have an ungated call site — which is why the exemption
+// list below went with them.
 const DESTRUCTIVE_COMMANDS: readonly string[] = [
   'CMD_CLEAR_ALL',
   'CMD_CLEAR_COMPLETED',
-  'CMD_CLEAR_FAILED',
   'CMD_REMOVE_QUEUE_ITEM',
   'CMD_CANCEL',
   'CMD_PAUSE_QUEUE',
@@ -59,7 +66,6 @@ const DESTRUCTIVE_COMMANDS: readonly string[] = [
   'CMD_RESTART_CANCELED_TASK',
   'CMD_MODIFY_TASK',
   'CMD_RERUN_FROM_HISTORY',
-  'CMD_RESET',
   // Feature 095 (T011, FR-003) — deleting a queue drops its pending Tasks with
   // no undo. Both posts of its two-phase flow live in one function body in
   // `webview-ui/src/lib/queue-control-ipc.ts` alongside the `useConfirm(` call,
@@ -229,80 +235,31 @@ describe('Feature 063 T046 — destructive command sites must be useConfirm-gate
   // This used to read "discovers each of the 15", and accepted matches from
   // legacy files so it would keep holding for commands no live component wired
   // up. FR-R3-140 deleted the legacy files, and with them the last webview
-  // sender of three commands the host still accepts. The choice was to weaken
-  // the check or to name the three; naming them keeps the control at full
-  // strength for the twelve that do have a sender, and turns "no sender" from
-  // something the gate tolerated into something it states.
+  // sender of three commands the host still accepted, so the check grew a
+  // `NO_WEBVIEW_SENDER` exemption map naming those three rather than weakening.
   //
-  // Every entry here is a command the HOST still handles. The webview simply has
-  // nowhere to send it from, so there is no call site to gate and the useConfirm
-  // rule below has nothing to say about it.
-  const NO_WEBVIEW_SENDER: ReadonlyMap<string, string> = new Map([
-    [
-      'CMD_CLEAR_FAILED',
-      'Subsumed by CMD_CLEAR_ALL. Its last sender was ControlPanel.svelte, deleted by FR-R3-140 as unreachable.'
-    ],
-    [
-      'CMD_RETRY_PHASE_NOW',
-      'Its only sender was PhaseTracker.svelte, deleted by FR-R3-140 as unreachable. See webview-ui/src/lib/phase-control.ts for why it was never routed through the shared helper.'
-    ],
-    [
-      'CMD_RESET',
-      'Its only sender was ControlPanel.svelte, deleted by FR-R3-140 as unreachable. The host command survives; the sidebar IPC handler is src/ui/sidebar/commands/cmd-reset.ts.'
-    ]
-  ]);
-
-  // Both directions below read the same set, so they cannot disagree about what
-  // the scan found.
+  // The map is gone again, and this is the state it was written to reach. Its
+  // three entries left one at a time and for different reasons, which is the
+  // point: `CMD_RETRY_PHASE_NOW` earned a new dispatcher (finding C of the
+  // lifecycle round-check of 2026-08-30), and `CMD_CLEAR_FAILED` and `CMD_RESET`
+  // were deleted from the contract entirely (finding D). Nothing the host still
+  // accepts is unreachable from the webview, so nothing needs excusing, and the
+  // list's own instruction was to delete it rather than leave two assertions
+  // iterating an empty set.
+  //
+  // A repopulated list needs both of those assertions back — that every entry
+  // really has no sender, and that the list is non-empty so the first one
+  // iterates something — and an entry added without them should not pass review.
   const sentCommands = new Set(allSites.map((s) => s.command));
 
-  // A reason here is the whole record — there is no owner and no review date to
-  // fall back on, unlike the reachability allowlist, where an expiry does the
-  // real work and an empty-string check is only a floor. So the bar is a
-  // sentence, not a non-empty string.
-  const MIN_REASON_LENGTH = 20;
-
-  it('discovers every destructive command that has a webview sender', () => {
-    const missing = DESTRUCTIVE_COMMANDS.filter(
-      (cmd) => !sentCommands.has(cmd) && !NO_WEBVIEW_SENDER.has(cmd)
-    );
+  it('discovers every destructive command, because every one has a webview sender', () => {
+    const missing = DESTRUCTIVE_COMMANDS.filter((cmd) => !sentCommands.has(cmd));
     expect(
       missing,
       `Destructive commands handed to no sender anywhere in webview source. Either a ` +
-        `sender was removed — wire it back or add the command to NO_WEBVIEW_SENDER with ` +
-        `the reason — or the scan is broken:\n${missing.join('\n')}`
+        `sender was removed — wire it back, or delete the command from the contract as ` +
+        `finding D did — or the scan is broken:\n${missing.join('\n')}`
     ).toEqual([]);
-  });
-
-  it('every NO_WEBVIEW_SENDER entry really has no sender (the list cannot rot)', () => {
-    // The other direction, and the one that matters: a command that gains a
-    // sender must leave this list, or its call sites go ungated with no gate
-    // noticing. Three entries today, so this iterates something.
-    const resurrected = [...NO_WEBVIEW_SENDER.keys()].filter((cmd) => sentCommands.has(cmd));
-    expect(
-      resurrected,
-      `These commands are listed as having no webview sender, but the scan found ` +
-        `one. Remove them from NO_WEBVIEW_SENDER so their call sites are gated:\n` +
-        resurrected.join('\n')
-    ).toEqual([]);
-    expect(
-      NO_WEBVIEW_SENDER.size,
-      'NO_WEBVIEW_SENDER is empty, so the assertion above iterates nothing. ' +
-        'Delete both this list and the check if every destructive command has a sender again.'
-    ).toBeGreaterThan(0);
-  });
-
-  it('every NO_WEBVIEW_SENDER entry is a destructive command and carries a reason', () => {
-    // This loop is only non-vacuous because the test above pins the list
-    // non-empty. Keep that assertion if this one is ever moved or renamed.
-    for (const [command, reason] of NO_WEBVIEW_SENDER) {
-      expect(DESTRUCTIVE_COMMANDS, `${command} is not a destructive command`).toContain(command);
-      expect(
-        reason.trim().length,
-        `${command} needs a reason of at least ${MIN_REASON_LENGTH} characters saying which ` +
-          `sender went away and why it was not replaced`
-      ).toBeGreaterThan(MIN_REASON_LENGTH);
-    }
   });
 
   it('every destructive command sent from live code is gated by useConfirm in an enclosing scope (FR-016)', () => {
@@ -337,63 +294,83 @@ describe('Feature 063 T046 — destructive command sites must be useConfirm-gate
   // moved into `deactivateDefinition`, beside the post it authorises).
   //
   // What remains is the other half of the claim, which the sender scan cannot
-  // make: that each catalog action key is actually reached. Four keys collapsed to
-  // two here — one `remove` key per definition kind became one kind-agnostic
-  // deactivate, and `catalog.reset-workflows` has no successor because emptying a
-  // layer in one write is not an operation the store provides any more.
-  const CATALOG_LIFECYCLE_ACTION_KEYS: readonly string[] = [
-    'catalog.deactivate-definition',
-    'catalog.discard-draft'
-  ];
+  // make: that each action key is actually reached.
+  //
+  // This began as a two-key check over the catalog lifecycle alone. The
+  // lifecycle round-check of 2026-08-30 (finding E) widened it to every key,
+  // because the narrow version could not have caught what happened: FR-R3-140
+  // deleted `PhaseTracker.svelte`, the only component that passed
+  // `run.retry-phase-now` to `useConfirm`, and no gate said anything — the copy
+  // stayed in the table, typed and tested, describing a prompt nothing could
+  // raise. The key list is read from `action-copy.ts` rather than restated here,
+  // so a key added to the union is a key this check immediately demands a
+  // consumer for.
+  const ACTION_COPY_SOURCE = readFileSync(
+    resolve(SCAN_ROOT, 'lib', 'action-copy.ts'),
+    'utf8'
+  );
 
-  it('passes each catalog lifecycle action key to useConfirm in live code', () => {
+  function declaredActionKeys(): readonly string[] {
+    const union = /export type ActionKey =([\s\S]*?);/.exec(ACTION_COPY_SOURCE);
+    if (!union) return [];
+    return [...union[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  }
+
+  // Keys whose prompt is deliberately raised somewhere other than a webview
+  // `useConfirm` call. Same bar as any exemption in this file: a sentence saying
+  // where the confirmation went, not a name parked on a list.
+  const CONFIRMED_ELSEWHERE: ReadonlyMap<string, string> = new Map([
+    [
+      'workspace.reset',
+      'The webview sender (CMD_RESET) was deleted by the lifecycle round-check of ' +
+        '2026-08-30 (finding D). Reset survives as the palette command schegent.reset, ' +
+        'which raises its own host-side prompt — RESET_CONFIRMATION_MESSAGE in ' +
+        'src/commands/reset.ts — so the decision is still confirmed, just not here. The ' +
+        'key stays declared because it is the sole member of NEVER_SUPPRESSIBLE in ' +
+        'use-confirm.ts, and an empty set would make that rule untested.'
+    ]
+  ]);
+
+  const MIN_ELSEWHERE_REASON_LENGTH = 40;
+
+  it('declares a non-empty ActionKey union that this file can read', () => {
+    // The regex above returning nothing would make the two checks below pass
+    // vacuously, which is the failure mode a source-parsing lint has.
+    expect(declaredActionKeys().length).toBeGreaterThan(10);
+  });
+
+  it('passes every declared action key to useConfirm in live code', () => {
     const sources = files.map((filePath) => readFileSync(filePath, 'utf8'));
-    const missing = CATALOG_LIFECYCLE_ACTION_KEYS.filter((key) => {
-      const re = new RegExp(`useConfirm\\(\\s*'${key.replace('.', '\\.')}'`);
+    const missing = declaredActionKeys().filter((key) => {
+      if (CONFIRMED_ELSEWHERE.has(key)) return false;
+      const re = new RegExp(`useConfirm\\(\\s*'${key.replace(/\./g, '\\.')}'`);
       return !sources.some((source) => re.test(source));
     });
     expect(
       missing,
-      `Action keys declared in ACTION_COPY but never passed to useConfirm:\n${missing.join('\n')}`
+      `Action keys declared in ACTION_COPY but never passed to useConfirm. Either the ` +
+        `component that raised the prompt was deleted — rebuild the dispatcher, as ` +
+        `finding C did for run.retry-phase-now — or the key is dead and should be ` +
+        `removed from the union:\n${missing.join('\n')}`
     ).toEqual([]);
   });
 
-  // Feature 084 (T063, QS-40) — the exchange feature deliberately adds nothing
-  // here. FR-018 and FR-044b: the shared gate exists for actions that remove or
-  // replace something the operator holds INSIDE the product. Export writes a
-  // file the operator names in the host's own save dialog, where overwrite
-  // consent already lives; import only appends, and confirming the plan is the
-  // consent. Registering either here would ask twice for one decision and would
-  // teach the gate to fire on non-destructive actions.
-  //
-  // Pinned as a list rather than a count so a swap — one command out, one in —
-  // is as visible as an addition.
-  it('leaves the destructive-command list at the pinned 15 (FR-018, FR-044b, QS-40)', () => {
-    expect(DESTRUCTIVE_COMMANDS).toEqual([
-      'CMD_CLEAR_ALL',
-      'CMD_CLEAR_COMPLETED',
-      'CMD_CLEAR_FAILED',
-      'CMD_REMOVE_QUEUE_ITEM',
-      'CMD_CANCEL',
-      'CMD_PAUSE_QUEUE',
-      'CMD_RESUME_QUEUE',
-      'CMD_RETRY_PHASE_NOW',
-      'CMD_RESTART_CANCELED_TASK',
-      'CMD_MODIFY_TASK',
-      'CMD_RERUN_FROM_HISTORY',
-      'CMD_RESET',
-      // Feature 095 (T011, FR-003) — the thirteenth. Deleting a queue drops
-      // its pending Tasks with no undo, which is the queue-scoped analogue of
-      // `CMD_CLEAR_ALL`; the gate is the same one, not a second flow.
-      'CMD_DELETE_QUEUE',
-      // Feature 100 (T509a) — the fourteenth and fifteenth, and the first two
-      // whose gate lives inside the sender rather than at the call site
-      // (FR-049, FR-050). Four catalog `ActionKey` entries became two in the
-      // same change, so this list grew by two while the key list shrank by two;
-      // pinning both is what makes that trade visible instead of arithmetic.
-      'CMD_DEACTIVATE_DEFINITION',
-      'CMD_DISCARD_DEFINITION_DRAFT'
-    ]);
+  it('every CONFIRMED_ELSEWHERE key is still declared and still has no webview consumer', () => {
+    const declared = new Set(declaredActionKeys());
+    const sources = files.map((filePath) => readFileSync(filePath, 'utf8'));
+    for (const [key, reason] of CONFIRMED_ELSEWHERE) {
+      expect(declared, `${key} is excused but no longer declared in ActionKey`).toContain(key);
+      expect(
+        reason.trim().length,
+        `${key} needs a reason saying where its confirmation moved to`
+      ).toBeGreaterThan(MIN_ELSEWHERE_REASON_LENGTH);
+      const re = new RegExp(`useConfirm\\(\\s*'${key.replace(/\./g, '\\.')}'`);
+      expect(
+        sources.some((source) => re.test(source)),
+        `${key} is excused as confirmed elsewhere, but a webview useConfirm call now ` +
+          `raises it. Remove it from CONFIRMED_ELSEWHERE.`
+      ).toBe(false);
+    }
   });
 
   it('registers no confirmation action for the exchange commands (FR-018, FR-044b)', () => {

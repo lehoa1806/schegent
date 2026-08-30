@@ -83,7 +83,13 @@ describe('the command registry is unchanged by this feature (T040, FR-023)', () 
   it('registers no new mutating command', () => {
     // Pinned by count as well as by name. A new entry added for a "just one
     // read" command would pass a name-shaped assertion and fail this one.
-    expect(MUTATING_COMMAND_TYPES).toHaveLength(46);
+    //
+    // 46 -> 42 on 2026-08-30: the lifecycle round-check (finding D) deleted four
+    // gated commands the webview could no longer send. A count that only ever
+    // rises would have made that deletion look like a failure of this feature,
+    // which is why the number moves with a reason rather than being loosened to
+    // an inequality.
+    expect(MUTATING_COMMAND_TYPES).toHaveLength(42);
     expect(MUTATING_COMMANDS.size).toBe(MUTATING_COMMAND_TYPES.length);
   });
 

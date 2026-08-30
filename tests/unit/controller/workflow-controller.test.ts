@@ -16,6 +16,16 @@ import {
 } from '../../../src/config/pipeline-config';
 import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import type { WorkflowRunPipeline } from '../../../src/state/workflow-run';
+import { LockHeldError } from '../../../src/lib/errors';
+import {
+  UncontainedBackendRefusedError,
+  judgeBackendContainment
+} from '../../../src/services/backend-containment-policy';
+import type { BackendRunnerKind } from '../../../src/contracts/backend-kinds';
+import type {
+  UncontainedConsentOutcome,
+  UncontainedConsentPort
+} from '../../../src/controller/uncontained-consent-gate';
 
 // Feature 098 (T080) — the two Pipelines these tests drive, declared here instead
 // of read off `BUILT_IN_PIPELINE` / `BUILT_IN_BUGFIX_PIPELINE`. They keep the
@@ -407,6 +417,255 @@ describe('SchegentWorkflowController.startNew', () => {
     // share the window's owner id. It joins the BUG-005 block below, which
     // already asserts the same for complete / fail / rate-limit-pause.
     expect(lock.release).not.toHaveBeenCalled();
+  });
+
+  /**
+   * FR-R3-146 (FR-005) — a policy refusal is not a crash, and its remedy is not
+   * optional text.
+   *
+   * The operator report this feature answers received exactly this, from a fresh
+   * install whose shipped default backend is refused by its shipped default grant:
+   *
+   *   workflow 7860845a-… failed unexpectedly: The 'claude' backend runs without an
+   *   OS-enforced bound … Add 'claude' to 'schegent.backend.uncontainedBackends' to
+   *   accept that for this backend only, or cho
+   *
+   * Two defects in one line. It is announced as an unexpected failure, and it is cut
+   * at 240 characters — through the half that names the remedy. The refusal is
+   * deliberate and correct; only its reporting is wrong.
+   *
+   * Driven through `runSpy` because `handleUnexpectedStartFailure` is the funnel
+   * every throw from the drive path reaches, and the construction refusal is one.
+   */
+  describe('a containment refusal is reported as the policy decision it is', () => {
+    const refusal = (): UncontainedBackendRefusedError => {
+      const verdict = judgeBackendContainment('claude', new Set<BackendRunnerKind>());
+      if (verdict.outcome !== 'refused') throw new Error('unreachable');
+      return new UncontainedBackendRefusedError(verdict.kind, verdict.message);
+    };
+
+    it('records its own code, not unexpected-controller-error', async () => {
+      runSpy.mockRejectedValueOnce(refusal());
+
+      const feature = await queue.enqueue('feature description');
+      await expect(controller.startNew(feature, null)).resolves.toBeUndefined();
+
+      const run = store.getRun(DEFAULT_QUEUE_ID)!;
+      expect(run.status).toBe('failed');
+      expect(run.lastError!.code).toBe('uncontained-backend-refused');
+
+      // And the queue row agrees — an operator reading the queue sees the same code.
+      const row = queue.findById(feature.id);
+      if (row?.lastError && typeof row.lastError === 'object') {
+        expect(row.lastError.code).toBe('uncontained-backend-refused');
+      }
+    });
+
+    it('records the message in full, not a 240-character prefix', async () => {
+      const thrown = refusal();
+      // Non-vacuity: if the message were ever shortened below the cut, this test
+      // would pass without proving anything.
+      expect(thrown.message.length).toBeGreaterThan(240);
+      runSpy.mockRejectedValueOnce(thrown);
+
+      const feature = await queue.enqueue('feature description');
+      await controller.startNew(feature, null);
+
+      const run = store.getRun(DEFAULT_QUEUE_ID)!;
+      expect(run.lastError!.message).toBe(thrown.message);
+      // The exact severance the operator reported, named so a regression is legible.
+      expect(run.lastError!.message).not.toMatch(/or cho$/);
+      expect(run.lastError!.message).toContain('schegent.backend.uncontainedBackends');
+      expect(run.lastError!.message).toContain('choose a backend that carries a sandbox');
+    });
+
+    it('does not announce it as an unexpected failure', async () => {
+      runSpy.mockRejectedValueOnce(refusal());
+
+      const feature = await queue.enqueue('feature description');
+      await controller.startNew(feature, null);
+
+      const announcements = vi
+        .mocked(notifier.warn)
+        .mock.calls.map((call) => String(call[0]));
+      expect(announcements.length).toBeGreaterThan(0);
+      expect(announcements.join('\n')).not.toContain('failed unexpectedly');
+    });
+
+    it('leaves the other two branches exactly as they were', async () => {
+      // The general case is out of scope: everything that is not this refusal keeps
+      // its code, its truncation, and its wording.
+      runSpy.mockRejectedValueOnce(new LockHeldError('other-window'));
+      const held = await queue.enqueue('lock held');
+      await controller.startNew(held, null);
+      expect(store.getRun(DEFAULT_QUEUE_ID)!.lastError!.code).toBe('lock-held');
+
+      const long = `parser invariant exploded: ${'x'.repeat(400)}`;
+      runSpy.mockRejectedValueOnce(new Error(long));
+      const boom = await queue.enqueue('unexpected');
+      await controller.startNew(boom, null);
+      const run = store.getRun(DEFAULT_QUEUE_ID)!;
+      expect(run.lastError!.code).toBe('unexpected-controller-error');
+      expect(run.lastError!.message).toHaveLength(240);
+    });
+  });
+
+  /**
+   * FR-R3-146 (FR-002, FR-003) — the refusal becomes a question, asked once.
+   *
+   * The gate's bound is the GRANT, not a counter: once a kind has been granted in
+   * this window it is never asked about again, so a write that did not take effect
+   * fails as the fault it is instead of reopening the same modal.
+   */
+  describe('a containment refusal is offered to the operator, once', () => {
+    const refusal = (): UncontainedBackendRefusedError => {
+      const verdict = judgeBackendContainment('claude', new Set<BackendRunnerKind>());
+      if (verdict.outcome !== 'refused') throw new Error('unreachable');
+      return new UncontainedBackendRefusedError(verdict.kind, verdict.message);
+    };
+
+    function withConsent(outcome: UncontainedConsentOutcome) {
+      // Typed as the port, so `mock.calls[0][0]` is the refusal the controller
+      // actually passes rather than an inferred empty tuple.
+      const requestUncontainedConsent = vi.fn<UncontainedConsentPort>(async () => outcome);
+      return {
+        requestUncontainedConsent,
+        controller: new SchegentWorkflowController(
+          phaseRunner,
+          store,
+          queue,
+          statusBar,
+          notifier,
+          new SanitizedLogger(),
+          lock,
+          opts,
+          { ...deps, requestUncontainedConsent }
+        )
+      };
+    }
+
+    it('prompts, and on the grant retries the run to completion', async () => {
+      const c = withConsent({ decision: 'granted' });
+      runSpy.mockRejectedValueOnce(refusal());
+      runSpy.mockImplementation(async () => makeOutput());
+
+      const feature = await queue.enqueue('feature description');
+      await c.controller.startNew(feature, null);
+
+      expect(c.requestUncontainedConsent).toHaveBeenCalledTimes(1);
+      // The modal is handed the backend and the policy's own message, not a paraphrase.
+      // `lastCall` rather than `calls[0][0]`: the call count is asserted above, and
+      // an optional access keeps this out of the `noUncheckedIndexedAccess` ratchet.
+      const asked = c.requestUncontainedConsent.mock.lastCall?.[0];
+      expect(asked?.kind).toBe('claude');
+      expect(asked?.message).toBe(refusal().message);
+      expect(store.getRun(DEFAULT_QUEUE_ID)!.status).toBe('completed');
+    });
+
+    it('denies on dismissal, and reports the refusal without retrying', async () => {
+      const c = withConsent({ decision: 'denied' });
+      runSpy.mockRejectedValueOnce(refusal());
+      runSpy.mockImplementation(async () => makeOutput());
+
+      const feature = await queue.enqueue('feature description');
+      await c.controller.startNew(feature, null);
+
+      const run = store.getRun(DEFAULT_QUEUE_ID)!;
+      expect(run.status).toBe('failed');
+      expect(run.lastError!.code).toBe('uncontained-backend-refused');
+      // One drive attempt, not two — a denial does not retry.
+      expect(runSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('cannot loop when the grant is written but does not take effect', async () => {
+      // The host accepted the write and the setting still reads as it did. That is a
+      // real fault; asking the same question again would never end.
+      const c = withConsent({ decision: 'granted' });
+      runSpy.mockRejectedValue(refusal());
+
+      const feature = await queue.enqueue('feature description');
+      await c.controller.startNew(feature, null);
+
+      expect(c.requestUncontainedConsent).toHaveBeenCalledTimes(1);
+      expect(runSpy).toHaveBeenCalledTimes(2);
+      const run = store.getRun(DEFAULT_QUEUE_ID)!;
+      expect(run.status).toBe('failed');
+      expect(run.lastError!.code).toBe('uncontained-backend-refused');
+    });
+
+    it('surfaces a different failure after the grant as itself, not as consent', async () => {
+      // The operator granted the backend and the CLI is not installed. Re-prompting
+      // for consent they already gave would hide the problem they can actually fix.
+      const c = withConsent({ decision: 'granted' });
+      runSpy.mockRejectedValueOnce(refusal());
+      runSpy.mockRejectedValueOnce(new Error('spawn claude ENOENT'));
+
+      const feature = await queue.enqueue('feature description');
+      await c.controller.startNew(feature, null);
+
+      expect(c.requestUncontainedConsent).toHaveBeenCalledTimes(1);
+      const run = store.getRun(DEFAULT_QUEUE_ID)!;
+      expect(run.lastError!.code).toBe('unexpected-controller-error');
+      expect(run.lastError!.message).toContain('ENOENT');
+    });
+
+    it('says the approval could not be saved, rather than calling it a refusal', async () => {
+      const c = withConsent({ decision: 'write-failed', reason: 'profile is read-only' });
+      runSpy.mockRejectedValueOnce(refusal());
+      runSpy.mockImplementation(async () => makeOutput());
+
+      const feature = await queue.enqueue('feature description');
+      await c.controller.startNew(feature, null);
+
+      const run = store.getRun(DEFAULT_QUEUE_ID)!;
+      expect(run.lastError!.code).toBe('uncontained-consent-write-failed');
+      expect(run.lastError!.message).toContain('profile is read-only');
+      expect(run.lastError!.message).toContain('schegent.backend.uncontainedBackends');
+      // Not retried: the grant was never recorded, so a second drive would be refused
+      // again for the same reason.
+      expect(runSpy).toHaveBeenCalledTimes(1);
+    });
+
+    // FR-R3-146 (FR-002, SC-002, US3-1) — the refusal path, asserted rather than
+    // assumed. A consent surface whose declined branch is untested is the rubber
+    // stamp FR-R3-056 removed; these are the three things a decline must leave true.
+    it('leaves nothing behind when the operator declines', async () => {
+      const c = withConsent({ decision: 'denied' });
+      runSpy.mockRejectedValueOnce(refusal());
+      runSpy.mockImplementation(async () => makeOutput());
+
+      const feature = await queue.enqueue('feature description');
+      await c.controller.startNew(feature, null);
+
+      // Asked once, answered once. The port is the only thing that can write the
+      // setting, and a `denied` outcome is the port reporting it wrote nothing —
+      // the branch `uncontained-consent.test.ts` pins on the writing side.
+      expect(c.requestUncontainedConsent).toHaveBeenCalledTimes(1);
+      // No second drive, so no runner is constructed after the decline. This is the
+      // whole safety property: the decision resolves in the host, before any spawn.
+      expect(runSpy).toHaveBeenCalledTimes(1);
+
+      const run = store.getRun(DEFAULT_QUEUE_ID)!;
+      expect(run.status).toBe('failed');
+      // A policy refusal, recorded as one. Not `unexpected-controller-error`, and
+      // not cut at 240 characters — the operator keeps the half that says what to do.
+      expect(run.lastError!.code).toBe('uncontained-backend-refused');
+      expect(run.lastError!.code).not.toBe('unexpected-controller-error');
+      expect(run.lastError!.message).toContain('schegent.backend.uncontainedBackends');
+      expect(run.lastError!.message.length).toBeGreaterThan(240);
+    });
+
+    it('never prompts an operator who already granted the backend by hand', async () => {
+      // Nothing refuses, so nothing asks. The existing path is untouched.
+      const c = withConsent({ decision: 'granted' });
+      runSpy.mockImplementation(async () => makeOutput());
+
+      const feature = await queue.enqueue('feature description');
+      await c.controller.startNew(feature, null);
+
+      expect(c.requestUncontainedConsent).not.toHaveBeenCalled();
+      expect(store.getRun(DEFAULT_QUEUE_ID)!.status).toBe('completed');
+    });
   });
 
   it('cancels mid-run when cancelActive is invoked', async () => {

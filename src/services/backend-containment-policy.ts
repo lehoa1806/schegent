@@ -269,3 +269,46 @@ export function judgeBackendContainment(
       'docs/operations/untrusted-repositories.md.'
   };
 }
+
+/**
+ * FR-R3-056 — thrown rather than returned, because there is no runner to return.
+ * A distinct type so a caller can report the posture refusal as itself instead of
+ * as a generic construction failure.
+ *
+ * FR-R3-146 (FR-005) — MOVED HERE from `runner/backend-runner-factory.ts`, where it
+ * was declared beside the throw. The controller must now recognise it, and
+ * `tests/lint/backend-kind-placement.test.ts` forbids any module outside
+ * `src/runner/` taking a VALUE from the factory — the exemption is one file wide and
+ * is for the composition root. Adding the controller to that allowlist would widen
+ * an exemption whose narrowness is the point.
+ *
+ * `services/` is where this product already puts a thrown refusal a caller must
+ * recognise across a module boundary: `CapabilityNotEnforceableError` in
+ * `services/capability-refusal.ts` says so, and cites this type's reasoning while
+ * doing it. Here rather than in a file of its own because the message a caller
+ * reports is built ten lines above, by `judgeBackendContainment`, and a refusal type
+ * separated from the judgement that raises it is two files to keep in step.
+ */
+export class UncontainedBackendRefusedError extends Error {
+  public constructor(
+    public readonly kind: BackendRunnerKind,
+    message: string
+  ) {
+    super(message);
+    this.name = 'UncontainedBackendRefusedError';
+  }
+}
+
+/**
+ * Recognise the refusal across a module boundary without an instanceof trap.
+ *
+ * The shape `isCapabilityRefusal` established. A predicate rather than a bare
+ * `instanceof` at the call site because the caller is `catch (err: unknown)`, and a
+ * predicate narrows without the caller importing the constructor for a type guard
+ * it then has to spell itself.
+ */
+export function isUncontainedBackendRefusal(
+  error: unknown
+): error is UncontainedBackendRefusedError {
+  return error instanceof UncontainedBackendRefusedError;
+}

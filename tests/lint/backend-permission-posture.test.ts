@@ -8,6 +8,7 @@ import {
   REMOVED_ALLOW_UNCONTAINED_SETTING,
   judgeBackendContainment
 } from '../../src/services/backend-containment-policy';
+import { createUncontainedConsentRequester } from '../../src/activation/uncontained-consent';
 
 const ROOT = resolve(__dirname, '../..');
 const DECISION_DOC = 'docs/concepts/unprompted-agent-not-contained.md';
@@ -955,6 +956,19 @@ describe('the historical-record exemption list is live', () => {
  * setting it are the two places the authority is described, and both are asserted
  * here.
  *
+ * FR-R3-146 (FR-004, plan A4) — a THIRD surface, and the recorded position above is
+ * amended rather than deleted. "Not a prompt" was aimed at FR-R3-031/032's
+ * disclosure, which FR-R3-056 rejected with "a document does not bound a process":
+ * a notice shown beside a spawn that happened anyway. The modal is answered BEFORE
+ * one — the refusal is thrown inside `createBackendRunner`, so no runner exists
+ * while it is open — and the manifest default stays `[]`, so the shipped posture is
+ * exactly as closed as it was. What changed is that a fresh install can now answer
+ * the refusal instead of only reading it.
+ *
+ * The modal is held to the SAME list, not a second one beside it. Three surfaces
+ * describing one authority in three vocabularies is how two of them come to be
+ * wrong without anything failing.
+ *
  * THREE SUBSTANCES, each because omitting it produced a real misunderstanding the
  * audit of 2026-08-27 recorded as an edge case:
  *
@@ -1026,6 +1040,52 @@ describe('the uncontained-backend consent surface states what it grants (FR-R3-1
         'setting. A refusal that does not say what accepting it means is a refusal they will ' +
         'work around without understanding.'
     ).toEqual([]);
+  });
+
+  /**
+   * The modal an operator meets AT the refusal (FR-R3-146, contract C1).
+   *
+   * Composed by the real requester rather than restated here, because a gate that
+   * asserts against its own copy of the text asserts nothing about the product. The
+   * dialog dismisses, and the config double throws on write: this gate reads what
+   * an operator would see and must not be able to grant anything while doing it.
+   */
+  const modal = async (): Promise<string> => {
+    let shown = '';
+    const request = createUncontainedConsentRequester({
+      confirm: async (message, detail, approveLabel) => {
+        shown = [message, detail, approveLabel].join('\n');
+        return undefined;
+      },
+      config: {
+        get: () => undefined,
+        update: () => {
+          throw new Error('a gate that reads the consent text must not be able to grant');
+        }
+      },
+      logger: { info: () => {}, warn: () => {} }
+    });
+    await request({ kind: 'claude', message: refusal() });
+    return shown;
+  };
+
+  it('states all three substances in the consent modal', async () => {
+    const text = substance(await modal());
+    const missing = SUBSTANCES.filter((s) => !s.pattern.test(text)).map((s) => s.what);
+    expect(
+      missing,
+      'The modal is the surface a fresh install meets first, and the only one that can be ' +
+        'answered on the spot. It carries the refusal message verbatim precisely so these three ' +
+        'stay one text — a modal that paraphrases them is a fourth vocabulary for one authority.'
+    ).toEqual([]);
+  });
+
+  it('names the backend and the installation scope in what the operator clicks', async () => {
+    // The action is the consent. It must say which backend it grants and how far
+    // the grant reaches, because that is what pressing it does.
+    const text = await modal();
+    expect(text).toContain("Enable 'claude' for This Installation");
+    expect(text).toContain("Schegent cannot start the 'claude' backend without your approval.");
   });
 
   it('names the removed key in the refusal, so a stale grant is explicable', () => {

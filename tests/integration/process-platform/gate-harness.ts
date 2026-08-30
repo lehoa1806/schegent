@@ -83,7 +83,6 @@ export function makeGateProbe(gates: GateSettings): GateProbe {
       moveUp: async () => record('queueOps.moveUp', okFalse),
       moveDown: async () => record('queueOps.moveDown', okFalse),
       clearCompleted: async () => record('queueOps.clearCompleted', { removed: 0 }),
-      clearFailed: async () => record('queueOps.clearFailed', { removed: 0 }),
       setQueuePausedState: async () => record('queueOps.setQueuePausedState', okFalse),
       modifyTask: async () => record('queueOps.modifyTask', okFalse),
       removeTask: async () => record('queueOps.removeTask', okFalse),

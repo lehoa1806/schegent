@@ -2,7 +2,6 @@ import {
   CMD_CANCEL,
   CMD_CLEAR_ALL,
   CMD_CLEAR_COMPLETED,
-  CMD_CLEAR_FAILED,
   CMD_CLEAR_PHASE_BREAKPOINT,
   CMD_CONTINUE_WORKFLOW,
   CMD_CREATE_QUEUE,
@@ -22,7 +21,6 @@ import {
   CMD_OPEN_AUDIT_LOG,
   CMD_OPEN_DASHBOARD,
   CMD_OPEN_HISTORY_ITEM_DETAILS,
-  CMD_OPEN_QUEUE_ITEM_DETAILS,
   CMD_OPEN_VERBOSE_SETTING,
   CMD_PAUSE_PHASE,
   CMD_PAUSE_QUEUE,
@@ -38,15 +36,12 @@ import {
   CMD_RENAME_QUEUE,
   CMD_REORDER_TASK,
   CMD_RERUN_FROM_HISTORY,
-  CMD_RESET,
   CMD_RESOLVE_AUDIT_POINTER,
   CMD_RESOLVE_HISTORY_DESCRIPTION,
   CMD_RESTART_CANCELED_TASK,
   CMD_RESTART_PHASE,
-  CMD_RESUME,
   CMD_RESUME_PHASE,
   CMD_RESUME_QUEUE,
-  CMD_RETRY_ACTIVE_RUN,
   CMD_RETRY_PHASE_NOW,
   CMD_RETRY_QUEUE_ITEM,
   CMD_RESTORE_DEFINITION_VERSION,
@@ -67,7 +62,6 @@ import type { CommandHandler } from './handler-contract';
 import { handler as cancel } from './cmd-cancel';
 import { handler as clearAll } from './cmd-clear-all';
 import { handler as clearCompleted } from './cmd-clear-completed';
-import { handler as clearFailed } from './cmd-clear-failed';
 import { handler as clearPhaseBreakpoint } from './cmd-clear-phase-breakpoint';
 import { handler as continueWorkflow } from './cmd-continue-workflow';
 import { handler as createQueue } from './cmd-create-queue';
@@ -85,7 +79,6 @@ import { handler as moveTask } from './cmd-move-task';
 import { handler as openAuditLog } from './cmd-open-audit-log';
 import { handler as openDashboard } from './cmd-open-dashboard';
 import { handler as openHistoryItemDetails } from './cmd-open-history-item-details';
-import { handler as openQueueItemDetails } from './cmd-open-queue-item-details';
 import { handler as openVerboseSetting } from './cmd-open-verbose-setting';
 import { handler as pausePhase } from './cmd-pause-phase';
 import { handler as pauseQueue } from './cmd-pause-queue';
@@ -99,15 +92,12 @@ import { handler as removeTaskPhase } from './cmd-remove-task-phase';
 import { handler as renameQueue } from './cmd-rename-queue';
 import { handler as reorderTask } from './cmd-reorder-task';
 import { handler as rerunFromHistory } from './cmd-rerun-from-history';
-import { handler as reset } from './cmd-reset';
 import { handler as resolveAuditPointer } from './cmd-resolve-audit-pointer';
 import { handler as resolveHistoryDescription } from './cmd-resolve-history-description';
 import { handler as restartCanceledTask } from './cmd-restart-canceled-task';
 import { handler as restartPhase } from './cmd-restart-phase';
-import { handler as resume } from './cmd-resume';
 import { handler as resumePhase } from './cmd-resume-phase';
 import { handler as resumeQueue } from './cmd-resume-queue';
-import { handler as retryActiveRun } from './cmd-retry-active-run';
 import { handler as retryPhaseNow } from './cmd-retry-phase-now';
 import { handler as retryQueueItem } from './cmd-retry-queue-item';
 import {
@@ -144,7 +134,6 @@ export const HANDLERS: ReadonlyMap<string, CommandHandler> = new Map<
   [CMD_CANCEL, cancel as CommandHandler],
   [CMD_CLEAR_ALL, clearAll as CommandHandler],
   [CMD_CLEAR_COMPLETED, clearCompleted as CommandHandler],
-  [CMD_CLEAR_FAILED, clearFailed as CommandHandler],
   [CMD_CLEAR_PHASE_BREAKPOINT, clearPhaseBreakpoint as CommandHandler],
   [CMD_CONTINUE_WORKFLOW, continueWorkflow as CommandHandler],
   [CMD_CREATE_QUEUE, createQueue as CommandHandler],
@@ -162,7 +151,6 @@ export const HANDLERS: ReadonlyMap<string, CommandHandler> = new Map<
   [CMD_OPEN_AUDIT_LOG, openAuditLog as CommandHandler],
   [CMD_OPEN_DASHBOARD, openDashboard as CommandHandler],
   [CMD_OPEN_HISTORY_ITEM_DETAILS, openHistoryItemDetails as CommandHandler],
-  [CMD_OPEN_QUEUE_ITEM_DETAILS, openQueueItemDetails as CommandHandler],
   [CMD_OPEN_VERBOSE_SETTING, openVerboseSetting as CommandHandler],
   [CMD_PAUSE_PHASE, pausePhase as CommandHandler],
   [CMD_PAUSE_QUEUE, pauseQueue as CommandHandler],
@@ -176,15 +164,12 @@ export const HANDLERS: ReadonlyMap<string, CommandHandler> = new Map<
   [CMD_RENAME_QUEUE, renameQueue as CommandHandler],
   [CMD_REORDER_TASK, reorderTask as CommandHandler],
   [CMD_RERUN_FROM_HISTORY, rerunFromHistory as CommandHandler],
-  [CMD_RESET, reset as CommandHandler],
   [CMD_RESOLVE_AUDIT_POINTER, resolveAuditPointer as CommandHandler],
   [CMD_RESOLVE_HISTORY_DESCRIPTION, resolveHistoryDescription as CommandHandler],
   [CMD_RESTART_CANCELED_TASK, restartCanceledTask as CommandHandler],
   [CMD_RESTART_PHASE, restartPhase as CommandHandler],
-  [CMD_RESUME, resume as CommandHandler],
   [CMD_RESUME_PHASE, resumePhase as CommandHandler],
   [CMD_RESUME_QUEUE, resumeQueue as CommandHandler],
-  [CMD_RETRY_ACTIVE_RUN, retryActiveRun as CommandHandler],
   [CMD_RETRY_PHASE_NOW, retryPhaseNow as CommandHandler],
   [CMD_RETRY_QUEUE_ITEM, retryQueueItem as CommandHandler],
   // Feature 100 (T508) — the six lifecycle commands, all six from one module.

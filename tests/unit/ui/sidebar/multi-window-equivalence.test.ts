@@ -8,7 +8,7 @@ import { MessageRouter, type QueueOps, type QueueRemover, type RouterDeps } from
 import {
   CMD_PAUSE_QUEUE,
   CMD_RESUME_QUEUE,
-  CMD_RETRY_ACTIVE_RUN,
+  CMD_RETRY_PHASE_NOW,
   CMD_RETRY_QUEUE_ITEM,
   CMD_REMOVE_QUEUE_ITEM,
   CMD_OPEN_AUDIT_LOG,
@@ -178,7 +178,6 @@ describe('Multi-window equivalence (T068 / SC-014)', () => {
       moveUp: async () => ({ ok: true }),
       moveDown: async () => ({ ok: true }),
       clearCompleted: async () => ({ removed: 0 }),
-      clearFailed: async () => ({ removed: 0 }),
       setQueuePausedState: async () => ({ ok: true, queueId: 'default' })
     };
     const router = new MessageRouter({
@@ -204,7 +203,12 @@ describe('Multi-window equivalence (T068 / SC-014)', () => {
     const mutating = [
       { type: CMD_PAUSE_QUEUE, payload: { reason: null }, correlationId: 'c1' },
       { type: CMD_RESUME_QUEUE, payload: undefined, correlationId: 'c2' },
-      { type: CMD_RETRY_ACTIVE_RUN, payload: undefined, correlationId: 'c3' },
+      // `CMD_RETRY_ACTIVE_RUN` held this slot until the lifecycle round-check
+      // of 2026-08-30 (finding D) deleted it. `CMD_RETRY_PHASE_NOW` replaces it
+      // rather than the slot being dropped: the sample needs a run-control
+      // command to prove the primacy guard rejects that family too, and this is
+      // the one an operator can now actually reach.
+      { type: CMD_RETRY_PHASE_NOW, payload: { queueId: 'default' }, correlationId: 'c3' },
       { type: CMD_RETRY_QUEUE_ITEM, payload: { id: 'q-x' }, correlationId: 'c4' },
       { type: CMD_REMOVE_QUEUE_ITEM, payload: { id: 'q-y' }, correlationId: 'c5' }
     ] as const;

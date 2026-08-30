@@ -74,11 +74,21 @@ install **refuses its first run** until you enable
 `schegent.backend.uncontainedBackends` (or select Codex, which carries its
 own sandbox). That refusal is the shipped capability posture, not a fault —
 see [Agent capability posture](../architecture/agent-capability-posture.md).
+
+You do not have to go and find the setting first. The refusal asks: a dialog
+names the backend, says what granting it means, and writes that one backend id
+to `schegent.backend.uncontainedBackends` in your User settings if you approve.
+Cancelling or dismissing declines, and nothing is written or started. Approving
+is asked **once per machine** — the grant applies to every workspace you open in
+this installation, which is why the dialog says so. Setting the value yourself,
+before or after, does exactly the same thing; the dialog is a route to the
+setting, not a second place consent lives.
+
 Configure it, plus only the differences in your environment:
 
 | Need | Setting | Required when |
 |---|---|---|
-| Allow an uncontained backend | `schegent.backend.uncontainedBackends` | Name each backend you accept — a fresh install refuses its first run until you do. Per backend since FR-R3-125, so allowing `agy` does not allow `claude`. Application-scoped (it applies to every workspace in this installation), default `[]`. Before naming one, read [Running Schegent on a repository you do not trust](../operations/untrusted-repositories.md). |
+| Allow an uncontained backend | `schegent.backend.uncontainedBackends` | Name each backend you accept — a fresh install refuses its first run until you do, and the refusal offers to write it for you. Per backend since FR-R3-125, so allowing `agy` does not allow `claude`. Application-scoped (it applies to every workspace in this installation), default `[]`. Before naming one, read [Running Schegent on a repository you do not trust](../operations/untrusted-repositories.md). |
 | Select the backend | `schegent.backend.runner` | You use Codex or Agy instead of the default Claude runner. |
 | Locate Claude | `schegent.cli.path` | `claude` is not available on `PATH`. |
 | Locate Codex | `schegent.codex.path` | `codex` is not available on `PATH`. |
@@ -89,7 +99,10 @@ Configure it, plus only the differences in your environment:
 Set backend selection and environment policy in VS Code **Settings**. Reload
 the VS Code window after changing them because Schegent captures them during
 workspace activation. Executable-path settings are read per invocation and do
-not require a reload.
+not require a reload, and so is `schegent.backend.uncontainedBackends` —
+granting a backend mid-session takes effect on the next run without a reload.
+Removing one is the case that still needs a reload: a backend already started in
+this window is not torn down by editing the setting.
 
 <!-- Source: ../../package.json -->
 <!-- Source: ../reference/settings.md -->

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
 import { QueueManager } from '../../src/queue/queue-manager';
+import { runClearFailed, runRetryQueuedItem } from '../../src/commands/queue-ops';
 import { MessageRouter } from '../../src/ui/sidebar/message-router';
 import { SanitizedLogger } from '../../src/lib/logger';
 import type { CommandAckMessage, SidebarCommand } from '../../src/ui/sidebar/messages';
@@ -10,7 +11,6 @@ import {
   CMD_MOVE_QUEUE_ITEM_DOWN,
   CMD_PAUSE_QUEUE,
   CMD_RESUME_QUEUE,
-  CMD_CLEAR_FAILED,
   CMD_CLEAR_COMPLETED,
   CMD_CREATE_QUEUE,
   CMD_RENAME_QUEUE,
@@ -47,6 +47,13 @@ interface BuiltSystem {
   warnings: string[];
   postAck: (m: CommandAckMessage) => Promise<boolean>;
   isPrimary: { value: boolean };
+  // Clear-failed lost its IPC route in the lifecycle round-check of 2026-08-30
+  // (finding D): `CMD_CLEAR_FAILED` was reachable from no webview surface after
+  // FR-R3-140 deleted `ControlPanel.svelte`, and the destructive-action lint had
+  // already recorded that `CMD_CLEAR_ALL` subsumed it. The capability is
+  // untouched — `schegent.clearFailed` still runs `runClearFailed` — so this
+  // step now calls what the surviving palette registration calls.
+  clearFailed: () => Promise<void>;
 }
 
 async function build(): Promise<BuiltSystem> {
@@ -57,8 +64,27 @@ async function build(): Promise<BuiltSystem> {
   const acks: CommandAckMessage[] = [];
   const warnings: string[] = [];
   const isPrimary = { value: true };
+  // The sidebar's Retry no longer reaches `queueOps` from the handler: it
+  // delegates to `schegent.retryQueuedItem`, because that registration is where
+  // the drain trigger lives and a handler that mutated the row itself left the
+  // retried Task sitting `pending` with nothing to start it. So the host command
+  // has to be present for this integration to be an integration at all — a stub
+  // returning `undefined` would assert that a no-op acks `accepted`.
+  const opsCtx = {
+    queue,
+    lock: { hasPrimacy: async () => isPrimary.value } as never,
+    notifier: {
+      info: (m: string) => warnings.push(m),
+      warn: (m: string) => warnings.push(m),
+      error: (m: string) => warnings.push(m)
+    } as never,
+    logger: new SanitizedLogger()
+  };
   const router = new MessageRouter({
-    executeCommand: <T>(): Promise<T> => Promise.resolve(undefined as unknown as T),
+    executeCommand: <T,>(commandId: string, ...args: unknown[]): Promise<T> =>
+      commandId === 'schegent.retryQueuedItem'
+        ? (runRetryQueuedItem(args[0], opsCtx) as Promise<T>)
+        : Promise.resolve(undefined as unknown as T),
     queueRemover: queue,
     queueOps: queue,
     isPrimary: () => isPrimary.value,
@@ -70,7 +96,16 @@ async function build(): Promise<BuiltSystem> {
     acks.push(m);
     return true;
   };
-  return { store, queue, router, acks, warnings, postAck, isPrimary };
+  return {
+    store,
+    queue,
+    router,
+    acks,
+    warnings,
+    postAck,
+    isPrimary,
+    clearFailed: () => runClearFailed(opsCtx)
+  };
 }
 
 describe('Queue mutations integration (T044)', () => {
@@ -160,8 +195,7 @@ describe('Queue mutations integration (T044)', () => {
     // Fail C, then clearFailed
     await sys.queue.markInFlight(c.id, 'run-C');
     await sys.queue.finish(c.id, 'failed', 'oops');
-    await sys.router.dispatch({ type: CMD_CLEAR_FAILED, correlationId: 'cf1' }, sys.postAck);
-    expect(sys.acks.at(-1)?.status).toBe('accepted');
+    await sys.clearFailed();
     const remainingIds = sys.queue.list().map((r) => r.id);
     expect(remainingIds).not.toContain(c.id);
 

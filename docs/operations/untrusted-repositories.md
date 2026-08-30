@@ -108,6 +108,38 @@ builds such a runner.
 Set `schegent.cli.environmentMode` to `allowlist` or `minimal` whenever an uncontained backend is
 granted. It is not containment; it removes one class of reachable secret.
 
+## The two grants, and how to withdraw them
+
+Schegent asks for consent in exactly two places, and both are asked **once** rather than per task.
+They are different grants with different scopes and different storage, and neither implies the
+other.
+
+| | Uncontained backend | Git mutation plan |
+|---|---|---|
+| **What it permits** | Constructing a runner for a backend with no OS-enforced bound (`claude`, `agy`). Everything that backend does then runs with your local user authority. | The phases of **one exact pipeline plan** staging, committing, or changing branches in this workspace. |
+| **When you are asked** | At the first refusal, as a blocking modal answered before anything is spawned. | Before the first Run on that plan. `Approve This Run` covers that Run only and records nothing; `Always Approve This Plan Here` records the grant. |
+| **Scope** | **Machine.** `application`-scoped: every workspace in this installation. | **This workspace, this plan.** Editing the pipeline changes the fingerprint and asks again. Another repository asks. |
+| **Where it is stored** | `schegent.backend.uncontainedBackends` in your User settings (`settings.json`). | `.schegent/state.json`, under `schegent.consent.gitPlanGrants.v1`, keyed by fingerprint — with the pipeline id, the phase ids, and when you gave it. |
+| **How to withdraw it** | Remove the backend id from the setting. Applies to the next runner Schegent builds; a runner already built in this window is not torn down, so reload the window if you need it to bite now. | Delete that entry from `.schegent/state.json` — or the whole key, or reset Schegent's workspace state, which clears all of them. The next Run on that plan asks again. |
+
+The stored Git grant is written to be read: it names the pipeline and the phases, not just a hash,
+so a grant you find months later can be judged without reading source.
+
+Both are explicit acts. Cancelling or dismissing either modal **denies** — closing a dialog is always
+the safe move — and neither value is ever written except by its own affirmative action. Neither
+widens on its own: granting `claude` does not grant `agy`, and approving one plan says nothing about
+a plan that differs by a single phase.
+
+Two things neither grant does:
+
+- The uncontained grant does **not** restore the backend CLI's own approval prompts.
+  `--dangerously-skip-permissions` is still passed. It is a bound on *whether the run starts*, not
+  on what the model does once it has.
+- The Git grant does **not** bound what a granted uncontained backend can do to the repository. A
+  backend with a shell can invoke `git` whether or not any phase declared it would; the grant covers
+  the phases Schegent itself runs, and the repository's safety against the other case is the
+  disposable-or-restorable environment this page is about.
+
 ## Practical guidance
 
 | Situation | Do |

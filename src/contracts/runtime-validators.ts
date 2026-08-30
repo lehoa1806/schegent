@@ -16,21 +16,16 @@
 import {
   CMD_CANCEL,
   CMD_CLEAR_COMPLETED,
-  CMD_CLEAR_FAILED,
   CMD_MOVE_QUEUE_ITEM_DOWN,
   CMD_MOVE_QUEUE_ITEM_UP,
   CMD_OPEN_AUDIT_LOG,
   CMD_OPEN_DASHBOARD,
   CMD_OPEN_HISTORY_ITEM_DETAILS,
-  CMD_OPEN_QUEUE_ITEM_DETAILS,
   CMD_PAUSE_QUEUE,
   CMD_REMOVE_TASK_PHASE,
   CMD_REMOVE_QUEUE_ITEM,
   CMD_RERUN_FROM_HISTORY,
-  CMD_RESET,
-  CMD_RESUME,
   CMD_RESUME_QUEUE,
-  CMD_RETRY_ACTIVE_RUN,
   CMD_RETRY_QUEUE_ITEM,
   CMD_START,
   CMD_SAVE_DEFINITION_DRAFT,
@@ -159,10 +154,6 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
       // target taskId so the host resolves the run by FeatureRequest.id
       // instead of via the singular `store.getRun()` projection.
       return validateTaskIdPayload(CMD_CANCEL, obj, correlationId);
-    case CMD_RESUME:
-      return validateNoPayload(CMD_RESUME, obj, correlationId);
-    case CMD_RESET:
-      return validateReset(obj, correlationId);
     case CMD_REMOVE_QUEUE_ITEM:
       return validateConfirmedRemoveQueueItem(obj, correlationId);
     case CMD_OPEN_AUDIT_LOG:
@@ -173,8 +164,6 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
       return validateIdPayload(CMD_MOVE_QUEUE_ITEM_UP, obj, correlationId);
     case CMD_MOVE_QUEUE_ITEM_DOWN:
       return validateIdPayload(CMD_MOVE_QUEUE_ITEM_DOWN, obj, correlationId);
-    case CMD_OPEN_QUEUE_ITEM_DETAILS:
-      return validateIdPayload(CMD_OPEN_QUEUE_ITEM_DETAILS, obj, correlationId);
     case CMD_OPEN_HISTORY_ITEM_DETAILS:
       return validateIdPayload(CMD_OPEN_HISTORY_ITEM_DETAILS, obj, correlationId);
     case CMD_RERUN_FROM_HISTORY:
@@ -185,8 +174,6 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
       return validateResumeQueue(obj, correlationId);
     case CMD_CLEAR_COMPLETED:
       return validateNoPayload(CMD_CLEAR_COMPLETED, obj, correlationId);
-    case CMD_CLEAR_FAILED:
-      return validateNoPayload(CMD_CLEAR_FAILED, obj, correlationId);
     case CMD_CLEAR_ALL:
       return validateOptionalEmptyPayload(CMD_CLEAR_ALL, obj, correlationId);
     case CMD_SET_CONFIRM_SUPPRESSION:
@@ -197,8 +184,6 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
       return validateNoPayload(CMD_DISMISS_MIGRATION_NOTICE, obj, correlationId);
     case CMD_OPEN_DASHBOARD:
       return validateNoPayload(CMD_OPEN_DASHBOARD, obj, correlationId);
-    case CMD_RETRY_ACTIVE_RUN:
-      return validateNoPayload(CMD_RETRY_ACTIVE_RUN, obj, correlationId);
     // Feature 100 (T509) — the six lifecycle commands replace the three
     // whole-array layer saves that stood here.
     case CMD_SAVE_DEFINITION_DRAFT:
@@ -372,26 +357,10 @@ function validateStart(obj: Record<string, unknown>, correlationId: string): Ipc
   });
 }
 
-function validateReset(obj: Record<string, unknown>, correlationId: string): IpcValidationResult {
-  const payload = obj['payload'];
-  if (payload === null || typeof payload !== 'object') {
-    return fail('missing-payload', { type: CMD_RESET, correlationId });
-  }
-  const p = payload as Record<string, unknown>;
-  if (hasUnexpectedKeys(p, ['confirmed'])) {
-    return fail('unexpected-payload-fields', { type: CMD_RESET, correlationId });
-  }
-  if (p['confirmed'] !== true) {
-    return fail('reset-not-confirmed', { type: CMD_RESET, correlationId });
-  }
-  return ok({ type: CMD_RESET, correlationId, payload: { confirmed: true } });
-}
-
 type IdCommandType =
   | typeof CMD_RETRY_QUEUE_ITEM
   | typeof CMD_MOVE_QUEUE_ITEM_UP
   | typeof CMD_MOVE_QUEUE_ITEM_DOWN
-  | typeof CMD_OPEN_QUEUE_ITEM_DETAILS
   | typeof CMD_OPEN_HISTORY_ITEM_DETAILS;
 
 function validateIdPayload(type: IdCommandType, obj: Record<string, unknown>, correlationId: string): IpcValidationResult {
@@ -556,12 +525,9 @@ function validateResumeQueue(obj: Record<string, unknown>, correlationId: string
 }
 
 type NoPayloadType =
-  | typeof CMD_RESUME
   | typeof CMD_OPEN_AUDIT_LOG
   | typeof CMD_CLEAR_COMPLETED
-  | typeof CMD_CLEAR_FAILED
   | typeof CMD_OPEN_DASHBOARD
-  | typeof CMD_RETRY_ACTIVE_RUN
   | typeof CMD_OPEN_VERBOSE_SETTING
   | typeof CMD_DISMISS_MIGRATION_NOTICE;
 

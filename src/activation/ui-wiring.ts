@@ -36,6 +36,7 @@ import {
 } from '../commands/start-queue';
 import type { PipelineCatalog } from '../config/pipeline-config';
 import type { SchegentWorkflowController } from '../controller/workflow-controller';
+import { errorMessage } from '../lib/errors';
 import type { SanitizedLogger } from '../lib/logger';
 import {
   registerGuardedCommand,
@@ -344,17 +345,31 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
         taskId: typeof arg?.taskId === 'string' ? arg.taskId : undefined
       })
     ),
-    registerGuardedCommand(guard, 
+    registerGuardedCommand(guard,
       'schegent.restartCanceledTask',
-      (arg?: { taskId?: string }) =>
-        runRestartCanceledTask({
+      async (arg?: { taskId?: string }) => {
+        const result = await runRestartCanceledTask({
           store: deps.store,
           queue: deps.queue,
           audit: deps.auditWriter,
           notifier: deps.notifier,
           logger: deps.logger,
           taskId: typeof arg?.taskId === 'string' ? arg.taskId : ''
-        })
+        });
+        if (result.ok) {
+          // Restoring a row to `pending` is the same state transition
+          // `schegent.enqueue` performs above, and needs the same trigger: the
+          // drain coordinator is edge-triggered, so without this the restarted
+          // Task waits for an unrelated event. `result.queueId` is the queue the
+          // row actually landed on, never a defaulted sweep of Default.
+          void deps.controller.drainQueuedWork(result.queueId).catch((err) =>
+            deps.logger.warn(
+              `restartCanceledTask: auto-drain failed: ${errorMessage(err)}`
+            )
+          );
+        }
+        return result;
+      }
     ),
     registerGuardedCommand(guard, 'schegent.showAuditLog', () =>
       runShowAuditLog({ workspaceRoot: deps.workspaceRoot, notifier: deps.notifier })
@@ -371,9 +386,19 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
     registerGuardedCommand(guard, 'schegent.exportAuditLog', () =>
       runExportAuditLog({ workspaceRoot: deps.workspaceRoot, notifier: deps.notifier })
     ),
-    registerGuardedCommand(guard, 'schegent.retryQueuedItem', (arg) =>
-      runRetryQueuedItem(arg, queueOpsCtx)
-    ),
+    registerGuardedCommand(guard, 'schegent.retryQueuedItem', async (arg) => {
+      const result = await runRetryQueuedItem(arg, queueOpsCtx);
+      if (result.ok) {
+        // Same omission, same fix as `schegent.restartCanceledTask` above. This
+        // is also the sidebar's Retry (↻): `cmd-retry-queue-item` delegates
+        // here rather than calling `queueOps.retry()` itself, so the two retry
+        // affordances share this one trigger instead of forking around it.
+        void deps.controller.drainQueuedWork(result.queueId).catch((err) =>
+          deps.logger.warn(`retryQueuedItem: auto-drain failed: ${errorMessage(err)}`)
+        );
+      }
+      return result;
+    }),
     registerGuardedCommand(guard, 'schegent.moveQueuedItemUp', (arg) =>
       runMoveQueuedItemUp(arg, queueOpsCtx)
     ),

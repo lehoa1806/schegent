@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
-// @ts-expect-error -- .mjs generator, typed by use rather than by declaration
-import { gateFiles, readCensusRows, reconcile } from '../../scripts/census-lint-gates.mjs';
+import {
+  censusProseOf,
+  gateFiles,
+  readCensusRows,
+  reconcile,
+  render
+  // @ts-expect-error -- .mjs generator, typed by use rather than by declaration
+} from '../../scripts/census-lint-gates.mjs';
 
 /**
  * FR-R3-121 (FR-020) — the census covers every gate, and names no gate that is gone.
@@ -62,6 +68,46 @@ describe('the lint-gate census is complete (FR-R3-121)', () => {
         'deleted gate is the stale-record shape this round has been closing; ' +
         'regenerate to drop them.'
     ).toEqual([]);
+  });
+
+  // Lifecycle round-check of 2026-08-30 (T1616). Regenerating the census twice
+  // used to produce two different files: `censusProseOf` captured the newline the
+  // template writes after `<!-- census:prose -->`, and `render` emitted its own
+  // newline before the captured text, so every run added one blank line. Found by
+  // regenerating twice while adding a gate, and normalised by hand at the time —
+  // which is the shape worth refusing, because a generator whose output drifts on
+  // re-run makes every regeneration diff carry noise a reviewer learns to skip.
+  //
+  // Asserted as a fixed point rather than by counting blank lines: `render` after
+  // a read of `render` must be the same text. Nothing is written to disk; both
+  // calls are pure over a synthetic row set, so this cannot disturb the real
+  // census.
+  describe('regeneration is idempotent (T1616)', () => {
+    const files = ['a.test.ts', 'gate-integrity/b.test.ts'];
+    const rows = new Map([
+      ['a.test.ts', { invariant: 'refuses a thing', alsoHeldBy: '—', verdict: 'unique', evidence: '—' }],
+      [
+        'gate-integrity/b.test.ts',
+        { invariant: 'refuses another', alsoHeldBy: '—', verdict: 'unique', evidence: '—' }
+      ]
+    ]);
+
+    it('re-rendering hand-written prose reproduces it byte for byte', () => {
+      const prose = '\nA hand-written section.\n\nWith a blank line inside it.\n\n';
+      const once: string = render(files, rows, prose);
+      expect(censusProseOf(once)).toBe(prose);
+    });
+
+    it('rendering the census a second time changes nothing', () => {
+      const once: string = render(files, rows, '\nMethod: something a human wrote.\n\n');
+      const twice: string = render(files, rows, censusProseOf(once));
+      expect(twice).toBe(once);
+    });
+
+    it('holds for empty prose, the case that first shipped the extra line', () => {
+      const once: string = render(files, rows, '');
+      expect(render(files, rows, censusProseOf(once))).toBe(once);
+    });
   });
 
   it('every row carries a verdict from the closed vocabulary', () => {

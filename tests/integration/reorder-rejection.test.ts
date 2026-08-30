@@ -156,7 +156,6 @@ async function makeHarness(): Promise<Harness> {
       moveUp: (id: string) => manager.moveUp(id),
       moveDown: (id: string) => manager.moveDown(id),
       clearCompleted: () => manager.clearCompleted(),
-      clearFailed: () => manager.clearFailed(),
       setQueuePausedState: (
         paused: boolean,
         queueId?: string,
