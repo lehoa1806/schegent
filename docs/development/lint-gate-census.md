@@ -19,8 +19,8 @@ predicted it: its author sampled the set and found every gate well motivated.
 
 | Figure | Value | Date | Method |
 |---|---|---|---|
-| Gate files | **171** | 2026-08-30 | `*.test.ts` under `tests/lint/` recursively |
-| Marked `unique` | 158 | 2026-08-30 | hand verdict |
+| Gate files | **174** | 2026-08-30 | `*.test.ts` under `tests/lint/` recursively |
+| Marked `unique` | 161 | 2026-08-30 | hand verdict |
 | Marked `partially redundant` | 13 | 2026-08-30 | hand verdict |
 | Marked `redundant` | 0 | 2026-08-30 | hand verdict |
 
@@ -290,9 +290,12 @@ changing one means updating that machinery in the same commit.
 | `run-request-purity.test.ts` | Feature 087 — request validation imports no host API (T033) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `runners-report-not-record.test.ts` | runners report, they do not record (FR-R3-083) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `safe-open-migration.test.ts` | safe-open migration (FR-R3-053) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
+| `save-general-settings-doc-parity.test.ts` | CMD_SAVE_GENERAL_SETTINGS payload keys are documented as the host accepts them | — | unique | `settings-schema-parity.test.ts` holds the manifest to `SETTINGS_SCHEMA` and `settings-scope-parity.test.ts` holds scopes to targets; neither reads a documentation file, so neither could see the reference list falling behind `KEY_SPECS`. It did: the list said 22 on the day the code accepted 28. Landed red against that text, and against a hand-truncated copy of it, before landing green |
 | `scanning-gates-prove-they-scanned.test.ts` | a scanning gate proves it scanned something | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `security-override-parity.test.ts` | security overrides are applied to every workspace | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `self-certification-disclosed.test.ts` | self-certification is disclosed | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
+| `settings-field-bounds-parity.test.ts` | every `min`/`max` a General Settings field advertises is the bound the host validator enforces | partly by `settings-schema-parity.test.ts`, which holds the manifest to `SETTINGS_SCHEMA`; nothing else compared either against the numbers the Svelte control shows the operator | unique | a control offering a range the host rejects fails the save with no warning at the moment of typing. The manifest and the schema agreeing says nothing about the third copy, which is the one on screen |
+| `settings-group-heading-parity.test.ts` | each of the four settings-group components renders the heading its `docs/reference/settings.md` section is titled with | — | unique | the visual baselines cannot substitute: all three settings screenshots passed 3/3 against baselines captured before the groups existed, because the group renders either way and the diff sits under `maxDiffPixelRatio`. A one-word heading drift is invisible to a pixel gate and visible to this one |
 | `snapshot-mirror-census.test.ts` | FR-R3-132 — the snapshot mirror imports what it does not decide | partly by `webview-host-import-direction.test.ts`, which decides WHERE the webview may import from; nothing else asks whether it imported at all | unique | the parity tests compare specific fields on specific shapes; none counts duplication or checks a union for a missing member. Landed red 2026-08-28 against 51 byte-identical declarations, and its union half independently rediscovered the live defect the measurement had found — `QueueSummary.pauseSource` omitting `'retry-cap'`. **Its own first version walked three host directories and reported zero remaining copies; a review pointed at four in `src/services/`, and widening the walk to `src/` turned zero into fifteen.** Two earlier drafts were wrong in the other direction too: one read string literals out of JSDoc, one read a module specifier as a union member. All four corrections are recorded in the source |
 | `source-loc-budget.test.ts` | large source file LOC budgets | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `source-marker-targets.test.ts` | provenance markers name a real file (FR-R3-063) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |

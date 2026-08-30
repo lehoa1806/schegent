@@ -45,8 +45,9 @@
 import * as vscode from 'vscode';
 
 import {
-  isExplicitBoolean,
-  resolveCapabilityDecision
+  resolveCapabilityDecision,
+  resolveCapabilityScope,
+  type ResolvedScope
 } from './capability-trust-decision';
 
 // Feature 099 (T492, FR-046) — `pipelineOverrides` and `workflowOverrides` are
@@ -55,10 +56,12 @@ import {
 // CONTENT, not layering, so the collapse leaves them exactly as they were.
 export type TrustCapability = 'phases' | 'retryConditions';
 
-export type ResolvedScope =
-  | 'user'
-  | 'workspace'
-  | 'workspace-trust';
+// FR-R3-143 (T039) — the type moved to the pure module with the ladder that
+// produces it and is re-exported here, so every existing
+// `from '../state/capability-trust-resolver'` import keeps resolving. Re-exported
+// rather than redeclared: two spellings of a closed enum is how a third one
+// eventually appears in only one of them.
+export type { ResolvedScope };
 
 export interface ResolvedCapabilities {
   readonly workspaceTrust: boolean;
@@ -107,18 +110,19 @@ export function isCapabilityAllowed(capability: TrustCapability): boolean {
   });
 }
 
+/**
+ * FR-R3-143 (T039) — the ladder is `resolveCapabilityScope`; this is the
+ * `vscode`-reading half, and invariant I-1 is the whole of its job: re-read
+ * `isTrusted` and `inspect()` on every call rather than caching either. Same
+ * split `isCapabilityAllowed` has had since FR-R3-126, and for the same reason.
+ */
 export function getResolvedScope(capability: TrustCapability): ResolvedScope {
-  if (vscode.workspace.isTrusted !== true) return 'workspace-trust';
   const { workspaceValue, globalValue } = readInspect(capability);
-  // Mirrors the ladder above deny-first, so the reporter names the scope that ACTUALLY
-  // decided. Before FR-R3-108 it reported `workspace` in the inversion case while the
-  // answer came from the user's deny — telling an operator the wrong thing about their
-  // own setting, which is worse than telling them nothing.
-  if (globalValue === false) return 'user';
-  if (workspaceValue === false) return 'workspace';
-  if (isExplicitBoolean(workspaceValue)) return 'workspace';
-  if (isExplicitBoolean(globalValue)) return 'user';
-  return 'workspace-trust';
+  return resolveCapabilityScope({
+    isTrusted: vscode.workspace.isTrusted === true,
+    workspaceValue,
+    globalValue
+  });
 }
 
 export function getResolvedCapabilities(): ResolvedCapabilities {

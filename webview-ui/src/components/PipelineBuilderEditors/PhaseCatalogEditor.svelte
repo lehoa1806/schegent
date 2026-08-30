@@ -204,11 +204,21 @@
   );
 </script>
 
+<!--
+  FR-R3-143 (T040) — the deciding step is read off the projection this editor
+  already holds, not threaded down as two more props. `showTrustBanner` answers
+  "is it denied"; `resolvedScope` answers "by whom", and both come from the same
+  snapshot, so a separate prop pair could only ever go out of step with the flag
+  beside it. `undefined` reaches the banner as `undefined` and it names no layer.
+-->
 {#if showTrustBanner}
-  <TrustBanner variant="phases" />
+  <TrustBanner variant="phases" decidedBy={snapshot.resolvedScope?.phases} />
 {/if}
 {#if showRetryTrustBanner}
-  <TrustBanner variant="retry-conditions" />
+  <TrustBanner
+    variant="retry-conditions"
+    decidedBy={snapshot.resolvedScope?.retryConditions}
+  />
 {/if}
 {#if !snapshot.phaseCatalog}
   <div class="catalog-state" role="status" aria-live="polite" aria-busy="true" data-testid="phase-catalog-loading">

@@ -93,7 +93,8 @@ export class PlaceholderProjector implements ProjectorHandle {
       telemetry: null,
       // Feature 059 — fail-closed trust projection on placeholder.
       workspaceTrust: IDLE_TRUST_PROJECTION.workspaceTrust,
-      resolvedTrust: IDLE_TRUST_PROJECTION.resolvedTrust
+      resolvedTrust: IDLE_TRUST_PROJECTION.resolvedTrust,
+      resolvedScope: IDLE_TRUST_PROJECTION.resolvedScope
     });
   }
 

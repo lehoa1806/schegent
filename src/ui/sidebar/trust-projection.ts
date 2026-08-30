@@ -12,7 +12,10 @@
 // the whole snapshot, and a surface with no snapshot is one that shows the
 // operator its last state indefinitely.
 
-import { getResolvedCapabilities } from '../../state/capability-trust-resolver';
+import {
+  getResolvedCapabilities,
+  getResolvedScope
+} from '../../state/capability-trust-resolver';
 import { IDLE_TRUST_PROJECTION, type TrustProjection } from './snapshot';
 
 /**
@@ -30,6 +33,24 @@ export function composeTrustProjection(onError?: (message: string) => void): Tru
       resolvedTrust: Object.freeze({
         phases: resolved.phases,
         retryConditions: resolved.retryConditions
+      }),
+      // FR-R3-143 (T036) — WHICH STEP of the ladder decided, alongside what it
+      // decided. `resolvedTrust` alone cannot answer "why is this off?", and the
+      // surfaces that tried to answer it guessed: `TrustBanner.svelte:33-42` says
+      // "disabled by workspace policy" for both capabilities, which is false
+      // whenever the deciding step is the user's own setting.
+      //
+      // This is `getResolvedScope`, not the `scopes` map the general-settings
+      // projection carries. They disagree in three ways that matter here: that map
+      // is workspace-first where this ladder is deny-first, it treats an explicit
+      // `null` as set (`!== undefined`), and it has no `'workspace-trust'` member —
+      // so it cannot express the one state an operator most needs named.
+      //
+      // Inside the existing `try` deliberately: a resolver that throws must still
+      // yield `IDLE_TRUST_PROJECTION` whole, per the fail-closed contract above.
+      resolvedScope: Object.freeze({
+        phases: getResolvedScope('phases'),
+        retryConditions: getResolvedScope('retryConditions')
       })
     });
   } catch (error) {

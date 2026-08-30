@@ -30,12 +30,28 @@ const mocks = vi.hoisted(() => {
       phases: boolean;
       retryConditions: boolean;
     },
+    // FR-R3-143 (T036) — the projection now also carries WHICH ladder step decided.
+    nextScope: {
+      phases: 'workspace-trust',
+      retryConditions: 'workspace-trust'
+    } as {
+      phases: 'user' | 'workspace' | 'workspace-trust';
+      retryConditions: 'user' | 'workspace' | 'workspace-trust';
+    },
     throwOnNext: false as boolean,
     callCount: 0 as number
   };
   return { state };
 });
 
+// FR-R3-143 (T036) — `getResolvedScope` is mocked HERE, not left off.
+//
+// It was left off for the length of one edit, and the result is worth recording:
+// `composeTrustProjection` called `undefined`, the `try` caught the TypeError, and
+// the two happy-path cases below quietly became fail-closed cases that asserted
+// `true` and got `false`. The fail-closed contract did its job — but a factory mock
+// replaces the WHOLE module, so anything the module under test starts calling is
+// `undefined` until someone adds it here.
 vi.mock('../../../src/state/capability-trust-resolver', () => ({
   getResolvedCapabilities: () => {
     mocks.state.callCount += 1;
@@ -43,6 +59,12 @@ vi.mock('../../../src/state/capability-trust-resolver', () => ({
       throw new Error('resolver boom');
     }
     return { ...mocks.state.nextReturn };
+  },
+  getResolvedScope: (capability: 'phases' | 'retryConditions') => {
+    if (mocks.state.throwOnNext) {
+      throw new Error('resolver boom');
+    }
+    return mocks.state.nextScope[capability];
   }
 }));
 
@@ -55,13 +77,18 @@ interface TrustFields {
     phases: boolean;
     retryConditions: boolean;
   };
+  resolvedScope: {
+    phases: 'user' | 'workspace' | 'workspace-trust';
+    retryConditions: 'user' | 'workspace' | 'workspace-trust';
+  };
 }
 
 function readTrust(snap: WorkflowSnapshot): TrustFields {
   const anySnap = snap as unknown as Partial<TrustFields>;
   return {
     workspaceTrust: anySnap.workspaceTrust as boolean,
-    resolvedTrust: anySnap.resolvedTrust as TrustFields['resolvedTrust']
+    resolvedTrust: anySnap.resolvedTrust as TrustFields['resolvedTrust'],
+    resolvedScope: anySnap.resolvedScope as TrustFields['resolvedScope']
   };
 }
 
@@ -95,6 +122,10 @@ beforeEach(() => {
     workspaceTrust: true,
     phases: true,
     retryConditions: true
+  };
+  mocks.state.nextScope = {
+    phases: 'workspace-trust',
+    retryConditions: 'workspace-trust'
   };
   mocks.state.throwOnNext = false;
   mocks.state.callCount = 0;
@@ -131,6 +162,26 @@ describe('state-projector trust projection (059, T021) — happy path', () => {
     expect(trust.resolvedTrust.retryConditions).toBe(true);
     projector.dispose();
   });
+
+  it('carries the deciding step per capability, not one value for both', () => {
+    // FR-R3-143 (T036) — the case the field exists for: one capability denied by
+    // the user's own setting, the other untouched. A projection that reported a
+    // single scope, or reported `workspace` for both, is what
+    // `TrustBanner.svelte:33-42` was reading when it told operators their
+    // workspace had disabled something their user settings had.
+    mocks.state.nextReturn = {
+      workspaceTrust: true,
+      phases: false,
+      retryConditions: true
+    };
+    mocks.state.nextScope = { phases: 'user', retryConditions: 'workspace-trust' };
+    const { logger } = buildLogger();
+    const projector = makeProjector(logger);
+    const trust = readTrust(projector.project());
+    expect(trust.resolvedScope.phases).toBe('user');
+    expect(trust.resolvedScope.retryConditions).toBe('workspace-trust');
+    projector.dispose();
+  });
 });
 
 describe('state-projector trust projection (059, T021) — untrusted workspace', () => {
@@ -159,6 +210,12 @@ describe('state-projector trust projection (059, T021) — fail-closed on resolv
     expect(trust.workspaceTrust).toBe(false);
     expect(trust.resolvedTrust.phases).toBe(false);
     expect(trust.resolvedTrust.retryConditions).toBe(false);
+    // FR-R3-143 (T036, T037) — the new field falls back WITH the rest, and it
+    // falls back to the ceiling rather than to a setting. A disclosure reading
+    // `'user'` here would tell an operator their own setting denied something,
+    // when in fact the resolver failed and nothing was read at all.
+    expect(trust.resolvedScope.phases).toBe('workspace-trust');
+    expect(trust.resolvedScope.retryConditions).toBe('workspace-trust');
     expect(warnings.length).toBeGreaterThan(0);
     expect(warnings.some((w) => /trust/i.test(w))).toBe(true);
     projector.dispose();

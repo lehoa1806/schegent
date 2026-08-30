@@ -15,7 +15,14 @@
 //   - schegent.trust.allowCustomRetryConditions
 //
 // This module is intentionally `vscode`-free: it is imported by host
-// validators (transitively via `general-settings.ts`) and by tests.
+// validators and by tests. FR-R3-143 (T016) — that sentence used to end
+// "(transitively via `general-settings.ts`)", which was false: that file
+// imported one module, `../contracts/snapshot-vocabulary`, so no path reached
+// this one through it. The validator path is
+// `src/activation/workspace-settings.ts:8` -> `settings-schema-validator.ts:31`
+// -> here; `src/config/general-settings.ts` now imports this module DIRECTLY,
+// since T015 read the `cli.environmentAllowlist` element pattern from
+// `SETTINGS_SCHEMA` rather than writing a fourth copy of it.
 // No I/O, no side effects, no module-level state besides the frozen
 // schema record itself.
 //
@@ -27,6 +34,17 @@
 // Model Catalog and backend-runner keys whose IPC paths live elsewhere.
 // Feature 099 (T494, FR-054) — it no longer includes definition keys at
 // all: Phases, Pipelines and Workflows are stored, not configured.
+
+// FR-R3-143 (T034) — the two process-environment constraints below are READ from
+// `src/contracts/process-environment-policy.ts` rather than written here. That
+// module is where the fold that enforces them lives, and where the settings surface
+// reads them from; a literal here would be a second declaration that a parity test
+// against `package.json` would keep green while the two drifted from the code that
+// applies them.
+import {
+  PROCESS_ENVIRONMENT_MODES,
+  PROCESS_ENV_NAME_PATTERN_SOURCE
+} from '../contracts/process-environment-policy';
 
 /** Setting value-shape category, mirroring JSON Schema vocabulary. */
 export type SettingsSchemaType =
@@ -98,7 +116,7 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     // Feature 098 (PRIV-02) — `inherit` -> `allowlist`; see package.json.
     default: 'allowlist',
     scope: 'application',
-    enum: ['inherit', 'minimal', 'allowlist'],
+    enum: PROCESS_ENVIRONMENT_MODES,
     docLabel: 'Backend CLI environment policy mode'
   },
   'schegent.cli.environmentAllowlist': {
@@ -106,7 +124,7 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     type: 'array',
     default: [],
     itemType: 'string',
-    itemPattern: '^[A-Za-z_][A-Za-z0-9_]*$',
+    itemPattern: PROCESS_ENV_NAME_PATTERN_SOURCE,
     scope: 'application',
     docLabel: 'Backend CLI environment variable name allowlist'
   },

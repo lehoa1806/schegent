@@ -19,6 +19,13 @@
 // so the webview imports it rather than restating it. Re-exported unchanged.
 import type { SettingScope } from '../contracts/snapshot-vocabulary';
 export type { SettingScope };
+// FR-R3-143 (T015, revised at T034) — the element pattern for
+// `cli.environmentAllowlist` is READ, not restated: a fourth copy of
+// `^[A-Za-z_][A-Za-z0-9_]*$` would be the copy that drifts. From `contracts/`
+// rather than `SETTINGS_SCHEMA`, because T034 made contracts the single
+// declaration the schema itself now reads — indexing the schema here would be
+// reading a copy of a copy, through an index access the strictness ratchet counts.
+import { PROCESS_ENV_NAME_PATTERN_SOURCE } from '../contracts/process-environment-policy';
 
 /**
  * Minimal slice of `vscode.WorkspaceConfiguration` that this surface
@@ -37,7 +44,14 @@ export interface GeneralSettingsConfig {
         workspaceFolderValue?: T;
       }
     | undefined;
-  update(key: string, value: unknown, target: number): Promise<void> | Thenable<void>;
+  // FR-R3-143 (T022) — `Promise<void> | Thenable<void>`, until the payload-parity
+  // gate imported this module from the webview and `Thenable` turned out to be an
+  // ambient `@types/vscode` global. The module's header says it is `vscode`-free
+  // so it can be tested without the electron harness; that was true of its imports
+  // and false of its types. `@types/vscode` declares `Thenable<T> extends
+  // PromiseLike<T>` with no members, so the real `WorkspaceConfiguration.update`
+  // still satisfies this and nothing that assigned before stops.
+  update(key: string, value: unknown, target: number): PromiseLike<void>;
 }
 
 /** Mirrors `vscode.ConfigurationTarget.Global`. */
@@ -81,6 +95,14 @@ export interface GeneralSettings {
   readonly sessionRetentionMaxAgeDays: number;
   readonly sessionRetentionMaxBytes: number;
   readonly rawTranscriptMode: import('../state/workflow-run').RawTranscriptMode;
+  // FR-R3-143 (T017) — six settings the manifest has always contributed and
+  // this surface never projected, so the tab could not draw them.
+  readonly cliInheritEnvironment: boolean;
+  readonly cliEnvironmentMode: string;
+  readonly cliEnvironmentAllowlist: readonly string[];
+  readonly backendProbeTimeoutSeconds: number;
+  readonly uiConfirmationsEnable: boolean;
+  readonly multiRootSuppressWarning: boolean;
   readonly scopes: {
     readonly cliPath: SettingScope;
     readonly loggingVerbose: SettingScope;
@@ -104,6 +126,12 @@ export interface GeneralSettings {
     readonly sessionRetentionMaxAgeDays: SettingScope;
     readonly sessionRetentionMaxBytes: SettingScope;
     readonly rawTranscriptMode: SettingScope;
+    readonly cliInheritEnvironment: SettingScope;
+    readonly cliEnvironmentMode: SettingScope;
+    readonly cliEnvironmentAllowlist: SettingScope;
+    readonly backendProbeTimeoutSeconds: SettingScope;
+    readonly uiConfirmationsEnable: SettingScope;
+    readonly multiRootSuppressWarning: SettingScope;
   };
 }
 
@@ -129,7 +157,13 @@ type AllowedKey =
   | 'logging.runtimeLogMaxGenerations'
   | 'logging.sessionRetentionMaxAgeDays'
   | 'logging.sessionRetentionMaxBytes'
-  | 'logging.rawTranscriptMode';
+  | 'logging.rawTranscriptMode'
+  | 'cli.inheritEnvironment'
+  | 'cli.environmentMode'
+  | 'cli.environmentAllowlist'
+  | 'backend.probeTimeoutSeconds'
+  | 'ui.confirmations.enable'
+  | 'multiRoot.suppressWarning';
 
 type RuntimeType =
   | 'string'
@@ -156,6 +190,8 @@ interface KeySpec {
   readonly max?: number;
   readonly allowClear?: boolean;
   readonly allowedValues?: readonly string[];
+  /** Element pattern for `array-of-string`; mirrors the schema's `itemPattern`. */
+  readonly itemPattern?: string;
 }
 
 export const KEY_SPECS: Readonly<Record<AllowedKey, KeySpec>> = Object.freeze({
@@ -304,6 +340,48 @@ export const KEY_SPECS: Readonly<Record<AllowedKey, KeySpec>> = Object.freeze({
     // retained MORE raw transcript data than the setting the user was shown.
     defaultValue: 'errors-only',
     allowedValues: ['always', 'errors-only', 'off']
+  },
+  // FR-R3-143 (T018) — six keys the manifest contributes that this allowlist
+  // did not carry, so the settings tab had no write path for them. Every
+  // `defaultValue`, `min`, `max` and `allowedValues` below is the manifest's;
+  // `settings-defaults-parity` compares the two and fails on drift.
+  'cli.inheritEnvironment': { scope: 'application',
+    type: 'boolean',
+    typedField: 'cliInheritEnvironment',
+    defaultValue: true
+  },
+  'cli.environmentMode': { scope: 'application',
+    type: 'string-enum',
+    typedField: 'cliEnvironmentMode',
+    defaultValue: 'allowlist',
+    allowedValues: ['inherit', 'minimal', 'allowlist']
+  },
+  'cli.environmentAllowlist': { scope: 'application',
+    type: 'array-of-string',
+    typedField: 'cliEnvironmentAllowlist',
+    defaultValue: [],
+    // Read, not restated — see the import note at the head of this file.
+    itemPattern: PROCESS_ENV_NAME_PATTERN_SOURCE
+  },
+  'backend.probeTimeoutSeconds': { scope: 'application',
+    type: 'number-int-range',
+    typedField: 'backendProbeTimeoutSeconds',
+    defaultValue: 5,
+    min: 1,
+    max: 30
+  },
+  // The first two `window`-scoped entries in this table. `configurationTargetFor`
+  // already routes anything that is not `application` to Workspace, so they need
+  // no code change there — only the correct scope declared here.
+  'ui.confirmations.enable': { scope: 'window',
+    type: 'boolean',
+    typedField: 'uiConfirmationsEnable',
+    defaultValue: true
+  },
+  'multiRoot.suppressWarning': { scope: 'window',
+    type: 'boolean',
+    typedField: 'multiRootSuppressWarning',
+    defaultValue: false
   }
 });
 
@@ -399,10 +477,14 @@ function checkType(spec: KeySpec, value: unknown): WriteResult {
   }
 }
 
-function checkArrayElements(value: readonly unknown[]): WriteResult {
+function checkArrayElements(spec: KeySpec, value: readonly unknown[]): WriteResult {
+  const itemPattern = spec.itemPattern === undefined ? null : new RegExp(spec.itemPattern);
   for (const el of value) {
     if (typeof el !== 'string') return { ok: false, reason: 'invalid-array' };
     if (el.trim().length === 0) return { ok: false, reason: 'invalid-array' };
+    if (itemPattern !== null && !itemPattern.test(el)) {
+      return { ok: false, reason: 'invalid-array' };
+    }
   }
   return { ok: true };
 }
@@ -519,7 +601,7 @@ export async function writeGeneralSettings(
       return { ok: false, reason: `${typeCheck.reason}:${key}` };
     }
     if (spec.type === 'array-of-string') {
-      const arrCheck = checkArrayElements(value as readonly unknown[]);
+      const arrCheck = checkArrayElements(spec, value as readonly unknown[]);
       if (!arrCheck.ok) {
         return { ok: false, reason: `invalid-array:${key}` };
       }
@@ -620,8 +702,16 @@ export function readGeneralSettings(
     const spec = KEY_SPECS[key];
     let value = config.get(key, spec.defaultValue);
     if (spec.type === 'array-of-string') {
+      // FR-R3-143 (T019) — a hand-edited settings.json can hold an element the
+      // write path refuses. Drop it here too, so the tab never shows a value it
+      // could not save back.
+      const itemPattern = spec.itemPattern === undefined ? null : new RegExp(spec.itemPattern);
       if (!Array.isArray(value)) value = [];
-      else value = (value as unknown[]).filter((el) => typeof el === 'string' && el.length > 0);
+      else
+        value = (value as unknown[]).filter(
+          (el) =>
+            typeof el === 'string' && el.length > 0 && (itemPattern === null || itemPattern.test(el))
+        );
     }
     if (spec.type === 'number') {
       if (

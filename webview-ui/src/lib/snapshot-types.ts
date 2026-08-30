@@ -648,6 +648,15 @@ export interface GeneralSettings {
    * says.
    */
   readonly retryForceContinueOnCap: boolean;
+  // FR-R3-143 (T021) — six manifest settings the host now projects. Mirrored
+  // here for the same reason `retryForceContinueOnCap` above is: a key missing
+  // from this type is a default that silently becomes whatever the code says.
+  readonly cliInheritEnvironment: boolean;
+  readonly cliEnvironmentMode: string;
+  readonly cliEnvironmentAllowlist: readonly string[];
+  readonly backendProbeTimeoutSeconds: number;
+  readonly uiConfirmationsEnable: boolean;
+  readonly multiRootSuppressWarning: boolean;
   readonly scopes: {
     readonly cliPath: SettingScope;
     readonly loggingVerbose: SettingScope;
@@ -671,6 +680,12 @@ export interface GeneralSettings {
     readonly sessionRetentionMaxBytes: SettingScope;
     readonly rawTranscriptMode: SettingScope;
     readonly retryForceContinueOnCap: SettingScope;
+    readonly cliInheritEnvironment: SettingScope;
+    readonly cliEnvironmentMode: SettingScope;
+    readonly cliEnvironmentAllowlist: SettingScope;
+    readonly backendProbeTimeoutSeconds: SettingScope;
+    readonly uiConfirmationsEnable: SettingScope;
+    readonly multiRootSuppressWarning: SettingScope;
   };
 }
 
@@ -723,6 +738,13 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   rawTranscriptMode: 'errors-only',
   retryForceContinueOnCap: false,
   sessionRetentionMaxBytes: 512 * 1024 * 1024,
+  // FR-R3-143 (T021) — manifest defaults, matching the host idle snapshot.
+  cliInheritEnvironment: true,
+  cliEnvironmentMode: 'allowlist',
+  cliEnvironmentAllowlist: Object.freeze([]) as readonly string[],
+  backendProbeTimeoutSeconds: 5,
+  uiConfirmationsEnable: true,
+  multiRootSuppressWarning: false,
   scopes: Object.freeze({
     cliPath: 'default',
     loggingVerbose: 'default',
@@ -745,7 +767,13 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
     sessionRetentionMaxAgeDays: 'default',
     sessionRetentionMaxBytes: 'default',
     rawTranscriptMode: 'default',
-    retryForceContinueOnCap: 'default'
+    retryForceContinueOnCap: 'default',
+    cliInheritEnvironment: 'default',
+    cliEnvironmentMode: 'default',
+    cliEnvironmentAllowlist: 'default',
+    backendProbeTimeoutSeconds: 'default',
+    uiConfirmationsEnable: 'default',
+    multiRootSuppressWarning: 'default'
   })
 });
 
@@ -940,6 +968,19 @@ export interface WorkflowSnapshot {
   readonly resolvedTrust?: {
     readonly phases: boolean;
     readonly retryConditions: boolean;
+  };
+  /**
+   * FR-R3-143 (T037) — which step of the trust ladder decided each capability:
+   * `'user'`, `'workspace'`, or `'workspace-trust'` (the ceiling).
+   *
+   * Optional on the same legacy-tolerance terms as `resolvedTrust` above: an older
+   * host bundle omits it. A view that reads it must treat absence as "unknown" and
+   * say nothing, NOT as any particular step — naming the wrong step is the defect
+   * this field exists to fix (`TrustBanner` called every denial a workspace policy).
+   */
+  readonly resolvedScope?: {
+    readonly phases: 'user' | 'workspace' | 'workspace-trust';
+    readonly retryConditions: 'user' | 'workspace' | 'workspace-trust';
   };
   /**
    * Feature 033 — ephemeral per-subprocess telemetry sample. Never

@@ -323,11 +323,21 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
       // `true` from the removed key therefore grants nothing.
       'backend.uncontainedBackends'
     ]);
-    // Application-scoped CLI spawn hardening toggle. It is read once at
+    // Application-scoped CLI keys.
+    //
+    // FR-R3-143 (T027) — this comment used to say these were "read once at
     // activation and intentionally not writable through the workspace-scoped
-    // general-settings IPC surface.
-    // Feature 074 — `agy.path` is the Agy CLI binary path, same pattern as
-    // `cli.path` (application-scoped, read once at activation).
+    // general-settings IPC surface". Every clause of that is now wrong, and two
+    // were already wrong before this feature: `codex.path` and `agy.path` have
+    // been in `KEY_SPECS` since feature 074, and FR-R3-051 (M-05) made writes
+    // scope-aware, so the surface stopped being workspace-scoped. This feature
+    // adds the environment trio, so all five in this bucket are writable.
+    //
+    // The MEMBERSHIP is deliberately left alone: coverage below is a
+    // disjunction, so a key in both `KEY_SPECS` and a bucket is covered twice
+    // and passes — which is what `codex.path` and `agy.path` have been doing
+    // here. The buckets record why a key is exempt IF it is; they are not a
+    // claim that it is.
     const cliApplicationKeys = new Set<string>([
       'cli.inheritEnvironment',
       'cli.environmentMode',
@@ -335,12 +345,18 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
       'codex.path',
       'agy.path'
     ]);
-    // Feature 058 — read-once-at-activation toggles. The activation guard
-    // reads `schegent.multiRoot.suppressWarning` via `getConfiguration` with
-    // a typed default; SETTINGS_SCHEMA + the drift-guard in
-    // `validateWorkspaceSettings(config, logger, ...)` already constrain
-    // the value. Not part of KEY_SPECS because it does not flow through
-    // the general-settings IPC handler.
+    // Feature 058 — the activation guard reads
+    // `schegent.multiRoot.suppressWarning` via `getConfiguration` with a typed
+    // default; SETTINGS_SCHEMA + the drift-guard in
+    // `validateWorkspaceSettings(config, logger, ...)` already constrain the
+    // value.
+    //
+    // FR-R3-143 (T027) — the sentence that closed this note, "Not part of
+    // KEY_SPECS because it does not flow through the general-settings IPC
+    // handler", is no longer true: it flows through it now, so the settings tab
+    // can offer the toggle instead of asking an operator to edit settings.json
+    // to silence a toast. Reading it at activation is unchanged — the guard
+    // fires once per activation either way.
     const multiRootKeys = new Set<string>(['multiRoot.suppressWarning']);
     // Features 059 and 083 — per-capability trust scopes. These keys are
     // `nullable boolean` settings consumed exclusively by

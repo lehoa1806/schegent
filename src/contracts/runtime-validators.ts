@@ -46,6 +46,7 @@ import {
   CMD_DISABLE_PHASE,
   CMD_ENABLE_PHASE,
   CMD_OPEN_VERBOSE_SETTING,
+  CMD_OPEN_TRUST_SETTINGS,
   // Feature 092 (T034, US1) — reinstated by FR-019/FR-020.
   CMD_CREATE_QUEUE,
   CMD_RENAME_QUEUE,
@@ -250,6 +251,8 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
       return validateStopPhaseLogTail(obj, correlationId);
     case CMD_OPEN_VERBOSE_SETTING:
       return validateNoPayload(CMD_OPEN_VERBOSE_SETTING, obj, correlationId);
+    case CMD_OPEN_TRUST_SETTINGS:
+      return validateNoPayload(CMD_OPEN_TRUST_SETTINGS, obj, correlationId);
     case CMD_RESOLVE_AUDIT_POINTER:
       return validateResolveAuditPointer(obj, correlationId);
     case CMD_RESOLVE_HISTORY_DESCRIPTION:
@@ -529,6 +532,7 @@ type NoPayloadType =
   | typeof CMD_CLEAR_COMPLETED
   | typeof CMD_OPEN_DASHBOARD
   | typeof CMD_OPEN_VERBOSE_SETTING
+  | typeof CMD_OPEN_TRUST_SETTINGS
   | typeof CMD_DISMISS_MIGRATION_NOTICE;
 
 // Feature 017 — BUG-001. Both CMD_CANCEL and CMD_RESTART_CANCELED_TASK

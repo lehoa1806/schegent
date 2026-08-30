@@ -87,3 +87,32 @@ export function resolveCapabilityDecision(inputs: CapabilityTrustInputs): boolea
   if (isExplicitBoolean(globalValue)) return globalValue;
   return SILENT_DEFAULT;
 }
+
+/** Which step of the ladder produced the decision. */
+export type ResolvedScope = 'user' | 'workspace' | 'workspace-trust';
+
+/**
+ * WHICH step decided, for the same inputs `resolveCapabilityDecision` judges.
+ *
+ * FR-R3-143 (T039) — moved here from `capability-trust-resolver.getResolvedScope`
+ * for the reason recorded at the head of this file, now applying to the reporting
+ * half as well: the Settings tab's trust disclosure must be provable against the
+ * REAL ladder, and a webview test cannot import a module that reaches `vscode`.
+ * Without this, that test could only restate the ladder and agree with itself —
+ * the one shape the acceptance for that surface rules out.
+ *
+ * `getResolvedScope` is now the `vscode`-reading half and nothing else, exactly
+ * as `isCapabilityAllowed` has been since FR-R3-126. The ordering is unchanged
+ * and is deny-first for the same reason the decision is: reporting `workspace`
+ * while the answer came from the user's own deny tells an operator the wrong
+ * thing about their own setting, which is worse than telling them nothing.
+ */
+export function resolveCapabilityScope(inputs: CapabilityTrustInputs): ResolvedScope {
+  if (inputs.isTrusted !== true) return 'workspace-trust';
+  const { workspaceValue, globalValue } = inputs;
+  if (globalValue === false) return 'user';
+  if (workspaceValue === false) return 'workspace';
+  if (isExplicitBoolean(workspaceValue)) return 'workspace';
+  if (isExplicitBoolean(globalValue)) return 'user';
+  return 'workspace-trust';
+}

@@ -51,7 +51,12 @@ const EXPECTED_KEYS: readonly ActionKey[] = [
   'run.overwrite-output',
   // Feature 095 (FR-003) — deleting a queue drops its pending Tasks with no
   // undo, and the queue-scoped analogue of `queue.clean-all`.
-  'queue.delete'
+  'queue.delete',
+  // FR-R3-143 (T042) — the one key whose action is not itself destructive: it
+  // turns every other prompt in this table off. Confirming on the way out only,
+  // never on the way back in, which is why the module short-circuits on
+  // `snapshot.confirmationsEnabled` rather than branching per direction.
+  'settings.disable-confirmations'
 ];
 
 describe('ACTION_COPY exhaustiveness (FR-022b)', () => {

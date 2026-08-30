@@ -304,8 +304,8 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     streamPressure: { ...readStreamPressure(), machineMemoryBytes: totalmem() },
     evidenceHealth: deps.getEvidenceHealth?.() ?? IDLE_EVIDENCE_HEALTH,
     telemetry: ctx.telemetry,
-    workspaceTrust: trust.workspaceTrust,
-    resolvedTrust: trust.resolvedTrust,
+    // Spread: `TrustProjection`'s members ARE the snapshot's trust members.
+    ...trust,
     ...(launchables !== undefined ? { launchables } : {}),
     ...(phaseCatalogProjection !== undefined ? { phaseCatalog: phaseCatalogProjection } : {}),
     ...(pipelineCatalogProjection !== undefined

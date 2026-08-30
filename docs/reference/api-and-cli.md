@@ -138,6 +138,7 @@ The authoritative schema version is `3`. The table is exhaustive: `COMMAND_TYPES
 | `CMD_START_PHASE_LOG_TAIL` | `{ selection: { queueId, taskId, pipelineId, phaseId, iterationN: integer } }` | R | <!-- Source: src/contracts/sidebar-ipc/phase-log.ts --> |
 | `CMD_STOP_PHASE_LOG_TAIL` | `{ sessionId: string }` | R | <!-- Source: src/contracts/sidebar-ipc/phase-log.ts --> |
 | `CMD_OPEN_VERBOSE_SETTING` | no payload | R | <!-- Source: src/contracts/sidebar-ipc.ts --> |
+| `CMD_OPEN_TRUST_SETTINGS` | no payload; the `schegent.trust` query is a literal in the handler, never webview-supplied | R | <!-- Source: src/contracts/sidebar-ipc.ts --><!-- Source: src/ui/sidebar/commands/cmd-open-trust-settings.ts --> |
 | `CMD_RESOLVE_AUDIT_POINTER` | `{ runId: string }` | R | <!-- Source: src/contracts/sidebar-ipc/history-evidence.ts --> |
 | `CMD_SET_PHASE_BREAKPOINT` | `{ queueId: string, runId: string, phaseId: string }` | M | <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_CLEAR_PHASE_BREAKPOINT` | `{ queueId: string, runId: string, phaseId: string }` | M | <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
@@ -209,7 +210,9 @@ The webview supplies no file path for export or preflight; the host owns the ope
 
 <!-- Source: src/contracts/sidebar-ipc/process-yaml.ts -->
 
-`CMD_SAVE_GENERAL_SETTINGS.updates` accepts only these unprefixed keys, and validates the entire batch before writing: `cli.path`, `codex.path`, `agy.path`, `logging.verbose`, `loop.maxIterations`, `invocation.idleTimeoutSeconds`, `invocation.maxDurationSeconds`, `watchdog.pollIntervalMinutes`, `audit.rotation.sizeMB`, `audit.rotation.maxAgeDays`, `defaultPipelineId`, `fatalSignatures`, `claude.autoCompactPctOverride`, `logging.runtimeLogLevel`, `logging.runtimeLogFilePath`, `retry.maxAttempts`, `retry.forceContinueOnCap`, `logging.runtimeLogMaxBytes`, `logging.runtimeLogMaxGenerations`, `logging.sessionRetentionMaxAgeDays`, `logging.sessionRetentionMaxBytes`, and `logging.rawTranscriptMode`.
+`CMD_SAVE_GENERAL_SETTINGS.updates` accepts only these 28 unprefixed keys, and validates the entire batch before writing: `cli.path`, `codex.path`, `agy.path`, `logging.verbose`, `loop.maxIterations`, `invocation.idleTimeoutSeconds`, `invocation.maxDurationSeconds`, `watchdog.pollIntervalMinutes`, `audit.rotation.sizeMB`, `audit.rotation.maxAgeDays`, `defaultPipelineId`, `fatalSignatures`, `claude.autoCompactPctOverride`, `logging.runtimeLogLevel`, `logging.runtimeLogFilePath`, `retry.maxAttempts`, `retry.forceContinueOnCap`, `logging.runtimeLogMaxBytes`, `logging.runtimeLogMaxGenerations`, `logging.sessionRetentionMaxAgeDays`, `logging.sessionRetentionMaxBytes`, `logging.rawTranscriptMode`, `cli.inheritEnvironment`, `cli.environmentMode`, `cli.environmentAllowlist`, `backend.probeTimeoutSeconds`, `ui.confirmations.enable`, and `multiRoot.suppressWarning`.
+
+The last six entered `KEY_SPECS` with `FR-R3-143`. A batch naming one of them before that was rejected as `unknown-key:<key>`, because the accepted set is the key list of `KEY_SPECS` itself.
 
 `queue.globalConcurrencyCap` and `queue.defaultQueueId` are **not** in that set. Neither is a settings key: both are workspace state, and `CMD_SAVE_QUEUE_SETTINGS` above is the only command that writes either.
 

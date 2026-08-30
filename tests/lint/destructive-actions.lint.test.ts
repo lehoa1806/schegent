@@ -9,8 +9,10 @@
 // superset: it also carries keys for destructive decisions that are not commands
 // of their own (the output overwrite confirmed inside a run launch, and
 // `workspace.reset`, whose command was deleted while its host-side prompt in
-// `src/commands/reset.ts` stayed). `workspace.reset` is the lone
-// non-suppressible action.
+// `src/commands/reset.ts` stayed). Which keys are non-suppressible is
+// `NEVER_SUPPRESSIBLE` in `webview-ui/src/lib/use-confirm.ts`; this header said
+// `workspace.reset` was the only one until FR-R3-143 (T042) added a second, and
+// naming them here again would only reproduce that.
 //
 // For each call site that hands a destructive command constant to a sender —
 // `<sender>(CMD_DESTRUCTIVE, ...)` — under `webview-ui/src/**/*.{svelte,ts}`
@@ -310,10 +312,31 @@ describe('Feature 063 T046 — destructive command sites must be useConfirm-gate
     'utf8'
   );
 
+  /**
+   * FR-R3-143 (T055) — the terminator is anchored to END OF LINE, and the
+   * capture has its comments stripped before keys are read.
+   *
+   * The pattern was `([\s\S]*?);` — lazy, so it stopped at the FIRST semicolon
+   * anywhere in the capture. There is one inside the prose comment in the middle
+   * of the union ("so the kind became a parameter; and a layer reset…"), so this
+   * function returned the twelve keys above that comment and the check below
+   * silently stopped asking about `catalog.deactivate-definition`,
+   * `catalog.discard-draft`, `run.overwrite-output` and `queue.delete` — a
+   * quarter of the union, and the four newest members of it. The sentence above
+   * claiming "a key added to the union is a key this check immediately demands a
+   * consumer for" was false for exactly the keys most likely to be added.
+   *
+   * A union member's semicolon is the last thing on its line; a semicolon inside
+   * a sentence is not, so `;[^\S\n]*\n` separates the two without needing to
+   * parse TypeScript. Comments are then dropped from the capture, because the
+   * key extractor matches any single-quoted run and the union demonstrably
+   * carries prose — a quoted word in that prose would read as a seventeenth key.
+   */
   function declaredActionKeys(): readonly string[] {
-    const union = /export type ActionKey =([\s\S]*?);/.exec(ACTION_COPY_SOURCE);
+    const union = /export type ActionKey =([\s\S]*?);[^\S\n]*\n/.exec(ACTION_COPY_SOURCE);
     if (!union) return [];
-    return [...union[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+    const withoutComments = union[1].replace(/\/\/[^\n]*/g, '');
+    return [...withoutComments.matchAll(/'([^']+)'/g)].map((m) => m[1]);
   }
 
   // Keys whose prompt is deliberately raised somewhere other than a webview
@@ -326,17 +349,41 @@ describe('Feature 063 T046 — destructive command sites must be useConfirm-gate
         '2026-08-30 (finding D). Reset survives as the palette command schegent.reset, ' +
         'which raises its own host-side prompt — RESET_CONFIRMATION_MESSAGE in ' +
         'src/commands/reset.ts — so the decision is still confirmed, just not here. The ' +
-        'key stays declared because it is the sole member of NEVER_SUPPRESSIBLE in ' +
-        'use-confirm.ts, and an empty set would make that rule untested.'
+        'key stays declared because it is a member of NEVER_SUPPRESSIBLE in use-confirm.ts ' +
+        '(FR-R3-143 T042 added settings.disable-confirmations as the second), and dropping ' +
+        'it would leave that rule tested only by a key whose prompt is raised in the webview.'
     ]
   ]);
 
   const MIN_ELSEWHERE_REASON_LENGTH = 40;
 
-  it('declares a non-empty ActionKey union that this file can read', () => {
-    // The regex above returning nothing would make the two checks below pass
-    // vacuously, which is the failure mode a source-parsing lint has.
-    expect(declaredActionKeys().length).toBeGreaterThan(10);
+  /**
+   * FR-R3-143 (T055) — an EQUALITY, not a floor.
+   *
+   * This was `toBeGreaterThan(10)`, written to catch the regex matching nothing.
+   * It cannot catch the regex matching a PREFIX, which is what it was doing:
+   * twelve of sixteen keys passed a `> 10` floor comfortably, so the truncation
+   * described above sat here green for as long as it existed. A floor can only
+   * ever detect the total failure of a parser, never its partial failure, and
+   * partial is the failure a source-parsing lint actually has.
+   *
+   * Raise this WITH the union, in the same change. The number is the point: it
+   * is what makes the next truncation fail loudly instead of shrinking quietly.
+   */
+  const DECLARED_ACTION_KEY_COUNT = 17;
+
+  it('reads every key the ActionKey union declares, and no others', () => {
+    expect(
+      declaredActionKeys().length,
+      'the union parser must see the whole union. If a key was added, raise ' +
+        'DECLARED_ACTION_KEY_COUNT in the same change; if it dropped, the ' +
+        'terminator anchor is matching early again.'
+    ).toBe(DECLARED_ACTION_KEY_COUNT);
+    // Named anchors, one from each end and one from beyond the old truncation
+    // point, so a count that is right for the wrong reason still fails.
+    expect(declaredActionKeys()).toContain('queue.clean-all');
+    expect(declaredActionKeys()).toContain('catalog.deactivate-definition');
+    expect(declaredActionKeys()).toContain('queue.delete');
   });
 
   it('passes every declared action key to useConfirm in live code', () => {

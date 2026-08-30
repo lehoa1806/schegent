@@ -1,14 +1,22 @@
 import type { InvocationRequest } from './invocation-result';
+import { sanitizeProcessEnvAllowlist } from '../contracts/process-environment-policy';
 
-export type ProcessEnvironmentMode = 'inherit' | 'minimal' | 'allowlist';
-
-export interface ProcessEnvironmentPolicy {
-  readonly mode: ProcessEnvironmentMode;
-  readonly inheritProcessEnv: boolean;
-  readonly processEnvAllowlist?: readonly string[];
-}
-
-export const PROCESS_ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+// FR-R3-143 (T034) — the policy fold moved to `src/contracts/process-environment-policy.ts`
+// so the settings surface can call it instead of restating it; see that file for why.
+// Re-exported here because eight host modules and three test files import these
+// names from this path, and a boundary move that rewrites fourteen import lines is
+// a boundary move nobody can review.
+export {
+  PROCESS_ENVIRONMENT_MODES,
+  PROCESS_ENV_NAME_PATTERN,
+  PROCESS_ENV_NAME_PATTERN_SOURCE,
+  resolveProcessEnvironmentPolicy,
+  sanitizeProcessEnvAllowlist
+} from '../contracts/process-environment-policy';
+export type {
+  ProcessEnvironmentMode,
+  ProcessEnvironmentPolicy
+} from '../contracts/process-environment-policy';
 
 /**
  * Non-secret bootstrap variables needed for executable lookup, home/config
@@ -35,38 +43,6 @@ export const REQUIRED_PROCESS_ENV_NAMES: readonly string[] = Object.freeze([
   'WINDIR',
   'COMSPEC'
 ]);
-
-/** Stores and accepts names only; invalid names and duplicates are ignored. */
-export function sanitizeProcessEnvAllowlist(value: unknown): readonly string[] {
-  if (!Array.isArray(value)) return Object.freeze([]);
-  return Object.freeze([
-    ...new Set(
-      value.filter(
-        (name): name is string =>
-          typeof name === 'string' && PROCESS_ENV_NAME_PATTERN.test(name)
-      )
-    )
-  ]);
-}
-
-/** Resolve the new mode while preserving the legacy boolean opt-out. */
-export function resolveProcessEnvironmentPolicy(input: {
-  readonly inheritEnvironment: boolean;
-  readonly mode: unknown;
-  readonly allowlist: unknown;
-}): ProcessEnvironmentPolicy {
-  if (!input.inheritEnvironment || input.mode === 'minimal') {
-    return Object.freeze({ mode: 'minimal', inheritProcessEnv: false });
-  }
-  if (input.mode === 'allowlist') {
-    return Object.freeze({
-      mode: 'allowlist',
-      inheritProcessEnv: false,
-      processEnvAllowlist: sanitizeProcessEnvAllowlist(input.allowlist)
-    });
-  }
-  return Object.freeze({ mode: 'inherit', inheritProcessEnv: true });
-}
 
 /**
  * FR-R3-049 (M-11) — the one place that says how an invocation gets its policy.

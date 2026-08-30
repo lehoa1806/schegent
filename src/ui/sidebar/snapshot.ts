@@ -1,4 +1,7 @@
 import type { PhaseName } from '../../contracts/phase-identity';
+// FR-R3-143 (T036) — type-only, so nothing new reaches the runtime graph: that
+// module imports `vscode`, and this one is read by the composer and the tests.
+import type { ResolvedScope } from '../../state/capability-trust-resolver';
 import type { DebugLogEntry } from '../../lib/webview-log-sink';
 import type { BackendPingState } from '../../services/backend-ping-service';
 import type { PhaseDefinition, PhaseSourceStatus } from '../../contracts/process-definitions';
@@ -748,6 +751,22 @@ export interface WorkflowSnapshot {
     readonly retryConditions: boolean;
   };
   /**
+   * FR-R3-143 (T036, T037) — WHICH step of the ladder decided each capability:
+   * the result of `getResolvedScope`, not of the `scopes` map.
+   *
+   * `resolvedTrust` above says what was decided; a surface that must tell an
+   * operator how to change it needs to know who decided. `'workspace-trust'` means
+   * the ceiling denied it and no `schegent.trust.*` setting is in play at all.
+   *
+   * Always present, like the two fields above, so the webview needs no existence
+   * guard on the host side of the boundary. (Its webview mirror is optional, for
+   * tolerance of an older host bundle.)
+   */
+  readonly resolvedScope: {
+    readonly phases: ResolvedScope;
+    readonly retryConditions: ResolvedScope;
+  };
+  /**
    * Feature 063 (FR-021) — projected confirmation-prompt suppression
    * set. Optional for legacy-tolerance: idle snapshots and tests that
    * stub a minimal store omit it; the webview treats `undefined` the
@@ -790,6 +809,14 @@ export interface TrustProjection {
     phases: boolean;
     retryConditions: boolean;
   }>;
+  /**
+   * FR-R3-143 (T036, T037) — the ladder step that decided each capability, typed
+   * with the resolver's own `ResolvedScope` so the two cannot drift apart.
+   */
+  readonly resolvedScope: Readonly<{
+    phases: ResolvedScope;
+    retryConditions: ResolvedScope;
+  }>;
 }
 
 export const IDLE_TRUST_PROJECTION: TrustProjection = Object.freeze({
@@ -797,6 +824,16 @@ export const IDLE_TRUST_PROJECTION: TrustProjection = Object.freeze({
   resolvedTrust: Object.freeze({
     phases: false,
     retryConditions: false
+  }),
+  // FR-R3-143 (T037) — `'workspace-trust'` is the honest idle value, not a
+  // placeholder. This projection is what a host with no resolved trust publishes,
+  // and what `composeTrustProjection` falls back to when the resolver throws; in
+  // both cases nothing is allowed, and the ceiling — not a user or workspace
+  // setting — is why. Idling at `'user'` or `'workspace'` would have every
+  // disclosure blame a setting the operator never wrote.
+  resolvedScope: Object.freeze({
+    phases: 'workspace-trust',
+    retryConditions: 'workspace-trust'
   })
 });
 
@@ -878,7 +915,8 @@ export function buildIdleSnapshot(opts: {
     // Feature 059 — idle snapshot uses fail-closed trust defaults until
     // the projector composes the first resolver read.
     workspaceTrust: IDLE_TRUST_PROJECTION.workspaceTrust,
-    resolvedTrust: IDLE_TRUST_PROJECTION.resolvedTrust
+    resolvedTrust: IDLE_TRUST_PROJECTION.resolvedTrust,
+    resolvedScope: IDLE_TRUST_PROJECTION.resolvedScope
   });
 }
 
@@ -958,6 +996,15 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   rawTranscriptMode: 'errors-only',
   retryMaxAttempts: 5,
   retryForceContinueOnCap: false,
+  // FR-R3-143 (T020) — the six the manifest contributes and this object never
+  // carried. Values are the manifest's defaults, which is what the parity test
+  // above derives its expectations from.
+  cliInheritEnvironment: true,
+  cliEnvironmentMode: 'allowlist',
+  cliEnvironmentAllowlist: Object.freeze([]) as readonly string[],
+  backendProbeTimeoutSeconds: 5,
+  uiConfirmationsEnable: true,
+  multiRootSuppressWarning: false,
   scopes: Object.freeze({
     cliPath: 'default',
     codexPath: 'default',
@@ -980,7 +1027,13 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
     sessionRetentionMaxBytes: 'default',
     rawTranscriptMode: 'default',
     retryMaxAttempts: 'default',
-    retryForceContinueOnCap: 'default'
+    retryForceContinueOnCap: 'default',
+    cliInheritEnvironment: 'default',
+    cliEnvironmentMode: 'default',
+    cliEnvironmentAllowlist: 'default',
+    backendProbeTimeoutSeconds: 'default',
+    uiConfirmationsEnable: 'default',
+    multiRootSuppressWarning: 'default'
   })
 });
 

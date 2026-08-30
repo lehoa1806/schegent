@@ -28,7 +28,14 @@ export type ActionKey =
   | 'catalog.deactivate-definition'
   | 'catalog.discard-draft'
   | 'run.overwrite-output'
-  | 'queue.delete';
+  | 'queue.delete'
+  // FR-R3-143 (T042) — turning every other prompt off is itself a decision worth
+  // one prompt, and only in that direction. Turning them back ON needs no
+  // confirmation, and gets none for free: `useConfirm` reads
+  // `snapshot.confirmationsEnabled`, which is still `true` while disabling and
+  // already `false` while enabling, so the asymmetry is the existing
+  // short-circuit rather than a hand-written branch beside it.
+  | 'settings.disable-confirmations';
 
 export type Severity = 'info' | 'caution' | 'destructive';
 
@@ -99,6 +106,10 @@ export type ActionCopyContext = {
     readonly pendingTaskCount: number;
     readonly connectedRunCount: number;
   };
+  // FR-R3-143 (T042) — no placeholders. The prompt describes a setting, not a
+  // target, and the one number worth stating (how many prompts this silences)
+  // is the size of a union this module declares, not a runtime fact.
+  'settings.disable-confirmations': Record<string, never>;
 };
 
 // Authoritative copy table (v1, English). Adding a new key here AND to
@@ -217,6 +228,19 @@ export const ACTION_COPY: Readonly<Record<ActionKey, ActionCopyEntry>> = Object.
       'Deletes **{queueName}**{impactSummary}. This cannot be undone.',
     confirmLabel: 'Delete Queue',
     severity: 'destructive'
+  },
+  // `caution`, not `destructive`: nothing is lost, and the change is reversible
+  // by the same control. What it costs is every later prompt, including the ones
+  // in front of actions that ARE destructive — which is what the body says
+  // instead of borrowing the severity of the actions it silences.
+  'settings.disable-confirmations': {
+    title: 'Turn off confirmation prompts?',
+    bodyTemplate:
+      'Destructive actions — deleting a queue, Clean All, discarding a draft — will run ' +
+      'immediately, with no prompt. You can turn prompts back on from this setting at ' +
+      'any time.',
+    confirmLabel: 'Turn Off Prompts',
+    severity: 'caution'
   }
 } satisfies Record<ActionKey, ActionCopyEntry>);
 
@@ -334,6 +358,7 @@ export function renderActionBody<K extends ActionKey>(
     case 'queue.pause':
     case 'queue.resume':
     case 'workspace.reset':
+    case 'settings.disable-confirmations':
       return entry.bodyTemplate;
     default: {
       // Exhaustiveness check — adding a new ActionKey without a case

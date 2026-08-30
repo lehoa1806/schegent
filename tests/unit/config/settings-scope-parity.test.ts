@@ -108,12 +108,27 @@ describe('declared setting scope matches the manifest (M-05)', () => {
   });
 
   it('accounts for every application-scoped manifest key it accepts', () => {
-    // The three that reach `writeGeneralSettings` today. Named so that a ninth
-    // application-scoped setting becoming writable shows up here as a change to
-    // review rather than as a silent workspace write.
+    // The seven that reach `writeGeneralSettings` today. Named so that an
+    // eighth application-scoped setting becoming writable shows up here as a
+    // change to review rather than as a silent workspace write.
+    //
+    // FR-R3-143 (T024) — four arrived at once: the settings tab could not
+    // offer the environment policy, its allowlist, or the probe timeout while
+    // the host had no write path for them. Each is `application`-scoped in the
+    // manifest, so `configurationTargetFor` sends it to Global, which is the
+    // point of this assertion — a workspace cannot set a machine-level policy
+    // for the installation, and a review of this line is where that is checked.
     const applicationAndAccepted = [...ALLOWED_KEYS]
       .filter((key) => manifest.get(key)?.scope === 'application')
       .sort();
-    expect(applicationAndAccepted).toEqual(['agy.path', 'cli.path', 'codex.path']);
+    expect(applicationAndAccepted).toEqual([
+      'agy.path',
+      'backend.probeTimeoutSeconds',
+      'cli.environmentAllowlist',
+      'cli.environmentMode',
+      'cli.inheritEnvironment',
+      'cli.path',
+      'codex.path'
+    ]);
   });
 });

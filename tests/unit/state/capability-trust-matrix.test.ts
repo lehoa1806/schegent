@@ -187,4 +187,33 @@ describe('FR-R3-108 — the resolved-scope reporter agrees with the resolver', (
     expect(isCapabilityAllowed('phases')).toBe(false);
     expect(getResolvedScope('phases')).toBe('user');
   });
+
+  /**
+   * FR-R3-143 (T049 run 5) — found by falsification, not by review.
+   *
+   * Reverting `getResolvedScope` to the pre-FR-R3-108 workspace-first order left
+   * this whole file green. Neither check above can see that order:
+   *
+   * - The "every cell" test only asserts that the named scope's value agrees
+   *   with the decision. When BOTH scopes hold `false`, `user` and `workspace`
+   *   agree equally well, so either answer satisfies it.
+   * - The inversion test sets `user=false, workspace=true`. Only one scope holds
+   *   a deny there, so both orders return `user` and the order is invisible.
+   *
+   * Both-deny is the one cell where the order is observable, and nothing was
+   * standing on it. The answer is `user` because that is the scope the operator
+   * can act on: told `workspace`, they would go editing a repository file to
+   * restore a capability their own settings also refuse.
+   */
+  it('names user scope when BOTH scopes deny — the only cell where the order shows', () => {
+    for (const capability of CAPABILITIES) {
+      set(capability, false, false);
+      expect(isCapabilityAllowed(capability)).toBe(false);
+      expect(
+        getResolvedScope(capability),
+        `${capability}: with a deny at both scopes the reporter must name the user's own, ` +
+          'which is the one they can change'
+      ).toBe('user');
+    }
+  });
 });
