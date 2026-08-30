@@ -544,6 +544,14 @@ async function openSurface(page: Page, surface: SurfaceName, theme: ThemeName): 
     await page.getByTestId('dashboard-route-builder').click();
     const builder = page.getByTestId('pipeline-builder-root');
     await expect(builder).toBeVisible();
+    // Feature 180 (T1556, FR-005) — the Builder opens on Phases now, so the tab
+    // this baseline frames has to be asked for. Role and name rather than a test
+    // id: the tab buttons carry `id="builder-tab-{id}"` and no `data-testid`
+    // (`BuilderTabs.svelte`), and this is the handle a screen-reader user has.
+    // Capturing Pipelines rather than the new landing tab is deliberate — it
+    // keeps the strip the only difference between these baselines and their
+    // predecessors, which is what makes the comparison evidence.
+    await page.getByRole('tab', { name: 'Pipelines' }).click();
     await builder.locator('.phase-list-item').first().click();
     await expect(page.getByTestId('pipelines-name-field-dev-new-feature')).toBeVisible();
     return builder;

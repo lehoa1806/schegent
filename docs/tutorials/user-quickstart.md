@@ -95,11 +95,15 @@ The dashboard opens on **Queues** and also exposes **Runs**, **History**, **Metr
 
 ## 2. Import the example process
 
-1. Open **Builder**. Its initial tab is **Pipelines**.
-2. In the import panel, select **Import…**.
-3. In the YAML picker, choose `examples/speckit-bugfix.pipeline.yaml` from the Schegent checkout.
-4. Review the preflight result. It must identify a Pipeline with ID `speckit-bugfix` and name `Spec-kit Bugfix`.
-5. Select **Confirm import**.
+1. Open **Builder**. Its initial tab is **Phases**, and its tabs read **Phases**, **Pipelines**, **Workflows**, **Models** — the order definitions compose in.
+2. Select the **Pipelines** tab. The import entry is not exclusive to it — the same kind-agnostic
+   front door appears on any Builder tab whose catalog is empty, and on **Models** unconditionally —
+   so this step is not what makes the import work. It puts you on the tab where the imported Pipeline
+   appears, which is what the steps below describe.
+3. In the import panel, select **Import…**.
+4. In the YAML picker, choose `examples/speckit-bugfix.pipeline.yaml` from the Schegent checkout.
+5. Review the preflight result. It must identify a Pipeline with ID `speckit-bugfix` and name `Spec-kit Bugfix`.
+6. Select **Confirm import**.
 
 The document is a package: it defines the pipeline and includes all five phase definitions it references. A successful confirmed import publishes the complete set so that the pipeline is launchable; the implementation first stages draft records and then publishes them as one import operation.
 

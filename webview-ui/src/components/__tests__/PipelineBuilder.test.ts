@@ -541,11 +541,11 @@ describe('PipelineBuilder — restored 3-tab design', () => {
 
   // Feature 083 added the Workflows tab; the Workflow Library has no other
   // mount site, so the tab bar is 4-wide from this feature forward.
-  it('renders the 4-tab bar: Pipelines, Phases, Workflows, Models', () => {
+  it('renders the 4-tab bar: Phases, Pipelines, Workflows, Models', () => {
     const snap = buildSnapshot();
     const { container } = render(PipelineBuilder, { props: { snapshot: snap } });
     const tabs = [...container.querySelectorAll('.tab-btn')].map((t) => t.textContent?.trim());
-    expect(tabs).toEqual(['Pipelines', 'Phases', 'Workflows', 'Models']);
+    expect(tabs).toEqual(['Phases', 'Pipelines', 'Workflows', 'Models']);
   });
 
   it('implements the catalog switcher as keyboard-operable tabs', async () => {
@@ -563,7 +563,7 @@ describe('PipelineBuilder — restored 3-tab design', () => {
     expect(tabs[1]?.getAttribute('aria-selected')).toBe('true');
     expect(document.activeElement).toBe(tabs[1]);
     expect(container.querySelector('[role="tabpanel"]')?.getAttribute('aria-labelledby'))
-      .toBe('builder-tab-phases');
+      .toBe('builder-tab-pipelines');
   });
 
   it('Phases tab: phase list renders after switching tabs', async () => {
@@ -682,7 +682,11 @@ describe('PipelineBuilder — restored 3-tab design', () => {
   // point and unmounts it with the tab — so that is what it asserts.
   it('Models tab: mounts the Model Catalog import entry point', async () => {
     const snap = buildSnapshot([], [], ['claude-sonnet-4-6']);
-    const { container } = render(PipelineBuilder, { props: { snapshot: snap } });
+    // Feature 180 (T1555, FR-004) — the assertions before the switch describe
+    // the tab this starts on, so the start is pinned rather than inherited.
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: snap, initialTab: 'pipelines' }
+    });
     expect(container.querySelectorAll('[data-testid="process-import-preflight"]')).toHaveLength(1);
     expect(container.querySelector('[data-testid="catalog-empty-state-pipeline"]')).not.toBeNull();
     await switchTab(container, 'Models');
@@ -702,7 +706,9 @@ describe('PipelineBuilder — restored 3-tab design', () => {
       phases: Object.freeze(['speckit-specify', 'speckit-plan'])
     }) as unknown as PipelineDefinition;
     const snap = buildSnapshot([], [pipeline]);
-    const { container } = render(PipelineBuilder, { props: { snapshot: snap } });
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: snap, initialTab: 'pipelines' }
+    });
     await tick();
     const saveBtn = container.querySelector(
       '[data-testid="pipelines-save-all"]'
@@ -739,7 +745,9 @@ describe('PipelineBuilder — restored 3-tab design', () => {
       phases: Object.freeze(['speckit-specify'])
     }) as unknown as PipelineDefinition;
     const snap = buildSnapshot([], [pipeline]);
-    const { container } = render(PipelineBuilder, { props: { snapshot: snap } });
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: snap, initialTab: 'pipelines' }
+    });
     await tick();
 
     // Select pipeline
@@ -1327,7 +1335,7 @@ describe('PipelineBuilder — confirmed Pipeline removal (US7, T054)', () => {
     deleteBtn: HTMLButtonElement;
   }> {
     const { container } = render(PipelineBuilder, {
-      props: { snapshot: buildSnapshot([], [REMOVABLE]) }
+      props: { snapshot: buildSnapshot([], [REMOVABLE]), initialTab: 'pipelines' }
     });
     await tick();
     await fireEvent.click(container.querySelector('.phase-list-item') as HTMLButtonElement);

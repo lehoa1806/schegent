@@ -401,8 +401,8 @@ scalar `schegent.*` keys.
 
 The Phases, Pipelines, Workflows, and Models editors are not in
 `SettingsSurface` — they live in Pipeline Builder, as its four tabs
-(Pipelines / Phases / Workflows / Models, per spec 083 and spec 096). This
-co-locates configuration with the workflows that consume it.
+(Phases / Pipelines / Workflows / Models, per spec 083, spec 096 and spec 180).
+This co-locates configuration with the workflows that consume it.
 
 ### Settings hover-text primitive (spec 018)
 
@@ -699,7 +699,7 @@ drift from the graph the moment a connection changed, so the surface is
 recomputed at resolution and projection time and the rows carry no port list.
 
 `PipelineBuilder.svelte` mounts it behind the **Workflows** tab (the Builder's
-tab bar is Pipelines / Phases / Workflows / Models) and supplies the one thing
+tab bar is Phases / Pipelines / Workflows / Models) and supplies the one thing
 the editor may not compute for itself: the `trusted` verdict, derived from
 `snapshot.resolvedTrust.workflowOverrides` under the workspace-trust ceiling.
 That capability is deliberately **distinct** from `pipelineOverrides` — see

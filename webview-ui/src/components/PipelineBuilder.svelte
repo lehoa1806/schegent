@@ -55,7 +55,11 @@
     !showWorkspaceTrustBanner && !trustRetryConditions
   );
   // svelte-ignore state_referenced_locally
-  let activeTab = $state<BuilderTab>(initialTab ?? 'pipelines');
+  // Feature 180 (T1554, FR-002) — the default moves with the strip, so `tabs[0]`
+  // is still the tab that carries `tabindex="0"` on open. Held as a literal
+  // rather than read off `BUILDER_TABS[0]`: deriving it would couple the shell
+  // to the strip's internals to save one string.
+  let activeTab = $state<BuilderTab>(initialTab ?? 'phases');
   let phases = $state<MutablePhase[]>([]);
   let effectivePhases = $state<MutablePhase[]>([]);
   let models = $state<Record<string, string[]>>({});

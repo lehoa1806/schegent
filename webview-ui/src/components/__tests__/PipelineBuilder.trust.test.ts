@@ -187,7 +187,11 @@ describe('PipelineBuilder trust gating (059, T022) — pipelines under Workspace
   // which the pair below pins in both directions — a control dead either way
   // would satisfy one of them on its own, and neither alone is the claim.
   it('opens the Pipelines tab for editing under workspace trust, with no per-capability banner', () => {
-    const { container } = render(PipelineBuilder, { props: { snapshot: buildSnapshot() } });
+    // Feature 180 (T1555, FR-004) — the tab is named rather than inherited. It
+    // used to arrive by default, and the default is now Phases.
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: buildSnapshot(), initialTab: 'pipelines' }
+    });
     const add = container.querySelector('[data-testid="pipelines-add"]') as HTMLButtonElement | null;
     expect(add).not.toBeNull();
     expect(add?.disabled).toBe(false);
