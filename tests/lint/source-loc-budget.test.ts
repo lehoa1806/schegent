@@ -1109,6 +1109,15 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // between them and are the next candidates. The probe-failure arm stays where it
   // is — its audit emission order differs from the other two, and unifying it is an
   // observable change.
+  //
+  // 2026-08-31 — 1,286 -> 1,246, and the ceiling is HELD again, for a different
+  // reason than above. `emitTerminalOutcome` and the thirty lines of FR-R3-107
+  // history explaining it left for `services/terminal-outcome-audit.ts`, because
+  // the controller's own terminal route needed the same emitter and could not
+  // reach a private method. The forty lines are a real decrement, not a comment
+  // trim: what moved is the payload the event carries. That took the file off
+  // `UNDECIDED_CEILING_BASELINE` — see the note there — so 1,290 is now a budget
+  // with 43 lines of measured headroom rather than a high-water mark.
   { path: 'src/services/run-driver.ts', maxLines: 1_290 },
   // FR-R3-128 — the extraction's destination is governed in the same change. An
   // extraction that shrinks one method and adds an ungoverned file has moved the
@@ -1207,6 +1216,17 @@ describe('large source file LOC budgets', () => {
   // table lives in. Its ceiling of 712 is left where it is: real headroom on a
   // file that shrank is a budget, which is the state this list exists to move
   // files into.
+  // `run-driver.ts` came off this list on 2026-08-31, and this one WAS an
+  // architectural decision rather than a deletion. FR-R3-107's "one emitter for
+  // `task-execution-ended`" was true of the driver and false of the host: the
+  // controller owns a second route to a terminal state and emitted nothing on it,
+  // so a failed run was `failed` in the state store and still open in the durable
+  // record. Closing that meant the emitter had to be reachable from both, so it
+  // moved to `services/terminal-outcome-audit.ts` — 1,286 - 1,246, the payload
+  // plus the thirty lines of history that explain it. Its ceiling of 1,290 is left
+  // where it is, on the same terms as the three above: real headroom on a file
+  // that shrank is a budget, which is the state this list exists to move files
+  // into. The next decrement is still the four pause arms named at the entry.
   /**
    * Recorded ceiling, not recorded headroom (FR-R3-143 T056).
    *
@@ -1235,8 +1255,7 @@ describe('large source file LOC budgets', () => {
   }> = [
     { path: 'src/controller/workflow-controller.ts', ceiling: 1040 },
     { path: 'src/ui/sidebar/state-projector-runtime.ts', ceiling: 300 },
-    { path: 'src/ui/sidebar/snapshot-composer.ts', ceiling: 322 },
-    { path: 'src/services/run-driver.ts', ceiling: 1290 }
+    { path: 'src/ui/sidebar/snapshot-composer.ts', ceiling: 322 }
   ];
 
   const BASELINE_PATHS: ReadonlySet<string> = new Set(
