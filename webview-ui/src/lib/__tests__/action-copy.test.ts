@@ -56,7 +56,13 @@ const EXPECTED_KEYS: readonly ActionKey[] = [
   // turns every other prompt in this table off. Confirming on the way out only,
   // never on the way back in, which is why the module short-circuits on
   // `snapshot.confirmationsEnabled` rather than branching per direction.
-  'settings.disable-confirmations'
+  'settings.disable-confirmations',
+  // FR-R3-144 (T034) — granting a backend permission to run with no sandbox. It
+  // is in this table, and not a bare toggle, because it widens what an unattended
+  // run may do on the machine: the enforcement refuses the spawn today, and after
+  // this write it does not. The body is the refusal's own sentence, carried in as
+  // a placeholder, so the prompt cannot describe a rule the runner no longer has.
+  'backend.grant-uncontained'
 ];
 
 describe('ACTION_COPY exhaustiveness (FR-022b)', () => {
@@ -77,6 +83,13 @@ describe('ACTION_COPY exhaustiveness (FR-022b)', () => {
   it('destructive severity covers irreversible catalog and workspace actions', () => {
     const destructive = EXPECTED_KEYS.filter((k) => ACTION_COPY[k].severity === 'destructive');
     expect(destructive.sort()).toEqual([
+      // FR-R3-144 (T034) — the one destructive key that deletes nothing, and the
+      // reason the assertion's name is about irreversibility rather than deletion.
+      // Granting is undoable from the same control; what it enables is not, because
+      // it is not state — it is model-generated actions running with the operator's
+      // local authority, for as long as the grant stands. The strongest
+      // presentation in the dialog belongs to the widest permission on the tab.
+      'backend.grant-uncontained',
       // Feature 100 — both remain destructive, for two different reasons. A
       // deactivation drops the definition from the launchable catalog; a discard
       // drops an edit that was never published, and of a never-published

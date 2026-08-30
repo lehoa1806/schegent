@@ -83,6 +83,11 @@ export class PlaceholderProjector implements ProjectorHandle {
       availableModels: Object.freeze({ claude: [], codex: [], agy: [] }) as Record<BackendRunnerKind, readonly string[]>,
       configuredModels: Object.freeze({ claude: [], codex: [], agy: [] }) as Record<BackendRunnerKind, readonly string[]>,
       availableBackends: Object.freeze(['claude']) as readonly BackendRunnerKind[],
+      // FR-R3-144 (T021) — empty, like the idle snapshot's. The placeholder stands
+      // in before any configuration has been read, and a posture composed from
+      // nothing would assert a grant state no setting supports.
+      backendPostures: Object.freeze([]),
+      backendGrantProblems: Object.freeze([]),
       backendPingState: Object.freeze({ status: 'idle' as const }),
       generalSettings: IDLE_GENERAL_SETTINGS,
       queueSettings: IDLE_QUEUE_SETTINGS,

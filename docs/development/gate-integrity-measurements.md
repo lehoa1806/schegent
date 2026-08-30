@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 102
+    vacuity-census-denominator: 103
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **102** |
+| Gates the detector calls **controlled** (the denominator) | **103** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -123,6 +123,19 @@ report the loss because a gate that leaves the denominator leaves the printed ou
 entrants, and none survived — so the three were genuinely controlled and not merely detected as such,
 which is the claim `T1615` was held open to make rather than assert. `scanning-gates-prove-they-scanned`
 also reads `isScanningGate`, so all three now fall under it too; `WITHOUT_A_CONTROL` stays empty.
+
+**Denominator movement 102 → 103 (2026-08-30, `FR-R3-144`).** One gate joined, and it is a
+genuine addition rather than a reclassification.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | `webview-posture-derivation.test.ts` (102 → 103) | Joined. Forbids the webview computing a backend's containment or grant state rather than rendering the projection the composer hands it (`T024`, `FR-008`). It walks `webview-ui/src` through the same shared helper as the three rows above and asserts `toEqual([])`, and it carries three floors: the scan found more than fifty files including the settings tab, the derived vocabulary it forbids is non-empty, and the test-file exclusion covers a real set strictly smaller than the scan. |
+
+The gate's forbidden vocabulary is **derived from the policy module's own tables** rather than
+transcribed, which is why the second floor exists: a refactor that emptied
+`mechanismByBackend()` would otherwise leave the gate passing over nothing, and a derived list is
+exactly the shape whose failure mode is silent. The rate stays **0.0%** — the entrant was mutated
+with the rest and did not survive.
 
 The residual is unchanged and is the note below: the detector reads for scanning **by name**, so the
 next extraction of a walk into a helper will do this again. Nothing gates that.

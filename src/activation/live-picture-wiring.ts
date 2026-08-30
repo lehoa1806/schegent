@@ -39,6 +39,7 @@ import { buildBuilderLifecycleByKind } from '../ui/sidebar/builder-lifecycle';
 import { isConfirmationsEnabled } from '../state/confirmations-config';
 import { resolveRunOrigin } from '../services/run-origin-resolver';
 import { initCapabilityTrustResolver } from '../state/capability-trust-resolver';
+import { ALLOW_UNCONTAINED_SETTING } from '../services/backend-containment-policy';
 
 /**
  * FR-R3-119 — the live picture: the state projector, the connected-run service it
@@ -183,6 +184,19 @@ const projector = new StateProjector({
   getAvailableModels: () => backendCapabilities.getAvailableModels(),
   getAvailableBackends: () => backendCapabilities.getAvailableBackends(),
   getBackendPingState: () => backendPing.getState(),
+  // FR-R3-144 (T021, D-4) — the grant setting, read raw on every compose.
+  //
+  // No section and no `Uri` scope, unlike `getGeneralSettings` above: the setting
+  // is application-scoped by design (FR-R3-125), so reading it through a
+  // workspace-scoped configuration would show a posture the spawn path does not
+  // enforce. The same unscoped read is what `sidebar-router-wiring.ts` writes
+  // through, which is what keeps the two ends agreeing.
+  //
+  // Re-read on every projection rather than cached: the `onDidChangeConfiguration`
+  // listener below kicks the projector for any `schegent.*` change, so a grant
+  // made in another window appears here without a second mechanism.
+  getUncontainedGrantSetting: () =>
+    vscode.workspace.getConfiguration().get<unknown>(ALLOW_UNCONTAINED_SETTING),
   getConnectedRuns: () => connectedRuns.listProjections(),
   // Feature 103 (T031, FR-003) — both callers and both cadences: see `resolveRunOrigin`.
   getRunOrigin: (taskId) => resolveRunOrigin(store.getConnectedRuns(), taskId)

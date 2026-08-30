@@ -38,6 +38,7 @@ import {
   CMD_SAVE_QUEUE_SETTINGS,
   CMD_SET_CONFIRM_SUPPRESSION,
   CMD_SET_PHASE_BREAKPOINT,
+  CMD_SET_UNCONTAINED_BACKEND_GRANT,
   CMD_SKIP_PHASE,
   CMD_START,
   CMD_START_QUEUE,
@@ -122,7 +123,16 @@ export const MUTATING_COMMAND_REASONS = Object.freeze({
   [CMD_RENAME_QUEUE]: 'queue registry write',
   [CMD_DELETE_QUEUE]: 'queue registry write',
   [CMD_SAVE_QUEUE_SETTINGS]: 'queue settings write',
-  [CMD_MOVE_TASK]: 'task move between queues'
+  [CMD_MOVE_TASK]: 'task move between queues',
+  // FR-R3-144 (T017, D-2) — grant or revoke one backend's uncontained posture.
+  // The most consequential write in this table: it decides whether a backend
+  // with no OS-enforced bound may spawn at all, and it is application-scoped, so
+  // it applies to every workspace in the installation. Gated in a secondary
+  // window for the same reason every other write here is — one host owns the
+  // write — and the name carries a `SET_` prefix, so
+  // `mutating-command-name-gate` would also have caught an omission. Registered
+  // deliberately rather than relying on that.
+  [CMD_SET_UNCONTAINED_BACKEND_GRANT]: 'uncontained backend grant'
 } satisfies Partial<Record<CommandType, string>>);
 
 export const MUTATING_COMMAND_TYPES = Object.freeze(

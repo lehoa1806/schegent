@@ -108,8 +108,8 @@ describe('declared setting scope matches the manifest (M-05)', () => {
   });
 
   it('accounts for every application-scoped manifest key it accepts', () => {
-    // The seven that reach `writeGeneralSettings` today. Named so that an
-    // eighth application-scoped setting becoming writable shows up here as a
+    // The eight that reach `writeGeneralSettings` today. Named so that a
+    // ninth application-scoped setting becoming writable shows up here as a
     // change to review rather than as a silent workspace write.
     //
     // FR-R3-143 (T024) — four arrived at once: the settings tab could not
@@ -118,12 +118,21 @@ describe('declared setting scope matches the manifest (M-05)', () => {
     // manifest, so `configurationTargetFor` sends it to Global, which is the
     // point of this assertion — a workspace cannot set a machine-level policy
     // for the installation, and a review of this line is where that is checked.
+    //
+    // FR-R3-144 (T006) — `backend.runner` is the eighth, and it is the one this
+    // assertion was written for. It chooses which backend drives every phase and
+    // therefore what permission posture the product runs under, which is a
+    // machine-level decision: `application` in the manifest, Global at the write.
+    // A workspace that could set it would be a repository choosing the authority
+    // its own contents execute with. The two spend keys arriving beside it are
+    // `resource`-scoped and correctly absent from this list.
     const applicationAndAccepted = [...ALLOWED_KEYS]
       .filter((key) => manifest.get(key)?.scope === 'application')
       .sort();
     expect(applicationAndAccepted).toEqual([
       'agy.path',
       'backend.probeTimeoutSeconds',
+      'backend.runner',
       'cli.environmentAllowlist',
       'cli.environmentMode',
       'cli.inheritEnvironment',

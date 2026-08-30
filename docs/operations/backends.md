@@ -23,6 +23,8 @@ Model arguments are `--model <id>` for all three adapters. Claude and Agy use `-
 
 Set `schegent.backend.runner` to `claude`, `codex`, or `agy`. The default is `claude`. A blank, missing, or non-string value silently selects that default; an unknown nonblank string selects the default and emits a warning. The runner choice is cached when the workspace-bound Extension Host activates, so reload that host after changing it. Binary paths are read dynamically, so changing `schegent.cli.path`, `schegent.codex.path`, or `schegent.agy.path` does not require a reload.
 
+The Settings tab edits the same settings without the native Settings editor: the runner selector, one section per backend carrying that backend's binary path and its containment posture, and a per-run spend ceiling in dollars and in tokens (`schegent.spend.maxUsdPerRun`, `schegent.spend.maxTokensPerRun`). The sections are generated from the supported-backend enumeration, so a backend the product supports cannot be missing from the tab.
+
 <!-- Source: package.json -->
 <!-- Source: src/runner/backend-runner-factory.ts -->
 <!-- Source: src/config/cli-path-accessor.ts -->

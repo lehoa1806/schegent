@@ -29,6 +29,7 @@ import { composePipelineCatalogProjection } from './pipeline-catalog-projection'
 import { composeWorkflowCatalogProjection } from './workflow-catalog-projector';
 import { buildLaunchProjection } from './launch-projection';
 import { composeTrustProjection } from './trust-projection';
+import { composeBackendPostures } from './backend-posture-projection';
 import type { StateProjectorDeps } from './state-projector';
 import { totalmem } from 'node:os';
 
@@ -291,6 +292,7 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     availableBackends: Object.freeze(
       deps.getAvailableBackends?.() ?? (['claude'] as readonly BackendRunnerKind[])
     ),
+    ...composeBackendPostures(deps.getUncontainedGrantSetting?.()),
     backendPingState: deps.getBackendPingState?.() ?? Object.freeze({ status: 'idle' as const }),
     generalSettings: deps.getGeneralSettings?.() ?? IDLE_GENERAL_SETTINGS,
     // FR-R3-145 (T1572) — `store`, not `deps`: the cap is enforced against the

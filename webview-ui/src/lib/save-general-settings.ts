@@ -19,6 +19,11 @@
 import { CMD_SAVE_GENERAL_SETTINGS } from './messages';
 import { postCommand } from './vscode-api';
 import { snapshotStore } from './snapshot-store.svelte';
+// FR-R3-144 (T007) — the backend union is READ from the contract the host
+// declares it in, through the same re-export the rest of the webview uses. A
+// literal `'claude' | 'codex' | 'agy'` here would be a fourth place a backend
+// has to be added, and the first one nothing would fail to remind you about.
+import type { BackendRunnerKind } from './snapshot-types';
 
 const ACK_TIMEOUT_MS = 5000;
 
@@ -62,6 +67,15 @@ export interface GeneralSettingsPayload {
   readonly 'backend.probeTimeoutSeconds'?: number;
   readonly 'ui.confirmations.enable'?: boolean;
   readonly 'multiRoot.suppressWarning'?: boolean;
+  // FR-R3-144 (T007) — which backend runs, and what it may spend.
+  //
+  // `null` on either bound is the CLEAR, not zero: it is the manifest's own
+  // default and it means unbounded. `backend.runner` takes no `null`, because a
+  // backend is always named — clearing it would mean "no backend", which is not
+  // a state a run can be in.
+  readonly 'backend.runner'?: BackendRunnerKind;
+  readonly 'spend.maxUsdPerRun'?: number | null;
+  readonly 'spend.maxTokensPerRun'?: number | null;
 }
 
 /**
@@ -104,7 +118,11 @@ export const GENERAL_SETTINGS_PAYLOAD_KEYS = [
   'cli.environmentAllowlist',
   'backend.probeTimeoutSeconds',
   'ui.confirmations.enable',
-  'multiRoot.suppressWarning'
+  'multiRoot.suppressWarning',
+  // FR-R3-144 (T007)
+  'backend.runner',
+  'spend.maxUsdPerRun',
+  'spend.maxTokensPerRun'
 ] as const;
 
 export type GeneralSettingsPayloadKey = (typeof GENERAL_SETTINGS_PAYLOAD_KEYS)[number];

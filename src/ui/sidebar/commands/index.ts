@@ -52,6 +52,7 @@ import {
   CMD_SAVE_QUEUE_SETTINGS,
   CMD_SET_CONFIRM_SUPPRESSION,
   CMD_SET_PHASE_BREAKPOINT,
+  CMD_SET_UNCONTAINED_BACKEND_GRANT,
   CMD_SKIP_PHASE,
   CMD_START,
   CMD_START_PHASE_LOG_TAIL,
@@ -114,6 +115,7 @@ import { handler as saveGeneralSettings } from './cmd-save-general-settings';
 import { handler as saveModels } from './cmd-save-models';
 import { handler as saveQueueSettings } from './cmd-save-queue-settings';
 import { handler as setConfirmSuppression } from './cmd-set-confirm-suppression';
+import { handler as setUncontainedBackendGrant } from './cmd-set-uncontained-backend-grant';
 import { handler as setPhaseBreakpoint } from './cmd-set-phase-breakpoint';
 import { handler as skipPhase } from './cmd-skip-phase';
 import { handler as start } from './cmd-start';
@@ -187,6 +189,7 @@ export const HANDLERS: ReadonlyMap<string, CommandHandler> = new Map<
   [CMD_SAVE_QUEUE_SETTINGS, saveQueueSettings as CommandHandler],
   [CMD_SET_CONFIRM_SUPPRESSION, setConfirmSuppression as CommandHandler],
   [CMD_SET_PHASE_BREAKPOINT, setPhaseBreakpoint as CommandHandler],
+  [CMD_SET_UNCONTAINED_BACKEND_GRANT, setUncontainedBackendGrant as CommandHandler],
   [CMD_SKIP_PHASE, skipPhase as CommandHandler],
   [CMD_START, start as CommandHandler],
   [CMD_START_PHASE_LOG_TAIL, startPhaseLogTail as CommandHandler],

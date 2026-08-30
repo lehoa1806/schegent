@@ -370,7 +370,10 @@ describe('Feature 063 T046 — destructive command sites must be useConfirm-gate
    * Raise this WITH the union, in the same change. The number is the point: it
    * is what makes the next truncation fail loudly instead of shrinking quietly.
    */
-  const DECLARED_ACTION_KEY_COUNT = 17;
+  // FR-R3-144 (T033) — 17 → 18 with `backend.grant-uncontained`, the settings
+  // control that waives OS-enforced containment for a backend. Raised in the same
+  // change as the union, which is what the note above asks for.
+  const DECLARED_ACTION_KEY_COUNT = 18;
 
   it('reads every key the ActionKey union declares, and no others', () => {
     expect(

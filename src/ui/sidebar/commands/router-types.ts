@@ -8,6 +8,7 @@ import type { PipelineCatalog } from '../../../config/pipeline-config';
 import type { CatalogVersionRef } from '../../../contracts/catalog-version';
 import type { RunOutputRecord } from '../../../contracts/run-results';
 import type { BackendRunnerKind } from '../../../contracts/backend-kinds';
+import type { UncontainedGrantOutcome } from '../../../services/uncontained-grant-writer';
 import type { ConnectedWorkflowRun } from '../../../state/connected-workflow-run';
 import type { ConnectedRunWriteResult } from '../../../state/workspace-state';
 import type { ChildRunStateReader } from '../connected-run-projector';
@@ -370,6 +371,24 @@ export interface RouterDeps {
   readonly writeGeneralSettings?: (
     updates: Readonly<Record<string, unknown>>
   ) => Promise<{ ok: true } | { ok: false; reason: string }>;
+  /**
+   * FR-R3-144 (T018, D-2) — `CMD_SET_UNCONTAINED_BACKEND_GRANT` handler hook.
+   *
+   * A port of its own, beside `writeGeneralSettings` rather than inside it. The
+   * two write different things for different reasons: one is a batched draft of
+   * `KEY_SPECS` values, this one is a per-id read-modify-write of the
+   * application-scoped setting that decides whether a backend with no OS-enforced
+   * bound may spawn. Sharing a port would let one write's failure be reported as
+   * the other's, and would make a rejected draft field able to take a grant with
+   * it.
+   *
+   * Optional so unit tests that do not exercise this command can omit the wiring;
+   * the handler REJECTS when it is absent rather than accepting silently.
+   */
+  readonly setUncontainedBackendGrant?: (
+    kind: BackendRunnerKind,
+    granted: boolean
+  ) => Promise<UncontainedGrantOutcome>;
   /**
    * Feature 063 — `CMD_SET_CONFIRM_SUPPRESSION` handler hook. Persists
    * the per-action "Don't ask again" preference to the

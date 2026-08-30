@@ -125,6 +125,20 @@ export type GeneralSettingsControlId =
   | 'trust-phases-open-settings'
   | 'trust-retryConditions-open-settings'
   | 'backend-ping'
+  // FR-R3-144 (T031, T036, T034) — the backend selector, both per-run spend
+  // bounds, and the uncontained grant. The grant carries no `-save`/`-reset` pair
+  // because it is not a draft field: it writes through its own IPC command the
+  // moment it is confirmed, which is why the confirmation exists.
+  | 'backendRunner'
+  | 'backendRunner-save'
+  | 'backendRunner-reset'
+  | 'spendMaxUsdPerRun'
+  | 'spendMaxUsdPerRun-save'
+  | 'spendMaxUsdPerRun-reset'
+  | 'spendMaxTokensPerRun'
+  | 'spendMaxTokensPerRun-save'
+  | 'spendMaxTokensPerRun-reset'
+  | 'backend-grant'
   | 'save-all'
   | 'reset-all';
 
@@ -448,6 +462,83 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
     body:
       'Run a bounded host-side CLI availability probe. The command carries ' +
       'only the backend identity; configured paths and process output never reach the webview.'
+  },
+
+  // FR-R3-144 (T031) — the setting the whole item turns on.
+  backendRunner: {
+    title: 'Backend',
+    body:
+      'Which CLI Schegent invokes for every task. Applies to every workspace on ' +
+      'this machine, and takes effect on the next invocation — a run already in ' +
+      'flight finishes on the backend it started with. Each backend reports spend ' +
+      'in its own denomination and carries its own containment, both shown below.'
+  },
+  'backendRunner-save': {
+    title: 'Save backend',
+    body:
+      'Persist the selected backend to your user settings. Disabled until you ' +
+      'change the selection.'
+  },
+  'backendRunner-reset': {
+    body:
+      'Restore the backend currently in force. Disabled when there are no unsaved ' +
+      'changes on this field.'
+  },
+
+  // FR-R3-144 (T036) — one key per denomination; the tab offers the one that
+  // matches the selected backend, because a bound in a denomination the backend
+  // never reports is a bound that silently does nothing.
+  spendMaxUsdPerRun: {
+    title: 'Per-run spend bound (USD)',
+    body:
+      'Pause a run once its reported cost crosses this many US dollars. It pauses ' +
+      'and never fails or cancels: you can resume, and the accounting continues ' +
+      'from where it stopped. Leave it empty for no bound. Applies to backends ' +
+      'that report a cost.'
+  },
+  'spendMaxUsdPerRun-save': {
+    title: 'Save spend bound',
+    body:
+      'Persist this per-run dollar bound. Disabled until you change the value. ' +
+      'Clearing the field saves "no bound".'
+  },
+  'spendMaxUsdPerRun-reset': {
+    body:
+      'Restore the projected dollar bound. Disabled when there are no unsaved ' +
+      'changes on this field.'
+  },
+  spendMaxTokensPerRun: {
+    title: 'Per-run spend bound (tokens)',
+    body:
+      'Pause a run once its reported token usage crosses this count. It pauses ' +
+      'and never fails or cancels: you can resume, and the accounting continues ' +
+      'from where it stopped. Leave it empty for no bound. Applies to backends ' +
+      'that report tokens and no cost.'
+  },
+  'spendMaxTokensPerRun-save': {
+    title: 'Save spend bound',
+    body:
+      'Persist this per-run token bound. Disabled until you change the value. ' +
+      'Clearing the field saves "no bound".'
+  },
+  'spendMaxTokensPerRun-reset': {
+    body:
+      'Restore the projected token bound. Disabled when there are no unsaved ' +
+      'changes on this field.'
+  },
+
+  // FR-R3-144 (T034) — the grant, and what granting it actually means. The
+  // sentence the operator sees BEFORE writing is the enforcement's own refusal,
+  // carried by the posture projection; this is the standing explanation of the
+  // control itself.
+  'backend-grant': {
+    title: 'Uncontained permission',
+    body:
+      'Allow this backend to run even though the platform enforces no sandbox for ' +
+      'it. The permission is per backend, is stored in your settings, and can be ' +
+      'revoked here at any time — revoking takes effect on the next invocation. ' +
+      'Without it the run is refused before the process starts, which is what the ' +
+      'sentence beside this button says.'
   },
 
   'trust-phases-open-settings': {

@@ -186,6 +186,15 @@ describe('sidebar-ipc drift guard (FR-024)', () => {
             definitions: [{ id: 'specify', body: null }]
           }
         ]
+      },
+      // FR-R3-144 — both fields are required, and `granted` is required as a
+      // FIELD rather than as a truthy value: `false` is the revoke direction, so
+      // a guard that accepted a payload without it would make an absent flag mean
+      // "grant". The minimal fixture states the grant direction because that is
+      // the one that widens what a spawned process may touch.
+      [Authoritative.CMD_SET_UNCONTAINED_BACKEND_GRANT]: {
+        kind: 'claude',
+        granted: true
       }
     };
     for (const literal of Authoritative.COMMAND_TYPES) {

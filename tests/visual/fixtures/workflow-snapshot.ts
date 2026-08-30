@@ -670,6 +670,9 @@ export const workflowSnapshot = {
     "backendProbeTimeoutSeconds": 5,
     "uiConfirmationsEnable": true,
     "multiRootSuppressWarning": false,
+    "backendRunner": "claude",
+    "spendMaxUsdPerRun": null,
+    "spendMaxTokensPerRun": null,
     "scopes": {
       "cliPath": "default",
       "loggingVerbose": "workspace",
@@ -698,7 +701,10 @@ export const workflowSnapshot = {
       "cliEnvironmentAllowlist": "default",
       "backendProbeTimeoutSeconds": "default",
       "uiConfirmationsEnable": "default",
-      "multiRootSuppressWarning": "default"
+      "multiRootSuppressWarning": "default",
+      "backendRunner": "default",
+      "spendMaxUsdPerRun": "default",
+      "spendMaxTokensPerRun": "default"
     }
   },
   "sessionArtifacts": {
@@ -765,5 +771,42 @@ export const workflowSnapshot = {
   "queueSettings": {
     "globalConcurrencyCap": 1,
     "defaultQueueId": "default"
-  }
+  },
+  // FR-R3-144 (T021) — the three postures a shipped default produces: `claude` and
+  // `agy` carry no OS-enforced bound and are ungranted, `codex` carries one and
+  // needs no grant. Literals for the reason the paragraph above gives — this is a
+  // captured frame — and the values are what `composeBackendPostures([])` returns,
+  // which is what a cold workspace with the manifest default `[]` projects.
+  // The refusal sentences are `judgeBackendContainment`'s own, copied whole. They
+  // are long, and that is the point: the tab renders the enforcement's wording
+  // verbatim, so the baseline must photograph a tab carrying two of them. Held to
+  // the projection by `tests/unit/ui/sidebar/backend-posture-projection.test.ts`,
+  // which compares this literal against `composeBackendPostures([])` — the first
+  // version of this fixture omitted both, and three screenshots recorded a surface
+  // with no refusal on it while a fresh install shows two.
+  "backendPostures": [
+    {
+      "kind": "claude",
+      "containment": "none",
+      "mechanism": "none",
+      "grant": "not-granted",
+      "refusal":
+        "The 'claude' backend runs without an OS-enforced bound on what it can reach: model-generated actions execute with your local user authority. Add 'claude' to 'schegent.backend.uncontainedBackends' to accept that for this backend only, or choose a backend that carries a sandbox. The setting is application-scoped, so it applies to every workspace in this installation. It replaces the removed boolean 'schegent.backend.allowUncontainedBackends', which now grants nothing. See docs/architecture/agent-capability-posture.md and docs/operations/untrusted-repositories.md."
+    },
+    {
+      "kind": "agy",
+      "containment": "none",
+      "mechanism": "none",
+      "grant": "not-granted",
+      "refusal":
+        "The 'agy' backend runs without an OS-enforced bound on what it can reach: model-generated actions execute with your local user authority. Add 'agy' to 'schegent.backend.uncontainedBackends' to accept that for this backend only, or choose a backend that carries a sandbox. The setting is application-scoped, so it applies to every workspace in this installation. It replaces the removed boolean 'schegent.backend.allowUncontainedBackends', which now grants nothing. See docs/architecture/agent-capability-posture.md and docs/operations/untrusted-repositories.md."
+    },
+    {
+      "kind": "codex",
+      "containment": "os-enforced",
+      "mechanism": "codex-sandbox-workspace-write",
+      "grant": "not-required"
+    }
+  ],
+  "backendGrantProblems": []
 } as const satisfies WorkflowSnapshot;

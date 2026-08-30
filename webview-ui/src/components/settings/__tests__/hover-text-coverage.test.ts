@@ -88,6 +88,34 @@ function buildBaseSnapshot(overrides: Partial<WorkflowSnapshot> & LegacyRunField
     availablePipelines: Object.freeze([]),
     availablePhases: Object.freeze([]),
     availableModels: Object.freeze([]),
+    // FR-R3-144 (T034, T035) — the posture projection, on every mount. The grant button
+    // renders only for a backend whose containment the platform does not enforce,
+    // so a fixture without postures would report `backend-grant` as an orphan key
+    // and would hold the control count down by two. These are the shipped
+    // classifications: `codex` carries a sandbox and has nothing to grant, `claude`
+    // and `agy` do not and can be granted.
+    backendPostures: Object.freeze([
+      Object.freeze({
+        kind: 'claude',
+        containment: 'none',
+        mechanism: 'none',
+        grant: 'not-granted',
+        refusal: "'claude' runs with no OS-enforced containment."
+      }),
+      Object.freeze({
+        kind: 'codex',
+        containment: 'os-enforced',
+        mechanism: 'codex-sandbox-workspace-write',
+        grant: 'not-required'
+      }),
+      Object.freeze({
+        kind: 'agy',
+        containment: 'none',
+        mechanism: 'none',
+        grant: 'not-granted',
+        refusal: "'agy' runs with no OS-enforced containment."
+      })
+    ]),
     ...rest
   }) as unknown as unknown as WorkflowSnapshot;
 }
@@ -118,6 +146,27 @@ function snapshotWithPopulatedAllowlist(): WorkflowSnapshot {
   const generalSettings: GeneralSettings = {
     ...IDLE_GENERAL_SETTINGS,
     cliEnvironmentAllowlist: Object.freeze(['HTTPS_PROXY']) as readonly string[]
+  };
+  return buildBaseSnapshot({ generalSettings });
+}
+
+/**
+ * FR-R3-144 (T036) — the same case again, for the spend bound.
+ *
+ * The tab offers ONE per-run bound: the one denominated as the selected backend
+ * reports. The shipped default is `claude`, which reports a cost, so the mount
+ * above draws the USD control and never the token one — `spendMaxTokensPerRun`
+ * and its save/reset keys would be orphans on that mount alone, and not because
+ * they are unwired.
+ *
+ * That the two are mutually exclusive is the behaviour FR-009 asks for, not a
+ * fixture gap: a dollar bound shown for a backend that reports no cost is a bound
+ * an operator believes they set and did not.
+ */
+function snapshotWithTokenDenominatedBackend(): WorkflowSnapshot {
+  const generalSettings: GeneralSettings = {
+    ...IDLE_GENERAL_SETTINGS,
+    backendRunner: 'codex'
   };
   return buildBaseSnapshot({ generalSettings });
 }
@@ -180,11 +229,20 @@ const TAB_SPECS: readonly TabSpec[] = [
     name: 'GeneralSettingsTab',
     component: GeneralSettingsTab as unknown as ComponentType,
     buildProps: () => ({ snapshot: snapshotWithGeneralSettings() }),
-    alternateProps: [() => ({ snapshot: snapshotWithPopulatedAllowlist() })],
+    alternateProps: [
+      () => ({ snapshot: snapshotWithPopulatedAllowlist() }),
+      () => ({ snapshot: snapshotWithTokenDenominatedBackend() })
+    ],
     headerOnlyKeys: ['tab-header'],
-    // Measured at FR-R3-143 (T053) on `snapshotWithGeneralSettings()`, which
+    // Measured at FR-R3-144 (T031, T034, T036) on `snapshotWithGeneralSettings()`, which
     // leaves the allowlist empty — so this counts no per-row Remove button.
-    minFocusableControls: 92,
+    //
+    // Raised from 92 by the eight controls this feature adds to that mount: the
+    // backend selector and its save/reset pair, the USD spend bound and its pair,
+    // and one grant button each for the two backends the platform does not
+    // contain. The Claude auto-compaction field moved into Claude's section and
+    // is counted in both numbers.
+    minFocusableControls: 100,
     descriptionKeys: Object.keys(GENERAL_SETTINGS_DESCRIPTIONS),
     controlIdToKey: (id) => {
       // FR-R3-143 (T030) — the allowlist editor's Remove buttons are per-row,
@@ -194,6 +252,15 @@ const TAB_SPECS: readonly TabSpec[] = [
       if (/^cliEnvironmentAllowlist-remove-\d+$/.test(id)) {
         return 'cliEnvironmentAllowlist-remove';
       }
+      // FR-R3-144 (T034) — one grant button per uncontained backend, so the id
+      // carries the backend and they share one description. Per-instance for the
+      // same reason as the Remove buttons above: the action's inline branch
+      // (body ≤ 80 chars) injects `id="desc-<controlId>"`, so a shared id across
+      // sections would be a duplicate DOM id the moment the body is shortened.
+      // `backend-ping` reuses one id across all three sections and survives only
+      // because its body is long enough to take the popover branch — noted in this
+      // feature's review; not changed here, as it is untouched shipped behaviour.
+      if (/^backend-grant-[a-z]+$/.test(id)) return 'backend-grant';
       return id in GENERAL_SETTINGS_DESCRIPTIONS ? id : null;
     }
   },

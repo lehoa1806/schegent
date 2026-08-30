@@ -17,6 +17,7 @@ import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
 import type { CatalogConfigReader } from '../config/pipeline-config-loader';
 import { coerceModels } from '../config/pipeline-config-loader';
 import { writeGeneralSettings, type GeneralSettingsConfig } from '../config/general-settings';
+import { setUncontainedGrant } from '../services/uncontained-grant-writer';
 import type { SchegentWorkflowController } from '../controller/workflow-controller';
 import type { SanitizedLogger } from '../lib/logger';
 import type { QueueManager } from '../queue/queue-manager';
@@ -230,6 +231,39 @@ return new MessageRouter({
         }
       }
     );
+  },
+  // FR-R3-144 (T018) — `CMD_SET_UNCONTAINED_BACKEND_GRANT` persistence.
+  //
+  // `getConfiguration()` with NO section and no resource URI, so the writer
+  // supplies the one full key it owns and writes it at application scope. This is
+  // the same seam `run-safety-wiring.ts` gives the consent modal, built the same
+  // way and for the same reason: the value appended to must be the value as it
+  // stands when the write happens, so the configuration is read per call rather
+  // than captured here.
+  //
+  // Deliberately NOT the `vscode.Uri.file(workspaceRoot)`-scoped configuration
+  // `writeGeneralSettings` above takes. That one is resource-scoped because its
+  // keys are; this grant is machine-wide by declaration, and handing it a
+  // workspace-scoped accessor would put an application-scoped write behind a
+  // folder's configuration.
+  setUncontainedBackendGrant: async (kind, granted) => {
+    const outcome = await setUncontainedGrant(
+      {
+        config: {
+          get: <T,>(key: string): T | undefined =>
+            vscode.workspace.getConfiguration().get<T>(key),
+          update: (key, value, target) =>
+            vscode.workspace.getConfiguration().update(key, value, target)
+        },
+        logger
+      },
+      kind,
+      granted
+    );
+    // The posture the tab renders is derived from this setting, so the projection
+    // has to be pushed or the control keeps showing the state it had.
+    projector.kick();
+    return outcome;
   },
   // Feature 063 — `CMD_SET_CONFIRM_SUPPRESSION` persistence. The
   // handler validates the action key against `KNOWN_ACTION_KEYS`

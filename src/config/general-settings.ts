@@ -15,17 +15,43 @@
 // The host adds the `schegent.` prefix; payload keys are unprefixed scalar setting
 // names. See contracts/general-settings-ipc.md.
 //
-// FR-R3-132 (T1502) — `SettingScope` moved to `src/contracts/snapshot-vocabulary.ts`,
-// so the webview imports it rather than restating it. Re-exported unchanged.
-import type { SettingScope } from '../contracts/snapshot-vocabulary';
-export type { SettingScope };
-// FR-R3-143 (T015, revised at T034) — the element pattern for
-// `cli.environmentAllowlist` is READ, not restated: a fourth copy of
-// `^[A-Za-z_][A-Za-z0-9_]*$` would be the copy that drifts. From `contracts/`
-// rather than `SETTINGS_SCHEMA`, because T034 made contracts the single
-// declaration the schema itself now reads — indexing the schema here would be
-// reading a copy of a copy, through an index access the strictness ratchet counts.
-import { PROCESS_ENV_NAME_PATTERN_SOURCE } from '../contracts/process-environment-policy';
+
+// FR-R3-144 (T001) — the table, the payload shape and the validator moved out;
+// this module keeps the two functions that touch the host config object. Every
+// moved name is re-exported below, so no importer changed.
+import {
+  ALLOWED_KEYS,
+  CONFIGURATION_TARGET_GLOBAL,
+  CONFIGURATION_TARGET_WORKSPACE,
+  KEY_SPECS,
+  configurationTargetFor,
+  type AllowedKey,
+  type GeneralSettings,
+  type ManifestSettingScope,
+  type SettingScope
+} from './general-settings-keys';
+import {
+  checkArrayElements,
+  checkType,
+  isAllowedKey,
+  type WriteResult
+} from './general-settings-validate';
+
+export {
+  ALLOWED_KEYS,
+  CONFIGURATION_TARGET_GLOBAL,
+  CONFIGURATION_TARGET_WORKSPACE,
+  KEY_SPECS,
+  configurationTargetFor
+};
+export type {
+  AllowedKey,
+  GeneralSettings,
+  ManifestSettingScope,
+  SettingScope,
+  WriteResult
+};
+export type { KeySpec, RuntimeType } from './general-settings-keys';
 
 /**
  * Minimal slice of `vscode.WorkspaceConfiguration` that this surface
@@ -54,439 +80,9 @@ export interface GeneralSettingsConfig {
   update(key: string, value: unknown, target: number): PromiseLike<void>;
 }
 
-/** Mirrors `vscode.ConfigurationTarget.Global`. */
-export const CONFIGURATION_TARGET_GLOBAL = 1;
-
-/** Mirrors `vscode.ConfigurationTarget.Workspace`. */
-export const CONFIGURATION_TARGET_WORKSPACE = 2;
-
-/**
- * FR-R3-051 (M-05) — the one place a key's configuration target is decided.
- * An `application`-scoped setting has no workspace layer, so real VS Code
- * refuses that write. See the contract named above for why this is one resolver
- * and not a constant at each of the three call sites.
- */
-export function configurationTargetFor(scope: ManifestSettingScope): number {
-  return scope === 'application' ? CONFIGURATION_TARGET_GLOBAL : CONFIGURATION_TARGET_WORKSPACE;
-}
-
-
-
-export interface GeneralSettings {
-  readonly cliPath: string;
-  readonly loggingVerbose: boolean;
-  readonly loopMaxIterations: number;
-  readonly invocationIdleTimeoutSeconds: number;
-  readonly invocationMaxDurationSeconds: number;
-  readonly watchdogPollIntervalMinutes: number;
-  readonly auditRotationSizeMB: number;
-  readonly auditRotationMaxAgeDays: number;
-  readonly defaultPipelineId: string;
-  readonly fatalSignatures: readonly string[];
-  readonly claudeAutoCompactPctOverride: number | undefined;
-  readonly runtimeLogLevel: string;
-  readonly runtimeLogFilePath: string;
-  readonly retryMaxAttempts: number;
-  readonly retryForceContinueOnCap: boolean;
-  readonly codexPath: string;
-  readonly agyPath: string;
-  readonly runtimeLogMaxBytes: number;
-  readonly runtimeLogMaxGenerations: number;
-  readonly sessionRetentionMaxAgeDays: number;
-  readonly sessionRetentionMaxBytes: number;
-  readonly rawTranscriptMode: import('../state/workflow-run').RawTranscriptMode;
-  // FR-R3-143 (T017) — six settings the manifest has always contributed and
-  // this surface never projected, so the tab could not draw them.
-  readonly cliInheritEnvironment: boolean;
-  readonly cliEnvironmentMode: string;
-  readonly cliEnvironmentAllowlist: readonly string[];
-  readonly backendProbeTimeoutSeconds: number;
-  readonly uiConfirmationsEnable: boolean;
-  readonly multiRootSuppressWarning: boolean;
-  readonly scopes: {
-    readonly cliPath: SettingScope;
-    readonly loggingVerbose: SettingScope;
-    readonly loopMaxIterations: SettingScope;
-    readonly invocationIdleTimeoutSeconds: SettingScope;
-    readonly invocationMaxDurationSeconds: SettingScope;
-    readonly watchdogPollIntervalMinutes: SettingScope;
-    readonly auditRotationSizeMB: SettingScope;
-    readonly auditRotationMaxAgeDays: SettingScope;
-    readonly defaultPipelineId: SettingScope;
-    readonly fatalSignatures: SettingScope;
-    readonly claudeAutoCompactPctOverride: SettingScope;
-    readonly runtimeLogLevel: SettingScope;
-    readonly runtimeLogFilePath: SettingScope;
-    readonly retryMaxAttempts: SettingScope;
-    readonly retryForceContinueOnCap: SettingScope;
-    readonly codexPath: SettingScope;
-    readonly agyPath: SettingScope;
-    readonly runtimeLogMaxBytes: SettingScope;
-    readonly runtimeLogMaxGenerations: SettingScope;
-    readonly sessionRetentionMaxAgeDays: SettingScope;
-    readonly sessionRetentionMaxBytes: SettingScope;
-    readonly rawTranscriptMode: SettingScope;
-    readonly cliInheritEnvironment: SettingScope;
-    readonly cliEnvironmentMode: SettingScope;
-    readonly cliEnvironmentAllowlist: SettingScope;
-    readonly backendProbeTimeoutSeconds: SettingScope;
-    readonly uiConfirmationsEnable: SettingScope;
-    readonly multiRootSuppressWarning: SettingScope;
-  };
-}
-
-type AllowedKey =
-  | 'cli.path'
-  | 'logging.verbose'
-  | 'loop.maxIterations'
-  | 'invocation.idleTimeoutSeconds'
-  | 'invocation.maxDurationSeconds'
-  | 'watchdog.pollIntervalMinutes'
-  | 'audit.rotation.sizeMB'
-  | 'audit.rotation.maxAgeDays'
-  | 'defaultPipelineId'
-  | 'fatalSignatures'
-  | 'claude.autoCompactPctOverride'
-  | 'logging.runtimeLogLevel'
-  | 'logging.runtimeLogFilePath'
-  | 'retry.maxAttempts'
-  | 'retry.forceContinueOnCap'
-  | 'codex.path'
-  | 'agy.path'
-  | 'logging.runtimeLogMaxBytes'
-  | 'logging.runtimeLogMaxGenerations'
-  | 'logging.sessionRetentionMaxAgeDays'
-  | 'logging.sessionRetentionMaxBytes'
-  | 'logging.rawTranscriptMode'
-  | 'cli.inheritEnvironment'
-  | 'cli.environmentMode'
-  | 'cli.environmentAllowlist'
-  | 'backend.probeTimeoutSeconds'
-  | 'ui.confirmations.enable'
-  | 'multiRoot.suppressWarning';
-
-type RuntimeType =
-  | 'string'
-  | 'number'
-  | 'boolean'
-  | 'array-of-string'
-  | 'number-int-range'
-  | 'string-enum'
-  | 'string-no-traversal';
-
-/**
- * FR-R3-051 (M-05) — the manifest's `scope`, mirrored so a write can pick the
- * target that scope requires. Required, so a key without one fails to compile.
- * See specs/136-settings-scope-and-defaults/contracts/settings-write-target.md.
- */
-export type ManifestSettingScope = 'application' | 'window' | 'resource';
-
-interface KeySpec {
-  readonly scope: ManifestSettingScope;
-  readonly type: RuntimeType;
-  readonly typedField: keyof Omit<GeneralSettings, 'scopes'>;
-  readonly defaultValue: unknown;
-  readonly min?: number;
-  readonly max?: number;
-  readonly allowClear?: boolean;
-  readonly allowedValues?: readonly string[];
-  /** Element pattern for `array-of-string`; mirrors the schema's `itemPattern`. */
-  readonly itemPattern?: string;
-}
-
-export const KEY_SPECS: Readonly<Record<AllowedKey, KeySpec>> = Object.freeze({
-  'cli.path': { scope: 'application', type: 'string', typedField: 'cliPath', defaultValue: 'claude' },
-  'codex.path': { scope: 'application', type: 'string', typedField: 'codexPath', defaultValue: 'codex' },
-  'agy.path': { scope: 'application', type: 'string', typedField: 'agyPath', defaultValue: 'agy' },
-  'logging.verbose': { scope: 'resource',
-    type: 'boolean',
-    typedField: 'loggingVerbose',
-    defaultValue: false
-  },
-  'loop.maxIterations': { scope: 'resource',
-    type: 'number',
-    typedField: 'loopMaxIterations',
-    defaultValue: 10,
-    min: 1,
-    max: 50
-  },
-  'invocation.idleTimeoutSeconds': { scope: 'resource',
-    type: 'number',
-    typedField: 'invocationIdleTimeoutSeconds',
-    defaultValue: 5400,
-    min: 30
-  },
-  // FR-R3-075 -- the absolute wall-clock bound beside the idle window above.
-  // 21600 s = 4x the idle default and ~1.7x the longest legitimately long
-  // phase observed to date (3.6 h): loose enough that no real phase yet seen
-  // would have been killed, bounded enough that a chatty runaway stops.
-  'invocation.maxDurationSeconds': { scope: 'resource',
-    type: 'number',
-    typedField: 'invocationMaxDurationSeconds',
-    defaultValue: 21600,
-    min: 60
-  },
-  'watchdog.pollIntervalMinutes': { scope: 'resource',
-    type: 'number',
-    typedField: 'watchdogPollIntervalMinutes',
-    defaultValue: 30,
-    min: 1
-  },
-  'audit.rotation.sizeMB': { scope: 'resource',
-    type: 'number',
-    typedField: 'auditRotationSizeMB',
-    defaultValue: 5,
-    min: 1
-  },
-  'audit.rotation.maxAgeDays': { scope: 'resource',
-    type: 'number',
-    typedField: 'auditRotationMaxAgeDays',
-    defaultValue: 30,
-    min: 1
-  },
-  defaultPipelineId: { scope: 'resource',
-    type: 'string',
-    typedField: 'defaultPipelineId',
-    // Feature 056 Track 3 (FR-013..FR-017) — Align host default with the
-    // package.json contribution default so a fresh workspace and the webview
-    // idle snapshot agree. Feature 098 (T047, FR-033a) — that value is unset.
-    defaultValue: ''
-  },
-  fatalSignatures: { scope: 'resource',
-    type: 'array-of-string',
-    typedField: 'fatalSignatures',
-    defaultValue: []
-  },
-  'claude.autoCompactPctOverride': { scope: 'resource',
-    type: 'number-int-range',
-    typedField: 'claudeAutoCompactPctOverride',
-    defaultValue: undefined,
-    min: 1,
-    max: 100,
-    allowClear: true
-  },
-  'logging.runtimeLogLevel': { scope: 'resource',
-    type: 'string-enum',
-    typedField: 'runtimeLogLevel',
-    defaultValue: 'INFO',
-    allowedValues: ['DEBUG', 'INFO', 'WARN', 'ERROR']
-  },
-  'logging.runtimeLogFilePath': { scope: 'resource',
-    type: 'string-no-traversal',
-    typedField: 'runtimeLogFilePath',
-    defaultValue: ''
-  },
-  'retry.maxAttempts': { scope: 'resource',
-    type: 'number-int-range',
-    typedField: 'retryMaxAttempts',
-    // Feature 056 Track 4 (FR-018..FR-022) — The advertised maximum
-    // matches the effective implementation cap (`DELAYED_RETRY_CAP = 5`)
-    // in src/controller/retry-handler.ts. Previously the contribution
-    // schema and host validator exposed [1, 20] which silently saturated
-    // at 5 in production.
-    defaultValue: 5,
-    min: 1,
-    max: 5
-  },
-  // Workspace-wide default for a phase's `forceContinueOnRetryCap`. Defaults
-  // OFF: advancing on an unsatisfied condition is a deliberate trade of
-  // verification for progress, so it is opted into, never inherited.
-  'retry.forceContinueOnCap': { scope: 'resource',
-    type: 'boolean',
-    typedField: 'retryForceContinueOnCap',
-    defaultValue: false
-  },
-  'logging.runtimeLogMaxBytes': { scope: 'resource',
-    type: 'number-int-range',
-    typedField: 'runtimeLogMaxBytes',
-    // Feature 056 Track 7 (F-009 runtime-log retention) — Default 5 MiB.
-    // 64 KiB minimum is large enough to avoid pathological rotation
-    // thrash; 1 GiB upper bound prevents accidental fork-bomb-style
-    // unbounded growth via the workspace mirror.
-    defaultValue: 5 * 1024 * 1024,
-    min: 65536,
-    max: 1073741824
-  },
-  'logging.runtimeLogMaxGenerations': { scope: 'resource',
-    type: 'number-int-range',
-    typedField: 'runtimeLogMaxGenerations',
-    // Feature 056 Track 7 (F-009 runtime-log retention) — Default 3
-    // rotated generations (current + 3 = 4 files total). Operators can
-    // disable rotation entirely with 0; the upper bound caps the
-    // worst-case disk footprint at (1 + 20) × runtimeLogMaxBytes.
-    defaultValue: 3,
-    min: 0,
-    max: 20
-  },
-  'logging.sessionRetentionMaxAgeDays': { scope: 'resource',
-    type: 'number-int-range',
-    typedField: 'sessionRetentionMaxAgeDays',
-    defaultValue: 30,
-    min: 1,
-    max: 3650
-  },
-  'logging.sessionRetentionMaxBytes': { scope: 'resource',
-    type: 'number-int-range',
-    typedField: 'sessionRetentionMaxBytes',
-    defaultValue: 512 * 1024 * 1024,
-    min: 1024 * 1024,
-    max: 10 * 1024 * 1024 * 1024
-  },
-  'logging.rawTranscriptMode': { scope: 'resource',
-    type: 'string-enum',
-    typedField: 'rawTranscriptMode',
-    // FR-R3-051 (M-06) — `errors-only`, matching the manifest. This said
-    // `always`: the manifest is what VS Code applies, so a code fallback here
-    // retained MORE raw transcript data than the setting the user was shown.
-    defaultValue: 'errors-only',
-    allowedValues: ['always', 'errors-only', 'off']
-  },
-  // FR-R3-143 (T018) — six keys the manifest contributes that this allowlist
-  // did not carry, so the settings tab had no write path for them. Every
-  // `defaultValue`, `min`, `max` and `allowedValues` below is the manifest's;
-  // `settings-defaults-parity` compares the two and fails on drift.
-  'cli.inheritEnvironment': { scope: 'application',
-    type: 'boolean',
-    typedField: 'cliInheritEnvironment',
-    defaultValue: true
-  },
-  'cli.environmentMode': { scope: 'application',
-    type: 'string-enum',
-    typedField: 'cliEnvironmentMode',
-    defaultValue: 'allowlist',
-    allowedValues: ['inherit', 'minimal', 'allowlist']
-  },
-  'cli.environmentAllowlist': { scope: 'application',
-    type: 'array-of-string',
-    typedField: 'cliEnvironmentAllowlist',
-    defaultValue: [],
-    // Read, not restated — see the import note at the head of this file.
-    itemPattern: PROCESS_ENV_NAME_PATTERN_SOURCE
-  },
-  'backend.probeTimeoutSeconds': { scope: 'application',
-    type: 'number-int-range',
-    typedField: 'backendProbeTimeoutSeconds',
-    defaultValue: 5,
-    min: 1,
-    max: 30
-  },
-  // The first two `window`-scoped entries in this table. `configurationTargetFor`
-  // already routes anything that is not `application` to Workspace, so they need
-  // no code change there — only the correct scope declared here.
-  'ui.confirmations.enable': { scope: 'window',
-    type: 'boolean',
-    typedField: 'uiConfirmationsEnable',
-    defaultValue: true
-  },
-  'multiRoot.suppressWarning': { scope: 'window',
-    type: 'boolean',
-    typedField: 'multiRootSuppressWarning',
-    defaultValue: false
-  }
-});
-
-/** Unprefixed scalar setting names accepted by `writeGeneralSettings`. */
-export const ALLOWED_KEYS: ReadonlySet<string> = new Set(Object.keys(KEY_SPECS));
-
-export type WriteResult =
-  | { readonly ok: true }
-  | { readonly ok: false; readonly reason: string };
-
 interface WrittenValueSnapshot {
   readonly hadValue: boolean;
   readonly value: unknown;
-}
-
-function isAllowedKey(key: string): key is AllowedKey {
-  return ALLOWED_KEYS.has(key);
-}
-
-function checkType(spec: KeySpec, value: unknown): WriteResult {
-  switch (spec.type) {
-    case 'string':
-      return typeof value === 'string'
-        ? { ok: true }
-        : { ok: false, reason: 'type-mismatch' };
-    case 'number':
-      if (typeof value !== 'number' || !Number.isFinite(value)) {
-        return { ok: false, reason: 'type-mismatch' };
-      }
-      if (spec.min !== undefined && value < spec.min) {
-        return { ok: false, reason: 'out-of-range' };
-      }
-      if (spec.max !== undefined && value > spec.max) {
-        return { ok: false, reason: 'out-of-range' };
-      }
-      return { ok: true };
-    case 'boolean':
-      return typeof value === 'boolean'
-        ? { ok: true }
-        : { ok: false, reason: 'type-mismatch' };
-    case 'array-of-string':
-      return Array.isArray(value)
-        ? { ok: true }
-        : { ok: false, reason: 'type-mismatch' };
-    case 'number-int-range': {
-      // `null` / `undefined` are accepted as a clear sentinel iff `allowClear`.
-      if (value === null || value === undefined) {
-        return spec.allowClear === true
-          ? { ok: true }
-          : { ok: false, reason: 'type-mismatch' };
-      }
-      if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
-        return { ok: false, reason: 'type-mismatch' };
-      }
-      if (spec.min !== undefined && value < spec.min) {
-        return { ok: false, reason: 'out-of-range' };
-      }
-      if (spec.max !== undefined && value > spec.max) {
-        return { ok: false, reason: 'out-of-range' };
-      }
-      return { ok: true };
-    }
-    case 'string-enum': {
-      if (typeof value !== 'string') {
-        return { ok: false, reason: 'type-mismatch' };
-      }
-      if (!spec.allowedValues || !spec.allowedValues.includes(value)) {
-        return { ok: false, reason: 'invalid-enum' };
-      }
-      return { ok: true };
-    }
-    case 'string-no-traversal': {
-      // Allow empty string (= default), any absolute path, and relative
-      // paths that contain no `..` segment. Path resolution against a
-      // workspace happens at read time via `resolveRuntimeLogPath`.
-      if (typeof value !== 'string') {
-        return { ok: false, reason: 'type-mismatch' };
-      }
-      const trimmed = value.trim();
-      if (trimmed.length === 0) return { ok: true };
-      const isAbsolute =
-        trimmed.startsWith('/') ||
-        trimmed.startsWith('\\\\') ||
-        trimmed.startsWith('//') ||
-        /^[A-Za-z]:[\\/]?/.test(trimmed);
-      if (isAbsolute) return { ok: true };
-      const segments = trimmed.split(/[\\/]+/);
-      if (segments.some((seg) => seg === '..')) {
-        return { ok: false, reason: 'relative-traversal' };
-      }
-      return { ok: true };
-    }
-  }
-}
-
-function checkArrayElements(spec: KeySpec, value: readonly unknown[]): WriteResult {
-  const itemPattern = spec.itemPattern === undefined ? null : new RegExp(spec.itemPattern);
-  for (const el of value) {
-    if (typeof el !== 'string') return { ok: false, reason: 'invalid-array' };
-    if (el.trim().length === 0) return { ok: false, reason: 'invalid-array' };
-    if (itemPattern !== null && !itemPattern.test(el)) {
-      return { ok: false, reason: 'invalid-array' };
-    }
-  }
-  return { ok: true };
 }
 
 /**
@@ -619,10 +215,18 @@ export async function writeGeneralSettings(
   const writtenKeys: string[] = [];
   for (const [key, value] of entries) {
     const spec = KEY_SPECS[key as AllowedKey];
-    const isClear =
-      spec.type === 'number-int-range' &&
-      spec.allowClear === true &&
-      (value === null || value === undefined);
+    // FR-R3-144 (T008) — the third and last place the clear sentinel was pinned
+    // to `number-int-range`. Found by a test, not by reading: `spend.maxUsdPerRun`
+    // is a `number`, so clearing it fell through to `config.update(key, null)`
+    // and wrote an explicit null, while its twin `spend.maxTokensPerRun` took
+    // this branch and REMOVED the key. Same operator action on two settings that
+    // mean the same thing, two different `settings.json` states — and two
+    // different scope labels afterwards, since an explicit null reads back as
+    // `workspace` and a removal as `default`.
+    //
+    // Clearing is a property of `allowClear`; the runtime type decides what a
+    // non-cleared value must look like and nothing else.
+    const isClear = spec.allowClear === true && (value === null || value === undefined);
     // FR-R3-051 (M-05) — the target the key's manifest scope requires.
     const target = configurationTargetFor(spec.scope);
     try {
@@ -731,7 +335,16 @@ export function readGeneralSettings(
         (spec.min !== undefined && value < spec.min) ||
         (spec.max !== undefined && value > spec.max)
       ) {
-        value = spec.allowClear === true ? undefined : spec.defaultValue;
+        // FR-R3-144 (T006) — a cleared key projects ITS OWN declared default,
+        // which for an `allowClear` key IS the cleared value. This used to be a
+        // literal `undefined`, correct for the one `allowClear` key that existed
+        // (`claude.autoCompactPctOverride`, whose `defaultValue` is `undefined`)
+        // and wrong for `spend.maxTokensPerRun`, whose manifest default is
+        // `null`. Its sibling `spend.maxUsdPerRun` is a `number` and reaches the
+        // branch above, which already projects `defaultValue`; two settings that
+        // mean the same thing would otherwise have arrived at the webview as
+        // `undefined` and `null`. No behaviour changed for the autocompact key.
+        value = spec.defaultValue;
       }
     }
     if (spec.type === 'string-enum') {

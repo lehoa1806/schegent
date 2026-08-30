@@ -35,7 +35,15 @@ export type ActionKey =
   // `snapshot.confirmationsEnabled`, which is still `true` while disabling and
   // already `false` while enabling, so the asymmetry is the existing
   // short-circuit rather than a hand-written branch beside it.
-  | 'settings.disable-confirmations';
+  | 'settings.disable-confirmations'
+  // FR-R3-144 (T033, FR-007) — granting a backend permission to run without an
+  // OS-enforced bound. One prompt per backend, because the grant is per backend:
+  // accepting it for `agy` says nothing about `claude`, and a surface that asked
+  // once and applied the answer to both would be the boolean FR-R3-125 removed.
+  //
+  // Revoking is deliberately unconfirmed (C7-3). Asking before NARROWING a
+  // permission teaches operators to click through the prompt that matters.
+  | 'backend.grant-uncontained';
 
 export type Severity = 'info' | 'caution' | 'destructive';
 
@@ -110,6 +118,16 @@ export type ActionCopyContext = {
   // target, and the one number worth stating (how many prompts this silences)
   // is the size of a union this module declares, not a runtime fact.
   'settings.disable-confirmations': Record<string, never>;
+  // FR-R3-144 (T033) — `refusal` is `BackendPosture.refusal`, which is
+  // `judgeBackendContainment`'s own sentence, projected by the host. It is a
+  // PLACEHOLDER rather than copy in the table below on purpose: the operator is
+  // being asked to accept a consequence, and the wording of that consequence must
+  // be the enforcement's, not a paraphrase kept in the webview that would go stale
+  // the first time the policy was reworded. `label` is the backend's display name.
+  'backend.grant-uncontained': {
+    label: string;
+    refusal: string;
+  };
 };
 
 // Authoritative copy table (v1, English). Adding a new key here AND to
@@ -241,6 +259,28 @@ export const ACTION_COPY: Readonly<Record<ActionKey, ActionCopyEntry>> = Object.
       'any time.',
     confirmLabel: 'Turn Off Prompts',
     severity: 'caution'
+  },
+  // FR-R3-144 (T033, FR-007) — the body is almost entirely `{refusal}`, and the
+  // two sentences around it are the only ones this table owns: what the operator
+  // is about to do, and how to undo it. Everything about WHY it matters is the
+  // policy's own wording, because that is the sentence the spawn refuses with and
+  // the one the section already shows.
+  //
+  // `destructive`, not `caution`. Nothing is deleted by granting; the severity is
+  // for what the grant ENABLES — model-generated actions executing with the
+  // operator's local authority, on every workspace in the installation. The
+  // dialog's strongest presentation belongs to the widest permission on the tab.
+  'backend.grant-uncontained': {
+    // Not templated: `useConfirm` renders only the BODY through
+    // `renderActionBody`, so a placeholder here would reach the operator as the
+    // literal `{label}`. The backend is named twice in the body instead — once by
+    // the policy's own sentence, once by the scope line under it.
+    title: 'Allow this backend to run without a sandbox?',
+    bodyTemplate:
+      '{refusal}\n\nGranting this applies to **{label}** only, and you can revoke it ' +
+      'from this section at any time.',
+    confirmLabel: 'Allow Uncontained',
+    severity: 'destructive'
   }
 } satisfies Record<ActionKey, ActionCopyEntry>);
 
@@ -354,6 +394,12 @@ export function renderActionBody<K extends ActionKey>(
         '{impactSummary}',
         parts.length === 0 ? '' : `, along with ${parts.join(' and ')}`
       );
+    }
+    case 'backend.grant-uncontained': {
+      const ctx = context as ActionCopyContext['backend.grant-uncontained'];
+      return entry.bodyTemplate
+        .replace('{refusal}', ctx.refusal)
+        .replace('{label}', ctx.label);
     }
     case 'queue.pause':
     case 'queue.resume':

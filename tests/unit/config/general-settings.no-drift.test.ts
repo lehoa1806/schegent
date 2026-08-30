@@ -61,7 +61,7 @@ const BASE_FIELDS = [
 ] as const;
 
 /** The typed fields FR-R3-143 added. Absent from both goldens by construction. */
-const NEW_FIELDS = [
+const FIELDS_ADDED_BY_143 = [
   'cliInheritEnvironment',
   'cliEnvironmentMode',
   'cliEnvironmentAllowlist',
@@ -69,6 +69,19 @@ const NEW_FIELDS = [
   'uiConfirmationsEnable',
   'multiRootSuppressWarning'
 ] as const;
+
+/**
+ * FR-R3-144 (T005) — three more, absent from the goldens for the same reason:
+ * the goldens predate every feature that has added a field since, which is the
+ * only property that makes them a comparison rather than a mirror.
+ */
+const FIELDS_ADDED_BY_144 = [
+  'backendRunner',
+  'spendMaxUsdPerRun',
+  'spendMaxTokensPerRun'
+] as const;
+
+const NEW_FIELDS = [...FIELDS_ADDED_BY_143, ...FIELDS_ADDED_BY_144] as const;
 
 interface Golden {
   readonly values: Readonly<Record<string, unknown>>;
@@ -270,7 +283,7 @@ describe('FR-R3-143 — the six new keys did not move the 22 that were already t
 
   // Without this, the two blocks above would pass just as well against a golden
   // that happened to be today's output — the comparison would be with itself.
-  it('compares against a record that predates the six new fields', () => {
+  it('compares against a record that predates every field added since', () => {
     for (const field of NEW_FIELDS) {
       expect(
         Object.hasOwn(UNTOUCHED.values, field),
@@ -282,7 +295,7 @@ describe('FR-R3-143 — the six new keys did not move the 22 that were already t
     }
   });
 
-  it('projects the six new fields today, so the delta is an addition and nothing else', () => {
+  it('projects the new fields today, so the delta is an addition and nothing else', () => {
     const now = project();
     for (const field of NEW_FIELDS) {
       expect(Object.hasOwn(now, field), `${field} is not projected`).toBe(true);
@@ -290,8 +303,9 @@ describe('FR-R3-143 — the six new keys did not move the 22 that were already t
     const projected = Object.keys(now).filter((key) => key !== 'scopes');
     expect(
       projected.sort(),
-      'the projection is exactly the 22 old fields plus the 6 new ones — a field arriving ' +
-        'from anywhere else is unaccounted for'
+      `the projection is exactly the ${BASE_FIELDS.length} old fields plus the ` +
+        `${NEW_FIELDS.length} added since — a field arriving from anywhere else is ` +
+        'unaccounted for'
     ).toEqual([...BASE_FIELDS, ...NEW_FIELDS].sort());
     expect(projected).toHaveLength(Object.keys(KEY_SPECS).length);
   });

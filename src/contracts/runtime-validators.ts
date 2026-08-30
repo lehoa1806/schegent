@@ -72,6 +72,7 @@ import {
   CMD_LAUNCH_PIPELINE,
   CMD_LAUNCH_WORKFLOW,
   CMD_CONTINUE_WORKFLOW,
+  CMD_SET_UNCONTAINED_BACKEND_GRANT,
   type SidebarCommand
 } from './sidebar-ipc';
 import { isValidEnqueueStartIntent } from './start-intent-types';
@@ -89,6 +90,7 @@ import {
 } from './validators/process-yaml';
 import { validateLaunchPipeline } from './validators/launch-pipeline';
 import { validateContinueWorkflow, validateLaunchWorkflow } from './validators/workflow-run';
+import { validateSetUncontainedBackendGrant } from './validators/uncontained-grant';
 import { validateSetConfirmSuppression, validateStartQueue } from './validators/queue';
 import {
   validateCreateQueue,
@@ -280,6 +282,8 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
       return validateLaunchWorkflow(obj, correlationId);
     case CMD_CONTINUE_WORKFLOW:
       return validateContinueWorkflow(obj, correlationId);
+    case CMD_SET_UNCONTAINED_BACKEND_GRANT:
+      return validateSetUncontainedBackendGrant(obj, correlationId);
     default:
       return fail('unknown-type', { type, correlationId });
   }

@@ -141,6 +141,20 @@ export interface StateProjectorDeps {
   readonly getAvailableModels?: () => Record<BackendRunnerKind, readonly string[]>;
   readonly getAvailableBackends?: () => readonly BackendRunnerKind[];
   readonly getBackendPingState?: () => BackendPingState;
+  /**
+   * FR-R3-144 (T021, D-4) — the RAW value of
+   * `schegent.backend.uncontainedBackends`, handed over unread.
+   *
+   * Raw and not a parsed list, because parsing it is `resolveUncontainedGrant`'s
+   * job and the posture projection calls that function directly. A port that
+   * returned an already-parsed list would put a second reader of this setting in
+   * the wiring, and the whole point of D-4 is that the projection and the refusal
+   * at spawn time are the same answer from the same function.
+   *
+   * Optional like every other port here; absent means the posture list is empty,
+   * which the surface renders as "not reported" rather than as "nothing granted".
+   */
+  readonly getUncontainedGrantSetting?: () => unknown;
 }
 
 export type ProjectorListener = (snapshot: WorkflowSnapshot) => void;

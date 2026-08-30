@@ -62,7 +62,8 @@ import {
   CMD_RENAME_QUEUE,
   CMD_DELETE_QUEUE,
   CMD_SAVE_QUEUE_SETTINGS,
-  CMD_MOVE_TASK
+  CMD_MOVE_TASK,
+  CMD_SET_UNCONTAINED_BACKEND_GRANT
 } from '../../../../src/ui/sidebar/messages';
 import { MUTATING_COMMAND_TYPES } from '../../../../src/contracts/sidebar-command-metadata';
 import { isMutatingCommand } from '../../../../src/ui/sidebar/message-router';
@@ -158,7 +159,16 @@ const PINNED_MUTATING_COMMANDS: ReadonlyArray<string> = [
   CMD_RENAME_QUEUE,
   CMD_DELETE_QUEUE,
   CMD_SAVE_QUEUE_SETTINGS,
-  CMD_MOVE_TASK
+  CMD_MOVE_TASK,
+  // FR-R3-144 (T017) — writes `schegent.backend.uncontainedBackends` at
+  // application scope: the list naming which backends may be spawned with no
+  // containment mechanism. Gated for a stronger reason than the rest of this
+  // table. Every other entry reshapes work inside the workspace; this one
+  // widens what a spawned process is permitted to touch, and it does so for
+  // the whole installation rather than one workspace. A secondary window
+  // granting that on the operator's behalf is the exact scenario the gate
+  // exists for.
+  CMD_SET_UNCONTAINED_BACKEND_GRANT
 ];
 
 // Feature 089 T026 (FR-027) — commands whose own declaration in
@@ -229,20 +239,20 @@ describe('Feature 012 T050 — MUTATING_COMMANDS pinned-list regression', () => 
   // workspace for no safety gain. Import commits through the existing
   // CMD_PUBLISH_PACKAGE, which IS gated, so the exchange feature adds no
   // mutating command.
-  it('does NOT gate CMD_EXPORT_PROCESS_YAML as mutating, and leaves the pinned list at 42', () => {
+  it('does NOT gate CMD_EXPORT_PROCESS_YAML as mutating, and leaves the pinned list at 43', () => {
     expect(isMutatingCommand(CMD_EXPORT_PROCESS_YAML)).toBe(false);
     expect(PINNED_MUTATING_COMMANDS).not.toContain(CMD_EXPORT_PROCESS_YAML);
-    expect(PINNED_MUTATING_COMMANDS).toHaveLength(42);
+    expect(PINNED_MUTATING_COMMANDS).toHaveLength(43);
   });
 
   // Feature 084 T032 (FR-031, FR-032). Preflight reads the operator's chosen
   // document once and returns a plan. It writes no configuration and moves no
   // layer revision, so it is not mutating either; the write it precedes goes
   // through CMD_PUBLISH_PACKAGE, which is gated.
-  it('does NOT gate CMD_PREFLIGHT_PROCESS_YAML as mutating, and leaves the pinned list at 42', () => {
+  it('does NOT gate CMD_PREFLIGHT_PROCESS_YAML as mutating, and leaves the pinned list at 43', () => {
     expect(isMutatingCommand(CMD_PREFLIGHT_PROCESS_YAML)).toBe(false);
     expect(PINNED_MUTATING_COMMANDS).not.toContain(CMD_PREFLIGHT_PROCESS_YAML);
-    expect(PINNED_MUTATING_COMMANDS).toHaveLength(42);
+    expect(PINNED_MUTATING_COMMANDS).toHaveLength(43);
   });
 });
 

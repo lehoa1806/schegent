@@ -376,43 +376,25 @@ const EXEMPTIONS: ReadonlyMap<string, Exemption> = new Map<string, Exemption>([
   // `already rendered` failure, so leaving one would fail FR-005 here.
 
   // ── Owned by FR-R3-144 (T1563–T1568): the backend and spend surface. ──────
-  [
-    'backend.runner',
-    {
-      owner: 'FR-R3-144 (T1564, T1566)',
-      reason:
-        'Which backend runs. A three-valued enum whose default is why a fresh install ' +
-        'stalls; T1566 surfaces it with the refusal reason and both routes out.',
-      reviewBy: '2026-12-31'
-    }
-  ],
+  //
+  // Three rows were DELETED here, not renewed: `backend.runner`,
+  // `spend.maxUsdPerRun` and `spend.maxTokensPerRun` are rendered by
+  // `GeneralSettingsTab.svelte` as of T031/T036, and a ledger row for a rendered
+  // key is this ledger's own `already rendered` failure. The rows were written by
+  // FR-R3-145 (T1570) precisely so their disappearance would be the evidence this
+  // feature landed; deleting them is that evidence.
+  //
+  // One row stays, and it is not an omission.
   [
     'backend.uncontainedBackends',
     {
       owner: 'FR-R3-144 (T1564, T1566)',
       reason:
-        'Which backends may run uncontained. An array of backend ids, and a grant, so it ' +
-        'ships with confirmation friction rather than as a checkbox.',
-      reviewBy: '2026-12-31'
-    }
-  ],
-  [
-    'spend.maxUsdPerRun',
-    {
-      owner: 'FR-R3-144 (T1564, T1567)',
-      reason:
-        'The per-run cost bound for backends that report cost. Deliberately outside the ' +
-        'workspace-scoped write path today; T1564 sites it at Global target.',
-      reviewBy: '2026-12-31'
-    }
-  ],
-  [
-    'spend.maxTokensPerRun',
-    {
-      owner: 'FR-R3-144 (T1564, T1567)',
-      reason:
-        'The per-run token bound for backends that report tokens. The second denomination ' +
-        'of the same bound, shown for the backend actually selected.',
+        'Surfaced by the per-backend grant button (T034), which is NOT a settings field: it ' +
+        'writes through its own confirmed IPC command rather than the draft path this gate ' +
+        'scans for, so the key carries no `ipcKey:` literal to find. The row stays as the ' +
+        'record of where it IS reachable — a control an operator can find, deliberately not ' +
+        'a checkbox in a field list, because granting it widens what an unattended run may do.',
       reviewBy: '2026-12-31'
     }
   ]

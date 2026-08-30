@@ -60,9 +60,16 @@ export function isModalOpen(): boolean {
 // returns before this set is ever consulted — an ordering filed as a bug by
 // T044 and deliberately not changed here. Cited by its marker rather than a
 // line number, which is the citation style this feature exists to stop trusting.
+//
+// FR-R3-144 (T033, FR-007) — `backend.grant-uncontained` joins it. The item asks
+// for one confirmation PER BACKEND; a "Don't ask again" would make the second
+// grant silent, which is the same as asking once for all of them. That is the
+// arrangement FR-R3-125 removed when it replaced the boolean with a per-backend
+// list, and a suppression checkbox would have restored it through the back door.
 const NEVER_SUPPRESSIBLE: ReadonlySet<ActionKey> = new Set<ActionKey>([
   'workspace.reset',
-  'settings.disable-confirmations'
+  'settings.disable-confirmations',
+  'backend.grant-uncontained'
 ]);
 
 export function useConfirm<K extends ActionKey>(
