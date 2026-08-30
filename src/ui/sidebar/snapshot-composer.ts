@@ -5,6 +5,7 @@ import type { WorkspaceStateStore } from '../../state/workspace-state';
 import type { WorkflowRun } from '../../state/workflow-run';
 import type { RunStateMap } from '../../state/run-state-migrator';
 import type { FeatureRequest, QueueState } from '../../queue/feature-request';
+import { DEFAULT_GLOBAL_CONCURRENCY_CAP } from '../../contracts/queue-bounds';
 import { DEFAULT_QUEUE_ID } from '../../contracts/queue-identity';
 import type { ClaudeCliMonitor } from '../../monitor/claude-cli-monitor';
 import type { HistoryStore } from '../../state/history-store';
@@ -64,7 +65,8 @@ type ProjectorStore = Pick<
   'getRunMap' | 'getQueue' | 'getLock' | 'subscribe'
 > & Partial<Pick<
   WorkspaceStateStore,
-  'getProjectedQueueRegistry' | 'getConfirmSuppression' | 'getRequestsForQueue'
+  | 'getProjectedQueueRegistry' | 'getConfirmSuppression' | 'getRequestsForQueue'
+  | 'getGlobalConcurrencyCap' | 'getDefaultQueueId'
 >>;
 
 export interface SnapshotComposerContext {
@@ -291,6 +293,12 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     ),
     backendPingState: deps.getBackendPingState?.() ?? Object.freeze({ status: 'idle' as const }),
     generalSettings: deps.getGeneralSettings?.() ?? IDLE_GENERAL_SETTINGS,
+    // FR-R3-145 (T1572) — `store`, not `deps`: the cap is enforced against the
+    // memento, not configuration. See `QueueSettingsProjection`.
+    queueSettings: {
+      globalConcurrencyCap: store.getGlobalConcurrencyCap?.() ?? DEFAULT_GLOBAL_CONCURRENCY_CAP,
+      defaultQueueId: store.getDefaultQueueId?.() ?? DEFAULT_QUEUE_ID
+    },
     sessionArtifacts: deps.getSessionArtifacts?.() ?? IDLE_SESSION_ARTIFACTS,
     // FR-R3-130 — read per composition, never cached; `totalmem()` rides with it.
     streamPressure: { ...readStreamPressure(), machineMemoryBytes: totalmem() },

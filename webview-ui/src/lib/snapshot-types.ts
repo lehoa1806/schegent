@@ -16,7 +16,12 @@ import type {
   WorkflowCatalogFieldErrorProjection,
   WorkflowStatus,
   BuilderLifecycle,
+  QueueSettingsProjection,
 } from '../../../src/contracts/snapshot-projections.js';
+// FR-R3-145 (T1572) — value imports for `IDLE_QUEUE_SETTINGS`, from the same
+// contract leaves the host reads. See that constant for why they are not literals.
+import { DEFAULT_GLOBAL_CONCURRENCY_CAP } from '../../../src/contracts/queue-bounds.js';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity.js';
 import type {
   BackendRunnerKind,
 } from '../../../src/contracts/backend-kinds.js';
@@ -105,6 +110,7 @@ export type {
   AuditTailEntry,
   BuilderLifecycle,
   BuilderVersionEntry,
+  QueueSettingsProjection,
   QueueSummary
 } from '../../../src/contracts/snapshot-projections.js';
 export type { RunOutputRecord } from '../../../src/contracts/run-results.js';
@@ -623,8 +629,6 @@ export interface GeneralSettings {
   readonly defaultPipelineId: string;
   readonly fatalSignatures: readonly string[];
   readonly claudeAutoCompactPctOverride: number | undefined;
-  readonly queueGlobalConcurrencyCap: number;
-  readonly queueDefaultQueueId: string;
   readonly runtimeLogLevel: RuntimeLogLevel;
   readonly runtimeLogFilePath: string;
   readonly retryMaxAttempts: number;
@@ -656,8 +660,6 @@ export interface GeneralSettings {
     readonly defaultPipelineId: SettingScope;
     readonly fatalSignatures: SettingScope;
     readonly claudeAutoCompactPctOverride: SettingScope;
-    readonly queueGlobalConcurrencyCap: SettingScope;
-    readonly queueDefaultQueueId: SettingScope;
     readonly runtimeLogLevel: SettingScope;
     readonly runtimeLogFilePath: SettingScope;
     readonly retryMaxAttempts: SettingScope;
@@ -671,6 +673,22 @@ export interface GeneralSettings {
     readonly retryForceContinueOnCap: SettingScope;
   };
 }
+
+/**
+ * FR-R3-145 (T1572) — what the webview shows before the host sends a snapshot,
+ * and what it falls back to when an older host bundle omits `queueSettings`.
+ *
+ * Derived from the same two contract constants the host derives from, imported
+ * rather than restated. `history-rerun.ts:27` already value-imports
+ * `DEFAULT_QUEUE_ID` from the same leaf, so this is the established edge and not
+ * a new one. The alternative — two literals here — is how
+ * `IDLE_GENERAL_SETTINGS.invocationIdleTimeoutSeconds` came to say 1800 for the
+ * width of a release while every other surface said 5400.
+ */
+export const IDLE_QUEUE_SETTINGS: QueueSettingsProjection = Object.freeze({
+  globalConcurrencyCap: DEFAULT_GLOBAL_CONCURRENCY_CAP,
+  defaultQueueId: DEFAULT_QUEUE_ID
+});
 
 export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   cliPath: 'claude',
@@ -696,20 +714,6 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   defaultPipelineId: '',
   fatalSignatures: Object.freeze([]) as readonly string[],
   claudeAutoCompactPctOverride: undefined,
-  // Feature 094 (T032, FR-017) — must equal the manifest's contributed
-  // `default` for `schegent.queue.globalConcurrencyCap`, which this object
-  // mirrors until the first projection lands. It stayed at the pre-092 value
-  // of 1 after the manifest moved to 3;
-  // `tests/parity/settings-defaults-parity.test.ts` now derives the expected
-  // value from the manifest instead of restating it, so a future raise cannot
-  // leave this behind without failing.
-  // Feature 098 (REL-02) — the manifest default moved 3 -> 1. Concurrent
-  // Runs share one working tree, so `RunCheckpointService` declines to
-  // snapshot above one in-flight Run; at a default of 3 that decline was
-  // every fresh install's behaviour. Raising it back is gated on per-run
-  // worktree isolation, not on this line.
-  queueGlobalConcurrencyCap: 1,
-  queueDefaultQueueId: 'default',
   runtimeLogLevel: 'INFO',
   runtimeLogFilePath: '',
   retryMaxAttempts: 5,
@@ -731,8 +735,6 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
     defaultPipelineId: 'default',
     fatalSignatures: 'default',
     claudeAutoCompactPctOverride: 'default',
-    queueGlobalConcurrencyCap: 'default',
-    queueDefaultQueueId: 'default',
     runtimeLogLevel: 'default',
     runtimeLogFilePath: 'default',
     retryMaxAttempts: 'default',
@@ -865,12 +867,23 @@ export interface WorkflowSnapshot {
   readonly availableBackends: readonly BackendRunnerKind[];
   readonly backendPingState?: BackendPingState;
   /**
-   * Feature 011 — typed read of every scalar `schegent.*` setting,
-   * with the effective scope for each field. Optional for
-   * legacy-tolerance: an older host bundle may not include it; the
-   * webview must default to `IDLE_GENERAL_SETTINGS` in that case.
+   * Feature 011 — typed read of the scalar `schegent.*` settings `KEY_SPECS`
+   * admits, with the effective scope for each field. FR-R3-145 (T1569): that
+   * is a subset of what the manifest declares, not every scalar key, which is
+   * what this said until keys were contributed without being added to
+   * `KEY_SPECS`. Optional for legacy-tolerance: an older host bundle may not
+   * include it; the webview must default to `IDLE_GENERAL_SETTINGS` in that case.
    */
   readonly generalSettings?: GeneralSettings;
+  /**
+   * FR-R3-145 (T1572) — the two queue settings, projected from the workspace
+   * memento the drain enforces against rather than from the configuration
+   * `generalSettings` reads. Imported, not restated: the shape is one both sides
+   * must agree on, which is the census gate's own rule for what gets imported.
+   * Optional for legacy-tolerance, as its neighbour is; the webview must default
+   * to `IDLE_QUEUE_SETTINGS` when an older host bundle omits it.
+   */
+  readonly queueSettings?: QueueSettingsProjection;
   readonly sessionArtifacts?: SessionArtifactsProjection;
   /** FR-R3-130 (T1496) — live aggregate stream pressure. Optional, as its neighbour is. */
   readonly streamPressure?: StreamPressureProjection;

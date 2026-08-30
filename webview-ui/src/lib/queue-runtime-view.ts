@@ -12,12 +12,19 @@ import type { QueueRuntime, WorkflowSnapshot } from './snapshot-types';
 
 /**
  * The id the registry gives its always-present first queue. Used only when the
- * host has not projected `generalSettings` yet — the operator-settable
- * `queue.defaultQueueId` is authoritative whenever it has arrived.
+ * host has not projected `queueSettings` yet — its `defaultQueueId` is
+ * authoritative whenever it has arrived.
+ *
+ * FR-R3-145 (T1572) re-pointed the consumer below and left this comment naming
+ * `generalSettings` and an "operator-settable `queue.defaultQueueId`". Neither
+ * survives: the configuration key is gone, and the projection that governs this
+ * fallback is `queueSettings`, which is optional on the webview mirror under the
+ * usual legacy tolerance — so a host bundle predating this feature is exactly the
+ * case that lands here.
  */
 export const FALLBACK_QUEUE_ID = 'default';
 
-type SnapshotLike = Pick<WorkflowSnapshot, 'queues' | 'generalSettings'> | null | undefined;
+type SnapshotLike = Pick<WorkflowSnapshot, 'queues' | 'queueSettings'> | null | undefined;
 
 export function findQueueRuntime(
   snapshot: Pick<WorkflowSnapshot, 'queues'> | null | undefined,
@@ -26,9 +33,15 @@ export function findQueueRuntime(
   return snapshot?.queues?.find((runtime) => runtime.queueId === queueId) ?? null;
 }
 
-/** The queue a surface reads when the operator has made no explicit selection. */
+/**
+ * The queue a surface reads when the operator has made no explicit selection.
+ *
+ * FR-R3-145 (T1572) — from `queueSettings`, the memento projection, not from
+ * `generalSettings`. Every surface that resolves a default queue now resolves it
+ * from the same store the queue modal writes to (FR-011).
+ */
 export function defaultQueueId(snapshot: SnapshotLike): string {
-  return snapshot?.generalSettings?.queueDefaultQueueId ?? FALLBACK_QUEUE_ID;
+  return snapshot?.queueSettings?.defaultQueueId ?? FALLBACK_QUEUE_ID;
 }
 
 /**

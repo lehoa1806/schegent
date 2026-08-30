@@ -29,8 +29,10 @@ import * as path from 'node:path';
 
 import { AUDIT_SCHEMA_VERSION } from '../../src/contracts/audit-events';
 import { STATE_SCHEMA_VERSION } from '../../src/contracts/state-schema';
-import { MAX_QUEUES } from '../../src/contracts/queue-bounds';
-import { DEFAULT_GLOBAL_CONCURRENCY_CAP } from '../../src/state/workspace-state';
+// FR-R3-145 (T1572) — `DEFAULT_GLOBAL_CONCURRENCY_CAP` moved here from
+// `src/state/workspace-state.ts`, beside the ceiling it is bounded by.
+import { DEFAULT_GLOBAL_CONCURRENCY_CAP, MAX_QUEUES } from '../../src/contracts/queue-bounds';
+import { MAX_GLOBAL_CONCURRENCY_CAP } from '../../src/state/workspace-state';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const ARCH_REL = 'ARCHITECTURE.md';
@@ -106,6 +108,22 @@ function readContribution(key: string): SettingContribution {
     if (found) return found;
   }
   throw new Error(`package.json contributes no setting named ${key}`);
+}
+
+/**
+ * FR-R3-145 (T1570) — the same lookup, for a key that is expected to be absent.
+ *
+ * `readContribution` throws, which is right when the manifest entry is the
+ * authority a claim is checked against. It is the wrong shape for asserting that
+ * a contribution was REMOVED: a thrown error and a failed assertion read the
+ * same in a report, and the absence is the thing being pinned.
+ */
+function contributionOrNull(key: string): SettingContribution | null {
+  try {
+    return readContribution(key);
+  } catch {
+    return null;
+  }
 }
 
 /** The `## Schema Versions` block, so the row lookup cannot stray into another table. */
@@ -241,18 +259,35 @@ describe('FR-R3-013 — ARCHITECTURE.md schema and defaults parity', () => {
     expect(disagreements(ARCH_LINES)).toEqual([]);
   });
 
-  it('the documented globalConcurrencyCap default matches the code and the contribution', () => {
-    const contribution = readContribution('schegent.queue.globalConcurrencyCap');
-    // Three-way, and the code-to-contribution leg first: if those two have
-    // already drifted, the document cannot be right about both and saying which
-    // one it disagrees with would be arbitrary.
+  /**
+   * FR-R3-145 (T1570) — this pair used to check the document against
+   * `package.json`. There is no contribution to check against any more.
+   *
+   * `schegent.queue.globalConcurrencyCap` was a *configuration* key, and it was
+   * removed because no scheduling path read it: `hasExecutionCapacity` and
+   * `hasWorkspaceCapacity` gate on the workspace memento of the same name, which
+   * the Queue configuration surface writes through `CMD_SAVE_QUEUE_SETTINGS`. A
+   * three-way parity check whose third leg is a key nothing consults was
+   * verifying that two stale numbers agreed.
+   *
+   * What replaces it is the same check with the manifest leg turned around: the
+   * document is pinned to the constants, and the contribution's ABSENCE is
+   * asserted. Restoring the key would fail here, which is the point — the reason
+   * it is gone is not obvious from `package.json`, where nothing is written.
+   */
+  it('no manifest contribution restates the cap', () => {
     expect(
-      contribution.default,
-      'package.json contributes a different default for ' +
-        '`schegent.queue.globalConcurrencyCap` than `DEFAULT_GLOBAL_CONCURRENCY_CAP` ' +
-        'in src/state/workspace-state.ts'
-    ).toBe(DEFAULT_GLOBAL_CONCURRENCY_CAP);
+      contributionOrNull('schegent.queue.globalConcurrencyCap'),
+      'package.json contributes `schegent.queue.globalConcurrencyCap` again. That key ' +
+        'was removed by FR-R3-145: the cap the drain gates on lives in the workspace ' +
+        'memento of the same name, and a configuration key beside it is a second ' +
+        'opinion the operator can set and nothing reads. If the intent is to make the ' +
+        'cap configurable, the work is to make the scheduler read configuration — not ' +
+        'to re-advertise the key.'
+    ).toBeNull();
+  });
 
+  it('the documented globalConcurrencyCap default matches the code', () => {
     const documented = claimNear('schegent.queue.globalConcurrencyCap', /default `(\d+)`/);
     expect(
       documented,
@@ -263,15 +298,18 @@ describe('FR-R3-013 — ARCHITECTURE.md schema and defaults parity', () => {
       Number((documented as RegExpMatchArray)[1]),
       `${ARCH_REL} documents a default of ${(documented as RegExpMatchArray)[1]} for ` +
         `\`schegent.queue.globalConcurrencyCap\`; the shipped default is ` +
-        `\`${DEFAULT_GLOBAL_CONCURRENCY_CAP}\`. The 2026-08-18 defaults change ` +
-        'lowered it under review finding REL-02 — not feature 098, which is the ' +
-        `runtime-only catalog. Edit ${ARCH_REL}.`
+        `\`${DEFAULT_GLOBAL_CONCURRENCY_CAP}\`, from ` +
+        '`src/contracts/queue-bounds.ts`. The 2026-08-18 defaults change lowered it ' +
+        'under review finding REL-02 — not feature 098, which is the runtime-only ' +
+        `catalog. Edit ${ARCH_REL}.`
     ).toBe(DEFAULT_GLOBAL_CONCURRENCY_CAP);
   });
 
-  it('the documented globalConcurrencyCap range matches the contribution', () => {
-    const contribution = readContribution('schegent.queue.globalConcurrencyCap');
-    const documented = claimNear('schegent.queue.globalConcurrencyCap', /range `\[(\d+), (\d+)\]`/);
+  it('the documented globalConcurrencyCap range matches the enforced bounds', () => {
+    const documented = claimNear(
+      'schegent.queue.globalConcurrencyCap',
+      /range `\[(\d+), (\d+)\]`/
+    );
     expect(
       documented,
       `${ARCH_REL} names \`schegent.queue.globalConcurrencyCap\` without stating its ` +
@@ -281,9 +319,10 @@ describe('FR-R3-013 — ARCHITECTURE.md schema and defaults parity', () => {
     expect(
       [Number(min), Number(max)],
       `${ARCH_REL} documents the range [${min}, ${max}] for ` +
-        `\`schegent.queue.globalConcurrencyCap\`; package.json contributes ` +
-        `[${contribution.minimum}, ${contribution.maximum}].`
-    ).toEqual([contribution.minimum, contribution.maximum]);
+        `\`schegent.queue.globalConcurrencyCap\`; the bound enforced by ` +
+        '`WorkspaceStateStore`, `QueueManager.saveQueueSettings` and ' +
+        `\`validateSaveQueueSettings\` is [1, ${MAX_GLOBAL_CONCURRENCY_CAP}].`
+    ).toEqual([1, MAX_GLOBAL_CONCURRENCY_CAP]);
   });
 
   it('the documented MAX_QUEUES bound matches the constant', () => {

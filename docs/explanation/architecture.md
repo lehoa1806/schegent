@@ -137,7 +137,7 @@ Queue admission is intentionally separate from execution. `AutoDrainCoordinator`
 1. An `idle-pending` Queue waits for its scheduled or explicit start.
 2. An operator-paused Queue remains paused.
 3. The Queue must have neither an in-flight Task nor a non-terminal Run occupying its one Run slot.
-4. Both the controller's live-session count and the workspace's persisted in-flight count must be below `schegent.queue.globalConcurrencyCap`.
+4. Both the controller's live-session count and the workspace's persisted in-flight count must be below the workspace-wide concurrency cap. Both readings take that number from the same place — the `schegent.queue.globalConcurrencyCap` entry in workspace state, set through the Queue configuration surface rather than in `settings.json`.
 5. The selected Task is the Queue's FIFO pending head.
 6. The host acquires and re-verifies that Queue's execution lease.
 7. The controller resumes the matching persisted Run or admits a new one.
@@ -147,6 +147,7 @@ Each refusal before admission is a wait, not a failed Task. Reservations cover t
 <!-- Source: src/services/auto-drain-coordinator.ts -->
 <!-- Source: src/queue/queue-manager.ts -->
 <!-- Source: src/state/execution-lease.ts -->
+<!-- Source: src/state/workspace-state.ts -->
 
 For a new admission, `WorkflowRunFactory` resolves the selected Pipeline against the single `CatalogSession` snapshot. It refuses a missing Pipeline or Phase instead of shortening the plan. A composed Task may already carry a frozen `ExecutionEnvelope`; otherwise the factory expands and freezes the Pipeline, all Phase bodies, the mutation plan, approval receipt, transcript mode, progress denominator, inputs, and default runner into a new `WorkflowRun`. Later catalog or setting changes cannot rewrite that Run's plan.
 

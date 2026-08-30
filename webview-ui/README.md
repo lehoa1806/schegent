@@ -395,9 +395,12 @@ Feature 030 (US3) removed the **Queue** sub-tab and its
 grounds that `MAX_QUEUES = 1` made a per-queue cap and a default-queue
 selector meaningless. Feature 092 raised `MAX_QUEUES` back to 20 but did
 **not** restore the sub-tab: per-queue configuration is reachable from the
-Queue Detail tier (FR-064), and `schegent.queue.globalConcurrencyCap` — now
-ranged `1..20`, default `3` — stays in **General** alongside the other
-scalar `schegent.*` keys.
+Queue Detail tier (FR-064), and the workspace-wide concurrency cap — ranged
+`1..20`, default `1` — is authored in `QueueConfigModal.svelte`, which submits
+it together with the default-queue selection over `CMD_SAVE_QUEUE_SETTINGS`.
+It is **not** on **General** and is not a `schegent.*` configuration key at
+all: its value is workspace state, so it reaches the webview in its own
+snapshot projection rather than in `snapshot.generalSettings`.
 
 The Phases, Pipelines, Workflows, and Models editors are not in
 `SettingsSurface` — they live in Pipeline Builder, as its four tabs

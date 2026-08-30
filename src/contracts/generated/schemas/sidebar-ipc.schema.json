@@ -207,6 +207,11 @@
           "type": "GeneralSettings"
         },
         {
+          "name": "queueSettings",
+          "optional": false,
+          "type": "QueueSettingsProjection"
+        },
+        {
           "name": "sessionArtifacts",
           "optional": false,
           "type": "SessionArtifactsProjection"

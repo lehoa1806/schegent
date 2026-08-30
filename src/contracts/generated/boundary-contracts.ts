@@ -216,7 +216,6 @@ export const SETTINGS_KEYS = [
   "schegent.loop.maxIterations",
   "schegent.models",
   "schegent.multiRoot.suppressWarning",
-  "schegent.queue.globalConcurrencyCap",
   "schegent.retry.forceContinueOnCap",
   "schegent.retry.maxAttempts",
   "schegent.spend.maxTokensPerRun",

@@ -77,19 +77,20 @@ function generalSettingsCoveredKeys(): string[] {
 
 describe('SETTINGS_SCHEMA validation alignment with writeGeneralSettings', () => {
   it('SETTINGS_SCHEMA covers every key in ALLOWED_KEYS (schema is the superset)', () => {
-    // Intentionally-internal keys mirror the allowlist in
-    // `tests/parity/settings-defaults-parity.test.ts`:
-    //   - `queue.defaultQueueId`: which queue an unaddressed enqueue lands on.
-    //     Still not advertised in `package.json` or `SETTINGS_SCHEMA`, but for a
-    //     different reason since feature 092 raised `MAX_QUEUES` to 20: the
-    //     value is a queue *id*, which the operator does not author and cannot
-    //     usefully type into a settings box. It is set from the queue settings
-    //     UI, where the ids are chosen from the registry rather than spelled.
-    //     Add to this set only with a load-bearing reason.
-    const INTENTIONALLY_INTERNAL = new Set<string>(['queue.defaultQueueId']);
+    // FR-R3-145 (T1570) — the `INTENTIONALLY_INTERNAL` set that stood here is
+    // gone, along with its twin in `tests/parity/settings-defaults-parity.test.ts`.
+    // It held one name, `queue.defaultQueueId`, excused for being a host-accepted
+    // key with no schema entry. That key is no longer in `ALLOWED_KEYS` — it was
+    // a typed field for a configuration nothing declared, and the store that
+    // routes on the default queue is the memento — so the set excused nothing
+    // while quietly promising to keep excusing it if it came back. The schema is
+    // now the superset of `ALLOWED_KEYS` with no exceptions.
+    //
+    // Non-vacuity for the walk: an emptied `ALLOWED_KEYS` would find nothing
+    // missing from the schema and prove nothing about the schema.
+    expect(ALLOWED_KEYS.size).toBeGreaterThan(20);
     const missingFromSchema: string[] = [];
     for (const allowed of ALLOWED_KEYS) {
-      if (INTENTIONALLY_INTERNAL.has(allowed)) continue;
       if (!SETTINGS_SCHEMA_KEYS.has(`schegent.${allowed}`)) {
         missingFromSchema.push(allowed);
       }
@@ -187,7 +188,12 @@ describe('SETTINGS_SCHEMA validation alignment with writeGeneralSettings', () =>
       { key: 'logging.verbose', value: true },
       { key: 'loop.maxIterations', value: 25 },
       { key: 'retry.maxAttempts', value: 3 },
-      { key: 'queue.globalConcurrencyCap', value: 1 },
+      // FR-R3-145 (T1570) — `queue.globalConcurrencyCap` was a sample here until
+      // the configuration key was removed. It contributed nothing this list does
+      // not still have: three other `number` keys remain, and the round-trip it
+      // exercised was schema-vs-validator agreement on a key neither the schema
+      // nor the validator now knows. The cap lives in the workspace memento; its
+      // range is enforced in `src/contracts/validators/queue-management.ts`.
       { key: 'logging.runtimeLogLevel', value: 'DEBUG' },
       { key: 'logging.runtimeLogMaxBytes', value: 1024 * 1024 },
       { key: 'logging.runtimeLogMaxGenerations', value: 5 },

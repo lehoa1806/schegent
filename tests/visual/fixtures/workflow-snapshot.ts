@@ -646,8 +646,6 @@ export const workflowSnapshot = {
     "defaultPipelineId": "speckit-new-feature",
     "fatalSignatures": [],
     "claudeAutoCompactPctOverride": undefined,
-    "queueGlobalConcurrencyCap": 1,
-    "queueDefaultQueueId": "default",
     "runtimeLogLevel": "INFO",
     "runtimeLogFilePath": "",
     "retryMaxAttempts": 5,
@@ -669,8 +667,6 @@ export const workflowSnapshot = {
       "defaultPipelineId": "default",
       "fatalSignatures": "default",
       "claudeAutoCompactPctOverride": "default",
-      "queueGlobalConcurrencyCap": "default",
-      "queueDefaultQueueId": "default",
       "runtimeLogLevel": "default",
       "runtimeLogFilePath": "default",
       "retryMaxAttempts": "default",
@@ -739,5 +735,14 @@ export const workflowSnapshot = {
   "confirmSuppression": {
     "version": 1,
     "suppressedActionKeys": []
+  },
+  // FR-R3-145 (T1572) — the memento-sourced queue settings. Literals here, unlike
+  // everywhere else, because this fixture is a captured snapshot: it is `as const`
+  // so the visual suite renders one fixed frame, and a derived value would make the
+  // frame move when a default moves. `1` and `"default"` are what a cold workspace
+  // reports, matching the rest of this fixture's idle posture.
+  "queueSettings": {
+    "globalConcurrencyCap": 1,
+    "defaultQueueId": "default"
   }
 } as const satisfies WorkflowSnapshot;

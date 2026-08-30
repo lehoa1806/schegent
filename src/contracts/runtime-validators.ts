@@ -629,9 +629,16 @@ function validateSaveGeneralSettings(
   } as SidebarCommand);
 }
 
-// Feature 030 — single-queue mode: validators for CMD_CREATE_QUEUE,
-// CMD_RENAME_QUEUE, CMD_DELETE_QUEUE, CMD_SAVE_QUEUE_SETTINGS removed
-// because the commands no longer exist.
+// FR-R3-145 (T1569) — this said Feature 030's single-queue mode had removed the
+// CMD_CREATE_QUEUE, CMD_RENAME_QUEUE, CMD_DELETE_QUEUE and CMD_SAVE_QUEUE_SETTINGS
+// validators "because the commands no longer exist". Feature 092 brought all four
+// commands back — declared in `./sidebar-ipc.ts`, dispatched from
+// `../ui/sidebar/commands/index.ts` — and their validator bodies moved to
+// `./validators/queue-management.ts`, which the switch above dispatches to. Nothing
+// was removed; it was relocated. CMD_SAVE_QUEUE_SETTINGS is the one that made the
+// stale note expensive: it is now the only path that writes the workspace
+// concurrency ceiling, so a reader who believed this comment would have gone
+// looking for the queue-settings write and concluded there was none.
 
 function validateModifyTask(
   obj: Record<string, unknown>,

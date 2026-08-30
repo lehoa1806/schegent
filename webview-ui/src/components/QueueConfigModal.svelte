@@ -17,11 +17,19 @@
 
   import { refusalText, saveQueueSettings } from '../lib/queue-control-ipc';
   import { adviseStreamPressure } from '../../../src/contracts/stream-pressure-advice';
-  import type { GeneralSettings, QueueRuntime } from '../lib/snapshot-types';
+  import type { QueueRuntime, QueueSettingsProjection } from '../lib/snapshot-types';
 
   interface Props {
-    /** The projected settings — the prefill source (FR-009). Never a constant. */
-    generalSettings: GeneralSettings;
+    /**
+     * The projected queue settings — the prefill source (FR-009). Never a constant.
+     *
+     * FR-R3-145 (T1572) — was `generalSettings: GeneralSettings`, the CONFIGURATION
+     * projection. This dialog saves through `CMD_SAVE_QUEUE_SETTINGS`, which writes
+     * the workspace memento, so prefilling from configuration meant the dialog could
+     * not read back its own write: reopening it showed the old number and the
+     * operator's save looked lost. Same store in, same store out.
+     */
+    queueSettings: QueueSettingsProjection;
     /** The queues that exist right now; the default-queue options (FR-009). */
     queues: readonly QueueRuntime[];
     onClose: () => void;
@@ -38,15 +46,17 @@
   }
 
   const {
-    generalSettings,
+    queueSettings,
     queues,
     onClose,
     originatingElement = null,
     machineMemoryBytes = 0
   }: Props = $props();
 
-  // Suggested bounds only. `schegent.queue.globalConcurrencyCap` is [1, 20]; the
-  // host is what enforces it.
+  // Suggested bounds only. The cap's range is [1, 20]; the host is what enforces
+  // it. FR-R3-145 (T1572) — this comment named a `schegent.*` configuration key
+  // that no longer exists and that no scheduling path ever read.
+  // `MAX_QUEUES` in `src/contracts/queue-bounds.ts` is the ceiling's one source.
   const CAP_HINT_MIN = 1;
   const CAP_HINT_MAX = 20;
 
@@ -83,8 +93,8 @@
     return advice.level === 'warn' ? advice.message : null;
   });
 
-  const initialCap = (): string => String(generalSettings.queueGlobalConcurrencyCap);
-  const initialDefaultQueue = (): string => generalSettings.queueDefaultQueueId;
+  const initialCap = (): string => String(queueSettings.globalConcurrencyCap);
+  const initialDefaultQueue = (): string => queueSettings.defaultQueueId;
 
   let cap = $state(initialCap());
   let defaultQueue = $state(initialDefaultQueue());

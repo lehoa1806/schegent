@@ -860,7 +860,21 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // a four-line comment on the field, which said what
   // `src/ui/sidebar/snapshot.ts`'s `StreamPressureProjection` docblock already says
   // at length. Set to exactly what the file measures.
-  { path: 'src/ui/sidebar/snapshot-composer.ts', maxLines: 312 },
+  //
+  // FR-R3-145 (T1572) — 312 -> 320, for the queue-settings projection: one import
+  // of `DEFAULT_GLOBAL_CONCURRENCY_CAP`, two getters added to `ProjectorStore`'s
+  // optional half, one composed field, and a two-line reason for the one thing a
+  // reader would otherwise "fix" — the field reads `store`, while its neighbour
+  // `generalSettings` reads `deps`. Same shape as the raise above: a projection
+  // in the module whose job is composing projections, with nothing movable added.
+  //
+  // Prose trimmed before raising, per this file's convention. The first draft put
+  // a six-line comment inside the `ProjectorStore` union restating the
+  // configuration-versus-memento split that `QueueSettingsProjection`'s docblock
+  // in `src/contracts/snapshot-projections.ts` already sets out at length, and
+  // spread five union members over five lines to hold it. Set to exactly what the
+  // file measures.
+  { path: 'src/ui/sidebar/snapshot-composer.ts', maxLines: 320 },
   // The second file of the same 2026-05-22 decision; see the waiver above.
   {
     path: 'src/queue/queue-manager.ts',
@@ -1053,11 +1067,21 @@ describe('large source file LOC budgets', () => {
   // is what five dead commands were costing two of the tree's largest files.
   // Their ceilings are left where they are: real headroom on a file that shrank
   // is a budget, which is the state this list exists to move files into.
+  //
+  // `general-settings.ts` came off this list on 2026-08-30, by the same mechanism
+  // as the two above: deletion, not an architectural decision. FR-R3-145 removed
+  // `schegent.queue.globalConcurrencyCap` — a configuration key whose value no
+  // scheduling path read, because the cap the drain gates on lives in the
+  // workspace memento — taking its typed field, its `scopes` row, its member of
+  // the `AllowedKey` union and its `KEY_SPECS` entry with it. 710 - 682 is what
+  // one advertised-but-unread key was costing the file this repository's settings
+  // table lives in. Its ceiling of 712 is left where it is: real headroom on a
+  // file that shrank is a budget, which is the state this list exists to move
+  // files into.
   const UNDECIDED_CEILING_BASELINE: readonly string[] = [
     'src/controller/workflow-controller.ts', // 1025 / 1025 — no headroom
     'src/ui/sidebar/state-projector-runtime.ts', // 285 / 300 — 15 lines
-    'src/ui/sidebar/snapshot-composer.ts', //    311 /  312 — 1 line
-    'src/config/general-settings.ts', //         710 /  712 — 2 lines
+    'src/ui/sidebar/snapshot-composer.ts', //    320 /  320 — no headroom
     'src/services/run-driver.ts' //             1289 / 1290 — 1 line
   ];
 

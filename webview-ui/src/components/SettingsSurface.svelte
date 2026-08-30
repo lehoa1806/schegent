@@ -1,9 +1,10 @@
 <script lang="ts">
   /**
    * Feature 012 T047 — Settings surface reduced to two sub-tabs.
-   * Feature 030 (US3) — Removed the Queue sub-tab. Multi-queue settings
-   * (global concurrency cap, default queue) are no longer configurable;
-   * the unified single queue is hard-coded at cap=1 with id='default'.
+   * Feature 030 (US3) — Removed the Queue sub-tab. FR-R3-145 (T1569): the
+   * settings that sub-tab carried are configurable again as of Feature 092,
+   * but from QueueConfigModal.svelte, not from here — the sub-tab did not
+   * come back, which is why this surface is still two tabs.
    *
    * Phases / Pipelines moved to PipelineBuilder.svelte; Models moved to
    * PipelineBuilderEditors/ModelCatalogEditor.svelte, mounted under the
@@ -53,15 +54,23 @@
 <main class="settings-surface" data-testid="settings-surface-root">
   <header class="settings-header">
     <h1 class="settings-title">Settings</h1>
-    <p class="settings-description">Configure runners, safety controls, and retention.</p>
+    <!--
+      FR-R3-145 (T1569, FR-003) — the header names what the two tabs render and
+      nothing else. It said "runners, safety controls, and retention": retention
+      is here, "runners" is three CLI path fields with no runner selector, and no
+      safety control (spend bounds, trust, confirmations, uncontained backends)
+      is on this surface at all. Naming them is the claim, not the absence — the
+      controls themselves belong to FR-R3-143 and FR-R3-144.
+    -->
+    <p class="settings-description">Configure CLI paths, logging, run limits, retention, and fatal signatures.</p>
   </header>
   <div class="settings-layout">
     <div class="settings-tabs" role="tablist" aria-label="Settings sections">
       <!--
-        Feature 030 (US3) — Queue sub-tab removed. Multi-queue settings
-        (cap, default queue) are no longer configurable; the unified
-        single queue is hard-coded at id='default', position=0,
-        schedule=null.
+        Feature 030 (US3) — Queue sub-tab removed, and not restored by
+        Feature 092: the cap and the default queue are configured from
+        QueueConfigModal.svelte instead, so this tablist stays at two
+        (FR-R3-145, T1569).
       -->
       {#each SETTINGS_TABS as tab (tab.id)}
         <button

@@ -272,13 +272,20 @@ describe('StateProjector.getCurrentSnapshot', () => {
   });
 
   it('projects queue registry and derived queue pause causes', async () => {
-    // Feature 030 (US3, T046) — single-queue mode. The original test
-    // exercised a two-queue projection via `createQueue('Secondary')`,
-    // which is now blocked by MAX_QUEUES=1. With the single unified
-    // queue, the registry shape is fixed at one default entry; the
-    // queue-paused derivation still applies and surfaces in the
-    // projected `pauseCause` on pending requests when the default
-    // queue is manually paused.
+    // Feature 030 (US3, T046) narrowed this test: the original exercised a
+    // two-queue projection via `createQueue('Secondary')`, and the collapse to
+    // one queue left no second queue to create.
+    //
+    // FR-R3-145 (T1569) corrected what stood here, which said that call "is now
+    // blocked by MAX_QUEUES=1" and that the registry shape "is fixed at one
+    // default entry". Feature 092 restored `MAX_QUEUES` to 20 — see
+    // `src/contracts/queue-bounds.ts` — so neither is true; a second queue is
+    // creatable and the registry is not fixed at one. The test stays at one
+    // queue because one is all this assertion needs: what it exercises is the
+    // queue-paused derivation surfacing in the projected `pauseCause` on
+    // pending requests, and a second queue would add nothing to that. The
+    // multi-queue projection is covered by
+    // `tests/integration/per-queue-snapshot-isolation.test.ts`.
     //
     // FR-R3-011 — the pause is now set on the queue record. `setQueuePaused`
     // wrote it onto the registry entry, which no longer holds one; the

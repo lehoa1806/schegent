@@ -25,8 +25,7 @@ import QueueConfigModal from '../QueueConfigModal.svelte';
 import { CMD_ACK, CMD_SAVE_QUEUE_SETTINGS } from '../../lib/messages';
 import { buildQueueRuntime } from '../../lib/__tests__/queue-runtime-fixture';
 import { snapshotStore } from '../../lib/snapshot-store.svelte';
-import { IDLE_GENERAL_SETTINGS } from '../../lib/snapshot-types';
-import type { GeneralSettings, QueueRuntime } from '../../lib/snapshot-types';
+import type { QueueRuntime, QueueSettingsProjection } from '../../lib/snapshot-types';
 
 let nextCorrelationId = 0;
 const postCommandSpy = vi.fn((..._args: readonly unknown[]) => ({
@@ -46,16 +45,21 @@ const QUEUES: readonly QueueRuntime[] = Object.freeze([
 ]);
 
 // Neither value is the idle default, so a hard-coded prefill cannot pass.
-const SETTINGS: GeneralSettings = Object.freeze({
-  ...IDLE_GENERAL_SETTINGS,
-  queueGlobalConcurrencyCap: 7,
-  queueDefaultQueueId: 'q-gamma'
+//
+// FR-R3-145 (T1572) — this was a `GeneralSettings` spread over
+// `IDLE_GENERAL_SETTINGS`, which is what let the defect through: the dialog
+// prefilled from the CONFIGURATION projection and saved to the MEMENTO, so every
+// test here passed while the operator's save read as lost. The prop is now the
+// memento projection, and the same two distinctive values prove the prefill.
+const SETTINGS: QueueSettingsProjection = Object.freeze({
+  globalConcurrencyCap: 7,
+  defaultQueueId: 'q-gamma'
 });
 
-function mount(overrides: Partial<GeneralSettings> = {}) {
+function mount(overrides: Partial<QueueSettingsProjection> = {}) {
   return render(QueueConfigModal, {
     props: {
-      generalSettings: { ...SETTINGS, ...overrides },
+      queueSettings: { ...SETTINGS, ...overrides },
       queues: QUEUES,
       onClose: () => {}
     }
@@ -149,7 +153,7 @@ describe('QueueConfigModal — saving both values (FR-010)', () => {
   it('closes only once the host accepts', async () => {
     let closed = 0;
     const { getByTestId } = render(QueueConfigModal, {
-      props: { generalSettings: SETTINGS, queues: QUEUES, onClose: () => (closed += 1) }
+      props: { queueSettings: SETTINGS, queues: QUEUES, onClose: () => (closed += 1) }
     });
 
     await fireEvent.click(getByTestId('queue-config-save'));
@@ -162,7 +166,7 @@ describe('QueueConfigModal — saving both values (FR-010)', () => {
   it('cancels without posting anything', async () => {
     let closed = 0;
     const { getByTestId } = render(QueueConfigModal, {
-      props: { generalSettings: SETTINGS, queues: QUEUES, onClose: () => (closed += 1) }
+      props: { queueSettings: SETTINGS, queues: QUEUES, onClose: () => (closed += 1) }
     });
 
     await fireEvent.click(getByTestId('queue-config-cancel'));
@@ -188,7 +192,7 @@ describe('QueueConfigModal — the host owns the range (FR-011)', () => {
   it('shows the refusal the host answers and stays open', async () => {
     let closed = 0;
     const { getByTestId, queryByTestId } = render(QueueConfigModal, {
-      props: { generalSettings: SETTINGS, queues: QUEUES, onClose: () => (closed += 1) }
+      props: { queueSettings: SETTINGS, queues: QUEUES, onClose: () => (closed += 1) }
     });
 
     await fireEvent.input(getByTestId('queue-config-cap'), { target: { value: '99' } });
@@ -227,7 +231,7 @@ describe('QueueConfigModal — dialog conventions', () => {
   it('closes on Escape without posting', async () => {
     let closed = 0;
     render(QueueConfigModal, {
-      props: { generalSettings: SETTINGS, queues: QUEUES, onClose: () => (closed += 1) }
+      props: { queueSettings: SETTINGS, queues: QUEUES, onClose: () => (closed += 1) }
     });
 
     await fireEvent.keyDown(window, { key: 'Escape' });
@@ -279,7 +283,7 @@ describe('QueueConfigModal — the stream-pressure warning', () => {
   function mountWithMemory(cap: number, machineMemoryBytes: number) {
     return render(QueueConfigModal, {
       props: {
-        generalSettings: { ...SETTINGS, queueGlobalConcurrencyCap: cap },
+        queueSettings: { ...SETTINGS, globalConcurrencyCap: cap },
         queues: QUEUES,
         machineMemoryBytes,
         onClose: () => {}

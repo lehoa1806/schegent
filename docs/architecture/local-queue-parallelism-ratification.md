@@ -61,10 +61,10 @@ all in-flight work with the global setting. The drain coordinator additionally
 reserves a capacity slot across awaited admission so two concurrent local
 continuations cannot both spend the same observed vacancy.
 
-The public setting defaults to one, has a minimum of one and maximum of twenty,
-and refuses invalid values instead of clamping them. The enforcing ceiling
-derives from the queue-registry constant; three settings surfaces advertise the
-same range. All six definition sites cite this authority record.
+The cap defaults to one, has a minimum of one and maximum of twenty, and refuses
+invalid values instead of clamping them. The enforcing ceiling derives from the
+queue-registry constant. The next section records which store holds the
+operator's chosen value, and every definition site cites this authority record.
 
 <!-- Source: src/contracts/state-schema.ts -->
 <!-- Source: src/state/queue-state-migrator.ts -->
@@ -73,9 +73,69 @@ same range. All six definition sites cite this authority record.
 <!-- Source: src/queue/queue-manager.ts -->
 <!-- Source: src/services/auto-drain-coordinator.ts -->
 <!-- Source: src/contracts/validators/queue-management.ts -->
-<!-- Source: src/config/settings-schema.ts -->
+<!-- Source: src/state/workspace-state.ts -->
+<!-- Source: src/contracts/queue-bounds.ts -->
+
+## The store that decides the cap
+
+Decision: the cap has one authority, the `WorkspaceState` memento entry
+`KEYS.queueGlobalConcurrencyCap` (`schegent.queue.globalConcurrencyCap`), read by
+`getGlobalConcurrencyCap()`. The VS Code configuration property of the same name
+is withdrawn from `contributes.configuration`. The value is chosen in the Queue
+configuration surface, which saves through `CMD_SAVE_QUEUE_SETTINGS`, and not in
+`settings.json`. The default stays one and the range stays `[1, 20]`; the store
+is the only thing that moves.
+
+The decision follows from the enforcement site rather than from a preference.
+`AGENTS.md` records that the concurrency ceiling is enforced at exactly one
+place — drain step 4's `hasExecutionCapacity(controller.liveRunCount)` conjoined
+with `hasWorkspaceCapacity()` — and both of those predicates compare against
+`this.store.getGlobalConcurrencyCap()`, where `this.store` is the
+`WorkspaceStateStore` built over the workspace memento. No configuration read
+exists anywhere on a scheduling path. Before this change the configuration
+property's entire production footprint was one line seeding an input in the
+queue configuration modal, whose save wrote the memento: the modal read one
+store and wrote the other, and nothing propagated between them.
+
+Declined: configuration-authoritative. It costs three things this record is not
+willing to spend. `QueueManager` is constructed `(store, logger)` in
+`workspace-session.ts` and holds no `vscode.workspace` handle, so a configuration
+read would have to be threaded into the scheduler or into `WorkspaceStateStore`,
+whose constructor in `extension.ts` is a deliberately bare `{get, update}`
+memento shim — the shape that keeps headless tests and the `vscode`-free modules
+buildable. And the two stores hold opposite corruption policies: the memento
+refuses an out-of-range persisted value and throws `QueueMutationRejected`, on
+the argument stated at that reader that silently returning one for a persisted
+hundred would run the workspace at a twentieth of the operator's stated intent;
+`readGeneralSettings` silently coerces an out-of-range configuration value to the
+default. One authority cannot hold both policies, and choosing between them is a
+re-decision of the queue's state ownership rather than a decision about where a
+number lives.
+
+Nothing is seeded and nothing is migrated. An operator carrying
+`"schegent.queue.globalConcurrencyCap": 8` in `settings.json` runs at a cap of
+one today, because nothing reads that value, and runs at a cap of one after the
+property is gone. Seeding the memento from it on upgrade would raise a real
+operator to eight concurrent Runs without their asking — a behaviour change
+delivered by an upgrade, acting on a preference whose effect they have never once
+observed. Removal leaves every workspace's effective cap exactly where it is and
+makes VS Code report the key as unknown, which is the honest signal that it never
+did anything.
+
+This narrows nothing decided above. The ratified topology, the default of one,
+and the maximum of twenty are unchanged; the reader asking *what the cap is* is
+answered by the memento, and the reader asking *who may set it* is answered by
+the queue configuration surface. `queue.defaultQueueId` is disposed of the same
+way and for the same reason: it was a settings-payload key for a configuration
+property that was never declared, while the host already routed on the memento.
+
+<!-- Source: src/state/workspace-state.ts -->
+<!-- Source: src/queue/queue-manager.ts -->
+<!-- Source: src/activation/workspace-session.ts -->
+<!-- Source: src/extension.ts -->
 <!-- Source: src/config/general-settings.ts -->
-<!-- Source: package.json -->
+<!-- Source: src/contracts/sidebar-ipc/queue.ts -->
+<!-- Source: AGENTS.md -->
 
 ## Disposition of the expansion-gate criteria
 
@@ -250,7 +310,7 @@ an invitation to update the number in prose.
 | 3 | Filesystem owners | one | the local canonical workspace and `.schegent/` state |
 | 4 | Network surface for command or state access | none | no listening endpoint in the extension host |
 | 5 | `MAX_QUEUES` | 20 | `src/queue/queue-registry.ts` (declared); the cap ceiling derives from it |
-| 6 | The cap's maximum | 20 | the three enforcing and three advertising definition sites |
+| 6 | The cap's maximum | 20 | the three enforcing definition sites and `MAX_QUEUES` |
 | 7 | Window-primacy lease cardinality | one holder per workspace | `WorkspaceLockManager` |
 | 8 | Execution lease tenure | per queue, admission through terminal transition | `ExecutionLeaseManager` and terminal release service |
 | 9 | Working trees shared by concurrent Runs | one, operator-owned | the canonical workspace passed to every runner |
@@ -274,26 +334,31 @@ The other rows describe the deployment shape and must be checked during design
 review because a unit test cannot prove the number of real operators or hosts.
 
 <!-- Source: src/queue/queue-registry.ts -->
-<!-- Source: package.json -->
+<!-- Source: src/contracts/queue-bounds.ts -->
 <!-- Source: src/contracts/state-schema.ts -->
 <!-- Source: tests/lint/cap-authority-citation-parity.test.ts -->
 
 ## Authority citation and drift control
 
-The following sites define the setting's values and therefore cite this record:
+The following sites define the cap's values and therefore cite this record:
 
 | Role | Definition site |
 |---|---|
 | Enforces | `src/state/workspace-state.ts` |
 | Enforces | `src/queue/queue-manager.ts` |
 | Enforces | `src/contracts/validators/queue-management.ts` |
-| Advertises | `src/config/settings-schema.ts` |
-| Advertises | `src/config/general-settings.ts` |
-| Advertises | `package.json` |
+
+Three sites used to sit beside them under the role *advertises* —
+`src/config/settings-schema.ts`, `src/config/general-settings.ts`, and the
+`package.json` contribution. They stated the range to an operator or a schema
+consumer for a configuration property that no scheduling path read, and they
+left with that property when the memento became the one authority. Nothing that
+refuses an out-of-range value left with them: all three enforcing sites are
+intact, and the range they enforce is unchanged.
 
 Contract, generated-schema, command, and webview files may carry the field
 without defining its range. The citation parity test discovers every source
-mention and requires each one to be classified, preventing a new seventh
+mention and requires each one to be classified, preventing a new fourth
 definition from appearing without review.
 
 <!-- Source: tests/lint/cap-authority-citation-parity.test.ts -->

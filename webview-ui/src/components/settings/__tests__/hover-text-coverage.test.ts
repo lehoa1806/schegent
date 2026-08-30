@@ -35,8 +35,11 @@ import type { ComponentType } from 'svelte';
 import GeneralSettingsTab from '../GeneralSettingsTab.svelte';
 import FatalSignaturesTab from '../FatalSignaturesTab.svelte';
 // Feature 030 (US3) — QueueSettingsTab.svelte + descriptions were
-// deleted alongside the multi-queue surfaces. Multi-queue settings
-// (concurrency cap, default queue) are no longer configurable.
+// deleted alongside the multi-queue surfaces. FR-R3-145 (T1569): those
+// settings became configurable again with Feature 092, but from
+// QueueConfigModal.svelte rather than from a Settings sub-tab, so the
+// deleted tab is still absent and the table below still iterates the
+// tabs that exist.
 
 import { GENERAL_SETTINGS_DESCRIPTIONS } from '../GeneralSettingsTab.descriptions';
 import { FATAL_SIGNATURES_DESCRIPTIONS } from '../FatalSignaturesTab.descriptions';

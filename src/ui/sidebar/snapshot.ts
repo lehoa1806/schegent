@@ -362,6 +362,11 @@ export interface HistoryEntry {
 import type { PhaseDef, PipelineDef } from '../../config/pipeline-config';
 import type { BackendRunnerKind } from '../../contracts/backend-kinds';
 import type { GeneralSettings } from '../../config/general-settings';
+// FR-R3-145 (T1572) — value imports, so the idle projection restates neither
+// number. Both live in the contract layer precisely so this module and
+// `src/state/workspace-state.ts` can read them without depending on each other.
+import { DEFAULT_GLOBAL_CONCURRENCY_CAP } from '../../contracts/queue-bounds';
+import { DEFAULT_QUEUE_ID } from '../../contracts/queue-identity';
 import type { TelemetrySnapshot } from '../../telemetry/telemetry-snapshot';
 import type {
   ActiveFeatureSummary,
@@ -380,7 +385,8 @@ import type {
   WorkflowStatus,
   AuditTailEntry,
   BuilderLifecycle,
-  QueueSummary
+  QueueSummary,
+  QueueSettingsProjection
 } from '../../contracts/snapshot-projections';
 
 // FR-R3-132 (T1502) — these projection shapes moved to
@@ -416,6 +422,7 @@ export type {
   AuditTailEntry,
   BuilderVersionEntry,
   QueueSummary,
+  QueueSettingsProjection,
   BuilderLifecycle,
 } from '../../contracts/snapshot-projections';
 
@@ -645,6 +652,14 @@ export interface WorkflowSnapshot {
    * workspace/user override is absent).
    */
   readonly generalSettings: GeneralSettings;
+  /**
+   * FR-R3-145 (T1572) — the two queue settings, read from the memento the drain
+   * enforces against rather than from the configuration `generalSettings`
+   * projects. Deliberately a sibling of `generalSettings` and not a field on it:
+   * the two come from different stores, and collapsing them is what let the
+   * queue modal seed from one and save to the other.
+   */
+  readonly queueSettings: QueueSettingsProjection;
   readonly sessionArtifacts: SessionArtifactsProjection;
   /** FR-R3-130 (T1496) — live aggregate stream pressure. */
   readonly streamPressure: StreamPressureProjection;
@@ -854,6 +869,7 @@ export function buildIdleSnapshot(opts: {
     availableBackends: Object.freeze([] as readonly BackendRunnerKind[]),
     backendPingState: Object.freeze({ status: 'idle' as const }),
     generalSettings: IDLE_GENERAL_SETTINGS,
+    queueSettings: IDLE_QUEUE_SETTINGS,
     sessionArtifacts: IDLE_SESSION_ARTIFACTS,
     streamPressure: IDLE_STREAM_PRESSURE,
     evidenceHealth: IDLE_EVIDENCE_HEALTH,
@@ -870,6 +886,18 @@ export const IDLE_DELAYED_RETRY: DelayedRetryState = Object.freeze({
   pendingRetryAt: null,
   pendingRetryCause: null,
   delayedRetryCount: 0
+});
+
+/**
+ * FR-R3-145 (T1572) — what the queue settings read as before any store has been
+ * opened: exactly what a cold workspace's memento would return, which is what
+ * `getGlobalConcurrencyCap()` and `getDefaultQueueId()` fall back to. Shared by
+ * `buildIdleSnapshot` and `PlaceholderProjector` so neither restates the values,
+ * and derived from the contract constants so neither restates the numbers.
+ */
+export const IDLE_QUEUE_SETTINGS: QueueSettingsProjection = Object.freeze({
+  globalConcurrencyCap: DEFAULT_GLOBAL_CONCURRENCY_CAP,
+  defaultQueueId: DEFAULT_QUEUE_ID
 });
 
 /** FR-R3-130 — nothing in flight is nothing held, which is the honest idle value. */
@@ -896,10 +924,13 @@ export const IDLE_SESSION_ARTIFACTS: SessionArtifactsProjection = Object.freeze(
  * "Mirrors `package.json`" is the whole contract of this object: every value
  * here must equal the `default` its setting contributes in the manifest, and
  * `tests/parity/settings-defaults-parity.test.ts` derives its expectations
- * from that manifest rather than restating them. Feature 094 corrected
- * `queueGlobalConcurrencyCap`, which stayed at the pre-092 value of 1 for
- * three days after the manifest moved to 3, and was displayed to operators
- * for the width of the first configuration round-trip.
+ * from that manifest rather than restating them. FR-R3-145 (T1572) removed
+ * `queueGlobalConcurrencyCap` and `queueDefaultQueueId` from this object with
+ * the configuration keys behind them; both now project from the memento, as
+ * `queueSettings`. The hazard they illustrated is why the contract holds:
+ * feature 094 found `queueGlobalConcurrencyCap` still at the pre-092 value of 1
+ * three days after the manifest moved to 3, displayed to operators for the width
+ * of the first configuration round-trip.
  */
 export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   cliPath: 'claude',
@@ -918,13 +949,6 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   defaultPipelineId: '',
   fatalSignatures: Object.freeze([]) as readonly string[],
   claudeAutoCompactPctOverride: undefined,
-  // Feature 098 (REL-02) — the manifest default moved 3 -> 1. Concurrent
-  // Runs share one working tree, so `RunCheckpointService` declines to
-  // snapshot above one in-flight Run; at a default of 3 that decline was
-  // every fresh install's behaviour. Raising it back is gated on per-run
-  // worktree isolation, not on this line.
-  queueGlobalConcurrencyCap: 1,
-  queueDefaultQueueId: 'default',
   runtimeLogLevel: 'INFO',
   runtimeLogFilePath: '',
   runtimeLogMaxBytes: 5 * 1024 * 1024,
@@ -948,8 +972,6 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
     defaultPipelineId: 'default',
     fatalSignatures: 'default',
     claudeAutoCompactPctOverride: 'default',
-    queueGlobalConcurrencyCap: 'default',
-    queueDefaultQueueId: 'default',
     runtimeLogLevel: 'default',
     runtimeLogFilePath: 'default',
     runtimeLogMaxBytes: 'default',

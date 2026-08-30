@@ -383,6 +383,34 @@ export interface QueueSummary {
   readonly taskCount: number;
 }
 
+/**
+ * FR-R3-145 (T1572) — the two queue settings, projected from the store that
+ * decides them.
+ *
+ * WHY THIS IS NOT A FIELD ON `generalSettings`, which already carried both.
+ * `generalSettings` is the *configuration* projection by construction: it is
+ * filled from `readGeneralSettings(vscode.workspace.getConfiguration('schegent'))`.
+ * The concurrency ceiling is not enforced against configuration. It is enforced
+ * at one place — `hasExecutionCapacity(liveRunCount)` conjoined with
+ * `hasWorkspaceCapacity()` — and both predicates read the workspace memento via
+ * `store.getGlobalConcurrencyCap()`. The queue modal seeded its input from the
+ * configuration and saved to the memento, so it could not read back its own
+ * write: the value came back unchanged and the operator's save looked lost.
+ *
+ * Named for its store rather than its subject so the distinction survives the
+ * next reader. `queueSettings.globalConcurrencyCap` is the number the drain
+ * gates on. There is no longer a configuration key holding a second opinion.
+ *
+ * The transport was already free — `WorkspaceState` notifies on both keys and
+ * the projector re-projects on any store change — so this needed no new command.
+ */
+export interface QueueSettingsProjection {
+  /** The workspace ceiling the drain enforces. `[1, MAX_QUEUES]`; `1` on a cold workspace. */
+  readonly globalConcurrencyCap: number;
+  /** The queue an unrouted task lands on. `DEFAULT_QUEUE_ID` on a cold workspace. */
+  readonly defaultQueueId: string;
+}
+
 export interface AuditTailEntry {
   readonly id: string;
   readonly timestamp: string;

@@ -213,10 +213,13 @@ from the argv used by that backend adapter.
 
 The queue registry contains at least one queue and at most `MAX_QUEUES = 20`.
 Each queue is sequential: it can have at most one in-flight Task. Workspace-wide
-capacity is independent and is controlled by
-`schegent.queue.globalConcurrencyCap`, default `1`, range `[1, 20]`. The default
-keeps parallel work opt-in; raising the value allows different queues to run at
-the same time against the same operator-owned working tree.
+capacity is independent and is held in workspace state under
+`schegent.queue.globalConcurrencyCap`, default `1`, range `[1, 20]`. It is not a
+`settings.json` key: the value is chosen in the Queue configuration surface,
+saved through `CMD_SAVE_QUEUE_SETTINGS`, and read back from that same memento by
+the predicates the drain gates on. The default keeps parallel work opt-in;
+raising the value allows different queues to run at the same time against the
+same operator-owned working tree.
 
 Queue state is addressed by queue ID. Pending Tasks retain order, one task may
 be marked in flight, and queue lifecycle distinguishes ordinary idle state,
@@ -237,7 +240,7 @@ does not block a sibling queue, and a queue never runs two Tasks concurrently.
 <!-- Source: src/services/auto-drain-coordinator.ts -->
 <!-- Source: src/services/guarded-run-service.ts -->
 <!-- Source: src/state/execution-lease.ts -->
-<!-- Source: package.json -->
+<!-- Source: src/state/workspace-state.ts -->
 
 ## Controller and Phase execution
 

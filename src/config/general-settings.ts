@@ -70,8 +70,6 @@ export interface GeneralSettings {
   readonly defaultPipelineId: string;
   readonly fatalSignatures: readonly string[];
   readonly claudeAutoCompactPctOverride: number | undefined;
-  readonly queueGlobalConcurrencyCap: number;
-  readonly queueDefaultQueueId: string;
   readonly runtimeLogLevel: string;
   readonly runtimeLogFilePath: string;
   readonly retryMaxAttempts: number;
@@ -95,8 +93,6 @@ export interface GeneralSettings {
     readonly defaultPipelineId: SettingScope;
     readonly fatalSignatures: SettingScope;
     readonly claudeAutoCompactPctOverride: SettingScope;
-    readonly queueGlobalConcurrencyCap: SettingScope;
-    readonly queueDefaultQueueId: SettingScope;
     readonly runtimeLogLevel: SettingScope;
     readonly runtimeLogFilePath: SettingScope;
     readonly retryMaxAttempts: SettingScope;
@@ -123,8 +119,6 @@ type AllowedKey =
   | 'defaultPipelineId'
   | 'fatalSignatures'
   | 'claude.autoCompactPctOverride'
-  | 'queue.globalConcurrencyCap'
-  | 'queue.defaultQueueId'
   | 'logging.runtimeLogLevel'
   | 'logging.runtimeLogFilePath'
   | 'retry.maxAttempts'
@@ -234,30 +228,6 @@ export const KEY_SPECS: Readonly<Record<AllowedKey, KeySpec>> = Object.freeze({
     min: 1,
     max: 100,
     allowClear: true
-  },
-  'queue.globalConcurrencyCap': { scope: 'resource',
-    type: 'number-int-range',
-    typedField: 'queueGlobalConcurrencyCap',
-    // Feature 092 (T055, FR-026/FR-027) — the cap was pinned at 1 by feature
-    // 056 Track 4 (FR-018..FR-022) because one workspace lock meant one run.
-    // US2 split that lock into window primacy plus a per-queue execution
-    // lease, so the RANGE opened to [1, 20]; `settings-schema-parity.test.ts`
-    // fails unless the advertising sites agree. Feature 098 (REL-02) moved the
-    // DEFAULT back to 1 — range untouched — as concurrent Runs share a tree.
-    //
-    // Feature 094 — the bound lives in six sites, not the "three and a fourth"
-    // this comment used to claim: three advertise (this one,
-    // `settings-schema.ts`, package.json) and three enforce. All six, the
-    // authority for a range wider than one, and the 098 default's reasoning:
-    // `docs/architecture/local-queue-parallelism-ratification.md`.
-    defaultValue: 1,
-    min: 1,
-    max: 20
-  },
-  'queue.defaultQueueId': { scope: 'window',
-    type: 'string',
-    typedField: 'queueDefaultQueueId',
-    defaultValue: 'default'
   },
   'logging.runtimeLogLevel': { scope: 'resource',
     type: 'string-enum',

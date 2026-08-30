@@ -109,8 +109,6 @@ describe('Feature 011 — general-settings allowlist', () => {
         'defaultPipelineId',
         'fatalSignatures',
         'claude.autoCompactPctOverride',
-        'queue.globalConcurrencyCap',
-        'queue.defaultQueueId',
         'logging.runtimeLogLevel',
         'logging.runtimeLogFilePath',
         'logging.rawTranscriptMode',
@@ -322,8 +320,6 @@ describe('Feature 011 — readGeneralSettings projects current values + scopes',
         'audit.rotation.maxAgeDays': 30,
         'defaultPipelineId': 'speckit-new-feature',
         'fatalSignatures': [],
-        'queue.globalConcurrencyCap': 1,
-        'queue.defaultQueueId': 'default'
       }
     });
     const snap = readGeneralSettings(config);
@@ -331,8 +327,6 @@ describe('Feature 011 — readGeneralSettings projects current values + scopes',
     expect(snap.loggingVerbose).toBe(false);
     expect(snap.loopMaxIterations).toBe(10);
     expect(snap.fatalSignatures).toEqual([]);
-    expect(snap.queueGlobalConcurrencyCap).toBe(1);
-    expect(snap.queueDefaultQueueId).toBe('default');
     expect(snap.scopes.cliPath).toBe('default');
     expect(snap.scopes.fatalSignatures).toBe('default');
   });
@@ -379,64 +373,49 @@ describe('Feature 011 — readGeneralSettings projects current values + scopes',
   });
 });
 
-describe('Feature 017 — queue settings validation', () => {
-  it('accepts queue global concurrency cap in [1, 1] (Feature 056 Track 4)', async () => {
+describe('FR-R3-145 (T1570) — the queue settings are not configuration', () => {
+  // This block replaces `Feature 017 — queue settings validation`, five cases
+  // that wrote `queue.globalConcurrencyCap` and `queue.defaultQueueId` through
+  // `writeGeneralSettings` and asserted the bound `[1, 20]` on the way in. Every
+  // one of them passed against a configuration key that no scheduling path read:
+  // `hasExecutionCapacity` and `hasWorkspaceCapacity` gate on the workspace
+  // memento, which `QueueConfigModal` writes through `CMD_SAVE_QUEUE_SETTINGS`.
+  // The configuration key is gone, so the only honest assertion left about it is
+  // that it is refused. The bound those five cases were built to protect is
+  // enforced at the IPC boundary by `validateSaveQueueSettings` in
+  // `src/contracts/validators/queue-management.ts` and again in
+  // `QueueManager.saveQueueSettings`; both are covered where they live.
+  it('refuses the removed queue keys as unknown rather than validating them', async () => {
+    for (const key of ['queue.globalConcurrencyCap', 'queue.defaultQueueId']) {
+      const result = await writeGeneralSettings(makeConfig(), { [key]: 1 });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.reason).toBe(`unknown-key:${key}`);
+    }
+  });
+
+  it('writes nothing to configuration when a removed queue key is supplied', async () => {
+    // The refusal has to be a refusal, not a partial write. `writeGeneralSettings`
+    // validates the whole batch before it updates anything, and this is the
+    // property that made removing the key safe: a caller still passing it gets
+    // an error, not a half-applied settings save.
     const config = makeConfig();
     const fake = config as unknown as FakeWorkspaceConfig;
-    const result = await writeGeneralSettings(config, { 'queue.globalConcurrencyCap': 1 });
-    expect(result.ok).toBe(true);
-    expect(fake.updateCalls).toEqual([
-      { key: 'queue.globalConcurrencyCap', value: 1, target: CONFIGURATION_TARGET_WORKSPACE }
-    ]);
-  });
-
-  // Feature 092 (T039b, US2, FR-026/FR-027) — the bound widened from `[1, 1]`
-  // to `[1, 20]`, so the value this test used as its out-of-range example is
-  // now a legal one. Widening the bound without moving the example would have
-  // left the guard asserting nothing.
-  it('accepts a queue global concurrency cap inside [1, 20]', async () => {
-    const config = makeConfig();
-    const result = await writeGeneralSettings(config, { 'queue.globalConcurrencyCap': 2 });
-    expect(result.ok).toBe(true);
-  });
-
-  it('accepts the upper bound 20', async () => {
-    const config = makeConfig();
-    const result = await writeGeneralSettings(config, { 'queue.globalConcurrencyCap': 20 });
-    expect(result.ok).toBe(true);
-  });
-
-  it('rejects queue global concurrency cap outside [1, 20] (Feature 092)', async () => {
-    const config = makeConfig();
-    const above = await writeGeneralSettings(config, { 'queue.globalConcurrencyCap': 21 });
-    expect(above.ok).toBe(false);
-    if (!above.ok) expect(above.reason).toBe('out-of-range:queue.globalConcurrencyCap');
-
-    const below = await writeGeneralSettings(makeConfig(), {
-      'queue.globalConcurrencyCap': 0
+    const result = await writeGeneralSettings(config, {
+      'logging.verbose': true,
+      'queue.globalConcurrencyCap': 2
     });
-    expect(below.ok).toBe(false);
-    if (!below.ok) expect(below.reason).toBe('out-of-range:queue.globalConcurrencyCap');
+    expect(result.ok).toBe(false);
+    expect(fake.updateCalls).toEqual([]);
   });
 
-  it('accepts queue default id as a string', async () => {
-    const config = makeConfig();
-    const result = await writeGeneralSettings(config, { 'queue.defaultQueueId': 'default' });
-    expect(result.ok).toBe(true);
-  });
-
-  it('projects malformed queue cap to the default cap', () => {
-    // Feature 092 (T055, FR-026/FR-027) — the default moved from 1 to 3;
-    // feature 098 (REL-02) moved it back to 1 for the shared-worktree
-    // checkpoint reason. The projection behaviour is unchanged across both:
-    // an out-of-range *configuration* read still falls back to the declared
-    // default. (`WorkspaceStateStore`'s persisted-value reader is the one
-    // that stopped saturating; these are different surfaces with different
-    // failure modes.)
-    const config = makeConfig({ workspace: { 'queue.globalConcurrencyCap': 100 } });
-    const snap = readGeneralSettings(config);
-    expect(snap.queueGlobalConcurrencyCap).toBe(1);
-  });
+  // FR-R3-145 (T1570) — 'projects malformed queue cap to the default cap' stood
+  // here. It asserted that an out-of-range *configuration* read fell back to the
+  // declared default, which was true and which nothing depended on: no scheduling
+  // path read that configuration. The behaviour that matters — an out-of-range
+  // *persisted* cap being refused rather than saturated — is
+  // `WorkspaceStateStore`'s, and is covered in
+  // `tests/unit/state/workspace-state.test.ts`. A different surface with a
+  // different failure mode, which is why deleting this one loses no coverage.
 });
 
 describe('Feature 011 — empty updates', () => {

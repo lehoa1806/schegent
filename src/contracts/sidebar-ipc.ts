@@ -496,17 +496,18 @@ export interface SaveModelsCommand extends CommandBase<typeof CMD_SAVE_MODELS> {
 // host compensates by restoring any keys already written by that batch. See
 // specs/011-webui-config-editor/contracts/general-settings-ipc.md.
 //
-// Supported keys (host-side allowlist lives in
-// src/config/general-settings.ts `KEY_SPECS` — webview must mirror but
-// is NOT the source of truth):
-//   - cli.path, logging.verbose, loop.maxIterations,
-//     invocation.idleTimeoutSeconds, invocation.maxDurationSeconds, watchdog.pollIntervalMinutes,
-//     audit.rotation.sizeMB, audit.rotation.maxAgeDays,
-//     defaultPipelineId, fatalSignatures,
-//     queue.globalConcurrencyCap, logging.runtimeLogLevel,
-//     logging.runtimeLogFilePath, logging.runtimeLogMaxBytes,
-//     logging.runtimeLogMaxGenerations, retry.maxAttempts.
-//   - Feature 012: `claude.autoCompactPctOverride`.
+// Supported keys: the `AllowedKey` union in src/config/general-settings.ts, which
+// `KEY_SPECS` is keyed by. The webview mirrors that list and is NOT the source of
+// truth; a key absent from it is refused as `unknown-key:<key>`.
+//
+// FR-R3-145 (T1569) deleted the copy of the list that stood here rather than
+// correcting it. Measured against `AllowedKey` at that point, the copy named 17 of
+// 22 keys, listed one that no longer existed (`queue.globalConcurrencyCap`, removed
+// by T1572), and omitted six that did — `codex.path`, `agy.path`,
+// `retry.forceContinueOnCap`, `logging.sessionRetentionMaxAgeDays`,
+// `logging.sessionRetentionMaxBytes`, `logging.rawTranscriptMode`. Restating a
+// union in a comment beside it buys nothing and drifts silently: the reader who
+// trusted this list would have sent a key the host refuses, and missed six it takes.
 export interface SaveGeneralSettingsCommand
   extends CommandBase<typeof CMD_SAVE_GENERAL_SETTINGS> {
   readonly payload: {

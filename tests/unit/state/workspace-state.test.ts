@@ -307,13 +307,25 @@ describe('WorkspaceStateStore feature-017 queue foundations', () => {
     ]);
   });
 
-  // Feature 030 (US3, T046) — the "moves pending tasks between queues
-  // with target position shifting" test required creating a secondary
-  // queue via `createQueue`, which is now blocked by MAX_QUEUES=1. The
-  // cross-queue movePendingRequest path is structurally unreachable
-  // on a single-queue registry; the same-queue reorder path is still
-  // exercised by the "reorders pending tasks within a queue" test
-  // above.
+  // Feature 030 (US3, T046) deleted the "moves pending tasks between queues
+  // with target position shifting" test: it required a secondary queue via
+  // `createQueue`, and the collapse to one queue left none to create.
+  //
+  // FR-R3-145 (T1569) corrected what stood here, which said that call "is now
+  // blocked by MAX_QUEUES=1" and that "the cross-queue movePendingRequest path
+  // is structurally unreachable on a single-queue registry". Feature 092
+  // restored `MAX_QUEUES` to 20 (`src/contracts/queue-bounds.ts:40`), and
+  // `movePendingRequest(taskId, { targetQueueId, position })` takes the target
+  // queue as a parameter, so the path is reachable again.
+  //
+  // It is also, as of this correction, untested — the deleted test was never
+  // restored, and no other suite calls `movePendingRequest` across queues.
+  // The comment's claim of unreachability is what kept that from reading as a
+  // gap. Restoring the test is out of scope for FR-R3-145, which corrects
+  // claims rather than adding coverage; see
+  // `docs/features/bugs/PENDING_cross-queue-move-is-reachable-and-untested.md`.
+  // The same-queue reorder path is still exercised by the "reorders pending
+  // tasks within a queue" test above.
 
   it('rejects positions outside the target queue range', async () => {
     await expect(

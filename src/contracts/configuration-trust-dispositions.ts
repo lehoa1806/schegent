@@ -184,10 +184,6 @@ export const CONFIGURATION_SENSITIVITY = Object.freeze({
     sensitivity: 'run-shape',
     reason: 'model identifiers passed to a backend an untrusted window never spawns'
   },
-  'schegent.queue.globalConcurrencyCap': {
-    sensitivity: 'run-shape',
-    reason: 'caps concurrent runs, of which an untrusted window has none'
-  },
   'schegent.retry.forceContinueOnCap': {
     sensitivity: 'run-shape',
     reason:
