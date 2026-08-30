@@ -157,7 +157,7 @@ describe('PipelineBuilder — Workflow Library mount (083)', () => {
     const labels = Array.from(container.querySelectorAll('.builder-tabs .tab-btn')).map(
       (btn) => btn.textContent?.trim()
     );
-    expect(labels).toEqual(['Pipelines', 'Phases', 'Workflows', 'Models']);
+    expect(labels).toEqual(['Phases', 'Pipelines', 'Workflows', 'Models']);
   });
 
   it('mounts the Workflow Library when initialTab is "workflows"', () => {

@@ -13,9 +13,16 @@
     onactivate: (tab: BuilderTab) => void;
   }
   const { activeTab, onactivate }: Props = $props();
+  // Feature 180 (T1554, FR-001) — the strip reads in the order definitions
+  // compose: a Pipeline is an ordered sequence of Phases, and a Workflow node
+  // runs a Pipeline. Both editors already refuse to author until the earlier
+  // surface has been visited (`PipelineCatalogEditor.svelte:248-252`,
+  // `WorkflowToolbar.svelte:225-235`), so leading with Pipelines put first the
+  // tab that can send the operator to the tab on its right. Order only — every
+  // id and label is what it was, and `BuilderTab` is a set, not a sequence.
   const BUILDER_TABS = Object.freeze([
-    { id: 'pipelines', label: 'Pipelines' },
     { id: 'phases', label: 'Phases' },
+    { id: 'pipelines', label: 'Pipelines' },
     { id: 'workflows', label: 'Workflows' },
     { id: 'models', label: 'Models' }
   ] satisfies ReadonlyArray<{ id: BuilderTab; label: string }>);
