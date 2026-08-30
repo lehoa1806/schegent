@@ -131,6 +131,42 @@ describe('HistoryRerunPanel — opening it (FR-033, FR-039)', () => {
     expect(instruction.disabled).toBe(false);
   });
 
+  /**
+   * 2026-08-31 — and it did not stay editable for long.
+   *
+   * `HistoryDashboard` rebuilds every row object from a fresh `allRows` on each
+   * host push, so `row` arrives as a new object with identical content once per
+   * push — a 1 Hz liveness tick while a run is going. The description effect was
+   * keyed on that object rather than on `row.runId`, so each push re-ran it, and
+   * its first act is `descriptionAnswer = null`, which is exactly what
+   * `resolvingDescription` unmounts the form on. `RunLauncher` then remounts and
+   * re-seeds from the prefill, discarding what the operator had typed.
+   *
+   * A NEW row object with the SAME runId is the whole reproduction, which is why
+   * this rerenders rather than pushing a snapshot. The IPC cost of the same
+   * defect is measured in `history-description-ipc-storm.test.ts`.
+   */
+  it('keeps what the operator typed when the row object is rebuilt (finding 2)', async () => {
+    const { getByTestId, rerender } = mount(readyTarget());
+    await tick();
+
+    const instruction = getByTestId('run-supplemental-instruction') as HTMLTextAreaElement;
+    await fireEvent.input(instruction, { target: { value: 'the operator typed this' } });
+
+    await rerender({
+      row: row(),
+      target: readyTarget(),
+      pipeline: PIPELINE,
+      onClose: () => {}
+    });
+    await tick();
+
+    expect(
+      (getByTestId('run-supplemental-instruction') as HTMLTextAreaElement).value,
+      'a host push must not tear the form down under the cursor'
+    ).toBe('the operator typed this');
+  });
+
   it('states that the recorded inputs were not retained, rather than showing a blank form', async () => {
     // History keeps no input port values — only the description. An empty
     // contract section with nothing said about it reads as "this Pipeline needs
