@@ -104,7 +104,7 @@ export default defineConfig({
       // tests, not unit tests" — and measurement showed that premise named
       // the wrong suite: the file is 74.64% statement-covered by the suite
       // that runs on every `npm run test`, while the `*.host.test.ts` files
-      // the comment referred to are excluded at line 28 below and are
+      // the comment referred to are excluded at line 40 above and are
       // reached in CI only after the visual-regression step. Including it
       // costs 0.30 points of line coverage. `src/**/*.d.ts` was deleted
       // because it matched zero files under `src/`; an exclusion that

@@ -2,8 +2,9 @@
   // Feature 184 (FR-R3-141, T015) — the Pipeline Library list, moved into the top
   // bar's picker.
   //
-  // Lifted verbatim from `PipelineCatalogEditor.svelte:276-295`. The row carries
-  // name and id and nothing else, exactly as it did there.
+  // Lifted verbatim out of `PipelineCatalogEditor.svelte`, which is why that file
+  // no longer holds it and no line there can be cited. The row carries name and id
+  // and nothing else, exactly as it did there.
   //
   // That non-enrichment is a decision, not an oversight (C7-1). The Workflow
   // counterpart's row summarises purpose, node sequence, derived ports and a node

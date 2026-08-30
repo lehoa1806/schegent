@@ -11,7 +11,7 @@ import { controlFacts, decideControlParity, CONTROLS_DOC, BLOCK_START, BLOCK_END
  *
  * THE DEFECT. `FR-R3-099` retired every hosted workflow by operator decision and
  * deleted `.github/workflows/`. Four documents went on describing what those
- * workflows do. `CONTRIBUTING.md:3` told a contributor the checked-in CI workflows
+ * workflows do. `./CONTRIBUTING.md:3` told a contributor the checked-in CI workflows
  * are configured for `develop`; `SECURITY.md:170` said the withdrawn scheduled audit
  * is now run by the gate, which does not run it; `RELEASE.md:380` said nothing
  * generates an SBOM, which `npm run package` does; `docs/operations/licenses.md`
@@ -201,7 +201,7 @@ const REGISTRY: readonly ClaimPattern[] = [
     asserts: 'workflowsExist',
     polarity: 'affirms',
     why: 'a reader is told workflows are checked in or configured, and the directory holds none',
-    // `CONTRIBUTING.md:3`, verbatim as it stood before this change.
+    // `./CONTRIBUTING.md:3`, verbatim as it stood before this change.
     probe: 'The checked-in CI workflows are configured for `develop`.'
   },
   {

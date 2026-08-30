@@ -329,7 +329,7 @@ describe('documented security-critical defaults are executable (FR-R3-126)', () 
 
   it('catches the sentence that actually shipped — proved on the real prior text', () => {
     // The false-positive/false-negative control for the list above, driven against
-    // the verbatim sentence `docs/security/threat-model.md:66` carried until
+    // the verbatim sentence `./docs/security/threat-model.md:66` carried until
     // 2026-08-27, and against the sentence that replaced it.
     const shipped =
       "- A Phase outcome is self-certification **unless the Phase declares " +

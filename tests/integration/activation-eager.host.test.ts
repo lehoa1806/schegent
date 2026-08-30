@@ -34,7 +34,7 @@ import * as vscode from 'vscode';
 //   `tests/__stubs__/vscode.ts` can return whatever a test wants it to, so an
 //   assertion against it would be an assertion about the stub. Only a real
 //   extension host can answer "did activation happen on its own", which is why
-//   `vitest.config.ts:28` excludes `*.host.test.ts` and why that exclusion is
+//   `./vitest.config.ts:40` excludes `*.host.test.ts` and why that exclusion is
 //   structural rather than a gap to close.
 //
 // The manifest assertion below is kept rather than deleted as now-redundant: in

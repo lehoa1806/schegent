@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 103
+    vacuity-census-denominator: 104
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **103** |
+| Gates the detector calls **controlled** (the denominator) | **104** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -136,6 +136,18 @@ transcribed, which is why the second floor exists: a refactor that emptied
 `mechanismByBackend()` would otherwise leave the gate passing over nothing, and a derived list is
 exactly the shape whose failure mode is silent. The rate stays **0.0%** — the entrant was mutated
 with the rest and did not survive.
+
+**Denominator movement 103 → 104 (2026-08-31, the bare-basename reference item).** One gate joined.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | `basename-line-references.test.ts` (103 → 104) | Joined. Resolves backticked `name.ext:NN` citations — bare basenames against an index of both trees, qualified paths against the filesystem — and refuses dead, ambiguous and stale ones in present-tense documents. It walks both trees through `filesUnder` and carries four floors, because this gate exists *because* a checker reported `dead=0` over a corpus that held a dead reference: the file index holds more than five hundred entries, more than a thousand citations were extracted, more than twenty of them are present-tense bare names, and more than twenty are qualified paths. The last is the one that would catch the specific regression of the qualified pattern silently matching nothing. |
+
+The four floors are not decoration. Every assertion in the gate filters a list and compares it to
+`[]`, which is the shape that passes loudest when the list is empty for the wrong reason — the
+founding defect of the item it was written for. Driven red by twelve mutations, one per verdict per
+reference form plus the ledger and guard controls; each hit its own test. The rate stays **0.0%** —
+the entrant was mutated with the rest and did not survive.
 
 The residual is unchanged and is the note below: the detector reads for scanning **by name**, so the
 next extraction of a walk into a helper will do this again. Nothing gates that.
@@ -429,7 +441,7 @@ Every one of these is emitted at run time rather than recorded here, so it canno
 `FR-R3-118` reported one defect: `spec-traceability-governance.test.ts` read the
 planning envelope unguarded, raised `ENOENT` in a standalone execution-repository
 clone, and so made `npm run gate` unreachable — and a release uncuttable — from a
-clone that `README.md:22` and `repo/AGENTS.md` both promise can build and test. It
+clone that the workspace `README.md` and `repo/AGENTS.md` both promise can build and test. It
 recorded nine siblings as already correct, "one file out of ten".
 
 **The sweep was performed by cloning the repository into an envelope-free parent
@@ -673,7 +685,7 @@ across all three seeds and once against the specific sentence `FR-R3-116` row 1 
 | Gate | Mutation | Observed |
 |---|---|---|
 | `document-mechanism-consistency` | each of three seeds' denial sentences planted in a document in its scope | red, naming the seed, then green on restore — by `scripts/document-mechanism-consistency-selftest.sh`, 9 passed / 0 failed |
-| `document-mechanism-consistency` | `threat-model.md:70`'s exact original sentence restored | red — the FR-026 case, specifically |
+| `document-mechanism-consistency` | the planning envelope's `docs/security/threat-model.md` FR-026 sentence, restored verbatim | red — the FR-026 case, specifically |
 | `no-unguarded-parent-read` | a probe file reading `../AGENTS.md` with no envelope check | red, naming the probe, then green on removal |
 | `platform-branch-has-record-row` | `process.platform === 'freebsd'` added under `src/` | red, naming `freebsd`, then green on revert |
 | `source-loc-budget` function bound | a 407-line function added to `src/activation/` | red — and this one **changed the design**: it passed against the first draft, which is how the flat-mark defect was found |

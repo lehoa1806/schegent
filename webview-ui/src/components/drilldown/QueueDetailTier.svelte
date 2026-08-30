@@ -195,7 +195,8 @@
   }
 
   // T012a (FR-017) — relocated from `Dashboard.svelte`'s `onPause`/`onResume`/
-  // `onClearDone`/`onClean` (`Dashboard.svelte:281-334`) unmodified in logic.
+  // `onClearDone`/`onClean`, unmodified in logic. That file was replaced by the
+  // task-first operations surface in `ea391673`, so this is the only copy left.
   // `Dashboard.svelte`'s `postQueueCommand()` wrapper branched on an optional
   // `queueId` prop; this tier's `queueId` is required, so that branch is dead
   // here and the calls are inlined directly.
