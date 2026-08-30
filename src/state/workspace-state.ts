@@ -2108,12 +2108,12 @@ export class WorkspaceStateStore {
     }
     // `insertAt` is a PENDING-ARRAY index; `.position` is a slot in the GLOBAL
     // sequence `compactRequestPositions()` keeps contiguous over pending and
-    // non-pending rows alike. They coincide only while every row ahead of the
-    // insert point is pending, so using the index as a slot put an appended
-    // Task second-to-last on any executing queue. Translate: take the slot of
-    // the row the Task lands in front of, or one past the last pending row.
-    const last = targetPending[targetPending.length - 1];
-    const ahead = targetPending[insertAt];
+    // non-pending rows alike, so using one as the other put an appended Task
+    // second-to-last on any executing queue. Translate: the slot of the row the
+    // Task lands in front of, or one past the last pending row. `.at()`, not
+    // `[...]`, so `T | undefined` makes the guards necessary, not defensive.
+    const last = targetPending.at(-1);
+    const ahead = targetPending.at(insertAt);
     const insertSlot =
       ahead?.position ??
       (last === undefined
