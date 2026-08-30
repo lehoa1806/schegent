@@ -14,6 +14,12 @@
   // own IPC call and its own status line, and it renders one specific setting.
   // Making it a field row means undoing all of that. The duplication that
   // remains between the two is filed, not fixed, at T045.
+  //
+  // The two also ADD differently, and that half is now decided rather than
+  // filed: see the `'string-list'` kind in `field-types.ts`. The short version
+  // is that this control is for entries with an `itemPattern` — refuse at add,
+  // keep the list always-valid, rows read-only — and free text belongs in a
+  // tab with editable rows instead.
 
   import { hoverTextAnchor } from '../../hover-text/hover-text-anchor-action';
   import type { ControlDescription } from '../../hover-text/hover-text-types';

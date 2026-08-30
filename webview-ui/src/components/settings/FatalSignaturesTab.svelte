@@ -15,6 +15,17 @@
    *   - empty / whitespace-only inputs blocked from save (FR-029-like),
    *   - duplicates flagged inline (host merger dedupes anyway).
    *
+   * WHY THIS ADDS DIFFERENTLY FROM `general/StringListField.svelte`, which is
+   * the other editable list on this surface: a signature is free text matched
+   * as a substring, so there is no pattern to refuse at add and no way to fix
+   * a character except by editing the row. That is a decision, not drift —
+   * `general/field-types.ts`, on the `'string-list'` kind, carries the rule and
+   * the reasoning. Read it before giving a third list a fourth behaviour.
+   *
+   * The `{#each}` below is keyed by INDEX and must stay that way; the reason
+   * and its regression test are at
+   * `__tests__/FatalSignaturesTab.duplicate-key.test.ts`.
+   *
    * Feature 018 — Settings UI Hover Text & Descriptions: every focusable
    * control on this tab uses the `use:hoverTextAnchor` action which
    * manages `aria-describedby` and lazily portals a hover/focus
