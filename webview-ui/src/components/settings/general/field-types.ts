@@ -77,6 +77,30 @@ export type FieldKind =
   // feature was not asked to make.
   | 'enum'
   // FR-R3-143 (T030) — an editable list of strings.
+  //
+  // THE ADD-INTERACTION DECISION (T045). Two list editors ship on the Settings
+  // surface and they add items differently: this kind takes a companion input,
+  // validates, and refuses; `FatalSignaturesTab.svelte` appends an empty row
+  // you type into. Settled here, and the rule keys off the ENTRY rather than
+  // the component:
+  //
+  //   - A CONSTRAINED TOKEN — one with an `itemPattern`, where "invalid" is a
+  //     fact the host acts on — uses this kind. Validate at add and keep the
+  //     list always-valid; the row is `<code>`, not an input, because a token
+  //     is fixed by removing it and adding the right one. Duplicates are
+  //     refused on the same ground: the host de-dupes, so a second copy can
+  //     only mislead.
+  //   - FREE TEXT with no pattern — a prose fragment matched as a substring —
+  //     gets an editable row, as the fatal-signatures tab has. There is no
+  //     "invalid" to refuse at add, and retyping a 24-character signature to
+  //     fix one character is the wrong ask. Duplicates are warned, never
+  //     refused: two rows are legitimately equal while one is still being
+  //     typed.
+  //
+  // A new list is a constrained token until shown otherwise, so it lands here.
+  // What the rule does not license is the `data-testid` prefixes drifting
+  // further apart (`string-list-*` here, `fatal-operator-*` there); that pair
+  // is duplication rather than a decision, and stays filed at T045.
   | 'string-list';
 
 export interface FieldSpec {
