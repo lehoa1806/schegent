@@ -82,11 +82,42 @@
    */
   let descriptionAnswer = $state<{ readonly text: string | null } | null>(null);
 
+  /**
+   * Keyed on the run id string, not on the `row` object — the same guard
+   * `HistoryRunDetail` and `HistoryEvidencePanel` each carry, and the one place
+   * it was never applied.
+   *
+   * A prop is a getter back into the parent's expression, so reading
+   * `row.runId` straight inside the effect subscribes it to `rerunRow`, which
+   * `HistoryDashboard` rebuilds from a fresh `allRows` on every host push. The
+   * effect then re-ran per push and re-asked for a description that cannot
+   * change — this helper's own docstring says "the host answers once, on the
+   * ack. A completed Run's description does not change, so there is nothing to
+   * stream." A derived over a primitive stops there: same string, no notify.
+   *
+   * Measured, on 2026-08-31: one open plus ten identical pushes cost eleven
+   * requests before this line and one after, with the already-keyed sibling read
+   * holding at one throughout — which is what proves the key is the remedy and
+   * the surface is not simply remounting. See
+   * `__tests__/history-description-ipc-storm.test.ts`, and finding 2 of the
+   * 2026-08-30 host-log triage, where a workspace with exactly one history entry
+   * issued 2,002 of these in a single second.
+   *
+   * A repeat was not merely wasteful. Each re-run put `descriptionAnswer` back
+   * to `null`, and `resolvingDescription` unmounts the form on exactly that —
+   * so an operator mid-composition had the form torn down and rebuilt once per
+   * host push — and while a workspace has work in flight, that is the 1 Hz
+   * liveness tick. (The word for that workspace state is spelled out nowhere in
+   * this file on purpose: a lint gate reserves it for the status-vocabulary
+   * modules, and it is a blunt substring scan by design.)
+   */
+  const wantedRunId = $derived(row.runId);
+
   $effect(() => {
     // Re-asked per row, and the answer is discarded when the row changes — a
     // late reply must never seed the launcher for a run the operator is no
     // longer looking at.
-    const runId = row.runId;
+    const runId = wantedRunId;
     descriptionAnswer = null;
     let current = true;
     void resolveHistoryDescription(runId).then((result) => {
