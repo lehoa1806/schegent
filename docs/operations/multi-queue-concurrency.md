@@ -7,11 +7,13 @@ Schegent can keep 1–20 local Queues. The reserved `default` Queue must always 
 
 ## Two independent caps
 
-The per-Queue capacity is fixed at one. The workspace-wide `schegent.queue.globalConcurrencyCap` setting limits how many Queues can be active simultaneously; its default is `1` and its accepted range is `[1, 20]`. An out-of-range value is refused instead of clamped.
+The per-Queue capacity is fixed at one. The workspace-wide cap limits how many Queues can be active simultaneously; its default is `1` and its accepted range is `[1, 20]`. An out-of-range value is refused instead of clamped.
+
+Set it in the **Queue configuration** surface, not in `settings.json`. The cap is workspace state, held under `schegent.queue.globalConcurrencyCap` in the workspace memento and written by the `CMD_SAVE_QUEUE_SETTINGS` save; that memento is the store both drain predicates read, so the number the surface shows is the number admission gates on. It is per workspace, so raising it in one workspace does not raise it in another.
 
 <!-- Source: src/queue/queue-manager.ts -->
 <!-- Source: src/state/workspace-state.ts -->
-<!-- Source: package.json -->
+<!-- Source: src/contracts/sidebar-ipc/queue.ts -->
 
 Raising the global cap enables simultaneous Runs in one checkout. It does not create separate worktrees, file locks, or merge isolation. Tasks in different Queues may edit the same files, so use a value above one only when the selected Pipelines can safely share the working tree.
 

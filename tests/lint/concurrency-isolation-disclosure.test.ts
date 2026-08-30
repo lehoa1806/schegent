@@ -25,17 +25,26 @@
 // under `src/config/` advertise the BOUND to a schema consumer and carry a
 // `docLabel` and four numbers. There is no operator-facing sentence in either, so
 // a disclosure there would be text no operator ever sees, and requiring one would
-// mean writing prose into a schema table to satisfy a gate. The surfaces below are
-// the five places the sentence is actually read: the VS Code settings UI (from the
-// manifest), the in-product dialog, the operator guide, the authority record, and
-// the architecture document.
+// mean writing prose into a schema table to satisfy a gate.
+//
+// FR-R3-145 (T1570) — and all three of those advertising sites are now gone,
+// `package.json` included. `schegent.queue.globalConcurrencyCap` was a
+// configuration key that no scheduling path read: the cap the drain gates on is
+// the workspace memento of the same name, written from the dialog through
+// `CMD_SAVE_QUEUE_SETTINGS`. Removing the key removed the VS Code settings UI as a
+// surface — there is no longer a row there to render, so there is no longer a
+// reader to disclose to. That is a surface *disappearing with the thing it
+// disclosed*, not a disclosure being deleted, and it is the one shape this gate
+// must not treat as drift. The four surfaces below are where the sentence is now
+// read: the in-product dialog, the operator guide, the authority record, and the
+// architecture document.
 //
 // THE POINT-OF-DECISION SURFACES CARRY MORE. `QueueConfigModal.svelte` and
 // `docs/operations/multi-queue-concurrency.md` are where a value is chosen, so
 // they must state the CONSEQUENCE (conflicting edits) and not only the fact (one
-// tree). The manifest description states the consequence concretely already —
-// "every run's edits land in the one shared working tree" — and is held to the
-// shared-tree requirement so a future trim cannot empty it.
+// tree). With the manifest gone the dialog is the only surface an operator passes
+// through on the way to setting the value, so the mutation proof below is driven
+// against its text.
 //
 // LIMITS, STATED. The claim scan below is heuristic, in the manner of
 // `gate-integrity/vacuity-detector.ts`: it reads text, it cannot parse intent, and
@@ -71,18 +80,14 @@ interface Surface {
 }
 
 /**
- * The five surfaces that state the shared tree to a human.
+ * The four surfaces that state the shared tree to a human.
  *
  * Do not take this count from any other comment. `cap-authority-citation-parity`
- * counts SIX definition sites and it is counting a different thing — sites that
- * define the range — three of which carry no prose at all.
+ * counts FOUR definition sites and it is counting a different thing — sites that
+ * define the range — every one of which carries no prose at all. The two counts
+ * matching is a coincidence of this moment, not a relationship.
  */
 const DISCLOSURE_SURFACES: readonly Surface[] = [
-  {
-    file: 'package.json',
-    pointOfDecision: false,
-    why: "the cap's markdownDescription is what the VS Code settings UI renders"
-  },
   {
     file: 'webview-ui/src/components/QueueConfigModal.svelte',
     pointOfDecision: true,
@@ -116,33 +121,50 @@ const DISCLOSURE_SURFACES: readonly Surface[] = [
  *    the bound across a boundary and say nothing to anyone.
  */
 const EXEMPT: ReadonlyMap<string, string> = new Map([
+  ['src/contracts/queue-bounds.ts', 'declares the ceiling and the default; a leaf, no prose'],
   ['src/state/workspace-state.ts', 'enforces the bound; no operator-facing prose'],
   ['src/queue/queue-manager.ts', 'enforces the bound; no operator-facing prose'],
   ['src/contracts/validators/queue-management.ts', 'enforces the bound; no operator-facing prose'],
-  ['src/config/settings-schema.ts', 'schema table: docLabel and four numbers, no prose'],
-  ['src/config/general-settings.ts', 'typed accessor table, no prose'],
-  [
-    'src/contracts/configuration-trust-dispositions.ts',
-    'trust disposition table: names the setting key, states no bound and no prose'
-  ],
   ['src/contracts/sidebar-ipc.ts', 'contract surface, carries the field'],
   ['src/contracts/sidebar-ipc/queue.ts', 'contract surface, carries the field'],
-  ['src/contracts/generated/boundary-contracts.ts', 'generated from the schema'],
-  ['src/contracts/generated/schemas/settings.schema.json', 'generated from the schema'],
+  ['src/contracts/snapshot-projections.ts', 'contract surface, declares the projected field'],
   ['src/ui/sidebar/commands/router-types.ts', 'router types, carries the field'],
-  ['src/ui/sidebar/snapshot.ts', 'idle projection, carries the value'],
+  ['src/ui/sidebar/snapshot.ts', 'idle projection, imports the value'],
+  ['src/ui/sidebar/snapshot-composer.ts', 'projection, reads the value from the store'],
   ['src/commands/cancel.ts', 'passes an already-validated value through'],
   ['src/ui/sidebar/commands/cmd-cancel.ts', 'passes an already-validated value through'],
   ['src/ui/sidebar/commands/cmd-save-queue-settings.ts', 'passes an already-validated value through'],
   ['webview-ui/src/lib/queue-control-ipc.ts', 'posts the value, states no bound'],
-  ['webview-ui/src/lib/snapshot-types.ts', 'mirrored contract types, carries the field']
+  ['webview-ui/src/lib/snapshot-types.ts', 'mirrored contract types, carries the field'],
+  ['webview-ui/src/lib/snapshot-store.svelte.ts', 'accessor over the mirror, carries the value']
 ]);
+
+// FR-R3-145 (T1570) — five entries left this map, and they left because the files
+// stopped naming the cap, not because they stopped being exempt:
+// `src/config/settings-schema.ts`, `src/config/general-settings.ts`,
+// `src/contracts/configuration-trust-dispositions.ts` and the two generated
+// artifacts derived from the schema. An exemption for a file that no longer
+// mentions the cap exempts nothing, and it hides the return: if one of them names
+// the cap again it should arrive as an unclassified file and be argued for, which
+// is the whole job of the sweep below. The `gone` check at the end of that test
+// resolves paths on disk and would not have caught any of the five — every one of
+// those files still exists.
+
 
 /** Every non-test file naming the cap, by repo-relative path. */
 function capMentioningFiles(): string[] {
   const roots = ['src', 'webview-ui/src'];
   const pattern = /globalConcurrencyCap|GlobalConcurrencyCap|GLOBAL_CONCURRENCY_CAP/;
-  const found: string[] = ['package.json'];
+  // FR-R3-145 (T1570) — `package.json` was unconditionally in this list, because
+  // the walk covers `src` and `webview-ui/src` and the manifest is neither. It is
+  // now included only if it actually names the cap. Hardcoding it made the
+  // manifest a permanent member of the swept set, so after the contribution was
+  // removed it would have been reported as an unclassified file that does not
+  // mention the cap — a failure with nothing behind it. Tested rather than
+  // assumed, the entry keeps the property that matters: re-contributing the key
+  // makes `package.json` unclassified again, and someone has to say why.
+  const found: string[] = [];
+  const manifestText = read('package.json');
   for (const root of roots) {
     for (const abs of filesUnder(resolve(REPO_ROOT, root), {
       extensions: ['.ts', '.svelte', '.json']
@@ -152,16 +174,17 @@ function capMentioningFiles(): string[] {
       if (pattern.test(readFileSync(abs, 'utf8'))) found.push(rel);
     }
   }
+  if (pattern.test(manifestText)) found.push('package.json');
   return found.sort();
 }
 
 describe('the shared-tree disclosure has content (FR-R3-124)', () => {
-  it('names five disclosure surfaces and finds every one of them on disk', () => {
+  it('names four disclosure surfaces and finds every one of them on disk', () => {
     // Vacuity control, and the only one that matters here: every assertion below
     // reads a file from this list, so a list that silently shrank — a rename, a
     // moved document — would assert over nothing and pass. The length is pinned
     // and every path is resolved.
-    expect(DISCLOSURE_SURFACES).toHaveLength(5);
+    expect(DISCLOSURE_SURFACES).toHaveLength(4);
     const missing = DISCLOSURE_SURFACES.map((s) => s.file).filter(
       (file) => !existsSync(resolve(REPO_ROOT, file))
     );
@@ -199,10 +222,12 @@ describe('the shared-tree disclosure has content (FR-R3-124)', () => {
     ).toEqual([]);
   });
 
-  it('classifies every file that names the cap, so a sixth surface cannot appear silently', () => {
+  it('classifies every file that names the cap, so a fifth surface cannot appear silently', () => {
     const files = capMentioningFiles();
-    // Vacuity control for the sweep: 17 files name the cap today. A pattern or a
-    // walk that stopped matching would produce an empty set and a green gate.
+    // Vacuity control for the sweep: 17 files name the cap today — the same count
+    // as before FR-R3-145, which removed six mentioning files and added six. A
+    // pattern or a walk that stopped matching would produce an empty set and a
+    // green gate.
     expect(
       files.length,
       'no file was found naming the concurrency cap — the sweep no longer matches how this ' +
@@ -235,24 +260,26 @@ describe('the shared-tree disclosure has content (FR-R3-124)', () => {
     expect(SHARED_TREE.test(strippedModal)).toBe(false);
     expect(CONFLICT.test(strippedModal)).toBe(false);
 
-    // And against the manifest's real sentence, minus the clause. Parsed rather than
-    // regex-sliced: the first version matched the cap block by its indentation, which
-    // would have failed on a reformat with a message about the gate rather than about
-    // the manifest.
-    const manifest = JSON.parse(read('package.json')) as {
-      contributes?: {
-        configuration?: { properties?: Record<string, { markdownDescription?: string }> };
-      };
-    };
-    const capText =
-      manifest.contributes?.configuration?.properties?.['schegent.queue.globalConcurrencyCap']
-        ?.markdownDescription;
+    // And against real text from this tree with the disclosure removed. FR-R3-145
+    // (T1570) re-pointed this from the manifest's `markdownDescription`, which no
+    // longer exists — `schegent.queue.globalConcurrencyCap` was a configuration key
+    // nothing read and was removed. The dialog took its place as the surface an
+    // operator passes through to set the value, so it is the right corpus: this is
+    // the mutation the gate must catch, applied to the file it now matters most in.
+    //
+    // The whole file, not a sliced sentence. The previous version parsed JSON to
+    // avoid matching the cap block by its indentation; a Svelte component has no
+    // equivalent structure to parse, and slicing it by regex would reintroduce
+    // exactly the brittleness that parsing was chosen to avoid. Replacing every
+    // spelling of the tree noun cannot leave a false positive behind, because
+    // `SHARED_TREE` requires one of those nouns to match at all.
+    const dialog = read('webview-ui/src/components/QueueConfigModal.svelte');
     expect(
-      capText,
-      'the cap setting is no longer at contributes.configuration.properties in the manifest'
-    ).toBeTypeOf('string');
-    expect(SHARED_TREE.test(capText!)).toBe(true);
-    expect(SHARED_TREE.test(capText!.replace(/working tree/g, 'queue'))).toBe(false);
+      SHARED_TREE.test(dialog),
+      'the dialog no longer states the shared tree; the surface assertion above ' +
+        'should have caught this first, so the two are out of step'
+    ).toBe(true);
+    expect(SHARED_TREE.test(dialog.replace(/working tree|worktree/g, 'queue'))).toBe(false);
   });
 });
 

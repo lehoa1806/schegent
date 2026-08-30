@@ -52,12 +52,18 @@ function manifestProperties(): ReadonlyMap<string, ManifestProperty> {
 /** VS Code's default when a contribution omits `scope`. */
 const DEFAULT_MANIFEST_SCOPE = 'window';
 
-/**
- * Writable by the host, contributed by nothing. Found by this gate. It has no
- * declared scope, so it is declared `window` -- VS Code's treatment of an
- * uncontributed key, which keeps its existing workspace target.
+/*
+ * FR-R3-145 (T1570) -- the `UNCONTRIBUTED` set that stood here is gone.
+ *
+ * It held exactly one name, `queue.defaultQueueId`, excused for being writable by
+ * the host with no manifest contribution behind it. That key is no longer a
+ * `KEY_SPECS` payload key -- it was a typed field for a configuration that never
+ * existed, and the surfaces that resolve a default queue now resolve it from the
+ * store that routes on it. So the set excused nothing, and leaving it standing
+ * would have meant the key could come back uncontributed and this gate would
+ * still have said nothing. The loop below now reports any accepted key the
+ * manifest does not declare, with no exception at all.
  */
-const UNCONTRIBUTED = new Set(['queue.defaultQueueId']);
 
 describe('declared setting scope matches the manifest (M-05)', () => {
   const manifest = manifestProperties();
@@ -67,6 +73,10 @@ describe('declared setting scope matches the manifest (M-05)', () => {
     // every assertion below vacuously true.
     expect(manifest.size).toBeGreaterThan(20);
     expect([...manifest.values()].some((p) => p.scope === 'application')).toBe(true);
+    // The same guard from the other side. Both loops below walk `ALLOWED_KEYS`,
+    // so an emptied host table would report no mismatches with perfect honesty
+    // and no information.
+    expect(ALLOWED_KEYS.size).toBeGreaterThan(20);
   });
 
   // There is deliberately NO test here for "every accepted key declares a
@@ -81,13 +91,12 @@ describe('declared setting scope matches the manifest (M-05)', () => {
       const declared = KEY_SPECS[key as keyof typeof KEY_SPECS].scope;
       const property = manifest.get(key);
       if (!property) {
-        // One key is writable here with no manifest contribution at all. Named
-        // rather than tolerated: a second one appearing is a finding, not a
-        // tolerable gap, because an uncontributed setting has no declared scope,
-        // no default and no settings-UI presence.
-        if (!UNCONTRIBUTED.has(key)) {
-          mismatches.push(`${key}: accepted by the host but absent from the manifest`);
-        }
+        // An uncontributed setting has no declared scope, no default and no
+        // settings-UI presence, so a key that is writable here and absent from
+        // the manifest is a finding rather than a tolerable gap. FR-R3-145
+        // (T1570) removed the one standing exception; there is nothing left this
+        // arm is expected to forgive.
+        mismatches.push(`${key}: accepted by the host but absent from the manifest`);
         continue;
       }
       const expected = property.scope ?? DEFAULT_MANIFEST_SCOPE;

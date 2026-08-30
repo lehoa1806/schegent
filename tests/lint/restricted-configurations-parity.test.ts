@@ -165,8 +165,14 @@ describe('restrictedConfigurations parity (FR-R3-136 T1526c)', () => {
   // run over, and the class histogram, so a policy change has to be a deliberate
   // edit here rather than a silent shift in the map.
   it('runs over the sets it claims to (counts and class histogram)', () => {
-    expect(workspaceSettableKeys()).toHaveLength(28);
-    expect(Object.keys(CONFIGURATION_SENSITIVITY)).toHaveLength(28);
+    // FR-R3-145 (T1570) — 28 -> 27. `schegent.queue.globalConcurrencyCap` was
+    // removed: it was a `run-shape` row for a property no run ever read, and the
+    // cap it named lives in the workspace memento, which Workspace Trust does not
+    // arbitrate. A memento is not a configuration and there is no disposition to
+    // write for it; the untrusted window's protection for the cap is that it
+    // starts no runs at all.
+    expect(workspaceSettableKeys()).toHaveLength(27);
+    expect(Object.keys(CONFIGURATION_SENSITIVITY)).toHaveLength(27);
     expect(derivedRestrictedConfigurations()).toHaveLength(14);
     expect(EXECUTABLE_AUTHORITY_PROPERTIES).toHaveLength(9);
 
@@ -178,7 +184,7 @@ describe('restrictedConfigurations parity (FR-R3-136 T1526c)', () => {
       capability: 2,
       'operator-signal': 4,
       evidence: 8,
-      'run-shape': 14
+      'run-shape': 13
     });
     // The classes that produce the list, stated once so a reclassification of the
     // POLICY (rather than of a property) is also a visible edit.

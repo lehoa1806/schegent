@@ -1,7 +1,7 @@
-// QueueManager — single-queue mode (Feature 030).
+// QueueManager — the workspace's queues, up to `MAX_QUEUES` (FR-R3-145, T1569).
 //
-// The unified workspace queue is the canonical `'default'` queue defined
-// in `queue-registry`. The manager exposes pause/resume + task-level
+// `'default'` is the canonical queue defined in `queue-registry`, and the one a
+// call that names no queue id lands on. The manager exposes pause/resume + task-level
 // mutators (reorder, modify, remove, retry, clear) plus the helpers a
 // drain pass calls (peekNextPending, hasCapacity, markInFlight, finish).
 //
@@ -11,13 +11,13 @@
 // the bug that round-check was opened on. The word is avoided here because this
 // header is where a reader forms the model.
 //
-// Multi-queue management surface (create/rename/delete/move-between/save
-// queue settings) was removed in Feature 030; the v6 migration coalesced
-// any prior multi-queue state into the single `'default'` entry. The
-// registry never carries a schedule under single-queue mode, so the
-// `fireDueSchedules` watchdog path is a no-op in practice (the function
-// is retained for migration robustness and to keep the watchdog wiring
-// stable).
+// Feature 030 removed the multi-queue management surface and its v6 migration
+// coalesced prior multi-queue state into the single `'default'` entry; Feature
+// 092 brought the surface back, so create/rename/delete/move-between/save queue
+// settings are live methods below. No caller attaches a schedule — the one call
+// to `setQueueSchedule` clears one — so the `fireDueSchedules` watchdog path is
+// a no-op in practice (the function is retained for migration robustness and to
+// keep the watchdog wiring stable).
 //
 // Pause semantics (preserved):
 //   - operator pause/resume: `setQueuePausedState`
@@ -991,9 +991,10 @@ export class QueueManager {
     // multi-active-run lock semantics; US2 did exactly that — the workspace
     // lock now carries window primacy only, and mutual exclusion between Runs
     // moved to the per-queue execution lease — so the precondition is met.
-    // The package contribution, `SETTINGS_SCHEMA`, the host validator
-    // (`KEY_SPECS['queue.globalConcurrencyCap']`), `setGlobalConcurrencyCap`
-    // and this validator all share the bound.
+    // FR-R3-145 (T1569) corrected the sentence that stood here: it listed five
+    // sites sharing the bound, of which three — the package contribution,
+    // `SETTINGS_SCHEMA` and `KEY_SPECS` — went with the configuration key,
+    // which was on no scheduling path. `setGlobalConcurrencyCap` remains.
     //
     // Feature 094 — the authority for a cap above one is
     // `docs/architecture/local-queue-parallelism-ratification.md`, which
@@ -1001,8 +1002,7 @@ export class QueueManager {
     // single-operator shape only. The 092 note above explains the mechanism
     // that made a cap above one representable; it is not the decision to use
     // one. This is one of the three sites that *enforce* the bound, alongside
-    // `state/workspace-state.ts` and `contracts/validators/
-    // queue-management.ts`; three further sites advertise it.
+    // `state/workspace-state.ts` and `contracts/validators/queue-management.ts`.
     if (
       !Number.isInteger(params.globalConcurrencyCap) ||
       params.globalConcurrencyCap < 1 ||

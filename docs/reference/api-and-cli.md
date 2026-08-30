@@ -129,7 +129,7 @@ The authoritative schema version is `3`. The table is exhaustive: `COMMAND_TYPES
 | `CMD_CREATE_QUEUE` | `{ name: string }` | M | <!-- Source: src/contracts/sidebar-ipc/queue.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_RENAME_QUEUE` | `{ queueId: string, name: string }` | M | <!-- Source: src/contracts/sidebar-ipc/queue.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_DELETE_QUEUE` | `{ queueId: string, confirmed?: true }` | M | <!-- Source: src/contracts/sidebar-ipc/queue.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
-| `CMD_SAVE_QUEUE_SETTINGS` | `{ globalConcurrencyCap: integer 1–20, defaultQueueId: string }` | M | <!-- Source: src/contracts/sidebar-ipc/queue.ts --><!-- Source: src/contracts/validators/queue-management.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
+| `CMD_SAVE_QUEUE_SETTINGS` | `{ globalConcurrencyCap: integer 1–20, defaultQueueId: string }`. Both are workspace state, not settings keys, and this is the **only** command that writes either. | M | <!-- Source: src/contracts/sidebar-ipc/queue.ts --><!-- Source: src/contracts/validators/queue-management.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --><!-- Source: src/state/workspace-state.ts --> |
 | `CMD_MOVE_TASK` | `{ taskId: string, targetQueueId: string, position?: non-negative integer }` | M | <!-- Source: src/contracts/sidebar-ipc/queue.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_MODIFY_TASK` | `{ taskId: string, description: string }` | M | <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_REORDER_TASK` | `{ taskId: string, newPosition: non-negative integer }` | M | <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
@@ -209,9 +209,13 @@ The webview supplies no file path for export or preflight; the host owns the ope
 
 <!-- Source: src/contracts/sidebar-ipc/process-yaml.ts -->
 
-`CMD_SAVE_GENERAL_SETTINGS.updates` accepts only these unprefixed keys, and validates the entire batch before writing: `cli.path`, `codex.path`, `agy.path`, `logging.verbose`, `loop.maxIterations`, `invocation.idleTimeoutSeconds`, `invocation.maxDurationSeconds`, `watchdog.pollIntervalMinutes`, `audit.rotation.sizeMB`, `audit.rotation.maxAgeDays`, `defaultPipelineId`, `fatalSignatures`, `claude.autoCompactPctOverride`, `queue.globalConcurrencyCap`, `queue.defaultQueueId`, `logging.runtimeLogLevel`, `logging.runtimeLogFilePath`, `retry.maxAttempts`, `retry.forceContinueOnCap`, `logging.runtimeLogMaxBytes`, `logging.runtimeLogMaxGenerations`, `logging.sessionRetentionMaxAgeDays`, `logging.sessionRetentionMaxBytes`, and `logging.rawTranscriptMode`.
+`CMD_SAVE_GENERAL_SETTINGS.updates` accepts only these unprefixed keys, and validates the entire batch before writing: `cli.path`, `codex.path`, `agy.path`, `logging.verbose`, `loop.maxIterations`, `invocation.idleTimeoutSeconds`, `invocation.maxDurationSeconds`, `watchdog.pollIntervalMinutes`, `audit.rotation.sizeMB`, `audit.rotation.maxAgeDays`, `defaultPipelineId`, `fatalSignatures`, `claude.autoCompactPctOverride`, `logging.runtimeLogLevel`, `logging.runtimeLogFilePath`, `retry.maxAttempts`, `retry.forceContinueOnCap`, `logging.runtimeLogMaxBytes`, `logging.runtimeLogMaxGenerations`, `logging.sessionRetentionMaxAgeDays`, `logging.sessionRetentionMaxBytes`, and `logging.rawTranscriptMode`.
+
+`queue.globalConcurrencyCap` and `queue.defaultQueueId` are **not** in that set. Neither is a settings key: both are workspace state, and `CMD_SAVE_QUEUE_SETTINGS` above is the only command that writes either.
 
 <!-- Source: src/config/general-settings.ts -->
+<!-- Source: src/contracts/sidebar-ipc/queue.ts -->
+<!-- Source: src/state/workspace-state.ts -->
 
 `CMD_SET_CONFIRM_SUPPRESSION.actionKey` is handler-validated against exactly: `queue.clean-all`, `queue.clear-done`, `queue.remove-item`, `queue.cancel-item`, `queue.pause`, `queue.resume`, `run.retry-phase-now`, `run.restart-canceled`, `run.modify-task`, `history.rerun`, and `workspace.reset`. The webview `ActionKey` union currently declares five additional keys—`run.skip-phase`, `catalog.deactivate-definition`, `catalog.discard-draft`, `run.overwrite-output`, and `queue.delete`—that this host handler rejects as `unknown-action-key`.
 

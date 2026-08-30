@@ -466,18 +466,6 @@
           "itemPattern": null
         },
         {
-          "key": "schegent.queue.globalConcurrencyCap",
-          "type": "integer",
-          "default": 1,
-          "scope": "resource",
-          "enum": null,
-          "minimum": 1,
-          "maximum": 20,
-          "pattern": null,
-          "itemType": null,
-          "itemPattern": null
-        },
-        {
           "key": "schegent.retry.forceContinueOnCap",
           "type": "boolean",
           "default": false,

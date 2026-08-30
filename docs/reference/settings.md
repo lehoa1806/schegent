@@ -50,14 +50,29 @@ The backend choice is a privilege choice, not a cosmetic preference. A Phase's `
 | `schegent.defaultPipelineId` | empty string or `^[a-z][a-z0-9-]{0,63}$` | empty string | resource | Pipeline used when enqueueing omits one. Empty means no default; Schegent ships no definitions. |
 | `schegent.retry.maxAttempts` | integer, `1`–`5` | `5` | resource | Maximum delayed-retry attempts before the Run and Queue pause. |
 | `schegent.retry.forceContinueOnCap` | boolean | `false` | resource | When a `retryCondition` remains truthy at its final allowed iteration, allows advancement and records a forced-continue runtime event. Failed and timed-out outcomes remain terminal. |
-| `schegent.queue.globalConcurrencyCap` | integer, `1`–`20` | `1` | resource | Maximum simultaneous Runs across queues; each Queue still admits at most one. Out-of-range values are refused, not clamped. |
+
+**The workspace-wide concurrency cap is not on this page, because it is not a
+`settings.json` key.** The maximum number of Runs that may execute at once — still
+defaulting to `1`, still accepted only in `[1, 20]`, still refused rather than clamped
+when out of range — is workspace state, set in the **Queue configuration** surface and
+saved through `CMD_SAVE_QUEUE_SETTINGS`. The key schegent.queue.globalConcurrencyCap is
+written here without backticks deliberately, on the same rule as the removed
+`allowUncontainedBackends` boolean below: a backticked setting key on a reference page is
+a control an operator can reach in their settings, and this one is genuinely gone from the
+manifest. It was declared there and read by nothing on any scheduling path, so a value
+left behind in `settings.json` changes nothing and never did — it is not migrated, and a
+workspace that never opened the Queue configuration keeps the cap of `1` it already ran
+at. See [Multi-queue concurrency](../operations/multi-queue-concurrency.md) for the
+operator guidance and
+[the parallelism ratification](../architecture/local-queue-parallelism-ratification.md)
+for why the memento is the one authority.
 
 <!-- Source: package.json -->
 <!-- Source: src/config/settings-schema.ts -->
 <!-- Source: src/config/general-settings.ts -->
 <!-- Source: src/controller/retry-handler.ts -->
 <!-- Source: src/state/workspace-state.ts -->
-<!-- Source: src/queue/queue-registry.ts -->
+<!-- Source: src/contracts/sidebar-ipc/queue.ts -->
 
 ## Audit, transcripts, and runtime logging
 

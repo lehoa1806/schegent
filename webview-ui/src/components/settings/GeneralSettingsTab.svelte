@@ -53,7 +53,10 @@
     readonly placeholder?: string;
   }
 
-  // Per FR-020 we surface every scalar `schegent.*` key. fatalSignatures
+  // FR-R3-145 (T1569) — `FIELDS` below is a subset of the scalar `schegent.*`
+  // keys the manifest declares, not all of them. The FR-020 claim that stood
+  // here stopped being true as keys were contributed without controls, so it
+  // is stated as the subset it is rather than as coverage. fatalSignatures
   // is intentionally handled by FatalSignaturesTab (array-of-string).
   const BACKEND_FIELDS: readonly FieldSpec[] = [
     { key: 'cliPath', ipcKey: 'cli.path', label: 'Claude CLI Path', kind: 'string' },

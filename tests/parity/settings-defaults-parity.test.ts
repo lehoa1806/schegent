@@ -18,16 +18,27 @@
  *   - `queue.globalConcurrencyCap.maximum` was `5`; v1 only shipped
  *     single-active-run semantics so it was pinned to `1`. Feature 092
  *     (T039a, FR-026/FR-027) supplied the lock split that pin was waiting
- *     for and re-aimed it at `[1, 20]` with a default of `3`. The guard is
- *     re-aimed, not deleted: an unpinned range is how the maximum drifted
- *     to `5` in the first place.
+ *     for and re-aimed it at `[1, 20]` with a default of `3`.
  *
- * This test pins those three values and rejects future drift on the
- * shared schema surface.
+ * This test pins those values and rejects future drift on the shared schema
+ * surface.
+ *
+ * FR-R3-145 (T1570) — the third drift's setting is gone. `schegent.queue.
+ * globalConcurrencyCap` was a configuration key nothing enforced against: the
+ * cap the drain gates on lives in the workspace memento, and the two were free to
+ * disagree. The key was removed rather than wired up, and the parity that
+ * replaces it — host and webview idle queue settings against the store's own
+ * defaults — is at the bottom of this file. The history above is left standing
+ * because it is why the surviving guards are shaped the way they are.
  */
 
 import { describe, expect, it } from 'vitest';
 import * as fs from 'fs';
+
+// FR-R3-145 (T1570) — the store's own fallbacks, so the queue-settings parity
+// below asserts what a cold workspace reports rather than a restatement of it.
+import { DEFAULT_GLOBAL_CONCURRENCY_CAP } from '../../src/contracts/queue-bounds';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 import * as path from 'path';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -98,24 +109,15 @@ describe('Feature 056 Track 3 — settings defaults parity', () => {
     expect(contrib.maximum).toBe(5);
   });
 
-  // Feature 098 (REL-02) — the RANGE stays [1, 20]; only the DEFAULT moves to
-  // 1. Concurrent Runs share one working tree, and `RunCheckpointService`
-  // declines to snapshot above one in-flight Run precisely because a
-  // `git diff HEAD` of a shared tree cannot be attributed to a single Run.
-  // With a default of 3 that decline was the out-of-the-box behaviour: every
-  // fresh install ran Git-capable phases with no restorable checkpoint and
-  // nothing in the UI saying so. Defaulting to 1 makes checkpoints work by
-  // default and turns parallelism into an informed opt-in. Raising it back is
-  // gated on per-run worktree isolation, not on this line.
-  it('package.json queue.globalConcurrencyCap is pinned to [1, 20] with default 1', () => {
-    const pkg = readPackageJson();
-    const contrib =
-      pkg.contributes.configuration.properties['schegent.queue.globalConcurrencyCap'];
-    expect(contrib).toBeDefined();
-    expect(contrib.default).toBe(1);
-    expect(contrib.minimum).toBe(1);
-    expect(contrib.maximum).toBe(20);
-  });
+  // FR-R3-145 (T1570) — the `queue.globalConcurrencyCap` manifest pin that stood
+  // here is gone with the property. It asserted `[1, 20]` and a default of `1`
+  // against a contribution no scheduling path read; the values were right and the
+  // subject was not. Its replacement — the cap's real range asserted against
+  // `MAX_QUEUES`, and its real default against the store's — is at the bottom of
+  // this file and in `tests/unit/contracts/validators/queue-management.test.ts`,
+  // which exercises the validator that actually refuses an out-of-range cap. The
+  // 098 reasoning for the default of `1` moved to `src/contracts/queue-bounds.ts`,
+  // beside the constant it explains.
 
   it('package.json runtimeLogMaxBytes is present with [64 KiB, 1 GiB] range', () => {
     const pkg = readPackageJson();
@@ -166,51 +168,44 @@ describe('Feature 056 Track 3 — host validator agrees with package.json', () =
     const settings = mod.readGeneralSettings(fakeConfig);
     expect(settings.defaultPipelineId).toBe('');
     expect(settings.retryMaxAttempts).toBe(5);
-    // Feature 092 (T054/T055/T055a, FR-026/FR-027) — the ceiling's default
-    // moved from 1 to 3 when the lock split made concurrency representable.
-    // Feature 098 (REL-02) — and back to 1: concurrent Runs share one
-    // working tree, so recovery checkpoints are declined above one in-flight
-    // Run. The RANGE is still [1, 20]; only the default moved.
-    expect(settings.queueGlobalConcurrencyCap).toBe(1);
+    // FR-R3-145 (T1570) — the concurrency cap is no longer read here. It was
+    // never enforced against configuration: both drain predicates read the
+    // workspace memento, and `readGeneralSettings` reads
+    // `vscode.workspace.getConfiguration`. Asserting a configuration default for
+    // it made this file agree that a number mattered which nothing consulted.
+    // The cap's default is now asserted against `IDLE_QUEUE_SETTINGS` below.
     expect(settings.runtimeLogMaxBytes).toBe(5 * 1024 * 1024);
     expect(settings.runtimeLogMaxGenerations).toBe(3);
   });
 });
 
 /**
- * Feature 094 (T030, FR-017, SC-012) — derive the expected cap, do not restate
- * it.
+ * Feature 094 (T030, FR-017, SC-012) — derive the expected value, do not restate
+ * it. The rule outlived the helper that carried it.
  *
- * Until 2026-08-15 the two expectations below read `toBe(1)`, eleven lines
- * under an expectation in this same file asserting the host reader was `3`.
- * This file's own header says the manifest, the host validator and the idle
- * projections must agree, and names this very setting as one of the drifts it
- * was written to fix — yet it recorded the drift instead of failing on it,
- * because every expected value in it was a hand-copied literal. A restated
- * number is a place a wrong value can be written down and look deliberate; it
- * makes the guard agree with whatever it was last edited to agree with.
+ * Until 2026-08-15 two expectations below read `toBe(1)`, eleven lines under an
+ * expectation in this same file asserting the host reader was `3`. This file's own
+ * header says the manifest, the host validator and the idle projections must
+ * agree, and named that very setting as one of the drifts it was written to fix —
+ * yet it recorded the drift instead of failing on it, because every expected value
+ * in it was a hand-copied literal. A restated number is a place a wrong value can
+ * be written down and look deliberate; it makes the guard agree with whatever it
+ * was last edited to agree with.
  *
- * The idle projections exist to mirror what an operator would see before any
- * configuration is read, so the manifest's contributed `default` is the thing
- * they must equal. Reading it here means the next raise of the cap needs one
- * edit, in `package.json`, and this test follows.
+ * Feature 094's answer was `manifestDefaultFor()`, reading the contributed
+ * `default` out of `package.json`. FR-R3-145 (T1570) removed it with its last
+ * caller: the one setting it was built for turned out to have no manifest entry
+ * that anything enforced. The rule it embodied is unchanged, and the queue-settings
+ * parity at the bottom of this file follows it — deriving from
+ * `DEFAULT_GLOBAL_CONCURRENCY_CAP`, which is what the store actually falls back
+ * to. What changed is which document is authoritative for this one value.
  */
-function manifestDefaultFor(settingKey: string): number {
-  const pkg = readPackageJson();
-  const contrib = pkg.contributes.configuration.properties[settingKey];
-  expect(contrib).toBeDefined();
-  expect(typeof contrib.default).toBe('number');
-  return contrib.default as number;
-}
 
 describe('Feature 056 Track 3 — webview idle snapshot agrees with host defaults', () => {
   it('host IDLE_GENERAL_SETTINGS uses the corrected defaults', async () => {
     const mod = await import('../../src/ui/sidebar/snapshot.js');
     expect(mod.IDLE_GENERAL_SETTINGS.defaultPipelineId).toBe('');
     expect(mod.IDLE_GENERAL_SETTINGS.retryMaxAttempts).toBe(5);
-    expect(mod.IDLE_GENERAL_SETTINGS.queueGlobalConcurrencyCap).toBe(
-      manifestDefaultFor('schegent.queue.globalConcurrencyCap')
-    );
     expect(mod.IDLE_GENERAL_SETTINGS.runtimeLogMaxBytes).toBe(5 * 1024 * 1024);
     expect(mod.IDLE_GENERAL_SETTINGS.runtimeLogMaxGenerations).toBe(3);
   });
@@ -219,11 +214,48 @@ describe('Feature 056 Track 3 — webview idle snapshot agrees with host default
     const mod = await import('../../webview-ui/src/lib/snapshot-types.js');
     expect(mod.IDLE_GENERAL_SETTINGS.defaultPipelineId).toBe('');
     expect(mod.IDLE_GENERAL_SETTINGS.retryMaxAttempts).toBe(5);
-    expect(mod.IDLE_GENERAL_SETTINGS.queueGlobalConcurrencyCap).toBe(
-      manifestDefaultFor('schegent.queue.globalConcurrencyCap')
-    );
     expect(mod.IDLE_GENERAL_SETTINGS.runtimeLogMaxBytes).toBe(5 * 1024 * 1024);
     expect(mod.IDLE_GENERAL_SETTINGS.runtimeLogMaxGenerations).toBe(3);
+  });
+});
+
+/**
+ * FR-R3-145 (T1570) — the same parity for the queue settings, against the store
+ * that decides them.
+ *
+ * The two assertions this replaces derived the expected cap from
+ * `package.json`'s contributed `default`, which was the right instinct for a
+ * setting the manifest declares. The cap is not one: no scheduling path ever read
+ * the configuration key, and it is now removed. Deriving from `MANIFEST` would
+ * have left this gate reading `undefined` and passing on `undefined === undefined`
+ * — a coverage gate that cannot fail, which is the subject of this item.
+ *
+ * `DEFAULT_GLOBAL_CONCURRENCY_CAP` and `DEFAULT_QUEUE_ID` are the store's own
+ * fallbacks, so this asserts what a cold workspace actually reports and not a
+ * second opinion about it.
+ */
+describe('FR-R3-145 — idle queue settings agree with the store defaults', () => {
+  it('host IDLE_QUEUE_SETTINGS derives from the contract constants', async () => {
+    const mod = await import('../../src/ui/sidebar/snapshot.js');
+    expect(mod.IDLE_QUEUE_SETTINGS.globalConcurrencyCap).toBe(DEFAULT_GLOBAL_CONCURRENCY_CAP);
+    expect(mod.IDLE_QUEUE_SETTINGS.defaultQueueId).toBe(DEFAULT_QUEUE_ID);
+  });
+
+  it('webview IDLE_QUEUE_SETTINGS is the same object by value', async () => {
+    const host = await import('../../src/ui/sidebar/snapshot.js');
+    const webview = await import('../../webview-ui/src/lib/snapshot-types.js');
+    expect(webview.IDLE_QUEUE_SETTINGS).toEqual(host.IDLE_QUEUE_SETTINGS);
+  });
+
+  it('no manifest property declares the cap any more', () => {
+    const pkg = readPackageJson();
+    expect(
+      pkg.contributes.configuration.properties['schegent.queue.globalConcurrencyCap'],
+      'the configuration key was removed; a reappearance means a second store for the cap'
+    ).toBeUndefined();
+    expect(
+      pkg.contributes.configuration.properties['schegent.queue.defaultQueueId']
+    ).toBeUndefined();
   });
 });
 
@@ -396,27 +428,26 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
     const generalSettings = await import('../../src/config/general-settings.js');
     const hostKeys = Array.from(generalSettings.ALLOWED_KEYS);
 
-    // Intentionally-internal keys: validated by the host but
-    // deliberately NOT exposed in the Settings UI. Adding to this
-    // allowlist requires a load-bearing reason (e.g. v1-frozen
-    // single-queue invariant from CLAUDE.md hard rule 030).
-    //
-    //   - `queue.defaultQueueId`: the single-queue invariant pins
-    //     this to `'default'` (CLAUDE.md hard rule 030). Surfacing
-    //     it in Settings would invite operator drift away from the
-    //     `MAX_QUEUES = 1` contract.
-    const INTENTIONALLY_INTERNAL = new Set<string>(['queue.defaultQueueId']);
+    // Non-vacuity for the walk below: an emptied host table would report nothing
+    // missing, truthfully and uselessly.
+    expect(hostKeys.length).toBeGreaterThan(20);
 
+    // FR-R3-145 (T1570) — the `INTENTIONALLY_INTERNAL` set that stood here is
+    // gone. It held one name, `queue.defaultQueueId`, excused on the strength of
+    // a single-queue invariant that feature 092 reversed years before this was
+    // read again. The key is no longer a `KEY_SPECS` payload key at all, so the
+    // set excused nothing — and while it stood, the key could have returned as a
+    // host-validated setting with no Settings UI surface and this gate would have
+    // stayed green. Every host-validated key now has to answer for itself.
     const missingFromPackage: string[] = [];
     for (const key of hostKeys) {
-      if (INTENTIONALLY_INTERNAL.has(key)) continue;
       if (!packageKeys.has(key)) missingFromPackage.push(key);
     }
 
     // Failure mode: a host validator entry without a package.json
-    // contribution. Fix: add the contribution, or — if the key MUST
-    // stay internal — add it to `INTENTIONALLY_INTERNAL` above with
-    // a comment explaining why.
+    // contribution — a setting writable through the IPC boundary but
+    // invisible and undocumented to the operator. Fix: add the
+    // contribution, or take the key out of `KEY_SPECS`.
     expect(missingFromPackage).toEqual([]);
   });
 });

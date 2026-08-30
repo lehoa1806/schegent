@@ -33,7 +33,7 @@ uncorrected framing would reintroduce a defect a verification already found.
 `repo/tests/perf/aggregate-resource-soak.test.ts`, run through `npm run test:perf`.
 
 Forty `ZippedStreamBuffer` instances — two streams for each of twenty concurrent runs, which is the
-maximum `schegent.queue.globalConcurrencyCap` admits — each filled past
+maximum the workspace-wide concurrency cap admits — each filled past
 `MAX_STREAM_BUFFER_BYTES` so every buffer is at its accepted-input ceiling with its retention policy
 fully engaged. All forty are held live across the measurement, because the question is what they cost
 while they are held.

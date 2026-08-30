@@ -1,6 +1,6 @@
 import type { CommandAckMessage, HostMessage } from './messages';
 import { CMD_ACK, STATE_SNAPSHOT } from './messages';
-import { IDLE_DELAYED_RETRY, IDLE_GENERAL_SETTINGS } from './snapshot-types';
+import { IDLE_DELAYED_RETRY, IDLE_GENERAL_SETTINGS, IDLE_QUEUE_SETTINGS } from './snapshot-types';
 import { defaultQueueRuntime, findQueueRuntime } from './queue-runtime-view';
 import type {
   AuditTailEntry,
@@ -8,6 +8,7 @@ import type {
   DebugLogEntry,
   DelayedRetryState,
   GeneralSettings,
+  QueueSettingsProjection,
   HistoryEntry,
   LiveActivity,
   PhaseName,
@@ -165,6 +166,20 @@ class SnapshotStore {
    */
   get generalSettings(): GeneralSettings {
     return this._snapshot?.generalSettings ?? IDLE_GENERAL_SETTINGS;
+  }
+
+  /**
+   * FR-R3-145 (T1572) — the queue settings, from the workspace memento.
+   *
+   * A sibling of `generalSettings` and not a field on it, because the two come
+   * from different stores. The queue modal used to prefill from
+   * `generalSettings.queueGlobalConcurrencyCap` — the *configuration* — and save
+   * through `CMD_SAVE_QUEUE_SETTINGS`, which writes the *memento*. The value came
+   * back unchanged and the operator's save read as lost. Same legacy-tolerance as
+   * its neighbour: the IDLE constant when an older host omits the projection.
+   */
+  get queueSettings(): QueueSettingsProjection {
+    return this._snapshot?.queueSettings ?? IDLE_QUEUE_SETTINGS;
   }
 
   /**

@@ -3,7 +3,7 @@ import type {
   RunRecordQuarantinedPayload
 } from '../contracts/audit-events';
 import { createRunQuarantine } from './run-quarantine';
-import { MAX_QUEUES } from '../contracts/queue-bounds';
+import { DEFAULT_GLOBAL_CONCURRENCY_CAP, MAX_QUEUES } from '../contracts/queue-bounds';
 import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
 import {
   MAX_PENDING_TASKS_PER_QUEUE,
@@ -101,7 +101,7 @@ function safeDisplay(value: unknown): string {
 
 /**
  * Feature 092 (T056, FR-026/FR-027) — the workspace concurrency ceiling's
- * default and upper bound.
+ * upper bound.
  *
  * The upper bound is `MAX_QUEUES` rather than a second literal 20, because a
  * ceiling above the number of queues is unreachable by construction: each queue
@@ -117,15 +117,15 @@ function safeDisplay(value: unknown): string {
  * bound past `MAX_QUEUES`, or widening `MAX_QUEUES` itself, is outside what
  * that record authorises.
  *
- * This is one of six sites that define the cap's value or its bounds: three
- * enforce (here, `queue/queue-manager.ts`, `contracts/validators/
- * queue-management.ts`) and three advertise (`config/settings-schema.ts`,
- * `config/general-settings.ts`, `package.json`). The enforcing three derive
- * their ceiling; only the advertising three restate the numbers.
+ * FR-R3-145 (T1572) — this is one of *three* sites defining the cap's value or
+ * its bounds, and all three enforce: here, `queue/queue-manager.ts`, and
+ * `contracts/validators/queue-management.ts`, each deriving its ceiling from
+ * `MAX_QUEUES`. The three that restated the numbers without enforcing them —
+ * `config/settings-schema.ts`, `config/general-settings.ts`, `package.json` —
+ * advertised a configuration key nothing read, and went with it. The default
+ * now lives in `contracts/queue-bounds.ts` beside `MAX_QUEUES`: the projection
+ * that displays it and the store that decides it are in different layers.
  */
-// Feature 098 (REL-02) — 3 -> 1. See `config/general-settings.ts` for the
-// reasoning; the ceiling below and the ratification record are unchanged.
-export const DEFAULT_GLOBAL_CONCURRENCY_CAP = 1;
 export const MAX_GLOBAL_CONCURRENCY_CAP = MAX_QUEUES;
 
 /**
@@ -1772,20 +1772,20 @@ export class WorkspaceStateStore {
     // call site.
     const value = this.memento.get<number>(KEYS.queueGlobalConcurrencyCap);
     // The key having never been written is the normal cold-start case, not a
-    // corruption: fall back to the schema default the six defining sites agree
-    // on. Six, not five — feature 094 enumerated them by inspection and found
-    // this comment's count and `config/general-settings.ts`'s count disagreed
-    // with each other and both with the truth. See the header on
-    // `DEFAULT_GLOBAL_CONCURRENCY_CAP` for the enumeration and the authority.
+    // corruption: fall back to `DEFAULT_GLOBAL_CONCURRENCY_CAP`, whose header in
+    // `contracts/queue-bounds.ts` carries the value's reason and its authority.
+    // FR-R3-145 (T1569) deleted the count that stood here — "the six defining
+    // sites agree on. Six, not five" — along with the three that only advertised
+    // the bound. `tests/lint/cap-authority-citation-parity.test.ts` counts now.
     if (value === undefined || value === null) return DEFAULT_GLOBAL_CONCURRENCY_CAP;
     assertGlobalConcurrencyCap(value, 'persisted');
     return value;
   }
 
   public setGlobalConcurrencyCap(value: number): Promise<void> {
-    // Feature 092 (T056, FR-026/FR-027) — `[1, MAX_QUEUES]`. The package
-    // contribution, `SETTINGS_SCHEMA`, the host validator and
-    // `QueueManager.saveQueueSettings` all share this invariant.
+    // Feature 092 (T056, FR-026/FR-027) — `[1, MAX_QUEUES]`. FR-R3-145 removed the
+    // package contribution and `SETTINGS_SCHEMA` from the list that stood here; the
+    // host validator and `QueueManager.saveQueueSettings` still share the invariant.
     assertGlobalConcurrencyCap(value, 'requested');
     return this.serialize(KEYS.queueGlobalConcurrencyCap, () =>
       this.memento.update(KEYS.queueGlobalConcurrencyCap, value)

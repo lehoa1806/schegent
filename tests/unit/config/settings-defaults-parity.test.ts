@@ -64,12 +64,22 @@ function idleDefaults(
   return out;
 }
 
-/**
- * Writable by the host with no manifest contribution, so the manifest states no
- * default for it. Found by `settings-scope-parity.test.ts`; excluded here only
- * from the manifest comparison, and still compared across the other three.
+/*
+ * FR-R3-145 (T1570) -- the `UNCONTRIBUTED` set that stood here is gone, matching
+ * the deletions in `settings-scope-parity.test.ts` and
+ * `tests/parity/settings-defaults-parity.test.ts`.
+ *
+ * It held one name, `queue.defaultQueueId`, excused from the manifest comparison
+ * for being "writable by the host with no manifest contribution", and it cited
+ * `settings-scope-parity.test.ts` as where that was found -- a citation that had
+ * already gone stale, since that file's copy of the set is deleted. The key is no
+ * longer an accepted settings key at all: a default queue is a value in the queue
+ * settings the store routes on, not a configuration a manifest could contribute.
+ * Emptying the set changed no assertion, which is the whole problem with it -- an
+ * exemption excusing nothing still stands ready to excuse the key silently if it
+ * ever returns uncontributed. Both loops below now compare the manifest with no
+ * exception at all.
  */
-const UNCONTRIBUTED = new Set(['queue.defaultQueueId']);
 
 describe('every default agrees on all four surfaces (M-06)', () => {
   const manifest = manifestDefaults();
@@ -99,11 +109,11 @@ describe('every default agrees on all four surfaces (M-06)', () => {
     const mismatches: string[] = [];
     for (const [key, fallback] of hostFallback) {
       const surfaces: Array<[string, unknown]> = [
+        ['manifest', manifest.get(key)],
         ['hostFallback', fallback],
         ['hostIdle', hostIdle.get(key)],
         ['webviewIdle', webviewIdle.get(key)]
       ];
-      if (!UNCONTRIBUTED.has(key)) surfaces.unshift(['manifest', manifest.get(key)]);
       const present = surfaces.filter(([name]) =>
         name === 'manifest'
           ? manifest.has(key)
@@ -126,7 +136,7 @@ describe('every default agrees on all four surfaces (M-06)', () => {
   it('states every writable key on every surface, in both directions', () => {
     const gaps: string[] = [];
     for (const key of hostFallback.keys()) {
-      if (!manifest.has(key) && !UNCONTRIBUTED.has(key)) gaps.push(`${key}: absent from manifest`);
+      if (!manifest.has(key)) gaps.push(`${key}: absent from manifest`);
       if (!hostIdle.has(key)) gaps.push(`${key}: absent from the host idle snapshot`);
       if (!webviewIdle.has(key)) gaps.push(`${key}: absent from the webview idle snapshot`);
     }

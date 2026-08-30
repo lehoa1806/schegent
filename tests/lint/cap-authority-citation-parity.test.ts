@@ -19,7 +19,7 @@
 // somewhere in this codebase:
 //
 //   1. A **new** definition site appears and nobody adds a citation. The
-//      discovery sweep below fails on an unclassified file, so a seventh site
+//      discovery sweep below fails on an unclassified file, so a fifth site
 //      cannot be added silently — the author must classify it, and classifying
 //      it as a definition site brings the citation assertion with it.
 //   2. A citation is **deleted** or edited away. Each definition site is
@@ -28,14 +28,25 @@
 //      so a rename fails here rather than leaving six links pointing nowhere.
 //
 // This guard checks the citation *link*. The values themselves are held by
-// `tests/unit/config/settings-schema-parity.test.ts` (the advertising sites
-// agree) and `tests/parity/settings-defaults-parity.test.ts` (the idle
-// projections match the manifest). The enforcing sites derive their ceiling
-// from `MAX_QUEUES` and so cannot drift from it by restatement.
+// `tests/parity/settings-defaults-parity.test.ts`, which now asserts that the
+// idle projections *import* the two constants rather than restating them, and by
+// `tests/lint/architecture-doc-schema-parity.test.ts`, which pins the documented
+// default and range to the code. The enforcing sites derive their ceiling from
+// `MAX_QUEUES` and so cannot drift from it by restatement.
+//
+// FR-R3-145 (T1570) — this file previously named the advertising sites' agreement
+// as the other half, checked by `tests/unit/config/settings-schema-parity.test.ts`
+// against the manifest. There are no advertising sites left: the manifest
+// contribution, its schema row and its `general-settings.ts` field advertised a
+// configuration key that no scheduling path read, and were removed with it. The
+// half of the problem that gate covered is gone rather than moved, which is a
+// smaller surface, not a weaker one.
 
 import { describe, expect, it } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
+
+import { MAX_GLOBAL_CONCURRENCY_CAP } from '../../src/state/workspace-state';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
@@ -46,22 +57,37 @@ const RECORD_PATH = 'docs/architecture/local-queue-parallelism-ratification.md';
 const RECORD_CITATION = 'local-queue-parallelism-ratification.md';
 
 /**
- * The six sites that state the cap's permitted values or its default.
+ * The four sites that state the cap's permitted values or its default.
  *
- * Three **advertise** the bound — they tell an operator or a schema consumer
- * what the range is. Three **enforce** it — they refuse a value outside it.
- * The split matters to a reader deciding which site answers a question, and it
- * is recorded here because two in-code comments carried counts (four, and five)
- * that disagreed with each other and with the truth until feature 094
- * enumerated them by inspection.
+ * One **defines** the numbers other sites derive from. Three **enforce** them —
+ * they refuse a value outside the range. The split matters to a reader deciding
+ * which site answers a question, and it is recorded here because two in-code
+ * comments carried counts (four, and five) that disagreed with each other and
+ * with the truth until feature 094 enumerated them by inspection.
+ *
+ * FR-R3-145 (T1570) — six became four, and the `advertises` role became empty.
+ * `package.json`, `src/config/settings-schema.ts` and
+ * `src/config/general-settings.ts` advertised `schegent.queue.globalConcurrencyCap`
+ * to the operator; nothing read it. The cap the drain gates on is the workspace
+ * memento of the same name, written through `CMD_SAVE_QUEUE_SETTINGS`. Three
+ * sites telling an operator a number that no scheduling path consults is not a
+ * weaker version of advertising, it is a different thing, so the rows were
+ * removed with the key rather than re-pointed.
+ *
+ * `src/contracts/queue-bounds.ts` is the arrival, and it is a third role rather
+ * than either existing one. It refuses nothing and tells no operator anything —
+ * it is where `MAX_QUEUES` and `DEFAULT_GLOBAL_CONCURRENCY_CAP` are written down,
+ * and every other site derives from it. A reader who lands there is being told
+ * what the numbers are, which is exactly the reader FR-011's citation exists for.
  */
-const CAP_DEFINITION_SITES: ReadonlyArray<{ file: string; role: 'advertises' | 'enforces' }> = [
+const CAP_DEFINITION_SITES: ReadonlyArray<{
+  file: string;
+  role: 'defines' | 'advertises' | 'enforces';
+}> = [
+  { file: 'src/contracts/queue-bounds.ts', role: 'defines' },
   { file: 'src/state/workspace-state.ts', role: 'enforces' },
   { file: 'src/queue/queue-manager.ts', role: 'enforces' },
   { file: 'src/contracts/validators/queue-management.ts', role: 'enforces' },
-  { file: 'src/config/settings-schema.ts', role: 'advertises' },
-  { file: 'src/config/general-settings.ts', role: 'advertises' },
-  { file: 'package.json', role: 'advertises' },
 ];
 
 /**
@@ -80,20 +106,34 @@ const NON_DEFINITION_MENTIONS: ReadonlySet<string> = new Set([
   'src/contracts/sidebar-ipc.ts',
   'src/contracts/sidebar-ipc/queue.ts',
   'src/ui/sidebar/commands/router-types.ts',
-  // Generated from the schema; the bound they contain is a copy of
-  // `settings-schema.ts`, which is a definition site and carries the citation.
-  'src/contracts/generated/boundary-contracts.ts',
-  'src/contracts/generated/schemas/settings.schema.json',
-  // FR-R3-136 — a trust disposition table. It names the setting KEY, once, as a
-  // row saying whether a workspace may set it while the folder is untrusted; it
-  // holds no bound and no default, so deleting every other site would leave it
-  // answering nothing about the range. Reading it tells you who may write the
-  // cap, never what the cap is.
-  'src/contracts/configuration-trust-dispositions.ts',
   // Command handlers — pass an already-validated value through.
   'src/commands/cancel.ts',
   'src/ui/sidebar/commands/cmd-cancel.ts',
   'src/ui/sidebar/commands/cmd-save-queue-settings.ts',
+  // FR-R3-145 (T1572) — the snapshot path, added when the cap became a projected
+  // field. `snapshot-projections.ts` declares `QueueSettingsProjection`,
+  // `snapshot-composer.ts` fills it from the store, and `snapshot.ts` holds the
+  // idle value. None states a bound.
+  //
+  // `snapshot.ts` is the one worth reading twice, because it is the file this
+  // guard's own header is about: "two idle projections drifted to a stale default
+  // while a parity guard restated the expected value as a literal and stayed
+  // green". `IDLE_QUEUE_SETTINGS` cannot drift, because it does not restate — it
+  // value-imports `DEFAULT_GLOBAL_CONCURRENCY_CAP` and `DEFAULT_QUEUE_ID` from the
+  // contract layer. That is why it belongs here and not above: an importing site
+  // has no second opinion to be wrong about.
+  'src/contracts/snapshot-projections.ts',
+  'src/ui/sidebar/snapshot-composer.ts',
+  'src/ui/sidebar/snapshot.ts',
+  // FR-R3-145 (T1570) — three entries were removed from this set rather than
+  // kept: `src/contracts/generated/boundary-contracts.ts` and
+  // `src/contracts/generated/schemas/settings.schema.json` (generated from
+  // `settings-schema.ts`, whose entry is gone, so they no longer contain the
+  // bound) and `src/contracts/configuration-trust-dispositions.ts` (its row
+  // classified a configuration key that no longer exists). An exemption for a
+  // file that no longer mentions the cap exempts nothing and hides the return: if
+  // one of them states the cap again, it should arrive here as an unclassified
+  // file and be argued for, which is what this set is for.
 ]);
 
 /** Every source file naming the setting key or the exported constants. */
@@ -138,19 +178,43 @@ describe('concurrency cap authority citation', () => {
     }
   );
 
-  it('names three advertising and three enforcing sites', () => {
-    const advertises = CAP_DEFINITION_SITES.filter((s) => s.role === 'advertises');
-    const enforces = CAP_DEFINITION_SITES.filter((s) => s.role === 'enforces');
-    expect(advertises).toHaveLength(3);
-    expect(enforces).toHaveLength(3);
+  it('names one defining, three enforcing and no advertising sites', () => {
+    const byRole = (role: string): number =>
+      CAP_DEFINITION_SITES.filter((s) => s.role === role).length;
+    expect(byRole('defines')).toBe(1);
+    expect(byRole('enforces')).toBe(3);
+    // FR-R3-145 (T1570) — pinned at zero deliberately, not left unstated. An
+    // advertising site is one that tells an operator what the range is, and the
+    // three that did were removed because the value they advertised was not the
+    // value the scheduler used. Re-adding one is a real decision — it means the
+    // cap has become configurable again — and it should fail here first.
+    expect(byRole('advertises')).toBe(0);
   });
 
   it('no source file states the cap without being classified', () => {
+    const mentioning = discoverMentioningFiles();
+    // FR-R3-145 (T1570) — vacuity control, and this gate went without one for a
+    // round. Its non-vacuity used to be carried accidentally, by
+    // `expect(advertises).toHaveLength(3)` in the test above: a count of a
+    // hand-written array, which proves nothing about whether the WALK found
+    // anything. That number went to zero when the advertising sites were removed,
+    // and with it the only thing `scanning-gates-prove-they-scanned` recognised
+    // here — which is how the miss surfaced. This is the real control: the sweep
+    // walks `src/`, and a moved root or a pattern that stops matching yields an
+    // empty set and a green gate, indistinguishable from a clean tree. Thirteen
+    // files under `src/` name the cap today.
+    expect(
+      mentioning.length,
+      'the sweep found (almost) no file naming the concurrency cap. The walk root or the ' +
+        'pattern has stopped matching how this tree spells the setting, so the check below ' +
+        'is comparing nothing to nothing and would pass on any tree.'
+    ).toBeGreaterThan(8);
+
     const classified = new Set<string>([
       ...CAP_DEFINITION_SITES.map((s) => s.file),
       ...NON_DEFINITION_MENTIONS,
     ]);
-    const unclassified = discoverMentioningFiles().filter((f) => !classified.has(f));
+    const unclassified = mentioning.filter((f) => !classified.has(f));
 
     expect(
       unclassified,
@@ -204,13 +268,22 @@ describe('re-evaluation trigger premises still hold', () => {
     },
     {
       premise: "the cap's maximum",
-      source: 'package.json',
-      read: () => {
-        const pkg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'));
-        const prop =
-          pkg.contributes?.configuration?.properties?.['schegent.queue.globalConcurrencyCap'];
-        return prop?.maximum === undefined ? undefined : String(prop.maximum);
-      },
+      // FR-R3-145 (T1570) re-pointed this from `package.json`, the same way
+      // FR-R3-110 re-pointed premise 5 when `MAX_QUEUES` moved: the trigger fired
+      // on the premise's *location*, not its content. The manifest contributed
+      // `maximum: 20` for a configuration key nothing read; removing the key
+      // removed the only place a literal 20 was written for the cap. The value is
+      // unchanged — `MAX_GLOBAL_CONCURRENCY_CAP` is `MAX_QUEUES`, which was 20
+      // before the removal and is 20 after — so the record's criterion 3 reasons
+      // from the same number it always did, and no disposition needed
+      // re-evaluating.
+      //
+      // Imported rather than regexed, because after the removal the maximum is
+      // computed and no source file states it as a digit. A regex would have to
+      // match `MAX_QUEUES` and then chase it, which is the indirection this
+      // premise exists to collapse.
+      source: 'src/state/workspace-state.ts',
+      read: () => String(MAX_GLOBAL_CONCURRENCY_CAP),
       expected: '20',
     },
     {

@@ -555,17 +555,25 @@ describe('QueueManager.clearCompleted / clearFailed', () => {
 
 // Feature 030 (US3, T046) — the `QueueManager multi-queue support`
 // describe block was deleted as part of the v5 → v6 single-queue
-// migration. It exercised methods that no longer exist:
-// `createNamedQueue`, `renameNamedQueue`, `deleteNamedQueue`,
-// `saveQueueSettings`, `setQueuePausedState(true, queueId)` with a
-// non-default queueId, and the global-concurrency-cap accessor
-// (`setGlobalConcurrencyCap`) that backed the multi-queue dequeue
-// fairness contract. The single unified queue has `MAX_QUEUES = 1`,
-// the registry is constrained to exactly one entry with
-// `id === 'default'`, and concurrency is implicitly capped at 1.
-// Single-queue behavior is exercised by
-// `tests/unit/queue/queue-manager-single-queue.test.ts` and
-// `tests/unit/queue/queue-registry-single-queue.test.ts`.
+// migration, because the collapse to one queue left it nothing to
+// exercise.
+//
+// FR-R3-145 (T1569) corrected the rest of what stood here. It said six
+// methods "no longer exist"; three of them do — `saveQueueSettings`,
+// `setGlobalConcurrencyCap`, and `setQueuePausedState`, whose second
+// parameter is still an optional `queueId`. Only `createNamedQueue`,
+// `renameNamedQueue` and `deleteNamedQueue` are actually gone. It also
+// said `MAX_QUEUES = 1`, that the registry "is constrained to exactly one
+// entry", and that concurrency "is implicitly capped at 1": Feature 092
+// restored `MAX_QUEUES` to 20 (`src/contracts/queue-bounds.ts:40`), so
+// none of the three holds. And it pointed at two files that do not exist
+// in this tree, `queue-manager-single-queue.test.ts` and
+// `queue-registry-single-queue.test.ts` — a dead citation is worse than
+// none, because it reads as coverage.
+//
+// Multi-queue behavior is exercised by the `QueueManager capacity
+// predicates (T040)` block immediately below, which creates a second
+// queue, and by `tests/integration/per-queue-snapshot-isolation.test.ts`.
 
 // ---------------------------------------------------------------------------
 // Feature 092 (T040, US2, FR-025/FR-026) — two capacity predicates.
