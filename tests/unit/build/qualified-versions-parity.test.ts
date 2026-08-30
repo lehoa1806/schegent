@@ -98,6 +98,66 @@ describe('FR-055 — the drift warning fires on drift and on nothing else', () =
     expect(message).toContain('npm run canary');
   });
 
+  // FR-R3-147 — the three below. The line above already stated the principle
+  // ("a warning an operator cannot act on is noise") and the comparison did not
+  // honour it: `===` fired on a patch bump, which the backend CLI ships weekly
+  // and which the qualification table's own header calls "usually fine".
+  it('is silent on a patch bump, which is the drift that recurs by construction', () => {
+    const log = logger();
+    const qualified = QUALIFIED_BACKEND_VERSIONS.claude!;
+    const [major, minor] = qualified.split('.');
+    const patchBumped = `${major}.${minor}.999`;
+    expect(patchBumped).not.toBe(qualified);
+
+    expect(
+      cliVersionFields(patchBumped, 'claude', log),
+      'a patch bump is not drift, so the record carries no drift flag'
+    ).toEqual({ cliVersion: patchBumped });
+    expect(
+      log.warn,
+      'the observed field case: 2.1.246 qualified against 2.1.250 installed, four days apart'
+    ).not.toHaveBeenCalled();
+  });
+
+  it('names the direction, because older and newer are not the same risk', () => {
+    const qualified = QUALIFIED_BACKEND_VERSIONS.claude!;
+    const major = Number(qualified.split('.')[0]);
+
+    const newer = logger();
+    cliVersionFields(`${major + 1}.0.0`, 'claude', newer);
+    const newerMessage = newer.warn.mock.calls[0]![0] as string;
+
+    const older = logger();
+    cliVersionFields(`${major - 1}.0.0`, 'claude', older);
+    const olderMessage = older.warn.mock.calls[0]![0] as string;
+
+    expect(newerMessage).toContain('newer than');
+    expect(olderMessage).toContain('older than');
+    expect(
+      olderMessage,
+      'the more dangerous case must not read identically to the safer one'
+    ).not.toBe(newerMessage);
+  });
+
+  it('still warns on a minor bump, so the loosening stops at the patch', () => {
+    const log = logger();
+    const qualified = QUALIFIED_BACKEND_VERSIONS.claude!;
+    const [major, minor] = qualified.split('.');
+    const fields = cliVersionFields(`${major}.${Number(minor) + 1}.0`, 'claude', log);
+    expect(fields.cliVersionDrift).toBe(true);
+    expect(log.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to exact comparison when a version does not parse', () => {
+    // Conservative on purpose: an unreadable version string is not evidence that
+    // the binary is fine, and this path must not become a way to silence the
+    // warning by reporting a version shape the comparison cannot read.
+    const log = logger();
+    const fields = cliVersionFields('not-a-version', 'claude', log);
+    expect(fields.cliVersionDrift).toBe(true);
+    expect(log.warn).toHaveBeenCalledTimes(1);
+  });
+
   it('says nothing when the version could not be observed', () => {
     const log = logger();
     expect(cliVersionFields(null, 'claude', log)).toEqual({});

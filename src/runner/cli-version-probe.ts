@@ -140,6 +140,58 @@ export async function observedVersionOf(
   }
 }
 
+type DriftDirection = 'newer than' | 'older than' | 'not comparable to';
+
+/**
+ * FR-R3-147 — what each direction means for the operator, which is not the same thing.
+ *
+ * `===` gave both the same sentence. Four patches ahead and a major version behind are not one
+ * condition, and the more dangerous of the two is the one the old wording did not describe.
+ */
+const DRIFT_ADVICE: Readonly<Record<DriftDirection, string>> = Object.freeze({
+  'newer than':
+    'A newer CLI usually speaks the same protocol; treat this as context if a phase fails in a way you cannot explain.',
+  'older than':
+    'An older CLI may not have protocol features this build relies on; upgrading the backend CLI is the fix.',
+  'not comparable to':
+    'The installed version did not parse as a version, so which way it drifted is unknown.'
+});
+
+/**
+ * FR-R3-147 — drift compared on `major.minor`, and which side of it we are on.
+ *
+ * `null` means "not drift, say nothing". That is the patch-only case, and it is the whole point:
+ * the backend CLI auto-updates itself while the pin moves only when a human runs the canary and
+ * commits, so exact-string equality made this warning permanently on for every installed workspace.
+ * A warning that can never be cleared is furniture, and it teaches operators to skip the line where
+ * a real incompatibility would one day appear. The qualification table's own header already says
+ * "a newer CLI is usually fine; vendors do not break protocols weekly" — this compares the way that
+ * sentence reasons.
+ *
+ * UNPARSEABLE IS DRIFT, deliberately, and says so as `not comparable to` rather than guessing a
+ * side. An unreadable version string is not evidence the binary is fine — a lenient fallback would
+ * be a way to silence the warning by reporting a shape the comparison cannot read — but it is not
+ * evidence of a direction either, and a message that named one would be asserting what this
+ * function does not know.
+ *
+ * THE RELEASE GATE IS NOT THIS. `FR-R3-104` §4 requires a release attempt with a version-mismatched
+ * qualification record to be refused, and that stays exact: a release is cut from a checkout by
+ * someone who can run the canary, which is precisely the audience this runtime warning does not
+ * have. Two surfaces, two audiences; they stopped sharing one comparison here.
+ */
+function driftDirection(qualified: string, observed: string): DriftDirection | null {
+  const q = /^(\d+)\.(\d+)/.exec(qualified);
+  const o = /^(\d+)\.(\d+)/.exec(observed);
+  if (!q || !o) return 'not comparable to';
+  const qMajor = Number(q[1]);
+  const oMajor = Number(o[1]);
+  if (qMajor !== oMajor) return oMajor > qMajor ? 'newer than' : 'older than';
+  const qMinor = Number(q[2]);
+  const oMinor = Number(o[2]);
+  if (qMinor !== oMinor) return oMinor > qMinor ? 'newer than' : 'older than';
+  return null;
+}
+
 /**
  * FR-R3-104 (FR-054, FR-055) — the version fields for one phase's records, and the drift warning.
  *
@@ -171,10 +223,13 @@ export function cliVersionFields(
     ? QUALIFIED_BACKEND_VERSIONS[backend]
     : undefined;
   if (qualified === undefined || qualified === observed) return { cliVersion: observed };
+  const direction = driftDirection(qualified, observed);
+  if (direction === null) return { cliVersion: observed };
   logger?.warn(
-    `${backend} CLI version ${observed} differs from the version this build was qualified ` +
-      `against (${qualified}, ${QUALIFIED_AT}). Protocol handling for this backend has not been ` +
-      'checked against the installed binary; run `npm run canary` from a checkout to re-qualify.'
+    `${backend} CLI ${observed} is ${direction} the version this build was qualified against ` +
+      `(${qualified}, ${QUALIFIED_AT}). Protocol handling for this backend has not been checked ` +
+      `against this binary. ${DRIFT_ADVICE[direction]} ` +
+      'From a checkout, `npm run canary` re-qualifies.'
   );
   return { cliVersion: observed, cliVersionDrift: true, qualifiedCliVersion: qualified };
 }
