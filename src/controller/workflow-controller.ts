@@ -22,7 +22,7 @@ import { releaseExecutionLeaseForTerminalRun } from '../services/execution-lease
 import { ExecutionLeaseManager } from '../state/execution-lease';
 import { EMPTY_CATALOG, type PipelineCatalog } from '../config/pipeline-config';
 import { classifyStartFailure } from './start-failure-classification';
-import { UncontainedConsentGate, recoverOrReport } from './uncontained-consent-gate';
+import { UncontainedConsentGate, driveUnderConsent } from './uncontained-consent-gate';
 import type { UncontainedConsentPort } from './uncontained-consent-gate';
 import { DELAYED_RETRY_CAP } from '../contracts/retry-bounds';
 import type { DelayedRetryWatchdog } from './retry-handler';
@@ -509,22 +509,10 @@ export class SchegentWorkflowController {
       const queueId = this.queue.queueIdForTask(feature.id);
       await this.store.setRun(queueId, run, this.store.runCommitClaim(queueId));
       await this.queue.markInFlight(feature.id, run.id, false);
-      // The `catch` below covered the drive too before the split, so it keeps
-      // covering it — attached synchronously, so a rejection is never briefly
-      // unhandled while the caller decides whether to await.
-      const admitted = run;
-      const drive = (): Promise<void> => this.driveSession(queueId, admitted, feature.description);
-      return {
-        // FR-R3-146 (FR-002) — the containment refusal is thrown from `resolveRunner`
-        // during the drive, so this is where a first run on an ungranted machine
-        // arrives. The gate asks once and re-drives; the admission catch below is
-        // left alone because no runner is constructed there.
-        completed: drive().catch((err) =>
-          recoverOrReport(err, this.consent, drive, (failure) =>
-            this.handleUnexpectedStartFailure(feature, admitted, feature.description, failure)
-          )
-        )
-      };
+      // FR-R3-146 (FR-002) — the `catch` below covered the drive too before the
+      // split, so `guardedDrive` keeps covering it. The admission catch is left
+      // alone: no runner is constructed there, so nothing there can be refused.
+      return { completed: this.guardedDrive(queueId, run, feature) };
     } catch (err) {
       await this.handleUnexpectedStartFailure(feature, run, feature.description, err);
       return NOTHING_TO_DRIVE;
@@ -840,8 +828,17 @@ export class SchegentWorkflowController {
     await this.store.setRun(queueId, next, this.store.runCommitClaim(queueId));
     await this.queue.markInFlight(feature.id, next.id, true);
     // Admitted. `driveSession` carries its own `finally` disposal, so the drive
-    // is handed back rather than awaited (T049a).
-    return { resumed: true, completed: this.driveSession(queueId, next, feature.description) };
+    // is handed back rather than awaited (T049a). FR-R3-146 (FR-002, FR-005): a
+    // resumed run is a run, so it takes the same `guardedDrive` as `admitNew`.
+    return { resumed: true, completed: this.guardedDrive(queueId, next, feature) };
+  }
+
+  /** Both admissions drive through here; the reasoning is at `driveUnderConsent`. */
+  private guardedDrive(queueId: string, run: WorkflowRun, feature: FeatureRequest): Promise<void> {
+    const report = (failure: unknown): Promise<void> =>
+      this.handleUnexpectedStartFailure(feature, run, feature.description, failure);
+    const drive = (): Promise<void> => this.driveSession(queueId, run, feature.description);
+    return driveUnderConsent(this.consent, drive, report);
   }
 
   /**
