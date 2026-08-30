@@ -832,7 +832,26 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // reasoning about re-reading through the narrowing reader moved to the tests that assert
       // it. What survives is why the key is its own key, which is the one thing a reader of
       // `KEYS` cannot recover from anywhere else.
-      highWaterMark: 2815
+      //
+      // Cross-queue move, index-vs-slot — 2815 → 2832.
+      //
+      // `movePendingRequest` read its `position` argument, a PENDING-ARRAY index, as if it were a
+      // `.position` slot. Those coincide only on a queue whose rows are all pending, so moving a
+      // Task onto a queue that was executing one appended it second-to-last. The correction is a
+      // translation from one space to the other, and it has to be at this call site: the two
+      // spaces meet here and nowhere else.
+      //
+      // NOT extracted, and the reason is that extraction would mislead. The arithmetic is four
+      // statements that read `targetPending` and the destination row set — a module boundary
+      // around them would advertise a concept the codebase does not have, and would sit next to
+      // `reorderPendingRequest`, which does the same translation inline. Kept size-honest
+      // instead: the first draft was +24, and the comment that explained the two index spaces at
+      // length is now six lines, with the measurement and the two-defect account in
+      // `docs/features/bugs/DONE_cross-queue-move-is-reachable-and-untested.md`.
+      //
+      // Of the 17, six are that comment and eleven are the translation, the sort that makes
+      // indexing `targetPending` meaningful, and the widened shift.
+      highWaterMark: 2832
     }
   },
   // Feature 077 — public facade and every state-projection collaborator have

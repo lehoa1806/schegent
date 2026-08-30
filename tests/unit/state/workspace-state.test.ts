@@ -15,6 +15,7 @@ import { HistoryStore } from '../../../src/state/history-store';
 import { QueueManager } from '../../../src/queue/queue-manager';
 import { MAX_PENDING_TASKS_PER_QUEUE, type FeatureRequest, type QueueState } from '../../../src/queue/feature-request';
 import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
+import { createQueue } from '../../../src/queue/queue-registry';
 import type { WorkflowRun, WorkflowRunPipeline, WorkspaceLock } from '../../../src/state/workflow-run';
 import type { SanitizedLogger } from '../../../src/lib/logger';
 import { buildMutationPlan } from '../../../src/services/mutation-plan';
@@ -31,6 +32,9 @@ class FakeMemento implements Memento {
     return Promise.resolve();
   }
 }
+
+/** The registry admits UUIDv4 only, and refuses the default id (`queue-registry.ts:353`). */
+const SECOND_QUEUE_ID = '5ec04d00-1111-4222-8333-444444444444';
 
 let memento: FakeMemento;
 let store: WorkspaceStateStore;
@@ -309,23 +313,278 @@ describe('WorkspaceStateStore feature-017 queue foundations', () => {
 
   // Feature 030 (US3, T046) deleted the "moves pending tasks between queues
   // with target position shifting" test: it required a secondary queue via
-  // `createQueue`, and the collapse to one queue left none to create.
+  // `createQueue`, and the collapse to MAX_QUEUES=1 left none to create.
+  // Feature 092 restored the cap to 20 and the path with it, but not the test.
+  // Restored below against the current API.
   //
-  // FR-R3-145 (T1569) corrected what stood here, which said that call "is now
-  // blocked by MAX_QUEUES=1" and that "the cross-queue movePendingRequest path
-  // is structurally unreachable on a single-queue registry". Feature 092
-  // restored `MAX_QUEUES` to 20 (`src/contracts/queue-bounds.ts:40`), and
-  // `movePendingRequest(taskId, { targetQueueId, position })` takes the target
-  // queue as a parameter, so the path is reachable again.
-  //
-  // It is also, as of this correction, untested — the deleted test was never
-  // restored, and no other suite calls `movePendingRequest` across queues.
-  // The comment's claim of unreachability is what kept that from reading as a
-  // gap. Restoring the test is out of scope for FR-R3-145, which corrects
-  // claims rather than adding coverage; see
-  // `docs/features/bugs/PENDING_cross-queue-move-is-reachable-and-untested.md`.
-  // The same-queue reorder path is still exercised by the "reorders pending
-  // tasks within a queue" test above.
+  // `position` is a PENDING-ARRAY INDEX on this writer, the same reading
+  // `reorderPendingRequest` documents at `workspace-state.ts:1990`. An index
+  // and a `.position` slot value coincide only while a queue's pending slots
+  // run 0..n-1, so the cases below stage a target where they do not — that is
+  // the arithmetic the deleted test was named for, and it is the half a
+  // single-queue reorder test cannot reach.
+
+  /** Registers a second queue alongside the default one. */
+  async function addQueue(id: string, name: string): Promise<void> {
+    await store.setQueueRegistry(
+      createQueue(store.getQueueRegistry(), { id, name, now: 1_700_000_000_000 })
+    );
+  }
+
+  /** The queue's pending ids in the order their positions put them in. */
+  function pendingOrder(queueId: string): string[] {
+    return store
+      .getQueue(queueId)
+      .requests.filter((request) => request.status === 'pending')
+      .sort((a, b) => a.position - b.position)
+      .map((request) => request.id);
+  }
+
+  /** The queue's pending `[id, position]` pairs, lowest slot first. */
+  function pendingSlots(queueId: string): [string, number][] {
+    return store
+      .getQueue(queueId)
+      .requests.filter((request) => request.status === 'pending')
+      .sort((a, b) => a.position - b.position)
+      .map((request) => [request.id, request.position]);
+  }
+
+  it('moves a pending task between queues with target position shifting', async () => {
+    await addQueue(SECOND_QUEUE_ID, 'Second');
+    await store.setQueue({
+      ...emptyQueue(),
+      requests: [pendingFeature('a', 0), pendingFeature('b', 1), pendingFeature('c', 2)]
+    });
+    await store.setQueue(
+      {
+        ...emptyQueue(),
+        requests: [
+          { ...pendingFeature('x', 0), queueId: SECOND_QUEUE_ID },
+          { ...pendingFeature('y', 1), queueId: SECOND_QUEUE_ID }
+        ]
+      },
+      SECOND_QUEUE_ID
+    );
+
+    const moved = await store.movePendingRequest('b', {
+      targetQueueId: SECOND_QUEUE_ID,
+      position: 1
+    });
+
+    expect(moved.queueId).toBe(SECOND_QUEUE_ID);
+    expect(moved.position).toBe(1);
+    // The target shifts to open the slot; the source closes the gap the row left.
+    expect(pendingSlots(SECOND_QUEUE_ID)).toEqual([
+      ['x', 0],
+      ['b', 1],
+      ['y', 2]
+    ]);
+    expect(pendingSlots(DEFAULT_QUEUE_ID)).toEqual([
+      ['a', 0],
+      ['c', 1]
+    ]);
+  });
+
+  it('carries the task content verbatim and rewrites only the queue fields', async () => {
+    await addQueue(SECOND_QUEUE_ID, 'Second');
+    const original: FeatureRequest = {
+      ...pendingFeature('carried', 0),
+      description: 'author once, re-file many',
+      pipelineId: 'pipeline-7',
+      retryCount: 2
+    };
+    await store.setQueue({ ...emptyQueue(), requests: [original] });
+
+    const moved = await store.movePendingRequest('carried', {
+      targetQueueId: SECOND_QUEUE_ID
+    });
+
+    expect(moved).toMatchObject({
+      id: 'carried',
+      description: 'author once, re-file many',
+      pipelineId: 'pipeline-7',
+      retryCount: 2,
+      enqueuedAt: original.enqueuedAt,
+      createdAt: original.createdAt,
+      queueId: SECOND_QUEUE_ID,
+      position: 0
+    });
+    expect(moved.updatedAt).not.toBe(original.updatedAt);
+    expect(store.getQueue(DEFAULT_QUEUE_ID).requests).toEqual([]);
+  });
+
+  it('appends to the end of a target whose pending slots do not start at 0', async () => {
+    // The realistic shape: the target is already executing, so its running row
+    // holds slot 0 and its pending rows sit at 1 and 2. `position` is a pending
+    // index, so omitting it means "last of 2 pending" — index 2.
+    await addQueue(SECOND_QUEUE_ID, 'Second');
+    await store.setQueue({ ...emptyQueue(), requests: [pendingFeature('mover', 0)] });
+    await store.setQueue(
+      {
+        ...emptyQueue(),
+        requests: [
+          {
+            ...pendingFeature('running', 0),
+            queueId: SECOND_QUEUE_ID,
+            status: 'in-flight' as const,
+            runId: 'run-1'
+          },
+          { ...pendingFeature('x', 1), queueId: SECOND_QUEUE_ID },
+          { ...pendingFeature('y', 2), queueId: SECOND_QUEUE_ID }
+        ],
+        inFlightId: 'running'
+      },
+      SECOND_QUEUE_ID
+    );
+
+    await store.movePendingRequest('mover', { targetQueueId: SECOND_QUEUE_ID });
+
+    expect(pendingOrder(SECOND_QUEUE_ID)).toEqual(['x', 'y', 'mover']);
+  });
+
+  it('inserts at a pending index rather than a slot value in a gapped target', async () => {
+    await addQueue(SECOND_QUEUE_ID, 'Second');
+    await store.setQueue({ ...emptyQueue(), requests: [pendingFeature('mover', 0)] });
+    await store.setQueue(
+      {
+        ...emptyQueue(),
+        requests: [
+          {
+            ...pendingFeature('running', 0),
+            queueId: SECOND_QUEUE_ID,
+            status: 'in-flight' as const,
+            runId: 'run-1'
+          },
+          { ...pendingFeature('x', 1), queueId: SECOND_QUEUE_ID },
+          { ...pendingFeature('y', 2), queueId: SECOND_QUEUE_ID }
+        ],
+        inFlightId: 'running'
+      },
+      SECOND_QUEUE_ID
+    );
+
+    // Pending index 1 is "between x and y", whatever slots those two hold.
+    await store.movePendingRequest('mover', {
+      targetQueueId: SECOND_QUEUE_ID,
+      position: 1
+    });
+
+    expect(pendingOrder(SECOND_QUEUE_ID)).toEqual(['x', 'mover', 'y']);
+    // The in-flight row is not pending and keeps its slot untouched.
+    expect(
+      store.getQueue(SECOND_QUEUE_ID).requests.find((request) => request.id === 'running')?.position
+    ).toBe(0);
+  });
+
+  it('inserts ahead of every pending row without landing on an occupied slot', async () => {
+    // Pending index 0 means "first of the pending rows", not "slot 0" — slot 0
+    // belongs to the in-flight row.
+    //
+    // This case passes against the pre-fix writer as well, and is kept anyway.
+    // That writer wrote the arrival onto the in-flight row's slot, but the
+    // duplicate never surfaced: `compactRequestPositions()` re-derives every
+    // position on read, and its sort is stable, so the arrival — last in array
+    // order — landed after the row it was level with. The order was right by
+    // the tie-break rather than by the arithmetic. What this pins is the
+    // invariant that made the luck unnecessary, which the shift-every-row
+    // branch below could break on its own.
+    await addQueue(SECOND_QUEUE_ID, 'Second');
+    await store.setQueue({ ...emptyQueue(), requests: [pendingFeature('mover', 0)] });
+    await store.setQueue(
+      {
+        ...emptyQueue(),
+        requests: [
+          {
+            ...pendingFeature('running', 0),
+            queueId: SECOND_QUEUE_ID,
+            status: 'in-flight' as const,
+            runId: 'run-1'
+          },
+          { ...pendingFeature('x', 1), queueId: SECOND_QUEUE_ID },
+          { ...pendingFeature('y', 2), queueId: SECOND_QUEUE_ID }
+        ],
+        inFlightId: 'running'
+      },
+      SECOND_QUEUE_ID
+    );
+
+    await store.movePendingRequest('mover', {
+      targetQueueId: SECOND_QUEUE_ID,
+      position: 0
+    });
+
+    expect(pendingOrder(SECOND_QUEUE_ID)).toEqual(['mover', 'x', 'y']);
+    const positions = store.getQueue(SECOND_QUEUE_ID).requests.map((request) => request.position);
+    expect(new Set(positions).size).toBe(positions.length);
+    // The arrival is behind the row that is executing, not level with it.
+    const slots = new Map(
+      store.getQueue(SECOND_QUEUE_ID).requests.map((request) => [request.id, request.position])
+    );
+    expect(slots.get('running')).toBeLessThan(slots.get('mover') ?? -1);
+  });
+
+  it('leaves the source queue with no vacant slot after the row departs', async () => {
+    // A gap here becomes a wrong insert later: the source is some other move's
+    // target, and this writer reads slots to decide where a row lands.
+    await addQueue(SECOND_QUEUE_ID, 'Second');
+    await store.setQueue({
+      ...emptyQueue(),
+      requests: [pendingFeature('a', 0), pendingFeature('b', 1), pendingFeature('c', 2)]
+    });
+
+    await store.movePendingRequest('a', { targetQueueId: SECOND_QUEUE_ID });
+
+    expect(pendingSlots(DEFAULT_QUEUE_ID)).toEqual([
+      ['b', 0],
+      ['c', 1]
+    ]);
+  });
+
+  it('rejects a move to an unknown queue, a non-pending task, and an out-of-range index', async () => {
+    await addQueue(SECOND_QUEUE_ID, 'Second');
+    await store.setQueue({
+      ...emptyQueue(),
+      requests: [
+        pendingFeature('pending-row', 0),
+        { ...pendingFeature('running-row', 1), status: 'in-flight' as const, runId: 'run-1' }
+      ]
+    });
+
+    await expect(
+      store.movePendingRequest('pending-row', { targetQueueId: 'queue-that-is-not-there' })
+    ).rejects.toMatchObject({ reason: 'unknown-queue-id' });
+    await expect(
+      store.movePendingRequest('running-row', { targetQueueId: SECOND_QUEUE_ID })
+    ).rejects.toMatchObject({ reason: 'task-not-in-pending-state' });
+    await expect(
+      store.movePendingRequest('absent', { targetQueueId: SECOND_QUEUE_ID })
+    ).rejects.toMatchObject({ reason: 'task-not-found' });
+    // The empty target admits index 0 only — one past the pending count.
+    await expect(
+      store.movePendingRequest('pending-row', { targetQueueId: SECOND_QUEUE_ID, position: 1 })
+    ).rejects.toMatchObject({ reason: 'position-out-of-range' });
+  });
+
+  it('refuses a move that would take the target past the pending cap', async () => {
+    await addQueue(SECOND_QUEUE_ID, 'Second');
+    await store.setQueue({ ...emptyQueue(), requests: [pendingFeature('mover', 0)] });
+    await store.setQueue(
+      {
+        ...emptyQueue(),
+        requests: Array.from({ length: MAX_PENDING_TASKS_PER_QUEUE }, (_, i) => ({
+          ...pendingFeature(`full-${i}`, i),
+          queueId: SECOND_QUEUE_ID
+        }))
+      },
+      SECOND_QUEUE_ID
+    );
+
+    await expect(
+      store.movePendingRequest('mover', { targetQueueId: SECOND_QUEUE_ID })
+    ).rejects.toMatchObject({ reason: 'task-cap-reached' });
+    // The refusal is total: the row is still on its own queue.
+    expect(pendingOrder(DEFAULT_QUEUE_ID)).toEqual(['mover']);
+  });
 
   it('rejects positions outside the target queue range', async () => {
     await expect(
