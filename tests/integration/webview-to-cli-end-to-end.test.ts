@@ -71,6 +71,7 @@ import type { SchegentStatusBar } from '../../src/ui/status-bar';
 import type { Notifier } from '../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../src/state/lock';
 import type { CommandAckMessage } from '../../src/ui/sidebar/messages';
+import { removeTempRoot } from '../temp-root-cleanup';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -188,7 +189,12 @@ async function buildHarness(overrides: { isPrimary?: boolean; isTrusted?: boolea
       return true;
     },
     cleanup: async () => {
-      await fs.rm(workspaceRoot, { recursive: true, force: true });
+      // `resumeActivePhase` hands the resume to `setImmediate` and the audit
+      // writer appends with nothing awaiting it, so a write can still land after
+      // the last assertion — which is the behaviour under test, not a leak. A
+      // plain recursive `rm` races it and fails on `rmdir` with ENOTEMPTY:
+      // measured at 4 failures in 10 isolated runs before this call replaced it.
+      await removeTempRoot(workspaceRoot);
     }
   };
 }
