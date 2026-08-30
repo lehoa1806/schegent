@@ -1,58 +1,74 @@
 <script lang="ts">
-  import { pingBackend } from '../../lib/backend-ping-ipc';
+  // FR-R3-144 (T025, T026, T028) — the list of backend sections.
+  //
+  // WHAT CHANGED AND WHY. This component drew a row per runner from a local
+  // `RUNNERS` array, paired against the tab's `BACKEND_FIELDS` by INDEX
+  // (`{@const spec = BACKEND_FIELDS[i]}`). The pairing was correct only because
+  // the two arrays were written in the same order and nothing compared them: a
+  // spec inserted at the front would have drawn Claude's path under Codex's Ping
+  // button with every test still green. It also carried five `any`-typed props,
+  // so nothing about the shapes flowing through it was checked at all.
+  //
+  // Both are gone. The backends come from `SUPPORTED_BACKENDS` — the platform's
+  // own enumeration, so a backend added there gets a section without an edit here
+  // — and each one's data is looked up by KEY in a `Record` the tab declares.
+  // Every prop is typed against the real type.
+  //
+  // The per-backend rendering lives in `general/BackendSection.svelte`; this file
+  // owns the heading, the shared probe state and nothing else.
+  import { SUPPORTED_BACKENDS } from '../../../../src/contracts/backend-kinds';
   import type {
     BackendPingState,
+    BackendPosture,
     BackendRunnerKind,
+    PipelineDefinition,
     WorkflowSnapshot
   } from '../../lib/snapshot-types';
-  import { hoverTextAnchor } from '../hover-text/hover-text-anchor-action';
-  import { GENERAL_SETTINGS_DESCRIPTIONS } from './GeneralSettingsTab.descriptions';
-  import GeneralSettingFieldRow from './general/GeneralSettingFieldRow.svelte';
+  import BackendSection from './general/BackendSection.svelte';
+  import type {
+    BackendSection as BackendSectionSpec,
+    Draft,
+    FieldSpec,
+    ScalarKey,
+    StatusByKey
+  } from './general/field-types';
 
   interface Props {
     snapshot: WorkflowSnapshot;
-    BACKEND_FIELDS: readonly any[];
-    draft: any;
-    statusByKey: any;
-    fieldChanged: (key: any) => boolean;
-    fieldScopeLabel: (key: any) => string;
-    pipelines: any;
-    saveOne: (spec: any) => void;
-    resetField: (key: any) => void;
-    onAutoCompactInput: (ev: Event) => void;
+    /**
+     * Every backend's section data, keyed by backend.
+     *
+     * A `Record` rather than an array: a fourth `BackendRunnerKind` member makes
+     * the tab's declaration a compile error until that backend has a section,
+     * where an array would compile and silently render three of four.
+     */
+    backends: Readonly<Record<BackendRunnerKind, BackendSectionSpec>>;
+    draft: Draft;
+    statusByKey: StatusByKey;
+    fieldChanged: (key: ScalarKey) => boolean;
+    fieldScopeLabel: (key: ScalarKey) => string;
+    pipelines: readonly PipelineDefinition[];
+    saveOne: (spec: FieldSpec) => void;
+    resetField: (key: ScalarKey) => void;
   }
   let {
     snapshot,
-    BACKEND_FIELDS,
+    backends,
     draft = $bindable(),
     statusByKey,
     fieldChanged,
     fieldScopeLabel,
     pipelines,
     saveOne,
-    resetField,
-    onAutoCompactInput
+    resetField
   }: Props = $props();
 
-  const RUNNERS: readonly BackendRunnerKind[] = ['claude', 'codex', 'agy'];
-  const LABELS: Record<BackendRunnerKind, string> = {
-    claude: 'Claude',
-    codex: 'Codex',
-    agy: 'Agy'
-  };
-  const state = $derived<BackendPingState>(
-    snapshot.backendPingState ?? { status: 'idle' }
-  );
+  const ping = $derived<BackendPingState>(snapshot.backendPingState ?? { status: 'idle' });
   const availableBackends = $derived(snapshot.availableBackends ?? []);
-  const busy = $derived(state.status === 'running');
-
-  function description(runner: BackendRunnerKind): string {
-    if (state.status === 'idle' || state.runner !== runner) return '';
-    if (state.status === 'running') return `Checking ${LABELS[runner]}…`;
-    if (state.status === 'success') return `Healthy · ${state.latencyMs} ms`;
-    const exit = state.exitCode === undefined ? '' : ` · exit ${state.exitCode}`;
-    return `Unavailable · ${state.cause}${exit}`;
-  }
+  const busy = $derived(ping.status === 'running');
+  // Absent when the host predates the projection; each section renders no posture
+  // block in that case rather than inventing one. See `BackendSection`'s prop doc.
+  const postures = $derived<readonly BackendPosture[]>(snapshot.backendPostures ?? []);
 </script>
 
 <section class="backend-health" aria-labelledby="backend-health-heading">
@@ -61,45 +77,23 @@
     <p id="backend-health-description">Run a bounded, output-free availability check for a configured CLI.</p>
   </div>
   <div class="backend-list">
-    {#each RUNNERS as runner, i}
-      {@const spec = BACKEND_FIELDS[i]}
-      <div class="backend-row-wrapper" data-testid={`backend-health-${runner}`}>
-        <div class="identity">
-          <strong>{LABELS[runner]}</strong>
-          <span class:available={availableBackends.includes(runner)}>
-            {availableBackends.includes(runner) ? 'Discovered' : 'Unavailable'}
-          </span>
-          {#if description(runner)}
-            <small role="status" aria-live="polite">{description(runner)}</small>
-          {/if}
-        </div>
-        <GeneralSettingFieldRow
-          {spec}
-          bind:draft
-          status={statusByKey[spec.key]}
-          changed={fieldChanged(spec.key)}
-          scopeLabel={fieldScopeLabel(spec.key)}
-          {pipelines}
-          onSave={() => saveOne(spec)}
-          onReset={() => resetField(spec.key)}
-          {onAutoCompactInput}
-        >
-          {#snippet actionsAppend()}
-            <button
-              type="button"
-              class="ping-btn"
-              disabled={busy}
-              aria-label={`Ping ${LABELS[runner]} backend`}
-              data-testid={`ping-backend-${runner}`}
-              onclick={() => pingBackend(runner)}
-              use:hoverTextAnchor={{
-                controlId: 'backend-ping',
-                description: GENERAL_SETTINGS_DESCRIPTIONS['backend-ping']
-              }}
-            >{state.status === 'running' && state.runner === runner ? 'Pinging…' : 'Ping'}</button>
-          {/snippet}
-        </GeneralSettingFieldRow>
-      </div>
+    {#each SUPPORTED_BACKENDS as kind (kind)}
+      <BackendSection
+        {kind}
+        section={backends[kind]}
+        posture={postures.find((row) => row.kind === kind)}
+        discovered={availableBackends.includes(kind)}
+        inUse={draft.backendRunner === kind}
+        {ping}
+        {busy}
+        bind:draft
+        {statusByKey}
+        {pipelines}
+        {fieldChanged}
+        {fieldScopeLabel}
+        {saveOne}
+        {resetField}
+      />
     {/each}
   </div>
 </section>
@@ -115,23 +109,4 @@
   h3 { margin: 0; font-size: 1em; }
   p { margin: 3px 0 0; color: var(--schegent-muted-fg); font-size: 0.85em; }
   .backend-list { display: grid; gap: 0; margin-top: 4px; }
-  .backend-row-wrapper {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-  .identity { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; padding-top: 10px; }
-  .identity span { color: var(--vscode-notificationsWarningIcon-foreground); font-size: 0.8em; }
-  .identity span.available { color: var(--vscode-testing-iconPassed); }
-  small { flex-basis: 100%; color: var(--schegent-muted-fg); }
-  .ping-btn {
-    padding: 4px 12px;
-    border: 0;
-    border-radius: var(--schegent-radius);
-    background: var(--schegent-button-bg);
-    color: var(--schegent-button-fg);
-    cursor: pointer;
-  }
-  .ping-btn:hover:not(:disabled) { background: var(--schegent-button-hover); }
-  .ping-btn:disabled { cursor: not-allowed; opacity: 0.55; }
 </style>

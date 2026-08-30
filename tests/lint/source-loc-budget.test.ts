@@ -729,7 +729,30 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // look wrong. There was a THIRD, `src/state/workspace-state.ts`'s `SCHEMA_VERSION = '1.0.0'`,
   // a string. Three constants, one name, two types. A reader who arrives at this line needs to
   // know which of the three they have.
-  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 1058 },
+  //
+  // FR-R3-144 — 1058 -> 1100, and this one is a budget rather than a high-water
+  // mark, which is what FR-R3-119's gate below now requires of it.
+  //
+  // The previous number was "what the file measured" at the time, the form every
+  // bump above used. That form ran out here: the ceiling sat 28 lines above a
+  // 1,030-line file, inside the 25-line margin `undecidedCeilings()` flags, so the
+  // NEXT command to be registered was always going to trip the gate no matter how
+  // small it was. CMD_SET_UNCONTAINED_BACKEND_GRANT is that command, and it costs
+  // this file 24 lines — its constant, its COMMAND_TYPES membership, its
+  // SidebarCommand member, a three-line discriminator guard, its COMMAND_GUARDS
+  // row, and the import/re-export pair for the sub-module.
+  //
+  // That list is the decision. Since feature 087 the per-command cost of this file
+  // has been the five mandatory registration edits and nothing else — payload
+  // shapes, request/response types and payload predicates live in their own
+  // modules under `sidebar-ipc/`, and this command's do too
+  // (`sidebar-ipc/uncontained-grant.ts`). So the budget is set to what that shape
+  // costs for the next few commands rather than to today's measurement: 46 lines
+  // of headroom is roughly three more registrations. When it runs out, the
+  // question on the table will be whether the barrel itself should be generated or
+  // split — an architectural question, which is what should force it, rather than
+  // whichever feature happens to add the next command.
+  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 1100 },
   // Waived, not budgeted. Feature 063's operator decision retired the ceiling
   // on this file and on queue-manager.ts below; it did not set a large one. The
   // entries used to say `maxLines: 10_000` against files of 2,500 and 1,821,
@@ -874,7 +897,20 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // in `src/contracts/snapshot-projections.ts` already sets out at length, and
   // spread five union members over five lines to hold it. Set to exactly what the
   // file measures.
-  { path: 'src/ui/sidebar/snapshot-composer.ts', maxLines: 320 },
+  //
+  // FR-R3-144 (T021) — 320 -> 322, for the backend-posture projection: one import
+  // of `composeBackendPostures` and one spread. A spread rather than a named field
+  // because the projection contributes two snapshot fields — the per-backend
+  // postures and the grant entries that name no backend and so have no row to hang
+  // off — and spreading one call keeps the composer's cost at the same two lines a
+  // single field would have cost.
+  //
+  // Nothing was trimmed because there was nothing to trim: the derivation is 100
+  // lines and all of it went to `src/ui/sidebar/backend-posture-projection.ts`,
+  // capped separately, which is the same move `trust-projection.ts` and
+  // `phase-catalog-projection.ts` record above. Set to exactly what the file
+  // measures.
+  { path: 'src/ui/sidebar/snapshot-composer.ts', maxLines: 322 },
   // The second file of the same 2026-05-22 decision; see the waiver above.
   {
     path: 'src/queue/queue-manager.ts',
@@ -949,7 +985,39 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // is the form for a file whose growth is unbounded, and this file's growth is
   // bounded by the manifest it is in lock-step with. One more setting fits; a
   // seventh needs a decision, which is what a ceiling is for.
-  { path: 'src/config/general-settings.ts', maxLines: 800 },
+  //
+  // FR-R3-144 (T001/T002), 2026-08-30 — 800 → 420, because the seventh setting
+  // arrived and the decision the ceiling asked for was taken. Three more keys
+  // did not fit under 800 in any honest sense, and the answer was the split the
+  // note above declined: the file is now the TRANSACTION — capture, write,
+  // rollback, and the read projection — at 384 lines, with the table and the
+  // validator in the two files below.
+  //
+  // Why the seam holds where the earlier note said extraction would only hide
+  // growth: that argument was about splitting ONE table across two files, and it
+  // still stands — the table did not split, it moved whole. What left with it is
+  // everything that is not the table, which is a different fact about the module
+  // and not a slice of the same one. This ceiling is retired DOWN, not raised;
+  // an 800 ceiling on a 384-line file has stopped being a forcing function long
+  // before `WAIVER_FACTOR` would notice at 3x.
+  { path: 'src/config/general-settings.ts', maxLines: 420 },
+  // FR-R3-144 (T002) — the settings TABLE and the payload shape it projects.
+  //
+  // This is where the four-surface lock-step now lives, so this is the ceiling
+  // that means what the retired 800 meant: a new setting is four rows here —
+  // the typed field, its `scopes` row, its `AllowedKey` member and its
+  // `KEY_SPECS` entry — plus whatever its entry needs to explain itself. 450
+  // against 418 is roughly two more settings; a third needs a decision.
+  { path: 'src/config/general-settings-keys.ts', maxLines: 450 },
+  // FR-R3-144 (T002) — the validator, a pure function of a spec and a value.
+  //
+  // Budgeted despite being the smallest entry in this list, because "it is only
+  // 136 lines, it does not need a budget" is precisely the reasoning recorded
+  // below as the FINDING behind `run-driver.ts`: the file nothing governed was
+  // the one that grew. Its growth is bounded by `RuntimeType`, a closed union in
+  // the file above, which is itself budgeted — so this number should move only
+  // when a runtime type is added, and that is a change worth seeing.
+  { path: 'src/config/general-settings-validate.ts', maxLines: 165 },
   // FR-R3-107 (FR-079) — `run-driver.ts` enters the ratchet at its measured size.
   //
   // WHY IT WAS NOT HERE BEFORE, which is the finding rather than an oversight. The
@@ -1095,7 +1163,7 @@ describe('large source file LOC budgets', () => {
   const UNDECIDED_CEILING_BASELINE: readonly string[] = [
     'src/controller/workflow-controller.ts', // 1025 / 1025 — no headroom
     'src/ui/sidebar/state-projector-runtime.ts', // 285 / 300 — 15 lines
-    'src/ui/sidebar/snapshot-composer.ts', //    320 /  320 — no headroom
+    'src/ui/sidebar/snapshot-composer.ts', //    322 /  322 — no headroom
     'src/services/run-driver.ts' //             1289 / 1290 — 1 line
   ];
 

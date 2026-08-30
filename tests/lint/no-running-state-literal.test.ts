@@ -184,6 +184,13 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'src/contracts/sidebar-ipc/metrics.ts',
   'webview-ui/src/components/MetricsDashboard/MetricsTaskTable.svelte',
   'webview-ui/src/components/settings/BackendHealthSection.svelte',
+  // FR-R3-144 (T038) — the per-backend section extracted out of the file above.
+  // Both read `BackendPingState.status === 'running'`, the probe's own
+  // discriminator: a Ping either is or is not in flight. That is not the pinned
+  // per-task status projection this guard protects, and the two files split the
+  // same one reading between them — the section renders the button's label, the
+  // parent decides whether a probe may start.
+  'webview-ui/src/components/settings/general/BackendSection.svelte',
   'src/metrics/metrics-service.ts',
   'src/services/workflow-run-factory.ts',
   // Feature 092 — the webview's label map for `QueueLifecycle`, whose own

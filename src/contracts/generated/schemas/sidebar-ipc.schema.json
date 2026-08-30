@@ -82,7 +82,8 @@
           "CMD_PREFLIGHT_PROCESS_YAML",
           "CMD_LAUNCH_PIPELINE",
           "CMD_LAUNCH_WORKFLOW",
-          "CMD_CONTINUE_WORKFLOW"
+          "CMD_CONTINUE_WORKFLOW",
+          "CMD_SET_UNCONTAINED_BACKEND_GRANT"
         ]
       },
       "uniqueItems": true
@@ -196,6 +197,16 @@
           "name": "availableBackends",
           "optional": false,
           "type": "readonly BackendRunnerKind[]"
+        },
+        {
+          "name": "backendPostures",
+          "optional": false,
+          "type": "readonly BackendPosture[]"
+        },
+        {
+          "name": "backendGrantProblems",
+          "optional": false,
+          "type": "BackendGrantEntryProblems"
         },
         {
           "name": "backendPingState",

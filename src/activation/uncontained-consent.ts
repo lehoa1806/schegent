@@ -46,8 +46,10 @@ import type {
   UncontainedConsentOutcome,
   UncontainedRefusal
 } from '../controller/uncontained-consent-gate';
-import { ALLOW_UNCONTAINED_SETTING } from '../services/backend-containment-policy';
-import { CONFIGURATION_TARGET_GLOBAL } from '../config/general-settings';
+import {
+  setUncontainedGrant,
+  type UncontainedConsentConfig
+} from '../services/uncontained-grant-writer';
 import { errorMessage } from '../lib/errors';
 
 // The port's shapes are declared by the consumer, in
@@ -57,14 +59,13 @@ import { errorMessage } from '../lib/errors';
 // already been through the caller's sanitizer, so redaction keeps one authority and
 // this module never decides what is safe to show.
 
-/**
- * The configuration seam. Full dotted keys, so the caller supplies
- * `getConfiguration()` with no section and this module keeps the one key it owns.
- */
-export interface UncontainedConsentConfig {
-  get<T>(key: string): T | undefined;
-  update(key: string, value: unknown, target: number): Promise<void> | Thenable<void>;
-}
+// FR-R3-144 (T012) — `UncontainedConsentConfig` is one exception to that rule, and
+// it is one because it is the SAME declaration rather than a second name: the seam
+// moved to `services/uncontained-grant-writer.ts` with the write it describes, and
+// is re-exported under its own name so callers and tests that already import it
+// from here keep working. Aliasing it to a new name here would create the two-names
+// problem the paragraph above is about.
+export type { UncontainedConsentConfig };
 
 /** The modal's headline. One line: which backend, and that nothing has started. */
 export function uncontainedConsentHeadline(kind: BackendRunnerKind): string {
@@ -120,15 +121,19 @@ export function createUncontainedConsentRequester(deps: {
 }
 
 /**
- * Add ONE backend id to the grant list at application scope.
+ * Record the grant the operator just made.
  *
- * The current value is re-read HERE, after the modal was answered, rather than
- * captured when the prompt opened. Two windows can be refused at the same moment
- * for different backends; if each appended to the list it read before prompting,
- * whichever wrote second would overwrite the other's entry with a list that never
- * contained it. Re-reading at write time makes the lost grant a race that has to be
- * won inside one `await`, instead of one that spans however long an operator takes
- * to read a modal.
+ * FR-R3-144 (T012) — the read-modify-write moved to
+ * `services/uncontained-grant-writer.ts`, and its docblock went with it, because
+ * the Settings tab this item adds is a second caller and a second direction. What
+ * stays here is the one thing that is about the MODAL: the answer was affirmative,
+ * so grant this one id.
+ *
+ * The re-read the writer performs is what made this correct and still does. The
+ * argument, restated only because it is the reason this function is one line rather
+ * than a captured list: two windows can be refused at the same moment for different
+ * backends, and a list captured when the prompt opened spans however long an
+ * operator takes to read a modal.
  */
 async function grantUncontainedBackend(
   deps: {
@@ -137,52 +142,16 @@ async function grantUncontainedBackend(
   },
   kind: BackendRunnerKind
 ): Promise<UncontainedConsentOutcome> {
-  const current = readGrantedIds(deps.config);
-  // Already there — the operator granted it in another window while this modal was
-  // open, or by hand. Nothing to write, and writing an identical list anyway would
-  // report a failure the operator cannot act on if the profile is read-only.
-  if (current.includes(kind)) {
-    deps.logger.info(`backend.uncontained-consent already-granted kind=${kind}`);
-    return { decision: 'granted' };
-  }
+  const outcome = await setUncontainedGrant(deps, kind, true);
+  if (outcome.decision !== 'not-applicable') return outcome;
 
-  try {
-    await deps.config.update(
-      ALLOW_UNCONTAINED_SETTING,
-      [...current, kind],
-      CONFIGURATION_TARGET_GLOBAL
-    );
-  } catch (error) {
-    // Via `errorMessage`, not a cast to Error: a host that rejects with a string or
-    // a plain object would otherwise put "undefined" in front of an operator who
-    // has to act on it.
-    const reason = errorMessage(error);
-    deps.logger.warn(
-      `backend.uncontained-consent write-failed kind=${kind} ` +
-        `setting=${ALLOW_UNCONTAINED_SETTING} reason=${reason}`
-    );
-    return { decision: 'write-failed', reason };
-  }
-
-  deps.logger.info(
-    `backend.uncontained-consent granted kind=${kind} scope=application ` +
-      `setting=${ALLOW_UNCONTAINED_SETTING}`
+  // Unreachable: `kind` came from a refusal, so it is a real backend id and it was
+  // uncontained when `judgeBackendContainment` threw — the two things `classify`
+  // rejects. Reported as a denial rather than a grant because if the impossible
+  // happens the gate must not retry a spawn on the strength of it. The operator
+  // sees the original refusal, which is the fail-closed answer.
+  deps.logger.warn(
+    `backend.uncontained-consent not-applicable kind=${kind} problem=${outcome.problem}`
   );
-  return { decision: 'granted' };
-}
-
-/**
- * The list as it stands, reduced to the entries a write can preserve.
- *
- * A non-array value grants nothing today — `resolveUncontainedGrant` fails closed
- * on it — so replacing it with a one-entry list loses no grant. Non-string elements
- * are dropped for the same reason and because the manifest declares `string[]`;
- * unsupported and already-contained ids are KEPT verbatim, because reporting those
- * is `resolveUncontainedGrant`'s job and quietly deleting an operator's typo is how
- * they never learn they made one.
- */
-function readGrantedIds(config: UncontainedConsentConfig): readonly string[] {
-  const raw = config.get<unknown>(ALLOW_UNCONTAINED_SETTING);
-  if (!Array.isArray(raw)) return [];
-  return raw.filter((entry): entry is string => typeof entry === 'string');
+  return { decision: 'denied' };
 }

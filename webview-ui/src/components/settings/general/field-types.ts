@@ -18,7 +18,7 @@
 //     which is all the settings coverage gate scans
 //     (`tests/integration/settings-surface.integration.test.ts:252`).
 
-import type { PipelineDefinition } from '../../../lib/snapshot-types';
+import type { BackendRunnerKind, PipelineDefinition } from '../../../lib/snapshot-types';
 
 export type ScalarKey =
   | 'cliPath'
@@ -52,7 +52,14 @@ export type ScalarKey =
   | 'cliEnvironmentAllowlist'
   | 'backendProbeTimeoutSeconds'
   | 'uiConfirmationsEnable'
-  | 'multiRootSuppressWarning';
+  | 'multiRootSuppressWarning'
+  // FR-R3-144 (T025, T031, T036) — the three keys Phase A added to
+  // `GeneralSettings` and no surface could reach. `backendRunner` is the one the
+  // whole item turns on: the tab assumed Claude, and the setting that decides
+  // otherwise had no control.
+  | 'backendRunner'
+  | 'spendMaxUsdPerRun'
+  | 'spendMaxTokensPerRun';
 
 export type FieldKind =
   | 'string'
@@ -142,6 +149,15 @@ export type Draft = {
   backendProbeTimeoutSeconds: number;
   uiConfirmationsEnable: boolean;
   multiRootSuppressWarning: boolean;
+  // FR-R3-144 (T031) — typed as the backend union rather than `string`, so a
+  // selector option the product does not support is a compile error here and not
+  // a rejected write the operator discovers after saving.
+  backendRunner: BackendRunnerKind;
+  // FR-R3-144 (T036) — `null` is the clear sentinel, the same one Feature 012
+  // established for `claudeAutoCompactPctOverride`: no bound rather than a bound
+  // of zero. `settings-draft.ts` treats all three alike.
+  spendMaxUsdPerRun: number | null;
+  spendMaxTokensPerRun: number | null;
 };
 
 export interface FieldStatus {
@@ -154,6 +170,42 @@ export type StatusByKey = Partial<Record<ScalarKey, FieldStatus>>;
 // FR-R3-143 (T005) — the contract every group component in this directory
 // renders against. The tab owns the draft, the status map and the four
 // callbacks; a group owns only its heading and its slice of `FIELDS`.
+/**
+ * One backend's whole presence on this tab.
+ *
+ * FR-R3-144 (T025, D-5) — this type exists so `BACKENDS` can be a
+ * `Readonly<Record<BackendRunnerKind, BackendSection>>`. The record is the
+ * mechanism FR-001 asks for and the reason it is a `Record` rather than the `Map`
+ * host code uses for the same association: adding a fourth member to
+ * `BackendRunnerKind` makes the record a **compile error** until that backend has
+ * a section, where a `Map` or an array would compile and render two backends out
+ * of four.
+ *
+ * It replaces `BACKEND_FIELDS[i]` paired against `RUNNERS[i]` by position. That
+ * pairing was correct only because the two arrays happened to be written in the
+ * same order, and nothing checked: a path spec inserted at the front would have
+ * drawn Claude's path under Codex's Ping button, with every test still green.
+ *
+ * The type lives here; the record itself must stay in `.svelte`, because its
+ * `key:`/`ipcKey:` literals are the evidence base of the settings coverage gate
+ * (`tests/integration/settings-surface.integration.test.ts`), which scans
+ * `.svelte` files and nothing else. See this file's header.
+ */
+export interface BackendSection {
+  /** Display name, e.g. `Claude`. */
+  readonly label: string;
+  /** Where this backend's executable is configured. */
+  readonly path: FieldSpec;
+  /**
+   * Settings only this backend honours.
+   *
+   * Empty is a real, rendered answer (T030): the section says so in a sentence
+   * rather than leaving a blank region, because a blank region reads as a surface
+   * that failed to load.
+   */
+  readonly specific: readonly FieldSpec[];
+}
+
 export interface SettingsGroupProps {
   fields: readonly FieldSpec[];
   draft: Draft;
@@ -163,5 +215,12 @@ export interface SettingsGroupProps {
   fieldScopeLabel: (key: ScalarKey) => string;
   saveOne: (spec: FieldSpec) => void;
   resetField: (key: ScalarKey) => void;
-  onAutoCompactInput: (ev: Event) => void;
+  // FR-R3-144 (T036) — `onAutoCompactInput` is GONE from this contract. It was a
+  // handler named after one Claude-only setting, declared on the tab, and passed
+  // through every group — including groups with no clearable number in them — to
+  // reach the single `kind: 'number-optional'` arm in `GeneralSettingFieldRow`,
+  // which wrote `draft.claudeAutoCompactPctOverride` by name. The two per-run
+  // spend bounds are the second and third fields of that kind, so the arm writes
+  // `draft[spec.key]` like every other arm, and the row owns its own handler. See
+  // `onClearableNumberInput` there.
 }

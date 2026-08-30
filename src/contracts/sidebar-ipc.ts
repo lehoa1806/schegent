@@ -164,6 +164,12 @@ export const CMD_LAUNCH_PIPELINE = 'CMD_LAUNCH_PIPELINE' as const;
 // `MUTATING_COMMAND_REASONS` — both entries are deliberate.
 export const CMD_LAUNCH_WORKFLOW = 'CMD_LAUNCH_WORKFLOW' as const;
 export const CMD_CONTINUE_WORKFLOW = 'CMD_CONTINUE_WORKFLOW' as const;
+// FR-R3-144 (T015, D-2) — grant or revoke ONE backend's uncontained posture.
+// Mutating: it writes `schegent.backend.uncontainedBackends` at application
+// scope, the setting that decides whether a backend with no OS-enforced bound may
+// spawn at all. Why it is a command of its own rather than a key inside
+// `CMD_SAVE_GENERAL_SETTINGS`: sidebar-ipc/uncontained-grant.ts.
+export const CMD_SET_UNCONTAINED_BACKEND_GRANT = 'CMD_SET_UNCONTAINED_BACKEND_GRANT' as const;
 
 // -- Host message literals (host → webview) ----------------------------------
 
@@ -232,7 +238,8 @@ export const COMMAND_TYPES = [
   CMD_PREFLIGHT_PROCESS_YAML,
   CMD_LAUNCH_PIPELINE,
   CMD_LAUNCH_WORKFLOW,
-  CMD_CONTINUE_WORKFLOW
+  CMD_CONTINUE_WORKFLOW,
+  CMD_SET_UNCONTAINED_BACKEND_GRANT
 ] as const;
 
 export const HOST_MESSAGE_TYPES = [STATE_SNAPSHOT, CMD_ACK, MSG_PHASE_LOG_ENTRY] as const;
@@ -282,6 +289,12 @@ import type {
   PreflightProcessYamlCommand
 } from './sidebar-ipc/process-yaml';
 import { admitsExportInclusion } from './sidebar-ipc/process-yaml';
+import {
+  isSetUncontainedBackendGrantPayload,
+  type SetUncontainedBackendGrantCommand } from './sidebar-ipc/uncontained-grant';
+export type {
+  SetUncontainedBackendGrantPayload,
+  SetUncontainedBackendGrantCommand } from './sidebar-ipc/uncontained-grant';
 import { isLaunchPipelinePayload, type LaunchPipelineCommand } from './sidebar-ipc/run-launcher';
 export type {
   LaunchPipelineRequest, LaunchPipelineCommand, LaunchPipelineResult,
@@ -621,7 +634,8 @@ export type SidebarCommand =
   | PreflightProcessYamlCommand
   | LaunchPipelineCommand
   | LaunchWorkflowCommand
-  | ContinueWorkflowCommand;
+  | ContinueWorkflowCommand
+  | SetUncontainedBackendGrantCommand;
 
 // -- Runtime guards ----------------------------------------------------------
 //
@@ -897,6 +911,15 @@ export function isCmdReadMetrics(value: unknown): value is ReadMetricsCommand {
   return isReadMetricsRequest((value as { payload?: unknown }).payload);
 }
 
+// FR-R3-144 — same split as 087 and 088 above: only the discriminator needs a
+// runtime value from this module.
+export function isCmdSetUncontainedBackendGrant(
+  value: unknown
+): value is SetUncontainedBackendGrantCommand {
+  return isObjectWithType(value, CMD_SET_UNCONTAINED_BACKEND_GRANT)
+    && isSetUncontainedBackendGrantPayload((value as { payload?: unknown }).payload);
+}
+
 export function isCmdPingBackend(value: unknown): value is PingBackendCommand {
   if (!isObjectWithType(value, CMD_PING_BACKEND)) return false;
   const payload = (value as { payload?: unknown }).payload;
@@ -1026,5 +1049,6 @@ export const COMMAND_GUARDS: Readonly<
   [CMD_PREFLIGHT_PROCESS_YAML]: isCmdPreflightProcessYaml,
   [CMD_LAUNCH_PIPELINE]: isCmdLaunchPipeline,
   [CMD_LAUNCH_WORKFLOW]: isCmdLaunchWorkflow,
-  [CMD_CONTINUE_WORKFLOW]: isCmdContinueWorkflow
+  [CMD_CONTINUE_WORKFLOW]: isCmdContinueWorkflow,
+  [CMD_SET_UNCONTAINED_BACKEND_GRANT]: isCmdSetUncontainedBackendGrant
 });

@@ -19,6 +19,12 @@
 // column states which figure applies where, and the value comes from the same
 // vocabulary table the usage parser reads.
 import { DELAYED_RETRY_CAP } from '../contracts/retry-bounds';
+import { SUPPORTED_BACKENDS } from '../contracts/backend-kinds';
+import {
+  SPEND_BOUND_KEY_BY_DENOMINATION,
+  spendDenominationOf,
+  type SpendDenomination
+} from '../contracts/backend-spend-denomination';
 import { KEY_SPECS } from '../config/general-settings';
 import { SETTINGS_SCHEMA } from '../config/settings-schema';
 
@@ -110,6 +116,13 @@ export function autonomyBounds(): readonly AutonomyBoundEntry[] {
  * because FR-R3-098 left cost ABSENT there rather than derived from a rate card
  * nobody published. So the bound in force follows the report, and this table is a
  * projection of that fact rather than a second opinion about it.
+ *
+ * FR-R3-144 (T036) — it is now literally a projection. The three rows were written
+ * out by hand here, which made this the second hand-kept copy of "which backend
+ * reports a cost"; the settings tab needed a third, and needing a third is how you
+ * find out you should have had none. `contracts/backend-spend-denomination.ts` is
+ * the one copy, the rows below are rendered from it, and a backend added to the
+ * platform appears in this document without an edit here.
  */
 export interface BackendDenomination {
   readonly backend: string;
@@ -117,24 +130,31 @@ export interface BackendDenomination {
   readonly boundInForce: string;
 }
 
+/** What a backend reports, in the reader's words, given what it is bounded in. */
+const REPORTS_BY_DENOMINATION: Readonly<Record<SpendDenomination, string>> = Object.freeze({
+  usd: 'cost and tokens',
+  tokens: 'tokens only'
+});
+
+/** The unit as it is written in this document's third column. */
+const UNIT_BY_DENOMINATION: Readonly<Record<SpendDenomination, string>> = Object.freeze({
+  usd: 'USD',
+  tokens: 'tokens'
+});
+
 export function backendDenominations(): readonly BackendDenomination[] {
-  return Object.freeze([
-    {
-      backend: 'claude',
-      reports: 'cost and tokens',
-      boundInForce: '`schegent.spend.maxUsdPerRun` (USD)'
-    },
-    {
-      backend: 'codex',
-      reports: 'tokens only',
-      boundInForce: '`schegent.spend.maxTokensPerRun` (tokens)'
-    },
-    {
-      backend: 'agy',
-      reports: 'tokens only',
-      boundInForce: '`schegent.spend.maxTokensPerRun` (tokens)'
-    }
-  ]);
+  return Object.freeze(
+    SUPPORTED_BACKENDS.map((backend) => {
+      const denomination = spendDenominationOf(backend);
+      return {
+        backend,
+        reports: REPORTS_BY_DENOMINATION[denomination],
+        boundInForce:
+          '`schegent.' +
+          `${SPEND_BOUND_KEY_BY_DENOMINATION[denomination]}\` (${UNIT_BY_DENOMINATION[denomination]})`
+      };
+    })
+  );
 }
 
 export function renderAutonomyBounds(): string {

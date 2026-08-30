@@ -89,7 +89,12 @@ describe('the command registry is unchanged by this feature (T040, FR-023)', () 
     // rises would have made that deletion look like a failure of this feature,
     // which is why the number moves with a reason rather than being loosened to
     // an inequality.
-    expect(MUTATING_COMMAND_TYPES).toHaveLength(42);
+    //
+    // 42 -> 43 on 2026-08-30: FR-R3-144 added CMD_SET_UNCONTAINED_BACKEND_GRANT,
+    // the Settings control for the uncontained-backend list. It writes an
+    // application-scoped security setting, so it is gated for a stronger reason
+    // than the rest of the table — see the pinned-list fixture, which names it.
+    expect(MUTATING_COMMAND_TYPES).toHaveLength(43);
     expect(MUTATING_COMMANDS.size).toBe(MUTATING_COMMAND_TYPES.length);
   });
 

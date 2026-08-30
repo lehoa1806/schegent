@@ -16,8 +16,17 @@ import type {
 } from '../../contracts/workflow-definitions';
 import type { RunOutputRecord } from '../../contracts/run-results';
 import type { ConnectedRunProjection } from '../../contracts/sidebar-ipc';
+import type {
+  BackendGrantEntryProblems,
+  BackendGrantState,
+  BackendPosture
+} from '../../contracts/sidebar-ipc/uncontained-grant';
 
 export type { BackendPingState };
+// FR-R3-144 (T020) — re-exported the way `BackendPingState` is, so a consumer of
+// the snapshot names the posture types from the snapshot module rather than
+// reaching into `contracts/sidebar-ipc/` for them.
+export type { BackendGrantEntryProblems, BackendGrantState, BackendPosture };
 import {
   IDLE_EVIDENCE_HEALTH,
   type EvidenceHealthSnapshot
@@ -363,7 +372,7 @@ export interface HistoryEntry {
 
 
 import type { PhaseDef, PipelineDef } from '../../config/pipeline-config';
-import type { BackendRunnerKind } from '../../contracts/backend-kinds';
+import { DEFAULT_BACKEND, type BackendRunnerKind } from '../../contracts/backend-kinds';
 import type { GeneralSettings } from '../../config/general-settings';
 // FR-R3-145 (T1572) — value imports, so the idle projection restates neither
 // number. Both live in the contract layer precisely so this module and
@@ -648,6 +657,21 @@ export interface WorkflowSnapshot {
    */
   readonly configuredModels: Record<BackendRunnerKind, readonly string[]>;
   readonly availableBackends: readonly BackendRunnerKind[];
+  /**
+   * FR-R3-144 (T020, D-4) — every supported backend's containment posture,
+   * derived at compose time from `services/backend-containment-policy.ts`.
+   *
+   * Beside `availableBackends` and not folded into it: that list answers "is this
+   * backend installed", this one answers "may it run, and under what bound". A
+   * backend can be discovered and refused, which is the case the Settings tab
+   * exists to make legible.
+   */
+  readonly backendPostures: readonly BackendPosture[];
+  /**
+   * FR-R3-144 (T020, FR-004) — entries in the grant setting that name no backend.
+   * Empty in the ordinary case; see `BackendGrantEntryProblems`.
+   */
+  readonly backendGrantProblems: BackendGrantEntryProblems;
   readonly backendPingState: BackendPingState;
   /**
    * Feature 011 — scalar `schegent.*` settings projected for the
@@ -904,6 +928,11 @@ export function buildIdleSnapshot(opts: {
     availableModels: Object.freeze({ claude: [], codex: [], agy: [] }) as unknown as Record<BackendRunnerKind, readonly string[]>,
     configuredModels: Object.freeze({ claude: [], codex: [], agy: [] }) as unknown as Record<BackendRunnerKind, readonly string[]>,
     availableBackends: Object.freeze([] as readonly BackendRunnerKind[]),
+    // FR-R3-144 (T020) — empty, not a computed default. The idle snapshot stands
+    // in for "nothing has been read yet", and a posture list built here would be
+    // a second derivation of the policy answer, made from no configuration.
+    backendPostures: Object.freeze([] as readonly BackendPosture[]),
+    backendGrantProblems: Object.freeze([] as readonly string[]),
     backendPingState: Object.freeze({ status: 'idle' as const }),
     generalSettings: IDLE_GENERAL_SETTINGS,
     queueSettings: IDLE_QUEUE_SETTINGS,
@@ -1005,6 +1034,12 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   backendProbeTimeoutSeconds: 5,
   uiConfirmationsEnable: true,
   multiRootSuppressWarning: false,
+  // FR-R3-144 (T005) — the manifest's defaults, again: `claude`, and no spend
+  // bound in either denomination. `null` here is the manifest's `null`, and it
+  // means unbounded — a `0` would read as a bound of zero and stop every run.
+  backendRunner: DEFAULT_BACKEND,
+  spendMaxUsdPerRun: null,
+  spendMaxTokensPerRun: null,
   scopes: Object.freeze({
     cliPath: 'default',
     codexPath: 'default',
@@ -1033,7 +1068,10 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
     cliEnvironmentAllowlist: 'default',
     backendProbeTimeoutSeconds: 'default',
     uiConfirmationsEnable: 'default',
-    multiRootSuppressWarning: 'default'
+    multiRootSuppressWarning: 'default',
+    backendRunner: 'default',
+    spendMaxUsdPerRun: 'default',
+    spendMaxTokensPerRun: 'default'
   })
 });
 

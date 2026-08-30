@@ -23,7 +23,7 @@
   "rules": {
     "@typescript-eslint/no-unnecessary-condition": {
       "host": 341,
-      "webview": 261,
+      "webview": 260,
       "owner": {
         "decision": "D9 — Six baseline entries, each owned",
         "reference": "specs/112-webview-lint-and-type-aware-rules/plan.md"
@@ -261,7 +261,7 @@
         "src/components/hover-text/HoverTextPortal.svelte": 1,
         "src/components/settings/BackendHealthSection.svelte": 1,
         "src/components/settings/FatalSignaturesTab.svelte": 1,
-        "src/components/settings/GeneralSettingsTab.svelte": 2,
+        "src/components/settings/GeneralSettingsTab.svelte": 1,
         "src/components/settings/RetryConditionEditor.svelte": 1,
         "src/lib/activity-feed/classify-arg-value.ts": 1,
         "src/lib/activity-feed/detect-metadata-line.ts": 2,
@@ -316,7 +316,7 @@
       }
     },
     "svelte/require-each-key": {
-      "webview": 10,
+      "webview": 9,
       "owner": {
         "decision": "D9 — Six baseline entries, each owned",
         "reference": "specs/112-webview-lint-and-type-aware-rules/plan.md"
@@ -327,7 +327,6 @@
         "src/components/PipelineBuilderEditors/PhaseCatalogEditor.svelte": 5,
         "src/components/drilldown/QueueDetailRows.svelte": 1,
         "src/components/drilldown/QueueTaskRow.svelte": 1,
-        "src/components/settings/BackendHealthSection.svelte": 1,
         "src/components/settings/FatalSignaturesTab.svelte": 1
       }
     },

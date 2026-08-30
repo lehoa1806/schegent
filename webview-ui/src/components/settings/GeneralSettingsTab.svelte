@@ -6,6 +6,7 @@
   // FR-R3-143 (T033) — the pure functions of (projection, draft). See that
   // module's header for why they left the component and why `FIELDS` did not.
   import {
+    CLEARABLE_KEYS,
     friendlyReason,
     ipcKeyFor,
     isFieldChanged,
@@ -13,24 +14,15 @@
     snapshotToDraft
   } from './general/settings-draft';
   import { confirmSettingsWrite } from './general/confirm-settings-write';
-  // FR-R3-143 (T030, T034) — the mode list and the allowlist element pattern are
-  // READ from the module that enforces them, not copied. A copy on the far side of
-  // the IPC boundary is the one that would drift, and it would drift silently:
-  // `sanitizeProcessEnvAllowlist` drops a name the surface accepted without saying
-  // so, at spawn time, in another process.
-  //
-  // This import is `src/contracts/`, and that is not incidental. The first version
-  // read the same two values from `src/config/settings-schema`, which
-  // `tests/lint/webview-host-import-direction.test.ts` forbids: a webview VALUE
-  // import drags everything the module transitively imports into the untrusted
-  // bundle, so values come from contracts or not at all. T034 moved them there,
-  // and `SETTINGS_SCHEMA` now reads the same two constants.
-  import {
-    PROCESS_ENVIRONMENT_MODES,
-    PROCESS_ENV_NAME_PATTERN_SOURCE
-  } from '../../../../src/contracts/process-environment-policy';
   import GeneralSettingsHeader from './general/GeneralSettingsHeader.svelte';
-  import BackendEnvironmentGroup from './general/BackendEnvironmentGroup.svelte';
+  // FR-R3-144 (T038) — the backend group declares its own specs and exports them
+  // flattened. This tab composes the groups and owns the draft, the save/reset
+  // machinery and the dirty marker; it does not also hold every group's data.
+  // See that component's header for why the specs live in a `.svelte` module
+  // block rather than a `.ts` one.
+  import BackendEnvironmentGroup, {
+    BACKEND_GROUP_FIELDS
+  } from './general/BackendEnvironmentGroup.svelte';
   import ExecutionRetryGroup from './general/ExecutionRetryGroup.svelte';
   import AuditLoggingGroup from './general/AuditLoggingGroup.svelte';
   import UiTrustGroup from './general/UiTrustGroup.svelte';
@@ -47,20 +39,31 @@
   // here stopped being true as keys were contributed without controls, so it
   // is stated as the subset it is rather than as coverage. fatalSignatures
   // is intentionally handled by FatalSignaturesTab (array-of-string).
-  const BACKEND_FIELDS: readonly FieldSpec[] = [
-    { key: 'cliPath', ipcKey: 'cli.path', label: 'Claude CLI Path', kind: 'string' },
-    { key: 'codexPath', ipcKey: 'codex.path', label: 'Codex CLI Path', kind: 'string' },
-    { key: 'agyPath', ipcKey: 'agy.path', label: 'Agy CLI Path', kind: 'string' }
-  ] as const;
-
   // FR-R3-143 (T009) — `GENERAL_FIELDS` was one flat array in no particular
-  // order. It is split into the three groups §4 names; `BACKEND_FIELDS` above
-  // is the fourth and is not split. Rendered field *order* changes as a
-  // result, which is the point of grouping rather than a side effect: the old
-  // array interleaved audit/logging (indices 1-6, 11-12) with execution
-  // (7-10, 13). No test asserts field order.
+  // order. It is split into the three groups §4 names; the backend group is the
+  // fourth, and since FR-R3-144 (T025) its fields are keyed by backend rather
+  // than listed. Rendered field *order* changes as a result, which is the point
+  // of grouping rather than a side effect: the old array interleaved
+  // audit/logging (indices 1-6, 11-12) with execution (7-10, 13). No test
+  // asserts field order.
   const AUDIT_LOGGING_FIELDS: readonly FieldSpec[] = [
-    { key: 'loggingVerbose', ipcKey: 'logging.verbose', label: 'Verbose Logging', kind: 'boolean' },
+    // FR-R3-144 (T037, FR-008) — the note is not new prose. It is the sentence
+    // `docs/reference/settings.md` already carries for this key, and this is the
+    // only setting in that document whose behaviour is conditional on the backend.
+    // The doc said so and the control did not, so an operator who turned this on
+    // under Codex got nothing and had no way to know why.
+    //
+    // (Prose in this file avoids the pinned per-task status vocabulary — the word
+    // for "in flight" included. The lint gate that keeps that vocabulary out of
+    // files with no business holding it greps by substring, comments and all, and
+    // it is right not to make an exception for prose.)
+    {
+      key: 'loggingVerbose',
+      ipcKey: 'logging.verbose',
+      label: 'Verbose Logging',
+      kind: 'boolean',
+      note: 'For Claude, additionally writes unredacted debug, stream, and verbose artifacts. Codex and Agy currently ignore this setting. Changes apply to the next invocation.'
+    },
     {
       key: 'runtimeLogLevel',
       ipcKey: 'logging.runtimeLogLevel',
@@ -124,63 +127,12 @@
     { key: 'retryForceContinueOnCap', ipcKey: 'retry.forceContinueOnCap', label: 'Continue Past Retry Cap', kind: 'boolean' }
   ] as const;
 
-  // FR-R3-143 (T031) — the process-environment and probe settings, in their own
-  // array rather than appended to `BACKEND_FIELDS`. `BackendHealthSection`
-  // pairs `BACKEND_FIELDS[i]` with `RUNNERS[i]` positionally, so a fourth entry
-  // there would be a CLI path the section never draws. That positional coupling
-  // is FR-R3-144's to remove (T1563); this feature does not touch it.
-  //
-  // The three environment settings and the probe timeout differ in when they
-  // take effect, and each `note` says which — see the descriptions module for
-  // where that was read from. All four are `application`-scoped, so the host
-  // writes them to User settings for every workspace on this machine.
-  const PROCESS_ENVIRONMENT_FIELDS: readonly FieldSpec[] = [
-    {
-      key: 'cliEnvironmentMode',
-      ipcKey: 'cli.environmentMode',
-      label: 'Environment Mode',
-      kind: 'enum',
-      options: PROCESS_ENVIRONMENT_MODES,
-      note: 'Applies to every workspace on this machine. Takes effect after reloading the VS Code Extension Host.'
-    },
-    {
-      key: 'cliEnvironmentAllowlist',
-      ipcKey: 'cli.environmentAllowlist',
-      label: 'Environment Allowlist',
-      kind: 'string-list',
-      itemPattern: PROCESS_ENV_NAME_PATTERN_SOURCE,
-      invalidMessage:
-        'Not a legal environment variable name — use letters, digits and underscores, and do not start with a digit.',
-      note: 'Names only; values are read at spawn time and never stored here. Applies to every workspace on this machine. Takes effect after reloading the VS Code Extension Host.'
-    },
-    {
-      key: 'cliInheritEnvironment',
-      ipcKey: 'cli.inheritEnvironment',
-      label: 'Inherit Host Environment (legacy)',
-      kind: 'boolean',
-      note: 'Superseded by Environment Mode; Off forces minimal. Applies to every workspace on this machine. Takes effect after reloading the VS Code Extension Host.'
-    },
-    {
-      key: 'backendProbeTimeoutSeconds',
-      ipcKey: 'backend.probeTimeoutSeconds',
-      label: 'Backend Probe Timeout (seconds)',
-      kind: 'number',
-      min: 1,
-      max: 30,
-      note: 'Applies to every workspace on this machine. Read at the start of each probe — the next Ping uses it, no reload.'
-    }
-  ] as const;
-
+  // FR-R3-144 (T029) — `claudeAutoCompactPctOverride` is no longer in this list.
+  // It sat between "Confirmation Prompts" and "Suppress Multi-Root Warning" under
+  // a "UI and trust" heading, where the word `Claude` in its own label was the only
+  // thing distinguishing a Claude-only setting from two that apply to every
+  // backend. It is now `BACKENDS.claude.specific`, drawn inside Claude's section.
   const UI_TRUST_FIELDS: readonly FieldSpec[] = [
-    {
-      key: 'claudeAutoCompactPctOverride',
-      ipcKey: 'claude.autoCompactPctOverride',
-      label: 'Claude auto-compaction threshold (%)',
-      kind: 'number-optional',
-      min: 1,
-      max: 100,
-      placeholder: 'Unset — use CLI default'
-    },
     // FR-R3-143 (T032) — both `window`-scoped, so the host writes them to this
     // workspace. Only the multi-root one is read once per activation, and only
     // it discloses that.
@@ -200,13 +152,17 @@
     }
   ] as const;
 
-  const FIELDS = [
-    ...BACKEND_FIELDS,
-    ...PROCESS_ENVIRONMENT_FIELDS,
+  // Every spec on the tab, in group order. Save All iterates this and `dirty` is
+  // computed from it, so a spec that reached the screen but not this array would
+  // be a control whose edit Save All silently dropped — which is why the backend
+  // group exports its own flattened list rather than leaving the tab to restate
+  // it. `FIELDS` is now the only thing the tab needs the specs FOR.
+  const FIELDS: readonly FieldSpec[] = [
+    ...BACKEND_GROUP_FIELDS,
     ...AUDIT_LOGGING_FIELDS,
     ...EXECUTION_RETRY_FIELDS,
     ...UI_TRUST_FIELDS
-  ] as const;
+  ];
 
   const currentSettings = $derived<GeneralSettings>(
     snapshot.generalSettings ?? IDLE_GENERAL_SETTINGS
@@ -296,8 +252,12 @@
   }
 
   function resetField(key: ScalarKey): void {
-    if (key === 'claudeAutoCompactPctOverride') {
-      draft.claudeAutoCompactPctOverride = currentSettings.claudeAutoCompactPctOverride ?? null;
+    // FR-R3-144 (T036) — `CLEARABLE_KEYS`, not a name comparison. Resetting a
+    // clearable field to the projection's `undefined` rather than to `null` would
+    // put the draft in a state `isFieldChanged` reads as unchanged and the input
+    // renders as blank — indistinguishable from cleared, but the opposite write.
+    if (CLEARABLE_KEYS.has(key)) {
+      (draft as Record<string, unknown>)[key] = currentSettings[key] ?? null;
     } else {
       const projected = currentSettings[key] as unknown;
       // FR-R3-143 (T030) — copy, for the reason `snapshotToDraft` copies: the
@@ -317,17 +277,13 @@
     statusByKey = {};
   }
 
-  // Feature 012 — bind helper for the optional integer field. Empty input
-  // converts to `null` (clear sentinel); otherwise to an integer.
-  function onAutoCompactInput(ev: Event): void {
-    const raw = (ev.target as HTMLInputElement).value;
-    if (raw === '' || raw == null) {
-      draft.claudeAutoCompactPctOverride = null;
-      return;
-    }
-    const n = Number(raw);
-    draft.claudeAutoCompactPctOverride = Number.isFinite(n) ? n : null;
-  }
+  // FR-R3-144 (T036) — `onAutoCompactInput` is gone. It was a handler named after
+  // one Claude-only setting, declared here and threaded through all four groups —
+  // including the two with no clearable number in them — to reach the single
+  // `number-optional` arm in `GeneralSettingFieldRow`, which wrote
+  // `draft.claudeAutoCompactPctOverride` by name. With three fields of that kind
+  // the arm writes `draft[spec.key]` and owns its own handler, so there is nothing
+  // left to thread.
 
   const dirty = $derived(
     FIELDS.some((spec) => fieldChanged(spec.key))
@@ -347,8 +303,6 @@
 
   <BackendEnvironmentGroup
     {snapshot}
-    fields={BACKEND_FIELDS}
-    environmentFields={PROCESS_ENVIRONMENT_FIELDS}
     bind:draft
     {statusByKey}
     {pipelines}
@@ -356,7 +310,6 @@
     {fieldScopeLabel}
     {saveOne}
     {resetField}
-    {onAutoCompactInput}
   />
 
   <ExecutionRetryGroup
@@ -368,7 +321,6 @@
     {fieldScopeLabel}
     {saveOne}
     {resetField}
-    {onAutoCompactInput}
   />
 
   <AuditLoggingGroup
@@ -380,7 +332,6 @@
     {fieldScopeLabel}
     {saveOne}
     {resetField}
-    {onAutoCompactInput}
   />
 
   <UiTrustGroup
@@ -393,7 +344,6 @@
     {fieldScopeLabel}
     {saveOne}
     {resetField}
-    {onAutoCompactInput}
   />
 </section>
 

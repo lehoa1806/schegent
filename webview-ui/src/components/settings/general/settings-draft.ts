@@ -64,9 +64,31 @@ export function snapshotToDraft(s: GeneralSettings): Draft {
     cliEnvironmentAllowlist: [...s.cliEnvironmentAllowlist],
     backendProbeTimeoutSeconds: s.backendProbeTimeoutSeconds,
     uiConfirmationsEnable: s.uiConfirmationsEnable,
-    multiRootSuppressWarning: s.multiRootSuppressWarning
+    multiRootSuppressWarning: s.multiRootSuppressWarning,
+    // FR-R3-144 (T031, T036) — the three Phase A added.
+    backendRunner: s.backendRunner,
+    spendMaxUsdPerRun: s.spendMaxUsdPerRun ?? null,
+    spendMaxTokensPerRun: s.spendMaxTokensPerRun ?? null
   };
 }
+
+/**
+ * The keys whose "no value" is `null` rather than a number.
+ *
+ * FR-R3-144 (T036) — this was one hardcoded `key === 'claudeAutoCompactPctOverride'`
+ * comparison in two functions, and both had to grow a second and a third arm for
+ * the spend bounds. A named set instead, because the property is a property of the
+ * key and not of the comparison: the projection sends `undefined` for an unset
+ * optional and the draft holds `null`, so `!==` reports a change on every mount
+ * unless both sides are normalised. Getting that wrong marks a field dirty from
+ * the moment the tab opens, which is how Save All comes to post a value nobody
+ * typed.
+ */
+export const CLEARABLE_KEYS: ReadonlySet<ScalarKey> = new Set<ScalarKey>([
+  'claudeAutoCompactPctOverride',
+  'spendMaxUsdPerRun',
+  'spendMaxTokensPerRun'
+]);
 
 /** Whether the drafted value for `key` diverges from what is saved. */
 export function isFieldChanged(
@@ -77,7 +99,8 @@ export function isFieldChanged(
   const drafted = draft[key];
   const projected = current[key] as unknown;
   // Feature 012: treat null draft == undefined projection as unchanged.
-  if (key === 'claudeAutoCompactPctOverride') {
+  // FR-R3-144 (T036): for all three clearable keys, not just the first one.
+  if (CLEARABLE_KEYS.has(key)) {
     return (drafted ?? null) !== (projected ?? null);
   }
   // FR-R3-143 (T030) — the draft holds a copy of the projected array, so `!==`

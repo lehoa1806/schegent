@@ -5,6 +5,9 @@
     type GeneralSettingsControlId
   } from '../GeneralSettingsTab.descriptions';
   import type { PipelineDefinition } from '../../../lib/snapshot-types';
+  // FR-R3-144 (T031) — a VALUE import, from `src/contracts/` as the import-direction
+  // rule requires. See `onEnumChange` for why a predicate rather than a cast.
+  import { isBackendRunnerKind } from '../../../../../src/contracts/backend-kinds';
   import type { Draft, FieldSpec, FieldStatus, ScalarKey } from './field-types';
   import StringListField from './StringListField.svelte';
 
@@ -33,8 +36,15 @@
   // both kinds are generic, and the `-add` / `-remove-<i>` description keys the
   // list editor needs are indexed off this type, so a second list setting is a
   // member here and three description entries, not another component.
-  type EnumKey = 'cliEnvironmentMode';
+  type EnumKey = 'cliEnvironmentMode' | 'backendRunner';
   type StringListKey = 'cliEnvironmentAllowlist';
+  // FR-R3-144 (T036) — the keys whose "no value" is `null` rather than a number.
+  // `settings-draft.ts` holds the same set as `CLEARABLE_KEYS`, for the change
+  // comparison; this union is the narrowing the bindings below need.
+  type ClearableNumberKey =
+    | 'claudeAutoCompactPctOverride'
+    | 'spendMaxUsdPerRun'
+    | 'spendMaxTokensPerRun';
 
   interface Props {
     spec: FieldSpec;
@@ -45,7 +55,6 @@
     pipelines: readonly PipelineDefinition[];
     onSave: () => void;
     onReset: () => void;
-    onAutoCompactInput: (ev: Event) => void;
   }
 
   let {
@@ -57,7 +66,6 @@
     pipelines,
     onSave,
     onReset,
-    onAutoCompactInput,
     actionsAppend
   }: Props & { actionsAppend?: import('svelte').Snippet } = $props();
 
@@ -73,6 +81,59 @@
 
   function onStringInput(event: Event): void {
     draft[spec.key as StringKey] = (event.currentTarget as HTMLInputElement).value;
+  }
+
+  /**
+   * FR-R3-144 (T036) — `step="1"` was right for a percentage and wrong for a
+   * dollar bound whose manifest minimum is `0.01`: a browser refuses a fractional
+   * entry against an integer step, so the operator could not type the smallest
+   * bound the host accepts. A spec whose own minimum is fractional accepts
+   * fractions; every other clearable number keeps the integer step it had.
+   */
+  const numberStep = $derived((spec.min ?? 1) < 1 ? 'any' : '1');
+
+  /**
+   * FR-R3-144 (T031) — the generic enum's write path.
+   *
+   * `bind:value` cannot serve two enum keys once their draft types differ:
+   * `cliEnvironmentMode` is a `string` and `backendRunner` is `BackendRunnerKind`,
+   * so a write through `draft[spec.key as EnumKey]` would have to be assignable to
+   * both, and a `<select>` yields a bare `string`. The cast that would silence
+   * that is exactly the wrong instrument — the value comes from the DOM, so it is
+   * external input at a boundary, and the honest move is to CHECK it. A backend id
+   * that is not one this build supports is dropped rather than written into the
+   * draft, where it would be posted on the next Save and rejected by the host.
+   */
+  function onEnumChange(event: Event): void {
+    const value = (event.currentTarget as HTMLSelectElement).value;
+    if (spec.key === 'backendRunner') {
+      if (isBackendRunnerKind(value)) draft.backendRunner = value;
+      return;
+    }
+    draft[spec.key as Exclude<EnumKey, 'backendRunner'>] = value;
+  }
+
+  /**
+   * FR-R3-144 (T036) — the clearable-number input's write path, for WHICHEVER key
+   * the spec names.
+   *
+   * This was `onAutoCompactInput`, threaded from `GeneralSettingsTab` through
+   * every group to this one arm, and hardwired to `claudeAutoCompactPctOverride`
+   * at both ends: the input's `value` read that field by name and the handler
+   * wrote it by name. One `kind: 'number-optional'` field could exist, and it had
+   * to be Claude's. The two per-run spend bounds are the second and third, so the
+   * key comes from `spec` like every other arm's does, and the handler that had to
+   * be passed down four levels to reach the component that owns the input is gone
+   * from all of them.
+   *
+   * Empty input is `null` — the clear sentinel the host translates to
+   * `config.update(key, undefined)` — and so is anything non-finite, so a
+   * half-typed `1e` clears rather than writing `NaN` into the draft.
+   */
+  function onClearableNumberInput(event: Event): void {
+    const raw = (event.currentTarget as HTMLInputElement).value;
+    const parsed = raw === '' ? Number.NaN : Number(raw);
+    draft[spec.key as ClearableNumberKey] = Number.isFinite(parsed) ? parsed : null;
   }
 </script>
 
@@ -148,11 +209,11 @@
         class="text-input"
         min={spec.min}
         max={spec.max}
-        step="1"
+        step={numberStep}
         placeholder={spec.placeholder ?? ''}
         data-testid="general-settings-input-{spec.key}"
-        value={draft.claudeAutoCompactPctOverride ?? ''}
-        oninput={onAutoCompactInput}
+        value={draft[spec.key as ClearableNumberKey] ?? ''}
+        oninput={onClearableNumberInput}
         use:hoverTextAnchor={{
           controlId: spec.key,
           description: GENERAL_SETTINGS_DESCRIPTIONS[spec.key]
@@ -197,7 +258,8 @@
         class="select-input"
         aria-labelledby={fieldLabelId(spec.key)}
         data-testid="general-settings-input-{spec.key}"
-        bind:value={draft[spec.key as EnumKey]}
+        value={draft[spec.key as EnumKey]}
+        onchange={onEnumChange}
         use:hoverTextAnchor={{
           controlId: spec.key,
           description: GENERAL_SETTINGS_DESCRIPTIONS[spec.key]

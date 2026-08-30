@@ -22,8 +22,10 @@ import type {
 // contract leaves the host reads. See that constant for why they are not literals.
 import { DEFAULT_GLOBAL_CONCURRENCY_CAP } from '../../../src/contracts/queue-bounds.js';
 import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity.js';
-import type {
-  BackendRunnerKind,
+// FR-R3-144 (T007) — value import, same edge and same reason as the two above.
+import {
+  DEFAULT_BACKEND,
+  type BackendRunnerKind
 } from '../../../src/contracts/backend-kinds.js';
 import type {
   PhaseName,
@@ -31,6 +33,18 @@ import type {
 import type {
   ConnectedRunProjection,
 } from '../../../src/contracts/sidebar-ipc/workflow-run.js';
+// FR-R3-144 (T020, D-4) — imported, not mirrored. Everything else in this file
+// restates a host type by hand and is kept honest by a drift test; the posture
+// types are the one thing that must not be restatable, because a webview-side
+// copy of `BackendGrantState` is one edit away from becoming a webview-side
+// DERIVATION of it — which is what T024's gate forbids. One declaration, read
+// from the same module the composer reads.
+import type {
+  BackendGrantEntryProblems,
+  BackendGrantState,
+  BackendPosture,
+} from '../../../src/contracts/sidebar-ipc/uncontained-grant.js';
+export type { BackendGrantEntryProblems, BackendGrantState, BackendPosture };
 import type {
   PhaseSourceStatus,
 } from '../../../src/contracts/process-definitions.js';
@@ -657,6 +671,12 @@ export interface GeneralSettings {
   readonly backendProbeTimeoutSeconds: number;
   readonly uiConfirmationsEnable: boolean;
   readonly multiRootSuppressWarning: boolean;
+  // FR-R3-144 (T007) — the backend the tab now names, and the two bounds it can
+  // set. `null` on either bound is the manifest's own default and means NO
+  // bound; it is not a zero bound, and the surface must not render it as one.
+  readonly backendRunner: BackendRunnerKind;
+  readonly spendMaxUsdPerRun: number | null;
+  readonly spendMaxTokensPerRun: number | null;
   readonly scopes: {
     readonly cliPath: SettingScope;
     readonly loggingVerbose: SettingScope;
@@ -686,6 +706,9 @@ export interface GeneralSettings {
     readonly backendProbeTimeoutSeconds: SettingScope;
     readonly uiConfirmationsEnable: SettingScope;
     readonly multiRootSuppressWarning: SettingScope;
+    readonly backendRunner: SettingScope;
+    readonly spendMaxUsdPerRun: SettingScope;
+    readonly spendMaxTokensPerRun: SettingScope;
   };
 }
 
@@ -745,6 +768,12 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   backendProbeTimeoutSeconds: 5,
   uiConfirmationsEnable: true,
   multiRootSuppressWarning: false,
+  // FR-R3-144 (T007) — manifest defaults again. `DEFAULT_BACKEND` is imported
+  // for the same reason `DEFAULT_QUEUE_ID` above is: a literal `'claude'` here
+  // is the copy that keeps saying claude after the default moves.
+  backendRunner: DEFAULT_BACKEND,
+  spendMaxUsdPerRun: null,
+  spendMaxTokensPerRun: null,
   scopes: Object.freeze({
     cliPath: 'default',
     loggingVerbose: 'default',
@@ -773,7 +802,10 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
     cliEnvironmentAllowlist: 'default',
     backendProbeTimeoutSeconds: 'default',
     uiConfirmationsEnable: 'default',
-    multiRootSuppressWarning: 'default'
+    multiRootSuppressWarning: 'default',
+    backendRunner: 'default',
+    spendMaxUsdPerRun: 'default',
+    spendMaxTokensPerRun: 'default'
   })
 });
 
@@ -893,6 +925,20 @@ export interface WorkflowSnapshot {
    */
   readonly configuredModels?: Record<BackendRunnerKind, readonly string[]>;
   readonly availableBackends: readonly BackendRunnerKind[];
+  /**
+   * FR-R3-144 (T020, D-4) — every supported backend's containment posture, as the
+   * host derived it. The Settings tab RENDERS these discriminants and computes
+   * none of them; `tests/lint/webview-posture-derivation.test.ts` is what keeps
+   * that true.
+   *
+   * Optional for legacy-tolerance, like `generalSettings` above: an older host
+   * bundle may not send it, and the surface must show "not reported" rather than
+   * inventing a posture — an invented one would be a webview-side answer to the
+   * question this projection exists to keep on the host.
+   */
+  readonly backendPostures?: readonly BackendPosture[];
+  /** FR-R3-144 (T020, FR-004) — grant-setting entries that name no backend. */
+  readonly backendGrantProblems?: BackendGrantEntryProblems;
   readonly backendPingState?: BackendPingState;
   /**
    * Feature 011 — typed read of the scalar `schegent.*` settings `KEY_SPECS`

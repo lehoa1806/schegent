@@ -207,14 +207,33 @@ until `claude` is named here or a sandboxed backend is selected (FR-R3-056). Nam
 explicit acceptance of that authority **for that backend only** — allowing `agy` does not allow
 `claude` (FR-R3-125).
 
+There are two ways to name one, and they are the same grant reached from different moments:
+
+- **Before the refusal** — the Settings tab shows each backend's posture and, for a backend that has
+  no OS-enforced bound and no grant, an **Allow uncontained** control. The confirmation quotes the
+  refusal the enforcement itself would produce (FR-R3-144).
+- **At the refusal** — the run stops and a modal asks about the backend it just refused, granting
+  that backend on acceptance (FR-R3-146).
+
+Both write this setting through the same writer, so a grant made in one place is the grant the other
+one reads. Revoking is available from the Settings control at any time; it takes effect for the next
+invocation, not for a run already in flight.
+
 Entries are validated rather than filtered, and neither case throws: an id that is not a backend
 names the ids that are, and an id naming an already-contained backend says it grants nothing because
 that backend was never refused. Anything that is not a list of strings grants nothing.
 
 `application`-scoped on purpose: a workspace must not be able to grant itself the right to run an
 unbounded agent, and the grant therefore applies to **every workspace you open in this
-installation**, not only the one you granted it from. It is also deliberately **not** writable
-through the workspace-scoped general-settings IPC surface, for the same reason.
+installation**, not only the one you granted it from.
+
+It is also deliberately **not** one of the keys the general-settings write surface accepts. That
+surface is a batched draft-save: several keys go in one transaction, and a value rejected on an
+unrelated key takes the whole batch with it. A security grant does not belong in a transaction with
+`schegent.logging.verbose`. The Settings control described above therefore writes through its own
+confirmed command, which re-reads the current list at write time and changes one backend's entry —
+so a Settings tab left open for an hour cannot post a stale list that silently revokes a grant
+another window made in the meantime.
 
 **Replaces the removed boolean schegent.backend.allowUncontainedBackends, and the migration fails
 closed on purpose.** That old key is written here without backticks deliberately: a backticked

@@ -126,7 +126,15 @@ describe('Feature 011 — general-settings allowlist', () => {
         'cli.environmentAllowlist',
         'backend.probeTimeoutSeconds',
         'ui.confirmations.enable',
-        'multiRoot.suppressWarning'
+        'multiRoot.suppressWarning',
+        // FR-R3-144 (T006) — which backend runs, and the two denominations a
+        // spend bound can be set in. `backend.uncontainedBackends` is NOT here
+        // and is not an oversight: an entry would make it a whole-array write
+        // through this same batch, and a whole-array payload cannot tell a
+        // revoke from a stale draft. It has its own per-backend command.
+        'backend.runner',
+        'spend.maxUsdPerRun',
+        'spend.maxTokensPerRun'
       ])
     );
   });

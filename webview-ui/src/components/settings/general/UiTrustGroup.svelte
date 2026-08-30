@@ -21,8 +21,7 @@
     fieldChanged,
     fieldScopeLabel,
     saveOne,
-    resetField,
-    onAutoCompactInput
+    resetField
   }: Props = $props();
 </script>
 
@@ -45,7 +44,6 @@
         {pipelines}
         onSave={() => saveOne(spec)}
         onReset={() => resetField(spec.key)}
-        {onAutoCompactInput}
       />
     {/each}
   </div>
