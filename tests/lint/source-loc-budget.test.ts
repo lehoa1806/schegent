@@ -94,6 +94,34 @@ function tightMargin(maxLines: number): number {
   return Math.max(25, Math.floor(maxLines * 0.02));
 }
 
+/**
+ * THE NOTES BELOW ARE RECORD, NOT INSTRUCTION (FR-R3-143 T056).
+ *
+ * Thirty-three times, across twenty-seven of them, a note closes by telling the
+ * next editor to set the ceiling to what the file now measures — and `no NEW
+ * plain ceiling sits at its file` names that exact shape as the failure mode: a
+ * ceiling at its file is a high-water mark nobody decided on, and the next edit
+ * raises it by what the edit added. One file held both, and a maintainer
+ * reading top to bottom met the advice thirty-three times before meeting the
+ * gate once. Both halves were true when written. The gate is the newer, and it
+ * is the one that stands.
+ *
+ * THE RULE FOR A PLAIN CEILING, TODAY. It keeps more than `tightMargin` above
+ * its file, or it is not a budget. A size that is genuinely accepted already
+ * has a name here — a waiver, carrying a quoted decision, an ISO date, a
+ * resolvable reference and a high-water mark, all four gated. "Raise it to
+ * what the file measures" is that second thing wearing the first thing's
+ * clothes: it reads as a budget and ratchets like a waiver with nobody's name
+ * on it. When an edit genuinely cannot be size-neutral, the routes are the
+ * ones the failure messages name — reduce and tighten, or declare the waiver.
+ *
+ * The notes stay exactly as written. Each records what an edit extracted
+ * first, what could not move, and why, and that history is most of this
+ * file's value; rewriting twenty-seven of them would destroy the record to
+ * correct a sentence at the end of each. They stop being advice, which is a
+ * change of status rather than of text. `the retired convention gains no new
+ * instances` holds the count to a ratchet so a thirty-fourth cannot arrive.
+ */
 const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // P4 activation extraction ratchet: 1,500 → 1,305. Backend/evidence
   // composition and Stage-2 dashboard/command lifecycle now have focused
@@ -1179,12 +1207,41 @@ describe('large source file LOC budgets', () => {
   // table lives in. Its ceiling of 712 is left where it is: real headroom on a
   // file that shrank is a budget, which is the state this list exists to move
   // files into.
-  const UNDECIDED_CEILING_BASELINE: readonly string[] = [
-    'src/controller/workflow-controller.ts', // 1025 / 1025 — no headroom
-    'src/ui/sidebar/state-projector-runtime.ts', // 285 / 300 — 15 lines
-    'src/ui/sidebar/snapshot-composer.ts', //    322 /  322 — no headroom
-    'src/services/run-driver.ts' //             1289 / 1290 — 1 line
+  /**
+   * Recorded ceiling, not recorded headroom (FR-R3-143 T056).
+   *
+   * These four used to carry their measurement as a comment — `285 / 300 — 15
+   * lines`, `1025 / 1025 — no headroom`, and so on. Three of the four were
+   * wrong when checked on 2026-08-31: the real headroom on the first was **1**,
+   * an error of 14; `run-driver.ts` claimed 1 where it was 3; and
+   * `workflow-controller.ts` kept a verdict that still read true over two
+   * numbers that no longer did. A hand-written figure nothing recomputes rots
+   * silently, which is the defect this list exists to catch, one layer down. So
+   * the measured half is not written here any more — it is derived, and the
+   * failures below print it.
+   *
+   * `ceiling` IS recorded, because it is data a test reads rather than prose: a
+   * file on a shrink-only list may not raise its own ceiling. That gap was
+   * real. `workflow-controller.ts` went from 1,025 to 1,040 while listed — the
+   * list exempts a file from ARRIVING at its ceiling and says nothing about one
+   * already there raising it, so the growth this gate predicts in words
+   * happened to a file the list was protecting, and no test saw it. These are
+   * the numbers as of 2026-08-31, which freezes that raise rather than blessing
+   * it: from here they may only come down.
+   */
+  const UNDECIDED_CEILING_BASELINE: ReadonlyArray<{
+    readonly path: string;
+    readonly ceiling: number;
+  }> = [
+    { path: 'src/controller/workflow-controller.ts', ceiling: 1040 },
+    { path: 'src/ui/sidebar/state-projector-runtime.ts', ceiling: 300 },
+    { path: 'src/ui/sidebar/snapshot-composer.ts', ceiling: 322 },
+    { path: 'src/services/run-driver.ts', ceiling: 1290 }
   ];
+
+  const BASELINE_PATHS: ReadonlySet<string> = new Set(
+    UNDECIDED_CEILING_BASELINE.map((entry) => entry.path)
+  );
 
   function undecidedCeilings(): readonly string[] {
     return BUDGETS.filter((entry): entry is CeilingEntry => !isWaived(entry))
@@ -1194,9 +1251,7 @@ describe('large source file LOC budgets', () => {
   }
 
   it('no NEW plain ceiling sits at its file (FR-R3-119)', () => {
-    const arrivals = undecidedCeilings().filter(
-      (path) => !UNDECIDED_CEILING_BASELINE.includes(path)
-    );
+    const arrivals = undecidedCeilings().filter((path) => !BASELINE_PATHS.has(path));
     expect(
       arrivals,
       `A ceiling this close to its file is not a budget, it is a high-water mark nobody ` +
@@ -1210,7 +1265,7 @@ describe('large source file LOC budgets', () => {
 
   it('the un-decided baseline only shrinks', () => {
     const stillUndecided = undecidedCeilings();
-    const departed = UNDECIDED_CEILING_BASELINE.filter(
+    const departed = UNDECIDED_CEILING_BASELINE.map((entry) => entry.path).filter(
       (path) => !stillUndecided.includes(path)
     );
     expect(
@@ -1219,6 +1274,99 @@ describe('large source file LOC budgets', () => {
         `UNDECIDED_CEILING_BASELINE so the list keeps measuring something, which is the only ` +
         `way a ratchet stays a ratchet.`
     ).toEqual([]);
+  });
+
+  /**
+   * FR-R3-143 (T056) — the one motion this list exists to stop, which nothing
+   * observed.
+   *
+   * A file joins by sitting at its ceiling, and `no NEW plain ceiling sits at
+   * its file` then keeps others from joining. But a listed file raising its own
+   * number is exempt from that check by being listed, so it could ratchet
+   * freely — and one did, 1,025 to 1,040, which is precisely "the next edit
+   * raises it by exactly what the edit added" carried out on a file the list
+   * was protecting.
+   *
+   * That edit extracted two modules first and justified the remainder in
+   * thirteen lines, and it was right to. That is the point: a rule depending on
+   * every future editor writing thirteen good lines is not a gate. An entry
+   * whose path has left BUDGETS or become a waiver is skipped here and caught
+   * by the departure check above, which fails until the list is updated.
+   */
+  it('a listed file does not raise its own ceiling (FR-R3-143 T056)', () => {
+    const ceilings = new Map(
+      BUDGETS.filter((entry): entry is CeilingEntry => !isWaived(entry)).map((entry) => [
+        entry.path,
+        entry.maxLines
+      ])
+    );
+    const raised: string[] = [];
+    for (const entry of UNDECIDED_CEILING_BASELINE) {
+      const current = ceilings.get(entry.path);
+      if (current === undefined || current <= entry.ceiling) continue;
+      raised.push(
+        `${entry.path}: ceiling ${current}, recorded at ${entry.ceiling} ` +
+          `(+${current - entry.ceiling}), file measures ${lineCount(entry.path)}`
+      );
+    }
+    expect(
+      raised,
+      `A file on this shrink-only list raised its own ceiling. Sitting at a ceiling is what ` +
+        `puts a file here; raising it is the growth being listed was supposed to make someone ` +
+        `decide about, not a way around the decision. Reduce the file instead, or convert the ` +
+        `entry to a waiver carrying a quoted decision, an ISO date, a resolvable reference and ` +
+        `a high-water mark — and take the path off this list, because a waived file is decided.`
+    ).toEqual([]);
+  });
+
+  /**
+   * FR-R3-143 (T056) — the retired convention, held to a ratchet.
+   *
+   * The header on BUDGETS demotes these closing sentences from instruction to
+   * record. Prose alone cannot hold that, because the next editor copies the
+   * shape of the note above theirs — which is how there came to be this many.
+   * So the count is pinned.
+   *
+   * COUNTED ON NORMALIZED TEXT, which is not fussiness. The first draft of this
+   * check ran its regex over the raw slice and pinned **24**. The real figure is
+   * 33: five notes wrap between `exactly` and `what`, and four say "set to what
+   * the file measures" without the `exactly`, so a raw match was measuring where
+   * the comments happened to break rather than how often the convention appears.
+   * A gate whose number moves when someone re-wraps a paragraph is the defect
+   * this item is about, one layer down. Stripping `//` and collapsing whitespace
+   * first makes the count a property of the prose.
+   *
+   * One of the 33 is not an instruction: T026's note quotes the sentence while
+   * recording that it deleted it. It is counted anyway rather than special-cased,
+   * because a regex that tries to tell quotation from use is a second fragile
+   * thing to maintain, and the ratchet only needs the number to be stable and
+   * checked. Two further meta-references do not match at all — they describe the
+   * convention ("the form every bump above used") without restating it.
+   *
+   * Deliberately scoped to the BUDGETS literal: the header that retires the
+   * convention has to be able to quote it, and this message has to be able to
+   * name it, without either counting as an instance.
+   */
+  const CONVENTION_INSTANCES = 33;
+
+  it('the retired convention gains no new instances (FR-R3-143 T056)', () => {
+    const source = readFileSync(resolve(__dirname, 'source-loc-budget.test.ts'), 'utf8');
+    const start = source.indexOf('const BUDGETS');
+    const end = source.indexOf('function lineCount');
+    expect(start, 'the BUDGETS literal moved; this check no longer reads it').toBeGreaterThan(-1);
+    expect(end, 'lineCount moved; this check no longer bounds the notes').toBeGreaterThan(start);
+
+    const notes = source.slice(start, end).replace(/\/\//g, ' ').replace(/\s+/g, ' ');
+    const found = notes.match(/(?:set|raised) to (?:exactly )?what (?:the file|it) (?:now )?measures/gi);
+    expect(
+      found?.length ?? 0,
+      `The count of notes closing with the retired convention changed. Higher: a note was ` +
+        `written telling the next editor to set a ceiling to what the file measures, which is ` +
+        `the shape "no NEW plain ceiling sits at its file" fails — say what was extracted and ` +
+        `what could not move, and leave the ceiling with real headroom or declare a waiver. ` +
+        `Lower: a note was reworded or removed, which is fine — bring this number down with it. ` +
+        `Re-wrapping a comment must NOT move this number; if it did, the normalization above broke.`
+    ).toBe(CONVENTION_INSTANCES);
   });
 
   /**
