@@ -195,6 +195,39 @@ describe('backend posture — every route reaches the funnel (FR-R3-064)', () =>
     ).toBeLessThan(phaseStart);
   });
 
+  it('route "consent-retry" re-enters the same drive rather than becoming a fifth route', () => {
+    // FR-R3-146 (FR-014) — the consent modal adds a RECOVERY, not a route. The retry
+    // it triggers is the same `driveSession` thunk the first attempt used, so it
+    // reaches `PhaseRunner.run` the same way and records the posture the same way —
+    // including FR-R3-125's compounding warning, which `createBackendRunner` emits on
+    // the construction that succeeds. (Behaviourally proved in
+    // `tests/unit/runner/backend-runner-factory.test.ts`: the registry caches only on
+    // success, so the granted construction is judged and warned afresh.)
+    //
+    // A retry that built its own runner, or drove by another path, would be exactly
+    // the fifth route this file exists to forbid.
+    const callees = calleesOf(CONTROLLER, 'admitNew');
+    expect(callees.has('recoverOrReport')).toBe(true);
+    expect(callees.has('driveSession')).toBe(true);
+
+    const controller = read(CONTROLLER);
+    expect(controller).toContain('const drive = (): Promise<void> => this.driveSession(');
+    expect(controller).toContain('recoverOrReport(err, this.consent, drive,');
+
+    for (const file of [
+      CONTROLLER,
+      'src/controller/uncontained-consent-gate.ts',
+      'src/activation/uncontained-consent.ts'
+    ]) {
+      expect(
+        read(file).includes('createBackendRunner('),
+        `${file} constructs a backend runner. The consent path must recover through the ` +
+          'existing drive, not build a runner beside the registry — a construction outside ' +
+          'the funnel is a run whose posture nobody records.'
+      ).toBe(false);
+    }
+  });
+
   it('the funnel is the only place the posture is emitted', () => {
     // A second emission site is how "exactly one per run" quietly becomes "one
     // per site that remembered". If a second site is ever justified, it belongs

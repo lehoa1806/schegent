@@ -258,7 +258,8 @@ closes.
 
 **What it does not do.** It does not move, weaken, or duplicate the enforcement — `createBackendRunner`
 still refuses at the last point before an uncontained backend exists as an object. It adds no consent
-prompt: the setting is the consent surface, and that is shape 3's recorded decision. It does not widen
+prompt: the setting is the consent surface, and that is shape 3's recorded decision. (`FR-R3-146`
+later put a prompt *in front of* that setting without moving the surface — see the section below.) It does not widen
 or restate the containment classification, which is proven against each adapter's actual argv in
 `backend-containment-policy.test.ts`.
 
@@ -286,6 +287,55 @@ start — remains outstanding and is unaffected by this.
 
 The MCP and new-backend freeze the review attached to this item holds until shape 2 ships; the
 review makes that ordering explicit, and shape 3 does not lift it.
+
+## FR-R3-146 — the prompt in front of the setting, decided 2026-08-30
+
+**Shape 3 is unchanged.** The manifest default of `schegent.backend.uncontainedBackends` is still
+`[]`, the refusal is still thrown at `createBackendRunner`, the containment classification is
+untouched, and no flag any backend is launched with moves. A fresh install still refuses its first
+run, so every onboarding sentence saying so stays true.
+
+**What changed.** The refusal used to end there. `judgeBackendContainment` threw, nothing caught it
+by type, and the operator was shown "workflow failed unexpectedly" with the actionable half of the
+message — the setting name and the exact value to add — cut off at 240 characters. A deliberate
+policy refusal was rendered as a crash, and the only route out was to already know the answer. Now
+the refusal shows a blocking modal at the refusal point, and approving writes the refused backend
+id — and no other — to `schegent.backend.uncontainedBackends` at `ConfigurationTarget.Global`.
+
+**The setting is still the consent surface.** The prompt does not replace it, does not keep consent
+anywhere else, and grants exactly what an operator typing the id by hand would grant: the same key,
+the same `application` scope, the same per-backend shape. It is how an operator *reaches* the surface
+at the moment the surface becomes relevant, instead of being told to go find it after a refusal they
+read as a failure. The setting remains the thing to inspect, and removing an id from it remains the
+withdrawal.
+
+**The reversal, argued rather than assumed.** `FR-R3-125` recorded that the setting is the consent
+surface, **not a prompt**, and this adds a prompt. `FR-R3-056`'s objection to what preceded shape 3
+was that *a document does not bound a process*: a disclosure the operator may never read cannot stop
+a spawn. A blocking modal **awaited before the spawn** is precisely the thing that objection said was
+missing — the answer is a precondition of the process starting, not a note about it. What
+`FR-R3-125` rejected was a prompt standing *in place of* a bound; what this adds is the bound's own
+question. The default does not become permissive: cancel denies, dismissal denies, a dialog host that
+throws denies, and a failed write denies.
+
+**Why a modal and not a notification with a settings link.** A toast with an "Open Settings" button
+is a document with a button on it — the operator still has to find the key, know the backend id, and
+restart the run, and nothing waits for them. Awaiting the answer is what makes it a gate; the answer
+*is* the grant.
+
+**What the prompt is not.** It is not per-run consent. That question was answered separately and
+built as `backend-posture-admitted` (`FR-R3-064`), which still fires per run and is what keeps a
+granted run auditable. Once granted, this prompt does not appear again on this machine — that is the
+point of it, and it is why the per-run record carries the weight the prompt does not.
+
+**Read fresh, and therefore live.** `BackendRunnerFactoryOptions.uncontainedGranted` is now a thunk
+called at judgement time rather than a set captured at activation, so a grant written by the modal is
+visible to the very next runner construction with no window reload. The pinned converse is that a
+*withdrawal* does not evict a runner already built in this window — enforcement is at construction —
+which is recorded in the threat model rather than implied here.
+
+Shape 2 — the capability broker, which bounds what the agent may *do* rather than whether it may
+start — remains outstanding and is unaffected. The MCP and new-backend freeze still holds.
 
 ## Related
 

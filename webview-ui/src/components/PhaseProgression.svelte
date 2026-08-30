@@ -69,6 +69,7 @@
 
   const isLargePipeline = $derived(phases.length >= LARGE_PIPELINE_THRESHOLD);
   const activePhase = $derived(phases.find((phase) => phase.state === 'active')?.name ?? null);
+  // Drives the countdown badge below and the header menu's Retry now control.
   const isWaitingRetry = $derived(delayedRetry?.pendingRetryAt != null);
 
   // Feature 028 US3 — set of phase ids carrying a future-phase
@@ -144,6 +145,7 @@
       {queueId}
       {targetsSubjectRun}
       {manualPauseAt}
+      {isWaitingRetry}
       {phaseOverrides}
       {phaseBreakpoints}
       selectedPhase={selectedPhaseId}
@@ -220,8 +222,6 @@
     {/each}
   </div>
 </section>
-
-
 
 <style>
   .phase-progression-zone { display: flex; flex-direction: column; height: 100%; }

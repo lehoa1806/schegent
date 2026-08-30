@@ -45,19 +45,46 @@ function expectId(input: unknown): string | null {
   return null;
 }
 
-export async function runRetryQueuedItem(arg: unknown, ctx: QueueOpsCtx): Promise<void> {
-  if (!(await ensurePrimary(ctx))) return;
+/**
+ * Returning a Task to `pending` is not the same thing as asking the queue to
+ * drain, and for the whole life of this command it only did the first —
+ * `AutoDrainCoordinator` is edge-triggered, so the retried Task sat pending
+ * until some unrelated event happened to trigger a drain. The caller now owns
+ * that trigger, and needs two facts to fire it: whether the retry took, and
+ * *which* queue to drain. Hence a result where there was none.
+ *
+ * `queueId` is resolved from the row rather than defaulted, because
+ * `drainQueuedWork` must never sweep Default on behalf of a Task that lives
+ * somewhere else (`tests/lint/no-implicit-default-queue.test.ts`).
+ */
+export type RetryQueuedItemResult =
+  | { ok: true; queueId: string }
+  | { ok: false; reason: string };
+
+export async function runRetryQueuedItem(
+  arg: unknown,
+  ctx: QueueOpsCtx
+): Promise<RetryQueuedItemResult> {
+  if (!(await ensurePrimary(ctx))) return { ok: false, reason: 'not-primary' };
   const id = expectId(arg);
   if (!id) {
     ctx.notifier.warn('Schegent: retry requires a queue item id.');
-    return;
+    return { ok: false, reason: 'invalid-id' };
   }
   try {
+    // Resolved before the mutation: `queueIdForTask` reads the row, and the row
+    // is only guaranteed to be there while the Task still exists.
+    const queueId = ctx.queue.queueIdForTask(id);
     const result = await ctx.queue.retry(id);
-    if (!result.ok) notifyMutationFailure(ctx, 'Retry', result);
+    if (!result.ok) {
+      notifyMutationFailure(ctx, 'Retry', result);
+      return { ok: false, reason: result.reason ?? 'illegal-state' };
+    }
+    return { ok: true, queueId };
   } catch (err) {
     ctx.logger.error(`runRetryQueuedItem failed: ${(err as Error).message}`);
     ctx.notifier.error(`Schegent: retry failed.`);
+    return { ok: false, reason: 'unexpected-error' };
   }
 }
 

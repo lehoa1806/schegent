@@ -1122,7 +1122,6 @@ describe('Workflow catalog management — Pipeline independence (US6, T053)', ()
         moveUp: vi.fn(),
         moveDown: vi.fn(),
         clearCompleted: vi.fn(),
-        clearFailed: vi.fn(),
         setQueuePausedState: vi.fn()
       },
       phaseOps: { skipPhase: vi.fn(), disablePhase: vi.fn(), enablePhase: vi.fn() }

@@ -510,3 +510,50 @@ with FR-028's history behind it.
 <!-- Source: src/services/process-liveness.ts -->
 <!-- Source: src/services/resume-decision.ts -->
 <!-- Source: src/state/spawn-identity-recorder.ts -->
+
+### T27 — A persisted consent grant outlives what the operator agreed to
+
+Both consent surfaces are now answered **once** rather than per task (`FR-R3-146`). A grant that is
+remembered is a grant that can be remembered longer, or read more widely, than the operator meant.
+There are two, and each is bound on a different axis.
+
+**The uncontained-backend grant.** Asked at the refusal point, as a blocking modal answered before
+anything is spawned. Approving writes the refused backend id — and no other — to
+`schegent.backend.uncontainedBackends` in User settings. Its scope is the **machine**:
+`application`-scoped by design, so a workspace cannot grant itself the right to run an unbounded
+agent. Withdrawn by removing the id from the setting. The manifest default stays `[]`, so a fresh
+install still refuses its first run, and the setting is read at **every** runner construction rather
+than captured at activation — a grant written mid-session takes effect with no window reload.
+
+**The Git mutation-plan grant.** Asked before the first Run on a plan. `Approve This Run` covers that
+Run and records nothing; `Always Approve This Plan Here` writes an entry to `.schegent/state.json`
+under `schegent.consent.gitPlanGrants.v1`, keyed by the plan fingerprint and carrying the pipeline
+id, the phase ids, and when it was given. Its scope is **this workspace and this exact plan**:
+editing the pipeline changes the fingerprint and asks again, and another repository asks. Withdrawn
+by deleting that entry, or by resetting workspace state.
+
+For both, cancelling or dismissing **denies**, and neither value is written except by its own
+affirmative action. A failed write does not become a denial of the run just approved — it means the
+next run asks again, which is the fail-closed direction for a grant that was never recorded.
+
+**Residual risk, stated rather than implied:**
+
+- **A remembered grant is not a re-consulted operator.** The Git plan fingerprint covers the
+  pipeline id and each phase's id, runner, declared side effects and `promptVersion`. A phase prompt
+  revised *without* changing `promptVersion` is the same fingerprint and does not ask again.
+- **The uncontained grant is not evicted mid-session.** Enforcement is at runner construction and the
+  registry caches by kind, so removing the id does not tear down a runner already built in this
+  window, nor stop a phase already running. Reload the window to make a withdrawal bite now.
+- **Neither grant bounds the model.** The uncontained grant decides whether a run *starts*;
+  `--dangerously-skip-permissions` is still passed. The Git grant covers the phases the host runs,
+  and a backend with a shell can invoke `git` regardless of what any phase declared — T8's position,
+  restated at a different seam.
+- **Workspace state lives in the workspace.** The Git grant is a file in the repository directory, so
+  anyone who can write `.schegent/state.json` can write a grant. That is the boundary
+  [Workspace Trust](../operations/workspace-trust.md) already draws, and it is why the machine-level
+  grant is deliberately *not* stored there.
+
+<!-- Source: src/activation/uncontained-consent.ts -->
+<!-- Source: src/activation/git-approval.ts -->
+<!-- Source: src/state/git-plan-grants.ts -->
+<!-- Source: src/runner/backend-runner-factory.ts -->

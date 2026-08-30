@@ -33,6 +33,43 @@ const HARDCODED_GRANT =
 /** Any mention, so the gate can prove it is looking at something. */
 const ANY_MENTION = /uncontainedGranted|uncontainedBackends/;
 
+/**
+ * FR-R3-146 (FR-003) — a grant that is READ per construction, not STORED.
+ *
+ * The `getConfiguration` assertion below proves the read exists. It does not
+ * prove the read's RESULT is unstored, and until this gate was added it was not:
+ * `backend-execution-wiring.ts` called `readUncontainedGrant()` once at
+ * activation and froze `uncontainedGrant.granted` into a registry that lives for
+ * the window. So a grant written at runtime — by an operator editing settings
+ * mid-session, or by the consent modal FR-R3-146 adds — was invisible until the
+ * window reloaded, and the rule two lines below this one was written, gated, and
+ * violated at the same time.
+ *
+ * The forbidden shape is therefore a value, and the required shape is a thunk:
+ * `uncontainedGranted: () => …`. Tests may pass a set freely — only `src/` is
+ * scanned — because a test double's lifetime is one assertion.
+ */
+const GRANT_ASSIGNMENT = /uncontainedGranted\s*:\s*/g;
+const THUNK = /^\(\s*\)\s*=>/;
+
+/**
+ * True when any `uncontainedGranted:` in `body` is followed by something other
+ * than a thunk.
+ *
+ * Written as a scan rather than one regex with a negative lookahead: a lookahead
+ * placed after `\s*` is defeated by backtracking — the engine matches zero
+ * whitespace, lands on the space before `(`, and the lookahead "fails" against a
+ * thunk that is in fact there. Deciding the tail explicitly cannot be
+ * backtracked into a false positive.
+ */
+function storesGrant(body: string): boolean {
+  for (const match of body.matchAll(GRANT_ASSIGNMENT)) {
+    const tail = body.slice(match.index + match[0].length);
+    if (!THUNK.test(tail)) return true;
+  }
+  return false;
+}
+
 function sources(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
@@ -74,6 +111,37 @@ describe('the uncontained posture is never hardcoded in production code', () => 
     expect(HARDCODED_GRANT.test('uncontainedGranted: new Set(SUPPORTED_BACKENDS)')).toBe(true);
     expect(HARDCODED_GRANT.test('uncontainedGranted: grant.granted')).toBe(false);
     expect(HARDCODED_GRANT.test('uncontainedGranted: new Set()')).toBe(false);
+  });
+
+  it('has no stored grant under src/ — the value is read per construction', () => {
+    const offenders = files.filter((f) => storesGrant(f.body)).map((f) => f.path);
+    expect(
+      offenders,
+      'FR-R3-146 (FR-003): `uncontainedGranted` must be a thunk called at judgement time. ' +
+        'A resolved set assigned here is captured for the lifetime of whatever holds it — ' +
+        'the registry outlives the window — so a grant written at runtime is not visible ' +
+        'until the window reloads. Pass `() => readUncontainedGrant().granted`.'
+    ).toEqual([]);
+  });
+
+  it('catches the stored shape it forbids — proved, not assumed', () => {
+    // Same non-vacuity discipline as above. The first line is the exact text this
+    // gate was written against, at `backend-execution-wiring.ts:269`.
+    expect(storesGrant('uncontainedGranted: uncontainedGrant.granted')).toBe(true);
+    expect(storesGrant('uncontainedGranted: new Set()')).toBe(true);
+    expect(storesGrant('uncontainedGranted: this.granted')).toBe(true);
+    // The declared type is the same offence: a set-typed field cannot be read.
+    expect(storesGrant('readonly uncontainedGranted: ReadonlySet<BackendRunnerKind>;')).toBe(true);
+    expect(storesGrant('uncontainedGranted: () => readUncontainedGrant().granted')).toBe(false);
+    expect(storesGrant('uncontainedGranted: () => grant.granted')).toBe(false);
+    expect(storesGrant('readonly uncontainedGranted: () => ReadonlySet<BackendRunnerKind>;')).toBe(
+      false
+    );
+    // Spacing is not a way out, in either direction.
+    expect(storesGrant('uncontainedGranted:()=>x')).toBe(false);
+    expect(storesGrant('uncontainedGranted:  (  ) => x')).toBe(false);
+    // One thunk does not excuse a stored sibling elsewhere in the same file.
+    expect(storesGrant('uncontainedGranted: () => a\nuncontainedGranted: b')).toBe(true);
   });
 
   it('reads the value from configuration in the one place that supplies it', () => {

@@ -12,6 +12,21 @@ Schegent deliberately launches each backend non-interactively. Claude is the def
 <!-- Source: src/runner/agy-cli.ts -->
 <!-- Source: package.json -->
 
+## The consent modal did not change this posture
+
+The posture line above stays `prompts-disabled`. A later change added a blocking modal at the containment refusal point: when the configured backend is not named in `schegent.backend.uncontainedBackends`, Schegent asks the operator once, writes the granted backend id into that setting at application scope, and re-drives the run. Reading that as "prompts are configurable now" and editing the line to `operator-configurable` is the edit this section exists to stop, because it would be false.
+
+The modal decides whether Schegent will launch an uncontained backend at all. It does not restore the backend CLI's own approval prompts. `--dangerously-skip-permissions` is still passed on every Claude and Agy invocation, unconditionally, and a granted run behaves exactly as this document describes: the agent acts without asking. The grant is consent to start the process, not supervision of what it then does — one answer before one spawn, not a prompt per action. The sentence above, that no contributed setting restores backend approval prompts, is as true after the modal as before it.
+
+The edit is also not cosmetic. `readPosture()` in the gate reads this line, and every assertion there guarded by `if (readPosture() !== 'prompts-disabled') return;` — the first-run gate that must be named on each onboarding surface, and the disclosure checks beside it — returns early under any other value. Changing the word fails nothing and silently retires those. The value moves when the backend CLIs are launched with their own prompts intact, which is the condition recorded below, and not before.
+
+<!-- Source: src/activation/uncontained-consent.ts -->
+<!-- Source: src/controller/uncontained-consent-gate.ts -->
+<!-- Source: src/runner/backend-runner-factory.ts -->
+<!-- Source: src/runner/claude-cli.ts -->
+<!-- Source: package.json -->
+<!-- Source: tests/lint/backend-permission-posture.test.ts -->
+
 ## Decision
 
 Approval prompts remain disabled for unattended runs. A prompt with nobody present to answer it becomes an invocation stall and eventually an idle timeout; the product currently has no supervised prompt-forwarding mode. This is an explicit privilege trade-off, not a safety guarantee.

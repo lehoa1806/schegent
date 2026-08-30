@@ -17,7 +17,7 @@
 // The `pipeline-snapshot.test.ts` integration suite covers the *plan-carrying*
 // half, including the deleted-Phase and deleted-Pipeline cases.
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   buildCatalog,
   type PhaseDef,
@@ -33,7 +33,7 @@ import {
   UnresolvablePipelineError,
   WorkflowRunFactory
 } from '../../../src/services/workflow-run-factory';
-import type { WorkflowRunPipeline } from '../../../src/state/workflow-run';
+import type { MutationPlanSnapshot, WorkflowRunPipeline } from '../../../src/state/workflow-run';
 
 const ALPHA: PhaseDef = {
   id: 'alpha', name: 'Alpha', version: 1, instruction: 'Alpha prompt.'
@@ -263,5 +263,64 @@ describe('a frozen plan bypasses every refusal (T023)', () => {
     );
 
     expect(run.pipeline?.id).toBe('ab-flow');
+  });
+});
+
+// FR-R3-146 (plan A6) — the factory's side of the consent seam is UNCHANGED by the
+// durable Git grant. It still takes `(plan) => Promise<boolean>`; the three-way
+// decision and the grant record both live behind that boolean, in the wiring.
+//
+// The short circuit is the half worth pinning: a pipeline that cannot touch Git
+// must raise no prompt at all, so the new record is never consulted and never
+// written for a run that was never going to mutate anything.
+const GIT_PHASE: PhaseDef = {
+  id: 'commit', name: 'Commit', version: 1, instruction: 'Commit.', sideEffects: 'git'
+};
+const GIT_FLOW: PipelineDef = { id: 'git-flow', name: 'With Git', phases: ['alpha', 'commit'] };
+
+function gitCatalog(): PipelineCatalog {
+  return buildCatalog([ALPHA, GIT_PHASE, DONE], [GIT_FLOW], { claude: [], codex: [], agy: [] }, 'git-flow');
+}
+
+describe('the Git consent seam the factory owns (FR-R3-146, A6)', () => {
+  it('asks nothing when no phase can touch Git', async () => {
+    const requestGitApproval = vi.fn(async () => true);
+    const subject = new WorkflowRunFactory({
+      getCatalog: catalog, defaultRunnerKind: 'claude', logger: new SanitizedLogger(),
+      requestGitApproval
+    });
+
+    const run = await subject.create(plainItem(), null, 'ab-flow');
+
+    expect(run.mutationPlan?.gitCapablePhaseIds).toEqual([]);
+    expect(requestGitApproval).not.toHaveBeenCalled();
+  });
+
+  it('asks with the plan when a phase can, and takes a boolean for an answer', async () => {
+    // Typed parameter, not `() => true`: an untyped mock makes `lastCall` an empty
+    // tuple, so asserting on the argument is a type error rather than a test.
+    const requestGitApproval = vi.fn(async (_plan: MutationPlanSnapshot) => true);
+    const subject = new WorkflowRunFactory({
+      getCatalog: gitCatalog, defaultRunnerKind: 'claude', logger: new SanitizedLogger(),
+      requestGitApproval
+    });
+
+    const run = await subject.create(plainItem(), null, 'git-flow');
+
+    expect(requestGitApproval).toHaveBeenCalledTimes(1);
+    expect(requestGitApproval).toHaveBeenCalledWith(run.mutationPlan);
+    // FR-012 — the plan names its pipeline, so the grant written from it can too.
+    expect(run.mutationPlan?.pipelineId).toBe('git-flow');
+  });
+
+  it('refuses to create the Run when the answer is false', async () => {
+    const subject = new WorkflowRunFactory({
+      getCatalog: gitCatalog, defaultRunnerKind: 'claude', logger: new SanitizedLogger(),
+      requestGitApproval: async () => false
+    });
+
+    await expect(subject.create(plainItem(), null, 'git-flow')).rejects.toThrow(
+      'git-mutation-plan-not-approved'
+    );
   });
 });

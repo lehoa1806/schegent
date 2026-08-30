@@ -9,12 +9,11 @@ import {
   mechanismByBackend,
   mechanismOf,
   resolveUncontainedGrant,
-  judgeBackendContainment
+  judgeBackendContainment,
+  UncontainedBackendRefusedError,
+  isUncontainedBackendRefusal
 } from '../../../src/services/backend-containment-policy';
-import {
-  createBackendRunner,
-  UncontainedBackendRefusedError
-} from '../../../src/runner/backend-runner-factory';
+import { createBackendRunner } from '../../../src/runner/backend-runner-factory';
 import {
   DEFAULT_BACKEND,
   SUPPORTED_BACKENDS,
@@ -240,20 +239,20 @@ describe('the refusal is enforced where a backend is constructed', () => {
     // admission, resume, an auto-drain, a continuation. A check at admission
     // alone would be bypassed by every path that does not go through admission,
     // which is most of them.
-    expect(() => createBackendRunner('claude', { uncontainedGranted: new Set<BackendRunnerKind>() })).toThrow(
+    expect(() => createBackendRunner('claude', { uncontainedGranted: () => new Set<BackendRunnerKind>() })).toThrow(
       UncontainedBackendRefusedError
     );
-    expect(() => createBackendRunner('agy', { uncontainedGranted: new Set<BackendRunnerKind>() })).toThrow(
+    expect(() => createBackendRunner('agy', { uncontainedGranted: () => new Set<BackendRunnerKind>() })).toThrow(
       UncontainedBackendRefusedError
     );
   });
 
   it('constructs a contained backend with the posture unaccepted', () => {
-    expect(() => createBackendRunner('codex', { uncontainedGranted: new Set<BackendRunnerKind>() })).not.toThrow();
+    expect(() => createBackendRunner('codex', { uncontainedGranted: () => new Set<BackendRunnerKind>() })).not.toThrow();
   });
 
   it('refuses through the registry too, which is what the host actually holds', () => {
-    const registry = new BackendRunnerRegistry({ uncontainedGranted: new Set<BackendRunnerKind>() });
+    const registry = new BackendRunnerRegistry({ uncontainedGranted: () => new Set<BackendRunnerKind>() });
     // No argument: the global default, which is `claude`. A fresh install's
     // default run path, refused.
     expect(() => registry.getOrCreate()).toThrow(/without an OS-enforced bound/);
@@ -261,12 +260,41 @@ describe('the refusal is enforced where a backend is constructed', () => {
 
   it('names the setting and the decision record in what it throws', () => {
     try {
-      createBackendRunner('claude', { uncontainedGranted: new Set<BackendRunnerKind>() });
+      createBackendRunner('claude', { uncontainedGranted: () => new Set<BackendRunnerKind>() });
       expect.unreachable('should have refused');
     } catch (error) {
       expect((error as Error).message).toContain(ALLOW_UNCONTAINED_SETTING);
       expect((error as Error).message).toContain('agent-capability-posture.md');
     }
+  });
+
+  /**
+   * FR-R3-146 (FR-005) — a caller that must tell this refusal from a crash.
+   *
+   * The controller catches `unknown`. Without a predicate it would either import the
+   * factory as a value — which `backend-kind-placement.test.ts` forbids outside
+   * `src/runner/` — or match on `err.name`, which is a string two files then have to
+   * agree about.
+   */
+  it('is recognisable across a module boundary, and does not claim unrelated errors', () => {
+    try {
+      createBackendRunner('claude', { uncontainedGranted: () => new Set<BackendRunnerKind>() });
+      expect.unreachable('should have refused');
+    } catch (error) {
+      expect(isUncontainedBackendRefusal(error)).toBe(true);
+      if (!isUncontainedBackendRefusal(error)) throw new Error('unreachable');
+      // Narrowed: the kind is readable without a cast, which is the point of the type.
+      expect(error.kind).toBe('claude');
+      const verdict = judgeBackendContainment('claude', new Set<BackendRunnerKind>());
+      if (verdict.outcome !== 'refused') throw new Error('unreachable');
+      // The thrown message IS the judge's, unaltered — the controller's untruncated
+      // branch (FR-005) asserts the same equality from the other end.
+      expect(error.message).toBe(verdict.message);
+    }
+    // Non-vacuity: the predicate is not "is an Error".
+    expect(isUncontainedBackendRefusal(new Error('parser invariant exploded'))).toBe(false);
+    expect(isUncontainedBackendRefusal(null)).toBe(false);
+    expect(isUncontainedBackendRefusal('refused')).toBe(false);
   });
 });
 

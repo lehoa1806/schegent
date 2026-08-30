@@ -5,6 +5,7 @@ import { AgyCliRunner } from './agy-cli';
 import { SanitizedLogger } from '../lib/logger';
 import {
   ALLOW_UNCONTAINED_SETTING,
+  UncontainedBackendRefusedError,
   judgeBackendContainment
 } from '../services/backend-containment-policy';
 import type { ProcessEnvironmentMode } from './spawn-env';
@@ -39,20 +40,13 @@ import {
 // backend-agnostic.
 
 
-/**
- * FR-R3-056 — thrown rather than returned, because there is no runner to return.
- * A distinct type so a caller can report the posture refusal as itself instead of
- * as a generic construction failure.
- */
-export class UncontainedBackendRefusedError extends Error {
-  public constructor(
-    public readonly kind: BackendRunnerKind,
-    message: string
-  ) {
-    super(message);
-    this.name = 'UncontainedBackendRefusedError';
-  }
-}
+// FR-R3-146 (FR-005) — `UncontainedBackendRefusedError` was declared here, beside
+// the throw. It now lives with `judgeBackendContainment` in
+// `services/backend-containment-policy.ts`, which is where its message is built and
+// where the controller can import it: `tests/lint/backend-kind-placement.test.ts`
+// forbids a value import of THIS module from outside `src/runner/`. Deliberately not
+// re-exported from here — a second name for one type is how the two come to disagree
+// about which one an `instanceof` is testing.
 
 export interface BackendRunnerFactoryOptions {
   /**
@@ -62,8 +56,15 @@ export interface BackendRunnerFactoryOptions {
    * A set, not a boolean: allowing `agy` must not allow `claude`. Resolved from
    * `schegent.backend.uncontainedBackends` by `resolveUncontainedGrant`, which
    * also reports the entries that grant nothing.
+   *
+   * FR-R3-146 (FR-003) — a THUNK, not a set. It was a set, and the one production
+   * caller resolved it once at activation and handed the result to a registry that
+   * lives as long as the window, so a grant written at runtime was invisible until
+   * a reload. The hard rule against caching settings on long-lived objects already
+   * said not to; the type is what makes it so. Called at judgement time, once per
+   * construction — cheap, since `getConfiguration` reads an in-memory model.
    */
-  readonly uncontainedGranted: ReadonlySet<BackendRunnerKind>;
+  readonly uncontainedGranted: () => ReadonlySet<BackendRunnerKind>;
   /**
    * FR-R3-125 (FR-007) — the environment policy mode, so the compounding case can
    * be stated where both facts are known. Optional and defaulting to `undefined`
@@ -135,7 +136,8 @@ export function createBackendRunner(
   kind: BackendRunnerKind,
   options: BackendRunnerFactoryOptions
 ): BackendRunner {
-  const verdict = judgeBackendContainment(kind, options.uncontainedGranted);
+  // FR-R3-146 (FR-003) — read here, at judgement time, never captured by a caller.
+  const verdict = judgeBackendContainment(kind, options.uncontainedGranted());
   if (verdict.outcome === 'refused') {
     throw new UncontainedBackendRefusedError(verdict.kind, verdict.message);
   }

@@ -226,6 +226,15 @@
     <!-- Two-column body: phases left, content right -->
     <div class="run-columns">
       <!-- Left panel: Phase Progression -->
+      <!--
+        Lifecycle round-check finding C — `delayedRetry`. `PhaseProgression` has
+        declared that prop since the delayed-retry badge was built, and this,
+        its only wiring site, never passed it: `isWaitingRetry` was permanently
+        false in the shipping build, so the countdown never rendered and the
+        Retry now control it gates had nowhere to appear. Gated on `isExecuting`
+        for the same reason as `activeRunId` — a countdown belonging to the
+        queue's live Run must not be drawn on a surface showing another Task.
+      -->
       <aside class="run-left-panel">
         <PhaseProgression
           phases={phases}
@@ -239,6 +248,7 @@
           phaseOverrides={runtime?.phaseOverrides ?? []}
           phaseBreakpoints={runtime?.phaseBreakpoints ?? []}
           resumeTargetPhaseId={inFlightRun?.resumeTargetPhaseId ?? null}
+          delayedRetry={isExecuting ? inFlightRun?.delayedRetry : undefined}
         />
       </aside>
 

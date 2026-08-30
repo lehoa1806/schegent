@@ -39,18 +39,19 @@ export function enablePhase(phaseId: string, queueId: string): void {
   postCommand(CMD_ENABLE_PHASE, { queueId, phaseId });
 }
 
-// Retry-now is deliberately absent from this module. It is one of the twelve
+// Retry-now is deliberately absent from this module. It is one of the fifteen
 // destructive commands, so `tests/lint/destructive-actions.lint.test.ts`
 // requires its `postCommand` to sit in the same scope as the `useConfirm` that
 // gates it — and that confirm needs component-level context (the originating
 // element and the active phase's display label) which does not belong in a lib
-// module. That reason is unchanged.
+// module. That reason has never changed, and is why the dispatcher lives in a
+// component while its six siblings above live here.
 //
-// What has changed: FR-R3-140 deleted `PhaseTracker.svelte`, the component this
-// comment used to name as the dispatcher. It was unreachable from either bundle
-// entry point, so no operator could reach the control either — the webview has
-// no retry-now dispatcher now, and did not effectively have one before. Stated
-// rather than left implied by a filename that no longer resolves.
+// The component is `PhaseControlMenu.svelte`. It used to be `PhaseTracker.svelte`,
+// which FR-R3-140 deleted as unreachable from either bundle entry point, leaving
+// the capability built and routable and reachable by nobody — the state the
+// lifecycle round-check of 2026-08-30 recorded as finding C. The replacement is
+// reachable: `RunDetailTier` renders `PhaseProgression`, which renders the menu.
 
 // Phase removal addresses a queued Task by id, not an in-flight Run, so it
 // stays queue-free: the host resolves the owning queue from the Task row.

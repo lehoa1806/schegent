@@ -101,6 +101,12 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'src/monitor/claude-cli-monitor.ts',
   'src/monitor/monitor-state.ts',
   'src/queue/queue-manager.ts',
+  // The `queueLifecycle` writer for transitions that move work in or out of a
+  // queue. The literal is the lifecycle discriminator, not the pinned task-status
+  // projection; extracted from `queue-manager.ts` above so both it and
+  // `commands/restart-canceled-task.ts` share one definition of the held/unheld
+  // distinction.
+  'src/queue/queue-lifecycle-refresh.ts',
   // Feature 065 — `QueueLifecycle = 'running' | ...` union (FR-001..FR-005).
   // The literal is the lifecycle discriminator, not the pinned task-status
   // projection, and is required by the lifecycle entity.

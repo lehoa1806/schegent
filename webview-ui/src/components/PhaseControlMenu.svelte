@@ -14,6 +14,8 @@
   } from '../lib/phase-breakpoint-ipc';
   import { phaseDeleteConfirmation, type DeleteConfirmationCopy } from '../lib/deletion-confirmation';
   import { useConfirm } from '../lib/use-confirm';
+  import { postCommand } from '../lib/vscode-api';
+  import { CMD_RETRY_PHASE_NOW } from '../lib/messages';
   import type { PhaseName, PhaseTile } from '../lib/snapshot-types';
 
   interface Props {
@@ -57,6 +59,25 @@
      */
     targetsSubjectRun: boolean;
     manualPauseAt?: string | null;
+    /**
+     * Whether the Run this menu addresses is counting down a delayed retry —
+     * `delayedRetry.pendingRetryAt !== null`, the same fact `PhaseProgression`
+     * renders as the "Waiting to retry in Ns" badge.
+     *
+     * It gates the *visibility* of Retry now rather than its enabled state,
+     * unlike every other control here. The host answers `not-pending-retry`
+     * when no backoff is armed, so a permanently-present button would be an
+     * affordance whose only effect is a rejection toast; and unlike Pause or
+     * Skip there is no phase for it to act on out of that window. Surfacing it
+     * beside the countdown is what makes it legible: the badge says the run is
+     * waiting, the button says the operator need not.
+     *
+     * Defaulted to `false`, and this is the one prop here that may be: absent
+     * means "no countdown to shortcut", which hides the control. A missing
+     * `targetsSubjectRun` defaults to nothing because its failure is silent and
+     * enabling; this one fails closed by omission.
+     */
+    isWaitingRetry?: boolean;
     phaseOverrides?: readonly { readonly phaseId: string; readonly action: 'skipped' | 'disabled' | 'removed' }[];
     /**
      * Feature 028 US3 — id of the currently-selected phase tile, used as
@@ -79,6 +100,7 @@
     queueId,
     targetsSubjectRun,
     manualPauseAt = null,
+    isWaitingRetry = false,
     phaseOverrides = [],
     selectedPhase = null,
     selectedPhaseState = null,
@@ -103,6 +125,14 @@
   );
   const overrideDisabled = $derived(!canControlRun);
   const enableDisabled = $derived(!canControlRun || !hasOverride);
+  /**
+   * Shares `canControlRun` with its siblings rather than restating it. The
+   * off-target conjunct is the load-bearing one: `isWaitingRetry` is read off
+   * the displayed surface while `CMD_RETRY_PHASE_NOW` is addressed by `queueId`
+   * alone, so without it a countdown shown for one Task would shortcut the
+   * backoff of whichever Run the queue happens to be executing.
+   */
+  const retryNowDisabled = $derived(!canControlRun);
   /**
    * Delete is deliberately NOT gated on `targetsSubjectRun`, and it is the one
    * control that is not: it posts `removeTaskPhase(activeTaskId, currentPhase)`
@@ -204,6 +234,22 @@
     skipPhase(currentPhase, queueId);
   }
 
+  /**
+   * The `postCommand` sits here, beside its `useConfirm`, because
+   * `tests/lint/destructive-actions.lint.test.ts` requires it to — which is
+   * also why retry-now is the one control absent from `lib/phase-control.ts`.
+   * That module records the reason; this is the scope it was waiting for.
+   */
+  async function onRetryNow(event: MouseEvent): Promise<void> {
+    if (retryNowDisabled || !isWaitingRetry || currentPhase === null) return;
+    const confirmed = await useConfirm('run.retry-phase-now', {
+      originatingElement: event.currentTarget as HTMLElement,
+      context: { phaseName: currentPhase }
+    });
+    if (!confirmed) return;
+    postCommand(CMD_RETRY_PHASE_NOW, { queueId });
+  }
+
   function onDisable(): void {
     if (overrideDisabled || currentPhase === null) return;
     disablePhase(currentPhase, queueId);
@@ -252,6 +298,16 @@
       title={controlTitle('Pause active phase')}
       onclick={onPause}
     >Pause</button>
+  {/if}
+  {#if isWaitingRetry}
+    <button
+      type="button"
+      data-testid="phase-control-retry-now"
+      aria-label="Retry the active phase now instead of waiting out the backoff"
+      aria-disabled={aria(retryNowDisabled)}
+      title={controlTitle('Retry now instead of waiting out the backoff')}
+      onclick={onRetryNow}
+    >Retry now</button>
   {/if}
   <button
     type="button"

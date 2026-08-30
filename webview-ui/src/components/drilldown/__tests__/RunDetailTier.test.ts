@@ -19,6 +19,7 @@ import { buildQueueRuntime } from '../../../lib/__tests__/queue-runtime-fixture'
 import { IDLE_DELAYED_RETRY, IDLE_GENERAL_SETTINGS } from '../../../lib/snapshot-types';
 import type {
   ConnectedRunProjection,
+  DelayedRetryState,
   PhaseTile,
   QueueItem,
   RunOutputRecord,
@@ -92,6 +93,7 @@ function buildSnapshot(overrides: {
   readonly liveSummary?: string;
   readonly inFlightTaskId?: string;
   readonly outputs?: readonly RunOutputRecord[];
+  readonly delayedRetry?: DelayedRetryState;
 }): WorkflowSnapshot {
   const tasks = overrides.tasks ?? [];
   return Object.freeze({
@@ -131,7 +133,7 @@ function buildSnapshot(overrides: {
                   freshness: 'live' as const,
                   staleSeconds: 0
                 },
-                delayedRetry: IDLE_DELAYED_RETRY,
+                delayedRetry: overrides.delayedRetry ?? IDLE_DELAYED_RETRY,
                 resumeTargetPhaseId: null,
                 outputs: overrides.outputs ?? []
               }
@@ -532,5 +534,67 @@ describe('RunDetailTier — navigation and primacy (FR-059, FR-060, FR-065)', ()
     expect(queryByTestId('run-detail-controls')).toBeNull();
     // Reading the Run is still allowed.
     expect(getByTestId('run-detail-prompt')).not.toBeNull();
+  });
+});
+
+// Lifecycle round-check finding C — the wiring gap under it.
+//
+// `PhaseProgression` has declared a `delayedRetry` prop since the countdown
+// badge was built, and this tier — its only wiring site — never passed one. The
+// component's own tests supplied the prop directly and passed; the shipping
+// build rendered a permanently-false `isWaitingRetry`, so the badge never
+// appeared and the Retry now control it gates had nowhere to appear either.
+//
+// These assert through the mounted tier rather than against `PhaseProgression`
+// in isolation, because isolation is exactly what hid the defect.
+describe('RunDetailTier — delayed-retry countdown reaches the phase strip', () => {
+  const WAITING = Object.freeze({
+    pendingRetryAt: '2026-08-12T00:10:00.000Z',
+    pendingRetryCause: 'rate_limit' as const,
+    delayedRetryCount: 2
+  });
+
+  it('renders the countdown and the Retry now control while a backoff is armed', () => {
+    const { getByTestId } = mount(
+      buildSnapshot({
+        tasks: [task('r-1', { status: 'in-flight' })],
+        inFlightTaskId: 'r-1',
+        delayedRetry: WAITING
+      })
+    );
+
+    expect(getByTestId('phase-retry-badge-speckit-plan').textContent).toContain(
+      'Waiting to retry'
+    );
+    expect(getByTestId('phase-control-retry-now').getAttribute('aria-disabled')).toBe('false');
+  });
+
+  it('shows neither when no backoff is armed', () => {
+    const { queryByTestId } = mount(
+      buildSnapshot({
+        tasks: [task('r-1', { status: 'in-flight' })],
+        inFlightTaskId: 'r-1'
+      })
+    );
+
+    expect(queryByTestId('phase-retry-badge-speckit-plan')).toBeNull();
+    expect(queryByTestId('phase-control-retry-now')).toBeNull();
+  });
+
+  it('withholds both on a surface showing a task other than the executing run', () => {
+    // The queue is counting down a retry on `live-one`; the operator is looking
+    // at `r-1`. A countdown drawn here would describe a Run this view is not
+    // about, and the button under it is addressed by queue — it would shortcut
+    // the other Run's backoff.
+    const { queryByTestId } = mount(
+      buildSnapshot({
+        tasks: [task('r-1'), task('live-one', { status: 'in-flight' })],
+        inFlightTaskId: 'live-one',
+        delayedRetry: WAITING
+      })
+    );
+
+    expect(queryByTestId('phase-retry-badge-speckit-plan')).toBeNull();
+    expect(queryByTestId('phase-control-retry-now')).toBeNull();
   });
 });

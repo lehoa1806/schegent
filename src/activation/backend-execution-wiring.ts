@@ -256,17 +256,30 @@ const spawnIdentityRecorder = createSpawnIdentityRecorder({
   now: () => Date.now(),
   log: (message) => logger.info(message)
 });
-const uncontainedGrant = readUncontainedGrant();
 // FR-R3-125 (FR-004a) — an entry that grants nothing says why, once, at the
 // wiring site. Never thrown: a malformed safety setting fails closed and leaves
 // the product usable, and an operator whose extension will not start does not
 // read the reason.
-for (const problem of uncontainedGrant.problems) logger.warn(problem.message);
+//
+// FR-R3-146 (FR-003) — deliberately still ONE resolution, and deliberately not
+// the one the factory judges against. This is a report about the setting as it
+// stood at activation; repeating it per phase would turn one misconfiguration
+// into a log entry on every run.
+for (const problem of readUncontainedGrant().problems) logger.warn(problem.message);
 const runnerRegistry = new BackendRunnerRegistry({
   // FR-R3-056 (H-01), reshaped by FR-R3-125 — the shipped posture. Unset reads as
   // the manifest default (`[]`), so a fresh install refuses every uncontained
   // backend. See docs/architecture/agent-capability-posture.md.
-  uncontainedGranted: uncontainedGrant.granted,
+  //
+  // FR-R3-146 (FR-003) — a thunk, so the registry holds the READER and not a
+  // resolved set. This registry lives for the window, so a set resolved here is a
+  // set frozen at activation, and a grant written mid-session — by an operator
+  // editing settings, or by the consent modal — would not take effect until a
+  // reload. The warning loop above resolves once ON PURPOSE, because it reports on
+  // the setting as it stood at activation; this must not. Same rule the spend
+  // bound follows at `run-safety-wiring.ts`, and the same rule
+  // `readUncontainedAllowed` below was already following for the other consumer.
+  uncontainedGranted: () => readUncontainedGrant().granted,
   // FR-R3-125 (FR-007) — so the factory can state the compounding case
   // (no OS bound AND the full ambient environment) where both facts are known.
   environmentMode: processEnvironmentPolicy.mode,

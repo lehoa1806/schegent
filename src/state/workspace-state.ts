@@ -279,6 +279,13 @@ export const KEYS = {
   // is per queue, fires on a different trigger, and carries different text —
   // one shared field would make dismissing either dismiss both.
   concurrencyNotice: 'schegent.ui.concurrencyNotice',
+  // FR-R3-146 (FR-006) — durable Git-plan consent, keyed by mutation-plan
+  // fingerprint. Its own key for the reason `connectedRuns` gives above, and
+  // deliberately not folded into `confirmSuppression`: that one holds UI action
+  // names, and merging them would let "don't ask about clearing the queue" read
+  // as consent to mutate a repository. Absent means nothing granted, which is
+  // both fail-closed and the whole forward migration this record needs.
+  gitPlanGrants: 'schegent.consent.gitPlanGrants.v1',
   // Feature FR-R3-006 (T337, T341) — the reset generation marker.
   //
   // In `KEYS` and on `RESET_EXEMPT_KEYS` below, which is not a contradiction:
@@ -335,6 +342,13 @@ export const RESET_CLEARED_KEYS: readonly string[] = Object.values(KEYS).filter(
 
 import { readConfirmSuppression, writeConfirmSuppression } from './confirm-suppression';
 export { CONFIRM_SUPPRESSION_VERSION, type ConfirmSuppressionState } from './confirm-suppression';
+import {
+  readGitPlanGrants,
+  writeGitPlanGrant,
+  type GitPlanGrant,
+  type GitPlanGrantMap
+} from './git-plan-grants';
+export { type GitPlanGrant, type GitPlanGrantMap } from './git-plan-grants';
 import { migrateConnectedRuns } from './connected-run-migrator';
 import { assertConnectedRunInvariants, type ConnectedWorkflowRun } from './connected-workflow-run';
 // Type-only: `execution-lease.ts` imports the staleness constants from `lock.ts`,
@@ -741,6 +755,8 @@ export class WorkspaceStateStore {
   private runClaimSource: RunClaimSource | null = null;
   /** One warn per queue, not one per commit: a stranded lease is not news twice. */
   private readonly unfencedQueuesWarned = new Set<string>();
+  /** FR-R3-146 — same rule for an unreadable Git-plan grant; see `getGitPlanGrants`. */
+  private readonly gitPlanGrantProblemsWarned = new Set<string>();
   // Feature 092 (T056) retired the one-shot saturation-WARN guard that used to
   // live here: the reader no longer saturates, so there is no silent coercion
   // left to warn about.
@@ -2512,6 +2528,36 @@ export class WorkspaceStateStore {
   public async setConfirmSuppression(actionKey: string, suppressed: boolean): Promise<void> {
     const next = writeConfirmSuppression(this.getConfirmSuppression(), actionKey, suppressed);
     await this.memento.update(KEYS.confirmSuppression, next);
+  }
+
+  /**
+   * FR-R3-146 (FR-006, FR-011) — the durable Git-plan grants. Narrowing, and the
+   * reasoning for its totality, are in `./git-plan-grants.ts`.
+   *
+   * Read per consultation, never captured: an operator who clears state
+   * mid-session means it. Warned once per distinct problem, not once per
+   * consultation — a drain asks on every task, and a corrupt entry is not news
+   * twenty times (the rule `unfencedQueuesWarned` already applies).
+   */
+  public getGitPlanGrants(): GitPlanGrantMap {
+    const result = readGitPlanGrants(this.memento.get<unknown>(KEYS.gitPlanGrants));
+    for (const problem of result.problems) {
+      if (this.gitPlanGrantProblemsWarned.has(problem)) continue;
+      this.gitPlanGrantProblemsWarned.add(problem);
+      this.logger?.warn(`workspace-state: ${KEYS.gitPlanGrants}: ${problem}`);
+    }
+    return result.grants;
+  }
+
+  /** Is this exact plan granted here? `hasOwnProperty`, so a stored `toString` cannot consent. */
+  public hasGitPlanGrant(fingerprint: string): boolean {
+    return Object.prototype.hasOwnProperty.call(this.getGitPlanGrants(), fingerprint);
+  }
+
+  /** Record one grant; only the modal's `'persist'` decision reaches here. */
+  public async recordGitPlanGrant(grant: GitPlanGrant): Promise<void> {
+    const next = writeGitPlanGrant(this.getGitPlanGrants(), grant);
+    await this.memento.update(KEYS.gitPlanGrants, next);
   }
 
   /**

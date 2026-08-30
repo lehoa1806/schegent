@@ -46,8 +46,11 @@
   const showPendingEdit = $derived(status === 'pending');
   const showInFlightCancel = $derived(status === 'in-flight');
   // Feature 017 — BUG-001. Canceled tasks expose a Restart affordance that
-  // resurrects the FeatureRequest to `pending` so the dequeue pump picks it
-  // up. Distinct from the failed-row Retry path.
+  // resurrects the FeatureRequest to `pending`; the host command it posts to is
+  // what then asks the queue to drain. (This comment used to say "so the dequeue
+  // pump picks it up" — there is no such pump, and believing in one is why both
+  // this path and the failed-row Retry shipped without a drain trigger.)
+  // Distinct from the failed-row Retry path.
   const showRestartCanceled = $derived(status === 'canceled');
   const disabled = $derived(!isPrimary);
   const ariaDisabled = $derived(disabled ? 'true' : 'false');

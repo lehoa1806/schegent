@@ -6,6 +6,7 @@ import {
   HISTORY_CAP_PER_QUEUE,
   KEYS,
   QueueMutationRejected,
+  RESET_CLEARED_KEYS,
   WorkspaceStateStore,
   type Memento,
   type StoreChangeKey
@@ -14,7 +15,10 @@ import { HistoryStore } from '../../../src/state/history-store';
 import { QueueManager } from '../../../src/queue/queue-manager';
 import { MAX_PENDING_TASKS_PER_QUEUE, type FeatureRequest, type QueueState } from '../../../src/queue/feature-request';
 import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
-import type { WorkflowRun, WorkspaceLock } from '../../../src/state/workflow-run';
+import type { WorkflowRun, WorkflowRunPipeline, WorkspaceLock } from '../../../src/state/workflow-run';
+import type { SanitizedLogger } from '../../../src/lib/logger';
+import { buildMutationPlan } from '../../../src/services/mutation-plan';
+import { createPersistentGitApproval } from '../../../src/activation/git-approval';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -643,5 +647,387 @@ describe('history retention is the per-queue cap and nothing else (FR-044, FR-04
 
     expect(history.listForQueue('alpha')).toHaveLength(HISTORY_CAP_PER_QUEUE);
     expect(history.listForQueue('beta')).toHaveLength(1);
+  });
+});
+
+/**
+ * FR-R3-146 (FR-006, FR-011) — the durable Git-plan grant, and the reader that
+ * has to survive whatever is in `.schegent/state.json`.
+ *
+ * The whole input table from `contracts/git-plan-grants.md` is here, not a
+ * sample of it. This record is consulted before a Git-mutating run and a reader
+ * that threw would take activation down with it; one that guessed would grant
+ * consent for a plan nobody approved. Both failures are silent until the day
+ * they are not, so every row is asserted rather than assumed.
+ */
+describe('git plan grants — a total reader that fails closed (FR-R3-146)', () => {
+  const GRANT = Object.freeze({
+    fingerprint: 'a'.repeat(64),
+    grantedAt: 1_700_000_000_000,
+    pipelineId: 'spec-driven',
+    phaseIds: Object.freeze(['speckit-implement', 'speckit-git-commit'])
+  });
+
+  let warnings: string[];
+  let logged: WorkspaceStateStore;
+  let loggedMemento: FakeMemento;
+
+  beforeEach(async () => {
+    warnings = [];
+    loggedMemento = new FakeMemento();
+    logged = new WorkspaceStateStore(loggedMemento, {
+      warn: (message: string) => warnings.push(message)
+    } as unknown as SanitizedLogger);
+    await logged.initialize();
+  });
+
+  /** Put a raw value under the key without going through the writer. */
+  const stored = async (raw: unknown): Promise<void> => {
+    await loggedMemento.update(KEYS.gitPlanGrants, raw);
+  };
+
+  it('reads an absent key as no grants, and says nothing about it', () => {
+    expect(logged.getGitPlanGrants()).toEqual({});
+    expect(logged.hasGitPlanGrant(GRANT.fingerprint)).toBe(false);
+    // A fresh workspace is not a fault. A warning here would be in every log
+    // this product ever writes, which is how the ones that matter get filtered.
+    expect(warnings).toEqual([]);
+  });
+
+  it.each([
+    ['null', null],
+    ['a string', 'schegent.consent.gitPlanGrants.v1'],
+    ['a number', 7],
+    ['an array', [{ ...GRANT }]]
+  ])('reads %s as no grants, warns once, and does not throw', async (_label, raw) => {
+    await stored(raw);
+
+    expect(logged.getGitPlanGrants()).toEqual({});
+    expect(warnings).toHaveLength(1);
+    // The warning names the key, so an operator can find the record it is about.
+    expect(warnings[0]).toContain(KEYS.gitPlanGrants);
+  });
+
+  it('reads a well-formed map as its entries, with nothing to report', async () => {
+    await stored({ [GRANT.fingerprint]: { ...GRANT } });
+
+    const grants = logged.getGitPlanGrants();
+    expect(Object.keys(grants)).toEqual([GRANT.fingerprint]);
+    expect(grants[GRANT.fingerprint]).toEqual(GRANT);
+    expect(logged.hasGitPlanGrant(GRANT.fingerprint)).toBe(true);
+    expect(warnings).toEqual([]);
+  });
+
+  it('keeps the well-formed entries of a partly-malformed map, and warns per drop', async () => {
+    const other = { ...GRANT, fingerprint: 'b'.repeat(64) };
+    await stored({
+      [GRANT.fingerprint]: { ...GRANT },
+      [other.fingerprint]: other,
+      ['c'.repeat(64)]: 'not a record at all'
+    });
+
+    const grants = logged.getGitPlanGrants();
+    // The two good entries survive: one bad neighbour must not cost a grant the
+    // operator gave, or a corrupt file becomes a re-prompt for every plan.
+    expect(Object.keys(grants).sort()).toEqual([GRANT.fingerprint, other.fingerprint].sort());
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('c'.repeat(64));
+  });
+
+  it.each([
+    ['`fingerprint` disagrees with its key', { ...GRANT, fingerprint: 'd'.repeat(64) }],
+    ['`fingerprint` is absent', { grantedAt: 1, pipelineId: 'p', phaseIds: [] }],
+    ['`grantedAt` is absent', { fingerprint: GRANT.fingerprint, pipelineId: 'p', phaseIds: [] }],
+    ['`grantedAt` is not finite', { ...GRANT, grantedAt: Number.NaN }],
+    ['`grantedAt` is a string', { ...GRANT, grantedAt: '1700000000000' }],
+    ['`pipelineId` is absent', { fingerprint: GRANT.fingerprint, grantedAt: 1, phaseIds: [] }],
+    ['`phaseIds` is not an array', { ...GRANT, phaseIds: 'speckit-implement' }],
+    ['`phaseIds` holds a non-string', { ...GRANT, phaseIds: ['ok', 3] }],
+    ['the entry is null', null]
+  ])('drops an entry where %s, and grants nothing for it', async (_label, entry) => {
+    await stored({ [GRANT.fingerprint]: entry });
+
+    expect(logged.getGitPlanGrants()).toEqual({});
+    expect(logged.hasGitPlanGrant(GRANT.fingerprint)).toBe(false);
+    expect(warnings).toHaveLength(1);
+  });
+
+  it('is authoritative on the key, not on the field, when the two disagree', async () => {
+    // Written out because it is the one rejection that could plausibly have gone
+    // the other way. The key is what a lookup matches on, so honouring the field
+    // would mean consulting fingerprint A and finding a record that says B.
+    const impostor = 'e'.repeat(64);
+    await stored({ [impostor]: { ...GRANT } });
+
+    expect(logged.hasGitPlanGrant(impostor)).toBe(false);
+    expect(logged.hasGitPlanGrant(GRANT.fingerprint)).toBe(false);
+  });
+
+  it('does not read an inherited property as a grant', async () => {
+    // `grants['toString']` is a function on Object.prototype. A truthiness check
+    // would read that as consent.
+    await stored({});
+    expect(logged.hasGitPlanGrant('toString')).toBe(false);
+  });
+
+  it('reports an unreadable record once, not once per consultation', async () => {
+    await stored('not a map');
+    for (let i = 0; i < 5; i += 1) logged.getGitPlanGrants();
+    // A drain consults this per task. Five identical lines is how the line that
+    // matters gets filtered out.
+    expect(warnings).toHaveLength(1);
+  });
+});
+
+/**
+ * FR-R3-146 (FR-008) — the write never widens.
+ *
+ * The property SC-004 rests on: consent is bound to one fingerprint, and a plan
+ * that differs by a single phase is a different plan.
+ */
+describe('git plan grants — the writer (FR-R3-146)', () => {
+  const grant = (fingerprint: string, grantedAt = 1_700_000_000_000) => ({
+    fingerprint,
+    grantedAt,
+    pipelineId: 'spec-driven',
+    phaseIds: ['speckit-implement']
+  });
+
+  it('records exactly the fingerprint approved, and nothing near it', async () => {
+    await store.recordGitPlanGrant(grant('a'.repeat(64)));
+
+    expect(store.hasGitPlanGrant('a'.repeat(64))).toBe(true);
+    // One character different: a different plan, and not granted.
+    expect(store.hasGitPlanGrant(`${'a'.repeat(63)}b`)).toBe(false);
+    expect(Object.keys(store.getGitPlanGrants())).toHaveLength(1);
+  });
+
+  it('is idempotent, refreshing grantedAt rather than duplicating or failing', async () => {
+    await store.recordGitPlanGrant(grant('a'.repeat(64), 1_700_000_000_000));
+    await store.recordGitPlanGrant(grant('a'.repeat(64), 1_700_000_999_000));
+
+    const grants = store.getGitPlanGrants();
+    expect(Object.keys(grants)).toHaveLength(1);
+    expect(grants).toMatchObject({ ['a'.repeat(64)]: { grantedAt: 1_700_000_999_000 } });
+  });
+
+  it('leaves grants for other plans exactly as they were', async () => {
+    await store.recordGitPlanGrant(grant('a'.repeat(64)));
+    await store.recordGitPlanGrant(grant('b'.repeat(64)));
+
+    expect(Object.keys(store.getGitPlanGrants()).sort()).toEqual(
+      ['a'.repeat(64), 'b'.repeat(64)].sort()
+    );
+  });
+
+  it('keeps what it stored legible without reading source (FR-012)', async () => {
+    await store.recordGitPlanGrant({
+      fingerprint: 'a'.repeat(64),
+      grantedAt: 1_700_000_000_000,
+      pipelineId: 'spec-driven',
+      phaseIds: ['speckit-implement', 'speckit-git-commit']
+    });
+
+    // What an operator opening `.schegent/state.json` sees: which pipeline, which
+    // phases, when. A bare fingerprint would be a grant nobody can audit.
+    const raw = memento.get<Record<string, unknown>>(KEYS.gitPlanGrants);
+    expect(JSON.stringify(raw)).toContain('spec-driven');
+    expect(JSON.stringify(raw)).toContain('speckit-git-commit');
+    expect(JSON.stringify(raw)).toContain('1700000000000');
+  });
+
+  it('is withdrawn by a reset, so clearing state restores the prompt', async () => {
+    await store.recordGitPlanGrant(grant('a'.repeat(64)));
+    expect(store.hasGitPlanGrant('a'.repeat(64))).toBe(true);
+
+    for (const key of RESET_CLEARED_KEYS) await memento.update(key, undefined);
+
+    expect(store.hasGitPlanGrant('a'.repeat(64))).toBe(false);
+  });
+
+  // FR-R3-146 (FR-002, SC-002, US3) — a declined prompt writes no grant.
+  //
+  // Only `recordGitPlanGrant` writes, and only the modal's `'persist'` decision
+  // calls it. So the store's half of "a decline leaves nothing behind" is that
+  // ASKING costs nothing: consulting the record must not bring it into existence,
+  // or a workspace where every prompt was dismissed would still gain a key.
+  it('writes nothing when it is only consulted', async () => {
+    expect(store.hasGitPlanGrant('a'.repeat(64))).toBe(false);
+    expect(store.getGitPlanGrants()).toEqual({});
+
+    expect(memento.get(KEYS.gitPlanGrants)).toBeUndefined();
+  });
+
+  it('leaves an existing record untouched when a later plan is declined', async () => {
+    await store.recordGitPlanGrant(grant('a'.repeat(64)));
+    const before = JSON.stringify(memento.get(KEYS.gitPlanGrants));
+
+    // The operator dismisses the modal for a different plan: nothing is recorded
+    // for it, and the grant they did give is not disturbed.
+    expect(store.hasGitPlanGrant('b'.repeat(64))).toBe(false);
+
+    expect(JSON.stringify(memento.get(KEYS.gitPlanGrants))).toBe(before);
+    expect(Object.keys(store.getGitPlanGrants())).toEqual(['a'.repeat(64)]);
+  });
+
+  // FR-R3-146 (FR-012, SC-005, US4) — the grant outlives the window, not just the Run.
+  //
+  // The legibility test above reads the record the same store just wrote. This one
+  // closes the window: a second `WorkspaceStateStore` over the same state, through
+  // `initialize()` and therefore through the forward-migration ladder, which is the
+  // path that would silently drop an unrecognised key. Fields are compared as
+  // values, not as substrings of JSON, so a reader that kept the fingerprint and
+  // discarded the audit trail fails here.
+  it('round-trips through a new window with the audit trail intact', async () => {
+    const fingerprint = 'c'.repeat(64);
+    await store.recordGitPlanGrant({
+      fingerprint,
+      grantedAt: 1_700_000_000_000,
+      pipelineId: 'spec-driven',
+      phaseIds: ['speckit-implement', 'speckit-git-commit']
+    });
+
+    const reopened = new WorkspaceStateStore(memento);
+    await reopened.initialize();
+
+    expect(reopened.hasGitPlanGrant(fingerprint)).toBe(true);
+    expect(reopened.getGitPlanGrants()).toMatchObject({
+      [fingerprint]: {
+        fingerprint,
+        grantedAt: 1_700_000_000_000,
+        pipelineId: 'spec-driven',
+        phaseIds: ['speckit-implement', 'speckit-git-commit']
+      }
+    });
+  });
+
+  // FR-R3-146 (FR-013, US4-2) — withdrawal at the granularity the grant was given.
+  //
+  // The reset test above withdraws everything. This is the withdrawal an operator
+  // actually performs: open `.schegent/state.json`, remove the one entry they no
+  // longer stand behind, keep the rest. The prompt has to come back for that plan
+  // and only that plan, and consenting again has to work — a withdrawal that
+  // permanently poisoned a fingerprint would be a worse trap than never asking.
+  it('is withdrawn one entry at a time, and only that plan asks again', async () => {
+    const withdrawn = 'a'.repeat(64);
+    const kept = 'b'.repeat(64);
+    await store.recordGitPlanGrant(grant(withdrawn));
+    await store.recordGitPlanGrant(grant(kept));
+
+    await memento.update(
+      KEYS.gitPlanGrants,
+      Object.fromEntries(
+        Object.entries(store.getGitPlanGrants()).filter(([key]) => key !== withdrawn)
+      )
+    );
+
+    expect(store.hasGitPlanGrant(withdrawn)).toBe(false);
+    expect(store.hasGitPlanGrant(kept)).toBe(true);
+
+    // And it can be given again: withdrawal restores the question, not a refusal.
+    await store.recordGitPlanGrant(grant(withdrawn));
+    expect(store.hasGitPlanGrant(withdrawn)).toBe(true);
+  });
+});
+
+/**
+ * FR-R3-146 (FR-010, SC-006, US5) — the upgrade.
+ *
+ * A workspace that has been running Schegent for months has queues, Runs and
+ * history in `.schegent/state.json` and no consent key at all, because the code
+ * that wrote that file did not have one. This feature adds exactly one key and no
+ * migration rung, on the `connectedRuns` precedent: a new key's ABSENCE already
+ * means "nothing granted", and a rung that wrote `{}` would be a state change
+ * dressed as a no-op.
+ *
+ * The fixture is built through the public API rather than by hand-writing raw
+ * memento values, because that is what makes it a faithful pre-feature file: the
+ * feature touched no other key, so state written without ever calling
+ * `recordGitPlanGrant` IS what the previous build produced. The test asserts that
+ * premise instead of assuming it.
+ */
+describe('git plan grants — state written before the feature existed (FR-R3-146)', () => {
+  const GIT_PIPELINE: WorkflowRunPipeline = Object.freeze({
+    id: 'spec-driven',
+    name: 'Spec Driven',
+    phases: Object.freeze([
+      Object.freeze({ id: 'speckit-specify', name: 'Specify', sideEffects: 'workspace' as const }),
+      Object.freeze({ id: 'speckit-implement', name: 'Implement', sideEffects: 'git' as const })
+    ])
+  });
+
+  let warnings: string[];
+  let upgraded: WorkspaceStateStore;
+
+  /** A workspace with real work in it and no consent key. */
+  beforeEach(async () => {
+    const before = new WorkspaceStateStore(memento);
+    await before.initialize();
+    await before.insertPendingRequest(pendingFeature('legacy-task'));
+    await before.setRun(DEFAULT_QUEUE_ID, sampleRun(), unfencedCommit('test-fixture'));
+    await new HistoryStore(before).append(DEFAULT_QUEUE_ID, {
+      runId: 'run-1',
+      featureId: 'feat-1',
+      descriptionPreview: 'desc 1',
+      terminalStatus: 'completed' as const,
+      startedAt: new Date(1_700_000_000_000).toISOString(),
+      completedAt: new Date(1_700_000_000_500).toISOString(),
+      durationMs: 500,
+      lastErrorSummary: null,
+      auditLogPointer: 'runId:run-1',
+      catalogVersion: { kind: 'pipeline' as const, id: 'spec-driven', versionId: 'v1' }
+    });
+
+    // The premise: nothing under this file's own key. If a future change starts
+    // writing it unprompted, this fixture stops being a pre-feature one and the
+    // rest of the describe stops meaning what it says.
+    expect(memento.get(KEYS.gitPlanGrants)).toBeUndefined();
+
+    warnings = [];
+    upgraded = new WorkspaceStateStore(memento, {
+      warn: (message: string) => warnings.push(message)
+    } as unknown as SanitizedLogger);
+    await upgraded.initialize();
+  });
+
+  it('loads without loss and without a word about the key it does not have', () => {
+    expect(upgraded.getGitPlanGrants()).toEqual({});
+    // An upgrade is not a fault. A warning here would appear in every log written
+    // by every workspace that upgraded, which is how the ones that matter are lost.
+    expect(warnings).toEqual([]);
+
+    expect(upgraded.getQueue(DEFAULT_QUEUE_ID).requests.map((r) => r.id)).toEqual(['legacy-task']);
+    expect(upgraded.getRun(DEFAULT_QUEUE_ID)?.id).toBe('run-1');
+    expect(new HistoryStore(upgraded).listForQueue(DEFAULT_QUEUE_ID)).toHaveLength(1);
+
+    // Reading it did not create it: an upgrade that never grants anything leaves
+    // the file exactly as it found it.
+    expect(memento.get(KEYS.gitPlanGrants)).toBeUndefined();
+  });
+
+  it('never reads absence as a grant, so a Git-capable plan still asks', async () => {
+    // A real plan, not a placeholder fingerprint: the value the consultation
+    // actually carries is the sha256 of the pipeline, and "absent means empty" has
+    // to hold for that value and not merely for a string of a's.
+    const plan = buildMutationPlan(GIT_PIPELINE);
+    expect(plan.gitCapablePhaseIds).toEqual(['speckit-implement']);
+    expect(upgraded.hasGitPlanGrant(plan.fingerprint)).toBe(false);
+
+    // And end to end: the caller reaches the modal rather than skipping it. This
+    // is the property SC-006 rests on — an upgrade must not silently inherit
+    // consent nobody in this workspace ever gave.
+    const asked: string[] = [];
+    const approve = createPersistentGitApproval({
+      request: async (asking) => {
+        asked.push(asking.fingerprint);
+        return 'denied';
+      },
+      isGranted: (fingerprint) => upgraded.hasGitPlanGrant(fingerprint),
+      persist: () => Promise.reject(new Error('must not be reached')),
+      logger: { info: () => {}, warn: () => {} } as unknown as SanitizedLogger
+    });
+
+    expect(await approve(plan)).toBe(false);
+    expect(asked).toEqual([plan.fingerprint]);
   });
 });

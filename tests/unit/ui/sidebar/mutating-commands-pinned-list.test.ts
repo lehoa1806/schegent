@@ -23,15 +23,11 @@ import {
   CMD_MOVE_QUEUE_ITEM_UP,
   CMD_MOVE_QUEUE_ITEM_DOWN,
   CMD_CLEAR_COMPLETED,
-  CMD_CLEAR_FAILED,
   CMD_PAUSE_QUEUE,
   CMD_RESUME_QUEUE,
   CMD_RERUN_FROM_HISTORY,
-  CMD_RETRY_ACTIVE_RUN,
   CMD_START,
   CMD_CANCEL,
-  CMD_RESUME,
-  CMD_RESET,
   CMD_SAVE_MODELS,
   CMD_SAVE_GENERAL_SETTINGS,
   CMD_RETRY_PHASE_NOW,
@@ -77,15 +73,19 @@ const PINNED_MUTATING_COMMANDS: ReadonlyArray<string> = [
   CMD_MOVE_QUEUE_ITEM_UP,
   CMD_MOVE_QUEUE_ITEM_DOWN,
   CMD_CLEAR_COMPLETED,
-  CMD_CLEAR_FAILED,
   CMD_PAUSE_QUEUE,
   CMD_RESUME_QUEUE,
   CMD_RERUN_FROM_HISTORY,
-  CMD_RETRY_ACTIVE_RUN,
   CMD_START,
   CMD_CANCEL,
-  CMD_RESUME,
-  CMD_RESET,
+  // The lifecycle round-check of 2026-08-30 (finding D) retired four pins from
+  // this block: `CMD_CLEAR_FAILED`, `CMD_RETRY_ACTIVE_RUN`, `CMD_RESUME`, and
+  // `CMD_RESET`. All four were registered, gated, and reachable from no webview
+  // surface after FR-R3-140 deleted `ControlPanel.svelte`. Removing them from
+  // the gate and from this mirror is the deliberate removal the second
+  // complement assertion below demands, not an accidental demotion: the
+  // capabilities survive as palette commands, which the primacy guard covers
+  // separately. The count moved 46 -> 42 for exactly that reason.
   CMD_RETRY_PHASE_NOW,
   // Feature 056 Track 1 (FR-001..FR-005). Catalog and general-settings
   // saves write VS Code configuration / workspace state.
@@ -229,20 +229,20 @@ describe('Feature 012 T050 — MUTATING_COMMANDS pinned-list regression', () => 
   // workspace for no safety gain. Import commits through the existing
   // CMD_PUBLISH_PACKAGE, which IS gated, so the exchange feature adds no
   // mutating command.
-  it('does NOT gate CMD_EXPORT_PROCESS_YAML as mutating, and leaves the pinned list at 46', () => {
+  it('does NOT gate CMD_EXPORT_PROCESS_YAML as mutating, and leaves the pinned list at 42', () => {
     expect(isMutatingCommand(CMD_EXPORT_PROCESS_YAML)).toBe(false);
     expect(PINNED_MUTATING_COMMANDS).not.toContain(CMD_EXPORT_PROCESS_YAML);
-    expect(PINNED_MUTATING_COMMANDS).toHaveLength(46);
+    expect(PINNED_MUTATING_COMMANDS).toHaveLength(42);
   });
 
   // Feature 084 T032 (FR-031, FR-032). Preflight reads the operator's chosen
   // document once and returns a plan. It writes no configuration and moves no
   // layer revision, so it is not mutating either; the write it precedes goes
   // through CMD_PUBLISH_PACKAGE, which is gated.
-  it('does NOT gate CMD_PREFLIGHT_PROCESS_YAML as mutating, and leaves the pinned list at 46', () => {
+  it('does NOT gate CMD_PREFLIGHT_PROCESS_YAML as mutating, and leaves the pinned list at 42', () => {
     expect(isMutatingCommand(CMD_PREFLIGHT_PROCESS_YAML)).toBe(false);
     expect(PINNED_MUTATING_COMMANDS).not.toContain(CMD_PREFLIGHT_PROCESS_YAML);
-    expect(PINNED_MUTATING_COMMANDS).toHaveLength(46);
+    expect(PINNED_MUTATING_COMMANDS).toHaveLength(42);
   });
 });
 

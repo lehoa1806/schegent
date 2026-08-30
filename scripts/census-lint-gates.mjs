@@ -66,13 +66,29 @@ export function invariantOf(relPath, root = LINT_ROOT) {
  * carry. It rewrote 151 rows faithfully and threw away the only part a human
  * wrote. Preserving rows but not reasoning is the worse half to keep.
  */
-export function readCensusProse(path = CENSUS_PATH) {
-  if (!existsSync(path)) return '';
-  const body = readFileSync(path, 'utf8');
+/**
+ * The hand-written prose in an already-rendered census, as `render` would take it
+ * back.
+ *
+ * SECOND BUG FOUND BY USING IT (2026-08-30, lifecycle round-check T1616): this
+ * read was not the inverse of the write. `render` emits
+ * `<!-- census:prose -->\n${prose}`, and this captured the slice *including* that
+ * newline — so re-rendering wrote it twice and every regeneration added one blank
+ * line. Two regenerations in one sitting is what exposed it; a single one looks
+ * like an ordinary diff. Exactly one leading newline is stripped, not
+ * `trimStart()`, because a prose block legitimately opens with a blank line and
+ * trimming would make the read lossy in the other direction.
+ */
+export function censusProseOf(body) {
   const start = body.indexOf(PROSE_START);
   const end = body.indexOf(TABLE_HEADING);
   if (start === -1 || end === -1 || end < start) return '';
-  return body.slice(start + PROSE_START.length, end);
+  return body.slice(start + PROSE_START.length, end).replace(/^\n/, '');
+}
+
+export function readCensusProse(path = CENSUS_PATH) {
+  if (!existsSync(path)) return '';
+  return censusProseOf(readFileSync(path, 'utf8'));
 }
 
 /** Rows already written, keyed by gate path, so hand-written columns survive. */
@@ -102,7 +118,7 @@ export function reconcile({ files, rows }) {
   };
 }
 
-function render(files, rows, prose) {
+export function render(files, rows, prose) {
   const verdictCount = (v) =>
     files.filter((f) => (rows.get(f)?.verdict ?? 'unique') === v).length;
 

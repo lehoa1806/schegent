@@ -58,6 +58,10 @@ const LIFECYCLE_ALLOWLIST: ReadonlySet<string> = new Set([
   // the singleton, so the derivation was not a per-queue one and this file was
   // covered only by the broader status guard.
   'src/queue/queue-manager.ts',
+  // The same per-queue derivation, for the transitions that gain or lose work
+  // rather than the ones that resume a queue. Deliberately confined to the two
+  // unheld lifecycles, so it is not a second `idle-pending` enforcement site.
+  'src/queue/queue-lifecycle-refresh.ts',
   // Feature 092 — composes one `QueueRuntime` per registry entry, so a queue's
   // lifecycle crosses to the webview attached to the queue that owns it rather
   // than as a workspace-wide singular (FR-048, FR-051).

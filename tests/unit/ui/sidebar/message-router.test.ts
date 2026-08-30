@@ -10,14 +10,11 @@ import {
   CMD_CANCEL,
   CMD_OPEN_AUDIT_LOG,
   CMD_REMOVE_QUEUE_ITEM,
-  CMD_RESET,
-  CMD_RESUME,
   CMD_START,
   CMD_RETRY_QUEUE_ITEM,
   CMD_MOVE_QUEUE_ITEM_UP,
   CMD_MOVE_QUEUE_ITEM_DOWN,
   CMD_CLEAR_COMPLETED,
-  CMD_CLEAR_FAILED,
   CMD_PAUSE_QUEUE,
   CMD_RESUME_QUEUE,
   CMD_PAUSE_PHASE,
@@ -58,8 +55,6 @@ class FakeQueueOps {
   moveDownResult: { ok: boolean; reason?: string } = { ok: true };
   clearCompletedCalls: number = 0;
   clearCompletedResult: { removed: number } = { removed: 0 };
-  clearFailedCalls: number = 0;
-  clearFailedResult: { removed: number } = { removed: 0 };
   setQueuePausedStateCalls: Array<{
     paused: boolean;
     queueId: string | undefined;
@@ -100,10 +95,6 @@ class FakeQueueOps {
   async clearCompleted(): Promise<{ removed: number }> {
     this.clearCompletedCalls++;
     return this.clearCompletedResult;
-  }
-  async clearFailed(): Promise<{ removed: number }> {
-    this.clearFailedCalls++;
-    return this.clearFailedResult;
   }
   async setQueuePausedState(
     paused: boolean,
@@ -375,17 +366,12 @@ describe('MessageRouter.dispatch', () => {
     expect(acks[0].msg.status).toBe('accepted');
   });
 
-  it('routes CMD_RESUME to schegent.resume', async () => {
-    await dispatch(router, { type: CMD_RESUME, correlationId: 'c3' }, acks);
-    expect(executeCommand).toHaveBeenCalledWith('schegent.resume');
-    expect(acks[0].msg.status).toBe('accepted');
-  });
-
-  it('routes CMD_RESET to schegent.reset', async () => {
-    await dispatch(router, { type: CMD_RESET, correlationId: 'c4', payload: { confirmed: true } }, acks);
-    expect(executeCommand).toHaveBeenCalledWith('schegent.reset');
-    expect(acks[0].msg.status).toBe('accepted');
-  });
+  // `CMD_RESUME` and `CMD_RESET` were routed here until the lifecycle
+  // round-check of 2026-08-30 (finding D) deleted them. Both were `exec` shims
+  // onto `schegent.resume` / `schegent.reset`, and after FR-R3-140 deleted
+  // `ControlPanel.svelte` — their only sender — the routes these two tests
+  // covered were routes only these two tests took. The palette commands they
+  // forwarded to are untouched and still registered.
 
   it('routes CMD_OPEN_AUDIT_LOG to schegent.showAuditLog', async () => {
     await dispatch(router, { type: CMD_OPEN_AUDIT_LOG, correlationId: 'c5' }, acks);
@@ -471,20 +457,29 @@ describe('MessageRouter.dispatch', () => {
   });
 
   describe('Queue mutating commands (T042)', () => {
-    it('CMD_RETRY_QUEUE_ITEM calls queueOps.retry and acks accepted on ok', async () => {
-      queueOps.retryResult = { ok: true };
+    // These three used to drive `queueOps.retry` directly, because the handler
+    // called it directly. That fork is the defect: returning the row to
+    // `pending` is not asking the queue to drain, and only the host command
+    // registration fires the drain, so the sidebar's Retry left the Task sitting
+    // pending with no Run and no log. The handler now delegates — the shape
+    // `cmd-restart-canceled-task` always had — so what these pin is the
+    // delegation and the ack it produces.
+    it('CMD_RETRY_QUEUE_ITEM delegates to schegent.retryQueuedItem and acks accepted on ok', async () => {
+      executeCommand.mockResolvedValueOnce({ ok: true, queueId: 'default' });
       await dispatch(
         router,
         { type: CMD_RETRY_QUEUE_ITEM, correlationId: 'r1', payload: { id: 'q-1' } },
         acks
       );
-      expect(queueOps.retryCalls).toEqual(['q-1']);
+      expect(executeCommand).toHaveBeenCalledWith('schegent.retryQueuedItem', { id: 'q-1' });
+      // The fork is gone: the router no longer reaches past the command.
+      expect(queueOps.retryCalls).toEqual([]);
       expect(acks[0].msg.status).toBe('accepted');
     });
 
-    it('CMD_RETRY_QUEUE_ITEM rejects with reason and notifies on illegal-state', async () => {
+    it('CMD_RETRY_QUEUE_ITEM rejects with reason on illegal-state', async () => {
       const built = makeRouter();
-      built.queueOps.retryResult = { ok: false, reason: 'illegal-state' };
+      built.executeCommand.mockResolvedValueOnce({ ok: false, reason: 'illegal-state' });
       const localAcks: CapturedAck[] = [];
       await dispatch(
         built.router,
@@ -493,7 +488,10 @@ describe('MessageRouter.dispatch', () => {
       );
       expect(localAcks[0].msg.status).toBe('rejected');
       expect(localAcks[0].msg.reason).toBe('illegal-state');
-      expect(built.warnings.length).toBeGreaterThan(0);
+      // The operator-facing warning moved with the mutation: `runRetryQueuedItem`
+      // raises it through the host notifier before returning `{ ok: false }`,
+      // which is outside this router's scope. `queue-mutations.test.ts` is where
+      // that notification is asserted now.
     });
 
     it('CMD_MOVE_QUEUE_ITEM_UP calls queueOps.moveUp', async () => {
@@ -537,12 +535,11 @@ describe('MessageRouter.dispatch', () => {
       expect(acks[0].msg.status).toBe('accepted');
     });
 
-    it('CMD_CLEAR_FAILED calls queueOps.clearFailed', async () => {
-      queueOps.clearFailedResult = { removed: 2 };
-      await dispatch(router, { type: CMD_CLEAR_FAILED, correlationId: 'cf1' }, acks);
-      expect(queueOps.clearFailedCalls).toBe(1);
-      expect(acks[0].msg.status).toBe('accepted');
-    });
+    // `CMD_CLEAR_FAILED` sat here until finding D deleted it — the one member of
+    // that batch that was not an `exec` shim, so its removal also retired
+    // `QueueOps.clearFailed`. `schegent.clearFailed` still runs `runClearFailed`
+    // against `QueueManager`, which `tests/integration/queue-mutations.test.ts`
+    // now drives directly.
 
     it('CMD_PAUSE_QUEUE calls queueOps.setQueuePausedState(true)', async () => {
       await dispatch(router, { type: CMD_PAUSE_QUEUE, correlationId: 'pq1' }, acks);
@@ -768,7 +765,7 @@ describe('MessageRouter.dispatch', () => {
   describe('No thrown exceptions on illegal state (T042 / FR-032)', () => {
     it('CMD_RETRY_QUEUE_ITEM never throws on not-found, returns rejected ack', async () => {
       const built = makeRouter();
-      built.queueOps.retryResult = { ok: false, reason: 'not-found' };
+      built.executeCommand.mockResolvedValueOnce({ ok: false, reason: 'not-found' });
       const localAcks: CapturedAck[] = [];
       await expect(
         dispatch(

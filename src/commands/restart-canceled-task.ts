@@ -1,4 +1,5 @@
 import type { QueueManager } from '../queue/queue-manager';
+import { withRefreshedLifecycle } from '../queue/queue-lifecycle-refresh';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { Notifier } from '../ui/notifications';
 import type { SanitizedLogger } from '../lib/logger';
@@ -7,11 +8,24 @@ import type { FeatureRequest } from '../queue/feature-request';
 import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
 import { MAX_PENDING_TASKS_PER_QUEUE } from '../queue/feature-request';
 
-export type RestartCanceledResult = { ok: true } | { ok: false; reason: string };
+export type RestartCanceledResult =
+  | { ok: true; queueId: string }
+  | { ok: false; reason: string };
 
 /**
  * Feature 017 — BUG-001. Transition a `canceled` FeatureRequest back to
- * `pending` so the queue dequeue pump picks it up on the next tick.
+ * `pending`, and report the queue it landed on so the caller can ask that queue
+ * to drain.
+ *
+ * This used to say the row would be picked up "by the queue dequeue pump on the
+ * next tick". **There is no dequeue pump.** `AutoDrainCoordinator` is
+ * edge-triggered — a drain happens only where some call site asks for one — and
+ * the only periodic sweep in the subsystem, `QueueScheduleWatchdog.tick()`,
+ * filters to queues with an elapsed `scheduledStartAt`, which an ordinary
+ * restarted Task never has. So the restarted row sat `pending` with nothing to
+ * start it. Returning `queueId` is what lets the registration in `ui-wiring`
+ * supply the trigger, the same way `schegent.enqueue` already does for the same
+ * state transition.
  *
  * Invariants:
  *  - Reject `not-found` when no FeatureRequest matches `taskId`.
@@ -81,13 +95,20 @@ export async function runRestartCanceledTask(ctx: {
         pausedReason: null,
         pauseCause: null
       };
+      const nextQueue = {
+        ...queue,
+        requests: queue.requests.map((request) =>
+          request.id === taskId ? next : request
+        )
+      };
       return {
-        queue: {
-          ...queue,
-          requests: queue.requests.map((request) =>
-            request.id === taskId ? next : request
-          )
-        },
+        // The queue just gained pending work, so its unheld lifecycle is
+        // refreshed to match. A *held* queue (`operator-paused`,
+        // `idle-pending`) comes back untouched, so a restart never releases a
+        // hold the operator or a schedule put there — see
+        // `queue-lifecycle-refresh.ts` for why that distinction is the whole
+        // point of the helper.
+        queue: withRefreshedLifecycle(nextQueue),
         result: next
       };
     }, targetQueueId, ctx.store.runCommitClaim(targetQueueId));
@@ -107,7 +128,7 @@ export async function runRestartCanceledTask(ctx: {
     });
 
     ctx.notifier.info('Schegent: task restarted.');
-    return { ok: true };
+    return { ok: true, queueId: targetQueueId };
   } catch (err) {
     const message = (err as Error).message ?? 'unknown error';
     if (message === 'task-cap-reached') return { ok: false, reason: message };
