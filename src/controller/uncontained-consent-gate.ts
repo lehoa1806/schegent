@@ -138,3 +138,32 @@ export async function recoverOrReport(
   if (next.action === 'report') return report(next.err);
   await retry().catch(report);
 }
+
+/**
+ * A drive with the gate above it — the shape EVERY admission must use.
+ *
+ * `resolveRunner` throws the containment refusal during the drive, not at
+ * admission, so which admission started the run makes no difference to where the
+ * refusal appears. This exists as one named thing because that symmetry was
+ * stated and then not held: the gate was wired onto the interactive start and
+ * left off the resume path, and every case that proved the gate went through the
+ * former.
+ *
+ * The consequence was not a late prompt — resume never prompted at all. The
+ * rejection escaped the admission's `completed` promise bare, and the auto-drain's
+ * `detach()` caught it and logged `run on queue <id> ended abnormally`, the
+ * generic warn path: no modal, no re-drive, and no `uncontained-backend-refused`
+ * recorded on the run. The drain resumes in-flight work, so the one path the
+ * consent gate did not cover was the unattended one the product exists to run.
+ * Recorded in `docs/features/bugs/`, found from a live host log.
+ *
+ * Attach it synchronously, so a rejection is never briefly unhandled while the
+ * caller decides whether to await.
+ */
+export function driveUnderConsent(
+  gate: UncontainedConsentGate,
+  drive: () => Promise<void>,
+  report: (failure: unknown) => Promise<void>
+): Promise<void> {
+  return drive().catch((err) => recoverOrReport(err, gate, drive, report));
+}

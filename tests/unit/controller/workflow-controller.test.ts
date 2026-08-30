@@ -666,6 +666,95 @@ describe('SchegentWorkflowController.startNew', () => {
       expect(c.requestUncontainedConsent).not.toHaveBeenCalled();
       expect(store.getRun(DEFAULT_QUEUE_ID)!.status).toBe('completed');
     });
+
+    /**
+     * FR-002 says "when A RUN is refused", and a resumed run is a run. Every case
+     * above drives through `startNew`, and the gate was wired onto that admission
+     * only — so the refusal a RESUMED run raises went straight past the gate and
+     * out of `admitResume`'s `completed` promise, to be caught by whatever the
+     * caller happened to have. For the auto-drain that is `detach()`, which logs
+     * `run on queue default ended abnormally: <message>` and stops.
+     *
+     * Found in `docs/audits/syslog-triage-2026-08-30.md` from a live syslog: a
+     * task refused twice on the drain path, one truncated ERROR, no modal, and no
+     * `uncontained-backend-refused` anywhere in 5,068 lines. The drain resumes
+     * in-flight work, so this was the unattended path the product exists to run.
+     */
+    async function pauseRunForResume(featureId: string): Promise<void> {
+      await store.setRun(DEFAULT_QUEUE_ID, {
+        id: 'run-resume-consent',
+        featureId,
+        featureDir: 'specs/001-existing',
+        // Required: `resumeExistingOnQueue` refuses a run with no pipeline snapshot,
+        // and would return NOT_RESUMED before reaching the drive this pins.
+        pipeline: pre074Snapshot(SPECKIT_PIPELINE_ID),
+        status: 'paused',
+        currentPhase: 'speckit-plan',
+        currentIteration: 1,
+        startedAt: 1_700_000_000_000,
+        lastTransitionAt: 1_700_000_000_000,
+        phasesCompleted: [],
+        lastError: null,
+        delayedRetryCount: 0,
+        pendingRetryAt: null,
+        pendingRetryCause: null,
+        phaseOverrides: [],
+        // `verify-paused` specifically, and it is load-bearing. Of the four
+        // manual-pause causes only this one is cleared on resume
+        // (`clearedPauseFieldsOnResume`); `operator-paused` and
+        // `queue-paused-mid-run` MUST survive, and `decideAfterPhase` re-reads
+        // `manualPauseAt` at every phase boundary, so a Run carrying either
+        // drives exactly one phase and pauses again. That would make the
+        // end-state assertion below a statement about the pause-cause matrix
+        // rather than about the gate. This is also the shape the drain actually
+        // meets: `RunDriver`'s `pause-verify` branch is what stamps it.
+        manualPauseAt: 1_700_000_100_000,
+        manualPauseCause: 'verify-paused',
+        phaseBreakpoints: [],
+        resumeTargetPhaseId: null
+      },
+        unfencedCommit('test-fixture')
+      );
+    }
+
+    it('asks on a resumed run too, and retries it on the grant', async () => {
+      const c = withConsent({ decision: 'granted' });
+      const feature = await queue.enqueue('resumed feature');
+      await pauseRunForResume(feature.id);
+      runSpy.mockRejectedValueOnce(refusal());
+      runSpy.mockImplementation(async () => makeOutput());
+
+      const admission = await c.controller.admitResume(DEFAULT_QUEUE_ID);
+      expect(admission.resumed).toBe(true);
+      await admission.completed;
+
+      expect(c.requestUncontainedConsent).toHaveBeenCalledTimes(1);
+      expect(c.requestUncontainedConsent.mock.lastCall?.[0].kind).toBe('claude');
+      expect(store.getRun(DEFAULT_QUEUE_ID)!.status).toBe('completed');
+    });
+
+    it('records a declined resume as a policy refusal, not an abnormal ending', async () => {
+      // The half the syslog showed: without the gate the refusal escapes
+      // `completed` as a bare rejection and the operator gets auto-drain's
+      // "ended abnormally", with the remedy cut off. It must be recorded on the
+      // run, in full, the same way a declined `startNew` is.
+      const c = withConsent({ decision: 'denied' });
+      const feature = await queue.enqueue('resumed feature');
+      await pauseRunForResume(feature.id);
+      runSpy.mockRejectedValueOnce(refusal());
+      runSpy.mockImplementation(async () => makeOutput());
+
+      const admission = await c.controller.admitResume(DEFAULT_QUEUE_ID);
+      await expect(admission.completed).resolves.toBeUndefined();
+
+      expect(c.requestUncontainedConsent).toHaveBeenCalledTimes(1);
+      expect(runSpy).toHaveBeenCalledTimes(1);
+      const run = store.getRun(DEFAULT_QUEUE_ID)!;
+      expect(run.status).toBe('failed');
+      expect(run.lastError!.code).toBe('uncontained-backend-refused');
+      expect(run.lastError!.message).toContain('schegent.backend.uncontainedBackends');
+      expect(run.lastError!.message.length).toBeGreaterThan(240);
+    });
   });
 
   it('cancels mid-run when cancelActive is invoked', async () => {

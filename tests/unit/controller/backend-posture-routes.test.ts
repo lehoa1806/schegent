@@ -206,13 +206,29 @@ describe('backend posture — every route reaches the funnel (FR-R3-064)', () =>
     //
     // A retry that built its own runner, or drove by another path, would be exactly
     // the fifth route this file exists to forbid.
-    const callees = calleesOf(CONTROLLER, 'admitNew');
-    expect(callees.has('recoverOrReport')).toBe(true);
-    expect(callees.has('driveSession')).toBe(true);
+    //
+    // Asserted for BOTH admissions, which it was not until 2026-08-31. This test
+    // named `admitNew` alone and passed for as long as `admitResume` had no gate on
+    // its drive at all — the refusal a RESUMED run raised escaped the admission's
+    // `completed` promise bare and reached the operator as auto-drain's "ended
+    // abnormally". A property held by one of two admissions is not a property, and
+    // pinning it on one of them is how that stayed invisible.
+    for (const entry of ['admitNew', 'admitResume']) {
+      expect(
+        reaches(CONTROLLER, entry, 'guardedDrive'),
+        `${entry} does not reach guardedDrive. Every admission drives with the consent gate ` +
+          'above it; an admission that calls driveSession directly is a refusal the operator ' +
+          'never gets asked about.'
+      ).toBe(true);
+      expect(reaches(CONTROLLER, entry, 'driveSession')).toBe(true);
+    }
+    expect(calleesOf(CONTROLLER, 'guardedDrive').has('driveSession')).toBe(true);
 
     const controller = read(CONTROLLER);
     expect(controller).toContain('const drive = (): Promise<void> => this.driveSession(');
-    expect(controller).toContain('recoverOrReport(err, this.consent, drive,');
+    expect(controller).toContain('driveUnderConsent(this.consent, drive, report)');
+    // One seam, so there is nowhere for a third admission to drive unguarded.
+    expect(controller.split('this.driveSession(').length - 1).toBe(1);
 
     for (const file of [
       CONTROLLER,
