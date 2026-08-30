@@ -6,8 +6,9 @@
 //   mechanism by which BUG-010 slipped past the original T077 work.
 //   The original T077 lint pin verified the TYPE DECLARATION of
 //   `QueueProjection.orderedItems` (a required `readonly QueueItem[]`),
-//   but did not detect that the snapshot-construction site at
-//   `repo/src/ui/sidebar/state-projector.ts:812` used `as QueueProjection`
+//   but did not detect that the snapshot-construction site in
+//   `src/ui/sidebar/state-projector.ts` — then past line 800, since reduced —
+//   used `as QueueProjection`
 //   to bypass field-completeness checking. The cast quietly produced a
 //   `QueueProjection`-typed value at compile time that lacked the
 //   required `orderedItems` field at runtime; the webview's `?? []`

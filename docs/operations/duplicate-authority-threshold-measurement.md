@@ -153,7 +153,8 @@ every citation in `docs/audits/**` and `docs/features/round_3/**` was a backtick
 link, and therefore that deletion broke nothing. That was **wrong**: it sampled the four audit files and
 three repository documents, not the whole planning tree. `npm run docs:check` then found two genuine
 markdown links, both in round-3 planning documents —
-`00_backlog_verification_gaps_plan.md:90` and the source item `66_FR-R3-066…md:6`.
+`00_backlog_verification_gaps_plan.md` (consolidated into `00_INDEX.md` by `2c0d0bc`), at
+line 90, and the source item `66_FR-R3-066…md:6`.
 
 Both were resolved the way this repository's own link checker prescribes for a target that is gone for
 good: the link became inline code carrying the reason (`` `feature-reference.md` (deleted by `FR-R3-066`;
