@@ -3,6 +3,10 @@ import { QueueManager } from '../../../src/queue/queue-manager';
 import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import { createQueue } from '../../../src/queue/queue-registry';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
+import {
+  appendAttempt,
+  createConnectedRun
+} from '../../../src/state/connected-workflow-run';
 import type { Memento } from '../../../src/state/workspace-state';
 
 class FakeMemento implements Memento {
@@ -17,11 +21,12 @@ class FakeMemento implements Memento {
   }
 }
 
+let memento: FakeMemento;
 let store: WorkspaceStateStore;
 let queue: QueueManager;
 
 beforeEach(async () => {
-  const memento = new FakeMemento();
+  memento = new FakeMemento();
   store = new WorkspaceStateStore(memento);
   await store.initialize();
   queue = new QueueManager(store);
@@ -252,6 +257,88 @@ describe('QueueManager.removeTask (BUG-002 T118)', () => {
   // constrained to exactly one entry (`id === 'default'`) and the
   // multi-queue management surface is gone, so the audit path always
   // resolves `queueId: 'default'` and there is no second queue to test.
+});
+
+describe('QueueManager.moveTask (Feature 092 T028, FR-017)', () => {
+  const OTHER_QUEUE_ID = '5ec04d00-2222-4333-8444-555555555555';
+
+  async function addOtherQueue(): Promise<void> {
+    await store.setQueueRegistry(
+      createQueue(store.getQueueRegistry(), {
+        id: OTHER_QUEUE_ID,
+        name: 'Other',
+        now: 1_700_000_000_000
+      })
+    );
+  }
+
+  it('re-files a pending task onto another queue', async () => {
+    await addOtherQueue();
+    const task = await queue.enqueue('re-file me');
+
+    const result = await queue.moveTask(task.id, OTHER_QUEUE_ID);
+
+    expect(result).toMatchObject({ ok: true, taskId: task.id, queueId: OTHER_QUEUE_ID });
+    expect(store.getQueue(OTHER_QUEUE_ID).requests.map((request) => request.id)).toEqual([task.id]);
+    expect(store.getQueue(DEFAULT_QUEUE_ID).requests).toEqual([]);
+  });
+
+  it('refuses to move a task that a connected Workflow run owns (FR-042)', async () => {
+    // The one refusal this layer owns rather than delegating: a child Task's
+    // queue is fixed by its aggregate's binding, so moving it alone would put
+    // the child on a queue the aggregate is not bound to.
+    await addOtherQueue();
+    const task = await queue.enqueue('child of a workflow');
+    // Built and written through the production constructors, so the record has
+    // to satisfy the same invariants a real aggregate does.
+    const written = await store.compareAndSetConnectedRun(
+      appendAttempt(
+        createConnectedRun({
+          connectedRunId: 'connected-1',
+          workflowId: 'wf-1',
+          graph: {
+            workflowId: 'wf-1',
+            name: 'Release',
+            version: 1,
+            nodes: [{ nodeId: 'n-a', pipelineId: 'p-a' }],
+            connections: [],
+            startNodeIds: ['n-a']
+          },
+          pipelines: { 'p-a': { id: 'p-a', name: 'A', phases: [{ id: 'done', name: 'Done' }] } },
+          startedAt: 1_700_000_000_000
+        }),
+        'n-a',
+        { queueItemId: task.id, startedAt: 1_700_000_000_001 }
+      ),
+      0
+    );
+    // Guard the fixture: a record the migrator drops would make the refusal
+    // below pass for the wrong reason.
+    expect(written.outcome).toBe('written');
+    expect(Object.keys(store.getConnectedRuns())).toEqual(['connected-1']);
+
+    const result = await queue.moveTask(task.id, OTHER_QUEUE_ID);
+
+    expect(result).toMatchObject({ ok: false, reason: 'task-bound-to-connected-run' });
+    expect(store.getQueue(DEFAULT_QUEUE_ID).requests.map((request) => request.id)).toEqual([
+      task.id
+    ]);
+  });
+
+  it('reports the store’s refusals as reasons rather than throwing', async () => {
+    await addOtherQueue();
+    const running = await queue.enqueue('already started');
+    await queue.markInFlight(running.id, 'run-1');
+
+    await expect(queue.moveTask(running.id, OTHER_QUEUE_ID)).resolves.toMatchObject({
+      ok: false,
+      reason: 'task-not-in-pending-state'
+    });
+    await expect(queue.moveTask('no-such-task', OTHER_QUEUE_ID)).resolves.toMatchObject({
+      ok: false,
+      reason: 'unknown-task-id'
+    });
+  });
 });
 
 describe('QueueManager.markInFlight extended fields', () => {

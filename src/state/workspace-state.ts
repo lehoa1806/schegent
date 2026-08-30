@@ -2084,9 +2084,11 @@ export class WorkspaceStateStore {
       );
     }
     const sameQueue = owner.queueId === params.targetQueueId;
-    const targetPending = this.getQueue(params.targetQueueId).requests.filter(
-      (request) => request.status === 'pending'
-    );
+    // Sorted, because `insertAt` indexes into this below and `getQueue()`
+    // returns rows in array order rather than position order.
+    const targetPending = this.getQueue(params.targetQueueId)
+      .requests.filter((request) => request.status === 'pending')
+      .sort((a, b) => a.position - b.position);
     if (!sameQueue && targetPending.length >= MAX_PENDING_TASKS_PER_QUEUE) {
       throw new QueueMutationRejected(
         'task-cap-reached',
@@ -2104,11 +2106,24 @@ export class WorkspaceStateStore {
     if (sameQueue) {
       return this.reorderPendingRequest(taskId, insertAt);
     }
+    // `insertAt` is a PENDING-ARRAY index; `.position` is a slot in the GLOBAL
+    // sequence `compactRequestPositions()` keeps contiguous over pending and
+    // non-pending rows alike. They coincide only while every row ahead of the
+    // insert point is pending, so using the index as a slot put an appended
+    // Task second-to-last on any executing queue. Translate: take the slot of
+    // the row the Task lands in front of, or one past the last pending row.
+    const last = targetPending[targetPending.length - 1];
+    const ahead = targetPending[insertAt];
+    const insertSlot =
+      ahead?.position ??
+      (last === undefined
+        ? this.getQueue(params.targetQueueId).requests.length
+        : last.position + 1);
     const now = Date.now();
     const moved: FeatureRequest = {
       ...target,
       queueId: params.targetQueueId,
-      position: insertAt,
+      position: insertSlot,
       updatedAt: now
     };
     return this.updateQueueMap((current) => {
@@ -2123,9 +2138,11 @@ export class WorkspaceStateStore {
           },
           [params.targetQueueId]: {
             ...destination,
+            // Every row at or past the opened slot shifts, pending or not: one
+            // left in place would share a slot with the arriving Task.
             requests: [
               ...destination.requests.map((request) =>
-                request.status === 'pending' && request.position >= insertAt
+                request.position >= insertSlot
                   ? { ...request, position: request.position + 1, updatedAt: now }
                   : request
               ),
