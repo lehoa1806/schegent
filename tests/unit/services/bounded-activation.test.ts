@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { RunCheckpointRetentionService } from '../../../src/services/run-checkpoint-retention';
 import { readAuditTailColdStart } from '../../../src/ui/sidebar/audit-tail-coldstart';
+import { AUDIT_TAIL_MAX } from '../../../src/ui/sidebar/snapshot';
 import { SanitizedLogger } from '../../../src/lib/logger';
 
 /**
@@ -57,6 +58,28 @@ function auditLine(index: number): string {
   })}\n`;
 }
 
+/**
+ * One audit entry per line, padded to `bytes` so that a 256 KiB cap recovers a
+ * handful of entries rather than hundreds.
+ *
+ * Not a contrived shape: the padding sits in `payload`, which is where a real
+ * entry's bulk lives, and the record still satisfies every required field the
+ * parser checks.
+ */
+function fatAuditLine(index: number, bytes: number): string {
+  return `${JSON.stringify({
+    v: 3,
+    id: `entry-${index}`,
+    timestamp: '2026-08-25T00:00:00.000Z',
+    eventType: 'phase-start',
+    runId: 'run-1',
+    phase: 'speckit-plan',
+    iteration: 1,
+    outcome: 'info',
+    payload: { detail: 'x'.repeat(bytes) }
+  })}\n`;
+}
+
 describe('FR-R3-082 — the cold-start audit tail is bounded by bytes (T1095)', () => {
   it('shows the END of a planted log and holds only the cap', async () => {
     const logPath = path.join(workspaceRoot, '.schegent', 'audit.log');
@@ -77,10 +100,39 @@ describe('FR-R3-082 — the cold-start audit tail is bounded by bytes (T1095)', 
     expect(entries.length).toBeGreaterThan(0);
     expect(JSON.stringify(entries)).toContain('entry-39999');
     expect(JSON.stringify(entries)).not.toContain('entry-0"');
-    // And the skip is REPORTED. A tail that quietly starts megabytes in looks
-    // like a short log.
-    expect(warnings.map((entry) => entry.message).join('\n')).toContain('tail byte cap');
+    // And NOTHING is reported, because nothing was lost.
+    //
+    // This assertion was inverted on 2026-08-31; it used to require the byte-cap
+    // warning here. The view shows `AUDIT_TAIL_MAX` entries and the cap recovered
+    // far more than that, so an unbounded read would have displayed the same
+    // fifty records. Warning about a skip that cost the operator nothing is the
+    // condition the triage found permanently on in the field: measured against a
+    // real 1.41 MB log, 1.15 MB was skipped and the cap still held 431 entries
+    // for a view that shows 50. See `dropped-nothing` below for the case the
+    // warning is actually for.
+    expect(warnings, JSON.stringify(warnings)).toEqual([]);
   }, 60_000);
+
+  it('reports the skip only when the cap cost the view entries', async () => {
+    const logPath = path.join(workspaceRoot, '.schegent', 'audit.log');
+    // The case the warning exists for, and the one the comment in the reader
+    // describes: a tail that starts megabytes in AND cannot fill the view. Two
+    // entries per 256 KiB, so the cap recovers a handful, not fifty.
+    const fat: string[] = [];
+    for (let i = 0; i < 12; i += 1) fat.push(fatAuditLine(i, 128 * 1024));
+    await fs.writeFile(logPath, fat.join(''));
+
+    const entries = await readAuditTailColdStart(workspaceRoot, logger);
+
+    expect(entries.length).toBeGreaterThan(0);
+    expect(entries.length).toBeLessThan(AUDIT_TAIL_MAX);
+    const capWarning = warnings.find((w) => w.message.includes('tail byte cap'));
+    expect(capWarning, 'a view the cap left short must say so').toBeDefined();
+    // The count is what makes it diagnosable: skippedBytes alone never said
+    // whether anything was actually missing from the view.
+    expect(capWarning?.context).toMatchObject({ recoveredEntries: entries.length });
+    expect(capWarning?.context?.skippedBytes).toBeGreaterThan(0);
+  });
 
   it('reads a small log whole, with nothing reported', async () => {
     const logPath = path.join(workspaceRoot, '.schegent', 'audit.log');

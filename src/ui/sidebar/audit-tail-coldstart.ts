@@ -66,18 +66,12 @@ export async function readAuditTailColdStart(
   }
 
   let contents: string;
+  let skippedBytes = 0;
   try {
     const { size } = await opened.handle.stat();
     const tail = await readBoundedTail(opened.handle, size, AUDIT_TAIL_MAX_BYTES);
     contents = tail.bytes.toString('utf8');
-    if (tail.skippedBytes > 0) {
-      // Never silent. A tail that quietly starts 4 GiB in looks like a short
-      // log, and an operator reading it would draw conclusions from an absence
-      // this host manufactured.
-      logger?.warn('audit-coldstart: log exceeds the tail byte cap; earlier entries not read', {
-        skippedBytes: tail.skippedBytes
-      });
-    }
+    skippedBytes = tail.skippedBytes;
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     logger?.warn('audit-coldstart: read failed', { code: code ?? 'unknown' });
@@ -106,6 +100,36 @@ export async function readAuditTailColdStart(
       logger?.warn('audit-coldstart: dropped unparseable audit log line(s)');
       warnedOnce = true;
     }
+  }
+
+  // Reported only when the cap actually cost the view something.
+  //
+  // The original intent, kept verbatim: "a tail that quietly starts 4 GiB in
+  // looks like a short log, and an operator reading it would draw conclusions
+  // from an absence this host manufactured." That absence is real only when the
+  // bytes read could not fill the view. `AUDIT_TAIL_MAX` bounds what the sidebar
+  // shows at fifty entries, so a cap that recovered fifty or more produced
+  // exactly the display an unbounded read would have produced, and there is no
+  // manufactured absence to explain.
+  //
+  // Emitting it on `skippedBytes > 0` alone made it permanent furniture. The
+  // audit log is append-only and this product may never erase it, so every
+  // long-lived workspace crosses 256 KiB once and then warns on every cold start
+  // forever, about a condition that is by design and that no operator can act
+  // on. Measured on 2026-08-31 against a real 1.41 MB log: 1.15 MB skipped, 431
+  // entries still inside the cap, for a view that shows 50 — 8x more than it
+  // could display. Finding 4 of the 2026-08-30 host-log triage read that warning
+  // as evidence the log had outgrown the cap and needed rotation; the arithmetic
+  // says the cap is doing its job and the warning was the defect.
+  //
+  // `recoveredEntries` rides along because `skippedBytes` alone never answered
+  // the question an operator actually has, which is whether anything is missing
+  // from what they are looking at.
+  if (skippedBytes > 0 && projected.length < AUDIT_TAIL_MAX) {
+    logger?.warn('audit-coldstart: log exceeds the tail byte cap; earlier entries not read', {
+      skippedBytes,
+      recoveredEntries: projected.length
+    });
   }
 
   return Object.freeze(projected);
