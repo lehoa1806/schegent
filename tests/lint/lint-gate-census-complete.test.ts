@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   censusProseOf,
@@ -28,6 +30,8 @@ import {
  * RECURSIVE. A flat glob misses `gate-integrity/`'s five gates and yields a census
  * that looks complete and is not.
  */
+const CENSUS_REL = 'docs/development/lint-gate-census.md';
+
 describe('the lint-gate census is complete (FR-R3-121)', () => {
   const files: readonly string[] = gateFiles();
   const rows: Map<string, unknown> = readCensusRows();
@@ -108,6 +112,69 @@ describe('the lint-gate census is complete (FR-R3-121)', () => {
       const once: string = render(files, rows, '');
       expect(render(files, rows, censusProseOf(once))).toBe(once);
     });
+  });
+
+  /**
+   * FR-R3-145 (2026-08-31) — the summary block counts the rows beneath it.
+   *
+   * FOUND, NOT PREDICTED. Adding a gate regenerated this file and moved
+   * `partially redundant` from 13 to 14. Nothing in that change touched a verdict,
+   * so the 13 had been wrong at rest: the committed summary claimed 162 unique and
+   * 13 partially redundant while its own rows tallied 161 and 14. Some earlier edit
+   * changed one row's verdict and left the totals above it alone.
+   *
+   * WHY THE IDEMPOTENCE TESTS ABOVE DID NOT CATCH IT. They are pure over a
+   * synthetic two-row set, by design and correctly — they prove `render` is a fixed
+   * point, which is a property of the generator. Being a fixed point says nothing
+   * about whether the file ON DISK is what the generator would produce from the
+   * rows it contains. That is the gap: a stale summary is exactly a file that
+   * disagrees with its own content, and no test read the real one.
+   *
+   * This is the same defect as the item it was found under — a document asserting
+   * something about itself that stopped being true, where the assertion is the
+   * thing that stops anyone checking. A reader auditing coverage reads these four
+   * numbers, not 176 rows.
+   */
+  it('the summary block agrees with the rows it summarises (FR-R3-145)', () => {
+    const census = readFileSync(resolve(__dirname, '..', '..', CENSUS_REL), 'utf8');
+    const tally = new Map<string, number>([
+      ['unique', 0],
+      ['partially redundant', 0],
+      ['redundant', 0]
+    ]);
+    for (const row of rows.values()) {
+      const { verdict } = row as { verdict: string };
+      tally.set(verdict, (tally.get(verdict) ?? 0) + 1);
+    }
+
+    const stated = (label: string): number | null => {
+      const line = new RegExp(`^\\| ${label} \\| \\*{0,2}(\\d+)\\*{0,2} \\|`, 'm').exec(census);
+      return line === null ? null : Number(line[1]);
+    };
+
+    const drifted: string[] = [];
+    const claims: ReadonlyArray<readonly [string, number]> = [
+      ['Gate files', files.length],
+      ['Marked `unique`', tally.get('unique') ?? 0],
+      ['Marked `partially redundant`', tally.get('partially redundant') ?? 0],
+      ['Marked `redundant`', tally.get('redundant') ?? 0]
+    ];
+    for (const [label, actual] of claims) {
+      const claimed = stated(label);
+      if (claimed === null) {
+        drifted.push(`"${label}" has no row in the summary block for this gate to check`);
+        continue;
+      }
+      if (claimed !== actual) drifted.push(`${label}: summary says ${claimed}, rows hold ${actual}`);
+    }
+
+    expect(
+      drifted,
+      'The census summary no longer counts its own rows. Run ' +
+        '`node scripts/census-lint-gates.mjs`, which recomputes these totals; do not ' +
+        'hand-edit them back into agreement, because the number being wrong is never ' +
+        'the defect — the verdict that changed underneath it is.'
+    ).toEqual([]);
   });
 
   it('every row carries a verdict from the closed vocabulary', () => {
