@@ -10,6 +10,7 @@ import type {
   OutputTargetRefusedAtDispatchPayload,
   RunSnapshotDeclinedPayload
 } from '../contracts/audit-events';
+import { emitTerminalOutcomeAudit } from '../services/terminal-outcome-audit';
 
 export type TaskLifecycleAuditEvent =
   | 'task-execution-started'
@@ -86,6 +87,27 @@ export class WorkflowLifecycleAuditor {
         `task-lifecycle audit append failed (${eventType}): ${(err as Error).message}`
       );
     }
+  }
+
+  /**
+   * The terminal record, for the controller's own route to a terminal state.
+   *
+   * `handleUnexpectedStartFailure` fails a Run that threw before or outside the drive:
+   * it persists `status: 'failed'`, finishes the queue row, records history and releases
+   * the lease — and until 2026-08-31 it emitted nothing, because FR-R3-107's one emitter
+   * was private to `RunDriver`. A run could be `failed` in the state store and still open
+   * in the durable record. `terminal-outcome-audit.ts` holds the payload and the history.
+   *
+   * It goes through that module rather than building a payload here for the reason the
+   * consolidation existed: two shapes for one event is the drift FR-R3-107 removed.
+   */
+  public async emitTaskExecutionEnded(
+    run: WorkflowRun,
+    terminalStatus: 'completed' | 'failed',
+    lastErrorSummary?: string
+  ): Promise<void> {
+    const extra = lastErrorSummary === undefined ? {} : { lastErrorSummary };
+    await emitTerminalOutcomeAudit(this, this.logger, run, terminalStatus, extra);
   }
 
   public async emitOptionalPhaseFailureContinued(

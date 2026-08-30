@@ -637,6 +637,7 @@ export class SchegentWorkflowController {
         );
       }
       await this.terminalTransitions?.complete(terminalRun, description);
+      await this.lifecycleAuditor.emitTaskExecutionEnded(terminalRun, 'failed', lastError.message);
     }
 
     // Feature 093 (T068b, FR-028) — the window-primacy release that stood here

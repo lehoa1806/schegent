@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { unfencedCommit } from '../../../src/state/ownership-claim';
-import { SchegentWorkflowController } from '../../../src/controller/workflow-controller';
+import {
+  SchegentWorkflowController,
+  type WorkflowControllerDeps
+} from '../../../src/controller/workflow-controller';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
 import { QueueManager } from '../../../src/queue/queue-manager';
 import { SanitizedLogger } from '../../../src/lib/logger';
@@ -180,7 +183,14 @@ const opts = {
 // Feature 098 (T080) — the controller's own fallback is the empty catalog now, so
 // a test that means to drive a Pipeline has to hand it one. It goes in the deps
 // argument rather than in `opts`, which is where the controller reads it.
-const deps = { catalog: testCatalog() };
+//
+// The `auditWriter` arrived on 2026-08-31 and is why this is built per test rather
+// than shared: without one, every `WorkflowLifecycleAuditor` method short-circuits
+// on `if (!this.writer) return;`, so a suite that owns the controller's terminal
+// failure route could not see whether that route wrote a durable record at all. It
+// did not. See `emits the terminal audit record` below.
+let auditAppend: ReturnType<typeof vi.fn>;
+let deps: WorkflowControllerDeps;
 
 let memento: FakeMemento;
 let store: WorkspaceStateStore;
@@ -201,6 +211,8 @@ beforeEach(async () => {
   notifier = makeNotifier();
   lock = makeLock();
   runSpy = vi.fn();
+  auditAppend = vi.fn().mockResolvedValue(undefined);
+  deps = { catalog: testCatalog(), auditWriter: { append: auditAppend } };
   phaseRunner = { run: runSpy } as unknown as PhaseRunner;
   controller = new SchegentWorkflowController(
     phaseRunner,
@@ -417,6 +429,56 @@ describe('SchegentWorkflowController.startNew', () => {
     // share the window's owner id. It joins the BUG-005 block below, which
     // already asserts the same for complete / fail / rate-limit-pause.
     expect(lock.release).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The durable record of a failed run, which this route did not write until
+   * 2026-08-31.
+   *
+   * `task-execution-ended` is what the audit log, the metrics rollup and every
+   * after-the-fact question about a run read to learn that it reached a terminal
+   * state and how. FR-R3-107 consolidated its three drifted emissions into ONE
+   * emitter — and that emitter was private to `RunDriver`, which is the wrong side
+   * of this boundary. `handleUnexpectedStartFailure` is a SECOND route to a terminal
+   * state: it persists `status: 'failed'`, finishes the queue row, records history
+   * and releases the lease, all without the drive ever settling. So the run was
+   * `failed` in the state store and still *open* in the durable record.
+   *
+   * Found in a live host log (`docs/audits/syslog-triage-2026-08-30.md`, finding
+   * 2b): four `task-execution-started`, one `task-execution-ended`. The runs that
+   * failed left their reason in a DEBUG line that is off by default, and nothing
+   * else. The payload asserted below is the driver's, because the point is one shape
+   * from both routes — the metrics rollup unions these by run id, and a second shape
+   * would make a total depend on which route a run took.
+   */
+  it('emits the terminal audit record when the run fails at the controller', async () => {
+    runSpy.mockRejectedValueOnce(new Error('parser invariant exploded'));
+
+    const feature = await queue.enqueue('feature description');
+    await controller.startNew(feature, null);
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
+
+    const ended = auditAppend.mock.calls
+      .map((call) => call[0] as { eventType: string; payload: Record<string, unknown> })
+      .filter((entry) => entry.eventType === 'task-execution-ended');
+    expect(
+      ended.length,
+      'a run that reached `failed` must leave exactly one terminal record; zero means the ' +
+        'durable log cannot tell a failed run from one still running'
+    ).toBe(1);
+    // Bound once, after the length assertion that makes the `!` true — four `ended[0]`
+    // reads would each owe `noUncheckedIndexedAccess` a diagnostic the ratchet refuses.
+    const terminal = ended[0]!;
+    expect(terminal.payload).toMatchObject({
+      taskId: feature.id,
+      runId: run.id,
+      terminalStatus: 'failed'
+    });
+    // The reason, in the record rather than only in a DEBUG log.
+    expect(terminal.payload.lastErrorSummary).toContain('parser invariant exploded');
+    // The same derived statistics the driver's emitter carries, not hand-written zeros.
+    expect(terminal.payload.phasesTotal).toBe(SPECKIT_PHASE_IDS.length);
+    expect(typeof terminal.payload.durationMs).toBe('number');
   });
 
   /**

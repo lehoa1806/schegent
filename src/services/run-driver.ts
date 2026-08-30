@@ -9,10 +9,9 @@ import type { WorkspaceLockManager } from '../state/lock';
 import type { IsContinueGate } from '../controller/is-continue-gate';
 import { PhaseSequencer, nextOverridesAfterSkip } from '../controller/phase-sequencer';
 import { terminalSettler } from './run-terminal-effects';
+import { emitTerminalOutcomeAudit } from './terminal-outcome-audit';
 import {
-  computeRunPhaseStats,
   type PhaseResult,
-  type RunPhaseStats,
   type SanitizedError,
   type WorkflowRun
 } from '../state/workflow-run';
@@ -1209,37 +1208,6 @@ export class RunDriver {
     });
   }
 
-  // Feature 072 — derive phase stats from the pipeline snapshot and
-  // completion records for the task-execution-ended payload.
-  //
-  // FR-R3-009 — delegated to `computeRunPhaseStats` in `state/workflow-run.ts`
-  // so the durable metrics rollup reports the same three numbers this payload
-  // does. Both are unioned by run id downstream; two implementations would let
-  // a total depend on which range a run fell in.
-  private computePhaseStats(run: WorkflowRun): RunPhaseStats {
-    return computeRunPhaseStats(run);
-  }
-
-  /**
-   * FR-R3-107 (FR-077, FR-078) — the ONE place `task-execution-ended` is emitted.
-   *
-   * WHY THIS EXISTS. `drive()` had three copies of this emission, and they had already
-   * drifted three ways. The CLI-probe-failure copy hand-wrote `phasesCompleted: 0,
-   * phasesSkipped: 0` instead of deriving them, omitted the `durationMs` the other two
-   * carried, and guarded `if (this.deps.emitTaskLifecycleAudit)` while the others called it
-   * unguarded — so the same event left three shapes, and one terminal path emitted nothing
-   * at all where the others logged a warning.
-   *
-   * THE ZERO STATS WERE A LATENT BUG, NOT A DELIBERATE SHAPE. They were *correct* — a CLI
-   * probe fails before any phase runs — but correct **by position**, and nothing pinned the
-   * position. `computeRunPhaseStats` returns zeros for a Run with no phase records, so
-   * deriving preserves today's values byte-for-byte while making a future reordering visible
-   * instead of silently wrong.
-   *
-   * The try/catch stays per-emission, with a warning naming the terminal status, because an
-   * audit failure must not turn a completed Run into a failed one. That discipline was in all
-   * three copies and is the part worth keeping.
-   */
   private settleTerminalFn: ReturnType<typeof terminalSettler> | null = null;
 
   /**
@@ -1254,26 +1222,18 @@ export class RunDriver {
     return this.settleTerminalFn;
   }
 
+  /**
+   * The driver's half of the one emitter; `terminal-outcome-audit.ts` owns the payload,
+   * the guard and the reasoning. It stays a method because `terminalSettler` binds to it.
+   */
   private async emitTerminalOutcome(
     run: WorkflowRun,
     terminalStatus: 'completed' | 'failed',
     extra: { readonly lastErrorSummary?: string } = {}
   ): Promise<void> {
-    try {
-      if (!this.deps.emitTaskLifecycleAudit) return;
-      await this.deps.emitTaskLifecycleAudit('task-execution-ended', run, {
-        taskId: run.featureId,
-        runId: run.id,
-        terminalStatus,
-        durationMs: Date.now() - run.startedAt,
-        ...this.computePhaseStats(run),
-        ...extra
-      });
-    } catch (err) {
-      this.deps.logger.warn(
-        `run-driver: task-execution-ended (${terminalStatus}) audit failed: ${errorMessage(err)}`
-      );
-    }
+    const audit = this.deps.emitTaskLifecycleAudit;
+    const sink = audit ? { emitTaskLifecycle: audit } : null;
+    await emitTerminalOutcomeAudit(sink, this.deps.logger, run, terminalStatus, extra);
   }
 }
 
