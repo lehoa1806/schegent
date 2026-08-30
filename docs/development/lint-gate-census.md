@@ -19,9 +19,9 @@ predicted it: its author sampled the set and found every gate well motivated.
 
 | Figure | Value | Date | Method |
 |---|---|---|---|
-| Gate files | **175** | 2026-08-30 | `*.test.ts` under `tests/lint/` recursively |
+| Gate files | **176** | 2026-08-30 | `*.test.ts` under `tests/lint/` recursively |
 | Marked `unique` | 162 | 2026-08-30 | hand verdict |
-| Marked `partially redundant` | 13 | 2026-08-30 | hand verdict |
+| Marked `partially redundant` | 14 | 2026-08-30 | hand verdict |
 | Marked `redundant` | 0 | 2026-08-30 | hand verdict |
 
 <!-- census:prose -->
@@ -167,6 +167,7 @@ changing one means updating that machinery in the same commit.
 | `backend-permission-posture.test.ts` | backend permission posture | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `backend-posture-emission-funnel.test.ts` | backend posture emission funnel (FR-R3-064) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `backend-runner-kind-exhaustive.test.ts` | Backend Runner Kind Exhaustive Parity (Feature 074) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
+| `blueprint-configuration-parity.test.ts` | blueprint L0 configuration table matches the settings schema (FR-R3-145) | partly by `settings-schema-parity.test.ts`, which holds `settings-schema.ts` and `package.json` equal in both directions; that pair is why this gate can compare against the schema and still speak for the manifest, but neither half looks at the blueprint | unique | the table's Key, Default and Scope columns and its stated key count are asserted only here — before this gate they had drifted eight ways behind a preamble a reader takes as a parity claim. Driven red 2026-08-31 by six mutations, one per test: deleting the `spend.maxUsdPerRun` row, inventing a `spend.maxGoats` row, drifting a default, drifting a scope, staling the count, and renaming the `## L0` heading, which trips the vacuity control. Each hit exactly its own test. The Bounds column is deliberately not covered, and the gate's header says so |
 | `candidate-union-is-publish-only.test.ts` | Feature 100 T500c — only the publish gate builds a candidate union | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `cap-authority-citation-parity.test.ts` | concurrency cap authority citation | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `capability-argv-parity.test.ts` | FR-R3-086 — the adapter literal and the plan agree on "unbounded" | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
