@@ -110,7 +110,7 @@ Unredacted transcripts and verbose diagnostics can contain prompts, source code,
 |---|---|---|---|---|
 | `schegent.claude.autoCompactPctOverride` | integer `1`–`100`, or `null` | `null` | resource | When non-null, exports `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` for Claude. |
 | `schegent.multiRoot.suppressWarning` | boolean | `false` | window | Suppresses the activation warning that the first folder is Schegent's canonical workspace. |
-| `schegent.ui.confirmations.enable` | boolean | `true` | window | Globally enables the sidebar's destructive-action confirmations; which actions those are is declared by the `ActionKey` union in `webview-ui/src/lib/action-copy.ts`. Reset Workspace is confirmed host-side by its Command Palette command, outside this setting's reach. |
+| `schegent.ui.confirmations.enable` | boolean | `true` | window | Globally enables the sidebar's destructive-action confirmations; which actions those are is declared by the `ActionKey` union in `webview-ui/src/lib/action-copy.ts`. A small always-confirm set is outside this setting's reach and still prompts when it is `false` — the set is `NEVER_SUPPRESSIBLE` in `webview-ui/src/lib/use-confirm.ts`, and each member's reason is recorded beside it. Reset Workspace is confirmed host-side by its Command Palette command, outside this setting's reach by that route too. |
 | `schegent.trust.allowCustomPhases` | boolean or `null` | `null` | window | Capability gate for saving custom Phase definitions; Workspace Trust is an upper bound. |
 | `schegent.trust.allowCustomRetryConditions` | boolean or `null` | `null` | window | Capability gate for non-default retry-condition expressions; Workspace Trust is an upper bound. |
 

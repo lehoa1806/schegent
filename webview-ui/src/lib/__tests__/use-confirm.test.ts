@@ -117,7 +117,15 @@ describe('useConfirm', () => {
     await p;
   });
 
-  it('(c) confirmationsEnabled === false short-circuits regardless of suppression state (suppressed)', async () => {
+  // These two said "regardless of suppression state", which enumerates two states
+  // and reads as if it covered a third: a key that is not suppressible at all.
+  // Both bodies use `queue.pause`, an ordinarily suppressible key, and neither
+  // ever staged a `NEVER_SUPPRESSIBLE` member. The titles were the reason nobody
+  // looked — they claimed the interaction in the words a reader would grep for,
+  // and the interaction was broken. Filed by FR-R3-143 (T044); the coverage they
+  // appeared to provide is in "the never-suppressible set survives the global
+  // toggle" below. The titles now say which keys they are about.
+  it('(c) a suppressible key short-circuits on confirmationsEnabled === false (already suppressed)', async () => {
     state.enabled = false;
     state.suppressedKeys.add('queue.pause');
     const p = useConfirm('queue.pause');
@@ -125,7 +133,7 @@ describe('useConfirm', () => {
     await expect(p).resolves.toBe(true);
   });
 
-  it('(c2) confirmationsEnabled === false short-circuits regardless of suppression state (unsuppressed)', async () => {
+  it('(c2) a suppressible key short-circuits on confirmationsEnabled === false (not suppressed)', async () => {
     state.enabled = false;
     state.suppressedKeys = new Set<string>();
     const p = useConfirm('queue.pause');
@@ -201,7 +209,12 @@ describe('useConfirm', () => {
     expect(state.suppressedKeys.has('queue.clear-done')).toBe(false);
   });
 
-  it('workspace.reset is never suppressible — checkbox is not rendered and short-circuit gate does not apply', async () => {
+  // "short-circuit gate" named neither of the two the module's own header numbers,
+  // and this body stages only guard 2 — `state.enabled` is left at its `beforeEach`
+  // default of `true`. Read against guard 1 the old title was false, and it was the
+  // sentence a reader auditing the set would find first. The title now names the
+  // guard it exercises; guard 1 is covered in the parameterised block below.
+  it('workspace.reset ignores the per-action suppression guard — no checkbox, still prompts', async () => {
     // Even if the suppression set somehow contains the key, the helper
     // must ignore it (NEVER_SUPPRESSIBLE list).
     state.suppressedKeys.add('workspace.reset');
@@ -239,6 +252,84 @@ describe('useConfirm', () => {
     ).toBeNull();
     getButton('confirm-dialog-cancel').click();
     await expect(p).resolves.toBe(false);
+  });
+
+  /**
+   * The bug T044 filed and this change closes. `NEVER_SUPPRESSIBLE` protected its
+   * members from guard 2 (per-action "Don't ask again") and not from guard 1
+   * (`confirmationsEnabled === false`), which returned before the set was ever
+   * consulted. Every member resolved `true` with no dialog, exactly like an
+   * ordinary suppressed action, and the set's name said otherwise.
+   *
+   * These cases are parameterised over the whole set on purpose. The bug survived
+   * two members and was found by reading; the third (`backend.grant-uncontained`)
+   * was added afterwards and inherited it silently. A per-member test would have
+   * to be remembered each time the set grows, which is the thing that did not
+   * happen. `action-copy.test.ts` already pins the `ActionKey` union, so a member
+   * added here without a case is a compile error rather than a silent gap.
+   */
+  const NEVER_SUPPRESSIBLE_KEYS = [
+    'workspace.reset',
+    'settings.disable-confirmations',
+    'backend.grant-uncontained'
+  ] as const;
+
+  // Only `backend.grant-uncontained` has placeholders; the other two take
+  // `Record<string, never>`. `useConfirm`'s per-key context type is what makes a
+  // single loop over the set need this, and typing it as the union keeps the call
+  // below honest rather than reaching for `any`.
+  type NeverSuppressibleKey = (typeof NEVER_SUPPRESSIBLE_KEYS)[number];
+  function promptFor(key: NeverSuppressibleKey): Promise<boolean> {
+    if (key === 'backend.grant-uncontained') {
+      return useConfirm(key, {
+        context: { label: 'Test Backend', refusal: 'no sandbox is available on this platform' }
+      });
+    }
+    return useConfirm(key);
+  }
+
+  describe('the never-suppressible set survives the global toggle', () => {
+    for (const key of NEVER_SUPPRESSIBLE_KEYS) {
+      it(`${key} still prompts with confirmationsEnabled === false`, async () => {
+        state.enabled = false;
+        const p = promptFor(key);
+        await tick();
+        expect(
+          getDialog(),
+          `${key} is in NEVER_SUPPRESSIBLE; the global toggle is an operator preference ` +
+            'and must not empty a set whose members each have a stated reason it cannot answer'
+        ).not.toBeNull();
+        expect(
+          document.querySelector('[data-testid="confirm-dialog-suppression-checkbox"]'),
+          'and the prompt it raises must still hide the checkbox'
+        ).toBeNull();
+        getButton('confirm-dialog-cancel').click();
+        await expect(p).resolves.toBe(false);
+      });
+
+      it(`${key} still prompts with the toggle off AND the key suppressed`, async () => {
+        // Both escapes staged at once: neither may reach the resolve(true) path.
+        state.enabled = false;
+        state.suppressedKeys.add(key);
+        const p = promptFor(key);
+        await tick();
+        expect(getDialog(), `${key} must not be silenced by the two guards combined`).not.toBeNull();
+        getButton('confirm-dialog-cancel').click();
+        await expect(p).resolves.toBe(false);
+      });
+    }
+
+    it('holds the modal lock for a never-suppressible prompt raised past the toggle', async () => {
+      state.enabled = false;
+      const p = useConfirm('workspace.reset');
+      await tick();
+      expect(isModalOpen(), 'the prompt is a real modal, so the FR-019 lock must be taken').toBe(
+        true
+      );
+      getButton('confirm-dialog-cancel').click();
+      await p;
+      expect(isModalOpen()).toBe(false);
+    });
   });
 
   it('teardown clears modalOpen even when the user cancels (lock is released)', async () => {
