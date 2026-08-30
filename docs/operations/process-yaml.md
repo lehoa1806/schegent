@@ -19,7 +19,7 @@ Choose the control for the resource you want to export:
 | Model Catalog | Choose **Export Model Catalog**. The catalog is exportable even when it is empty. |
 
 <!-- Source: webview-ui/src/components/PipelineBuilderEditors/PhaseCatalogEditor.svelte -->
-<!-- Source: webview-ui/src/components/PipelineBuilderEditors/PipelineCatalogEditor.svelte -->
+<!-- Source: webview-ui/src/components/PipelineBuilderEditors/PipelineToolbar.svelte -->
 <!-- Source: webview-ui/src/components/PipelineBuilderEditors/WorkflowToolbar.svelte -->
 <!-- Source: webview-ui/src/components/PipelineBuilderEditors/ModelCatalogEditor.svelte -->
 

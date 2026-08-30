@@ -57,17 +57,18 @@
 .pb .form-label { font-size: 0.85em; font-weight: 600; color: var(--schegent-muted-fg); }
 .pb .checkbox-field { flex-direction: row; align-items: center; gap: 8px; }
 .pb .retry-condition-row { border-top: 1px solid var(--schegent-divider); padding-top: 12px; }
-.pb .phases-sequence-editor { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; flex: 1; }
+/* Feature 184 (FR-R3-141, T034) — the Pipeline sequence editor's rules left with it.
+   `.phases-sequence-editor`, `.sequence-select`, `.sequence-actions` and the
+   `.custom-tooltip` hover card were the `<select>` row's own; the canvas states the
+   Phase in the card's `title`. `.sequence-label`, `.sequence-list`, `.sequence-item`
+   and `.sequence-number` STAY: `PipelinePortsEditor.svelte` still uses all four, and
+   the split-pane rules stay for `PhaseCatalogEditor.svelte`, which this feature does
+   not touch. */
 .pb .sequence-label { font-size: 0.9em; color: var(--schegent-muted-fg); }
 .pb .sequence-list { display: flex; flex-direction: column; gap: 2px; background: var(--schegent-list-bg); padding: 8px; border: 1px solid var(--schegent-divider); border-radius: var(--schegent-radius-sm); flex: 1; overflow-y: auto; }
 .pb .sequence-item { display: flex; align-items: center; gap: 8px; background: transparent; border: 1px solid transparent; padding: 8px; border-radius: var(--schegent-radius-sm); position: relative; }
 .pb .sequence-item:hover { background: var(--schegent-surface-hover); border-color: var(--schegent-divider); }
-.pb .sequence-item:hover .custom-tooltip { opacity: 1; visibility: visible; }
-.pb .custom-tooltip { position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); background: var(--vscode-editorHoverWidget-background); border: 1px solid var(--vscode-editorHoverWidget-border); color: var(--vscode-editorHoverWidget-foreground); padding: 8px 12px; border-radius: 6px; font-size: 0.9em; width: 300px; z-index: var(--schegent-z-tooltip); opacity: 0; visibility: hidden; pointer-events: none; white-space: pre-wrap; margin-bottom: 8px; }
-.pb .sequence-item:first-child .custom-tooltip { bottom: auto; top: 100%; margin-bottom: 0; margin-top: 8px; }
 .pb .sequence-number { width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; background: var(--vscode-editor-background); border-radius: 50%; font-size: 0.8em; font-weight: bold; color: var(--schegent-muted-fg); }
-.pb .sequence-select { flex: 1; }
-.pb .sequence-actions { display: flex; gap: 4px; }
 .pb .icon-btn { background: transparent; border: 1px solid var(--schegent-divider); border-radius: 4px; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--schegent-fg); }
 .pb .icon-btn:hover:not(:disabled) { background: var(--schegent-hover-bg); }
 .pb .icon-btn:disabled { opacity: 0.3; cursor: not-allowed; }
