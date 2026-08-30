@@ -117,7 +117,16 @@ describe('Feature 011 — general-settings allowlist', () => {
         'logging.sessionRetentionMaxAgeDays',
         'logging.sessionRetentionMaxBytes',
         'retry.maxAttempts',
-        'retry.forceContinueOnCap'
+        'retry.forceContinueOnCap',
+        // FR-R3-143 (T025) — six manifest settings the tab could not offer
+        // because nothing here accepted them. The two `window`-scoped ones are
+        // the first of that scope in `KEY_SPECS`.
+        'cli.inheritEnvironment',
+        'cli.environmentMode',
+        'cli.environmentAllowlist',
+        'backend.probeTimeoutSeconds',
+        'ui.confirmations.enable',
+        'multiRoot.suppressWarning'
       ])
     );
   });

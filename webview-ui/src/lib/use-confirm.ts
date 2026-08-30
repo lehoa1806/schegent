@@ -12,10 +12,12 @@
 //   3. another modal already open (FR-019)           → resolve(false) sync.
 //   4. otherwise mount the dialog and await the user's choice.
 //
-// `workspace.reset` is the lone always-confirm action: per spec
-// Assumptions, its prompt is unsuppressible. The helper translates that
-// into `suppressible: false` on the `ConfirmationRequest` so the dialog
-// hides the "Don't ask again" checkbox.
+// Some actions are always-confirm: their prompts are unsuppressible. The
+// helper translates that into `suppressible: false` on the
+// `ConfirmationRequest` so the dialog hides the "Don't ask again" checkbox.
+// `NEVER_SUPPRESSIBLE` below is the list; this sentence deliberately does not
+// restate its members, because it named only `workspace.reset` for as long as
+// that was true and went on saying so after T042 added a second.
 
 import { mount, unmount } from 'svelte';
 import ConfirmDialog from '../components/ConfirmDialog.svelte';
@@ -44,10 +46,24 @@ export function isModalOpen(): boolean {
   return modalOpen;
 }
 
-// The single non-suppressible action. Reset Workspace wipes every
-// memento (including the suppression set), so the operator must always
-// see the prompt before triggering it.
-const NEVER_SUPPRESSIBLE: ReadonlySet<ActionKey> = new Set<ActionKey>(['workspace.reset']);
+// The non-suppressible actions. Reset Workspace wipes every memento (including
+// the suppression set), so the operator must always see the prompt before
+// triggering it.
+//
+// FR-R3-143 (T042) — `settings.disable-confirmations` joins it on the same
+// reasoning applied one level up: a "Don't ask again" on the prompt that guards
+// turning all prompts off would suppress the mechanism that reads the
+// suppression set.
+//
+// This membership buys protection from PER-ACTION suppression only. It does not
+// survive `confirmationsEnabled === false`: the `FR-017 short-circuit` below
+// returns before this set is ever consulted — an ordering filed as a bug by
+// T044 and deliberately not changed here. Cited by its marker rather than a
+// line number, which is the citation style this feature exists to stop trusting.
+const NEVER_SUPPRESSIBLE: ReadonlySet<ActionKey> = new Set<ActionKey>([
+  'workspace.reset',
+  'settings.disable-confirmations'
+]);
 
 export function useConfirm<K extends ActionKey>(
   actionKey: K,

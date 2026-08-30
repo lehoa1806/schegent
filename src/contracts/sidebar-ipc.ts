@@ -97,6 +97,11 @@ export const CMD_STOP_PHASE_LOG_TAIL = 'CMD_STOP_PHASE_LOG_TAIL' as const;
 // "Open Settings" CTA when verbose diagnostics is disabled. Read-only
 // (the operator still has to flip the toggle by hand).
 export const CMD_OPEN_VERBOSE_SETTING = 'CMD_OPEN_VERBOSE_SETTING' as const;
+// FR-R3-143 (T039) — the same helper for the two read-only `schegent.trust.*`
+// keys; `cmd-open-trust-settings.ts` records why they have no control. No
+// payload on purpose: a `key` parameter would be a webview-supplied string
+// reaching `executeCommand`, and the handler holds the query literal instead.
+export const CMD_OPEN_TRUST_SETTINGS = 'CMD_OPEN_TRUST_SETTINGS' as const;
 // FR-R3-010 — resolve a completed Run's `auditLogPointer` to its audit records.
 // READ-ONLY, so out of `MUTATING_COMMANDS`; `cmd-resolve-audit-pointer.ts` says why.
 export const CMD_RESOLVE_AUDIT_POINTER = 'CMD_RESOLVE_AUDIT_POINTER' as const;
@@ -212,6 +217,7 @@ export const COMMAND_TYPES = [
   CMD_START_PHASE_LOG_TAIL,
   CMD_STOP_PHASE_LOG_TAIL,
   CMD_OPEN_VERBOSE_SETTING,
+  CMD_OPEN_TRUST_SETTINGS,
   CMD_RESOLVE_AUDIT_POINTER,
   CMD_RESOLVE_HISTORY_DESCRIPTION,
   CMD_SET_PHASE_BREAKPOINT,
@@ -542,6 +548,9 @@ export type * from './sidebar-ipc/run-controls';
 export interface OpenVerboseSettingCommand
   extends CommandBase<typeof CMD_OPEN_VERBOSE_SETTING> {}
 
+export interface OpenTrustSettingsCommand
+  extends CommandBase<typeof CMD_OPEN_TRUST_SETTINGS> {}
+
 export interface PingBackendCommand extends CommandBase<typeof CMD_PING_BACKEND> {
   readonly payload: { readonly runner: 'claude' | 'codex' | 'agy' }; }
 
@@ -599,6 +608,7 @@ export type SidebarCommand =
   | StartPhaseLogTailCommand
   | StopPhaseLogTailCommand
   | OpenVerboseSettingCommand
+  | OpenTrustSettingsCommand
   | ResolveAuditPointerCommand
   | ResolveHistoryDescriptionCommand
   | StartQueueCommand
@@ -789,6 +799,9 @@ export function isCmdStopPhaseLogTail(value: unknown): value is StopPhaseLogTail
 }
 export function isCmdOpenVerboseSetting(value: unknown): value is OpenVerboseSettingCommand {
   return isObjectWithType(value, CMD_OPEN_VERBOSE_SETTING);
+}
+export function isCmdOpenTrustSettings(value: unknown): value is OpenTrustSettingsCommand {
+  return isObjectWithType(value, CMD_OPEN_TRUST_SETTINGS);
 }
 export function isCmdResolveAuditPointer(value: unknown): value is ResolveAuditPointerCommand {
   return isObjectWithType(value, CMD_RESOLVE_AUDIT_POINTER);
@@ -998,6 +1011,7 @@ export const COMMAND_GUARDS: Readonly<
   [CMD_START_PHASE_LOG_TAIL]: isCmdStartPhaseLogTail,
   [CMD_STOP_PHASE_LOG_TAIL]: isCmdStopPhaseLogTail,
   [CMD_OPEN_VERBOSE_SETTING]: isCmdOpenVerboseSetting,
+  [CMD_OPEN_TRUST_SETTINGS]: isCmdOpenTrustSettings,
   [CMD_RESOLVE_AUDIT_POINTER]: isCmdResolveAuditPointer,
   [CMD_RESOLVE_HISTORY_DESCRIPTION]: isCmdResolveHistoryDescription,
   [CMD_SET_PHASE_BREAKPOINT]: isCmdSetPhaseBreakpoint,

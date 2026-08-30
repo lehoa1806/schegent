@@ -934,8 +934,22 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // one typed field became two, with their scope-map rows and the KEY_SPECS
   // entries (the max-duration default's reasoning lives beside its entry).
   // The four-surface lock-step means this file grows exactly when the manifest
-  // does; nothing movable was added. Set to what the file measures.
-  { path: 'src/config/general-settings.ts', maxLines: 712 },
+  // does; nothing movable was added.
+  //
+  // FR-R3-143 (T026), 2026-08-30 — 712 → 800, and the sentence that used to end
+  // the note above ("Set to what the file measures") is gone with it. That shape
+  // is the one `no NEW plain ceiling sits at its file` now rejects, and this file
+  // had already been taken OFF `UNDECIDED_CEILING_BASELINE` by FR-R3-145 the same
+  // morning, so there was no list left to absorb it.
+  //
+  // The change admits six manifest settings the tab could not offer — six typed
+  // fields, six scope rows, six `KEY_SPECS` entries with the manifest's own
+  // defaults — taking the file from 682 to 771. 800 is 29 lines above that,
+  // clear of `tightMargin(800)` = 25, and is deliberately NOT a waiver: a waiver
+  // is the form for a file whose growth is unbounded, and this file's growth is
+  // bounded by the manifest it is in lock-step with. One more setting fits; a
+  // seventh needs a decision, which is what a ceiling is for.
+  { path: 'src/config/general-settings.ts', maxLines: 800 },
   // FR-R3-107 (FR-079) — `run-driver.ts` enters the ratchet at its measured size.
   //
   // WHY IT WAS NOT HERE BEFORE, which is the finding rather than an oversight. The

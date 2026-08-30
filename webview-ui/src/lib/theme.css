@@ -196,6 +196,19 @@
     min-height: 44px !important;
   }
 
+  /* A `<summary>` is actuated exactly like a button — tapped to toggle its
+   * `<details>` — but matches neither selector above, so it was the one
+   * interactive element this block never raised. The settings groups
+   * (FR-R3-143) came out at 35px because of it. `padding-block` does the
+   * centering the min-height alone would not: `summary` stays `display:
+   * list-item` here, so the disclosure marker each group renders survives.
+   * `!important` for the same reason the rules above carry it — the component
+   * styles are Svelte-scoped and outrank a bare element selector. */
+  summary {
+    min-height: 44px !important;
+    padding-block: 12px !important;
+  }
+
   input:not([type='checkbox']):not([type='radio']),
   select,
   textarea {

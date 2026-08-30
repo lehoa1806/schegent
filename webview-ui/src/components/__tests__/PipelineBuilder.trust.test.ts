@@ -56,6 +56,13 @@ interface TrustOpts {
   workspaceTrust?: boolean;
   phases?: boolean;
   retryConditions?: boolean;
+  /**
+   * FR-R3-143 (T040) — which ladder step decided, when the fixture wants to pin
+   * it. Left out by every case above this feature, which is the point: the
+   * field is optional on the projection, and a banner that named a layer on its
+   * absence would be guessing.
+   */
+  scope?: 'user' | 'workspace' | 'workspace-trust';
 }
 
 function buildSnapshot(opts: TrustOpts = {}): WorkflowSnapshot {
@@ -151,7 +158,10 @@ function buildSnapshot(opts: TrustOpts = {}): WorkflowSnapshot {
     resolvedTrust: {
       phases: opts.phases ?? true,
       retryConditions: opts.retryConditions ?? true
-    }
+    },
+    ...(opts.scope === undefined
+      ? {}
+      : { resolvedScope: { phases: opts.scope, retryConditions: opts.scope } })
   }) as unknown as unknown as WorkflowSnapshot;
 }
 
@@ -165,6 +175,68 @@ describe('PipelineBuilder trust gating (059, T022) — phases disabled', () => {
     expect(saveBtn?.hasAttribute('disabled')).toBe(true);
     const banner = container.querySelector('[data-testid="trust-banner-phases"]');
     expect(banner).not.toBeNull();
+  });
+
+  // FR-R3-143 (T040) — the banner names the layer that decided.
+  //
+  // Both per-capability bodies used to read "disabled by workspace policy"
+  // unconditionally. That sentence is false whenever the deciding step is the
+  // operator's own user setting — the ladder treats a user-layer `false` as a
+  // first-class deny — and it is false at the Workspace Trust ceiling too. An
+  // operator sent to `.vscode/settings.json` for a setting that is not there
+  // concludes the product is broken, which is a worse outcome than the denial.
+  //
+  // Pinned per step rather than once, because "names A layer" is satisfiable by
+  // a banner that names the same wrong layer every time — which is exactly the
+  // defect being corrected.
+  it.each([
+    ['user', /your user settings/i, /this workspace's settings/i],
+    ['workspace', /this workspace's settings/i, /your user settings/i]
+  ] as const)(
+    'names %s as the deciding layer on the phases banner',
+    (scope, expected, forbidden) => {
+      const { container } = render(PipelineBuilder, {
+        props: { snapshot: buildSnapshot({ phases: false, scope }), initialTab: 'phases' }
+      });
+      const cause = container.querySelector('[data-testid="trust-banner-phases-decided-by"]');
+      expect(cause, 'a denied capability must say which layer denied it').not.toBeNull();
+      const text = (cause?.textContent ?? '').replace(/\s+/g, ' ').trim();
+      expect(text).toMatch(expected);
+      expect(text, 'and must not name the layer that did not decide').not.toMatch(forbidden);
+    }
+  );
+
+  it('names the deciding layer on the retry-conditions banner too', () => {
+    // The second banner carried the identical wrong sentence. Correcting one and
+    // leaving the other would ship a tab where two rows disagree about the same
+    // ladder.
+    const { container } = render(PipelineBuilder, {
+      props: {
+        snapshot: buildSnapshot({ retryConditions: false, scope: 'user' }),
+        initialTab: 'phases'
+      }
+    });
+    const cause = container.querySelector(
+      '[data-testid="trust-banner-retry-conditions-decided-by"]'
+    );
+    expect(cause?.textContent ?? '').toMatch(/your user settings/i);
+  });
+
+  it('names no layer at all when the host does not project one', () => {
+    // Legacy tolerance: an older host bundle omits `resolvedScope`. The banner
+    // still says the capability is disabled — that much it knows — and stops
+    // there. Guessing is what T040 removed, so falling back to a guess would
+    // reintroduce it under a different name.
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: buildSnapshot({ phases: false }), initialTab: 'phases' }
+    });
+    expect(container.querySelector('[data-testid="trust-banner-phases"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="trust-banner-phases-decided-by"]')).toBeNull();
+    const banner = container.querySelector('[data-testid="trust-banner-phases"]');
+    expect(
+      banner?.textContent ?? '',
+      'the sentence this task deleted must not come back through the fallback'
+    ).not.toMatch(/workspace policy/i);
   });
 
   it('disables every Phase editing control in a secondary window', () => {

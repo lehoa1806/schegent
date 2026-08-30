@@ -126,6 +126,19 @@ a decorative status dot given an `aria-label` a generic `span` may not carry (th
 fixed. An undeclared limit read as full coverage is the failure `EXCLUDED_ROUTES` exists to prevent
 one level down; it was happening one level up.
 
+**Four, from a rule the scan cannot carry at all.** `FR-R3-143` gave the General tab four collapsible
+groups, and each group's header is a `<summary>`. The 390x844 coarse-pointer walk in
+`tests/visual/webview.visual.spec.ts` measured `button, input, select, textarea` and stopped there, so
+it never saw them; the theme's `@media (pointer: coarse)` block raised the same four element types and
+no others, so nothing lifted them either. The two omissions covered for each other and the headers
+shipped at **35px** against a 44px floor. The axe scan could not have caught this: target size is
+WCAG **2.2** SC 2.5.8, and this scan's tag set is `wcag2a, wcag2aa, wcag21a, wcag21aa`. Both halves are
+fixed — `summary` is in the walk's selector and in the theme's coarse-pointer rule — and the walk now
+seeds a list entry through the UI first, because `StringListField`'s per-row Remove button does not
+exist on a surface published with an empty allowlist and so had never been measured either.
+<!-- Source: webview-ui/src/lib/theme.css -->
+<!-- Source: tests/visual/webview.visual.spec.ts -->
+
 **What this does and does not change about the target.** Contrast is now clean across the scanned
 surface — both webviews, 8 surfaces × 3 themes — and the sentence this file used to carry, *the
 product does not currently meet the level it states*, is no longer true **of contrast**. It remains

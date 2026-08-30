@@ -45,6 +45,18 @@ const TYPE_ONLY_ALLOWLIST: ReadonlyArray<{ readonly module: string; readonly rea
       '2026-08-26 — the phase-log display shapes. Type-only at every site, so nothing reaches ' +
       'the bundle. A contracts move is the right destination and is not this item; recorded ' +
       'here so it is visible rather than forgotten'
+  },
+  {
+    // Assembled for the reason given above CONTRACTS_QUEUE_IDENTITY.
+    module: ['src', 'config', 'general-settings'].join('/'),
+    reason:
+      '2026-08-30 — FR-R3-143 (T022). Imported by ONE webview test, as a value, to compare ' +
+      "`KEY_SPECS` against the payload interface's key list. The two sides of that comparison " +
+      'live in two trees by construction, so the test reaches across whichever tree it sits ' +
+      'in; it sits here because the host vitest suite has no other webview importer. Tests ' +
+      'are not bundled, so nothing reaches the untrusted surface. `KEY_SPECS` is not a ' +
+      'contracts candidate: it carries validators, not a shape, and CLAUDE.md hard rule 011 ' +
+      'names its location'
   }
 ];
 

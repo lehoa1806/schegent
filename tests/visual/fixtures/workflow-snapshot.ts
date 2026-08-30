@@ -632,6 +632,15 @@ export const workflowSnapshot = {
     "phases": true,
     "retryConditions": true
   },
+  // FR-R3-143 (T037) — two DIFFERENT steps, both consistent with the `true` above.
+  // `phases` is allowed because the user set it so explicitly; `retryConditions`
+  // is allowed because nothing is set and the workspace is trusted. A fixture that
+  // used one value for both would render one row of the disclosure twice and leave
+  // the distinction it exists to draw unexercised by the visual suite.
+  "resolvedScope": {
+    "phases": "user",
+    "retryConditions": "workspace-trust"
+  },
   "generalSettings": {
     "cliPath": "claude",
     "codexPath": "codex",
@@ -655,6 +664,12 @@ export const workflowSnapshot = {
     "sessionRetentionMaxAgeDays": 30,
     "sessionRetentionMaxBytes": 536870912,
     "rawTranscriptMode": "always",
+    "cliInheritEnvironment": true,
+    "cliEnvironmentMode": "allowlist",
+    "cliEnvironmentAllowlist": [],
+    "backendProbeTimeoutSeconds": 5,
+    "uiConfirmationsEnable": true,
+    "multiRootSuppressWarning": false,
     "scopes": {
       "cliPath": "default",
       "loggingVerbose": "workspace",
@@ -677,7 +692,13 @@ export const workflowSnapshot = {
       "retryForceContinueOnCap": "default",
       "codexPath": "default",
       "agyPath": "default",
-      "rawTranscriptMode": "default"
+      "rawTranscriptMode": "default",
+      "cliInheritEnvironment": "default",
+      "cliEnvironmentMode": "default",
+      "cliEnvironmentAllowlist": "default",
+      "backendProbeTimeoutSeconds": "default",
+      "uiConfirmationsEnable": "default",
+      "multiRootSuppressWarning": "default"
     }
   },
   "sessionArtifacts": {

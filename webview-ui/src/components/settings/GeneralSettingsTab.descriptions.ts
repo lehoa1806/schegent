@@ -60,6 +60,19 @@ export type GeneralSettingsControlId =
   | 'auditRotationMaxAgeDays'
   | 'auditRotationMaxAgeDays-save'
   | 'auditRotationMaxAgeDays-reset'
+  // FR-R3-143 (T012, T013) — four keys the IPC already accepted, now drawn.
+  | 'retryMaxAttempts'
+  | 'retryMaxAttempts-save'
+  | 'retryMaxAttempts-reset'
+  | 'retryForceContinueOnCap'
+  | 'retryForceContinueOnCap-save'
+  | 'retryForceContinueOnCap-reset'
+  | 'runtimeLogMaxBytes'
+  | 'runtimeLogMaxBytes-save'
+  | 'runtimeLogMaxBytes-reset'
+  | 'runtimeLogMaxGenerations'
+  | 'runtimeLogMaxGenerations-save'
+  | 'runtimeLogMaxGenerations-reset'
   | 'defaultPipelineId'
   | 'defaultPipelineId-save'
   | 'defaultPipelineId-reset'
@@ -81,6 +94,36 @@ export type GeneralSettingsControlId =
   | 'rawTranscriptMode'
   | 'rawTranscriptMode-save'
   | 'rawTranscriptMode-reset'
+  // FR-R3-143 (T033) — the six the manifest declared and no surface could
+  // reach. `cliEnvironmentAllowlist` carries two extra ids because it is the
+  // one list-valued field: its editor has an Add button and a Remove button
+  // per row, and every focusable control needs a description
+  // (`__tests__/hover-text-coverage.test.ts`).
+  | 'cliInheritEnvironment'
+  | 'cliInheritEnvironment-save'
+  | 'cliInheritEnvironment-reset'
+  | 'cliEnvironmentMode'
+  | 'cliEnvironmentMode-save'
+  | 'cliEnvironmentMode-reset'
+  | 'cliEnvironmentAllowlist'
+  | 'cliEnvironmentAllowlist-save'
+  | 'cliEnvironmentAllowlist-reset'
+  | 'cliEnvironmentAllowlist-add'
+  | 'cliEnvironmentAllowlist-remove'
+  | 'backendProbeTimeoutSeconds'
+  | 'backendProbeTimeoutSeconds-save'
+  | 'backendProbeTimeoutSeconds-reset'
+  | 'uiConfirmationsEnable'
+  | 'uiConfirmationsEnable-save'
+  | 'uiConfirmationsEnable-reset'
+  | 'multiRootSuppressWarning'
+  | 'multiRootSuppressWarning-save'
+  | 'multiRootSuppressWarning-reset'
+  // FR-R3-143 (T039) — the two read-only trust disclosures. Only the affordance
+  // carries a description key: the disclosure's own text is static prose, not a
+  // control, so it has no `-save`/`-reset` pair to explain.
+  | 'trust-phases-open-settings'
+  | 'trust-retryConditions-open-settings'
   | 'backend-ping'
   | 'save-all'
   | 'reset-all';
@@ -182,7 +225,7 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
   loopMaxIterations: {
     title: 'Loop max iterations',
     body:
-      'Maximum recursive iterations per loopable phase (1–100). The runner ' +
+      'Maximum recursive iterations per loopable phase (1–50). The runner ' +
       'aborts the phase as a fatal error if this limit is reached without ' +
       'a clean exit.'
   },
@@ -407,6 +450,19 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
       'only the backend identity; configured paths and process output never reach the webview.'
   },
 
+  'trust-phases-open-settings': {
+    title: 'Change in Settings',
+    body:
+      'Opens the VS Code Settings editor filtered to the Schegent trust keys. This tab ' +
+      'shows the resolved value but cannot change it: the capability is decided against ' +
+      'Workspace Trust and can be denied from your user settings, which this tab has no ' +
+      'way to write. The editor can target either layer.'
+  },
+  'trust-retryConditions-open-settings': {
+    body:
+      'Opens the VS Code Settings editor filtered to the Schegent trust keys, the same ' +
+      'destination as the button above — both keys are edited on that one surface.'
+  },
   'save-all': {
     title: 'Save all changes',
     body:
@@ -419,5 +475,214 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
     body:
       'Discard every unsaved edit across all fields and restore the ' +
       'projected configuration. Disabled when no fields have unsaved changes.'
-  }
+  },
+  // FR-R3-143 (T012) — retry.
+  retryMaxAttempts: {
+    title: 'Retry max attempts',
+    body:
+      'How many delayed-retry attempts a phase gets before the Run and its ' +
+      'Queue pause (1–5). Retries cannot be switched off here: the lowest ' +
+      'accepted value is 1, and the first attempt is not counted as a retry.'
+  },
+  'retryMaxAttempts-save': {
+    body:
+      'Save the retry attempt limit. Disabled until the value differs from ' +
+      'the saved projection.'
+  },
+  'retryMaxAttempts-reset': {
+    body: 'Restore the projected retry attempt limit. Disabled when there are no unsaved edits.'
+  },
+  retryForceContinueOnCap: {
+    title: 'Continue past retry cap',
+    body:
+      'When a phase reaches its last allowed iteration with its retry condition ' +
+      'still truthy, advance instead of halting, and record a forced-continue ' +
+      'runtime event. This is the workspace default only — a Phase definition ' +
+      'overrides it — and it does not carry a failure forward: failed and ' +
+      'timed-out outcomes stay terminal.'
+  },
+  'retryForceContinueOnCap-save': {
+    body:
+      'Save whether a run continues past the retry cap. Disabled until the ' +
+      'value differs from the saved projection.'
+  },
+  'retryForceContinueOnCap-reset': {
+    body: 'Restore the projected setting. Disabled when there are no unsaved edits.'
+  },
+  // FR-R3-143 (T013) — runtime log rotation.
+  runtimeLogMaxBytes: {
+    title: 'Runtime log rotation size (bytes)',
+    body:
+      'Rotate the runtime debug log once it reaches this size (1 MiB–1 GiB). ' +
+      'Rotation is by size only; there is no time-based trigger.'
+  },
+  'runtimeLogMaxBytes-save': {
+    body:
+      'Save the rotation size. Disabled until the value differs from the ' +
+      'saved projection.'
+  },
+  'runtimeLogMaxBytes-reset': {
+    body: 'Restore the projected rotation size. Disabled when there are no unsaved edits.'
+  },
+  runtimeLogMaxGenerations: {
+    title: 'Runtime logs kept',
+    body:
+      'How many numbered runtime-log generations to keep (0–20). The oldest is ' +
+      'deleted once the count is exceeded. Zero opts out of rotation entirely: ' +
+      'the log is truncated in place, so its earlier contents are gone.'
+  },
+  'runtimeLogMaxGenerations-save': {
+    body:
+      'Save how many rotated logs are kept. Disabled until the value differs ' +
+      'from the saved projection.'
+  },
+  'runtimeLogMaxGenerations-reset': {
+    body: 'Restore the projected count. Disabled when there are no unsaved edits.'
+  },
+
+  // FR-R3-143 (T031) — process environment and backend probing. These four are
+  // `application`-scoped: they are saved to User settings and apply to every
+  // workspace this installation opens, which each body says outright. The
+  // three environment ones are read once, at activation
+  // (`src/activation/workspace-settings.ts:50`), and threaded by value into
+  // every consumer — hence the reload sentence. `backend.probeTimeoutSeconds`
+  // is read through a callback at probe time
+  // (`src/activation/backend-wiring.ts:59`), so it deliberately says the
+  // opposite. Getting either one backwards is how an operator concludes a
+  // setting does not work.
+  cliInheritEnvironment: {
+    title: 'Inherit the extension host environment (legacy)',
+    body:
+      'Superseded by Environment Mode below, and kept because existing settings ' +
+      'still carry it: setting it Off forces `minimal` regardless of the mode. ' +
+      'Leave it On unless you are deliberately reproducing the old behaviour. ' +
+      'Applies to every workspace on this machine, and takes effect after ' +
+      'reloading the VS Code Extension Host.'
+  },
+  'cliInheritEnvironment-save': {
+    body:
+      'Save this toggle to User settings, for every workspace on this machine. ' +
+      'Disabled until the value differs from the saved projection — flip the ' +
+      'checkbox first.'
+  },
+  'cliInheritEnvironment-reset': {
+    body:
+      'Restore the projected value of the legacy inherit toggle. Disabled when ' +
+      'there are no unsaved changes on this field.'
+  },
+
+  cliEnvironmentMode: {
+    title: 'Environment mode',
+    body:
+      'What the backend CLI subprocess inherits. `allowlist` (the default) ' +
+      'forwards the required PATH/home/temp/locale bootstrap variables plus the ' +
+      'names listed below; `minimal` forwards only Schegent-controlled ' +
+      'variables; `inherit` forwards the whole extension-host environment, ' +
+      'including any ambient cloud, registry and signing credentials in it. ' +
+      'Applies to every workspace on this machine, and takes effect after ' +
+      'reloading the VS Code Extension Host.'
+  },
+  'cliEnvironmentMode-save': {
+    body:
+      'Save the environment mode to User settings, for every workspace on this ' +
+      'machine. Disabled until the value differs from the saved projection.'
+  },
+  'cliEnvironmentMode-reset': {
+    body:
+      'Restore the projected environment mode. Disabled when there are no ' +
+      'unsaved changes on this field.'
+  },
+
+  cliEnvironmentAllowlist: {
+    title: 'Environment allowlist',
+    body:
+      'Variable NAMES to forward when the mode is `allowlist` — values are read ' +
+      'from the extension host at spawn time and are never stored in this ' +
+      'setting. Add `HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS` or `ANTHROPIC_API_KEY` ' +
+      'here if your setup needs them. Type a name and press Enter or click Add. ' +
+      'Applies to every workspace on this machine, and takes effect after ' +
+      'reloading the VS Code Extension Host.'
+  },
+  'cliEnvironmentAllowlist-save': {
+    body:
+      'Save the allowlist to User settings, for every workspace on this machine. ' +
+      'Disabled until the list differs from the saved projection — add or remove ' +
+      'a name first.'
+  },
+  'cliEnvironmentAllowlist-reset': {
+    body:
+      'Discard the added and removed names and restore the projected allowlist. ' +
+      'Disabled when there are no unsaved changes on this field.'
+  },
+  'cliEnvironmentAllowlist-add': {
+    body:
+      'Add the typed name to the draft list. Names must match the shape a shell ' +
+      'accepts — letters, digits and underscores, not starting with a digit — ' +
+      'because a name that does not is dropped silently at spawn time. Nothing ' +
+      'is persisted until you click Save.'
+  },
+  'cliEnvironmentAllowlist-remove': {
+    body:
+      'Remove this name from the draft list; the variable stops being forwarded ' +
+      'to backend CLIs once you save. The removal is not persisted until you ' +
+      'click Save, and Reset restores the projected list.'
+  },
+
+  backendProbeTimeoutSeconds: {
+    title: 'Backend probe timeout (seconds)',
+    body:
+      'How long a backend availability probe may run before it is treated as ' +
+      'unavailable (1–30). Raise it on a slow filesystem or a cold network ' +
+      'mount. Applies to every workspace on this machine, and is read at the ' +
+      'start of each probe — the next Ping uses the new value, with no reload.'
+  },
+  'backendProbeTimeoutSeconds-save': {
+    body:
+      'Save the probe timeout to User settings, for every workspace on this ' +
+      'machine. Disabled until the value differs from the saved projection.'
+  },
+  'backendProbeTimeoutSeconds-reset': {
+    body:
+      'Restore the projected probe timeout. Disabled when there are no unsaved ' +
+      'changes on this field.'
+  },
+
+  // FR-R3-143 (T032) — two `window`-scoped settings, saved to this workspace.
+  uiConfirmationsEnable: {
+    title: 'Confirmation prompts',
+    body:
+      'Ask before destructive actions such as clearing the queue or deleting a ' +
+      'definition. Turning this Off removes those prompts, so the action happens ' +
+      'on the first click. Saved for this workspace, and applied to the next ' +
+      'confirmation — no reload.'
+  },
+  'uiConfirmationsEnable-save': {
+    body:
+      'Save this toggle to workspace settings. Disabled until the value differs ' +
+      'from the saved projection — flip the checkbox first.'
+  },
+  'uiConfirmationsEnable-reset': {
+    body:
+      'Restore the projected confirmation setting. Disabled when there are no ' +
+      'unsaved changes on this field.'
+  },
+
+  multiRootSuppressWarning: {
+    title: 'Suppress the multi-root warning',
+    body:
+      'Stop the one-per-activation notice that a multi-root workspace is open ' +
+      'and only the canonical folder is used. The warning is emitted once during ' +
+      'activation, so this takes effect the next time the window is opened or ' +
+      'the Extension Host reloads. Saved for this workspace.'
+  },
+  'multiRootSuppressWarning-save': {
+    body:
+      'Save this toggle to workspace settings. Disabled until the value differs ' +
+      'from the saved projection — flip the checkbox first.'
+  },
+  'multiRootSuppressWarning-reset': {
+    body:
+      'Restore the projected suppression setting. Disabled when there are no ' +
+      'unsaved changes on this field.'
+  },
 } as const satisfies { readonly [K in GeneralSettingsControlId]: ControlDescription };

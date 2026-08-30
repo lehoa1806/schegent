@@ -16,7 +16,14 @@ type SurfaceName =
   | 'queues'
   | 'builder'
   | 'metrics'
-  | 'activity-feed';
+  | 'activity-feed'
+  // FR-R3-143 (T046) — Settings was named by `ROUTE_MOUNT_TARGETS` below and by
+  // `tests/a11y/routes.ts`, so both the route walk and the a11y sweep activated
+  // it; neither photographs. `SurfaceName` is the photographed set, and nothing
+  // relates the two lists, so the surface could be reordered, emptied, or
+  // restyled with every gate green. It is the surface this feature rebuilt, and
+  // it was the only route in `ROUTE_MOUNT_TARGETS` with no baseline.
+  | 'settings';
 
 /** The one queue `fixtures/workflow-snapshot.ts` registers. */
 const FIXTURE_QUEUE_ID = 'default';
@@ -98,6 +105,34 @@ const SURFACE_CONTRACTS: Readonly<Record<SurfaceName, SurfaceContract>> = {
   'activity-feed': {
     present: ['phase-log-selectors', 'phase-log-reading-pane', 'phase-log-entry-list'],
     absent: ['phase-log-loading', 'run-detail-missing']
+  },
+  // FR-R3-143 (T046) — the four `settings-group-*` landmarks are the grouping
+  // this feature imposed on what was one flat field list, so a row that fell out
+  // of its group fails by name rather than as a diff ratio. The last two are the
+  // lines that report a HOST decision rather than a draft value:
+  // `effective-environment-policy` is what the three environment controls
+  // actually resolve to, and `trust-disclosure` is what Workspace Trust allows.
+  // Both render unconditionally, so their absence means the group above them
+  // stopped rendering — which is the fallback a screenshot cannot distinguish.
+  //
+  // `absent` names the route-level branches rather than a settings-specific
+  // empty state, because there is no settings-specific one: `GeneralSettingsTab`
+  // falls back to `IDLE_GENERAL_SETTINGS` when no projection arrives and renders
+  // a complete, plausible form out of it. What the pixels would then differ by is
+  // field values, which is exactly what `--update-snapshots` absorbs silently;
+  // what cannot be absorbed is `RouteOutlet`'s error or loading branch standing
+  // in for the surface entirely.
+  settings: {
+    present: [
+      'general-settings-tab',
+      'settings-group-backend-environment',
+      'settings-group-execution-retry',
+      'settings-group-audit-logging',
+      'settings-group-ui-trust',
+      'effective-environment-policy',
+      'trust-disclosure'
+    ],
+    absent: ['dashboard-route-error', 'dashboard-route-loading']
   }
 };
 
@@ -557,6 +592,22 @@ async function openSurface(page: Page, surface: SurfaceName, theme: ThemeName): 
     return builder;
   }
 
+  if (surface === 'settings') {
+    await page.getByTestId('dashboard-route-settings').click();
+    const settings = page.getByTestId('settings-surface-root');
+    await expect(settings).toBeVisible();
+    // The General tab is `SETTINGS_TABS[0]` and `SettingsSurface.svelte` lands on
+    // it, so no click is needed — and that is asserted rather than assumed. The
+    // Builder arm above had to ask for its tab after Feature 180 moved the
+    // landing tab out from under it; the same move here would otherwise
+    // photograph Fatal Signatures and be adopted by the next baseline refresh.
+    await expect(page.getByTestId('settings-tab-general')).toHaveAttribute(
+      'aria-selected',
+      'true'
+    );
+    return settings;
+  }
+
   await page.getByTestId('dashboard-route-operations').click();
 
   if (surface === 'queues') {
@@ -597,14 +648,40 @@ const volatileMasks = (page: Page): readonly Locator[] => [
   page.getByTestId('sidebar-telemetry-row')
 ];
 
+/**
+ * The surfaces the screenshot loop below walks.
+ *
+ * Named rather than inlined so it can be compared against `SURFACE_CONTRACTS`.
+ * FR-R3-143 (T046) — Settings had a mount target, an a11y route, and a contract
+ * row's worth of landmarks, and no baseline, because this list is the only thing
+ * that decides what is photographed and nothing checked it against anything. The
+ * `readonly SurfaceName[]` annotation rejects a typo; it cannot reject an
+ * omission, which is the direction that fails silently.
+ */
+const PHOTOGRAPHED_SURFACES: readonly SurfaceName[] = [
+  'sidebar',
+  'queues',
+  'builder',
+  'metrics',
+  'activity-feed',
+  'settings'
+];
+
+// The omission check the annotation cannot make. `SURFACE_CONTRACTS` is
+// `Record<SurfaceName, SurfaceContract>`, so its keys are the union itself at
+// runtime: a surface added to `SurfaceName` is a compiler error until it has a
+// contract row, and this is a failure until it has baselines. Both halves of
+// "photographed, not only mounted" then hold by construction rather than by
+// someone remembering. No `page` fixture, so this costs no browser.
+test('every surface with a contract is photographed', () => {
+  expect(
+    [...PHOTOGRAPHED_SURFACES].sort(),
+    'a surface has a structural contract but no screenshot, so nothing compares its pixels'
+  ).toEqual(Object.keys(SURFACE_CONTRACTS).sort());
+});
+
 for (const theme of ['light', 'dark', 'high-contrast'] as const) {
-  for (const surface of [
-    'sidebar',
-    'queues',
-    'builder',
-    'metrics',
-    'activity-feed'
-  ] as const) {
+  for (const surface of PHOTOGRAPHED_SURFACES) {
     test(`${surface} remains visually stable in ${theme}`, async ({ page }) => {
       const target = await openSurface(page, surface, theme);
       // Structural gate before the pixel gate: prove the surface rendered its
@@ -771,6 +848,48 @@ test.describe('route load failure recovery', () => {
   });
 });
 
+/**
+ * Every element a coarse pointer can actuate. `summary` is here because the
+ * settings groups (FR-R3-143) are `<details>`, and a `<summary>` is a natively
+ * interactive control that no `button` selector reaches: it toggles the group,
+ * it takes focus, and on a touch screen it is tapped exactly like a button.
+ * Nothing measured it until this list did, and the theme's coarse-pointer block
+ * did not raise it either — the two omissions covered for each other.
+ */
+const COARSE_POINTER_TARGETS = 'button, input, select, textarea, summary';
+
+/**
+ * Returns one description per control that fails the 44px coarse-pointer floor,
+ * empty when they all pass. Extracted so the seven-route walk and the settings
+ * deep-walk measure by the identical rule; a second inline copy would drift.
+ */
+async function collectUndersizedTargets(page: Page): Promise<string[]> {
+  return page.locator(COARSE_POINTER_TARGETS).evaluateAll((controls) =>
+    controls.flatMap((control) => {
+      const element = control;
+      const view = element.ownerDocument.defaultView;
+      const style = view?.getComputedStyle(element);
+      if (!style) return [];
+      if (style.display === 'none' || style.visibility === 'hidden') return [];
+      const rect = element.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return [];
+      const inputType = element.getAttribute('type');
+      if (inputType === 'checkbox' || inputType === 'radio') {
+        const label = element.closest('label');
+        const labelRect = label?.getBoundingClientRect();
+        return labelRect && labelRect.height >= 44
+          ? []
+          : [`${element.outerHTML.slice(0, 140)} (label height ${labelRect?.height ?? 0})`];
+      }
+      const tooShort = rect.height < 44;
+      const tooNarrow = element.tagName === 'BUTTON' && rect.width < 44;
+      return tooShort || tooNarrow
+        ? [`${element.outerHTML.slice(0, 140)} (${rect.width}×${rect.height})`]
+        : [];
+    })
+  );
+}
+
 test.describe('responsive accessibility hardening', () => {
   test.use({ hasTouch: true, viewport: { width: 390, height: 844 } });
 
@@ -799,30 +918,7 @@ test.describe('responsive accessibility hardening', () => {
       );
       expect(overflow, `${route} introduced page-level horizontal overflow`).toBeLessThanOrEqual(1);
 
-      const undersized = await page.locator('button, input, select, textarea').evaluateAll((controls) =>
-        controls.flatMap((control) => {
-          const element = control;
-          const view = element.ownerDocument.defaultView;
-          const style = view?.getComputedStyle(element);
-          if (!style) return [];
-          if (style.display === 'none' || style.visibility === 'hidden') return [];
-          const rect = element.getBoundingClientRect();
-          if (rect.width === 0 || rect.height === 0) return [];
-          const inputType = element.getAttribute('type');
-          if (inputType === 'checkbox' || inputType === 'radio') {
-            const label = element.closest('label');
-            const labelRect = label?.getBoundingClientRect();
-            return labelRect && labelRect.height >= 44
-              ? []
-              : [`${element.outerHTML.slice(0, 140)} (label height ${labelRect?.height ?? 0})`];
-          }
-          const tooShort = rect.height < 44;
-          const tooNarrow = element.tagName === 'BUTTON' && rect.width < 44;
-          return tooShort || tooNarrow
-            ? [`${element.outerHTML.slice(0, 140)} (${rect.width}×${rect.height})`]
-            : [];
-        })
-      );
+      const undersized = await collectUndersizedTargets(page);
       expect(undersized, `${route} has undersized coarse-pointer controls`).toEqual([]);
 
       const unnamedForms = await page.locator('input, select, textarea').evaluateAll((controls) =>
@@ -847,5 +943,67 @@ test.describe('responsive accessibility hardening', () => {
       // all seven.
       assertNoPageErrors(page, route);
     }
+  });
+
+  /**
+   * FR-R3-143 (T052) — the walk above visits the settings route in the state the
+   * fixture publishes it, and that state hides two of the surface's new controls
+   * from every measurement it makes:
+   *
+   * - **`StringListField`'s per-entry Remove button.** The fixture's
+   *   `cliEnvironmentAllowlist` is `[]`, so the `{#each}` renders nothing and the
+   *   only buttons the walk sees are Add and the field's save/reset pair. A
+   *   Remove that came out at 20px would be invisible to the walk forever,
+   *   because the surface the walk measures never has one.
+   * - **A control that only exists after an interaction.** The entry field's
+   *   error line (`role="alert"`) is likewise unreachable from a published
+   *   snapshot alone.
+   *
+   * So this seeds a row through the UI rather than through the fixture: typing
+   * and clicking Add is the path an operator takes, it exercises `add()`'s
+   * validation against the host's own `itemPattern`, and it leaves the shared
+   * snapshot — and therefore the three settings baselines — untouched.
+   */
+  test('the settings surface holds the 44px floor once its list controls exist', async ({ page }) => {
+    await installDeterministicHost(page);
+    await page.goto('/dashboard.html');
+    await page.addStyleTag({ content: themeCss('dark') });
+    await publishSnapshot(page);
+    await expect(page.getByTestId('queues-tier')).toBeVisible();
+    await expect.poll(() => page.evaluate("matchMedia('(pointer: coarse)').matches")).toBe(true);
+
+    await page.getByTestId('dashboard-route-settings').click();
+    await assertRouteMounted(page, 'settings', ROUTE_MOUNT_TARGETS.settings);
+
+    // The four group headers are `<summary>`, and each one is a tap target.
+    const summaries = page.locator('[data-testid^="settings-group-"] > summary');
+    await expect(summaries, 'the General tab renders its four collapsible groups').toHaveCount(4);
+
+    const allowlist = 'cliEnvironmentAllowlist';
+    await expect(
+      page.getByTestId(`string-list-empty-${allowlist}`),
+      'the fixture starts with an empty allowlist, which is why Remove is unmeasured without this'
+    ).toBeVisible();
+
+    await page.getByTestId(`general-settings-input-${allowlist}`).fill('HTTPS_PROXY');
+    await page.getByTestId(`general-settings-add-${allowlist}`).click();
+    const remove = page.getByTestId(`general-settings-remove-${allowlist}-0`);
+    await expect(remove, 'Add appends a row, and the row carries its own Remove').toBeVisible();
+
+    const undersized = await collectUndersizedTargets(page);
+    expect(undersized, 'settings has undersized coarse-pointer controls').toEqual([]);
+
+    // Named explicitly, because `toEqual([])` above passes just as well when a
+    // control stopped rendering as when it is correctly sized.
+    const removeBox = await remove.boundingBox();
+    expect(removeBox?.height ?? 0, 'the per-entry Remove is a 44px target').toBeGreaterThanOrEqual(44);
+    expect(removeBox?.width ?? 0, 'the per-entry Remove is a 44px target').toBeGreaterThanOrEqual(44);
+
+    const overflow = await page.evaluate(
+      'Math.max(0, document.documentElement.scrollWidth - window.innerWidth)'
+    );
+    expect(overflow, 'the seeded allowlist row must not widen the page').toBeLessThanOrEqual(1);
+
+    assertNoPageErrors(page, 'settings coarse-pointer deep walk');
   });
 });

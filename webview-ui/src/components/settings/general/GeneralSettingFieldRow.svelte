@@ -5,71 +5,36 @@
     type GeneralSettingsControlId
   } from '../GeneralSettingsTab.descriptions';
   import type { PipelineDefinition } from '../../../lib/snapshot-types';
+  import type { Draft, FieldSpec, FieldStatus, ScalarKey } from './field-types';
+  import StringListField from './StringListField.svelte';
 
-  type ScalarKey =
-    | 'cliPath'
-    | 'codexPath'
-    | 'agyPath'
+  // FR-R3-143 (T003) — `ScalarKey`, `FieldKind` and `FieldSpec` now come from
+  // `field-types.ts`. The per-kind key unions below stay: they narrow `draft`
+  // for this component's bindings and have no counterpart in the tab.
+  type StringKey = 'cliPath' | 'codexPath' | 'agyPath' | 'runtimeLogFilePath';
+  type BooleanKey =
     | 'loggingVerbose'
+    | 'retryForceContinueOnCap'
+    | 'cliInheritEnvironment'
+    | 'uiConfirmationsEnable'
+    | 'multiRootSuppressWarning';
+  type NumberKey =
     | 'loopMaxIterations'
     | 'invocationIdleTimeoutSeconds'
     | 'invocationMaxDurationSeconds'
     | 'watchdogPollIntervalMinutes'
     | 'auditRotationSizeMB'
     | 'auditRotationMaxAgeDays'
-    | 'defaultPipelineId'
-    | 'claudeAutoCompactPctOverride'
-    | 'runtimeLogLevel'
-    | 'runtimeLogFilePath'
-    | 'sessionRetentionMaxAgeDays'
-    | 'sessionRetentionMaxBytes'
-    | 'rawTranscriptMode';
-
-  type StringKey = 'cliPath' | 'codexPath' | 'agyPath' | 'runtimeLogFilePath';
-
-  type FieldKind =
-    | 'string'
-    | 'boolean'
-    | 'number'
-    | 'pipeline-select'
-    | 'number-optional'
-    | 'level-select'
-    | 'raw-transcript-select';
-
-  interface FieldSpec {
-    readonly key: ScalarKey;
-    readonly ipcKey?: string;
-    readonly label: string;
-    readonly kind: FieldKind;
-    readonly min?: number;
-    readonly max?: number;
-    readonly placeholder?: string;
-  }
-
-  type Draft = {
-    cliPath: string;
-    codexPath: string;
-    agyPath: string;
-    loggingVerbose: boolean;
-    loopMaxIterations: number;
-    invocationIdleTimeoutSeconds: number;
-    invocationMaxDurationSeconds: number;
-    watchdogPollIntervalMinutes: number;
-    auditRotationSizeMB: number;
-    auditRotationMaxAgeDays: number;
-    defaultPipelineId: string;
-    claudeAutoCompactPctOverride: number | null;
-    runtimeLogLevel: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
-    runtimeLogFilePath: string;
-    sessionRetentionMaxAgeDays: number;
-    sessionRetentionMaxBytes: number;
-    rawTranscriptMode: 'always' | 'errors-only' | 'off';
-  };
-
-  interface FieldStatus {
-    status: 'pending' | 'accepted' | 'rejected';
-    reason?: string;
-  }
+    | 'retryMaxAttempts'
+    | 'runtimeLogMaxBytes'
+    | 'runtimeLogMaxGenerations'
+    | 'backendProbeTimeoutSeconds';
+  // FR-R3-143 (T029, T030) — one member each so far. Written as unions anyway:
+  // both kinds are generic, and the `-add` / `-remove-<i>` description keys the
+  // list editor needs are indexed off this type, so a second list setting is a
+  // member here and three description entries, not another component.
+  type EnumKey = 'cliEnvironmentMode';
+  type StringListKey = 'cliEnvironmentAllowlist';
 
   interface Props {
     spec: FieldSpec;
@@ -129,14 +94,14 @@
         <input
           type="checkbox"
           aria-labelledby={fieldLabelId(spec.key)}
-          bind:checked={draft[spec.key as 'loggingVerbose']}
+          bind:checked={draft[spec.key as BooleanKey]}
           data-testid="general-settings-input-{spec.key}"
           use:hoverTextAnchor={{
             controlId: spec.key,
             description: GENERAL_SETTINGS_DESCRIPTIONS[spec.key]
           }}
         />
-        <span>{draft[spec.key as 'loggingVerbose'] ? 'On' : 'Off'}</span>
+        <span>{draft[spec.key as BooleanKey] ? 'On' : 'Off'}</span>
       </label>
     {:else if spec.kind === 'number'}
       <input
@@ -150,17 +115,7 @@
           controlId: spec.key,
           description: GENERAL_SETTINGS_DESCRIPTIONS[spec.key]
         }}
-        bind:value={
-          draft[
-            spec.key as
-              | 'loopMaxIterations'
-              | 'invocationIdleTimeoutSeconds'
-              | 'invocationMaxDurationSeconds'
-              | 'watchdogPollIntervalMinutes'
-              | 'auditRotationSizeMB'
-              | 'auditRotationMaxAgeDays'
-          ]
-        }
+        bind:value={draft[spec.key as NumberKey]}
       />
     {:else if spec.kind === 'pipeline-select'}
       <select
@@ -234,6 +189,35 @@
         <option value="errors-only">Errors only</option>
         <option value="off">Off</option>
       </select>
+    {:else if spec.kind === 'enum'}
+      <!-- FR-R3-143 (T029) — the generic enum. Values are rendered as their own
+           labels, which is what makes it generic; a kind whose labels differ
+           from its values stays bespoke (see `FieldKind` in field-types.ts). -->
+      <select
+        class="select-input"
+        aria-labelledby={fieldLabelId(spec.key)}
+        data-testid="general-settings-input-{spec.key}"
+        bind:value={draft[spec.key as EnumKey]}
+        use:hoverTextAnchor={{
+          controlId: spec.key,
+          description: GENERAL_SETTINGS_DESCRIPTIONS[spec.key]
+        }}
+      >
+        {#each spec.options ?? [] as option (option)}
+          <option value={option}>{option}</option>
+        {/each}
+      </select>
+    {:else if spec.kind === 'string-list'}
+      <StringListField
+        bind:value={draft[spec.key as StringListKey]}
+        itemPattern={spec.itemPattern}
+        invalidMessage={spec.invalidMessage}
+        controlIdPrefix={spec.key}
+        labelledBy={fieldLabelId(spec.key)}
+        inputDescription={GENERAL_SETTINGS_DESCRIPTIONS[spec.key as StringListKey]}
+        addDescription={GENERAL_SETTINGS_DESCRIPTIONS[`${spec.key as StringListKey}-add`]}
+        removeDescription={GENERAL_SETTINGS_DESCRIPTIONS[`${spec.key as StringListKey}-remove`]}
+      />
     {:else}
       <input
         type="text"
@@ -248,6 +232,12 @@
           description: GENERAL_SETTINGS_DESCRIPTIONS[spec.key]
         }}
       />
+    {/if}
+    {#if spec.note}
+      <!-- FR-R3-143 (T031, T032) — static text, deliberately not a hover-text:
+           a disclosure the operator has to hover to find is one they change the
+           setting without. No `controlId`, so it creates no dangling surface. -->
+      <p class="field-note" data-testid="general-settings-note-{spec.key}">{spec.note}</p>
     {/if}
   </div>
   <div class="field-actions">
@@ -324,6 +314,12 @@
     letter-spacing: 0.02em;
   }
   .field-input { grid-area: input; }
+  .field-note {
+    margin: 4px 0 0;
+    font-size: 0.8em;
+    line-height: 1.4;
+    color: var(--schegent-muted-fg);
+  }
   .field-actions {
     grid-area: actions;
     display: flex;

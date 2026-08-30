@@ -31,15 +31,31 @@ const mocks = vi.hoisted(() => {
       phases: boolean;
       retryConditions: boolean;
     },
+    // FR-R3-143 (T036) — which ladder step decided, now carried end-to-end.
+    scope: {
+      phases: 'workspace-trust',
+      retryConditions: 'workspace-trust'
+    } as {
+      phases: 'user' | 'workspace' | 'workspace-trust';
+      retryConditions: 'user' | 'workspace' | 'workspace-trust';
+    },
     throwOnNext: false as boolean
   };
   return { state };
 });
 
+// FR-R3-143 (T036) — a factory mock replaces the whole module, so `getResolvedScope`
+// has to be declared here or `composeTrustProjection` calls `undefined`, the
+// fail-closed `try` swallows it, and every assertion below silently tests the
+// fallback instead of the path it names.
 vi.mock('../../src/state/capability-trust-resolver', () => ({
   getResolvedCapabilities: () => {
     if (mocks.state.throwOnNext) throw new Error('resolver boom');
     return { ...mocks.state.current };
+  },
+  getResolvedScope: (capability: 'phases' | 'retryConditions') => {
+    if (mocks.state.throwOnNext) throw new Error('resolver boom');
+    return mocks.state.scope[capability];
   }
 }));
 
@@ -92,6 +108,7 @@ beforeEach(() => {
     phases: true,
     retryConditions: true
   };
+  mocks.state.scope = { phases: 'workspace-trust', retryConditions: 'workspace-trust' };
   mocks.state.throwOnNext = false;
 });
 

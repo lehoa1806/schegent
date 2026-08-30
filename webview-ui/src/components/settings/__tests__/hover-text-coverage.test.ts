@@ -106,6 +106,22 @@ function snapshotWithGeneralSettings(): WorkflowSnapshot {
 // QueueSettingsTab.svelte. The queue-related hover-text fixtures are no
 // longer needed.
 
+/**
+ * FR-R3-143 (T030) — the shipped default for `cli.environmentAllowlist` is the
+ * empty list, so the fixture above renders the list editor with no rows and no
+ * Remove buttons. `cliEnvironmentAllowlist-remove` would be reported as an
+ * orphan description key on that mount alone — not because it is unwired, but
+ * because nothing asked for a row. This is the case `alternateProps` exists
+ * for: the orphan check unions the mounts.
+ */
+function snapshotWithPopulatedAllowlist(): WorkflowSnapshot {
+  const generalSettings: GeneralSettings = {
+    ...IDLE_GENERAL_SETTINGS,
+    cliEnvironmentAllowlist: Object.freeze(['HTTPS_PROXY']) as readonly string[]
+  };
+  return buildBaseSnapshot({ generalSettings });
+}
+
 
 // ── Per-tab table (T036 parameterization) ──────────────────────────────
 
@@ -126,6 +142,25 @@ interface TabSpec {
    */
   readonly headerOnlyKeys: readonly string[];
   /**
+   * FR-R3-143 (T053) — the number of focusable controls this tab is known to
+   * mount, as a floor.
+   *
+   * The two assertions below are both satisfiable by a tab that renders almost
+   * nothing: `focusable.length > 0` passes on one control, and the orphan check
+   * passes when no description key is orphaned — which is trivially true if the
+   * groups holding those controls stopped rendering and their keys went with
+   * them. That is not hypothetical here: `GeneralSettingsTab` falls back to
+   * `IDLE_GENERAL_SETTINGS` and renders a plausible form from it, so a broken
+   * projection does not empty the DOM, it shrinks it.
+   *
+   * A measured floor is the check neither of those makes. RAISE it when a tab
+   * gains controls — that is the "the count rises" half of FR-016, and a green
+   * run on an unchanged count would mean the collector never saw the new ones.
+   * Lowering it is how a regression gets absorbed, so a change that lowers this
+   * number should say in the same diff which controls left and why.
+   */
+  readonly minFocusableControls: number;
+  /**
    * Keys (after the prefix and dynamic-suffix translation) that this tab
    * expects to see exercised by mounting. All other keys in the map must
    * also appear here.
@@ -145,15 +180,30 @@ const TAB_SPECS: readonly TabSpec[] = [
     name: 'GeneralSettingsTab',
     component: GeneralSettingsTab as unknown as ComponentType,
     buildProps: () => ({ snapshot: snapshotWithGeneralSettings() }),
+    alternateProps: [() => ({ snapshot: snapshotWithPopulatedAllowlist() })],
     headerOnlyKeys: ['tab-header'],
+    // Measured at FR-R3-143 (T053) on `snapshotWithGeneralSettings()`, which
+    // leaves the allowlist empty — so this counts no per-row Remove button.
+    minFocusableControls: 92,
     descriptionKeys: Object.keys(GENERAL_SETTINGS_DESCRIPTIONS),
-    controlIdToKey: (id) => (id in GENERAL_SETTINGS_DESCRIPTIONS ? id : null)
+    controlIdToKey: (id) => {
+      // FR-R3-143 (T030) — the allowlist editor's Remove buttons are per-row,
+      // so their control ids carry a row index, exactly as FatalSignaturesTab's
+      // do below. One shared id across rows would collide in the action's
+      // inline branch, which builds `id="desc-<controlId>"`.
+      if (/^cliEnvironmentAllowlist-remove-\d+$/.test(id)) {
+        return 'cliEnvironmentAllowlist-remove';
+      }
+      return id in GENERAL_SETTINGS_DESCRIPTIONS ? id : null;
+    }
   },
   {
     name: 'FatalSignaturesTab',
     component: FatalSignaturesTab as unknown as ComponentType,
     buildProps: () => ({ snapshot: snapshotWithGeneralSettings() }),
     headerOnlyKeys: ['tab-header', 'built-in-section-header', 'operator-section-header'],
+    // Measured at FR-R3-143 (T053) on the one-operator-row fixture above.
+    minFocusableControls: 5,
     descriptionKeys: Object.keys(FATAL_SIGNATURES_DESCRIPTIONS),
     controlIdToKey: (id) => {
       // Static buttons map fatal-add → operator-add, etc.
@@ -214,6 +264,12 @@ describe.each(TAB_SPECS)('Feature 018 — hover-text coverage on $name', (spec) 
     const { container } = render(spec.component, { props: spec.buildProps() });
     const focusable = Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
     expect(focusable.length, 'tab mounted no focusable controls').toBeGreaterThan(0);
+    expect(
+      focusable.length,
+      `${spec.name} mounted fewer focusable controls than it is known to have. Nothing below ` +
+        'reports a shrinking surface: the orphan check passes when a group stops rendering and ' +
+        'takes its description keys with it. See `minFocusableControls`.'
+    ).toBeGreaterThanOrEqual(spec.minFocusableControls);
 
     const uncovered: string[] = [];
     for (const el of focusable) {
@@ -289,6 +345,100 @@ describe.each(TAB_SPECS)('Feature 018 — hover-text coverage on $name', (spec) 
     expect(
       danglingControlIds,
       `controlIds without description-map keys: ${danglingControlIds.join(', ')}`
+    ).toEqual([]);
+  });
+});
+
+// ── FR-R3-143 (T053): the controls this feature added, by name ─────────
+
+/**
+ * The count floor above says the surface did not shrink. It cannot say that the
+ * collector saw the controls FR-R3-143 added — 92 is satisfiable by 92 of
+ * anything. These name them.
+ *
+ * Named rather than counted because a delta is the weaker claim: a run that
+ * gained six controls and silently lost six others passes a delta check and
+ * fails this one. Six field rows entered `KEY_SPECS` with this item, and two
+ * components — `StringListField` and `TrustDisclosure` — render controls that
+ * do NOT go through `GeneralSettingFieldRow` and so derive no `-save`/`-reset`
+ * id automatically; those are exactly the ones that would land in `orphanKeys`
+ * if their anchors were dropped, and exactly the ones nothing else asserts by
+ * name.
+ */
+describe('FR-R3-143 — the controls this item added are collected', () => {
+  /** Anchored control ids across the empty-allowlist and populated mounts. */
+  function collectAcrossFixtures(): Set<string> {
+    const ids = new Set<string>();
+    for (const snapshot of [snapshotWithGeneralSettings(), snapshotWithPopulatedAllowlist()]) {
+      const { container } = render(GeneralSettingsTab as unknown as ComponentType, {
+        props: { snapshot }
+      });
+      container
+        .querySelectorAll<HTMLElement>('[data-hover-text-anchored="true"]')
+        .forEach((el) => {
+          const v = el.getAttribute('data-hover-text-controlid');
+          if (v) ids.add(v);
+        });
+      container.querySelectorAll<HTMLElement>('p[id^="desc-"]').forEach((p) => {
+        const id = p.getAttribute('id');
+        if (id) ids.add(id.slice('desc-'.length));
+      });
+      cleanup();
+    }
+    return ids;
+  }
+
+  /**
+   * The six keys that entered `KEY_SPECS` with this item, as
+   * `GeneralSettingFieldRow` spells their control ids.
+   *
+   * `cliEnvironmentAllowlist` is absent from this list on purpose: it is a
+   * `string-list`, so `StringListField` renders it and its Add/Remove ids do not
+   * follow the row convention. It is asserted separately below.
+   */
+  const NEW_FIELD_KEYS = [
+    'cliEnvironmentMode',
+    'cliInheritEnvironment',
+    'backendProbeTimeoutSeconds',
+    'uiConfirmationsEnable',
+    'multiRootSuppressWarning'
+  ] as const;
+
+  it('anchors every new field row, with its save and reset', () => {
+    const seen = collectAcrossFixtures();
+    const missing = NEW_FIELD_KEYS.flatMap((key) =>
+      [key, `${key}-save`, `${key}-reset`].filter((id) => !seen.has(id))
+    );
+    expect(
+      missing,
+      'these controls entered the tab with FR-R3-143 and the collector does not see them, so ' +
+        'nothing is checking their hover text'
+    ).toEqual([]);
+  });
+
+  it('anchors the allowlist editor: entry, Add, and a per-row Remove', () => {
+    const seen = collectAcrossFixtures();
+    // The Remove id carries its row index; the populated fixture has one row.
+    expect(
+      [
+        'cliEnvironmentAllowlist',
+        'cliEnvironmentAllowlist-add',
+        'cliEnvironmentAllowlist-remove-0'
+      ].filter((id) => !seen.has(id)),
+      'StringListField does not go through GeneralSettingFieldRow, so each of its controls ' +
+        'carries its own anchor or none at all. The Remove button only exists when the list has ' +
+        'a row, which is what the populated fixture is for.'
+    ).toEqual([]);
+  });
+
+  it('anchors the trust disclosure affordance for both capabilities', () => {
+    const seen = collectAcrossFixtures();
+    expect(
+      ['trust-phases-open-settings', 'trust-retryConditions-open-settings'].filter(
+        (id) => !seen.has(id)
+      ),
+      'TrustDisclosure renders the one control on a read-only surface; if it is unanchored the ' +
+        'operator gets a button with no explanation of why the setting is not editable here'
     ).toEqual([]);
   });
 });

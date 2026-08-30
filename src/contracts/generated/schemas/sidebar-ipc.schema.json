@@ -67,6 +67,7 @@
           "CMD_START_PHASE_LOG_TAIL",
           "CMD_STOP_PHASE_LOG_TAIL",
           "CMD_OPEN_VERBOSE_SETTING",
+          "CMD_OPEN_TRUST_SETTINGS",
           "CMD_RESOLVE_AUDIT_POINTER",
           "CMD_RESOLVE_HISTORY_DESCRIPTION",
           "CMD_SET_PHASE_BREAKPOINT",
@@ -265,6 +266,11 @@
           "name": "resolvedTrust",
           "optional": false,
           "type": "{ readonly phases: boolean; readonly retryConditions: boolean; }"
+        },
+        {
+          "name": "resolvedScope",
+          "optional": false,
+          "type": "{ readonly phases: ResolvedScope; readonly retryConditions: ResolvedScope; }"
         },
         {
           "name": "confirmSuppression",

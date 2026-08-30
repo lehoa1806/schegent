@@ -96,7 +96,9 @@ export const CONFIGURATION_SENSITIVITY = Object.freeze({
   // ---- operator-signal (4) ----
   'schegent.ui.confirmations.enable': {
     sensitivity: 'operator-signal',
-    reason: 'false removes the confirmation dialog from ten destructive actions'
+    reason:
+      'false removes the confirmation dialog from every sidebar action the ActionKey ' +
+      'union declares in webview-ui/src/lib/action-copy.ts'
   },
   'schegent.multiRoot.suppressWarning': {
     sensitivity: 'operator-signal',

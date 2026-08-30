@@ -22,6 +22,7 @@ import {
   CMD_OPEN_DASHBOARD,
   CMD_OPEN_HISTORY_ITEM_DETAILS,
   CMD_OPEN_VERBOSE_SETTING,
+  CMD_OPEN_TRUST_SETTINGS,
   CMD_PAUSE_PHASE,
   CMD_PAUSE_QUEUE,
   CMD_PING_BACKEND,
@@ -80,6 +81,7 @@ import { handler as openAuditLog } from './cmd-open-audit-log';
 import { handler as openDashboard } from './cmd-open-dashboard';
 import { handler as openHistoryItemDetails } from './cmd-open-history-item-details';
 import { handler as openVerboseSetting } from './cmd-open-verbose-setting';
+import { handler as openTrustSettings } from './cmd-open-trust-settings';
 import { handler as pausePhase } from './cmd-pause-phase';
 import { handler as pauseQueue } from './cmd-pause-queue';
 import { handler as pingBackend } from './cmd-ping-backend';
@@ -152,6 +154,7 @@ export const HANDLERS: ReadonlyMap<string, CommandHandler> = new Map<
   [CMD_OPEN_DASHBOARD, openDashboard as CommandHandler],
   [CMD_OPEN_HISTORY_ITEM_DETAILS, openHistoryItemDetails as CommandHandler],
   [CMD_OPEN_VERBOSE_SETTING, openVerboseSetting as CommandHandler],
+  [CMD_OPEN_TRUST_SETTINGS, openTrustSettings as CommandHandler],
   [CMD_PAUSE_PHASE, pausePhase as CommandHandler],
   [CMD_PAUSE_QUEUE, pauseQueue as CommandHandler],
   [CMD_PING_BACKEND, pingBackend as CommandHandler],

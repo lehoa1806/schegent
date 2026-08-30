@@ -362,118 +362,18 @@ const EXEMPTIONS: ReadonlyMap<string, Exemption> = new Map<string, Exemption>([
 
   // ── Owned by FR-R3-143 (T1557–T1562): the twelve settings with no operator
   //    surface anywhere in the product. Each row leaves with its control. ────
-  [
-    'retry.maxAttempts',
-    {
-      owner: 'FR-R3-143 (T1558)',
-      reason: 'How many times a failed phase is retried. Already accepted by the IPC; simply never drawn.',
-      reviewBy: '2026-12-31'
-    }
-  ],
-  [
-    'retry.forceContinueOnCap',
-    {
-      owner: 'FR-R3-143 (T1558)',
-      reason: 'Whether a run continues past the retry cap. Already accepted by the IPC; simply never drawn.',
-      reviewBy: '2026-12-31'
-    }
-  ],
-  [
-    'logging.runtimeLogMaxBytes',
-    {
-      owner: 'FR-R3-143 (T1558)',
-      reason: 'Runtime log rotation size. Already accepted by the IPC; simply never drawn.',
-      reviewBy: '2026-12-31'
-    }
-  ],
-  [
-    'logging.runtimeLogMaxGenerations',
-    {
-      owner: 'FR-R3-143 (T1558)',
-      reason: 'How many rotated runtime logs are kept. Already accepted by the IPC; simply never drawn.',
-      reviewBy: '2026-12-31'
-    }
-  ],
-  [
-    'cli.inheritEnvironment',
-    {
-      owner: 'FR-R3-143 (T1559, T1561)',
-      reason:
-        'The environment inherit switch. Application-scoped and a member of ' +
-        '`EXECUTABLE_AUTHORITY_PROPERTIES`, so the control has to state its machine-wide ' +
-        'reach before it can exist.',
-      reviewBy: '2026-12-31'
-    }
-  ],
-  [
-    'cli.environmentMode',
-    {
-      owner: 'FR-R3-143 (T1559, T1561)',
-      reason:
-        'Whether the CLI gets an allowlisted or an inherited environment. Needs the generic ' +
-        'enum `FieldKind` T1559 adds rather than a fourth bespoke select.',
-      reviewBy: '2026-12-31'
-    }
-  ],
-  [
-    'cli.environmentAllowlist',
-    {
-      owner: 'FR-R3-143 (T1559, T1561)',
-      reason:
-        'Which variables cross into the CLI. An array of strings, which the tab has no ' +
-        'renderer for until T1559 builds one.',
-      reviewBy: '2026-12-31'
-    }
-  ],
-  [
-    'backend.probeTimeoutSeconds',
-    {
-      owner: 'FR-R3-143 (T1559, T1561)',
-      reason: 'The timeout on the probe the Ping button runs. No host write path today.',
-      reviewBy: '2026-12-31'
-    }
-  ],
-  [
-    'trust.allowCustomPhases',
-    {
-      owner: 'FR-R3-143 (T1560)',
-      reason:
-        'Whether authored Phases may run. A capability-class nullable boolean resolved ' +
-        'against workspace trust, so T1560 renders the ladder and the deciding step, not ' +
-        'the raw value.',
-      reviewBy: '2026-12-31'
-    }
-  ],
-  [
-    'trust.allowCustomRetryConditions',
-    {
-      owner: 'FR-R3-143 (T1560)',
-      reason:
-        'Whether authored retry conditions may run. Same capability ladder as ' +
-        '`trust.allowCustomPhases`.',
-      reviewBy: '2026-12-31'
-    }
-  ],
-  [
-    'ui.confirmations.enable',
-    {
-      owner: 'FR-R3-143 (T1561)',
-      reason:
-        'Whether destructive actions confirm. T1561 gates it asymmetrically — disabling ' +
-        'confirms once, enabling does not — so it cannot ship as a plain checkbox.',
-      reviewBy: '2026-12-31'
-    }
-  ],
-  [
-    'multiRoot.suppressWarning',
-    {
-      owner: 'FR-R3-143 (T1559)',
-      reason:
-        'The multi-root workspace warning. Read once at activation and outside the ' +
-        'general-settings IPC surface, so it needs a `KEY_SPECS` entry before a control.',
-      reviewBy: '2026-12-31'
-    }
-  ],
+  //
+  // All eight have left. `cli.inheritEnvironment`, `cli.environmentMode`,
+  // `cli.environmentAllowlist` and `backend.probeTimeoutSeconds` are rendered by
+  // `PROCESS_ENVIRONMENT_FIELDS` (T031); `ui.confirmations.enable` and
+  // `multiRoot.suppressWarning` by `UI_TRUST_FIELDS` (T032); and
+  // `trust.allowCustomPhases` / `trust.allowCustomRetryConditions` by
+  // `TrustDisclosure.svelte` (T039), READ-ONLY — the gate counts a key as
+  // surfaced when the operator can see what is in force, which is the whole
+  // question a capability the host resolves can answer (spec C1 records why a
+  // control would ack `accepted` and change nothing). Their rows are deleted
+  // rather than renewed — a row for a rendered key is the ledger's own
+  // `already rendered` failure, so leaving one would fail FR-005 here.
 
   // ── Owned by FR-R3-144 (T1563–T1568): the backend and spend surface. ──────
   [
@@ -688,7 +588,23 @@ describe('FR-R3-145 (T1570) — every declared schegent.* setting is rendered or
     const synthetic = new Map<string, Exemption>([
       ['models', { owner: '   ', reason: 'unowned', reviewBy: PERMANENT }],
       ['fatalSignatures', { owner: 'A. Maintainer', reason: '', reviewBy: PERMANENT }],
-      ['ui.confirmations.enable', { owner: 'A. Maintainer', reason: 'stale', reviewBy: '2020-01-01' }],
+      // FR-R3-143 (T031, T032, then T041) — the expired row has now been moved
+      // twice for the same reason, which is the reason it is finally parked on a
+      // key that cannot move again. It was `ui.confirmations.enable`; T031/T032
+      // rendered that, so it became `trust.allowCustomPhases`; T039 rendered
+      // that too. Either way the synthetic entry reports BOTH `expired` and
+      // `already rendered` (`ledgerProblems` accumulates; it does not stop at
+      // the first), and the kind list carries a duplicate.
+      //
+      // `invocation.timeoutSeconds` is declared, undrawn, and PERMANENTLY so:
+      // its ledger row records that a control would put two keys on one typed
+      // field and let the unset alias clobber the renamed key. A key that is
+      // waiting for a control is the wrong anchor for a fixture that needs one
+      // that will never get one.
+      [
+        'invocation.timeoutSeconds',
+        { owner: 'A. Maintainer', reason: 'stale', reviewBy: '2020-01-01' }
+      ],
       ['cli.path', { owner: 'A. Maintainer', reason: 'superseded by a control', reviewBy: 'soon' }],
       ['queue.globalConcurrencyCap', { owner: 'A. Maintainer', reason: 'the removed key', reviewBy: PERMANENT }]
     ]);

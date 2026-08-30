@@ -45,7 +45,79 @@ export interface GeneralSettingsPayload {
   // privacy-profile apply — was the first to notice.
   readonly 'logging.sessionRetentionMaxAgeDays'?: number;
   readonly 'logging.sessionRetentionMaxBytes'?: number;
+  // FR-R3-143 (T022) — six more the host has always accepted and this
+  // interface never named, for exactly the reason recorded above: the tab
+  // posts through a COMPUTED key. Same fix, applied to the rest of the gap
+  // rather than to the two keys that happened to be noticed.
+  readonly 'codex.path'?: string;
+  readonly 'agy.path'?: string;
+  readonly 'retry.maxAttempts'?: number;
+  readonly 'retry.forceContinueOnCap'?: boolean;
+  readonly 'logging.runtimeLogMaxBytes'?: number;
+  readonly 'logging.runtimeLogMaxGenerations'?: number;
+  // FR-R3-143 (T018) — and the six this feature admits to `KEY_SPECS`.
+  readonly 'cli.inheritEnvironment'?: boolean;
+  readonly 'cli.environmentMode'?: 'inherit' | 'minimal' | 'allowlist';
+  readonly 'cli.environmentAllowlist'?: readonly string[];
+  readonly 'backend.probeTimeoutSeconds'?: number;
+  readonly 'ui.confirmations.enable'?: boolean;
+  readonly 'multiRoot.suppressWarning'?: boolean;
 }
+
+/**
+ * FR-R3-143 (T022) — the same keys at runtime, so a gate can compare this
+ * surface against the host's `KEY_SPECS` instead of trusting that a reader
+ * noticed. The interface above cannot be enumerated at runtime, and it drifted
+ * from `KEY_SPECS` by six members before anything asked.
+ *
+ * Kept honest in BOTH directions by `PAYLOAD_KEYS_MATCH_INTERFACE` below: a key
+ * here that the interface does not declare, or a member the interface declares
+ * that is missing here, makes that alias `never` and fails the typecheck.
+ * `save-general-settings.payload-parity.test.ts` then compares this list to
+ * `KEY_SPECS`, which is the half a type cannot check across the boundary.
+ */
+export const GENERAL_SETTINGS_PAYLOAD_KEYS = [
+  'cli.path',
+  'codex.path',
+  'agy.path',
+  'logging.verbose',
+  'loop.maxIterations',
+  'invocation.idleTimeoutSeconds',
+  'invocation.maxDurationSeconds',
+  'watchdog.pollIntervalMinutes',
+  'audit.rotation.sizeMB',
+  'audit.rotation.maxAgeDays',
+  'defaultPipelineId',
+  'fatalSignatures',
+  'claude.autoCompactPctOverride',
+  'logging.runtimeLogLevel',
+  'logging.runtimeLogFilePath',
+  'logging.rawTranscriptMode',
+  'logging.runtimeLogMaxBytes',
+  'logging.runtimeLogMaxGenerations',
+  'logging.sessionRetentionMaxAgeDays',
+  'logging.sessionRetentionMaxBytes',
+  'retry.maxAttempts',
+  'retry.forceContinueOnCap',
+  'cli.inheritEnvironment',
+  'cli.environmentMode',
+  'cli.environmentAllowlist',
+  'backend.probeTimeoutSeconds',
+  'ui.confirmations.enable',
+  'multiRoot.suppressWarning'
+] as const;
+
+export type GeneralSettingsPayloadKey = (typeof GENERAL_SETTINGS_PAYLOAD_KEYS)[number];
+
+type UnlistedPayloadMember = Exclude<keyof GeneralSettingsPayload, GeneralSettingsPayloadKey>;
+type UndeclaredListedKey = Exclude<GeneralSettingsPayloadKey, keyof GeneralSettingsPayload>;
+
+/** `never` — and therefore a type error on the constant below — if either set has a member the other lacks. */
+type PayloadKeyParity = [UnlistedPayloadMember, UndeclaredListedKey] extends [never, never]
+  ? true
+  : never;
+
+export const PAYLOAD_KEYS_MATCH_INTERFACE: PayloadKeyParity = true;
 
 export type SaveResult =
   | { readonly status: 'accepted' }

@@ -4,8 +4,12 @@ Restored under FR-R3-062. This page is cited by two `schegent.trust.*` settings 
 manifest and by three trust-banner bodies the webview shows an operator, so its absence was a dead
 reference reachable from the product UI.
 
-Sourced from `src/state/capability-trust-resolver.ts` and
-`src/ui/sidebar/commands/trust-gate.ts`.
+Sourced from `src/state/capability-trust-decision.ts`, which holds the ladder
+itself, `src/state/capability-trust-resolver.ts`, which is the half that reads
+`vscode`, and `src/ui/sidebar/commands/trust-gate.ts`. `FR-R3-143` split the two
+so the ladder could be evaluated without the extension host; the four steps
+below are unchanged by that move.
+<!-- Source: src/state/capability-trust-decision.ts -->
 <!-- Source: src/state/capability-trust-resolver.ts -->
 <!-- Source: src/ui/sidebar/commands/trust-gate.ts -->
 
@@ -65,7 +69,7 @@ Two things deliberately did **not** change:
   considered and declined: workspace trust already gates the residual case, and flipping would stop
   custom phases loading for every existing operator on upgrade — a first-run behaviour change for
   everyone, to close a case an explicit `false` already closes. The decision is recorded at
-  `SILENT_DEFAULT` in `src/state/capability-trust-resolver.ts`, and the flip remains available; taking
+  `SILENT_DEFAULT` in `src/state/capability-trust-decision.ts`, and the flip remains available; taking
   it would carry a migration story with it, because an operator whose phases stopped loading must be
   told why, by name, in the refusal.
 

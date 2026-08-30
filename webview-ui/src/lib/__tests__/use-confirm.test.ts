@@ -213,6 +213,34 @@ describe('useConfirm', () => {
     await expect(p).resolves.toBe(false);
   });
 
+  /**
+   * FR-R3-143 (T049 run 8) — `settings.disable-confirmations` is the second
+   * member of `NEVER_SUPPRESSIBLE`, and until this test only the first one was
+   * ever exercised. A membership nothing runs is a declaration, and the module's
+   * own header records what happened the last time this list was described
+   * rather than checked.
+   *
+   * The action is the reason the rule exists at one more level: a "Don't ask
+   * again" on the prompt guarding "turn every prompt off" would suppress the
+   * mechanism that reads the suppression set.
+   */
+  it('settings.disable-confirmations is never suppressible — it still prompts with the key suppressed', async () => {
+    state.suppressedKeys.add('settings.disable-confirmations');
+    const p = useConfirm('settings.disable-confirmations');
+    await tick();
+    expect(
+      getDialog(),
+      'a suppressed key must still raise this prompt; resolving true here is the surface ' +
+        'silently disabling every other confirmation'
+    ).not.toBeNull();
+    expect(
+      document.querySelector('[data-testid="confirm-dialog-suppression-checkbox"]'),
+      'and the dialog must not offer the checkbox that would record the suppression'
+    ).toBeNull();
+    getButton('confirm-dialog-cancel').click();
+    await expect(p).resolves.toBe(false);
+  });
+
   it('teardown clears modalOpen even when the user cancels (lock is released)', async () => {
     const p = useConfirm('queue.pause');
     await tick();

@@ -2,56 +2,45 @@
   import type { GeneralSettings, WorkflowSnapshot } from '../../lib/snapshot-types';
   import { IDLE_GENERAL_SETTINGS, IDLE_SESSION_ARTIFACTS } from '../../lib/snapshot-types';
   import { saveGeneralSettings } from '../../lib/save-general-settings';
-  import { GENERAL_SETTINGS_DESCRIPTIONS } from './GeneralSettingsTab.descriptions';
-  import { hoverTextAnchor } from '../hover-text/hover-text-anchor-action';
-  import GeneralSettingFieldRow from './general/GeneralSettingFieldRow.svelte';
-  import PrivacyProfileSelector from './general/PrivacyProfileSelector.svelte';
-  import BackendHealthSection from './BackendHealthSection.svelte';
+  import type { Draft, FieldSpec, ScalarKey } from './general/field-types';
+  // FR-R3-143 (T033) — the pure functions of (projection, draft). See that
+  // module's header for why they left the component and why `FIELDS` did not.
+  import {
+    friendlyReason,
+    ipcKeyFor,
+    isFieldChanged,
+    scopeLabelFor,
+    snapshotToDraft
+  } from './general/settings-draft';
+  import { confirmSettingsWrite } from './general/confirm-settings-write';
+  // FR-R3-143 (T030, T034) — the mode list and the allowlist element pattern are
+  // READ from the module that enforces them, not copied. A copy on the far side of
+  // the IPC boundary is the one that would drift, and it would drift silently:
+  // `sanitizeProcessEnvAllowlist` drops a name the surface accepted without saying
+  // so, at spawn time, in another process.
+  //
+  // This import is `src/contracts/`, and that is not incidental. The first version
+  // read the same two values from `src/config/settings-schema`, which
+  // `tests/lint/webview-host-import-direction.test.ts` forbids: a webview VALUE
+  // import drags everything the module transitively imports into the untrusted
+  // bundle, so values come from contracts or not at all. T034 moved them there,
+  // and `SETTINGS_SCHEMA` now reads the same two constants.
+  import {
+    PROCESS_ENVIRONMENT_MODES,
+    PROCESS_ENV_NAME_PATTERN_SOURCE
+  } from '../../../../src/contracts/process-environment-policy';
+  import GeneralSettingsHeader from './general/GeneralSettingsHeader.svelte';
+  import BackendEnvironmentGroup from './general/BackendEnvironmentGroup.svelte';
+  import ExecutionRetryGroup from './general/ExecutionRetryGroup.svelte';
+  import AuditLoggingGroup from './general/AuditLoggingGroup.svelte';
+  import UiTrustGroup from './general/UiTrustGroup.svelte';
 
   interface Props {
     snapshot: WorkflowSnapshot;
   }
   const { snapshot }: Props = $props();
 
-  type ScalarKey =
-    | 'cliPath'
-    | 'codexPath'
-    | 'agyPath'
-    | 'loggingVerbose'
-    | 'loopMaxIterations'
-    | 'invocationIdleTimeoutSeconds'
-    | 'invocationMaxDurationSeconds'
-    | 'watchdogPollIntervalMinutes'
-    | 'auditRotationSizeMB'
-    | 'auditRotationMaxAgeDays'
-    | 'defaultPipelineId'
-    | 'claudeAutoCompactPctOverride'
-    | 'runtimeLogLevel'
-    | 'runtimeLogFilePath'
-    | 'sessionRetentionMaxAgeDays'
-    | 'sessionRetentionMaxBytes'
-    | 'rawTranscriptMode';
-
-  type FieldKind =
-    | 'string'
-    | 'boolean'
-    | 'number'
-    | 'pipeline-select'
-    | 'number-optional'
-    | 'level-select'
-    | 'raw-transcript-select';
-
-  interface FieldSpec {
-    readonly key: ScalarKey;
-    // Wire-format IPC key (defaults to `key`). Feature 012 uses dotted
-    // names like `claude.autoCompactPctOverride` for the new override.
-    readonly ipcKey?: string;
-    readonly label: string;
-    readonly kind: FieldKind;
-    readonly min?: number;
-    readonly max?: number;
-    readonly placeholder?: string;
-  }
+  // FR-R3-143 (T002) — one definition, in `general/field-types.ts`.
 
   // FR-R3-145 (T1569) — `FIELDS` below is a subset of the scalar `schegent.*`
   // keys the manifest declares, not all of them. The FR-020 claim that stood
@@ -64,7 +53,13 @@
     { key: 'agyPath', ipcKey: 'agy.path', label: 'Agy CLI Path', kind: 'string' }
   ] as const;
 
-  const GENERAL_FIELDS: readonly FieldSpec[] = [
+  // FR-R3-143 (T009) — `GENERAL_FIELDS` was one flat array in no particular
+  // order. It is split into the three groups §4 names; `BACKEND_FIELDS` above
+  // is the fourth and is not split. Rendered field *order* changes as a
+  // result, which is the point of grouping rather than a side effect: the old
+  // array interleaved audit/logging (indices 1-6, 11-12) with execution
+  // (7-10, 13). No test asserts field order.
+  const AUDIT_LOGGING_FIELDS: readonly FieldSpec[] = [
     { key: 'loggingVerbose', ipcKey: 'logging.verbose', label: 'Verbose Logging', kind: 'boolean' },
     {
       key: 'runtimeLogLevel',
@@ -101,13 +96,82 @@
       min: 1048576,
       max: 10737418240
     },
-    { key: 'loopMaxIterations', ipcKey: 'loop.maxIterations', label: 'Loop Max Iterations', kind: 'number', min: 1, max: 100 },
+    { key: 'auditRotationSizeMB', ipcKey: 'audit.rotation.sizeMB', label: 'Audit Rotation Size (MB)', kind: 'number', min: 1, max: 100 },
+    { key: 'auditRotationMaxAgeDays', ipcKey: 'audit.rotation.maxAgeDays', label: 'Audit Retention (days)', kind: 'number', min: 1, max: 365 },
+    { key: 'runtimeLogMaxBytes', ipcKey: 'logging.runtimeLogMaxBytes', label: 'Runtime Log Rotation Size (bytes)', kind: 'number', min: 1048576, max: 1073741824 },
+    // FR-R3-143 (T047) — `0, 20`, from the manifest. T013 wrote `1, 50`, which
+    // offered 21..50 to an operator the host would refuse and hid `0` (keep no
+    // rotated generations), the one value with a distinct meaning.
+    { key: 'runtimeLogMaxGenerations', ipcKey: 'logging.runtimeLogMaxGenerations', label: 'Runtime Logs Kept', kind: 'number', min: 0, max: 20 }
+  ] as const;
+
+  const EXECUTION_RETRY_FIELDS: readonly FieldSpec[] = [
+    // FR-R3-143 (T047) — `max: 50`, from the manifest. This one is not this
+    // feature's doing: Feature 018 wrote `100` and the host has accepted at most
+    // 50 the whole time. It is corrected here rather than filed because
+    // `tests/lint/settings-field-bounds-parity.test.ts`, added by the same task,
+    // fails on it, and an allowance list on a new gate's first day is a worse
+    // artifact than the one-token fix it would be excusing.
+    { key: 'loopMaxIterations', ipcKey: 'loop.maxIterations', label: 'Loop Max Iterations', kind: 'number', min: 1, max: 50 },
     { key: 'invocationIdleTimeoutSeconds', ipcKey: 'invocation.idleTimeoutSeconds', label: 'Invocation Idle Timeout (seconds)', kind: 'number', min: 60, max: 7200 },
     { key: 'invocationMaxDurationSeconds', ipcKey: 'invocation.maxDurationSeconds', label: 'Invocation Max Duration (seconds)', kind: 'number', min: 60, max: 86400 },
     { key: 'watchdogPollIntervalMinutes', ipcKey: 'watchdog.pollIntervalMinutes', label: 'Watchdog Poll Interval (minutes)', kind: 'number', min: 1, max: 240 },
-    { key: 'auditRotationSizeMB', ipcKey: 'audit.rotation.sizeMB', label: 'Audit Rotation Size (MB)', kind: 'number', min: 1, max: 100 },
-    { key: 'auditRotationMaxAgeDays', ipcKey: 'audit.rotation.maxAgeDays', label: 'Audit Retention (days)', kind: 'number', min: 1, max: 365 },
     { key: 'defaultPipelineId', ipcKey: 'defaultPipelineId', label: 'Default Pipeline', kind: 'pipeline-select' },
+    // FR-R3-143 (T047) — `1, 5`, from the manifest. T012 wrote `0, 20` and the
+    // hover text explained that zero disables retries; the host's minimum is 1,
+    // so that was an instruction to enter a value it would reject.
+    { key: 'retryMaxAttempts', ipcKey: 'retry.maxAttempts', label: 'Retry Max Attempts', kind: 'number', min: 1, max: 5 },
+    { key: 'retryForceContinueOnCap', ipcKey: 'retry.forceContinueOnCap', label: 'Continue Past Retry Cap', kind: 'boolean' }
+  ] as const;
+
+  // FR-R3-143 (T031) — the process-environment and probe settings, in their own
+  // array rather than appended to `BACKEND_FIELDS`. `BackendHealthSection`
+  // pairs `BACKEND_FIELDS[i]` with `RUNNERS[i]` positionally, so a fourth entry
+  // there would be a CLI path the section never draws. That positional coupling
+  // is FR-R3-144's to remove (T1563); this feature does not touch it.
+  //
+  // The three environment settings and the probe timeout differ in when they
+  // take effect, and each `note` says which — see the descriptions module for
+  // where that was read from. All four are `application`-scoped, so the host
+  // writes them to User settings for every workspace on this machine.
+  const PROCESS_ENVIRONMENT_FIELDS: readonly FieldSpec[] = [
+    {
+      key: 'cliEnvironmentMode',
+      ipcKey: 'cli.environmentMode',
+      label: 'Environment Mode',
+      kind: 'enum',
+      options: PROCESS_ENVIRONMENT_MODES,
+      note: 'Applies to every workspace on this machine. Takes effect after reloading the VS Code Extension Host.'
+    },
+    {
+      key: 'cliEnvironmentAllowlist',
+      ipcKey: 'cli.environmentAllowlist',
+      label: 'Environment Allowlist',
+      kind: 'string-list',
+      itemPattern: PROCESS_ENV_NAME_PATTERN_SOURCE,
+      invalidMessage:
+        'Not a legal environment variable name — use letters, digits and underscores, and do not start with a digit.',
+      note: 'Names only; values are read at spawn time and never stored here. Applies to every workspace on this machine. Takes effect after reloading the VS Code Extension Host.'
+    },
+    {
+      key: 'cliInheritEnvironment',
+      ipcKey: 'cli.inheritEnvironment',
+      label: 'Inherit Host Environment (legacy)',
+      kind: 'boolean',
+      note: 'Superseded by Environment Mode; Off forces minimal. Applies to every workspace on this machine. Takes effect after reloading the VS Code Extension Host.'
+    },
+    {
+      key: 'backendProbeTimeoutSeconds',
+      ipcKey: 'backend.probeTimeoutSeconds',
+      label: 'Backend Probe Timeout (seconds)',
+      kind: 'number',
+      min: 1,
+      max: 30,
+      note: 'Applies to every workspace on this machine. Read at the start of each probe — the next Ping uses it, no reload.'
+    }
+  ] as const;
+
+  const UI_TRUST_FIELDS: readonly FieldSpec[] = [
     {
       key: 'claudeAutoCompactPctOverride',
       ipcKey: 'claude.autoCompactPctOverride',
@@ -116,77 +180,38 @@
       min: 1,
       max: 100,
       placeholder: 'Unset — use CLI default'
+    },
+    // FR-R3-143 (T032) — both `window`-scoped, so the host writes them to this
+    // workspace. Only the multi-root one is read once per activation, and only
+    // it discloses that.
+    {
+      key: 'uiConfirmationsEnable',
+      ipcKey: 'ui.confirmations.enable',
+      label: 'Confirmation Prompts',
+      kind: 'boolean',
+      note: 'Off means destructive actions happen on the first click, with no prompt.'
+    },
+    {
+      key: 'multiRootSuppressWarning',
+      ipcKey: 'multiRoot.suppressWarning',
+      label: 'Suppress Multi-Root Warning',
+      kind: 'boolean',
+      note: 'The warning is emitted once during activation, so this takes effect the next time the window opens or the Extension Host reloads.'
     }
   ] as const;
 
-  const FIELDS = [...BACKEND_FIELDS, ...GENERAL_FIELDS] as const;
+  const FIELDS = [
+    ...BACKEND_FIELDS,
+    ...PROCESS_ENVIRONMENT_FIELDS,
+    ...AUDIT_LOGGING_FIELDS,
+    ...EXECUTION_RETRY_FIELDS,
+    ...UI_TRUST_FIELDS
+  ] as const;
 
   const currentSettings = $derived<GeneralSettings>(
     snapshot.generalSettings ?? IDLE_GENERAL_SETTINGS
   );
   const sessionArtifacts = $derived(snapshot.sessionArtifacts ?? IDLE_SESSION_ARTIFACTS);
-  const sessionBudgetPercent = $derived(
-    currentSettings.sessionRetentionMaxBytes > 0
-      ? Math.round((sessionArtifacts.totalBytes / currentSettings.sessionRetentionMaxBytes) * 100)
-      : 0
-  );
-  const sessionUsageWarning = $derived(
-    sessionArtifacts.lastSweepFailures > 0 || sessionBudgetPercent >= 80
-  );
-
-  function formatBytes(bytes: number): string {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
-    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
-    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GiB`;
-  }
-
-  // Local draft separate from the projected settings — we only commit
-  // a key on Save so users can revert via reload-without-save.
-  type Draft = {
-    cliPath: string;
-    codexPath: string;
-    agyPath: string;
-    loggingVerbose: boolean;
-    loopMaxIterations: number;
-    invocationIdleTimeoutSeconds: number;
-    invocationMaxDurationSeconds: number;
-    watchdogPollIntervalMinutes: number;
-    auditRotationSizeMB: number;
-    auditRotationMaxAgeDays: number;
-    defaultPipelineId: string;
-    // Feature 012: `null` is the "clear / use CLI default" sentinel; the
-    // host translates a payload of `null` to `config.update(key, undefined)`.
-    claudeAutoCompactPctOverride: number | null;
-    // Feature 019: runtime debug log sink controls.
-    runtimeLogLevel: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
-    runtimeLogFilePath: string;
-    sessionRetentionMaxAgeDays: number;
-    sessionRetentionMaxBytes: number;
-    rawTranscriptMode: 'always' | 'errors-only' | 'off';
-  };
-
-  function snapshotToDraft(s: GeneralSettings): Draft {
-    return {
-      cliPath: s.cliPath,
-      codexPath: s.codexPath,
-      agyPath: s.agyPath,
-      loggingVerbose: s.loggingVerbose,
-      loopMaxIterations: s.loopMaxIterations,
-      invocationIdleTimeoutSeconds: s.invocationIdleTimeoutSeconds,
-      invocationMaxDurationSeconds: s.invocationMaxDurationSeconds,
-      watchdogPollIntervalMinutes: s.watchdogPollIntervalMinutes,
-      auditRotationSizeMB: s.auditRotationSizeMB,
-      auditRotationMaxAgeDays: s.auditRotationMaxAgeDays,
-      defaultPipelineId: s.defaultPipelineId,
-      claudeAutoCompactPctOverride: s.claudeAutoCompactPctOverride ?? null,
-      runtimeLogLevel: s.runtimeLogLevel,
-      runtimeLogFilePath: s.runtimeLogFilePath,
-      sessionRetentionMaxAgeDays: s.sessionRetentionMaxAgeDays,
-      sessionRetentionMaxBytes: s.sessionRetentionMaxBytes,
-      rawTranscriptMode: s.rawTranscriptMode
-    };
-  }
 
   // Initialize with IDLE_GENERAL_SETTINGS shape; the $effect below
   // immediately re-syncs against the real projection (this avoids the
@@ -211,44 +236,24 @@
     Partial<Record<ScalarKey, { status: 'pending' | 'accepted' | 'rejected'; reason?: string }>>
   >({});
 
+  // Bound to the current projection so the groups keep the `(key) => …` prop
+  // signature `SettingsGroupProps` declares.
   function fieldChanged(key: ScalarKey): boolean {
-    const drafted = draft[key];
-    const projected = currentSettings[key] as unknown;
-    // Feature 012: treat null draft == undefined projection as unchanged.
-    if (key === 'claudeAutoCompactPctOverride') {
-      const a = drafted ?? null;
-      const b = projected ?? null;
-      return a !== b;
-    }
-    return drafted !== projected;
+    return isFieldChanged(key, draft, currentSettings);
   }
 
   function fieldScopeLabel(key: ScalarKey): string {
-    const scope = currentSettings.scopes?.[key];
-    if (!scope) return 'Unknown';
-    return scope.charAt(0).toUpperCase() + scope.slice(1);
-  }
-
-  function ipcKeyFor(spec: { readonly key: ScalarKey; readonly ipcKey?: string }): string {
-    return spec.ipcKey ?? spec.key;
-  }
-
-  // Map rejection reasons (Feature 012 T026) to user-friendly messages
-  // for `claude.autoCompactPctOverride`. Other keys keep the raw reason.
-  function friendlyReason(spec: { readonly key: ScalarKey }, reason?: string): string | undefined {
-    if (!reason) return reason;
-    if (spec.key !== 'claudeAutoCompactPctOverride') return reason;
-    if (reason.startsWith('out-of-range:')) return 'Value must be an integer between 1 and 100';
-    if (reason.startsWith('type-mismatch:')) return 'Value must be a whole number';
-    if (reason.startsWith('clear-failed:')) return 'Failed to clear override — please retry';
-    return reason;
+    return scopeLabelFor(key, currentSettings);
   }
 
   async function saveOne(spec: { readonly key: ScalarKey; readonly ipcKey?: string }): Promise<void> {
     const key = spec.key;
-    const value = draft[key];
+    const updates = { [ipcKeyFor(spec)]: draft[key] };
+    // FR-R3-143 (T042) — declining reverts the toggle, so the control does not
+    // sit showing a state that was never written.
+    if (!(await confirmSettingsWrite(updates))) return resetField('uiConfirmationsEnable');
     statusByKey = { ...statusByKey, [key]: { status: 'pending' } };
-    const result = await saveGeneralSettings({ [ipcKeyFor(spec)]: value });
+    const result = await saveGeneralSettings(updates);
     statusByKey = {
       ...statusByKey,
       [key]: result.status === 'accepted'
@@ -271,6 +276,10 @@
       }
     }
     if (changedSpecs.length === 0) return;
+    // The whole batch is transactional on the host, so declining aborts all of
+    // it rather than dropping one key out of a payload the host was told to
+    // apply atomically. The other drafts stay dirty and Save All still works.
+    if (!(await confirmSettingsWrite(updates))) return resetField('uiConfirmationsEnable');
     const pending: Partial<typeof statusByKey> = {};
     for (const spec of changedSpecs) {
       pending[spec.key] = { status: 'pending' };
@@ -290,7 +299,13 @@
     if (key === 'claudeAutoCompactPctOverride') {
       draft.claudeAutoCompactPctOverride = currentSettings.claudeAutoCompactPctOverride ?? null;
     } else {
-      (draft as Record<string, unknown>)[key] = currentSettings[key];
+      const projected = currentSettings[key] as unknown;
+      // FR-R3-143 (T030) — copy, for the reason `snapshotToDraft` copies: the
+      // projection's array is frozen, and the list editor would be resetting
+      // the field into an array it cannot then edit.
+      (draft as Record<string, unknown>)[key] = Array.isArray(projected)
+        ? [...projected]
+        : projected;
     }
     const next = { ...statusByKey };
     delete next[key];
@@ -322,85 +337,64 @@
 </script>
 
 <section class="general-settings" data-testid="general-settings-tab">
-  <header class="tab-header">
-    <h2>{GENERAL_SETTINGS_DESCRIPTIONS['tab-header'].title}</h2>
-    <p class="hint">{GENERAL_SETTINGS_DESCRIPTIONS['tab-header'].body}</p>
-    <div class:usage-warning={sessionUsageWarning} class="session-usage" data-testid="session-artifact-usage">
-      <strong>Unredacted local session artifacts:</strong>
-      {sessionArtifacts.artifactCount} run{sessionArtifacts.artifactCount === 1 ? '' : 's'},
-      {formatBytes(sessionArtifacts.totalBytes)} retained.
-      {#if sessionArtifacts.lastSweepAt}
-        Last swept {new Date(sessionArtifacts.lastSweepAt).toLocaleString()}.
-      {:else}
-        Waiting for the activation sweep.
-      {/if}
-      {#if sessionArtifacts.lastSweepFailures > 0}
-        {sessionArtifacts.lastSweepFailures} retention operation{sessionArtifacts.lastSweepFailures === 1 ? '' : 's'} failed; inspect the sanitized runtime log.
-      {/if}
-      {#if sessionBudgetPercent >= 80}
-        Usage is {sessionBudgetPercent}% of the configured byte budget.
-      {/if}
-    </div>
-    <PrivacyProfileSelector
-      loggingVerbose={currentSettings.loggingVerbose}
-      rawTranscriptMode={currentSettings.rawTranscriptMode}
-      sessionRetentionMaxAgeDays={currentSettings.sessionRetentionMaxAgeDays}
-      sessionRetentionMaxBytes={currentSettings.sessionRetentionMaxBytes}
-    />
-    <div class="toolbar">
-      <button
-        type="button"
-        class="btn btn-primary"
-        data-testid="general-settings-save-all"
-        disabled={!dirty}
-        onclick={saveAll}
-        use:hoverTextAnchor={{
-          controlId: 'save-all',
-          description: GENERAL_SETTINGS_DESCRIPTIONS['save-all']
-        }}
-      >Save All Changes</button>
-      <button
-        type="button"
-        class="btn btn-ghost"
-        data-testid="general-settings-reset-all"
-        disabled={!dirty}
-        onclick={resetAll}
-        use:hoverTextAnchor={{
-          controlId: 'reset-all',
-          description: GENERAL_SETTINGS_DESCRIPTIONS['reset-all']
-        }}
-      >Reset All</button>
-    </div>
-  </header>
+  <GeneralSettingsHeader
+    settings={currentSettings}
+    {sessionArtifacts}
+    {dirty}
+    {saveAll}
+    {resetAll}
+  />
 
-  <BackendHealthSection
+  <BackendEnvironmentGroup
     {snapshot}
-    {BACKEND_FIELDS}
+    fields={BACKEND_FIELDS}
+    environmentFields={PROCESS_ENVIRONMENT_FIELDS}
     bind:draft
     {statusByKey}
+    {pipelines}
     {fieldChanged}
     {fieldScopeLabel}
-    {pipelines}
     {saveOne}
     {resetField}
     {onAutoCompactInput}
   />
 
-  <div class="field-list">
-    {#each GENERAL_FIELDS as spec (spec.key)}
-      <GeneralSettingFieldRow
-        {spec}
-        bind:draft
-        status={statusByKey[spec.key]}
-        changed={fieldChanged(spec.key)}
-        scopeLabel={fieldScopeLabel(spec.key)}
-        {pipelines}
-        onSave={() => saveOne(spec)}
-        onReset={() => resetField(spec.key)}
-        {onAutoCompactInput}
-      />
-    {/each}
-  </div>
+  <ExecutionRetryGroup
+    fields={EXECUTION_RETRY_FIELDS}
+    bind:draft
+    {statusByKey}
+    {pipelines}
+    {fieldChanged}
+    {fieldScopeLabel}
+    {saveOne}
+    {resetField}
+    {onAutoCompactInput}
+  />
+
+  <AuditLoggingGroup
+    fields={AUDIT_LOGGING_FIELDS}
+    bind:draft
+    {statusByKey}
+    {pipelines}
+    {fieldChanged}
+    {fieldScopeLabel}
+    {saveOne}
+    {resetField}
+    {onAutoCompactInput}
+  />
+
+  <UiTrustGroup
+    {snapshot}
+    fields={UI_TRUST_FIELDS}
+    bind:draft
+    {statusByKey}
+    {pipelines}
+    {fieldChanged}
+    {fieldScopeLabel}
+    {saveOne}
+    {resetField}
+    {onAutoCompactInput}
+  />
 </section>
 
 <style>
@@ -411,54 +405,7 @@
     padding: 8px 0;
     height: 100%;
   }
-  .tab-header h2 {
-    margin: 0 0 4px 0;
-    font-size: 1.1em;
-    font-weight: 600;
-  }
-  .hint {
-    margin: 0 0 12px 0;
-    color: var(--schegent-muted-fg);
-    font-size: 0.9em;
-  }
-  .session-usage {
-    margin: 0 0 12px 0;
-    padding: 8px 10px;
-    border: 1px solid var(--vscode-notificationsInfoIcon-foreground);
-    border-radius: var(--schegent-radius);
-    background: var(--vscode-textBlockQuote-background);
-    color: var(--schegent-muted-fg);
-    font-size: 0.85em;
-    line-height: 1.45;
-  }
-  .usage-warning {
-    border-color: var(--vscode-notificationsWarningIcon-foreground);
-    color: var(--vscode-foreground);
-  }
-  .toolbar {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 8px;
-  }
-  .btn {
-    min-height: var(--schegent-control-height-compact);
-    padding: 3px 10px;
-    border-radius: var(--schegent-radius-sm);
-    font-size: 0.9em;
-    font-weight: 500;
-    cursor: pointer;
-    border: 1px solid transparent;
-  }
-  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-  .btn-primary { background: var(--schegent-button-bg); color: var(--schegent-button-fg); }
-  .btn-primary:hover:not(:disabled) { background: var(--schegent-button-hover); }
-  .btn-ghost { background: transparent; color: var(--schegent-muted-fg); }
-  .btn-ghost:hover:not(:disabled) { background: var(--vscode-list-hoverBackground); }
-
-  .field-list {
-    display: flex;
-    flex-direction: column;
-    gap: 0;
-    border-top: 1px solid var(--schegent-divider);
-  }
+  /* The header's own rules moved with its markup into
+   * `general/GeneralSettingsHeader.svelte` — Svelte scopes styles per
+   * component, so leaving them here would have styled nothing. */
 </style>
