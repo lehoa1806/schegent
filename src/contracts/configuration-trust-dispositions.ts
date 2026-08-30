@@ -98,7 +98,9 @@ export const CONFIGURATION_SENSITIVITY = Object.freeze({
     sensitivity: 'operator-signal',
     reason:
       'false removes the confirmation dialog from every sidebar action the ActionKey ' +
-      'union declares in webview-ui/src/lib/action-copy.ts'
+      'union declares in webview-ui/src/lib/action-copy.ts, except the always-confirm ' +
+      'set NEVER_SUPPRESSIBLE in webview-ui/src/lib/use-confirm.ts, which this setting ' +
+      'does not reach'
   },
   'schegent.multiRoot.suppressWarning': {
     sensitivity: 'operator-signal',

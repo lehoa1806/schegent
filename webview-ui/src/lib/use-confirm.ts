@@ -6,11 +6,18 @@
 //
 // Contract: specs/063-clean-all-confirmations/contracts/confirm-dialog.md
 //
-// Resolution rules:
+// Resolution rules, in the order they are evaluated:
+//   0. the action is in `NEVER_SUPPRESSIBLE`          → rules 1 and 2 do not run.
 //   1. `schegent.ui.confirmations.enable === false` → resolve(true) sync.
 //   2. operator previously checked "Don't ask again" → resolve(true) sync.
 //   3. another modal already open (FR-019)           → resolve(false) sync.
 //   4. otherwise mount the dialog and await the user's choice.
+//
+// Rule 0 is written first because it was not always true. Until FR-R3-143's T044
+// bug was fixed, rule 1 was evaluated before the membership test and returned
+// before it, so every member of the set resolved `true` with no dialog whenever
+// the global toggle was off — the set protected against rule 2 alone, while its
+// name and three product surfaces said otherwise.
 //
 // Some actions are always-confirm: their prompts are unsuppressible. The
 // helper translates that into `suppressible: false` on the
@@ -55,11 +62,16 @@ export function isModalOpen(): boolean {
 // turning all prompts off would suppress the mechanism that reads the
 // suppression set.
 //
-// This membership buys protection from PER-ACTION suppression only. It does not
-// survive `confirmationsEnabled === false`: the `FR-017 short-circuit` below
-// returns before this set is ever consulted — an ordering filed as a bug by
-// T044 and deliberately not changed here. Cited by its marker rather than a
-// line number, which is the citation style this feature exists to stop trusting.
+// This membership buys protection from BOTH silencing routes: per-action
+// suppression and the global `schegent.ui.confirmations.enable` toggle. It used
+// to buy only the first, because the `FR-017 short-circuit` returned before this
+// set was consulted; T044 filed that ordering and it is now fixed below.
+//
+// The global toggle is an operator preference and this set is a floor under it.
+// That is not a new position for the product: `Schegent: Reset Workspace State`
+// already raises its confirmation host-side and unconditionally, outside this
+// setting's reach, for the same action as the first member here. What changed is
+// that the sidebar route now agrees with the Command Palette route.
 //
 // FR-R3-144 (T033, FR-007) — `backend.grant-uncontained` joins it. The item asks
 // for one confirmation PER BACKEND; a "Don't ask again" would make the second
@@ -78,17 +90,28 @@ export function useConfirm<K extends ActionKey>(
 ): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     const confirmationsEnabled = snapshotStore.snapshot?.confirmationsEnabled ?? true;
-
-    // FR-017 short-circuit: workspace owner disabled prompts globally.
-    if (!confirmationsEnabled) {
-      resolve(true);
-      return;
-    }
-
     const suppressible = !NEVER_SUPPRESSIBLE.has(actionKey);
-    if (suppressible && confirmSuppressionStore.isSuppressed(actionKey)) {
-      resolve(true);
-      return;
+
+    // Both silencing routes live inside this branch, and the nesting is the
+    // point rather than a style choice: membership of `NEVER_SUPPRESSIBLE` is a
+    // floor under operator preference, so every route that resolves `true`
+    // without asking has to be below it. Guard 1 used to sit above the
+    // membership test and skipped the set entirely — filed by FR-R3-143 (T044),
+    // fixed here. A fourth silencing route added outside this branch would
+    // reopen the same hole; `use-confirm.test.ts` parameterises its cases over
+    // the whole set so a new member cannot inherit one silently.
+    if (suppressible) {
+      // Guard 1 (FR-017): workspace owner disabled prompts globally.
+      if (!confirmationsEnabled) {
+        resolve(true);
+        return;
+      }
+
+      // Guard 2: operator previously checked "Don't ask again".
+      if (confirmSuppressionStore.isSuppressed(actionKey)) {
+        resolve(true);
+        return;
+      }
     }
 
     // FR-019 single-modal lock. Another prompt is already up — drop
