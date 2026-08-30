@@ -44,7 +44,6 @@ export interface PipelineCatalogStoreOptions {
 export class PipelineCatalogStore {
   pipelines = $state<MutablePipeline[]>([]);
   selectedIndex = $state<number | null>(null);
-  newPhaseId = $state('');
   savePending = $state(false);
   mutation = $state<PipelineCatalogMutation | null>(null);
   mutationSourceKey = $state<string | null>(null);
@@ -218,12 +217,31 @@ export class PipelineCatalogStore {
     });
   }
 
-  appendPhase(): void {
+  /**
+   * Feature 184 (FR-R3-141, FR-030) — append the Phase the caller names.
+   *
+   * Replaces `appendPhase()`, which read a `newPhaseId` field this class held
+   * between a `<select>`'s change and an "Add Phase" button's click. The palette
+   * that replaced that pair has no pending value — the click *is* the commit —
+   * so the id arrives as an argument and the field is gone.
+   *
+   * Both guards matter and neither is reachable from the palette: it renders one
+   * button per effective Phase and only while a row is open. They are here
+   * because the method is public and the failure of either is silent — an append
+   * to no row, or an empty id in a saved sequence.
+   */
+  appendPhaseId(phaseId: string): void {
     const index = this.selectedIndex;
-    const phaseId = this.newPhaseId.trim();
-    if (index === null || phaseId.length === 0) return;
-    this.update(index, { phases: [...this.pipelines[index].phases, phaseId] });
-    this.newPhaseId = '';
+    const trimmed = phaseId.trim();
+    if (index === null || trimmed.length === 0) return;
+    // `.at()` rather than `[index]` for the reason `phaseOf` uses it: the index
+    // signature types the read as always-present, which reads the guard below as
+    // dead. The four sibling methods above keep the older shape and their
+    // findings are in the lint record; this one is new, so it is written the way
+    // that does not add to it.
+    const pipeline = this.pipelines.at(index);
+    if (!pipeline) return;
+    this.update(index, { phases: [...pipeline.phases, trimmed] });
   }
 
   removePhase(phaseIndex: number): void {

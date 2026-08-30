@@ -127,7 +127,6 @@ function mount(
       selectedIndex: options.selectedIndex ?? null,
       historyIndex: 0,
       historyLength: 1,
-      newPhaseId: '',
       trusted: options.trusted ?? true,
       saveError: null,
       savePending: options.savePending ?? false,
@@ -145,7 +144,6 @@ function mount(
       onredo: vi.fn(),
       onsave: vi.fn(),
       ondismisssaveerror: vi.fn(),
-      onnewphaseidchange: vi.fn(),
       onaddphase: vi.fn(),
       onremovephase: vi.fn(),
       onmovephaseup: options.onmovephaseup ?? vi.fn(),
@@ -384,9 +382,12 @@ describe('Phase reference reordering (US2, FR-038)', () => {
   };
 
   it('renders the sequence in `phases` order', () => {
+    // Feature 184 (T037) — one card per position, in order, replaces the column
+    // of `<select>`s. The claim is unchanged: order is `phases` order, and the
+    // repeated id proves the surface addresses positions rather than Phases.
     const { container } = mount({ pipelines: [THREE_PHASE_PIPELINE], selectedIndex: 0 });
-    const selects = [...container.querySelectorAll('.sequence-select')] as HTMLSelectElement[];
-    expect(selects.map((select) => select.value)).toEqual([
+    const cards = [...container.querySelectorAll('[data-testid^="pipelines-phase-id-"]')];
+    expect(cards.map((card) => card.textContent.trim())).toEqual([
       'speckit-specify',
       'done',
       'speckit-specify'
@@ -484,7 +485,7 @@ describe('Pipeline field error presentation (US3, FR-017, FR-032, FR-038)', () =
     }));
   }
 
-  it('renders a per-position Phase error beside the select it names', () => {
+  it('renders a per-position Phase error beside the select it names', async () => {
     const row: MutablePipeline = {
       ...THREE_PHASE,
       sourceStatus: 'invalid',
@@ -493,19 +494,28 @@ describe('Pipeline field error presentation (US3, FR-017, FR-032, FR-038)', () =
       ]
     };
     const { container } = mount({ pipelines: [row], selectedIndex: 0 });
-    const named = container.querySelector('[data-testid="pipelines-phase-select-1"]');
-    expect(named?.getAttribute('aria-invalid')).toBe('true');
-    expect(describedRegion(container, '[data-testid="pipelines-phase-select-1"]').textContent).toContain(
+    // Feature 184 (T039) — the position is flagged on its card, which is what is
+    // visible without selecting anything, and the card owns the error region.
+    const card = container.querySelector('[data-testid="pipelines-phase-card-1"]');
+    expect(card?.getAttribute('data-invalid')).toBe('true');
+    expect(describedRegion(container, '[data-testid="pipelines-phase-card-1"]').textContent).toContain(
       'Phase 2 does not resolve'
     );
     // A message about Phase 2 must not flag the neighbouring positions.
     for (const position of [0, 2]) {
-      const other = container.querySelector(`[data-testid="pipelines-phase-select-${position}"]`);
-      expect(other?.getAttribute('aria-invalid')).toBeNull();
+      const other = container.querySelector(`[data-testid="pipelines-phase-card-${position}"]`);
+      expect(other?.getAttribute('data-invalid')).toBeNull();
     }
+
+    // And the `<select>` that edits the position still names the same region, so
+    // the message reaches the control the operator repairs it with.
+    await fireEvent.click(card as HTMLElement);
+    const named = container.querySelector('[data-testid="pipelines-phase-select-1"]');
+    expect(named?.getAttribute('aria-invalid')).toBe('true');
+    expect(named?.getAttribute('aria-describedby')).toBe(card?.getAttribute('aria-describedby'));
   });
 
-  it('anchors a binding endpoint error to the Phase position it names', () => {
+  it('anchors a binding endpoint error to the Phase position it names', async () => {
     // The failing endpoint is the *producer* index, so the message belongs
     // beside Phase 3's select rather than beside the consumer at Phase 2.
     const row: MutablePipeline = {
@@ -528,6 +538,9 @@ describe('Pipeline field error presentation (US3, FR-017, FR-032, FR-038)', () =
       ]
     };
     const { container } = mount({ pipelines: [row], selectedIndex: 0 });
+    // Feature 184 (T039) — the inspector holds one `<select>`, for the selected
+    // position, so reaching Phase 3's is a click on Phase 3's card.
+    await fireEvent.click(container.querySelector('[data-testid="pipelines-phase-card-2"]') as HTMLElement);
     const region = describedRegion(container, '[data-testid="pipelines-phase-select-2"]');
     expect(region.textContent).toContain('Binding 1 reads from Phase 3');
   });
@@ -894,28 +907,29 @@ describe('Pipeline empty-Phase-prerequisite state (US6, FR-034, SC-007)', () => 
 
   it('leaves no enabled control that would author an unsatisfiable draft', () => {
     const { container } = mountNoPhases({ pipelines: [WORKSPACE_PIPELINE], selectedIndex: 0 });
-    for (const testId of [
-      'pipelines-add',
-      'pipelines-save-all',
-      'pipelines-duplicate',
-      'pipelines-add-phase'
-    ]) {
+    for (const testId of ['pipelines-add', 'pipelines-save-all', 'pipelines-duplicate']) {
       const control = container.querySelector(`[data-testid="${testId}"]`) as HTMLButtonElement | null;
       expect(control === null || control.disabled, `${testId} must not be enabled`).toBe(true);
     }
-    // The append picker offers nothing, so it must not invite a selection.
-    const picker = container.querySelector(
-      '[data-testid="pipelines-new-phase"]'
-    ) as HTMLSelectElement | null;
-    expect(picker === null || picker.disabled).toBe(true);
+    // Feature 184 (T038) — `pipelines-add-phase` and `pipelines-new-phase` were
+    // deleted with the append row, and a `null`-tolerant assertion on a deleted
+    // id passes vacuously. The claim moves to what replaced them: the palette is
+    // the only append affordance, and it offers nothing to append.
+    expect(container.querySelectorAll('[data-testid^="pipelines-palette-phase-"]')).toHaveLength(0);
   });
 
-  it('still renders existing rows read-only rather than hiding the catalog', () => {
+  it('still renders existing rows read-only rather than hiding the catalog', async () => {
     const { container } = mountNoPhases({ pipelines: [WORKSPACE_PIPELINE], selectedIndex: 0 });
+    // Feature 184 (T042) — the Library is behind the picker once a row is open,
+    // and `pipelines-editor-{id}` retired with the form card. The claim is that
+    // the catalog is still reachable and the row still authorable, so it is now
+    // read off the picker and the canvas surface.
+    await fireEvent.click(container.querySelector('[data-testid="pipelines-picker-toggle"]') as HTMLElement);
     expect(
       container.querySelector('[data-testid="pipelines-list-item-custom-flow"]')
     ).not.toBeNull();
-    expect(container.querySelector('[data-testid="pipelines-editor-custom-flow"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="pipelines-flow-builder"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="pipelines-inspector-identity"]')).not.toBeNull();
   });
 
   it('keeps every control available once at least one effective Phase exists', () => {
@@ -1081,7 +1095,7 @@ describe('Pipeline Builder accessibility audit (FR-038, SC-007)', () => {
     expect(onmovephasedown).toHaveBeenCalledWith(0);
   });
 
-  it('conveys source status as text, never by color alone', () => {
+  it('conveys source status as text, never by color alone', async () => {
     // Feature 099 (T496f, FR-042, FR-043) — two badges were read here, and the
     // scope one is deleted with the tier. The audit property is unchanged and
     // still worth asserting on what remains: the status is legible without
@@ -1092,7 +1106,10 @@ describe('Pipeline Builder accessibility audit (FR-038, SC-007)', () => {
     // lifecycle actions off that row and a control nested in a button is invalid
     // markup. The audit property is unchanged: the status is still legible
     // without seeing the colour it is painted in.
+    // Feature 184 (T041) — the rows moved into the picker popover unchanged, so
+    // the popover is opened and everything below it reads exactly as before.
     const { container } = mount({ pipelines: [WORKSPACE_PIPELINE], selectedIndex: 0 });
+    await fireEvent.click(container.querySelector('[data-testid="pipelines-picker-toggle"]') as HTMLElement);
     const row = container
       .querySelector('[data-testid="pipelines-list-item-custom-flow"]')
       ?.closest('.phase-list-row') as HTMLElement;

@@ -1,6 +1,11 @@
-/* The canvas Builder's surface. Loaded beside `pipeline-builder.css` from
-   PipelineBuilder.svelte, and scoped under `.pb` exactly as that file is, so the
-   two cannot collide with anything outside the Builder.
+/* Both canvas Builders' surface — the Workflow tab's and, since Feature 184
+   (FR-R3-141, T035), the Pipelines tab's. Loaded beside `pipeline-builder.css`
+   from PipelineBuilder.svelte (`:34-35`), and scoped under `.pb` exactly as that
+   file is, so the two cannot collide with anything outside the Builder.
+
+   Nothing here is Workflow-specific: the `.wf-` prefix names the shape (shell,
+   palette rail, node, inspector), not the definition kind, which is why the
+   Pipeline canvas dresses itself from this file rather than forking a copy.
 
    Every colour is a theme token. The reference design is a light-mode SaaS
    canvas, and hardcoding its palette would make the Builder the one surface in

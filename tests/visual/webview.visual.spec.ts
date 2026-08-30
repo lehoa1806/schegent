@@ -346,6 +346,18 @@ const THEMES: Readonly<Record<ThemeName, ThemePalette>> = {
   }
 };
 
+/**
+ * Feature 184 (T046, FR-R3-141) — `--vscode-sideBarSectionHeader-background` is
+ * new to this palette. `--schegent-surface-raised` reads it (`theme.css:10`) and
+ * falls back to a hard `#2d2d2d` when it is missing. Every real VS Code theme
+ * defines it, but this palette never did, because until the Pipelines tab moved
+ * onto `workflow-flow.css` nothing photographed a raised surface — the only
+ * other consumer is `App.svelte`'s `.skip-link`, which is translated off-screen
+ * until focused. Left undefined, `builder-light.png` would have recorded
+ * near-black Phase cards that no operator will ever see. `input` is this
+ * palette's raised-surface role, the same one `--vscode-editorWidget-background`
+ * takes.
+ */
 function themeCss(theme: ThemeName): string {
   const palette = THEMES[theme];
   return `
@@ -362,6 +374,7 @@ function themeCss(theme: ThemeName): string {
       --vscode-editorWidget-background: ${palette.input};
       --vscode-editorWidget-border: ${palette.border};
       --vscode-panel-border: ${palette.border};
+      --vscode-sideBarSectionHeader-background: ${palette.input};
       --vscode-sideBarSectionHeader-border: ${palette.border};
       --vscode-widget-border: ${palette.border};
       --vscode-widget-shadow: rgba(0, 0, 0, 0.35);
@@ -587,7 +600,18 @@ async function openSurface(page: Page, surface: SurfaceName, theme: ThemeName): 
     // keeps the strip the only difference between these baselines and their
     // predecessors, which is what makes the comparison evidence.
     await page.getByRole('tab', { name: 'Pipelines' }).click();
+    // Feature 184 (T045, FR-R3-141) — the Library moved into the top bar's
+    // picker, so opening a row means going through the popover. The picker
+    // starts open with nothing selected and closed once a row is, and the toggle
+    // toggles: clicking it unconditionally would CLOSE the popover in the state
+    // this capture actually starts from. So the state is read, not assumed.
+    const picker = page.getByTestId('pipelines-picker-toggle');
+    if ((await picker.getAttribute('aria-expanded')) !== 'true') await picker.click();
+    await expect(picker).toHaveAttribute('aria-expanded', 'true');
     await builder.locator('.phase-list-item').first().click();
+    // The Name field is in the inspector now rather than the form card; the test
+    // id came across unchanged, so this assertion still names the same control
+    // and still proves the row is open before the shutter fires.
     await expect(page.getByTestId('pipelines-name-field-dev-new-feature')).toBeVisible();
     return builder;
   }

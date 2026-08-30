@@ -1078,17 +1078,26 @@ describe('PipelineBuilder — BUG-002 cross-tab phase visibility', () => {
     await fireEvent.click(pipelineItem);
     await tick();
 
-    // 4. Check the "Add Phase" dropdown in the pipeline editor
-    const addPhaseDropdown = container.querySelector('.add-phase-row .select-input') as HTMLSelectElement;
-    expect(addPhaseDropdown).not.toBeNull();
-    const optionValues = Array.from(addPhaseDropdown.querySelectorAll('option')).map(o => o.value);
+    // 4. Check what the append affordance offers. Feature 184 (T038) — the
+    //    `<select>` + "Add Phase" pair became the palette, one button per
+    //    effective Phase, so the offer is read off the buttons that render.
+    const offered = Array.from(
+      container.querySelectorAll('[data-testid^="pipelines-palette-phase-"]')
+    ).map((button) => button.getAttribute('data-testid'));
 
     // An unsaved draft must not be offered to a persistable Pipeline.
-    expect(optionValues).toContain('speckit-specify');
-    expect(optionValues).not.toContain('new-phase');
+    expect(offered).toContain('pipelines-palette-phase-speckit-specify');
+    expect(offered).not.toContain('pipelines-palette-phase-new-phase');
 
-    // 5. Also check the inline sequence select for the existing pipeline phase
-    const sequenceSelect = container.querySelector('.sequence-select') as HTMLSelectElement;
+    // 5. Also check the sequence select for the existing pipeline phase, which
+    //    moved to the inspector and exists for the selected position (T037).
+    await fireEvent.click(
+      container.querySelector('[data-testid="pipelines-phase-card-0"]') as HTMLButtonElement
+    );
+    await tick();
+    const sequenceSelect = container.querySelector(
+      '[data-testid="pipelines-phase-select-0"]'
+    ) as HTMLSelectElement;
     expect(sequenceSelect).not.toBeNull();
     const seqOptions = Array.from(sequenceSelect.querySelectorAll('option')).map(o => o.value);
     expect(seqOptions).toContain('speckit-specify');
@@ -1104,8 +1113,13 @@ describe('PipelineBuilder — BUG-002 cross-tab phase visibility', () => {
       initialTab: 'phases'
     });
     await tick();
-    expect(Array.from(addPhaseDropdown.querySelectorAll('option')).map(o => o.value))
-      .toContain('new-phase');
+    // Feature 184 (T038) — re-read the palette rather than the node captured
+    // before the refresh: the offer is what the surface renders *now*.
+    expect(
+      Array.from(container.querySelectorAll('[data-testid^="pipelines-palette-phase-"]')).map(
+        (button) => button.getAttribute('data-testid')
+      )
+    ).toContain('pipelines-palette-phase-new-phase');
   });
 });
 
@@ -1404,5 +1418,177 @@ describe('PipelineBuilder — confirmed Pipeline removal (US7, T054)', () => {
     expect(
       (container.querySelector('[data-testid="pipelines-remove"]') as HTMLButtonElement).disabled
     ).toBe(false);
+  });
+});
+
+// Feature 184 (FR-R3-141, T031a/T031b/T031c) — the three claims the per-component
+// suites structurally cannot make, because each one is about the assembled
+// surface driven through the real `PipelineCatalogStore`.
+//
+// They live in this file rather than a new one because this is where the harness
+// for that already is: `buildSnapshot` builds the catalog projection the store
+// adopts, and `savedBody`/`saveDraftHelper` observe what actually left. A new
+// file would have to copy both to say anything.
+describe('PipelineBuilder — Pipeline canvas behaviour (Feature 184)', () => {
+  const SPECIFY: PhaseDefinition = Object.freeze({
+    id: 'speckit-specify', name: 'Specify', version: 1, instruction: 'Specify.'
+  }) as unknown as PhaseDefinition;
+  const PLAN: PhaseDefinition = Object.freeze({
+    id: 'speckit-plan', name: 'Plan', version: 1, instruction: 'Plan.'
+  }) as unknown as PhaseDefinition;
+  const CUSTOM: PipelineDefinition = Object.freeze({
+    id: 'custom',
+    name: 'Custom Pipeline',
+    phases: Object.freeze(['speckit-specify'])
+  }) as unknown as PipelineDefinition;
+
+  /** Renders the Pipelines tab on a two-Phase catalog and opens the stored row. */
+  async function openCanvas(): Promise<HTMLElement> {
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: buildSnapshot([SPECIFY, PLAN], [CUSTOM]), initialTab: 'pipelines' }
+    });
+    await tick();
+    await fireEvent.click(container.querySelector('.phase-list-item') as HTMLButtonElement);
+    await tick();
+    return container;
+  }
+
+  const at = (container: HTMLElement, id: string) =>
+    container.querySelector(`[data-testid="${id}"]`) as HTMLElement | null;
+
+  /** The single button carrying this exact accessible name. Undo and Redo have no test id. */
+  function byLabel(container: HTMLElement, label: string): HTMLButtonElement {
+    const found = (Array.from(container.querySelectorAll('button')) as HTMLButtonElement[]).filter(
+      (button) => button.textContent.trim() === label
+    );
+    expect(found).toHaveLength(1);
+    return found[0];
+  }
+
+  it('T031a: Undo reverts the row and Redo returns it, across panes', async () => {
+    const container = await openCanvas();
+    const name = () => at(container, 'pipelines-name-field-custom') as HTMLInputElement;
+
+    expect(name().value).toBe('Custom Pipeline');
+    await fireEvent.input(name(), { target: { value: 'Renamed Pipeline' } });
+    await tick();
+    expect(name().value).toBe('Renamed Pipeline');
+
+    // The assertion is on the *row*, not on the buttons. T027 proves Undo and
+    // Redo render with the right disabled bounds, which stays true if the
+    // handlers no longer reach the store's history at all — the exact shape a
+    // literal port takes when it carries the markup and drops the wiring.
+    await fireEvent.click(byLabel(container, 'Undo'));
+    await tick();
+    expect(name().value).toBe('Custom Pipeline');
+
+    await fireEvent.click(byLabel(container, 'Redo'));
+    await tick();
+    expect(name().value).toBe('Renamed Pipeline');
+  });
+
+  it('T031b: a stored Pipeline is editable in place, on the canvas and in the inspector', async () => {
+    vi.mocked(saveDraftHelper).mockClear();
+    const container = await openCanvas();
+
+    // The canvas-side edit is the sequence: FR-010 retired the header's name
+    // input, so the name is now only authorable in the inspector and the two
+    // edits below are one from each pane.
+    await fireEvent.click(at(container, 'pipelines-palette-phase-speckit-plan') as HTMLElement);
+    await tick();
+    await fireEvent.input(at(container, 'pipelines-name-field-custom') as HTMLInputElement, {
+      target: { value: 'Renamed Pipeline' }
+    });
+    await tick();
+
+    await fireEvent.click(at(container, 'pipelines-save-all') as HTMLButtonElement);
+    await tick();
+
+    // Both reached the store, so neither pane is read-only for a stored row.
+    expect(saveDraftHelper).toHaveBeenCalledTimes(1);
+    expect(savedBody()).toEqual({
+      id: 'custom',
+      name: 'Renamed Pipeline',
+      version: 1,
+      phases: ['speckit-specify', 'speckit-plan']
+    });
+  });
+
+  it('T031b: nothing but the ID field is gated on `persisted`', async () => {
+    const container = await openCanvas();
+    const id = at(container, 'pipelines-id-field-custom') as HTMLInputElement;
+
+    // T019 proves the ID field is read-only when persisted, which is true under
+    // both the Pipeline rule (identity is frozen, the body is not) and the
+    // Workflow rule (a stored row is read-only outright). Only the pairing tells
+    // them apart: under the Workflow rule every assertion below flips.
+    expect(id.readOnly).toBe(true);
+    expect((at(container, 'pipelines-name-field-custom') as HTMLInputElement).readOnly).toBe(false);
+    expect((at(container, 'pipelines-description-custom') as HTMLTextAreaElement).readOnly).toBe(
+      false
+    );
+    for (const control of [
+      'pipelines-save-all',
+      'pipelines-remove',
+      'pipelines-duplicate',
+      'pipelines-discard',
+      'pipelines-palette-phase-speckit-plan',
+      'pipelines-remove-phase-0'
+    ]) {
+      expect((at(container, control) as HTMLButtonElement).disabled).toBe(false);
+    }
+  });
+
+  // T031c. Every leg is a forward walk over the surface's own tab order, so an
+  // element that is disabled, carries `tabindex="-1"`, or is not focusable at all
+  // is unreachable and the walk throws. Per-control assertions all pass while one
+  // element stays untabbable, and that element is what T1548's acceptance line —
+  // "every add, reorder, and remove operable from the keyboard alone" — is about.
+  const TABBABLE = 'a[href], button, input, select, textarea, [tabindex]';
+
+  function tabUntil(container: HTMLElement, testId: string): HTMLElement {
+    const order = (Array.from(container.querySelectorAll(TABBABLE)) as HTMLElement[]).filter(
+      (element) =>
+        !(element as HTMLButtonElement).disabled &&
+        element.getAttribute('tabindex') !== '-1' &&
+        element.getAttribute('aria-hidden') !== 'true'
+    );
+    const from = order.indexOf(document.activeElement as HTMLElement);
+    for (let index = from + 1; index < order.length; index++) {
+      order[index].focus();
+      if (order[index].dataset.testid === testId) return order[index];
+    }
+    throw new Error(`"${testId}" is not reachable by Tab (${order.length} stops walked)`);
+  }
+
+  it('T031c: add, select, reorder and remove are all reachable by Tab alone', async () => {
+    const container = await openCanvas();
+    // Each leg restarts the walk: a click re-renders the canvas and detaches the
+    // node that had focus, so continuing from a stale `activeElement` would prove
+    // nothing. Restarting keeps every leg's claim intact — "reachable by Tab".
+    const leg = (testId: string) => {
+      (document.activeElement as HTMLElement | null)?.blur();
+      return tabUntil(container, testId);
+    };
+    // jsdom does not synthesise the click a browser fires when Enter lands on a
+    // focused native button, so the walk proves reachability and the click stands
+    // in for the platform's own activation.
+    const press = async (testId: string) => {
+      await fireEvent.click(leg(testId));
+      await tick();
+    };
+
+    await press('pipelines-palette-phase-speckit-plan');
+    expect(at(container, 'pipelines-phase-card-1')).not.toBeNull();
+
+    await press('pipelines-phase-card-1');
+    expect(at(container, 'pipelines-phase-select-1')).not.toBeNull();
+
+    await press('pipelines-move-phase-up-1');
+    expect(at(container, 'pipelines-phase-id-0')?.textContent.trim()).toBe('speckit-plan');
+
+    await press('pipelines-remove-phase-0');
+    expect(at(container, 'pipelines-phase-card-1')).toBeNull();
+    expect(at(container, 'pipelines-phase-id-0')?.textContent.trim()).toBe('speckit-specify');
   });
 });

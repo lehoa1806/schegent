@@ -303,7 +303,6 @@
         selectedIndex={pipelineStore.selectedIndex}
         historyIndex={pipelineStore.historyIndex}
         historyLength={pipelineStore.historyLength}
-        newPhaseId={pipelineStore.newPhaseId}
         trusted={pipelineMutationsAllowed}
         {saveError}
         savePending={pipelineStore.savePending}
@@ -322,8 +321,7 @@
         onredo={() => pipelineStore.redo()}
         onsave={() => pipelineStore.save()}
         ondismisssaveerror={() => saveError = null}
-        onnewphaseidchange={(value) => pipelineStore.newPhaseId = value}
-        onaddphase={() => pipelineStore.appendPhase()}
+        onaddphase={(phaseId) => pipelineStore.appendPhaseId(phaseId)}
         onremovephase={(index) => pipelineStore.removePhase(index)}
         onmovephaseup={(index) => pipelineStore.movePhaseUp(index)}
         onmovephasedown={(index) => pipelineStore.movePhaseDown(index)}
