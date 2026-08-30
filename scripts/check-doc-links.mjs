@@ -30,10 +30,26 @@ const SKIP_DIRS = new Set([
   '.svelte-kit'
 ]);
 
-// Planning-envelope trees deliberately left out of the gate.
-//   specs/    -- Spec Driven Development workflow output; auto-generated history.
+// Planning-envelope trees left out of THIS gate.
+//   repo/     -- walked as the primary tree already, not a second time via `..`.
 //   .specify/ -- speckit templates, whose placeholder links are not real targets.
 //   .claude/  -- tool-managed skill files.
+//   specs/    -- covered by scripts/spec-links-name-the-repo.sh in the envelope.
+//
+// The specs/ line said "Spec Driven Development workflow output; auto-generated
+// history" until 2026-08-31. Both halves were false, and the exclusion they
+// justified hid a real breakage for three and a half months. These are
+// hand-authored contracts, not generated; and calling them "history" made
+// skipping them sound principled when what it actually skipped was the
+// 2026-05-17 restructure never being swept through them. Measured that day:
+// 1,848 of 6,134 local links under specs/** did not resolve, and 1,396 of those
+// pointed at files that still existed, one directory level away, under repo/.
+//
+// The tree stays out of this gate on the boundary — specs/ is envelope, and this
+// script runs in a repo/ clone that has no `..` to read. The envelope gate owns
+// it, and refuses rather than passes when it cannot see repo/. What changed is
+// that the exclusion is now a division of labour with a named owner instead of a
+// claim about the files that was not true.
 const WS_SKIP_TOP = new Set(['repo', 'specs', '.specify', '.claude']);
 
 /** True when `..` holds the planning envelope rather than an unrelated parent. */
