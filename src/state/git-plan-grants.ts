@@ -30,10 +30,19 @@
 
 /**
  * One durable grant. `fingerprint` is stored inside the entry as well as being
- * its map key so a record read on its own — in an audit, in a bug report, in
- * `.schegent/state.json` opened by hand — is self-describing. `pipelineId` and
+ * its map key so a record read on its own — in an audit, in a bug report, in the
+ * list `Schegent: Git Approvals` renders — is self-describing. `pipelineId` and
  * `phaseIds` are there for FR-012: an operator must be able to tell what they
  * granted without reading source.
+ *
+ * WHERE THIS ACTUALLY LIVES, said plainly because this docblock used to say
+ * otherwise. The grants are a `WorkspaceStateStore` key, and that store is built
+ * over `context.workspaceState` — a VS Code `Memento`, which the workbench keeps
+ * in `<user-data-dir>/User/workspaceStorage/<hash>/state.vscdb`, a SQLite
+ * database. There is no `.schegent/state.json`; nothing in this product has ever
+ * written one. Five surfaces named that file and told operators to open and edit
+ * it, which made FR-012's "observable and revocable" reachable only by a route
+ * that does not exist. `commands/git-approvals.ts` is the route that does.
  */
 export interface GitPlanGrant {
   readonly fingerprint: string;
@@ -123,6 +132,29 @@ export function readGitPlanGrants(raw: unknown): GitPlanGrantsRead {
  */
 export function writeGitPlanGrant(current: GitPlanGrantMap, grant: GitPlanGrant): GitPlanGrantMap {
   return { ...current, [grant.fingerprint]: grant };
+}
+
+/**
+ * FR-R3-146 (FR-012) — the map after withdrawing one grant.
+ *
+ * Returns `null` when the fingerprint is not present, so the caller can tell
+ * "removed" from "there was nothing to remove" without comparing maps. That
+ * distinction is the whole reason withdrawal has a return value: an operator who
+ * asked to forget a grant and got a silent success would have no way to know
+ * whether the grant they were looking at is gone or whether they were looking at
+ * a stale list.
+ *
+ * `hasOwnProperty` rather than `in` or a truthiness test, for the reason
+ * `hasGitPlanGrant` gives: a stored `toString` must not answer for a plan.
+ */
+export function forgetGitPlanGrant(
+  current: GitPlanGrantMap,
+  fingerprint: string
+): GitPlanGrantMap | null {
+  if (!Object.prototype.hasOwnProperty.call(current, fingerprint)) return null;
+  const next: Record<string, GitPlanGrant> = { ...current };
+  delete next[fingerprint];
+  return next;
 }
 
 /** Why this entry cannot be used, or `null` if it can. */

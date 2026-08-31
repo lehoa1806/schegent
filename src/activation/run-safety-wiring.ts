@@ -165,10 +165,17 @@ export async function createRunSafetyWiring(input: {
   // sentence because the writes are NOT under the workspace: the sweep deletes
   // checkpoint archives under `context.globalStorageUri`. It is still a producer
   // act under T1523a's criterion, which is about paths the workspace or persisted
-  // state can INFLUENCE rather than paths inside the folder — every candidate is
-  // selected from run ids read out of `.schegent/state.json`. An untrusted folder
+  // state can INFLUENCE rather than paths inside the folder. An untrusted folder
   // therefore gets to name what a global-storage sweep deletes, which reaches
   // further than the folder that supplied the names.
+  //
+  // HOW it gets to name them, corrected by FR-R3-146. This said candidates were
+  // "read out of `.schegent/state.json`", which is wrong twice: no such file
+  // exists, and the sweep reads no state at all. `runSweep` enumerates the
+  // checkpoint root with `readdir`, so the candidates are DIRECTORY NAMES — and
+  // those names are run ids the checkpoint service wrote when the runs they
+  // belong to were persisted. The influence is real and one step longer than the
+  // old sentence claimed.
   const sweepCheckpointRetention = (): Promise<unknown> => checkpointRetention.sweep();
   return {
     terminalTransitions,

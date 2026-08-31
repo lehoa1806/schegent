@@ -70,7 +70,7 @@ unaffected.
 
 ## What refuses untrusted
 
-**23 commands refuse.** Every mutating command id in
+**24 commands refuse.** Every mutating command id in
 `src/contracts/entry-point-dispositions.ts` is wrapped by `registerGuardedCommand`, which — when the
 window is untrusted — shows a warning, records `command refused: workspace not trusted` with the
 `commandId`, and returns without calling the handler.

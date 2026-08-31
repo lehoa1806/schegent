@@ -6,6 +6,7 @@ import { downloadAndUnzipVSCode } from '@vscode/test-electron';
 import {
   findCompletionMarker,
   INTEGRATION_RESULT_DIR_ENV,
+  INTEGRATION_USER_DATA_DIR_ENV,
   readSuccessfulIntegrationHostResult,
   resolveDownloadedExecutable
 } from './vscode-test-executable';
@@ -405,6 +406,11 @@ async function runPass(options: PassOptions): Promise<number> {
     ],
     {
       [INTEGRATION_RESULT_DIR_ENV]: resultDirectory,
+      // The `--user-data-dir` above, told to the leg running inside the window.
+      // A host test cannot derive it: the flag is this function's private
+      // decision, and `ConfigurationTarget.Global` is only checkable against the
+      // file it lands in. See the constant's note in `vscode-test-executable.ts`.
+      [INTEGRATION_USER_DATA_DIR_ENV]: userDataDirectory,
       ...options.env
     }
   );

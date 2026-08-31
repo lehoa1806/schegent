@@ -923,7 +923,7 @@ describe('history retention is the per-queue cap and nothing else (FR-044, FR-04
 
 /**
  * FR-R3-146 (FR-006, FR-011) — the durable Git-plan grant, and the reader that
- * has to survive whatever is in `.schegent/state.json`.
+ * has to survive whatever is under the memento key.
  *
  * The whole input table from `contracts/git-plan-grants.md` is here, not a
  * sample of it. This record is consulted before a Git-mutating run and a reader
@@ -1099,8 +1099,10 @@ describe('git plan grants — the writer (FR-R3-146)', () => {
       phaseIds: ['speckit-implement', 'speckit-git-commit']
     });
 
-    // What an operator opening `.schegent/state.json` sees: which pipeline, which
-    // phases, when. A bare fingerprint would be a grant nobody can audit.
+    // What `Schegent: Git Approvals` has to render: which pipeline, which phases,
+    // when. A bare fingerprint would be a grant nobody can audit. (This comment
+    // named `.schegent/state.json` until FR-R3-146 found there is no such file —
+    // the record was always legible, and had nowhere to be read.)
     const raw = memento.get<Record<string, unknown>>(KEYS.gitPlanGrants);
     expect(JSON.stringify(raw)).toContain('spec-driven');
     expect(JSON.stringify(raw)).toContain('speckit-git-commit');
@@ -1175,22 +1177,25 @@ describe('git plan grants — the writer (FR-R3-146)', () => {
   // FR-R3-146 (FR-013, US4-2) — withdrawal at the granularity the grant was given.
   //
   // The reset test above withdraws everything. This is the withdrawal an operator
-  // actually performs: open `.schegent/state.json`, remove the one entry they no
-  // longer stand behind, keep the rest. The prompt has to come back for that plan
-  // and only that plan, and consenting again has to work — a withdrawal that
-  // permanently poisoned a fingerprint would be a worse trap than never asking.
+  // actually performs: remove the one entry they no longer stand behind, keep the
+  // rest. The prompt has to come back for that plan and only that plan, and
+  // consenting again has to work — a withdrawal that permanently poisoned a
+  // fingerprint would be a worse trap than never asking.
+  //
+  // THIS TEST USED TO PERFORM THE WITHDRAWAL ITSELF, filtering the map and writing
+  // it back through the memento, under a comment that said the operator would
+  // "open `.schegent/state.json`" and do the same by hand. It passed for the whole
+  // life of the feature while asserting a route that did not exist: there is no
+  // such file, and the store had no narrower withdrawal than `reset`. A test that
+  // supplies the mechanism it is testing proves the STORAGE can represent the
+  // outcome, never that the product can reach it. It now drives the real method.
   it('is withdrawn one entry at a time, and only that plan asks again', async () => {
     const withdrawn = 'a'.repeat(64);
     const kept = 'b'.repeat(64);
     await store.recordGitPlanGrant(grant(withdrawn));
     await store.recordGitPlanGrant(grant(kept));
 
-    await memento.update(
-      KEYS.gitPlanGrants,
-      Object.fromEntries(
-        Object.entries(store.getGitPlanGrants()).filter(([key]) => key !== withdrawn)
-      )
-    );
+    expect(await store.forgetGitPlanGrant(withdrawn)).toBe(true);
 
     expect(store.hasGitPlanGrant(withdrawn)).toBe(false);
     expect(store.hasGitPlanGrant(kept)).toBe(true);
@@ -1199,14 +1204,76 @@ describe('git plan grants — the writer (FR-R3-146)', () => {
     await store.recordGitPlanGrant(grant(withdrawn));
     expect(store.hasGitPlanGrant(withdrawn)).toBe(true);
   });
+
+  // Reported rather than swallowed, because the command tells the operator two
+  // different things: "forgot it" and "that was already gone". Both are true
+  // outcomes of pressing the same button, and a list read a while ago in a second
+  // window is how the second one happens. Reporting the second as success would be
+  // a lie about a security decision.
+  it('reports a fingerprint it never held as nothing forgotten, and writes nothing', async () => {
+    await store.recordGitPlanGrant(grant('a'.repeat(64)));
+    const before = JSON.stringify(memento.get(KEYS.gitPlanGrants));
+
+    expect(await store.forgetGitPlanGrant('b'.repeat(64))).toBe(false);
+
+    expect(JSON.stringify(memento.get(KEYS.gitPlanGrants))).toBe(before);
+    expect(store.hasGitPlanGrant('a'.repeat(64))).toBe(true);
+  });
+
+  it('does not withdraw a grant when handed an inherited property name', async () => {
+    // Same trap as the reader's `toString` case, on the write side: a `delete` on
+    // a key the map does not own would report a withdrawal that never happened.
+    await store.recordGitPlanGrant(grant('a'.repeat(64)));
+
+    expect(await store.forgetGitPlanGrant('toString')).toBe(false);
+    expect(Object.keys(store.getGitPlanGrants())).toEqual(['a'.repeat(64)]);
+  });
+
+  it('withdraws every grant at once and reports how many there were', async () => {
+    await store.recordGitPlanGrant(grant('a'.repeat(64)));
+    await store.recordGitPlanGrant(grant('b'.repeat(64)));
+
+    expect(await store.forgetAllGitPlanGrants()).toBe(2);
+
+    expect(store.getGitPlanGrants()).toEqual({});
+    expect(store.hasGitPlanGrant('a'.repeat(64))).toBe(false);
+    expect(store.hasGitPlanGrant('b'.repeat(64))).toBe(false);
+  });
+
+  // The reason `forgetAllGitPlanGrants` writes even when it counts zero. The
+  // reader drops malformed entries, so "no grants" and "a key full of junk the
+  // reader refuses" look identical through `getGitPlanGrants()`. An operator who
+  // asks to forget everything has to end with a key that holds nothing — not one
+  // that still holds a record some future reader might accept.
+  it('clears a key the reader rejected, even though it counted nothing to forget', async () => {
+    await memento.update(KEYS.gitPlanGrants, { ['a'.repeat(64)]: 'not a record at all' });
+
+    expect(await store.forgetAllGitPlanGrants()).toBe(0);
+
+    expect(memento.get(KEYS.gitPlanGrants)).toEqual({});
+  });
+
+  it('leaves a withdrawal visible to the next window', async () => {
+    const fingerprint = 'a'.repeat(64);
+    await store.recordGitPlanGrant(grant(fingerprint));
+    await store.forgetGitPlanGrant(fingerprint);
+
+    const reopened = new WorkspaceStateStore(memento);
+    await reopened.initialize();
+
+    // Withdrawal is durable in the same sense the grant is. A withdrawal that only
+    // held for this window would restore the prompt until the next reload and then
+    // silently stop asking again.
+    expect(reopened.hasGitPlanGrant(fingerprint)).toBe(false);
+  });
 });
 
 /**
  * FR-R3-146 (FR-010, SC-006, US5) — the upgrade.
  *
  * A workspace that has been running Schegent for months has queues, Runs and
- * history in `.schegent/state.json` and no consent key at all, because the code
- * that wrote that file did not have one. This feature adds exactly one key and no
+ * history in its memento and no consent key at all, because the code that wrote
+ * those keys did not have one. This feature adds exactly one key and no
  * migration rung, on the `connectedRuns` precedent: a new key's ABSENCE already
  * means "nothing granted", and a rung that wrote `{}` would be a state change
  * dressed as a no-op.

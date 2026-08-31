@@ -879,7 +879,27 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       //
       // Of the 17, six are that comment and eleven are the translation, the sort that makes
       // indexing `targetPending` meaningful, and the widened shift.
-      highWaterMark: 2832
+      //
+      // FR-R3-146 (FR-012, SC-005) — 2832 → 2866: withdrawing a stored Git-plan grant.
+      //
+      // The +34 above is the same shape as the +46 two paragraphs up, and for the same reason.
+      // Five surfaces told operators to open `.schegent/state.json` and delete a grant from it.
+      // No such file exists and nothing has ever written one — the grants are a memento key, so
+      // FR-012's "observable and revocable" was reachable only by a route that does not exist.
+      // `schegent.gitApprovals` is the route that does, and it needs two writes this store has
+      // to own: forget one fingerprint, forget them all.
+      //
+      // The mechanism is NOT here. `forgetGitPlanGrant` in `src/state/git-plan-grants.ts` holds
+      // the narrowing — the has-own-property probe that distinguishes "withdrawn" from "was
+      // never there", and the immutable copy — beside the writer it mirrors. What is left here
+      // is the memento boundary, which is where it belongs: two accessors of three to five
+      // statements that read through the same narrowing reader, `await this.memento.update`, and
+      // report what the caller has to tell the operator.
+      //
+      // Of the 34, twelve are code and the rest is why `forgetAllGitPlanGrants` writes even at
+      // zero — the key may hold a value the reader dropped as malformed, and "forget everything"
+      // has to clear that too, which is the one thing a reader of the two bodies cannot recover.
+      highWaterMark: 2866
     }
   },
   // Feature 077 — public facade and every state-projection collaborator have

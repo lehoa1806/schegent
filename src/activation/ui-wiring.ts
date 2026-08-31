@@ -11,6 +11,7 @@ import { runCancel } from '../commands/cancel';
 import { runClearAll } from '../commands/clear-all';
 import { runEnqueue, type EnqueueCommandArgs } from '../commands/enqueue';
 import { runExportAuditLog } from '../commands/export-audit';
+import { runGitApprovals, type GitApprovalItem } from '../commands/git-approvals';
 import { runOpenDashboard } from '../commands/open-dashboard';
 import {
   runClearCompleted,
@@ -373,6 +374,38 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
     ),
     registerGuardedCommand(guard, 'schegent.showAuditLog', () =>
       runShowAuditLog({ workspaceRoot: deps.workspaceRoot, notifier: deps.notifier })
+    ),
+    // FR-R3-146 (FR-012, SC-005) — the observe-and-withdraw surface for the
+    // durable Git grants. Both thunks read the store when the command runs, not
+    // when the wiring is built: the rule `run-safety-wiring.ts:204-206` states for
+    // the grant lookup itself, and for the same reason — an operator who clears
+    // state mid-session means it.
+    registerGuardedCommand(guard, 'schegent.gitApprovals', () =>
+      runGitApprovals({
+        grants: () => deps.store.getGitPlanGrants(),
+        forget: (fingerprint) => deps.store.forgetGitPlanGrant(fingerprint),
+        forgetAll: () => deps.store.forgetAllGitPlanGrants(),
+        pick: (items) =>
+          Promise.resolve(
+            vscode.window.showQuickPick<GitApprovalItem & vscode.QuickPickItem>(
+              items as (GitApprovalItem & vscode.QuickPickItem)[],
+              {
+                title: 'Schegent: Git Approvals',
+                placeHolder: 'Plans this workspace approves without asking. Pick one to withdraw it.',
+                // The detail line carries the phases and the fingerprint, and it
+                // is the reason this list answers "what did I grant" at all.
+                matchOnDetail: true
+              }
+            )
+          ),
+        // `modal: true`, like both consent modals: withdrawing a security decision
+        // is answered, not dismissed past.
+        confirm: (message, detail, approveLabel) =>
+          Promise.resolve(
+            vscode.window.showWarningMessage(message, { modal: true, detail }, approveLabel)
+          ),
+        info: (message) => deps.notifier.info(message)
+      })
     ),
     // FR-R3-112 — the chain verification, from the surface rather than only from a shell.
     registerGuardedCommand(guard, 'schegent.verifyAuditChain', () =>

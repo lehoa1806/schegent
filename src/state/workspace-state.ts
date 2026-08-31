@@ -343,6 +343,7 @@ export const RESET_CLEARED_KEYS: readonly string[] = Object.values(KEYS).filter(
 import { readConfirmSuppression, writeConfirmSuppression } from './confirm-suppression';
 export { CONFIRM_SUPPRESSION_VERSION, type ConfirmSuppressionState } from './confirm-suppression';
 import {
+  forgetGitPlanGrant,
   readGitPlanGrants,
   writeGitPlanGrant,
   type GitPlanGrant,
@@ -2575,6 +2576,39 @@ export class WorkspaceStateStore {
   public async recordGitPlanGrant(grant: GitPlanGrant): Promise<void> {
     const next = writeGitPlanGrant(this.getGitPlanGrants(), grant);
     await this.memento.update(KEYS.gitPlanGrants, next);
+  }
+
+  /**
+   * FR-R3-146 (FR-012) — withdraw one grant. `true` when something was removed.
+   *
+   * The other half of a durable grant, and the half that shipped without a
+   * caller: FR-012 requires that a grant stay revocable and that removing it
+   * restore the prompt, and the only route the documentation offered was editing
+   * a `.schegent/state.json` that does not exist. `schegent.gitApprovals` is the
+   * route now, and this is what it calls.
+   *
+   * Read-modify-write over the LIVE map rather than one the caller passes in,
+   * for the reason `recordGitPlanGrant` does it that way: a list rendered in a
+   * QuickPick spans however long the operator takes to read it, and another
+   * window may have granted something in between. Withdrawing what the operator
+   * chose must not delete what they never saw.
+   */
+  public async forgetGitPlanGrant(fingerprint: string): Promise<boolean> {
+    const next = forgetGitPlanGrant(this.getGitPlanGrants(), fingerprint);
+    if (next === null) return false;
+    await this.memento.update(KEYS.gitPlanGrants, next);
+    return true;
+  }
+
+  /** Withdraw every grant in this workspace; returns how many there were. */
+  public async forgetAllGitPlanGrants(): Promise<number> {
+    const count = Object.keys(this.getGitPlanGrants()).length;
+    // Written even at zero: the key may hold a value the reader dropped as
+    // malformed, and "forget everything" has to clear that too. `getGitPlanGrants`
+    // reports 0 for it, so an early return on the count would leave the one shape
+    // an operator most wants gone.
+    await this.memento.update(KEYS.gitPlanGrants, {});
+    return count;
   }
 
   /**

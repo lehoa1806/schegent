@@ -526,11 +526,12 @@ install still refuses its first run, and the setting is read at **every** runner
 than captured at activation — a grant written mid-session takes effect with no window reload.
 
 **The Git mutation-plan grant.** Asked before the first Run on a plan. `Approve This Run` covers that
-Run and records nothing; `Always Approve This Plan Here` writes an entry to `.schegent/state.json`
-under `schegent.consent.gitPlanGrants.v1`, keyed by the plan fingerprint and carrying the pipeline
-id, the phase ids, and when it was given. Its scope is **this workspace and this exact plan**:
-editing the pipeline changes the fingerprint and asks again, and another repository asks. Withdrawn
-by deleting that entry, or by resetting workspace state.
+Run and records nothing; `Always Approve This Plan Here` writes an entry under
+`schegent.consent.gitPlanGrants.v1` in this workspace's `workspaceState` memento, keyed by the plan
+fingerprint and carrying the pipeline id, the phase ids, and when it was given. Its scope is **this
+workspace and this exact plan**: editing the pipeline changes the fingerprint and asks again, and
+another repository asks. Withdrawn from `Schegent: Git Approvals`, which lists what this workspace
+holds and withdraws one entry or all of them; resetting workspace state also clears them.
 
 For both, cancelling or dismissing **denies**, and neither value is written except by its own
 affirmative action. A failed write does not become a denial of the run just approved — it means the
@@ -548,10 +549,18 @@ next run asks again, which is the fail-closed direction for a grant that was nev
   `--dangerously-skip-permissions` is still passed. The Git grant covers the phases the host runs,
   and a backend with a shell can invoke `git` regardless of what any phase declared — T8's position,
   restated at a different seam.
-- **Workspace state lives in the workspace.** The Git grant is a file in the repository directory, so
-  anyone who can write `.schegent/state.json` can write a grant. That is the boundary
-  [Workspace Trust](../operations/workspace-trust.md) already draws, and it is why the machine-level
-  grant is deliberately *not* stored there.
+- **The Git grant is scoped to the workspace but not stored in it.** This page said until FR-R3-146
+  that the grant was a file in the repository directory, and that anyone who could write it could
+  write a grant. Both halves were wrong, in the direction that understates the product. A
+  `workspaceState` memento is keyed *by* the workspace and kept *outside* it, in VS Code's own
+  `workspaceStorage` under the user's data directory — so repository content cannot forge a grant by
+  checking one in, and cloning a repository carries none. What can write one is anything already
+  running as the operator with write access to that directory, which is the same actor that could
+  edit User settings; no boundary this product draws survives it, and none is claimed.
+- **It is not observable by opening a file.** The memento is a SQLite database VS Code owns
+  (`state.vscdb`), which is why withdrawal is a command rather than an editing instruction, and why
+  five surfaces telling operators to edit a file that does not exist left FR-012 unmet in practice
+  until there was a surface that reads it. `Schegent: Git Approvals` is that surface.
 
 <!-- Source: src/activation/uncontained-consent.ts -->
 <!-- Source: src/activation/git-approval.ts -->
