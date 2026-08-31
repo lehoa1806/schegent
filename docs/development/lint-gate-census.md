@@ -19,10 +19,10 @@ predicted it: its author sampled the set and found every gate well motivated.
 
 | Figure | Value | Date | Method |
 |---|---|---|---|
-| Gate files | **177** | 2026-08-30 | `*.test.ts` under `tests/lint/` recursively |
-| Marked `unique` | 163 | 2026-08-30 | hand verdict |
-| Marked `partially redundant` | 14 | 2026-08-30 | hand verdict |
-| Marked `redundant` | 0 | 2026-08-30 | hand verdict |
+| Gate files | **178** | 2026-08-31 | `*.test.ts` under `tests/lint/` recursively |
+| Marked `unique` | 163 | 2026-08-31 | hand verdict |
+| Marked `partially redundant` | 15 | 2026-08-31 | hand verdict |
+| Marked `redundant` | 0 | 2026-08-31 | hand verdict |
 
 <!-- census:prose -->
 
@@ -303,6 +303,7 @@ changing one means updating that machinery in the same commit.
 | `source-marker-targets.test.ts` | provenance markers name a real file (FR-R3-063) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `spec-traceability-envelope-absence.test.ts` | spec traceability governance: the envelope-absent path | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `spec-traceability-governance.test.ts` | spec traceability governance | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
+| `start-failure-classification-coverage.test.ts` | a refusal that cannot fit the catch-all bound is classified | `tests/unit/controller/start-failure-classification.test.ts` (the two refusal types that exist today, never the population) | partially redundant | that sibling is a unit test, which is **not** a successor under the retirement rule above — and per-instance coverage is precisely the control that failed here. `classifyStartFailure` bounds an arbitrary throw at 240 characters and its docblock exempts the classified shapes "because each is built by this product from constants and each is cut mid-remedy by it": a membership rule, written in prose, checked by nothing. `CapabilityNotEnforceableError` satisfied it word for word and was not a member, so every capability refusal that ever fired reached the operator as `workflow … failed unexpectedly`, cut mid-sentence, with the whole remedy deleted. Measured: 427 characters for the full set, 370 for the shortest a lone capability can raise, so no input was harmless. That is the **second** time this defect shipped — `FR-R3-146` fixed the same bound and the same severed remedy on `UncontainedBackendRefusedError` and fixed the instance. This gate reads the population out of `src/`, so a new `*Refused` / `*NotEnforceable` class forces a decision rather than inheriting the catch-all silently. Landed red 2026-08-31; four mutations, each hitting the assertion it was aimed at — M1 disable the `isCapabilityRefusal` branch (the classification assertion, diagnostic *"builds a 427-character message from constants and lands in the catch-all"*, plus the status-bar assertion as a consequence, because the catch-all puts the 240-character remnant on the bar), M2 `.slice(0, UNEXPECTED_MESSAGE_MAX)` inside the branch (the untruncated assertion, and only that one), M3 drop a class from `REFUSALS` (the completeness control), M4 point the walk at a subtree (both floors, *"expected 8 to be greater than 200"*) — all restored and re-run green, 20 tests across the gate and its unit sibling. Two listed types are under the bound (`OutputTargetRefusedAtDispatch` 81, `AuditPathRefusedError` 45) and pass immediately; they are listed so that *growing* their messages fails here |
 | `stdin-write-requires-error-handler.test.ts` | stdin writes route through the shared helper | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `stdout-boundary-doc-parity.test.ts` | CLI stdout boundary: threat model and parser agree (FR-025) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `suite-invoked-once.test.ts` | a suite directory is invoked once per chain | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |

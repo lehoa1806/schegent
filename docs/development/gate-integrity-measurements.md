@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 104
+    vacuity-census-denominator: 105
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **104** |
+| Gates the detector calls **controlled** (the denominator) | **105** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -148,6 +148,22 @@ The four floors are not decoration. Every assertion in the gate filters a list a
 founding defect of the item it was written for. Driven red by twelve mutations, one per verdict per
 reference form plus the ledger and guard controls; each hit its own test. The rate stays **0.0%** —
 the entrant was mutated with the rest and did not survive.
+
+**Denominator movement 104 → 105 (2026-08-31, the refusal-classification coverage item).** One gate
+joined, and the entry it forced is a correction to itself.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | `start-failure-classification-coverage.test.ts` (104 → 105) | Joined. Refuses a product-authored refusal error whose message outruns `UNEXPECTED_MESSAGE_MAX` and is still classified as an unexpected fault — the defect that reached the operator as `workflow … failed unexpectedly`, cut at 240 characters through the sentence naming the remedy, for the second time. It walks `src/` with `readdirSync` and asserts `toEqual([])` over refusal classes it does not know about. **Its first version was `looksControlled` for the wrong reason**: the only idiom the detector recognised in it was the word *vacuous* in a test title, and its `toEqual([])` would have passed over an empty walk. Two floors were added before this row was written — more than two hundred sources walked (observed 494) and at least as many refusal classes found as the table lists (observed 4) — so a moved directory now fails the gate instead of emptying it. |
+
+The near miss is the point of recording it. The detector's `PROVES_NON_EMPTY` is deliberately broad —
+its own header says the question is *"whether the author thought about it, not whether they picked a
+house form"* — and breadth has a cost in the other direction: a gate can enter the denominator on a
+word rather than a control, and the census would report it as evidence. Nothing detects that, because
+`neuter` strips the recognised idiom and the mutation then reports the gate as uncontrolled, which is
+the correct answer for the wrong reason. This one was caught by reading the file while writing its
+census row, not by a gate. The rate stays **0.0%** — the entrant was mutated with the rest and did not
+survive.
 
 The residual is unchanged and is the note below: the detector reads for scanning **by name**, so the
 next extraction of a walk into a helper will do this again. Nothing gates that.
