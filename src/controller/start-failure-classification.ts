@@ -1,5 +1,6 @@
 import { LockHeldError } from '../lib/errors';
 import { isUncontainedBackendRefusal } from '../services/backend-containment-policy';
+import { isCapabilityRefusal } from '../services/capability-refusal';
 import { isConsentWriteFailure } from './uncontained-consent-gate';
 
 // FR-R3-146 (FR-005) — how a start failure is REPORTED, decided in one place.
@@ -31,6 +32,7 @@ import { isConsentWriteFailure } from './uncontained-consent-gate';
 export type StartFailureKind =
   | 'lock-held'
   | 'uncontained-backend-refused'
+  | 'capability-not-enforceable'
   | 'consent-write-failed'
   | 'unexpected';
 
@@ -39,8 +41,15 @@ export type StartFailureKind =
  *
  * An unexpected error's message is whatever a dependency chose to put in it, of
  * whatever length; a status line and a notification toast are not sinks that can
- * absorb that. The two classified shapes are not subject to it, because both are
- * built by this product from constants and both are cut mid-remedy by it.
+ * absorb that. The classified shapes are not subject to it, because each is
+ * built by this product from constants and each is cut mid-remedy by it.
+ *
+ * THAT SENTENCE IS THE MEMBERSHIP RULE, and it was written here before every
+ * member satisfying it was in the set: `CapabilityNotEnforceableError` met it
+ * word for word and was classified as `unexpected` anyway, which cost it its
+ * whole remedy sentence and told the operator a deliberate refusal had "failed
+ * unexpectedly". A rule stated in a docblock is not a rule anything checks —
+ * `tests/lint/start-failure-classification-coverage.test.ts` now checks it.
  */
 export const UNEXPECTED_MESSAGE_MAX = 240;
 
@@ -110,6 +119,38 @@ export function classifyStartFailure(
       // more readable — it would make the bar unusable.
       statusDetail: `backend '${err.kind}' refused: no OS-enforced bound`,
       announcement: `Schegent: backend '${err.kind}' was refused — ${message}`
+    };
+  }
+
+  if (isCapabilityRefusal(err)) {
+    // A phase REFUSED because the backend cannot withhold what the phase declared
+    // — the same shape as the containment refusal above, and it was reaching the
+    // operator as `workflow … failed unexpectedly`, cut at 240 characters through
+    // the sentence naming the remedy.
+    //
+    // NOT TRUNCATED, for the reason `UNEXPECTED_MESSAGE_MAX` states: this message
+    // is built here from constants, and the bound severs it mid-remedy. The
+    // shortest one this error can raise — a single withheld capability — is 370
+    // characters, so there is no input for which the cut was harmless.
+    //
+    // `warn`, like the two refusals above: nothing is broken. The product declined
+    // to run a phase with a narrower capability set than the one it was given, and
+    // reporting that as a fault sends an operator looking for a fault.
+    const message = sanitize(err.message);
+    return {
+      kind: 'capability-not-enforceable',
+      // The same string `capability-enforcement-plan.ts` already uses for this
+      // refusal's `reason`, so the record and the plan name it identically.
+      code: 'capability-not-enforceable',
+      message,
+      level: 'warn',
+      logLine: `workflow ${featureId} refused: ${message}`,
+      // One line, and a FIXED phrase rather than the withheld list: the status bar
+      // is a summary surface, the list is unbounded as capabilities are added, and
+      // a bound on this line is what the whole finding is about. The full text is
+      // on the Run record and in the log.
+      statusDetail: `backend '${err.kind}' cannot enforce the declared capabilities`,
+      announcement: `Schegent: backend '${err.kind}' cannot enforce this phase's capabilities — ${message}`
     };
   }
 
