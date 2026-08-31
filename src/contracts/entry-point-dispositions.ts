@@ -55,7 +55,20 @@ export const MUTATING_COMMAND_IDS = Object.freeze({
   'schegent.pausePhase': 'phase pause',
   'schegent.resumePhase': 'phase resume',
   'schegent.restartPhase': 'phase restart',
-  'schegent.deleteRunEvidence': 'evidence deletion'
+  'schegent.deleteRunEvidence': 'evidence deletion',
+
+  // FR-R3-146 (FR-012) — LISTS grants and can withdraw them, so it is classified
+  // by the second half. The criterion above asks whether an entry can cause an
+  // effect, not what its name suggests, and withdrawing a consent decision writes
+  // persisted state.
+  //
+  // Refused while untrusted despite being the safe direction — withdrawal only
+  // ever makes the product ask MORE — because the read half is what the refusal
+  // would also cost, and an untrusted window is one where repository content may
+  // have influenced what is on screen. The operator loses nothing that trusting
+  // the folder does not immediately return, and `schegent.reset` is classified the
+  // same way for the same reason.
+  'schegent.gitApprovals': 'git approval withdrawal'
 } as const);
 
 /**
