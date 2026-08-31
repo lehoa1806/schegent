@@ -119,11 +119,14 @@ other.
 | **What it permits** | Constructing a runner for a backend with no OS-enforced bound (`claude`, `agy`). Everything that backend does then runs with your local user authority. | The phases of **one exact pipeline plan** staging, committing, or changing branches in this workspace. |
 | **When you are asked** | At the first refusal, as a blocking modal answered before anything is spawned — or ahead of that, on the Settings tab, where each backend's section states its posture and offers the grant behind the same confirmation. Both routes write the same setting through the same writer. | Before the first Run on that plan. `Approve This Run` covers that Run only and records nothing; `Always Approve This Plan Here` records the grant. |
 | **Scope** | **Machine.** `application`-scoped: every workspace in this installation. | **This workspace, this plan.** Editing the pipeline changes the fingerprint and asks again. Another repository asks. |
-| **Where it is stored** | `schegent.backend.uncontainedBackends` in your User settings (`settings.json`). | `.schegent/state.json`, under `schegent.consent.gitPlanGrants.v1`, keyed by fingerprint — with the pipeline id, the phase ids, and when you gave it. |
-| **How to withdraw it** | Turn the grant off in that backend's section on the Settings tab, or remove the backend id from the setting by hand — the tab's control removes exactly that id and leaves the rest of the list alone. Applies to the next runner Schegent builds; a runner already built in this window is not torn down, so reload the window if you need it to bite now. | Delete that entry from `.schegent/state.json` — or the whole key, or reset Schegent's workspace state, which clears all of them. The next Run on that plan asks again. |
+| **Where it is stored** | `schegent.backend.uncontainedBackends` in your User settings (`settings.json`). | This workspace's `workspaceState` memento, under `schegent.consent.gitPlanGrants.v1`, keyed by fingerprint — with the pipeline id, the phase ids, and when you gave it. VS Code keeps that memento in its own `workspaceStorage`, **not** in the repository. |
+| **How to withdraw it** | Turn the grant off in that backend's section on the Settings tab, or remove the backend id from the setting by hand — the tab's control removes exactly that id and leaves the rest of the list alone. Applies to the next runner Schegent builds; a runner already built in this window is not torn down, so reload the window if you need it to bite now. | Run **`Schegent: Git Approvals`** from the Command Palette. It lists every plan this workspace approves without asking, and withdraws the one you pick or all of them, behind a confirmation. Resetting Schegent's workspace state also clears them. The next Run on that plan asks again. |
 
 The stored Git grant is written to be read: it names the pipeline and the phases, not just a hash,
-so a grant you find months later can be judged without reading source.
+so a grant you find months later can be judged without reading source. `Schegent: Git Approvals` is
+where you read it. Until FR-R3-146 this page and four others told you to open and edit
+`.schegent/state.json` — no such file exists, and nothing in this product has ever written one, so
+that instruction could not be followed. The command is the route that works.
 
 Both are explicit acts. Cancelling or dismissing either modal **denies** — closing a dialog is always
 the safe move — and neither value is ever written except by its own affirmative action. Neither
