@@ -4,6 +4,26 @@ import * as path from 'path';
 const COMPLETE_MARKER = 'is-complete';
 export const INTEGRATION_RESULT_DIR_ENV = 'SCHEGENT_INTEGRATION_RESULT_DIR';
 
+/**
+ * FR-R3-146 — the launch's private `--user-data-dir`, told to the host leg.
+ *
+ * A host test runs INSIDE the window under test, so it can see what the extension
+ * host sees and nothing else. That is enough for almost everything, and not enough
+ * for one claim this repository makes in several places: that
+ * `ConfigurationTarget.Global` writes to the profile's User settings. What the
+ * unit suites assert is that the call was made with that target — an assertion
+ * about an argument, which a `Workspace` target would also satisfy if the enum
+ * member were wrong.
+ *
+ * The observable that separates them is the FILE VS Code writes, and its path is
+ * derived from a flag only the launcher knows. So the launcher tells the host leg
+ * where the profile is, and the host test reads `User/settings.json` off disk.
+ *
+ * Exported here rather than declared in the host module because `runPass` sets it
+ * and the module reads it: one name, one file, no drift.
+ */
+export const INTEGRATION_USER_DATA_DIR_ENV = 'SCHEGENT_INTEGRATION_USER_DATA_DIR';
+
 export interface IntegrationHostResult {
   readonly schemaVersion: 1;
   readonly pid: number;
