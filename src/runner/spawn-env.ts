@@ -20,8 +20,27 @@ export type {
 
 /**
  * Non-secret bootstrap variables needed for executable lookup, home/config
- * discovery, temporary files, locale handling, and the Windows runtime.
- * `LC_*` variables are also copied dynamically.
+ * discovery, account identity, temporary files, locale handling, and the
+ * Windows runtime. `LC_*` variables are also copied dynamically.
+ *
+ * ACCOUNT IDENTITY IS BOOTSTRAP, NOT CONVENIENCE. `USER`/`LOGNAME`/`USERNAME`
+ * were absent until 2026-08-31, and the omission read as harmless because
+ * `HOME` was present: a child could still find `~/.claude`, so its settings,
+ * plugins and skills all loaded correctly. What it could NOT do was
+ * authenticate. The Claude CLI resolves its OAuth credential from the macOS
+ * login Keychain, and that lookup identifies the account by `USER`; with the
+ * name stripped it finds no credential at all and exits in ~87ms with
+ * `Not logged in - Please run /login`.
+ *
+ * That message names a remedy which does not apply -- the machine IS logged in,
+ * and logging in again changes nothing -- so the failure was attributed to an
+ * expired session rather than to the spawn environment. Since `allowlist` with
+ * an empty list is the SHIPPED DEFAULT, this made the default configuration
+ * unable to authenticate on macOS.
+ *
+ * The general rule this encodes: a name is bootstrap when the CLI cannot start
+ * WORKING without it, which is not the same as cannot start. An outage that
+ * presents as a credential problem is the most expensive shape this list has.
  */
 export const REQUIRED_PROCESS_ENV_NAMES: readonly string[] = Object.freeze([
   'PATH',
@@ -29,6 +48,9 @@ export const REQUIRED_PROCESS_ENV_NAMES: readonly string[] = Object.freeze([
   'PATHEXT',
   'HOME',
   'USERPROFILE',
+  'USER',
+  'LOGNAME',
+  'USERNAME',
   'APPDATA',
   'LOCALAPPDATA',
   'TMPDIR',

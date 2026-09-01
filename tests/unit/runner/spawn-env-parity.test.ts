@@ -34,8 +34,17 @@ import { ENV_POLICY_CALL_SITES } from '../../fixtures/env-policy-call-sites';
 const SENTINEL_NAMES = ['AWS_SECRET_ACCESS_KEY', 'NPM_TOKEN', 'ARTIFACT_SIGNING_KEY'] as const;
 const SENTINEL_VALUE = 'not-a-real-credential-synthetic-fixture';
 
-/** Names a CLI needs to start at all; a restriction that drops these is an outage. */
-const BOOTSTRAP = ['PATH', 'HOME'] as const;
+/**
+ * Names a CLI needs to start at all; a restriction that drops these is an outage.
+ *
+ * `USER` joined the pair on 2026-08-31. It is here rather than only in
+ * `spawn-env.test.ts` because the outage it caused was per call site: the macOS
+ * Keychain lookup that resolves the CLI's OAuth credential identifies the account
+ * by `USER`, so any site that forwards a policy without it spawns a child that
+ * cannot authenticate — while still reading the right `~/.claude` through `HOME`,
+ * which is what made it present as an expired login instead of a stripped spawn.
+ */
+const BOOTSTRAP = ['PATH', 'HOME', 'USER'] as const;
 
 let saved: NodeJS.ProcessEnv;
 

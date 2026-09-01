@@ -10,7 +10,8 @@ const TEST_NAMES = [
   'SCHEGENT_ENV_ALLOWED_TEST',
   'SCHEGENT_ENV_BLOCKED_TEST',
   'LC_SCHEGENT_TEST',
-  'PATH'
+  'PATH',
+  'USER'
 ] as const;
 const ORIGINAL = new Map(TEST_NAMES.map((name) => [name, process.env[name]]));
 
@@ -61,6 +62,33 @@ describe('buildSpawnEnv', () => {
     expect(env.LC_SCHEGENT_TEST).toBe('locale-value');
     expect(env.SCHEGENT_ENV_BLOCKED_TEST).toBeUndefined();
     expect(env.SCHEGENT_PHASE).toBe('plan');
+  });
+
+  /**
+   * The shipped default is `allowlist` with an EMPTY list, so this case is not an
+   * edge -- it is what every operator who has configured nothing actually spawns
+   * with, and `REQUIRED_PROCESS_ENV_NAMES` is the whole of it.
+   *
+   * `USER` was missing from that set. On macOS the Claude CLI resolves its OAuth
+   * credential from the login Keychain, and that lookup identifies the account by
+   * `USER`; without it the CLI finds no credential at all and exits in ~87ms with
+   * `Not logged in - Please run /login`. That reads as an expired session rather
+   * than a stripped environment, which is why it cost two runs to attribute.
+   *
+   * `HOME` alone is not enough and is the reason the failure was confusing: with
+   * `HOME` forwarded the child still reads the right `~/.claude/*`, so settings,
+   * plugins and skills all load correctly and only the credential is missing.
+   */
+  it('forwards the identity variables an OS credential store needs (default allowlist)', () => {
+    process.env.USER = 'ambient-user';
+
+    const env = buildSpawnEnv({
+      env: {},
+      inheritProcessEnv: false,
+      processEnvAllowlist: []
+    });
+
+    expect(env.USER).toBe('ambient-user');
   });
 });
 
