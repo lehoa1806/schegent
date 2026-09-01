@@ -598,3 +598,185 @@ describe('RunDetailTier — delayed-retry countdown reaches the phase strip', ()
     expect(queryByTestId('phase-control-retry-now')).toBeNull();
   });
 });
+
+// The same wiring gap as finding C above, on the pair of props beside it.
+//
+// `PhaseProgression` has declared `onSelectPhase` and `selectedPhaseId` since
+// the strip was built, and this tier — its only wiring site since the Dashboard
+// embed was removed — passed neither. Every tile was a button whose click
+// handler resolved to `undefined`, so the Activity Feed beside it only ever
+// showed the phase the Run happened to be on: Live worked, the tiles did not.
+//
+// Asserted through the mounted tier rather than against `PhaseProgression`,
+// because the component's own tests pass the callback and so cannot see this.
+describe('RunDetailTier — a phase tile navigates the Activity Feed', () => {
+  const RUNNING = Object.freeze({
+    tasks: [
+      task('r-1', {
+        status: 'in-flight' as const,
+        currentPipelineId: 'standard',
+        currentPhase: 'speckit-plan'
+      })
+    ],
+    inFlightTaskId: 'r-1'
+  });
+
+  it('reads the clicked phase’s log, not the phase the Run is on', async () => {
+    const { getByTestId } = mount(buildSnapshot(RUNNING));
+    await Promise.resolve();
+    await Promise.resolve();
+    readPhaseLogSpy.mockClear();
+
+    await fireEvent.click(getByTestId('phase-progression-speckit-specify'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(readPhaseLogSpy).toHaveBeenCalledWith({
+      selection: {
+        queueId: 'q-beta',
+        taskId: 'r-1',
+        pipelineId: 'standard',
+        phaseId: 'speckit-specify',
+        iterationN: null
+      }
+    });
+  });
+
+  it('marks the clicked tile as the selected one', async () => {
+    const { getByTestId } = mount(buildSnapshot(RUNNING));
+
+    const tile = getByTestId('phase-progression-speckit-specify');
+    expect(tile.getAttribute('aria-pressed')).toBe('false');
+
+    await fireEvent.click(tile);
+
+    expect(tile.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('keeps the operator’s pinned phase when the Run advances to the next one', async () => {
+    // A click is an operator selection, which turns Live Mode off (Feature
+    // 067). Without that gate the tier's own pin re-fires on the next snapshot
+    // that moves `currentPhase` and yanks the feed off the phase they chose —
+    // which would make the tile click work for exactly as long as the Run
+    // stayed still.
+    const { getByTestId, rerender } = mount(buildSnapshot(RUNNING));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await fireEvent.click(getByTestId('phase-progression-speckit-specify'));
+    await Promise.resolve();
+    await Promise.resolve();
+    readPhaseLogSpy.mockClear();
+
+    const advanced = buildSnapshot({
+      ...RUNNING,
+      tasks: [
+        task('r-1', {
+          status: 'in-flight',
+          currentPipelineId: 'standard',
+          currentPhase: 'speckit-tasks'
+        })
+      ]
+    });
+    await rerender({
+      snapshot: advanced,
+      queueId: 'q-beta',
+      runId: 'r-1',
+      isPrimary: true,
+      onBack: () => {}
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(readPhaseLogSpy).not.toHaveBeenCalled();
+    expect(getByTestId('phase-progression-speckit-specify').getAttribute('aria-pressed')).toBe(
+      'true'
+    );
+  });
+});
+
+// The Live button is the other half of the same navigation, and it read the
+// wrong Run: `PhaseLogFeed` resolves "currently executing" from
+// `snapshot.queue.inFlight`, the *default* queue's singular, so on a tier
+// showing a Run on any other queue the button either sat disabled (in-flight
+// null, as in this fixture) or jumped the feed to an unrelated queue's Run —
+// the cross-queue bleed FR-051/FR-052 forbid. `liveTarget` overrides it with
+// this tier's own Run.
+describe('RunDetailTier — Live targets this Run, not the default queue', () => {
+  const RUNNING = Object.freeze({
+    tasks: [
+      task('r-1', {
+        status: 'in-flight' as const,
+        currentPipelineId: 'standard',
+        currentPhase: 'speckit-plan'
+      })
+    ],
+    inFlightTaskId: 'r-1'
+  });
+
+  /** The default queue running something unrelated, as it usually is. */
+  function withDefaultQueueInFlight(snapshot: WorkflowSnapshot): WorkflowSnapshot {
+    return {
+      ...snapshot,
+      queue: {
+        ...snapshot.queue,
+        inFlight: {
+          ...task('other-queue-task'),
+          status: 'in-flight',
+          queueId: 'default',
+          currentPipelineId: 'standard',
+          currentPhase: 'speckit-specify'
+        }
+      }
+    } as unknown as WorkflowSnapshot;
+  }
+
+  it('offers Live while this Run executes, even though the default queue has nothing in flight', () => {
+    const { getByTestId } = mount(buildSnapshot(RUNNING));
+
+    const live = getByTestId('phase-log-jump-current');
+    expect(live.getAttribute('aria-disabled')).toBe('false');
+    expect(live.getAttribute('title')).toBe('Jump to the currently executing phase');
+  });
+
+  it('withholds Live when this Run is not the one executing', () => {
+    // A finished or pending Run has no "currently executing phase" of its own
+    // to jump to. Borrowing the default queue's would be the same bleed.
+    const { getByTestId } = mount(
+      withDefaultQueueInFlight(buildSnapshot({ tasks: [task('r-1', { status: 'completed' })] }))
+    );
+
+    const live = getByTestId('phase-log-jump-current');
+    expect(live.getAttribute('aria-disabled')).toBe('true');
+  });
+
+  it('jumps to this Run’s current phase, not the default queue’s', async () => {
+    const { getByTestId } = mount(withDefaultQueueInFlight(buildSnapshot(RUNNING)));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Pin somewhere else first, so the jump has an observable destination to
+    // move back to rather than landing on the phase already selected.
+    await fireEvent.click(getByTestId('phase-progression-speckit-specify'));
+    await Promise.resolve();
+    await Promise.resolve();
+    readPhaseLogSpy.mockClear();
+
+    await fireEvent.click(getByTestId('phase-log-jump-current'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(readPhaseLogSpy).toHaveBeenCalledWith({
+      selection: {
+        queueId: 'q-beta',
+        taskId: 'r-1',
+        pipelineId: 'standard',
+        phaseId: 'speckit-plan',
+        iterationN: null
+      }
+    });
+    expect(readPhaseLogSpy).not.toHaveBeenCalledWith({
+      selection: expect.objectContaining({ queueId: 'default' })
+    });
+  });
+});

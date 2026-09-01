@@ -284,6 +284,39 @@ describe('Feature 020 T044 — PhaseLogFeed auto-attach (T053 contract)', () => 
     expect(subscribeSpy).toHaveBeenCalled();
   });
 
+  it('asks for the tuple the operator actually selected', async () => {
+    // The assertion the test above is missing: `startPhaseLogTail` being
+    // called says nothing about *which* phase log it attached to. The
+    // request has to carry the selected tuple whole — a host that receives
+    // a mangled one cannot report the mistake, it just tails nothing and
+    // the feed sits silent with a LIVE badge on it.
+    //
+    // Worth its own test because the container round-trips the tuple
+    // through `tailFingerprint`, a single string joined and re-split on a
+    // U+0001 separator. That separator does not render: in a file read, a
+    // grep hit, or a diff, the join looks like a bare concatenation and the
+    // split looks like `split('')`. Anything that strips control characters
+    // from this file — an editor, a formatter, a copy-paste through a tool
+    // that sanitizes — silently turns the decode into a per-character one
+    // and every field lands wrong. This test fails loudly if that happens.
+    const store = createPhaseLogStore();
+    render(PhaseLogFeed, {
+      props: { snapshot: buildSnapshot(), store }
+    });
+    await selectTuple(store, 'q-1', 'run-1', 'speckit-plan');
+    await tick();
+    await tick();
+    expect(startSpy).toHaveBeenCalledWith({
+      selection: {
+        queueId: 'q-1',
+        taskId: 'run-1',
+        pipelineId: 'standard',
+        phaseId: 'speckit-plan',
+        iterationN: 1
+      }
+    });
+  });
+
   it('does NOT auto-attach when the selected phase is not the active phase', async () => {
     const store = createPhaseLogStore();
     render(PhaseLogFeed, {

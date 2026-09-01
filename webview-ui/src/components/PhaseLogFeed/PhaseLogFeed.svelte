@@ -15,7 +15,7 @@
   // store's `handlePush` internals — this component is intentionally
   // unaware of the wire format beyond the start/stop calls.
 
-  import type { WorkflowSnapshot } from '../../lib/snapshot-types';
+  import type { QueueItem, WorkflowSnapshot } from '../../lib/snapshot-types';
   import { createPhaseLogStore, type PhaseLogStore } from '../../lib/phase-log-store.svelte';
   import PhaseLogSelectors from './PhaseLogSelectors.svelte';
   import PhaseLogIterationStepper from './PhaseLogIterationStepper.svelte';
@@ -46,6 +46,28 @@
      * store's own cascade instead of a workspace-wide read.
      */
     readonly autoFollow?: boolean;
+    /**
+     * The in-flight reading this instance treats as "currently executing":
+     * what the Live button jumps to, whether it renders enabled, whether a
+     * live tail attaches, and which task the breadcrumb resolves a label
+     * against. Omitted means the workspace-wide `snapshot.queue.inFlight`,
+     * which is the right reading for an embed whose subject *is* the
+     * workspace — so every existing caller is unchanged.
+     *
+     * `RunDetailTier` passes its own Run. Its embed is pinned to one Run on
+     * one queue, and the workspace singular is whatever the *default* queue
+     * happens to be executing, so reading it there had both halves wrong at
+     * once: Live cascaded the pinned store onto another queue's task (the
+     * cross-queue bleed FR-051/FR-052 forbid, reached through the manual
+     * button rather than the auto-follow `autoFollow={false}` already
+     * closed), and `tailFingerprint` could never match, so a Run on any
+     * queue but `default` never attached a tail and its log never streamed.
+     *
+     * A wrapper object, not a bare `QueueItem | null`: `undefined` has to
+     * stay distinguishable from an explicit `null`, which is a caller saying
+     * "nothing is executing on my subject" rather than "use the default".
+     */
+    readonly liveTarget?: { readonly inFlight: QueueItem | null };
     readonly onSelectQueue?: (queueId: string | null) => void;
     readonly onSelectTask?: (taskId: string | null, pipelineId: string | null) => void;
     readonly onSelectPhase?: (phaseId: string | null) => void;
@@ -56,6 +78,7 @@
     snapshot,
     store = createPhaseLogStore(),
     autoFollow = true,
+    liveTarget,
     onSelectQueue,
     onSelectTask,
     onSelectPhase,
@@ -63,6 +86,19 @@
   }: Props = $props();
 
   const state = $derived(store.state);
+
+  // The single in-flight reading everything "live" on this instance resolves
+  // through — see `liveTarget` above for why a per-subject override exists.
+  const liveInFlight = $derived(
+    liveTarget !== undefined ? liveTarget.inFlight : snapshot.queue.inFlight
+  );
+  // The selectors read the same reading, so the header's breadcrumb and the
+  // Live button's enabled state cannot disagree with what the button does.
+  const selectorsQueue = $derived(
+    liveTarget !== undefined
+      ? { ...snapshot.queue, inFlight: liveInFlight }
+      : snapshot.queue
+  );
 
   const availablePhases = $derived(snapshot.availablePhases ?? []);
   const hasNoEntries = $derived(
@@ -137,7 +173,7 @@
     ) {
       return '';
     }
-    const inFlight = snapshot.queue.inFlight;
+    const inFlight = liveInFlight;
     if (inFlight === null) return '';
     if (inFlight.id !== sel.taskId) return '';
     if (inFlight.currentPhase !== sel.phaseId) return '';
@@ -360,7 +396,10 @@
       onJumpToCurrent();
       return;
     }
-    void store.jumpToCurrent(snapshot, { setLiveModeOn: true });
+    void store.jumpToCurrent(
+      { queue: { inFlight: liveInFlight } },
+      { setLiveModeOn: true }
+    );
   }
   async function handleCopyAll(): Promise<void> {
     const entries = state.entries;
@@ -380,7 +419,7 @@
   aria-label="Activity Feed"
 >
   <PhaseLogSelectors
-    snapshot={{ queue: snapshot.queue, history: snapshot.history }}
+    snapshot={{ queue: selectorsQueue, history: snapshot.history }}
     selection={state.selection}
     iterations={state.iterations}
     {availablePhases}

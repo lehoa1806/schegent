@@ -141,6 +141,17 @@
     if (task === null) return;
     const key = `${queueId}:${runId}:${task.currentPipelineId}:${task.currentPhase}`;
     if (key === pinnedTaskKey) return;
+    // A re-pin follows the Run as it advances, which is right up until the
+    // operator picks a phase tile themselves: `setPhase` records that as an
+    // operator selection and turns Live Mode off (Feature 067), and the phase
+    // they pinned has to survive the next transition. The first pin is
+    // unconditional — it is what fills the feed on mount, and Live Mode is
+    // persisted webview-wide, so reading it here would leave this tier empty
+    // for an operator who had turned it off on some other surface.
+    if (pinnedTaskKey !== null && !phaseLogStore.isLiveMode()) {
+      pinnedTaskKey = key;
+      return;
+    }
     pinnedTaskKey = key;
     phaseLogStore.setSelection(
       {
@@ -152,6 +163,30 @@
       },
       { origin: 'cascade' }
     );
+  });
+
+  // The phase strip is this tier's navigation into the Activity Feed beside
+  // it: the operator picks the phase whose log they want to read. Default
+  // origin ('manual') on purpose — this is an operator selection, and the
+  // Live button in the feed's own header is how they hand the follow back.
+  const selectedPhaseId = $derived(phaseLogStore.state.selection.phaseId);
+
+  function handleSelectPhase(phaseId: string): void {
+    phaseLogStore.setPhase(phaseId);
+  }
+
+  // What "currently executing" means on a surface about one Run: this Run,
+  // while it is the one executing, and nothing otherwise — the same
+  // non-borrowing rule `liveActivity` and `outputs` above already apply. The
+  // embed's own default is the workspace singular, which here is whatever the
+  // *default* queue happens to be executing; see `liveTarget` on PhaseLogFeed
+  // for both things that read wrong.
+  //
+  // `queueId` is overridden from this tier's own prop rather than trusted from
+  // the projection: `QueueItem.queueId` is optional, and `jumpToCurrent`
+  // returns null without it, which would leave Live silently doing nothing.
+  const liveTarget = $derived({
+    inFlight: isExecuting && task !== null ? { ...task, queueId } : null
   });
 
   function onBackKeyDown(event: KeyboardEvent): void {
@@ -249,6 +284,8 @@
           phaseBreakpoints={runtime?.phaseBreakpoints ?? []}
           resumeTargetPhaseId={inFlightRun?.resumeTargetPhaseId ?? null}
           delayedRetry={isExecuting ? inFlightRun?.delayedRetry : undefined}
+          {selectedPhaseId}
+          onSelectPhase={handleSelectPhase}
         />
       </aside>
 
@@ -296,7 +333,12 @@
             <!-- autoFollow={false}: this store is pinned to one Run (the $effect
                  above); PhaseLogFeed's own Live-Mode auto-follow must not
                  redirect it to the default queue's in-flight task. -->
-            <PhaseLogFeed {snapshot} store={phaseLogStore} autoFollow={false} />
+            <PhaseLogFeed
+              {snapshot}
+              store={phaseLogStore}
+              autoFollow={false}
+              {liveTarget}
+            />
           {:else if activeTab === 'outputs'}
             <RunOutputs {outputs} />
           {:else}
