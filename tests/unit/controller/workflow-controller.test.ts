@@ -445,7 +445,9 @@ describe('SchegentWorkflowController.startNew', () => {
    * `failed` in the state store and still *open* in the durable record.
    *
    * Found in a live host log (`docs/audits/syslog-triage-2026-08-30.md`, finding
-   * 2b): four `task-execution-started`, one `task-execution-ended`. The runs that
+   * 2b — retired 2026-08-31, its record is now the envelope's
+   * `docs/features/round_3/00_INDEX.md` under `syslog-triage-2026-08-30`): four
+   * `task-execution-started`, one `task-execution-ended`. The runs that
    * failed left their reason in a DEBUG line that is off by default, and nothing
    * else. The payload asserted below is the driver's, because the point is one shape
    * from both routes — the metrics rollup unions these by run id, and a second shape
@@ -737,7 +739,9 @@ describe('SchegentWorkflowController.startNew', () => {
      * caller happened to have. For the auto-drain that is `detach()`, which logs
      * `run on queue default ended abnormally: <message>` and stops.
      *
-     * Found in `docs/audits/syslog-triage-2026-08-30.md` from a live syslog: a
+     * Found in `docs/audits/syslog-triage-2026-08-30.md` from a live syslog —
+     * retired 2026-08-31, its record is now the envelope's
+     * `docs/features/round_3/00_INDEX.md` under `syslog-triage-2026-08-30`: a
      * task refused twice on the drain path, one truncated ERROR, no modal, and no
      * `uncontained-backend-refused` anywhere in 5,068 lines. The drain resumes
      * in-flight work, so this was the unattended path the product exists to run.
