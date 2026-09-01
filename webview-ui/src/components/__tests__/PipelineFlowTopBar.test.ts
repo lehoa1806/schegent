@@ -7,6 +7,8 @@
 
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import PipelineFlowTopBar from '../PipelineBuilderEditors/PipelineFlowTopBar.svelte';
 import type { BuilderLifecycle } from '../../lib/snapshot-types';
 import type { MutablePipeline } from '../PipelineBuilderEditors/types';
@@ -168,5 +170,43 @@ describe('PipelineFlowTopBar unsaved-draft status (T025)', () => {
     });
 
     expect(at('pipelines-topbar-unsaved')).not.toBeNull();
+  });
+});
+
+// Feature 186 (US2, T015, FR-005, D-5) — the picker's default-open state must
+// not visually cover the toolbar's own controls. jsdom computes no layout, so
+// the enforceable form of "renders in normal document flow" is the CSS rule
+// that took it out of flow in the first place: `.wf-picker-pop` stops being
+// `position: absolute`, and `.wf-picker` stops being `position: relative` —
+// dead once nothing inside it is positioned against it.
+describe('the popover stops floating out of flow (T015, FR-005, D-5)', () => {
+  /** Empty string when the selector carries no rule at all (D-5 may delete it). */
+  function ruleBodyOf(source: string, selector: string): string {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = source.match(new RegExp(`\\.pb ${escaped}\\s*\\{([^}]*)\\}`));
+    return match?.[1] ?? '';
+  }
+
+  it('renders the popover in normal flow, not floated over the toolbar', () => {
+    const source = readFileSync(
+      resolve(__dirname, '../PipelineBuilderEditors/workflow-flow.css'),
+      'utf8'
+    );
+    const pop = ruleBodyOf(source, '.wf-picker-pop');
+    expect(pop, 'expected a rule for .wf-picker-pop').not.toBe('');
+    expect(pop).not.toContain('position: absolute');
+    expect(pop).not.toContain('top:');
+    expect(pop).not.toContain('left:');
+    expect(pop).not.toContain('z-index:');
+    // A long catalog still scrolls in place rather than pushing the toolbar an
+    // unbounded distance down the page.
+    expect(pop).toContain('max-height: 340px');
+    expect(pop).toContain('overflow-y: auto');
+
+    // `.wf-picker` carried only `position: relative`, dead once nothing inside
+    // it is positioned against it (D-5) — its rule may be gone entirely, and
+    // either way it must not declare `position: relative`.
+    const picker = ruleBodyOf(source, '.wf-picker');
+    expect(picker).not.toContain('position: relative');
   });
 });

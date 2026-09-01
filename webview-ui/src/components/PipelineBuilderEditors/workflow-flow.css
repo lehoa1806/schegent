@@ -109,8 +109,15 @@
 .pb .wf-topbar-name:hover { background: var(--schegent-hover-bg); border-color: var(--schegent-divider); }
 .pb .wf-topbar-name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pb .wf-topbar-actions { display: flex; align-items: center; gap: var(--schegent-space-2); margin-left: auto; flex-wrap: wrap; }
-.pb .wf-picker { position: relative; }
-.pb .wf-picker-pop { position: absolute; z-index: var(--schegent-z-popover); top: calc(100% + 4px); left: 0; width: 320px; max-height: 340px; overflow-y: auto; padding: var(--schegent-space-2); background: var(--schegent-surface-raised); border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); }
+/* Feature 186 (US2/US3, T016, FR-005, D-5) — the popover used to float out of
+   document flow (`position: absolute`), which is what let its default-open
+   state cover the toolbar's own controls. It now renders in normal flow
+   inside `.wf-picker`, which drops `position: relative` alongside it — dead
+   once nothing inside it is positioned against it. Open, it pushes the
+   toolbar and canvas down instead of covering them; closed, it renders
+   nothing, exactly as before. One shared rule in one shared file fixes both
+   the Pipeline and the Workflow picker at once. */
+.pb .wf-picker-pop { width: 320px; max-height: 340px; overflow-y: auto; padding: var(--schegent-space-2); background: var(--schegent-surface-raised); border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); }
 
 @media (max-width: 1100px) {
   .pb .wf-shell { flex-wrap: wrap; }
