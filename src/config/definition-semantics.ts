@@ -19,6 +19,7 @@
 // over data already in hand.
 
 import { storedRows } from '../catalog';
+import { authoredPhasePosition } from '../contracts/pipeline-definitions';
 import { resolvePhaseCatalog } from './process-catalog';
 import { resolvePipelineCatalog } from './pipeline-catalog';
 import { resolveWorkflowCatalog } from './workflow-catalog';
@@ -67,9 +68,6 @@ export interface DefinitionSemanticsOptions {
    */
   readonly defaultPipelineId: () => string;
 }
-
-/** The authored key for a Pipeline's phase list, as it sits in a stored body. */
-const AUTHORED_PHASE_LIST = 'phases';
 
 export function createDefinitionSemantics(
   options: DefinitionSemanticsOptions
@@ -252,18 +250,20 @@ function unresolvable(candidate: CandidateDefinition): ValidationDefect {
 // ---------------------------------------------------------------------------
 
 /**
- * The Phase ids a stored Pipeline body names, best-effort.
+ * Where `phaseId` sits in one stored Pipeline body, or `-1`.
  *
  * Read from the authored body rather than from a parsed `PipelineDefinition`,
  * because an `invalid` Pipeline still holds a reference that blocks: its defects
  * are corrected and the reference goes live, and a Phase deleted out from under it
  * in the meantime would leave it permanently unfixable.
+ *
+ * Both authored spellings are searched, and the reason is at
+ * `authoredPhasePosition`. This function read only the legacy `phases` key before,
+ * so a Pipeline authored the portable way blocked nothing.
  */
-function authoredPhaseIds(record: PipelineSourceRecord): readonly string[] {
-  if (record.definition !== null) return record.definition.phaseIds;
-  const authored = record.display[AUTHORED_PHASE_LIST];
-  if (!Array.isArray(authored)) return [];
-  return authored.filter((value): value is string => typeof value === 'string');
+function authoredPhaseIdPosition(record: PipelineSourceRecord, phaseId: string): number {
+  if (record.definition !== null) return record.definition.phaseIds.indexOf(phaseId);
+  return authoredPhasePosition(record.display, phaseId);
 }
 
 /**
@@ -304,7 +304,7 @@ function phaseBlockers(
 ): readonly ReferenceBlocker[] {
   const blockers: ReferenceBlocker[] = [];
   for (const record of records) {
-    const position = authoredPhaseIds(record).indexOf(phaseId);
+    const position = authoredPhaseIdPosition(record, phaseId);
     if (position === -1) continue;
     blockers.push({ kind: 'pipeline', id: record.pipelineId, field: `phaseIds[${position}]` });
   }

@@ -65,6 +65,63 @@ export function isPipelineOutputPortType(value: unknown): value is PipelineOutpu
   );
 }
 
+/**
+ * The two authored spellings of a Pipeline's phase list, in precedence order.
+ *
+ * `phaseIds` is portable and wins; `phases` is the legacy key. The validator refuses
+ * a body carrying both as `sequence-ambiguous`, so precedence only ever decides what
+ * to SHOW for a row that is already invalid.
+ *
+ * Declared here because both a host reader and the Builder's repair path have to
+ * agree with the validator about which key they are looking at. They each read one
+ * spelling before this existed, and it was the wrong one for a row authored the
+ * portable way.
+ */
+export const AUTHORED_PHASE_SEQUENCE_KEYS = ['phaseIds', 'phases'] as const;
+
+function stringsAt(source: Readonly<Record<string, unknown>>, key: string): readonly string[] {
+  const value = source[key];
+  if (!Array.isArray(value)) return [];
+  return (value as readonly unknown[]).filter((entry): entry is string => typeof entry === 'string');
+}
+
+/**
+ * The phase list an authored body declares, best-effort, by the validator's own
+ * precedence.
+ *
+ * For a row with no parsed definition, where `display` is the only record of what the
+ * operator typed. Empty when neither spelling holds a list.
+ */
+export function authoredPhaseSequence(
+  source: Readonly<Record<string, unknown>>
+): readonly string[] {
+  for (const key of AUTHORED_PHASE_SEQUENCE_KEYS) {
+    const ids = stringsAt(source, key);
+    if (ids.length > 0) return ids;
+  }
+  return [];
+}
+
+/**
+ * Where `phaseId` sits in whichever authored spelling names it, or `-1`.
+ *
+ * BOTH spellings are searched, not just the winning one, and that is deliberate: an
+ * ambiguous body is invalid, the operator resolves it by deleting one of the two
+ * keys, and either key may be the one that survives. A reference found only in the
+ * loser is still a reference that goes live the moment they choose it — which is the
+ * whole reason an invalid Pipeline blocks deleting the Phases it names.
+ */
+export function authoredPhasePosition(
+  source: Readonly<Record<string, unknown>>,
+  phaseId: string
+): number {
+  for (const key of AUTHORED_PHASE_SEQUENCE_KEYS) {
+    const position = stringsAt(source, key).indexOf(phaseId);
+    if (position !== -1) return position;
+  }
+  return -1;
+}
+
 export interface PipelineInputPort {
   readonly portId: string;
   readonly label: string;

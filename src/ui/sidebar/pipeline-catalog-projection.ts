@@ -12,6 +12,7 @@
 
 import type { ResolvedPipelineCatalog } from '../../config/pipeline-catalog';
 import { NO_BUILDER_LIFECYCLE, type BuilderLifecycleLookup } from './builder-lifecycle';
+import { DISPLAY_TEXT_MAX, projectAuthoredDisplay } from './display-projection';
 import type {
   PipelineDefinition,
   PipelineInputPort,
@@ -146,22 +147,17 @@ export function projectPipelineDefinition(
 }
 
 /**
- * Only recognized authored scalars reach the webview. An invalid row has no
- * `definition`, so `display` is the operator's only view of what they typed.
+ * An invalid row has no `definition`, so `display` is the operator's only view of
+ * what they typed — including `phases`, which is what an invalid Pipeline's phase
+ * list is repaired from and what blocks deleting the Phases it names.
  */
 function projectDisplay(
   display: Readonly<Record<string, unknown>>,
   sanitize: Sanitize
 ): Readonly<Record<string, unknown>> {
-  const projected: Record<string, unknown> = {};
-  for (const [field, value] of Object.entries(display)) {
-    if (typeof value === 'string') {
-      projected[field] = text(value, sanitize, field === 'description' ? DESCRIPTION_MAX : 512);
-    } else if (typeof value === 'number' || typeof value === 'boolean' || value === null) {
-      projected[field] = value;
-    }
-  }
-  return Object.freeze(projected);
+  return projectAuthoredDisplay(display, sanitize, (field) =>
+    field === 'description' ? DESCRIPTION_MAX : DISPLAY_TEXT_MAX
+  );
 }
 
 // Feature 099 (T489a, FR-043) — `projectionKey` stood here, composing

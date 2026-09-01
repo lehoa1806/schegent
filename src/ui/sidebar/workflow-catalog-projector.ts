@@ -16,6 +16,7 @@
 import type { PipelineDefinition } from '../../contracts/pipeline-definitions';
 import type { WorkflowCatalogResolution } from '../../contracts/workflow-definitions';
 import { deriveWorkflowPorts } from '../../config/workflow-derived-ports';
+import { DISPLAY_TEXT_MAX, projectAuthoredDisplay } from './display-projection';
 import {
   NO_BUILDER_LIFECYCLE,
   type BuilderLifecycleByKind,
@@ -49,22 +50,16 @@ const PORTS_PER_RECORD_MAX = 100;
 const KEY_MAX = 160;
 
 /**
- * Only recognized authored scalars reach the webview. An invalid row has no
- * `definition`, so `display` is the operator's only view of what they typed.
+ * An invalid row has no `definition`, so `display` is the operator's only view of
+ * what they typed — including its authored lists, such as `startNodeIds`.
  */
 function projectDisplay(
   display: Readonly<Record<string, unknown>>,
   sanitize: Sanitize
 ): Readonly<Record<string, unknown>> {
-  const projected: Record<string, unknown> = {};
-  for (const [field, value] of Object.entries(display)) {
-    if (typeof value === 'string') {
-      projected[field] = text(value, sanitize, field === 'description' ? DESCRIPTION_MAX : 512);
-    } else if (typeof value === 'number' || typeof value === 'boolean' || value === null) {
-      projected[field] = value;
-    }
-  }
-  return Object.freeze(projected);
+  return projectAuthoredDisplay(display, sanitize, (field) =>
+    field === 'description' ? DESCRIPTION_MAX : DISPLAY_TEXT_MAX
+  );
 }
 
 // Feature 099 (T489a, FR-043) — `projectionKey` stood here, composing

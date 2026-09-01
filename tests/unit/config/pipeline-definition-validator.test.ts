@@ -38,12 +38,17 @@ describe('validatePipelineDefinition — entry shape', () => {
     );
   });
 
-  it('exposes only recognized scalar authored fields in display', () => {
-    const result = validatePipelineDefinition(valid({ description: 'demo' }));
+  it('exposes only recognized authored fields in display, lists included', () => {
+    // `phaseIds` is carried because three sites read a list back out of `display`
+    // for an invalid row — see `src/config/authored-display.ts`. The claim this
+    // assertion still makes is the closed one: nothing outside the authored set
+    // reaches `display`, whatever its type.
+    const result = validatePipelineDefinition(valid({ description: 'demo', colour: 'red' }));
     expect(result.display).toEqual({
       pipelineId: 'alpha',
       name: 'Alpha',
       version: 1,
+      phaseIds: ['specify', 'plan'],
       description: 'demo'
     });
   });

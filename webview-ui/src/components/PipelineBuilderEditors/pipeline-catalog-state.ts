@@ -20,6 +20,7 @@ import type {
   PipelineOutputPort,
   WorkflowSnapshot
 } from '../../lib/snapshot-types';
+import { authoredPhaseSequence } from '../../../../src/contracts/pipeline-definitions';
 import type { SavePipelineRow } from '../../lib/definition-rows';
 import type { MutablePipeline, PipelinePortPatch } from './types';
 
@@ -55,9 +56,6 @@ export function sourceRecordToMutablePipeline(
 ): MutablePipeline {
   const definition = record.definition;
   const display = record.display;
-  const displayPhases = Array.isArray(display.phases)
-    ? (display.phases as unknown[]).filter((entry): entry is string => typeof entry === 'string')
-    : [];
   const description =
     definition?.description ??
     (typeof display.description === 'string' ? display.description : undefined);
@@ -66,7 +64,10 @@ export function sourceRecordToMutablePipeline(
     name: definition?.name ?? text(display.name, 'Invalid Pipeline'),
     ...(description !== undefined ? { description } : {}),
     version: definition?.version ?? (typeof display.version === 'number' ? display.version : 1),
-    phases: definition ? [...definition.phaseIds] : displayPhases,
+    // Either authored spelling, by the validator's precedence: a Pipeline written
+    // the portable `phaseIds` way opened with an empty list when this read only
+    // `display.phases`.
+    phases: definition ? [...definition.phaseIds] : [...authoredPhaseSequence(display)],
     inputs: definition ? definition.inputs.map((port) => ({ ...port })) : [],
     outputs: definition ? definition.outputs.map((port) => ({ ...port })) : [],
     bindings: definition ? definition.bindings.map(cloneBinding) : [],

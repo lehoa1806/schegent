@@ -13,6 +13,7 @@ import {
 } from '../contracts/pipeline-definitions';
 import { PHASE_EFFORT_LEVELS } from '../contracts/process-definitions';
 import { SUPPORTED_BACKENDS } from '../contracts/backend-kinds';
+import { recognizedAuthoredDisplay } from './authored-display';
 
 export const PIPELINE_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 export { PIPELINE_ID_MAX_LEN };
@@ -81,19 +82,7 @@ function fieldError(
 }
 
 function recognizedDisplay(raw: Record<string, unknown>): Readonly<Record<string, unknown>> {
-  const display: Record<string, unknown> = {};
-  for (const field of AUTHORED_PIPELINE_FIELDS) {
-    const value = raw[field];
-    if (
-      typeof value === 'string' ||
-      typeof value === 'number' ||
-      typeof value === 'boolean' ||
-      value === null
-    ) {
-      display[field] = value;
-    }
-  }
-  return Object.freeze(display);
+  return recognizedAuthoredDisplay(raw, AUTHORED_PIPELINE_FIELDS);
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

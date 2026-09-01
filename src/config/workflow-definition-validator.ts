@@ -13,6 +13,7 @@ import {
   type WorkflowSelectionRule
 } from '../contracts/workflow-definitions';
 import { PIPELINE_ID_PATTERN } from './pipeline-definition-validator';
+import { recognizedAuthoredDisplay } from './authored-display';
 
 /**
  * Field, identity, and shape validation for one authored Workflow row. Cross-reference
@@ -119,19 +120,7 @@ function objectRequiredResult(): WorkflowDefinitionValidationResult {
 }
 
 function recognizedDisplay(raw: Record<string, unknown>): Readonly<Record<string, unknown>> {
-  const display: Record<string, unknown> = {};
-  for (const field of AUTHORED_WORKFLOW_FIELDS) {
-    const value = raw[field];
-    if (
-      typeof value === 'string' ||
-      typeof value === 'number' ||
-      typeof value === 'boolean' ||
-      value === null
-    ) {
-      display[field] = value;
-    }
-  }
-  return Object.freeze(display);
+  return recognizedAuthoredDisplay(raw, AUTHORED_WORKFLOW_FIELDS);
 }
 
 /**

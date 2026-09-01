@@ -18,6 +18,7 @@ import {
 import type { BackendRunnerKind } from '../../contracts/backend-kinds';
 import type { ResolvedPhaseCatalog } from '../../config/process-catalog';
 import { NO_BUILDER_LIFECYCLE, type BuilderLifecycleLookup } from './builder-lifecycle';
+import { projectAuthoredDisplay } from './display-projection';
 import type { PhaseCatalogProjection } from './snapshot';
 
 type Sanitize = (value: string) => string;
@@ -90,28 +91,24 @@ function projectPhaseDefinition(
   );
 }
 
+/** The character cap for one authored Phase field's text, in `display` and in a list. */
+function phaseDisplayMax(field: string): number {
+  return field === 'instruction'
+    ? INSTRUCTION_MAX
+    : field === 'retryCondition'
+      ? PHASE_RETRY_CONDITION_MAX_LEN
+      : field === 'description'
+        ? DESCRIPTION_MAX
+        : field === 'skill'
+          ? SKILL_MAX
+          : MODEL_MAX;
+}
+
 function projectDisplay(
   display: Readonly<Record<string, unknown>>,
   sanitize: Sanitize
 ): Readonly<Record<string, unknown>> {
-  const projected: Record<string, unknown> = {};
-  for (const [field, value] of Object.entries(display)) {
-    if (typeof value === 'string') {
-      const max = field === 'instruction'
-        ? INSTRUCTION_MAX
-        : field === 'retryCondition'
-          ? PHASE_RETRY_CONDITION_MAX_LEN
-          : field === 'description'
-            ? DESCRIPTION_MAX
-            : field === 'skill'
-              ? SKILL_MAX
-              : MODEL_MAX;
-      projected[field] = catalogText(value, sanitize, max);
-    } else if (typeof value === 'number' || typeof value === 'boolean' || value === null) {
-      projected[field] = value;
-    }
-  }
-  return Object.freeze(projected);
+  return projectAuthoredDisplay(display, sanitize, phaseDisplayMax);
 }
 
 /** Projects the resolved Phase catalog, or `undefined` when the host has none. */

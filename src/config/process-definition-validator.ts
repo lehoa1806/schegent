@@ -19,6 +19,7 @@ import {
   type PhaseCapability
 } from '../contracts/phase-capabilities';
 import { ARGV_VALUE_MAX_LEN, ARGV_VALUE_PATTERN } from '../contracts/argv-value';
+import { recognizedAuthoredDisplay } from './authored-display';
 
 export const PHASE_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 export { PHASE_ID_MAX_LEN };
@@ -188,19 +189,7 @@ function boundedSpend(
 }
 
 function recognizedDisplay(raw: Record<string, unknown>): Readonly<Record<string, unknown>> {
-  const display: Record<string, unknown> = {};
-  for (const field of AUTHORED_PHASE_FIELDS) {
-    const value = raw[field];
-    if (
-      typeof value === 'string' ||
-      typeof value === 'number' ||
-      typeof value === 'boolean' ||
-      value === null
-    ) {
-      display[field] = value;
-    }
-  }
-  return Object.freeze(display);
+  return recognizedAuthoredDisplay(raw, AUTHORED_PHASE_FIELDS);
 }
 
 export function validatePhaseDefinition(
