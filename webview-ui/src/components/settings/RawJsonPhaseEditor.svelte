@@ -10,7 +10,29 @@
    *   - emits the parsed object via onsave callback when Save is clicked
    *
    * Pretty-print format: two-space indent (FR-028).
+   *
+   * WHAT AN AUTHOR MAY WRITE IS NOT DECIDED HERE. `AUTHORED_PHASE_FIELDS` and the
+   * closed enums come from `src/contracts/`, a VALUE import the
+   * `webview-host-import-direction` gate permits and that `EFFORT_LEVELS` in
+   * `lib/snapshot-types.ts` already takes for the same reason.
+   *
+   * This file used to carry its own thirteen-name `allowed` set. The copy predated
+   * the containment fields, so a Phase declaring `sideEffects` opened to
+   * `Invalid JSON: field \`sideEffects\` is not author-controlled` — the editor
+   * refusing the document it had just serialized — with Save disabled and no edit
+   * that could clear it. The bound is read now, not restated: the next authored
+   * field is admitted here with no edit to this file, which is the only version of
+   * this fix that stays fixed.
    */
+
+  import {
+    AUTHORED_PHASE_FIELDS,
+    PHASE_EFFORT_LEVELS,
+    PHASE_EVIDENCE_POLICIES,
+    PHASE_HOST_VERIFICATIONS,
+    PHASE_SIDE_EFFECTS
+  } from '../../../../src/contracts/process-definitions';
+  import { ALL_PHASE_CAPABILITIES } from '../../../../src/contracts/phase-capabilities';
 
   interface RawPhase {
     readonly id?: unknown;
@@ -28,6 +50,17 @@
     readonly runner?: unknown;
     readonly [k: string]: unknown;
   }
+
+  /**
+   * The one authored name this editor does not admit.
+   *
+   * The Builder row is `id`-keyed (`MutablePhase.id`), and the host refuses a
+   * document that carries both spellings as `identity-ambiguous`. Excluding it
+   * here keeps a JSON edit from assembling that refusal, and it is a subtraction
+   * from the closed set rather than a second set — stated once, with its reason,
+   * and pinned by the editor's own coverage test.
+   */
+  const ROW_IDENTITY_IS_ID = 'phaseId';
 
   interface Props {
     /** The phase definition to edit; serialized as the initial JSON. */
@@ -59,11 +92,9 @@
       return { ok: false, error: 'must be a JSON object' };
     }
     const obj = value as Record<string, unknown>;
-    const allowed = new Set([
-      'id', 'name', 'description', 'version', 'instruction', 'skill', 'model', 'effort',
-      'timeoutSeconds', 'loopable', 'retryCondition', 'isRequired', 'runner'
-    ]);
-    const unknown = Object.keys(obj).find((field) => !allowed.has(field));
+    const unknown = Object.keys(obj).find(
+      (field) => !AUTHORED_PHASE_FIELDS.has(field) || field === ROW_IDENTITY_IS_ID
+    );
     if (unknown) {
       return { ok: false, error: `field \`${unknown.slice(0, 32)}\` is not author-controlled` };
     }
@@ -100,7 +131,7 @@
     if (
       'effort' in obj &&
       obj['effort'] !== undefined &&
-      (typeof obj['effort'] !== 'string' || !['low', 'medium', 'high', 'xhigh', 'max'].includes(obj['effort']))
+      (typeof obj['effort'] !== 'string' || !(PHASE_EFFORT_LEVELS as readonly string[]).includes(obj['effort']))
     ) {
       return { ok: false, error: 'field `effort` must use a supported level' };
     }
@@ -138,6 +169,61 @@
       (typeof obj['runner'] !== 'string' || !['claude', 'codex', 'agy'].includes(obj['runner']))
     ) {
       return { ok: false, error: 'field `runner` must be one of claude, codex, agy when present' };
+    }
+    if (
+      'forceContinueOnRetryCap' in obj &&
+      obj['forceContinueOnRetryCap'] !== undefined &&
+      typeof obj['forceContinueOnRetryCap'] !== 'boolean'
+    ) {
+      return {
+        ok: false,
+        error: 'field `forceContinueOnRetryCap` must be a boolean when present'
+      };
+    }
+    // The three declared enums, each read from its contract rather than restated.
+    // `sideEffects` is the containment class: omission resolves to `workspace`, so
+    // a value this editor let through unchecked would be a privilege decision made
+    // by a typo.
+    for (const [field, levels] of [
+      ['sideEffects', PHASE_SIDE_EFFECTS],
+      ['evidencePolicy', PHASE_EVIDENCE_POLICIES],
+      ['hostVerification', PHASE_HOST_VERIFICATIONS]
+    ] as const) {
+      const declared = obj[field];
+      if (
+        field in obj && declared !== undefined &&
+        (typeof declared !== 'string' || !(levels as readonly string[]).includes(declared))
+      ) {
+        return {
+          ok: false,
+          error: `field \`${field}\` must be one of ${levels.join(', ')} when present`
+        };
+      }
+    }
+    if ('capabilities' in obj && obj['capabilities'] !== undefined) {
+      const declared = obj['capabilities'];
+      const valid = Array.isArray(declared) &&
+        declared.every((entry) => typeof entry === 'string' &&
+          (ALL_PHASE_CAPABILITIES as readonly string[]).includes(entry));
+      if (!valid) {
+        return {
+          ok: false,
+          error: `field \`capabilities\` must list only ${ALL_PHASE_CAPABILITIES.join(', ')}`
+        };
+      }
+    }
+    // Shape only, both spend bounds. The RANGE is the host's — `PHASE_SPEND_*`
+    // live beside the validator that enforces them, and a second copy of a bound
+    // here is how this file drifted in the first place. A figure inside the shape
+    // and outside the range comes back as a field error on the save.
+    for (const field of ['spendBoundUsd', 'spendBoundTokens'] as const) {
+      const declared = obj[field];
+      if (
+        field in obj && declared !== undefined &&
+        (typeof declared !== 'number' || !Number.isFinite(declared) || declared <= 0)
+      ) {
+        return { ok: false, error: `field \`${field}\` must be a positive number when present` };
+      }
     }
     return { ok: true, value: obj as RawPhase };
   }

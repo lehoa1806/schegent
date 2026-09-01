@@ -22,7 +22,7 @@ import type {
   PhaseHostVerification
 } from '../contracts/process-definitions';
 import { AUTHORED_PHASE_FIELDS, validatePhaseDefinition } from './process-definition-validator';
-import { validatePipelineDefinition } from './pipeline-definition-validator';
+import { AUTHORED_PIPELINE_FIELDS, validatePipelineDefinition } from './pipeline-definition-validator';
 
 // FR-R3-132 (T1502) — moved to `src/contracts/snapshot-vocabulary.ts` so the webview
 // imports it instead of restating it. Re-exported unchanged.
@@ -155,18 +155,33 @@ export const ALLOWED_PHASE_FIELDS: ReadonlySet<string> = new Set(
   Array.from(AUTHORED_PHASE_FIELDS).filter((field) => field !== 'phaseId')
 );
 
-const ALLOWED_PIPELINE_FIELDS: ReadonlySet<string> = new Set([
-  'id',
-  'name',
-  'phases',
-  'description',
-  'version',
-  'inputs',
-  'outputs',
-  'bindings',
-  'executionDefaults',
-  'recommendedNext'
+/**
+ * The portable spellings of `id` and `phases`. A stored Pipeline row never carries
+ * either: `pipelineDefinitionToPipelineDef` normalizes both to the resolved names
+ * before `validateCatalog` sees the row.
+ */
+export const PORTABLE_ONLY_PIPELINE_FIELDS: ReadonlySet<string> = new Set([
+  'pipelineId',
+  'phaseIds'
 ]);
+
+/**
+ * The Pipeline counterpart of `ALLOWED_PHASE_FIELDS`, derived for the same reason.
+ *
+ * This was the hand-written literal the Phase set used to be, and it was correct
+ * only by coincidence of what had been authored so far — the two names it omitted
+ * happened to be exactly the portable spellings. The thirteenth authored Pipeline
+ * field would have been discarded here before `validatePipelineRaw` could check it,
+ * silently, which is precisely how the Phase filter lost `sideEffects` and
+ * `evidencePolicy`. Gated by `tests/unit/config/pipeline-field-parity.test.ts`.
+ */
+const ALLOWED_PIPELINE_FIELDS: ReadonlySet<string> = new Set(
+  Array.from(AUTHORED_PIPELINE_FIELDS).filter(
+    (field) => !PORTABLE_ONLY_PIPELINE_FIELDS.has(field)
+  )
+);
+
+export { ALLOWED_PIPELINE_FIELDS };
 
 export function isPhaseDef(value: unknown): value is PhaseDef {
   if (!value || typeof value !== 'object') return false;

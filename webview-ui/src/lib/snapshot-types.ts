@@ -46,8 +46,12 @@ import type {
 } from '../../../src/contracts/sidebar-ipc/uncontained-grant.js';
 export type { BackendGrantEntryProblems, BackendGrantState, BackendPosture };
 import type {
+  PhaseEvidencePolicy,
+  PhaseHostVerification,
+  PhaseSideEffects,
   PhaseSourceStatus,
 } from '../../../src/contracts/process-definitions.js';
+import type { PhaseCapability } from '../../../src/contracts/phase-capabilities.js';
 import type {
   PipelineInputPortType,
   PipelineOutputPortType,
@@ -460,6 +464,17 @@ export interface PhaseDefinition {
   readonly runner?: BackendRunnerKind;
 }
 
+/**
+ * A projected catalog record's definition — what the Builder fills its editor
+ * from, and therefore what it can serialise back.
+ *
+ * THE DECLARED FIELDS ARE NOT DECORATION HERE. This shape named thirteen of the
+ * twenty-one names in `AUTHORED_PHASE_FIELDS`, and the Builder's save body could
+ * only forward what the row received — so `capabilities`, the sole array-valued
+ * authored field and the one `display` cannot carry, never arrived and was
+ * dropped on every save. Omission means every capability, so a narrowed phase
+ * silently regained full authority on an unrelated edit.
+ */
 export interface PortablePhaseDefinition {
   readonly phaseId: string;
   readonly name: string;
@@ -474,6 +489,13 @@ export interface PortablePhaseDefinition {
   readonly retryCondition?: string;
   readonly isRequired?: boolean;
   readonly runner?: BackendRunnerKind;
+  readonly sideEffects?: PhaseSideEffects;
+  readonly evidencePolicy?: PhaseEvidencePolicy;
+  readonly hostVerification?: PhaseHostVerification;
+  readonly capabilities?: readonly PhaseCapability[];
+  readonly spendBoundUsd?: number;
+  readonly spendBoundTokens?: number;
+  readonly forceContinueOnRetryCap?: boolean;
 }
 
 export interface PhaseCatalogSourceRecord {

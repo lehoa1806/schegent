@@ -152,6 +152,59 @@ export type EvidencePolicyOrigin = (typeof EVIDENCE_POLICY_ORIGINS)[number];
 export const PHASE_HOST_VERIFICATIONS = ['model-token', 'exit-code'] as const;
 export type PhaseHostVerification = (typeof PHASE_HOST_VERIFICATIONS)[number];
 
+/**
+ * Every field an author may write on a Phase. **The single closed set.**
+ *
+ * Declared here rather than in `config/process-definition-validator.ts` for the
+ * reason `PHASE_ID_MAX_LEN` above records: that module pulls
+ * `runner/backend-runner-factory`, and the Builder is bundled into the webview,
+ * where a Node-only import fails the build. The validator re-exports this name,
+ * so it remains the one set every caller sees — host, exchange, and Builder alike.
+ *
+ * **Why the placement is the fix and not a tidy-up.** The Builder's raw-JSON
+ * editor could not reach the validator, so it carried a thirteen-name hand-kept
+ * copy of this set. The copy predated the containment fields, and the drift was
+ * not a refusal an operator could argue with: opening the JSON view on a Phase
+ * that declared `sideEffects` reported `field \`sideEffects\` is not
+ * author-controlled` about the document the editor had itself just serialized,
+ * and Save stayed disabled with no way forward. The comment beside `sideEffects`
+ * below already named this failure mode for the save and import paths; a third
+ * route had it too, because the set was somewhere the third route could not read.
+ */
+export const AUTHORED_PHASE_FIELDS: ReadonlySet<string> = new Set([
+  'id',
+  'phaseId',
+  'name',
+  'description',
+  'version',
+  'instruction',
+  'skill',
+  'model',
+  'effort',
+  'timeoutSeconds',
+  // FR-R3-112 — the per-phase spend override. Two fields because the bound has two
+  // denominations; see `PhaseDefinitionBase.spendBoundUsd`. Both land in the
+  // implicit third argv class: neither reaches a command line, and
+  // `argv-field-partition` asserts that claim against the adapters.
+  'spendBoundUsd',
+  'spendBoundTokens',
+  'loopable',
+  'retryCondition',
+  'isRequired',
+  'forceContinueOnRetryCap',
+  'runner',
+  // Feature 098 T015 — authored, not host-resolved. The save path and the import
+  // path must hold a definition to the same closed set, or a Phase would be
+  // accepted by one route and refused by the other on the same field.
+  'sideEffects',
+  'evidencePolicy',
+  // FR-R3-058 — authored, closed with the rest. A Phase accepted by the import
+  // path and refused by the save path on the same field is the defect this set
+  // exists to prevent.
+  'hostVerification',
+  'capabilities'
+]);
+
 interface PhaseDefinitionBase {
   readonly phaseId: string;
   readonly name: string;

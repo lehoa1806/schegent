@@ -1,4 +1,5 @@
 import {
+  AUTHORED_PHASE_FIELDS,
   PHASE_EFFORT_LEVELS,
   PHASE_EVIDENCE_POLICIES,
   PHASE_HOST_VERIFICATIONS,
@@ -81,39 +82,15 @@ export const ARGV_ENUM_CLOSED_FIELDS: ReadonlySet<string> = new Set(['effort']);
  */
 export { ARGV_VALUE_PATTERN, ARGV_VALUE_MAX_LEN } from '../contracts/argv-value';
 
-export const AUTHORED_PHASE_FIELDS: ReadonlySet<string> = new Set([
-  'id',
-  'phaseId',
-  'name',
-  'description',
-  'version',
-  'instruction',
-  'skill',
-  'model',
-  'effort',
-  'timeoutSeconds',
-  // FR-R3-112 — the per-phase spend override. Two fields because the bound has two
-  // denominations; see `PhaseDefinitionBase.spendBoundUsd`. Both land in the
-  // implicit third argv class: neither reaches a command line, and
-  // `argv-field-partition` asserts that claim against the adapters.
-  'spendBoundUsd',
-  'spendBoundTokens',
-  'loopable',
-  'retryCondition',
-  'isRequired',
-  'forceContinueOnRetryCap',
-  'runner',
-  // Feature 098 T015 — authored, not host-resolved. The save path and the import
-  // path must hold a definition to the same closed set, or a Phase would be
-  // accepted by one route and refused by the other on the same field.
-  'sideEffects',
-  'evidencePolicy',
-  // FR-R3-058 — authored, closed with the rest. A Phase accepted by the import
-  // path and refused by the save path on the same field is the defect this set
-  // exists to prevent.
-  'hostVerification',
-  'capabilities'
-]);
+/**
+ * The closed set of authored Phase fields, re-exported.
+ *
+ * `src/contracts/process-definitions.ts` owns it, on the same reasoning as
+ * `PHASE_ID_MAX_LEN` and `ARGV_VALUE_PATTERN` above: the Builder is bundled into
+ * the webview and cannot import this module, and a set it cannot read is a set it
+ * forks. Re-exported here so every existing caller keeps naming one bound.
+ */
+export { AUTHORED_PHASE_FIELDS };
 
 const ERROR_MESSAGE_MAX = 512;
 const ERROR_FIELD_MAX = 32;

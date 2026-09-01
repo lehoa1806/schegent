@@ -14,6 +14,12 @@
 // of posting a narrowed `{ pipelines }` payload could silently drop authored
 // contract fields, and why nothing here does that.
 
+import type { PhaseCapability } from '../../../src/contracts/phase-capabilities';
+import type {
+  PhaseEvidencePolicy,
+  PhaseHostVerification,
+  PhaseSideEffects
+} from '../../../src/contracts/process-definitions';
 import type {
   PhaseBinding,
   PhaseDefinition,
@@ -24,6 +30,20 @@ import type {
   WorkflowNode
 } from './snapshot-types';
 
+/**
+ * The Phase body an editor serialises a row to.
+ *
+ * The note above says a row IS the definition body and that nothing here narrows
+ * one. That was the intent and not the fact: this interface named eleven of the
+ * twenty-one fields in `AUTHORED_PHASE_FIELDS`, and `toSavePhaseRow` narrowed to
+ * exactly those — so the containment declarations (`sideEffects`,
+ * `capabilities`) were dropped on every save, which is the pre-082 habit the note
+ * was written to disown. The ten missing names are added here and the builder now
+ * walks the authored set instead of restating it.
+ *
+ * `phaseId` is absent on purpose: the Builder row is `id`-keyed, and a body
+ * carrying both spellings is what the host refuses as `identity-ambiguous`.
+ */
 export interface SavePhaseRow {
   readonly id: string;
   readonly name: string;
@@ -34,10 +54,17 @@ export interface SavePhaseRow {
   readonly model?: string;
   readonly effort?: PhaseDefinition['effort'];
   readonly timeoutSeconds?: number;
+  readonly spendBoundUsd?: number;
+  readonly spendBoundTokens?: number;
   readonly loopable?: boolean;
   readonly retryCondition?: string;
   readonly isRequired?: boolean;
+  readonly forceContinueOnRetryCap?: boolean;
   readonly runner?: string;
+  readonly sideEffects?: PhaseSideEffects;
+  readonly evidencePolicy?: PhaseEvidencePolicy;
+  readonly hostVerification?: PhaseHostVerification;
+  readonly capabilities?: readonly PhaseCapability[];
 }
 
 /**

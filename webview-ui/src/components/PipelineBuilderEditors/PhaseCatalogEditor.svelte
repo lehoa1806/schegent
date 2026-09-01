@@ -13,6 +13,7 @@
   import RetryConditionEditor from '../settings/RetryConditionEditor.svelte';
   import TrustBanner from '../TrustBanner.svelte';
   import { mergeDetectedModels } from './model-catalog-state';
+  import { authoredPhaseDocument } from './phase-catalog-state';
   import type { MutablePhase, PhaseEditState } from './types';
 
   const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
@@ -118,13 +119,6 @@
     } else {
       onphasechange(index, { instruction: '', skill: undefined });
     }
-  }
-
-  function authoredPhase(phase: MutablePhase): Record<string, unknown> {
-    const { sourceKey: _sourceKey, sourceStatus: _status,
-      sourceErrors: _errors, modelAvailable: _modelAvailable,
-      persisted: _persisted, ...authored } = phase;
-    return authored;
   }
 
   function isRetryEnabled(phase: MutablePhase): boolean {
@@ -341,7 +335,7 @@
 
         {#if selectedEditState.rawJsonMode}
           <RawJsonPhaseEditor
-            phase={authoredPhase(phase)}
+            phase={authoredPhaseDocument(phase)}
             onsave={(parsed) => onrawsave(index, parsed as Record<string, unknown>)}
           />
         {:else}

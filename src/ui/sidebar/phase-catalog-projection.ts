@@ -82,7 +82,40 @@ function projectPhaseDefinition(
         }
       : {}),
     ...(definition.isRequired !== undefined ? { isRequired: definition.isRequired } : {}),
-    ...(definition.runner !== undefined ? { runner: definition.runner } : {})
+    ...(definition.runner !== undefined ? { runner: definition.runner } : {}),
+    // The containment and bound declarations. THESE WERE MISSING, and the Builder
+    // is why it mattered: it fills its editor from the projected definition and
+    // serialises the result back as the save body, so a declaration that never
+    // arrives cannot be saved — it is dropped on a save the operator is told
+    // succeeded. Six of them reached the webview anyway, by accident, because
+    // `recognizedDisplay` copies every authored scalar onto `display`;
+    // `capabilities` is the sole array-valued authored field and could not use
+    // that route, so a narrowed authority silently widened back to
+    // `DEFAULT_CAPABILITY_SET` (every capability) on an unrelated edit.
+    //
+    // Enums and numbers, already validated to their declared sets and bounds by
+    // `validatePhaseDefinition` — there is no free text here to sanitize, and
+    // copying a value is not deciding anything with it, so this stays plumbing in
+    // the sense `authored-fields-have-readers.test.ts` means.
+    ...(definition.sideEffects !== undefined ? { sideEffects: definition.sideEffects } : {}),
+    ...(definition.evidencePolicy !== undefined
+      ? { evidencePolicy: definition.evidencePolicy }
+      : {}),
+    ...(definition.hostVerification !== undefined
+      ? { hostVerification: definition.hostVerification }
+      : {}),
+    ...(definition.capabilities !== undefined
+      ? { capabilities: Object.freeze([...definition.capabilities]) }
+      : {}),
+    ...(definition.spendBoundUsd !== undefined
+      ? { spendBoundUsd: definition.spendBoundUsd }
+      : {}),
+    ...(definition.spendBoundTokens !== undefined
+      ? { spendBoundTokens: definition.spendBoundTokens }
+      : {}),
+    ...(definition.forceContinueOnRetryCap !== undefined
+      ? { forceContinueOnRetryCap: definition.forceContinueOnRetryCap }
+      : {})
   };
   return Object.freeze(
     definition.instruction !== undefined
