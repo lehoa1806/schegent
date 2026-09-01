@@ -46,16 +46,16 @@
           <div class="phase-list-id">{pipeline.id}</div>
         </button>
       </div>
-      <!-- Feature 101 (US1, T037) — the state, timestamps, active version, and
-           the validity badge. Outside the button above, because T042 hangs the
-           lifecycle actions off this row. -->
+      <!-- Feature 101 (US1, T037) — the state badge and the validity badge.
+           Outside the button above, because a control nested in a button is
+           invalid markup and unreachable by keyboard.
+           Feature 186 (US2, T010, D-2) — everything else this row used to
+           carry (cells, defects, actions, History) moved to
+           `DefinitionLifecyclePanel` on the inspector. -->
       <DefinitionLifecycleRow
-        kind="pipeline"
         definitionId={pipeline.id}
-        definitionName={pipeline.name || 'Untitled Pipeline'}
         lifecycle={lifecycleByKey.get(pipeline.sourceKey)}
         validity={pipeline.sourceStatus}
-        defects={pipeline.sourceErrors}
       />
     </div>
   {/each}

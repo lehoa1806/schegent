@@ -11,6 +11,7 @@
   // `WorkflowCatalogEditor`, which is what refuses the edit when the row is not an
   // editable draft.
   import type {
+    BuilderLifecycle,
     PortablePipelineDefinition,
     WorkflowConnection,
     WorkflowNode
@@ -18,6 +19,7 @@
   import type { AnchoredWorkflowDefects, WorkflowConditionPatch } from './workflow-catalog-state';
   import type { WorkflowFlowSelection } from './workflow-flow-view';
   import type { MutableWorkflow } from './types';
+  import DefinitionLifecyclePanel from '../Builder/DefinitionLifecyclePanel.svelte';
   import WorkflowBranchInspector from './WorkflowBranchInspector.svelte';
   import WorkflowRowDefects from './WorkflowRowDefects.svelte';
 
@@ -28,6 +30,8 @@
     defects: AnchoredWorkflowDefects;
     /** False for a stored row: only an unsaved draft is editable (FR-026). */
     editable: boolean;
+    /** Feature 186 (US3, T020, D-2) — absent on a host with no catalog store wired. */
+    lifecycle?: BuilderLifecycle;
     onworkflowpatch: (patch: Partial<MutableWorkflow>) => void;
     onnodepatch: (index: number, patch: Partial<WorkflowNode>) => void;
     onstarttoggle: (nodeId: string) => void;
@@ -199,6 +203,18 @@
       <div class="phase-badges">
         <span class="status-badge status-{p.row.sourceStatus}">{p.row.sourceStatus}</span>
       </div>
+
+      <!-- Feature 186 (US3, T020, D-1, D-2) — the open Workflow's lifecycle
+           facts and actions, reachable without opening the picker (FR-001,
+           FR-002). Mounted only in this resting branch: a selected node or
+           connection is part of the Workflow, not the open definition itself. -->
+      <DefinitionLifecyclePanel
+        kind="workflow"
+        definitionId={p.row.workflowId}
+        definitionName={p.row.name || 'Untitled Workflow'}
+        lifecycle={p.lifecycle}
+        defects={p.row.sourceErrors}
+      />
 
       <!-- Only what no node and no branch could show: anything anchored to one of
            those renders on it (FR-044), and repeating it here would make this the

@@ -316,10 +316,14 @@
     margin: 0;
   }
 
+  /* Feature 186 (US3, T024, FR-004, D-4) — no `max-height`/`overflow` here.
+     Every host that mounts this panel already supplies one scroll region of
+     its own (`.pane-right` on Phases, `.wf-inspector` on Pipelines and
+     Workflows, both already `overflow-y: auto`), so this flows inside
+     whichever single ancestor scroll region already exists rather than
+     nesting a second one inside it. */
   .body-content {
     margin: 0;
-    max-height: 320px;
-    overflow: auto;
     white-space: pre-wrap;
     word-break: break-word;
   }

@@ -29,6 +29,33 @@ const SNAPSHOT = {
   }
 } as unknown as WorkflowSnapshot;
 
+// Feature 186 (US2, T012) — a lifecycle projection keyed to THREE's sourceKey,
+// so `lifecycleByKey.get(selectedPipeline.sourceKey)` has something to find.
+const LIFECYCLE_SNAPSHOT = {
+  ...SNAPSHOT,
+  pipelineCatalog: {
+    ...SNAPSHOT.pipelineCatalog,
+    records: [
+      {
+        key: 'user::release-flow',
+        pipelineId: 'release-flow',
+        status: 'effective',
+        definition: null,
+        display: {},
+        errors: [],
+        lifecycle: {
+          state: 'active',
+          createdAt: Date.parse('2026-03-01T09:15:00.000Z'),
+          updatedAt: Date.parse('2026-03-04T18:42:30.000Z'),
+          activeVersionId: 'ver-7',
+          expectedDraftVersion: 'no-draft',
+          versions: []
+        }
+      }
+    ]
+  }
+} as unknown as WorkflowSnapshot;
+
 const THREE = flowPipelineRow({ phases: ['speckit-specify', 'speckit-plan', 'done'] });
 const OTHER = flowPipelineRow({ id: 'hotfix', name: 'Hotfix', sourceKey: 'user::hotfix' });
 
@@ -37,6 +64,7 @@ function mount(
     pipelines?: readonly MutablePipeline[];
     selectedIndex?: number | null;
     trusted?: boolean;
+    snapshot?: WorkflowSnapshot;
   } = {}
 ) {
   const handlers = {
@@ -56,7 +84,7 @@ function mount(
     onmovephasedown: vi.fn()
   };
   const props = {
-    snapshot: SNAPSHOT,
+    snapshot: options.snapshot ?? SNAPSHOT,
     pipelines: options.pipelines ?? [THREE, OTHER],
     phases: FLOW_PHASES,
     selectedIndex: options.selectedIndex === undefined ? 0 : options.selectedIndex,
@@ -225,5 +253,16 @@ describe('PipelineFlowBuilder wiring (T030)', () => {
       target: { value: 'done' }
     });
     expect(onphasechange).toHaveBeenCalledWith(1, 1, 'done');
+  });
+
+  // Feature 186 (US2, T012) — the inspector receives the open Pipeline's
+  // lifecycle so it can mount `DefinitionLifecyclePanel` without opening the
+  // picker (D-2). Checked indirectly through the panel's own rendered cell,
+  // since the inspector is not mocked here.
+  it('threads the selected Pipeline’s lifecycle to the inspector', () => {
+    const { at } = mount({ snapshot: LIFECYCLE_SNAPSHOT, pipelines: [THREE, OTHER], selectedIndex: 0 });
+
+    expect(at('definition-row-created-release-flow')).not.toBeNull();
+    expect(at('definition-row-active-version-release-flow')).not.toBeNull();
   });
 });

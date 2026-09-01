@@ -21,6 +21,8 @@
   // in flight, another row being edited); `persisted` is permanent, because an id
   // is an identity and changing it would rename a stored definition rather than
   // edit it. That is why the help text says to duplicate.
+  import type { BuilderLifecycle } from '../../lib/snapshot-types';
+  import DefinitionLifecyclePanel from '../Builder/DefinitionLifecyclePanel.svelte';
   import {
     pipelineErrorDescribedBy,
     pipelineErrorInvalidFlag,
@@ -40,6 +42,8 @@
     readonly: boolean;
     anchoredErrors: readonly AnchoredPipelineError[];
     consumingWorkflows: readonly string[];
+    /** Feature 186 (US2, T013, D-2) — absent on a host with no catalog store wired. */
+    lifecycle?: BuilderLifecycle;
     onpipelinechange: (patch: Partial<MutablePipeline>) => void;
     onphasechange: (position: number, phaseId: string) => void;
     onaddport: (kind: 'inputs' | 'outputs') => void;
@@ -54,6 +58,7 @@
     readonly,
     anchoredErrors,
     consumingWorkflows,
+    lifecycle,
     onpipelinechange,
     onphasechange,
     onaddport,
@@ -182,6 +187,20 @@
     <PipelineFieldErrors
       id={pipelineErrorRegionId(pipeline, 'description')}
       errors={descriptionErrors}
+    />
+  </div>
+
+  <!-- Feature 186 (US2, T013, D-1, D-2) — the open Pipeline's lifecycle facts
+       and actions, reachable without opening the picker (FR-001, FR-002). Its
+       own `.wf-inspector-section`, sibling to the identity section above, not
+       folded into it. -->
+  <div class="wf-inspector-section" data-testid="pipelines-inspector-lifecycle">
+    <DefinitionLifecyclePanel
+      kind="pipeline"
+      definitionId={pipeline.id}
+      definitionName={pipeline.name || 'Untitled Pipeline'}
+      {lifecycle}
+      defects={pipeline.sourceErrors}
     />
   </div>
 

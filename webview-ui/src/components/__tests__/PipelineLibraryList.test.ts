@@ -100,4 +100,45 @@ describe('PipelineLibraryList (T014)', () => {
     expect(at('pipelines-empty')).not.toBeNull();
     expect(container.querySelectorAll('[data-testid^="pipelines-list-item-"]')).toHaveLength(0);
   });
+
+  // Feature 186 (US2, T011, FR-003) — the row carries only name, id, and its two
+  // badges: no lifecycle write control reaches it, even when a lifecycle is
+  // projected for it. Written to pin the post-relocation state regardless of
+  // whether such a control was still reachable before it.
+  it('carries no lifecycle write control on any row, even with a lifecycle projected', () => {
+    const onselect = vi.fn();
+    const lifecycleByKey = new Map<string, BuilderLifecycle | undefined>([
+      [
+        'user::release-flow',
+        {
+          state: 'active-with-draft',
+          createdAt: 0,
+          updatedAt: 0,
+          activeVersionId: 'v1',
+          expectedDraftVersion: 'v2',
+          versions: []
+        }
+      ]
+    ]);
+    const { container } = render(PipelineLibraryList, {
+      props: { rows: ROWS, selectedIndex: 0, lifecycleByKey, onselect }
+    });
+
+    expect(container.querySelector('[data-testid="definition-row-created-release-flow"]')).toBeNull();
+    expect(
+      container.querySelector('[data-testid="definition-row-active-version-release-flow"]')
+    ).toBeNull();
+    expect(
+      container.querySelector('[data-testid="definition-history-toggle-release-flow"]')
+    ).toBeNull();
+    expect(
+      container.querySelector('[data-testid="definition-action-publish-release-flow"]')
+    ).toBeNull();
+    expect(
+      container.querySelector('[data-testid="definition-row-state-release-flow"]')
+    ).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="definition-row-validity-release-flow"]')
+    ).not.toBeNull();
+  });
 });

@@ -252,6 +252,7 @@
       readonly={selectedReadOnly}
       {anchoredErrors}
       {consumingWorkflows}
+      lifecycle={lifecycleByKey.get(selectedPipeline.sourceKey)}
       onpipelinechange={patchSelected}
       onphasechange={(position, phaseId) =>
         p.selectedIndex !== null && p.onphasechange(p.selectedIndex, position, phaseId)}

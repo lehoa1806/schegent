@@ -363,6 +363,7 @@
       {defects}
       {editable}
       {graph}
+      lifecycle={lifecycleByKey.get(selected.sourceKey)}
       onworkflowpatch={patchSelected}
     />
   {:else}

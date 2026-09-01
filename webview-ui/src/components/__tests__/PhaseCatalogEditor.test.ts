@@ -23,6 +23,36 @@ const STORED_PHASE: MutablePhase = {
   sourceErrors: [], persisted: true
 };
 
+// Feature 186 (US1, T007) — a lifecycle projection keyed to STORED_PHASE's
+// sourceKey, so the panel this feature mounts on the editor card has a draft
+// token to quote.
+const LIFECYCLE_SNAPSHOT = {
+  ...SNAPSHOT,
+  phaseCatalog: {
+    state: 'ready',
+    records: [
+      {
+        key: STORED_PHASE.sourceKey,
+        phaseId: STORED_PHASE.id,
+        status: 'effective',
+        definition: null,
+        display: {},
+        errors: [],
+        lifecycle: {
+          state: 'active',
+          createdAt: Date.parse('2026-03-01T09:15:00.000Z'),
+          updatedAt: Date.parse('2026-03-04T18:42:30.000Z'),
+          activeVersionId: 'ver-7',
+          expectedDraftVersion: 'no-draft',
+          versions: []
+        }
+      }
+    ],
+    effective: [],
+    revisions: { user: 'u', workspace: 'w' }, warnings: []
+  }
+} as unknown as WorkflowSnapshot;
+
 function mount(options: {
   snapshot?: WorkflowSnapshot;
   phases?: MutablePhase[];
@@ -281,5 +311,43 @@ describe('Phase catalog exchange entry points', () => {
     });
     expect(container.querySelector('[data-testid="process-import-preflight"]')).toBeNull();
     expect(container.querySelector('[data-testid="process-export-button"]')).toBeNull();
+  });
+});
+
+// Feature 186 (US1, T007) — the lifecycle facts move off the list row and onto
+// the editor card for the open Phase (FR-001, FR-002, FR-003).
+describe('Phase catalog lifecycle relocation (US1, T007)', () => {
+  it('shows the panel on the editor card for the selected phase, and not on its list row', () => {
+    const { container } = mount({
+      snapshot: LIFECYCLE_SNAPSHOT,
+      phases: [STORED_PHASE],
+      selectedIndex: 0
+    });
+
+    const editorCard = container.querySelector('[data-testid="phases-editor-custom"]') as HTMLElement;
+    expect(editorCard).not.toBeNull();
+    for (const suffix of ['created', 'modified', 'active-version']) {
+      expect(
+        editorCard.querySelector(`[data-testid="definition-row-${suffix}-custom"]`),
+        `expected the editor card to show the ${suffix} cell`
+      ).not.toBeNull();
+    }
+    expect(
+      editorCard.querySelector('[data-testid="definition-history-toggle-custom"]')
+    ).not.toBeNull();
+
+    const listRow = container.querySelector(
+      '[data-testid="phases-list-item-custom"]'
+    )?.closest('.phase-list-row') as HTMLElement;
+    expect(listRow).not.toBeNull();
+    for (const suffix of ['created', 'modified', 'active-version', 'defects']) {
+      expect(
+        listRow.querySelector(`[data-testid="definition-row-${suffix}-custom"]`),
+        `expected the list row to show no ${suffix} cell`
+      ).toBeNull();
+    }
+    expect(
+      listRow.querySelector('[data-testid="definition-history-toggle-custom"]')
+    ).toBeNull();
   });
 });

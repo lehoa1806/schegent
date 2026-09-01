@@ -86,16 +86,14 @@
           </span>
         </div>
       </button>
-      <!-- Outside the selection button, not inside it: T042 hung the lifecycle
-           actions off this row, and a control nested in a button is invalid
-           markup and unreachable by keyboard. -->
+      <!-- Outside the selection button, not inside it: a control nested in a
+           button is invalid markup and unreachable by keyboard.
+           Feature 186 (US3, T017, D-2) — everything but the two badges moved
+           to `DefinitionLifecyclePanel` on the inspector's resting branch. -->
       <DefinitionLifecycleRow
-        kind="workflow"
         definitionId={row.workflowId}
-        definitionName={row.name || 'Untitled Workflow'}
         lifecycle={lifecycleByKey.get(row.sourceKey)}
         validity={row.sourceStatus}
-        defects={row.sourceErrors}
       />
     </div>
   {/each}

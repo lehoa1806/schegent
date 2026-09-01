@@ -2,6 +2,7 @@
   import type { BuilderLifecycle, PhaseDefinition, WorkflowSnapshot } from '../../lib/snapshot-types';
   import CatalogEmptyState from '../Builder/CatalogEmptyState.svelte';
   import DefinitionLifecycleRow from '../Builder/DefinitionLifecycleRow.svelte';
+  import DefinitionLifecyclePanel from '../Builder/DefinitionLifecyclePanel.svelte';
   import ProcessExportButton from '../ProcessImport/ProcessExportButton.svelte';
   import ProcessImportPreflight from '../ProcessImport/ProcessImportPreflight.svelte';
   import {
@@ -291,12 +292,9 @@
                confirmations name what the operator sees, and an untitled row shows
                that placeholder, not an empty string. -->
           <DefinitionLifecycleRow
-            kind="phase"
             definitionId={phase.id}
-            definitionName={phase.name || 'Untitled Phase'}
             lifecycle={lifecycleByKey.get(phase.sourceKey)}
             validity={phase.sourceStatus}
-            defects={phase.sourceErrors}
           />
         </div>
       {/each}
@@ -332,6 +330,19 @@
             {#if !selectedReadOnly}<button class="btn btn-destructive" data-testid="phases-remove" disabled={!trusted || savePending} onclick={(event) => onremove(index, event.currentTarget)}>Delete Phase</button>{/if}
           </div>
         </div>
+
+        <!-- Feature 186 (US1, T008, D-1, D-3) — the open Phase's lifecycle
+             facts and actions. Its own bordered block, never inside
+             `.header-actions`: the panel's "Discard draft" write must never
+             sit adjacent to this header's local-reset "Discard Draft" button
+             above, which is a same-named but unrelated control (D-3). -->
+        <DefinitionLifecyclePanel
+          kind="phase"
+          definitionId={phase.id}
+          definitionName={phase.name || 'Untitled Phase'}
+          lifecycle={lifecycleByKey.get(phase.sourceKey)}
+          defects={phase.sourceErrors}
+        />
 
         {#if selectedEditState.rawJsonMode}
           <RawJsonPhaseEditor

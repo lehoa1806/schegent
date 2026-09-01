@@ -13,7 +13,7 @@
   // Every edit goes out through `graph`, the same `WorkflowGraphActions` bundle the
   // list Builder used, so the rules still live in `workflow-catalog-state.ts` and
   // no rule is expressible in this markup.
-  import type { PortablePipelineDefinition } from '../../lib/snapshot-types';
+  import type { BuilderLifecycle, PortablePipelineDefinition } from '../../lib/snapshot-types';
   import type { AnchoredWorkflowDefects } from './workflow-catalog-state';
   import type { WorkflowGraphActions } from './workflow-catalog-actions';
   import type { WorkflowFlowSelection } from './workflow-flow-view';
@@ -29,6 +29,12 @@
     /** False for a stored row: only an unsaved draft is editable (FR-026). */
     editable: boolean;
     graph: WorkflowGraphActions;
+    /**
+     * Feature 186 (US3, T021, D-2) — the actual mount site for `WorkflowInspector`
+     * is here, not in `WorkflowCatalogEditor` directly, so the prop crosses this
+     * intermediate component before it reaches it.
+     */
+    lifecycle?: BuilderLifecycle;
     onworkflowpatch: (patch: Partial<MutableWorkflow>) => void;
   }
 
@@ -113,6 +119,7 @@
     pipelines={p.pipelines}
     defects={p.defects}
     editable={p.editable}
+    lifecycle={p.lifecycle}
     onworkflowpatch={p.onworkflowpatch}
     onnodepatch={p.graph.patchNode}
     onstarttoggle={p.graph.toggleStartNode}

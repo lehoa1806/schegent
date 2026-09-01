@@ -53,6 +53,10 @@ vi.mock('../../../lib/snapshot-store.svelte', () => ({
 
 const WorkflowLibraryList = (await import('../../PipelineBuilderEditors/WorkflowLibraryList.svelte'))
   .default;
+// Feature 186 (D-1) — the defect list and the history toggle moved off the row
+// and onto the panel that mounts on the surface showing the open definition;
+// mounted directly for the cases below that address them.
+const DefinitionLifecyclePanel = (await import('../DefinitionLifecyclePanel.svelte')).default;
 
 // One payload per field, each carrying a different tag, so a failure names the
 // field that leaked rather than "something rendered an image somewhere".
@@ -140,6 +144,23 @@ function renderList(opts: ListOpts = {}) {
   });
 }
 
+/**
+ * The panel, holding the same markup-laden defects and lifecycle as the row
+ * fixture above — mounted directly, since the defect list and the history
+ * toggle live here now, not on `WorkflowLibraryList`'s row.
+ */
+function renderPanel(opts: ListOpts = {}) {
+  return render(DefinitionLifecyclePanel, {
+    props: {
+      kind: 'workflow' as const,
+      definitionId: WORKFLOW_ID,
+      definitionName: MARKUP_NAME,
+      lifecycle: opts.lifecycle ?? lifecycle(),
+      defects: opts.defects ?? []
+    }
+  });
+}
+
 /** Every element name from INJECTED that actually made it into the DOM. */
 function injectedTags(container: HTMLElement): string[] {
   return [...container.querySelectorAll(INJECTED)].map((node) => node.tagName.toLowerCase());
@@ -147,7 +168,7 @@ function injectedTags(container: HTMLElement): string[] {
 
 async function openHistory(container: HTMLElement): Promise<void> {
   const toggle = container.querySelector(`[data-testid="definition-history-toggle-${WORKFLOW_ID}"]`);
-  expect(toggle, 'expected a history toggle on the row').not.toBeNull();
+  expect(toggle, 'expected a history toggle on the panel').not.toBeNull();
   await fireEvent.click(toggle as HTMLElement);
 }
 
@@ -178,13 +199,13 @@ describe('imported text on the row (US7, T067, FR-038)', () => {
   });
 
   it('renders a defect field and message that are markup as characters', () => {
-    const { container } = renderList({
+    const { container } = renderPanel({
       defects: [
         { field: MARKUP_DEFECT_FIELD, code: 'unknown-pipeline', message: MARKUP_DEFECT_MESSAGE }
       ]
     });
     const defects = container.querySelector(`[data-testid="definition-row-defects-${WORKFLOW_ID}"]`);
-    expect(defects, 'expected the defect list on an invalid row').not.toBeNull();
+    expect(defects, 'expected the defect list on the panel').not.toBeNull();
     expect(defects?.textContent).toContain(MARKUP_DEFECT_FIELD);
     expect(defects?.textContent).toContain(MARKUP_DEFECT_MESSAGE);
     expect(injectedTags(container)).toEqual([]);
@@ -194,7 +215,7 @@ describe('imported text on the row (US7, T067, FR-038)', () => {
 
 describe('imported text in the history panel (US7, T067, FR-038)', () => {
   it('renders a version note that is markup as characters', async () => {
-    const { container } = renderList();
+    const { container } = renderPanel();
     await openHistory(container);
     expect(text(container, `definition-history-note-${WORKFLOW_ID}-${VERSION_ID}`)).toBe(
       MARKUP_NOTE
@@ -203,7 +224,7 @@ describe('imported text in the history panel (US7, T067, FR-038)', () => {
   });
 
   it('escapes the note inside the entry rather than dropping the tag', async () => {
-    const { container } = renderList();
+    const { container } = renderPanel();
     await openHistory(container);
     const entry = container.querySelector(
       `[data-testid="definition-history-entry-${WORKFLOW_ID}-${VERSION_ID}"]`
@@ -221,7 +242,7 @@ describe('imported text in the history panel (US7, T067, FR-038)', () => {
       instruction: MARKUP_BODY_VALUE,
       nested: Object.freeze({ note: MARKUP_NOTE })
     });
-    const { container } = renderList();
+    const { container } = renderPanel();
     await openHistory(container);
     const view = container.querySelector(
       `[data-testid="definition-history-open-${WORKFLOW_ID}-${VERSION_ID}"]`
@@ -241,7 +262,7 @@ describe('imported text in the history panel (US7, T067, FR-038)', () => {
   it('leaves nothing behind on the page once the panel closes', async () => {
     // A node that escaped into the document would outlive the panel that made
     // it, and the row is what stays on screen.
-    const { container } = renderList();
+    const { container } = renderPanel();
     await openHistory(container);
     await fireEvent.click(
       container.querySelector(`[data-testid="definition-history-close-${WORKFLOW_ID}"]`) as HTMLElement

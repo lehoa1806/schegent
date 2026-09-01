@@ -247,6 +247,42 @@ describe('WorkflowCatalogEditor row content (US5, T055)', () => {
       expect(text).not.toContain('null');
     }
   });
+
+  // Feature 186 (US3, T018, FR-003) — the row keeps its identity summary and its
+  // two badges; no lifecycle write control reaches it, even when a lifecycle is
+  // projected. Written to pin the post-relocation state regardless of whether
+  // such a control was still reachable before it.
+  it('carries no lifecycle write control on any row, even with a lifecycle projected', () => {
+    const { container } = mount([
+      record({
+        lifecycle: {
+          state: 'active-with-draft',
+          createdAt: 0,
+          updatedAt: 0,
+          activeVersionId: 'v1',
+          expectedDraftVersion: 'v2',
+          versions: []
+        }
+      })
+    ]);
+    const chrome = lifecycleRowFor(container, 'design-then-build');
+
+    expect(
+      chrome.querySelector('[data-testid="definition-row-created-design-then-build"]')
+    ).toBeNull();
+    expect(
+      chrome.querySelector('[data-testid="definition-history-toggle-design-then-build"]')
+    ).toBeNull();
+    expect(
+      chrome.querySelector('[data-testid="definition-action-publish-design-then-build"]')
+    ).toBeNull();
+    expect(
+      chrome.querySelector('[data-testid="definition-row-state-design-then-build"]')
+    ).not.toBeNull();
+    expect(
+      chrome.querySelector('[data-testid="definition-row-validity-design-then-build"]')
+    ).not.toBeNull();
+  });
 });
 
 // ── Every stored row is writable (FR-042, FR-043) ──────────────────────────
@@ -292,6 +328,54 @@ describe('WorkflowCatalogEditor stored rows (T496f)', () => {
     expect(duplicate?.disabled).toBe(false);
     const remove = container.querySelector<HTMLButtonElement>('[data-testid="workflows-remove"]');
     expect(remove?.disabled).toBe(false);
+  });
+});
+
+// Feature 186 (US3, T019, FR-001, FR-002, FR-006, D-2) — the inspector shows
+// the open Workflow's lifecycle facts and actions in its resting state, and
+// withholds them the moment a node or connection is selected instead: a
+// selected node or connection is part of the Workflow, not the open
+// definition itself.
+describe('WorkflowCatalogEditor lifecycle relocation (US3, T019)', () => {
+  const LIFECYCLE = {
+    state: 'active-with-draft' as const,
+    createdAt: Date.parse('2026-03-01T09:15:00.000Z'),
+    updatedAt: Date.parse('2026-03-04T18:42:30.000Z'),
+    activeVersionId: 'ver-7',
+    expectedDraftVersion: 'draft-1',
+    versions: []
+  };
+
+  it('shows the panel in the resting branch, once the Workflow is open', async () => {
+    const { container } = mount([record({ workflowId: 'stored-flow', lifecycle: LIFECYCLE })]);
+    await fireEvent.click(rowFor(container, 'stored-flow'));
+
+    expect(
+      container.querySelector('[data-testid="definition-row-created-stored-flow"]')
+    ).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="definition-row-active-version-stored-flow"]')
+    ).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="definition-history-toggle-stored-flow"]')
+    ).not.toBeNull();
+  });
+
+  it('withholds the panel once a node is selected instead of resting on the Workflow', async () => {
+    const { container } = mount([record({ workflowId: 'stored-flow', lifecycle: LIFECYCLE })]);
+    await fireEvent.click(rowFor(container, 'stored-flow'));
+    expect(
+      container.querySelector('[data-testid="definition-row-created-stored-flow"]')
+    ).not.toBeNull();
+
+    await fireEvent.click(container.querySelector('[data-testid="workflow-node-0"]') as HTMLElement);
+
+    expect(
+      container.querySelector('[data-testid="definition-row-created-stored-flow"]')
+    ).toBeNull();
+    expect(
+      container.querySelector('[data-testid="definition-history-toggle-stored-flow"]')
+    ).toBeNull();
   });
 });
 

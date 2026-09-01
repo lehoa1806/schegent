@@ -88,7 +88,9 @@ vi.mock('../../../lib/use-confirm', () => ({
 }));
 
 const DefinitionActions = (await import('../DefinitionActions.svelte')).default;
-const DefinitionLifecycleRow = (await import('../DefinitionLifecycleRow.svelte')).default;
+// Feature 186 (D-1) — the row mounted this until the split; the panel is where
+// the actions and the cells they affect now both live.
+const DefinitionLifecyclePanel = (await import('../DefinitionLifecyclePanel.svelte')).default;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -495,14 +497,13 @@ describe('Feature 101 T040 — a refused publish reports all defects (FR-023)', 
     );
   });
 
-  it('posts nothing further and leaves the row Active at its prior version', async () => {
-    const { container } = render(DefinitionLifecycleRow, {
+  it('posts nothing further and leaves the panel Active at its prior version', async () => {
+    const { container } = render(DefinitionLifecyclePanel, {
       props: {
         kind: 'pipeline' as const,
         definitionId: DEFINITION_ID,
         definitionName: DEFINITION_NAME,
         lifecycle: lifecycle('active-with-draft'),
-        validity: 'effective' as const,
         defects: []
       }
     });
@@ -515,11 +516,6 @@ describe('Feature 101 T040 — a refused publish reports all defects (FR-023)', 
         .querySelector(`[data-testid="definition-row-active-version-${DEFINITION_ID}"]`)
         ?.textContent?.trim()
     ).toBe('v3');
-    expect(
-      container
-        .querySelector(`[data-testid="definition-row-state-${DEFINITION_ID}"]`)
-        ?.textContent?.trim()
-    ).toBe('Active with draft');
   });
 
   it('clears the previous refusal when the next attempt is accepted', async () => {

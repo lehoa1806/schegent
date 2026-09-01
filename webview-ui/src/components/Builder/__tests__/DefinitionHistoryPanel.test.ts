@@ -61,6 +61,9 @@ vi.mock('../../../lib/snapshot-store.svelte', () => ({
 
 const DefinitionHistoryPanel = (await import('../DefinitionHistoryPanel.svelte')).default;
 const DefinitionLifecycleRow = (await import('../DefinitionLifecycleRow.svelte')).default;
+// Feature 186 (D-1) — the active-version cell moved off the row and onto the
+// panel that mounts on the surface showing the open definition.
+const DefinitionLifecyclePanel = (await import('../DefinitionLifecyclePanel.svelte')).default;
 
 const CREATED_AT = Date.parse('2026-03-01T09:15:00.000Z');
 const PUBLISHED_AT = Date.parse('2026-03-02T11:00:00.000Z');
@@ -366,6 +369,36 @@ describe('DefinitionHistoryPanel — the body is read-only (US4, T048, FR-030)',
     const source = readFileSync(resolve(__dirname, '../DefinitionHistoryPanel.svelte'), 'utf8');
     expect(source).not.toContain('{@html');
   });
+
+  // Feature 186 (US3, T023, FR-004, D-4) — `.body-content` carries no inline
+  // max-height or overflow: every host that mounts this panel already supplies
+  // one scroll region of its own (`.pane-right` on Phases, `.wf-inspector` on
+  // Pipelines and Workflows), and a version body capped at its own height
+  // inside any of those is a scroll region nested inside another one, which is
+  // exactly what FR-004 forbids.
+  it('lets the version body flow inside its host’s scroll region rather than carrying its own', async () => {
+    const { container } = renderPanel();
+    await openVersion(container, 'v2');
+    reads[0].settle({
+      outcome: 'success',
+      body: { id: 'speckit-specify', instruction: 'Write the spec.', runner: 'claude' }
+    });
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain('Write the spec.');
+    });
+    const content = container.querySelector(
+      '[data-testid="definition-history-body-ready-speckit-specify"]'
+    ) as HTMLElement;
+    expect(content).not.toBeNull();
+    expect(content.style.maxHeight).toBe('');
+    expect(content.style.overflow).toBe('');
+
+    const source = readFileSync(resolve(__dirname, '../DefinitionHistoryPanel.svelte'), 'utf8');
+    const rule = source.match(/\.body-content\s*\{([^}]*)\}/);
+    expect(rule, 'expected a .body-content rule').not.toBeNull();
+    expect(rule?.[1]).not.toContain('max-height');
+    expect(rule?.[1]).not.toContain('overflow');
+  });
 });
 
 describe('DefinitionHistoryPanel — closing returns focus (US4, T048, FR-030b)', () => {
@@ -437,25 +470,41 @@ describe('DefinitionHistoryPanel — Restore lands in Draft (US4, T047, FR-024)'
     ).toBeNull();
   });
 
-  it('leaves the row reading Active with draft at the unchanged active version', () => {
+  it('leaves the row and panel reading Active with draft at the unchanged active version', () => {
     // What the host's next snapshot looks like after a restore: state moved to
-    // `active-with-draft`, `activeVersionId` did not move. The row must render
-    // exactly that — Draft would be wrong, and a moved active cell worse.
-    const { container } = render(DefinitionLifecycleRow, {
+    // `active-with-draft`, `activeVersionId` did not move. The row and the panel
+    // must render exactly that — Draft would be wrong, and a moved active cell
+    // worse. Two components now, since the badge and the cell split across the
+    // row (D-1) and the panel it grew out of.
+    const restoredLifecycle = lifecycle({
+      state: 'active-with-draft',
+      activeVersionId: 'v3',
+      expectedDraftVersion: 'v4'
+    });
+    const row = render(DefinitionLifecycleRow, {
+      props: {
+        definitionId: 'speckit-specify',
+        lifecycle: restoredLifecycle,
+        validity: 'effective' as const
+      }
+    });
+    expect(
+      row.container
+        .querySelector('[data-testid="definition-row-state-speckit-specify"]')
+        ?.textContent?.trim()
+    ).toBe('Active with draft');
+
+    const panel = render(DefinitionLifecyclePanel, {
       props: {
         kind: 'phase' as const,
         definitionId: 'speckit-specify',
         definitionName: 'Specify',
-        lifecycle: lifecycle({ state: 'active-with-draft', activeVersionId: 'v3', expectedDraftVersion: 'v4' }),
-        validity: 'effective' as const,
+        lifecycle: restoredLifecycle,
         defects: []
       }
     });
     expect(
-      container.querySelector('[data-testid="definition-row-state-speckit-specify"]')?.textContent?.trim()
-    ).toBe('Active with draft');
-    expect(
-      container
+      panel.container
         .querySelector('[data-testid="definition-row-active-version-speckit-specify"]')
         ?.textContent?.trim()
     ).toBe('v3');
