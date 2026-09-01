@@ -214,6 +214,14 @@ async function main() {
   // files would be wrong within a day, and then the "which sites are new"
   // message it exists to produce would name the wrong ones — which is worse than
   // naming none, as the `byFile` comment above already records from experience.
+  //
+  // WHAT IS AND IS NOT GATED. The comparison below gates the COUNT. The breakdown
+  // is written beside it here, but nothing checks it against a later run, so a
+  // change that moves a finding between two files leaves the total equal and the
+  // breakdown stale with nothing failing. That has happened: the record attributed
+  // one `no-unnecessary-condition` to `src/extension.ts` after the finding had
+  // moved to `src/monitor/cli-transport-sink.ts`. Re-run this with
+  // `--write-baseline` when you move code, not only when a count changes.
   if (writeBaseline) {
     const updated = JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf8'));
     let touched = 0;
