@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { SanitizedLogger } from '../lib/logger';
+import { resolveDiffBase } from '../lib/git-diff-base';
 import { resolveContainedLink } from '../lib/path-containment';
 import type { WorkflowRun } from '../state/workflow-run';
 import { ensureDirWithinRoot, openWithinRoot } from '../lib/safe-open';
@@ -255,19 +256,30 @@ export class RunCheckpointService {
     };
   }
 
+  /**
+   * Read the tree against the base a diff can be taken from.
+   *
+   * The base is resolved first rather than alongside, because the diff needs it:
+   * `HEAD` is not a usable ref in a workspace whose first commit has not been
+   * made, and `resolveDiffBase` answers with the empty tree there. That is the
+   * one shape of failure this method deliberately does *not* propagate — an
+   * unborn HEAD is a readable tree with no commit behind it, and it used to
+   * reach the caller's `catch` as `checkpoint-unavailable`, blocking the first
+   * Git-capable phase in every fresh workspace. Every other fault still throws.
+   */
   private async capture(): Promise<CheckpointCapture> {
-    const [{ stdout: diff }, { stdout: status }, { stdout: head }] = await Promise.all([
-      runExecFile('git', ['diff', '--binary', '--no-ext-diff', 'HEAD'], {
+    const base = await resolveDiffBase(this.workspaceRoot);
+    const [{ stdout: diff }, { stdout: status }] = await Promise.all([
+      runExecFile('git', ['diff', '--binary', '--no-ext-diff', base.ref], {
         cwd: this.workspaceRoot,
         maxBuffer: 20 * 1024 * 1024
       }),
       runExecFile('git', ['status', '--porcelain=v1'], {
         cwd: this.workspaceRoot,
         maxBuffer: 1024 * 1024
-      }),
-      runExecFile('git', ['rev-parse', 'HEAD'], { cwd: this.workspaceRoot, maxBuffer: 1024 })
+      })
     ]);
-    return { diff, sections: splitDiffSections(diff), status, baseCommit: head.trim() };
+    return { diff, sections: splitDiffSections(diff), status, baseCommit: base.ref };
   }
 
   /**

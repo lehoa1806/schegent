@@ -37,6 +37,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { SanitizedLogger } from '../../../src/lib/logger';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
+import { EMPTY_TREE_SHA1 } from '../../../src/lib/git-diff-base';
 import { RunCheckpointService } from '../../../src/services/run-checkpoint-service';
 import { RunMutationLedger } from '../../../src/services/run-mutation-ledger';
 
@@ -197,5 +198,71 @@ describe('RunCheckpointService — concurrency (T053, T054, FR-022a, SC-015)', (
       'checkpoint-unavailable'
     );
     await fs.rm(outside, { recursive: true, force: true });
+  });
+});
+
+describe('RunCheckpointService — a workspace whose branch has no commits', () => {
+  // A `git init`-ed workspace that has not been committed yet has an unborn
+  // HEAD, and every `HEAD`-relative command against it fails. `capture()` used
+  // to route that into the same `catch` as an unreadable tree, so the *first*
+  // Git-capable phase in a fresh workspace died on `checkpoint-unavailable`
+  // before it ran. The tree is perfectly readable; there is simply no commit to
+  // diff against, and git's own answer for that is the empty tree.
+  let unbornRoot: string;
+
+  beforeEach(async () => {
+    unbornRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-checkpoint-unborn-'));
+    await run('git', ['init', '-q'], { cwd: unbornRoot });
+    await run('git', ['config', 'user.email', 'test@example.com'], { cwd: unbornRoot });
+    await run('git', ['config', 'user.name', 'Test'], { cwd: unbornRoot });
+  });
+
+  afterEach(async () => {
+    await fs.rm(unbornRoot, { recursive: true, force: true });
+  });
+
+  function unborn(): RunCheckpointService {
+    return new RunCheckpointService(
+      storageRoot,
+      unbornRoot,
+      logger,
+      () => 1,
+      blindLedger(unbornRoot)
+    );
+  }
+
+  it('does not block the Git-capable phase', async () => {
+    // The reported failure, at its narrowest: nothing is staged, everything in
+    // the workspace is untracked, and the phase has to be allowed to run.
+    await expect(unborn().checkpoint(RUN, 'speckit-implement')).resolves.toBeUndefined();
+    expect(warnings).toEqual([]);
+  });
+
+  it('records a restorable snapshot of the content that is staged', async () => {
+    await fs.writeFile(path.join(unbornRoot, 'a.txt'), 'edit by run-a\n');
+    await run('git', ['add', '-A'], { cwd: unbornRoot });
+
+    await unborn().checkpoint(RUN, 'speckit-implement');
+
+    const files = await artifacts();
+    expect(files.filter((name) => name.endsWith('.declined.json'))).toHaveLength(0);
+    const patch = await fs.readFile(
+      path.join(storageRoot, 'checkpoints', 'run-a', files.find((n) => n.endsWith('.patch'))!),
+      'utf8'
+    );
+    expect(patch).toContain('edit by run-a');
+  });
+
+  it('names the empty tree as the base the patch applies to', async () => {
+    // `baseCommit` is what the runbook tells an operator to apply the patch
+    // against, so it must name the object actually diffed rather than be blank
+    // or carry a commit id that does not exist.
+    await unborn().checkpoint(RUN, 'speckit-implement');
+
+    const name = (await artifacts()).find((f) => f.endsWith('.json') && !f.endsWith('.declined.json'));
+    const recorded = JSON.parse(
+      await fs.readFile(path.join(storageRoot, 'checkpoints', 'run-a', name!), 'utf8')
+    );
+    expect(recorded.baseCommit).toBe(EMPTY_TREE_SHA1);
   });
 });

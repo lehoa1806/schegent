@@ -13,6 +13,7 @@ import * as vscode from 'vscode';
 import type { RawTranscriptWriter } from '../audit/raw-transcript-writer';
 import type { QueueManager } from '../queue/queue-manager';
 import type { SanitizedLogger } from '../lib/logger';
+import { resolveDiffBase } from '../lib/git-diff-base';
 import type { HistoryStore } from '../state/history-store';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import { isTerminalRunStatus } from '../state/workflow-run';
@@ -105,12 +106,29 @@ export async function createRunSafetyWiring(input: {
   const inFlightRuns = () =>
     Object.values(input.store.getRunMap()).filter((run) => !isTerminalRunStatus(run.status));
   const mutationLedger = new RunMutationLedger({
+    // The base is resolved per read, on the same reasoning as the checkpoint's
+    // own capture: `HEAD` names nothing in a workspace whose first commit has
+    // not been made. The ledger catches a throwing `readDiff` and records the
+    // observation as failed, so a literal `HEAD` here did not fail a Run — it
+    // did something quieter and longer-lived, marking every Run's evidence
+    // incomplete for as long as the workspace had no commits, which declines
+    // every checkpoint above one in-flight Run. Resolving the base keeps the
+    // ledger observing in exactly the workspaces the checkpoint now snapshots.
     readDiff: async () =>
       (
-        await promisify(execFile)('git', ['diff', '--binary', '--no-ext-diff', 'HEAD'], {
-          cwd: input.workspaceRoot,
-          maxBuffer: 20 * 1024 * 1024
-        })
+        await promisify(execFile)(
+          'git',
+          [
+            'diff',
+            '--binary',
+            '--no-ext-diff',
+            (await resolveDiffBase(input.workspaceRoot)).ref
+          ],
+          {
+            cwd: input.workspaceRoot,
+            maxBuffer: 20 * 1024 * 1024
+          }
+        )
       ).stdout,
     listInFlightRunIds: () => inFlightRuns().map((run) => run.id),
     workspaceRoot: input.workspaceRoot
