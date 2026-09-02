@@ -3,9 +3,11 @@ import {
   AUDIT_PAYLOAD_MAX_ARRAY_LENGTH,
   AUDIT_PAYLOAD_MAX_STRING_LENGTH,
   AUDIT_PAYLOAD_TRUNCATION_MARKER,
+  PHASE_END_OUTCOMES,
   RECORDABLE_PHASE_END_WARNINGS,
   projectAuditPayload
 } from '../../../src/audit/audit-payload';
+import type { PhaseOutcome } from '../../../src/controller/phase';
 
 describe('audit payload schema v3', () => {
   it('projects CLI invocations to bounded execution metadata', () => {
@@ -202,5 +204,112 @@ describe('phase-end warning vocabulary', () => {
       terminationReason: 'error',
       warnings: ['output-truncated-unclassifiable', 'output-truncated-unclassifiable']
     })).toMatchObject({ warnings: ['output-truncated-unclassifiable'] });
+  });
+});
+
+describe('phase-end outcome vocabulary', () => {
+  // This projection runs on the WRITE path (`audit-log-writer.ts`), so a value it does not
+  // recognize is not merely displayed wrongly — it never reaches the log at all. The
+  // allowlist held five members while the producers emitted eight, and the six-way
+  // mismatch below is what put `outcome: malformed` on 7 of 11 phase-end records in the
+  // workspace this was found in, including a phase that finished 109 of 109 tasks with
+  // 398 unit tests passing.
+  const producerVocabulary = [
+    'clean',
+    'issues_remain',
+    'failed',
+    'rate_limited',
+    'timeout',
+    'transient_error',
+    'skipped',
+    'paused-at-breakpoint',
+    // Not a `PhaseOutcome` member: `phase-runner.ts` writes it directly on the
+    // deadline-exceeded arm, so the projection has to carry it too.
+    'deadline'
+  ] as const;
+
+  for (const outcome of producerVocabulary) {
+    it(`records '${outcome}' as written`, () => {
+      expect(projectAuditPayload('phase-end', {
+        outcome,
+        exitCode: 0,
+        terminationReason: 'token'
+      })).toMatchObject({ outcome });
+    });
+  }
+
+  // Both are unreachable from any producer — `mapOutcome` never returns 'malformed', and
+  // nothing anywhere emits the hyphenated spelling — but a log written before this change
+  // is full of the first and may carry the second, and it still has to read.
+  it('still accepts the legacy spellings on an existing log', () => {
+    expect(projectAuditPayload('phase-end', {
+      outcome: 'rate-limited',
+      exitCode: null,
+      terminationReason: 'rate_limit'
+    })).toMatchObject({ outcome: 'rate-limited' });
+    expect(projectAuditPayload('phase-end', {
+      outcome: 'malformed',
+      exitCode: 1,
+      terminationReason: 'error'
+    })).toMatchObject({ outcome: 'malformed' });
+  });
+
+  it('still resolves a genuinely foreign value to malformed', () => {
+    expect(projectAuditPayload('phase-end', {
+      outcome: 'nonsense-from-somewhere',
+      exitCode: 0,
+      terminationReason: 'token'
+    })).toMatchObject({ outcome: 'malformed' });
+    expect(projectAuditPayload('phase-end', {
+      exitCode: 0,
+      terminationReason: 'token'
+    })).toMatchObject({ outcome: 'malformed' });
+  });
+
+  // `terminationReason` falls back to the outcome when the payload carries none, and the
+  // fallback reads the RESOLVED value. A rate-limited phase with no reason recorded said
+  // 'malformed' twice over.
+  it('falls back to the resolved outcome for a missing termination reason', () => {
+    expect(projectAuditPayload('phase-end', {
+      outcome: 'rate_limited',
+      exitCode: null
+    })).toMatchObject({ outcome: 'rate_limited', terminationReason: 'rate_limited' });
+  });
+
+  // The audit vocabulary is deliberately a SUPERSET, not a copy: it carries `deadline` and
+  // the two legacy spellings, none of which are `PhaseOutcome` members. What must never
+  // recur is the other direction — a controller outcome the write path cannot record. This
+  // is the gate that would have caught the original defect, and it is the reason the union
+  // is not simply derived from `PhaseOutcome`.
+  it('accepts every PhaseOutcome the controller can produce', () => {
+    const controllerOutcomes: readonly PhaseOutcome[] = [
+      'clean',
+      'issues_remain',
+      'failed',
+      'rate_limited',
+      'timeout',
+      'transient_error',
+      'skipped',
+      'paused-at-breakpoint'
+    ];
+    for (const outcome of controllerOutcomes) {
+      expect(PHASE_END_OUTCOMES).toContain(outcome);
+    }
+  });
+
+  it('pins the recorded vocabulary', () => {
+    expect([...PHASE_END_OUTCOMES].sort()).toEqual([
+      'clean',
+      'deadline',
+      'failed',
+      'issues_remain',
+      'malformed',
+      'paused-at-breakpoint',
+      'rate-limited',
+      'rate_limited',
+      'skipped',
+      'timeout',
+      'transient_error'
+    ]);
   });
 });

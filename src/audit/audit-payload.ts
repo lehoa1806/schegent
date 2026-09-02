@@ -35,8 +35,56 @@ export interface CliInvocationPayloadV3 {
   readonly diagnosticsEnabled: boolean;
 }
 
+/**
+ * Every value a producer can put on a `phase-end` record's `outcome`.
+ *
+ * THE PROJECTION RUNS ON THE WRITE PATH (`audit-log-writer.ts`), so a value missing from
+ * this set is not merely displayed wrongly — it never reaches the log. The set held five
+ * members while the producers emitted nine, and six of the nine were absent:
+ * `issues_remain`, `rate_limited`, `transient_error`, `skipped` and `paused-at-breakpoint`
+ * from `PhaseOutcome`, plus `deadline`, which `phase-runner.ts` writes directly on the
+ * deadline-exceeded arm. All six were rewritten to `malformed` before the line was
+ * serialized, permanently. In the workspace this was found in, 7 of 11 `phase-end` records
+ * read `malformed` — including a `speckit-implement` that finished 109 of 109 tasks with
+ * 398 unit tests passing and reported so in its own sidecar.
+ *
+ * Two members are unreachable from any producer and are kept anyway. `mapOutcome` never
+ * returns `'malformed'` — it is the resolution for a value from outside this set, and the
+ * meaning it carries on a historical record is "the projection did not recognize what was
+ * written". Nothing anywhere emits the hyphenated `'rate-limited'`. Dropping either would
+ * break a log written before this change, which the warn-and-preserve discipline forbids.
+ *
+ * ADDITIVE — `AUDIT_SCHEMA_VERSION` does NOT bump, following the 028 / 030 / 031 / 032
+ * precedent recorded at the top of `src/contracts/audit-events.ts` and cited for
+ * `verdictBasis` below. Widening a closed union's accepted set adds records a reader could
+ * not previously see; it invalidates none.
+ *
+ * Not imported from `PhaseOutcome`: the audit set is deliberately a superset (it carries
+ * `deadline` and the two legacy spellings, none of which are `PhaseOutcome` members), and
+ * deriving it would tie a durable on-disk vocabulary to a controller type that is free to
+ * change. The parity between them is asserted in `audit-payload-v3.test.ts` instead.
+ */
+export const PHASE_END_OUTCOMES = [
+  'clean',
+  'issues_remain',
+  'failed',
+  'rate_limited',
+  'timeout',
+  'transient_error',
+  'skipped',
+  'paused-at-breakpoint',
+  'deadline',
+  // Legacy, unreachable from any producer; see the docblock above.
+  'rate-limited',
+  'malformed'
+] as const;
+
+export type PhaseEndOutcome = (typeof PHASE_END_OUTCOMES)[number];
+
+const PHASE_END_OUTCOME_SET: ReadonlySet<string> = new Set(PHASE_END_OUTCOMES);
+
 export interface PhaseEndPayloadV3 {
-  readonly outcome: 'clean' | 'failed' | 'timeout' | 'rate-limited' | 'malformed';
+  readonly outcome: PhaseEndOutcome;
   /**
    * FR-R3-117 — WHICH BASIS judged this Phase: the process's exit status, or the
    * model's own account of its work.
@@ -374,8 +422,10 @@ function projectPhaseEndWarnings(value: unknown): ProjectedWarnings {
 
 function projectPhaseEnd(payload: Record<string, unknown>): PhaseEndPayloadV3 {
   const rawOutcome = stringValue(payload.outcome, 'malformed');
-  const outcome = ['clean', 'failed', 'timeout', 'rate-limited', 'malformed'].includes(rawOutcome)
-    ? rawOutcome
+  // `malformed` is the resolution for a value from outside the vocabulary, not the default
+  // for most of it — see `PHASE_END_OUTCOMES`.
+  const outcome: PhaseEndOutcome = PHASE_END_OUTCOME_SET.has(rawOutcome)
+    ? (rawOutcome as PhaseEndOutcome)
     : 'malformed';
   const explicitMetrics = projectMetrics(payload.metrics);
   const legacyMetrics: Record<string, number> = { ...explicitMetrics };
@@ -403,7 +453,7 @@ function projectPhaseEnd(payload: Record<string, unknown>): PhaseEndPayloadV3 {
   const verdictBasis =
     rawBasis === 'exit-code' || rawBasis === 'model-token' ? rawBasis : undefined;
   return Object.freeze({
-    outcome: outcome as PhaseEndPayloadV3['outcome'],
+    outcome,
     ...(verdictBasis !== undefined ? { verdictBasis } : {}),
     exitCode: payload.exitCode === null ? null : numberValue(payload.exitCode, 0),
     terminationReason: boundedMetadataString(
