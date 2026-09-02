@@ -127,6 +127,32 @@ export class RunSessionRegistry {
    *
    * Removing exactly one entry is the bulkhead (RS-5): a Run that fails takes
    * its own session down and no sibling's.
+   *
+   * ASK TWICE, BECAUSE THE ANSWER CHANGES (2026-09-01)
+   *
+   * The three conditions are read at the moment of the call, and on one route
+   * the call arrived before the answer existed. `driveSession`'s `finally` was
+   * the only caller for a Run started by `admitNew`, and an exception escaping
+   * `RunDriver.drive()` — `checkpoint-unavailable` was the reported one — runs
+   * that `finally` while the persisted record still reads `running`: the
+   * `failed` write belongs to `handleUnexpectedStartFailure`, which
+   * `driveUnderConsent` only reaches once `drive()` has already rejected. So
+   * condition three refused, the session stayed, and nothing asked again.
+   *
+   * That leak is not a leaked object; it is a leaked *slot*. `size` below is
+   * `liveRunCount`, and drain step 4 is `liveRunCount < cap` against a default
+   * cap of one — so one unexpectedly-failed start put the window permanently at
+   * its ceiling, and every drain after it returned at step 4 in silence. An
+   * operator saw Retry and Start Queue do nothing at all, with no refusal in the
+   * log and no audit event, until the window was reloaded.
+   *
+   * Hence the second caller, in `handleUnexpectedStartFailure` beside the
+   * execution-lease release: the lease and the session are the two things a
+   * terminal Run gives back, they are owed at the same moment, and they are both
+   * owed before `scheduleAutoDrain()` so the sweep can see the slot. Being
+   * idempotent and self-guarding is what makes asking twice the fix — a caller
+   * that asks too early is told no and costs nothing, and the one that asks
+   * after the terminal write is the one that gets an answer.
    */
   public disposeIfEnded(queueId: string): boolean {
     const session = this.sessions.get(queueId);

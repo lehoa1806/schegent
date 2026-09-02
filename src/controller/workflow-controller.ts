@@ -653,6 +653,8 @@ export class SchegentWorkflowController {
     if (terminalRun) {
       await this.releaseExecutionLeaseForRun(terminalRun);
     }
+    // The session is the other thing it owes back, and on the same schedule.
+    this.sessions.disposeIfEnded(this.queue.queueIdForTask(feature.id));
     this.scheduleAutoDrain();
   }
 

@@ -432,6 +432,31 @@ describe('SchegentWorkflowController.startNew', () => {
   });
 
   /**
+   * The session a failed start leaves behind, which nothing collected.
+   *
+   * `driveSession`'s `finally` is the only disposal on this route, and it runs
+   * while the persisted Run still reads `running`: the throw escapes `drive()`
+   * *before* `handleUnexpectedStartFailure` writes `failed`, so
+   * `disposeIfEnded` sees a non-terminal Run and keeps the session. Nothing
+   * asks again once the record turns terminal.
+   *
+   * The session is what the concurrency cap counts (`liveRunCount` is
+   * `sessions.size`), and drain step 4 is `liveRunCount < cap` against a
+   * default cap of one. So one unexpectedly-failed start left the window at its
+   * ceiling for the rest of its life, and every later drain — an operator's
+   * Retry, Start Queue, the post-terminal sweep — refused at step 4 in silence.
+   */
+  it('disposes the run session when the runner throws unexpectedly', async () => {
+    runSpy.mockRejectedValueOnce(new Error('parser invariant exploded'));
+
+    const feature = await queue.enqueue('feature description');
+    await controller.startNew(feature, null);
+
+    expect(store.getRun(DEFAULT_QUEUE_ID)!.status).toBe('failed');
+    expect(controller.liveRunCount).toBe(0);
+  });
+
+  /**
    * The durable record of a failed run, which this route did not write until
    * 2026-08-31.
    *
