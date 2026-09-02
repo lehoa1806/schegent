@@ -247,6 +247,43 @@ describe('BackendCapabilityService', () => {
     service.dispose();
   });
 
+  it('never signals a child that failed to spawn, so a missing CLI cannot kill the host process group', async () => {
+    // A FAILED `spawn` -- ENOENT for a backend that is simply not installed, the
+    // ordinary misconfiguration -- still returns a ChildProcess. That child
+    // reports `pid === undefined` with `exitCode` AND `signalCode` both null, so
+    // a guard reading only the latter two treats it as live and signals it.
+    //
+    // Signalling it is not the no-op it looks like. libuv leaves the process
+    // handle's pid at 0 for a child that never started, so `child.kill(sig)`
+    // reaches `kill(0, sig)` -- which POSIX defines as "every process in the
+    // CALLER's process group". That is the extension host and everything sharing
+    // its group, terminated because a configured CLI was absent. Verified against
+    // Node 24: `spawn('claude', ['--help'], { env: {} })` then `child.kill()`
+    // returns `true` and takes the calling process group down with it.
+    vi.useFakeTimers();
+    const child = makeChild();
+    Object.defineProperty(child, 'pid', { value: undefined, configurable: true });
+    const service = makeService({
+      spawnFn: () => child,
+      backendKinds: ['claude'],
+      timeoutSeconds: 1
+    });
+
+    const result = service.probeAvailability('claude');
+    await vi.advanceTimersByTimeAsync(1_000);
+    await expect(result).resolves.toBe(false);
+    expect(child.kill).not.toHaveBeenCalled();
+
+    // The SIGKILL escalation must not arm either -- it carries the same hazard.
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(child.kill).not.toHaveBeenCalled();
+
+    // Nor may `dispose()`, which terminates every still-active child and is the
+    // path a Stage 2 teardown takes while probes are in flight.
+    service.dispose();
+    expect(child.kill).not.toHaveBeenCalled();
+  });
+
   it('caps retained model output at 64 KiB without inventing an Agy fallback model', async () => {
     const spawnFn = vi.fn((_command: string, args: readonly string[]) => {
       const child = makeChild();

@@ -341,6 +341,25 @@ export class BackendCapabilityService implements BackendAvailabilityProbe {
   }
 
   private terminate(child: ChildProcess): void {
+    // A child with no pid NEVER STARTED, and signalling it is not the no-op the
+    // shape of the call suggests. `spawn` failing -- ENOENT for a backend that is
+    // simply not installed, which is the ordinary misconfiguration and exactly
+    // what a probe exists to discover -- still returns a ChildProcess, and that
+    // object reports `pid === undefined` with `exitCode` and `signalCode` both
+    // null. The two checks below therefore read it as live.
+    //
+    // libuv leaves the process handle's pid at 0 for a child that never started,
+    // so `child.kill(sig)` reaches `kill(0, sig)`, which POSIX defines as "every
+    // process in the CALLER's process group" -- the extension host and whatever
+    // shares its group, terminated because a configured CLI was absent. Measured
+    // on Node 24: the call returns `true`, so nothing upstream reads as failed,
+    // and the host is gone.
+    //
+    // This guard belongs ahead of the liveness checks rather than inside them:
+    // `pid` is assigned once at spawn and never changes, so a child that reaches
+    // here without one can never become signallable, and the SIGKILL escalation
+    // armed below would carry the identical hazard 2s later.
+    if (child.pid === undefined) return;
     if (child.exitCode !== null || child.signalCode !== null) return;
     try {
       child.kill('SIGTERM');
