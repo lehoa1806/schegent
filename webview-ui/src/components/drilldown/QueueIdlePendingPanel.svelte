@@ -12,9 +12,14 @@
   // which the composer pins to `DEFAULT_QUEUE_ID`) rendered nothing at all for
   // every other queue, leaving its pending work with no way to start.
   //
-  // `scheduledStartAt` and `migrationNotice` still have no per-queue equivalent
-  // on the wire, so they stay what they have always been — the default queue's
-  // reading — and are shown only on the default queue's own panel.
+  // FR-R3-152 (T1633) — `scheduledStartAt` now has a per-queue equivalent on
+  // the wire (`QueueRuntime.scheduledStartAt`/`scheduledStartSource`), so this
+  // panel reads the selected queue's own runtime for it like every other
+  // per-queue field above, default included: no queue may follow a different
+  // code path than any other to reach this display. `migrationNotice` is
+  // unchanged and stays the default queue's own one-time reading — it is a
+  // one-time migration notice by design (Feature 065), not a per-queue
+  // schedule, and is out of this filing's scope.
   //
   // Gated on `isPrimary` at the mount site in `QueueDetailTier.svelte`, not
   // internally: neither `ScheduledStartIndicator` nor `StartModeChooser`
@@ -42,7 +47,7 @@
   );
   const isDefaultQueue = $derived(queueId === defaultQueueId(snapshot));
   const scheduledStartAt = $derived<number | null>(
-    isDefaultQueue ? snapshot.queue.scheduledStartAt ?? null : null
+    findQueueRuntime(snapshot, queueId)?.scheduledStartAt ?? null
   );
   const migrationNoticeState = $derived<'pending' | 'dismissed' | undefined>(
     isDefaultQueue ? snapshot.queue.migrationNotice : undefined

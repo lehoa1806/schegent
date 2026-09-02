@@ -21,150 +21,28 @@
 // queue's `QueueState`, not the workspace singleton, or a sibling's lifecycle
 // would decide whether this queue's timer was superseded.
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import {
   CATALOG_EMPTY_REASON,
   EMPTY_CATALOG_GUIDANCE
 } from '../../../src/contracts/empty-catalog-guidance';
-import {
-  ScheduledStartCoordinator,
-  type ScheduledStartCoordinatorDeps
-} from '../../../src/services/scheduled-start-coordinator';
-import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import { MAX_QUEUES } from '../../../src/contracts/queue-bounds';
+import type { ScheduledStartCoordinatorDeps } from '../../../src/services/scheduled-start-coordinator';
 import type { QueueState } from '../../../src/queue/feature-request';
-
-const QUEUE_A = DEFAULT_QUEUE_ID;
-const QUEUE_B = '11111111-2222-4333-8444-555555555555';
-const QUEUE_C = '22222222-3333-4444-8555-666666666666';
-
-/** A fake timer handle that records nothing but its own identity. */
-type FakeHandle = { readonly id: number } & NodeJS.Timeout;
-
-interface Harness {
-  readonly coord: ScheduledStartCoordinator;
-  /** Handles handed out by `setTimer`, in creation order. */
-  readonly created: FakeHandle[];
-  /** Handles passed to `clearTimer`, in call order. */
-  readonly cleared: FakeHandle[];
-  /** Runs the callback registered for `handle`, as the event loop would. */
-  runTimer(handle: FakeHandle): Promise<void>;
-  /** Sets one queue's persisted state. */
-  setQueueState(queueId: string, patch: Partial<QueueState>): void;
-  readonly audits: Array<{ eventType: string; payload: Record<string, unknown> }>;
-  readonly fired: string[];
-  now(): number;
-  advance(ms: number): void;
-}
-
-const NOW_BASE = 1_700_000_000_000;
-
-function idlePending(scheduledStartAt: number): QueueState {
-  return {
-    requests: [],
-    inFlightId: null,
-    paused: false,
-    pausedReason: null,
-    updatedAt: NOW_BASE,
-    queueLifecycle: 'idle-pending',
-    pauseSource: null,
-    scheduledStartAt,
-    scheduledStartSource: 'operator-chooser',
-    migrationNotice: null
-  } as unknown as QueueState;
-}
-
-/**
- * `overrides` is Feature 098 (T082): the empty-catalog gate is an optional dep,
- * and every case above is written against a coordinator that does not carry
- * one. Merging at construction keeps those cases exercising exactly the deps
- * they always did.
- */
-function makeHarness(overrides: Partial<ScheduledStartCoordinatorDeps> = {}): Harness {
-  let clock = NOW_BASE;
-  const created: FakeHandle[] = [];
-  const cleared: FakeHandle[] = [];
-  const callbacks = new Map<FakeHandle, () => void>();
-  const states = new Map<string, QueueState>();
-  const audits: Array<{ eventType: string; payload: Record<string, unknown> }> = [];
-  const fired: string[] = [];
-  let nextId = 1;
-
-  const deps: ScheduledStartCoordinatorDeps = {
-    store: {
-      // Feature 092 — addressed. A coordinator that ignored `queueId` here
-      // would let queue A's lifecycle decide queue B's supersession.
-      getQueue: ((queueId: string = DEFAULT_QUEUE_ID) =>
-        states.get(queueId) ??
-        ({
-          requests: [],
-          inFlightId: null,
-          paused: false,
-          pausedReason: null,
-          updatedAt: clock,
-          queueLifecycle: 'active-empty',
-          pauseSource: null,
-          scheduledStartAt: null,
-          scheduledStartSource: null,
-          migrationNotice: null
-        } as unknown as QueueState)) as never,
-      // Feature 092 — `reArm()` can no longer hardcode `'default'`; it has to
-      // ask which queues carry persisted execution state.
-      getQueueStates: (() => Object.fromEntries(states.entries())) as never
-      // FR-R3-002 (T284) — no `updateQueue` double. The coordinator's store
-      // Pick is read-only now that the lock-unavailable branch retains the
-      // persisted deadline instead of erasing it, so a writer here would be a
-      // seam the subject cannot reach.
-    },
-    auditWriter: {
-      append: async (entry: { eventType: string; payload: Record<string, unknown> }) => {
-        audits.push({ eventType: entry.eventType, payload: entry.payload });
-      }
-    } as never,
-    logger: { warn: vi.fn() } as never,
-    onFire: (queueId: string) => {
-      fired.push(queueId);
-    },
-    now: () => clock,
-    setTimer: (fn: () => void, _ms: number) => {
-      const handle = { id: nextId++ } as FakeHandle;
-      created.push(handle);
-      callbacks.set(handle, fn);
-      return handle;
-    },
-    clearTimer: (handle: NodeJS.Timeout) => {
-      cleared.push(handle as FakeHandle);
-      callbacks.delete(handle as FakeHandle);
-    }
-  };
-
-  const coord = new ScheduledStartCoordinator({ ...deps, ...overrides });
-
-  return {
-    coord,
-    created,
-    cleared,
-    async runTimer(handle: FakeHandle): Promise<void> {
-      const cb = callbacks.get(handle);
-      expect(cb, `no callback registered for handle ${handle.id}`).toBeDefined();
-      cb!();
-      // `fire()` is dispatched with `void`; let its microtasks settle.
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-    },
-    setQueueState(queueId: string, patch: Partial<QueueState>): void {
-      const base = states.get(queueId) ?? idlePending(NOW_BASE + 60_000);
-      states.set(queueId, { ...base, ...patch } as QueueState);
-    },
-    audits,
-    fired,
-    now: () => clock,
-    advance(ms: number): void {
-      clock += ms;
-    }
-  };
-}
+// FR-R3-152 (T1634) — extracted to `scheduled-start-coordinator-fixture.ts`
+// (no test registrations of its own) so
+// `tests/integration/queue-runtime-schedule-isolation.test.ts` can import
+// `makeHarness` without re-running this file's suite a second time
+// (research.md D7). This remains the one file that decides the fixture's
+// shape; it now imports its own fixture from there too.
+import {
+  makeHarness,
+  NOW_BASE,
+  QUEUE_A,
+  QUEUE_B,
+  QUEUE_C,
+  type Harness
+} from './scheduled-start-coordinator-fixture';
 
 describe('feature 092 (T041) — one timer per queue, not one timer per workspace', () => {
   let h: Harness;

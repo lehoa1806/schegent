@@ -40,15 +40,34 @@ export interface DebugLogEntry {
  * Queue lifecycle discriminator. Single source of truth for whether
  * `AutoDrainCoordinator` may promote the next pending task.
  *
- * - `running`         — `inFlightId !== null`; an in-flight task is draining.
- * - `operator-paused` — operator paused the queue; auto-drain is suppressed.
- * - `idle-pending`    — entered from `active-empty` via an enqueue without an
- *                       explicit start. May carry a scheduled trigger.
- * - `active-empty`    — no in-flight, no operator pause, no pending start
- *                       intent — the steady-state default.
+ * FR-R3-152 (T1630) — the ratified meaning, corrected from a prior version of
+ * this comment that claimed `running ⇒ inFlightId !== null`. That claim was
+ * false: `refreshUnheldLifecycle` (`src/queue/queue-lifecycle-refresh.ts`)
+ * deliberately allows `running` for an unheld queue with pending-only work
+ * and nothing in flight yet — a queue that just finished its last Task with
+ * more pending behind it must keep `running`, not fall to `idle-pending`
+ * (which is held and requires an explicit trigger to leave). The table below
+ * is Queue lifecycle; whether a Run is currently executing is a separate,
+ * non-inferred question answered only by the dedicated run-liveness
+ * projection (`isWorkingARun`) — a lifecycle of `running` never answers it by
+ * itself, and no code may use it as a Run-liveness test.
+ *
+ * - `running`         — not held, and at least one pending or in-flight
+ *                       Task. A live Run is optional while admission,
+ *                       workspace capacity, or an execution lease is pending.
+ * - `operator-paused` — held (operator/cascade/retry-cap policy); auto-drain
+ *                       is suppressed regardless of work.
+ * - `idle-pending`    — held, with pending work, waiting for an explicit
+ *                       operator or scheduled-start trigger. May carry a
+ *                       scheduled trigger, but need not.
+ * - `active-empty`    — not held, and no pending or in-flight Task — the
+ *                       released, empty steady state.
  *
  * Transition graph and lockstep invariants live in
- * [data-model.md §QueueLifecycle](../../specs/065-enqueue-start-separation/data-model.md).
+ * [data-model.md §QueueLifecycle](../../specs/065-enqueue-start-separation/data-model.md)
+ * (see that file's own dated correction entry for the same fix recorded
+ * here), and the fuller narrative in
+ * [phase-task-queue-lifecycle-review.md §QueueLifecycle](../../../docs/architecture/phase-task-queue-lifecycle-review.md).
  */
 export type QueueLifecycle =
   | 'running'

@@ -46,8 +46,8 @@ import {
   type WorkflowStatus
 } from './snapshot';
 import {
-  composeQueueRuntimes,
-  projectStartFailure,
+  composeQueueRuntimes, projectStartFailure,
+  scheduledStartFromQueueState,
   type QueueRunProjection
 } from './queue-runtime-composer';
 
@@ -239,7 +239,6 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
   // `getRequestsForQueue` the per-queue rows. The run-scoped readings attach to
   // the one queue that owns the Run and to no other, so an idle queue publishes
   // an empty runtime instead of borrowing its neighbour's.
-  //
   // Feature 093 (T051, FR-030) — that attribution is now a keyed lookup per
   // queue rather than one Run offered to every queue in turn, which is what
   // makes each queue's Run separately visible. Reading the whole record to
@@ -249,6 +248,7 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     summaries: queueProjection.queues,
     runOf,
     lifecycleOf: (queueId) => store.getQueue(queueId).queueLifecycle,
+    scheduledStartOf: (id) => scheduledStartFromQueueState(store.getQueue(id)),
     requestsOf,
     rowsOf: (queueId) =>
       projectQueueRows(requestsOf(queueId), rowContextFor(queueId, store.getQueue(queueId))),

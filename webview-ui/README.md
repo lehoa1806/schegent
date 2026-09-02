@@ -88,10 +88,11 @@ singleton, so "the" Run is no longer a thing the root can publish:
 - **`queues: readonly QueueRuntime[]`** — one entry per registry entry, in
   position order. Each carries its own `lifecycle`, `phases`,
   `phaseOverrides`, `manualPause`, `phaseBreakpoints`, `pendingCount`,
-  `tasks`, and an `inFlightRun: InFlightRunProjection | null` holding the
-  run-scoped readings (`runId`, `status`, `feature`, `pipeline`,
-  `elapsedMs`, `liveActivity`, `delayedRetry`, `resumeTargetPhaseId`,
-  `outputs`).
+  `tasks`, its own `scheduledStartAt`/`scheduledStartSource` (FR-R3-152 —
+  sourced only from that queue's own persisted entry), and an
+  `inFlightRun: InFlightRunProjection | null` holding the run-scoped readings
+  (`runId`, `status`, `feature`, `pipeline`, `elapsedMs`, `liveActivity`,
+  `delayedRetry`, `resumeTargetPhaseId`, `outputs`).
 - **The v3 top-level per-run singulars were deleted, not deprecated.** There
   is no compatibility shim and no fallback: a webview reading `snapshot.status`
   or `snapshot.phases` fails to compile, which is the point — the compiler
