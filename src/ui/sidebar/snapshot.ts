@@ -610,6 +610,21 @@ export interface QueueRuntime {
    * queue, and `pendingCount` above is the same rows counted.
    */
   readonly tasks: readonly QueueItem[];
+  /**
+   * FR-R3-152 (T1632, FR-005) — this queue's own scheduled-start reading,
+   * sourced only from this queue's persisted entry (`QueueState.scheduledStartAt`
+   * / `scheduledStartSource`). Required-and-nullable like `manualPause` and
+   * `startFailure` above: always present, so a consumer reads it without an
+   * existence guard, and `null` states "no schedule armed" rather than
+   * "unknown." Before this feature, only the top-level `QueueProjection`
+   * (the default queue's own reading) carried these fields; every other
+   * queue's schedule was unprojectable. `scheduledStartAt !== null` on this
+   * runtime implies `lifecycle === 'idle-pending'` on the same runtime — a read
+   * of the write-time lockstep Feature 065 already enforces on `QueueState`,
+   * never re-enforced here.
+   */
+  readonly scheduledStartAt: number | null;
+  readonly scheduledStartSource: ScheduledStartSource | null;
 }
 
 export interface WorkflowSnapshot {

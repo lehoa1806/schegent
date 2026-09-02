@@ -200,7 +200,9 @@ export const workflowSnapshot = {
           "currentPipelineId": "dev-new-feature",
           "hasOnDiskLogs": true
         }
-      ]
+      ],
+      "scheduledStartAt": null,
+      "scheduledStartSource": null
     }
   ],
   "queue": {

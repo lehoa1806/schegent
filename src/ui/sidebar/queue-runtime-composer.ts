@@ -109,6 +109,30 @@ export interface QueueRuntimeComposerContext {
    * a claim this module is entitled to make.
    */
   readonly startFailureOf?: (queueId: string) => QueueRuntime['startFailure'];
+  /**
+   * FR-R3-152 (T1632, FR-005) — this queue's own scheduled-start reading.
+   * Mirrors `lifecycleOf`'s shape and call pattern exactly: not optional,
+   * because every `QueueRuntime` must carry the field (unlike `rowsOf`/
+   * `startFailureOf`, there is no "registry not wired" case for a value that
+   * already lives on `QueueState` itself).
+   */
+  readonly scheduledStartOf: (queueId: string) => {
+    readonly at: QueueRuntime['scheduledStartAt'];
+    readonly source: QueueRuntime['scheduledStartSource'];
+  };
+}
+
+/**
+ * FR-R3-152 (T1632, code review) — reads both scheduled-start fields off one
+ * already-fetched `QueueState`, for a `scheduledStartOf` implementation
+ * (`snapshot-composer.ts`) that would otherwise call `store.getQueue(queueId)`
+ * twice just to reach its two sibling fields.
+ */
+export function scheduledStartFromQueueState(source: {
+  readonly scheduledStartAt: QueueRuntime['scheduledStartAt'];
+  readonly scheduledStartSource: QueueRuntime['scheduledStartSource'];
+}): { readonly at: QueueRuntime['scheduledStartAt']; readonly source: QueueRuntime['scheduledStartSource'] } {
+  return { at: source.scheduledStartAt, source: source.scheduledStartSource };
 }
 
 /**
@@ -151,7 +175,11 @@ function emptyRuntime(
   // this shape is empty because the queue owns no Run; the failed start is the
   // one fact about a queue that owns no Run *because* the start failed, so
   // emptying it with the rest would erase exactly the case FR-001 is about.
-  startFailure: QueueRuntime['startFailure']
+  startFailure: QueueRuntime['startFailure'],
+  // FR-R3-152 (T1632) — likewise survives an empty Run projection: a queue's
+  // scheduled start is a fact about the queue, not about a Run it may or may
+  // not own (an idle-pending queue owns none by construction).
+  scheduledStart: { readonly at: QueueRuntime['scheduledStartAt']; readonly source: QueueRuntime['scheduledStartSource'] }
 ): QueueRuntime {
   return Object.freeze({
     queueId: summary.id,
@@ -165,7 +193,9 @@ function emptyRuntime(
     phaseBreakpoints: Object.freeze([]) as QueueRuntime['phaseBreakpoints'],
     startFailure,
     pendingCount,
-    tasks
+    tasks,
+    scheduledStartAt: scheduledStart.at,
+    scheduledStartSource: scheduledStart.source
   });
 }
 
@@ -225,9 +255,10 @@ export function composeQueueRuntimes(ctx: QueueRuntimeComposerContext): readonly
       const lifecycle = ctx.lifecycleOf(summary.id);
       const tasks = Object.freeze((ctx.rowsOf?.(summary.id) ?? []).slice());
       const startFailure = ctx.startFailureOf?.(summary.id) ?? null;
+      const scheduledStart = ctx.scheduledStartOf(summary.id);
       const projection = ctx.runOf(summary.id);
       if (projection === null) {
-        return emptyRuntime(summary, lifecycle, pendingCount, tasks, startFailure);
+        return emptyRuntime(summary, lifecycle, pendingCount, tasks, startFailure, scheduledStart);
       }
       const run = projection.run;
       return Object.freeze({
@@ -245,6 +276,8 @@ export function composeQueueRuntimes(ctx: QueueRuntimeComposerContext): readonly
         manualPause: projectManualPause(run),
         phaseBreakpoints: projectBreakpoints(run),
         startFailure,
+        scheduledStartAt: scheduledStart.at,
+        scheduledStartSource: scheduledStart.source,
         pendingCount,
         tasks
       });

@@ -933,6 +933,15 @@ export interface QueueRuntime {
    * indices are the global address space the reorder handler translates.
    */
   readonly tasks: readonly QueueItem[];
+  /**
+   * FR-R3-152 (T1632, FR-005) — this queue's own scheduled-start reading,
+   * mirroring the host's `QueueRuntime.scheduledStartAt`/`scheduledStartSource`.
+   * Required-and-nullable like `startFailure` above: always present, `null`
+   * means "no schedule armed." `scheduledStartAt !== null` implies
+   * `lifecycle === 'idle-pending'` on this same runtime.
+   */
+  readonly scheduledStartAt: number | null;
+  readonly scheduledStartSource: ScheduledStartSource | null;
 }
 
 export interface WorkflowSnapshot {

@@ -41,8 +41,16 @@ vi.mock('../../../lib/vscode-api', () => ({
  * A `QueueRuntime` carrying nothing but the identity and lifecycle this panel
  * reads. Filler for the rest: the panel's gate is `lifecycle`, and a fixture
  * that populated the run-derived lists would suggest they were consulted.
+ *
+ * FR-R3-152 (T1633) — `scheduledStartAt`/`scheduledStartSource` are the two
+ * fields this feature adds; both default to `null` (no schedule) so every
+ * pre-existing call site that does not pass one keeps its old meaning.
  */
-function runtime(queueId: string, lifecycle: QueueLifecycle): QueueRuntime {
+function runtime(
+  queueId: string,
+  lifecycle: QueueLifecycle,
+  scheduledStartAt: number | null = null
+): QueueRuntime {
   return {
     queueId,
     name: queueId,
@@ -54,7 +62,9 @@ function runtime(queueId: string, lifecycle: QueueLifecycle): QueueRuntime {
     manualPause: null,
     phaseBreakpoints: Object.freeze([]),
     pendingCount: 1,
-    tasks: Object.freeze([])
+    tasks: Object.freeze([]),
+    scheduledStartAt,
+    scheduledStartSource: scheduledStartAt !== null ? 'operator-chooser' : null
   } as unknown as QueueRuntime;
 }
 
@@ -65,8 +75,9 @@ function snapshot(
     readonly migrationNotice?: 'pending' | 'dismissed';
     /**
      * The runtimes the snapshot publishes. Defaults to one entry for the default
-     * queue at `lifecycle`, which is the shape every pre-existing case here
-     * assumed when the panel read `snapshot.queue` instead.
+     * queue at `lifecycle`/`scheduledStartAt`, keeping every pre-existing call
+     * site's shorthand working now that the panel reads the per-queue runtime
+     * instead of `snapshot.queue`.
      */
     readonly queues?: readonly QueueRuntime[];
   } = {}
@@ -78,7 +89,13 @@ function snapshot(
       queueOverrides.queues ??
         (queueOverrides.lifecycle === undefined
           ? []
-          : [runtime(DEFAULT_QUEUE_ID, queueOverrides.lifecycle)])
+          : [
+              runtime(
+                DEFAULT_QUEUE_ID,
+                queueOverrides.lifecycle,
+                queueOverrides.scheduledStartAt ?? null
+              )
+            ])
     ),
     queue: {
       inFlight: null,
@@ -360,5 +377,102 @@ describe('QueueIdlePendingPanel — the queue it is shown for (hard rule 56)', (
 
     expect(queryByTestId('idle-pending-scheduled-host')).toBeNull();
     expect(getByTestId('idle-pending-start-queue-button')).not.toBeNull();
+  });
+});
+
+// FR-R3-152 (T1633, FR-005, FR-007) — before this feature, `scheduledStartAt`
+// lived only on `snapshot.queue` (the default queue's own projection), so this
+// panel's `isDefaultQueue` branch was the only way it could ever be non-null.
+// A non-default queue's own armed schedule was unprojectable and this panel
+// rendered the plain "Start queue" button for it regardless of what was
+// actually armed. These cases assert the fix: every queue's own
+// `QueueRuntime.scheduledStartAt` drives its own panel, default included.
+describe('QueueIdlePendingPanel — per-queue scheduled start (FR-R3-152)', () => {
+  it('renders a non-default queue\'s own scheduled start, not the default queue\'s', () => {
+    const nonDefaultDeadline = Date.parse('2026-09-05T08:00:00.000Z');
+    const { getByTestId, queryByTestId } = render(QueueIdlePendingPanel, {
+      props: {
+        queueId: OTHER_QUEUE_ID,
+        snapshot: snapshot({
+          // The default queue's own top-level projection is deliberately left
+          // unscheduled here — if the panel were still reading `snapshot.queue`
+          // this case would render the "Start queue" button, not the indicator.
+          lifecycle: 'idle-pending',
+          queues: [
+            runtime(DEFAULT_QUEUE_ID, 'idle-pending'),
+            runtime(OTHER_QUEUE_ID, 'idle-pending', nonDefaultDeadline)
+          ]
+        })
+      }
+    });
+
+    expect(getByTestId('idle-pending-scheduled-host')).not.toBeNull();
+    expect(queryByTestId('idle-pending-start-queue-button')).toBeNull();
+    expect(getByTestId('scheduled-start-fire-time').textContent).toContain('2026-09-05');
+  });
+
+  it("renders the default queue's own schedule through the same path as any other queue", () => {
+    const defaultDeadline = Date.parse('2026-09-06T09:00:00.000Z');
+    const { getByTestId } = render(QueueIdlePendingPanel, {
+      props: {
+        queueId: DEFAULT_QUEUE_ID,
+        snapshot: snapshot({
+          lifecycle: 'idle-pending',
+          // Deliberately empty: `snapshot.queue.scheduledStartAt` must not be
+          // the source of truth for the default queue any more than for any
+          // other. Only the per-queue `queues[]` entry carries it.
+          scheduledStartAt: null,
+          queues: [runtime(DEFAULT_QUEUE_ID, 'idle-pending', defaultDeadline)]
+        })
+      }
+    });
+
+    expect(getByTestId('idle-pending-scheduled-host')).not.toBeNull();
+    expect(getByTestId('scheduled-start-fire-time').textContent).toContain('2026-09-06');
+  });
+
+  it('switching the selected queue switches which schedule is rendered, without reading snapshot.queue', () => {
+    const firstDeadline = Date.parse('2026-09-07T10:00:00.000Z');
+    const secondDeadline = Date.parse('2026-09-08T11:00:00.000Z');
+    const snap = snapshot({
+      lifecycle: 'idle-pending',
+      queues: [
+        runtime(DEFAULT_QUEUE_ID, 'idle-pending', firstDeadline),
+        runtime(OTHER_QUEUE_ID, 'idle-pending', secondDeadline)
+      ]
+    });
+
+    const { getByTestId, rerender } = render(QueueIdlePendingPanel, {
+      props: { queueId: DEFAULT_QUEUE_ID, snapshot: snap }
+    });
+    expect(getByTestId('scheduled-start-fire-time').textContent).toContain('2026-09-07');
+
+    // Same snapshot, different selection — the panel must switch to the newly
+    // selected queue's own value, not retain the previous selection's.
+    void rerender({ queueId: OTHER_QUEUE_ID, snapshot: snap });
+    expect(getByTestId('scheduled-start-fire-time').textContent).toContain('2026-09-08');
+  });
+
+  it("names the selected non-default queue on Cancel, Change, and Start-now, never the default's id", async () => {
+    const { getByTestId } = render(QueueIdlePendingPanel, {
+      props: {
+        queueId: OTHER_QUEUE_ID,
+        snapshot: snapshot({
+          lifecycle: 'idle-pending',
+          queues: [
+            runtime(DEFAULT_QUEUE_ID, 'idle-pending'),
+            runtime(OTHER_QUEUE_ID, 'idle-pending', Date.parse('2026-09-09T12:00:00.000Z'))
+          ]
+        })
+      }
+    });
+
+    await fireEvent.click(getByTestId('scheduled-start-cancel'));
+
+    expect(postCommandSpy).toHaveBeenCalledTimes(1);
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_START_QUEUE, {
+      queueId: OTHER_QUEUE_ID,
+      startIntent: { startMode: 'cancel-schedule', source: 'operator-restart' }
+    });
   });
 });

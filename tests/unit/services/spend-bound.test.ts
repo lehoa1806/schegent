@@ -353,6 +353,7 @@ describe('the pause reaches the operator surface it was written for', () => {
         plannedTotal: null
       }),
       lifecycleOf: () => 'active-empty',
+      scheduledStartOf: () => ({ at: null, source: null }),
       requestsOf: () => []
     } as never);
 
