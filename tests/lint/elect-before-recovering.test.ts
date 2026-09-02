@@ -87,7 +87,15 @@ const RECOVERY_LANDMARKS = [
   // FR-R3-136 — the fourth, present and gated since feature 093 but unlisted
   // until now, which is what made the missing count assertion consequential
   // rather than merely untidy.
-  'resumePersistedRuns({'
+  'resumePersistedRuns({',
+  // Bug "there is no way to start a pending task" (2026-09-02), second finding —
+  // the fifth. A pending row the previous host left behind is recovery in the
+  // same sense as the four above: it belongs to the window that won the
+  // election, and a non-primary window that swept it would start a second Run on
+  // a queue the primary owns, which is the two-spawn defect this whole gate
+  // exists to prevent. Listed here on arrival, which `GATE_COUNT` now makes
+  // mandatory rather than optional.
+  'controller.scheduleAutoDrain()'
 ] as const;
 
 /** How far back a landmark's gate condition may sit, in stripped-source chars. */

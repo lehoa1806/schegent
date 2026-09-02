@@ -81,6 +81,9 @@ function recorder(options: { trusted: boolean; acquired?: boolean }): Recorder {
       },
       resumeExisting: () => {
         note('controller.resumeExisting', undefined);
+      },
+      scheduleAutoDrain: () => {
+        note('controller.scheduleAutoDrain', undefined);
       }
     },
     watchdog: {
@@ -144,15 +147,17 @@ const EVERY_ACT = Object.freeze([
   'scheduledStartCoordinator.reArm',
   'watchdog.reattachOnActivation',
   'controller.resumeExistingFromActivation',
-  'store.getRunMap'
+  'store.getRunMap',
+  'controller.scheduleAutoDrain'
 ]);
 
-/** The four FR-R3-070 installers, gated on the election rather than on trust. */
+/** The five FR-R3-070 installers, gated on the election rather than on trust. */
 const PRIMACY_GATED = Object.freeze([
   'scheduledStartCoordinator.reArm',
   'watchdog.reattachOnActivation',
   'controller.resumeExistingFromActivation',
-  'store.getRunMap'
+  'store.getRunMap',
+  'controller.scheduleAutoDrain'
 ]);
 
 describe('stage 2 producers: nothing happens in an untrusted window', () => {
@@ -199,6 +204,43 @@ describe('stage 2 producers: nothing happens in an untrusted window', () => {
     );
     expect(r.calls.indexOf('refreshCatalog')).toBeLessThan(
       r.calls.indexOf('scheduledStartCoordinator.reArm')
+    );
+  });
+
+  it('sweeps every queue for drainable work, after the recovery installers', async () => {
+    // Bug "there is no way to start a pending task" (2026-09-02), second finding.
+    //
+    // The drain is edge-triggered — nothing polls — so every transition to
+    // `pending` needs a call site that asks for one. Two producers of pending
+    // rows have no call site to put a trigger in: `queue-state-migrator.ts`
+    // demotes rows a crashed host left `in-flight`, during state load, before a
+    // controller exists; and a queue whose drain was refused mid-session (at the
+    // concurrency ceiling, or by a lost execution lease) was never re-asked.
+    // `pending-transition-drain-trigger.test.ts` excuses the migrator on the
+    // recorded grounds that "the drain that picks these up is the one activation
+    // performs once the controller is up" — this is that drain, and until it
+    // existed the excuse named nothing and the rows survived every restart.
+    //
+    // LAST, and that ordering is the assertion. `replayTerminalTransitions`
+    // finishes Runs whose completion was journalled but not projected, and the
+    // three installers above re-arm or resume the Runs a live queue already
+    // owns. A sweep that ran before them would read a queue as busy on a Run
+    // that had already ended, or start a second Run on a queue about to resume
+    // its own — so this asks last, once the picture is settled.
+    const r = recorder({ trusted: true });
+
+    await createStage2Producers(r.deps).run();
+
+    expect(r.calls).toContain('controller.scheduleAutoDrain');
+    expect(r.calls.filter((c) => c === 'controller.scheduleAutoDrain')).toHaveLength(1);
+    expect(r.calls.indexOf('runSafety.replayTerminalTransitions')).toBeLessThan(
+      r.calls.indexOf('controller.scheduleAutoDrain')
+    );
+    expect(r.calls.indexOf('controller.resumeExistingFromActivation')).toBeLessThan(
+      r.calls.indexOf('controller.scheduleAutoDrain')
+    );
+    expect(r.calls.indexOf('store.getRunMap')).toBeLessThan(
+      r.calls.indexOf('controller.scheduleAutoDrain')
     );
   });
 

@@ -669,7 +669,7 @@ export class SchegentWorkflowController {
    * reaches next, not to the queue that just finished. So the post-terminal
    * drain sweeps the registry rather than re-draining one queue.
    */
-  private scheduleAutoDrain(): void {
+  public scheduleAutoDrain(): void {
     void this.autoDrainCoordinator.drainAll().catch((err) =>
       this.logger.warn(`auto-drain failed: ${(err as Error).message}`)
     );

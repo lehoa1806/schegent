@@ -37,6 +37,19 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
 const SRC_ROOT = resolve(REPO_ROOT, 'src');
 const UI_WIRING = resolve(SRC_ROOT, 'activation', 'ui-wiring.ts');
 
+/**
+ * Where the drain that has no command to hang off it lives, and the call that
+ * performs it. Held by name because the `commandId: null` entries below cite it:
+ * a rename that leaves those reasons pointing at nothing fails here rather than
+ * quietly restoring the gap.
+ *
+ * `elect-before-recovering.test.ts` holds the same call to the ordering and the
+ * primacy gate; this one holds only that it exists, which is the half the
+ * pending-writer table depends on.
+ */
+const ACTIVATION_PRODUCERS = resolve(SRC_ROOT, 'activation', 'stage2-producers.ts');
+const ACTIVATION_DRAIN = 'controller.scheduleAutoDrain()';
+
 // The literal that puts a Task into the state only a drain can leave.
 const PENDING_WRITE = "status: 'pending'";
 
@@ -191,6 +204,33 @@ describe('Lifecycle round-check finding A — a pending transition must trigger 
       `These registrations call drainQueuedWork() with no queue, which sweeps the ` +
         `default queue and silently skips a Task on any other one:\n${bare.join('\n')}`
     ).toEqual([]);
+  });
+
+  it('performs the activation sweep the null-registration entries rely on', () => {
+    // DIRECTION 3, added by the bug "there is no way to start a pending task"
+    // (2026-09-02). The migrator's entry above excused itself on the grounds
+    // that "the drain that picks these up is the one activation performs once
+    // the controller is up". No such drain existed. Rows a crashed host left
+    // `in-flight`, demoted to `pending` during state load, were therefore
+    // drained by nothing, and because the coordinator is edge-triggered the
+    // wedge survived every subsequent restart — the operator restarted the
+    // window, which is the one remedy that looks like it should work.
+    //
+    // This is the assertion that excuse always needed. An entry may only claim
+    // "activation drains it" while activation actually does, so deleting the
+    // sweep fails here instead of silently re-stranding the rows.
+    const producers = readFileSync(ACTIVATION_PRODUCERS, 'utf8');
+    expect(
+      producers.includes(ACTIVATION_DRAIN),
+      `${relativize(ACTIVATION_PRODUCERS)} must call ${ACTIVATION_DRAIN}. The ` +
+        `\`commandId: null\` entries in PENDING_WRITERS carry no trigger of their own ` +
+        `because they name this sweep as the one that collects them; without it a row ` +
+        `demoted from in-flight during state load is drained by nothing and no restart ` +
+        `recovers it.`
+    ).toBe(true);
+    // Non-vacuity for the citation itself: at least one entry must actually be
+    // relying on it, or this test is holding the codebase to a promise nobody made.
+    expect(PENDING_WRITERS.some((w) => w.commandId === null)).toBe(true);
   });
 
   it('records a substantive reason for every classification', () => {

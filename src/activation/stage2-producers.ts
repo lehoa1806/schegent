@@ -67,7 +67,7 @@ export interface Stage2ProducerDeps {
   readonly lock: WorkspaceLockManager;
   readonly controller: Pick<
     SchegentWorkflowController,
-    'resumeExistingFromActivation' | 'resumeExisting'
+    'resumeExistingFromActivation' | 'resumeExisting' | 'scheduleAutoDrain'
   >;
   readonly watchdog: Pick<CreditWatchdog, 'reattachOnActivation'>;
   readonly scheduledStartCoordinator: Pick<ScheduledStartCoordinator, 'reArm'>;
@@ -259,6 +259,57 @@ export function createStage2Producers(deps: Stage2ProducerDeps): Stage2Producers
       });
     } else {
       logger.info('persisted-run resume skipped: window is not primary');
+    }
+
+    // Bug "there is no way to start a pending task" (2026-09-02), second finding
+    // — the drain nothing performed.
+    //
+    // `AutoDrainCoordinator` is edge-triggered: every transition to `pending`
+    // has to be followed by a call site asking for a drain, and two producers of
+    // pending rows have no call site to put one in. `queue-state-migrator.ts`
+    // demotes rows a crashed host left `in-flight`, during state load, before a
+    // controller exists to drain with. And a queue whose drain was declined
+    // mid-session — at the concurrency ceiling, or on a lost execution lease —
+    // keeps its rows with nothing scheduled to ask again, because the trigger
+    // that would have re-asked is the terminal transition of a Run that no
+    // longer exists. Both survived restarts, since restarting was the one thing
+    // that asked for nothing. `pending-transition-drain-trigger.test.ts` already
+    // excused the migrator on the recorded grounds that "the drain that picks
+    // these up is the one activation performs once the controller is up"; this
+    // is that drain, written now that the claim is checked.
+    //
+    // THE SWEEP IS THE ONE A TERMINAL RUN ALREADY PERFORMS, not a second one.
+    // `scheduleAutoDrain()` is what the controller runs after every Run that
+    // ends: it sweeps the whole registry, because the slot a finished Run frees
+    // belongs to whichever queue the round-robin cursor reaches next. Activation
+    // needs exactly that question asked once, about work no Run's ending will ask
+    // it about. Reusing it rather than adding a registry-wide entry point beside
+    // it keeps one spelling of "sweep for drainable work", and it is why this
+    // fix adds no method to a controller whose size ratchet may only come down.
+    //
+    // HARD RULE 31 IS SATISFIED BY CONSTRUCTION, not by a condition here. That
+    // sweep delegates to `drainAll()`, which reads no lifecycle value and
+    // pre-filters on none; the `idle-pending` refusal remains step 1 of
+    // `drainQueue`, the single enforcement site hard rule 32 requires. So this
+    // starts work only on queues in the unheld lifecycles — the ones whose
+    // meaning is "this drains automatically" — and an `idle-pending` or
+    // `operator-paused` queue is visited and declines, exactly as on the
+    // post-terminal sweep.
+    //
+    // LAST, AND PRIMACY-GATED. Last because the picture has to be settled first:
+    // `replayTerminalTransitions` finishes Runs whose completion was journalled
+    // but not projected, and the three installers above resume or re-arm the
+    // Runs a queue already owns. A sweep ahead of them would read a queue as
+    // busy on a Run that had already ended, or start a second Run on a queue
+    // about to resume its own. Gated because starting a Run is the primary's
+    // act — an ungated sweep here is precisely the two-processes-one-checkout
+    // defect FR-R3-070 removed. Not awaited, and not wrapped: the method returns
+    // void and logs its own failure through the controller's sanitized logger,
+    // which is the same handling every other caller of it gets.
+    if (lockResult.acquired) {
+      controller.scheduleAutoDrain();
+    } else {
+      logger.info('activation drain sweep skipped: window is not primary');
     }
   };
 
