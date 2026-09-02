@@ -209,7 +209,18 @@ export async function appendPhaseLogAudit(
   }
   try {
     await ctx.deps.audit.append({
-      runId: selection.taskId,
+      // The `task:` marker `appendPhaseAudit` uses sixty lines above, for the same reason.
+      // This wrote the bare task id, and an unmarked task id in the `runId` field is
+      // indistinguishable from a run id — so every phase-log event appeared to be filed
+      // against a run that had never existed. The read itself was always correct:
+      // `phase-log-service.ts` resolves taskId -> runId before loading the manifest. Only
+      // the record was wrong, and it is the record an operator reads when reconstructing
+      // what the UI was looking at.
+      //
+      // The marker rather than the resolved run id, because the response carries no run id
+      // and threading one through the IPC contract is a larger change than a wrong label
+      // warrants. `taskId` is in the payload either way.
+      runId: `task:${selection.taskId}`,
       phase: selection.phaseId,
       iteration: typeof iterationResolved === 'number' ? iterationResolved : 0,
       eventType,
