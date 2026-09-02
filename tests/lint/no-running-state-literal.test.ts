@@ -59,6 +59,13 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // substring, never the pinned per-task status discriminator. Moved verbatim
   // out of `src/controller/workflow-controller.ts`, which is already listed.
   'src/controller/manual-retry-override.ts',
+  // FR-R3-151 — the Pause/Resume eligibility check moved here from
+  // `phase-control-service.ts` (already listed below) when this feature
+  // centralized every Phase-control operation behind one classifier: reads
+  // `run.status !== 'running'` to decide whether the Task is in-flight, the
+  // same pinned discriminator the sibling entry below already compares
+  // against, never assigned here.
+  'src/controller/phase-control-decision.ts',
   // P4 extraction — owns phase mutation policy and therefore transitions a
   // resumed/restarted phase back to the canonical running workflow status.
   'src/controller/phase-control-service.ts',

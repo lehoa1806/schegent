@@ -47,6 +47,7 @@ function makeRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
 function makeService(run: WorkflowRun) {
   const setRun = vi.fn(async () => {});
   const appendBreakpoint = vi.fn(async () => {});
+  const appendPhaseControl = vi.fn(async () => {});
   const service = new PhaseControlService({
     store: {
       getRun: vi.fn(() => run),
@@ -68,13 +69,13 @@ function makeService(run: WorkflowRun) {
     cancelActive: vi.fn(),
     resumeExisting: vi.fn(async () => true),
     auditor: {
-      appendPhaseControl: vi.fn(async () => {}),
+      appendPhaseControl,
       emitTaskPaused: vi.fn(async () => {}),
       emitPhaseJumped: vi.fn(async () => {}),
       appendBreakpoint
     }
   } as unknown as ConstructorParameters<typeof PhaseControlService>[0]);
-  return { service, setRun, appendBreakpoint };
+  return { service, setRun, appendBreakpoint, appendPhaseControl };
 }
 
 describe('phase membership without a pipeline snapshot (T022)', () => {
@@ -134,6 +135,304 @@ describe('phase membership without a pipeline snapshot (T022)', () => {
     expect(await service.setPhaseBreakpoint(QUEUE_ID, 'run-1', 'speckit-plan')).toEqual({
       ok: false,
       reason: 'phase-unknown'
+    });
+  });
+});
+
+// FR-R3-151 — table-driven eligibility matrix over the operation/source-state
+// space in spec.md §User Story 1 (T1624). Every row asserts both the
+// accept/refuse outcome and, for refused rows, that nothing was written:
+// `store.setRun`, `appendPhaseControl`, and `appendBreakpoint` are all
+// asserted un-called. This is deliberately over `PhaseControlService`'s own
+// public methods, not `decidePhaseControl` directly (see
+// phase-control-decision.test.ts for the classifier's own unit tests) — the
+// point of this suite is to prove every method actually consults the
+// classifier before writing, not merely that the classifier itself is
+// correct.
+const PIPELINE = {
+  id: 'abc-flow',
+  name: 'Alpha Beta Gamma',
+  phases: [
+    { id: 'alpha', name: 'Alpha', instruction: 'a' },
+    { id: 'beta', name: 'Beta', instruction: 'b' },
+    { id: 'gamma', name: 'Gamma', instruction: 'g' }
+  ]
+} as unknown as WorkflowRun['pipeline'];
+
+// alpha: completed; beta: active (currentPhase); gamma: future, no override.
+function makeThreePhaseRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
+  return makeRun({
+    pipeline: PIPELINE,
+    currentPhase: 'beta',
+    phasesCompleted: [
+      {
+        phase: 'alpha',
+        iteration: 1,
+        startedAt: 0,
+        endedAt: 1,
+        result: 'clean',
+        terminationReason: 'error',
+        exitCode: 0,
+        stdoutSummary: '',
+        stderrSummary: '',
+        auditEntryId: null
+      }
+    ] as unknown as WorkflowRun['phasesCompleted'],
+    ...overrides
+  } as Partial<WorkflowRun>);
+}
+
+async function expectZeroWrites(
+  mocks: ReturnType<typeof makeService>,
+  act: () => Promise<unknown>
+): Promise<void> {
+  await act();
+  expect(mocks.setRun).not.toHaveBeenCalled();
+  expect(mocks.appendPhaseControl).not.toHaveBeenCalled();
+  expect(mocks.appendBreakpoint).not.toHaveBeenCalled();
+}
+
+describe('Phase control eligibility matrix (FR-R3-151, T1624)', () => {
+  describe('Restart Phase', () => {
+    it('refuses a terminal Run (completed) even though a Run record exists (FR-002, SC-002)', async () => {
+      const run = makeThreePhaseRun({ status: 'completed' });
+      const mocks = makeService(run);
+      await expectZeroWrites(mocks, async () => {
+        expect(await mocks.service.restartActivePhase(QUEUE_ID)).toEqual({
+          ok: false,
+          reason: 'run-terminal'
+        });
+      });
+    });
+
+    it('refuses a terminal Run (canceled) — closes the confirmed defect (spec §1, US1 Scenario 1)', async () => {
+      const run = makeThreePhaseRun({ status: 'canceled' });
+      const mocks = makeService(run);
+      await expectZeroWrites(mocks, async () => {
+        expect(await mocks.service.restartActivePhase(QUEUE_ID)).toEqual({
+          ok: false,
+          reason: 'run-terminal'
+        });
+      });
+      // FR-009 regression guard: this refusal is driven solely by run.status
+      // via the shared classifier — there is no separate "just came from a
+      // canceled-task fresh-Run restart" bypass anywhere in this path, so
+      // completing that distinct Feature 017 operation cannot grant
+      // permission to restart a Phase inside a Run this terminal.
+    });
+
+    it('allows Restart on an operable Run (failed, no pending retry) — failed is not terminal (workflow-run.ts isOperableRunStatus)', async () => {
+      const run = makeThreePhaseRun({ status: 'failed', pendingRetryAt: null });
+      const { service, setRun } = makeService(run);
+      expect(await service.restartActivePhase(QUEUE_ID)).toEqual({ ok: true });
+      expect(setRun).toHaveBeenCalledTimes(1);
+    });
+
+    it('allows Restart on a manually paused, operable Run', async () => {
+      const run = makeThreePhaseRun({ status: 'running', manualPauseAt: Date.now() });
+      const { service, setRun } = makeService(run);
+      expect(await service.restartActivePhase(QUEUE_ID)).toEqual({ ok: true });
+      expect(setRun).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('Skip', () => {
+    it('refuses a Phase id that is not the current active Phase (FR-004; Edge Cases)', async () => {
+      const run = makeThreePhaseRun();
+      const mocks = makeService(run);
+      await expectZeroWrites(mocks, async () => {
+        expect(await mocks.service.skipPhase(QUEUE_ID, 'gamma')).toEqual({
+          ok: false,
+          reason: 'phase-not-active'
+        });
+      });
+    });
+
+    it('refuses an unknown Phase id before checking activeness (FR-018)', async () => {
+      const run = makeThreePhaseRun();
+      const mocks = makeService(run);
+      await expectZeroWrites(mocks, async () => {
+        expect(await mocks.service.skipPhase(QUEUE_ID, 'not-a-phase')).toEqual({
+          ok: false,
+          reason: 'phase-id-not-in-pipeline-snapshot'
+        });
+      });
+    });
+
+    it('refuses a terminal Run (canceled) even though its currentPhase still names a real Phase (FR-004 — same "wrong-state" class FR-002 closed for Restart)', async () => {
+      // A canceled Run's `currentPhase` is left unchanged by cancellation
+      // (unlike a completed Run's, which moves to a sentinel), so Skip's
+      // phase-currency check alone would not have caught this on its own.
+      const run = makeThreePhaseRun({ status: 'canceled' });
+      const mocks = makeService(run);
+      await expectZeroWrites(mocks, async () => {
+        expect(await mocks.service.skipPhase(QUEUE_ID, 'beta')).toEqual({
+          ok: false,
+          reason: 'run-terminal'
+        });
+      });
+    });
+
+    it('refuses a terminal Run (completed)', async () => {
+      const run = makeThreePhaseRun({ status: 'completed' });
+      const mocks = makeService(run);
+      await expectZeroWrites(mocks, async () => {
+        expect(await mocks.service.skipPhase(QUEUE_ID, 'beta')).toEqual({
+          ok: false,
+          reason: 'run-terminal'
+        });
+      });
+    });
+
+    it('allows Skip on a failed Run with the target Phase still current — a legitimate skip-to-recover path', async () => {
+      const run = makeThreePhaseRun({ status: 'failed', pendingRetryAt: null });
+      const { service, setRun } = makeService(run);
+      expect(await service.skipPhase(QUEUE_ID, 'beta')).toEqual({ ok: true });
+      expect(setRun).toHaveBeenCalled();
+    });
+
+    it('allows Skip on the current active Phase', async () => {
+      const run = makeThreePhaseRun({ status: 'running' });
+      const { service, setRun } = makeService(run);
+      expect(await service.skipPhase(QUEUE_ID, 'beta')).toEqual({ ok: true });
+      expect(setRun).toHaveBeenCalled();
+    });
+  });
+
+  describe('Disable', () => {
+    it('refuses the active Phase — already started (FR-005; closes the confirmed defect)', async () => {
+      const run = makeThreePhaseRun();
+      const mocks = makeService(run);
+      await expectZeroWrites(mocks, async () => {
+        expect(await mocks.service.disablePhase(QUEUE_ID, 'beta')).toEqual({
+          ok: false,
+          reason: 'phase-already-started'
+        });
+      });
+    });
+
+    it('refuses a completed Phase — already started (FR-005)', async () => {
+      const run = makeThreePhaseRun();
+      const mocks = makeService(run);
+      await expectZeroWrites(mocks, async () => {
+        expect(await mocks.service.disablePhase(QUEUE_ID, 'alpha')).toEqual({
+          ok: false,
+          reason: 'phase-already-started'
+        });
+      });
+    });
+
+    it('allows Disable on a future Phase', async () => {
+      const run = makeThreePhaseRun();
+      const { service, setRun } = makeService(run);
+      expect(await service.disablePhase(QUEUE_ID, 'gamma')).toEqual({ ok: true });
+      expect(setRun).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('Enable', () => {
+    it('refuses a future Phase with no override (FR-006; US1 Scenario 3)', async () => {
+      const run = makeThreePhaseRun();
+      const mocks = makeService(run);
+      await expectZeroWrites(mocks, async () => {
+        expect(await mocks.service.enablePhase(QUEUE_ID, 'gamma')).toEqual({
+          ok: false,
+          reason: 'no-disabled-override'
+        });
+      });
+    });
+
+    it('refuses a future Phase whose override is not "disabled" (FR-006 — "any override exists" is the confirmed defect)', async () => {
+      const run = makeThreePhaseRun({
+        phaseOverrides: [{ phaseId: 'gamma', action: 'skipped', setAt: 0, actor: 'operator' }]
+      });
+      const mocks = makeService(run);
+      await expectZeroWrites(mocks, async () => {
+        expect(await mocks.service.enablePhase(QUEUE_ID, 'gamma')).toEqual({
+          ok: false,
+          reason: 'no-disabled-override'
+        });
+      });
+    });
+
+    it('refuses a disabled override on a Phase that is no longer future (FR-006 — "not both future and disabled")', async () => {
+      const run = makeThreePhaseRun({
+        phaseOverrides: [{ phaseId: 'alpha', action: 'disabled', setAt: 0, actor: 'operator' }]
+      });
+      const mocks = makeService(run);
+      await expectZeroWrites(mocks, async () => {
+        expect(await mocks.service.enablePhase(QUEUE_ID, 'alpha')).toEqual({
+          ok: false,
+          reason: 'phase-not-future'
+        });
+      });
+    });
+
+    it('allows Enable on a future Phase carrying a disabled override', async () => {
+      const run = makeThreePhaseRun({
+        phaseOverrides: [{ phaseId: 'gamma', action: 'disabled', setAt: 0, actor: 'operator' }]
+      });
+      const { service, setRun } = makeService(run);
+      expect(await service.enablePhase(QUEUE_ID, 'gamma')).toEqual({ ok: true });
+      expect(setRun).toHaveBeenCalledTimes(1);
+    });
+
+    it('refuses an unknown Phase id (FR-018)', async () => {
+      const run = makeThreePhaseRun();
+      const mocks = makeService(run);
+      await expectZeroWrites(mocks, async () => {
+        expect(await mocks.service.enablePhase(QUEUE_ID, 'not-a-phase')).toEqual({
+          ok: false,
+          reason: 'phase-id-not-in-pipeline-snapshot'
+        });
+      });
+    });
+  });
+
+  describe('Delete stays permissive (Feature 022 non-regression)', () => {
+    it('still allows deleting the active Phase (targeting-only change, not eligibility)', async () => {
+      const run = makeThreePhaseRun();
+      const { service, setRun } = makeService(run);
+      expect(await service.removeTaskPhase(QUEUE_ID, 'task-1', 'beta')).toMatchObject({ ok: true });
+      expect(setRun).toHaveBeenCalledTimes(1);
+    });
+
+    it('still allows deleting a completed Phase', async () => {
+      const run = makeThreePhaseRun();
+      const { service, setRun } = makeService(run);
+      expect(await service.removeTaskPhase(QUEUE_ID, 'task-1', 'alpha')).toMatchObject({ ok: true });
+      expect(setRun).toHaveBeenCalledTimes(1);
+    });
+
+    it('still allows deleting a future Phase', async () => {
+      const run = makeThreePhaseRun();
+      const { service, setRun } = makeService(run);
+      expect(await service.removeTaskPhase(QUEUE_ID, 'task-1', 'gamma')).toMatchObject({ ok: true });
+      expect(setRun).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('Pause / Resume — routed through the classifier without behavior change (FR-004)', () => {
+    it('still refuses Pause with no in-flight Run', async () => {
+      const run = makeThreePhaseRun({ status: 'completed' });
+      const mocks = makeService(run);
+      await expectZeroWrites(mocks, async () => {
+        expect(await mocks.service.pauseActivePhase(QUEUE_ID)).toEqual({
+          ok: false,
+          reason: 'no-run-in-flight'
+        });
+      });
+    });
+
+    it('still refuses Resume when the Run is not paused', async () => {
+      const run = makeThreePhaseRun({ status: 'running', manualPauseAt: null, pendingRetryAt: null });
+      const mocks = makeService(run);
+      await expectZeroWrites(mocks, async () => {
+        expect(await mocks.service.resumeActivePhase(QUEUE_ID)).toEqual({
+          ok: false,
+          reason: 'run-not-paused'
+        });
+      });
     });
   });
 });

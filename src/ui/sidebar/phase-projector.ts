@@ -79,6 +79,24 @@ export function buildPhasesFromRun(run: WorkflowRun | null): PhaseTile[] {
       .map((override) => override.phaseId)
   );
 
+  // FR-R3-151 (FR-012) — a future Phase carrying a disabled override projects
+  // `disabled` as soon as the override is set, not only once the runner
+  // reaches and bypasses it. Applied per-tile, over the tiles array itself
+  // rather than through `phaseOrder`/`phaseIndex` (which resolve one index
+  // per Phase name and so cannot distinguish two same-named occurrences at
+  // different positions): every tile whose name carries a disabled override
+  // defaults to `disabled` here, before the loops below run. The completed-
+  // phase loop still runs after this and is the one that can tell a
+  // disabled-bypass (`disabledPhaseIds` still holds the id when it completes
+  // with `result: 'skipped'`) from an ordinary skip reached and skipped
+  // while active (FR-014) — this default only covers the Phase's the runner
+  // has not reached yet.
+  for (const tile of tiles) {
+    if (disabledPhaseIds.has(tile.name)) {
+      tile.state = 'disabled';
+    }
+  }
+
   for (const completed of run.phasesCompleted) {
     const idx = phaseIndex(completed.phase, phaseOrder);
     if (idx === -1) continue;

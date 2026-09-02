@@ -277,8 +277,45 @@ Workflow graph node, child Run, revision, and continuation position so a later
 node cannot be continued against stale graph state. Conditions are structured
 data rather than evaluated operator-authored source.
 
+**Operator Phase controls are one authoritative state machine (FR-R3-151).**
+`PhaseControlService` is the sole writer for every operator-driven Phase
+mutation — pause, resume, restart, skip, disable, enable, delete, and
+set/clear breakpoint — sitting between `SchegentWorkflowController` (the
+public facade the sidebar commands call) and the store. Before writing
+anything, each of those methods consults `decidePhaseControl`
+(`src/controller/phase-control-decision.ts`), a pure, effect-free classifier
+that reads the target's frozen Run, its current Phase/index, completed-phase
+ledger, pause/retry markers, and Phase overrides, and returns either
+eligibility or one reason from a closed vocabulary — `run-terminal`,
+`phase-not-active`, `phase-already-started`, `phase-not-future`,
+`no-disabled-override`, and the reasons the service already returned before
+this feature. The classifier is the only place this eligibility logic lives;
+a census test (`tests/lint/phase-control-decision-census.test.ts`) fails if a
+future mutation method bypasses it. It reads `run.pipeline` and never writes
+or retargets it — transition-specific writes (the override array, iteration
+reset, audit events, drain/resume triggers) stay in `PhaseControlService`
+after eligibility is established. Delete's own eligibility is deliberately
+unnarrowed by the classifier (any visible Phase state remains a valid
+target, Feature 022 FR-008–FR-013); the classifier's `'delete'` branch is a
+pass-through kept only so Delete is still routed through the shared decision
+point. Restarting a **canceled Task** (`CMD_RESTART_CANCELED_TASK`) is a
+separate, Task-level fresh-Run operation (Feature 017 FR-034) and is not a
+path through this classifier — completing it never grants permission to
+restart a Phase inside a terminal Run.
+
+The sidebar projection follows the same override, not just the completed-
+phase ledger: `ui/sidebar/phase-projector.ts#buildPhasesFromRun` marks a
+future Phase carrying a `disabled` override as `disabled` at tile
+construction, before the runner ever reaches it, rather than only once a
+matching entry lands in `phasesCompleted`. A Phase that instead executed and
+was skipped while active still reads `skipped` from that ledger, so the two
+paths to a bypassed Phase remain visually distinct.
+
 <!-- Source: src/controller/workflow-controller.ts -->
 <!-- Source: src/controller/phase-runner.ts -->
+<!-- Source: src/controller/phase-control-service.ts -->
+<!-- Source: src/controller/phase-control-decision.ts -->
+<!-- Source: src/ui/sidebar/phase-projector.ts -->
 <!-- Source: src/services/run-driver.ts -->
 <!-- Source: src/services/retry-coordinator.ts -->
 <!-- Source: src/services/terminal-transition-coordinator.ts -->

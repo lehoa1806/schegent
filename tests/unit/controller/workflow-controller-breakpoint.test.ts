@@ -246,16 +246,23 @@ describe('SchegentWorkflowController.clearPhaseBreakpoint', () => {
 });
 
 describe('SchegentWorkflowController.setPhaseOverride auto-clears matching breakpoint', () => {
-  it('skipping a phase that has a breakpoint also removes the breakpoint (FR-015)', async () => {
+  // FR-R3-151 — a breakpoint can only ever be set on a future, pending Phase
+  // (`setPhaseBreakpoint` refuses `phase-in-flight`/`phase-completed`), and
+  // Skip is now restricted to the Task's current active Phase (spec.md
+  // FR-004). Those two facts are mutually exclusive: "skip a Phase that has
+  // a breakpoint" can no longer happen, so the auto-clear behavior this
+  // describe block is named for is exercised only by Disable now — this
+  // case became a refusal instead of a positive scenario. Kept, not deleted,
+  // as the regression guard for that boundary.
+  it('refuses to skip a non-active Phase even when it carries a breakpoint', async () => {
     await seedRun({
       phaseBreakpoints: [{ phaseId: 'speckit-implement', setAt: 1, actor: 'operator' }]
     });
     const result = await controller.skipPhase('speckit-implement');
-    expect(result).toEqual({ ok: true });
+    expect(result).toEqual({ ok: false, reason: 'phase-not-active' });
     const run = store.getRun(DEFAULT_QUEUE_ID)!;
-    expect(run.phaseBreakpoints).toHaveLength(0);
-    expect(run.phaseOverrides).toHaveLength(1);
-    expect(run.phaseOverrides[0].action).toBe('skipped');
+    expect(run.phaseBreakpoints).toHaveLength(1);
+    expect(run.phaseOverrides).toHaveLength(0);
   });
 
   it('disabling a phase that has a breakpoint also removes the breakpoint', async () => {

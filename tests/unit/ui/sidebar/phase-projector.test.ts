@@ -277,3 +277,158 @@ describe('the iteration bar follows the definition that makes a phase loop', () 
     });
   });
 });
+
+// FR-R3-151 (FR-012–FR-014, T1627) — a disabled future Phase projects
+// `disabled` immediately, before the runner reaches and bypasses it, and the
+// distinction between a disabled bypass and an ordinary skip is preserved
+// once the runner does reach it.
+describe('a disabled future Phase projects disabled immediately (FR-R3-151)', () => {
+  function makeDisableableRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
+    return {
+      ...makeImportedRun(),
+      currentPhase: 'draft',
+      pipeline: {
+        id: 'operator-flow',
+        name: 'Operator Flow',
+        phases: [
+          { id: 'draft', name: 'Draft', instruction: 'Draft it.' },
+          { id: 'refine', name: 'Refine', instruction: 'Refine it.' },
+          { id: 'ship', name: 'Ship', instruction: 'Ship it.' }
+        ]
+      },
+      ...overrides
+    };
+  }
+
+  it('before-bypass: projects disabled the moment the override is set, with no phasesCompleted entry yet', () => {
+    const run = makeDisableableRun({
+      phaseOverrides: [{ phaseId: 'ship', action: 'disabled', setAt: 1, actor: 'operator' }]
+    });
+
+    const tiles = buildPhasesFromRun(run);
+
+    expect(tiles.find((tile) => tile.name === 'ship')).toMatchObject({ state: 'disabled' });
+    // Unaffected: the active Phase and any other future Phase.
+    expect(tiles.find((tile) => tile.name === 'draft')).toMatchObject({ state: 'active' });
+    expect(tiles.find((tile) => tile.name === 'refine')).toMatchObject({ state: 'not-started' });
+  });
+
+  it('after-bypass: a completed entry with result "skipped" still shows disabled, not skipped, while the override stands', () => {
+    const run = makeDisableableRun({
+      currentPhase: 'ship',
+      phaseOverrides: [{ phaseId: 'refine', action: 'disabled', setAt: 1, actor: 'operator' }],
+      phasesCompleted: [
+        {
+          phase: 'refine',
+          iteration: 1,
+          startedAt: 0,
+          endedAt: 1,
+          result: 'skipped',
+          terminationReason: 'error',
+          exitCode: 0,
+          stdoutSummary: '',
+          stderrSummary: '',
+          auditEntryId: null
+        }
+      ] as unknown as WorkflowRun['phasesCompleted']
+    });
+
+    const tiles = buildPhasesFromRun(run);
+
+    expect(tiles.find((tile) => tile.name === 'refine')).toMatchObject({ state: 'disabled' });
+  });
+
+  it('enabled-again: removing the override returns the tile to not-started and leaves phaseBreakpoints untouched', () => {
+    // Enabling clears the phaseOverrides entry (PhaseControlService#enablePhase);
+    // this asserts the *projection* side of that write, and that the
+    // unrelated breakpoints array on the Run object is not something
+    // buildPhasesFromRun reads or mutates.
+    const runWhileDisabled = makeDisableableRun({
+      phaseOverrides: [{ phaseId: 'ship', action: 'disabled', setAt: 1, actor: 'operator' }],
+      phaseBreakpoints: [{ phaseId: 'ship', setAt: 1, actor: 'operator' }]
+    });
+    expect(buildPhasesFromRun(runWhileDisabled).find((tile) => tile.name === 'ship')).toMatchObject({
+      state: 'disabled'
+    });
+
+    const runAfterEnable = makeDisableableRun({
+      phaseOverrides: [],
+      phaseBreakpoints: [{ phaseId: 'ship', setAt: 1, actor: 'operator' }]
+    });
+    expect(buildPhasesFromRun(runAfterEnable).find((tile) => tile.name === 'ship')).toMatchObject({
+      state: 'not-started'
+    });
+    expect(runAfterEnable.phaseBreakpoints).toEqual([{ phaseId: 'ship', setAt: 1, actor: 'operator' }]);
+  });
+
+  it('an ordinary skip of the active Phase still projects skipped, not disabled', () => {
+    const run = makeDisableableRun({
+      currentPhase: 'refine',
+      phaseOverrides: [],
+      phasesCompleted: [
+        {
+          phase: 'draft',
+          iteration: 1,
+          startedAt: 0,
+          endedAt: 1,
+          result: 'skipped',
+          terminationReason: 'error',
+          exitCode: 0,
+          stdoutSummary: '',
+          stderrSummary: '',
+          auditEntryId: null
+        }
+      ] as unknown as WorkflowRun['phasesCompleted']
+    });
+
+    expect(buildPhasesFromRun(run).find((tile) => tile.name === 'draft')).toMatchObject({
+      state: 'skipped'
+    });
+  });
+
+  it('disabling one Phase does not affect a different, unrelated Phase', () => {
+    const run = makeDisableableRun({
+      phaseOverrides: [{ phaseId: 'ship', action: 'disabled', setAt: 1, actor: 'operator' }]
+    });
+
+    const tiles = buildPhasesFromRun(run);
+
+    expect(tiles.find((tile) => tile.name === 'ship')).toMatchObject({ state: 'disabled' });
+    expect(tiles.find((tile) => tile.name === 'refine')).toMatchObject({ state: 'not-started' });
+  });
+
+  // FR-R3-151 (US3 Acceptance Scenario 4) asks for index-differentiated
+  // disable when two Phases in one Run's Pipeline snapshot share a catalog
+  // id. Documented here rather than silently assumed: `PhaseOverride` (and
+  // `PhaseControlService#disablePhase`) address a Phase by id alone, with no
+  // occurrence index — the same limitation the pre-existing `phaseOrder: Map
+  // <PhaseName, number>` in this file already has, where a repeated name's
+  // Map entry is last-write-wins (`tiles.forEach((tile, idx) =>
+  // phaseOrder.set(tile.name, idx))` keeps only the final index). Given that,
+  // this fix — applied per-tile over the array, not through `phaseOrder` —
+  // marks every tile sharing the disabled id, which is the coherent reading
+  // available from an id-only override: it cannot fabricate an index the
+  // write never carried. True per-occurrence disambiguation would require an
+  // index-bearing `PhaseOverride` and a matching host API, which is a
+  // distinct, larger change outside this fix's scope.
+  it('a repeated catalog Phase id: both occurrences reflect the id-scoped override (documented boundary, not index-scoped)', () => {
+    const run = makeDisableableRun({
+      pipeline: {
+        id: 'operator-flow',
+        name: 'Operator Flow',
+        phases: [
+          { id: 'draft', name: 'Draft', instruction: 'Draft it.' },
+          { id: 'refine', name: 'Refine', instruction: 'Refine it.' },
+          { id: 'refine', name: 'Refine (again)', instruction: 'Refine it again.' }
+        ]
+      },
+      phaseOverrides: [{ phaseId: 'refine', action: 'disabled', setAt: 1, actor: 'operator' }]
+    });
+
+    const tiles = buildPhasesFromRun(run);
+    const refineTiles = tiles.filter((tile) => tile.name === 'refine');
+
+    expect(refineTiles).toHaveLength(2);
+    expect(refineTiles.every((tile) => tile.state === 'disabled')).toBe(true);
+  });
+});

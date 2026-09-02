@@ -199,6 +199,24 @@ right one — the churn is entirely on the host side of the boundary:
   in `PhaseTracker.svelte`, which FR-R3-140 deleted as unreachable, so no
   webview component sends it today — the rule for where it would live is
   unchanged, and only the example is gone.
+- **`PhaseControlMenu.svelte` targets two different props by design
+  (FR-R3-151).** Pause, Resume, Restart, Skip, and Retry-now are inherently
+  about the Task's *current* Phase and always dispatch `currentPhase`,
+  regardless of which tile the operator has clicked. Disable, Enable, and
+  Delete instead dispatch `selectedPhase` — the Feature 028 US3 prop that
+  already carried breakpoint targeting — so an operator who selects a
+  future or completed tile acts on that tile, not silently on whatever is
+  active. A `null` `selectedPhase` disables those three controls; it never
+  falls back to `currentPhase` (that silent fallback was the defect this
+  feature closed). Disable and Enable also grey out unless the selected
+  tile's *projected* state (`selectedPhaseState`, from `phase-projector.ts`)
+  matches the host's eligibility for that operation — future for Disable,
+  disabled-overridden for Enable — since these commands are fire-and-forget
+  (no ack is awaited) and a refusal would otherwise reach nowhere visible.
+  That is button affordance, not enforcement: the host — see
+  `src/controller/phase-control-decision.ts` — is still the sole
+  authoritative gate, and remains correct even if this mirrored check ever
+  drifted from it.
 
 **The aggregate status bar is a host surface, not this app's `StatusBar`.**
 `src/ui/status-bar.ts` owns the VS Code window status bar item and, since 093,
@@ -931,6 +949,14 @@ commands:
   the per-action "Don't ask again" choice into webview-scoped settings.
 
 Both commands are members of `MUTATING_COMMANDS` (primary-host gated).
+
+FR-R3-150 retired `CMD_CLEAR_ALL` as a sidebar-postable command: Clean All now
+posts the queue-scoped `CMD_CLEAR_QUEUE` (`{ queueId }`) instead, and the
+workspace-wide reset above survives only as the Command Palette's
+`schegent.clearAll`. `CMD_CLEAR_COMPLETED` also gained a required `queueId`
+in the same feature. See `docs/reference/api-and-cli.md` for the current
+payload shapes; the two paragraphs above describe feature 063's original
+shape and are not kept current after this.
 
 Every destructive postCommand site flows through the shared confirmation
 helper at
