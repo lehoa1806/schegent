@@ -25,6 +25,7 @@ import {
   REPO_ROOT,
   WEBVIEW_ROOT
 } from './lint-config.mjs';
+import { breakdownDrift, FILES_SHOWN } from './lint-baseline-diff.mjs';
 
 const BASELINE_PATH = path.join(REPO_ROOT, 'tests', 'lint', 'eslint-baseline.json');
 
@@ -111,9 +112,6 @@ function tally(results, cwd) {
 
   return { byRule, fatals };
 }
-
-/** How many files a regression message names before it summarises the rest. */
-const FILES_SHOWN = 10;
 
 /**
  * Which files carry a rule's findings, most first. A regression message used to
@@ -215,13 +213,16 @@ async function main() {
   // message it exists to produce would name the wrong ones — which is worse than
   // naming none, as the `byFile` comment above already records from experience.
   //
-  // WHAT IS AND IS NOT GATED. The comparison below gates the COUNT. The breakdown
-  // is written beside it here, but nothing checks it against a later run, so a
-  // change that moves a finding between two files leaves the total equal and the
-  // breakdown stale with nothing failing. That has happened: the record attributed
-  // one `no-unnecessary-condition` to `src/extension.ts` after the finding had
-  // moved to `src/monitor/cli-transport-sink.ts`. Re-run this with
-  // `--write-baseline` when you move code, not only when a count changes.
+  // WHAT IS GATED. The comparison below gates the COUNT in both directions and,
+  // on the path where the count did not move, the BREAKDOWN as well. It did not
+  // always: the breakdown used to be written here and checked nowhere, so a change
+  // that moved a finding between two files left the total equal and the record
+  // stale with nothing failing. That happened twice — one `no-unnecessary-condition`
+  // attributed to `src/extension.ts` after the finding had moved to
+  // `src/monitor/cli-transport-sink.ts`, and a finding blamed on a visual spec the
+  // run had not touched. The instruction that stood in for a gate ("re-run with
+  // `--write-baseline` when you move code, not only when a count changes") is now
+  // the gate's own failure message, so nobody has to have read this comment.
   if (writeBaseline) {
     const updated = JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf8'));
     let touched = 0;
@@ -294,6 +295,30 @@ async function main() {
           `node scripts/lint.mjs ${treeName} --write-baseline updates the count and its ` +
           `per-file breakdown together, so the two cannot drift.`
       );
+    } else {
+      // FR-R3-088 — an equal count is not a clean bill of health. The record's
+      // per-file breakdown is the evidence a FUTURE regression message cites when
+      // it names the file that grew, and a change that moves a finding from one
+      // file to another leaves the total untouched while making that evidence
+      // false. This is the only path where the drift is invisible in the count, so
+      // it is the only path that has to look at the breakdown.
+      //
+      // A rule with no recorded breakdown for this tree is not failed here: that
+      // is a different defect, and `tests/lint/eslint-baseline.test.ts` already
+      // requires every tree-scoped rule to carry one.
+      const recordedFiles = entry[`${treeName}Files`] ?? null;
+      const drift = recordedFiles ? breakdownDrift(recordedFiles, fileCounts(found)) : null;
+      if (drift !== null) {
+        failures.push(
+          `${ruleId} still totals ${actual} in ${treeName}, but its per-file breakdown no ` +
+            `longer describes this run: findings moved between files. The breakdown is what ` +
+            `the next regression cites to name the file that grew, so a stale one names the ` +
+            `wrong file — worse than naming none. Regenerate it: ` +
+            `node scripts/lint.mjs ${treeName} --write-baseline\n` +
+            `      What moved:\n` +
+            drift
+        );
+      }
     }
     if (showSites && found) {
       for (const site of found.sites) process.stdout.write(`      ${site}\n`);

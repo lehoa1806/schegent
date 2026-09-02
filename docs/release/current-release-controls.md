@@ -32,7 +32,7 @@ node scripts/current-control-facts.mjs --write
 | Independently verifiable build provenance | Not produced. The gate attestation records that a gate ran on the releasing machine; it is a local record, not a signature a third party can verify. |
 | Node version floor | Declared as `^22 \|\| ^24` (floor 22). Not enforced: no executed check reads it, and `.npmrc` does not set `engine-strict`, so a release built on an older Node is refused by nothing. |
 
-The two absence rows are measured over a stated candidate set — the 39 command bodies and files reachable from `npm run release` or living under `scripts/` — so adding a producer to either half changes the row rather than leaving it true by never having looked.
+The two absence rows are measured over a stated candidate set — the 40 command bodies and files reachable from `npm run release` or living under `scripts/` — so adding a producer to either half changes the row rather than leaving it true by never having looked.
 
 <!-- END DERIVED: release-controls -->
 

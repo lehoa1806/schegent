@@ -185,8 +185,9 @@
       "webviewFiles": {
         "src/components/Builder/__tests__/CatalogEmptyState.test.ts": 3,
         "src/components/Builder/__tests__/ChangedFieldSummary.test.ts": 3,
-        "src/components/Builder/__tests__/DefinitionActions.test.ts": 4,
+        "src/components/Builder/__tests__/DefinitionActions.test.ts": 3,
         "src/components/Builder/__tests__/DefinitionHistoryPanel.test.ts": 4,
+        "src/components/Builder/__tests__/DefinitionLifecyclePanel.test.ts": 1,
         "src/components/Builder/__tests__/DefinitionLifecycleRow.test.ts": 1,
         "src/components/Builder/__tests__/document-text-is-inert.test.ts": 1,
         "src/components/Builder/version-body-view.ts": 1,
