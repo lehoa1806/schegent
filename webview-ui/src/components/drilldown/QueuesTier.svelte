@@ -21,7 +21,7 @@
 
   import { postCommand } from '../../lib/vscode-api';
   import { CMD_CREATE_QUEUE } from '../../lib/messages';
-  import { queueLifecycleLabel } from '../../lib/queue-lifecycle-label';
+  import { queueRuntimeLabel } from '../../lib/queue-lifecycle-label';
   import { snapshotStore } from '../../lib/snapshot-store.svelte';
   import QueueConfigModal from '../QueueConfigModal.svelte';
   import type { QueueRuntime } from '../../lib/snapshot-types';
@@ -165,7 +165,7 @@
           <span class="card-head">
             <span class="queue-name">{runtime.name}</span>
             <span class="lifecycle" data-testid="queue-lifecycle-{runtime.queueId}">
-              {queueLifecycleLabel(runtime.lifecycle)}
+              {queueRuntimeLabel(runtime)}
             </span>
           </span>
           <span class="card-body">

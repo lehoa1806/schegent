@@ -15,7 +15,8 @@
 // every lifecycle module feature 065 added is: `'running'` here is the
 // `QueueLifecycle` discriminator, not the pinned per-task status projection.
 
-import type { QueueLifecycle } from './snapshot-types';
+import { isWorkingARun } from './queue-runtime-view';
+import type { QueueLifecycle, QueueRuntime } from './snapshot-types';
 
 const LABELS: Readonly<Record<QueueLifecycle, string>> = Object.freeze({
   running: 'Running',
@@ -26,4 +27,48 @@ const LABELS: Readonly<Record<QueueLifecycle, string>> = Object.freeze({
 
 export function queueLifecycleLabel(lifecycle: QueueLifecycle): string {
   return LABELS[lifecycle];
+}
+
+/**
+ * What an unheld queue with work but no Run is called. Deliberately parallel to
+ * `Active (empty)` above — same first word, because both are unheld and neither
+ * needs the operator's permission to proceed; different parenthetical, because
+ * one has nothing to do and the other has work and is waiting for a drain. And
+ * deliberately NOT `Idle (…)`, which is the held vocabulary: an operator reading
+ * `Idle` should reach for the start affordance, and an operator reading `Active`
+ * should not have to.
+ */
+const UNHELD_WAITING = 'Active (waiting)';
+
+/**
+ * Bug "there is no way to start a pending task" (2026-09-02), first finding — the
+ * label a badge over a live queue should read.
+ *
+ * `queueLifecycleLabel` above names the LIFECYCLE, which is a statement about
+ * whether the drain is allowed to visit this queue, not about whether it is
+ * doing anything. The two coincide often enough that every badge read the
+ * lifecycle and nobody noticed they had asked the wrong question — until a queue
+ * sat at `'running'` with twenty-one rows pending and nothing executing, and the
+ * dashboard said `Running` at it.
+ *
+ * It gets there legitimately. The host writes `'running'` when the operator
+ * starts a queue, as a promise that a start will be attempted, and the attempt is
+ * the caller's next statement; a drain that declines — at the workspace
+ * concurrency ceiling, on an execution lease another window took, on an admission
+ * that threw — writes nothing back, because the promise is still true. The queue
+ * remains one the drain may visit. It just is not being visited right now.
+ *
+ * So the badge asks both questions and says which it means. `isWorkingARun` is
+ * the liveness half, already spelled once in `queue-runtime-view.ts` for the
+ * affordances that had the same conflation: a Run's presence is its record, and
+ * the record outlives the Run.
+ *
+ * Only the unheld-with-work member is refined. A held queue is held whether or
+ * not something executes on it — `operator-paused` with a Run mid-phase is a
+ * queue whose current Run finishes and whose successors wait — so `Paused` and
+ * `Idle (pending)` are already the whole truth and are passed through unchanged.
+ */
+export function queueRuntimeLabel(runtime: QueueRuntime): string {
+  if (runtime.lifecycle === 'running' && !isWorkingARun(runtime)) return UNHELD_WAITING;
+  return queueLifecycleLabel(runtime.lifecycle);
 }

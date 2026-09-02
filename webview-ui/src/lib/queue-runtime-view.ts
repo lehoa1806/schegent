@@ -8,6 +8,7 @@
 // say which queue's, and a queue that owns no Run answers `null` rather than
 // borrowing the neighbour's (FR-053).
 
+import { isTerminalWorkflowStatus } from './snapshot-types';
 import type { QueueRuntime, WorkflowSnapshot } from './snapshot-types';
 
 /**
@@ -52,6 +53,43 @@ export function defaultQueueId(snapshot: SnapshotLike): string {
  */
 export function defaultQueueRuntime(snapshot: SnapshotLike): QueueRuntime | null {
   return findQueueRuntime(snapshot, defaultQueueId(snapshot));
+}
+
+/**
+ * Whether this queue is **working** a Run right now — as distinct from whether it
+ * **owns** one, which is what `inFlightRun !== null` answers and all that it
+ * answers.
+ *
+ * Bug "there is no way to start a pending task" (2026-09-02), second finding.
+ * `QueueRuntime.inFlightRun` is documented as `null` iff the queue owns no Run
+ * (FR-053), and the projection carries a `status` precisely because the Run it
+ * describes may have ended: `RunDetailTier` reads a completed Run's `outputs`
+ * through it, and feature 103's provenance fields are read off it after the fact.
+ * So presence is ownership, never liveness, and a surface that conflates the two
+ * reports a queue as busy for as long as the record survives.
+ *
+ * The cost of the conflation was that a queue with pending rows and a Run that
+ * had failed offered **Pause** instead of **Start Queue**, and since FR-018 makes
+ * the idle-pending panel the only other dispatcher of `CMD_START_QUEUE`, a queue
+ * that was neither operator-paused nor idle-pending had no start affordance
+ * anywhere. Nothing else asks for a drain — there is no activation-time sweep —
+ * so the queue stayed wedged across window restarts.
+ *
+ * Named here rather than derived at each call site so the distinction has one
+ * spelling, and so a caller has to pick which question it is asking.
+ */
+export function isWorkingARun(runtime: QueueRuntime | null | undefined): boolean {
+  const run = runtime?.inFlightRun ?? null;
+  return run !== null && !isTerminalWorkflowStatus(run.status);
+}
+
+/**
+ * Whether this queue owns a Run record at all, ended or not — the reading
+ * `inFlightRun` actually publishes. A reset surface wants this one: a Run that
+ * failed is still a record there is something to clear.
+ */
+export function ownsRun(runtime: QueueRuntime | null | undefined): boolean {
+  return (runtime?.inFlightRun ?? null) !== null;
 }
 
 /**

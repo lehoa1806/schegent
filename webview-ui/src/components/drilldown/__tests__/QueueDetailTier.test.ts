@@ -24,12 +24,13 @@ import {
   CMD_REORDER_TASK,
   CMD_RENAME_QUEUE,
   CMD_RESUME_QUEUE,
-  CMD_START
+  CMD_START,
+  CMD_START_QUEUE
 } from '../../../lib/messages';
 import { buildInFlightRun, buildQueueRuntime } from '../../../lib/__tests__/queue-runtime-fixture';
 import { snapshotStore } from '../../../lib/snapshot-store.svelte';
 import { useConfirm } from '../../../lib/use-confirm';
-import { IDLE_GENERAL_SETTINGS } from '../../../lib/snapshot-types';
+import { IDLE_GENERAL_SETTINGS, TERMINAL_WORKFLOW_STATUSES } from '../../../lib/snapshot-types';
 import type {
   ConnectedRunProjection,
   InFlightRunProjection,
@@ -1044,29 +1045,130 @@ describe('QueueDetailTier — read-only in a non-primary window (FR-065)', () =>
   });
 });
 
-// Feature 097 (T012a) — the idle-pending start affordance now shares this
-// tier's chrome. `QueueIdlePendingPanel` reads the *default* queue's own
-// projection (a pre-existing limitation carried forward unmodified, see the
-// component's own header comment) and carries no isPrimary prop of its own;
-// gating is entirely the mount decision made here.
+// Feature 097 (T012a) — the idle-pending start affordance shares this tier's
+// chrome. It carries no isPrimary prop of its own, so window gating is entirely
+// the mount decision made here; queue gating is the `queueId` this tier passes
+// down. Bug "there is no way to start a pending task": the panel used to read
+// the *default* queue's projection, and the two cases below used to assert that
+// — a queue that could never be started, pinned as passing coverage.
 describe('QueueDetailTier — mounts the idle-pending affordance (T012a)', () => {
-  function idlePendingSnapshot(): WorkflowSnapshot {
+  /** `q-beta` — the queue this tier is mounted for — is the idle-pending one. */
+  function shownQueueIdlePending(): WorkflowSnapshot {
+    return buildSnapshot([], { lifecycle: 'idle-pending' });
+  }
+
+  /** Only the *default* queue is idle-pending; `q-beta` is running. */
+  function otherQueueIdlePending(): WorkflowSnapshot {
     const base = buildSnapshot([]);
     return {
       ...base,
+      queues: Object.freeze([
+        { ...base.queues[0]!, lifecycle: 'idle-pending' },
+        ...base.queues.slice(1)
+      ]),
       queue: { ...base.queue, lifecycle: 'idle-pending', scheduledStartAt: null }
-    } as WorkflowSnapshot;
+    } as unknown as WorkflowSnapshot;
   }
 
-  it('shows the idle-pending start affordance when the default queue is idle-pending', () => {
-    const { getByTestId } = mount(idlePendingSnapshot());
+  it('shows the idle-pending start affordance when the queue on screen is idle-pending', () => {
+    const { getByTestId } = mount(shownQueueIdlePending());
 
     expect(getByTestId('idle-pending-start-queue-button')).not.toBeNull();
   });
 
-  it('withholds the idle-pending affordance in a non-primary window', () => {
-    const { queryByTestId } = mount(idlePendingSnapshot(), { isPrimary: false });
+  it('names the queue on screen when the operator starts it', async () => {
+    const { getByTestId } = mount(shownQueueIdlePending());
+
+    await fireEvent.click(getByTestId('idle-pending-start-queue-button'));
+    await fireEvent.click(getByTestId('start-mode-chooser-now'));
+
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_START_QUEUE, {
+      queueId: 'q-beta',
+      startIntent: { startMode: 'now', source: 'operator-restart' }
+    });
+  });
+
+  it('withholds the affordance when a different queue is the idle-pending one', () => {
+    const { queryByTestId } = mount(otherQueueIdlePending());
 
     expect(queryByTestId('idle-pending-start-queue-button')).toBeNull();
   });
+
+  it('withholds the idle-pending affordance in a non-primary window', () => {
+    const { queryByTestId } = mount(shownQueueIdlePending(), { isPrimary: false });
+
+    expect(queryByTestId('idle-pending-start-queue-button')).toBeNull();
+  });
+});
+
+// Bug "there is no way to start a pending task" (2026-09-02), second finding —
+// `hasInFlight` read `QueueRuntime.inFlightRun !== null` as "this queue is
+// executing". The projection does not mean that: its contract says `null` iff the
+// queue owns *no* Run, so a Run that ended keeps projecting, carrying a terminal
+// status. A queue whose Run failed therefore reported itself busy for as long as
+// the record survived, and `QueueControls` rendered **Pause** where **Start
+// Queue** belonged — leaving pending rows with no operator route to start at all.
+// Observed live: 21 pending Tasks, nothing executing, and a Run that had been
+// `failed` for eight hours.
+//
+// The two questions are now derived separately, so this block asserts both:
+// "is working a Run" (the button) and "owns a Run" (the Clean All reset gate,
+// which must keep counting a stale record as something there is to clean).
+describe('QueueDetailTier — a Run that has ended is not a Run in flight', () => {
+  const pendingRow = () => [task('waiting', { position: 0, status: 'pending' })];
+
+  it.each(TERMINAL_WORKFLOW_STATUSES)(
+    'offers Start Queue when the owned Run has ended as %s and rows are still pending',
+    (status) => {
+      const { getByTestId } = mount(
+        buildSnapshot(pendingRow(), {
+          lifecycle: 'running',
+          inFlightRun: buildInFlightRun({ runId: 'r-ended', status })
+        })
+      );
+
+      expect(getByTestId('dashboard-queue-action').textContent.trim()).toBe('Start Queue');
+    }
+  );
+
+  it.each(['running', 'paused'] as const)(
+    'still offers Pause while the owned Run reads %s',
+    (status) => {
+      const { getByTestId } = mount(
+        buildSnapshot(pendingRow(), {
+          lifecycle: 'running',
+          inFlightRun: buildInFlightRun({ runId: 'r-live', status })
+        })
+      );
+
+      expect(getByTestId('dashboard-queue-action').textContent.trim()).toBe('Pause');
+    }
+  );
+
+  it('starts THIS queue from the recovered affordance', async () => {
+    const { getByTestId } = mount(
+      buildSnapshot(pendingRow(), {
+        lifecycle: 'running',
+        inFlightRun: buildInFlightRun({ runId: 'r-ended', status: 'failed' })
+      })
+    );
+
+    await fireEvent.click(getByTestId('dashboard-queue-action'));
+
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_START_QUEUE, { queueId: 'q-beta' });
+  });
+
+  it.each(TERMINAL_WORKFLOW_STATUSES)(
+    'keeps Clean All enabled when a %s Run record is the only thing left to reset',
+    (status) => {
+      const { getByTestId } = mount(
+        buildSnapshot([], {
+          lifecycle: 'active-empty',
+          inFlightRun: buildInFlightRun({ runId: 'r-ended', status })
+        })
+      );
+
+      expect((getByTestId('dashboard-queue-clean') as HTMLButtonElement).disabled).toBe(false);
+    }
+  );
 });

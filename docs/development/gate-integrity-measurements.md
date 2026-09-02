@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 106
+    vacuity-census-denominator: 108
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **106** |
+| Gates the detector calls **controlled** (the denominator) | **108** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -177,6 +177,32 @@ Driven red by construction, not by revert: an open-coded `p === 'done' ? null : 
 was removed. The revert route existed — seven sites open-coded the rule before the fix — but the probe
 tests the rule the gate states rather than the sites that happened to carry it. The rate stays
 **0.0%** — the entrant was mutated with the rest and did not survive.
+
+**Denominator movement 106 → 107 (2026-09-02, the unaddressed-queue-command bug).** One gate joined.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | `no-unaddressed-queue-command.test.ts` (106 → 107) | Joined. Refuses a webview `postCommand` of a queue-lifecycle command that does not name its queue — the defect behind *"there is no way to start a pending task"*, where five dispatch sites across three components failed to name a queue — one posting no payload at all, four posting a payload without `queueId` — and the host read every one of them as the default queue. It walks `webview-ui/src` with `readdirSync` and asserts `toEqual([])` twice. Two floors, and they guard different emptinesses: the command set is **derived** from `src/contracts/sidebar-ipc.ts` rather than listed, so three anchors are asserted present in the derivation, and the governed dispatch list is asserted non-empty — a reshaped contract or a renamed `postCommand` would otherwise report a clean gate over nothing. A third assertion runs the other direction, refusing an exemption for a command the contract no longer declares, so the one allowlisted entry cannot outlive its reason. |
+
+Driven red before it was recorded: all five dispatch sites were reverted to their pre-fix shapes, two
+of the four assertions failed, and each named the offenders it was written for — the bare
+`postCommand(CMD_START_QUEUE)` and the four payloads carrying a `startIntent` and no queue. That matters more than the floors here, because this
+gate's subject is an **optional** contract field: no type can hold the invariant, since omitting the
+field compiles, and the census has no way to tell a gate that reads an absent key from one that reads
+nothing. The rate stays **0.0%** — the entrant was mutated with the rest and did not survive.
+
+**Denominator movement 107 → 108 (2026-09-02, the queue badge that named a permission).** One gate
+joined, from the same report as the entry above.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | `queue-badge-reads-liveness.test.ts` (107 → 108) | Joined. Confines `queueLifecycleLabel` to the module that declares it and the suite that pins it, so nothing which renders a queue can badge the lifecycle — which states whether the drain may visit the queue — where the operator reads activity. The defect: a queue at lifecycle `running` with twenty-one rows pending and nothing executing, badged **Running**. It walks `webview-ui/src` with `readdirSync` and asserts `toEqual([])`. Two floors, guarding the two different emptinesses this shape has: every allowlist entry is asserted to still contain the symbol, so a rename cannot leave the list permitting a file that no longer participates, and at least one **component** is asserted to call `queueRuntimeLabel`, so deleting both drill-down tiers cannot make the confinement pass for the wrong reason. |
+
+Driven red before it was recorded, and by construction rather than by revert: a one-line probe naming
+`queueLifecycleLabel` was dropped into `webview-ui/src/lib`, the confinement listed it, and the probe
+was removed. The revert route was available too — both tiers named the symbol before the fix — but the
+probe tests the rule the gate states rather than the two call sites that happened to break it. The rate
+stays **0.0%** — the entrant was mutated with the rest and did not survive.
 
 The residual is unchanged and is the note below: the detector reads for scanning **by name**, so the
 next extraction of a walk into a helper will do this again. Nothing gates that.

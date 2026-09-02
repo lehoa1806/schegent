@@ -236,6 +236,15 @@ export type {
   WorkflowCatalogFieldErrorProjection,
   WorkflowStatus
 } from '../../../src/contracts/snapshot-projections.js';
+// Bug "there is no way to start a pending task" (2026-09-02) — a VALUE re-export,
+// from the contract leaf rather than restated here. The webview has to tell a
+// queue that owns a Run from a queue that is working one, and the list of
+// statuses that ends a Run is the host's to define; a mirror copy could drift
+// into disagreeing with the projector that writes the field.
+export {
+  TERMINAL_WORKFLOW_STATUSES,
+  isTerminalWorkflowStatus
+} from '../../../src/contracts/snapshot-projections.js';
 export type {
   BackendRunnerKind
 } from '../../../src/contracts/backend-kinds.js';

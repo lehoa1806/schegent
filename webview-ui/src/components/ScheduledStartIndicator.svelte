@@ -22,15 +22,19 @@
   import { postCommand } from '../lib/vscode-api';
   import { CMD_START_QUEUE } from '../lib/messages';
   import StartModeChooser, { type StartQueueIntent } from './StartModeChooser.svelte';
+  import { findQueueRuntime } from '../lib/queue-runtime-view';
   import { snapshotStore } from '../lib/snapshot-store.svelte';
   import { remoteLifecycleChangeStore } from '../lib/remote-lifecycle-change-store.svelte';
 
   interface Props {
+    /** The queue whose schedule this is — named on every dispatch, so the host
+     *  does not fall back to the default queue (hard rule 56). */
+    readonly queueId: string;
     readonly scheduledStartAt: number;
     readonly collapsed?: boolean;
   }
 
-  const { scheduledStartAt, collapsed = false }: Props = $props();
+  const { queueId, scheduledStartAt, collapsed = false }: Props = $props();
 
   // Subscribe to the appropriate tick stream. Svelte stores are auto-subscribed
   // by referencing `$nowFine` / `$nowCoarse` in derived state.
@@ -44,12 +48,16 @@
 
   let showChooser = $state(false);
 
-  // FR-019a — if the chooser is mounted (operator pressed Change) and the
-  // queue lifecycle transitions OUT of `idle-pending` (e.g. another window
+  // FR-019a — if the chooser is mounted (operator pressed Change) and this
+  // queue's lifecycle transitions OUT of `idle-pending` (e.g. another window
   // committed a state change), silently unmount the chooser and surface the
   // "queue state changed elsewhere" notice. We don't dispatch any IPC.
+  //
+  // Read against `queueId`: `snapshot.queue` is the default queue's projection,
+  // so on any other queue's panel this effect used to fire on a lifecycle the
+  // operator was not looking at and pull the chooser out from under them.
   const queueLifecycleForChooser = $derived(
-    snapshotStore.snapshot?.queue.lifecycle ?? null
+    findQueueRuntime(snapshotStore.snapshot, queueId)?.lifecycle ?? null
   );
   $effect(() => {
     if (
@@ -96,6 +104,7 @@
 
   function onCancel(): void {
     postCommand(CMD_START_QUEUE, {
+      queueId,
       startIntent: {
         startMode: 'cancel-schedule',
         source: 'operator-restart'
@@ -105,6 +114,7 @@
 
   function onStartNow(): void {
     postCommand(CMD_START_QUEUE, {
+      queueId,
       startIntent: {
         startMode: 'now',
         source: 'operator-restart'
@@ -121,7 +131,7 @@
     if (intent === null) return;
     // Chooser already emits a `StartQueueIntent` with
     // `source: 'operator-restart'` (T027 simplification — Feature 065).
-    postCommand(CMD_START_QUEUE, { startIntent: intent } as never);
+    postCommand(CMD_START_QUEUE, { queueId, startIntent: intent } as never);
   }
 </script>
 

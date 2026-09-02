@@ -5,6 +5,13 @@
 
   interface Props {
     isPrimary: boolean;
+    /**
+     * The queue these controls act on. Named on the Start dispatch, because a
+     * `CMD_START_QUEUE` with no `queueId` is read by the host as the default
+     * queue — so an unnamed Start started a queue the operator was not looking
+     * at (hard rule 56).
+     */
+    queueId: string;
     /** True when the queue is paused (manually or cascaded). */
     paused: boolean;
     /** Number of pending tasks in the queue. */
@@ -29,6 +36,7 @@
 
   const {
     isPrimary,
+    queueId,
     paused,
     pendingCount,
     hasInFlight,
@@ -82,7 +90,7 @@
   function onAction(event: MouseEvent): void {
     if (actionDisabled) return;
     if (action === 'start') {
-      postCommand(CMD_START_QUEUE);
+      postCommand(CMD_START_QUEUE, { queueId } as never);
     } else if (action === 'pause') {
       onPause(event);
     } else if (action === 'resume') {

@@ -37,8 +37,13 @@
     CMD_CLEAR_COMPLETED,
     CMD_CLEAR_ALL
   } from '../../lib/messages';
-  import { queueLifecycleLabel } from '../../lib/queue-lifecycle-label';
-  import { defaultQueueId, findQueueRuntime } from '../../lib/queue-runtime-view';
+  import { queueRuntimeLabel } from '../../lib/queue-lifecycle-label';
+  import {
+    defaultQueueId,
+    findQueueRuntime,
+    isWorkingARun,
+    ownsRun
+  } from '../../lib/queue-runtime-view';
   import { confirmAndDeleteQueue, refusalText } from '../../lib/queue-control-ipc';
   import { useConfirm } from '../../lib/use-confirm';
   import { deriveCleanAllContext } from '../../lib/queue-derived';
@@ -90,7 +95,14 @@
   // whereas `lifecycle` and the legacy `QueueProjection.paused` are written
   // atomically together on every pause/resume transition
   // (`queue-manager.ts`).
-  const hasInFlight = $derived((runtime?.inFlightRun ?? null) !== null);
+  //
+  // Bug "there is no way to start a pending task" (2026-09-02) — these were one
+  // derivation answering two questions, and the wrong one for both. `inFlightRun`
+  // is `null` iff the queue owns no Run, so a Run that ended still projects; read
+  // as liveness it reported every queue with a stale record as permanently busy,
+  // and `QueueControls` offered Pause where Start Queue belonged. See
+  // `isWorkingARun` for the whole reading.
+  const hasInFlight = $derived(isWorkingARun(runtime));
   const paused = $derived(runtime?.lifecycle === 'operator-paused');
   const clearDoneDisabled = $derived(completedCount === 0);
   const cleanDisabled = $derived(
@@ -98,7 +110,9 @@
       completedCount === 0 &&
       failedCount === 0 &&
       canceledCount === 0 &&
-      !hasInFlight &&
+      // `ownsRun`, not `hasInFlight`: Clean All clears the active Run record, so a
+      // Run that has ended is still something there is to clean.
+      !ownsRun(runtime) &&
       !paused
   );
 
@@ -252,7 +266,7 @@
       <h1 data-testid="queue-detail-title">{queueName}</h1>
       <p class="meta">
         <span class="lifecycle" data-testid="queue-detail-lifecycle">
-          {runtime === null ? 'Unknown' : queueLifecycleLabel(runtime.lifecycle)}
+          {runtime === null ? 'Unknown' : queueRuntimeLabel(runtime)}
         </span>
         <span class="throughput" data-testid="queue-detail-throughput">
           <span class="count-completed">{completedCount} completed</span>
@@ -287,6 +301,7 @@
         <div class="action-group action-group--controls">
           <QueueControls
             {isPrimary}
+            {queueId}
             {paused}
             {pendingCount}
             {hasInFlight}

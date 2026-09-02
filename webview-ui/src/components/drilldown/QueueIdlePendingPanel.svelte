@@ -2,11 +2,19 @@
   // T012 (FR-014, FR-016, research.md R5) — Mechanism A, relocated from the
   // deleted `QueueListView.svelte` (feature 065) unmodified in logic, then
   // split out of `QueueDetailTier.svelte` by T012a to keep that file under
-  // the repository's 500-line component budget (SC-008). It reads the
-  // default queue's own projection (`snapshot.queue`), exactly as
-  // `QueueListView.svelte` always did: the wire carries no per-queue
-  // equivalent of `scheduledStartAt`/`migrationNotice`, so this is the
-  // default queue's reading regardless of which queue the caller is showing.
+  // the repository's 500-line component budget (SC-008).
+  //
+  // This is the FR-018 surface that owns starting an `idle-pending` queue —
+  // `QueueControls` deliberately suppresses its own Start branch for that
+  // lifecycle — and hard rule 31 forbids anything promoting such a queue
+  // without an operator trigger. So the gate has to be the lifecycle of the
+  // queue on screen: reading the default queue's projection (`snapshot.queue`,
+  // which the composer pins to `DEFAULT_QUEUE_ID`) rendered nothing at all for
+  // every other queue, leaving its pending work with no way to start.
+  //
+  // `scheduledStartAt` and `migrationNotice` still have no per-queue equivalent
+  // on the wire, so they stay what they have always been — the default queue's
+  // reading — and are shown only on the default queue's own panel.
   //
   // Gated on `isPrimary` at the mount site in `QueueDetailTier.svelte`, not
   // internally: neither `ScheduledStartIndicator` nor `StartModeChooser`
@@ -17,33 +25,36 @@
   import StartModeChooser, { type StartQueueIntent } from '../StartModeChooser.svelte';
   import { postCommand } from '../../lib/vscode-api';
   import { CMD_START_QUEUE, CMD_DISMISS_MIGRATION_NOTICE } from '../../lib/messages';
+  import { defaultQueueId, findQueueRuntime } from '../../lib/queue-runtime-view';
   import { remoteLifecycleChangeStore } from '../../lib/remote-lifecycle-change-store.svelte';
   import type { QueueLifecycle, WorkflowSnapshot } from '../../lib/snapshot-types';
 
   interface Props {
     snapshot: WorkflowSnapshot;
+    /** The queue this panel is shown for — the one its Start dispatch names. */
+    queueId: string;
   }
 
-  const { snapshot }: Props = $props();
+  const { snapshot, queueId }: Props = $props();
 
-  const defaultQueueLifecycle = $derived<QueueLifecycle | null>(snapshot.queue.lifecycle ?? null);
-  const scheduledStartAt = $derived<number | null>(snapshot.queue.scheduledStartAt ?? null);
+  const queueLifecycle = $derived<QueueLifecycle | null>(
+    findQueueRuntime(snapshot, queueId)?.lifecycle ?? null
+  );
+  const isDefaultQueue = $derived(queueId === defaultQueueId(snapshot));
+  const scheduledStartAt = $derived<number | null>(
+    isDefaultQueue ? snapshot.queue.scheduledStartAt ?? null : null
+  );
   const migrationNoticeState = $derived<'pending' | 'dismissed' | undefined>(
-    snapshot.queue.migrationNotice
+    isDefaultQueue ? snapshot.queue.migrationNotice : undefined
   );
 
   let showRestartChooser = $state(false);
 
-  // FR-019a — if the restart chooser is mounted and the default queue's
-  // lifecycle leaves `idle-pending` (e.g. another window committed a state
-  // change), silently unmount and surface the "queue state changed
-  // elsewhere" notice.
+  // FR-019a — if the restart chooser is mounted and this queue's lifecycle
+  // leaves `idle-pending` (e.g. another window committed a state change),
+  // silently unmount and surface the "queue state changed elsewhere" notice.
   $effect(() => {
-    if (
-      showRestartChooser &&
-      defaultQueueLifecycle !== null &&
-      defaultQueueLifecycle !== 'idle-pending'
-    ) {
+    if (showRestartChooser && queueLifecycle !== null && queueLifecycle !== 'idle-pending') {
       showRestartChooser = false;
       remoteLifecycleChangeStore.notifyChangedElsewhere();
     }
@@ -57,8 +68,9 @@
     showRestartChooser = false;
     if (intent === null) return;
     // Chooser already emits a `StartQueueIntent` with `source:'operator-restart'`.
-    // Per FR-018 / Q6 the dispatch is once-to-the-queue.
-    postCommand(CMD_START_QUEUE, { startIntent: intent } as never);
+    // Per FR-018 / Q6 the dispatch is once-to-the-queue — this queue, named, so
+    // the host does not fall back to the default (hard rule 56).
+    postCommand(CMD_START_QUEUE, { queueId, startIntent: intent } as never);
   }
 
   function onMigrationNoticeDismiss(): void {
@@ -66,10 +78,10 @@
   }
 </script>
 
-{#if defaultQueueLifecycle === 'idle-pending'}
+{#if queueLifecycle === 'idle-pending'}
   {#if scheduledStartAt !== null}
     <div class="idle-pending-host" data-testid="idle-pending-scheduled-host">
-      <ScheduledStartIndicator {scheduledStartAt} />
+      <ScheduledStartIndicator {queueId} {scheduledStartAt} />
     </div>
   {:else if !showRestartChooser}
     <div class="idle-pending-host" data-testid="idle-pending-start-queue-host">

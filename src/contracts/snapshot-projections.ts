@@ -133,6 +133,42 @@ export type WorkflowStatus =
   | 'failed'
   | 'canceled';
 
+/**
+ * Bug "there is no way to start a pending task" (2026-09-02) — the statuses at
+ * which a projected Run has stopped executing.
+ *
+ * Sited here, in the union's own module, because both sides of the wire need it:
+ * the host composes `InFlightRunProjection.status`, and the webview has to tell
+ * "this queue **owns** a Run" from "this queue **is working** a Run". Those are
+ * different questions, and `QueueRuntime.inFlightRun` answers only the first —
+ * its contract says `null` iff the queue owns no Run, so a Run that finished
+ * hours ago still projects, carrying its terminal status. A consumer that reads
+ * the projection's mere presence as "executing" reports a queue as busy forever.
+ * That is exactly the defect this constant was added to remove.
+ *
+ * The third such list in the repository, and deliberately not either of the
+ * others — the distinction is recorded here so it stays unmissable:
+ *
+ *   - `TERMINAL_RUN_STATUSES` (`src/state/workflow-run.ts`) is the same three
+ *     words over `WorkflowRunStatus`, the *persisted* union, which has no
+ *     `'idle'`. It governs lease release and session teardown. A unit test pins
+ *     the two lists equal, so this is a second reading of one fact rather than a
+ *     second fact.
+ *   - `WORKFLOW_NODE_TERMINAL_STATUSES` (`contracts/workflow-definitions.ts`) is
+ *     about a Workflow **node**'s terminal status in a branch predicate, and is
+ *     not this.
+ */
+export const TERMINAL_WORKFLOW_STATUSES = ['completed', 'failed', 'canceled'] as const;
+
+/**
+ * Whether a projected Run has stopped executing. See
+ * `TERMINAL_WORKFLOW_STATUSES` for why this is not a question about whether a
+ * queue owns a Run.
+ */
+export function isTerminalWorkflowStatus(status: WorkflowStatus): boolean {
+  return (TERMINAL_WORKFLOW_STATUSES as readonly string[]).includes(status);
+}
+
 export type QueueItemStatus =
   | 'pending'
   | 'in-flight'

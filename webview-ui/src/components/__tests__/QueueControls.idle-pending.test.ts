@@ -15,6 +15,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import QueueControls from '../QueueControls.svelte';
+import { CMD_START_QUEUE } from '../../lib/messages';
 import type { QueueLifecycle } from '../../lib/snapshot-types';
 
 const postCommandSpy = vi.fn();
@@ -28,8 +29,11 @@ beforeEach(() => {
 
 afterEach(() => cleanup());
 
+const QUEUE_ID = 'q-beta';
+
 function defaultProps(overrides: Partial<{
   isPrimary: boolean;
+  queueId: string;
   paused: boolean;
   pendingCount: number;
   hasInFlight: boolean;
@@ -39,6 +43,7 @@ function defaultProps(overrides: Partial<{
 }> = {}) {
   return {
     isPrimary: true,
+    queueId: QUEUE_ID,
     paused: false,
     pendingCount: 0,
     hasInFlight: false,
@@ -174,5 +179,23 @@ describe('QueueControls — idle-pending suppression (BUG-007 / FR-018)', () => 
     });
     await fireEvent.click(getByTestId('dashboard-queue-action'));
     expect(postCommandSpy).toHaveBeenCalledTimes(1);
+  });
+
+  // Bug "there is no way to start a pending task": a bare CMD_START_QUEUE is
+  // read by the host as the default queue, so this button started a queue the
+  // operator was not looking at.
+  it('names the queue it controls in the CMD_START_QUEUE payload', async () => {
+    const { getByTestId } = render(QueueControls, {
+      props: defaultProps({
+        pendingCount: 2,
+        hasInFlight: false,
+        paused: false,
+        queueLifecycle: 'active-empty'
+      })
+    });
+
+    await fireEvent.click(getByTestId('dashboard-queue-action'));
+
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_START_QUEUE, { queueId: QUEUE_ID });
   });
 });

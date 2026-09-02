@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import QueuesTier from '../QueuesTier.svelte';
 import { CMD_CREATE_QUEUE } from '../../../lib/messages';
-import { buildQueueRuntime } from '../../../lib/__tests__/queue-runtime-fixture';
+import { buildInFlightRun, buildQueueRuntime } from '../../../lib/__tests__/queue-runtime-fixture';
 import type { QueueItem, QueueRuntime } from '../../../lib/snapshot-types';
 
 const postCommandSpy = vi.fn((..._args: readonly unknown[]) => ({ correlationId: 'corr-1' }));
@@ -93,15 +93,40 @@ describe('QueuesTier — every queue at a glance (FR-055)', () => {
   it('spells every lifecycle it can be handed, so no queue reads as blank', () => {
     const { container } = render(QueuesTier, { props: { queues: QUEUES, isPrimary: true } });
 
+    // Bug "there is no way to start a pending task" (2026-09-02) — this row used
+    // to expect `Running`, over a fixture whose default queue carries the
+    // `'running'` LIFECYCLE and no Run. That is a real state and it is not work
+    // in progress: the badge reads `Active (waiting)` for it now, and the row
+    // below pins the reading it used to make.
     expect(
       container.querySelector('[data-testid="queue-lifecycle-default"]')?.textContent?.trim()
-    ).toBe('Running');
+    ).toBe('Active (waiting)');
     expect(
       container.querySelector('[data-testid="queue-lifecycle-q-beta"]')?.textContent?.trim()
     ).toBe('Idle (pending)');
     expect(
       container.querySelector('[data-testid="queue-lifecycle-q-gamma"]')?.textContent?.trim()
     ).toBe('Paused');
+  });
+
+  it('badges a queue Running when it is actually working a Run', () => {
+    // The non-vacuity half of the row above: `Active (waiting)` has to be a
+    // distinction the badge draws, not a string it has started always printing.
+    const working = Object.freeze([
+      buildQueueRuntime({
+        queueId: 'default',
+        name: 'Default',
+        position: 0,
+        lifecycle: 'running',
+        inFlightRun: buildInFlightRun({ status: 'running' }),
+        pendingCount: 2
+      })
+    ]);
+    const { container } = render(QueuesTier, { props: { queues: working, isPrimary: true } });
+
+    expect(
+      container.querySelector('[data-testid="queue-lifecycle-default"]')?.textContent.trim()
+    ).toBe('Running');
   });
 
   it('orders cards by queue position, not by arrival order in the array', () => {

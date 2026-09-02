@@ -19,8 +19,8 @@ predicted it: its author sampled the set and found every gate well motivated.
 
 | Figure | Value | Date | Method |
 |---|---|---|---|
-| Gate files | **179** | 2026-09-02 | `*.test.ts` under `tests/lint/` recursively |
-| Marked `unique` | 164 | 2026-09-02 | hand verdict |
+| Gate files | **181** | 2026-09-02 | `*.test.ts` under `tests/lint/` recursively |
+| Marked `unique` | 166 | 2026-09-02 | hand verdict |
 | Marked `partially redundant` | 15 | 2026-09-02 | hand verdict |
 | Marked `redundant` | 0 | 2026-09-02 | hand verdict |
 
@@ -256,6 +256,7 @@ changing one means updating that machinery in the same commit.
 | `no-scope-in-catalog-payloads.test.ts` | catalog payloads carry no scope, no shadowed status, and no layer id (SC-007) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `no-transport-in-audit.test.ts` | FR-R3-007 — CLI transport stays out of the structured audit log | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `no-tryAutoDrain-doc-references.test.ts` | Feature 056 Track 5 — operator docs are free of removed symbols | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
+| `no-unaddressed-queue-command.test.ts` | every webview queue-lifecycle command names its queue | — | unique | the two adjacent gates were read and neither holds it: `queue-command-reachability.test.ts` asks whether a queue command has a webview call site, never whether that site says which queue it means; `no-implicit-default-queue.test.ts` scans `src/`/`tests/` and deliberately permits a value fallback at a caller that tried to name its queue, one layer below the webview senders that never tried. No type holds it either — `queueId` is optional by contract, so omitting it compiles |
 | `no-unconditional-describe-skip.test.ts` | traceability governance — skipped-suite discipline | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `no-unguarded-parent-read.test.ts` | no test reads above REPO_ROOT without an envelope guard (FR-R3-118) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `no-vscode-import-in-headless.test.ts` | Feature 014 T005 — no vscode import in src/headless/ | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
@@ -276,6 +277,7 @@ changing one means updating that machinery in the same commit.
 | `process-yaml-grammar-frozen.test.ts` | Feature 086 T003 — the accepted language did not move | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `process-yaml-purity.test.ts` | Feature 084 — the Phase exchange path depends on nothing but itself | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `product-boundary-decisions.test.ts` | accepted product-boundary decisions | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
+| `queue-badge-reads-liveness.test.ts` | a queue badge reads what the queue is doing, not what it is allowed to do | — | unique | the two lifecycle-literal gates were read and neither holds it: `no-running-state-literal.test.ts` governs where the bare substring may appear and `queue-lifecycle-literal-allowlist.test.ts` governs who may emit it as a `QueueLifecycle` value; both are about the literal, neither about which of two labellers a component calls. No type holds it either — `queueLifecycleLabel` and `queueRuntimeLabel` both return `string`, so badging the permission where the operator reads activity compiles |
 | `queue-command-reachability.test.ts` | Feature 095 T035 — every queue command is reachable from the webview | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `queue-lifecycle-literal-allowlist.test.ts` | Feature 065 — QueueLifecycle running-literal allowlist | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `queue-projection-ordered-items-required.test.ts` | Feature 065 BUG-009 T077 — QueueProjection.orderedItems contract | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
