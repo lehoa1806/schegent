@@ -30,7 +30,7 @@ included:
         # should say what judges it, not inherit it silently.
         hostVerification: exit-code
         sideEffects: git
-        model: claude-sonnet-5
+        model: claude-opus-5
         effort: high
     - metadata:
         phaseId: speckit-clarify
@@ -55,7 +55,7 @@ included:
           - If ANY questions were asked and auto-accepted → emit "Open questions:" followed by a summary (controller will re-loop)
 
           Inside the SCHEGENT AUDIT LOG block, emit `open_questions: <N>` and `resolved_questions: <N>` as top-level integer metric lines so the controller can observe progress.
-        model: claude-sonnet-5
+        model: claude-opus-5
         effort: xhigh
         retryCondition: open_questions > 0
     - metadata:
@@ -64,7 +64,7 @@ included:
         version: 1
       spec:
         instruction: /speckit-plan
-        model: claude-sonnet-5
+        model: claude-opus-5
         hostVerification: exit-code
         effort: xhigh
     - metadata:
@@ -73,7 +73,7 @@ included:
         version: 1
       spec:
         instruction: /speckit-tasks
-        model: claude-sonnet-5
+        model: claude-opus-5
         hostVerification: exit-code
         effort: xhigh
     - metadata:
@@ -91,7 +91,7 @@ included:
           Always emit [SCHEGENT_STATUS: CLEAR] when complete — checklist is non-blocking.
 
           Inside the SCHEGENT AUDIT LOG block, emit `checklist_items: <N>` as a top-level integer metric line.
-        model: claude-sonnet-5
+        model: claude-opus-5
         effort: high
     - metadata:
         phaseId: speckit-analyze
@@ -118,7 +118,7 @@ included:
           critical_issues: 0
           high_issues: 2
           The controller uses these metrics to decide whether to re-loop. Missing metrics cause incorrect advancement.
-        model: claude-sonnet-5
+        model: claude-opus-5
         effort: xhigh
         retryCondition: critical_issues > 0
     - metadata:
@@ -136,7 +136,7 @@ included:
           - If any tasks are still pending → emit "Remaining issues:" listing the incomplete tasks
 
           REQUIRED METRIC OUTPUT: Inside the SCHEGENT AUDIT LOG block, you MUST emit `pending_tasks: <N>` as a top-level integer metric line (NOT nested under Notes: or any other heading). This line MUST appear even when the count is 0. The controller uses this metric to decide whether to re-loop.
-        model: claude-sonnet-5
+        model: claude-opus-5
         hostVerification: exit-code
         effort: high
         retryCondition: pending_tasks > 0
@@ -168,7 +168,7 @@ included:
           - If any findings remain → emit "Remaining issues:" listing residuals
 
           Inside the SCHEGENT AUDIT LOG block, emit `code_review_findings: <N>`, `security_review_findings: <N>`, and `pending_tasks: <N>` as top-level integer metric lines.
-        model: claude-sonnet-5
+        model: claude-opus-5
         hostVerification: exit-code
         effort: xhigh
         retryCondition: pending_tasks > 0 || code_review_findings > 0 || security_review_findings > 0
@@ -203,5 +203,5 @@ included:
         # should say what judges it, not inherit it silently.
         hostVerification: exit-code
         sideEffects: git
-        model: claude-sonnet-5
+        model: claude-opus-5
         effort: medium
