@@ -10,9 +10,8 @@
 
 import type { AuditEntry, AuditEventType, AuditOutcome } from '../../audit/audit-entry';
 import { classifyAuditEvent } from '../../contracts/audit-events';
-import type { Phase } from '../../controller/phase';
 import { truncateLabel } from './queue-projector';
-import type { PhaseName } from '../../contracts/phase-identity';
+import { phaseNameOrNull } from './phase-projector';
 import type { AuditCategory, AuditTailEntry } from './snapshot';
 
 export function projectAuditEntry(entry: AuditEntry): AuditTailEntry {
@@ -23,7 +22,7 @@ export function projectAuditEntry(entry: AuditEntry): AuditTailEntry {
   return Object.freeze({
     id: entry.id,
     timestamp: entry.timestamp,
-    phase: phaseForTail(entry.phase),
+    phase: phaseNameOrNull(entry.phase),
     category: categorize(entry.eventType, entry.outcome),
     summary: summarize(entry),
     runId: entry.runId,
@@ -54,8 +53,8 @@ function extractPhaseId(entry: AuditEntry): string | undefined {
   if (typeof payloadPhaseId === 'string' && payloadPhaseId.length > 0) return payloadPhaseId;
   const payloadPhase = entry.payload.phase;
   if (typeof payloadPhase === 'string' && payloadPhase.length > 0) return payloadPhase;
-  if (typeof entry.phase === 'string' && entry.phase.length > 0 && entry.phase !== 'done') {
-    return entry.phase;
+  if (typeof entry.phase === 'string') {
+    return phaseNameOrNull(entry.phase) ?? undefined;
   }
   return undefined;
 }
@@ -66,10 +65,6 @@ function normalizeOutcome(outcome: AuditOutcome): 'success' | 'error' | 'pending
   return undefined;
 }
 
-function phaseForTail(phase: Phase): PhaseName | null {
-  if (phase === 'done') return null;
-  return phase as PhaseName;
-}
 
 function categorize(eventType: AuditEventType, outcome: AuditOutcome): AuditCategory {
   if (eventType === 'error' || outcome === 'failure') return 'error';

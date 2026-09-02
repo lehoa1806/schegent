@@ -11,7 +11,7 @@ import type { ClaudeCliMonitor } from '../../monitor/claude-cli-monitor';
 import type { HistoryStore } from '../../state/history-store';
 import { projectHistory } from './history-projector';
 import { projectMonitor } from './monitor-projector';
-import { buildPhasesFromRun } from './phase-projector';
+import { buildPhasesFromRun, currentPhaseOrNull } from './phase-projector';
 import { sanitizeAndCap, projectQueue, projectQueueRows } from './queue-projector';
 import {
   buildActiveFeature,
@@ -179,13 +179,13 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     return {
       sanitize,
       registry,
-      inFlightPhase: run && run.currentPhase !== 'done' ? run.currentPhase : null,
+      inFlightPhase: currentPhaseOrNull(run),
       inFlightId: state.inFlightId,
       inFlightManualPauseCause: run?.manualPauseCause ?? null,
       scheduledStartSource: state.scheduledStartSource ?? null,
       scheduledStartAt: state.scheduledStartAt ?? null,
       activeRunTaskId: run?.featureId ?? null,
-      activeRunPhase: run?.currentPhase ?? null
+      activeRunPhase: currentPhaseOrNull(run)
     };
   };
   const requestsOf = (queueId: string): readonly FeatureRequest[] =>

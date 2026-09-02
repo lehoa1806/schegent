@@ -780,3 +780,95 @@ describe('RunDetailTier — Live targets this Run, not the default queue', () =>
     });
   });
 });
+
+// Bug "the phase log that asked for a phase named done" (2026-09-02).
+//
+// `'done'` is a terminal *state* of the phase state machine, not a Phase
+// definition: no log is ever written under that name, `availablePhases` never
+// lists it, and `phase-log-service.ts` refuses a tuple naming it with
+// `unknown-tuple`. The host composer now filters it out of the projection, so
+// `QueueItem.currentPhase` should not carry it — but the field's type still
+// admits any string, this tier copies it into a phase-log tuple verbatim, and
+// the refusal is silent. Observed in `.schegent/audit.log` on the two most
+// recent extension starts, twice each.
+//
+// The positive control lives above: 'asks the Activity Feed to load this Run's
+// own queue and phase' proves this tier does ask for a real phase, so the
+// first test here cannot pass merely by the tier having stopped pinning.
+describe('RunDetailTier — a finished Run does not name the terminal sentinel', () => {
+  const FINISHED = Object.freeze({
+    tasks: [
+      task('r-1', {
+        status: 'completed' as const,
+        currentPipelineId: 'standard',
+        currentPhase: 'done'
+      })
+    ]
+  });
+
+  it('never asks the host for a phase named `done`', async () => {
+    mount(buildSnapshot(FINISHED));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(readPhaseLogSpy).not.toHaveBeenCalledWith({
+      selection: expect.objectContaining({ phaseId: 'done' })
+    });
+  });
+
+  it('still pins this Run, so a phase tile reads that phase’s log', async () => {
+    // The sentinel makes the phase unknown, not the Run. The tier keeps its
+    // pin on { queueId, taskId, pipelineId } so the operator's own tile click
+    // completes a readable tuple — and so `PhaseLogFeed`'s workspace-wide
+    // cold-start fallback, which fires only on a fully empty selection, cannot
+    // point this tier at some other queue's task.
+    const { getByTestId } = mount(buildSnapshot(FINISHED));
+    await Promise.resolve();
+    await Promise.resolve();
+    readPhaseLogSpy.mockClear();
+
+    await fireEvent.click(getByTestId('phase-progression-speckit-specify'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(readPhaseLogSpy).toHaveBeenCalledWith({
+      selection: {
+        queueId: 'q-beta',
+        taskId: 'r-1',
+        pipelineId: 'standard',
+        phaseId: 'speckit-specify',
+        iterationN: null
+      }
+    });
+  });
+
+  it('tells the operator to pick a phase instead of showing a blank pane', async () => {
+    // Second finding of the same bug. Pinning with `phaseId: null` is correct
+    // (see the test above), but it lands in a hole between two components:
+    // `PhaseLogEmptyStates` only renders cards the host's banner asks for, and
+    // the host sends no banner without a complete tuple; `PhaseLogReadingPane`
+    // renders nothing on zero entries and defers to those cards. The operator
+    // got an unexplained blank with the phase strip — the way in — unlabelled
+    // beside it.
+    const { getByTestId } = mount(buildSnapshot(FINISHED));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const card = getByTestId('phase-log-empty-no-phase');
+    expect(card.textContent).toMatch(/phase/i);
+  });
+
+  it('drops the guidance once a phase is picked', async () => {
+    // The negative control: the card must not outlive the state it describes,
+    // or it would sit on top of the log the operator just asked for.
+    const { getByTestId, queryByTestId } = mount(buildSnapshot(FINISHED));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await fireEvent.click(getByTestId('phase-progression-speckit-specify'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(queryByTestId('phase-log-empty-no-phase')).toBeNull();
+  });
+});

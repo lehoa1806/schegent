@@ -25,7 +25,8 @@
   import {
     resolveLiveSelection,
     getPhaseOptions,
-    queueIdForItem
+    queueIdForItem,
+    TERMINAL_PHASE_SENTINEL
   } from '../../lib/activity-feed-selection.svelte';
   import { readPhaseLog } from '../../lib/phase-log-ipc';
 
@@ -108,10 +109,19 @@
   // `disabled-no-sessions`) AND the reading pane has no rows, show the
   // empty-state card in place of the reading pane. The "enabled with
   // sessions" banner is informational only — the pane renders normally.
+  // Bug "the phase log that asked for a phase named done" (2026-09-02), second
+  // finding — a selection naming a task but no phase never completes a tuple,
+  // so no banner ever arrives, so `showEmptyCard` stayed false and the reading
+  // pane rendered its own nothing. `hasNoEntries` is required as well, so a
+  // stale read's content is never hidden behind guidance.
+  const noPhaseSelected = $derived(
+    hasNoEntries && state.selection.taskId !== null && state.selection.phaseId === null
+  );
   const showEmptyCard = $derived(
-    hasNoEntries &&
-      state.verboseDiagnosticsState !== null &&
-      state.verboseDiagnosticsState.kind !== 'enabled-with-sessions'
+    noPhaseSelected ||
+      (hasNoEntries &&
+        state.verboseDiagnosticsState !== null &&
+        state.verboseDiagnosticsState.kind !== 'enabled-with-sessions')
   );
 
   const selectedRunner = $derived.by(() => {
@@ -328,7 +338,22 @@
   }
 
   function pickCandidatePhase(item: WorkflowSnapshot['queue']['recent'][number]): string | null {
-    if (item.currentPhase !== null) return item.currentPhase;
+    // Bug "the phase log that asked for a phase named done" (2026-09-02) —
+    // `'done'` is a terminal state of the phase state machine, not a Phase
+    // definition, so no log was ever written under that name and the host
+    // refuses the tuple with `unknown-tuple`. A completed Run is the ONLY
+    // interesting case for this fallback, and it is precisely the one that
+    // carries the sentinel: without this guard the first line returned it, the
+    // probe below failed, the loop `continue`d past every candidate, and the
+    // feed never left its empty state. The branch that follows — the newest
+    // completed phase — is what this function was always meant to reach here.
+    //
+    // Guarded at this call site as well as at the composer that now filters the
+    // sentinel out of the projection, because this function reads a field whose
+    // type still admits it and a refusal here is silent.
+    if (item.currentPhase !== null && item.currentPhase !== TERMINAL_PHASE_SENTINEL) {
+      return item.currentPhase;
+    }
     const phases = getPhaseOptions(snapshot, {
       id: item.id,
       label: item.label,
@@ -439,7 +464,7 @@
   />
 
   {#if showEmptyCard}
-    <PhaseLogEmptyStates banner={state.verboseDiagnosticsState} />
+    <PhaseLogEmptyStates banner={state.verboseDiagnosticsState} {noPhaseSelected} />
   {:else}
     <PhaseLogReadingPane
       entries={state.entries}

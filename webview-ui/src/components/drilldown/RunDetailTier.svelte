@@ -27,6 +27,7 @@
   import type { QueueItemStatus } from '../../lib/snapshot-types';
   import { resolveTaskPipelineName } from '../../lib/resolve-pipeline-name';
   import { createPhaseLogStore } from '../../lib/phase-log-store.svelte';
+  import { TERMINAL_PHASE_SENTINEL } from '../../lib/activity-feed-selection.svelte';
   import { deriveRunLivenessView, deriveRunProgressView } from '../../lib/run-liveness-view';
   import { nowCoarse } from '../../lib/tick-store';
   import type { WorkflowSnapshot } from '../../lib/snapshot-types';
@@ -139,7 +140,18 @@
 
   $effect(() => {
     if (task === null) return;
-    const key = `${queueId}:${runId}:${task.currentPipelineId}:${task.currentPhase}`;
+    // Bug "the phase log that asked for a phase named done" (2026-09-02) —
+    // `'done'` is a terminal state of the phase state machine, not a Phase
+    // definition, so nothing ever wrote a log under that name and the host
+    // refuses the tuple with `unknown-tuple`. Read as "no current phase", the
+    // same as an absent one: the Run is still pinned, so a tile click below
+    // still completes a readable tuple, but the tier stops asking for a log
+    // that cannot exist. Guarded here as well as at the composer that now
+    // filters the sentinel out of the projection, because `currentPhase` is
+    // typed as any string and the refusal this produces is silent.
+    const currentPhase =
+      task.currentPhase === TERMINAL_PHASE_SENTINEL ? null : task.currentPhase ?? null;
+    const key = `${queueId}:${runId}:${task.currentPipelineId}:${currentPhase}`;
     if (key === pinnedTaskKey) return;
     // A re-pin follows the Run as it advances, which is right up until the
     // operator picks a phase tile themselves: `setPhase` records that as an
@@ -158,7 +170,7 @@
         queueId,
         taskId: runId,
         pipelineId: task.currentPipelineId ?? null,
-        phaseId: task.currentPhase ?? null,
+        phaseId: currentPhase,
         iterationN: null
       },
       { origin: 'cascade' }

@@ -9,6 +9,24 @@ import type {
 import type { PhaseLogSelectionDraft } from './phase-log-store.svelte';
 import { defaultQueueId, findQueueRuntime } from './queue-runtime-view';
 
+/**
+ * Bug "the phase log that asked for a phase named done" (2026-09-02) — the
+ * terminal state of the phase state machine, which is NOT a Phase.
+ *
+ * `src/controller/phase.ts` declares it as such at the `Phase` type itself:
+ * nothing imports it as a catalog entry, `availablePhases` never lists it,
+ * `phase-projector.ts` gives it no position in a strip, and the phase-log
+ * service refuses any tuple naming it with `unknown-tuple`. But it is a
+ * legitimate value of `WorkflowRun.currentPhase`, and `QueueItem.currentPhase`
+ * is typed `PhaseName | null` — nothing in the type stops it reaching here.
+ *
+ * Named once because two surfaces read a task's current phase and turn it into
+ * a phase-log tuple, and both must treat this value as "no current phase". The
+ * host filters it out of the projection as well; this is the second line of
+ * defence, at the sites where getting it wrong fails silently.
+ */
+export const TERMINAL_PHASE_SENTINEL = 'done';
+
 export type ActivityFeedFollowMode = 'live' | 'manual';
 export type ActivityFeedManualLevel = 'queue' | 'task' | 'phase' | null;
 

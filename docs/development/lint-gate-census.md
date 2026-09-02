@@ -19,10 +19,10 @@ predicted it: its author sampled the set and found every gate well motivated.
 
 | Figure | Value | Date | Method |
 |---|---|---|---|
-| Gate files | **178** | 2026-08-31 | `*.test.ts` under `tests/lint/` recursively |
-| Marked `unique` | 163 | 2026-08-31 | hand verdict |
-| Marked `partially redundant` | 15 | 2026-08-31 | hand verdict |
-| Marked `redundant` | 0 | 2026-08-31 | hand verdict |
+| Gate files | **179** | 2026-09-02 | `*.test.ts` under `tests/lint/` recursively |
+| Marked `unique` | 164 | 2026-09-02 | hand verdict |
+| Marked `partially redundant` | 15 | 2026-09-02 | hand verdict |
+| Marked `redundant` | 0 | 2026-09-02 | hand verdict |
 
 <!-- census:prose -->
 
@@ -313,6 +313,7 @@ changing one means updating that machinery in the same commit.
 | `svelte-version-parity.test.ts` | Feature 112 svelte version parity | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `task-execution-event-types.test.ts` | Task Execution Event Types Parity (Feature 072) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `temp-root-cleanup-is-shared.test.ts` | temp-root cleanup has one implementation | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
+| `terminal-phase-sentinel-has-one-home.test.ts` | the terminal phase sentinel has one home per side | — | unique | no sibling gate asserts it, and the type-level route is closed on purpose: `PhaseName` is `string` because the phase catalog is operator-authored at runtime (`src/contracts/phase-identity.ts`), so no type can distinguish a phase from the terminal state. `current-phase-or-null.test.ts` checks the home's behaviour; only this gate checks that the rule stays in one place |
 | `threat-id-anchor-parity.test.ts` | Threat-id anchor parity | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `tree-degradation-emission-funnel.test.ts` | the degraded-tree report reaches the audit writer (FR-R3-083) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `uncontained-backend-not-hardcoded.test.ts` | the uncontained posture is never hardcoded in production code | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |

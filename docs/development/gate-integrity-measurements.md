@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 105
+    vacuity-census-denominator: 106
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **105** |
+| Gates the detector calls **controlled** (the denominator) | **106** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -164,6 +164,19 @@ word rather than a control, and the census would report it as evidence. Nothing 
 the correct answer for the wrong reason. This one was caught by reading the file while writing its
 census row, not by a gate. The rate stays **0.0%** — the entrant was mutated with the rest and did not
 survive.
+
+**Denominator movement 105 → 106 (2026-09-02, the phase log that asked for a phase named done).** One
+gate joined.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | `terminal-phase-sentinel-has-one-home.test.ts` (105 → 106) | Joined. Confines the `'done'` terminal-state literal to one module per side of the IPC boundary — `src/ui/sidebar/phase-projector.ts` on the host, `webview-ui/src/lib/activity-feed-selection.svelte.ts` in the webview — so no projection can decide for itself whether the phase state machine's terminal state counts as a phase. The defect: seven sites across `src/ui/sidebar/` open-coded that rule in four spellings and an eighth got it wrong, putting `'done'` on every settled Run's row; the host then refused its own projection with `unknown-tuple` on 63 of 63 phase-log failures in the reporting workspace's audit log. It walks `src/ui/sidebar` and `webview-ui/src` with `filesUnder` and asserts `toEqual([])`. Its control: every listed file — both homes and the one unrelated collision — is asserted to still contain the literal outside comments, so neither a broken scan nor a stale exemption can read as a clean tree. Worth naming because it is unusual: **no type can hold this invariant**, and not by omission — `PhaseName` is `string` deliberately (`src/contracts/phase-identity.ts`), because the phase catalog is operator-authored at runtime and a closed union would be a host claim about someone else's catalog. |
+
+Driven red by construction, not by revert: an open-coded `p === 'done' ? null : p` was dropped into
+`src/ui/sidebar/queue-projector.ts`, the gate named that file with its remediation text, and the probe
+was removed. The revert route existed — seven sites open-coded the rule before the fix — but the probe
+tests the rule the gate states rather than the sites that happened to carry it. The rate stays
+**0.0%** — the entrant was mutated with the rest and did not survive.
 
 The residual is unchanged and is the note below: the detector reads for scanning **by name**, so the
 next extraction of a walk into a helper will do this again. Nothing gates that.

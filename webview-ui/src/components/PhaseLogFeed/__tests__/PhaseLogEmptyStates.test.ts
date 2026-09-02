@@ -68,3 +68,60 @@ describe('Feature 020 T022 — PhaseLogEmptyStates', () => {
     expect(queryByTestId('phase-log-empty-disabled')).toBeNull();
   });
 });
+
+// Bug "the phase log that asked for a phase named done" (2026-09-02), second
+// finding — the hole between two components that each defer to the other.
+//
+// Both cards above are driven by `banner`, and the host only sends a banner in
+// answer to a COMPLETE tuple. A selection that names a task but no phase reads
+// nothing, so `banner` stays null, so this component renders nothing — while
+// `PhaseLogReadingPane` renders nothing of its own on zero entries and says so
+// in a comment: "the empty-state guidance can sit in its place." Neither side
+// is wrong on its own; between them the operator gets a blank pane.
+//
+// That state is reachable and normal: `RunDetailTier` pins a settled Run with
+// `phaseId: null` by design (pinning is what keeps the workspace-wide cold-start
+// fallback from redirecting the tier at another queue's task), and the Activity
+// Feed reaches it whenever a task is picked without a phase.
+describe('no phase selected — the third empty state', () => {
+  it('names the action when a task is selected but no phase is', () => {
+    const { getByTestId } = render(PhaseLogEmptyStates, {
+      props: { banner: null, noPhaseSelected: true }
+    });
+    const card = getByTestId('phase-log-empty-no-phase');
+    expect(card).toBeTruthy();
+    // The card has to say what to do, not merely that nothing is here. The
+    // phase strip is already on screen beside it; the gap was that nothing
+    // connected the blank pane to it.
+    expect(card.textContent).toMatch(/phase/i);
+  });
+
+  it('does not render when a phase IS selected and the host simply sent no banner', () => {
+    // The pre-existing pass-through: a complete tuple that is still loading has
+    // a null banner too, and must keep showing the reading pane rather than
+    // telling the operator to pick something they have already picked.
+    const { queryByTestId } = render(PhaseLogEmptyStates, {
+      props: { banner: null, noPhaseSelected: false }
+    });
+    expect(queryByTestId('phase-log-empty-no-phase')).toBeNull();
+  });
+
+  it('defaults to off, so every existing caller renders exactly as before', () => {
+    const { queryByTestId } = render(PhaseLogEmptyStates, {
+      props: { banner: null }
+    });
+    expect(queryByTestId('phase-log-empty-no-phase')).toBeNull();
+  });
+
+  it('wins over a stale banner, because the tuple it described is gone', () => {
+    // Deselecting a phase can leave the previous tuple's banner in state for a
+    // frame. "Pick a phase" is true then; "no log for this phase yet" is not,
+    // because there is no this-phase.
+    const banner: VerboseDiagnosticsBanner = { kind: 'enabled-no-sessions-for-tuple' };
+    const { getByTestId, queryByTestId } = render(PhaseLogEmptyStates, {
+      props: { banner, noPhaseSelected: true }
+    });
+    expect(getByTestId('phase-log-empty-no-phase')).toBeTruthy();
+    expect(queryByTestId('phase-log-empty-no-log')).toBeNull();
+  });
+});

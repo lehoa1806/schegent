@@ -108,7 +108,7 @@ export function buildPhasesFromRun(run: WorkflowRun | null): PhaseTile[] {
   }
 
   if (run.lastRetryDecision) {
-    const decisionPhaseName = run.lastRetryDecision.phase === 'done' ? null : (run.lastRetryDecision.phase as PhaseName);
+    const decisionPhaseName = phaseNameOrNull(run.lastRetryDecision.phase);
     if (decisionPhaseName) {
       const idx = phaseIndex(decisionPhaseName, phaseOrder);
       if (idx >= 0 && idx < tiles.length) {
@@ -135,6 +135,38 @@ export function phaseIndex(phase: Phase, phaseOrder: ReadonlyMap<PhaseName, numb
   if (phase === 'done') return -1;
   const idx = phaseOrder.get(phase as PhaseName);
   return typeof idx === 'number' ? idx : -1;
+}
+
+/**
+ * A phase value as a phase *name*, or `null` when it names no phase.
+ *
+ * Bug "the phase log that asked for a phase named done" (2026-09-02). The
+ * sentinel is never in `availablePhases`, never has a tile (see `phaseIndex`
+ * above), and never names a readable log — the phase-log service refuses such a
+ * tuple with `unknown-tuple`. Seven sites across this directory each open-coded
+ * that in four different spellings, and one of them drifted: the composer
+ * filtered `inFlightPhase` and not `activeRunPhase` six lines below, which put
+ * `'done'` on every settled Run's row and left the Activity Feed empty after a
+ * restart. `tests/lint/terminal-phase-sentinel-has-one-home.test.ts` keeps the
+ * rule from acquiring an eighth spelling.
+ *
+ * The empty string is `null` too: a nameless phase is not a phase, and every
+ * caller consolidated here already checked for it separately.
+ */
+export function phaseNameOrNull(phase: Phase | null | undefined): PhaseName | null {
+  if (phase === null || phase === undefined) return null;
+  if (phase === 'done' || phase === '') return null;
+  return phase as PhaseName;
+}
+
+/**
+ * The same rule reached through a Run, which is how most callers hold it. The
+ * null-Run case is folded in because both composer call sites read an optional
+ * Run; that is what lets them be the same expression rather than two that can
+ * drift apart again.
+ */
+export function currentPhaseOrNull(run: { currentPhase: Phase } | null | undefined): PhaseName | null {
+  return phaseNameOrNull(run?.currentPhase);
 }
 
 export function mapPhaseOutcome(outcome: PhaseOutcome): PhaseResultState | null {

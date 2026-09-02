@@ -7,7 +7,7 @@ import {
   computeWorkflowElapsedMs,
   type ActivityCache
 } from './activity-timing';
-import { computeSubProgressForTile } from './phase-projector';
+import { computeSubProgressForTile, currentPhaseOrNull, phaseNameOrNull } from './phase-projector';
 import { mapRunStatus } from './run-projector';
 import type { PhaseName } from '../../contracts/phase-identity';
 import type {
@@ -60,7 +60,7 @@ export class ProjectorBookkeeping {
         isoAt: projected.timestamp
       };
     }
-    const phaseName = entry.phase === 'done' ? null : (entry.phase as PhaseName);
+    const phaseName = phaseNameOrNull(entry.phase);
     if (!phaseName) return;
     if (
       entry.eventType === 'phase-message-emitted'
@@ -113,8 +113,7 @@ export class ProjectorBookkeeping {
       return;
     }
     const nextStatus = mapRunStatus(run);
-    const nextPhase = run.currentPhase === 'done'
-      ? null : (run.currentPhase as PhaseName);
+    const nextPhase = currentPhaseOrNull(run);
     // Feature 093 (T040) — justified survivor of the identity-reconciliation
     // sweep. This is a memoization change-detector, not a slot check: elapsed
     // and cumulative timings are accumulated across ticks, so the bookkeeper

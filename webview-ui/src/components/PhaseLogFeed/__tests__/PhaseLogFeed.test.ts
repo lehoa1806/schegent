@@ -34,7 +34,11 @@ import type {
   PhaseLogTailStartResult,
   PhaseLogTailStopResult
 } from '../../../../../src/services/phase-log/types';
-import { foldLegacyRun, type LegacyRunFields } from '../../../lib/__tests__/queue-runtime-fixture';
+import {
+  buildQueueRuntime,
+  foldLegacyRun,
+  type LegacyRunFields
+} from '../../../lib/__tests__/queue-runtime-fixture';
 
 // --- module mocks ------------------------------------------------------
 
@@ -721,6 +725,125 @@ describe('Feature 021 T046 (BUG-001 Defect A) — cold-start cascade', () => {
     expect(callArgs?.[1]).toEqual({ origin: 'cascade' });
     // Cold-start should NOT flip Live Mode OFF.
     expect(store.isLiveMode()).toBe(true);
+  });
+});
+
+// Bug "the phase log that asked for a phase named done" (2026-09-02) — the
+// cold-start fallback probed the terminal sentinel and gave up.
+//
+// Every case above builds its recent item with `currentPhase: 'speckit-plan'`,
+// a real phase. A *completed* Run does not have one: `'done'` is a terminal
+// state of the phase state machine, not a Phase definition, and until this fix
+// `queue-projector.ts` put it on the finished Run's own row. `pickCandidatePhase`
+// returns `item.currentPhase` on its first line and so never reached the
+// last-completed-phase fallback written directly below it for exactly this case.
+//
+// The host refuses such a tuple with `unknown-tuple` — `'done'` is in neither
+// `availablePhases` nor the frozen Pipeline — so the probe failed, the loop
+// `continue`d through every remaining candidate, and no selection was ever
+// committed. What the operator saw was an Activity Feed stuck on its empty
+// state after any restart with nothing in flight, which is where the report
+// "phase log stopped working" came from. `.schegent/audit.log` carries the
+// refusals: `phase-log-read failure reason=unknown-tuple phaseId=done`.
+//
+// `readSpy` is given the host's real refusal here rather than the permissive
+// default, so the assertion is that the feed RECOVERS, not merely that it asked
+// politely. A test that let the probe succeed would pass against the defect.
+describe('cold-start fallback — a completed Run has no current phase', () => {
+  function refuseTheSentinel(): void {
+    readSpy.mockReset();
+    readSpy.mockImplementation(async (req: unknown) => {
+      const phaseId = (req as { selection: { phaseId: string } }).selection.phaseId;
+      if (phaseId === 'done') {
+        // Exactly what `validateSelection` returns for a phase the catalog
+        // does not list on a task that is not in flight.
+        return { outcome: 'failure', reason: 'unknown-tuple' } as PhaseLogReadResult;
+      }
+      return {
+        outcome: 'success',
+        manifest: {
+          iterations: [1],
+          selectedIteration: 1,
+          entries: [makePushEntry(1, 'historical-init', 'system')],
+          skippedLines: 0,
+          truncatedCount: 0,
+          verboseDiagnosticsState: { kind: 'enabled-with-sessions' },
+          isInFlight: false
+        }
+      } as PhaseLogReadResult;
+    });
+  }
+
+  it('falls back to the newest completed phase instead of probing `done`', async () => {
+    refuseTheSentinel();
+    // `getPhaseOptions` reads tile state from the runtime of the queue that
+    // owns the task, and `buildSnapshot` folds its legacy run under `default`
+    // rather than the `q-1` these recent items name — so the strip is published
+    // here explicitly. Without it every option's state is null, the fallback
+    // cannot tell a completed phase from a not-started one, and the assertion
+    // below would be about list order rather than about run progress.
+    const withStrip = snapshotWithRecent([
+      buildRecentItem({ id: 'run-finished', currentPhase: 'done' })
+    ]);
+    const snapshot = Object.freeze({
+      ...withStrip,
+      queues: Object.freeze([
+        ...withStrip.queues,
+        buildQueueRuntime({
+          queueId: 'q-1',
+          inFlightRun: null,
+          phases: Object.freeze([
+            buildPhase('speckit-specify', 1, 'completed'),
+            buildPhase('speckit-plan', 2, 'completed'),
+            buildPhase('speckit-tasks', 3, 'not-started')
+          ])
+        })
+      ])
+    }) as WorkflowSnapshot;
+
+    const store = createPhaseLogStore();
+    const setSelectionSpy = vi.spyOn(store, 'setSelection');
+    render(PhaseLogFeed, { props: { snapshot, store } });
+    await tick();
+    await tick();
+    await tick();
+    await tick();
+
+    // `speckit-plan` is the highest-ordered completed phase — the last one the
+    // Run actually executed, and the log an operator opening a finished Run
+    // wants to read. Not `speckit-tasks`, which never ran.
+    expect(setSelectionSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        queueId: 'q-1',
+        taskId: 'run-finished',
+        pipelineId: 'standard',
+        phaseId: 'speckit-plan'
+      }),
+      { origin: 'cascade' }
+    );
+  });
+
+  it('never asks the host for a phase named `done`', async () => {
+    refuseTheSentinel();
+    const store = createPhaseLogStore();
+    render(PhaseLogFeed, {
+      props: {
+        snapshot: snapshotWithRecent([
+          buildRecentItem({ id: 'run-finished', currentPhase: 'done' })
+        ]),
+        store
+      }
+    });
+    await tick();
+    await tick();
+    await tick();
+    await tick();
+
+    const probedPhases = readSpy.mock.calls.map(
+      (call) => (call[0] as { selection: { phaseId: string } }).selection.phaseId
+    );
+    expect(probedPhases).not.toContain('done');
+    expect(probedPhases.length).toBeGreaterThan(0);
   });
 });
 
