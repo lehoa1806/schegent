@@ -17,7 +17,7 @@ import type { ClaudeCliMonitor } from '../monitor/claude-cli-monitor';
 import type { HistoryStore } from '../state/history-store';
 import { createHistoryRecorder, type HistoryRecorder } from '../services/history-recorder';
 import { AutoDrainCoordinator } from '../services/auto-drain-coordinator';
-import type { ExecutionLeasePort } from '../services/auto-drain-coordinator';
+import type { ExecutionLeasePort, QueueStartFailurePort } from '../services/auto-drain-coordinator';
 import { releaseExecutionLeaseForTerminalRun } from '../services/execution-lease-release';
 import { ExecutionLeaseManager } from '../state/execution-lease';
 import { EMPTY_CATALOG, type PipelineCatalog } from '../config/pipeline-config';
@@ -110,6 +110,8 @@ export interface WorkflowControllerDeps {
    * `extension.ts` passes in production.
    */
   executionLease?: ExecutionLeasePort;
+  /** Feature 187 — the drain's report channel; see `QueueStartFailurePort`. */
+  startFailures?: QueueStartFailurePort | null;
 }
 
 export interface StartNewOptions {
@@ -182,9 +184,7 @@ export class SchegentWorkflowController {
     this.sessionCleanup = deps.sessionCleanup ?? cleanupSessionArtifacts;
     this.terminalTransitions = deps.terminalTransitions;
     this.requestGitApproval = deps.requestGitApproval;
-    this.consent = new UncontainedConsentGate(deps.requestUncontainedConsent, (raw) =>
-      logger.sanitize(raw)
-    );
+    this.consent = new UncontainedConsentGate(deps.requestUncontainedConsent, (r) => logger.sanitize(r));
     this.runFactory = new WorkflowRunFactory({
       getCatalog: () => this.catalog,
       defaultRunnerKind: options.defaultRunnerKind,
@@ -231,9 +231,8 @@ export class SchegentWorkflowController {
       // Same adapter shape `extension.ts` uses for the queue's lifecycle hook:
       // the writer's entry type is stricter than the port's, so the widening
       // happens once, here, at the seam.
-      auditWriter: auditWriter
-        ? { append: (entry) => auditWriter.append(entry as never) }
-        : null,
+      auditWriter: auditWriter ? { append: (e) => auditWriter.append(e as never) } : null,
+      startFailures: deps.startFailures ?? null,
       logger
     });
     this.retryCoordinator = new RetryCoordinator({

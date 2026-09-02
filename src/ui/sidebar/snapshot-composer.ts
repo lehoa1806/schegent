@@ -47,6 +47,7 @@ import {
 } from './snapshot';
 import {
   composeQueueRuntimes,
+  projectStartFailure,
   type QueueRunProjection
 } from './queue-runtime-composer';
 
@@ -249,10 +250,9 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     runOf,
     lifecycleOf: (queueId) => store.getQueue(queueId).queueLifecycle,
     requestsOf,
-    rowsOf: (queueId) => projectQueueRows(
-      requestsOf(queueId),
-      rowContextFor(queueId, store.getQueue(queueId))
-    )
+    rowsOf: (queueId) =>
+      projectQueueRows(requestsOf(queueId), rowContextFor(queueId, store.getQueue(queueId))),
+    startFailureOf: (queueId) => projectStartFailure(deps.getQueueStartFailure?.(queueId), sanitize)
   });
 
   const trust = composeTrustProjection((message) => ctx.logger?.warn(message));

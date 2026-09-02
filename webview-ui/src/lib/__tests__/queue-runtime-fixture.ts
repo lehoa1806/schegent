@@ -78,6 +78,8 @@ export interface QueueRuntimeOverrides {
   readonly phaseOverrides?: QueueRuntime['phaseOverrides'];
   readonly manualPause?: QueueRuntime['manualPause'];
   readonly phaseBreakpoints?: QueueRuntime['phaseBreakpoints'];
+  /** Feature 187 — a queue whose last start attempt threw at admission. */
+  readonly startFailure?: QueueRuntime['startFailure'];
   readonly pendingCount?: number;
   /** Feature 092 (T108, FR-057) — this queue's own rows, as the Queue Detail tier lists them. */
   readonly tasks?: readonly QueueItem[];
@@ -99,6 +101,10 @@ export function buildQueueRuntime(overrides: QueueRuntimeOverrides = {}): QueueR
     phaseOverrides: Object.freeze(overrides.phaseOverrides ?? []),
     manualPause: overrides.manualPause ?? null,
     phaseBreakpoints: Object.freeze(overrides.phaseBreakpoints ?? []),
+    // Defaulted rather than omitted: the field is required-and-nullable on the
+    // wire, so a fixture that left it off would hand components `undefined` —
+    // a value the host cannot produce and the surfaces are entitled not to guard.
+    startFailure: overrides.startFailure ?? null,
     pendingCount: overrides.pendingCount ?? 0,
     tasks: Object.freeze(overrides.tasks ?? [])
   }) as QueueRuntime;

@@ -22,6 +22,7 @@ import type { SanitizedLogger } from '../lib/logger';
 import type { ClaudeCliMonitor } from '../monitor/claude-cli-monitor';
 import type { QueueManager } from '../queue/queue-manager';
 import type { EvidenceHealthMonitor } from '../services/evidence-health/evidence-health-monitor';
+import type { QueueStartFailureRegistry } from '../services/queue-start-failure-registry';
 import type { SessionArtifactRetentionService } from '../services/session-retention/session-artifact-retention-service';
 import type { HistoryStore } from '../state/history-store';
 import type { WorkspaceStateStore } from '../state/workspace-state';
@@ -83,6 +84,12 @@ export interface LivePictureWiringDeps {
   readonly backendCapabilities: BackendExecutionWiring['backendCapabilities'];
   readonly backendPing: BackendExecutionWiring['backendPing'];
   readonly protectedSessionRunIds: EvidenceWiring['protectedSessionRunIds'];
+  /**
+   * Feature 187 — the read half of the drain's report channel. The same registry
+   * the controller writes through, so a queue's surface and the failure it is
+   * describing cannot disagree.
+   */
+  readonly queueStartFailures: QueueStartFailureRegistry;
   readonly collectAllWorkflowPipelineRefs: EvidenceWiring['collectAllWorkflowPipelineRefs'];
   /**
    * FR-R3-136 (FR-005, FR-011) — read on every configuration change, never
@@ -134,6 +141,7 @@ export function wireLivePicture(deps: LivePictureWiringDeps): LivePictureWiring 
     backendCapabilities,
     backendPing,
     protectedSessionRunIds,
+    queueStartFailures,
     collectAllWorkflowPipelineRefs,
     bindCapabilityProjector,
     bindTelemetryProjector
@@ -156,6 +164,9 @@ const projector = new StateProjector({
     ),
   getSessionArtifacts: () => sessionRetention.getUsage(),
   getEvidenceHealth: () => evidenceHealth.getSnapshot(),
+  // Feature 187 — asked per queue, per projection. In memory, so this is a map
+  // lookup and not a read of anything the window has to persist.
+  getQueueStartFailure: (queueId: string) => queueStartFailures.get(queueId),
   getPhaseCatalog: () => catalogSession.phaseCatalog,
   // Feature 082 — authoritative Pipeline catalog for the Library and Builder.
   getPipelineCatalog: () => catalogSession.pipelineCatalog,

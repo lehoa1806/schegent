@@ -911,6 +911,19 @@ export interface QueueRuntime {
     readonly setAt: string;
     readonly actor: 'operator' | 'system';
   }[];
+  /**
+   * Feature 187 (FR-001, FR-002) — the queue's outstanding failed start, or
+   * `null` when its last start attempt did not fail. Mirrors the host's
+   * `QueueRuntime.startFailure`, which carries the reasoning.
+   *
+   * `summary` has already been through the host's sanitizer, so the surfaces
+   * render it as text and never re-derive it.
+   */
+  readonly startFailure: {
+    readonly admission: 'admitNew' | 'admitResume';
+    readonly at: string;
+    readonly summary: string | null;
+  } | null;
   /** Pending Tasks on this queue, derived from its own rows — never a total. */
   readonly pendingCount: number;
   /**

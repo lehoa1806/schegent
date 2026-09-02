@@ -580,6 +580,23 @@ export interface QueueRuntime {
     readonly setAt: string;
     readonly actor: 'operator' | 'system';
   }[];
+  /**
+   * Feature 187 (FR-001, FR-002) — the queue's outstanding failed start, or
+   * `null` when its last start attempt did not fail.
+   *
+   * Required-and-nullable like `manualPause` above, and for the same reason: the
+   * field is always present, so "no report" is a stated absence the webview
+   * reads without an existence guard rather than a key that might be missing.
+   *
+   * `summary` is `null` when the error carried no message worth showing; it is
+   * never the raw message — see `projectStartFailure`, which passes it through
+   * the same `sanitizeAndCap` every other operator-facing error text uses.
+   */
+  readonly startFailure: {
+    readonly admission: 'admitNew' | 'admitResume';
+    readonly at: string;
+    readonly summary: string | null;
+  } | null;
   /** Pending Tasks on this queue, derived from its own rows — never a total. */
   readonly pendingCount: number;
   /**

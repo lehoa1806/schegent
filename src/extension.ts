@@ -328,7 +328,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     getHistoryStore: () => historyStore
   });
   const { catalogReader, catalogStore, catalogSession, catalogLifecycle, lock,
-    executionLeases, statusBar, notifier, queue, startMountProbe } = session;
+    executionLeases, queueStartFailures, statusBar, notifier, queue, startMountProbe } = session;
   // FR-R3-119 — extracted to `src/activation/evidence-wiring.ts`: the audit
   // writer, the retention sweep, and the two thunks that tell them what is still
   // live. The migration events are passed rather than re-derived — the store
@@ -431,14 +431,12 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       inheritProcessEnv: processEnvironmentPolicy.inheritProcessEnv,
       processEnvAllowlist: processEnvironmentPolicy.processEnvAllowlist,
       defaultRunnerKind: backendKind,
-      isAuditEvidenceAvailable: () =>
-        evidenceHealth.getSnapshot().audit.status !== 'unavailable',
+      isAuditEvidenceAvailable: () => evidenceHealth.getSnapshot().audit.status !== 'unavailable',
       // Read per phase invocation, never cached at activation, so flipping the
       // setting mid-run takes effect on the next phase.
-      getForceContinueOnRetryCap: () =>
-        vscode.workspace
-          .getConfiguration('schegent', vscode.Uri.file(workspaceRoot))
-          .get<boolean>('retry.forceContinueOnCap', false) === true,
+      getForceContinueOnRetryCap: () => vscode.workspace
+        .getConfiguration('schegent', vscode.Uri.file(workspaceRoot))
+        .get<boolean>('retry.forceContinueOnCap', false) === true,
       // Feature 074 — resolve CLI binary path per-runner-kind. Reads the
       // setting per-invocation (never cached at activation) so the operator
       // can change `schegent.agy.path` without restarting VS Code.
@@ -454,6 +452,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       // so one window holds one set of leases regardless of which seam
       // claimed them.
       executionLease: executionLeases,
+      startFailures: queueStartFailures,
       ...runSafety,
       getRetryCap: () => {
         // Feature 056 Track 4 (FR-023..FR-026) — the configured retry
@@ -556,6 +555,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     backendCapabilities,
     backendPing,
     protectedSessionRunIds,
+    queueStartFailures,
     collectAllWorkflowPipelineRefs,
     bindCapabilityProjector: backend.bindCapabilityProjector,
     bindTelemetryProjector: backend.bindTelemetryProjector

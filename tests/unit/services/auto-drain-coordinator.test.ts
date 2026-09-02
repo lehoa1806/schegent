@@ -810,3 +810,320 @@ describe('AutoDrainCoordinator admission seam (Feature 093 T049a)', () => {
     expect(h.offered).toEqual(['q-a', 'q-b', 'q-c', 'q-d']);
   });
 });
+
+describe('AutoDrainCoordinator — the diagnostic a failed start leaves behind', () => {
+  // Nothing re-asks within the session after step 7 throws, so this warning is
+  // the whole record of why a queue stopped. These pin what it has to say.
+  function failingSetup(next: { id: string; description: string; runId?: string }) {
+    const store = makeStore({ inFlightId: null });
+    const queue = makeQueue(next);
+    const lease = makeLease(true);
+    const controller = makeController();
+    const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() };
+    const coord = new AutoDrainCoordinator({
+      store: store as never,
+      queue: queue as never,
+      executionLease: lease as never,
+      controller: controller as never,
+      logger: logger as never
+    });
+    return { coord, lease, controller, logger };
+  }
+
+  it('names the admission it actually called, not one the port forbids it', async () => {
+    const s = failingSetup({ id: 'q-7', description: 'ship the thing' });
+    s.controller.admitNew = vi.fn(async () => {
+      throw new Error('spawn refused');
+    });
+
+    await s.coord.drainIfIdle('q-7');
+
+    const message = String(s.logger.warn.mock.calls[0]?.[0]);
+    expect(message).toContain('admitNew');
+    expect(message).not.toContain('startNew');
+    expect(message).toContain('spawn refused');
+  });
+
+  it('names the queue, because a sweep visits several', async () => {
+    const s = failingSetup({ id: 'q-7', description: 'ship the thing' });
+    s.controller.admitNew = vi.fn(async () => {
+      throw new Error('spawn refused');
+    });
+
+    await s.coord.drainIfIdle('q-7');
+
+    expect(String(s.logger.warn.mock.calls[0]?.[0])).toContain('q-7');
+  });
+
+  it('names admitResume when the resume path is the one that threw', async () => {
+    const s = failingSetup({ id: 'q-7', description: 'ship the thing', runId: 'run-3' });
+    s.controller.admitResume = vi.fn(async () => {
+      throw new Error('journal unreadable');
+    });
+
+    await s.coord.drainIfIdle('q-7');
+
+    const message = String(s.logger.warn.mock.calls[0]?.[0]);
+    expect(message).toContain('admitResume');
+    expect(message).not.toContain('admitNew');
+  });
+
+  it('does not put the Task description in the log', async () => {
+    // Operator-authored content, on the same terms as FR-038a keeps a queue name
+    // out of the audit log.
+    const s = failingSetup({ id: 'q-7', description: 'migrate acme-corp billing' });
+    s.controller.admitNew = vi.fn(async () => {
+      throw new Error('spawn refused');
+    });
+
+    await s.coord.drainIfIdle('q-7');
+
+    expect(String(s.logger.warn.mock.calls[0]?.[0])).not.toContain('acme-corp');
+  });
+
+  it('gives the execution lease back so the queue is not claimed for 15s', async () => {
+    const s = failingSetup({ id: 'q-7', description: 'ship the thing' });
+    s.controller.admitNew = vi.fn(async () => {
+      throw new Error('spawn refused');
+    });
+
+    await s.coord.drainIfIdle('q-7');
+
+    expect(s.lease.release).toHaveBeenCalledWith('q-7');
+  });
+});
+
+// Feature 187 (T005-T007, US1/US2) — FR-001..FR-006.
+//
+// The log line the block above pins is a record for whoever opens a log. This
+// block pins the record for whoever does not: one report per queue, cleared by a
+// success, replaced by a later failure, and written at step 7 only.
+describe('AutoDrainCoordinator — the report a failed start leaves on its queue', () => {
+  function reportingSetup(
+    next: { id: string; description: string; runId?: string } | null,
+    queueState: { inFlightId: string | null; queueLifecycle?: QueueLifecycle } = {
+      inFlightId: null
+    },
+    capacity: { workspace?: boolean; queue?: boolean; execution?: boolean } = {}
+  ) {
+    const store = makeStore(queueState);
+    const queue = makeQueue(
+      next,
+      capacity.workspace ?? true,
+      capacity.queue ?? true,
+      capacity.execution ?? true
+    );
+    const lease = makeLease(true);
+    const controller = makeController();
+    const startFailures = { recordFailure: vi.fn(), clear: vi.fn() };
+    const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() };
+    const coord = new AutoDrainCoordinator({
+      store: store as never,
+      queue: queue as never,
+      executionLease: lease as never,
+      controller: controller as never,
+      startFailures,
+      logger: logger as never
+    });
+    return { coord, controller, startFailures, logger };
+  }
+
+  it('records the fresh-start admission that threw, against the queue that attempted it', async () => {
+    const s = reportingSetup({ id: 'q-7', description: 'ship the thing' });
+    s.controller.admitNew = vi.fn(async () => {
+      throw new Error('spawn refused');
+    });
+
+    await s.coord.drainIfIdle('q-7');
+
+    expect(s.startFailures.recordFailure).toHaveBeenCalledWith('q-7', {
+      admission: 'admitNew',
+      message: 'spawn refused'
+    });
+  });
+
+  it('records admitResume when the resume path is the one that threw', async () => {
+    // Not interchangeable with the case above: a resume failure and a spawn
+    // failure send an operator to different places (US2).
+    const s = reportingSetup({ id: 'q-7', description: 'ship the thing', runId: 'run-3' });
+    s.controller.admitResume = vi.fn(async () => {
+      throw new Error('journal unreadable');
+    });
+
+    await s.coord.drainIfIdle('q-7');
+
+    expect(s.startFailures.recordFailure).toHaveBeenCalledWith('q-7', {
+      admission: 'admitResume',
+      message: 'journal unreadable'
+    });
+  });
+
+  it('names the fresh start when a declining resume falls through to one that throws', async () => {
+    // `admitResume` returning `resumed: false` is the documented fall-through,
+    // not a failure. The attempt that failed is the fresh start, and that is what
+    // the report has to say (spec.md Edge Cases).
+    const s = reportingSetup({ id: 'q-7', description: 'ship the thing', runId: 'run-3' });
+    s.controller.admitNew = vi.fn(async () => {
+      throw new Error('spawn refused');
+    });
+
+    await s.coord.drainIfIdle('q-7');
+
+    expect(s.startFailures.recordFailure).toHaveBeenCalledWith(
+      'q-7',
+      expect.objectContaining({ admission: 'admitNew' })
+    );
+  });
+
+  it('clears the report when a fresh start succeeds', async () => {
+    const s = reportingSetup({ id: 'q-7', description: 'ship the thing' });
+
+    await s.coord.drainIfIdle('q-7');
+
+    expect(s.startFailures.clear).toHaveBeenCalledWith('q-7');
+    expect(s.startFailures.recordFailure).not.toHaveBeenCalled();
+  });
+
+  it('clears the report when a resume succeeds', async () => {
+    const s = reportingSetup({ id: 'q-7', description: 'ship the thing', runId: 'run-3' });
+    s.controller.admitResume = vi.fn(async () => ({
+      resumed: true,
+      completed: Promise.resolve()
+    }));
+
+    await s.coord.drainIfIdle('q-7');
+
+    expect(s.startFailures.clear).toHaveBeenCalledWith('q-7');
+    expect(s.controller.admitNew).not.toHaveBeenCalled();
+  });
+
+  it('does not record and does not clear when step 1 refuses an idle-pending queue', async () => {
+    // The gate-order property, and the reason `startFailures` is optional: the
+    // report is written inside step 7's own try/catch, so a queue refused before
+    // step 7 is neither reported on nor cleared. This one passes on the pre-change
+    // tree; it is here to fail if a later edit hoists either call into
+    // `drainQueue`, where it would run for all seven refusals.
+    const s = reportingSetup({ id: 'q-7', description: 'ship the thing' }, {
+      inFlightId: null,
+      queueLifecycle: 'idle-pending'
+    });
+
+    await s.coord.drainIfIdle('q-7');
+
+    expect(s.startFailures.recordFailure).not.toHaveBeenCalled();
+    expect(s.startFailures.clear).not.toHaveBeenCalled();
+  });
+
+  it('does not record and does not clear when step 4 refuses at the workspace ceiling', async () => {
+    const s = reportingSetup(
+      { id: 'q-7', description: 'ship the thing' },
+      { inFlightId: null },
+      { workspace: false }
+    );
+
+    await s.coord.drainIfIdle('q-7');
+
+    expect(s.startFailures.recordFailure).not.toHaveBeenCalled();
+    expect(s.startFailures.clear).not.toHaveBeenCalled();
+  });
+
+  it('still logs the failure — the report supplements the line, it does not replace it', async () => {
+    const s = reportingSetup({ id: 'q-7', description: 'ship the thing' });
+    s.controller.admitNew = vi.fn(async () => {
+      throw new Error('spawn refused');
+    });
+
+    await s.coord.drainIfIdle('q-7');
+
+    expect(String(s.logger.warn.mock.calls[0]?.[0])).toContain('admitNew');
+  });
+
+  it('reports nothing at all when no port is wired', async () => {
+    // Absent, a failed start behaves exactly as it did before this feature: it
+    // logs and returns false. Every existing coordinator double relies on this.
+    const store = makeStore({ inFlightId: null });
+    const queue = makeQueue({ id: 'q-7', description: 'ship the thing' });
+    const lease = makeLease(true);
+    const controller = makeController();
+    controller.admitNew = vi.fn(async () => {
+      throw new Error('spawn refused');
+    });
+    const coord = new AutoDrainCoordinator({
+      store: store as never,
+      queue: queue as never,
+      executionLease: lease as never,
+      controller: controller as never
+    });
+
+    await expect(coord.drainIfIdle('q-7')).resolves.toBeUndefined();
+    expect(controller.admitNew).toHaveBeenCalled();
+    expect(lease.release).toHaveBeenCalledWith('q-7');
+  });
+
+  it('reports one queue and still offers the rest of the sweep', async () => {
+    // Feature 187 (T009, US3 scenario 3) — a failure is one queue's, and a sweep
+    // visits every queue in the registry. The report must not be the reason the
+    // queues after it never get asked.
+    const ids = ['q-a', 'q-b'];
+    const offered: string[] = [];
+    const startFailures = { recordFailure: vi.fn(), clear: vi.fn() };
+    const coord = new AutoDrainCoordinator({
+      store: {
+        getQueue: vi.fn(() => ({
+          queueLifecycle: 'active-empty' as QueueLifecycle,
+          pauseSource: null,
+          inFlightId: null
+        })),
+        getRun: vi.fn(() => null),
+        getQueueRegistry: () => ({
+          entries: ids.map((id, position) => ({
+            id,
+            name: id,
+            position,
+            state: 'active' as const,
+            pauseSource: null,
+            schedule: null,
+            createdAt: 0,
+            updatedAt: 0
+          })),
+          updatedAt: 0
+        })
+      } as never,
+      queue: {
+        peekNextPending: vi.fn((queueId: string) => ({
+          id: `task-${queueId}`,
+          description: 'next',
+          queueId
+        })),
+        hasQueueCapacity: vi.fn(() => true),
+        hasExecutionCapacity: vi.fn(() => true),
+        hasWorkspaceCapacity: vi.fn(() => true)
+      } as never,
+      executionLease: {
+        tryAcquire: vi.fn(async () => ({ acquired: true, ownerId: 'w-1' })),
+        release: vi.fn(async () => undefined)
+      } as never,
+      controller: {
+        admitNew: vi.fn(async (task: { queueId: string }) => {
+          offered.push(task.queueId);
+          if (task.queueId === 'q-a') throw new Error('spawn refused');
+          return { completed: Promise.resolve() };
+        }),
+        admitResume: vi.fn(async () => ({ resumed: false, completed: Promise.resolve() })),
+        liveRunCount: 0
+      } as never,
+      startFailures
+    });
+
+    await coord.drainAll();
+
+    expect(offered).toEqual(['q-a', 'q-b']);
+    expect(startFailures.recordFailure).toHaveBeenCalledTimes(1);
+    expect(startFailures.recordFailure).toHaveBeenCalledWith('q-a', {
+      admission: 'admitNew',
+      message: 'spawn refused'
+    });
+    expect(startFailures.clear).toHaveBeenCalledTimes(1);
+    expect(startFailures.clear).toHaveBeenCalledWith('q-b');
+  });
+});

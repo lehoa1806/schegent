@@ -167,6 +167,20 @@
             <span class="lifecycle" data-testid="queue-lifecycle-{runtime.queueId}">
               {queueRuntimeLabel(runtime)}
             </span>
+            <!-- Feature 187 (FR-004) — beside the badge, not instead of it. The
+                 lifecycle is still true; the failed start is why the queue is
+                 still in it. Compact by intent: this list distinguishes which
+                 queue to look at, and the detail tier says what happened. -->
+            {#if runtime.startFailure !== null}
+              <span
+                class="start-failed"
+                data-testid="queue-start-failed-{runtime.queueId}"
+                aria-label="Last start attempt failed"
+                title="Last start attempt failed — open this queue for details"
+              >
+                Start failed
+              </span>
+            {/if}
           </span>
           <span class="card-body">
             {#if runLabel(runtime) !== null}
@@ -291,6 +305,20 @@
   .lifecycle {
     font-size: 11px;
     color: var(--vscode-textLink-foreground);
+  }
+
+  .start-failed {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: var(--schegent-radius);
+    color: var(--vscode-notificationsErrorIcon-foreground, var(--vscode-charts-red));
+    background: color-mix(
+      in srgb,
+      var(--vscode-notificationsErrorIcon-foreground, var(--vscode-charts-red)) 14%,
+      transparent
+    );
+    white-space: nowrap;
   }
 
   .card-body {

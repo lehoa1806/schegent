@@ -35,6 +35,7 @@ import type {
   ConnectedRunProjection,
   InFlightRunProjection,
   QueueItem,
+  QueueRuntime,
   QueueSummary,
   WorkflowSnapshot
 } from '../../../lib/snapshot-types';
@@ -120,6 +121,8 @@ function buildSnapshot(
     readonly lifecycle?: 'running' | 'operator-paused' | 'idle-pending' | 'active-empty';
     readonly connectedRuns?: readonly ConnectedRunProjection[];
     readonly inFlightRun?: InFlightRunProjection | null;
+    /** Feature 187 — `q-beta`'s outstanding failed start; `default` never has one. */
+    readonly startFailure?: QueueRuntime['startFailure'];
     /** Feature 097 — override when a test needs more than one phase to tell rows apart. */
     readonly pipelines?: readonly {
       readonly id: string;
@@ -145,6 +148,7 @@ function buildSnapshot(
         position: 1,
         lifecycle: overrides.lifecycle ?? 'running',
         inFlightRun: overrides.inFlightRun ?? null,
+        startFailure: overrides.startFailure ?? null,
         pendingCount: betaTasks.filter((item) => item.status === 'pending').length,
         tasks: betaTasks
       })
@@ -1171,4 +1175,55 @@ describe('QueueDetailTier — a Run that has ended is not a Run in flight', () =
       expect((getByTestId('dashboard-queue-clean') as HTMLButtonElement).disabled).toBe(false);
     }
   );
+});
+
+// Feature 187 (T023, FR-001) — the notice is mounted for the queue on screen,
+// and the mount is what these cases assert. `QueueStartFailureNotice.test.ts`
+// covers what it renders; the risk here is the one a component test cannot see —
+// a notice wired to `snapshot.queue` (the default queue, which the composer pins
+// to `DEFAULT_QUEUE_ID`) rather than to the queue this tier is showing. That is
+// the exact defect feature 097 T012 had to fix in `QueueIdlePendingPanel`, so it
+// is worth a case that reads `q-beta` and would fail on a default-queue read.
+describe('QueueDetailTier — a failed start on this queue', () => {
+  const FAILURE = Object.freeze({
+    admission: 'admitResume' as const,
+    at: '2026-08-12T00:00:00.000Z',
+    summary: 'the backend refused the run'
+  });
+
+  it('shows the notice for the queue whose start failed', () => {
+    const { getByTestId } = mount(buildSnapshot([], { startFailure: FAILURE }));
+
+    expect(getByTestId('queue-start-failure-q-beta').textContent).toContain(
+      'Resuming this queue failed'
+    );
+  });
+
+  it('shows nothing when this queue has no failed start', () => {
+    const { queryByTestId } = mount(buildSnapshot([]));
+
+    expect(queryByTestId('queue-start-failure-q-beta')).toBeNull();
+  });
+
+  it('does not borrow the report from a sibling queue', () => {
+    // The tier is mounted on `default`, whose runtime carries no report — only
+    // `q-beta`'s does. A notice reading the wrong queue's runtime renders here.
+    const { queryByTestId } = mount(buildSnapshot([], { startFailure: FAILURE }), {
+      queueId: 'default'
+    });
+
+    expect(queryByTestId('queue-start-failure-default')).toBeNull();
+    expect(queryByTestId('queue-start-failure-q-beta')).toBeNull();
+  });
+
+  it('reports a failed start on a secondary window too', () => {
+    // Not gated on `isPrimary`, unlike `QueueIdlePendingPanel`: that panel owns
+    // a Start button and a secondary window may not dispatch one. This notice
+    // has no action, so withholding it would only hide the fact.
+    const { getByTestId } = mount(buildSnapshot([], { startFailure: FAILURE }), {
+      isPrimary: false
+    });
+
+    expect(getByTestId('queue-start-failure-q-beta')).toBeTruthy();
+  });
 });

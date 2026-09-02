@@ -143,6 +143,7 @@ export const workflowSnapshot = {
       "phaseOverrides": [],
       "manualPause": null,
       "phaseBreakpoints": [],
+      "startFailure": null,
       "pendingCount": 1,
       "tasks": [
         {

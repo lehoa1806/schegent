@@ -272,3 +272,68 @@ describe('QueuesTier — read-only in a non-primary window (FR-065)', () => {
     expect(selected).toEqual(['default']);
   });
 });
+
+// Feature 187 (T025, FR-004, SC-001) — spec.md US1 scenario 2, which is the one
+// question a detail-only surface cannot answer. An operator with several queues
+// looks at this list first; if a failed start is visible only after drilling in,
+// finding it means opening every card in turn — which is the same "go and look
+// somewhere else" the log line already was.
+//
+// Compact by intent: the marker distinguishes, the detail tier explains. So these
+// cases assert *which* card carries it, not what it says.
+describe('QueuesTier — which queue failed to start (FR-004)', () => {
+  const WITH_FAILURE: readonly QueueRuntime[] = Object.freeze([
+    QUEUES[0]!,
+    buildQueueRuntime({
+      queueId: 'q-beta',
+      name: 'nightly',
+      position: 1,
+      lifecycle: 'idle-pending',
+      pendingCount: 3,
+      startFailure: {
+        admission: 'admitNew',
+        at: '2026-08-12T00:00:00.000Z',
+        summary: 'the backend refused the run'
+      }
+    }),
+    QUEUES[2]!
+  ]);
+
+  it('marks only the queue whose start failed', () => {
+    const { container } = render(QueuesTier, { props: { queues: WITH_FAILURE, isPrimary: true } });
+
+    expect(container.querySelectorAll('[data-testid^="queue-start-failed-"]')).toHaveLength(1);
+    expect(container.querySelector('[data-testid="queue-start-failed-q-beta"]')).not.toBeNull();
+  });
+
+  it('marks no queue when every start succeeded', () => {
+    const { container } = render(QueuesTier, { props: { queues: QUEUES, isPrimary: true } });
+
+    expect(container.querySelectorAll('[data-testid^="queue-start-failed-"]')).toHaveLength(0);
+  });
+
+  it('keeps the lifecycle badge readable beside the marker', () => {
+    // The marker sits next to the badge rather than replacing it: `idle-pending`
+    // is still true of this queue, and the failed start is why it stayed there.
+    const { container } = render(QueuesTier, { props: { queues: WITH_FAILURE, isPrimary: true } });
+
+    expect(
+      container.querySelector('[data-testid="queue-lifecycle-q-beta"]')?.textContent.trim()
+    ).toBe('Idle (pending)');
+  });
+
+  it('gives the marker an accessible name, since it is an icon-sized element', () => {
+    const { container } = render(QueuesTier, { props: { queues: WITH_FAILURE, isPrimary: true } });
+
+    const marker = container.querySelector('[data-testid="queue-start-failed-q-beta"]');
+    expect(marker?.getAttribute('title')).toBeTruthy();
+    expect(marker?.getAttribute('aria-label')).toBeTruthy();
+  });
+
+  it('marks a failed start on a secondary window too', () => {
+    // Nothing here is an action, so a read-only window sees the same facts.
+    const { container } = render(QueuesTier, { props: { queues: WITH_FAILURE, isPrimary: false } });
+
+    expect(container.querySelector('[data-testid="queue-start-failed-q-beta"]')).not.toBeNull();
+  });
+});

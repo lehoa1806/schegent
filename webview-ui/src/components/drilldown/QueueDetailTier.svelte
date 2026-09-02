@@ -29,6 +29,7 @@
   import QueueInputForm from '../QueueInputForm.svelte';
   import QueueControls from '../QueueControls.svelte';
   import QueueIdlePendingPanel from './QueueIdlePendingPanel.svelte';
+  import QueueStartFailureNotice from './QueueStartFailureNotice.svelte';
   import { postCommand } from '../../lib/vscode-api';
   import {
     CMD_RENAME_QUEUE,
@@ -358,8 +359,15 @@
     </div>
   {/if}
 
+  <!-- Feature 187 (FR-001) — above the idle-pending panel, because the two say
+       opposite things about the same queue and only one of them is news: "this
+       queue is waiting for you to start it" reads as normal, and "the last start
+       already failed" is why it is still waiting. Ungated by `isPrimary`, unlike
+       the panel below, which owns a Start a secondary window may not dispatch. -->
+  <QueueStartFailureNotice {queueId} startFailure={runtime?.startFailure ?? null} />
+
   {#if isPrimary}
-    <QueueIdlePendingPanel {snapshot} />
+    <QueueIdlePendingPanel {snapshot} {queueId} />
   {/if}
 
   {#if isPrimary && composerOpen}

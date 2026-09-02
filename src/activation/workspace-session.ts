@@ -21,6 +21,7 @@ import type { HistoryStore } from '../state/history-store';
 import type { SanitizedLogger } from '../lib/logger';
 import { QueueManager } from '../queue/queue-manager';
 import type { ProcessEnvironmentPolicy } from '../runner/spawn-env';
+import { QueueStartFailureRegistry } from '../services/queue-start-failure-registry';
 import { ExecutionLeaseManager } from '../state/execution-lease';
 import { WorkspaceLockManager } from '../state/lock';
 import type { WorkspaceStateStore } from '../state/workspace-state';
@@ -77,6 +78,18 @@ export interface WorkspaceSession {
   readonly catalogLifecycle: ReturnType<typeof createHostCatalogLifecycle>;
   readonly lock: WorkspaceLockManager;
   readonly executionLeases: ExecutionLeaseManager;
+  /**
+   * Feature 187 (T010) — where a step-7 admission throw is reported, so the
+   * queue's own surface can say a start failed rather than reading
+   * `Active (waiting)` and leaving the operator to guess.
+   *
+   * Opened here beside `executionLeases` because it is the same shape of thing:
+   * session-scoped, written by the drain, read elsewhere in the window. In
+   * memory only — the drain is edge-triggered and activation sweeps every unheld
+   * queue on the next window start, so a persisted report would be shown beside
+   * a newer attempt's result.
+   */
+  readonly queueStartFailures: QueueStartFailureRegistry;
   readonly statusBar: SchegentStatusBar;
   readonly notifier: Notifier;
   readonly queue: QueueManager;
@@ -158,6 +171,9 @@ const lock = new WorkspaceLockManager(store, ownerId);
 // separate manager over a separate key: holding a queue's execution lease
 // must never make this window primary.
 const executionLeases = new ExecutionLeaseManager(store, ownerId);
+// Feature 187 (T010) — the drain's report channel. Takes the clock so the
+// registry, not the coordinator, stamps the time of an attempt.
+const queueStartFailures = new QueueStartFailureRegistry(() => Date.now());
 // FR-R3-136 (FR-009) — THE ELECTION IS NO LONGER HERE. It moved to
 // `stage2-producers.ts`, and the reason is C2: `store.ownership.acquire` is an
 // exclusive-create on a generation-numbered file under `.schegent/`, which is a
@@ -200,6 +216,7 @@ const queue = new QueueManager(store, logger);
     catalogLifecycle,
     lock,
     executionLeases,
+    queueStartFailures,
     statusBar,
     notifier,
     queue,

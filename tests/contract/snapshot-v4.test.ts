@@ -64,7 +64,11 @@ const QUEUE_RUNTIME_FIELDS = [
   'manualPause',
   'phaseBreakpoints',
   'pendingCount',
-  'tasks'
+  'tasks',
+  // Feature 187 (FR-002) — the first field added to `QueueRuntime` since
+  // feature 092 defined the record. The count in the assertion below moved with
+  // it, and so did the table this list is checked against.
+  'startFailure'
 ] as const;
 
 const QUEUE_B = 'b1f2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d';
@@ -191,7 +195,7 @@ describe('snapshot v4 — envelope shape (T085, FR-048 – FR-050)', () => {
 });
 
 describe('snapshot v4 — QueueRuntime fields (T086, FR-048, FR-056)', () => {
-  it('carries exactly the eleven fields of data-model.md §1.4', () => {
+  it('carries exactly the twelve fields of data-model.md §1.4', () => {
     const runtime = project().queues[0];
     expect(runtime).toBeDefined();
     expect(Object.keys(runtime!).sort()).toEqual([...QUEUE_RUNTIME_FIELDS].sort());

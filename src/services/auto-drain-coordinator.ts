@@ -78,6 +78,27 @@ export interface OverlapAuditPort {
   }): Promise<unknown>;
 }
 
+/**
+ * Feature 187 (T003, FR-010) — where a step-7 throw is reported, narrowed to
+ * that one subject on the same terms as `OverlapAuditPort` above.
+ *
+ * **No read side, deliberately.** The coordinator writes what it just did and
+ * cannot ask what it wrote, cannot enumerate queues through this, and cannot
+ * reach queue state with it. That last one is the point: step 1 of `drainQueue`
+ * is the single site that decides whether an `idle-pending` queue may start
+ * (hard rules 31 and 32), so this module is the *reader* of a hold. A port that
+ * could write one would put "may this queue start" and "this queue may not
+ * start" in the same object, arriving through the one door nobody thought to
+ * gate because it comes from inside the enforcement site.
+ */
+export interface QueueStartFailurePort {
+  recordFailure(
+    queueId: string,
+    failure: { readonly admission: 'admitNew' | 'admitResume'; readonly message: string }
+  ): void;
+  clear(queueId: string): void;
+}
+
 export interface AutoDrainCoordinatorDeps {
   readonly store: Pick<WorkspaceStateStore, 'getQueue' | 'getQueueRegistry' | 'getRun'>;
   readonly queue: Pick<
@@ -114,6 +135,15 @@ export interface AutoDrainCoordinatorDeps {
    * the gate under test.
    */
   readonly auditWriter?: OverlapAuditPort | null;
+  /**
+   * Feature 187 (T004) — optional for exactly the reason `auditWriter` above is,
+   * and the reason is worth restating because it is the same gate-order property:
+   * the unit tests assert that no collaborator past the failing step was
+   * consulted, and a required port would be built into every double, making that
+   * assertion true for reasons unrelated to the gate under test. Absent, a failed
+   * start still logs (FR-011) and reports nothing.
+   */
+  readonly startFailures?: QueueStartFailurePort | null;
   readonly logger?: SanitizedLogger;
 }
 
@@ -126,6 +156,7 @@ export class AutoDrainCoordinator {
   private readonly executionLease: ExecutionLeasePort;
   private readonly controller: AutoDrainCoordinatorDeps['controller'];
   private readonly auditWriter: OverlapAuditPort | null;
+  private readonly startFailures: QueueStartFailurePort | null;
   private readonly logger: SanitizedLogger | null;
 
   /**
@@ -231,6 +262,7 @@ export class AutoDrainCoordinator {
     this.executionLease = deps.executionLease;
     this.controller = deps.controller;
     this.auditWriter = deps.auditWriter ?? null;
+    this.startFailures = deps.startFailures ?? null;
     this.logger = deps.logger ?? null;
   }
 
@@ -437,40 +469,85 @@ export class AutoDrainCoordinator {
       );
       return false;
     }
-    // Step 7 — start.
+    // Step 7 — start. `attempted` is what the failure message names; see the
+    // `catch` for why naming it correctly is load-bearing.
+    let attempted: 'admitResume' | 'admitNew' = 'admitNew';
     try {
       // If the pending task still carries a runId (preserved by the
       // retry path when the active workspace run matches), try to resume
       // the existing run so the pipeline picks up from the failed phase
       // instead of restarting from scratch.
       if (next.runId) {
+        attempted = 'admitResume';
         // Feature 093 (T039) — pattern A: the queue is already the subject of
         // this drain, so the resume names it rather than reaching for whatever
         // Run happened to be persisted.
         const resume = await this.controller.admitResume(queueId);
         if (resume.resumed) {
+          // Feature 187 (FR-003) — a start that worked supersedes any report of
+          // one that did not. Before `detach`, so an overlap-audit throw cannot
+          // leave the queue reporting a failure it has just recovered from; not
+          // in a `finally`, which would also run on the throw eleven lines below
+          // and erase the report recorded there.
+          this.startFailures?.clear(queueId);
           this.detach(queueId, resume.completed);
           await this.openOverlapEpisodeIfStarted(queueId);
           return true;
         }
         // Fall through to a fresh start if the run cannot be resumed
         // (e.g. the persisted run no longer matches).
+        attempted = 'admitNew';
       }
       // Feature 093 (T049a) — awaited to admission, not to completion. The Task
       // is in flight by the time this resolves, so the rest of the sweep reads
       // current capacity; the Run itself proceeds alongside it.
       const admission = await this.controller.admitNew(next, null);
+      this.startFailures?.clear(queueId);
       this.detach(queueId, admission.completed);
       await this.openOverlapEpisodeIfStarted(queueId);
       return true;
     } catch (err) {
-      // Release the lease we acquired — if startNew throws before
-      // RunDriver.drive() enters its own scope, this queue would stay
+      // Release the lease we acquired — if the admission throws before
+      // `RunDriver.drive()` enters its own scope, this queue would stay
       // claimed until STALENESS_THRESHOLD_MS (15s).
       await Promise.resolve(this.executionLease.release(queueId)).catch(() => undefined);
+      // FR-R3-089 — name the queue, and the admission that actually failed.
+      //
+      // This read `controller.startNew failed`, a call the drain has not made
+      // since Feature 093 (T049a) narrowed `deps.controller` to the admission
+      // pair — the narrowing whose entire purpose is that this module *cannot*
+      // reach `startNew`. And `startNew` still exists on the controller, so the
+      // message did not read as stale. It read as a lead, and it pointed at a
+      // function that was never on this path.
+      //
+      // It matters more here than a wrong name usually does, because this
+      // warning is the *only* trace a failed start leaves. Every other refusal
+      // in the seven steps is re-asked by a terminal Run's own sweep; this one
+      // cannot be, because no Run started and so none will end. The next sweep
+      // within the session comes from some other queue's Run terminating, and
+      // there may not be one; the next guaranteed one is at activation. An
+      // operator asking why a queue stopped therefore has this line and nothing
+      // else, and a sweep visits several queues, so it names which one. It does
+      // not name the Task: the description is operator-authored content, on the
+      // same terms as FR-038a keeps a queue name out of the audit log.
       this.logger?.warn(
-        `auto-drain: controller.startNew failed: ${(err as Error).message}`
+        `auto-drain: controller.${attempted} failed for queue ${queueId}: ${(err as Error).message}`
       );
+      // Feature 187 (FR-001, FR-002, FR-011) — and the same failure, reported to
+      // whoever does *not* open a log. The line above is the record for a
+      // maintainer; this is the record for the operator watching a queue that
+      // reads `Active (waiting)` and cannot tell a fault from a turn in the
+      // queue. Written here, inside step 7's own `catch`, because that is the
+      // only refusal of the seven that is a fault rather than a wait — hoisting
+      // it into `drainQueue` would report the other six as failures too.
+      //
+      // Nothing else happens. No lifecycle is written, no retry is scheduled:
+      // the queue stays unheld, so the next trigger re-attempts it exactly as it
+      // re-attempts every other refusal (FR-005, FR-006).
+      this.startFailures?.recordFailure(queueId, {
+        admission: attempted,
+        message: (err as Error).message
+      });
       return false;
     }
   }

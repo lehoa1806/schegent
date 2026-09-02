@@ -7,6 +7,7 @@ import type { ClaudeCliMonitor } from '../../monitor/claude-cli-monitor';
 import type { BackendRunnerKind } from '../../contracts/backend-kinds';
 import type { EvidenceHealthSnapshot } from '../../services/evidence-health/evidence-health-monitor';
 import type { BackendPingState } from '../../services/backend-ping-service';
+import type { QueueStartFailure } from '../../services/queue-start-failure-registry';
 import type { Disposable, WorkspaceStateStore } from '../../state/workspace-state';
 import type { HistoryStore } from '../../state/history-store';
 import type { TelemetrySnapshot } from '../../telemetry/telemetry-snapshot';
@@ -91,6 +92,13 @@ export interface StateProjectorDeps {
   readonly getSessionArtifacts?: () => SessionArtifactsProjection;
   readonly getEvidenceHealth?: () => EvidenceHealthSnapshot;
   readonly getPhaseCatalog?: () => ResolvedPhaseCatalog | undefined;
+  /**
+   * Feature 187 (FR-001) — this queue's outstanding failed start, or `null`.
+   * Asked per queue rather than handed a map because the answer is one small
+   * record and the registry is in memory; absent on a host with no drain wiring,
+   * which projects no report rather than a fabricated one.
+   */
+  readonly getQueueStartFailure?: (queueId: string) => QueueStartFailure | null;
   /** Feature 082 — resolved Pipeline catalog; throwing projects `state: 'error'`. */
   readonly getPipelineCatalog?: () => ResolvedPipelineCatalog | undefined;
   /**

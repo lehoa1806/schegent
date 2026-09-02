@@ -23,6 +23,8 @@ import type { RunOutputRecord } from '../../contracts/run-results';
 // same import in `snapshot.ts`.
 import type { CatalogVersionRef } from '../../contracts/catalog-version';
 import type { RunOriginRef } from '../../contracts/run-origin';
+import type { QueueStartFailure } from '../../services/queue-start-failure-registry';
+import { sanitizeAndCap } from './queue-projector';
 import type {
   ActiveFeatureSummary,
   ActivePipelineSummary,
@@ -96,6 +98,42 @@ export interface QueueRuntimeComposerContext {
    * Optional, and an absent one publishes no rows rather than a borrowed list.
    */
   readonly rowsOf?: (queueId: string) => readonly QueueItem[];
+  /**
+   * Feature 187 (FR-001) — this queue's outstanding failed start, already
+   * projected. Handed in projected rather than raw for the same reason `rowsOf`
+   * is: the sanitizer belongs to the composer that owns it, and this module has
+   * none. `projectStartFailure` below is what the caller applies.
+   *
+   * Optional, and an absent one publishes no report rather than a fabricated
+   * absence of one — the two read the same on the wire, but only one of them is
+   * a claim this module is entitled to make.
+   */
+  readonly startFailureOf?: (queueId: string) => QueueRuntime['startFailure'];
+}
+
+/**
+ * Feature 187 (FR-002) — one queue's failed start, as the sidebar reads it.
+ *
+ * `undefined` (no registry wired) and `null` (a registry holding no report)
+ * project the same way, because the surface says the same thing about both:
+ * nothing to report. The distinction matters upstream, not here.
+ *
+ * `summary` goes through the same `sanitizeAndCap` as `pausedReason` and
+ * `lastErrorSummary`. This message is the one in the feature that comes straight
+ * off a driver's `Error`, so it is the likeliest to name a path on the
+ * operator's disk; there is exactly one function in the projection allowed to
+ * decide what error text reaches the wire, and this is not a second one.
+ */
+export function projectStartFailure(
+  raw: QueueStartFailure | null | undefined,
+  sanitize: (value: string) => string
+): QueueRuntime['startFailure'] {
+  if (raw === null || raw === undefined) return null;
+  return Object.freeze({
+    admission: raw.admission,
+    at: new Date(raw.at).toISOString(),
+    summary: sanitizeAndCap(raw.message, sanitize)
+  });
 }
 
 /**
@@ -108,7 +146,12 @@ function emptyRuntime(
   summary: QueueSummary,
   lifecycle: QueueLifecycle,
   pendingCount: number,
-  tasks: readonly QueueItem[]
+  tasks: readonly QueueItem[],
+  // Feature 187 — a report survives here and nowhere else. Every other field on
+  // this shape is empty because the queue owns no Run; the failed start is the
+  // one fact about a queue that owns no Run *because* the start failed, so
+  // emptying it with the rest would erase exactly the case FR-001 is about.
+  startFailure: QueueRuntime['startFailure']
 ): QueueRuntime {
   return Object.freeze({
     queueId: summary.id,
@@ -120,6 +163,7 @@ function emptyRuntime(
     phaseOverrides: Object.freeze([]) as QueueRuntime['phaseOverrides'],
     manualPause: null,
     phaseBreakpoints: Object.freeze([]) as QueueRuntime['phaseBreakpoints'],
+    startFailure,
     pendingCount,
     tasks
   });
@@ -180,8 +224,11 @@ export function composeQueueRuntimes(ctx: QueueRuntimeComposerContext): readonly
       const pendingCount = requests.filter((request) => request.status === 'pending').length;
       const lifecycle = ctx.lifecycleOf(summary.id);
       const tasks = Object.freeze((ctx.rowsOf?.(summary.id) ?? []).slice());
+      const startFailure = ctx.startFailureOf?.(summary.id) ?? null;
       const projection = ctx.runOf(summary.id);
-      if (projection === null) return emptyRuntime(summary, lifecycle, pendingCount, tasks);
+      if (projection === null) {
+        return emptyRuntime(summary, lifecycle, pendingCount, tasks, startFailure);
+      }
       const run = projection.run;
       return Object.freeze({
         queueId: summary.id,
@@ -197,6 +244,7 @@ export function composeQueueRuntimes(ctx: QueueRuntimeComposerContext): readonly
         ),
         manualPause: projectManualPause(run),
         phaseBreakpoints: projectBreakpoints(run),
+        startFailure,
         pendingCount,
         tasks
       });
