@@ -12,7 +12,11 @@
     setPhaseBreakpoint,
     clearPhaseBreakpoint
   } from '../lib/phase-breakpoint-ipc';
-  import { phaseDeleteConfirmation, type DeleteConfirmationCopy } from '../lib/deletion-confirmation';
+  import {
+    phaseDeleteConfirmation,
+    type DeleteConfirmationCopy,
+    type DeleteConfirmationStatus
+  } from '../lib/deletion-confirmation';
   import { useConfirm } from '../lib/use-confirm';
   import { postCommand } from '../lib/vscode-api';
   import { CMD_RETRY_PHASE_NOW } from '../lib/messages';
@@ -111,20 +115,17 @@
   const hasActivePhase = $derived(currentPhase !== null);
   const isManuallyPaused = $derived(manualPauseAt !== null);
   /**
-   * The conjunct every `queueId`-addressed control shares, spelled once rather
-   * than repeated per control — the off-target defect was in part a shape where
-   * each control restated its own precondition, so a missing conjunct was
+   * The conjunct every `queueId`-addressed, active-phase control shares
+   * (Pause/Resume/Restart/Skip/Retry-now), spelled once rather than repeated
+   * per control — the off-target defect was in part a shape where each
+   * control restated its own precondition, so a missing conjunct was
    * invisible.
    */
   const canControlRun = $derived(isPrimary && targetsSubjectRun && hasActivePhase);
   const pauseDisabled = $derived(!canControlRun || isManuallyPaused);
   const resumeDisabled = $derived(!canControlRun || !isManuallyPaused);
   const restartDisabled = $derived(!canControlRun);
-  const hasOverride = $derived(
-    currentPhase !== null && phaseOverrides.some((override) => override.phaseId === currentPhase)
-  );
-  const overrideDisabled = $derived(!canControlRun);
-  const enableDisabled = $derived(!canControlRun || !hasOverride);
+  const skipDisabled = $derived(!canControlRun);
   /**
    * Shares `canControlRun` with its siblings rather than restating it. The
    * off-target conjunct is the load-bearing one: `isWaitingRetry` is read off
@@ -133,16 +134,47 @@
    * backoff of whichever Run the queue happens to be executing.
    */
   const retryNowDisabled = $derived(!canControlRun);
+
+  /**
+   * FR-R3-151 (FR-010) — Disable and Enable are queue-addressed the same way
+   * Pause/Resume/Restart/Skip are (both post `queueId`), so they share the
+   * same `isPrimary && targetsSubjectRun` off-target guard those controls
+   * do — but they target the operator's *selected* tile, not the Run's
+   * active Phase, so the third conjunct is `selectedPhase !== null` rather
+   * than `hasActivePhase`. A `null` selection disables the control; it does
+   * NOT fall back to `currentPhase` (that fallback was the defect this
+   * feature closes).
+   */
+  const canControlSelected = $derived(isPrimary && targetsSubjectRun && selectedPhase !== null);
+  // FR-R3-151 (FR-005) — mirrors `decidePhaseControl`'s 'disable' branch:
+  // eligible only when the selection is still future. `not-started` is the
+  // projector's (T014) exact spelling of that same test.
+  const disableDisabled = $derived(!canControlSelected || selectedPhaseState !== 'not-started');
+  // The button-label toggle below still asks "any override" — Enable is
+  // still the right label for a `skipped` selection too, and
+  // `showSetBreakpoint` wants "any override" as well; `enableDisabled` below
+  // is the one that must be precise about which override.
+  const selectedHasOverride = $derived(
+    selectedPhase !== null && phaseOverrides.some((override) => override.phaseId === selectedPhase)
+  );
+  // FR-R3-151 (FR-006) — mirrors `decidePhaseControl`'s 'enable' branch:
+  // eligible only when future AND disabled-overridden. `disabled` is the
+  // projector's exact spelling of both at once, closing the earlier "any
+  // override" check that left Enable clickable — and silently refused —
+  // for a stale `skipped` override.
+  const enableDisabled = $derived(!canControlSelected || selectedPhaseState !== 'disabled');
   /**
    * Delete is deliberately NOT gated on `targetsSubjectRun`, and it is the one
-   * control that is not: it posts `removeTaskPhase(activeTaskId, currentPhase)`
+   * control that is not: it posts `removeTaskPhase(activeTaskId, selectedPhase)`
    * — a Task id and a phase drawn from the *displayed* set, both of which
-   * describe the surface's own subject. It is already addressed correctly, so
-   * disabling it here would remove a working capability to fix a defect it does
-   * not have. The bug report proposed conjoining the guard into every
-   * `*Disabled`; that over-applies, and this is the exception.
+   * describe the surface's own subject, and `removeTaskPhase` resolves its own
+   * queue from the Task id rather than taking one, so there is no off-target
+   * Run to guard against the way there is for `queueId`-addressed controls.
+   * The bug report proposed conjoining the guard into every `*Disabled`; that
+   * over-applies, and this is the exception. FR-R3-151 (FR-010) moves its
+   * target from `currentPhase` to `selectedPhase`, unchanged otherwise.
    */
-  const deleteDisabled = $derived(!isPrimary || !hasActivePhase || activeTaskId === null);
+  const deleteDisabled = $derived(!isPrimary || selectedPhase === null || activeTaskId === null);
 
   /**
    * Why a control is greyed out, when the reason is the address rather than the
@@ -163,10 +195,7 @@
   //   - the selected phase has no skip/disable/remove override,
   //   - the selected phase has no breakpoint already armed,
   //   - the active run id is known so the IPC can target it.
-  const selectedHasOverride = $derived(
-    selectedPhase !== null &&
-      phaseOverrides.some((override) => override.phaseId === selectedPhase)
-  );
+  // (`selectedHasOverride` above already answers the second bullet.)
   const selectedHasBreakpoint = $derived(
     selectedPhase !== null &&
       phaseBreakpoints.some((bp) => bp.phaseId === selectedPhase)
@@ -225,13 +254,17 @@
   }
 
   async function onSkip(event: MouseEvent): Promise<void> {
-    if (overrideDisabled || currentPhase === null) return;
+    if (skipDisabled || currentPhase === null) return;
+    // `$props()` bindings are live: capture before the confirm's `await`, so
+    // Confirm dispatches what the dialog named, not whatever is current later.
+    const targetPhase = currentPhase;
+    const targetQueueId = queueId;
     const confirmed = await useConfirm('run.skip-phase', {
       originatingElement: event.currentTarget as HTMLElement,
-      context: { phaseName: currentPhase }
+      context: { phaseName: targetPhase }
     });
     if (!confirmed) return;
-    skipPhase(currentPhase, queueId);
+    skipPhase(targetPhase, targetQueueId);
   }
 
   /**
@@ -242,29 +275,51 @@
    */
   async function onRetryNow(event: MouseEvent): Promise<void> {
     if (retryNowDisabled || !isWaitingRetry || currentPhase === null) return;
+    const targetQueueId = queueId; // live-binding capture, as in `onSkip`
     const confirmed = await useConfirm('run.retry-phase-now', {
       originatingElement: event.currentTarget as HTMLElement,
       context: { phaseName: currentPhase }
     });
     if (!confirmed) return;
-    postCommand(CMD_RETRY_PHASE_NOW, { queueId });
+    postCommand(CMD_RETRY_PHASE_NOW, { queueId: targetQueueId });
   }
 
+  // FR-R3-151 (FR-010) — Disable, Enable, and Delete all target
+  // `selectedPhase`, the tile the operator selected, never `currentPhase`.
   function onDisable(): void {
-    if (overrideDisabled || currentPhase === null) return;
-    disablePhase(currentPhase, queueId);
+    if (disableDisabled || selectedPhase === null) return;
+    disablePhase(selectedPhase, queueId);
   }
 
   function onEnable(): void {
-    if (enableDisabled || currentPhase === null) return;
-    enablePhase(currentPhase, queueId);
+    if (enableDisabled || selectedPhase === null) return;
+    enablePhase(selectedPhase, queueId);
+  }
+
+  /**
+   * `PhaseTile['state']`'s `'not-started'` is `DeleteConfirmationStatus`'s
+   * `'future'` (shared vocabulary with Task deletion); every other tile
+   * state literal passes through unchanged. `null` means `PhaseProgression`
+   * could not find the selected id in its current tile list (for example, a
+   * stale selection surviving past its own deletion) — `'stale'` falls
+   * through to the generic copy rather than misleadingly claiming "active".
+   */
+  function toDeleteConfirmationStatus(state: PhaseTile['state'] | null): DeleteConfirmationStatus {
+    if (state === null) return 'stale';
+    return state === 'not-started' ? 'future' : state;
   }
 
   function onDelete(): void {
-    if (deleteDisabled || currentPhase === null || activeTaskId === null) return;
-    const copy = phaseDeleteConfirmation(currentPhase, 'active');
+    if (deleteDisabled || selectedPhase === null || activeTaskId === null) return;
+    // Same live-binding hazard as `onSkip`, sharper here: `onConfirm` below
+    // doesn't run until the operator acts on the dialog, by which a re-render
+    // could change the selection/task. Capturing both ties Confirm to what
+    // the dialog described, and lets TypeScript narrow away the `!`s below.
+    const targetPhase = selectedPhase;
+    const targetTaskId = activeTaskId;
+    const copy = phaseDeleteConfirmation(targetPhase, toDeleteConfirmationStatus(selectedPhaseState));
     if (onRequestConfirm) {
-      onRequestConfirm(copy, () => removeTaskPhase(activeTaskId!, currentPhase!));
+      onRequestConfirm(copy, () => removeTaskPhase(targetTaskId, targetPhase));
     }
   }
 </script>
@@ -321,26 +376,26 @@
     type="button"
     data-testid="phase-control-skip"
     aria-label="Skip active phase"
-    aria-disabled={aria(overrideDisabled)}
+    aria-disabled={aria(skipDisabled)}
     title={controlTitle('Skip active phase')}
     onclick={onSkip}
   >Skip</button>
-  {#if hasOverride}
+  {#if selectedHasOverride}
     <button
       type="button"
       data-testid="phase-control-enable"
-      aria-label="Enable active phase"
+      aria-label="Enable selected phase"
       aria-disabled={aria(enableDisabled)}
-      title={controlTitle('Enable active phase')}
+      title={controlTitle('Enable selected phase')}
       onclick={onEnable}
     >Enable</button>
   {:else}
     <button
       type="button"
       data-testid="phase-control-disable"
-      aria-label="Disable active phase"
-      aria-disabled={aria(overrideDisabled)}
-      title={controlTitle('Disable active phase')}
+      aria-label="Disable selected phase"
+      aria-disabled={aria(disableDisabled)}
+      title={controlTitle('Disable selected phase')}
       onclick={onDisable}
     >Disable</button>
   {/if}
@@ -348,9 +403,9 @@
     type="button"
     class="destructive"
     data-testid="phase-control-delete"
-    aria-label="Delete active phase from pipeline"
+    aria-label="Delete selected phase from pipeline"
     aria-disabled={aria(deleteDisabled)}
-    title="Remove the active phase from this task's pipeline (requires confirmation)"
+    title="Remove the selected phase from this task's pipeline (requires confirmation)"
     onclick={onDelete}
   >Delete</button>
   {#if showSetBreakpoint}

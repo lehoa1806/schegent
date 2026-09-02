@@ -190,26 +190,34 @@ describe('FR-R3-008 — an override adjusts the recorded total in the same write
     });
   });
 
-  it.each([
-    ['skipPhase', (c: SchegentWorkflowController) => c.skipPhase('speckit-plan')],
-    ['disablePhase', (c: SchegentWorkflowController) => c.disablePhase('speckit-plan')]
-  ])('narrows the total and raises progress when %s overrides a remaining phase', async (
-    _name,
-    act
-  ) => {
-    await seedRun();
-    const before = percentOf(store.getRun(DEFAULT_QUEUE_ID));
-    expect(before, '1 of 4').toBe(25);
+  // FR-R3-151 — `skipPhase` used to be parameterized here alongside
+  // `disablePhase` because, before that feature, Skip accepted any Phase id
+  // regardless of activeness and so could "override a remaining phase" the
+  // same way Disable can. FR-R3-151's authoritative operation matrix
+  // restricts Skip to the Task's current active Phase only (spec.md FR-004;
+  // `PhaseControlService.skipPhase` now refuses a non-active target with
+  // `phase-not-active` via the shared classifier) — Disable is the operation
+  // that legitimately targets a future/remaining Phase, so it is the only
+  // case left in this table. `tests/unit/controller/workflow-controller-
+  // skip-phase.test.ts` covers Skip's own (active-phase-only) scope.
+  it.each([['disablePhase', (c: SchegentWorkflowController) => c.disablePhase('speckit-plan')]])(
+    'narrows the total and raises progress when %s overrides a remaining phase',
+    async (_name, act) => {
+      await seedRun();
+      const before = percentOf(store.getRun(DEFAULT_QUEUE_ID));
+      expect(before, '1 of 4').toBe(25);
 
-    expect(await act(controller)).toEqual({ ok: true });
+      expect(await act(controller)).toEqual({ ok: true });
 
-    const after = store.getRun(DEFAULT_QUEUE_ID)!;
-    expect(after.plannedTotal!.phaseCount, 'the overridden phase left the plan').toBe(3);
-    // Fewer phases left to do, the same one done: progress rises. It must not
-    // fall, which is what a numerator-only or denominator-only change would do.
-    expect(percentOf(after), '1 of 3').toBe(33);
-    expect(percentOf(after)).toBeGreaterThan(before);
-  });
+      const after = store.getRun(DEFAULT_QUEUE_ID)!;
+      expect(after.plannedTotal!.phaseCount, 'the overridden phase left the plan').toBe(3);
+      // Fewer phases left to do, the same one done: progress rises. It must
+      // not fall, which is what a numerator-only or denominator-only change
+      // would do.
+      expect(percentOf(after), '1 of 3').toBe(33);
+      expect(percentOf(after)).toBeGreaterThan(before);
+    }
+  );
 
   it('narrows the total when a remaining phase is removed', async () => {
     const run = await seedRun();

@@ -19,8 +19,8 @@ predicted it: its author sampled the set and found every gate well motivated.
 
 | Figure | Value | Date | Method |
 |---|---|---|---|
-| Gate files | **181** | 2026-09-02 | `*.test.ts` under `tests/lint/` recursively |
-| Marked `unique` | 166 | 2026-09-02 | hand verdict |
+| Gate files | **182** | 2026-09-02 | `*.test.ts` under `tests/lint/` recursively |
+| Marked `unique` | 167 | 2026-09-02 | hand verdict |
 | Marked `partially redundant` | 15 | 2026-09-02 | hand verdict |
 | Marked `redundant` | 0 | 2026-09-02 | hand verdict |
 
@@ -266,6 +266,7 @@ changing one means updating that machinery in the same commit.
 | `ownership-registry-wiring.test.ts` | FR-R3-003 — ownership arbitration is wired to the authoritative storage | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `pending-transition-drain-trigger.test.ts` | Lifecycle round-check finding A — a pending transition must trigger a drain | — | unique | `tests/integration/retry-restart-drain-trigger.test.ts` holds the behaviour for the two commands that exist today, which is the half a lint cannot assert. It cannot hold the invariant: a fourth `status: 'pending'` writer added tomorrow is absent from that test by construction, and that omission — three implementations, none triggering a drain — is what this gate exists to refuse. No sibling gate, type, generated contract or compiler flag asserts it; see Method |
 | `permanent-limit-agreement.test.ts` | permanent-limit agreement (FR-R3-083) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
+| `phase-control-decision-census.test.ts` | every PhaseControlService mutation routes through decidePhaseControl (FR-R3-151, T1625) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `phase-field-forwarding-seam.test.ts` | the authoring -> invocation seam (feature 155 security review, S7) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `phase-removal-confirmation.test.ts` | Definition removal confirmation boundary | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `phase-resume-has-a-trigger.test.ts` | a phase control that resumes a Run must arm a trigger (T1614) | `pending-transition-drain-trigger.test.ts` (the same shape, a different subject) | unique | the sibling reads `status: 'pending'` writers across `src/` and asserts their *command registrations* drain a named queue; this reads `status: 'running'` writers inside `PhaseControlService` and asserts the *method* arms a resume. The overlap is the argument — nothing polls, so a state write needs a trigger — and not the subject: neither gate reads a line the other reads, and deleting either leaves its own transition unguarded. Landed green, which is the finding: T1614's pass found the property already holding at every phase control. The probe that shows it load-bearing is deleting `scheduleResume` from `resumeActivePhase`, which fails direction 1; adding an unclassified `status: 'running'` writer fails direction 2 |
