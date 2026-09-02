@@ -256,7 +256,30 @@ const BUDGETS = [
   // `src/config/phase-runner-policy.ts` beside `writesGitMetadata`; the shell
   // calls it and forwards the answer, which is what a shell should do. That is
   // why this is headroom rather than a split.
-  { path: 'src/controller/phase-runner.ts', max: 1_069 },
+  // Bugfix 2026-09-02 — 1069 → 1073 for the `detail` field on the
+  // `session-compact-failed` warning. Four lines: one property and a three-line
+  // note.
+  //
+  // WHAT IT BUYS. This catch swallowed the compaction error entirely and logged a
+  // phase and an iteration. A pin to a Model that does not exist therefore failed
+  // at every phase boundary of an eight-hour run — dropping the session each time
+  // and restarting the next phase cold — and no operator-readable sink named the
+  // Model. The one sentence that did reached `cli-transport.log` only. The `err`
+  // binding was on the eslint baseline as unused for the same reason, so the
+  // record was accurate and its significance invisible.
+  //
+  // WHY IT IS NOT CHEAPER. An earlier draft wrapped the message in
+  // `logger.sanitize` here and carried the whole rationale, and measured 1080. Both
+  // came back out: `warn` folds context into the line before `write()` sanitizes
+  // it, so the explicit call was a second redaction of an already-redacted string,
+  // and the reasoning about bounding and redaction belongs beside `failureExcerpt`
+  // in `session-compactor.ts`, which is where it is. What remains here is the
+  // field and the one thing a reader could get wrong — passing `err` itself, which
+  // would put a stack trace into a sink that is not access-controlled.
+  //
+  // NO RESPONSIBILITY WAS ADDED. The excerpt is built by the compactor; the shell
+  // logs a string it was handed. Headroom, not a split.
+  { path: 'src/controller/phase-runner.ts', max: 1_073 },
   // FR-R3-052 / H-03 (2026-08-24) — 400 → 415 for the size check that was
   // missing. `stat()` was already called here and only `isFile()` was read, so
   // `readFile()` took a multi-GiB sidecar wholly into memory. The bound, the

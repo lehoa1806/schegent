@@ -277,15 +277,14 @@
       }
     },
     "@typescript-eslint/no-unused-vars": {
-      "host": 2,
+      "host": 1,
       "webview": 10,
       "owner": {
         "decision": "D9 — Six baseline entries, each owned",
         "reference": "specs/112-webview-lint-and-type-aware-rules/plan.md"
       },
-      "reductionNote": "12 bindings nothing reads, of four kinds: 2 caught-error parameters (src/controller/phase-runner.ts:401, tests/integration/task-lifecycle-events.test.ts:148), 3 unused type imports, 2 dead imports in webview-ui/src/components/PhaseProgression.svelte, and 5 unused destructurings and test-callback parameters. Each is a one-line deletion or an _ prefix with no behavioural risk, so the route is to clear each when its file is next edited. The rule stays at warn per FR-028 and is baselined anyway, because a warn nothing bounds is how 12 becomes 120.",
+      "reductionNote": "11 bindings nothing reads, of four kinds: 1 caught-error parameter (tests/integration/task-lifecycle-events.test.ts:148), 3 unused type imports, 2 dead imports in webview-ui/src/components/PhaseProgression.svelte, and 5 unused destructurings and test-callback parameters. Each is a one-line deletion or an _ prefix with no behavioural risk, so the route is to clear each when its file is next edited. The rule stays at warn per FR-028 and is baselined anyway, because a warn nothing bounds is how 12 becomes 120. Cleared by that route: src/controller/phase-runner.ts's swallowed `err` in the session-compaction catch, which now carries the CLI's own account of the refusal into the WARN line — the binding was unread because the failure it described was being discarded.",
       "hostFiles": {
-        "src/controller/phase-runner.ts": 1,
         "tests/integration/task-lifecycle-events.test.ts": 1
       },
       "webviewFiles": {

@@ -484,9 +484,13 @@ export class PhaseRunner {
         effectiveSessionReuse = false;
         effectiveIsContinue = false;
         effectiveResumeSessionId = undefined;
+        // `detail` is the CLI's own account of the refusal, already bounded and
+        // redacted by `failureExcerpt`; without it this line named a phase and no
+        // cause. The message, never `err` — a stack does not belong in this sink.
         this.logger.warn('session-compact-failed', {
           phase: inputs.phase,
-          iteration: inputs.iteration
+          iteration: inputs.iteration,
+          detail: err instanceof Error ? err.message : 'unknown error'
         });
         await this.appendRequiredAudit({
           runId: inputs.runId,
