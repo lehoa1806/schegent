@@ -147,6 +147,61 @@ describe('ClaudeCliMonitor state machine', () => {
     expect(mc.audit.entries.find((e) => e.eventType === 'monitor-stall')).toBeDefined();
   });
 
+  // The detector was constructed in `onStart` and armed only by the first chunk, so it
+  // measured gaps BETWEEN outputs and could not measure the gap before the first one. A
+  // phase that never wrote a byte was invisible to it for as long as it lived — 2h26m in
+  // the workspace this was found in, with `status` still 'starting' the whole time.
+  //
+  // `handleStall` has always carried the arm for this case:
+  //   `state.lastStdoutMonotonic !== null ? … : monotonic - state.startedAtMonotonic`
+  // and it was unreachable, because arming required the output whose absence is the bug.
+  it('a child that never writes a byte stalls at the threshold', () => {
+    mc.monitor.onStart('run-1', 'speckit-review', 1);
+    mc.advance(90_000);
+    const state = mc.monitor.getCurrentState()!;
+    expect(state.status).toBe('stalled');
+    expect(state.detectedIssues).toContain('stall');
+    const stall = mc.audit.entries.find((e) => e.eventType === 'monitor-stall');
+    expect(stall).toBeDefined();
+    // Measured from spawn, since there is no last-output instant to measure from.
+    expect((stall!.payload as { msSinceLastStdout: number }).msSinceLastStdout).toBe(90_000);
+  });
+
+  it('first output withdraws a no-output stall', () => {
+    mc.monitor.onStart('run-1', 'speckit-review', 1);
+    mc.advance(90_000);
+    expect(mc.monitor.getCurrentState()!.status).toBe('stalled');
+    mc.monitor.onStdoutChunk('run-1', 'finally\n');
+    expect(mc.monitor.getCurrentState()!.status).toBe('running');
+  });
+
+  // The other direction: arming at spawn must not declare a stall against a child that
+  // simply took a while to warm up. The first chunk rearms rather than double-arming,
+  // because `armTimer` clears any timer it finds.
+  it('a slow first byte inside the threshold is not a stall', () => {
+    mc.monitor.onStart('run-1', 'speckit-review', 1);
+    mc.advance(60_000);
+    mc.monitor.onStdoutChunk('run-1', 'hello\n');
+    expect(mc.monitor.getCurrentState()!.status).toBe('running');
+    mc.advance(60_000);
+    expect(mc.monitor.getCurrentState()!.status).toBe('running');
+    expect(mc.fakeTimer.timers).toHaveLength(1);
+  });
+
+  // Pausing before the first output used to be a no-op, because `pause()` only banks
+  // remaining time when a timer is armed. The paused stretch now stays uncounted here too.
+  it('a pause before the first output does not consume the threshold', () => {
+    mc.monitor.onStart('run-1', 'speckit-review', 1);
+    mc.advance(30_000);
+    mc.monitor.onWorkflowPaused();
+    mc.advance(600_000);
+    mc.monitor.onWorkflowResumed();
+    mc.advance(50_000);
+    expect(mc.monitor.getCurrentState()!.status).not.toBe('stalled');
+    mc.advance(15_000);
+    expect(mc.monitor.getCurrentState()!.status).toBe('stalled');
+  });
+
   // FR-R3-106 (FR-072, FR-074) — REPLACES `stderr activity during silence does NOT reset
   // stall timer`, which asserted the defect as behaviour and carried no rationale.
   //

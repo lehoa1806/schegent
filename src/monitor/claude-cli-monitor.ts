@@ -190,16 +190,32 @@ export class ClaudeCliMonitor {
     };
     this.states.set(runId, state);
     this.latestRunId = runId;
-    this.detectors.set(
-      runId,
-      new StallDetector({
-        thresholdMs: this.opts.stallThresholdMs,
-        monotonicNow: this.opts.monotonicNow,
-        setTimeout: this.opts.setTimeout ?? ((cb, ms) => setTimeout(cb, ms)),
-        clearTimeout: this.opts.clearTimeout ?? ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>)),
-        onStall: () => this.handleStall(runId)
-      })
-    );
+    const detector = new StallDetector({
+      thresholdMs: this.opts.stallThresholdMs,
+      monotonicNow: this.opts.monotonicNow,
+      setTimeout: this.opts.setTimeout ?? ((cb, ms) => setTimeout(cb, ms)),
+      clearTimeout: this.opts.clearTimeout ?? ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>)),
+      onStall: () => this.handleStall(runId)
+    });
+    this.detectors.set(runId, detector);
+    // ARM AT SPAWN, not on first output.
+    //
+    // The detector was constructed here and armed only inside the chunk handlers, so it
+    // measured the gaps BETWEEN outputs and could not measure the gap before the first
+    // one. A phase that produced nothing was outside its coverage entirely, for as long as
+    // it lived — 2h26m of a wedged `speckit-review`, with `status` still 'starting', in the
+    // workspace this was found in. That is the failure a watchdog exists for, and it was
+    // the one shape it could not see. `handleStall` has always carried the arm for it
+    // (`lastStdoutMonotonic === null` -> measure from `startedAtMonotonic`); the arm was
+    // unreachable, because arming required the output whose absence is the condition.
+    //
+    // Nothing downstream needs to change to recover. `armTimer` clears any timer it finds,
+    // so the first chunk's `start()` is a rearm rather than a second timer; both chunk
+    // handlers already withdraw a declared stall (FR-R3-106); and `pause()` can now bank
+    // remaining time across a pause that lands before the first byte, where it used to be
+    // a no-op. A slow first byte costs a recoverable status blip and one audit event —
+    // `monitor-stall` fails no phase — which is the right price for seeing a silent hang.
+    detector.start();
     this.appendAudit(runId, 'monitor-invocation-started', { pid }, 'info');
     this.notify();
   }
