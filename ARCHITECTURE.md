@@ -171,8 +171,27 @@ the request, refuses a fresh foreign workspace lock, addresses the requested
 queue's pause state, and enforces the scheduled-start horizon. Reset and Git
 approval have explicit host dialogs rather than relying on a webview click.
 
+The acknowledgement a route posts is the host command's own answer, narrowed to
+one closed vocabulary — `accepted`, `no-op`, `refused`, `failed` — by a single
+converter rather than by each route. Eligibility is decided once, host-side, and
+the route reports that decision; a second oracle at the boundary would be a
+second way to be wrong. Two shapes carry no value of their own and are converted
+in the same place: `undefined` from the Workspace Trust gate becomes a refusal,
+and a result no reading covers becomes `failed`. The asymmetry is deliberate —
+an unrecognized result is a wiring defect, and a false `failed` is recoverable
+where a false `accepted` is not. Non-accepting reasons are codes, never error
+messages, because the reason crosses to the webview and a message from that
+layer carries paths; the sanitized message goes to the log.
+
+A confirmable action's key is likewise one declaration. `src/contracts/action-keys.ts`
+holds the tuple; the host allowlist is a set built over it and the webview's
+`ActionKey` union is a generated whole-file mirror of it, so the two sides cannot
+be edited apart without a `contracts:check` failure that names the stale file.
+
 <!-- Source: src/contracts/sidebar-ipc.ts -->
 <!-- Source: src/contracts/sidebar-command-metadata.ts -->
+<!-- Source: src/contracts/command-outcome.ts -->
+<!-- Source: src/contracts/action-keys.ts -->
 <!-- Source: src/ui/sidebar/message-router.ts -->
 <!-- Source: src/ui/sidebar/mutation-command-executor.ts -->
 <!-- Source: src/services/guarded-run-service.ts -->
@@ -234,6 +253,25 @@ per-queue execution lease, asks the controller to admit the task, and releases
 or transitions ownership at the appropriate terminal boundary. A paused queue
 does not block a sibling queue, and a queue never runs two Tasks concurrently.
 
+**A queue can stop itself on a failed Task (FR-R3-156).** `drainQueueOnce` asks
+nine ordered questions before starting a Task; the ninth, step 2a, sits between
+the operator-pause check and the pending-head selection. It derives a per-queue
+`QueueFailurePolicy` (`halt-on-failure`, the workspace default, or `continue`)
+from `QueueState.failurePolicy` and evaluates `evaluateQueueHalt` over the
+queue's current rows (`src/queue/queue-halt-policy.ts`): under `halt-on-failure`,
+a row that ended `failed` refuses every further start on that queue until an
+operator retries or removes it, with `canceled` explicitly excluded from the
+blocking set. Nothing about the halt is stored — it is recomputed from the
+queue's own rows on every drain attempt, so retrying or removing the failed row
+clears it with no code of its own. The check reads only state step 1 already
+fetched, costs no additional store call, and sits before the execution-lease
+acquire, so a halted queue's lease is never touched and no other queue's drain
+is affected. `QueueStartFailure` (`src/services/queue-start-failure-registry.ts`)
+is a discriminated union of the pre-existing admission-refusal variant and a new
+`halted` variant carrying the failed Task's id and sanitized name, reported
+through the same queue-surface channel an admission refusal already used — no
+new lifecycle value, no new audit event.
+
 **Task status transitions are one closed table (FR-R3-153).** `QueueManager`'s
 status writers — `markInFlight`, `pause`, `finish`, and `retry` — and
 `restart-canceled-task.ts`'s return-to-pending writer each consult
@@ -261,12 +299,69 @@ classifier — it stays `task-deletion.ts`'s concern, which already brings an
 in-flight task's run to cancellation and releases its execution lease before
 the row is removed, for any Run status short of terminal.
 
+**Queue cleanup is addressed, and workspace-wide reset is a separate
+operation (FR-R3-150).** Queue Detail's Clean All clears *the queue the
+operator is looking at* via `CMD_CLEAR_QUEUE { queueId }`, handled by
+`src/commands/clear-queue.ts`; `schegent.clearAll` remains the one
+workspace-wide reset and is no longer reachable from Queue Detail. The two
+are deliberately distinct rather than one command with an optional
+`queueId`, at every layer: separate IPC commands, separate orchestrators,
+and separate audit events (`queue-cleared` vs `queue-cleared-all`), because
+an omitted or defaulted queue id is precisely the failure this closes — an
+operator wiping one queue and silently resetting the workspace. The
+`no-unaddressed-queue-command.test.ts` gate fails the build on a webview
+queue-lifecycle sender that does not name its queue.
+
+The queue-scoped orchestrator mirrors the workspace-wide one's sequence —
+confirm, cancel active work, wait for a bounded runner acknowledgement,
+write once, emit — but every step is addressed. Its runner-ack probe
+(`src/controller/queue-runner-ack.ts`) races the queue-addressed
+`controller.isDriving(queueId)` rather than the workspace-wide
+`controller.running` getter, so cleaning one queue never waits on, or
+reports on, a sibling's still-executing Run; the poll budget and the
+runner-state vocabulary the two probes share live in
+`src/controller/runner-ack-shared.ts` so a change to either is made once.
+The state write is a single `QueueManager.clearQueue(queueId)` memento
+write that clears that queue's tasks, in-flight id, pause fields, and
+scheduled start together and settles its lifecycle at `active-empty` —
+one write, so no reader observes a half-cleared queue. Cancelling an armed
+scheduled start is unconditional rather than gated on the queue having
+tasks, because a schedule is itself state Clean All promises to clear
+(LC-Q-05), and a queue whose only remaining state is an armed schedule is
+therefore not a no-op.
+
+The workspace-wide reset (`clearAll`) is a separate method, not a loop over
+the queue-scoped one, and both statements above hold for it per queue: it
+disarms every armed timer before it writes, settles each queue's lifecycle
+and schedule fields in the same write that empties it, counts an armed
+schedule as dirty state, and reports `scheduleCleared` on its result and in
+its `queue-cleared-all` history entry. It stays a separate method because it
+runs one workspace-wide runner-ack probe rather than one per queue, it
+iterates queue *states* where the queue-scoped path refuses ids absent from
+the *registry*, and it alone resets the workspace-wide watchdog backoff that
+FR-007 keeps out of the queue-scoped path. The one lifecycle its per-queue
+write preserves is `operator-paused`, because the pause release is a later
+step that also clears `pauseSource`, resumes the queue's matching Run, and
+records the mutation — and that step's own already-not-paused early return
+would swallow all three if the emptying write settled the lifecycle first.
+What the two methods do share is the per-queue field write and the no-op
+predicate, and those live in `src/queue/queue-reset-settle.ts` as two pure
+functions — pure so each method still issues its own single `updateQueue`
+call, which is what keeps the one-write invariant above intact.
+
 <!-- Source: src/queue/queue-registry.ts -->
 <!-- Source: src/queue/queue-manager.ts -->
+<!-- Source: src/queue/queue-reset-settle.ts -->
 <!-- Source: src/queue/feature-request.ts -->
 <!-- Source: src/queue/task-transition-decision.ts -->
+<!-- Source: src/commands/clear-queue.ts -->
+<!-- Source: src/controller/queue-runner-ack.ts -->
+<!-- Source: src/controller/runner-ack-shared.ts -->
 <!-- Source: src/services/auto-drain-coordinator.ts -->
 <!-- Source: src/services/guarded-run-service.ts -->
+<!-- Source: src/services/queue-start-failure-registry.ts -->
+<!-- Source: src/contracts/queue-failure-policy.ts -->
+<!-- Source: src/queue/queue-halt-policy.ts -->
 <!-- Source: src/state/execution-lease.ts -->
 <!-- Source: src/state/workspace-state.ts -->
 <!-- Source: src/controller/task-deletion.ts -->
@@ -576,8 +671,13 @@ A new backend implements the shared runner contract, registers in the factory,
 uses the common spawn environment and bounded output result, and documents its
 actual permission-shaped argv. A new mutating IPC command must join the command
 metadata registry, receive runtime payload validation, and pass through the
-trust and primacy executor. A new persisted field requires an old-record read
-story and, when record shape changes, the next forward migration.
+trust and primacy executor. It must also acknowledge what the host command
+answered rather than the fact that it asked: a route that dispatches and then
+acknowledges `accepted` unconditionally reports a refusal as a success, which is
+a defect no test of the host command can catch. A new confirmable action adds
+its key to the canonical tuple, never to one side's copy. A new persisted field
+requires an old-record read story and, when record shape changes, the next
+forward migration.
 
 A new catalog definition or lifecycle operation must preserve the three-kind
 closed union, optimistic concurrency, trust ordering, published-version
@@ -620,7 +720,10 @@ on:
    refused.
 9. Absolute workspace paths and unsanitized backend output do not belong in
    webview projections or structured audit payloads.
-10. Remote or multi-user expansion requires a new authority model, not merely a
+10. A mutation acknowledgement reports the host's own decision, from one closed
+    outcome vocabulary; the boundary does not re-decide eligibility, and it
+    never reports an unattempted or unrecognized result as accepted.
+11. Remote or multi-user expansion requires a new authority model, not merely a
     larger local concurrency setting.
 
 <!-- Source: src/extension.ts -->

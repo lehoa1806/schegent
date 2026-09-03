@@ -17,13 +17,25 @@ import type { QueueRuntime } from '../../../lib/snapshot-types';
 /** Fixed so the relative age is an assertion and not a race against the clock. */
 const NOW = Date.parse('2026-09-02T10:35:00.000Z');
 
-function failure(
-  overrides: Partial<NonNullable<QueueRuntime['startFailure']>> = {}
-): NonNullable<QueueRuntime['startFailure']> {
+type AdmissionFailure = Extract<NonNullable<QueueRuntime['startFailure']>, { kind: 'admission' }>;
+type HaltedFailure = Extract<NonNullable<QueueRuntime['startFailure']>, { kind: 'halted' }>;
+
+function failure(overrides: Partial<AdmissionFailure> = {}): AdmissionFailure {
   return {
+    kind: 'admission',
     admission: 'admitNew',
     at: '2026-09-02T10:30:00.000Z',
     summary: 'the backend refused the run',
+    ...overrides
+  };
+}
+
+function haltedFailure(overrides: Partial<HaltedFailure> = {}): HaltedFailure {
+  return {
+    kind: 'halted',
+    taskId: 't-1',
+    taskName: 'ingest data',
+    at: '2026-09-02T10:30:00.000Z',
     ...overrides
   };
 }
@@ -104,5 +116,32 @@ describe('QueueStartFailureNotice', () => {
       props: { queueId: 'q-other', startFailure: failure(), nowMs: NOW }
     });
     expect(getByTestId('queue-start-failure-q-other')).toBeTruthy();
+  });
+});
+
+describe('QueueStartFailureNotice — the halted kind (feature 195, T029)', () => {
+  it('names the failed task rather than an admission attempt', () => {
+    const { getByTestId } = render(QueueStartFailureNotice, {
+      props: { queueId: 'q-1', startFailure: haltedFailure({ taskName: 'ingest data' }), nowMs: NOW }
+    });
+    const text = getByTestId('queue-halted-q-1').textContent;
+    expect(text).toContain('ingest data');
+    expect(text.toLowerCase()).toContain('halted');
+  });
+
+  it('renders no admission-shaped notice for a halted report', () => {
+    const { queryByTestId } = render(QueueStartFailureNotice, {
+      props: { queueId: 'q-1', startFailure: haltedFailure(), nowMs: NOW }
+    });
+    expect(queryByTestId('queue-start-failure-q-1')).toBeNull();
+  });
+
+  it('states the two ways out, not an acknowledgement step', () => {
+    const { getByTestId } = render(QueueStartFailureNotice, {
+      props: { queueId: 'q-1', startFailure: haltedFailure(), nowMs: NOW }
+    });
+    const text = getByTestId('queue-halted-q-1').textContent.toLowerCase();
+    expect(text).toContain('retry');
+    expect(text).toContain('remove');
   });
 });

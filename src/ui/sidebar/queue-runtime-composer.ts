@@ -147,13 +147,30 @@ export function scheduledStartFromQueueState(source: {
  * off a driver's `Error`, so it is the likeliest to name a path on the
  * operator's disk; there is exactly one function in the projection allowed to
  * decide what error text reaches the wire, and this is not a second one.
+ *
+ * Feature 195 (T015, FR-007, FR-008, FR-024) — a `kind: 'halted'` report goes
+ * through the identical `sanitizeAndCap`, on `taskName` rather than `message`:
+ * the failed task's name is operator-authored content on the same terms as
+ * every other string this function already sanitizes.
  */
 export function projectStartFailure(
   raw: QueueStartFailure | null | undefined,
   sanitize: (value: string) => string
 ): QueueRuntime['startFailure'] {
   if (raw === null || raw === undefined) return null;
+  if (raw.kind === 'halted') {
+    return Object.freeze({
+      kind: 'halted',
+      taskId: raw.taskId,
+      // FR-008 requires a name; falling back to the id (never sanitized away,
+      // since it never came from the operator) keeps that guarantee on the
+      // pathological path where sanitizing the description empties it.
+      taskName: sanitizeAndCap(raw.taskName, sanitize) ?? raw.taskId,
+      at: new Date(raw.at).toISOString()
+    });
+  }
   return Object.freeze({
+    kind: 'admission',
     admission: raw.admission,
     at: new Date(raw.at).toISOString(),
     summary: sanitizeAndCap(raw.message, sanitize)

@@ -32,6 +32,9 @@ function makeStore(queueState: {
     getQueue: vi.fn(() => ({
       queueLifecycle: queueState.queueLifecycle ?? 'active-empty',
       pauseSource: null,
+      // Feature 195 (T012) — no scenario in this file carries a failed row;
+      // `...queueState` still lets a call site override it explicitly.
+      requests: [],
       ...queueState
     })),
     // BUG-003 — step 3's second reading. `null` is "this queue holds no Run",
@@ -90,7 +93,8 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
       store: store as never,
       queue: queue as never,
       executionLease: lease as never,
-      controller: controller as never
+      controller: controller as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
     expect(controller.admitNew).toHaveBeenCalledWith({ id: 'q-2', description: 'next item' }, null);
@@ -105,7 +109,8 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
       store: store as never,
       queue: queue as never,
       executionLease: lease as never,
-      controller: controller as never
+      controller: controller as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
     expect(queue.peekNextPending).not.toHaveBeenCalled();
@@ -121,7 +126,8 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
       store: store as never,
       queue: queue as never,
       executionLease: lease as never,
-      controller: controller as never
+      controller: controller as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
     expect(queue.peekNextPending).not.toHaveBeenCalled();
@@ -137,7 +143,8 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
       store: store as never,
       queue: queue as never,
       executionLease: lease as never,
-      controller: controller as never
+      controller: controller as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
     expect(queue.hasWorkspaceCapacity).not.toHaveBeenCalled();
@@ -160,7 +167,8 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
         store: store as never,
         queue: queue as never,
         executionLease: lease as never,
-        controller: controller as never
+        controller: controller as never,
+        failurePolicyDefault: { resolve: () => 'halt-on-failure' }
       });
       await coord.drainIfIdle(DEFAULT_QUEUE_ID);
       expect(controller.admitNew).not.toHaveBeenCalled();
@@ -187,7 +195,8 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
         store: store as never,
         queue: queue as never,
         executionLease: lease as never,
-        controller: controller as never
+        controller: controller as never,
+        failurePolicyDefault: { resolve: () => 'halt-on-failure' }
       });
       await coord.drainIfIdle(DEFAULT_QUEUE_ID);
       expect(controller.admitNew).toHaveBeenCalled();
@@ -203,7 +212,8 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
       store: store as never,
       queue: queue as never,
       executionLease: lease as never,
-      controller: controller as never
+      controller: controller as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
     expect(lease.tryAcquire).not.toHaveBeenCalled();
@@ -219,7 +229,8 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
       store: store as never,
       queue: queue as never,
       executionLease: lease as never,
-      controller: controller as never
+      controller: controller as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
     expect(controller.admitNew).not.toHaveBeenCalled();
@@ -252,7 +263,8 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
       store: store as never,
       queue: queue as never,
       executionLease: lease as never,
-      controller: controller as never
+      controller: controller as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
     expect(controller.admitNew).toHaveBeenCalledTimes(1);
@@ -273,7 +285,8 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
       store: store as never,
       queue: queue as never,
       executionLease: lease as never,
-      controller: controller as never
+      controller: controller as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
     expect(queue.hasExecutionCapacity).toHaveBeenCalledWith(0);
@@ -301,7 +314,8 @@ describe('AutoDrainCoordinator — Feature 065 idle-pending gate', () => {
       store: store as never,
       queue: queue as never,
       executionLease: lease as never,
-      controller: controller as never
+      controller: controller as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
     expect(queue.peekNextPending).not.toHaveBeenCalled();
@@ -322,7 +336,8 @@ describe('AutoDrainCoordinator — Feature 065 idle-pending gate', () => {
       store: store as never,
       queue: queue as never,
       executionLease: lease as never,
-      controller: controller as never
+      controller: controller as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
     expect(controller.admitNew).toHaveBeenCalled();
@@ -339,7 +354,8 @@ describe('AutoDrainCoordinator — Feature 065 idle-pending gate', () => {
       store: store as never,
       queue: queue as never,
       executionLease: lease as never,
-      controller: controller as never
+      controller: controller as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
     expect(controller.admitNew).toHaveBeenCalled();
@@ -362,7 +378,8 @@ describe('AutoDrainCoordinator — Feature 065 idle-pending gate', () => {
       store: store as never,
       queue: queue as never,
       executionLease: lease as never,
-      controller: controller as never
+      controller: controller as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
     expect(controller.admitNew).not.toHaveBeenCalled();
@@ -394,7 +411,8 @@ function roundRobinHarness(options: { capacity: number }) {
       getQueue: vi.fn(() => ({
         queueLifecycle: 'active-empty' as QueueLifecycle,
         pauseSource: null,
-        inFlightId: null
+        inFlightId: null,
+        requests: []
       })),
       getRun: vi.fn(() => null),
       getQueueRegistry: () => ({
@@ -440,7 +458,8 @@ function roundRobinHarness(options: { capacity: number }) {
       get liveRunCount() {
         return inFlight;
       }
-    } as never
+    } as never,
+    failurePolicyDefault: { resolve: () => 'halt-on-failure' }
   });
 
   return {
@@ -566,7 +585,8 @@ function interleavingHarness(
       getQueue: (_queueId: string) => ({
         queueLifecycle: 'active-empty' as QueueLifecycle,
         pauseSource: null,
-        inFlightId: null
+        inFlightId: null,
+        requests: []
       }),
       getRun: (_queueId: string) => null,
       getQueueRegistry: () => ({
@@ -614,7 +634,8 @@ function interleavingHarness(
             return undefined;
           }
         }
-      : null
+      : null,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
   } as never);
 
   return {
@@ -825,7 +846,8 @@ describe('AutoDrainCoordinator — the diagnostic a failed start leaves behind',
       queue: queue as never,
       executionLease: lease as never,
       controller: controller as never,
-      logger: logger as never
+      logger: logger as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
     });
     return { coord, lease, controller, logger };
   }
@@ -923,7 +945,8 @@ describe('AutoDrainCoordinator — the report a failed start leaves on its queue
       executionLease: lease as never,
       controller: controller as never,
       startFailures,
-      logger: logger as never
+      logger: logger as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
     });
     return { coord, controller, startFailures, logger };
   }
@@ -937,6 +960,7 @@ describe('AutoDrainCoordinator — the report a failed start leaves on its queue
     await s.coord.drainIfIdle('q-7');
 
     expect(s.startFailures.recordFailure).toHaveBeenCalledWith('q-7', {
+      kind: 'admission',
       admission: 'admitNew',
       message: 'spawn refused'
     });
@@ -953,6 +977,7 @@ describe('AutoDrainCoordinator — the report a failed start leaves on its queue
     await s.coord.drainIfIdle('q-7');
 
     expect(s.startFailures.recordFailure).toHaveBeenCalledWith('q-7', {
+      kind: 'admission',
       admission: 'admitResume',
       message: 'journal unreadable'
     });
@@ -1052,7 +1077,8 @@ describe('AutoDrainCoordinator — the report a failed start leaves on its queue
       store: store as never,
       queue: queue as never,
       executionLease: lease as never,
-      controller: controller as never
+      controller: controller as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
     });
 
     await expect(coord.drainIfIdle('q-7')).resolves.toBeUndefined();
@@ -1072,7 +1098,8 @@ describe('AutoDrainCoordinator — the report a failed start leaves on its queue
         getQueue: vi.fn(() => ({
           queueLifecycle: 'active-empty' as QueueLifecycle,
           pauseSource: null,
-          inFlightId: null
+          inFlightId: null,
+          requests: []
         })),
         getRun: vi.fn(() => null),
         getQueueRegistry: () => ({
@@ -1112,7 +1139,8 @@ describe('AutoDrainCoordinator — the report a failed start leaves on its queue
         admitResume: vi.fn(async () => ({ resumed: false, completed: Promise.resolve() })),
         liveRunCount: 0
       } as never,
-      startFailures
+      startFailures,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
     });
 
     await coord.drainAll();
@@ -1120,6 +1148,7 @@ describe('AutoDrainCoordinator — the report a failed start leaves on its queue
     expect(offered).toEqual(['q-a', 'q-b']);
     expect(startFailures.recordFailure).toHaveBeenCalledTimes(1);
     expect(startFailures.recordFailure).toHaveBeenCalledWith('q-a', {
+      kind: 'admission',
       admission: 'admitNew',
       message: 'spawn refused'
     });

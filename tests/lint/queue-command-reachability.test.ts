@@ -70,7 +70,16 @@ const PINNED_QUEUE_SURFACE: readonly string[] = [
   'CMD_RENAME_QUEUE',
   'CMD_DELETE_QUEUE',
   'CMD_SAVE_QUEUE_SETTINGS',
-  'CMD_MOVE_TASK'
+  'CMD_SET_QUEUE_FAILURE_POLICY',
+  'CMD_MOVE_TASK',
+  // FR-R3-150 (T1618c) — the queue-scoped Clean All. A1's weaker "some real
+  // non-test webview reference" rule is what it needs: its call site is
+  // `QueueDetailTier.svelte`'s own `onClean`, the same direct-dispatch
+  // pattern `CMD_CLEAR_ALL` used before this feature retired it as a
+  // sidebar-postable command. It does NOT join `PINNED_FAMILY`/A2's
+  // single-call-site rule below — that rule governs the five
+  // `queue-control-ipc.ts` commands specifically, not every queue command.
+  'CMD_CLEAR_QUEUE'
 ];
 
 /**
@@ -85,7 +94,12 @@ const PINNED_QUEUE_SURFACE: readonly string[] = [
 const SINGLE_CALL_SITE_COMMANDS: readonly string[] = [
   'CMD_DELETE_QUEUE',
   'CMD_SAVE_QUEUE_SETTINGS',
-  'CMD_MOVE_TASK'
+  'CMD_MOVE_TASK',
+  // Feature 195 (T040, FR-014, FR-018) — the per-queue failure-policy control,
+  // same discipline as the three above: one dispatch function in
+  // `queue-control-ipc.ts`, no inline `postCommand(CMD_SET_QUEUE_FAILURE_POLICY`
+  // anywhere else.
+  'CMD_SET_QUEUE_FAILURE_POLICY'
 ];
 
 const MESSAGES_SHIM = 'webview-ui/src/lib/messages.ts';

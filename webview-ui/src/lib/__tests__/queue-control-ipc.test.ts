@@ -12,6 +12,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  CMD_CLEAR_COMPLETED,
+  CMD_CLEAR_QUEUE,
   CMD_DELETE_QUEUE,
   CMD_MOVE_TASK,
   CMD_SAVE_QUEUE_SETTINGS
@@ -59,6 +61,8 @@ vi.mock('../use-confirm', () => ({
 }));
 
 const {
+  clearCompleted,
+  clearQueue,
   confirmAndDeleteQueue,
   moveTask,
   saveQueueSettings
@@ -258,5 +262,103 @@ describe('confirmAndDeleteQueue', () => {
     await vi.advanceTimersByTimeAsync(0);
     fireAck(posted[1]!.correlationId, 'rejected', 'queue-has-in-flight-task');
     await expect(promise).resolves.toEqual({ status: 'refused', reason: 'queue-has-in-flight-task' });
+  });
+});
+
+// Code-review finding (iteration 4, FR-R3-150/FR-011) — `clearQueue`/
+// `clearCompleted` replace a bare `postCommand` call in `QueueDetailTier`
+// that never listened for the ack, so an `unknown-queue-id` refusal (the
+// queue was deleted from another window between opening the confirmation
+// and confirming it) reached no one. These assert the confirm-then-correlate
+// contract the two share with `confirmAndDeleteQueue` above.
+const CLEAN_ALL_CONTEXT = {
+  queueId: 'q-beta',
+  queueName: 'nightly',
+  pendingCount: 1,
+  completedCount: 0,
+  failedCount: 0,
+  canceledCount: 0,
+  inflightTitle: null,
+  pauseSource: null,
+  hasActiveRun: false,
+  hasSchedule: false
+};
+
+const CLEAR_DONE_CONTEXT = { queueId: 'q-beta', queueName: 'nightly', completedCount: 2 };
+
+describe('clearQueue', () => {
+  it('confirms, then posts and correlates the ack', async () => {
+    const promise = clearQueue('q-beta', CLEAN_ALL_CONTEXT);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(confirmCalls).toEqual([{ actionKey: 'queue.clean-all', context: CLEAN_ALL_CONTEXT }]);
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toMatchObject({ type: CMD_CLEAR_QUEUE, payload: { queueId: 'q-beta' } });
+
+    fireAck(posted[0]!.correlationId, 'accepted');
+    await expect(promise).resolves.toEqual({ status: 'cleared' });
+  });
+
+  it('posts nothing when the operator declines', async () => {
+    confirmAnswer = false;
+    const promise = clearQueue('q-beta', CLEAN_ALL_CONTEXT);
+    await expect(promise).resolves.toEqual({ status: 'declined' });
+    expect(posted).toHaveLength(0);
+  });
+
+  it('surfaces an unknown-queue-id refusal instead of dropping the ack', async () => {
+    const promise = clearQueue('q-beta', CLEAN_ALL_CONTEXT);
+    await vi.advanceTimersByTimeAsync(0);
+    fireAck(posted[0]!.correlationId, 'rejected', 'unknown-queue-id');
+    await expect(promise).resolves.toEqual({ status: 'refused', reason: 'unknown-queue-id' });
+  });
+});
+
+// Feature 195 (T032, FR-019, SC-011) — every command this module correlates
+// shares one `correlatedRequest` scaffold, and that scaffold's `status` comes
+// from the host's own ack `status` field alone (never from `outcome`, never
+// inferred). A halt is one of the reasons a queue command can now be
+// declined for (`queue-halted-on-failed-task`, `commands/start-queue.ts`);
+// this pins that a `rejected` ack carrying that reason resolves through the
+// shared scaffold as a refusal with the reason attached, and never as
+// `accepted` — the structural guarantee FR-019 depends on for every command
+// routed through this module, not only the one this feature added.
+describe('halted-queue refusals never acknowledge accepted (FR-019, SC-011)', () => {
+  it('moveTask resolves a halt refusal as rejected-with-reason, never accepted', async () => {
+    const promise = moveTask('t-1', 'q-beta');
+    fireAck(posted[0]!.correlationId, 'rejected', 'queue-halted-on-failed-task');
+    const result = await promise;
+    expect(result).toEqual({ status: 'rejected', reason: 'queue-halted-on-failed-task' });
+    expect(result.status).not.toBe('accepted');
+  });
+
+  it('clearQueue resolves a halt refusal as refused-with-reason, never cleared', async () => {
+    const promise = clearQueue('q-beta', CLEAN_ALL_CONTEXT);
+    await vi.advanceTimersByTimeAsync(0);
+    fireAck(posted[0]!.correlationId, 'rejected', 'queue-halted-on-failed-task');
+    const outcome = await promise;
+    expect(outcome).toEqual({ status: 'refused', reason: 'queue-halted-on-failed-task' });
+    expect(outcome.status).not.toBe('cleared');
+  });
+});
+
+describe('clearCompleted', () => {
+  it('confirms, then posts and correlates the ack', async () => {
+    const promise = clearCompleted('q-beta', CLEAR_DONE_CONTEXT);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(confirmCalls).toEqual([{ actionKey: 'queue.clear-done', context: CLEAR_DONE_CONTEXT }]);
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toMatchObject({ type: CMD_CLEAR_COMPLETED, payload: { queueId: 'q-beta' } });
+
+    fireAck(posted[0]!.correlationId, 'accepted');
+    await expect(promise).resolves.toEqual({ status: 'cleared' });
+  });
+
+  it('surfaces an unknown-queue-id refusal instead of dropping the ack', async () => {
+    const promise = clearCompleted('q-beta', CLEAR_DONE_CONTEXT);
+    await vi.advanceTimersByTimeAsync(0);
+    fireAck(posted[0]!.correlationId, 'rejected', 'unknown-queue-id');
+    await expect(promise).resolves.toEqual({ status: 'refused', reason: 'unknown-queue-id' });
   });
 });

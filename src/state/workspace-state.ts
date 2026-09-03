@@ -23,6 +23,7 @@ import {
   type QueueRegistry,
   type QueueRegistryEntry
 } from '../queue/queue-registry';
+import type { QueueFailurePolicy } from '../contracts/queue-failure-policy';
 import type {
   TerminalTransitionIntent,
   WorkflowRun,
@@ -203,7 +204,19 @@ function ensureExtendedQueueShape(persisted: QueueState): QueueState {
     pausedReason: pauseSource === null ? null : persisted.pausedReason ?? null,
     scheduledStartAt: queueLifecycle === 'idle-pending' ? scheduledStartAt : null,
     scheduledStartSource: queueLifecycle === 'idle-pending' ? scheduledStartSource : null,
-    ...(migrationNotice ? { migrationNotice } : {})
+    ...(migrationNotice ? { migrationNotice } : {}),
+    // Feature 195 (T033, T036, FR-003, FR-017) — carried through verbatim,
+    // same optionality rule as `migrationNotice` above: absent stays absent
+    // (a queue that has stated no opinion), and a present value travels
+    // unvalidated — an unrecognised string is `effectiveQueueFailurePolicy`'s
+    // job to read as absent, not this normaliser's job to reject. Without
+    // this line every write through `updateQueue()` silently dropped the
+    // field the moment after `QueueManager.setFailurePolicy` set it, because
+    // this function rebuilds the record from a fixed field list rather than
+    // spreading `persisted`.
+    ...(persisted.failurePolicy !== undefined
+      ? { failurePolicy: persisted.failurePolicy }
+      : {})
   };
 }
 
@@ -1706,18 +1719,34 @@ export class WorkspaceStateStore {
    * `QueueState` and is projected here, from one record, on every read. There is
    * no second copy to go stale, so there is nothing to reconcile at startup.
    */
-  public getProjectedQueueRegistry(): ProjectedQueueRegistry {
+  /**
+   * Feature 195 (T039, FR-014, FR-018) — `workspaceFailurePolicyDefault` is
+   * optional, defaulted to the literal package default (`'halt-on-failure'`):
+   * this store stays vscode-free, so it cannot read the live setting itself.
+   * The one caller that projects this registry for the webview
+   * (`snapshot-composer.ts`) passes the live value it already reads for
+   * `generalSettings`; every other caller gets the same answer the setting's
+   * own contributed default would give a workspace that never overrode it.
+   */
+  public getProjectedQueueRegistry(
+    workspaceFailurePolicyDefault: QueueFailurePolicy = 'halt-on-failure'
+  ): ProjectedQueueRegistry {
     const queueStates = this.readQueueMap();
-    const pauseByQueueId = new Map<string, QueuePauseView>(
-      Object.entries(queueStates).map(([queueId, state]) => [
-        queueId,
-        {
-          paused: state.queueLifecycle === 'operator-paused',
-          pauseSource: state.pauseSource ?? null
-        }
-      ])
+    const pauseByQueueId = new Map<string, QueuePauseView>();
+    const failurePolicyByQueueId = new Map<string, QueueFailurePolicy | undefined>();
+    for (const [queueId, state] of Object.entries(queueStates)) {
+      pauseByQueueId.set(queueId, {
+        paused: state.queueLifecycle === 'operator-paused',
+        pauseSource: state.pauseSource ?? null
+      });
+      failurePolicyByQueueId.set(queueId, state.failurePolicy);
+    }
+    return projectQueueRegistry(
+      this.getQueueRegistry(),
+      pauseByQueueId,
+      failurePolicyByQueueId,
+      workspaceFailurePolicyDefault
     );
-    return projectQueueRegistry(this.getQueueRegistry(), pauseByQueueId);
   }
 
   /**

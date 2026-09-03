@@ -184,9 +184,21 @@ describe('a document may not name a command that does not exist (FR-R3-127)', ()
     // `extension.ts` is Stage 1, which is the split the sentence describes; the
     // registration/declaration parity behind these counts is
     // `tests/lint/command-trust-dispositions.test.ts`.
+    //
+    // Feature 195 — `queue-failure-policy-wiring.ts` joins the Stage 2 scan.
+    // Every other guarded command's `registerGuardedCommand(...)` call sits
+    // inline in `ui-wiring.ts`; this one is the first to move the call itself
+    // into its own `*-wiring.ts` module, because `registerStage2Ui()` had no
+    // LOC-budget headroom left to add it inline (see
+    // `tests/lint/source-loc-budget.test.ts`'s `phase-runner-loc-budget`-style
+    // composition-root bound). A count scoped to one file would silently drop
+    // this call site rather than flag it, so the scan follows the call to
+    // wherever it actually registers.
     const guardedIn = (rel: string): number =>
       read(rel).split('registerGuardedCommand(').length - 1;
-    const stage2 = guardedIn('src/activation/ui-wiring.ts');
+    const stage2 =
+      guardedIn('src/activation/ui-wiring.ts') +
+      guardedIn('src/activation/queue-failure-policy-wiring.ts');
     const stage1 = guardedIn('src/extension.ts');
     expect(stage1, 'Stage 1 registers no command through the guard helper').toBeGreaterThan(0);
     expect(stage2, 'Stage 2 registers no command through the guard helper').toBeGreaterThan(15);

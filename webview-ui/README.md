@@ -57,8 +57,29 @@ Webview → host commands and host → webview snapshots are typed in `src/contr
 - Webview → host: `SidebarCommand` (discriminated union) — see `src/contracts/sidebar-ipc.ts`.
 - Host → webview: `WorkflowSnapshot` — see `src/ui/sidebar/snapshot.ts` and the mirrored webview types in `webview-ui/src/lib/snapshot-types.ts`.
 - Validation: `MessageRouter` validates every inbound command via `src/contracts/runtime-validators.ts`. Unknown shapes are rejected and audited as `audit.invalid_command`.
+- Acknowledgement: `CommandAckMessage` carries `status: 'accepted' | 'rejected'` and, since feature 193, an optional `outcome` narrowing what `rejected` meant — see `src/contracts/command-outcome.ts`.
 
 The webview's command literal types are re-exported from `src/contracts/`. There is no separate webview-side definition.
+
+`CommandAckMessage.outcome` is one of four words — `accepted`, `no-op`, `refused`, `failed` — and it
+is **optional on the wire**: a handler that does not populate it posts the `status` field alone, and
+that is the legacy-tolerant reading every consumer must keep. Five routes populate it, and they are
+the five feature 193 (`FR-R3-154`) corrected: `CMD_PAUSE_PHASE`, `CMD_RESUME_PHASE`,
+`CMD_RESTART_PHASE`, `CMD_RETRY_PHASE_NOW`, and `CMD_START_QUEUE`. Each used to acknowledge
+`accepted` the moment it had dispatched, so a refusal the host had already decided arrived as a
+success; each now acknowledges the host command's own answer.
+
+No component narrows on `outcome` today, and that is by design rather than by omission. Every
+lifecycle surface calls `lifecycleMessage(result)` in
+[`lib/lifecycle-control-ipc.ts`](src/lib/lifecycle-control-ipc.ts), which returns `null` for an
+acceptance and one operator sentence for everything else — so `toLifecycleResult` is the one place
+the four outcomes are discriminated, and a component that wants "was this refused or did it break?"
+should read the field there rather than growing a second reading of the envelope. That sentence is
+webview copy resolved from the reason **code** by `lifecycleRefusalText`, not text the host wrote;
+an unmapped code degrades to `The host refused: <code>` rather than showing nothing. `refused` and
+`no-op` are both `status: 'rejected'`; a `no-op` is not an error, and a surface that treats
+`rejected` as failure will say so wrongly. A non-accepting `reason` is always a code, never an error
+message.
 
 Spec 102 adds `WorkflowSnapshot.launchables` in that direction and nothing new
 in the other: the launch surface starts runs through the command shapes that
@@ -552,14 +573,26 @@ that path is unchanged.
 
 ### Parity-mirror pattern
 
-Two webview modules MUST stay byte-equivalent to their host counterparts:
+Three webview modules MUST stay byte-equivalent to their host counterparts:
 
 | Webview mirror | Host source | Parity test |
 |---|---|---|
 | `webview-ui/src/lib/retry-condition.ts` | `src/lib/retry-condition.ts` | `tests/parity/retry-condition-parity.test.ts` (SC-011) — broad expression fixture; webview's verdict must match host on every input. |
 | `webview-ui/src/lib/fatal-signature-registry.ts` | `src/lib/fatal-signature-registry.ts` (`FATAL_SIGNATURES`) | `tests/parity/fatal-signatures-parity.test.ts` — byte-identical literal. |
+| `webview-ui/src/lib/generated/action-keys.ts` | `src/contracts/action-keys.ts` (`ACTION_KEYS`) | `tests/parity/action-key-parity.test.ts` — set equality plus a file-identity check, so a regression that collapses to reading one authority twice fails too. Also enforced by `npm run contracts:check`, which regenerates the mirror and names it when stale. |
 
-Both files carry a `// Mirror of ... — Do not modify without updating both.` banner. CI fails the merge on any drift.
+All three open with the same `// GENERATED FILE — do not edit.` banner naming their source and
+`npm run contracts:generate`. (This line used to describe a `// Mirror of ... — Do not modify without
+updating both.` banner, which is a hand-maintenance instruction and no longer what any of the three
+carries — they are generator output, and the banner says so.) CI fails the merge on any drift.
+
+The third row is the one that earned the pattern. Before feature 193 the confirmation keys were **not**
+mirrored: `src/state/confirm-suppression.ts` held the host allowlist, the webview declared its own
+`ActionKey` union, and a comment on each side asserted the two matched. The webview offered sixteen
+keys against eleven the host accepted, so five confirmation dialogs wrote a "don't ask again" the
+host rejected as `unknown-action-key` — and the operator was asked again next time, with no error to
+explain it. Two hand-maintained lists with comments claiming parity is the shape this table exists to
+prevent.
 
 The webview `WorkflowSnapshot` projection includes three new 011 fields with `undefined`-safe defaults: `delayedRetryCount`, `pendingRetryAt`, `pendingRetryCause`, and the new `generalSettings: GeneralSettings` payload. Components fall back to `IDLE_GENERAL_SETTINGS` when the host omits the field (legacy-tolerance per the contract).
 
@@ -975,13 +1008,44 @@ context via `renderActionBody` — Clean All (`pendingCount`,
 context carries the task's `status` alongside `taskTitle` so the rendered
 body names that status's real deletion consequence (pending/in-flight/
 paused/terminal each read differently) rather than one generic sentence.
+As of FR-R3-150 the two queue-cleanup entries (`queue.clean-all`,
+`queue.clear-done`) also carry `queueId`/`queueName`, so the body names
+the queue being wiped instead of "the queue", and Clean All's context
+carries `hasSchedule` — a queue whose only leftover state is an armed
+scheduled start still has something to clear (LC-Q-05), so the prompt
+says so rather than reading as a no-op. Those two templates substitute in
+a **single regex pass** over the original template rather than a chain of
+`.replace()` calls: queue names and task titles are operator-authored with
+no character restriction, and a chain re-scans text a prior call just
+substituted in, so a queue named `{pauseSummary}` or a task titled `$&`
+would be re-matched and corrupted by a later call in the chain.
 The repo-grep regression at
 [`../tests/lint/destructive-actions.lint.test.ts`](../tests/lint/destructive-actions.lint.test.ts)
 fails the build on any destructive `postCommand(...)` call that is not
 preceded by a matching `useConfirm(...)` await.
 
 One new audit event type is additive (no `AUDIT_SCHEMA_VERSION` bump):
-`queue-cleared-all { pendingCount, completedCount, failedCount, canceledCount, hadActiveRun, hadCascadePause }`.
+`queue-cleared-all { removedPending, removedInFlight, pauseStateCleared,
+runnerState, watchdogBackoffCleared, scheduleCleared }`. `scheduleCleared` is
+the newest field (FR-R3-150 T1619c, additive) and reports whether the reset
+disarmed at least one queue's scheduled start; it is a bare boolean because
+this event is the workspace-wide one and the per-queue record of a disarm is
+`scheduled-start-canceled`, which the coordinator emits per queue id. The
+earlier six-field `{ pendingCount, completedCount, failedCount, canceledCount,
+hadActiveRun, hadCascadePause }` shape recorded here never matched
+`QueueClearedAllPayload` in
+[`../src/contracts/audit-events.ts`](../src/contracts/audit-events.ts), which
+is the source of truth for it.
+
+FR-R3-150 adds a second, likewise additive: `queue-cleared { queueId,
+removedPending, removedCompleted, removedFailed, removedCanceled,
+removedInFlight, pauseCleared, scheduleCleared, runnerState }`, emitted once
+per confirmed, non-no-op `CMD_CLEAR_QUEUE`. It is deliberately distinct from
+`queue-cleared-all` rather than a variant of it with a `queueId` field: the
+two record different operator decisions, and an audit reader answering "was
+this whole workspace reset?" must not have to inspect a payload field to find
+out. The payload carries the queue **id** and never its operator-authored
+name, matching `queue-created`/`queue-deleted`.
 
 ### IPC additions (spec 064 — System tab and task-scoped Activity Feed)
 
@@ -1297,6 +1361,37 @@ asserts the SHA-256 is unchanged.
   which delegates each leaf to the injected `SanitizedLogger.sanitize`.
   No webview-side sanitizer is permitted; double-sanitization is
   forbidden.
+
+### Queue failure policy and `CMD_SET_QUEUE_FAILURE_POLICY` (spec 195, FR-R3-156)
+
+One new mutating command, `CMD_SET_QUEUE_FAILURE_POLICY`, payload
+`{ queueId: string; policy: QueueFailurePolicy | null }`. `policy: null` means
+"follow the workspace default" and removes the queue's stored override rather
+than writing a concrete value. It joins `MUTATING_COMMAND_TYPES`
+(`src/contracts/sidebar-command-metadata.ts`), so it is primary-host gated the
+same as every other mutating queue command, and its handler
+(`src/ui/sidebar/commands/cmd-set-queue-failure-policy.ts`) acks the host's own
+`CommandOutcome` — `accepted`, `no-op`, or `refused` with a reason — rather
+than an unconditional `accepted`. The webview posts it from
+`webview-ui/src/lib/queue-control-ipc.ts`'s `setQueueFailurePolicy()`, on the
+same correlated-request terms as the five queue commands above; the control
+lives in `QueueConfigModal.svelte`, offering the three choices
+`halt-on-failure`, `continue`, and follow-the-default, reading the two
+non-default values from the generated mirror `lib/generated/queue-failure-policy.ts`
+rather than restating them.
+
+One existing snapshot field widened rather than a new one added:
+`QueueRuntime.startFailure` (already the "why this queue did not start"
+projection) is now a discriminated union — the pre-existing admission-refusal
+shape plus a `halted` variant carrying the failed task's id and sanitized
+name, projected through the same `sanitizeAndCap` the pre-existing `summary`
+field already used. `QueueControls.svelte` renders the halted task's name and
+its retry/remove actions (via the existing `QueueItemActions` dispatch) in the
+queue header; `drilldown/QueueStartFailureNotice.svelte` and
+`drilldown/QueuesTier.svelte` render the same reason on the queue's detail
+surface and its row in the list. No new `accepted` acknowledgement is
+introduced on any path that refuses because of a halt —
+`webview-ui/src/lib/__tests__/queue-control-ipc.test.ts` asserts it.
 
 ## Build
 

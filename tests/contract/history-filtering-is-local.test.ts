@@ -94,7 +94,11 @@ describe('the command registry is unchanged by this feature (T040, FR-023)', () 
     // the Settings control for the uncontained-backend list. It writes an
     // application-scoped security setting, so it is gated for a stronger reason
     // than the rest of the table — see the pinned-list fixture, which names it.
-    expect(MUTATING_COMMAND_TYPES).toHaveLength(43);
+    //
+    // 43 -> 44 on 2026-09-04: feature 195 (FR-R3-156) added
+    // CMD_SET_QUEUE_FAILURE_POLICY, the per-queue halt-on-failure override.
+    // `null` removes the stored override rather than writing a concrete value.
+    expect(MUTATING_COMMAND_TYPES).toHaveLength(44);
     expect(MUTATING_COMMANDS.size).toBe(MUTATING_COMMAND_TYPES.length);
   });
 

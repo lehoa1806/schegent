@@ -780,7 +780,16 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // question on the table will be whether the barrel itself should be generated or
   // split — an architectural question, which is what should force it, rather than
   // whichever feature happens to add the next command.
-  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 1100 },
+  //
+  // Feature 195 — 1100 -> 1150. `CMD_SET_QUEUE_FAILURE_POLICY`'s registration
+  // (its constant, `COMMAND_TYPES` membership, `SidebarCommand` member, type
+  // guard, `MUTATING_COMMAND_REASONS`/`COMMAND_GUARDS` rows) spent the last of
+  // the FR-R3-144 headroom, landing this file at 1090 — inside
+  // `tightMargin(1100)`'s 25-line band. Fifty lines restores the same three-ish
+  // registrations of headroom FR-R3-144 sized for, on the same terms: when it
+  // runs out again, the question is still whether the barrel should split, not
+  // whichever feature adds the next command.
+  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 1150 },
   // Waived, not budgeted. Feature 063's operator decision retired the ceiling
   // on this file and on queue-manager.ts below; it did not set a large one. The
   // entries used to say `maxLines: 10_000` against files of 2,500 and 1,821,
@@ -906,7 +915,16 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // introducing a second, parallel reason type for the Task-transition classifier
       // in `src/queue/task-transition-decision.ts`. Four lines of literals, three of
       // comment pointing at the decision that added them.
-      highWaterMark: 2873
+      //
+      // Feature 195 (T039, 2026-09-04) — 2873 → 2902: `getProjectedQueueRegistry`
+      // gained an optional `workspaceFailurePolicyDefault` parameter and now builds
+      // a second per-queue map (`failurePolicyByQueueId`) alongside the existing
+      // pause-view one, in the same loop; and `ensureExtendedQueueShape` gained one
+      // conditional spread carrying `QueueState.failurePolicy` through reads and
+      // writes, the same shape `migrationNotice` already used. No new method, no
+      // new file — the two existing normalisation/projection sites this feature's
+      // stored field has to pass through.
+      highWaterMark: 2902
     }
   },
   // Feature 077 — public facade and every state-projection collaborator have
@@ -1055,7 +1073,51 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // helper's own signature and doc comment cost slightly more than that
       // saved — a net +10, in exchange for one fewer thing to keep in sync
       // by hand the next time this translation changes.
-      highWaterMark: 1982
+      //
+      // 1982 → 2200 (FR-R3-150, 2026-09-03): the queue-scoped Clean All
+      // primitive, recovered from the stash that held it and merged over the
+      // FR-R3-153 transition work above. `ClearQueueResult` (a discriminated
+      // union, on `QueueDeletionImpact`'s precedent) and `clearQueue(queueId,
+      // probe?)` itself — one memento write clearing tasks/run/pause/schedule
+      // and settling `active-empty`, the unconditional schedule-cancel-hook
+      // call that closes LC-Q-05, and the no-op gate widened to inspect the
+      // schedule fields so a queue whose only residue is an armed timer is not
+      // reported already-clean. Plus `ClearByStatusResult` and the shared
+      // `refuseIfUnknownQueue` guard `clearCompleted`/`clearFailed` now call to
+      // refuse an unknown queue id (FR-011) rather than silently no-op through
+      // `getQueue()`'s born-empty fallback, and two folds — `countRemovedByStatus`
+      // and `clearRunSnapshots` — that `clearAll` and `clearQueue` now share
+      // instead of hand-copying.
+      //
+      // Extraction into a sibling module was considered and rejected: both
+      // additions are methods on `QueueManager` operating on its own private
+      // `store`, the same shape as `clearAll` immediately above them, and
+      // splitting them out would separate the two methods `clearAll`'s own
+      // header points readers to as the sibling primitive it composes over
+      // (research.md D2 in specs/188-queue-cleanup-scope/).
+      //
+      // 2200 → 2207 (FR-R3-154, 2026-09-03): no behaviour, only narrowing.
+      // `clearAll` read `queuesBefore[id]` off a `Record<string, QueueState>`
+      // in three places, which `noUncheckedIndexedAccess` types as possibly
+      // `undefined` and which really does crash on a key that is not there.
+      // The reads became `Object.entries`/`Object.values` iterations that carry
+      // the key and the state together, and one `find(...) ?? [0]` kept its
+      // existing conditional shape so the `no-unnecessary-condition` baseline
+      // count is unchanged. Six of the seven lines are the comment explaining
+      // that at the site; deleting it to stay under the mark was the other
+      // option and is the wrong one — the mark exists so growth is a decision,
+      // and a decision recorded nowhere is what the next reader pays for. The
+      // new mark is the exact count, not a round number with slack, so the next
+      // line added here trips this gate again.
+      //
+      // Feature 195 (T036, 2026-09-04) — 2207 → 2259: `setFailurePolicy`, one
+      // method beside `saveQueueSettings` reading and writing this queue's own
+      // `failurePolicy` field through `store.updateQueue`, on the same idempotent-
+      // reject-reason shape `setQueuePausedState`'s `already-paused` already uses.
+      // No new file: the method needs `store.getQueue`/`store.updateQueue`, which
+      // only `QueueManager` composes for a caller outside `WorkspaceStateStore`
+      // itself.
+      highWaterMark: 2259
     }
   },
   // Speckit-auto alignment (2026-07-30) — bumped 700 → 800 to absorb two new
@@ -1188,7 +1250,31 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // trim: what moved is the payload the event carries. That took the file off
   // `UNDECIDED_CEILING_BASELINE` — see the note there — so 1,290 is now a budget
   // with 43 lines of measured headroom rather than a high-water mark.
-  { path: 'src/services/run-driver.ts', maxLines: 1_290 },
+  //
+  // Feature 194 (FR-009, T019) — 1,290 -> 1,320. `drive()` itself is governed
+  // shrink-only by `tests/lint/drive-loop-loc-budget.test.ts` (FR-R3-128), so
+  // the stagnation-tracker eviction call could not be inlined there: it is a
+  // single call site inside `drive()` to a new extracted method,
+  // `handlePostPhaseDecisionSideEffects()`, which also absorbed the
+  // pre-existing `postDecision.warnings` logging loop (a genuine decrement to
+  // `drive()`, not a comment trim — see that method's docblock). The file
+  // grew by the extracted method's own body plus the one-line call site;
+  // 1,320 restores the same order of headroom `tightMargin` expects rather
+  // than leaving a five-line margin the next small change would immediately
+  // retrip.
+  //
+  // Feature 194 (FR-009, same feature, 2026-09-03) — 1,320 -> 1,330. The
+  // eviction wiring above covers only the decideAfterPhase()-mediated exits;
+  // three more bypass it entirely and leak the phase they left off at for
+  // the rest of the window's lifetime without their own call: mid-loop
+  // cancellation (its whole body moved to a new `handleCancellation()`
+  // method, a net decrease even with the eviction call added — see
+  // `drive-loop-loc-budget.test.ts`), a skip-phase override (one inline
+  // line; `decideBeforePhase()` has no extraction point to give it), and
+  // audit-evidence-unavailable fail-closed (one line in the existing
+  // `failClosedForAuditEvidence()`). 1,330 measured at 1,294 actual restores
+  // the same order of headroom the prior raise did, for the same reason.
+  { path: 'src/services/run-driver.ts', maxLines: 1_330 },
   // FR-R3-128 — the extraction's destination is governed in the same change. An
   // extraction that shrinks one method and adds an ungoverned file has moved the
   // debt, not reduced it. 182 lines measured; 210 carries the 25-line margin this

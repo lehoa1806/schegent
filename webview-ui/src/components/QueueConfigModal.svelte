@@ -15,9 +15,22 @@
 
   import { onMount, tick } from 'svelte';
 
-  import { refusalText, saveQueueSettings } from '../lib/queue-control-ipc';
+  import { refusalText, saveQueueSettings, setQueueFailurePolicy } from '../lib/queue-control-ipc';
   import { adviseStreamPressure } from '../../../src/contracts/stream-pressure-advice';
-  import type { QueueRuntime, QueueSettingsProjection } from '../lib/snapshot-types';
+  import { QUEUE_FAILURE_POLICIES, type QueueFailurePolicy } from '../lib/generated/queue-failure-policy';
+  import type { QueueRuntime, QueueSettingsProjection, QueueSummary } from '../lib/snapshot-types';
+
+  // Feature 195 (T040, FR-014) — the two concrete choices read from the
+  // generated mirror rather than restated, plus one webview-local choice
+  // (`FOLLOW_DEFAULT`) that names "no override" — the third arm the wire
+  // vocabulary spells as `policy: null` (contract §6).
+  const FOLLOW_DEFAULT = 'follow-default' as const;
+  type FailurePolicyChoice = QueueFailurePolicy | typeof FOLLOW_DEFAULT;
+
+  const FAILURE_POLICY_LABEL: Readonly<Record<QueueFailurePolicy, string>> = Object.freeze({
+    'halt-on-failure': 'Halt on failure',
+    continue: 'Continue'
+  });
 
   interface Props {
     /**
@@ -32,6 +45,17 @@
     queueSettings: QueueSettingsProjection;
     /** The queues that exist right now; the default-queue options (FR-009). */
     queues: readonly QueueRuntime[];
+    /**
+     * Feature 195 (T040, FR-014) — the registry's own per-queue projection,
+     * carrying `failurePolicy` (effective) and `failurePolicyOverride` (raw)
+     * for the per-queue control below. Separate from `queues` above rather
+     * than widening `QueueRuntime`: this is the registry's summary, projected
+     * once in `queue-summary-projector.ts`, and reading it here is the same
+     * "one derivation site" reasoning `QueuesTier.svelte` already applies to
+     * `queueSettings`. Optional and defaulted to empty for a host build that
+     * predates this feature.
+     */
+    queueSummaries?: readonly QueueSummary[];
     onClose: () => void;
     /** Focus returns here on unmount, as `ConfirmDialog` does. */
     originatingElement?: HTMLElement | null;
@@ -48,6 +72,7 @@
   const {
     queueSettings,
     queues,
+    queueSummaries = [],
     onClose,
     originatingElement = null,
     machineMemoryBytes = 0
@@ -102,6 +127,20 @@
   let busy = $state(false);
   let capInputEl: HTMLInputElement | null = $state(null);
 
+  // Feature 195 (T040, FR-019) — one message per queue row, keyed by
+  // `queueId`, so a refusal or no-op on one queue's control cannot bleed onto
+  // another's while both are visible in the same list.
+  let failurePolicyMessage = $state<Record<string, string>>({});
+
+  function currentChoice(queueId: string): FailurePolicyChoice {
+    const summary = queueSummaries.find((entry) => entry.id === queueId);
+    return summary?.failurePolicyOverride ?? FOLLOW_DEFAULT;
+  }
+
+  function effectivePolicyFor(queueId: string): QueueFailurePolicy {
+    return queueSummaries.find((entry) => entry.id === queueId)?.failurePolicy ?? 'halt-on-failure';
+  }
+
   onMount(() => {
     void tick().then(() => capInputEl?.focus());
     return () => originatingElement?.focus?.();
@@ -123,6 +162,32 @@
     } finally {
       busy = false;
     }
+  }
+
+  /**
+   * Feature 195 (T040, FR-018, FR-019) — the per-queue failure-policy write.
+   * `choice === FOLLOW_DEFAULT` posts `policy: null`, which removes the
+   * stored field rather than writing a concrete value (contract §6).
+   *
+   * `no-op` reads as its own sentence, never as `refused`: the host declared
+   * nothing wrong with the request, only that the queue already answered
+   * that way (FR-019's "no operator action against a halted queue... is
+   * reported as having succeeded" holds for every other outcome here too —
+   * `no-op` is not success being under-reported, it is nothing having
+   * changed, and the wording says so).
+   */
+  async function onChangeFailurePolicy(queueId: string, choice: FailurePolicyChoice): Promise<void> {
+    const policy = choice === FOLLOW_DEFAULT ? null : choice;
+    const outcome = await setQueueFailurePolicy(queueId, policy);
+    failurePolicyMessage = {
+      ...failurePolicyMessage,
+      [queueId]:
+        outcome.status === 'accepted'
+          ? ''
+          : outcome.status === 'no-op'
+            ? 'Already set that way.'
+            : refusalText(outcome.reason)
+    };
   }
 
   function onKeyDown(event: KeyboardEvent): void {
@@ -187,6 +252,43 @@
       <option value={option.queueId}>{option.name}</option>
     {/each}
   </select>
+
+  <!--
+    Feature 195 (T040, FR-014) — one row per queue, each an independent write
+    (through `setQueueFailurePolicy`, addressed by `queueId`) rather than a
+    field this dialog's own Save button batches: a queue's failure policy is
+    the queue's own answer, not a workspace setting the cap and default-queue
+    fields above are.
+  -->
+  <fieldset class="failure-policy-list">
+    <legend>Failure policy</legend>
+    {#each options as option (option.queueId)}
+      <div class="failure-policy-row" data-testid="queue-failure-policy-row-{option.queueId}">
+        <span class="failure-policy-name">{option.name}</span>
+        <select
+          data-testid="queue-failure-policy-select-{option.queueId}"
+          aria-label="Failure policy for {option.name}"
+          value={currentChoice(option.queueId)}
+          onchange={(event) =>
+            onChangeFailurePolicy(option.queueId, event.currentTarget.value as FailurePolicyChoice)}
+        >
+          <option value={FOLLOW_DEFAULT}>
+            Follow workspace default (currently {FAILURE_POLICY_LABEL[effectivePolicyFor(option.queueId)]})
+          </option>
+          {#each QUEUE_FAILURE_POLICIES as policy (policy)}
+            <option value={policy}>{FAILURE_POLICY_LABEL[policy]}</option>
+          {/each}
+        </select>
+        {#if failurePolicyMessage[option.queueId]}
+          <p
+            class="failure-policy-message"
+            role="status"
+            data-testid="queue-failure-policy-message-{option.queueId}"
+          >{failurePolicyMessage[option.queueId]}</p>
+        {/if}
+      </div>
+    {/each}
+  </fieldset>
 
   {#if pressureAdvice !== null}
     <p class="pressure-advice" role="status" data-testid="queue-config-pressure-advice">
@@ -265,6 +367,44 @@
     margin: 0;
     font-size: 12px;
     color: var(--vscode-errorForeground);
+  }
+
+  .failure-policy-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 0;
+    padding: 8px;
+    border: 1px solid var(--vscode-widget-border, transparent);
+    border-radius: 4px;
+  }
+
+  .failure-policy-list legend {
+    font-size: 12px;
+    color: var(--vscode-descriptionForeground);
+    padding: 0 4px;
+  }
+
+  .failure-policy-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .failure-policy-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .failure-policy-message {
+    flex-basis: 100%;
+    margin: 0;
+    font-size: 0.85em;
+    color: var(--vscode-descriptionForeground);
   }
 
   .actions {

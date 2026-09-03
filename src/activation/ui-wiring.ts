@@ -9,6 +9,7 @@ import type { AuditLogWriter } from '../audit/audit-log-writer';
 import { runAuto, type AutoCommandArgs } from '../commands/auto';
 import { runCancel } from '../commands/cancel';
 import { runClearAll } from '../commands/clear-all';
+import { runClearQueue } from '../commands/clear-queue';
 import { runEnqueue, type EnqueueCommandArgs } from '../commands/enqueue';
 import { runExportAuditLog } from '../commands/export-audit';
 import { runGitApprovals, type GitApprovalItem } from '../commands/git-approvals';
@@ -26,6 +27,12 @@ import { runRerunFromHistory } from '../commands/rerun-from-history';
 import { runRestartCanceledTask } from '../commands/restart-canceled-task';
 import { runResume } from '../commands/resume';
 import { runRetryActiveRun } from '../commands/retry-active-run';
+import {
+  runPausePhase,
+  runRestartPhase,
+  runResumePhase,
+  type PhaseControlCommandDeps
+} from '../commands/phase-control-commands';
 import { runRetryPhaseNow } from '../commands/retry-phase-now';
 import { runSchedule, type ScheduleCommandArgs } from '../commands/schedule';
 import { runShowActiveRun } from '../commands/show-active-run';
@@ -35,6 +42,7 @@ import {
   runStartQueueCommand,
   type StartQueueCommandArg
 } from '../commands/start-queue';
+import { registerQueueFailurePolicyCommand } from './queue-failure-policy-wiring';
 import type { PipelineCatalog } from '../config/pipeline-config';
 import type { SchegentWorkflowController } from '../controller/workflow-controller';
 import { errorMessage } from '../lib/errors';
@@ -44,6 +52,8 @@ import {
   type GuardedCommandDeps
 } from './guarded-command-registration';
 import type { QueueManager } from '../queue/queue-manager';
+import type { ExecutionLeasePort } from '../services/auto-drain-coordinator';
+import type { QueueStartFailureRegistry } from '../services/queue-start-failure-registry';
 import type { GuardedRunService } from '../services/guarded-run-service';
 import type { HistoryStore } from '../state/history-store';
 import type { WorkspaceLockManager } from '../state/lock';
@@ -79,8 +89,20 @@ interface Stage2UiWiringDeps {
   readonly controller: SchegentWorkflowController;
   readonly queue: QueueManager;
   readonly lock: WorkspaceLockManager;
+  // FR-R3-150 (T1620) — the queue-scoped Clean All orchestrator releases a
+  // queue's execution lease directly by id (D5); this is the same manager
+  // instance the controller and the deactivate path share (one window, one
+  // set of leases, per `extension.ts`'s own note at its `executionLease` wire).
+  readonly executionLease: ExecutionLeasePort;
   readonly historyStore: HistoryStore;
   readonly getWorkspaceFolders: () => readonly vscode.WorkspaceFolder[] | undefined;
+  /**
+   * Feature 195 (T018, FR-021) — the same registry `AutoDrainCoordinator`
+   * writes to at step 2a, read here so an explicit Start Queue can report a
+   * halt as a refusal naming the failed task, rather than the pre-feature
+   * asynchronous `accepted`.
+   */
+  readonly queueStartFailures: Pick<QueueStartFailureRegistry, 'get'>;
 }
 
 export interface Stage2UiWiring {
@@ -202,6 +224,16 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
    * of "still executing" is how one of them comes to permit a delete the other
    * would refuse.
    */
+  /**
+   * FR-R3-154 (T1645) — the three Phase controls take the same three
+   * dependencies, named once so the registrations below stay one line each.
+   */
+  const phaseControlCommandDeps = (d: typeof deps): PhaseControlCommandDeps => ({
+    controller: d.controller,
+    notifier: d.notifier,
+    logger: d.logger
+  });
+
   const evidenceCommandDeps = (d: typeof deps): EvidenceCommandDeps => ({
     workspaceRoot: d.workspaceRoot,
     isRunActive: (runId) =>
@@ -332,7 +364,8 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
         runStartQueueCommand(arg, {
           guardedRunService: deps.guardedRunService,
           controller: deps.controller,
-          logger: deps.logger
+          logger: deps.logger,
+          startFailures: deps.queueStartFailures
         })
     ),
     registerGuardedCommand(guard, 'schegent.cancel', (arg?: { taskId?: string }) =>
@@ -449,6 +482,18 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
         logger: deps.logger
       })
     ),
+    // FR-R3-150 (T1618/T1620) — the queue-scoped Clean All, addressed by
+    // `queueId`; registered-only (no palette entry), called only from
+    // `cmd-clear-queue.ts`. `schegent.clearAll` above stays workspace-wide.
+    registerGuardedCommand(guard, 'schegent.clearQueue', (queueId: string) =>
+      runClearQueue(
+        {
+          controller: deps.controller, queue: deps.queue, executionLease: deps.executionLease,
+          audit: deps.auditWriter, lock: deps.lock, notifier: deps.notifier, logger: deps.logger
+        },
+        queueId
+      )
+    ),
     registerGuardedCommand(guard, 'schegent.clearCompleted', () =>
       runClearCompleted(queueOpsCtx)
     ),
@@ -461,6 +506,7 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
     registerGuardedCommand(guard, 'schegent.resumeQueue', () =>
       runResumeQueue(queueOpsCtx)
     ),
+    registerQueueFailurePolicyCommand(guard, { queue: deps.queue, logger: deps.logger }), // T037
     registerGuardedCommand(guard, 'schegent.rerunFromHistory', (arg) =>
       runRerunFromHistory(arg, {
         guarded: deps.guardedRunService,
@@ -506,27 +552,23 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
     // Feature 093 (FR-018 / T080) — the sidebar always passes the addressed
     // queue; a human invoking these from the palette passes nothing and the
     // controller resolves a sole Run, refusing when N are in flight.
-    registerGuardedCommand(guard, 'schegent.pausePhase', async (queueId?: string) => {
-      const result = await deps.controller.pauseActivePhase(queueId);
-      if (!result.ok) {
-        deps.notifier.warn(`Schegent: pause phase rejected (${result.reason}).`);
-      }
-    }),
-    registerGuardedCommand(guard, 
-      'schegent.resumePhase',
-      async (prompt?: string, queueId?: string) => {
-        const result = await deps.controller.resumeActivePhase(prompt, queueId);
-        if (!result.ok) {
-          deps.notifier.warn(`Schegent: resume phase rejected (${result.reason}).`);
-        }
-      }
+    //
+    // FR-R3-154 (T1645) — the three bodies moved to
+    // `src/commands/phase-control-commands.ts` so their `MutationResult` is
+    // returned instead of warned about and dropped. `registerGuardedCommand`
+    // preserves a handler's return value, which is what carries the outcome
+    // back through `executeCommand` to the sidebar route.
+    registerGuardedCommand(guard, 'schegent.pausePhase', (queueId?: string) =>
+      runPausePhase(queueId, phaseControlCommandDeps(deps))
     ),
-    registerGuardedCommand(guard, 'schegent.restartPhase', async (queueId?: string) => {
-      const result = await deps.controller.restartActivePhase(queueId);
-      if (!result.ok) {
-        deps.notifier.warn(`Schegent: restart phase rejected (${result.reason}).`);
-      }
-    }),
+    registerGuardedCommand(guard,
+      'schegent.resumePhase',
+      (prompt?: string, queueId?: string) =>
+        runResumePhase(prompt, queueId, phaseControlCommandDeps(deps))
+    ),
+    registerGuardedCommand(guard, 'schegent.restartPhase', (queueId?: string) =>
+      runRestartPhase(queueId, phaseControlCommandDeps(deps))
+    ),
     registerGuardedCommand(guard, 'schegent.redetectClaudeTransport', () => {
       deps.notifier.info(
         'Schegent: Claude CLI now natively streams prompts over stdin. No transport redetection is necessary.'
@@ -544,7 +586,6 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
       runDeleteRunEvidenceCommand(evidenceCommandDeps(deps), runId)
     )
   ];
-
   return {
     dashboardBridge,
     dispose(): void {

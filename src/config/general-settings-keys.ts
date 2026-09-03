@@ -34,6 +34,7 @@ import {
   SUPPORTED_BACKENDS,
   type BackendRunnerKind
 } from '../contracts/backend-kinds';
+import { QUEUE_FAILURE_POLICIES, type QueueFailurePolicy } from '../contracts/queue-failure-policy'; // Feature 195
 
 /** Mirrors `vscode.ConfigurationTarget.Global`. */
 export const CONFIGURATION_TARGET_GLOBAL = 1;
@@ -92,6 +93,7 @@ export interface GeneralSettings {
   readonly backendRunner: BackendRunnerKind;
   readonly spendMaxUsdPerRun: number | null;
   readonly spendMaxTokensPerRun: number | null;
+  readonly queueHaltOnTaskFailure: QueueFailurePolicy; // Feature 195 (T008)
   readonly scopes: {
     readonly cliPath: SettingScope;
     readonly loggingVerbose: SettingScope;
@@ -124,6 +126,7 @@ export interface GeneralSettings {
     readonly backendRunner: SettingScope;
     readonly spendMaxUsdPerRun: SettingScope;
     readonly spendMaxTokensPerRun: SettingScope;
+    readonly queueHaltOnTaskFailure: SettingScope;
   };
 }
 
@@ -158,7 +161,7 @@ export type AllowedKey =
   | 'multiRoot.suppressWarning'
   | 'backend.runner'
   | 'spend.maxUsdPerRun'
-  | 'spend.maxTokensPerRun';
+  | 'spend.maxTokensPerRun' | 'queue.haltOnTaskFailure';
 
 export type RuntimeType =
   | 'string'
@@ -411,7 +414,9 @@ export const KEY_SPECS: Readonly<Record<AllowedKey, KeySpec>> = Object.freeze({
     defaultValue: null,
     min: 1,
     allowClear: true
-  }
+  },
+  // Feature 195 — default matches manifest/schema (T045)
+  'queue.haltOnTaskFailure': { scope: 'window', type: 'string-enum', typedField: 'queueHaltOnTaskFailure', defaultValue: 'halt-on-failure', allowedValues: QUEUE_FAILURE_POLICIES }
 });
 
 /** Unprefixed scalar setting names accepted by `writeGeneralSettings`. */

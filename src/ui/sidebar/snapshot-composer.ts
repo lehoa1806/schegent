@@ -102,12 +102,12 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
   // pause state and `migrationNotice` the sidebar renders), so pinning the
   // read states what the composer already meant rather than changing it.
   const queue = store.getQueue(DEFAULT_QUEUE_ID);
-  // FR-R3-011 — the projected registry. Pause state is no longer persisted on
-  // a registry entry; `getProjectedQueueRegistry()` fills it in from each
-  // queue's `QueueState`, which is the same value the drain gate reads. The
-  // composer takes the projection rather than re-deriving one so there is one
-  // derivation site, not a second copy of the rule in the UI layer.
-  const registry = store.getProjectedQueueRegistry?.();
+  // Feature 195 (T039) — read once, reused for the registry projection below.
+  const generalSettings = deps.getGeneralSettings?.() ?? IDLE_GENERAL_SETTINGS;
+  // FR-R3-011 — the projected registry, one derivation site rather than a
+  // second copy of the pause rule in the UI layer. Feature 195 (T039) adds
+  // the workspace default a queue's effective failure policy falls back to.
+  const registry = store.getProjectedQueueRegistry?.(generalSettings.queueHaltOnTaskFailure);
   const lock = store.getLock();
   const confirmSuppression = store.getConfirmSuppression?.();
   const confirmationsEnabled = deps.getConfirmationsEnabled?.();
@@ -294,7 +294,7 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     ),
     ...composeBackendPostures(deps.getUncontainedGrantSetting?.()),
     backendPingState: deps.getBackendPingState?.() ?? Object.freeze({ status: 'idle' as const }),
-    generalSettings: deps.getGeneralSettings?.() ?? IDLE_GENERAL_SETTINGS,
+    generalSettings,
     // FR-R3-145 (T1572) — `store`, not `deps`: the cap is enforced against the
     // memento, not configuration. See `QueueSettingsProjection`.
     queueSettings: {

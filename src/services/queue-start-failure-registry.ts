@@ -26,19 +26,43 @@
 // ends. A `retainOnly(liveQueueIds)` sweep would be scaffolding for a leak that
 // does not exist at this scale.
 
-/** One queue's most recent failed start attempt. Frozen; latest wins. */
-export interface QueueStartFailure {
-  /** Which of the two admissions actually ran — they fail for unrelated reasons. */
-  readonly admission: 'admitNew' | 'admitResume';
-  /** Epoch millis, stamped by this registry's clock rather than by its caller. */
-  readonly at: number;
-  /**
-   * The error's message, raw. Sanitizing happens at the projection seam, where
-   * the sanitizer lives (`projectStartFailure`), so nothing here has to know
-   * whether its reader is an operator surface or a test.
-   */
-  readonly message: string;
-}
+/**
+ * One queue's most recent failed start attempt. Frozen; latest wins.
+ *
+ * Feature 195 (T014, FR-001, FR-002, FR-007) — widened to a discriminated
+ * union. `kind: 'admission'` is this module's original (and only) shape,
+ * renamed rather than left implicit so a `switch` on `kind` is exhaustive;
+ * `kind: 'halted'` is the new report a halt-on-failure gate leaves, naming
+ * the failed task rather than an admission call and its error.
+ *
+ * Registry semantics are unchanged by the widening: one entry per queue,
+ * later replaces earlier, a successful start clears (`clear`).
+ */
+export type QueueStartFailure =
+  | {
+      readonly kind: 'admission';
+      /** Which of the two admissions actually ran — they fail for unrelated reasons. */
+      readonly admission: 'admitNew' | 'admitResume';
+      /** Epoch millis, stamped by this registry's clock rather than by its caller. */
+      readonly at: number;
+      /**
+       * The error's message, raw. Sanitizing happens at the projection seam,
+       * where the sanitizer lives (`projectStartFailure`), so nothing here has
+       * to know whether its reader is an operator surface or a test.
+       */
+      readonly message: string;
+    }
+  | {
+      readonly kind: 'halted';
+      /** The failed row's own id — never carried anywhere else (FR-003). */
+      readonly taskId: string;
+      /**
+       * The failed row's operator-authored name, raw. Sanitized at the same
+       * projection seam as `message` above, for the same reason.
+       */
+      readonly taskName: string;
+      readonly at: number;
+    };
 
 export class QueueStartFailureRegistry {
   private readonly byQueue = new Map<string, QueueStartFailure>();
@@ -57,11 +81,17 @@ export class QueueStartFailureRegistry {
    */
   recordFailure(
     queueId: string,
-    failure: { readonly admission: 'admitNew' | 'admitResume'; readonly message: string }
+    failure:
+      | { readonly kind: 'admission'; readonly admission: 'admitNew' | 'admitResume'; readonly message: string }
+      | { readonly kind: 'halted'; readonly taskId: string; readonly taskName: string }
   ): void {
     this.byQueue.set(
       queueId,
-      Object.freeze({ admission: failure.admission, at: this.now(), message: failure.message })
+      Object.freeze(
+        failure.kind === 'admission'
+          ? { kind: 'admission', admission: failure.admission, at: this.now(), message: failure.message }
+          : { kind: 'halted', taskId: failure.taskId, taskName: failure.taskName, at: this.now() }
+      )
     );
   }
 
