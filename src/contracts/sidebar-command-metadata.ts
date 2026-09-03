@@ -1,6 +1,6 @@
 import {
   CMD_CANCEL,
-  CMD_CLEAR_ALL,
+  CMD_CLEAR_QUEUE,
   CMD_CLEAR_COMPLETED,
   CMD_CLEAR_PHASE_BREAKPOINT,
   CMD_CONTINUE_WORKFLOW,
@@ -37,6 +37,7 @@ import {
   CMD_SAVE_MODELS,
   CMD_SAVE_QUEUE_SETTINGS,
   CMD_SET_CONFIRM_SUPPRESSION,
+  CMD_SET_QUEUE_FAILURE_POLICY,
   CMD_SET_PHASE_BREAKPOINT,
   CMD_SET_UNCONTAINED_BACKEND_GRANT,
   CMD_SKIP_PHASE,
@@ -92,10 +93,10 @@ export const MUTATING_COMMAND_REASONS = Object.freeze({
   // BUG-002 (FR-012a) — start-queue trigger. Mutating because it promotes
   // a pending task to in-flight and kicks off a controller run.
   [CMD_START_QUEUE]: 'queue start',
-  // Feature 063 — atomic Clean All. Drops every queue item, cancels the
-  // active runner if any, and clears the watchdog backoff window in a
-  // single batched memento write.
-  [CMD_CLEAR_ALL]: 'queue full reset',
+  // FR-R3-150 (T1618) — queue-scoped Clean All. Drops every task belonging
+  // to the addressed queue, cancels its active run if any, and clears its
+  // pause and scheduled-start state in a single batched memento write.
+  [CMD_CLEAR_QUEUE]: 'queue reset',
   // Feature 063 — confirmation suppression preference write. Mutating
   // because it persists to the `schegent.ui.confirmSuppression` memento.
   [CMD_SET_CONFIRM_SUPPRESSION]: 'confirmation suppression preference write',
@@ -123,6 +124,10 @@ export const MUTATING_COMMAND_REASONS = Object.freeze({
   [CMD_RENAME_QUEUE]: 'queue registry write',
   [CMD_DELETE_QUEUE]: 'queue registry write',
   [CMD_SAVE_QUEUE_SETTINGS]: 'queue settings write',
+  // Feature 195 (T035, FR-018, FR-019) — this queue's own halt-on-failure
+  // answer, or the removal of it (`policy: null`, "follow the workspace
+  // default"). Mutating: writes or removes `QueueState.failurePolicy`.
+  [CMD_SET_QUEUE_FAILURE_POLICY]: 'queue failure-policy write',
   [CMD_MOVE_TASK]: 'task move between queues',
   // FR-R3-144 (T017, D-2) — grant or revoke one backend's uncontained posture.
   // The most consequential write in this table: it decides whether a backend

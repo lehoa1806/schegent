@@ -13,13 +13,18 @@
 // tidiness instinct is a diff with no requirement behind it.
 
 import {
+  CMD_CLEAR_COMPLETED,
+  CMD_CLEAR_QUEUE,
   CMD_DELETE_QUEUE,
   CMD_MOVE_TASK,
-  CMD_SAVE_QUEUE_SETTINGS
+  CMD_SAVE_QUEUE_SETTINGS,
+  CMD_SET_QUEUE_FAILURE_POLICY
 } from './messages';
+import type { QueueFailurePolicy } from './generated/queue-failure-policy';
 import { snapshotStore } from './snapshot-store.svelte';
 import type { AckResult } from './snapshot-store.svelte';
 import { useConfirm } from './use-confirm';
+import type { ActionCopyContext } from './action-copy';
 import { postCommand } from './vscode-api';
 
 const ACK_TIMEOUT_MS = 5000;
@@ -145,6 +150,90 @@ export function moveTask(taskId: string, targetQueueId: string): Promise<QueueCo
   return correlatedRequest(() => postCommand(CMD_MOVE_TASK, { taskId, targetQueueId }).correlationId);
 }
 
+/**
+ * Feature 195 (T040, FR-018, FR-019) — this queue's own halt-on-failure
+ * answer, or `null` to follow the workspace default. A three-way outcome
+ * rather than `QueueControlResult`'s two: the host distinguishes a committed
+ * write from a redundant one (`no-op`, when the queue already read the way
+ * the operator asked), and collapsing that into `refused` would tell the
+ * operator their unchanged request was declined.
+ */
+export type SetQueueFailurePolicyOutcome =
+  | { readonly status: 'accepted' }
+  | { readonly status: 'no-op'; readonly reason: string }
+  | { readonly status: 'refused'; readonly reason: string };
+
+function toSetQueueFailurePolicyOutcome(ack: AckResult): SetQueueFailurePolicyOutcome {
+  if (ack.status === 'accepted') return { status: 'accepted' };
+  const reason = ack.reason ?? 'rejected';
+  return ack.outcome === 'no-op' ? { status: 'no-op', reason } : { status: 'refused', reason };
+}
+
+export function setQueueFailurePolicy(
+  queueId: string,
+  policy: QueueFailurePolicy | null
+): Promise<SetQueueFailurePolicyOutcome> {
+  return correlated<SetQueueFailurePolicyOutcome>(
+    () => postCommand(CMD_SET_QUEUE_FAILURE_POLICY, { queueId, policy }).correlationId,
+    toSetQueueFailurePolicyOutcome,
+    { status: 'refused', reason: 'timeout' }
+  );
+}
+
+export type ClearQueueOutcome =
+  | { readonly status: 'cleared' }
+  | { readonly status: 'declined' }
+  | { readonly status: 'refused'; readonly reason: string };
+
+// Code-review finding (iteration 4, FR-R3-150/FR-011) — `CMD_CLEAR_QUEUE` and
+// `CMD_CLEAR_COMPLETED` are outside the feature-092 five this module's header
+// enumerates, but `QueueDetailTier.svelte`'s `onClean`/`onClearDone` posted
+// them fire-and-forget after their own separate `useConfirm(...)` call, so
+// the `unknown-queue-id` refusal this feature adds (a queue deleted from
+// another window between opening the confirmation and confirming it) reached
+// no listener: `applyAck()` just clears the pending flag and drops the ack.
+// `cmd-clear-queue.ts`'s own comment says the sidebar IPC boundary — here —
+// is where FR-011 expects the refusal to surface; nothing did.
+//
+// The confirm call moves in here rather than staying at the call site,
+// mirroring `confirmAndDeleteQueue` above and for the same reason:
+// `destructive-actions.lint.test.ts` walks the *enclosing brace block* of a
+// destructive command's `postCommand` call for a `useConfirm(` sibling, so a
+// post correlated in this module needs its own gate in this module — a gate
+// upstream in the caller is invisible to that scan, exactly the shape the
+// comment on `confirmAndDeleteQueue` above already explains for delete.
+export async function clearQueue(
+  queueId: string,
+  context: ActionCopyContext['queue.clean-all'],
+  originatingElement: HTMLElement | null = null
+): Promise<ClearQueueOutcome> {
+  const confirmed = await useConfirm('queue.clean-all', { originatingElement, context });
+  if (!confirmed) return { status: 'declined' };
+  const result = await correlatedRequest(() =>
+    postCommand(CMD_CLEAR_QUEUE, { queueId }).correlationId
+  );
+  return result.status === 'accepted'
+    ? { status: 'cleared' }
+    : { status: 'refused', reason: result.reason };
+}
+
+// Code-review finding (iteration 4, FR-R3-150/FR-011) — see `clearQueue`
+// above; the same gap and the same fix, for Clear Done.
+export async function clearCompleted(
+  queueId: string,
+  context: ActionCopyContext['queue.clear-done'],
+  originatingElement: HTMLElement | null = null
+): Promise<ClearQueueOutcome> {
+  const confirmed = await useConfirm('queue.clear-done', { originatingElement, context });
+  if (!confirmed) return { status: 'declined' };
+  const result = await correlatedRequest(() =>
+    postCommand(CMD_CLEAR_COMPLETED, { queueId }).correlationId
+  );
+  return result.status === 'accepted'
+    ? { status: 'cleared' }
+    : { status: 'refused', reason: result.reason };
+}
+
 // FR-013 — one refusal vocabulary for all four control groups, so a reason the
 // host answers reads the same wherever it surfaces. Unknown codes fall through
 // verbatim rather than being swallowed: a refusal the operator cannot act on is
@@ -172,6 +261,8 @@ export function moveTask(taskId: string, targetQueueId: string): Promise<QueueCo
 //     FR-013); kept dormant rather than deleted in case a caller returns.
 //   - `QueueManager.saveQueueSettings` — the settings refusals
 //   - `commands/constants.ts` and each `cmd-*.ts` guard — transport refusals
+//   - `commands/clear-queue.ts` (`runClearQueue`) — the two orchestrator
+//     refusals the queue-scoped Clean All relays through `cmd-clear-queue.ts`
 // `timeout` and `unexpected-accept` are the two this module synthesises itself.
 //
 // `invalid-queue-name` is deliberately absent: it belongs to create and rename,
@@ -204,6 +295,25 @@ const REFUSAL_TEXT: Readonly<Record<string, string>> = Object.freeze({
   // Settings
   'invalid-concurrency-cap': 'That value is outside the range this setting accepts.',
   'config-write-failed': 'The setting could not be saved. Try again.',
+  // Feature 195 (T035) — `CMD_SET_QUEUE_FAILURE_POLICY`'s payload validator
+  // (`validateSetQueueFailurePolicy`, `contracts/validators/queue-management.ts`).
+  'invalid-failure-policy': 'That is not a recognized failure policy.',
+  // Clean All orchestration (`runClearQueue`). Both reach the operator through
+  // `cmd-clear-queue.ts`, which relays the orchestrator's `reason` verbatim —
+  // without these two entries they render as "The host refused: not-primary",
+  // which is the exact fall-through defect the header above records.
+  'not-primary': 'This window is not the primary one, so it cannot change the queue.',
+  'persistence-error': 'The queue could not be cleared — workspace state could not be written.',
+  // Shared outcome vocabulary — `command-outcome.ts` and `handler-helpers.ts`,
+  // reachable here since `cmd-clear-queue.ts` relays through `execAndAck`
+  // (code-review finding, iteration 5). Same three the lifecycle table carries,
+  // worded for a queue rather than a Run: the trust gate's `undefined`, a
+  // dispatch that threw, and a result shape no reading covers. Without them the
+  // first would render as "The host refused: workspace-not-trusted".
+  'workspace-not-trusted': 'The workspace is not trusted, so this control is unavailable.',
+  'command-dispatch-failed': 'The queue could not be cleared. Check the log and try again.',
+  'command-result-unrecognized':
+    'The host answered in a way this view could not read, and nothing was changed.',
   // Transport
   'secondary-window-readonly': 'This window is not the primary one, so it cannot change the queue.',
   unsupported: 'This host build does not support that operation.',

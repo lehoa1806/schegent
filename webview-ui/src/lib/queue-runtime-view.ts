@@ -35,6 +35,18 @@ export function findQueueRuntime(
 }
 
 /**
+ * Feature 195 (T028, FR-007) — the halt-on-failure variant of a queue's
+ * `startFailure`, or `null` when the queue has none or its last failed start
+ * was an admission error. A single named read, so a consumer discriminates on
+ * `kind` through this function rather than sniffing for `taskName` itself.
+ */
+export function haltedStartFailure(
+  runtime: Pick<QueueRuntime, 'startFailure'>
+): Extract<QueueRuntime['startFailure'], { kind: 'halted' }> | null {
+  return runtime.startFailure?.kind === 'halted' ? runtime.startFailure : null;
+}
+
+/**
  * The queue a surface reads when the operator has made no explicit selection.
  *
  * FR-R3-145 (T1572) — from `queueSettings`, the memento projection, not from

@@ -1,7 +1,9 @@
 <script lang="ts">
   import { postCommand } from '../lib/vscode-api';
+  import { correlatedLifecycle, lifecycleMessage } from '../lib/lifecycle-control-ipc';
   import { CMD_START_QUEUE } from '../lib/messages';
-  import type { QueueLifecycle } from '../lib/snapshot-types';
+  import type { QueueItem, QueueLifecycle } from '../lib/snapshot-types';
+  import QueueItemActions from './QueueItemActions.svelte';
 
   interface Props {
     isPrimary: boolean;
@@ -28,6 +30,18 @@
      * callers that have not yet been threaded with the lifecycle.
      */
     queueLifecycle?: QueueLifecycle | null;
+    /**
+     * Feature 195 (T031, FR-009) — the row this queue's halt names, or
+     * `null` when the queue is not halted. Required-and-nullable like
+     * `QueueRuntime.startFailure` itself (FR-007): always present, so this
+     * component gains no existence guard and the caller cannot silently
+     * omit it. Rendered here, in the queue header, so "the halt has a
+     * stated way out" (FR-009) reads from the same surface that reports
+     * the halt (`QueueStartFailureNotice`) rather than only from the row
+     * list. Retry and remove are dispatched through `QueueItemActions`,
+     * unmodified — this header adds no IPC call of its own.
+     */
+    haltedTask: QueueItem | null;
     onResume: (event: MouseEvent) => void;
     onPause: (event: MouseEvent) => void;
     onClearDone: (event: MouseEvent) => void;
@@ -43,6 +57,7 @@
     clearDoneDisabled,
     cleanDisabled,
     queueLifecycle = null,
+    haltedTask,
     onResume,
     onPause,
     onClearDone,
@@ -87,10 +102,20 @@
 
   const actionDisabled = $derived(!isPrimary || action === 'idle');
 
-  function onAction(event: MouseEvent): void {
+  // FR-R3-154 (T1646) — what the host answered about the last Start, as one
+  // sentence, or `null` when it committed. Pause and Resume are the parent's
+  // callbacks, not this component's posts, so they are not reported here.
+  let startMessage = $state<string | null>(null);
+
+  async function onAction(event: MouseEvent): Promise<void> {
     if (actionDisabled) return;
     if (action === 'start') {
-      postCommand(CMD_START_QUEUE, { queueId } as never);
+      startMessage = null;
+      startMessage = lifecycleMessage(
+        await correlatedLifecycle(
+          () => postCommand(CMD_START_QUEUE, { queueId } as never).correlationId
+        )
+      );
     } else if (action === 'pause') {
       onPause(event);
     } else if (action === 'resume') {
@@ -130,6 +155,20 @@
     disabled={cleanDisabled || !isPrimary}
     title="Clear all tasks, in-flight work, pause state, active run, and watchdog backoff"
   >Clean All</button>
+  {#if startMessage !== null}
+    <p class="start-message" role="alert" data-testid="dashboard-queue-start-message">{startMessage}</p>
+  {/if}
+  {#if haltedTask !== null}
+    <!-- Feature 195 (T031, FR-007, FR-008, FR-009) — the header states the
+         same fact and the same name `QueueStartFailureNotice` already
+         reports, with retry and remove reachable here too (contract §3). -->
+    <div class="halted-actions" data-testid="dashboard-queue-halted-actions">
+      <span class="halted-actions-label">
+        Halted: <strong>{haltedTask.label}</strong> failed
+      </span>
+      <QueueItemActions item={haltedTask} {isPrimary} />
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -137,6 +176,30 @@
     display: flex;
     flex-wrap: wrap;
     gap: 4px;
+  }
+
+  /* Takes the whole row: the controls wrap, so an inline sentence would reflow
+     the button it is reporting on. Colour matches `QueueDetailTier`'s
+     `.refusal`. */
+  .start-message {
+    flex-basis: 100%;
+    margin: 2px 0 0;
+    font-size: 12px;
+    color: var(--vscode-errorForeground);
+  }
+
+  /* Takes the whole row for the same reason `.start-message` does — the
+     controls wrap, so an inline sentence would reflow the button row. */
+  .halted-actions {
+    flex-basis: 100%;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 2px 0 0;
+  }
+  .halted-actions-label {
+    font-size: 12px;
+    color: var(--vscode-errorForeground);
   }
 
   .btn {

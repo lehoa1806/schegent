@@ -1,5 +1,6 @@
 import type { FrozenRunPlan } from '../contracts/run-request';
 import type { QueuePauseSource } from './queue-registry';
+import type { QueueFailurePolicy } from '../contracts/queue-failure-policy';
 
 // FR-R3-132 (T1502) — moved to `src/contracts/snapshot-vocabulary.ts` so the webview
 // imports it instead of restating it. Re-exported unchanged.
@@ -187,6 +188,22 @@ export interface QueueState {
    * Default for a never-migrated queue is `'dismissed'` (nothing to surface).
    */
   migrationNotice?: 'pending' | 'dismissed';
+  /**
+   * Feature 195 (T007, FR-001, FR-017, FR-018) — this queue's own answer to
+   * "does a failed task stop it", or absent when the operator has never
+   * stated one.
+   *
+   * The optionality IS the shape gate, not an incidental default: a record
+   * carrying this field has been touched by an operator (`CMD_SET_QUEUE_
+   * FAILURE_POLICY`, `src/commands/set-queue-failure-policy.ts`); one without
+   * it has not. That is what lets a later change to the workspace default
+   * (`schegent.queue.haltOnTaskFailure`) reach exactly the un-opinionated
+   * queues and none of the overridden ones (FR-018) — see
+   * `effectiveQueueFailurePolicy` in `src/contracts/queue-failure-policy.ts`.
+   * Every pre-existing record lacks this field and loads unchanged (FR-017):
+   * no schema bump, no migrator (research.md D2).
+   */
+  failurePolicy?: QueueFailurePolicy;
 }
 
 export const MAX_DESCRIPTION_LENGTH = 32_000;

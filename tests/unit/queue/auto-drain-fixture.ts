@@ -52,7 +52,12 @@ export function makeCoordinator(
     getQueue: vi.fn(() => ({
       queueLifecycle: lifecycle,
       pauseSource: stopAt === 'paused' ? 'operator' : null,
-      inFlightId: null
+      inFlightId: null,
+      // Feature 195 (T012) — step 2a reads this off the same `queueState`; no
+      // scenario here has a failed row, so an empty array leaves every
+      // existing `stopAt` case answering exactly as it did before that step
+      // existed.
+      requests: []
     })),
     // BUG-003 — step 3's second reading. A paused Run holds its queue's one Run
     // slot while leaving the in-flight Task count that `hasQueueCapacity` reads,
@@ -87,7 +92,8 @@ export function makeCoordinator(
       // A controller with no sessions genuinely drives nothing; every gate this
       // file pins is chosen by its own spy, not by the live-Run count.
       liveRunCount: 0
-    } as never
+    } as never,
+    failurePolicyDefault: { resolve: () => 'halt-on-failure' }
   });
   return { coord, spies };
 }

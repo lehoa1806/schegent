@@ -591,12 +591,28 @@ export interface QueueRuntime {
    * `summary` is `null` when the error carried no message worth showing; it is
    * never the raw message — see `projectStartFailure`, which passes it through
    * the same `sanitizeAndCap` every other operator-facing error text uses.
+   *
+   * Feature 195 (T015, FR-007, FR-008) — widened to the same discrimination as
+   * `QueueStartFailure` in `queue-start-failure-registry.ts`: `kind: 'halted'`
+   * is a queue's own halt report, naming the failed task rather than an
+   * admission call's error. `taskName` is sanitized through the same
+   * `sanitizeAndCap` as `summary` above (FR-024, AGENTS.md rule 2) — this is
+   * the one string in the feature that is verbatim operator-authored content.
    */
-  readonly startFailure: {
-    readonly admission: 'admitNew' | 'admitResume';
-    readonly at: string;
-    readonly summary: string | null;
-  } | null;
+  readonly startFailure:
+    | {
+        readonly kind: 'admission';
+        readonly admission: 'admitNew' | 'admitResume';
+        readonly at: string;
+        readonly summary: string | null;
+      }
+    | {
+        readonly kind: 'halted';
+        readonly taskId: string;
+        readonly taskName: string;
+        readonly at: string;
+      }
+    | null;
   /** Pending Tasks on this queue, derived from its own rows — never a total. */
   readonly pendingCount: number;
   /**
@@ -1072,6 +1088,8 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   backendRunner: DEFAULT_BACKEND,
   spendMaxUsdPerRun: null,
   spendMaxTokensPerRun: null,
+  // Feature 195 (T008) — manifest default, matching the schema and KEY_SPECS.
+  queueHaltOnTaskFailure: 'halt-on-failure',
   scopes: Object.freeze({
     cliPath: 'default',
     codexPath: 'default',
@@ -1103,7 +1121,8 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
     multiRootSuppressWarning: 'default',
     backendRunner: 'default',
     spendMaxUsdPerRun: 'default',
-    spendMaxTokensPerRun: 'default'
+    spendMaxTokensPerRun: 'default',
+    queueHaltOnTaskFailure: 'default'
   })
 });
 

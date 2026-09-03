@@ -213,7 +213,9 @@ describe('drainAll() keeps the idle-pending gate a single enforcement site (T037
       queueLifecycle: lifecycles[queueId],
       pauseSource: null,
       paused: false,
-      inFlightId: null
+      inFlightId: null,
+      // Feature 195 (T012) — no queue in this file carries a failed row.
+      requests: []
     }));
     const hasQueueCapacity = vi.fn(() => true);
     const peekNextPending = vi.fn((queueId: string) => ({
@@ -258,7 +260,8 @@ describe('drainAll() keeps the idle-pending gate a single enforcement site (T037
         admitNew,
         admitResume: vi.fn(async () => ({ resumed: false, completed: Promise.resolve() })),
         liveRunCount: 0
-      } as never
+      } as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
     });
     return { coord, getQueue, admitNew, hasQueueCapacity };
   }

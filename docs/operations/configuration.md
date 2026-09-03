@@ -24,6 +24,15 @@ The three executable-path settings are read through configuration-backed path re
 
 Changing session-retention limits requests a new retention sweep. Changing `schegent.defaultPipelineId` or `schegent.models` refreshes the in-memory catalog projection used by the extension. <!-- Source: src/extension.ts -->
 
+`schegent.queue.haltOnTaskFailure` needs no reload. It is a `window`-scoped enum of
+`halt-on-failure` (the default) and `continue`, naming the workspace-wide default for whether a
+Queue stops starting further Tasks after one of its current Tasks ends `failed`; a Queue with its
+own per-Queue answer, set from the Queue's own configuration control, ignores this default. The
+drain coordinator reads it fresh on every attempt to start work on a Queue, so a change reaches
+every un-opinionated Queue from the next such attempt onward — see
+[Multi-queue concurrency](multi-queue-concurrency.md#failure-policy-halting-a-queue-on-a-failed-task).
+<!-- Source: package.json --> <!-- Source: src/services/auto-drain-coordinator.ts -->
+
 ## Validate a configuration change
 
 Run the settings-schema parity test after adding or changing a setting. It requires the contribution manifest and the typed host schema to agree on keys and value constraints; settings exposed through General Settings also require a matching allowlist entry and validator. <!-- Source: tests/unit/config/settings-schema-parity.test.ts --> <!-- Source: src/config/settings-schema.ts --> <!-- Source: src/config/general-settings.ts -->

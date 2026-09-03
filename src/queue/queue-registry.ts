@@ -34,6 +34,10 @@
 
 import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
 import { MAX_QUEUES, MAX_QUEUE_NAME_LENGTH } from '../contracts/queue-bounds';
+import {
+  effectiveQueueFailurePolicy,
+  type QueueFailurePolicy
+} from '../contracts/queue-failure-policy';
 
 // FR-R3-110 — `DEFAULT_QUEUE_ID` moved to `src/contracts/queue-identity.ts` and
 // `MAX_QUEUES` / `MAX_QUEUE_NAME_LENGTH` to `src/contracts/queue-bounds.ts`. The id
@@ -129,6 +133,22 @@ export interface QueueRegistry {
 export interface ProjectedQueueRegistryEntry extends QueueRegistryEntry {
   readonly state: QueueRegistryState;
   readonly pauseSource: QueuePauseSource;
+  /**
+   * Feature 195 (T039, FR-014, research D1) — this queue's halt-on-failure
+   * policy as it actually runs *right now*: `QueueState.failurePolicy` when
+   * the queue has stated one, the workspace default otherwise. A projection,
+   * exactly like `state` above, never a second stored copy — `QueueState` is
+   * the only place a policy is written (FR-003).
+   */
+  readonly failurePolicy: QueueFailurePolicy;
+  /**
+   * The raw per-queue override, or `null` when the queue has stated no
+   * opinion and `failurePolicy` above is standing in for the workspace
+   * default. Pairs with `failurePolicy` the same way `pauseSource` pairs
+   * with `state`: one is the resolved reading, the other names whether this
+   * queue's own record is the source of it.
+   */
+  readonly failurePolicyOverride: QueueFailurePolicy | null;
 }
 
 export interface ProjectedQueueRegistry {
@@ -159,19 +179,33 @@ export interface QueuePauseView {
  * `validateQueueRegistry` used to assert across two persisted records now holds
  * by construction here — there is one place that builds the pair, and it builds
  * both halves from the same input.
+ *
+ * Feature 195 (T039) — `failurePolicyByQueueId` and `workspaceFailurePolicyDefault`
+ * are additive and default-valued so every pre-existing caller (none of which
+ * knows about this feature) keeps compiling and keeps its prior behaviour: an
+ * omitted map projects every entry as following the literal package default,
+ * `'halt-on-failure'`, which is also `package.json`'s own contributed default.
  */
 export function projectQueueRegistry(
   registry: QueueRegistry,
-  pauseByQueueId: ReadonlyMap<string, QueuePauseView>
+  pauseByQueueId: ReadonlyMap<string, QueuePauseView>,
+  failurePolicyByQueueId: ReadonlyMap<string, QueueFailurePolicy | undefined> = new Map(),
+  workspaceFailurePolicyDefault: QueueFailurePolicy = 'halt-on-failure'
 ): ProjectedQueueRegistry {
   return {
     entries: registry.entries.map((entry) => {
       const view = pauseByQueueId.get(entry.id);
       const paused = view?.paused === true;
+      const storedFailurePolicy = failurePolicyByQueueId.get(entry.id);
       return {
         ...entry,
         state: paused ? 'manually-paused' : 'active',
-        pauseSource: paused ? view?.pauseSource ?? 'operator' : null
+        pauseSource: paused ? view?.pauseSource ?? 'operator' : null,
+        failurePolicy: effectiveQueueFailurePolicy(
+          storedFailurePolicy,
+          workspaceFailurePolicyDefault
+        ),
+        failurePolicyOverride: storedFailurePolicy ?? null
       };
     }),
     updatedAt: registry.updatedAt

@@ -28,7 +28,7 @@ The permitted maximum stays 20 and the default stays 1. Per-Run working-tree iso
 
 ## Admission order
 
-For each Queue, the drain coordinator checks that the Queue exists, is not paused, has no in-flight Task, the workspace remains under its global cap, a pending head exists, and this host can acquire that Queue's execution lease. It rechecks the lease at the point of effect before starting work. A round-robin cursor prevents the first Queue from always winning when the global cap is saturated.
+For each Queue, the drain coordinator checks that the Queue exists, is not paused, is not halted on a failed task, has no in-flight Task, the workspace remains under its global cap, a pending head exists, and this host can acquire that Queue's execution lease. It rechecks the lease at the point of effect before starting work. A round-robin cursor prevents the first Queue from always winning when the global cap is saturated.
 
 <!-- Source: src/services/auto-drain-coordinator.ts -->
 
@@ -38,12 +38,42 @@ An execution lease is scoped to one Queue. Window primacy and execution leases s
 <!-- Source: src/state/ownership-registry.ts -->
 <!-- Source: src/ui/sidebar/commands/primacy-gate.ts -->
 
+## Failure policy: halting a Queue on a failed Task
+
+Each Queue carries a failure policy of `halt-on-failure` or `continue`. The workspace-wide
+setting `schegent.queue.haltOnTaskFailure` supplies the answer for a Queue that states no
+override of its own; its default is `halt-on-failure`. Set the per-Queue answer from the
+Queue's own configuration control in the sidebar — "follow the default" is the choice a newly
+created Queue starts with.
+
+Under `halt-on-failure`, a Queue whose current rows include a Task that ended `failed` starts
+no further Task. The check is Step 2a of the admission order above, ordered after the
+operator-pause check and before every capacity or lease check, so a halted Queue's execution
+lease is never acquired and no other Queue's admission is affected. Under `continue` — the
+pre-feature behaviour — a failed Task does not stop the Queue from starting its remaining
+rows.
+
+Nothing about a halt is stored: the verdict is recomputed from the Queue's own rows on every
+admission attempt. Two actions end a halt, and both are ordinary Task actions with no
+separate acknowledgement step: retrying the failed Task, or removing it. A Queue that keeps a
+failed row as history — rather than clearing or retrying it — stays halted until the operator
+acts on that row.
+
+An explicit `Start Queue` request against a halted Queue is refused, naming the failed Task in
+the reason; a scheduled start due on a halted Queue releases the Queue exactly as it does
+today and is then refused by the same check. The Queue's own surface — the Queue list and the
+Queue header — reports which Task caused the halt.
+
+<!-- Source: src/contracts/queue-failure-policy.ts -->
+<!-- Source: src/queue/queue-halt-policy.ts -->
+<!-- Source: src/services/auto-drain-coordinator.ts -->
+
 ## Operator guidance
 
 1. Keep the global cap at `1` for Pipelines that may touch overlapping files or Git state.
 2. Put independent work in separate Queues before raising the cap.
 3. Pause a Queue to stop its pending head from being admitted; pausing does not rewrite another Queue.
-4. If work appears stalled, confirm the Queue lifecycle, workspace-capacity count, and execution-lease ownership in the runtime evidence before retrying.
+4. If work appears stalled, confirm the Queue lifecycle, workspace-capacity count, failure-policy halt, and execution-lease ownership in the runtime evidence before retrying.
 
 <!-- Source: src/queue/queue-manager.ts -->
 <!-- Source: src/services/auto-drain-coordinator.ts -->

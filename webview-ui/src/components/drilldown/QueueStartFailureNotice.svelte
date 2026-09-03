@@ -42,12 +42,14 @@
   // have asked for. Printing the identifiers would answer that only for someone
   // who has read the drain.
   const attempt = $derived(
-    startFailure?.admission === 'admitResume' ? 'Resuming this queue' : 'Starting this queue'
+    startFailure?.kind === 'admission' && startFailure.admission === 'admitResume'
+      ? 'Resuming this queue'
+      : 'Starting this queue'
   );
   const age = $derived(startFailure === null ? '' : formatRelativeTime(startFailure.at, nowMs));
 </script>
 
-{#if startFailure !== null}
+{#if startFailure !== null && startFailure.kind === 'admission'}
   <div class="start-failure" role="status" data-testid="queue-start-failure-{queueId}">
     <div class="headline">
       <span class="attempt">{attempt} failed</span>
@@ -61,6 +63,21 @@
       {/if}
     </span>
     <span class="retry-note">Schegent will offer this queue again when a run ends.</span>
+  </div>
+{:else if startFailure !== null && startFailure.kind === 'halted'}
+  <!-- Feature 195 (T029, FR-007, FR-009) — the halt-on-failure report. Named
+       here, in the component that already owns "why this queue did not
+       start", rather than a second notice: the operator reads one place for
+       either reason a start did not happen. -->
+  <div class="start-failure halted" role="status" data-testid="queue-halted-{queueId}">
+    <div class="headline">
+      <span class="attempt">Halted</span>
+      <span class="age" data-testid="queue-halted-age-{queueId}">{age}</span>
+    </div>
+    <span class="summary" data-testid="queue-halted-task-{queueId}">
+      Stopped because <strong>{startFailure.taskName}</strong> failed.
+    </span>
+    <span class="retry-note">Retry or remove that task to let this queue continue.</span>
   </div>
 {/if}
 

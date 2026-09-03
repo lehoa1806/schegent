@@ -397,6 +397,25 @@ const EXEMPTIONS: ReadonlyMap<string, Exemption> = new Map<string, Exemption>([
         'a checkbox in a field list, because granting it widens what an unattended run may do.',
       reviewBy: '2026-12-31'
     }
+  ],
+
+  // ── Owned by FR-R3-156 (feature 195): the queue failure-policy default. ──
+  [
+    'queue.haltOnTaskFailure',
+    {
+      owner: 'FR-R3-156 — native VS Code Settings UI',
+      reason:
+        'A `window`-scoped enum with its own `markdownDescription` in the contribution ' +
+        'manifest, discoverable and editable from the native VS Code Settings UI (FR-015) — ' +
+        'the same surface `queue.globalConcurrencyCap` used before this feature retired that ' +
+        'setting. It carries a `KEY_SPECS` entry so `CMD_SAVE_GENERAL_SETTINGS` can accept a ' +
+        'batch that includes it, not because `GeneralSettingsTab.svelte` renders a field for ' +
+        'it. The *per-queue* answer this default falls back to is the operator surface FR-014 ' +
+        'requires, reachable from `QueueConfigModal.svelte` through `CMD_SET_QUEUE_FAILURE_POLICY` ' +
+        '— a separate control for a separate question, so this key stays off the field-list ' +
+        'scan on purpose rather than by omission.',
+      reviewBy: PERMANENT
+    }
   ]
 ]);
 

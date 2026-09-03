@@ -32,8 +32,10 @@ import type {
   CMD_MOVE_TASK,
   CMD_RENAME_QUEUE,
   CMD_SAVE_QUEUE_SETTINGS,
+  CMD_SET_QUEUE_FAILURE_POLICY,
   CommandBase
 } from '../sidebar-ipc';
+import type { QueueFailurePolicy } from '../queue-failure-policy';
 
 export interface CreateQueueCommand extends CommandBase<typeof CMD_CREATE_QUEUE> {
   readonly payload: { readonly name: string };
@@ -69,5 +71,21 @@ export interface MoveTaskCommand extends CommandBase<typeof CMD_MOVE_TASK> {
     readonly taskId: string;
     readonly targetQueueId: string;
     readonly position?: number;
+  };
+}
+
+/**
+ * Feature 195 (T035, FR-018, FR-019) — this queue's own answer to the
+ * halt-on-failure question, or `null` to follow the workspace default.
+ * `policy: null` MUST remove the stored `QueueState.failurePolicy` field
+ * rather than write a concrete value: FR-018's stated/unstated distinction
+ * is what lets a later change to the workspace default reach exactly the
+ * queues that never stated an opinion (data-model.md §2).
+ */
+export interface SetQueueFailurePolicyCommand
+  extends CommandBase<typeof CMD_SET_QUEUE_FAILURE_POLICY> {
+  readonly payload: {
+    readonly queueId: string;
+    readonly policy: QueueFailurePolicy | null;
   };
 }

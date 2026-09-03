@@ -22,6 +22,7 @@
   import { postCommand } from '../../lib/vscode-api';
   import { CMD_CREATE_QUEUE } from '../../lib/messages';
   import { queueRuntimeLabel } from '../../lib/queue-lifecycle-label';
+  import { haltedStartFailure } from '../../lib/queue-runtime-view';
   import { snapshotStore } from '../../lib/snapshot-store.svelte';
   import QueueConfigModal from '../QueueConfigModal.svelte';
   import type { QueueRuntime } from '../../lib/snapshot-types';
@@ -126,6 +127,7 @@
     <QueueConfigModal
       queueSettings={snapshotStore.queueSettings}
       {queues}
+      queueSummaries={snapshotStore.snapshot?.queue.queues ?? []}
       machineMemoryBytes={snapshotStore.snapshot?.streamPressure?.machineMemoryBytes ?? 0}
       onClose={closeConfig}
       originatingElement={configOpener}
@@ -171,7 +173,19 @@
                  lifecycle is still true; the failed start is why the queue is
                  still in it. Compact by intent: this list distinguishes which
                  queue to look at, and the detail tier says what happened. -->
-            {#if runtime.startFailure !== null}
+            {#if haltedStartFailure(runtime) !== null}
+              <!-- Feature 195 (T030, FR-007, FR-008) — named and distinct from
+                   a plain "Start failed": the operator reads the failed
+                   task's name from the list without drilling in. -->
+              <span
+                class="start-failed halted"
+                data-testid="queue-halted-{runtime.queueId}"
+                aria-label="Halted: {haltedStartFailure(runtime)?.taskName} failed"
+                title="Halted — {haltedStartFailure(runtime)?.taskName} failed. Retry or remove it to continue."
+              >
+                Halted: {haltedStartFailure(runtime)?.taskName}
+              </span>
+            {:else if runtime.startFailure !== null}
               <span
                 class="start-failed"
                 data-testid="queue-start-failed-{runtime.queueId}"

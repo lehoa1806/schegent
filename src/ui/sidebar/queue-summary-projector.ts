@@ -52,7 +52,12 @@ export function projectQueues(
         schedule: projectSchedule(entry),
         taskCount: rows.filter(
           (request) => request.status === 'pending' || request.status === 'in-flight'
-        ).length
+        ).length,
+        // Feature 195 (T039, FR-014) — projected from `ProjectedQueueRegistryEntry`
+        // exactly as `state` and `pauseSource` above are: one derivation site
+        // (`projectQueueRegistry`), never a second copy of the rule here.
+        failurePolicy: entry.failurePolicy,
+        failurePolicyOverride: entry.failurePolicyOverride
       };
     });
 }

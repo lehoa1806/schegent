@@ -45,10 +45,19 @@ export const MUTATING_COMMAND_IDS = Object.freeze({
   'schegent.moveQueuedItemUp': 'queue reorder',
   'schegent.moveQueuedItemDown': 'queue reorder',
   'schegent.clearAll': 'queue full reset',
+  // FR-R3-150 (T1620) — the queue-scoped Clean All's own VS Code command,
+  // registered-only (no `package.json` entry) and called from
+  // `cmd-clear-queue.ts`'s sidebar handler alone.
+  'schegent.clearQueue': 'queue reset',
   'schegent.clearCompleted': 'queue cleanup',
   'schegent.clearFailed': 'queue cleanup',
   'schegent.pauseQueue': 'queue pause state',
   'schegent.resumeQueue': 'queue pause state',
+  // Feature 195 (T037, FR-018, FR-019) — this queue's own halt-on-failure
+  // answer, or its removal. Registered-only (no `package.json` entry), same
+  // shape as `schegent.clearQueue` above: called from
+  // `cmd-set-queue-failure-policy.ts`'s sidebar handler alone.
+  'schegent.setQueueFailurePolicy': 'queue failure-policy write',
   'schegent.rerunFromHistory': 'queue enqueue from history',
   'schegent.retryActiveRun': 'active run retry',
   'schegent.retryPhaseNow': 'phase retry',

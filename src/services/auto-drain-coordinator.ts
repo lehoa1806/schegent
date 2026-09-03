@@ -25,6 +25,8 @@ import type { OwnershipClaim, WorkspaceStateStore } from '../state/workspace-sta
 import { isTerminalRunStatus } from '../state/workflow-run';
 import type { SchegentWorkflowController } from '../controller/workflow-controller';
 import type { SanitizedLogger } from '../lib/logger';
+import { effectiveQueueFailurePolicy, type QueueFailurePolicy } from '../contracts/queue-failure-policy';
+import { evaluateQueueHalt } from '../queue/queue-halt-policy';
 
 /**
  * The slice of `ExecutionLeaseManager` the drain needs. Structural on purpose:
@@ -94,9 +96,25 @@ export interface OverlapAuditPort {
 export interface QueueStartFailurePort {
   recordFailure(
     queueId: string,
-    failure: { readonly admission: 'admitNew' | 'admitResume'; readonly message: string }
+    failure:
+      | { readonly kind: 'admission'; readonly admission: 'admitNew' | 'admitResume'; readonly message: string }
+      | { readonly kind: 'halted'; readonly taskId: string; readonly taskName: string }
   ): void;
   clear(queueId: string): void;
+}
+
+/**
+ * Feature 195 (T011, FR-001, research.md D4) — the queue failure-policy
+ * workspace default, read at the moment step 2a needs it rather than
+ * captured at construction.
+ *
+ * **Required, on the `claimFor` precedent stated on that port above**: a
+ * double that silently omitted it would turn the halt gate off for whatever
+ * composed this coordinator, and an optional port here would be exactly that
+ * default. Every test double must supply one.
+ */
+export interface QueueFailurePolicyDefaultPort {
+  resolve(): QueueFailurePolicy;
 }
 
 export interface AutoDrainCoordinatorDeps {
@@ -144,6 +162,8 @@ export interface AutoDrainCoordinatorDeps {
    * start still logs (FR-011) and reports nothing.
    */
   readonly startFailures?: QueueStartFailurePort | null;
+  /** Feature 195 (T011, FR-001) — see `QueueFailurePolicyDefaultPort` above. */
+  readonly failurePolicyDefault: QueueFailurePolicyDefaultPort;
   readonly logger?: SanitizedLogger;
 }
 
@@ -157,6 +177,7 @@ export class AutoDrainCoordinator {
   private readonly controller: AutoDrainCoordinatorDeps['controller'];
   private readonly auditWriter: OverlapAuditPort | null;
   private readonly startFailures: QueueStartFailurePort | null;
+  private readonly failurePolicyDefault: QueueFailurePolicyDefaultPort;
   private readonly logger: SanitizedLogger | null;
 
   /**
@@ -222,6 +243,14 @@ export class AutoDrainCoordinator {
   private readonly drainingQueues = new Set<string>();
 
   /**
+   * Feature 195 (T013, FR-003) — which queues step 2a most recently reported
+   * halted. See the clearing branch just below step 2a in `drainQueueOnce`
+   * for why this exists: it lets that branch clear exactly the report this
+   * coordinator wrote, without giving `QueueStartFailurePort` a read side.
+   */
+  private readonly haltedQueues = new Set<string>();
+
+  /**
    * Feature 093 (T049a) — the Runs this coordinator started that have not yet
    * reached a terminal status. See `detach` and `settled` below.
    */
@@ -263,6 +292,7 @@ export class AutoDrainCoordinator {
     this.controller = deps.controller;
     this.auditWriter = deps.auditWriter ?? null;
     this.startFailures = deps.startFailures ?? null;
+    this.failurePolicyDefault = deps.failurePolicyDefault;
     this.logger = deps.logger ?? null;
   }
 
@@ -366,6 +396,50 @@ export class AutoDrainCoordinator {
     // a record written after the collapse carries no `paused`, so the old read
     // was `undefined` on every queue and this step stopped refusing anything.
     if (queueState.queueLifecycle === 'operator-paused') return false;
+    // Step 2a — Feature 195 (T013, FR-002, FR-004, FR-012) — a queue whose
+    // effective failure policy is `halt-on-failure` and whose current rows
+    // include a failed task starts no further task.
+    //
+    // Recomputed from `queueState.requests`, the same read step 1 already
+    // paid for — no additional store call, no queue-manager call — and
+    // nothing about the verdict is written back to `queueState` or to
+    // `queueLifecycle` (FR-003): the next attempt asks the same question of
+    // whatever rows exist then, which is what makes retrying or removing the
+    // failed row clear the halt with no code of its own (FR-009).
+    //
+    // Sited here, before step 3, for the same reason BUG-003's note gives for
+    // ordering waits by what they mean to the operator: a halt is a distinct
+    // reason from "busy" or "at the ceiling", and — more load-bearing — this
+    // is *before* step 6's `tryAcquire`, so a halted queue's execution lease
+    // is never touched (FR-012, AGENTS.md rules 32/33/36/60). The queue that
+    // owns the failed task is refused; every other queue's gate chain is
+    // unaffected, because each call to this function reads only its own
+    // `queueId`'s state.
+    const failurePolicy = effectiveQueueFailurePolicy(
+      queueState.failurePolicy,
+      this.failurePolicyDefault.resolve()
+    );
+    const haltVerdict = evaluateQueueHalt(failurePolicy, queueState.requests);
+    if (haltVerdict !== null) {
+      this.haltedQueues.add(queueId);
+      this.startFailures?.recordFailure(queueId, {
+        kind: 'halted',
+        taskId: haltVerdict.taskId,
+        taskName: haltVerdict.taskName
+      });
+      return false;
+    }
+    // The halt condition is gone (the failed row was retried, removed, or
+    // otherwise stopped blocking). Clear exactly the report this coordinator
+    // itself wrote for it — not an admission report from an unrelated attempt
+    // — so a queue that has nothing left to start once the halt clears does
+    // not keep reporting one anyway (`haltedQueues` is this coordinator's own
+    // memory of what it wrote; `QueueStartFailurePort` has no read side by
+    // design, see that port's own note, so this is not a second gate on
+    // whether to start).
+    if (this.haltedQueues.delete(queueId)) {
+      this.startFailures?.clear(queueId);
+    }
     // Step 3 — this queue is busy. One limit, two readings, on the same terms as
     // step 4 below: neither subsumes the other, so a start needs both.
     //
@@ -545,6 +619,7 @@ export class AutoDrainCoordinator {
       // the queue stays unheld, so the next trigger re-attempts it exactly as it
       // re-attempts every other refusal (FR-005, FR-006).
       this.startFailures?.recordFailure(queueId, {
+        kind: 'admission',
         admission: attempted,
         message: (err as Error).message
       });

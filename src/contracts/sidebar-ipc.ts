@@ -119,16 +119,19 @@ export const CMD_CLEAR_PHASE_BREAKPOINT = 'CMD_CLEAR_PHASE_BREAKPOINT' as const;
 // pending task to in-flight via `controller.drainQueuedWork()`. Member of
 // `MUTATING_COMMANDS` and gated by the primary-host check.
 export const CMD_START_QUEUE = 'CMD_START_QUEUE' as const;
-// Feature 063 — Clean All atomic queue reset. Subsumes the separate
+// FR-R3-150 (T1618) — queue-scoped Clean All, replacing `CMD_CLEAR_ALL` as
+// the sidebar-postable route (research.md D1). Subsumes the separate
 // CMD_CLEAR_COMPLETED and CMD_CLEAR_FAILED commands; the lifecycle
 // round-check of 2026-08-30 (finding D) deleted the latter, which had
 // carried a handler, a guard and a validator arm for a route no webview
 // surface took after FR-R3-140 removed ControlPanel.svelte. Mutating: drops
-// every queue item (pending, in-flight, paused), cancels the active
-// runner if any, and clears the watchdog backoff window in a single
-// batched memento write. Member of `MUTATING_COMMAND_REASONS` and
-// gated by the primary-host + workspace-lock guards.
-export const CMD_CLEAR_ALL = 'CMD_CLEAR_ALL' as const;
+// every task (pending, in-flight, paused, terminal) belonging to the
+// addressed queue, cancels its active run if any, and clears its pause and
+// scheduled-start state in a single batched memento write — never a
+// sibling queue's. Member of `MUTATING_COMMAND_REASONS` and gated by the
+// primary-host + workspace-lock guards. The workspace-wide reset survives
+// as `schegent.clearAll`, a Command Palette entry only (FR-009).
+export const CMD_CLEAR_QUEUE = 'CMD_CLEAR_QUEUE' as const;
 // Feature 063 — per-action confirmation-prompt suppression persistence.
 // Mutating: writes to the `schegent.ui.confirmSuppression` memento via
 // `WorkspaceState`. Member of `MUTATING_COMMAND_REASONS` for audit
@@ -170,6 +173,10 @@ export const CMD_CONTINUE_WORKFLOW = 'CMD_CONTINUE_WORKFLOW' as const;
 // spawn at all. Why it is a command of its own rather than a key inside
 // `CMD_SAVE_GENERAL_SETTINGS`: sidebar-ipc/uncontained-grant.ts.
 export const CMD_SET_UNCONTAINED_BACKEND_GRANT = 'CMD_SET_UNCONTAINED_BACKEND_GRANT' as const;
+// Feature 195 (T035, FR-018, FR-019) — this queue's own halt-on-failure
+// answer, or `null` to follow the workspace default. Mutating: writes (or,
+// for `null`, removes) `QueueState.failurePolicy`.
+export const CMD_SET_QUEUE_FAILURE_POLICY = 'CMD_SET_QUEUE_FAILURE_POLICY' as const;
 
 // -- Host message literals (host → webview) ----------------------------------
 
@@ -229,7 +236,7 @@ export const COMMAND_TYPES = [
   CMD_SET_PHASE_BREAKPOINT,
   CMD_CLEAR_PHASE_BREAKPOINT,
   CMD_START_QUEUE,
-  CMD_CLEAR_ALL,
+  CMD_CLEAR_QUEUE,
   CMD_SET_CONFIRM_SUPPRESSION,
   CMD_DISMISS_MIGRATION_NOTICE,
   CMD_READ_METRICS,
@@ -239,7 +246,8 @@ export const COMMAND_TYPES = [
   CMD_LAUNCH_PIPELINE,
   CMD_LAUNCH_WORKFLOW,
   CMD_CONTINUE_WORKFLOW,
-  CMD_SET_UNCONTAINED_BACKEND_GRANT
+  CMD_SET_UNCONTAINED_BACKEND_GRANT,
+  CMD_SET_QUEUE_FAILURE_POLICY
 ] as const;
 
 export const HOST_MESSAGE_TYPES = [STATE_SNAPSHOT, CMD_ACK, MSG_PHASE_LOG_ENTRY] as const;
@@ -315,10 +323,12 @@ export type {
 // member, and the COMMAND_GUARDS entry.
 import type {
   CreateQueueCommand, DeleteQueueCommand, MoveTaskCommand,
-  RenameQueueCommand, SaveQueueSettingsCommand } from './sidebar-ipc/queue';
+  RenameQueueCommand, SaveQueueSettingsCommand,
+  SetQueueFailurePolicyCommand } from './sidebar-ipc/queue';
 export type {
   CreateQueueCommand, DeleteQueueCommand, MoveTaskCommand,
-  RenameQueueCommand, SaveQueueSettingsCommand } from './sidebar-ipc/queue';
+  RenameQueueCommand, SaveQueueSettingsCommand,
+  SetQueueFailurePolicyCommand } from './sidebar-ipc/queue';
 
 export type {
   ReadPhaseLogRequest,
@@ -378,6 +388,11 @@ export type {
   PhaseLogEntryPushMessage,
   HostMessage
 } from './sidebar-ipc/host-messages';
+// FR-R3-154 (T1646) — the ACK's `outcome` vocabulary, published here because
+// `webview-ui/src/lib/messages.ts` re-exports this module and nothing else: a
+// webview that narrows on `outcome` must read the same four words the host
+// writes, not a copy of them.
+export { COMMAND_ACK_OUTCOMES, type CommandAckOutcome } from './command-outcome';
 
 export interface StartCommand extends CommandBase<typeof CMD_START> {
   readonly payload: {
@@ -423,13 +438,17 @@ export interface MoveQueueItemDownCommand extends CommandBase<typeof CMD_MOVE_QU
   readonly payload: { readonly id: string };
 }
 
-export interface ClearCompletedCommand extends CommandBase<typeof CMD_CLEAR_COMPLETED> {}
+// FR-R3-150 (T1621a) — required, not optional: no more implicit Default
+// via `clearCompleted`'s default parameter.
+export interface ClearCompletedCommand extends CommandBase<typeof CMD_CLEAR_COMPLETED> {
+  readonly payload: { readonly queueId: string };
+}
 
-// Feature 063 — Clean All atomic queue reset. Empty payload object so the
-// router can distinguish "operator confirmed" from a malformed message
-// without introducing optional fields.
-export interface ClearAllCommand extends CommandBase<typeof CMD_CLEAR_ALL> {
-  readonly payload?: Record<string, never>;
+// FR-R3-150 (T1618) — required, not optional: a queue-scoped Clean All
+// names the queue it addresses on the wire, the same shape
+// `ClearCompletedCommand` above carries for the same reason (FR-011).
+export interface ClearQueueCommand extends CommandBase<typeof CMD_CLEAR_QUEUE> {
+  readonly payload: { readonly queueId: string };
 }
 
 // Feature 063 — per-action confirmation-prompt suppression. The actionKey
@@ -579,6 +598,17 @@ export interface PingBackendCommand extends CommandBase<typeof CMD_PING_BACKEND>
 // queue the start addresses; omission means the default queue, which is what
 // every pre-092 sender meant when there was only one. Sending it is how the
 // webview addresses a specific queue now that several may exist.
+//
+// FR-R3-154 (T1646) — ACK SEMANTICS, and this command is the one place in the
+// batch where they are asynchronous. With a `startIntent`, `accepted` means the
+// intent was applied: the schedule was armed, cancelled, or converted to a
+// start, and the ACK carries `rejected-horizon` / `rejected-untrusted` /
+// `start-intent-no-change` when it was not. WITHOUT a `startIntent`, `accepted`
+// means only that the queue was offered a drain pass —
+// `AutoDrainCoordinator.drainIfIdle` may decline it (paused, at cap, nothing
+// pending) and reports nothing, so the ACK cannot and does not claim a Run
+// started. That is the documented asynchronous acceptance T1646 reserves for
+// this branch; every other route in the batch ACKs a committed mutation.
 export interface StartQueueCommand extends CommandBase<typeof CMD_START_QUEUE> {
   readonly payload?: {
     readonly queueId?: string;
@@ -625,7 +655,7 @@ export type SidebarCommand =
   | ResolveAuditPointerCommand
   | ResolveHistoryDescriptionCommand
   | StartQueueCommand
-  | ClearAllCommand
+  | ClearQueueCommand
   | SetConfirmSuppressionCommand
   | DismissMigrationNoticeCommand
   | ReadMetricsCommand
@@ -635,7 +665,8 @@ export type SidebarCommand =
   | LaunchPipelineCommand
   | LaunchWorkflowCommand
   | ContinueWorkflowCommand
-  | SetUncontainedBackendGrantCommand;
+  | SetUncontainedBackendGrantCommand
+  | SetQueueFailurePolicyCommand;
 
 // -- Runtime guards ----------------------------------------------------------
 //
@@ -789,6 +820,15 @@ export function isCmdDeleteQueue(value: unknown): value is DeleteQueueCommand {
 export function isCmdSaveQueueSettings(value: unknown): value is SaveQueueSettingsCommand {
   return isObjectWithType(value, CMD_SAVE_QUEUE_SETTINGS);
 }
+// Feature 195 (T035) — discriminator only, same split as every other guard
+// here: the deeper `policy ∈ QUEUE_FAILURE_POLICIES ∪ {null}` check lives in
+// `validators/queue-management.ts`, the ingress gate `MessageRouter`
+// dispatches behind.
+export function isCmdSetQueueFailurePolicy(
+  value: unknown
+): value is SetQueueFailurePolicyCommand {
+  return isObjectWithType(value, CMD_SET_QUEUE_FAILURE_POLICY);
+}
 export function isCmdMoveTask(value: unknown): value is MoveTaskCommand {
   return isObjectWithType(value, CMD_MOVE_TASK);
 }
@@ -858,18 +898,13 @@ export function isCmdStartQueue(value: unknown): value is StartQueueCommand {
   }
   return startIntent === undefined || isValidStartQueueIntent(startIntent);
 }
-// Feature 063 — Clean All guard. Accepts `payload` absent or as an empty
-// object; rejects arrays and non-empty payloads.
-export function isCmdClearAll(value: unknown): value is ClearAllCommand {
-  if (!isObjectWithType(value, CMD_CLEAR_ALL)) return false;
-  const payload = (value as { payload?: unknown }).payload;
-  return payload === undefined
-    || (
-      payload !== null
-      && typeof payload === 'object'
-      && !Array.isArray(payload)
-      && Object.keys(payload).length === 0
-    );
+// FR-R3-150 (T1618) — shallow discriminator-only check, matching
+// `isCmdClearCompleted` above: deep `queueId` validation (non-empty,
+// length-bounded, registry membership) is architecturally out of scope
+// here (see this file's own header comment) and lives in
+// `validateQueueCleanupPayload` / `QueueManager.clearQueue`.
+export function isCmdClearQueue(value: unknown): value is ClearQueueCommand {
+  return isObjectWithType(value, CMD_CLEAR_QUEUE);
 }
 // Feature 063 — confirmation-suppression guard. Validates the discriminator
 // and the payload shape `{ actionKey: string; suppressed: boolean }`.
@@ -1026,6 +1061,7 @@ export const COMMAND_GUARDS: Readonly<
   [CMD_RENAME_QUEUE]: isCmdRenameQueue,
   [CMD_DELETE_QUEUE]: isCmdDeleteQueue,
   [CMD_SAVE_QUEUE_SETTINGS]: isCmdSaveQueueSettings,
+  [CMD_SET_QUEUE_FAILURE_POLICY]: isCmdSetQueueFailurePolicy,
   [CMD_MOVE_TASK]: isCmdMoveTask,
   [CMD_MODIFY_TASK]: isCmdModifyTask,
   [CMD_REORDER_TASK]: isCmdReorderTask,
@@ -1040,7 +1076,7 @@ export const COMMAND_GUARDS: Readonly<
   [CMD_SET_PHASE_BREAKPOINT]: isCmdSetPhaseBreakpoint,
   [CMD_CLEAR_PHASE_BREAKPOINT]: isCmdClearPhaseBreakpoint,
   [CMD_START_QUEUE]: isCmdStartQueue,
-  [CMD_CLEAR_ALL]: isCmdClearAll,
+  [CMD_CLEAR_QUEUE]: isCmdClearQueue,
   [CMD_SET_CONFIRM_SUPPRESSION]: isCmdSetConfirmSuppression,
   [CMD_DISMISS_MIGRATION_NOTICE]: isCmdDismissMigrationNotice,
   [CMD_READ_METRICS]: isCmdReadMetrics,

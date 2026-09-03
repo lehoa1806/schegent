@@ -291,6 +291,7 @@ describe('QueuesTier — which queue failed to start (FR-004)', () => {
       lifecycle: 'idle-pending',
       pendingCount: 3,
       startFailure: {
+        kind: 'admission',
         admission: 'admitNew',
         at: '2026-08-12T00:00:00.000Z',
         summary: 'the backend refused the run'
@@ -335,5 +336,39 @@ describe('QueuesTier — which queue failed to start (FR-004)', () => {
     const { container } = render(QueuesTier, { props: { queues: WITH_FAILURE, isPrimary: false } });
 
     expect(container.querySelector('[data-testid="queue-start-failed-q-beta"]')).not.toBeNull();
+  });
+});
+
+describe('QueuesTier — a halted queue (feature 195, T027, T030, FR-007, FR-008)', () => {
+  const WITH_HALT: readonly QueueRuntime[] = Object.freeze([
+    QUEUES[0]!,
+    buildQueueRuntime({
+      queueId: 'q-beta',
+      name: 'nightly',
+      position: 1,
+      lifecycle: 'idle-pending',
+      pendingCount: 3,
+      startFailure: {
+        kind: 'halted',
+        taskId: 't-1',
+        taskName: 'ingest data',
+        at: '2026-08-12T00:00:00.000Z'
+      }
+    }),
+    QUEUES[2]!
+  ]);
+
+  it('shows it is halted and names the failed task, without a plain "start failed" marker', () => {
+    const { container } = render(QueuesTier, { props: { queues: WITH_HALT, isPrimary: true } });
+
+    const marker = container.querySelector('[data-testid="queue-halted-q-beta"]');
+    expect(marker?.textContent).toContain('ingest data');
+    expect(container.querySelector('[data-testid="queue-start-failed-q-beta"]')).toBeNull();
+  });
+
+  it('marks no queue as halted when none is', () => {
+    const { container } = render(QueuesTier, { props: { queues: QUEUES, isPrimary: true } });
+
+    expect(container.querySelectorAll('[data-testid^="queue-halted-"]')).toHaveLength(0);
   });
 });
