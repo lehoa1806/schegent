@@ -45,6 +45,9 @@ import {
   CMD_REMOVE_QUEUE_ITEM,
   CMD_RESTART_CANCELED_TASK
 } from '../../lib/messages';
+import { useConfirm } from '../../lib/use-confirm';
+
+const useConfirmMock = vi.mocked(useConfirm);
 
 beforeEach(() => {
   nextCorrelationId = 'corr-test';
@@ -53,6 +56,8 @@ beforeEach(() => {
   markPendingSpy.mockReset();
   onceAckSpy.mockReset();
   lastAckListener = null;
+  useConfirmMock.mockReset();
+  useConfirmMock.mockResolvedValue(true);
 });
 afterEach(() => cleanup());
 
@@ -348,6 +353,37 @@ describe('QueueItemActions (FR-036 tightened, BUG-004)', () => {
         props: { item: buildItem({ status: 'failed' }), isPrimary: false }
       });
       await fireEvent.click(getByTestId('queue-item-retry-q-1'));
+      expect(postCommandSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  // FR-R3-153 (FR-011, T1639) — the confirmation must be able to name this
+  // task's real status, which requires the component to actually pass it
+  // through to `useConfirm`'s context (action-copy.test.ts covers the
+  // rendered wording itself).
+  describe('delete confirmation carries the task status (FR-011)', () => {
+    it.each(['pending', 'in-flight', 'paused', 'completed', 'failed', 'canceled'] as const)(
+      'passes status=%s into the queue.remove-item confirmation context',
+      async (status) => {
+        const { getByTestId } = render(QueueItemActions, {
+          props: { item: buildItem({ status }), isPrimary: true }
+        });
+        await fireEvent.click(getByTestId('queue-item-remove-q-1'));
+        await tick();
+        expect(useConfirmMock).toHaveBeenCalledWith(
+          'queue.remove-item',
+          expect.objectContaining({ context: expect.objectContaining({ taskTitle: 'Add filters', status }) })
+        );
+      }
+    );
+
+    it('dismissing the confirmation posts nothing, for any status', async () => {
+      useConfirmMock.mockResolvedValueOnce(false);
+      const { getByTestId } = render(QueueItemActions, {
+        props: { item: buildItem({ status: 'in-flight' }), isPrimary: true }
+      });
+      await fireEvent.click(getByTestId('queue-item-remove-q-1'));
+      await tick();
       expect(postCommandSpy).not.toHaveBeenCalled();
     });
   });

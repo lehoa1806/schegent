@@ -1,6 +1,7 @@
 import type { QueueManager } from '../queue/queue-manager';
 import type { SanitizedLogger } from '../lib/logger';
 import { isTerminalRunStatus, type WorkflowRun } from '../state/workflow-run';
+import type { TerminalRequestStatus } from '../queue/feature-request';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import type { HistoryRecorder } from './history-recorder';
 
@@ -101,22 +102,42 @@ export class TerminalTransitionCoordinator {
       }
     }
     try {
-      await this.queue.finish(run.featureId, run.status as 'completed' | 'failed' | 'canceled');
-      const recorded = await this.history.record(
-        run,
-        description,
-        run.status as 'completed' | 'failed' | 'canceled'
-      );
-      // FR-R3-071 — the intent clears only when history is durable (or a store
-      // is deliberately absent). `record` used to swallow its failures, so a
-      // failed append still cleared the repair intent and the crash-replay this
-      // journal exists for had nothing to replay.
-      if (recorded.outcome === 'failed') {
+      // FR-R3-153 (T1638) — `finish` is now typed to `TerminalRequestStatus`
+      // itself, so this cast names that shared type instead of repeating an
+      // inline literal union. It cannot be dropped outright: `isTerminalRunStatus`
+      // above (line 74) is a plain boolean check, not a type predicate, so
+      // TypeScript does not narrow `run.status` from `WorkflowRunStatus` on
+      // its own — widening that guard's signature is a separate, unrelated
+      // file's concern, out of this feature's scope.
+      const finished = await this.queue.finish(run.featureId, run.status as TerminalRequestStatus);
+      // FR-R3-153 — `finish` now refuses a transition outside the closed
+      // table by returning `{ ok: false, reason }` rather than throwing, so
+      // the surrounding `catch` (which this method relies on to leave the
+      // intent journalled for replay) never sees that refusal. Treated the
+      // same as a thrown failure below: the intent must stay journalled for
+      // a queue write that never landed, exactly like a failed history
+      // record leaves it journalled a few lines down.
+      if (finished.ok === false) {
         this.logger.warn(
-          `terminal-transition: replay remains pending: history record failed (${recorded.code})`
+          `terminal-transition: replay remains pending: queue.finish refused (${finished.reason ?? 'unknown'})`
         );
       } else {
-        await this.store.setTerminalTransitionIntent(run.id, null);
+        const recorded = await this.history.record(
+          run,
+          description,
+          run.status as 'completed' | 'failed' | 'canceled'
+        );
+        // FR-R3-071 — the intent clears only when history is durable (or a store
+        // is deliberately absent). `record` used to swallow its failures, so a
+        // failed append still cleared the repair intent and the crash-replay this
+        // journal exists for had nothing to replay.
+        if (recorded.outcome === 'failed') {
+          this.logger.warn(
+            `terminal-transition: replay remains pending: history record failed (${recorded.code})`
+          );
+        } else {
+          await this.store.setTerminalTransitionIntent(run.id, null);
+        }
       }
     } catch (error) {
       this.logger.warn(`terminal-transition: replay remains pending: ${(error as Error).message}`);

@@ -100,7 +100,9 @@
     if (disabled) return;
     const ok = await useConfirm('queue.remove-item', {
       originatingElement: event.currentTarget as HTMLElement | null,
-      context: { taskTitle: item.label }
+      // FR-R3-153 (FR-011) — status travels with the request so the
+      // confirmation names this task's real consequence, not a generic one.
+      context: { taskTitle: item.label, status: item.status }
     });
     if (!ok) return;
     // BUG-002 (T117) — clear any prior rejection text before dispatching

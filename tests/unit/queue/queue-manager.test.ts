@@ -8,6 +8,7 @@ import {
   createConnectedRun
 } from '../../../src/state/connected-workflow-run';
 import type { Memento } from '../../../src/state/workspace-state';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -102,9 +103,17 @@ describe('QueueManager.markInFlight', () => {
     const a = await queue.enqueue('A');
     const b = await queue.enqueue('B');
     await queue.markInFlight(a.id, 'run-1');
-    await expect(queue.markInFlight(b.id, 'run-2')).rejects.toThrow(/already in flight/);
+    await expect(queue.markInFlight(b.id, 'run-2')).rejects.toThrow(/in-flight-ownership-conflict/);
   });
 
+  // FR-R3-153 (T1636, corrected during implementation) — a second
+  // `markInFlight` call for the SAME featureId is a legal idempotent
+  // re-affirmation, not a duplicate admission: `WorkflowController
+  // #resumeExistingOnQueue` re-marks a Task in-flight on the same Run after
+  // a delayed-retry countdown elapses, and the Task row never left
+  // `in-flight` while the Run was paused waiting to retry (see
+  // task-transition-decision.ts's `mark-in-flight` branch comment). Only a
+  // genuinely DIFFERENT task is refused (asserted above).
   it('is idempotent for the same featureId', async () => {
     const a = await queue.enqueue('A');
     await queue.markInFlight(a.id, 'run-1');
@@ -127,6 +136,62 @@ describe('QueueManager.finish', () => {
     await queue.markInFlight(a.id, 'run-1');
     await queue.finish(b.id, 'canceled');
     expect(queue.hasInFlight()).toBe(true);
+  });
+});
+
+// FR-R3-153 (T1637, research.md grounding facts) — no describe block for
+// `QueueManager.pause` existed before this feature.
+describe('QueueManager.pause', () => {
+  it('accepts in-flight -> paused and clears the in-flight pointer', async () => {
+    const a = await queue.enqueue('A');
+    await queue.markInFlight(a.id, 'run-1');
+    const result = await queue.pause(a.id, 'manually-paused-task');
+    expect(result).toEqual({ ok: true });
+    expect(queue.findById(a.id)?.status).toBe('paused');
+    expect(queue.hasInFlight()).toBe(false);
+  });
+
+  it('preserves the in-flight pointer when preserveInFlightForRestore is set', async () => {
+    const a = await queue.enqueue('A');
+    await queue.markInFlight(a.id, 'run-1');
+    await queue.pause(a.id, 'manually-paused-task', true);
+    expect(store.getQueue(DEFAULT_QUEUE_ID).inFlightId).toBe(a.id);
+  });
+
+  it('refuses pending -> paused', async () => {
+    const a = await queue.enqueue('A');
+    const result = await queue.pause(a.id);
+    expect(result).toEqual({ ok: false, reason: 'illegal-source-status' });
+    expect(queue.findById(a.id)?.status).toBe('pending');
+  });
+
+  it('refuses completed -> paused', async () => {
+    const a = await queue.enqueue('A');
+    await queue.markInFlight(a.id, 'run-1');
+    await queue.finish(a.id, 'completed');
+    const result = await queue.pause(a.id);
+    expect(result).toEqual({ ok: false, reason: 'illegal-source-status' });
+  });
+
+  it('refuses failed -> paused', async () => {
+    const a = await queue.enqueue('A');
+    await queue.markInFlight(a.id, 'run-1');
+    await queue.finish(a.id, 'failed');
+    const result = await queue.pause(a.id);
+    expect(result).toEqual({ ok: false, reason: 'illegal-source-status' });
+  });
+
+  it('refuses canceled -> paused', async () => {
+    const a = await queue.enqueue('A');
+    await queue.markInFlight(a.id, 'run-1');
+    await queue.finish(a.id, 'canceled');
+    const result = await queue.pause(a.id);
+    expect(result).toEqual({ ok: false, reason: 'illegal-source-status' });
+  });
+
+  it('refuses an unknown task id', async () => {
+    const result = await queue.pause('missing');
+    expect(result).toEqual({ ok: false, reason: 'task-not-found' });
   });
 });
 
@@ -248,6 +313,41 @@ describe('QueueManager.removeTask (BUG-002 T118)', () => {
     const result = await queue.removeTask(a.id);
     expect(result).toMatchObject({ ok: true, priorStatus: 'completed', runId: 'run-1' });
     expect(queue.findById(a.id)).toBeNull();
+  });
+
+  // FR-R3-153 (T1640/T1637, research.md R6) — `removeTask` used to also mark
+  // an in-flight task's Run `canceled` in the store directly, as a weaker,
+  // second cancellation path that never called `cancelActive` or released
+  // the execution lease. That fallback is now removed: this is the single
+  // remaining path, and it leaves an owned Run entirely untouched —
+  // cancellation and lease release are `task-deletion.ts`'s job, which runs
+  // BEFORE calling this method.
+  it('leaves an in-flight task\'s Run record completely untouched (no fallback cancellation)', async () => {
+    const a = await queue.enqueue('A');
+    await queue.markInFlight(a.id, 'run-1');
+    const run = {
+      id: 'run-1',
+      featureId: a.id,
+      featureDir: 'specs/000',
+      status: 'running' as const,
+      currentPhase: 'speckit-plan',
+      currentIteration: 0,
+      startedAt: Date.now(),
+      lastTransitionAt: Date.now(),
+      phasesCompleted: [],
+      lastError: null,
+      delayedRetryCount: 0,
+      pendingRetryAt: null,
+      pendingRetryCause: null,
+      phaseOverrides: [],
+      manualPauseAt: null,
+      manualPauseCause: null,
+      phaseBreakpoints: [],
+      resumeTargetPhaseId: null
+    };
+    await store.setRun(DEFAULT_QUEUE_ID, run, unfencedCommit('test-fixture'));
+    await queue.removeTask(a.id);
+    expect(store.getRun(DEFAULT_QUEUE_ID)).toEqual(run);
   });
 
   // Feature 030 (US3, T046) — the "resolves queueId from the task before

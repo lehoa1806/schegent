@@ -109,7 +109,16 @@ async function cancelByTaskId(
     },
       ctx.store.runCommitClaim(queueId)
     );
-    await ctx.queue.finish(feature.id, 'canceled');
+    const finished = await ctx.queue.finish(feature.id, 'canceled');
+    // FR-R3-153 — `finish` refuses a transition outside the closed table by
+    // returning `{ ok: false, reason }` rather than throwing, so the queue
+    // row can fail to update with no exception raised. Report that instead
+    // of the blanket success notification below.
+    if (finished.ok === false) {
+      ctx.logger.error(`cancel: queue.finish refused: ${finished.reason ?? 'unknown'}`);
+      ctx.notifier.error('Schegent: cancel failed — the task could not be finalized.');
+      return { ok: false, reason: finished.reason ?? 'unexpected-error' };
+    }
     // Feature 093 (T068b, FR-028) — cancelling one Task does not end the
     // window's primacy. See the header note.
     ctx.notifier.info('Schegent: task canceled.');
@@ -130,7 +139,14 @@ async function cancelByTaskId(
     },
     outcome: 'info'
   });
-  await ctx.queue.finish(feature.id, 'canceled');
+  const finished = await ctx.queue.finish(feature.id, 'canceled');
+  // FR-R3-153 — see the `runMatches` branch above: a refusal is a returned
+  // value now, not a throw, and must not be reported as a success.
+  if (finished.ok === false) {
+    ctx.logger.error(`cancel: queue.finish refused: ${finished.reason ?? 'unknown'}`);
+    ctx.notifier.error('Schegent: cancel failed — the task could not be finalized.');
+    return { ok: false, reason: finished.reason ?? 'unexpected-error' };
+  }
   ctx.notifier.info('Schegent: task canceled.');
   return { ok: true };
 }
@@ -165,7 +181,14 @@ async function cancelActiveRun(ctx: Parameters<typeof runCancel>[0]): Promise<Ca
     outcome: 'info'
   });
   await ctx.store.setRun(queueId, { ...run, status: 'canceled', lastTransitionAt: Date.now() }, ctx.store.runCommitClaim(queueId));
-  await ctx.queue.finish(run.featureId, 'canceled');
+  const finished = await ctx.queue.finish(run.featureId, 'canceled');
+  // FR-R3-153 — see `cancelByTaskId` above: a refusal is a returned value
+  // now, not a throw, and must not be reported as a success.
+  if (finished.ok === false) {
+    ctx.logger.error(`cancel: queue.finish refused: ${finished.reason ?? 'unknown'}`);
+    ctx.notifier.error('Schegent: cancel failed — the task could not be finalized.');
+    return { ok: false, reason: finished.reason ?? 'unexpected-error' };
+  }
   // Feature 093 (T068b, FR-028) — same as the by-id path: the window keeps
   // primacy. Here it matters even when the resolver found a sole *running* Run,
   // because a paused sibling is still this window's work.

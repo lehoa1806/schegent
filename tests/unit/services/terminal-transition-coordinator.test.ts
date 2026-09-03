@@ -61,7 +61,7 @@ describe('TerminalTransitionCoordinator', () => {
       setRun: vi.fn(async () => { order.push('run'); }),
       runCommitClaim: vi.fn(() => unfencedCommit('test-fixture'))
     };
-    const queue = { finish: vi.fn(async () => { order.push('queue'); }) };
+    const queue = { finish: vi.fn(async () => { order.push('queue'); return { ok: true }; }) };
     const history = { record: vi.fn(async () => { order.push('history'); return { outcome: 'recorded' as const }; }) };
     const coordinator = new TerminalTransitionCoordinator(
       store as never, queue as never, history as never, new SanitizedLogger()
@@ -79,7 +79,7 @@ describe('TerminalTransitionCoordinator', () => {
       setRun: vi.fn(async () => undefined),
       runCommitClaim: vi.fn(() => unfencedCommit('test-fixture'))
     };
-    const queue = { finish: vi.fn(async () => undefined) };
+    const queue = { finish: vi.fn(async () => ({ ok: true })) };
     const history = { record: vi.fn(async () => ({ outcome: 'recorded' as const })) };
     const coordinator = new TerminalTransitionCoordinator(
       store as never, queue as never, history as never, new SanitizedLogger()
@@ -112,7 +112,7 @@ describe('TerminalTransitionCoordinator concurrent transitions (Feature 093 T048
       setRun: vi.fn(async () => undefined),
       runCommitClaim: vi.fn(() => unfencedCommit('test-fixture'))
     };
-    const queue = { finish: vi.fn(async () => undefined) };
+    const queue = { finish: vi.fn(async () => ({ ok: true })) };
     const history = { record: vi.fn(async () => ({ outcome: 'recorded' as const })) };
     return {
       store,
@@ -180,7 +180,7 @@ describe('TerminalTransitionCoordinator concurrent transitions (Feature 093 T048
         if (run.id === 'run-a') throw new Error('record write failed');
       })
     };
-    const queue = { finish: vi.fn(async () => undefined) };
+    const queue = { finish: vi.fn(async () => ({ ok: true })) };
     const history = { record: vi.fn(async () => ({ outcome: 'recorded' as const })) };
     const coordinator = new TerminalTransitionCoordinator(
       store as never, queue as never, history as never, new SanitizedLogger()
@@ -215,7 +215,7 @@ describe('TerminalTransitionCoordinator legacy journal (Feature 093 T048)', () =
       setRun: vi.fn(async () => undefined),
       runCommitClaim: vi.fn(() => unfencedCommit('test-fixture'))
     };
-    const queue = { finish: vi.fn(async () => undefined) };
+    const queue = { finish: vi.fn(async () => ({ ok: true })) };
     const history = { record: vi.fn(async () => ({ outcome: 'recorded' as const })) };
     const coordinator = new TerminalTransitionCoordinator(
       store as never, queue as never, history as never, new SanitizedLogger()

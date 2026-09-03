@@ -615,12 +615,13 @@ export class SchegentWorkflowController {
     this.notifier.warn(report.announcement);
 
     try {
-      await this.queue.finish(feature.id, 'failed', {
+      const finished = await this.queue.finish(feature.id, 'failed', {
         code: lastError.code,
         message: lastError.message,
         ...(lastError.phase ? { phase: lastError.phase } : {}),
         correlationId: terminalRun?.id ?? startedRun?.id ?? feature.id
       });
+      if (finished.ok === false) this.logger.error(`queue.finish refused (FR-R3-153): ${finished.reason}`);
     } catch (queueErr) {
       this.logger.error(
         `failed to mark queue item failed after unexpected workflow error: ${this.sanitizeUnexpectedError(queueErr)}`

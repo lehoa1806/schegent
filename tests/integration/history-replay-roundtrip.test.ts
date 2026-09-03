@@ -141,7 +141,7 @@ describe('FR-R3-071 — the repair intent survives a failing recorder', () => {
   it('a failing recorder retains the intent; a succeeding one clears it, and replay uses the journalled description', async () => {
     const state = new WorkspaceStateStore(new FakeMemento());
     await state.initialize();
-    const queue = { finish: vi.fn(async () => undefined) };
+    const queue = { finish: vi.fn(async () => ({ ok: true })) };
     const run = terminalRun({ id: 'run-crash', featureId: 'task-crash' });
 
     const failing = new TerminalTransitionCoordinator(

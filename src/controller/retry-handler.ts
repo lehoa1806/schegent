@@ -271,11 +271,19 @@ export class RetryHandler {
     if (scheduledRestoreAt !== null && guarded) {
       // System-armed scheduled restore path: preserve the in-flight binding
       // and emit the additive `system-pause-scheduled-restore` event.
-      await this.deps.queue.pause(
+      const scheduledRestorePause = await this.deps.queue.pause(
         persisted.featureId,
         'phase-paused',
         /* preserveInFlightForRestore */ true
       );
+      // FR-R3-153 — `pause` refuses any source status but in-flight, returned
+      // as `{ ok: false, reason }` rather than thrown; the scheduled-restore
+      // audit below must not claim a queue-side pause that never landed.
+      if (scheduledRestorePause.ok === false) {
+        this.deps.logger.warn(
+          `retry-handler: queue.pause (scheduled-restore) refused: ${scheduledRestorePause.reason ?? 'unknown'}`
+        );
+      }
       await guarded.transitionToScheduledRestore({
         scheduledStartAt: scheduledRestoreAt,
         scheduledStartSource: 'system-rate-limit-recovery',
@@ -311,7 +319,14 @@ export class RetryHandler {
       `retry-cap-exhausted:${persisted.id}`,
       'retry-cap'
     );
-    await this.deps.queue.pause(persisted.featureId, 'phase-paused');
+    const legacyPause = await this.deps.queue.pause(persisted.featureId, 'phase-paused');
+    // FR-R3-153 — see the scheduled-restore branch above: a refusal is a
+    // returned value now, not a throw, and must stay visible.
+    if (legacyPause.ok === false) {
+      this.deps.logger.warn(
+        `retry-handler: queue.pause (legacy fallback) refused: ${legacyPause.reason ?? 'unknown'}`
+      );
+    }
     // Bugfix 2026-05-23 — BUG-008: emit `system-pause-restore-unavailable`
     // only on genuine rate-limit failures (`exitCode !== 0`). A successful
     // invocation that somehow reached this fallback path is NOT an

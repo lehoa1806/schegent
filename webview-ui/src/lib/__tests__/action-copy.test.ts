@@ -169,9 +169,45 @@ describe('renderActionBody — placeholder resolution', () => {
     expect(body).toContain('**7** completed tasks');
   });
 
-  it('queue.remove-item: substitutes the taskTitle', () => {
-    const body = renderActionBody('queue.remove-item', { taskTitle: 'My task' });
+  // FR-R3-153 (FR-011, T1639) — one case per status; the wording must name
+  // that status's real consequence, not a generic one.
+  it('queue.remove-item (pending): names simple removal, no session-data consequence', () => {
+    const body = renderActionBody('queue.remove-item', { taskTitle: 'My task', status: 'pending' });
     expect(body).toContain('**My task**');
+    expect(body).not.toMatch(/session data/);
+  });
+
+  it('queue.remove-item (in-flight): names stopping the active task and session-data deletion', () => {
+    const body = renderActionBody('queue.remove-item', { taskTitle: 'My task', status: 'in-flight' });
+    expect(body).toContain('Stops the active task **My task**');
+    expect(body).toContain('session data (logs, diagnostics)');
+  });
+
+  it('queue.remove-item (paused): names losing resumable state and session-data deletion', () => {
+    const body = renderActionBody('queue.remove-item', { taskTitle: 'My task', status: 'paused' });
+    expect(body).toContain('paused task **My task**');
+    expect(body).toContain('session data');
+  });
+
+  it.each(['completed', 'failed', 'canceled'] as const)(
+    'queue.remove-item (%s): names permanent removal and session-data deletion, sharing one branch',
+    (status) => {
+      const body = renderActionBody('queue.remove-item', { taskTitle: 'My task', status });
+      expect(body).toContain('Permanently removes **My task**');
+      expect(body).toContain('session data (logs, diagnostics)');
+    }
+  );
+
+  // Code-review fix (2026-09-03) — regression test. The now-retired
+  // `taskDeleteConfirmation` always truncated a long label to 45 chars +
+  // "..." (see the deleted deletion-confirmation.test.ts); this branch
+  // reproduced its wording without carrying that truncation over.
+  it('queue.remove-item: truncates a long taskTitle to 45 chars + "..." like the retired taskDeleteConfirmation did', () => {
+    const long = 'a'.repeat(60);
+    const expected = 'a'.repeat(45) + '...';
+    const body = renderActionBody('queue.remove-item', { taskTitle: long, status: 'paused' });
+    expect(body).toContain(`**${expected}**`);
+    expect(body).not.toContain(long);
   });
 
   it('queue.cancel-item: omits running suffix when isRunning=false', () => {

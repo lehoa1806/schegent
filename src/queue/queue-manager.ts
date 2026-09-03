@@ -50,13 +50,40 @@ import {
   type FeatureRequestPauseCause,
   type FeatureRequestRerun,
   type FeatureRequestStatus,
+  type QueueState,
+  type TerminalRequestStatus,
   validateDescription
 } from './feature-request';
 import { withRefreshedLifecycle } from './queue-lifecycle-refresh';
+import { decideTaskTransition, type TaskTransitionRejectionReason } from './task-transition-decision';
 
 export interface MutationResult {
   ok: boolean;
   reason?: string;
+}
+
+/**
+ * Code-review fix (2026-09-03) — `finish`/`pause`/`retry` each catch
+ * `QueueMutationRejected` to convert an *ineligible transition* (decided by
+ * `decideTaskTransition`) into their own `{ ok: false, reason }` result.
+ * `store.updateQueue`'s own commit-fence check (`checkCommitFence`) throws the
+ * SAME error class for an unrelated reason — a stale or unverifiable
+ * ownership fence — and that failure must keep propagating exactly as it did
+ * before FR-R3-153, so an existing caller's own try/catch (which logs it)
+ * still sees it instead of a silently-discarded `{ ok: false }`. This is the
+ * closed vocabulary `decideTaskTransition` itself can produce; anything else
+ * (including every commit-fence reason) is re-thrown by
+ * `isTaskTransitionRejection` below.
+ */
+const TASK_TRANSITION_REJECTION_REASONS: ReadonlySet<string> = new Set<TaskTransitionRejectionReason>([
+  'task-not-found',
+  'queue-mismatch',
+  'illegal-source-status',
+  'in-flight-ownership-conflict'
+]);
+
+function isTaskTransitionRejection(err: unknown): err is QueueMutationRejected {
+  return err instanceof QueueMutationRejected && TASK_TRANSITION_REJECTION_REASONS.has(err.reason);
 }
 
 export interface ClearResult {
@@ -397,10 +424,32 @@ export class QueueManager {
 
   public async markInFlight(featureId: string, runId: string, isResume: boolean = false): Promise<void> {
     const now = Date.now();
+    // FR-R3-153 (T1636/T1637) — strict resolution (research.md R2): a missing
+    // task falls back to Default only as "some queue to open" for the
+    // mutator's own not-found check below, never as a guessed owner. A found
+    // row is opened at its own queue, so the mutator's `queue.requests.find`
+    // is the true, race-safe answer to "does this queue own it."
     const ownerQueueId = this.queueIdForTask(featureId);
     const movedRequest = await this.store.updateQueue((queue) => {
-      if (queue.inFlightId !== null && queue.inFlightId !== featureId) {
-        throw new Error(`Another request is already in flight: ${queue.inFlightId}`);
+      const current = queue.requests.find((r) => r.id === featureId);
+      const decision = decideTaskTransition({
+        operation: 'mark-in-flight',
+        currentStatus: current?.status,
+        queueOwnsTask: current !== undefined,
+        queueAlreadyHasDifferentInFlight: queue.inFlightId !== null && queue.inFlightId !== featureId
+      });
+      if (!decision.eligible) {
+        // Thrown, not returned — a value returned from this mutator is always
+        // committed (with a bumped `updatedAt`) by `store.updateQueue`, so
+        // the only way to leave the task row, queue ownership, and
+        // timestamps completely unchanged on refusal (spec FR-004) is to
+        // never reach that commit at all. Matches this method's own
+        // pre-existing throw-to-refuse contract (`admitNew` already
+        // try/catches it).
+        throw new QueueMutationRejected(
+          decision.reason,
+          `Cannot mark ${featureId} in-flight: ${decision.reason}`
+        );
       }
       const requests = queue.requests.map((r) =>
         r.id === featureId
@@ -466,14 +515,53 @@ export class QueueManager {
     }
   }
 
+  /**
+   * FR-R3-153 (code-review fix, 2026-09-03) — `finish` and `pause` share this
+   * exact wrapper: run a mutator through `store.updateQueue`, and translate
+   * a `decideTaskTransition` refusal (thrown as `QueueMutationRejected`, so
+   * a refused write never reaches the commit that would bump `updatedAt` —
+   * spec FR-004) back into the `{ ok: false, reason }` shape both methods
+   * return. `retry` does NOT use this: its catch remaps `task-not-found` to
+   * its own pre-existing `'not-found'`/`'illegal-state'` vocabulary, a
+   * translation this shared helper would have to special-case for one
+   * caller — not extracted here for that reason.
+   */
+  private async runTaskTransitionMutation(
+    ownerQueueId: string,
+    mutator: (queue: QueueState) => { readonly queue: QueueState; readonly result: MutationResult }
+  ): Promise<MutationResult> {
+    try {
+      return await this.store.updateQueue<MutationResult>(
+        mutator,
+        ownerQueueId,
+        this.store.runCommitClaim(ownerQueueId)
+      );
+    } catch (err) {
+      if (isTaskTransitionRejection(err)) return { ok: false, reason: err.reason };
+      throw err;
+    }
+  }
+
   public async finish(
     featureId: string,
-    status: FeatureRequestStatus,
+    status: TerminalRequestStatus,
     lastError: FeatureRequestFailure | string | null = null
-  ): Promise<void> {
+  ): Promise<MutationResult> {
     const now = Date.now();
-    await this.store.updateQueue(
-      (queue) => ({
+    const ownerQueueId = this.queueIdForTask(featureId);
+    return this.runTaskTransitionMutation(ownerQueueId, (queue) => {
+      const current = queue.requests.find((r) => r.id === featureId);
+      const decision = decideTaskTransition({
+        operation: 'finish',
+        currentStatus: current?.status,
+        targetStatus: status,
+        queueOwnsTask: current !== undefined,
+        queueAlreadyHasDifferentInFlight: false
+      });
+      if (!decision.eligible) {
+        throw new QueueMutationRejected(decision.reason, `Cannot finish ${featureId}: ${decision.reason}`);
+      }
+      return {
         queue: withRefreshedLifecycle({
           ...queue,
           requests: queue.requests.map((r) =>
@@ -489,11 +577,9 @@ export class QueueManager {
           ),
           inFlightId: queue.inFlightId === featureId ? null : queue.inFlightId
         }),
-        result: undefined
-      }),
-      this.queueIdForTask(featureId),
-      this.store.runCommitClaim(this.queueIdForTask(featureId))
-    );
+        result: { ok: true }
+      };
+    });
   }
 
   /**
@@ -509,11 +595,21 @@ export class QueueManager {
     featureId: string,
     pauseCause: FeatureRequestPauseCause | null = null,
     preserveInFlightForRestore: boolean = false
-  ): Promise<boolean> {
+  ): Promise<MutationResult> {
     const now = Date.now();
-    return this.store.updateQueue((queue) => {
+    const ownerQueueId = this.queueIdForTask(featureId);
+    return this.runTaskTransitionMutation(ownerQueueId, (queue) => {
       const idx = queue.requests.findIndex((r) => r.id === featureId);
-      if (idx === -1) return { queue, result: false };
+      const current = idx === -1 ? undefined : queue.requests[idx];
+      const decision = decideTaskTransition({
+        operation: 'pause',
+        currentStatus: current?.status,
+        queueOwnsTask: current !== undefined,
+        queueAlreadyHasDifferentInFlight: false
+      });
+      if (!decision.eligible) {
+        throw new QueueMutationRejected(decision.reason, `Cannot pause ${featureId}: ${decision.reason}`);
+      }
       const requests = queue.requests.map((r, i) =>
         i === idx
           ? {
@@ -525,13 +621,9 @@ export class QueueManager {
           : r
       );
       const inFlightId =
-        queue.inFlightId === featureId && !preserveInFlightForRestore
-          ? null
-          : queue.inFlightId;
-      return { queue: withRefreshedLifecycle({ ...queue, requests, inFlightId }), result: true };
-    }, this.queueIdForTask(featureId),
-      this.store.runCommitClaim(this.queueIdForTask(featureId))
-    );
+        queue.inFlightId === featureId && !preserveInFlightForRestore ? null : queue.inFlightId;
+      return { queue: withRefreshedLifecycle({ ...queue, requests, inFlightId }), result: { ok: true } };
+    });
   }
 
   public async cancel(featureId: string): Promise<boolean> {
@@ -1034,23 +1126,27 @@ export class QueueManager {
     }
   }
 
+  /**
+   * Removes a Task row. Deliberately does not cancel or clean up a Run this
+   * task might own — that ordering (cancel → release the execution lease →
+   * remove the row) is `task-deletion.ts#deleteTaskWithSessionCleanup`'s job,
+   * and it is this method's only production caller.
+   *
+   * FR-R3-153 (T1640, research.md R6) — this method used to also mark an
+   * in-flight task's Run `canceled` in the store directly, as a fallback for
+   * callers that bypass `deleteTaskWithSessionCleanup`. That fallback never
+   * called `cancelActive` (so nothing told the actual running process to
+   * stop) or released the execution lease — worse than doing nothing, since
+   * a caller could see `status: 'canceled'` and believe cleanup had
+   * happened. `QueueManager` has no access to `cancelActive` or the
+   * execution-lease releaser (both live one layer up, in
+   * `TaskDeletionDeps`), so this method cannot safely perform that sequence
+   * itself; removed rather than rewritten, so a second, weaker cancellation
+   * protocol cannot silently reappear here.
+   */
   public async removeTask(taskId: string): Promise<QueueMutationDetail> {
     try {
       const removed = await this.store.removeRequest(taskId);
-      // Feature 093 (T022) — pattern B: the Task id is what is held, so the
-      // store resolves the Run *and* its queue together. The old form compared
-      // `featureId` against the one ambient Run, which in a window running
-      // several would have cancelled whichever happened to be there.
-      const active = this.store.findRunByTask(removed.id);
-      if (removed.status === 'in-flight' && active !== null) {
-        await this.store.setRun(active.queueId, {
-          ...active.run,
-          status: 'canceled',
-          lastTransitionAt: Date.now()
-        },
-          this.store.runCommitClaim(active.queueId)
-        );
-      }
       return {
         ok: true,
         taskId: removed.id,
@@ -1355,40 +1451,76 @@ export class QueueManager {
     // Run it compares against is the one executing that Task, not whichever
     // Run the workspace happened to hold.
     const activeRun = this.store.findRunByTask(featureId)?.run ?? null;
-    return this.store.updateQueue<MutationResult>((queue) => {
-      const idx = queue.requests.findIndex((r) => r.id === featureId);
-      if (idx === -1) return { queue, result: { ok: false, reason: 'not-found' } };
-      const target = queue.requests[idx];
-      if (target.status !== 'failed' && target.status !== 'canceled' && target.status !== 'paused') {
-        return { queue, result: { ok: false, reason: 'illegal-state' } };
+    const ownerQueueId = this.queueIdForTask(featureId);
+    try {
+      return await this.store.updateQueue<MutationResult>((queue) => {
+        const idx = queue.requests.findIndex((r) => r.id === featureId);
+        const target = idx === -1 ? undefined : queue.requests[idx];
+        // FR-R3-153 (T1636/T1637) — routed through the shared classifier.
+        // Ineligible is thrown, not returned (spec FR-004 — a refused
+        // transition must leave timestamps completely unchanged, and
+        // `store.updateQueue` unconditionally bumps `updatedAt` on any
+        // returned value); the catch below translates it back to this
+        // method's own pre-existing `'not-found'`/`'illegal-state'`
+        // vocabulary so every current caller (queue-ops.ts's message
+        // lookup, this file's own tests) keeps working unchanged
+        // (research.md/T010 — "preserving each caller's existing
+        // {ok, reason} return shape").
+        //
+        const decision = decideTaskTransition({
+          operation: 'return-to-pending',
+          currentStatus: target?.status,
+          queueOwnsTask: target !== undefined,
+          queueAlreadyHasDifferentInFlight: false
+        });
+        // Checked as two separate guards (rather than one `||`-joined
+        // condition with a ternary picking the reason) so each narrows on its
+        // own: `target === undefined` narrows `target` for the rest of this
+        // callback, and `!decision.eligible` narrows `decision` to the
+        // `{ eligible: false, reason }` arm so `decision.reason` is a real
+        // read, not a guess. `decideTaskTransition` already refuses with
+        // `'task-not-found'` on every path where `target` is undefined
+        // (currentStatus undefined is its first check, before queueOwnsTask),
+        // so the two throws below never disagree with each other.
+        if (target === undefined) {
+          throw new QueueMutationRejected('task-not-found', `Cannot retry ${featureId}`);
+        }
+        if (!decision.eligible) {
+          throw new QueueMutationRejected(decision.reason, `Cannot retry ${featureId}`);
+        }
+        const canResume =
+          target.status === 'failed' &&
+          target.runId !== null &&
+          activeRun !== null &&
+          activeRun.id === target.runId &&
+          (activeRun.status === 'failed' || activeRun.status === 'paused');
+        const updated: FeatureRequest = {
+          ...target,
+          status: 'pending',
+          retryCount: target.retryCount + 1,
+          lastError: null,
+          pausedReason: null,
+          completedAt: null,
+          startedAt: canResume ? target.startedAt : null,
+          updatedAt: Date.now(),
+          runId: canResume ? target.runId : null
+        };
+        const without = queue.requests.filter((_, i) => i !== idx);
+        const inFlightIdx = without.findIndex((r) => r.status === 'in-flight');
+        const insertAt = inFlightIdx === -1 ? 0 : inFlightIdx + 1;
+        const reordered = [...without.slice(0, insertAt), updated, ...without.slice(insertAt)];
+        const repositioned = reordered.map((r, i) => ({ ...r, position: i }));
+        return {
+          queue: withRefreshedLifecycle({ ...queue, requests: repositioned }),
+          result: { ok: true }
+        };
+      }, ownerQueueId, this.store.runCommitClaim(ownerQueueId));
+    } catch (err) {
+      if (isTaskTransitionRejection(err)) {
+        return { ok: false, reason: err.reason === 'task-not-found' ? 'not-found' : 'illegal-state' };
       }
-      const canResume =
-        target.status === 'failed' &&
-        target.runId !== null &&
-        activeRun !== null &&
-        activeRun.id === target.runId &&
-        (activeRun.status === 'failed' || activeRun.status === 'paused');
-      const updated: FeatureRequest = {
-        ...target,
-        status: 'pending',
-        retryCount: target.retryCount + 1,
-        lastError: null,
-        pausedReason: null,
-        completedAt: null,
-        startedAt: canResume ? target.startedAt : null,
-        updatedAt: Date.now(),
-        runId: canResume ? target.runId : null
-      };
-      const without = queue.requests.filter((_, i) => i !== idx);
-      const inFlightIdx = without.findIndex((r) => r.status === 'in-flight');
-      const insertAt = inFlightIdx === -1 ? 0 : inFlightIdx + 1;
-      const reordered = [...without.slice(0, insertAt), updated, ...without.slice(insertAt)];
-      const repositioned = reordered.map((r, i) => ({ ...r, position: i }));
-      return {
-        queue: withRefreshedLifecycle({ ...queue, requests: repositioned }),
-        result: { ok: true }
-      };
-    }, this.queueIdForTask(featureId), this.store.runCommitClaim(this.queueIdForTask(featureId)));
+      throw err;
+    }
   }
 
   public async moveUp(featureId: string): Promise<MutationResult> {

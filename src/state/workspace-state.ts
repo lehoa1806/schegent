@@ -513,6 +513,13 @@ export type QueueMutationRejectReason =
   | 'task-cap-reached'
   | 'task-not-found'
   | 'task-not-in-pending-state'
+  // FR-R3-153 — the closed task-transition rejection vocabulary
+  // `decideTaskTransition` returns. See
+  // `src/queue/task-transition-decision.ts` and
+  // `specs/192-task-transitions-deletion-consent/data-model.md`.
+  | 'queue-mismatch'
+  | 'illegal-source-status'
+  | 'in-flight-ownership-conflict'
   | 'phase-not-found'
   | 'phase-already-removed'
   | 'cannot-delete-default-queue'
