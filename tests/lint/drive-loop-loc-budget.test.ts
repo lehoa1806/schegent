@@ -38,6 +38,12 @@ const SIGNATURE = 'public async drive(';
  *   744  as recorded by FR-R3-107 (stale by the time FR-R3-128 measured it)
  *   708  measured 2026-08-27, before this feature
  *   688  after the terminal effect sequence moved to `run-terminal-effects.ts`
+ *   687  FR-R3-153 (2026-09-03) — `finish`/`pause` started refusing an illegal
+ *        transition instead of always succeeding; the four call sites this
+ *        method makes now log a refusal via one shared `logQueueRefusal`
+ *        helper (extracted, not inlined here) rather than each hand-rolling
+ *        an `if (result.ok === false) { this.deps.logger.warn(...) }` block —
+ *        a net decrease even after adding the refusal check.
  *
  * Next candidates, named so the next decrement does not start with a
  * re-measurement: the four pause arms — breakpoint, delayed-retry, rate-limit,
@@ -45,7 +51,7 @@ const SIGNATURE = 'public async drive(';
  * candidate for merging into the shared sequence: its audit emission order differs,
  * and unifying it is an observable change.
  */
-const DRIVE_MAX_LINES = 688;
+const DRIVE_MAX_LINES = 687;
 
 /** Lines from the signature to the closing brace, inclusive. */
 export function methodLineCount(source: string, signature: string): number {

@@ -234,13 +234,43 @@ per-queue execution lease, asks the controller to admit the task, and releases
 or transitions ownership at the appropriate terminal boundary. A paused queue
 does not block a sibling queue, and a queue never runs two Tasks concurrently.
 
+**Task status transitions are one closed table (FR-R3-153).** `QueueManager`'s
+status writers — `markInFlight`, `pause`, `finish`, and `retry` — and
+`restart-canceled-task.ts`'s return-to-pending writer each consult
+`decideTaskTransition` (`src/queue/task-transition-decision.ts`), a pure,
+effect-free classifier mirroring `decidePhaseControl`'s shape exactly, before
+writing anything. It reads a task's current status, whether the addressed
+queue actually owns it, and (for `mark-in-flight`) whether the queue's one
+execution slot already belongs to a different task, and returns either
+eligibility or one reason from a closed vocabulary — `task-not-found`,
+`queue-mismatch`, `illegal-source-status`, `in-flight-ownership-conflict` —
+folded into the existing `QueueMutationRejectReason` union rather than a
+second, parallel type. A census test
+(`tests/lint/task-transition-decision-census.test.ts`) fails if a future
+writer bypasses it. The one safety invariant this closes is a *different*
+task stealing a queue's one execution slot; `mark-in-flight`'s own source-
+status allowlist stays wide open to `pending`, `in-flight`, `paused`, and
+`failed` because this product's own resume mechanisms legitimately re-admit
+a task from each of those statuses (a delayed-retry countdown that never
+moved the row off `in-flight`, an operator resume after a mid-phase pause
+that did, and a direct resume of a halted, `failed` run) — only `completed`
+and `canceled` are finished in both senses and stay refused, the same split
+`isOperableRunStatus` already draws for Runs. Deletion (any visible status to
+absent) is a row removal, not a status write, and is not decided by this
+classifier — it stays `task-deletion.ts`'s concern, which already brings an
+in-flight task's run to cancellation and releases its execution lease before
+the row is removed, for any Run status short of terminal.
+
 <!-- Source: src/queue/queue-registry.ts -->
 <!-- Source: src/queue/queue-manager.ts -->
 <!-- Source: src/queue/feature-request.ts -->
+<!-- Source: src/queue/task-transition-decision.ts -->
 <!-- Source: src/services/auto-drain-coordinator.ts -->
 <!-- Source: src/services/guarded-run-service.ts -->
 <!-- Source: src/state/execution-lease.ts -->
 <!-- Source: src/state/workspace-state.ts -->
+<!-- Source: src/controller/task-deletion.ts -->
+<!-- Source: src/commands/restart-canceled-task.ts -->
 
 ## Controller and Phase execution
 

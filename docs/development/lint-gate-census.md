@@ -19,8 +19,8 @@ predicted it: its author sampled the set and found every gate well motivated.
 
 | Figure | Value | Date | Method |
 |---|---|---|---|
-| Gate files | **182** | 2026-09-02 | `*.test.ts` under `tests/lint/` recursively |
-| Marked `unique` | 167 | 2026-09-02 | hand verdict |
+| Gate files | **183** | 2026-09-02 | `*.test.ts` under `tests/lint/` recursively |
+| Marked `unique` | 168 | 2026-09-02 | hand verdict |
 | Marked `partially redundant` | 15 | 2026-09-02 | hand verdict |
 | Marked `redundant` | 0 | 2026-09-02 | hand verdict |
 
@@ -315,6 +315,7 @@ changing one means updating that machinery in the same commit.
 | `svelte-type-information-reaches-runes.test.ts` | Feature 112 type information reaches rune-using components | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `svelte-version-parity.test.ts` | Feature 112 svelte version parity | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `task-execution-event-types.test.ts` | Task Execution Event Types Parity (Feature 072) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
+| `task-transition-decision-census.test.ts` | every Task status writer routes through decideTaskTransition (FR-R3-153, T1637) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `temp-root-cleanup-is-shared.test.ts` | temp-root cleanup has one implementation | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `terminal-phase-sentinel-has-one-home.test.ts` | the terminal phase sentinel has one home per side | — | unique | no sibling gate asserts it, and the type-level route is closed on purpose: `PhaseName` is `string` because the phase catalog is operator-authored at runtime (`src/contracts/phase-identity.ts`), so no type can distinguish a phase from the terminal state. `current-phase-or-null.test.ts` checks the home's behaviour; only this gate checks that the rule stays in one place |
 | `threat-id-anchor-parity.test.ts` | Threat-id anchor parity | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |

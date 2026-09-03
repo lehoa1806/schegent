@@ -6,6 +6,14 @@
 //
 // Contract: specs/063-clean-all-confirmations/contracts/action-copy-table.md
 
+// FR-R3-153 — the only type import this file has ever needed: the status a
+// delete confirmation's wording must branch on (contracts/
+// queue-remove-item-confirmation.md).
+import type { QueueItemStatus } from '../../../src/contracts/snapshot-projections.js';
+// Code-review fix (2026-09-03) — reuse the one label-truncation rule rather
+// than restate it; see the `queue.remove-item` case in `renderActionBody`.
+import { truncateLabel } from './deletion-confirmation';
+
 export type ActionKey =
   | 'queue.clean-all'
   | 'queue.clear-done'
@@ -67,7 +75,10 @@ export type ActionCopyContext = {
     readonly hasActiveRun: boolean;
   };
   'queue.clear-done': { readonly completedCount: number };
-  'queue.remove-item': { readonly taskTitle: string };
+  // FR-R3-153 (FR-011) — `status` drives the status-branching consequence
+  // sentence in `renderActionBody` below; the wording must name the real
+  // consequence of removing *this* task, not a generic one.
+  'queue.remove-item': { readonly taskTitle: string; readonly status: QueueItemStatus };
   'queue.cancel-item': { readonly taskTitle: string; readonly isRunning: boolean };
   'queue.pause': Record<string, never>;
   'queue.resume': Record<string, never>;
@@ -150,6 +161,12 @@ export const ACTION_COPY: Readonly<Record<ActionKey, ActionCopyEntry>> = Object.
   },
   'queue.remove-item': {
     title: 'Remove from queue?',
+    // FR-R3-153 (FR-011) — this entry's `bodyTemplate` is never read directly;
+    // `renderActionBody`'s own 'queue.remove-item' case below branches on
+    // `status` and returns one of four sentences. Left here (rather than an
+    // empty string) only so `ActionCopyEntry`'s shape stays uniform across
+    // every key, matching the file's existing convention for keys whose body
+    // needs no substitution.
     bodyTemplate: 'Removes **{taskTitle}** from the queue.',
     confirmLabel: 'Remove',
     severity: 'caution'
@@ -298,6 +315,31 @@ function plural(count: number, noun: string): string {
   return count === 1 ? noun : `${noun}s`;
 }
 
+// FR-R3-153 (FR-011, contracts/queue-remove-item-confirmation.md) — the four
+// sentences reproduce `deletion-confirmation.ts`'s (retired) `taskDeleteConfirmation`
+// wording, adapted to this file's `**{taskTitle}**` house style. The consequence
+// named must match the task's actual status: pending is simply removed; in-flight
+// and paused both name the session-data deletion `taskDeleteConfirmation` already
+// documented; terminal statuses share one branch, matching FR-011's grouping.
+//
+// Code-review fix (2026-09-03) — extracted out of `renderActionBody`'s
+// `'queue.remove-item'` case, which nested this switch inside that one (a
+// third level of control-flow nesting, an outlier versus every sibling case
+// in that function). `taskTitle` is already truncated by the caller.
+function removeItemBody(status: QueueItemStatus, taskTitle: string): string {
+  switch (status) {
+    case 'pending':
+      return `Removes **${taskTitle}** from the queue.`;
+    case 'in-flight':
+      return `Stops the active task **${taskTitle}** and permanently deletes its session data (logs, diagnostics) from disk.`;
+    case 'paused':
+      return `Removes the paused task **${taskTitle}** and permanently deletes its session data from disk.`;
+    default:
+      // completed | failed | canceled
+      return `Permanently removes **${taskTitle}** and its session data (logs, diagnostics) from disk.`;
+  }
+}
+
 // Render a body template with its typed context. The function is generic
 // over `ActionKey` so the type checker rejects passing the wrong context
 // shape (e.g. `{ taskTitle }` to `renderActionBody('queue.pause', …)`).
@@ -330,7 +372,18 @@ export function renderActionBody<K extends ActionKey>(
       const ctx = context as ActionCopyContext['queue.clear-done'];
       return entry.bodyTemplate.replace('{completedCount}', String(ctx.completedCount));
     }
-    case 'queue.remove-item':
+    case 'queue.remove-item': {
+      // Code-review fix (2026-09-03) — `taskDeleteConfirmation` always ran
+      // the label through `truncateLabel` (48-char threshold, 45 chars +
+      // "..." past it) before interpolating it; that call was dropped when
+      // this branch first reproduced the wording, so an operator-supplied
+      // title long enough to matter rendered here unclipped. Restored via
+      // the same helper (now exported from `deletion-confirmation.ts`)
+      // rather than a second copy of the 48/45 rule. The status-branching
+      // wording itself lives in `removeItemBody` above.
+      const ctx = context as ActionCopyContext['queue.remove-item'];
+      return removeItemBody(ctx.status, truncateLabel(ctx.taskTitle));
+    }
     case 'run.restart-canceled':
     case 'run.modify-task':
     case 'history.rerun': {

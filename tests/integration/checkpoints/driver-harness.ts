@@ -294,7 +294,12 @@ export async function makeDriveHarness(): Promise<CheckpointDriveHarness> {
         handleDelayedRetry: vi.fn(),
         maybeEmitRetryRecovered: vi.fn(async (run: WorkflowRun) => run)
       },
-      queue: { finish: vi.fn(), pause: vi.fn(), findById: vi.fn(() => null) },
+      // FR-R3-153 — `finish`/`pause` now return `MutationResult`, not `void`.
+      queue: {
+        finish: vi.fn(async () => ({ ok: true })),
+        pause: vi.fn(async () => ({ ok: true })),
+        findById: vi.fn(() => null)
+      },
       notifier: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
       statusBar: { update: vi.fn(), dispose: vi.fn() },
       historyRecorder: new HistoryRecorder({

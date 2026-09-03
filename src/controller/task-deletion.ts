@@ -3,7 +3,7 @@ import type { ContainmentRefusal } from '../lib/path-containment';
 import type { QueueManager } from '../queue/queue-manager';
 import type { SessionCleanupOutcome } from '../services/session-cleanup/session-cleanup-service';
 import type { WorkspaceStateStore } from '../state/workspace-state';
-import type { WorkflowRun } from '../state/workflow-run';
+import { isTerminalRunStatus, type WorkflowRun } from '../state/workflow-run';
 
 /**
  * Pluggable cleanup seam invoked after task deletion resolves a run ID.
@@ -73,7 +73,18 @@ export async function deleteTaskWithSessionCleanup(
     // T040 to retire, so this phase changes addressing and nothing else.
     const queueId = queue.queueIdForTask(taskId);
     const run = store.getRun(queueId);
-    if (run?.featureId === feature.id && run.status === 'running') {
+    // FR-R3-153 (T1640, research.md R6) — widened from `run.status ===
+    // 'running'`. A delayed-retry countdown (`RetryHandler#handleDelayedRetry`,
+    // e.g. after a rate limit) sets the Run's own status to `paused` (with
+    // `pendingRetryAt` armed) without ever calling `QueueManager.pause` on
+    // the task row — the row stays `in-flight` the whole time the Run waits
+    // to auto-resume. The narrower check skipped cancelActive/lease release
+    // for exactly that combination, silently falling through to
+    // `removeTask`'s own weaker fallback cancellation (now removed — see
+    // queue-manager.ts). Any non-terminal Run status must go through this
+    // same cancel/release sequence before the row is removed (spec FR-013,
+    // FR-018).
+    if (run?.featureId === feature.id && !isTerminalRunStatus(run.status)) {
       // Feature 093 (T042) — addressed. Cancelling ambiently here would have
       // aborted every Run in the window because one Task was deleted.
       deps.cancelActive(queueId);

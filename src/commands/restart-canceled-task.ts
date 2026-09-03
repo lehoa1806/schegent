@@ -3,10 +3,11 @@ import { withRefreshedLifecycle } from '../queue/queue-lifecycle-refresh';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { Notifier } from '../ui/notifications';
 import type { SanitizedLogger } from '../lib/logger';
-import type { WorkspaceStateStore } from '../state/workspace-state';
+import { QueueMutationRejected, type WorkspaceStateStore } from '../state/workspace-state';
 import type { FeatureRequest } from '../queue/feature-request';
 import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
 import { MAX_PENDING_TASKS_PER_QUEUE } from '../queue/feature-request';
+import { decideTaskTransition } from '../queue/task-transition-decision';
 
 export type RestartCanceledResult =
   | { ok: true; queueId: string }
@@ -58,6 +59,18 @@ export async function runRestartCanceledTask(ctx: {
       ctx.notifier.info('Schegent: cannot restart — task not found.');
       return { ok: false, reason: 'not-found' };
     }
+    // FR-R3-153 (T1636/T1637, code-review fix 2026-09-03) — this function's
+    // own identity is narrower than the shared classifier's 'return-to-pending'
+    // edge (paused/failed/canceled all legal): it restarts a `canceled` task
+    // specifically, leaving `retry()` to own paused/failed. A `decideTaskTransition`
+    // call here would be provably non-load-bearing — `queueOwnsTask` has no
+    // real ownership check to make at this call site (there is no separate
+    // "queue addressed" argument to compare against), and `'canceled'` is
+    // always a member of the classifier's accepted set for this operation, so
+    // its `.eligible` verdict could never disagree with the plain equality
+    // check below. This fast-fail (before entering `store.updateQueue`) is a
+    // pure optimization; the authoritative, TOCTOU-safe check is the one
+    // inside the mutator below.
     if (feature.status !== 'canceled') {
       return { ok: false, reason: 'illegal-state' };
     }
@@ -71,16 +84,33 @@ export async function runRestartCanceledTask(ctx: {
     // a task on any other queue the read-back found no matching row, so the
     // restart returned `null` and reported `illegal-state` — a live task the
     // operator asked to restart, refused for a reason that was not true.
-    const restarted = await ctx.store.updateQueue<FeatureRequest | null>((queue) => {
+    const restarted = await ctx.store.updateQueue<FeatureRequest>((queue) => {
       const current = queue.requests.find((request) => request.id === taskId);
-      if (!current || current.status !== 'canceled') return { queue, result: null };
+      const decision = decideTaskTransition({
+        operation: 'return-to-pending',
+        currentStatus: current?.status,
+        queueOwnsTask: current !== undefined,
+        queueAlreadyHasDifferentInFlight: false
+      });
+      // Thrown, not returned — a value returned from this mutator is always
+      // committed (with a bumped `updatedAt`) by `store.updateQueue`, so the
+      // only way to leave timestamps completely unchanged on refusal (spec
+      // FR-004) is to never reach that commit. Caught below, alongside this
+      // function's existing `'task-cap-reached'` throw. Typed as
+      // `QueueMutationRejected` (code-review fix 2026-09-03) rather than a
+      // bare `Error` — an inner layer throws a typed/domain error, matching
+      // every other writer this feature touches (`queue-manager.ts`'s
+      // `finish`/`pause`/`retry`).
+      if (!decision.eligible || current === undefined || current.status !== 'canceled') {
+        throw new QueueMutationRejected('illegal-source-status', `Cannot restart ${taskId}: illegal-state`);
+      }
       const pendingInTarget = queue.requests.filter(
         (request) =>
           (request.queueId ?? DEFAULT_QUEUE_ID) === targetQueueId &&
           request.status === 'pending'
       );
       if (pendingInTarget.length >= MAX_PENDING_TASKS_PER_QUEUE) {
-        throw new Error('task-cap-reached');
+        throw new QueueMutationRejected('task-cap-reached', `Cannot restart ${taskId}: task-cap-reached`);
       }
       const next: FeatureRequest = {
         ...current,
@@ -112,7 +142,6 @@ export async function runRestartCanceledTask(ctx: {
         result: next
       };
     }, targetQueueId, ctx.store.runCommitClaim(targetQueueId));
-    if (!restarted) return { ok: false, reason: 'illegal-state' };
 
     await ctx.audit.append({
       runId: previousRunId ?? `task:${feature.id}`,
@@ -130,8 +159,16 @@ export async function runRestartCanceledTask(ctx: {
     ctx.notifier.info('Schegent: task restarted.');
     return { ok: true, queueId: targetQueueId };
   } catch (err) {
+    // Code-review fix (2026-09-03) — the mutator's two refusals are now a
+    // typed `QueueMutationRejected` rather than a bare `Error`; this maps its
+    // `reason` back to this function's own, pre-existing public vocabulary
+    // (`'illegal-state'` / `'task-cap-reached'`) rather than string-matching
+    // `.message`.
+    if (err instanceof QueueMutationRejected) {
+      if (err.reason === 'task-cap-reached') return { ok: false, reason: 'task-cap-reached' };
+      if (err.reason === 'illegal-source-status') return { ok: false, reason: 'illegal-state' };
+    }
     const message = (err as Error).message ?? 'unknown error';
-    if (message === 'task-cap-reached') return { ok: false, reason: message };
     ctx.notifier.error(`Schegent: restart failed — ${message}`);
     ctx.logger.error(message);
     return { ok: false, reason: 'unexpected-error' };

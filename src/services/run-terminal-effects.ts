@@ -157,10 +157,20 @@ export async function settleTerminalRun(
   else deps.notifier.info(presentation.notify.message);
 
   try {
-    if (inputs.queueError === undefined) {
-      await deps.queue.finish(run.featureId, terminalStatus);
-    } else {
-      await deps.queue.finish(run.featureId, terminalStatus, inputs.queueError);
+    const finished =
+      inputs.queueError === undefined
+        ? await deps.queue.finish(run.featureId, terminalStatus)
+        : await deps.queue.finish(run.featureId, terminalStatus, inputs.queueError);
+    // FR-R3-153 — `finish` refuses a transition outside the closed table by
+    // returning `{ ok: false, reason }` rather than throwing, so the catch
+    // below (kept for a genuine store-level exception) never sees a refusal.
+    // Swallowed by design either way: see the module docblock. A Run that
+    // ended has ended, but the refusal still needs the same log line a
+    // thrown failure already gets.
+    if (finished.ok === false) {
+      deps.logger.warn(
+        `run-driver: queue.finish (${terminalStatus}) refused: ${finished.reason ?? 'unknown'}`
+      );
     }
   } catch (queueError) {
     // Swallowed by design: see the module docblock. A Run that ended has ended.

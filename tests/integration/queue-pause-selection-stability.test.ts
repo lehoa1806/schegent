@@ -62,7 +62,7 @@ describe('Feature 065 BUG-006 (T070) — queue-pause selection stability (FR-027
 
     // Act: operator pause (preserveInFlightForRestore=false → clears inFlightId).
     const paused = await h.queue.pause(enq.id, 'manually-paused-task', false);
-    expect(paused).toBe(true);
+    expect(paused).toEqual({ ok: true });
 
     const afterPauseQueue = h.store.getQueue('default');
     expect(afterPauseQueue.inFlightId).toBeNull();
@@ -106,7 +106,7 @@ describe('Feature 065 BUG-006 (T070) — queue-pause selection stability (FR-027
 
     // Act: system pause via the preserveInFlightForRestore path.
     const paused = await h.queue.pause(enq.id, 'phase-paused', true);
-    expect(paused).toBe(true);
+    expect(paused).toEqual({ ok: true });
 
     const afterPauseQueue = h.store.getQueue('default');
     // FR-027 invariant — inFlightId is preserved.

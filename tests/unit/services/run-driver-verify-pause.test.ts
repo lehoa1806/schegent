@@ -99,7 +99,8 @@ describe('RunDriver completes the verify pause (BUG-003)', () => {
       queue: {
         notifyStatusChange: vi.fn(),
         finish: vi.fn(),
-        pause: vi.fn(),
+        // FR-R3-153 — `pause` now returns `MutationResult`, not `void`.
+        pause: vi.fn(async () => ({ ok: true })),
         cascadedPause: vi.fn(),
         findById: vi.fn(() => ({ id: TASK_ID, queueId: QUEUE_ID }))
       },

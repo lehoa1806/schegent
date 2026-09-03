@@ -140,6 +140,7 @@ function makeHandler(opts: Partial<TestDeps> = {}): { handler: RetryHandler; tra
       ),
       pause: vi.fn(async (featureId: string, cause: string) => {
         tracker.pauseTaskCalls.push([featureId, cause]);
+        return { ok: true };
       }),
       // Feature 093 (T045) — the handler derives the queue from the Run's task.
       queueIdForTask: vi.fn(() => tracker.queueId)

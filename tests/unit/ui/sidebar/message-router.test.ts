@@ -413,21 +413,14 @@ describe('MessageRouter.dispatch', () => {
     expect(removedEvents[0].correlationId).toBe('rm-1');
   });
 
-  it('rejects CMD_REMOVE_QUEUE_ITEM with task-not-in-pending-state for non-pending rows (BUG-002)', async () => {
-    const built = makeRouter();
-    built.queueOps.removeTaskResult = { ok: false, reason: 'task-not-in-pending-state' };
-    const localAcks: CapturedAck[] = [];
-    await dispatch(
-      built.router,
-      { type: CMD_REMOVE_QUEUE_ITEM, correlationId: 'rm-2', payload: { id: 'in-flight-task', confirmed: true } },
-      localAcks
-    );
-    expect(localAcks[0].msg.status).toBe('rejected');
-    expect(localAcks[0].msg.reason).toBe('task-not-in-pending-state');
-    expect(built.warnings.some((w) => /pending/i.test(w))).toBe(true);
-    // The reject path must NOT emit a task-removed audit event.
-    expect(built.auditEntries.filter((e) => e.eventType === 'task-removed')).toHaveLength(0);
-  });
+  // FR-R3-153 (T1641, research.md grounding facts) — a
+  // 'rejects...task-not-in-pending-state for non-pending rows' case used to
+  // live here, driven entirely by a mocked `queueOps.removeTaskResult`
+  // rather than the real `QueueManager.removeTask`. The real method never
+  // produced that reason for any status, before or after this feature —
+  // removal has always been unrestricted by status (spec FR-014). Removed
+  // as a stale case that treated a mock's own fabricated reason as an
+  // invariant the implementation was ever asserting.
 
   it('rejects CMD_REMOVE_QUEUE_ITEM with unknown-task-id when the task is missing (BUG-002)', async () => {
     const built = makeRouter();

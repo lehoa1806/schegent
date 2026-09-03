@@ -899,7 +899,14 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // Of the 34, twelve are code and the rest is why `forgetAllGitPlanGrants` writes even at
       // zero — the key may hold a value the reader dropped as malformed, and "forget everything"
       // has to clear that too, which is the one thing a reader of the two bodies cannot recover.
-      highWaterMark: 2866
+      //
+      // FR-R3-153 (T1637) — 2866 → 2873: three new members
+      // (`queue-mismatch`, `illegal-source-status`, `in-flight-ownership-conflict`) on
+      // `QueueMutationRejectReason`, extending the existing closed union rather than
+      // introducing a second, parallel reason type for the Task-transition classifier
+      // in `src/queue/task-transition-decision.ts`. Four lines of literals, three of
+      // comment pointing at the decision that added them.
+      highWaterMark: 2873
     }
   },
   // Feature 077 — public facade and every state-projection collaborator have
@@ -1005,7 +1012,50 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // where a reader forms the model, so the correction belongs here and being
       // six lines rather than one is the point — a one-word fix is what left the
       // belief intact the first three times.
-      highWaterMark: 1850
+      //
+      // FR-R3-153 (T1636/T1637/T1640) — 1850 → 1935: `markInFlight`, `finish`,
+      // `pause`, and `retry` each now call the shared `decideTaskTransition`
+      // classifier before writing, and `removeTask`'s own weaker, second
+      // in-flight-cancel fallback was deleted (replaced by an explanatory
+      // doc comment on why it cannot safely be rewritten in place — it has no
+      // access to `cancelActive`/the execution-lease releaser, both one layer
+      // up in `task-deletion.ts`). Most of the growth is the reasoning each
+      // call site records for why it checks inside the mutator rather than
+      // before it (spec FR-004 — a refused transition must leave timestamps
+      // completely unchanged, and `store.updateQueue` unconditionally bumps
+      // them on any committed value) — the classifier itself lives in its own
+      // new file, `src/queue/task-transition-decision.ts`, capped separately.
+      //
+      // Code review fix (2026-09-03) — 1935 → 1972: `finish`, `pause`, and
+      // `retry`'s catch blocks were built on `err instanceof
+      // QueueMutationRejected`, which also matches `store.updateQueue`'s own
+      // commit-fence rejection (`checkCommitFence`, an unrelated ownership-race
+      // failure) — silently turning a genuine store-level race into the same
+      // `{ ok: false }` a refused transition returns, where before this feature
+      // it always propagated as a throw for an existing caller's own try/catch
+      // to log. `isTaskTransitionRejection` narrows the catch to the four
+      // reasons `decideTaskTransition` itself can produce, so a fence rejection
+      // is re-thrown again. `retry`'s dead ternary (`decision.eligible ?
+      // 'task-not-found' : decision.reason` — the true branch is unreachable,
+      // since `decideTaskTransition` already refuses with `'task-not-found'`
+      // whenever `target` is undefined) was split into two guards for the same
+      // reason TypeScript needs the direct `!decision.eligible` check to
+      // narrow `decision` to its `reason`-carrying arm. `finish`, `pause`, and
+      // `retry` also each cache `queueIdForTask(featureId)` once instead of
+      // calling it twice (mirroring `markInFlight`'s existing local), since it
+      // is a linear scan over every queue's requests, not a cheap lookup.
+      //
+      // Code review fix (2026-09-03) — 1972 → 1982: `finish` and `pause`
+      // shared the identical try/catch-and-translate wrapper around
+      // `store.updateQueue` verbatim; extracted into one private
+      // `runTaskTransitionMutation` helper both now call. `retry` keeps its
+      // own inline catch (it remaps `task-not-found` to a different public
+      // vocabulary the shared helper does not special-case). The extraction
+      // removes the duplicated wrapper from both call sites but the shared
+      // helper's own signature and doc comment cost slightly more than that
+      // saved — a net +10, in exchange for one fewer thing to keep in sync
+      // by hand the next time this translation changes.
+      highWaterMark: 1982
     }
   },
   // Speckit-auto alignment (2026-07-30) — bumped 700 → 800 to absorb two new
@@ -1144,7 +1194,14 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // debt, not reduced it. 182 lines measured; 210 carries the 25-line margin this
   // file requires of a plain ceiling, so it is a budget rather than a high-water mark
   // the next edit raises by exactly what it added.
-  { path: 'src/services/run-terminal-effects.ts', maxLines: 210 }
+  //
+  // FR-R3-153 (code-review fix, 2026-09-03) — 210 → 225. `settleTerminalRun`'s
+  // `queue.finish` call now checks the `MutationResult` it returns instead of
+  // only catching a thrown exception (`finish` refuses an illegal transition by
+  // returning rather than throwing, per this feature's closed transition
+  // table), adding ten measured lines. 192 lines measured; 225 keeps the same
+  // 25-line-plus margin this file's ceiling has always carried.
+  { path: 'src/services/run-terminal-effects.ts', maxLines: 225 }
 ];
 
 function lineCount(path: string): number {

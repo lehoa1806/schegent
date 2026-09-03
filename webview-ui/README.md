@@ -969,9 +969,13 @@ modal already owns the single-modal lock. Otherwise it imperatively
 mounts the `ConfirmDialog` component and resolves on Confirm/Cancel.
 Static copy for every `ActionKey` lives in
 [`webview-ui/src/lib/action-copy.ts`](src/lib/action-copy.ts) (title, body
-template, confirm label, danger flag); the Clean All entry alone
-substitutes runtime context (`pendingCount`, `inflightTitle`, etc.) via
-`renderActionBody`. The repo-grep regression at
+template, confirm label, danger flag); several entries substitute runtime
+context via `renderActionBody` — Clean All (`pendingCount`,
+`inflightTitle`, etc.) and, as of FR-R3-153, `queue.remove-item`, whose
+context carries the task's `status` alongside `taskTitle` so the rendered
+body names that status's real deletion consequence (pending/in-flight/
+paused/terminal each read differently) rather than one generic sentence.
+The repo-grep regression at
 [`../tests/lint/destructive-actions.lint.test.ts`](../tests/lint/destructive-actions.lint.test.ts)
 fails the build on any destructive `postCommand(...)` call that is not
 preceded by a matching `useConfirm(...)` await.

@@ -1,7 +1,7 @@
 import type { PhaseRunInputs, PhaseRunOutput, PhaseRunner } from '../controller/phase-runner';
 import { composePhaseMessagePath } from '../controller/phase-runner';
 import type { WorkspaceStateStore } from '../state/workspace-state';
-import type { QueueManager } from '../queue/queue-manager';
+import type { MutationResult, QueueManager } from '../queue/queue-manager';
 import type { SchegentStatusBar } from '../ui/status-bar';
 import type { Notifier } from '../ui/notifications';
 import type { SanitizedLogger } from '../lib/logger';
@@ -375,6 +375,21 @@ export class RunDriver {
     }
   }
 
+  /**
+   * FR-R3-153 (code-review fix 2026-09-03, `drive-loop-loc-budget.test.ts`'s
+   * shrink-only gate) — `finish`/`pause` now refuse a transition outside the
+   * closed table by returning `{ ok: false, reason }` rather than always
+   * succeeding; every call site here logs a refusal the same one-line way, so
+   * this is factored out instead of repeating the `if (result.ok === false)`
+   * block at each of the four sites `drive()`/`failClosedForAuditEvidence`
+   * call `queue.pause`/`queue.finish` from.
+   */
+  private logQueueRefusal(op: 'pause' | 'finish', context: string, result: MutationResult): void {
+    if (result.ok === false) {
+      this.deps.logger.warn(`run-driver: queue.${op} (${context}) refused: ${result.reason ?? 'unknown'}`);
+    }
+  }
+
   public async drive(initial: WorkflowRun, description: string): Promise<void> {
     if (this.isRunning) {
       this.deps.logger.warn('controller already running; ignoring duplicate driveRun');
@@ -451,16 +466,15 @@ export class RunDriver {
             });
             this.deps.notifier.warn(`Schegent: ${failureMessage}`);
             try {
-              await this.deps.queue.finish(run.featureId, 'failed', {
+              const finished = await this.deps.queue.finish(run.featureId, 'failed', {
                 code: sanitized.code,
                 message: sanitized.message,
                 phase: sanitized.phase ?? undefined,
                 correlationId: run.id
               });
+              this.logQueueRefusal('finish', 'probe failed', finished);
             } catch (queueError) {
-              this.deps.logger.warn(
-                `run-driver: queue.finish (probe failed) failed: ${errorMessage(queueError)}`
-              );
+              this.deps.logger.warn(`run-driver: queue.finish (probe failed) failed: ${errorMessage(queueError)}`);
             }
             // Feature 072 — emit task-execution-ended. FR-R3-107: one emitter, and the
             // statistics are DERIVED here rather than hand-written as zeros.
@@ -870,7 +884,7 @@ export class RunDriver {
             phasesCompleted: [...run.phasesCompleted, phaseResult]
           };
           run = await this.deps.persistTransition(run, paused);
-          await this.deps.queue.pause(run.featureId, 'phase-paused');
+          this.logQueueRefusal('pause', 'verify-paused', await this.deps.queue.pause(run.featureId, 'phase-paused'));
           await this.deps.appendPhaseControlAudit('phase-paused', run, {
             runId: run.id,
             phaseId: run.currentPhase
@@ -920,7 +934,7 @@ export class RunDriver {
             phasesCompleted: [...latestRun.phasesCompleted, phaseResult]
           };
           run = await this.deps.persistTransition(latestRun, paused);
-          await this.deps.queue.pause(run.featureId, 'phase-paused');
+          this.logQueueRefusal('pause', 'manual-paused', await this.deps.queue.pause(run.featureId, 'phase-paused'));
           await this.deps.appendPhaseControlAudit('phase-paused', run, {
             runId: run.id,
             phaseId: phaseResult.phase,
@@ -1152,12 +1166,13 @@ export class RunDriver {
       'Schegent: execution stopped because required structured audit evidence is unavailable. Resolve the evidence sink and reload the workspace before resuming.'
     );
     try {
-      await this.deps.queue.finish(failed.featureId, 'failed', {
+      const finished = await this.deps.queue.finish(failed.featureId, 'failed', {
         code: lastError.code,
         message: lastError.message,
         phase: lastError.phase ?? undefined,
         correlationId: failed.id
       });
+      this.logQueueRefusal('finish', 'audit unavailable', finished);
     } catch (queueError) {
       this.deps.logger.warn(
         `run-driver: queue.finish (audit unavailable) failed: ${errorMessage(queueError)}`

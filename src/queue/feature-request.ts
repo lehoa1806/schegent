@@ -31,6 +31,15 @@ export type FeatureRequestStatus =
  */
 export const TERMINAL_REQUEST_STATUSES = ['completed', 'canceled', 'failed'] as const;
 
+/**
+ * FR-R3-153 — the narrowed target type for `QueueManager.finish`. Replaces the
+ * over-permissive `FeatureRequestStatus` the method's `status` parameter used
+ * to accept, which let a caller (in principle) "finish" a task into `paused`
+ * or `in-flight`. A pure type addition; `TERMINAL_REQUEST_STATUSES` remains
+ * the one runtime source of truth this type is derived from.
+ */
+export type TerminalRequestStatus = (typeof TERMINAL_REQUEST_STATUSES)[number];
+
 export function isTerminalRequestStatus(status: FeatureRequestStatus | string): boolean {
   return (TERMINAL_REQUEST_STATUSES as readonly string[]).includes(status);
 }

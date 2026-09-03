@@ -267,4 +267,101 @@ describe('Feature 034 T005 — WorkflowController.deleteTask cleanup wiring', ()
 
     setRunSpy.mockRestore();
   });
+
+  // FR-R3-153 (T1640, spec FR-013/FR-018, research.md R6) — the confirmed
+  // gap: a delayed-retry countdown (`RetryHandler#handleDelayedRetry`, e.g.
+  // after a rate limit) sets the Run's own `status: 'paused'` (with
+  // `pendingRetryAt` armed) WITHOUT ever calling `QueueManager.pause` on
+  // the task row — the row stays `in-flight` the whole time the Run waits
+  // to auto-resume. `deleteTaskWithSessionCleanup`'s guard used to only
+  // recognize `run.status === 'running'`, so deleting the task mid-countdown
+  // skipped `cancelActive`/lease release entirely and fell through to
+  // `removeTask`'s own (now-removed) weaker fallback. This must go through
+  // the identical cancel → setRun(canceled) → release sequence the
+  // 'running' case above already proves.
+  it('in-flight task whose Run is mid delayed-retry countdown (paused) — cancel and release still run BEFORE cleanup', async () => {
+    const runId = 'R4';
+    const feature = await queue.enqueue('in-flight, Run mid-retry-countdown');
+    await queue.markInFlight(feature.id, runId);
+    expect(queue.findById(feature.id)?.status).toBe('in-flight');
+
+    const now = Date.now();
+    const run: WorkflowRun = {
+      id: runId,
+      featureId: feature.id,
+      featureDir: 'specs/000',
+      status: 'paused',
+      currentPhase: 'speckit-plan',
+      currentIteration: 1,
+      startedAt: now,
+      lastTransitionAt: now,
+      phasesCompleted: [],
+      lastError: null,
+      delayedRetryCount: 1,
+      pendingRetryAt: now + 60_000,
+      pendingRetryCause: 'rate_limit',
+      phaseOverrides: [],
+      manualPauseAt: null,
+      manualPauseCause: null,
+      phaseBreakpoints: [],
+      resumeTargetPhaseId: null
+    };
+    await store.setRun(DEFAULT_QUEUE_ID, run, unfencedCommit('test-fixture'));
+    await seedSessionArtifacts(runId);
+
+    const order: string[] = [];
+    const cleanupSpy = vi.fn(async () => {
+      order.push('cleanup');
+      return { cleaned: true };
+    });
+    const controller = makeController(cleanupSpy);
+    const cancelSpy = vi.spyOn(controller, 'cancelActive').mockImplementation(() => {
+      order.push('cancel');
+    });
+    const origSetRun = store.setRun.bind(store);
+    const setRunSpy = vi.spyOn(store, 'setRun').mockImplementation(async (queueId, r, claim) => {
+      if (r && r.status === 'canceled') order.push('setRun:canceled');
+      return origSetRun(queueId, r, claim);
+    });
+
+    const result = await controller.deleteTask(feature.id);
+
+    expect(result.ok).toBe(true);
+    expect(cancelSpy).toHaveBeenCalledTimes(1);
+    expect(order[0]).toBe('cancel');
+    expect(order.indexOf('setRun:canceled')).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf('cleanup')).toBeGreaterThan(order.indexOf('setRun:canceled'));
+
+    setRunSpy.mockRestore();
+  });
+
+  // FR-R3-153 (T1640, spec FR-014) — deletion completes correctly for every
+  // one of the six visible statuses, not only the two already exercised
+  // above (pending via the null-runId case, completed via seedTerminalTask).
+  it.each(['paused', 'failed', 'canceled'] as const)(
+    'deletes a %s task cleanly, leaving siblings in the same and another queue untouched',
+    async (status) => {
+      const sibling = await queue.enqueue('sibling in the same queue');
+      const otherQueueId = (await queue.createQueue('Queue B')).queueId as string;
+      const otherQueueSibling = await queue.enqueue('sibling in another queue', { queueId: otherQueueId });
+
+      const runId = `R-${status}`;
+      const feature = await queue.enqueue(`${status} feature`);
+      await queue.markInFlight(feature.id, runId);
+      if (status === 'paused') {
+        await queue.pause(feature.id);
+      } else {
+        await queue.finish(feature.id, status);
+      }
+
+      const controller = makeController(async () => ({ cleaned: true }));
+      const result = await controller.deleteTask(feature.id);
+
+      expect(result.ok).toBe(true);
+      expect(result.priorStatus).toBe(status);
+      expect(queue.findById(feature.id)).toBeNull();
+      expect(queue.findById(sibling.id)).not.toBeNull();
+      expect(queue.findById(otherQueueSibling.id)).not.toBeNull();
+    }
+  );
 });
