@@ -1393,6 +1393,41 @@ surface and its row in the list. No new `accepted` acknowledgement is
 introduced on any path that refuses because of a halt —
 `webview-ui/src/lib/__tests__/queue-control-ipc.test.ts` asserts it.
 
+### Retry-cap outcome: `QueueItem.degradedPhases` and the phase-editor control (spec 199, FR-R3-157)
+
+No new command. One new **read-only** snapshot field and one new **authoring**
+control, and the two are worth reading together because they sit on opposite
+sides of this package's import rule.
+
+`QueueItem.degradedPhases?: readonly DegradedPhaseEntry[]` — each entry a
+`{ phaseId, condition }` pair naming a Phase whose retry condition was still
+unsatisfied when its iteration cap ran out and which was authored to advance
+anyway. The host derives it once (`src/ui/sidebar/task-degradation.ts`,
+capturing off the Run at the moment it ends via `src/queue/terminal-capture.ts`)
+and the webview only renders it. `drilldown/QueueTaskRow.svelte` collapses an
+absent key and an empty list to the same answer — not degraded — in one
+`$derived`, deliberately once rather than in the markup: two spellings of
+nothing reaching two renderings is the distinction the projection exists to
+prevent. Nothing in the webview infers degradation from a warning tag, a cause
+literal, or an iteration count; a webview test feeds a row carrying the
+forced-continue warning with no `degradedPhases` and asserts it renders clean.
+
+`PipelineBuilderEditors/RetryCapOutcomeEditor.svelte` is the authoring half —
+three choices beside the retry-condition editor, labelled by what the run does
+rather than by the field's values. It is the one editor on that card whose
+**displayed** value is not the phase's own value: a phase that states nothing,
+or states the deprecated boolean, still does something definite at the cap. So
+it imports `resolveRetryCapOutcome` and `statesRetryCapOutcome` from
+`src/contracts/retry-cap-outcome.ts` — real value imports across the boundary,
+which `webview-host-import-direction.test.ts` permits only from `src/contracts/`
+— instead of restating the precedence here. A local copy would be individually
+correct and would disagree with the controller on exactly one input, a phase
+carrying both spellings, which is precisely where this control is telling an
+operator something they cannot otherwise check. `RawJsonPhaseEditor.svelte`
+validates `onRetryCap` against `RETRY_CAP_OUTCOMES` from
+`src/contracts/process-definitions.ts` — the same host-side list, imported the
+same way, that it already uses for every other closed-vocabulary phase field.
+
 ## Build
 
 ```bash

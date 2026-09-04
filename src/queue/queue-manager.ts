@@ -56,7 +56,7 @@ import {
   type TerminalRequestStatus,
   validateDescription
 } from './feature-request';
-import { phaseProgressPatch } from '../services/run-planned-total';
+import { terminalCapture, withoutTerminalCapture } from './terminal-capture';
 import { withRefreshedLifecycle } from './queue-lifecycle-refresh';
 import { hasResettableQueueState, queueResetFields } from './queue-reset-settle';
 import { decideTaskTransition, type TaskTransitionRejectionReason } from './task-transition-decision';
@@ -633,9 +633,10 @@ export class QueueManager {
   ): Promise<MutationResult> {
     const now = Date.now();
     const ownerQueueId = this.queueIdForTask(featureId);
-    // FR-R3-158 (T018) — looked up by Task, on `retry()`'s pattern, so a task
-    // finishing beside a running sibling cannot be handed the sibling's Run.
-    const progress = phaseProgressPatch(this.store.findRunByTask(featureId)?.run ?? null);
+    // FR-R3-158 (T018) / FR-R3-157 (T035, C3.5) — looked up by Task, on `retry()`'s
+    // pattern, so a task finishing beside a running sibling cannot be handed the
+    // sibling's Run. One lookup for every captured field: see `terminal-capture.ts`.
+    const captured = terminalCapture(this.store.findRunByTask(featureId)?.run ?? null);
     return this.runTaskTransitionMutation(ownerQueueId, (queue) => {
       const current = queue.requests.find((r) => r.id === featureId);
       const decision = decideTaskTransition({
@@ -659,7 +660,7 @@ export class QueueManager {
                   completedAt: now,
                   updatedAt: now,
                   lastError: status === 'failed' ? lastError ?? r.lastError : r.lastError,
-                  ...progress
+                  ...captured
                 }
               : r
           ),
@@ -1627,11 +1628,10 @@ export class QueueManager {
           activeRun !== null &&
           activeRun.id === target.runId &&
           (activeRun.status === 'failed' || activeRun.status === 'paused');
-        // FR-R3-158 (T031, FR-009b) — the recorded pair belongs to the attempt
-        // that ended, so a new attempt starts without one. Removed from the
-        // spread rather than set to a zero pair: absence is unknown, and the row
-        // then reads its total from the catalog like any other pending task.
-        const { phaseProgress: _clearedProgress, ...retained } = target;
+        // FR-R3-158 (T031, FR-009b) / FR-R3-157 (T036, FR-013, C3.8) — everything
+        // captured off the previous attempt's Run is dropped at the moment the
+        // retry is requested; `terminal-capture.ts` says why it is removed, not zeroed.
+        const retained = withoutTerminalCapture(target);
         const updated: FeatureRequest = {
           ...retained,
           status: 'pending',

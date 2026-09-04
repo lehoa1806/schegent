@@ -11,6 +11,7 @@ import type {
   PipelineOutputPort,
   PipelineOutputPortType,
   PipelineSourceStatus,
+  RetryCapOutcome,
   WorkflowCatalogFieldErrorProjection,
   WorkflowCatalogPortProjection,
   WorkflowConnection,
@@ -73,6 +74,16 @@ export type MutablePhase = {
   loopable?: boolean;
   retryCondition?: string;
   isRequired?: boolean;
+  // FR-R3-157 (T047) — the two cap fields are named here, unlike most authored
+  // fields, which the index signature below carries as `unknown`. `unknown` is
+  // enough for a row that only round-trips through the save path; it is not
+  // enough for these two, because the editor has to *read* them and hand them to
+  // `resolveRetryCapOutcome`. Declaring them is what keeps that call a single
+  // shared reader rather than a local narrowing cast at the control — a cast
+  // would compile against a field this type had renamed out from under it.
+  onRetryCap?: RetryCapOutcome;
+  /** Deprecated by `onRetryCap`; a row carrying it is still read, never written. */
+  forceContinueOnRetryCap?: boolean;
   runner?: PhaseDefinition['runner'];
   sourceKey: string;
   sourceStatus: PhaseSourceStatus;

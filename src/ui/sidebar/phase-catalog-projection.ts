@@ -115,7 +115,13 @@ function projectPhaseDefinition(
       : {}),
     ...(definition.forceContinueOnRetryCap !== undefined
       ? { forceContinueOnRetryCap: definition.forceContinueOnRetryCap }
-      : {})
+      : {}),
+    // FR-R3-157 — projected as a value, not as text: it is a closed enum the
+    // validator has already checked, so there is nothing here for `sanitize` to
+    // bound. Carried beside the boolean rather than in place of it, because the
+    // Builder serializes what it was shown: a projection that dropped either
+    // form would silently rewrite the author's phase on the next save.
+    ...(definition.onRetryCap !== undefined ? { onRetryCap: definition.onRetryCap } : {})
   };
   return Object.freeze(
     definition.instruction !== undefined

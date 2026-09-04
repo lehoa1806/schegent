@@ -13,6 +13,7 @@ import type {
 // real cycle. Both directions are erased at compile time.
 import type { ExecutionEnvelope, FrozenInputBinding } from '../contracts/run-request';
 import type { RunOutputRecord } from '../contracts/run-results';
+import type { DegradedPhaseEntry } from '../contracts/snapshot-projections';
 
 export interface WorkflowRunPipeline {
   readonly id: string;
@@ -421,6 +422,22 @@ export interface WorkflowRun {
    */
   liveness?: RunLiveness;
   phasesCompleted: PhaseResult[];
+  /**
+   * FR-R3-157 — every phase this run carried past its retry cap under
+   * `onRetryCap: 'continue-degraded'`, in the order they happened.
+   *
+   * **Absence means NOT degraded**, and that is the opposite of the convention
+   * `plannedTotal` and `liveness` above follow, where absence means unknown. It
+   * has to be: a degraded run is one that recorded something, so a run with no
+   * record is a run that degraded nowhere. Reading absence as "unknown" would
+   * make every legacy record and every clean run alike look suspicious, which is
+   * exactly the indistinguishability FR-006 forbids — in the other direction.
+   *
+   * No migration is needed and none is written. The field is optional and
+   * additive: a record persisted before this feature reads back byte-identical,
+   * and the reader's answer for it (`not degraded`) is the true one.
+   */
+  degradedPhases?: readonly DegradedPhaseEntry[];
   lastError: SanitizedError | null;
   /** Frozen at run creation; legacy records migrate to `always`. */
   rawTranscriptMode?: RawTranscriptMode;

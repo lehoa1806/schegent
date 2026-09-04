@@ -12,8 +12,7 @@ import type { HistoryStore } from '../../state/history-store';
 import { projectHistory } from './history-projector';
 import { projectMonitor } from './monitor-projector';
 import { buildPhasesFromRun, currentPhaseOrNull } from './phase-projector';
-import { sanitizeAndCap, projectQueue, projectQueueRows } from './queue-projector';
-import { phaseProgressContext } from './task-phase-progress';
+import { sanitizeAndCap, projectQueue, projectQueueRows, rowRunContext } from './queue-projector';
 import {
   buildActiveFeature,
   computeIsPrimary,
@@ -183,7 +182,7 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     return {
       sanitize,
       registry,
-      ...phaseProgressContext(run, catalog.pipelines), // FR-R3-158 — row sources 2 and 3.
+      ...rowRunContext(run, catalog.pipelines), // FR-R3-158 + FR-R3-157 — see there.
       inFlightPhase: currentPhaseOrNull(run),
       inFlightId: state.inFlightId,
       inFlightManualPauseCause: run?.manualPauseCause ?? null,

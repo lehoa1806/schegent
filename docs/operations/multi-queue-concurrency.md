@@ -64,8 +64,21 @@ the reason; a scheduled start due on a halted Queue releases the Queue exactly a
 today and is then refused by the same check. The Queue's own surface — the Queue list and the
 Queue header — reports which Task caused the halt.
 
+**A degraded Task does not halt its Queue.** A Phase can be authored to advance when its
+retry condition is still unsatisfied at the last allowed iteration, and to record that fact
+on the Task — the `continue-degraded` outcome of the Phase's `onRetryCap`, described in
+[Custom Phases](../features/custom-phases.md#when-the-condition-is-still-true-at-the-cap).
+Such a Task ends `completed`, not `failed`, so this policy's blocking set does not contain it
+and the Queue drains on. That is the trade the outcome exists to make: the run keeps going,
+and the Task row still names the Phase and the condition that was never satisfied, so an
+operator reviewing the Queue can see it after the run itself is gone. A Phase whose
+unsatisfied condition *should* stop the Queue is authored `fail` instead — nothing about this
+policy needs changing to get that behaviour.
+
 <!-- Source: src/contracts/queue-failure-policy.ts -->
 <!-- Source: src/queue/queue-halt-policy.ts -->
+<!-- Source: src/contracts/retry-cap-outcome.ts -->
+<!-- Source: src/queue/terminal-capture.ts -->
 <!-- Source: src/services/auto-drain-coordinator.ts -->
 
 ## Operator guidance

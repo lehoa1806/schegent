@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { PHASE_RETRY_CONDITION_MAX_LEN } from '../../../src/contracts/process-definitions';
+import {
+  PHASE_RETRY_CONDITION_MAX_LEN,
+  RETRY_CAP_OUTCOMES
+} from '../../../src/contracts/process-definitions';
 import { validatePhaseDefinition } from '../../../src/config/process-definition-validator';
 
 const valid = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
@@ -99,6 +102,57 @@ describe('validatePhaseDefinition', () => {
     expect(validatePhaseDefinition(valid({ [field]: 'whatever' })).errors).toEqual(
       expect.arrayContaining([expect.objectContaining({ field, code: 'invalid-enum' })])
     );
+  });
+
+  // --- FR-R3-157 — the three-valued `onRetryCap` (contract V1, V2) ---
+
+  describe('onRetryCap', () => {
+    it.each(RETRY_CAP_OUTCOMES)('accepts %s and carries it onto the definition', (outcome) => {
+      const result = validatePhaseDefinition(valid({ onRetryCap: outcome }));
+      expect(result.errors).toEqual([]);
+      expect(result.definition?.onRetryCap).toBe(outcome);
+    });
+
+    it('refuses a value outside the registry, naming the field and the accepted set (V1)', () => {
+      // The message lists the values because the author is editing a file by
+      // hand and the closed set is the whole content of the diagnosis: "invalid
+      // onRetryCap" tells them the line and nothing about the fix. Asserted
+      // against `RETRY_CAP_OUTCOMES` rather than a literal, so adding a fourth
+      // outcome cannot leave the operator reading a stale list of three.
+      const errors = validatePhaseDefinition(valid({ onRetryCap: 'continue-ish' })).errors;
+      expect(errors).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ field: 'onRetryCap', code: 'invalid-enum' })
+        ])
+      );
+      const message = errors.find((error) => error.field === 'onRetryCap')?.message ?? '';
+      for (const outcome of RETRY_CAP_OUTCOMES) {
+        expect(message, `message must name ${outcome}`).toContain(outcome);
+      }
+    });
+
+    it('refuses a non-string, which is the shape a YAML `on:` key can produce', () => {
+      expect(validatePhaseDefinition(valid({ onRetryCap: true })).errors).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ field: 'onRetryCap', code: 'invalid-enum' })
+        ])
+      );
+    });
+
+    it('accepts a phase carrying BOTH forms, including contradictory ones (V2)', () => {
+      // Not a validation error, deliberately. `onRetryCap` supersedes the boolean
+      // rather than conflicting with it — `resolveRetryCapOutcome` gives the
+      // stated outcome precedence — and refusing the pair would break the one
+      // guarantee this feature makes loudest: every pipeline file already on
+      // disk keeps loading. An author adding `onRetryCap` to a phase that has
+      // the boolean must not have to remove the boolean in the same edit.
+      const result = validatePhaseDefinition(
+        valid({ onRetryCap: 'fail', forceContinueOnRetryCap: true })
+      );
+      expect(result.errors).toEqual([]);
+      expect(result.definition?.onRetryCap).toBe('fail');
+      expect(result.definition?.forceContinueOnRetryCap).toBe(true);
+    });
   });
 
   it('normalizes legacy versions when requested', () => {

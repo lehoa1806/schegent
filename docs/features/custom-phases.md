@@ -42,7 +42,8 @@ The new-feature example declares Pipeline `speckit-new-feature` and includes nin
 | `loopable` | Optional compatibility boolean for legacy outcome looping. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/controller/phase.ts --> |
 | `retryCondition` | Optional non-empty expression, maximum 512 characters, parsed before the definition becomes effective. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/config/process-definition-validator.ts --> |
 | `isRequired` | Optional boolean; `false` lets a failed/timeout Phase advance. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/controller/phase.ts --> |
-| `forceContinueOnRetryCap` | Optional boolean; when true, a still-truthy condition at the cap advances with an explicit unverified warning. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/controller/phase.ts --> |
+| `onRetryCap` | Optional `fail`, `continue`, or `continue-degraded`; decides what this Phase does when its `retryCondition` is still truthy at the final allowed iteration. `fail` ends the Phase failed with the cap-exhausted cause. `continue` advances with an explicit unverified warning and records nothing durable. `continue-degraded` advances *and* records on the Task that this Phase's condition was never satisfied, so the run stays distinguishable from a clean one after the run itself is gone. Omission inherits the workspace default; an unconfigured workspace resolves to `fail`. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/contracts/retry-cap-outcome.ts --> |
+| `forceContinueOnRetryCap` | **Deprecated by `onRetryCap`, and still loaded.** `true` means `continue`, `false` means `fail` — exactly what those values have always meant — so no pipeline file already on disk needs editing, now or later. The boolean covers two of the three outcomes and cannot reach `continue-degraded`. A Phase declaring both is resolved by `onRetryCap`. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/contracts/retry-cap-outcome.ts --> |
 
 `sideEffects` controls the mutation plan, consent, and rollback checkpoint; it does not restrict the backend. A Phase declaring `sideEffects: git` is refused unless it uses a Git-capable runner, because Codex's `workspace-write` sandbox keeps `.git` read-only.
 
@@ -90,6 +91,23 @@ That Phase instructs the backend to emit a top-level `pending_tasks: <N>` metric
 
 <!-- Source: examples/speckit-new-feature.pipeline.yaml -->
 <!-- Source: src/controller/phase.ts -->
+
+### When the condition is still true at the cap
+
+`onRetryCap` decides that, per Phase, between three outcomes. The choice is about what an unsatisfied condition is worth to *this* Phase: a formatting check that never settles is not the same event as a test suite that never goes green, and before this field both were governed by one workspace-wide boolean.
+
+| Outcome | What the Phase does | What survives |
+|---|---|---|
+| `fail` | Ends failed, with the cap-exhausted cause. | The ordinary failure record. |
+| `continue` | Advances with an explicit unverified warning. | Nothing durable; the warning lives with the run. |
+| `continue-degraded` | Advances, exactly as `continue` does. | A degraded mark on the **Task**, naming this Phase and the condition that was never satisfied. |
+
+The mark is what separates the two continuing outcomes. It is captured onto the Task record rather than left on the run, so it is still there after the run is disposed of, and it is cleared when the Task is retried — a fresh attempt is not degraded by a previous one. Nothing else about the run changes: the fail path's behaviour, warning text, and cause value are exactly what they were.
+
+**A degraded Phase does not fail, and so does not halt its queue.** Under the `halt-on-failure` policy a Queue stops admitting work when one of its rows ended `failed`; `continue-degraded` produces a Task that completed, so the Queue drains on. That is the intended trade and the reason the mark exists — see [Failure policy](../operations/multi-queue-concurrency.md#failure-policy-halting-a-queue-on-a-failed-task). Choose `fail` for a Phase whose unsatisfied condition should stop the queue.
+
+<!-- Source: src/contracts/retry-cap-outcome.ts -->
+<!-- Source: src/queue/queue-halt-policy.ts -->
 
 ## Author a verification Phase
 

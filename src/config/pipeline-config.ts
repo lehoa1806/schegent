@@ -11,15 +11,19 @@ export {
   PHASE_SIDE_EFFECTS,
   PHASE_EVIDENCE_POLICIES,
   EVIDENCE_POLICY_ORIGINS,
+  RETRY_CAP_OUTCOMES,
   type PhaseSideEffects,
   type PhaseEvidencePolicy,
-  type EvidencePolicyOrigin
+  type EvidencePolicyOrigin,
+  type RetryCapOutcome
 } from '../contracts/process-definitions';
-import type {
-  PhaseSideEffects,
-  PhaseEvidencePolicy,
-  EvidencePolicyOrigin,
-  PhaseHostVerification
+import {
+  RETRY_CAP_OUTCOMES,
+  type PhaseSideEffects,
+  type PhaseEvidencePolicy,
+  type EvidencePolicyOrigin,
+  type PhaseHostVerification,
+  type RetryCapOutcome
 } from '../contracts/process-definitions';
 import { AUTHORED_PHASE_FIELDS, validatePhaseDefinition } from './process-definition-validator';
 import { AUTHORED_PIPELINE_FIELDS, validatePipelineDefinition } from './pipeline-definition-validator';
@@ -49,10 +53,19 @@ export interface PhaseDef {
   readonly isRequired?: boolean;
   /**
    * Advance instead of failing when `retryCondition` is still truthy at the
-   * iteration cap. Overrides `schegent.retry.forceContinueOnCap`; see
-   * `PhaseDefLike.forceContinueOnRetryCap` in controller/phase.ts.
+   * iteration cap. Overrides `schegent.retry.forceContinueOnCap`.
+   *
+   * **Deprecated by FR-R3-157 in favour of `onRetryCap`, and still loaded** — a
+   * pipeline file carrying it keeps working unchanged, forever.
+   * `contracts/retry-cap-outcome.ts` is the only reader that decides from it.
    */
   readonly forceContinueOnRetryCap?: boolean;
+  /**
+   * FR-R3-157 — the three-valued outcome at the iteration cap, superseding the
+   * boolean above. Absent means the workspace default; absent everywhere means
+   * `'fail'`. See `RETRY_CAP_OUTCOMES` in `contracts/process-definitions.ts`.
+   */
+  readonly onRetryCap?: RetryCapOutcome;
   readonly runner?: BackendRunnerKind;
   readonly sideEffects?: PhaseSideEffects; // Omission => `workspace` at the freeze.
   readonly evidencePolicy?: PhaseEvidencePolicy;
@@ -204,6 +217,9 @@ export function isPhaseDef(value: unknown): value is PhaseDef {
     (v.isRequired === undefined || typeof v.isRequired === 'boolean') &&
     (v.forceContinueOnRetryCap === undefined ||
       typeof v.forceContinueOnRetryCap === 'boolean') &&
+    (v.onRetryCap === undefined ||
+      (typeof v.onRetryCap === 'string' &&
+        (RETRY_CAP_OUTCOMES as readonly string[]).includes(v.onRetryCap))) &&
     (v.runner === undefined || isBackendRunnerKind(v.runner))
   );
   return structurallyValid;

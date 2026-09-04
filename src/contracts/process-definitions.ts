@@ -49,6 +49,50 @@ export const PHASE_ID_MAX_LEN = 64;
  */
 export const PHASE_RETRY_CONDITION_MAX_LEN = 512;
 
+/**
+ * What a Phase does when its `retryCondition` is still truthy at the iteration
+ * cap (FR-R3-157, FR-001).
+ *
+ * Three outcomes, because two is the wrong cardinality. The cap decision used to
+ * be a boolean — halt, or advance silently — and the same incident produced one
+ * exhaustion that should have continued and one that should have failed. Neither
+ * position of a two-valued switch is right for both, so the switch was always
+ * going to be wrong half the time.
+ *
+ * - `'fail'` — halt the Run, exactly as today, with the same warning and the same
+ *   recorded cause. The default when nothing says otherwise.
+ * - `'continue'` — advance, exactly as today under `forceContinueOnRetryCap`,
+ *   with the same forced-continue warning.
+ * - `'continue-degraded'` — advance to the same successor `'continue'` would,
+ *   and record the phase and the condition that was never satisfied, so the Run
+ *   is never mistaken for a clean one.
+ *
+ * **All three are scoped to the cap, and none is a way past a `failed` or
+ * `timeout` outcome.** Those are terminal and never reach the retryCondition
+ * branch at all. What this setting exists for is the narrower case: a phase whose
+ * condition can never go falsy — one gated on a step no headless run can perform
+ * — otherwise burns every iteration and then fails the whole task, and the only
+ * ways out were to leave it failing or to record work that did not happen.
+ * Forcing past a fatal-signature match is a different decision on different
+ * evidence, and `isRequired: false` is the field that already makes it. (This
+ * paragraph moved here verbatim in substance from `controller/phase.ts`'s
+ * `PhaseDefLike`, which no longer declares the field it documented — the reason
+ * outlived the boolean.)
+ *
+ * Declared here rather than in `controller/` because this file defines the
+ * authored schema, and the schema must not import from the controller to type
+ * its own field. `config/pipeline-config.ts` re-exports the type rather than
+ * restating it, the way it already does for `PHASE_EFFORT_LEVELS`.
+ *
+ * `contracts/retry-cap-outcome.ts` is the **only** place that resolves an
+ * outcome from a definition, and `tests/lint/retry-cap-resolution-site.test.ts`
+ * pins that. Note when writing such a proof that the value `'continue-degraded'`
+ * also occurs in `services/evidence-health/evidence-health-monitor.ts` as an
+ * unrelated evidence-sink policy: search the **field name**, never the value.
+ */
+export const RETRY_CAP_OUTCOMES = ['fail', 'continue', 'continue-degraded'] as const;
+export type RetryCapOutcome = (typeof RETRY_CAP_OUTCOMES)[number];
+
 export const PHASE_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type PhaseDefinitionEffort = (typeof PHASE_EFFORT_LEVELS)[number];
 
@@ -192,6 +236,12 @@ export const AUTHORED_PHASE_FIELDS: ReadonlySet<string> = new Set([
   'retryCondition',
   'isRequired',
   'forceContinueOnRetryCap',
+  // FR-R3-157 — the three-valued replacement for the boolean above, closed with
+  // the rest for the reason the `sideEffects` comment below states: the save path
+  // and the import path must hold a definition to the same closed set. Omit this
+  // entry and a Phase carrying `onRetryCap` loads from a pipeline file and is
+  // then refused when the Builder saves it back, which reads as a validator bug.
+  'onRetryCap',
   'runner',
   // Feature 098 T015 — authored, not host-resolved. The save path and the import
   // path must hold a definition to the same closed set, or a Phase would be
@@ -277,8 +327,26 @@ interface PhaseDefinitionBase {
   readonly loopable?: boolean;
   readonly retryCondition?: string;
   readonly isRequired?: boolean;
-  /** Advance rather than fail when `retryCondition` is truthy at the cap. */
+  /**
+   * Advance rather than fail when `retryCondition` is truthy at the cap.
+   *
+   * **Deprecated by FR-R3-157 in favour of `onRetryCap`, and still loaded.** No
+   * pipeline file needs editing, ever: `true` means `'continue'` and `false`
+   * means `'fail'`, and a Phase may carry both forms — `onRetryCap` wins.
+   *
+   * Nothing decides behaviour from this field except
+   * `contracts/retry-cap-outcome.ts`, which is the single resolution site
+   * `tests/lint/retry-cap-resolution-site.test.ts` pins. Every other occurrence
+   * is a declaration, a type check, a key in a field list, or a straight copy in
+   * a mapper or projector. Read it anywhere else and the two forms drift.
+   */
   readonly forceContinueOnRetryCap?: boolean;
+  /**
+   * FR-R3-157 — what this Phase does when `retryCondition` is still truthy at the
+   * iteration cap. Absent means the workspace default applies; absent everywhere
+   * means `'fail'`. See `RETRY_CAP_OUTCOMES`.
+   */
+  readonly onRetryCap?: RetryCapOutcome;
   readonly runner?: BackendRunnerKind;
 }
 

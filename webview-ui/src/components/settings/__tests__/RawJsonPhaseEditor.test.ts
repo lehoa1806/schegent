@@ -228,6 +228,13 @@ describe('Feature 011 T054 — RawJsonPhaseEditor (SC-008, FR-028, FR-029, FR-03
       spendBoundUsd: 5,
       spendBoundTokens: 100_000,
       forceContinueOnRetryCap: true,
+      // FR-R3-157 (T049, FR-018, C4.9) — BOTH forms are driven through this matrix,
+      // the deprecated switch above and the outcome here, because "keeps accepting
+      // both" is a claim about two documents and neither one proves it alone. Every
+      // pipeline file on disk carries the switch and will keep loading forever; a
+      // raw editor that quietly refused one of the two would make this route the
+      // place a valid file becomes unsavable.
+      onRetryCap: 'continue-degraded',
       description: 'A described phase.',
       timeoutSeconds: 45,
       retryCondition: 'attempts < 2',
@@ -277,6 +284,31 @@ describe('Feature 011 T054 — RawJsonPhaseEditor (SC-008, FR-028, FR-029, FR-03
         uncovered,
         `authored fields this test does not drive: ${uncovered.join(', ')}`
       ).toEqual([]);
+    });
+
+    it('refuses an unrecognized cap outcome the way it refuses an invalid switch (C4.9)', async () => {
+      // The half that is easy to leave out. Accepting the new form is visible the
+      // first time anyone uses it; refusing a MISSPELLED one is visible only when
+      // a phase silently falls back to `'fail'` at a cap months later, because an
+      // unrecognized outcome is indistinguishable from an absent one downstream.
+      const { container } = render(RawJsonPhaseEditor, { props: { phase: PHASE_FIXTURE } });
+      const textarea = container.querySelector(
+        '[data-testid="raw-json-input"]'
+      ) as HTMLTextAreaElement;
+      await fireEvent.input(textarea, {
+        target: {
+          value: JSON.stringify({ ...PHASE_FIXTURE, onRetryCap: 'continue-degraded-ish' }, null, 2)
+        }
+      });
+
+      expect(
+        (container.querySelector('[data-testid="raw-json-save"]') as HTMLButtonElement).disabled,
+        'a phase naming an outcome outside the three must not be savable'
+      ).toBe(true);
+      expect(
+        container.querySelector('[data-testid="raw-json-error"]')?.textContent ?? '',
+        'the message names the field, so the author can find it'
+      ).toContain('onRetryCap');
     });
 
     it('still refuses a value outside a declared closed enum', async () => {

@@ -49,7 +49,42 @@ The backend choice is a privilege choice, not a cosmetic preference. A Phase's `
 | `schegent.spend.maxTokensPerRun` | number (minimum `1`) or `null` | `null` | resource | Per-run spend bound in tokens, for backends that report tokens and no cost (`codex`, `agy`). `null` means **no bound**. Behaves identically to the dollar bound, including the pause. A Phase may override it with `spendBoundTokens`. |
 | `schegent.defaultPipelineId` | empty string or `^[a-z][a-z0-9-]{0,63}$` | empty string | resource | Pipeline used when enqueueing omits one. Empty means no default; Schegent ships no definitions. |
 | `schegent.retry.maxAttempts` | integer, `1`–`5` | `5` | resource | Maximum delayed-retry attempts before the Run and Queue pause. |
-| `schegent.retry.forceContinueOnCap` | boolean | `false` | resource | When a `retryCondition` remains truthy at its final allowed iteration, allows advancement and records a forced-continue runtime event. Failed and timed-out outcomes remain terminal. |
+| `schegent.retry.forceContinueOnCap` | boolean | `false` | resource | Workspace-wide **default** for what a Phase does when its `retryCondition` remains truthy at its final allowed iteration: `true` means advance and record a forced-continue runtime event, `false` means fail. A Phase's own `onRetryCap` overrides it — see below, including the third outcome this boolean cannot select. Failed and timed-out outcomes remain terminal. |
+
+### The retry-cap outcome is three-valued, and per Phase
+
+`schegent.retry.forceContinueOnCap` answers for a Phase that says nothing. A Phase that says
+something says it in `onRetryCap`, which admits three outcomes rather than two:
+
+| `onRetryCap` | At the cap | What survives the run |
+|---|---|---|
+| `fail` | Ends the Phase failed, with the cap-exhausted cause. | The ordinary failure record. |
+| `continue` | Advances with an explicit unverified warning. | Nothing durable. |
+| `continue-degraded` | Advances, exactly as `continue` does. | A degraded mark on the **Task**, naming the Phase and the condition that was never satisfied. |
+
+The workspace boolean maps onto the first two: `true` is `continue`, `false` is `fail`. It cannot
+select `continue-degraded`, which is reachable only per Phase — a workspace-wide degraded default
+would mark every task in the workspace and tell an operator nothing about any of them. Precedence
+is most-specific-first: the Phase's `onRetryCap`, then the Phase's deprecated
+`forceContinueOnRetryCap`, then this setting, then `fail`. A Phase that states anything wins over
+the workspace default, including when it states the opposite of it.
+
+The **Phase field** `forceContinueOnRetryCap` is deprecated by `onRetryCap` and **keeps loading
+indefinitely**, under the same `true`/`false` mapping it has always had. No pipeline file already on
+disk needs editing, now or later; a Phase declaring both is resolved by `onRetryCap`. The workspace
+setting on the row above is not deprecated — it remains the default for every Phase that declares
+neither.
+
+**A degraded Phase does not fail, and so does not halt its queue.** Under the `halt-on-failure`
+policy set by `schegent.queue.haltOnTaskFailure`, a Queue stops admitting work when one of its rows
+ended `failed`; `continue-degraded` produces a Task that completed, so the Queue drains on and the
+mark is how the unverified condition stays visible afterwards. Choose `fail` for a Phase whose
+unsatisfied condition should stop the queue. See
+[Failure policy](../operations/multi-queue-concurrency.md#failure-policy-halting-a-queue-on-a-failed-task)
+and the Phase field reference in [Custom Phases](../features/custom-phases.md#phase-definition-reference).
+
+<!-- Source: src/contracts/retry-cap-outcome.ts -->
+<!-- Source: src/queue/queue-halt-policy.ts -->
 
 **The workspace-wide concurrency cap is not on this page, because it is not a
 `settings.json` key.** The maximum number of Runs that may execute at once — still

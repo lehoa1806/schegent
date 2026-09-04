@@ -164,6 +164,12 @@ The authoritative schema version is `3`. The table is exhaustive: `COMMAND_TYPES
 <!-- Source: src/contracts/catalog-lifecycle.ts -->
 <!-- Source: src/catalog/package-publish.ts -->
 
+A Phase `body` is the authored Phase document; [Custom Phases](../features/custom-phases.md#phase-definition-reference) is its field reference. One field is named here because it is new and because both authoring routes must admit it identically: `onRetryCap` is `'fail' | 'continue' | 'continue-degraded'` — what the Phase does when its `retryCondition` is still truthy at the final allowed iteration, respectively failing, advancing with an unverified warning, or advancing and recording a durable degraded mark on the Task. Omitting it inherits `schegent.retry.forceContinueOnCap`, and an unconfigured workspace resolves to `fail`. It supersedes the boolean `forceContinueOnRetryCap`, which is deprecated and **keeps loading indefinitely** under the mapping `true` → `continue`, `false` → `fail`: no stored or exported document needs editing, now or later, and a body declaring both is resolved by `onRetryCap`. Both spellings belong to the closed authored-field set, so this command and the process-YAML import path accept exactly the same fields — a field admitted by one route and refused by the other is the defect that set exists to prevent.
+
+<!-- Source: src/contracts/process-definitions.ts -->
+<!-- Source: src/contracts/retry-cap-outcome.ts -->
+<!-- Source: src/config/process-definition-validator.ts -->
+
 `startIntent` has two legal forms:
 
 - Enqueue: `{ startMode: 'now' | 'scheduled', scheduledStartAt?: positive finite epoch milliseconds, source }`. `scheduledStartAt` is required only for `scheduled`. Accepted sources are `operator-chooser`, `operator-restart`, `programmatic-now`, `programmatic-scheduled`, and `migration-default`; the declared host-internal `system-rate-limit-recovery` source is rejected at IPC ingress.

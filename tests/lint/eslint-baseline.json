@@ -22,7 +22,7 @@
   ],
   "rules": {
     "@typescript-eslint/no-unnecessary-condition": {
-      "host": 341,
+      "host": 340,
       "webview": 260,
       "owner": {
         "decision": "D9 — Six baseline entries, each owned",
@@ -45,7 +45,7 @@
         "src/config/workflow-graph-validator.ts": 1,
         "src/controller/phase-retry-evaluator.ts": 2,
         "src/controller/phase-runner.ts": 1,
-        "src/controller/phase.ts": 2,
+        "src/controller/phase.ts": 1,
         "src/controller/workflow-lifecycle-auditor.ts": 1,
         "src/headless/pipeline-run-api.ts": 1,
         "src/headless/process-yaml-api.ts": 2,

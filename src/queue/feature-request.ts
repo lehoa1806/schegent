@@ -1,7 +1,7 @@
 import type { FrozenRunPlan } from '../contracts/run-request';
 import type { QueuePauseSource } from './queue-registry';
 import type { QueueFailurePolicy } from '../contracts/queue-failure-policy';
-import type { TaskPhaseProgressProjection } from '../contracts/snapshot-projections';
+import type { DegradedPhaseEntry, TaskPhaseProgressProjection } from '../contracts/snapshot-projections';
 
 // FR-R3-132 (T1502) — moved to `src/contracts/snapshot-vocabulary.ts` so the webview
 // imports it instead of restating it. Re-exported unchanged.
@@ -125,6 +125,25 @@ export interface FeatureRequest {
    * projector.
    */
   phaseProgress?: TaskPhaseProgressProjection;
+  /**
+   * FR-R3-157 (FR-011a) — the phases this task carried past their retry cap,
+   * recorded when it reached a terminal status so the mark outlives the Run
+   * that produced it. Same durability argument as `phaseProgress` directly
+   * above, and for the same reason: a mark held only on the Run reads blank on
+   * every finished row the moment the next task starts.
+   *
+   * Optional and additive, so a pre-feature record reads back byte-identical
+   * and no `STATE_SCHEMA_VERSION` bump is needed. **Absence means NOT
+   * degraded** — which is the opposite of `phaseProgress` above, where absence
+   * means unknown, and the difference is not an inconsistency: a settled-phase
+   * count is a measurement that may be unavailable, while a degradation is an
+   * event that either happened and was recorded or did not happen at all. An
+   * empty list means the same thing and is never written (`run-degradation.ts`).
+   *
+   * Cleared on retry (FR-013), so a new attempt never carries the previous
+   * attempt's doubt.
+   */
+  degradedPhases?: readonly DegradedPhaseEntry[];
 }
 
 export interface QueueState {

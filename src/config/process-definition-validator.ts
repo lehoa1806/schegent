@@ -6,6 +6,7 @@ import {
   PHASE_ID_MAX_LEN,
   PHASE_RETRY_CONDITION_MAX_LEN,
   PHASE_SIDE_EFFECTS,
+  RETRY_CAP_OUTCOMES,
   type PhaseDefinition,
   type PhaseEvidencePolicy,
   type PhaseHostVerification,
@@ -543,6 +544,32 @@ export function validatePhaseDefinition(
       )
     );
   }
+  // FR-R3-157 (contract V1) — the three-valued successor to the boolean above,
+  // checked beside it because they are the same authored decision in two forms.
+  //
+  // A phase carrying BOTH is valid (V2), including with contradictory values:
+  // `onRetryCap` supersedes rather than conflicts, `resolveRetryCapOutcome` gives
+  // it precedence, and refusing the pair would mean an author could not add the
+  // new field without removing the old one in the same edit — which is the one
+  // thing this feature promises never to require.
+  let onRetryCap: PhaseDefinition['onRetryCap'];
+  if (value.onRetryCap !== undefined) {
+    if (
+      typeof value.onRetryCap !== 'string' ||
+      !(RETRY_CAP_OUTCOMES as readonly string[]).includes(value.onRetryCap)
+    ) {
+      errors.push(
+        fieldError(
+          phaseId,
+          'onRetryCap',
+          'invalid-enum',
+          `Phase onRetryCap must be one of ${RETRY_CAP_OUTCOMES.join(', ')}`
+        )
+      );
+    } else {
+      onRetryCap = value.onRetryCap as PhaseDefinition['onRetryCap'];
+    }
+  }
 
   let retryCondition: string | undefined;
   if (value.retryCondition !== undefined) {
@@ -619,6 +646,7 @@ export function validatePhaseDefinition(
     ...(retryCondition !== undefined ? { retryCondition } : {}),
     ...(typeof isRequired === 'boolean' ? { isRequired } : {}),
     ...(typeof forceContinueOnRetryCap === 'boolean' ? { forceContinueOnRetryCap } : {}),
+    ...(onRetryCap !== undefined ? { onRetryCap } : {}),
     ...(runner !== undefined ? { runner } : {}),
     ...(sideEffects !== undefined ? { sideEffects } : {}),
     ...(evidencePolicy !== undefined ? { evidencePolicy } : {}),

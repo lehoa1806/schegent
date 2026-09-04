@@ -12,7 +12,10 @@
 // FR-001, FR-002, FR-005, FR-006, FR-008, FR-009, FR-026, QS-11, QS-19-22.
 
 import { describe, it, expect } from 'vitest';
-import { PHASE_RETRY_CONDITION_MAX_LEN } from '../../../src/contracts/process-definitions';
+import {
+  PHASE_RETRY_CONDITION_MAX_LEN,
+  RETRY_CAP_OUTCOMES
+} from '../../../src/contracts/process-definitions';
 import { parseDocumentText } from '../../../src/services/process-yaml/yaml-parser';
 import {
   DEFECT_FIELD_MAX,
@@ -399,6 +402,48 @@ describe('phase-yaml-validator — containment fields (FR-001, FR-002)', () => {
         message: 'Phase sideEffects must be one of none, workspace, git, unrestricted'
       })
     );
+  });
+
+  // FR-R3-157 — `onRetryCap`, closed to the same registry the catalog validator
+  // uses. The import path and the save path must refuse the same set, or a file
+  // imports clean and is then rejected when the Builder writes it back.
+  it('refuses an onRetryCap value outside the closed set', () => {
+    const found = defects(doc({ spec: ['instruction: i', 'onRetryCap: continue-ish'] }));
+    expect(found).toContainEqual(
+      expect.objectContaining({
+        field: 'onRetryCap',
+        code: 'invalid-enum',
+        message: 'Phase onRetryCap must be one of fail, continue, continue-degraded'
+      })
+    );
+  });
+
+  it.each(RETRY_CAP_OUTCOMES)('accepts onRetryCap: %s', (value) => {
+    const document = accepted(doc({ spec: ['instruction: i', `onRetryCap: ${value}`] }));
+    expect(document.spec.onRetryCap).toBe(value);
+  });
+
+  it('accepts both authored forms on one phase, carrying each verbatim (V2)', () => {
+    // Contradictory on purpose: `onRetryCap: continue-degraded` beside
+    // `forceContinueOnRetryCap: false`. The validator's job is to admit the
+    // pair, not to reconcile it — precedence lives in `resolveRetryCapOutcome`,
+    // the one resolution site (FR-007). Refusing the pair here would mean an
+    // author could not add the new field without deleting the old one in the
+    // same edit, which is the guarantee FR-002 makes loudest.
+    const document = accepted(
+      doc({
+        spec: [
+          'instruction: i',
+          'onRetryCap: continue-degraded',
+          'forceContinueOnRetryCap: false'
+        ]
+      })
+    );
+    expect(document.spec).toEqual({
+      instruction: 'i',
+      onRetryCap: 'continue-degraded',
+      forceContinueOnRetryCap: false
+    });
   });
 
   it('refuses an evidencePolicy value outside the closed set', () => {

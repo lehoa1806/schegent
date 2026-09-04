@@ -356,6 +356,33 @@ export interface TaskPhaseProgressProjection {
 }
 
 /**
+ * FR-R3-157 — one phase that exhausted its retry cap and advanced anyway.
+ *
+ * Both fields are required, because either alone is unactionable: a phase id
+ * without the condition says a phase was doubted but not what about, and a
+ * condition without the phase id says something went unverified but not where.
+ *
+ * **A Run is degraded exactly when its list of these is non-empty.** There is no
+ * companion boolean anywhere in the product, deliberately: a boolean beside a
+ * list is a second source of truth that can disagree with the first, and the one
+ * that disagrees is always the one a surface happens to read. An empty list and
+ * an absent field mean the same thing — not degraded — and no code distinguishes
+ * them.
+ *
+ * Declared here, in `contracts/`, because the same shape rides four carriers —
+ * the transition result, the Run, the Task record, and the queue projection —
+ * and the webview reads its types from this barrel. One declaration for all
+ * four; no projection-only twin that could drift from the stored form.
+ *
+ * `condition` is the retry condition **as authored**, not as evaluated, so an
+ * operator reads back the text they wrote.
+ */
+export interface DegradedPhaseEntry {
+  readonly phaseId: string;
+  readonly condition: string;
+}
+
+/**
  * FR-R3-130 (T1496) — aggregate stream pressure, as it stands right now.
  *
  * The audit of 2026-08-27's point about the cap-20 ceiling was that an operator can

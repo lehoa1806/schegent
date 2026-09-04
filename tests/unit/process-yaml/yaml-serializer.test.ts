@@ -110,8 +110,59 @@ describe('yaml-serializer — property order (FR-017)', () => {
       'loopable',
       'isRequired',
       'forceContinueOnRetryCap',
+      // FR-R3-157 — the three-valued outcome, emitted immediately after the
+      // boolean it supersedes. Adjacency is the point: an author reading a file
+      // that carries both sees them on consecutive lines, which is the only
+      // place the format itself can say they are the same decision written twice.
+      'onRetryCap',
       'retryCondition'
     ]);
+  });
+
+  // FR-R3-157 — a phase may carry BOTH authored forms (contract V2), so the
+  // serializer has to emit both, in one order, every time. A format that dropped
+  // either one would silently rewrite the author's file on save: dropping the
+  // boolean breaks the older reader, dropping `onRetryCap` reverts the decision.
+  it('emits both retry-cap forms, in the declared order, whichever order they were built in', () => {
+    // Typed as the real spec, not `Record<string, unknown>` behind a cast: the
+    // cast would have let a misspelled key through, and this test's whole claim
+    // is about which keys reach the file.
+    const withBoth = (spec: PhaseYamlDocument['spec']): PhaseYamlDocument => ({
+      apiVersion: PHASE_YAML_API_VERSION,
+      kind: PHASE_YAML_KIND,
+      // `My Phase` rather than a single letter: the serializer quotes `N`,
+      // because YAML 1.1 reads a bare `N` as a boolean, and a quoted name in
+      // the expected block would read as noise in a test about two other keys.
+      metadata: { phaseId: 'p', name: 'My Phase', version: 1 },
+      spec
+    });
+    const emitted = serializePhaseDocument(
+      withBoth({ instruction: 'i', onRetryCap: 'continue-degraded', forceContinueOnRetryCap: true })
+    );
+    expect(emitted).toBe(
+      [
+        'apiVersion: schegent/v1',
+        'kind: Phase',
+        'metadata:',
+        '  phaseId: p',
+        '  name: My Phase',
+        '  version: 1',
+        'spec:',
+        '  instruction: i',
+        '  forceContinueOnRetryCap: true',
+        '  onRetryCap: continue-degraded',
+        ''
+      ].join('\n')
+    );
+    expect(
+      serializePhaseDocument(
+        withBoth({
+          forceContinueOnRetryCap: true,
+          instruction: 'i',
+          onRetryCap: 'continue-degraded'
+        })
+      )
+    ).toBe(emitted);
   });
 
   it('emits in the declared order whatever order the object was built in', () => {

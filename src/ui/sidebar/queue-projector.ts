@@ -18,13 +18,20 @@ import type {
   ScheduledStartSource
 } from '../../queue/feature-request';
 import { DEFAULT_QUEUE_ID } from '../../contracts/queue-identity';
+import type { PipelineDef } from '../../contracts/snapshot-vocabulary';
 import { type ProjectedQueueRegistry } from '../../queue/queue-registry';
-import type { ManualPauseCause } from '../../state/workflow-run';
+import type { ManualPauseCause, WorkflowRun } from '../../state/workflow-run';
 import { projectQueues } from './queue-summary-projector';
 import {
+  phaseProgressContext,
   resolveTaskPhaseProgress,
   type TaskPhaseProgressContext
 } from './task-phase-progress';
+import {
+  degradationContext,
+  resolveTaskDegradation,
+  type TaskDegradationContext
+} from './task-degradation';
 import {
   RECENT_QUEUE_MAX,
   type QueueItem,
@@ -46,10 +53,11 @@ export function sanitizeAndCap(
   return sanitized;
 }
 
-// FR-R3-158 — the settled-phase readings ride in on the same context every other
-// row field reads, so a caller that supplies neither projects `null` rather than
-// a fabricated figure. The resolution itself lives in `task-phase-progress.ts`.
-export interface QueueProjectionContext extends TaskPhaseProgressContext {
+// FR-R3-158 / FR-R3-157 — the settled-phase and degradation readings ride in on
+// the same context every other row field reads, so a caller that supplies neither
+// projects `null` (or, for degradation, no key) rather than a fabricated answer.
+// The resolutions live in `task-phase-progress.ts` and `task-degradation.ts`.
+export interface QueueProjectionContext extends TaskPhaseProgressContext, TaskDegradationContext {
   readonly sanitize: (input: string) => string;
   readonly inFlightPhase: PhaseName | null;
   readonly inFlightId: string | null;
@@ -85,6 +93,23 @@ export interface QueueProjectionContext extends TaskPhaseProgressContext {
    * other entry counts zero rather than guessing.
    */
   readonly requestsOf?: (queueId: string) => readonly FeatureRequest[];
+}
+
+/**
+ * FR-R3-157 (T042) — every reading a row takes off the queue's own Run, paired
+ * here beside the context contract for the reason that contract extends both
+ * interfaces: the readings come from one Run and must be filled from that same
+ * Run or not at all. A caller that built one and forgot the other would publish
+ * rows right about their settled-phase figure and silently clean in their
+ * degradation — a shape no test of either resolution can see, each being right
+ * about its own field. One call is what stops that being a thing to remember.
+ * Each module keeps its own reading and builder; this only pairs them.
+ */
+export function rowRunContext(
+  run: WorkflowRun | null,
+  pipelines: readonly PipelineDef[]
+): TaskPhaseProgressContext & TaskDegradationContext {
+  return { ...phaseProgressContext(run, pipelines), ...degradationContext(run) };
 }
 
 export interface QueueProjectionResult {
@@ -196,6 +221,10 @@ function toQueueItem(req: FeatureRequest, ctx: QueueProjectionContext): QueueIte
     // snapshot-only test over a per-emission filesystem stat.
     hasOnDiskLogs: req.pipelineId !== null && req.pipelineId !== undefined,
     phaseProgress: resolveTaskPhaseProgress(req, ctx),
+    // FR-R3-157 (T042, C4.10) — spread, not assigned: a clean task gets no key at
+    // all, because absence is what "not degraded" is written as everywhere else in
+    // this feature. Resolution in `task-degradation.ts`.
+    ...resolveTaskDegradation(req, ctx, isInFlight),
     ...(pausedField !== undefined ? { paused: pausedField } : {})
   });
 }

@@ -53,6 +53,11 @@ const AUTHORED: Readonly<Record<string, unknown>> = {
   retryCondition: 'attempts < 2',
   isRequired: false,
   forceContinueOnRetryCap: true,
+  // FR-R3-157 (T046) — `'continue-degraded'` on purpose. It is not the default
+  // (`'fail'`), and it is the one outcome the deprecated boolean beside it cannot
+  // express, so a save that dropped this field and kept the boolean would land on
+  // `'continue'` and read as a plausible success rather than as a loss.
+  onRetryCap: 'continue-degraded',
   runner: 'codex',
   sideEffects: 'git',
   evidencePolicy: 'best-effort',

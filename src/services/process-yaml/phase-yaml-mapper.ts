@@ -68,6 +68,11 @@ export function documentFromPhaseDefinition(definition: PhaseDefinition): PhaseY
     ...(definition.forceContinueOnRetryCap !== undefined
       ? { forceContinueOnRetryCap: definition.forceContinueOnRetryCap }
       : {}),
+    // FR-R3-157 — carried independently of the boolean above, and never folded
+    // into it. A mapper that wrote one from the other would be a second
+    // resolution site (FR-007), and it would also destroy the round trip: a
+    // phase carrying both would come back carrying one.
+    ...(definition.onRetryCap !== undefined ? { onRetryCap: definition.onRetryCap } : {}),
     ...(definition.retryCondition !== undefined
       ? { retryCondition: definition.retryCondition }
       : {})
@@ -114,6 +119,7 @@ export function phaseDefinitionFromDocument(document: PhaseYamlDocument): PhaseD
     ...(spec.forceContinueOnRetryCap !== undefined
       ? { forceContinueOnRetryCap: spec.forceContinueOnRetryCap }
       : {}),
+    ...(spec.onRetryCap !== undefined ? { onRetryCap: spec.onRetryCap } : {}),
     ...(spec.runner !== undefined ? { runner: spec.runner } : {}),
     ...(spec.sideEffects !== undefined ? { sideEffects: spec.sideEffects } : {}),
     ...(spec.evidencePolicy !== undefined ? { evidencePolicy: spec.evidencePolicy } : {}),

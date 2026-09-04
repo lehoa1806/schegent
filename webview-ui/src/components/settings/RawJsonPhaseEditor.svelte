@@ -30,7 +30,8 @@
     PHASE_EFFORT_LEVELS,
     PHASE_EVIDENCE_POLICIES,
     PHASE_HOST_VERIFICATIONS,
-    PHASE_SIDE_EFFECTS
+    PHASE_SIDE_EFFECTS,
+    RETRY_CAP_OUTCOMES
   } from '../../../../src/contracts/process-definitions';
   import { ALL_PHASE_CAPABILITIES } from '../../../../src/contracts/phase-capabilities';
 
@@ -180,14 +181,18 @@
         error: 'field `forceContinueOnRetryCap` must be a boolean when present'
       };
     }
-    // The three declared enums, each read from its contract rather than restated.
+    // The declared enums, each read from its contract rather than restated.
     // `sideEffects` is the containment class: omission resolves to `workspace`, so
     // a value this editor let through unchecked would be a privilege decision made
-    // by a typo.
+    // by a typo. FR-R3-157 (T049) joins `onRetryCap` to that list for the same
+    // reason in a quieter key: an unrecognized outcome resolves the way an ABSENT
+    // one does, so a misspelling is not a broken phase — it is a phase that fails
+    // at its cap while its file says it should have carried on.
     for (const [field, levels] of [
       ['sideEffects', PHASE_SIDE_EFFECTS],
       ['evidencePolicy', PHASE_EVIDENCE_POLICIES],
-      ['hostVerification', PHASE_HOST_VERIFICATIONS]
+      ['hostVerification', PHASE_HOST_VERIFICATIONS],
+      ['onRetryCap', RETRY_CAP_OUTCOMES]
     ] as const) {
       const declared = obj[field];
       if (

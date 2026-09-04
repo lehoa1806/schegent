@@ -145,6 +145,11 @@
           "type": "PhaseResult[]"
         },
         {
+          "name": "degradedPhases",
+          "optional": true,
+          "type": "readonly DegradedPhaseEntry[]"
+        },
+        {
           "name": "lastError",
           "optional": false,
           "type": "SanitizedError | null"

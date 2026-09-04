@@ -15,6 +15,7 @@
   import TrustBanner from '../TrustBanner.svelte';
   import { mergeDetectedModels } from './model-catalog-state';
   import { authoredPhaseDocument } from './phase-catalog-state';
+  import RetryCapOutcomeEditor from './RetryCapOutcomeEditor.svelte';
   import type { MutablePhase, PhaseEditState } from './types';
 
   const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
@@ -453,6 +454,12 @@
                   readonly={!retryConditionsTrusted || selectedReadOnly}
                 />
               </div>
+              <RetryCapOutcomeEditor
+                {phase}
+                workspaceDefault={snapshot.generalSettings?.retryForceContinueOnCap}
+                readonly={!retryConditionsTrusted || selectedReadOnly}
+                onchange={(outcome) => onphasechange(index, { onRetryCap: outcome })}
+              />
             {/if}
             {#if phase.sourceErrors.length > 0}
               <div class="field-errors full-width" id={phaseErrorId(phase)} role="alert">
