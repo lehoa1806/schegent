@@ -279,7 +279,64 @@ const BUDGETS = [
   //
   // NO RESPONSIBILITY WAS ADDED. The excerpt is built by the compactor; the shell
   // logs a string it was handed. Headroom, not a split.
-  { path: 'src/controller/phase-runner.ts', max: 1_073 },
+  //
+  // Feature 194 (FR-001, FR-002, 2026-09-03) — 1073 → 1074 for `cause: 'cap_exhausted'` on
+  // the payload literal in `appendCapExhaustedPhaseEnd()`, beside the existing
+  // `terminationReason: 'cap-exhausted'`. One line: the published contract
+  // (`specs/010-pipeline-resilience/contracts/audit-events.md` §"phase-end —
+  // new payload.cause field") has enumerated this value since feature 010; the
+  // emitter never wrote it. No responsibility was added — the shell already
+  // owned this payload literal and gained one more property on it — so the fix
+  // is headroom, not a split. (The rest of this feature's cause fix lives in
+  // `src/audit/audit-payload.ts`'s `projectPhaseEnd`, a different file with its
+  // own budget, because that is where the field was actually being dropped.)
+  //
+  // Feature 194 (FR-010, T017, 2026-09-03) — 1074 → 1088 to surface `PhaseRetryEvaluator.
+  // maybeEmit()`'s return value (the `stalled` count it just computed) as
+  // `stalledCount` on `PhaseRunOutput`. Fourteen lines: a documented optional
+  // field on the interface, capturing the call's own return value into a
+  // local instead of discarding it, and one conditional spread on the
+  // returned object. No responsibility was added — the shell already called
+  // `maybeEmit()` and constructed this return object; it now reads a value
+  // that call already produced rather than a second computation elsewhere,
+  // which is the reasoning contract rule C3.3 exists to enforce.
+  //
+  // Feature 194 (FR-009, T019, 2026-09-03) — 1088 → 1096 for `evictStagnationTracker()`,
+  // an eight-line forwarding method to the `PhaseRetryEvaluator` instance
+  // this shell already owns and constructs. `RunDriver` holds only this
+  // `PhaseRunner`, not the evaluator, so it calls here when
+  // `PostPhaseDecision.evictStagnationTracker` is true. Same shape as
+  // `appendCapExhaustedPhaseEnd()` immediately below it: the shell forwards
+  // to a mechanism it does not implement.
+  //
+  // Feature 194 (T027, 2026-09-03) — 1096 → 1106 for the comment above
+  // `appendCapExhaustedPhaseEnd()`. Ten lines, all comment: the existing note
+  // had cited the contract and described `payload.cause` since feature 010
+  // while the code beneath it omitted the field, and the T005 discovery — that
+  // fixing the literal here was necessary but not sufficient, because
+  // `audit-payload.ts`'s `projectPhaseEnd()` also had to gain the field — is
+  // exactly the kind of gap a future reader of this comment alone would repeat.
+  //
+  // Feature 194 code review (2026-09-04) — 1106 → 1112. The `cause` property
+  // added above went in as the bare literal `'cap_exhausted'` on a payload
+  // typed `Record<string, unknown>`, while `projectPhaseEnd()` decides whether
+  // the field survives to disk by comparing it for identity with the exported
+  // `CAP_EXHAUSTED_CAUSE`. This shell is the field's SOLE producer, so those two
+  // were coupled by an unchecked string in the one place it mattered; the
+  // constant is now imported (no new import line — it joined the existing
+  // `audit-payload` specifier) and six lines of comment record why a literal
+  // here silently reproduces the Delta 1 defect the note above narrates.
+  //
+  // Feature 194 code review (SC-007, 2026-09-04) — 1112 → 1114. Two lines on
+  // `evictStagnationTracker()`: `phaseId` became optional, and omitting it now
+  // forwards to the evaluator's whole-Run eviction. The end-of-drive backstop in
+  // `run-driver.ts` was passing `run.currentPhase`, which by then names the phase
+  // the Run ADVANCED TO — `'done'` on a completed Run — so it deleted a pair
+  // nothing had written while an earlier looping phase's entry outlived the Run
+  // inside a window-scoped evaluator. Two forwarders would have cost more here
+  // and read no better: the optional argument is the same question ("which of
+  // this Run's phases?") with "all of them" as an answer.
+  { path: 'src/controller/phase-runner.ts', max: 1_114 },
   // FR-R3-052 / H-03 (2026-08-24) — 400 → 415 for the size check that was
   // missing. `stat()` was already called here and only `isFile()` was read, so
   // `readFile()` took a multi-GiB sidecar wholly into memory. The bound, the
@@ -294,7 +351,126 @@ const BUDGETS = [
   // `missing-sidecar`, and the note recording what the old comment was right
   // about and what it left out. Nothing to extract — it is one open.
   { path: 'src/controller/phase-sidecar-reader.ts', max: 439 },
-  { path: 'src/controller/phase-retry-evaluator.ts', max: 180 },
+  // Feature 194 (FR-006 through FR-009, 2026-09-03) — 180 → 296 for the stagnation
+  // tracker: a real, new stateful subsystem, not headroom on existing work.
+  // What the 116 lines buy: `StagnationEntry` and the nested
+  // `Map<runId, Map<phaseId, entry>>` (data-model.md §4's structure, chosen
+  // over a concatenated-string key so a separator collision can't merge two
+  // Runs' figures); `evictStagnationTracker()`, the public method
+  // `RunDriver` calls via `PhaseRunner` when `PostPhaseDecision.
+  // evictStagnationTracker` is true (T012, T019); the comparison call inside
+  // `maybeEmit()` that only touches the tracker when `decision === true`;
+  // `updateStagnationTracker()`, the AST-driven judged-set snapshot and
+  // count update; and the module-level `judgedSnapshotsEqual()`, which
+  // treats an appearing/disappearing judged identifier as a change (FR-009).
+  //
+  // WHY IT IS NOT CHEAPER. A single un-nested map keyed by a template string
+  // (`` `${runId}:${phaseId}` ``) would have cost fewer lines, and was
+  // rejected: `runId` and `phaseId` are both operator- or catalog-supplied,
+  // and a chosen separator is one more place two distinct keys could
+  // collide. The nested map is also the reason eviction is one call —
+  // `perPhase.delete(phaseId)` — rather than a key reconstruction at every
+  // call site.
+  //
+  // NO RESPONSIBILITY WAS ADDED TO `maybeEmit()` ITSELF. It gained one
+  // conditional call and one spread on the payload; the mechanism is a
+  // sibling private method, mirroring how this file already separates the
+  // parse/evaluate/append responsibilities it had before this feature.
+  //
+  // Feature 194 (SC-007, T012, 2026-09-03) — 296 → 311 for `retainedStagnationKeyCount`,
+  // a read-only getter summing the nested map's sizes, plus its docblock.
+  // Fifteen lines, and the spend is on being ASSERTABLE. SC-007 bounds memory
+  // — one retained figure set per looping pair, a 2-iteration run and a
+  // 100-iteration run alike, back to zero once all settle — and no emitted
+  // field can witness that: a per-iteration history would produce the
+  // identical `stalled` sequence, so the payload cannot tell the bounded
+  // implementation from the unbounded one. The alternative was a test reaching
+  // into `stagnationTrackers` directly, which would then fail on any internal
+  // reshape rather than on a behaviour change, and would make the private
+  // field's shape a de-facto public contract. No responsibility was added: the
+  // getter reads state this file already owns, returns a count rather than the
+  // map, and is called from nothing in `src/`.
+  //
+  // Feature 194 code review (FR-009, 2026-09-04) — 311 → 339 for two
+  // corrections to `updateStagnationTracker()`, both of which made it
+  // OVERSTATE, which FR-009 forbids outright:
+  //
+  //   * The judged-set snapshot is now built on `Object.create(null)`, not a
+  //     `{}` literal. The DSL lexer admits `__proto__` as a metric identifier
+  //     and the audit-log parser produces it as a real own key, so on a plain
+  //     literal the snapshot write invoked the inherited `__proto__` setter and
+  //     stored nothing — every snapshot compared equal to every other and the
+  //     count climbed while the judged figure moved on every iteration.
+  //   * An iteration in which NONE of the judged identifiers was measured now
+  //     evicts and returns absent instead of storing an empty snapshot. A
+  //     condition over absent figures is truthy at zero (`resolveTerm` reads a
+  //     missing identifier as 0), so that is the loop-to-cap case, and empty
+  //     snapshots compare equal to each other — the count grew across a gap in
+  //     which nothing was measured at all.
+  //
+  // Twenty-eight lines, and the majority are the two rationales: both defects
+  // are invisible at the call site and a later reader who "simplifies" either
+  // one back reintroduces an overstate that no emitted field can distinguish
+  // from a real stall. No responsibility was added — the method already owned
+  // the snapshot and the count.
+  //
+  // Feature 194 code review (2026-09-04) — 339 → 352. Thirteen lines, all of them
+  // the recorded justification for a reviewed finding that turned out to be a
+  // false positive: `maybeEmit()` does not reset the stagnation count on a FALSY
+  // iteration, which reads locally like a stale count surviving a move in the
+  // judged figures. It cannot, and the proof is in three other modules — a falsy
+  // retryCondition always advances (`phase.ts`), advance always sets
+  // `evictStagnationTracker` (`phase-sequencer.ts`), and the driver evicts before
+  // the phase can be re-entered (`run-driver.ts`). The argument is written at the
+  // retention it justifies rather than in a document, because the reader it has
+  // to reach is the one about to "simplify" the branch, and that reader is in this
+  // method. A defensive reset here would be a second spelling of the eviction
+  // that already happens, which is the change the note exists to prevent.
+  //
+  // Feature 194 code review (SC-007, FR-009, 2026-09-04) — 352 → 364, and the
+  // net hides two changes in opposite directions:
+  //
+  //   * +29 for `evictRunStagnationTrackers()` and a corrected docblock on the
+  //     per-phase form. SC-007's bound had no catch-all: the end-of-drive funnel
+  //     evicted ONE key read off `run.currentPhase`, which has advanced past the
+  //     phase that looped, so the bound rested entirely on every per-phase
+  //     eviction firing, and one missed advance retained a figure map for the
+  //     life of the window. The docblock also enumerated its callers as the
+  //     `PostPhaseDecision` path alone, which was true of one of the five.
+  //   * −17 for `judgedSnapshotsEqual()`, deleted. It hand-rolled record
+  //     equality — two `Object.keys` allocations, a length compare, a
+  //     `hasOwnProperty` per key — over two records whose key sets are both
+  //     drawn from `judged`, the array in scope four lines above the call. The
+  //     comparison is now `judged.every((n) => prior.metrics[n] === snapshot[n])`,
+  //     which judges presence and value together exactly as before (absent on
+  //     one side reads `undefined` and never equals a number; absent on both
+  //     reads equal, which is spec.md's "missing on both counts as unchanged").
+  //     Deleting it also retires an unstated precondition: as a generic-looking
+  //     module-level helper it was only correct for prototype-free records, so a
+  //     later caller handing it a `{}` literal would have compared a judged
+  //     `__proto__` through the inherited accessor — the defect the entry above
+  //     records fixing one line away from it.
+  //
+  // Feature 194 code review (2026-09-04, later the same day) — 364 → 363, a
+  // ratchet DOWN, which needs a note for the opposite reason the raises do. Two
+  // review findings moved this file after the entry above was written: one fix
+  // rewrote a comment longer and broke this budget outright, and the fix for
+  // that cut eleven lines of genuine duplication back out, landing at 363. The
+  // ceiling stayed at 364 and the file no longer touched it. A one-line margin
+  // is exactly the slack this table's convention exists to deny — it lets the
+  // next addition arrive with no note at all, which is the whole mechanism —
+  // so the ceiling follows the file down rather than banking the line.
+  // Lowering it costs nothing: the eleven lines were duplication of prose in
+  // two other files, so no future reader is owed them here.
+  //
+  // The ceiling still sits at the file, as all four entries in this table do
+  // (margins today: 0, 1, 0, 0). That is this gate's convention and not an
+  // oversight — it is a ratchet, so every addition to a budgeted file has to
+  // arrive with a note like this one. The sibling gate's `tightMargin` rule
+  // (FR-R3-119, tests/lint/source-loc-budget.test.ts) requires headroom instead;
+  // it governs that table's ceilings, not these, and granting slack here to
+  // satisfy a rule that does not apply would retire the ratchet for nothing.
+  { path: 'src/controller/phase-retry-evaluator.ts', max: 363 },
   // Raised from 100 on 2026-08-16. The truncation arm of `mapOutcome` stopped
   // returning 'failed' and now returns 'transient_error'; the budget is spent
   // on recording why, because a reader who assumed the old mapping was

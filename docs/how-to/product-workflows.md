@@ -109,7 +109,7 @@ Use **Schegent: Export Metadata-Only Audit** when the recipient should not recei
 2. Accept or replace the default filename `schegent-audit-v3.jsonl` in the workspace root.
 3. Save the JSON Lines file.
 
-The export includes only parseable schema-v3 entries. It retains the entry identity, timestamp, event type, phase, iteration, outcome, and schema version, plus only these payload keys when present: `exitCode`, `fileChangeCounts`, `metrics`, `omittedFileEvidenceCount`, `omittedToolEvidenceCount`, `outcome`, `terminationReason`, and `toolCategoryCounts`. It is a filtered export; the original audit log is unchanged.
+The export includes only parseable schema-v3 entries. It retains the entry identity, timestamp, event type, phase, iteration, outcome, and schema version, plus only these payload keys when present: `cause`, `exitCode`, `fileChangeCounts`, `metrics`, `omittedFileEvidenceCount`, `omittedToolEvidenceCount`, `outcome`, `stalled`, `terminationReason`, and `toolCategoryCounts`. `cause` and `stalled` are additionally value-checked, since the export reads the bytes on disk rather than what the current writer produces: on `phase-end` only the literal `cap_exhausted` survives, other event families keep their own `cause` vocabularies (admitted by shape, as a short lowercase token), `stalled` must be a positive whole number, and a rejected value exports as `null` rather than being dropped. It is a filtered export; the original audit log is unchanged.
 <!-- Source: package.json -->
 <!-- Source: src/commands/export-audit.ts -->
 <!-- Source: src/parser/audit-log-parser.ts -->

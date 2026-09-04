@@ -39,6 +39,7 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
     run: ReturnType<typeof vi.fn>;
     abort: ReturnType<typeof vi.fn>;
     appendCapExhaustedPhaseEnd: ReturnType<typeof vi.fn>;
+    evictStagnationTracker: ReturnType<typeof vi.fn>;
   };
   let onRunTerminalSpy: ReturnType<typeof vi.fn>;
   let deps: RunDriverDeps;
@@ -53,7 +54,8 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
     phaseRunnerMock = {
       run: vi.fn(),
       abort: vi.fn(),
-      appendCapExhaustedPhaseEnd: vi.fn().mockResolvedValue(undefined)
+      appendCapExhaustedPhaseEnd: vi.fn().mockResolvedValue(undefined),
+      evictStagnationTracker: vi.fn()
     };
     
     deps = {
@@ -527,6 +529,13 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
       expect(phaseRunnerMock.appendCapExhaustedPhaseEnd).toHaveBeenCalledOnce();
       expect(deps.emitOptionalPhaseFailureContinued).toHaveBeenCalledOnce();
       expect(deps.queue.pause).not.toHaveBeenCalled();
+      // 194, FR-009, data-model.md §4: a pause always evicts — the pending
+      // retry count restarts after resume rather than risking an overstate
+      // if it turns out this phase is never revisited (as here).
+      expect(phaseRunnerMock.evictStagnationTracker).toHaveBeenCalledWith(
+        runId,
+        'optional-audit'
+      );
     }
   );
 
@@ -664,5 +673,271 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
     expect(onRunTerminalSpy).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'failed' })
     );
+    // Regression (194, FR-009): this exit bypasses decideAfterPhase(), so
+    // nothing on the way out evicts the phase it parked on.
+    //
+    // 2026-09-04 review: this asserted the per-phase call
+    // `('run-audit-unavailable', 'plan')` that `failClosedForAuditEvidence()`
+    // used to make. That call is gone, and its removal was the fix rather than a
+    // regression: the same argument applied to every mid-drive exit, and each one
+    // answering it separately is how the enumeration came to be incomplete
+    // (the rethrow exit below was missed outright). `drive()` returning is the
+    // one funnel all of them pass, and a Run that has stopped driving cannot
+    // compare any of its phases again, so the eviction there is whole-Run —
+    // which subsumes this path's phase and every other phase it looped.
+    expect(phaseRunnerMock.evictStagnationTracker).toHaveBeenCalledWith(
+      'run-audit-unavailable'
+    );
+  });
+
+  it('evicts every phase of the run when canceled mid-loop (194)', async () => {
+    // Regression for a leak: the cancellation check at the top of drive()'s
+    // loop bypasses decideAfterPhase()/handlePostPhaseDecisionSideEffects()
+    // entirely, so without an eviction on the way out the tracker for whatever
+    // phase the run was parked on when canceled would outlive the run for
+    // the rest of the window's lifetime.
+    //
+    // 2026-09-04 review: `handleCancellation()`'s own per-phase call is gone, and
+    // this asserts the whole-Run eviction that covers it. The per-phase form was
+    // strictly weaker HERE, not merely redundant: it evicted `run.currentPhase`,
+    // which the mock below advances to 'implement' before the abort check fires,
+    // so a Run canceled while looping 'plan' would have left 'plan' retained if
+    // its advance had not happened to evict it first.
+    const runId = 'run-cancel-evict';
+    await store.setRun(DEFAULT_QUEUE_ID, {
+      id: runId,
+      taskId: 'task-cancel-evict',
+      featureId: 'task-cancel-evict',
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+      status: 'running',
+      currentPhase: 'plan',
+      currentIteration: 0,
+      pipeline: {
+        id: 'pipe-1',
+        name: 'Pipe',
+        phases: [
+          { id: 'plan', title: 'Plan', runner: 'claude', effort: 'normal' },
+          { id: 'implement', title: 'Implement', runner: 'claude', effort: 'normal' }
+        ]
+      },
+      phasesCompleted: [],
+      pendingRetry: false,
+      delayedRetryCount: 0,
+      manualPauseAt: null,
+      manualPauseCause: null,
+      phaseBreakpoints: [],
+      phaseOverrides: [],
+      resumeTargetPhaseId: null
+    } as any,
+      unfencedCommit('test-fixture')
+    );
+
+    phaseRunnerMock.run.mockImplementation(async () => {
+      // A cancellation arrives while 'plan' is in flight; the abort check
+      // fires on the loop's NEXT iteration, once 'plan' has already
+      // advanced the run to 'implement'.
+      driver.cancelActive();
+      return {
+        result: { kind: 'clean', auditEntry: null },
+        outcome: 'clean',
+        terminationReason: 'token',
+        stdoutSummary: '',
+        stderrSummary: '',
+        exitCode: 0,
+        warnings: [],
+        auditEntryId: null
+      } as PhaseRunOutput;
+    });
+
+    await expect(
+      driver.drive(store.getRun(DEFAULT_QUEUE_ID)!, 'cancel mid-loop')
+    ).resolves.toBeUndefined();
+
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
+    expect(run.status).toBe('canceled');
+    expect(phaseRunnerMock.run).toHaveBeenCalledOnce();
+    // 'plan' evicted normally on its own advance; the Run's whole subtree —
+    // 'implement' included, which was never dispatched — evicted on the way out.
+    expect(phaseRunnerMock.evictStagnationTracker).toHaveBeenCalledWith(runId, 'plan');
+    expect(phaseRunnerMock.evictStagnationTracker).toHaveBeenCalledWith(runId);
+  });
+
+  it('evicts the skipped phase\'s stagnation tracker on an operator override (194)', async () => {
+    // Regression for a leak: the skip-phase branch bypasses
+    // decideAfterPhase() entirely for the overridden phase, so without its
+    // own eviction call a tracker entry parked on that phase would outlive
+    // it — the run moves on and the phase is never revisited.
+    const runId = 'run-skip-evict';
+    await store.setRun(DEFAULT_QUEUE_ID, {
+      id: runId,
+      taskId: 'task-skip-evict',
+      featureId: 'task-skip-evict',
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+      status: 'running',
+      currentPhase: 'plan',
+      currentIteration: 0,
+      pipeline: {
+        id: 'pipe-1',
+        name: 'Pipe',
+        phases: [
+          { id: 'plan', title: 'Plan', runner: 'claude', effort: 'normal' },
+          { id: 'implement', title: 'Implement', runner: 'claude', effort: 'normal' }
+        ]
+      },
+      phasesCompleted: [],
+      pendingRetry: false,
+      delayedRetryCount: 0,
+      manualPauseAt: null,
+      manualPauseCause: null,
+      phaseBreakpoints: [],
+      phaseOverrides: [{ phaseId: 'plan', action: 'skipped' }],
+      resumeTargetPhaseId: null
+    } as any,
+      unfencedCommit('test-fixture')
+    );
+
+    phaseRunnerMock.run.mockResolvedValue({
+      result: { kind: 'clean', auditEntry: null },
+      outcome: 'clean',
+      terminationReason: 'token',
+      stdoutSummary: '',
+      stderrSummary: '',
+      exitCode: 0,
+      warnings: [],
+      auditEntryId: null
+    } as PhaseRunOutput);
+
+    await expect(
+      driver.drive(store.getRun(DEFAULT_QUEUE_ID)!, 'skip override')
+    ).resolves.toBeUndefined();
+
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
+    expect(run.status).toBe('completed');
+    // 'plan' was skipped by the override — evicted by the skip-phase
+    // branch's own call, never dispatched to the runner for that phase.
+    expect(phaseRunnerMock.evictStagnationTracker).toHaveBeenCalledWith(runId, 'plan');
+  });
+
+  it('evicts the stagnation tracker even when drive() exits by rethrowing (194)', async () => {
+    // The eviction sites were enumerated per exit, and the enumeration was
+    // incomplete: the catch block rethrows anything that is not an
+    // audit-evidence failure, straight past every one of them. The run's
+    // status is still 'running' and its id is stable across a resume, so the
+    // next attempt at the same phase compared fresh figures against a
+    // pre-failure snapshot and reported a count spanning the interruption —
+    // an overstate, which FR-009 forbids outright and C2.5 rules on directly
+    // ("a pause and resume resets the count"). Now evicted in the `finally`,
+    // which is the one funnel every exit passes through.
+    //
+    // 2026-09-04 review: and that eviction is whole-Run, which is what makes the
+    // "one funnel" claim true. It read `run.currentPhase` — the phase the Run had
+    // ADVANCED to, or 'done' on a completed run — so on the ordinary exit it
+    // deleted a key nothing had ever written, and the backstop every other site
+    // was justified against was a guaranteed no-op wherever it mattered.
+    const runId = 'run-rethrow-evict';
+    await store.setRun(DEFAULT_QUEUE_ID, {
+      id: runId,
+      taskId: 'task-rethrow-evict',
+      featureId: 'task-rethrow-evict',
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+      status: 'running',
+      currentPhase: 'plan',
+      currentIteration: 0,
+      pipeline: {
+        id: 'pipe-1',
+        name: 'Pipe',
+        phases: [{ id: 'plan', title: 'Plan', runner: 'claude', effort: 'normal' }]
+      },
+      phasesCompleted: [],
+      pendingRetry: false,
+      delayedRetryCount: 0,
+      manualPauseAt: null,
+      manualPauseCause: null,
+      phaseBreakpoints: [],
+      phaseOverrides: [],
+      resumeTargetPhaseId: null
+    } as any,
+      unfencedCommit('test-fixture')
+    );
+
+    // Not a RequiredEvidenceUnavailableError and evidence is available, so the
+    // catch rethrows rather than fail-closing.
+    phaseRunnerMock.run.mockRejectedValueOnce(new Error('adapter exploded'));
+
+    await expect(
+      driver.drive(store.getRun(DEFAULT_QUEUE_ID)!, 'rethrow mid-loop')
+    ).rejects.toThrow('adapter exploded');
+
+    expect(phaseRunnerMock.evictStagnationTracker).toHaveBeenCalledWith(runId);
+    // The phase this Run was on never reached a decision, so nothing named it —
+    // and nothing needed to. A `phaseId` here would be a claim about which phase
+    // leaked; the absence of one is the claim that no phase can.
+    expect(phaseRunnerMock.evictStagnationTracker.mock.calls).toEqual([[runId]]);
+  });
+
+  it("evicts the aborted phase's stagnation tracker when an override restarts it (194)", async () => {
+    // The override-abort branch `continue`s the loop without producing a
+    // PostPhaseDecision, so it reached none of the decision-mediated eviction
+    // sites. The invocation was killed mid-flight — its iteration was never
+    // compared — and the restarted phase's first comparison would resume the
+    // count across an interruption the operator caused.
+    const runId = 'run-override-abort-evict';
+    await store.setRun(DEFAULT_QUEUE_ID, {
+      id: runId,
+      taskId: 'task-override-abort',
+      featureId: 'task-override-abort',
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+      status: 'running',
+      currentPhase: 'plan',
+      currentIteration: 0,
+      pipeline: {
+        id: 'pipe-1',
+        name: 'Pipe',
+        phases: [
+          { id: 'plan', title: 'Plan', runner: 'claude', effort: 'normal' },
+          { id: 'implement', title: 'Implement', runner: 'claude', effort: 'normal' }
+        ]
+      },
+      phasesCompleted: [],
+      pendingRetry: false,
+      delayedRetryCount: 0,
+      manualPauseAt: null,
+      manualPauseCause: null,
+      phaseBreakpoints: [],
+      phaseOverrides: [],
+      resumeTargetPhaseId: null
+    } as any,
+      unfencedCommit('test-fixture')
+    );
+
+    // The key is consumed on the first hit, so 'plan' restarts exactly once.
+    driver.noteActivePhaseOverrideAbort(runId, 'plan');
+    phaseRunnerMock.run.mockResolvedValue({
+      result: { kind: 'clean', auditEntry: null },
+      outcome: 'clean',
+      terminationReason: 'token',
+      stdoutSummary: '',
+      stderrSummary: '',
+      exitCode: 0,
+      warnings: [],
+      auditEntryId: null
+    } as PhaseRunOutput);
+
+    await expect(
+      driver.drive(store.getRun(DEFAULT_QUEUE_ID)!, 'override abort restart')
+    ).resolves.toBeUndefined();
+
+    // Twice for 'plan': once for the aborted invocation, once when the restarted
+    // one advanced. One call is what this path produced before the fix, and a
+    // bare `toHaveBeenCalledWith` could not tell the two apart.
+    const planEvictions = phaseRunnerMock.evictStagnationTracker.mock.calls.filter(
+      (call: unknown[]) => call[1] === 'plan'
+    );
+    expect(planEvictions).toHaveLength(2);
+    expect(phaseRunnerMock.run).toHaveBeenCalledTimes(3);
   });
 });

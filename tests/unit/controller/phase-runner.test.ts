@@ -1116,6 +1116,68 @@ describe('PhaseRunner.run', () => {
       expect(payload.decision).toBe(false);
       expect(Array.from(payload.missingKeys ?? [])).toContain('open_questions');
     });
+
+    // Feature 194 (FR-010, T017, C3.3) — the hop from the evaluator's return
+    // value onto `PhaseRunOutput.stalledCount`. Without this, the count was
+    // asserted where it is computed and where it is rendered, but not on the
+    // field that carries it between the two: drop the spread and the audit
+    // payload keeps its `stalled` while the cap warning silently loses its
+    // clause. The assertion is that the two readings are the one number.
+    it('carries the evaluator stalled count on the run output (FR-010)', async () => {
+      cliRunner = makeFakeRunner(async () =>
+        makeRawOutput({ stdout: cleanStdoutWithMetric('open_questions: 2') })
+      );
+      runner = new PhaseRunner(cliRunner, new PromptBuilder(), auditWriter, new SanitizedLogger());
+      const phaseInputs = {
+        ...baseInputs,
+        phase: 'security-audit',
+        pipelineId: 'security',
+        phaseDef: customPhaseDef
+      };
+
+      // First comparison has no predecessor and emits nothing (C2.2).
+      const first = await runner.run({ ...phaseInputs, iteration: 1 });
+      expect(first.stalledCount).toBeUndefined();
+
+      const second = await runner.run({ ...phaseInputs, iteration: 2 });
+      expect(second.stalledCount).toBe(1);
+
+      const third = await runner.run({ ...phaseInputs, iteration: 3 });
+      expect(third.stalledCount).toBe(2);
+
+      const appendFn = auditWriter.append as ReturnType<typeof vi.fn>;
+      const retryPayloads = appendFn.mock.calls
+        .filter((c) => c[0].eventType === 'phase.retry_evaluated')
+        .map((c) => c[0].payload as Record<string, unknown>);
+      expect(retryPayloads).toHaveLength(3);
+      // One assertion over the sequence rather than three indexed reads: `'stalled' in p`
+      // distinguishes ABSENT from present-and-undefined, and an index past the end cannot
+      // report absence for an event nobody appended (FR-R3-110's noUncheckedIndexedAccess
+      // ratchet counts the unchecked `retryEvts[0][0]` form this replaced).
+      expect(retryPayloads.map((p) => ('stalled' in p ? p.stalled : 'absent'))).toEqual([
+        'absent',
+        second.stalledCount,
+        third.stalledCount
+      ]);
+    });
+
+    it('leaves stalledCount absent when the judged figures move (C2.4)', async () => {
+      let openQuestions = 2;
+      cliRunner = makeFakeRunner(async () =>
+        makeRawOutput({ stdout: cleanStdoutWithMetric(`open_questions: ${openQuestions}`) })
+      );
+      runner = new PhaseRunner(cliRunner, new PromptBuilder(), auditWriter, new SanitizedLogger());
+      const phaseInputs = {
+        ...baseInputs,
+        phase: 'security-audit',
+        pipelineId: 'security',
+        phaseDef: customPhaseDef
+      };
+      await runner.run({ ...phaseInputs, iteration: 1 });
+      openQuestions = 3;
+      const moved = await runner.run({ ...phaseInputs, iteration: 2 });
+      expect(moved.stalledCount).toBeUndefined();
+    });
   });
 
   describe('fatal-signature classification (010, T012)', () => {

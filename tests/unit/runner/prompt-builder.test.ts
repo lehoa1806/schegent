@@ -70,10 +70,14 @@ describe('PromptBuilder.build', () => {
   });
 
   it('instructs clarify to emit open_questions and resolved_questions metrics (010, T032, US2/SC-007)', () => {
-    // The metric requirement is authored, not compiled in. This sentence is the
-    // one `examples/speckit-new-feature.pipeline.yaml` carries on its clarify
-    // Phase; the builder's job is to render the definition's instruction whole,
-    // and the retryCondition that reads those metrics is on the same Phase.
+    // The metric requirement is authored, not compiled in. What is under test
+    // is the builder rendering a definition's instruction whole, so the string
+    // below is a REPRESENTATIVE excerpt rather than a copy of any file: the
+    // clarify Phase in `examples/speckit-new-feature.pipeline.yaml` carries a
+    // longer sentence, which feature 194 (T020, FR-012) extended again with the
+    // definition of `open_questions`, and that file is where the authoritative
+    // wording lives. Kept short on purpose — a verbatim copy would drift on
+    // every edit to the example and assert nothing more than these two lines do.
     const prompt = builder.build({
       phase: 'speckit-clarify',
       phaseDef: {

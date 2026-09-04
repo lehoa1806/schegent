@@ -4,7 +4,12 @@ import { resolve } from 'node:path';
 import { describe, it, expect } from 'vitest';
 
 import { PHASE_RETRY_CONDITION_MAX_LEN } from '../../../src/contracts/process-definitions';
-import { validate, evaluate, type Expression } from '../../../src/lib/retry-condition';
+import {
+  validate,
+  evaluate,
+  referencedIdentifiers,
+  type Expression
+} from '../../../src/lib/retry-condition';
 
 function parsedExpr(source: string): Expression {
   const result = validate(source);
@@ -337,5 +342,78 @@ describe('retry-condition DSL — the shipped corpus fits the bound (111, T693)'
     // is that the bound is a bound and not a fit — a corpus at 99% of 512 would
     // mean the next authored condition breaks the build.
     expect(longest.length).toBeLessThan(PHASE_RETRY_CONDITION_MAX_LEN / 2);
+  });
+});
+
+// Feature 194 — FR-007, FR-008, R3. The judged-figure set MUST be derived by walking
+// the parsed `Expression`, never by pattern-matching the source text, so it cannot
+// drift from what the condition actually tested. One case per node form in the
+// closed AST (`CompareExpr` on both `CompareTerm` sides, `LogicalExpr` on both sides,
+// `NotExpr` inner), plus deduplication and the identifier-free case.
+describe('retry-condition DSL — referencedIdentifiers() AST walk (194, T008)', () => {
+  it('yields the identifier on the left side of a compare', () => {
+    expect(referencedIdentifiers(parsedExpr('a > 0'))).toEqual(['a']);
+  });
+
+  it('yields the identifier on the right side of a compare', () => {
+    expect(referencedIdentifiers(parsedExpr('0 > a'))).toEqual(['a']);
+  });
+
+  it('yields both identifiers when a compare names one on each side', () => {
+    expect([...referencedIdentifiers(parsedExpr('a > b'))].sort()).toEqual(['a', 'b']);
+  });
+
+  it('yields identifiers from both sides of a logical and', () => {
+    expect([...referencedIdentifiers(parsedExpr('a > 0 and b > 0'))].sort()).toEqual(['a', 'b']);
+  });
+
+  it('yields identifiers from both sides of a logical or', () => {
+    expect([...referencedIdentifiers(parsedExpr('a > 0 or b > 0'))].sort()).toEqual(['a', 'b']);
+  });
+
+  it('yields the identifier inside a not', () => {
+    expect(referencedIdentifiers(parsedExpr('not a > 0'))).toEqual(['a']);
+  });
+
+  it('yields identifiers through nested logical and not combinations', () => {
+    expect(
+      [...referencedIdentifiers(parsedExpr('(a > 0 and not b > 0) or c > 0'))].sort()
+    ).toEqual(['a', 'b', 'c']);
+  });
+
+  it('deduplicates an identifier referenced more than once', () => {
+    expect(referencedIdentifiers(parsedExpr('a > 0 and a < 10'))).toEqual(['a']);
+  });
+
+  it('deduplicates an identifier compared to itself', () => {
+    expect(referencedIdentifiers(parsedExpr('a > a'))).toEqual(['a']);
+  });
+
+  it('yields an empty set for a condition with no identifiers', () => {
+    expect(referencedIdentifiers(parsedExpr('1 > 0'))).toEqual([]);
+  });
+
+  it('yields an empty, frozen array rather than undefined for the no-identifier case', () => {
+    const result = referencedIdentifiers(parsedExpr('1 > 0'));
+    expect(Array.isArray(result)).toBe(true);
+    expect(result.length).toBe(0);
+    // The "frozen" half of this test's own name. Without it the assertions above
+    // hold just as well for a plain `[...names]`, so dropping the `Object.freeze`
+    // in `referencedIdentifiers()` would leave the suite green while the judged
+    // set it hands `PhaseRetryEvaluator` — which retains it across iterations —
+    // became mutable by any later holder.
+    expect(Object.isFrozen(result)).toBe(true);
+  });
+
+  it('freezes the non-empty result too, not just the empty one', () => {
+    // The empty case above shares one `return` with this one, so it already
+    // guards the freeze. Asserted separately anyway because this is the case
+    // that matters: an empty array has nothing to mutate, and the judged set the
+    // evaluator holds across a loop is never the empty one.
+    const result = referencedIdentifiers(parsedExpr('a > 0 && b < 2'));
+    expect(result).toEqual(['a', 'b']);
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(() => (result as string[]).push('c')).toThrow(TypeError);
+    expect(result).toEqual(['a', 'b']);
   });
 });

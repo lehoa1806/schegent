@@ -84,7 +84,7 @@ beforeEach(async () => {
   store = new WorkspaceStateStore(memento);
   await store.initialize();
   queue = new QueueManager(store);
-  phaseRunner = { run: vi.fn() } as unknown as PhaseRunner;
+  phaseRunner = { run: vi.fn(), evictStagnationTracker: vi.fn() } as unknown as PhaseRunner;
   auditWriter = { append: vi.fn(async () => {}) };
   
   controller = new SchegentWorkflowController(

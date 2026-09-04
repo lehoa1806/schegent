@@ -73,7 +73,7 @@ function makeController(
 ): { controller: SchegentWorkflowController; store: WorkspaceStateStore } {
   const store = new WorkspaceStateStore(memento);
   const queue = new QueueManager(store);
-  const phaseRunner = { run: vi.fn() } as unknown as PhaseRunner;
+  const phaseRunner = { run: vi.fn(), evictStagnationTracker: vi.fn() } as unknown as PhaseRunner;
   const controller = new SchegentWorkflowController(
     phaseRunner,
     store,

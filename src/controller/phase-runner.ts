@@ -7,7 +7,7 @@ import { DEFAULT_BACKEND, type BackendRunnerKind } from '../contracts/backend-ki
 import type { PromptBuilder } from '../runner/prompt-builder';
 import type { ExecutionEnvelope } from '../contracts/run-request';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
-import { projectAuditPayload } from '../audit/audit-payload';
+import { CAP_EXHAUSTED_CAUSE, projectAuditPayload } from '../audit/audit-payload';
 import type { AuditEntry } from '../audit/audit-entry';
 import type { RawTranscriptWriter } from '../audit/raw-transcript-writer';
 import type { SanitizedLogger } from '../lib/logger';
@@ -174,6 +174,15 @@ export interface PhaseRunOutput {
    * persist on `WorkflowRun.lastCliSessionId`.
    */
   cliSessionId?: string;
+  /**
+   * Feature 194 (FR-010, contract C3.3) — the consecutive-unchanged count
+   * `PhaseRetryEvaluator.maybeEmit()` computed for this iteration, one
+   * optional numeric field. Threaded into `transition()`'s `stalledCount`
+   * (via `PhaseSequencer.decideAfterPhase()`) so the cap warning and the
+   * `phase.retry_evaluated` payload render the same number from the one
+   * computation. Absent under the same rule `stalled` is absent under.
+   */
+  stalledCount?: number;
 }
 
 export interface VerboseDiagnosticsAccessor {
@@ -827,7 +836,11 @@ export class PhaseRunner {
     // Feature 010 — FR-017: emit phase.retry_evaluated for every consulted
     // decision. Skipped when the parser outcome is malformed (the malformed
     // path already records the failure via phase-end + cause).
-    await this.retryEvaluator.maybeEmit({
+    // Feature 194 (T017) — the returned count is the SAME computation the
+    // payload's `stalled` field came from; carried on PhaseRunOutput so the
+    // cap warning renders it too, rather than a second, possibly-disagreeing
+    // computation downstream.
+    const stalledCount = await this.retryEvaluator.maybeEmit({
       phase: inputs.phase,
       phaseDef: inputs.phaseDef,
       pipelineId: inputs.pipelineId,
@@ -872,9 +885,9 @@ export class PhaseRunner {
         files_modified: audit.entry?.filesModified ?? [],
         commands_executed: audit.entry?.commandsExecuted ?? [],
         warnings: combinedWarnings.length > 0 ? combinedWarnings : undefined,
-        // FR-005 — redacted fatal-cause text; audit-log-writer is the
-        // single sanitization point (sanitize() runs there on the
-        // whole payload).
+        // FR-005 — redacted fatal-cause text. It no longer reaches disk: feature
+        // 194's `projectPhaseEnd()` narrows `payload.cause` to `cap_exhausted`, so
+        // the writer drops this member; the reason survives in terminationReason.
         ...(fatalCause ? { cause: fatalCause } : {})
       }
     );
@@ -889,7 +902,8 @@ export class PhaseRunner {
       auditEntryId: auditEntry.id,
       warnings: ('warnings' in result ? result.warnings : []) ?? [],
       phaseMessage,
-      cliSessionId: raw.cliSessionId
+      cliSessionId: raw.cliSessionId,
+      ...(stalledCount !== undefined ? { stalledCount } : {})
     };
   }
 
@@ -999,6 +1013,16 @@ export class PhaseRunner {
     };
   }
 
+  // Feature 194 (FR-009, T019) — forwards to the `PhaseRetryEvaluator`
+  // instance this runner owns. `RunDriver` holds only this `PhaseRunner`, not
+  // the evaluator directly, so it calls here when `PostPhaseDecision.
+  // evictStagnationTracker` is true. An omitted `phaseId` means the whole Run
+  // (SC-007): its `drive()` returned, so no phase of it can be compared again.
+  public evictStagnationTracker(runId: string, phaseId?: string): void {
+    if (phaseId === undefined) this.retryEvaluator.evictRunStagnationTrackers(runId);
+    else this.retryEvaluator.evictStagnationTracker(runId, phaseId);
+  }
+
   // Feature 010 — FR-010 cap-exhaustion path. The controller calls this when
   // the transition decision is `halt(failed, cap_exhausted)` so the audit log
   // carries a terminal `phase-end` with `outcome: 'failure'` and `payload.cause:
@@ -1006,6 +1030,16 @@ export class PhaseRunner {
   // §"phase-end — new payload.cause field"). The PhaseRunner already emitted
   // a success-shaped `phase-end` for the LLM-level outcome; this is the
   // controller-level addendum that records the cap-exhaustion verdict.
+  //
+  // This comment described the intended contract since feature 010, but the
+  // literal below omitted `cause` until feature 194 (T005) added it — and
+  // that alone was still not sufficient: `src/audit/audit-payload.ts`
+  // `projectPhaseEnd()` is what decides what actually reaches `audit.log`,
+  // and it had no `cause` field at all, so this function's payload literal
+  // could be entirely correct and the persisted record would still lack the
+  // field. Both are now fixed; see `projectPhaseEnd()`'s own docblock for why
+  // the fix there is scoped to the literal `cap_exhausted` value rather than
+  // a generic passthrough.
   public async appendCapExhaustedPhaseEnd(inputs: {
     runId: string;
     phase: Phase;
@@ -1019,6 +1053,13 @@ export class PhaseRunner {
       runner: inputs.phaseDef?.runner ?? this.runnerRegistry?.getGlobalDefault() ?? DEFAULT_BACKEND,
       outcome: 'failed',
       terminationReason: 'cap-exhausted',
+      // The constant, not the literal: `projectPhaseEnd()` gates this field on
+      // identity with it (`payload.cause === CAP_EXHAUSTED_CAUSE`), and this
+      // payload is typed `Record<string, unknown>`, so a literal here couples
+      // the sole producer to the projection allowlist through an unchecked
+      // string. Changing the constant's value would silently strip the field
+      // again — the Delta 1 defect this function's note above describes.
+      cause: CAP_EXHAUSTED_CAUSE,
       exitCode: null
     };
     if (inputs.phaseDef?.model) payload.model = inputs.phaseDef.model;

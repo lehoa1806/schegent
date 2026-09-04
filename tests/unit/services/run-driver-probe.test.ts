@@ -9,7 +9,7 @@ describe('RunDriver Probing (Feature 074)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     deps = {
-      runner: { run: vi.fn().mockResolvedValue({
+      runner: { evictStagnationTracker: vi.fn(), run: vi.fn().mockResolvedValue({
         result: { kind: 'clean', auditEntry: null },
         outcome: 'clean',
         terminationReason: 'token',

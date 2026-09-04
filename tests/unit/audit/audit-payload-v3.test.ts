@@ -118,6 +118,141 @@ describe('audit payload schema v3', () => {
   });
 });
 
+describe('phase-end payload.cause redaction (feature 194, FR-001–FR-004)', () => {
+  // projectPhaseEnd() gates `cause` with `payload.cause === 'cap_exhausted' ?
+  // 'cap_exhausted' : undefined` specifically so CLI-derived fatal-signature
+  // text (the vocabulary's other, free-form member) never reaches the
+  // persisted record — see that function's own docblock in
+  // src/audit/audit-payload.ts. Every other `cause`-adjacent test in this
+  // suite exercises the field being absent to begin with; this is the one
+  // that proves a PRESENT, non-'cap_exhausted' value is actively stripped
+  // rather than passed through.
+  it('keeps the literal cap_exhausted cause', () => {
+    expect(projectAuditPayload('phase-end', {
+      outcome: 'failed',
+      exitCode: null,
+      terminationReason: 'cap-exhausted',
+      cause: 'cap_exhausted'
+    })).toMatchObject({ cause: 'cap_exhausted' });
+  });
+
+  it('strips a truthy, non-cap_exhausted cause (redacted fatal-signature text) instead of passing it through', () => {
+    const projected = projectAuditPayload('phase-end', {
+      outcome: 'failed',
+      exitCode: 1,
+      terminationReason: 'error',
+      cause: 'operator-configured-fatal-signature: leaked secret pattern'
+    });
+    expect(projected).not.toHaveProperty('cause');
+    expect(JSON.stringify(projected)).not.toContain('leaked secret pattern');
+  });
+
+  it('does not re-admit the stripped cause through terminationReason when the payload supplies none', () => {
+    // The assertion above used to hold partly because its record supplied its
+    // own `terminationReason`: the fallback chain read `payload.cause` raw, so
+    // the text stripped from `cause` reappeared under `terminationReason` for
+    // any payload that omitted it. Unreachable from the current emitters (all
+    // of which write both fields together) and therefore easy to leave, but it
+    // made the redaction conditional on the caller, and this function is the
+    // last gate before disk. The chain now reads the PROJECTED value.
+    const projected = projectAuditPayload('phase-end', {
+      outcome: 'failed',
+      exitCode: 1,
+      cause: 'operator-configured-fatal-signature: leaked secret pattern'
+    });
+    expect(projected).not.toHaveProperty('cause');
+    expect(JSON.stringify(projected)).not.toContain('leaked secret pattern');
+    // Falls back to the outcome, as it does for any payload with no reason.
+    expect(projected).toMatchObject({ terminationReason: 'failed' });
+  });
+
+  it('never spells a cap exhaustion into terminationReason (2026-09-04 review)', () => {
+    // This test previously asserted `terminationReason: 'cap_exhausted'` here,
+    // pinning a defect. `cause`'s literal is the UNDERSCORE form; the
+    // `terminationReason` vocabulary spells the same classification
+    // `cap-exhausted` (`phase-runner.ts`'s `appendCapExhaustedPhaseEnd()` writes
+    // it). So the `?? cause` fallback arm could only ever put a second spelling
+    // of one classification on the record, splitting the bucket for any consumer
+    // grouping on it — and it was unreachable for every live emitter, all of
+    // which write `terminationReason` unconditionally beside `cause`. The arm is
+    // gone; a payload that states only a cause falls back to the outcome, which
+    // is what the field already means when nothing stated a reason.
+    const projected = projectAuditPayload('phase-end', {
+      outcome: 'failed',
+      exitCode: null,
+      cause: 'cap_exhausted'
+    });
+    expect(projected).toMatchObject({ cause: 'cap_exhausted', terminationReason: 'failed' });
+    // The load-bearing half: neither spelling arrives by way of the fallback.
+    expect(projected).not.toMatchObject({ terminationReason: 'cap_exhausted' });
+    expect(projected).not.toMatchObject({ terminationReason: 'cap-exhausted' });
+  });
+
+  it('keeps an explicit terminationReason beside the surviving cause', () => {
+    // The pairing every live emitter writes: both fields, each in its own
+    // vocabulary, neither derived from the other.
+    expect(projectAuditPayload('phase-end', {
+      outcome: 'failed',
+      exitCode: null,
+      cause: 'cap_exhausted',
+      terminationReason: 'cap-exhausted'
+    })).toMatchObject({ cause: 'cap_exhausted', terminationReason: 'cap-exhausted' });
+  });
+
+  // C1.1: "the exact literal `cap_exhausted`. Underscored." The gate is
+  // `payload.cause === CAP_EXHAUSTED_CAUSE`, and the two tests above cannot
+  // tell strict equality from a loosened one — their reject case fails any
+  // plausible matcher. These pin the boundary, so a later
+  // `String(payload.cause).trim().toLowerCase()`-style "robustness" edit fails
+  // here instead of silently widening a vocabulary the contract closes.
+  for (const near of ['CAP_EXHAUSTED', 'Cap_Exhausted', 'cap-exhausted', ' cap_exhausted', 'cap_exhausted ']) {
+    it(`strips a near-miss cause ${JSON.stringify(near)} rather than normalising it`, () => {
+      expect(projectAuditPayload('phase-end', {
+        outcome: 'failed',
+        exitCode: 1,
+        terminationReason: 'error',
+        cause: near
+      })).not.toHaveProperty('cause');
+    });
+  }
+});
+
+describe('phase.retry_evaluated payload.stalled (feature 194, FR-006–FR-011)', () => {
+  // `phase.retry_evaluated` has NO bespoke branch in projectAuditPayload, so
+  // `stalled` reaches disk through the generic recursive projection — it
+  // survives only because the name is absent from OMITTED_KEYS. Nothing else
+  // pinned that: every other test in the feature asserts the RAW payload handed
+  // to `auditWriter.append()`, upstream of this function, so adding `stalled`
+  // to that set (it reads like a diagnostic, and the sibling `expression` on
+  // this very event type IS in it) would strip the field from disk with the
+  // whole feature still green. The same class of gap as the `cause` drop this
+  // feature exists to fix, one event type over.
+  it('survives the generic projection, while the sibling expression is stripped', () => {
+    const projected = projectAuditPayload('phase.retry_evaluated', {
+      expression: 'issues > 0',
+      decision: true,
+      stalled: 3
+    });
+    expect(projected).toMatchObject({ decision: true, stalled: 3 });
+    // The second half of this test's own name (2026-09-04 review). It asserted
+    // only the first: `toMatchObject` ignores unlisted keys, so the sibling it
+    // exists to contrast against was never checked, and this test would have
+    // passed just as green with the operator-authored expression on disk.
+    // `expression` is in OMITTED_KEYS because it is operator-authored text that
+    // AGENTS.md rule 15 keeps out of every sink; `stalled` is an integer this
+    // code computed. Pinning the pair is what says the difference is deliberate.
+    expect(projected).not.toHaveProperty('expression');
+  });
+
+  it('keeps an absent stalled absent — absence and zero mean different things (C2.1)', () => {
+    const projected = projectAuditPayload('phase.retry_evaluated', {
+      decision: true,
+      missingKeys: ['issues']
+    });
+    expect(projected).not.toHaveProperty('stalled');
+  });
+});
+
 describe('phase-end warning vocabulary', () => {
   // Pinned deliberately. Every member must be a code-resident literal with
   // no interpolated content; adding one that splices in model output, a CLI

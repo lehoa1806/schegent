@@ -61,7 +61,8 @@ describe('RunDriver backend-scoped sessions', () => {
       runner: {
         run: vi.fn()
           .mockResolvedValueOnce(cleanOutput('session-from-first'))
-          .mockResolvedValueOnce(cleanOutput('session-from-second'))
+          .mockResolvedValueOnce(cleanOutput('session-from-second')),
+        evictStagnationTracker: vi.fn()
       },
       // Feature 093 (T039/T040) — the driver resolves the persisted snapshot by
       // the Run's own Task instead of reading the one ambient slot. This

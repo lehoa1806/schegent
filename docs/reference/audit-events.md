@@ -70,11 +70,33 @@ exhaustive classifier test pins every current literal to one scope.
 
 The writer does not persist arbitrary emitter objects verbatim. It first runs
 the event payload through `projectAuditPayload`, then applies the shared record
-sanitizer. Event-specific projectors reduce sensitive evidence to bounded
+sanitizer. `projectAuditPayload` dispatches on event type, so an event-specific
+projector runs for that type alone and every other event takes the generic path
+described below. Event-specific projectors reduce sensitive evidence to bounded
 metadata: for example, `phase-end` turns file lists into created/modified/deleted
 counts, and `cli-invocation` keeps runner, operation, permission mode, model and
 effort identifiers, continuation flags, and a diagnostics flag rather than the
 spawned command.
+
+Two classification fields are worth naming, because both are narrowed rather
+than passed through (feature 194):
+
+- **`phase-end.cause`** — a closed vocabulary of exactly one member,
+  `cap_exhausted`, written when a phase's `retryCondition` was still truthy at
+  its iteration cap. `projectPhaseEnd()` admits that literal and nothing else, so
+  the redacted fatal-signature text the emitter puts on the same field for a
+  fatal-signature failure — which includes operator-added patterns — never
+  reaches disk; the reason survives in `terminationReason`. The field is **absent**
+  on every other failure, and that absence is what distinguishes a cap exhaustion
+  from a generic failure, so it is never filled in with a placeholder.
+- **`phase.retry_evaluated.stalled`** — a positive integer counting consecutive
+  comparisons in which every metric the condition references held its value.
+  There is no bespoke projector for this event type; the field reaches disk
+  through the generic projection, and survives only because the name is not in
+  the omitted-key set — unlike its sibling `expression`, the operator-authored
+  condition text, which is. Absence means the rule did not apply and is never
+  a `0`. The full presence rule is published in
+  `specs/010-pipeline-resilience/contracts/audit-events.md`.
 
 <!-- Source: src/audit/audit-payload.ts -->
 <!-- Source: tests/unit/audit/audit-payload-v3.test.ts -->
@@ -144,10 +166,29 @@ instead of creating an empty file.
 Run `Schegent: Export Metadata-Only Audit` (`schegent.exportAuditLog`) to choose
 a JSONL destination. Export includes only valid schema-v3 records and keeps the
 envelope's identity, timestamp, event type, phase, iteration, outcome, and
-schema version. Payload export is restricted to counts and structural result
-fields such as `metrics`, `fileChangeCounts`, `toolCategoryCounts`, `exitCode`,
-`terminationReason`, and omitted-evidence counts. It deliberately omits
-`runId`, `correlationId`, and all other payload fields.
+schema version. Payload export is restricted to counts, structural result
+fields, and a small set of closed-vocabulary classification strings — `metrics`,
+`fileChangeCounts`, `toolCategoryCounts`, `exitCode`, `terminationReason`,
+omitted-evidence counts, `outcome`, `cause` and `stalled` (both feature 194).
+
+The two feature-194 fields are value-checked by `createCountsOnlyAuditExport()` in
+`src/commands/export-audit.ts`, not merely allowlisted, because that function parses
+whatever bytes are on disk rather than what the current writer produces — an entry a
+pre-feature-194 build wrote, or a future regression, can carry anything. The check is
+scoped by `(eventType, field)`: on `phase-end` only the literal `cap_exhausted` survives,
+matching the write path, where `projectPhaseEnd()` narrows the field to that one value and
+so keeps CLI-derived fatal-signature text out of `payload.cause`. Other event families
+carry their own `cause` vocabularies (`phase-breakpoint-cleared`, `task-reordered`,
+`monitor-rate-limited`, the backend-ping failures, the delayed-retry pauses), and those are
+admitted by shape — a short lowercase token — rather than re-enumerated in the export.
+`stalled` must be a positive whole number. **A rejected value exports as `null`, not as an
+absent field**: absence is load-bearing for both fields (a `phase-end` with no `cause` is a
+generic failure; an absent `stalled` means the stagnation rule did not apply), so silently
+dropping a value the guard disbelieves would rewrite a tamper signal into a meaningful
+reading.
+
+The export deliberately omits `runId`, `correlationId`, and every payload field not on this
+allowlist.
 
 <!-- Source: src/commands/export-audit.ts -->
 <!-- Source: tests/unit/commands/export-audit.test.ts -->

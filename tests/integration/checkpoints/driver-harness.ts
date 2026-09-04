@@ -277,7 +277,8 @@ export async function makeDriveHarness(): Promise<CheckpointDriveHarness> {
       return cleanOutput([]);
     }),
     abort: vi.fn(),
-    appendCapExhaustedPhaseEnd: vi.fn(async () => {})
+    appendCapExhaustedPhaseEnd: vi.fn(async () => {}),
+    evictStagnationTracker: vi.fn()
   };
 
   const depsFor = (queueId: string): RunDriverDeps =>

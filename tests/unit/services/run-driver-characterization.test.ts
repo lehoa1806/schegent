@@ -86,7 +86,8 @@ async function makeHarness(): Promise<Harness> {
   const phaseRunner = {
     run: vi.fn(),
     abort: vi.fn(),
-    appendCapExhaustedPhaseEnd: vi.fn().mockResolvedValue(undefined)
+    appendCapExhaustedPhaseEnd: vi.fn().mockResolvedValue(undefined),
+    evictStagnationTracker: vi.fn()
   };
   const checkpoints = { checkpoint: vi.fn().mockResolvedValue(undefined) };
 

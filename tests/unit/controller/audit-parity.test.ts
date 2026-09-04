@@ -120,7 +120,7 @@ beforeEach(async () => {
     callOrder.push(`run:${req.phase}`);
     return makeOutput();
   });
-  phaseRunner = { run: runSpy } as unknown as PhaseRunner;
+  phaseRunner = { run: runSpy, evictStagnationTracker: vi.fn() } as unknown as PhaseRunner;
   const historyAppend = vi.fn();
   historyAppend.mockImplementation(async () => {
     callOrder.push('history.append');

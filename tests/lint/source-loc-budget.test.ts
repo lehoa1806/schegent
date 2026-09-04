@@ -1272,8 +1272,30 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // `drive-loop-loc-budget.test.ts`), a skip-phase override (one inline
   // line; `decideBeforePhase()` has no extraction point to give it), and
   // audit-evidence-unavailable fail-closed (one line in the existing
-  // `failClosedForAuditEvidence()`). 1,330 measured at 1,294 actual restores
-  // the same order of headroom the prior raise did, for the same reason.
+  // `failClosedForAuditEvidence()`). 1,330 restores the same order of headroom
+  // the prior raise did, for the same reason.
+  //
+  // Feature 194 code review (2026-09-04) — no raise; a CORRECTION. The line
+  // above read "1,330 measured at 1,294 actual", and the file measured 1,303 by
+  // this gate's own `lineCount()` when that was written: a hand-written figure
+  // nothing recomputes, which is the rot this list's docblock says is the reason
+  // the measured half is no longer written here at all. It is struck rather than
+  // updated. The margin it was claiming to size is real but thin — 1,330 − 1,303
+  // = 27 against `tightMargin(1_330) = 26` — so FR-R3-119 passes by one line and
+  // the next two lines added to this file, by any feature, trip it.
+  //
+  // Every line figure in this note is `lineCount()`, this gate's own measure,
+  // which is `wc -l` PLUS ONE (it splits on newlines, so a trailing newline
+  // yields a final empty element). Named because the two measures differ by one
+  // at exactly the scale this margin is counted in: `wc -l` reports 1,302 for the
+  // same file `lineCount()` reports as 1,303, so a reader who checks the cheaper
+  // command reads the margin as 28 and the note as off by one. Two of the
+  // three eviction sites the raise above paid for are also gone: the fail-closed
+  // and cancellation calls were both inside `drive()`'s try, so the `finally`'s
+  // funnel already covered them, and that funnel now evicts the whole Run rather
+  // than one stale key. Deliberately NOT spent as a fourth raise in one
+  // uncommitted change — the file is at 1,303 and the next change here should
+  // reduce it or split it, not ratchet again.
   { path: 'src/services/run-driver.ts', maxLines: 1_330 },
   // FR-R3-128 — the extraction's destination is governed in the same change. An
   // extraction that shrinks one method and adds an ungoverned file has moved the

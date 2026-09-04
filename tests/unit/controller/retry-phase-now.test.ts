@@ -119,7 +119,7 @@ beforeEach(async () => {
   notifier = makeNotifier();
   lock = makeLock();
   runSpy = vi.fn();
-  phaseRunner = { run: runSpy } as unknown as PhaseRunner;
+  phaseRunner = { run: runSpy, evictStagnationTracker: vi.fn() } as unknown as PhaseRunner;
   const auditAppend = vi.fn();
   auditAppend.mockImplementation(async (entry: Record<string, unknown>) => ({
     id: 'mock-audit-id',

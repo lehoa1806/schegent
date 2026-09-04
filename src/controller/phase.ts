@@ -1,5 +1,6 @@
 import { validate as parseRetryCondition, evaluate as evalRetryCondition } from '../lib/retry-condition';
 import { PHASE_RETRY_CONDITION_MAX_LEN } from '../contracts/process-definitions';
+import { CAP_EXHAUSTED_CAUSE } from '../audit/audit-payload';
 
 /**
  * Prefix on the system-log line emitted when a phase is forced past its
@@ -87,6 +88,16 @@ export type TransitionInput = {
    * The phase field overrides it; absent on both sides means `false`.
    */
   forceContinueOnRetryCapDefault?: boolean;
+  /**
+   * Feature 194 (FR-010, contract C3.3) — the consecutive-unchanged-iterations
+   * count computed once by `PhaseRetryEvaluator` and surfaced on
+   * `PhaseRunOutput`. Threaded here so both cap warnings render the SAME
+   * number from the ONE computation, rather than a second one that could
+   * disagree with it. `undefined` when no count was computed (rule does not
+   * apply, or no prior comparable iteration exists) — a distinct state from
+   * `1`, which is a real count that simply does not clear the `> 1` threshold.
+   */
+  stalledCount?: number;
 };
 
 export type TransitionResult =
@@ -170,7 +181,8 @@ export function transition(input: TransitionInput): TransitionResult {
     pipeline,
     phaseDef,
     metrics,
-    forceContinueOnRetryCapDefault
+    forceContinueOnRetryCapDefault,
+    stalledCount
   } = input;
   const warnings: string[] = [];
 
@@ -223,16 +235,50 @@ export function transition(input: TransitionInput): TransitionResult {
     const truthy = evaluateRetryCondition(retrySource, metrics ?? {}, warnings);
     if (truthy) {
       if (iteration >= iterationCap) {
+        // Feature 194 (contract C3.1, C3.2) — threshold is strictly > 1. A count
+        // of exactly 1 is a real, computed count that simply does not clear it:
+        // the clause's presence always means "more than one consecutive
+        // comparison went nowhere", so its absence stays informative on its own.
+        //
+        // "comparisons", not "iterations" (C3.1a): C2.2 defines the value as
+        // comparisons and rules out the iteration reading, and n comparisons span
+        // n + 1 iterations. Rendering the same number under the wrong noun would
+        // report one fewer iteration than actually went nowhere; rendering n + 1
+        // would break C3.3's one-computation-two-renderings. The noun moved.
+        //
+        // Declared HERE, not at the top of `transition()`: this branch and the
+        // two warnings inside it are the clause's only readers, and every other
+        // return — a skip, a breakpoint pause, a terminal failure, an optional
+        // phase advancing, a loop under the cap — used to build and discard it.
+        const stagnationClause =
+          stalledCount !== undefined && stalledCount > 1
+            ? `; metrics unchanged across the last ${stalledCount} comparisons`
+            : '';
+        // The clause opens with `; `, which reads correctly appended to the
+        // terminal warning (it ends on `${phase}`) but not to the forced-continue
+        // one, whose last sentence ends in a full stop — that rendered
+        // `UNVERIFIED.; metrics unchanged …`. C3.4 forbids rewording either
+        // warning, so the stop MOVES to the end of the appended clause rather
+        // than the clause being reworded: the words on both sides are untouched,
+        // the clause is appended and not substituted, and the sentence keeps a
+        // terminator either way. An earlier draft dropped the stop instead, which
+        // left the stalled rendering ending mid-thought on `… comparisons` while
+        // claiming in this comment that it did not — the two renderings of one
+        // warning must not differ in punctuation.
+        //
         // Phase field wins over the workspace default; absent on both is `false`,
         // which is the pre-existing halt.
         const forceContinue =
           phaseDef?.forceContinueOnRetryCap ?? forceContinueOnRetryCapDefault ?? false;
         if (forceContinue) {
           const next = nextSuccessor(phase, pipeline);
+          // Feature 194 (contract C3.4) — the clause is APPENDED, never
+          // substituted: the existing text, including the UNVERIFIED
+          // declaration, is retained unchanged.
           warnings.push(
             `${FORCE_CONTINUE_NOTIFY_TAG} ${phase}: retryCondition still truthy at cap ` +
               `(${iterationCap}) — forced continue to ${next}. The condition was never ` +
-              'satisfied, so whatever it gates is UNVERIFIED.'
+              `satisfied, so whatever it gates is UNVERIFIED${stagnationClause}.`
           );
           return {
             kind: 'advance',
@@ -243,8 +289,10 @@ export function transition(input: TransitionInput): TransitionResult {
         }
         // FR-010 / SC-009: cap reached + truthy condition → terminal failure
         // with a redacted cause string distinct from the fatal-CLI cause.
-        warnings.push(`retryCondition still truthy at cap (${iterationCap}) on ${phase}`);
-        return { kind: 'halt', status: 'failed', warnings, cause: 'cap_exhausted' };
+        warnings.push(
+          `retryCondition still truthy at cap (${iterationCap}) on ${phase}${stagnationClause}`
+        );
+        return { kind: 'halt', status: 'failed', warnings, cause: CAP_EXHAUSTED_CAUSE };
       }
       return { kind: 'loop', nextPhase: phase, nextIteration: iteration + 1, warnings };
     }

@@ -30,9 +30,18 @@ schema-v3 rows.
 <!-- Source: src/commands/export-audit.ts -->
 
 The metadata-only export removes `runId`, `correlationId`, and all payload keys
-except `exitCode`, `fileChangeCounts`, `metrics`,
-`omittedFileEvidenceCount`, `omittedToolEvidenceCount`, `outcome`,
-`terminationReason`, and `toolCategoryCounts`. It retains the audit event ID,
+except `cause`, `exitCode`, `fileChangeCounts`, `metrics`,
+`omittedFileEvidenceCount`, `omittedToolEvidenceCount`, `outcome`, `stalled`,
+`terminationReason`, and `toolCategoryCounts`. `cause` and `stalled` are also
+value-checked on the way out, because the export reads whatever bytes are on disk
+rather than what the current writer produces. The check is scoped by event type:
+on `phase-end` only the literal `cap_exhausted` survives, while the other families
+that carry a `cause` — `phase-breakpoint-cleared`, `task-reordered`,
+`monitor-rate-limited`, the backend-ping failures, the delayed-retry pauses — keep
+their own vocabularies, admitted by shape as a short lowercase token. `stalled`
+must be a positive whole number. A rejected value exports as `null` rather than
+being dropped, so a field that was on disk never reads as one that was never
+recorded. It retains the audit event ID,
 timestamp, event type, phase, iteration, outcome, and schema version. Rows from
 other schema versions or with invalid envelopes are omitted.
 <!-- Source: src/commands/export-audit.ts -->

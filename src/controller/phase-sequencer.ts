@@ -44,6 +44,7 @@ import type { PhaseDef } from '../config/pipeline-config';
 import { transition, type TransitionResult } from './phase';
 import type { PhaseRunOutput } from './phase-runner';
 import { toDelayedRetryCause } from './rate-limit-backoff';
+import { CAP_EXHAUSTED_CAUSE } from '../audit/audit-payload';
 
 /** Pre-dispatch decision: skip the current phase or invoke the runner. */
 export type PrePhaseDecision =
@@ -59,12 +60,24 @@ export type PrePhaseDecision =
       readonly activePhaseDef: PhaseDef | undefined;
     };
 
-/** Post-dispatch decision: what the controller does with the runner's output. */
+/**
+ * Post-dispatch decision: what the controller does with the runner's output.
+ *
+ * Feature 194 (FR-009) — every arm carries `evictStagnationTracker`, and every
+ * arm but `advance-or-loop` types it as the literal `true` rather than
+ * `boolean`. The field was `boolean` throughout, which made `false` as
+ * type-valid as `true` on seven arms that have exactly one correct value: the
+ * compiler could not tell a copied-and-not-adjusted arm from a considered one,
+ * and a wrongly-`false` arm leaks a stagnation count into the next phase to
+ * enter, where it would be compared against figures it never described. The
+ * literal types put that mistake in reach of `tsc` instead of a reviewer.
+ */
 export type PostPhaseDecision =
   | {
       readonly kind: 'pause-breakpoint';
       readonly consumedPhaseId: string;
       readonly warnings: readonly string[];
+      readonly evictStagnationTracker: true;
     }
   | {
       readonly kind: 'pause-delayed-retry';
@@ -77,12 +90,14 @@ export type PostPhaseDecision =
       readonly rateLimitMessage: string | null;
       readonly phaseResult: PhaseResult;
       readonly warnings: readonly string[];
+      readonly evictStagnationTracker: true;
     }
   | {
       readonly kind: 'pause-rate-limit';
       readonly cause: string;
       readonly phaseResult: PhaseResult;
       readonly warnings: readonly string[];
+      readonly evictStagnationTracker: true;
     }
   | {
       readonly kind: 'fail';
@@ -92,29 +107,42 @@ export type PostPhaseDecision =
       readonly fatalCause: string | undefined;
       readonly capExhausted: boolean;
       readonly warnings: readonly string[];
+      readonly evictStagnationTracker: true;
     }
   | {
       readonly kind: 'pause-verify';
       readonly phaseResult: PhaseResult;
       readonly warnings: readonly string[];
+      readonly evictStagnationTracker: true;
     }
   | {
       readonly kind: 'pause-manual';
       readonly phaseResult: PhaseResult;
       readonly transition: TransitionResult;
       readonly warnings: readonly string[];
+      readonly evictStagnationTracker: true;
     }
   | {
       readonly kind: 'advance-or-loop';
       readonly phaseResult: PhaseResult;
       readonly transition: TransitionResult;
       readonly warnings: readonly string[];
+      // Feature 194 (FR-009, SC-007) — true for an 'advance' transition,
+      // false for a 'loop' transition. A loop is the one PostPhaseDecision
+      // outcome where the in-progress stagnation comparison must survive to
+      // the next iteration; every other kind ends this phase's current loop
+      // (or never had one), so the tracker entry for it has nothing left to
+      // compare against and must not outlive the phase that populated it. This
+      // is the one arm whose value is computed, so it is the one arm typed
+      // `boolean`; see the union head for why the others are not.
+      readonly evictStagnationTracker: boolean;
     }
   | {
       readonly kind: 'break-unexpected';
       readonly phaseResult: PhaseResult;
       readonly transition: TransitionResult;
       readonly warnings: readonly string[];
+      readonly evictStagnationTracker: true;
     };
 
 export interface PrePhaseInputs {
@@ -264,7 +292,8 @@ export class PhaseSequencer {
       return {
         kind: 'pause-breakpoint',
         consumedPhaseId: run.currentPhase,
-        warnings: output.warnings
+        warnings: output.warnings,
+        evictStagnationTracker: true
       };
     }
 
@@ -293,7 +322,12 @@ export class PhaseSequencer {
       ...(auditMetrics ? { metrics: auditMetrics } : {}),
       ...(forceContinueOnRetryCapDefault !== undefined
         ? { forceContinueOnRetryCapDefault }
-        : {})
+        : {}),
+      // Feature 194 (FR-010, C3.3) — the same count `PhaseRetryEvaluator`
+      // computed for this iteration's `phase.retry_evaluated` record, so the
+      // cap warning renders the identical number rather than a second
+      // computation of it.
+      ...(output.stalledCount !== undefined ? { stalledCount: output.stalledCount } : {})
     });
     const warnings = [...output.warnings, ...decision.warnings];
 
@@ -315,20 +349,31 @@ export class PhaseSequencer {
           resetsAtMs,
           rateLimitMessage,
           phaseResult,
-          warnings
+          warnings,
+          // Feature 194 (FR-009, data-model.md §4) — a pause always evicts,
+          // rate-limit/transient-error included: the Session 2026-09-03
+          // clarification is explicit that the count restarts after ANY
+          // resume, understating rather than risking an overstate.
+          evictStagnationTracker: true
         };
       }
       const cause =
         output.result.kind === 'rate_limited' ? output.result.cause : 'rate-limit';
-      return { kind: 'pause-rate-limit', cause, phaseResult, warnings };
+      return {
+        kind: 'pause-rate-limit',
+        cause,
+        phaseResult,
+        warnings,
+        evictStagnationTracker: true
+      };
     }
 
     if (decision.kind === 'halt' && decision.status === 'failed') {
       const fatalCause =
         output.result.kind === 'malformed' ? output.result.fatalCause : undefined;
       const baseMessage =
-        decision.cause === 'cap_exhausted'
-          ? 'cap_exhausted'
+        decision.cause === CAP_EXHAUSTED_CAUSE
+          ? CAP_EXHAUSTED_CAUSE
           : fatalCause ?? (output.warnings.join('; ').slice(0, 240) || 'phase failed');
       return {
         kind: 'fail',
@@ -336,24 +381,45 @@ export class PhaseSequencer {
         baseMessage,
         decisionCause: decision.cause,
         fatalCause,
-        capExhausted: decision.cause === 'cap_exhausted',
-        warnings
+        capExhausted: decision.cause === CAP_EXHAUSTED_CAUSE,
+        warnings,
+        evictStagnationTracker: true
       };
     }
 
     if (VERIFY_PHASE_IDS.has(run.currentPhase) && output.outcome !== 'clean') {
-      return { kind: 'pause-verify', phaseResult, warnings };
+      return { kind: 'pause-verify', phaseResult, warnings, evictStagnationTracker: true };
     }
 
     if (decision.kind !== 'advance' && decision.kind !== 'loop') {
-      return { kind: 'break-unexpected', phaseResult, transition: decision, warnings };
+      return {
+        kind: 'break-unexpected',
+        phaseResult,
+        transition: decision,
+        warnings,
+        evictStagnationTracker: true
+      };
     }
 
     if (latestManualPauseAt !== null) {
-      return { kind: 'pause-manual', phaseResult, transition: decision, warnings };
+      return {
+        kind: 'pause-manual',
+        phaseResult,
+        transition: decision,
+        warnings,
+        evictStagnationTracker: true
+      };
     }
 
-    return { kind: 'advance-or-loop', phaseResult, transition: decision, warnings };
+    // Feature 194 (FR-009, SC-007) — evict on advance (this phase's loop, if
+    // any, is over); do not evict on loop (the same comparison continues).
+    return {
+      kind: 'advance-or-loop',
+      phaseResult,
+      transition: decision,
+      warnings,
+      evictStagnationTracker: decision.kind === 'advance'
+    };
   }
 }
 

@@ -19,6 +19,18 @@ export const AUDIT_PAYLOAD_MAX_ARRAY_LENGTH = 100;
  */
 export const AUDIT_PAYLOAD_TRUNCATION_MARKER = '...';
 
+/**
+ * Feature 194 — the one code-resident, safe member of `payload.cause`'s
+ * two-member published vocabulary (`specs/010-pipeline-resilience/contracts/
+ * audit-events.md` §"phase-end — new payload.cause field"). The other member
+ * is CLI-derived fatal-signature text, deliberately excluded — see
+ * `projectPhaseEnd()` below. Exported so every consumer that needs to
+ * recognize "the safe cause value" (this file's own projection, and
+ * `src/commands/export-audit.ts`'s counts-only export) compares against the
+ * same literal instead of each re-typing it.
+ */
+export const CAP_EXHAUSTED_CAUSE = 'cap_exhausted';
+
 export type AuditPermissionMode =
   | 'read-only'
   | 'workspace-write'
@@ -103,6 +115,18 @@ export interface PhaseEndPayloadV3 {
   readonly verdictBasis?: 'exit-code' | 'model-token';
   readonly exitCode: number | null;
   readonly terminationReason: string;
+  /**
+   * Feature 194 (FR-001 through FR-004) — `specs/010-pipeline-resilience/contracts/
+   * audit-events.md` §"phase-end — new payload.cause field". The published contract
+   * names a two-member vocabulary (a redacted fatal-signature string, or the literal
+   * `cap_exhausted`); only `cap_exhausted` is projected here. The fatal-signature
+   * member is CLI-derived text and is deliberately excluded from this payload for the
+   * same reason `RECORDABLE_PHASE_END_WARNINGS` excludes matched fatal signatures —
+   * see `projectPhaseEnd`. Absent means the consumer should read this as a generic
+   * phase failure. Distinct from `terminationReason`, which stays present on every
+   * record and is never widened by this field.
+   */
+  readonly cause?: typeof CAP_EXHAUSTED_CAUSE;
   readonly metrics: Readonly<Record<string, number>>;
   readonly fileChangeCounts: Readonly<{
     created: number;
@@ -178,6 +202,34 @@ export class AuditPayloadValidationError extends Error {
 }
 
 const KEY_RE = /^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/;
+
+// The one key the audit pipeline cannot carry, dropped rather than rejected.
+//
+// `AuditLogWriter.append()` writes only when the sanitized and the projected
+// payloads stringify identically, and reports any difference as `secret-detected`
+// — the one signal on the evidence surface an operator must be able to trust.
+// `SanitizedLogger.sanitizeValue()` builds its result with `out[key] = cleaned` on
+// a `{}` literal, and for this name alone that invokes `Object.prototype`'s
+// inherited SETTER instead of defining a property, silently discarding a number.
+// So a projection that emits this key makes the two sides disagree on every such
+// payload, and turns an ordinary metric into a run-ending false secret alarm.
+//
+// DROPPED, not rejected, and the distinction is the whole point: throwing
+// `invalid-key` here would trade a false `secret-detected` for an equally fatal
+// `invalid-metric-key`, and the run dies either way. Dropping is the only
+// disposition under which the two sides agree and the append succeeds.
+//
+// Safe only because `RESERVED_METRIC_KEYS` drops the same name at the parser, so
+// it can never become a judged figure and no `stalled` count is ever computed
+// from a metric this projection omits. Removing either half reopens the defect —
+// removing this one revives the crash, removing that one lets `stalled` be
+// persisted beside a `metrics` object its own figure has vanished from.
+//
+// `__proto__` is the only name with this problem: every other inherited
+// `Object.prototype` member (`constructor`, `toString`, `valueOf`, …) is a data
+// property, so a plain assignment shadows it with an own property and both sides
+// already agree.
+const PROTOTYPE_SETTER_KEY = '__proto__';
 const PATH_OR_ENDPOINT_RE = /(?:^~?[\\/]|^[A-Za-z]:[\\/]|[a-z][a-z0-9+.-]*:\/\/|[\\/](?:Users|home|var|tmp|private|workspace|workspaces)[\\/])/i;
 const OMITTED_KEYS = new Set([
   'args',
@@ -261,13 +313,20 @@ function projectValue(value: unknown, depth: number): unknown {
       .map((item) => projectValue(item, depth + 1));
   }
   if (value && typeof value === 'object') {
-    const projected: Record<string, unknown> = {};
+    // `Object.fromEntries`, not `projected[key] = …` on a `{}` literal. The plain
+    // assignment is not merely different for `__proto__`, it is different for any
+    // future inherited accessor, and `fromEntries` uses CreateDataProperty so the
+    // construction cannot be steered by the prototype chain at all. `KEY_RE` admits
+    // `__proto__` (it is `[A-Za-z_]` then word characters), so that one name is
+    // skipped explicitly below — see `PROTOTYPE_SETTER_KEY` for why carrying it
+    // would abort the run with a false `secret-detected`.
+    const entries: [string, unknown][] = [];
     for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
       if (!KEY_RE.test(key)) throw new AuditPayloadValidationError('invalid-key');
-      if (OMITTED_KEYS.has(key) || child === undefined) continue;
-      projected[key] = projectValue(child, depth + 1);
+      if (OMITTED_KEYS.has(key) || key === PROTOTYPE_SETTER_KEY || child === undefined) continue;
+      entries.push([key, projectValue(child, depth + 1)]);
     }
-    return projected;
+    return Object.fromEntries(entries);
   }
   throw new AuditPayloadValidationError('unsupported-value');
 }
@@ -294,15 +353,21 @@ function countArray(value: unknown): number {
 
 function projectMetrics(value: unknown): Readonly<Record<string, number>> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return Object.freeze({});
-  const metrics: Record<string, number> = {};
+  // Entries then `Object.fromEntries`, and the `PROTOTYPE_SETTER_KEY` skip, both for
+  // the reasons `projectValue()`'s object branch gives. The skip precedes the value
+  // check on purpose: a `__proto__` figure is dropped whatever its value, so a
+  // non-numeric one cannot reach `invalid-metric-value` and turn a key this pipeline
+  // refuses to carry into a second way to abort the run.
+  const entries: [string, number][] = [];
   for (const [key, metric] of Object.entries(value as Record<string, unknown>)) {
     if (!KEY_RE.test(key)) throw new AuditPayloadValidationError('invalid-metric-key');
+    if (key === PROTOTYPE_SETTER_KEY) continue;
     if (typeof metric !== 'number' || !Number.isFinite(metric)) {
       throw new AuditPayloadValidationError('invalid-metric-value');
     }
-    metrics[key] = metric;
+    entries.push([key, metric]);
   }
-  return Object.freeze(metrics);
+  return Object.freeze(Object.fromEntries(entries));
 }
 
 function projectCliInvocation(payload: Record<string, unknown>): CliInvocationPayloadV3 {
@@ -452,14 +517,48 @@ function projectPhaseEnd(payload: Record<string, unknown>): PhaseEndPayloadV3 {
   const rawBasis = payload.verdictBasis;
   const verdictBasis =
     rawBasis === 'exit-code' || rawBasis === 'model-token' ? rawBasis : undefined;
+  // Feature 194 (FR-001 through FR-004) — `specs/010-pipeline-resilience/contracts/
+  // audit-events.md` §"phase-end — new payload.cause field" has specified this field, and
+  // its two-member vocabulary (a redacted fatal-signature string, or the literal
+  // `cap_exhausted`), since feature 010. Neither member ever reached the projected record:
+  // the emitter wrote `cause` on the raw payload, but this function had no field for it, so
+  // it was silently dropped before the audit log was ever written.
+  //
+  // This closes the gap for `cap_exhausted` ONLY — a fixed, code-resident literal with no
+  // CLI- or model-derived content. It deliberately does NOT become a passthrough for
+  // whatever string the emitter puts in `payload.cause`: the fatal-signature member is
+  // matched text from CLI stderr (see `phase-runner.ts` fatal-signature classification),
+  // and this file's own `RECORDABLE_PHASE_END_WARNINGS` docblock records the reason that
+  // kind of content is deliberately excluded from `phase-end` — "the runner's warning list
+  // also carries matched fatal signatures and parser messages that interpolate model
+  // output, and `phase-end` deliberately records neither." Persisting the fatal-signature
+  // text here would be the same leak by a different field. FR-004 requires this feature not
+  // to widen the field's value set; scoping the fix to the one safe, closed-vocabulary
+  // member is how that holds for the fatal-signature member too, rather than merely by
+  // omission.
+  const cause = payload.cause === CAP_EXHAUSTED_CAUSE ? CAP_EXHAUSTED_CAUSE : undefined;
   return Object.freeze({
     outcome,
     ...(verdictBasis !== undefined ? { verdictBasis } : {}),
     exitCode: payload.exitCode === null ? null : numberValue(payload.exitCode, 0),
+    // No `?? payload.cause` arm. It was there to reach a stated cause when
+    // `terminationReason` and `reason` were both absent, and it made this
+    // function's own redaction conditional on the caller: hand a payload with a
+    // fatal-signature `cause` and no `terminationReason`, and the text stripped
+    // one line above reappeared here under a different key. Reading the PROJECTED
+    // `cause` instead closed the leak and opened a smaller hole — the projected
+    // value is the underscore form `cap_exhausted`, while `terminationReason`'s
+    // vocabulary spells it `cap-exhausted`, so the arm could only ever write a
+    // second spelling of a classification consumers group on. Dropped outright:
+    // both live emitters write `terminationReason` unconditionally beside `cause`
+    // (`phase-runner.ts`'s ordinary path and its `appendCapExhaustedPhaseEnd()`),
+    // so no real record loses anything, and a hand-built payload carrying only
+    // a cause gets the outcome — what the field means when nothing stated one.
     terminationReason: boundedMetadataString(
-      payload.terminationReason ?? payload.reason ?? payload.cause,
+      payload.terminationReason ?? payload.reason,
       outcome
     ),
+    ...(cause !== undefined ? { cause } : {}),
     metrics: Object.freeze(legacyMetrics),
     fileChangeCounts: Object.freeze({ created, modified, deleted }),
     toolCategoryCounts: projectMetrics(payload.toolCategoryCounts),

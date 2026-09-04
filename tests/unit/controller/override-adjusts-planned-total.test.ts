@@ -95,7 +95,7 @@ beforeEach(async () => {
   await store.initialize();
   queue = new QueueManager(store);
   controller = new SchegentWorkflowController(
-    { run: vi.fn() } as unknown as PhaseRunner,
+    { run: vi.fn(), evictStagnationTracker: vi.fn() } as unknown as PhaseRunner,
     store,
     queue,
     { update: vi.fn(), dispose: vi.fn() } as unknown as SchegentStatusBar,

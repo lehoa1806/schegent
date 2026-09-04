@@ -44,6 +44,40 @@ const SIGNATURE = 'public async drive(';
  *        helper (extracted, not inlined here) rather than each hand-rolling
  *        an `if (result.ok === false) { this.deps.logger.warn(...) }` block —
  *        a net decrease even after adding the refusal check.
+ *   685  Feature 194 (FR-009, T019, 2026-09-03) — the `for (const w of
+ *        postDecision.warnings) { this.deps.logger.warn(w); }` loop and the
+ *        new stagnation-tracker eviction call both left for
+ *        `handlePostPhaseDecisionSideEffects()`, a private method outside
+ *        `drive()`. One call site replaced three lines of pre-existing code
+ *        plus what the new eviction check would otherwise have cost inline —
+ *        a real two-line decrement, not a comment trim, even though this
+ *        feature needed `drive()` to do one more thing.
+ *   684  Feature 194 (FR-009, 2026-09-03, same change) — the eviction wiring
+ *        above covers only the decideAfterPhase()-mediated exits; two more
+ *        (mid-loop cancellation, a skip-phase override) bypass it entirely
+ *        and need their own eviction call or the tracker for the phase they
+ *        left off at leaks for the rest of the window's lifetime. The
+ *        cancellation arm's whole body (persistTransition/emit/record, plus
+ *        the new eviction call) moved to `handleCancellation()`, a private
+ *        method outside `drive()` — replacing a 6-line inline block with a
+ *        4-line call, a net decrease even with the new call added. The
+ *        skip-phase arm's eviction call is the one line `decideBeforePhase()`
+ *        has no equivalent hook for, so it stays inline.
+ *   681  Feature 194 code review (FR-009, 2026-09-04) — the enumeration above
+ *        was still incomplete: a rethrown error from anywhere in the loop body
+ *        and the override-abort restart both exit without a
+ *        `PostPhaseDecision`, so neither reached any of the five eviction
+ *        calls, and a resumed run compared fresh figures against a
+ *        pre-interruption snapshot. The first fix is an extraction, so the
+ *        method shrank while gaining the coverage: the `finally`'s three
+ *        state-reset assignments moved into `endOfDriveReset()` (3 lines → 1),
+ *        and the unconditional eviction rides along there rather than being
+ *        enumerated per exit. The override-abort arm keeps its eviction inline
+ *        (+2 including the comment): extracting it too would have shrunk this
+ *        method by another 2 while pushing `run-driver.ts` itself to within 2
+ *        lines of its 1,330 ceiling, which the FR-R3-119 tight-ceiling gate in
+ *        source-loc-budget.test.ts reads as an ungoverned file. The whole-file
+ *        margin is the binding constraint on that arm, not this one.
  *
  * Next candidates, named so the next decrement does not start with a
  * re-measurement: the four pause arms — breakpoint, delayed-retry, rate-limit,
@@ -51,7 +85,7 @@ const SIGNATURE = 'public async drive(';
  * candidate for merging into the shared sequence: its audit emission order differs,
  * and unifying it is an observable change.
  */
-const DRIVE_MAX_LINES = 687;
+const DRIVE_MAX_LINES = 681;
 
 /** Lines from the signature to the closing brace, inclusive. */
 export function methodLineCount(source: string, signature: string): number {

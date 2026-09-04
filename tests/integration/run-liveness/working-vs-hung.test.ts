@@ -89,7 +89,7 @@ let monitor: ClaudeCliMonitor;
 
 function makeController(target: WorkspaceStateStore, q: QueueManager): SchegentWorkflowController {
   return new SchegentWorkflowController(
-    { run: async () => undefined } as unknown as PhaseRunner,
+    { run: async () => undefined, evictStagnationTracker: () => undefined } as unknown as PhaseRunner,
     target,
     q,
     { update: () => {}, dispose: () => {} } as unknown as SchegentStatusBar,

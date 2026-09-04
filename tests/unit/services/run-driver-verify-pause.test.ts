@@ -93,7 +93,8 @@ describe('RunDriver completes the verify pause (BUG-003)', () => {
           exitCode: 0,
           warnings: [],
           auditEntryId: null
-        })
+        }),
+        evictStagnationTracker: vi.fn()
       },
       store: { findRunByTask: vi.fn(() => null) },
       queue: {

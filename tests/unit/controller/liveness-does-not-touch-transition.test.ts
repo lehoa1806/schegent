@@ -97,7 +97,7 @@ beforeEach(async () => {
   queue = new QueueManager(store);
   auditWriter = { append: vi.fn(async () => {}) };
   controller = new SchegentWorkflowController(
-    { run: vi.fn() } as unknown as PhaseRunner,
+    { run: vi.fn(), evictStagnationTracker: vi.fn() } as unknown as PhaseRunner,
     store,
     queue,
     makeStatusBar(),

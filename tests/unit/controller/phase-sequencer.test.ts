@@ -41,6 +41,7 @@ import {
 } from '../../../src/controller/phase-sequencer';
 import type { PhaseOverride, WorkflowRun } from '../../../src/state/workflow-run';
 import type { PhaseRunOutput } from '../../../src/controller/phase-runner';
+import type { PhaseDef } from '../../../src/config/pipeline-config';
 
 function makeRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
   return {
@@ -463,6 +464,69 @@ describe('PhaseSequencer.decideAfterPhase', () => {
     }
   });
 
+  // Feature 194 (FR-010, C3.3) — the hop from `PhaseRunOutput.stalledCount` into
+  // `transition()`'s `stalledCount`. The evaluator's count and the rendered clause
+  // were each covered on their own side; the spread between them was not, so
+  // deleting it left every suite green while the operator warning lost its clause.
+  it('threads stalledCount into the cap warning clause', () => {
+    const run = makeRun({ currentPhase: 'speckit-implement' });
+    const output = makeOutput({
+      result: {
+        kind: 'clean',
+        auditEntry: { metrics: { remaining: 1 } } as never
+      },
+      outcome: 'clean',
+      stalledCount: 4
+    });
+    const decision = sequencer.decideAfterPhase({
+      run,
+      output,
+      iteration: 5,
+      iterationCap: 5,
+      activePhaseDef: {
+        id: 'speckit-implement',
+        retryCondition: 'remaining > 0'
+      } as PhaseDef,
+      latestManualPauseAt: run.manualPauseAt,
+      now: NOW
+    });
+    expect(decision.kind).toBe('fail');
+    expect(
+      decision.warnings.some((w) =>
+        w.includes('metrics unchanged across the last 4 comparisons')
+      )
+    ).toBe(true);
+  });
+
+  it('omits the clause when the output carries no stalledCount', () => {
+    // The negative half of the same hop: absence must not render as a count, and
+    // the base cap warning must survive intact (C3.2, C3.4).
+    const run = makeRun({ currentPhase: 'speckit-implement' });
+    const decision = sequencer.decideAfterPhase({
+      run,
+      output: makeOutput({
+        result: {
+          kind: 'clean',
+          auditEntry: { metrics: { remaining: 1 } } as never
+        },
+        outcome: 'clean'
+      }),
+      iteration: 5,
+      iterationCap: 5,
+      activePhaseDef: {
+        id: 'speckit-implement',
+        retryCondition: 'remaining > 0'
+      } as PhaseDef,
+      latestManualPauseAt: run.manualPauseAt,
+      now: NOW
+    });
+    expect(decision.kind).toBe('fail');
+    expect(decision.warnings.some((w) => w.includes('metrics unchanged'))).toBe(false);
+    expect(
+      decision.warnings.some((w) => w.includes('retryCondition still truthy at cap (5)'))
+    ).toBe(true);
+  });
+
   it('threads forceContinueOnRetryCapDefault through to the advance-or-loop branch', () => {
     // The workspace-setting default is resolved per phase decision by the
     // driver and passed down; the sequencer's only job is to hand it to
@@ -672,6 +736,231 @@ describe('PhaseSequencer.decideAfterPhase', () => {
         (w) => w.includes('iteration cap')
       )
     ).toBe(true);
+  });
+});
+
+// Feature 194 — FR-009, SC-007, T012. The stagnation tracker (owned by
+// `PhaseRetryEvaluator`, keyed by run + phase) must be dropped whenever this
+// phase's loop is no longer executing: on every halt (fail/pause-*) and on
+// advance, but NOT on loop — a loop is the one transition where the SAME
+// comparison must carry forward to the next iteration. `PhaseSequencer`
+// stays pure (no I/O, no state mutation — see the module docblock): it
+// computes the SIGNAL as data on the returned decision; the caller that
+// holds the actual `PhaseRetryEvaluator` instance (`RunDriver`) performs the
+// eviction when the signal is set.
+describe('PhaseSequencer.decideAfterPhase — stagnation tracker eviction signal (194, T012)', () => {
+  const sequencer = new PhaseSequencer();
+  const NOW = 1_700_000_003_000;
+
+  it('signals eviction on pause-breakpoint', () => {
+    const run = makeRun({ currentPhase: 'speckit-tasks' });
+    const output = makeOutput({ outcome: 'paused-at-breakpoint', warnings: [] });
+    const decision = sequencer.decideAfterPhase({
+      run,
+      output,
+      iteration: 1,
+      iterationCap: 5,
+      activePhaseDef: undefined,
+      latestManualPauseAt: run.manualPauseAt,
+      now: NOW
+    });
+    expect(decision.evictStagnationTracker).toBe(true);
+  });
+
+  it('signals eviction on pause-delayed-retry (rate_limited) — a pause always evicts (data-model.md §4)', () => {
+    const run = makeRun();
+    const output = makeOutput({
+      result: {
+        kind: 'rate_limited',
+        cause: 'rate_limit',
+        auditEntry: null,
+        resetsAtMs: 1_900_000_000_000,
+        rateLimitMessage: null
+      },
+      outcome: 'rate_limited'
+    });
+    const decision = sequencer.decideAfterPhase({
+      run,
+      output,
+      iteration: 1,
+      iterationCap: 5,
+      activePhaseDef: undefined,
+      latestManualPauseAt: run.manualPauseAt,
+      now: NOW
+    });
+    expect(decision.evictStagnationTracker).toBe(true);
+  });
+
+  it('signals eviction on pause-delayed-retry (transient_error) — a pause always evicts (data-model.md §4)', () => {
+    const run = makeRun();
+    const output = makeOutput({
+      result: { kind: 'transient_error', exitCode: 1, auditEntry: null },
+      outcome: 'transient_error'
+    });
+    const decision = sequencer.decideAfterPhase({
+      run,
+      output,
+      iteration: 1,
+      iterationCap: 5,
+      activePhaseDef: undefined,
+      latestManualPauseAt: run.manualPauseAt,
+      now: NOW
+    });
+    expect(decision.evictStagnationTracker).toBe(true);
+  });
+
+  it('signals eviction on fail (fatal)', () => {
+    const run = makeRun();
+    const output = makeOutput({
+      result: { kind: 'malformed', warnings: [], auditEntry: null },
+      outcome: 'failed'
+    });
+    const decision = sequencer.decideAfterPhase({
+      run,
+      output,
+      iteration: 1,
+      iterationCap: 5,
+      activePhaseDef: undefined,
+      latestManualPauseAt: run.manualPauseAt,
+      now: NOW
+    });
+    expect(decision.kind).toBe('fail');
+    expect(decision.evictStagnationTracker).toBe(true);
+  });
+
+  it('signals eviction on fail (cap_exhausted)', () => {
+    // Truthy retryCondition, iteration === iterationCap → cap_exhausted halt.
+    const run = makeRun({ currentPhase: 'speckit-implement' });
+    const output = makeOutput({
+      result: { kind: 'clean', auditEntry: { metrics: { remaining: 1 } } as never },
+      outcome: 'clean'
+    });
+    const decision = sequencer.decideAfterPhase({
+      run,
+      output,
+      iteration: 5,
+      iterationCap: 5,
+      activePhaseDef: {
+        id: 'speckit-implement',
+        retryCondition: 'remaining > 0'
+      } as PhaseDef,
+      latestManualPauseAt: run.manualPauseAt,
+      now: NOW
+    });
+    expect(decision.kind).toBe('fail');
+    if (decision.kind === 'fail') {
+      expect(decision.capExhausted).toBe(true);
+    }
+    expect(decision.evictStagnationTracker).toBe(true);
+  });
+
+  it('signals eviction on pause-verify — a pause always evicts (data-model.md §4)', () => {
+    const run = makeRun({ currentPhase: 'bugfix-verify-pre' });
+    const output = makeOutput({
+      result: { kind: 'clean', auditEntry: { metrics: {} } as never },
+      outcome: 'issues_remain'
+    });
+    const decision = sequencer.decideAfterPhase({
+      run,
+      output,
+      iteration: 1,
+      iterationCap: 5,
+      activePhaseDef: undefined,
+      latestManualPauseAt: run.manualPauseAt,
+      now: NOW
+    });
+    expect(decision.kind).toBe('pause-verify');
+    expect(decision.evictStagnationTracker).toBe(true);
+  });
+
+  it('signals eviction on pause-manual when the wrapped transition is advance', () => {
+    const run = makeRun({ currentPhase: 'speckit-plan', manualPauseAt: NOW });
+    const output = makeOutput({
+      result: { kind: 'clean', auditEntry: { metrics: {} } as never },
+      outcome: 'clean'
+    });
+    const decision = sequencer.decideAfterPhase({
+      run,
+      output,
+      iteration: 1,
+      iterationCap: 5,
+      activePhaseDef: undefined,
+      latestManualPauseAt: NOW,
+      now: NOW
+    });
+    expect(decision.kind).toBe('pause-manual');
+    if (decision.kind === 'pause-manual') {
+      expect(decision.transition.kind).toBe('advance');
+    }
+    expect(decision.evictStagnationTracker).toBe(true);
+  });
+
+  it('signals eviction on pause-manual when the wrapped transition is loop — a pause always evicts (data-model.md §4)', () => {
+    // speckit-clarify is a legacy LOOP_PHASES member (see isLoopPhase), so
+    // 'issues_remain' with no phaseDef/retryCondition still decides 'loop'.
+    const run = makeRun({ currentPhase: 'speckit-clarify', manualPauseAt: NOW });
+    const output = makeOutput({
+      result: { kind: 'remaining_issues', issues: [{ summary: 'x' }], auditEntry: null },
+      outcome: 'issues_remain'
+    });
+    const decision = sequencer.decideAfterPhase({
+      run,
+      output,
+      iteration: 1,
+      iterationCap: 5,
+      activePhaseDef: undefined,
+      latestManualPauseAt: NOW,
+      now: NOW
+    });
+    expect(decision.kind).toBe('pause-manual');
+    if (decision.kind === 'pause-manual') {
+      expect(decision.transition.kind).toBe('loop');
+    }
+    expect(decision.evictStagnationTracker).toBe(true);
+  });
+
+  it('signals eviction on advance-or-loop when the transition is advance', () => {
+    const run = makeRun({ currentPhase: 'speckit-plan' });
+    const output = makeOutput({
+      result: { kind: 'clean', auditEntry: { metrics: {} } as never },
+      outcome: 'clean'
+    });
+    const decision = sequencer.decideAfterPhase({
+      run,
+      output,
+      iteration: 1,
+      iterationCap: 5,
+      activePhaseDef: undefined,
+      latestManualPauseAt: run.manualPauseAt,
+      now: NOW
+    });
+    expect(decision.kind).toBe('advance-or-loop');
+    if (decision.kind === 'advance-or-loop') {
+      expect(decision.transition.kind).toBe('advance');
+    }
+    expect(decision.evictStagnationTracker).toBe(true);
+  });
+
+  it('does NOT signal eviction on advance-or-loop when the transition is loop — the running comparison must survive to the next iteration', () => {
+    const run = makeRun({ currentPhase: 'speckit-clarify' });
+    const output = makeOutput({
+      result: { kind: 'remaining_issues', issues: [{ summary: 'x' }], auditEntry: null },
+      outcome: 'issues_remain'
+    });
+    const decision = sequencer.decideAfterPhase({
+      run,
+      output,
+      iteration: 1,
+      iterationCap: 5,
+      activePhaseDef: undefined,
+      latestManualPauseAt: run.manualPauseAt,
+      now: NOW
+    });
+    expect(decision.kind).toBe('advance-or-loop');
+    if (decision.kind === 'advance-or-loop') {
+      expect(decision.transition.kind).toBe('loop');
+    }
+    expect(decision.evictStagnationTracker).toBe(false);
   });
 });
 

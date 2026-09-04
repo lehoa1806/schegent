@@ -150,7 +150,8 @@ async function completeRun(plan: FrozenRunPlan, runId: string) {
       auditEntryId: null
     } as unknown as PhaseRunOutput),
     abort: vi.fn(),
-    appendCapExhaustedPhaseEnd: vi.fn().mockResolvedValue(undefined)
+    appendCapExhaustedPhaseEnd: vi.fn().mockResolvedValue(undefined),
+    evictStagnationTracker: vi.fn()
   };
 
   const deps: RunDriverDeps = {

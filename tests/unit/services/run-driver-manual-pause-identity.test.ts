@@ -86,7 +86,8 @@ describe('RunDriver resolves the manual-pause snapshot by the Run own identity (
           exitCode: 0,
           warnings: [],
           auditEntryId: null
-        })
+        }),
+        evictStagnationTracker: vi.fn()
       },
       store: { findRunByTask: vi.fn(() => null),
         // FR-R3-077 — no record to judge, so the read side has nothing to decline.

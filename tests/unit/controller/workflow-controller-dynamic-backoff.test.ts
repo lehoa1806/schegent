@@ -108,7 +108,7 @@ beforeEach(async () => {
   await store.initialize();
   queue = new QueueManager(store);
   runSpy = vi.fn();
-  const phaseRunner: PhaseRunner = { run: runSpy } as unknown as PhaseRunner;
+  const phaseRunner: PhaseRunner = { run: runSpy, evictStagnationTracker: vi.fn() } as unknown as PhaseRunner;
   const auditAppend = vi.fn();
   auditAppend.mockImplementation(async (entry: Record<string, unknown>) => ({
     id: 'mock-audit-id',

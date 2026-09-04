@@ -7,7 +7,11 @@ import type { Notifier } from '../ui/notifications';
 import type { SanitizedLogger } from '../lib/logger';
 import type { WorkspaceLockManager } from '../state/lock';
 import type { IsContinueGate } from '../controller/is-continue-gate';
-import { PhaseSequencer, nextOverridesAfterSkip } from '../controller/phase-sequencer';
+import {
+  PhaseSequencer,
+  nextOverridesAfterSkip,
+  type PostPhaseDecision
+} from '../controller/phase-sequencer';
 import { terminalSettler } from './run-terminal-effects';
 import { emitTerminalOutcomeAudit } from './terminal-outcome-audit';
 import {
@@ -490,9 +494,7 @@ export class RunDriver {
       while (run.currentPhase !== 'done' && run.status === 'running') {
         this.assertAuditEvidenceAvailable();
         if (this.cancellationController!.signal.aborted) {
-          run = await this.deps.persistTransition(run, { ...run, status: 'canceled' });
-          await this.deps.emitRunEndedBreakpointAudit(run);
-          await this.deps.historyRecorder.record(run, description, 'canceled');
+          await this.handleCancellation(run, description, (canceled) => { run = canceled; });
           break;
         }
 
@@ -503,6 +505,7 @@ export class RunDriver {
         });
         if (preDecision.kind === 'skip-phase') {
           const { override: phaseOverride, skippedResult, transition: decision } = preDecision;
+          this.deps.runner.evictStagnationTracker(run.id, skippedResult.phase); // FR-009
           const nextPhaseDef = decision.kind === 'advance'
             ? run.pipeline?.phases.find((phase) => phase.id === decision.nextPhase)
             : undefined;
@@ -670,10 +673,9 @@ export class RunDriver {
             this.phaseOverrideAbortKey(run.id, run.currentPhase)
           )
         ) {
-          const latestRun = await this.latestSnapshotOf(run);
-          if (latestRun !== null) {
-            run = latestRun;
-          }
+          // FR-009: the killed iteration was never compared — see endOfDriveReset().
+          this.deps.runner.evictStagnationTracker(run.id, run.currentPhase);
+          run = (await this.latestSnapshotOf(run)) ?? run;
           this.cancellationController = new AbortController();
           continue;
         }
@@ -702,9 +704,7 @@ export class RunDriver {
           forceContinueOnRetryCapDefault:
             this.deps.options.getForceContinueOnRetryCap?.() ?? false
         });
-        for (const w of postDecision.warnings) {
-          this.deps.logger.warn(w);
-        }
+        this.handlePostPhaseDecisionSideEffects(run, postDecision);
 
         if (postDecision.kind === 'pause-breakpoint') {
           const consumedPhaseId = postDecision.consumedPhaseId;
@@ -1063,9 +1063,7 @@ export class RunDriver {
           );
         }
       }
-      this.isRunning = false;
-      this.cancellationController = null;
-      this.carriedIssues = [];
+      this.endOfDriveReset(run);
       // Feature 092 (T132, FR-033a) — this is the ordinary terminal funnel for
       // completed, failed, and canceled Runs, so it is where the execution
       // lease's tenure ends. Unconditional on the drain gates below: a Run that
@@ -1076,6 +1074,49 @@ export class RunDriver {
         this.deps.scheduleAutoDrain();
       }
     }
+  }
+
+  /**
+   * Feature 194 (FR-009, T019) — the two side effects `decideAfterPhase()`'s
+   * result drives that are not branch-specific: surfacing its warnings, and
+   * dropping this (run, phase) pair's stagnation tracker entry when the
+   * sequencer signals its loop (if any) is over. Extracted out of `drive()`
+   * itself — governed shrink-only by `tests/lint/drive-loop-loc-budget.
+   * test.ts` (FR-R3-128) — rather than inlined there.
+   */
+  private handlePostPhaseDecisionSideEffects(
+    run: WorkflowRun,
+    postDecision: PostPhaseDecision
+  ): void {
+    for (const w of postDecision.warnings) {
+      this.deps.logger.warn(w);
+    }
+    if (postDecision.evictStagnationTracker) {
+      // Same phaseId key `maybeEmit()` uses (`phaseDef?.id ?? phase`), and it
+      // cannot differ: `decideBeforePhase()` resolves the def by that id.
+      this.deps.runner.evictStagnationTracker(run.id, run.currentPhase);
+    }
+  }
+
+  // Feature 194 (FR-009, C2.5, SC-007): returning is the one funnel every
+  // `drive()` exit passes, so the eviction here is whole-Run — one key would be
+  // the wrong one, per `PhaseRetryEvaluator.evictRunStagnationTrackers()`.
+  // Rationale: tests/unit/services/run-driver-lifecycle-audit.test.ts.
+  private endOfDriveReset(run: WorkflowRun): void {
+    this.isRunning = false;
+    this.cancellationController = null;
+    this.carriedIssues = [];
+    this.deps.runner.evictStagnationTracker(run.id);
+  }
+
+  // No eviction here: inside `drive()`'s try, so `endOfDriveReset()` covers it.
+  private async handleCancellation(run: WorkflowRun, description: string, commit: (canceled: WorkflowRun) => void): Promise<void> {
+    const canceled = await this.deps.persistTransition(run, { ...run, status: 'canceled' });
+    // `commit` before the two writes below, as the inline block this replaced did: either can
+    // throw, and `drive()` left holding a `running` Run skips its terminal funnel (FR-033a).
+    commit(canceled);
+    await this.deps.emitRunEndedBreakpointAudit(canceled);
+    await this.deps.historyRecorder.record(canceled, description, 'canceled');
   }
 
   private assertAuditEvidenceAvailable(): void {

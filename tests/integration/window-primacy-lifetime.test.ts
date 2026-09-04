@@ -129,7 +129,8 @@ async function makeDriver(
       return CLEAN_PHASE_OUTPUT;
     }),
     abort: vi.fn(),
-    appendCapExhaustedPhaseEnd: vi.fn().mockResolvedValue(undefined)
+    appendCapExhaustedPhaseEnd: vi.fn().mockResolvedValue(undefined),
+    evictStagnationTracker: vi.fn()
   };
 
   const deps: RunDriverDeps = {

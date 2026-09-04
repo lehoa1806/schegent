@@ -456,4 +456,187 @@ describe('Phase enum and transitions', () => {
       expect(result.kind).toBe('advance');
     });
   });
+
+  // Feature 194 — FR-010, contracts/audit-payload-deltas.md Delta 3, C3.1-C3.4.
+  // `stalledCount` threads from the caller (PhaseSequencer.decideAfterPhase,
+  // sourced from PhaseRunOutput — T017/T018) into transition(), which appends
+  // the unchanged-iterations clause to BOTH cap warnings under the same
+  // threshold. Neither warning's existing text is reworded; the clause is
+  // appended, not substituted (C3.4).
+  describe('stagnation clause on cap warnings (194, T013)', () => {
+    const PHASE_DEF = {
+      id: 'security-audit',
+      retryCondition: 'open_questions > 0'
+    };
+    const CAP_EXHAUSTED = {
+      phase: 'security-audit',
+      outcome: 'clean' as const,
+      iteration: 5,
+      iterationCap: 5,
+      metrics: { open_questions: 3 }
+    };
+
+    it('appends the clause to the terminal warning when stalledCount > 1', () => {
+      const result = transition({ ...CAP_EXHAUSTED, phaseDef: PHASE_DEF, stalledCount: 4 });
+      expect(result.kind).toBe('halt');
+      expect(result.warnings).toContain(
+        'retryCondition still truthy at cap (5) on security-audit; metrics unchanged across the last 4 comparisons'
+      );
+    });
+
+    it('does NOT append the clause to the terminal warning when stalledCount is exactly 1 (C3.1)', () => {
+      const result = transition({ ...CAP_EXHAUSTED, phaseDef: PHASE_DEF, stalledCount: 1 });
+      expect(result.kind).toBe('halt');
+      expect(result.warnings).toContain('retryCondition still truthy at cap (5) on security-audit');
+      expect(result.warnings.join(' ')).not.toContain('metrics unchanged');
+    });
+
+    it('does NOT append the clause to the terminal warning when stalledCount is absent', () => {
+      const result = transition({ ...CAP_EXHAUSTED, phaseDef: PHASE_DEF });
+      expect(result.kind).toBe('halt');
+      expect(result.warnings).toContain('retryCondition still truthy at cap (5) on security-audit');
+      expect(result.warnings.join(' ')).not.toContain('metrics unchanged');
+    });
+
+    it('appends the clause to the forced-continue warning as one sentence, not "UNVERIFIED.; metrics unchanged" (C3.4)', () => {
+      // The clause opens with `; `, which is right for the terminal warning
+      // (it ends on the phase id) and wrong after this one's full stop. Only
+      // the rendered string showed it, and every assertion about that string
+      // used `toContain`, so both halves passed while the operator read a
+      // stray `.;`.
+      //
+      // 2026-09-04 review: this absorbed the separate C3.4 test that preceded
+      // it, which drove the identical input and then asserted `toContain
+      // ('UNVERIFIED')` and `toContain('metrics unchanged across the last 3
+      // comparisons')` — both strictly implied by the joined assertion below,
+      // which pins the punctuation BETWEEN them. Two tests, one of them unable
+      // to fail without the other failing first; its one distinct claim (the
+      // decision is still an advance) is kept here.
+      const stalled = transition({
+        ...CAP_EXHAUSTED,
+        phaseDef: { ...PHASE_DEF, forceContinueOnRetryCap: true },
+        stalledCount: 3
+      });
+      expect(stalled.kind).toBe('advance');
+      const stalledWarning = stalled.warnings.find((w) => w.startsWith(FORCE_CONTINUE_NOTIFY_TAG));
+      expect(stalledWarning).toBeDefined();
+      expect(stalledWarning).not.toContain('.;');
+      expect(stalledWarning).toContain('UNVERIFIED; metrics unchanged across the last 3 comparisons');
+      // …and it still ENDS in one. Dropping the stop rather than moving it past
+      // the clause left the stalled rendering terminatorless, which every
+      // `toContain` above passes over: only the tail says which of the two
+      // renderings the operator gets.
+      expect(stalledWarning?.endsWith('comparisons.')).toBe(true);
+      // The no-clause rendering's own full stop is asserted in the next test,
+      // beside the two inputs that produce it, rather than a third time here.
+    });
+
+    it('does NOT append the clause to the forced-continue warning when stalledCount is 1 or absent', () => {
+      // Both halves the name promises (2026-09-04 review). It drove only
+      // `stalledCount: 1`, so `absent` was asserted by the title alone — and the
+      // two reach the threshold check by different routes (`undefined > 1` is
+      // false by coercion, `1 > 1` by comparison), which is exactly the pair a
+      // `?? 0` or a truthiness rewrite would split.
+      const forceContinue = { ...PHASE_DEF, forceContinueOnRetryCap: true };
+      // Spread, not `stalledCount: undefined`. The absent case must genuinely
+      // omit the key — writing the property with an `undefined` value is a
+      // different input under `exactOptionalPropertyTypes`, and it is the shape
+      // this test is not about.
+      const cases: ReadonlyArray<[string, { stalledCount?: number }]> = [
+        ['1', { stalledCount: 1 }],
+        ['absent', {}]
+      ];
+      for (const [label, stalled] of cases) {
+        const result = transition({ ...CAP_EXHAUSTED, phaseDef: forceContinue, ...stalled });
+        expect(result.kind, label).toBe('advance');
+        const warning = result.warnings.find((w) => w.startsWith(FORCE_CONTINUE_NOTIFY_TAG));
+        expect(warning, label).toBeDefined();
+        expect(warning, label).not.toContain('metrics unchanged');
+        // The sentence still ends in its own full stop rather than trailing off
+        // where the clause would have started.
+        expect(warning?.endsWith('UNVERIFIED.'), label).toBe(true);
+      }
+    });
+
+    it('the same number in the warning is the number in stalledCount — one computation, two renderings (C3.3)', () => {
+      // The number is read off the input rather than written twice, so the
+      // assertion states C3.3 (one computation) instead of restating a literal
+      // that can drift from the clause it is meant to pin. An earlier draft
+      // hardcoded a phrasing the renderer never produced and asserted nothing.
+      const stalledCount = 7;
+      const result = transition({ ...CAP_EXHAUSTED, phaseDef: PHASE_DEF, stalledCount });
+      expect(result.kind).toBe('halt');
+      expect(result.warnings.join(' ')).toContain(
+        `metrics unchanged across the last ${stalledCount} comparisons`
+      );
+    });
+  });
+
+  // Feature 194 (FR-009) — a pinning test for the cross-file invariant that
+  // `PhaseRetryEvaluator`'s two error branches rest on, added by the 2026-09-04
+  // code review rather than by the feature.
+  //
+  // Those branches (`phase-retry-evaluator.ts`, parse error and evaluation
+  // error) deliberately do NOT evict the stagnation baseline, unlike the
+  // `malformed`/`transient_error`/`rate_limited` branch in the same method,
+  // which does. The asymmetry is correct only while an error here cannot
+  // produce a `loop`: FR-013 collapses both error kinds to falsy, a falsy
+  // condition advances, and every advance sets `evictStagnationTracker`. So the
+  // baseline is dropped one layer up instead of twice.
+  //
+  // Nothing tested that. If a later change made an error retry instead of
+  // advance — a plausible-sounding "don't advance past an unverified
+  // condition" — the sequencer would stop evicting, a comparison would span the
+  // iteration nobody compared, and `stalled` would OVERSTATE, the one direction
+  // FR-009 forbids. That change would break this test first, which is the point
+  // of it: the invariant lives in another file and had no guard.
+  describe('an errored retryCondition cannot loop (FR-013 pins FR-009, 194)', () => {
+    // Four shapes, not one, because the invariant has to hold for the whole
+    // class rather than for the one string a single test happens to pass. All
+    // four are PARSE errors — see the note below on why no case here is an
+    // evaluation error.
+    const ERROR_SOURCES: ReadonlyArray<[string, string]> = [
+      ['incomplete comparison', 'open_questions >'],
+      ['bare identifier, no comparison', 'open_questions'],
+      ['arithmetic, which the DSL has no operator for', 'open_questions + 1'],
+      ['unbalanced parentheses', '((']
+    ];
+
+    for (const [label, retryCondition] of ERROR_SOURCES) {
+      it(`treats "${retryCondition}" as falsy and advances, so the sequencer still evicts`, () => {
+        const result = transition({
+          phase: 'security-audit',
+          outcome: 'clean',
+          iteration: 1,
+          iterationCap: 5,
+          phaseDef: { id: 'security-audit', retryCondition },
+          // A value that would make a WORKING condition truthy, so each case is
+          // "the condition errored", not "the condition was satisfied".
+          metrics: { open_questions: 2 }
+        });
+        expect(result.kind, label).not.toBe('loop');
+        // The prefix, not just the `kind`: an advance for some unrelated reason
+        // would satisfy the line above while proving nothing about the error path.
+        expect(
+          result.warnings.some((w) => w.startsWith('retryCondition parse error:')),
+          label
+        ).toBe(true);
+      });
+    }
+
+    // No evaluation-error case, and the absence is the finding rather than a
+    // gap. `evaluate()` reports an error in exactly two situations: a top-level
+    // value that is not a boolean, and a thrown error. Neither is reachable for
+    // a source `parse()` accepts — the grammar requires a top-level comparison,
+    // so `open_questions` alone is rejected as "expected comparison operator"
+    // (it is the second case above, a PARSE error, not an evaluation one), and
+    // the evaluator's only `throw` is a default arm whose own message reads
+    // `unreachable comparison operator`. So the evaluation-error branch in
+    // `phase.ts` — and its twin in `phase-retry-evaluator.ts` — is defensive
+    // depth for a DSL that cannot currently produce it. It is left in place, and
+    // left untested from here, deliberately: a test would have to fabricate an
+    // `Expression` the parser never emits, which pins the fabrication rather
+    // than the behaviour. A DSL change that makes evaluation errors reachable
+    // (arithmetic, division, a non-boolean top level) owes this file a case.
+  });
 });

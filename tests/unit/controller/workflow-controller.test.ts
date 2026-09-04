@@ -213,7 +213,7 @@ beforeEach(async () => {
   runSpy = vi.fn();
   auditAppend = vi.fn().mockResolvedValue(undefined);
   deps = { catalog: testCatalog(), auditWriter: { append: auditAppend } };
-  phaseRunner = { run: runSpy } as unknown as PhaseRunner;
+  phaseRunner = { run: runSpy, evictStagnationTracker: vi.fn() } as unknown as PhaseRunner;
   controller = new SchegentWorkflowController(
     phaseRunner,
     store,
@@ -471,7 +471,7 @@ describe('SchegentWorkflowController.startNew', () => {
    *
    * Found in a live host log (`docs/audits/syslog-triage-2026-08-30.md`, finding
    * 2b — retired 2026-08-31, its record is now the envelope's
-   * `docs/features/round_3/00_INDEX.md` under `syslog-triage-2026-08-30`): four
+   * `docs/features/round_3/INDEX.md` under `syslog-triage-2026-08-30`): four
    * `task-execution-started`, one `task-execution-ended`. The runs that
    * failed left their reason in a DEBUG line that is off by default, and nothing
    * else. The payload asserted below is the driver's, because the point is one shape
@@ -766,7 +766,7 @@ describe('SchegentWorkflowController.startNew', () => {
      *
      * Found in `docs/audits/syslog-triage-2026-08-30.md` from a live syslog —
      * retired 2026-08-31, its record is now the envelope's
-     * `docs/features/round_3/00_INDEX.md` under `syslog-triage-2026-08-30`: a
+     * `docs/features/round_3/INDEX.md` under `syslog-triage-2026-08-30`: a
      * task refused twice on the drain path, one truncated ERROR, no modal, and no
      * `uncontained-backend-refused` anywhere in 5,068 lines. The drain resumes
      * in-flight work, so this was the unattended path the product exists to run.
