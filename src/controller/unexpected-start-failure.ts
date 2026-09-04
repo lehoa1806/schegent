@@ -39,7 +39,19 @@ export interface UnexpectedStartFailureDeps {
     WorkflowLifecycleAuditor,
     'emitRunEndedBreakpoints' | 'emitTaskExecutionEnded'
   >;
-  readonly terminalTransitions?: Pick<TerminalTransitionCoordinator, 'begin' | 'complete'>;
+  /**
+   * `| undefined` explicitly, not merely optional. The controller holds this
+   * collaborator as `TerminalTransitionCoordinator | undefined` and passes it
+   * positionally, so under `exactOptionalPropertyTypes` an absent key and an
+   * explicit `undefined` are different types and only the first would type. The
+   * distinction buys nothing here — the single call site is
+   * `deps.terminalTransitions?.complete(...)`, which reads both the same way —
+   * so the declaration says what the caller actually passes rather than forcing
+   * a conditional spread to preserve a difference no reader can observe.
+   */
+  readonly terminalTransitions?:
+    | Pick<TerminalTransitionCoordinator, 'begin' | 'complete'>
+    | undefined;
   readonly sessions: Pick<RunSessionRegistry, 'disposeIfEnded'>;
   /** The controller's own write funnel — it resolves the queue from the Run. */
   readonly persist: (prev: WorkflowRun, next: WorkflowRun) => Promise<WorkflowRun>;

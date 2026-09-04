@@ -53,6 +53,21 @@ const AUDIT = 'src/services/terminal-outcome-audit.ts';
 const AUDITOR = 'src/controller/workflow-lifecycle-auditor.ts';
 const CONTROLLER = 'src/controller/workflow-controller.ts';
 
+/**
+ * FR-R3-119 — where the controller's terminal-failure route now lives.
+ *
+ * The acting half of `handleUnexpectedStartFailure` moved out of the controller
+ * into `reportUnexpectedStartFailure` under the LOC gate; the controller keeps
+ * only the binding that supplies its collaborators. So the three assertions
+ * below that used to read `CONTROLLER` read this instead — on exactly the
+ * precedent recorded in the FR-R3-128 note further down: THE GATE FOLLOWS THE
+ * CODE. The property being protected is unchanged (both terminal routes reach
+ * the one emitter, and the controller's route emits last); only the file that
+ * decides it has moved. Contorting the controller to keep a source-text match
+ * would be preserving the gate's convenience at the code's expense.
+ */
+const START_FAILURE = 'src/controller/unexpected-start-failure.ts';
+
 const SOURCE = read(DRIVER);
 const EMITTER = read(AUDIT);
 
@@ -119,11 +134,16 @@ describe('FR-R3-107 — the terminal outcome has one emitter', () => {
     // The driver's route, through its own private wrapper that `terminalSettler` binds to.
     expect(SOURCE).toContain('emitTerminalOutcomeAudit(sink, this.deps.logger, run, terminalStatus, extra)');
     // The controller's route, through the auditor it hands every other audit event to.
-    // Asserted at BOTH ends: a controller that stopped calling it, or an auditor method
+    // Asserted at BOTH ends: a route that stopped calling it, or an auditor method
     // that started building its own payload, each re-open exactly what this closed.
-    expect(read(CONTROLLER)).toContain(
-      "this.lifecycleAuditor.emitTaskExecutionEnded(terminalRun, 'failed'"
+    //
+    // FR-R3-119 — reads `START_FAILURE` rather than `CONTROLLER`; see that constant.
+    expect(read(START_FAILURE)).toContain(
+      "deps.lifecycleAuditor.emitTaskExecutionEnded(terminalRun, 'failed'"
     );
+    // And the controller still reaches that route at all — otherwise the assertion
+    // above would keep passing against a module nothing calls.
+    expect(read(CONTROLLER)).toContain('reportUnexpectedStartFailure(');
     const auditor = read(AUDITOR);
     expect(auditor).toContain('public async emitTaskExecutionEnded(');
     expect(auditor).toContain('emitTerminalOutcomeAudit(this, this.logger, run, terminalStatus, extra)');
@@ -143,12 +163,13 @@ describe('FR-R3-107 — the terminal outcome has one emitter', () => {
     const sites = [
       ...SOURCE.matchAll(/this\.emitTerminalOutcome\(([^;]*?)\);/gs),
       ...EFFECTS.matchAll(/deps\.emitTerminalOutcome\(([^;]*?)\);/gs),
-      ...read(CONTROLLER).matchAll(/emitTaskExecutionEnded\(([^;]*?)\);/gs)
+      // FR-R3-119 — the controller's route moved to `START_FAILURE`; see that constant.
+      ...read(START_FAILURE).matchAll(/emitTaskExecutionEnded\(([^;]*?)\);/gs)
     ];
     expect(
       sites.length,
       'every terminal path must reach the one emitter, in the driver, the effects module ' +
-        'or the controller'
+        'or the start-failure route'
     ).toBeGreaterThanOrEqual(4);
     for (const site of sites) {
       const args = site[1] as string;
@@ -202,12 +223,16 @@ describe('FR-R3-107 — the terminal outcome has one emitter', () => {
     // is asserted here rather than left to the behavioural test because order is what a
     // reader of the audit log reconstructs a run from, and a passing emission in the
     // wrong place still reads as a run that ended before its history was written.
-    const controller = read(CONTROLLER);
-    const failureAt = controller.indexOf('private async handleUnexpectedStartFailure');
+    //
+    // FR-R3-119 — the route moved out of the controller; see `START_FAILURE`. The
+    // collaborators are reached through `deps.` there rather than `this.`, which is
+    // the only thing about this assertion that changed.
+    const route = read(START_FAILURE);
+    const failureAt = route.indexOf('export async function reportUnexpectedStartFailure');
     expect(failureAt, 'the controller route must still exist').toBeGreaterThan(0);
-    const region = controller.slice(failureAt);
-    const queueAt = region.indexOf('this.queue.finish(');
-    const historyAt = region.indexOf('this.historyRecorder.record(');
+    const region = route.slice(failureAt);
+    const queueAt = region.indexOf('deps.queue.finish(');
+    const historyAt = region.indexOf('deps.historyRecorder.record(');
     const auditAt = region.indexOf('emitTaskExecutionEnded(');
     expect(queueAt).toBeGreaterThanOrEqual(0);
     expect(historyAt).toBeGreaterThan(queueAt);
