@@ -243,6 +243,54 @@ describe('closed transition table — accepted cells', () => {
     expect(queue.findById(a.id)?.status).toBe('canceled');
   });
 
+  // FR-R3-160 — the cancel-before-start edge's missing sibling: fail-before-start.
+  //
+  // `WorkflowController.admitNew` builds the Run *before* it marks the task
+  // in-flight, so anything that throws in `WorkflowRunFactory.create` — an
+  // unresolvable `pipelineId` is the reachable one — leaves the task `pending`.
+  // The failure path then tries to fail it, and until this edge existed that
+  // `finish` was refused `illegal-source-status`, logged, and ignored. The task
+  // stayed pending and `reportUnexpectedStartFailure` ended by re-arming the
+  // drain, which re-drove the same task into the same refusal: an unbounded loop
+  // at ~19,500 iterations/second that exhausted the worker's heap and was why
+  // the host suite could not exit zero (196/research.md §4a).
+  //
+  // Asserted through `QueueManager.finish` and not only the pure classifier
+  // because the writer is what the failure path calls; a table that admits the
+  // edge while the writer still refuses it would fix nothing.
+  it('accepts pending -> failed via finish (fail-before-start, FR-R3-160)', async () => {
+    const { queue } = await buildSystem();
+    const a = await queue.enqueue('A');
+    expect(await queue.finish(a.id, 'failed')).toEqual({ ok: true });
+    expect(queue.findById(a.id)?.status).toBe('failed');
+  });
+
+  it('the pure classifier agrees: finish/failed is accepted from pending (FR-R3-160)', () => {
+    expect(
+      decideTaskTransition({
+        operation: 'finish',
+        currentStatus: 'pending',
+        targetStatus: 'failed',
+        queueOwnsTask: true,
+        queueAlreadyHasDifferentInFlight: false
+      })
+    ).toEqual({ eligible: true });
+  });
+
+  // The edge is deliberately narrow. `completed` is the one terminal status a
+  // task cannot reach without running, so `pending -> completed` stays refused —
+  // otherwise "finish from pending" would become a general escape hatch rather
+  // than the two specific pre-start outcomes the table means to admit.
+  it('does not widen to pending -> completed (FR-R3-160)', async () => {
+    const { queue } = await buildSystem();
+    const a = await queue.enqueue('A');
+    expect(await queue.finish(a.id, 'completed')).toEqual({
+      ok: false,
+      reason: 'illegal-source-status'
+    });
+    expect(queue.findById(a.id)?.status).toBe('pending');
+  });
+
   it('accepts paused/failed/canceled -> pending via retry, each with its own explicit trigger', async () => {
     const { queue } = await buildSystem();
     for (const status of ['paused', 'failed', 'canceled'] as const) {
