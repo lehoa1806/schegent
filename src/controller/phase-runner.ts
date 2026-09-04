@@ -47,7 +47,7 @@ import {
   summarize
 } from './phase-outcome-mapper';
 import { resolveHostVerification } from '../config/phase-runner-policy';
-import { compactClaudeSession } from './session-compactor';
+import { COMPACTION_MODEL_ID, compactClaudeSession } from './session-compactor';
 import { RequiredEvidenceUnavailableError } from '../lib/errors';
 // Compatibility re-export; canonical owner is phase-sidecar-reader.
 export { composePhaseMessagePath };
@@ -496,7 +496,7 @@ export class PhaseRunner {
         // `detail` is the CLI's own account of the refusal, already bounded and
         // redacted by `failureExcerpt`; without it this line named a phase and no
         // cause. The message, never `err` — a stack does not belong in this sink.
-        this.logger.warn('session-compact-failed', {
+        this.logger.warn('session-compact-failed (phase starts cold: no prior context)', {
           phase: inputs.phase,
           iteration: inputs.iteration,
           detail: err instanceof Error ? err.message : 'unknown error'
@@ -928,8 +928,8 @@ export class PhaseRunner {
         permissionMode: 'unrestricted',
         continued: false,
         sessionReused: true,
-        ...(inputs.phaseDef?.model ? { modelId: inputs.phaseDef.model } : {}),
-        ...(inputs.phaseDef?.effort ? { effortId: inputs.phaseDef.effort } : {}),
+        // The COMPACTION's model and no effort, never the Phase's — see the constant.
+        modelId: COMPACTION_MODEL_ID,
         diagnosticsEnabled: false
       })).then(() => undefined)
     });

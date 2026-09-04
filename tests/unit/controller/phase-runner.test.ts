@@ -4,6 +4,7 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { PhaseRunner } from '../../../src/controller/phase-runner';
+import { COMPACTION_MODEL_ID } from '../../../src/controller/session-compactor';
 import { PromptBuilder } from '../../../src/runner/prompt-builder';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import type { ClaudeCliRunner } from '../../../src/runner/claude-cli';
@@ -1729,7 +1730,8 @@ describe('Feature 074 — Multi-Backend Runner Resolution & Session Reset', () =
         outcome: 'failure',
         payload: expect.objectContaining({
           runner: 'agy',
-          terminationReason: 'cap-exhausted'
+          terminationReason: 'cap-exhausted',
+          cause: 'cap_exhausted'
         })
       })
     );
@@ -1819,6 +1821,46 @@ describe('Feature 074 — Multi-Backend Runner Resolution & Session Reset', () =
         })
       })
     );
+  });
+
+  // The compaction `cli-invocation` stamped `inputs.phaseDef.model` and
+  // `inputs.phaseDef.effort` — the PHASE's model and effort — on an invocation the host
+  // spawns with `COMPACTION_MODEL_ID` and no effort at all. So the audit log attributed
+  // compaction's cost and latency to the wrong model at every phase boundary of every
+  // run, and recorded a reasoning effort for a request that carried none.
+  it('records the compaction invocation against the model the host pinned', async () => {
+    cliRunner = makeFakeRunner(async () => makeRawOutput({ command: 'claude compact' }));
+    runner = new PhaseRunner(
+      cliRunner,
+      new PromptBuilder(),
+      auditWriter,
+      new SanitizedLogger()
+    );
+
+    await runner.run({
+      ...baseInputs,
+      sessionReuse: true,
+      resumeSessionId: 'owned-session',
+      phaseDef: {
+        id: 'speckit-review',
+        name: 'Review',
+        instruction: '',
+        steps: [],
+        model: 'claude-opus-5',
+        effort: 'xhigh'
+      }
+    } as unknown as Parameters<typeof runner.run>[0]);
+
+    const payloads = (auditWriter.append as ReturnType<typeof vi.fn>).mock.calls
+      .filter((call) => call[0].eventType === 'cli-invocation')
+      .map((call) => call[0].payload);
+    const compaction = payloads.find((p) => p.operation === 'session-compaction');
+    const phase = payloads.find((p) => p.operation === 'phase');
+    expect(compaction?.modelId).toBe(COMPACTION_MODEL_ID);
+    expect(compaction).not.toHaveProperty('effortId');
+    // The phase's own record is unaffected: it really did run on that model at that effort.
+    expect(phase?.modelId).toBe('claude-opus-5');
+    expect(phase?.effortId).toBe('xhigh');
   });
 
   it('forwards cancellation to the Claude pre-compaction invocation', async () => {
