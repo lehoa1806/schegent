@@ -134,12 +134,37 @@ export function decideTaskTransition(input: TaskTransitionDecisionInput): TaskTr
       if (targetStatus === undefined || !isTerminalRequestStatus(targetStatus)) {
         return reject('illegal-source-status');
       }
-      // research.md R4 — `finish` legitimately covers two edges of the closed
+      // research.md R4 — `finish` legitimately covers edges of the closed
       // transition table with one method: in-flight → any terminal outcome,
       // and the "cancel before start" pending → canceled edge
       // (`src/commands/cancel.ts:133`).
       if (currentStatus === 'in-flight') return ELIGIBLE;
       if (currentStatus === 'pending' && targetStatus === 'canceled') return ELIGIBLE;
+      // FR-R3-160 — the third edge: "fail before start", the sibling of the
+      // cancel-before-start edge above.
+      //
+      // `WorkflowController.admitNew` builds the Run *before* it marks the task
+      // in-flight, and covers `runFactory.create`, `store.setRun` and
+      // `markInFlight` with a single `try`. Anything that throws before
+      // `markInFlight` commits therefore leaves the task `pending` — an
+      // unresolvable `pipelineId` or an unknown phase (both
+      // `UnresolvablePipelineError`), an unapproved git mutation plan, or a
+      // `setRun` that fails. The unresolvable `pipelineId` is the case
+      // reproduced in specs/196-host-suite-exit-zero/research.md §4a; the others
+      // were reaching the identical trap, so this arm is what releases all of
+      // them (widened from "thrown by `create`" on a code-review finding).
+      //
+      // `reportUnexpectedStartFailure` then tries to fail the task, and without
+      // this arm that `finish` was refused `illegal-source-status`, logged, and
+      // ignored: the task stayed pending, and the same failure path ended by
+      // re-arming the auto-drain, which re-drove the same task into the same
+      // refusal. ~19,500 iterations per second retaining ~1.3 KB each, until the
+      // worker's heap was gone — the reason the host suite could not exit zero.
+      //
+      // Deliberately narrow, and not a general "finish from pending": `completed`
+      // stays refused below, because a task that never ran cannot have completed.
+      // Both admitted pre-start edges name an outcome reachable without executing.
+      if (currentStatus === 'pending' && targetStatus === 'failed') return ELIGIBLE;
       return reject('illegal-source-status');
     }
 
