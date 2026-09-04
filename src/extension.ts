@@ -36,7 +36,12 @@ import { wirePhaseExecution } from './activation/phase-execution-wiring';
 import { createStage2Producers, type Stage2Producers } from './activation/stage2-producers';
 import { wireTrustGrant } from './activation/trust-grant-wiring';
 import { closeStage2Resources } from './activation/stage2-teardown';
-import type { QueueFailurePolicy } from './contracts/queue-failure-policy';
+import {
+  readForceContinueOnRetryCap,
+  readQueueFailurePolicyDefault,
+  readRetryCap,
+  readRawTranscriptMode
+} from './activation/uncached-settings-accessors';
 
 /**
  * FR-R3-136 (FR-005) — the one live read of Workspace Trust in this file, and a
@@ -433,11 +438,10 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       processEnvAllowlist: processEnvironmentPolicy.processEnvAllowlist,
       defaultRunnerKind: backendKind,
       isAuditEvidenceAvailable: () => evidenceHealth.getSnapshot().audit.status !== 'unavailable',
-      // Read per phase invocation, never cached at activation, so flipping the
-      // setting mid-run takes effect on the next phase.
-      getForceContinueOnRetryCap: () => vscode.workspace
-        .getConfiguration('schegent', vscode.Uri.file(workspaceRoot))
-        .get<boolean>('retry.forceContinueOnCap', false) === true,
+      // FR-R3-119 — the four never-cached settings reads live together in
+      // `src/activation/uncached-settings-accessors.ts`, which is where the
+      // reason they are closures rather than values is written down.
+      getForceContinueOnRetryCap: () => readForceContinueOnRetryCap(workspaceRoot),
       // Feature 074 — resolve CLI binary path per-runner-kind. Reads the
       // setting per-invocation (never cached at activation) so the operator
       // can change `schegent.agy.path` without restarting VS Code.
@@ -454,39 +458,12 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       // claimed them.
       executionLease: executionLeases,
       startFailures: queueStartFailures,
-      // Feature 195 (T016, FR-001, FR-018) — the workspace default, read per
-      // drain attempt on the same terms as `getForceContinueOnRetryCap` just
-      // below: never cached at activation, so a mid-session change reaches
-      // the next attempt to start work on a queue without a reload.
-      getQueueFailurePolicyDefault: () =>
-        vscode.workspace
-          .getConfiguration('schegent', vscode.Uri.file(workspaceRoot))
-          .get<QueueFailurePolicy>('queue.haltOnTaskFailure', 'halt-on-failure'),
+      // FR-R3-119 — see the note on `getForceContinueOnRetryCap` above; these
+      // three are the rest of the same set.
+      getQueueFailurePolicyDefault: () => readQueueFailurePolicyDefault(workspaceRoot),
       ...runSafety,
-      getRetryCap: () => {
-        // Feature 056 Track 4 (FR-023..FR-026) — the configured retry
-        // cap shares the same window as `DELAYED_RETRY_CAP = 5`. Earlier
-        // versions advertised [1, 20] but silently saturated; now the
-        // package contribution, host validator, and accessor agree on
-        // [1, 5] so the operator-facing knob and the persistence
-        // invariant are honest.
-        const cfg = vscode.workspace.getConfiguration('schegent', vscode.Uri.file(workspaceRoot));
-        const value = cfg.get<number>('retry.maxAttempts', 5);
-        return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 5
-          ? value
-          : 5;
-      },
-      getRawTranscriptMode: () => {
-        // Feature 098 (PRIV-02) — both the fallback and the invalid-value
-        // landing spot mirror the manifest default, which moved `always` ->
-        // `errors-only`. A raw transcript is unredacted prompt, source and
-        // model output; an unreadable setting must not resolve to retaining
-        // one for every successful run.
-        const value = vscode.workspace
-          .getConfiguration('schegent', vscode.Uri.file(workspaceRoot))
-          .get<string>('logging.rawTranscriptMode', 'errors-only');
-        return value === 'always' || value === 'off' ? value : 'errors-only';
-      }
+      getRetryCap: () => readRetryCap(workspaceRoot),
+      getRawTranscriptMode: () => readRawTranscriptMode(workspaceRoot)
     }
   );
 

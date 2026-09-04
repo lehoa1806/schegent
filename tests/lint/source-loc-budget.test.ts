@@ -1434,11 +1434,22 @@ describe('large source file LOC budgets', () => {
    * the numbers as of 2026-08-31, which freezes that raise rather than blessing
    * it: from here they may only come down.
    */
+  // `workflow-controller.ts` came off this list on 2026-09-04, and like
+  // `run-driver.ts` this one WAS an architectural decision. The concurrent-session
+  // checkpoint took it 1,039 -> 1,092 and red, and the gate's own instruction —
+  // "split new responsibilities into focused modules before adding more behavior"
+  // — named the response. `handleUnexpectedStartFailure` and its private
+  // sanitizer moved to `src/controller/unexpected-start-failure.ts`: 117 lines
+  // that answer one question, *a start failed; what does the workspace owe back?*,
+  // and whose module boundary FR-R3-146 had already half-drawn when the
+  // classification half left for `start-failure-classification.ts`. 1,092 - 1,003.
+  // Its ceiling of 1,040 is left where it is, on the same terms as the four above:
+  // real headroom on a file that shrank is a budget, which is the state this list
+  // exists to move files into.
   const UNDECIDED_CEILING_BASELINE: ReadonlyArray<{
     readonly path: string;
     readonly ceiling: number;
   }> = [
-    { path: 'src/controller/workflow-controller.ts', ceiling: 1040 },
     { path: 'src/ui/sidebar/state-projector-runtime.ts', ceiling: 300 },
     { path: 'src/ui/sidebar/snapshot-composer.ts', ceiling: 322 }
   ];
@@ -1678,7 +1689,14 @@ describe('large source file LOC budgets', () => {
     // FR-R3-137 (T1530d) — 437 -> 433. Stage 2's resource teardown moved to
     // `src/activation/stage2-teardown.ts`; the two releases below it stayed,
     // because AGENTS.md rule 4 puts primacy's release in the composition root.
-    'src/extension.ts:wireStage2': 433
+    //
+    // FR-R3-119 — 433 -> 414 (2026-09-04). The thirteenth extraction,
+    // `src/activation/uncached-settings-accessors.ts`, took the four settings
+    // reads the controller must never cache. They were four inline closures
+    // sharing one AGENTS.md rule written four times, and the fifth arrived
+    // here — Feature 195's `getQueueFailurePolicyDefault` — which is what put
+    // the function over. What left was configuration reading, not composition.
+    'src/extension.ts:wireStage2': 414
   };
 
   /** Top-level function declarations and their extents, brace-counted. */
@@ -1761,7 +1779,7 @@ describe('large source file LOC budgets', () => {
     //
     // The two numbers being equal is the point. Lowering the exemption is a
     // two-line edit that shows up in review as a pair; raising it fails here.
-    const CEILING: Readonly<Record<string, number>> = { 'src/extension.ts:wireStage2': 433 };
+    const CEILING: Readonly<Record<string, number>> = { 'src/extension.ts:wireStage2': 414 };
     for (const [key, allowed] of Object.entries(LEGACY_FUNCTION_EXEMPTIONS)) {
       expect(allowed, `${key}: an exemption may be lowered, never raised`).toBeLessThanOrEqual(
         CEILING[key] ?? 0

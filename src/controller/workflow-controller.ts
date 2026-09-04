@@ -8,7 +8,7 @@ import type { WorkspaceLockManager } from '../state/lock';
 import { RunSessionRegistry } from './run-session';
 import { resolveControlTarget } from './sole-run-resolver';
 import { shouldContinueConversation, clearedPauseFieldsOnResume } from './resume-pause-fields';
-import type { SanitizedError, WorkflowRun } from '../state/workflow-run';
+import type { WorkflowRun } from '../state/workflow-run';
 import type { RunActivityObservation } from '../monitor/activity-coalescer';
 import { recordRunLiveness } from './run-liveness-recorder';
 import type { FeatureRequest } from '../queue/feature-request';
@@ -22,7 +22,7 @@ import type { QueueFailurePolicy } from '../contracts/queue-failure-policy';
 import { releaseExecutionLeaseForTerminalRun } from '../services/execution-lease-release';
 import { ExecutionLeaseManager } from '../state/execution-lease';
 import { EMPTY_CATALOG, type PipelineCatalog } from '../config/pipeline-config';
-import { classifyStartFailure } from './start-failure-classification';
+import { reportUnexpectedStartFailure } from './unexpected-start-failure';
 import { UncontainedConsentGate, driveUnderConsent } from './uncontained-consent-gate';
 import type { UncontainedConsentPort } from './uncontained-consent-gate';
 import { DELAYED_RETRY_CAP } from '../contracts/retry-bounds';
@@ -550,123 +550,34 @@ export class SchegentWorkflowController {
     }
   }
 
-  private async handleUnexpectedStartFailure(
+  /**
+   * FR-R3-119 — the acting half lives in `unexpected-start-failure.ts`; this is
+   * the binding. Thirteen collaborators wide because the work is composition,
+   * not calculation, and the width is what the function actually touches.
+   */
+  private handleUnexpectedStartFailure(
     feature: FeatureRequest,
     startedRun: WorkflowRun | null,
     description: string,
     err: unknown
   ): Promise<void> {
-    // FR-R3-146 (FR-005) — what kind of event this is, decided once.
-    //
-    // The code, the message, the log level and its wording, the status-bar detail
-    // and the operator notification were five separate ternaries over one question.
-    // They are now one answer, in `start-failure-classification.ts`, which is also
-    // where the reasoning for each shape lives.
-    const report = classifyStartFailure(err, feature.id, (raw) => this.logger.sanitize(raw));
-
-    // Feature 093 (T023) — pattern B, the failing Task names its own queue.
-    //
-    // The id comparison **survives** the conversion, and is not the one-slot
-    // artifact T040 sweeps out. It answers "did the Run we started get as far as
-    // being persisted?", which stays a real question once the read is
-    // queue-addressed: `startNew` assigns `run` before it writes it, so a
-    // `setRun` that itself threw leaves `startedRun` set while the queue still
-    // holds whatever preceded it. Without the comparison that predecessor would
-    // be failed and history-recorded in place of the Run that actually failed.
-    const latestRun = this.store.getRun(this.queue.queueIdForTask(feature.id));
-    const activeRun =
-      startedRun && latestRun?.id === startedRun.id
-        ? latestRun
-        : startedRun;
-    const lastError: SanitizedError = {
-      code: report.code,
-      message: report.message,
-      phase: activeRun?.currentPhase ?? null,
-      iteration: activeRun?.currentIteration ?? null,
-      at: Date.now()
-    };
-
-    this.logger[report.level](report.logLine);
-
-    let terminalRun: WorkflowRun | null = null;
-    if (activeRun && (activeRun.status === 'running' || activeRun.status === 'paused')) {
-      const failed: WorkflowRun = {
-        ...activeRun,
-        status: 'failed',
-        lastTransitionAt: Date.now(),
-        lastError,
-        pendingRetryAt: null,
-        pendingRetryCause: null,
-        manualPauseAt: null,
-        manualPauseCause: null,
-        resumeTargetPhaseId: null
-      };
-      try {
-        terminalRun = await this.persistTransition(activeRun, failed);
-        await this.lifecycleAuditor.emitRunEndedBreakpoints(terminalRun);
-      } catch (persistErr) {
-        this.logger.error(
-          `failed to persist unexpected workflow failure: ${this.sanitizeUnexpectedError(persistErr)}`
-        );
-      }
-    } else if (activeRun && activeRun.status === 'failed') {
-      terminalRun = activeRun;
-    }
-
-    this.statusBar.update(terminalRun?.id ?? startedRun?.id ?? feature.id, {
-      kind: 'failed',
-      ...(lastError.phase ? { phase: lastError.phase } : {}),
-      detail: report.statusDetail
-    });
-    this.notifier.warn(report.announcement);
-
-    try {
-      const finished = await this.queue.finish(feature.id, 'failed', {
-        code: lastError.code,
-        message: lastError.message,
-        ...(lastError.phase ? { phase: lastError.phase } : {}),
-        correlationId: terminalRun?.id ?? startedRun?.id ?? feature.id
-      });
-      if (finished.ok === false) this.logger.error(`queue.finish refused (FR-R3-153): ${finished.reason}`);
-    } catch (queueErr) {
-      this.logger.error(
-        `failed to mark queue item failed after unexpected workflow error: ${this.sanitizeUnexpectedError(queueErr)}`
-      );
-    }
-
-    if (terminalRun && report.kind !== 'lock-held') {
-      try {
-        await this.historyRecorder.record(terminalRun, description, 'failed');
-      } catch (historyErr) {
-        this.logger.warn(
-          `failed to record unexpected workflow failure in history: ${this.sanitizeUnexpectedError(historyErr)}`
-        );
-      }
-      await this.terminalTransitions?.complete(terminalRun, description);
-      await this.lifecycleAuditor.emitTaskExecutionEnded(terminalRun, 'failed', lastError.message);
-    }
-
-    // Feature 093 (T068b, FR-028) — the window-primacy release that stood here
-    // is gone. 092's T136 retired the `withLock('drive-run', …)` wrapper because
-    // primacy's tenure is the window's, but left the Run-scoped releases that
-    // wrapper had company from. `release()` keeps no reference count, so one
-    // unexpectedly-failed start dropped primacy for every sibling Run still
-    // mid-phase. The per-queue execution lease below is the one a terminal Run
-    // does owe back.
-    //
-    // Feature 092 (T132, FR-033a) — before the drain, so the sweep this
-    // schedules can already see the queue as free.
-    if (terminalRun) {
-      await this.releaseExecutionLeaseForRun(terminalRun);
-    }
-    // The session is the other thing it owes back, and on the same schedule.
-    this.sessions.disposeIfEnded(this.queue.queueIdForTask(feature.id));
-    this.scheduleAutoDrain();
-  }
-
-  private sanitizeUnexpectedError(err: unknown): string {
-    const raw = err instanceof Error ? err.message : String(err);
-    return this.logger.sanitize(raw.length > 0 ? raw : 'unknown workflow error');
+    return reportUnexpectedStartFailure(
+      {
+        logger: this.logger,
+        store: this.store,
+        queue: this.queue,
+        statusBar: this.statusBar,
+        notifier: this.notifier,
+        historyRecorder: this.historyRecorder,
+        lifecycleAuditor: this.lifecycleAuditor,
+        terminalTransitions: this.terminalTransitions,
+        sessions: this.sessions,
+        persist: (prev, next) => this.persistTransition(prev, next),
+        releaseExecutionLeaseForRun: (run) => this.releaseExecutionLeaseForRun(run),
+        scheduleAutoDrain: () => this.scheduleAutoDrain()
+      },
+      { feature, startedRun, description, err }
+    );
   }
 
   /**

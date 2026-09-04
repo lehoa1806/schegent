@@ -102,6 +102,12 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // `manual-retry-override.ts` above because the two are here for different
   // reasons and a single shared comment would misdescribe one of them.
   'src/controller/task-deletion.ts',
+  // FR-R3-119 (2026-09-04) — the unexpected-start-failure path, extracted from
+  // `workflow-controller.ts` under the composition-root LOC bound. Same read as
+  // `task-deletion.ts`'s and it moved verbatim: `activeRun.status === 'running'`
+  // decides whether a start failure has a live Run to fail, or whether the Run
+  // never got as far as being persisted. A read, never a write.
+  'src/controller/unexpected-start-failure.ts',
   'src/controller/workflow-controller.ts',
   // `src/extension.ts` was struck 2026-08-28 (FR-R3-136): the composition root
   // held two occurrences and this feature moved both out. The resume sweep's
@@ -223,14 +229,12 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // `queue-lifecycle-literal-allowlist.test.ts`, not the pinned per-task status
   // projection this guard protects; the two are distinct vocabularies and this
   // file touches only the former.
-  'webview-ui/src/lib/queue-lifecycle-label.ts',
-  // FR-R3-150 (code-review finding) — quotes `queue-manager.ts`'s own
-  // `hasInFlight ? 'running' : hasPending ? 'idle-pending' : 'active-empty'`
-  // lifecycle ternary verbatim, to explain why `idle-pending` alone is not
-  // `hasSchedule`'s signal. The `QueueLifecycle` vocabulary this quotes from
-  // is `queue-lifecycle-label.ts`'s "deliberately narrow" surface above, not
-  // the pinned per-task status discriminator this guard protects.
-  'webview-ui/src/lib/queue-derived.ts'
+  'webview-ui/src/lib/queue-lifecycle-label.ts'
+  // FR-R3-150 added `webview-ui/src/lib/queue-derived.ts` here for a comment
+  // quoting `queue-manager.ts`'s lifecycle ternary verbatim. The comment is
+  // gone (2026-09-04), so the entry excused nothing and
+  // `allowlist-entries-still-apply.test.ts` failed on it — a standing
+  // permission whose reason has expired is exactly what that gate reads for.
 ]);
 
 function filesWithRunningLiteral(): readonly string[] {
