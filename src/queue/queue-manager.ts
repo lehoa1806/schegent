@@ -59,7 +59,7 @@ import {
 import { terminalCapture, withoutTerminalCapture } from './terminal-capture';
 import { withRefreshedLifecycle } from './queue-lifecycle-refresh';
 import { hasResettableQueueState, queueResetFields } from './queue-reset-settle';
-import { decideTaskTransition, type TaskTransitionRejectionReason } from './task-transition-decision';
+import { decideTaskTransition, TASK_TRANSITION_REJECTION_REASONS } from './task-transition-decision';
 
 export interface MutationResult {
   ok: boolean;
@@ -74,18 +74,16 @@ export interface MutationResult {
  * SAME error class for an unrelated reason — a stale or unverifiable
  * ownership fence — and that failure must keep propagating exactly as it did
  * before FR-R3-153, so an existing caller's own try/catch (which logs it)
- * still sees it instead of a silently-discarded `{ ok: false }`. This is the
- * closed vocabulary `decideTaskTransition` itself can produce; anything else
- * (including every commit-fence reason) is re-thrown by
- * `isTaskTransitionRejection` below.
+ * still sees it instead of a silently-discarded `{ ok: false }`. The imported
+ * set is the closed vocabulary `decideTaskTransition` itself can produce;
+ * anything else (including every commit-fence reason) is re-thrown.
+ *
+ * FR-R3-161 (T057/T062) — a hand-written `Set` of those literals stood here
+ * and carried `'queue-mismatch'`, a reason nothing could produce. Both the
+ * stale member and the second enumeration that let it go stale are gone: the
+ * set is now derived from the union in `task-transition-decision.ts`, so this
+ * file cannot fall behind a reason the classifier gains.
  */
-const TASK_TRANSITION_REJECTION_REASONS: ReadonlySet<string> = new Set<TaskTransitionRejectionReason>([
-  'task-not-found',
-  'queue-mismatch',
-  'illegal-source-status',
-  'in-flight-ownership-conflict'
-]);
-
 function isTaskTransitionRejection(err: unknown): err is QueueMutationRejected {
   return err instanceof QueueMutationRejected && TASK_TRANSITION_REJECTION_REASONS.has(err.reason);
 }
@@ -519,7 +517,6 @@ export class QueueManager {
       const decision = decideTaskTransition({
         operation: 'mark-in-flight',
         currentStatus: current?.status,
-        queueOwnsTask: current !== undefined,
         queueAlreadyHasDifferentInFlight: queue.inFlightId !== null && queue.inFlightId !== featureId
       });
       if (!decision.eligible) {
@@ -643,7 +640,6 @@ export class QueueManager {
         operation: 'finish',
         currentStatus: current?.status,
         targetStatus: status,
-        queueOwnsTask: current !== undefined,
         queueAlreadyHasDifferentInFlight: false
       });
       if (!decision.eligible) {
@@ -693,7 +689,6 @@ export class QueueManager {
       const decision = decideTaskTransition({
         operation: 'pause',
         currentStatus: current?.status,
-        queueOwnsTask: current !== undefined,
         queueAlreadyHasDifferentInFlight: false
       });
       if (!decision.eligible) {
@@ -715,32 +710,32 @@ export class QueueManager {
     });
   }
 
-  public async cancel(featureId: string): Promise<boolean> {
-    const now = Date.now();
-    return this.store.updateQueue((queue) => {
-      const idx = queue.requests.findIndex((r) => r.id === featureId);
-      if (idx === -1 || queue.requests[idx].status !== 'pending') {
-        return { queue, result: false };
-      }
-      const requests = queue.requests.map((r, i) =>
-        i === idx
-          ? { ...r, status: 'canceled' as FeatureRequestStatus, completedAt: now, updatedAt: now }
-          : r
-      );
-      return { queue: withRefreshedLifecycle({ ...queue, requests }), result: true };
-    }, this.queueIdForTask(featureId),
-      this.store.runCommitClaim(this.queueIdForTask(featureId))
-    );
-  }
+  // FR-R3-161 (T032, FR-005/FR-012) — 2026-09-04. `cancel(featureId)` stood
+  // here and is removed, not rewritten. It wrote `canceled` from its own inline
+  // rule — `status !== 'pending'` refuses — while `finish(id, 'canceled')`
+  // decides the same edge through `decideTaskTransition` and admits an in-flight
+  // row: two protocols for one question, disagreeing silently on a status that
+  // reaches both. Routing it through the classifier instead would have left a
+  // second cancellation entry point with nothing to distinguish it from the
+  // first, so it goes on the precedent `removeTask` below already set under
+  // FR-R3-153 — "so a second, weaker cancellation protocol cannot silently
+  // reappear here." It had no production caller; every call site was a fixture
+  // producing a canceled row and each now says `finish(id, 'canceled')`
+  // (research F5, F17). The one assertion that could not follow pinned this
+  // method's refusal of an in-flight row — behaviour gone with the method, so
+  // deliberately removed rather than weakened (T034).
 
-  public async remove(featureId: string): Promise<boolean> {
-    try {
-      await this.store.removePendingRequest(featureId);
-      return true;
-    } catch {
-      return false;
-    }
-  }
+  // FR-R3-161 (T043, FR-007/FR-012) — 2026-09-04. `remove(featureId)` stood
+  // here and is removed. It was the second spelling of "delete a queue row",
+  // reached only through a fallback branch the wiring makes unreachable
+  // (research F8), and the weaker spelling on both counts that matter: no
+  // refreshed lifecycle after the row left, and a `catch { return false }` that
+  // collapsed "no such task" and "not removable" into one boolean — the exact
+  // loss `src/ui/sidebar/commands/cmd-remove-queue-item.ts:6-10` records the
+  // typed path as having been introduced to fix (research F7). `removeTask`
+  // below answers both; `src/controller/task-deletion.ts` cancels a live Run
+  // before either runs. Its sole callee `WorkspaceState.removePendingRequest`
+  // goes too (T044); the reason that primitive raised stays (T045).
 
   // Canonical single-writer for a queue's pause state.
   //
@@ -1604,7 +1599,6 @@ export class QueueManager {
         const decision = decideTaskTransition({
           operation: 'return-to-pending',
           currentStatus: target?.status,
-          queueOwnsTask: target !== undefined,
           queueAlreadyHasDifferentInFlight: false
         });
         // Checked as two separate guards (rather than one `||`-joined
@@ -1614,7 +1608,7 @@ export class QueueManager {
         // `{ eligible: false, reason }` arm so `decision.reason` is a real
         // read, not a guess. `decideTaskTransition` already refuses with
         // `'task-not-found'` on every path where `target` is undefined
-        // (currentStatus undefined is its first check, before queueOwnsTask),
+        // (currentStatus undefined is its first check, ahead of every edge),
         // so the two throws below never disagree with each other.
         if (target === undefined) {
           throw new QueueMutationRejected('task-not-found', `Cannot retry ${featureId}`);

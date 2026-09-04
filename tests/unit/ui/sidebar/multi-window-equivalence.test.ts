@@ -4,7 +4,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { StateProjector } from '../../../../src/ui/sidebar/state-projector';
-import { MessageRouter, type QueueOps, type QueueRemover, type RouterDeps } from '../../../../src/ui/sidebar/message-router';
+import { MessageRouter, type QueueOps, type RouterDeps } from '../../../../src/ui/sidebar/message-router';
 import {
   CMD_PAUSE_QUEUE,
   CMD_RESUME_QUEUE,
@@ -172,7 +172,6 @@ describe('Multi-window equivalence (T068 / SC-014)', () => {
 
   it('rejects mutating commands when isPrimary returns false on the secondary router', async () => {
     const acks: CommandAckMessage[] = [];
-    const queueRemover: QueueRemover = { remove: async () => true };
     const queueOps: QueueOps = {
       retry: async () => ({ ok: true }),
       moveUp: async () => ({ ok: true }),
@@ -182,7 +181,6 @@ describe('Multi-window equivalence (T068 / SC-014)', () => {
     };
     const router = new MessageRouter({
       executeCommand: (async () => undefined) as RouterDeps['executeCommand'],
-      queueRemover,
       queueOps,
       isPrimary: () => false,
       isTrusted: () => true,
@@ -227,7 +225,6 @@ describe('Multi-window equivalence (T068 / SC-014)', () => {
     const acks: CommandAckMessage[] = [];
     const router = new MessageRouter({
       executeCommand: (async () => undefined) as RouterDeps['executeCommand'],
-      queueRemover: { remove: async () => true },
       isPrimary: () => false,
       isTrusted: () => true,
       logger: {

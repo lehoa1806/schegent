@@ -45,7 +45,6 @@ describe('Feature 020 T008 — phase-log commands are not mutating', () => {
     const ackSpy = vi.fn<AckPoster>(() => Promise.resolve(true));
     const router = new MessageRouter({
       executeCommand: noopExecuteCommand,
-      queueRemover: { remove: vi.fn(() => Promise.resolve(false)) },
       isPrimary: () => false,
       logger: {
         info: vi.fn(),
@@ -82,7 +81,6 @@ describe('Feature 020 T008 — phase-log commands are not mutating', () => {
     const ackSpy = vi.fn<AckPoster>(() => Promise.resolve(true));
     const router = new MessageRouter({
       executeCommand: noopExecuteCommand,
-      queueRemover: { remove: vi.fn(() => Promise.resolve(false)) },
       isPrimary: () => false,
       logger: {
         info: vi.fn(),
@@ -118,7 +116,6 @@ describe('Feature 020 T008 — phase-log commands are not mutating', () => {
     const ackSpy = vi.fn<AckPoster>(() => Promise.resolve(true));
     const router = new MessageRouter({
       executeCommand: noopExecuteCommand,
-      queueRemover: { remove: vi.fn(() => Promise.resolve(false)) },
       isPrimary: () => false,
       logger: {
         info: vi.fn(),

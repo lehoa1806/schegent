@@ -2,13 +2,17 @@
 // See specs/034-task-deletion-cleanup/contracts/task-removed-audit.md.
 //
 // Asserts: the existing `task-removed` audit event payload carries the
-// additive `sessionCleaned: boolean` field on every emission. Both the
+// additive `sessionCleaned: boolean` field on every emission.
+//
+// FR-R3-161 (T047/T049a) — 2026-09-04. This header used to say "both the
 // typed-ops path (PhaseOps.deleteTask) and the legacy fallback path
-// (queueRemover.remove) MUST emit the field. The legacy fallback path
-// has no cleanup invocation and always emits `sessionCleaned: false`.
+// (queueRemover.remove) MUST emit the field". There is one path now: the router
+// declares no boolean remover, and `cmd-remove-queue-item.ts` refuses with
+// `queue-ops-unavailable` rather than deleting a row a weaker way when no typed
+// surface is wired. The fixture below models only what the router consumes.
 
 import { describe, it, expect, vi } from 'vitest';
-import { MessageRouter, type RouterDeps, type PhaseOps, type QueueOps } from '../../../../src/ui/sidebar/message-router';
+import { MessageRouter, type RouterDeps, type PhaseOps } from '../../../../src/ui/sidebar/message-router';
 import { SanitizedLogger } from '../../../../src/lib/logger';
 import type { CommandAckMessage, SidebarCommand } from '../../../../src/ui/sidebar/messages';
 import { CMD_REMOVE_QUEUE_ITEM } from '../../../../src/ui/sidebar/messages';
@@ -31,34 +35,20 @@ type DeleteTaskResult = NonNullable<PhaseOps['deleteTask']> extends (id: string)
   ? R
   : never;
 
-class FakeQueueOpsMinimal implements QueueOps {
-  removeCalls: string[] = [];
-  removeResult = true;
-  // Stub for QueueOps fields the router doesn't touch in this path.
-  retry = vi.fn(async () => ({ ok: true }));
-  moveUp = vi.fn(async () => ({ ok: true }));
-  moveDown = vi.fn(async () => ({ ok: true }));
-  clearCompleted = vi.fn(async () => ({ ok: true, removed: 0 }));
-  setQueuePausedState = vi.fn(async () => ({ ok: true, queueId: 'default' }));
-
-  async remove(id: string): Promise<boolean> {
-    this.removeCalls.push(id);
-    return this.removeResult;
-  }
-}
-
+// FR-R3-161 (T047/T049a) — `class FakeQueueOpsMinimal implements QueueOps` stood
+// here, existing only so the deleted legacy case could reach a boolean
+// `remove(...)` through an unwired `queueOps`. Every remaining case supplies
+// `phaseOpsDeleteTask`, which is the route an operator's removal actually takes,
+// so the router never read that stand-in and nothing here observes it any more.
 function makeRouter(opts: {
   phaseOpsDeleteTask?: (id: string) => Promise<DeleteTaskResult>;
-  fakeQueueOps?: FakeQueueOpsMinimal;
 } = {}): {
   router: MessageRouter;
   acks: CapturedAck[];
   auditEntries: CapturedAuditEntry[];
-  fakeQueueOps: FakeQueueOpsMinimal;
 } {
   const acks: CapturedAck[] = [];
   const auditEntries: CapturedAuditEntry[] = [];
-  const fakeQueueOps = opts.fakeQueueOps ?? new FakeQueueOpsMinimal();
   // When phaseOpsDeleteTask is provided, the router prefers the typed-ops path.
   const phaseOps: PhaseOps | undefined = opts.phaseOpsDeleteTask
     ? {
@@ -70,8 +60,6 @@ function makeRouter(opts: {
     : undefined;
   const deps: RouterDeps = {
     executeCommand: vi.fn() as unknown as RouterDeps['executeCommand'],
-    queueRemover: fakeQueueOps,
-    queueOps: phaseOps ? undefined : (fakeQueueOps as unknown as QueueOps),
     phaseOps,
     isPrimary: () => true,
     isTrusted: () => true,
@@ -85,7 +73,7 @@ function makeRouter(opts: {
     }
   };
   const router = new MessageRouter(deps);
-  return { router, acks, auditEntries, fakeQueueOps };
+  return { router, acks, auditEntries };
 }
 
 async function dispatch(
@@ -188,28 +176,17 @@ describe('Feature 034 T010 — task-removed payload carries sessionCleaned', () 
     assertPayloadIsPathsFree(removed[0].payload);
   });
 
-  it('legacy fallback path → sessionCleaned: false', async () => {
-    // No phaseOps.deleteTask AND no queueOps.removeTask wired —
-    // the router falls back to queueRemover.remove(...).
-    const { router, acks, auditEntries, fakeQueueOps } = makeRouter();
-    fakeQueueOps.removeResult = true;
-    await dispatch(
-      router,
-      { type: CMD_REMOVE_QUEUE_ITEM, correlationId: 'rm-L', payload: { id: 'task-legacy', confirmed: true } },
-      acks
-    );
-    expect(acks[0].msg.status).toBe('accepted');
-    expect(fakeQueueOps.removeCalls).toEqual(['task-legacy']);
-    const removed = auditEntries.filter((e) => e.eventType === 'task-removed');
-    expect(removed).toHaveLength(1);
-    expect(removed[0].payload).toMatchObject({
-      taskId: 'task-legacy',
-      cause: 'operator',
-      sessionCleaned: false
-    });
-    assertPayloadIsPathsFree(removed[0].payload);
-  });
-
+  // FR-R3-161 (T049a, FR-016) — 2026-09-04. **Deliberate removal 4 of 4.**
+  // `it('legacy fallback path → sessionCleaned: false', …)` stood here. Its
+  // entire subject was the router's boolean-remover fallback branch, which
+  // T046 deletes; once `queueRemover` is gone the case has no subject to
+  // exercise. It needs no replacement pin, and that is not an assertion of
+  // convenience: the branch was unreachable in production, because the wiring
+  // always supplies `phaseOps` (T009 re-confirmed it against
+  // `activation/sidebar-router-wiring.ts` immediately before the deletion), so
+  // no operator could reach the behaviour it pinned while the branch existed.
+  // The three typed-ops cases above are what an operator's removal actually
+  // runs, and they are untouched.
   it('rejection branch (unknown-task-id) → NO task-removed event emitted', async () => {
     const { router, acks, auditEntries } = makeRouter({
       phaseOpsDeleteTask: async () => ({ ok: false, reason: 'unknown-task-id' })

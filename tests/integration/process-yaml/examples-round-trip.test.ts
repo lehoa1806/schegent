@@ -353,7 +353,6 @@ async function commit(inst: Installation, plan: ImportPlan): Promise<readonly Co
         inst.models = value as ModelsConfig;
       },
       executeCommand: vi.fn(),
-      queueRemover: { remove: vi.fn() }
     },
     postAck: async (msg: CommandAckMessage) => {
       acks.push(msg);

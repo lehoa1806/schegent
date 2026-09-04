@@ -277,13 +277,18 @@ status writers — `markInFlight`, `pause`, `finish`, and `retry` — and
 `restart-canceled-task.ts`'s return-to-pending writer each consult
 `decideTaskTransition` (`src/queue/task-transition-decision.ts`), a pure,
 effect-free classifier mirroring `decidePhaseControl`'s shape exactly, before
-writing anything. It reads a task's current status, whether the addressed
-queue actually owns it, and (for `mark-in-flight`) whether the queue's one
-execution slot already belongs to a different task, and returns either
-eligibility or one reason from a closed vocabulary — `task-not-found`,
-`queue-mismatch`, `illegal-source-status`, `in-flight-ownership-conflict` —
+writing anything. It reads a task's current status and (for `mark-in-flight`)
+whether the queue's one execution slot already belongs to a different task, and
+returns either eligibility or one reason from a closed vocabulary —
+`task-not-found`, `illegal-source-status`, `in-flight-ownership-conflict` —
 folded into the existing `QueueMutationRejectReason` union rather than a
-second, parallel type. A census test
+second, parallel type. FR-R3-161 removed a fourth reason and the input that
+produced it: the classifier used to also read whether the addressed queue owned
+the task, but every caller resolves the row out of the queue it addresses and
+derived that answer from the same resolution, so the input was a tautology and
+`queue-mismatch` a refusal nothing could return. The queue manager's runtime
+copy of the vocabulary went with it — the set it classifies rejections with is
+now derived from the union itself, so the two cannot drift. A census test
 (`tests/lint/task-transition-decision-census.test.ts`) fails if a future
 writer bypasses it. The one safety invariant this closes is a *different*
 task stealing a queue's one execution slot; `mark-in-flight`'s own source-
@@ -297,7 +302,16 @@ and `canceled` are finished in both senses and stay refused, the same split
 absent) is a row removal, not a status write, and is not decided by this
 classifier — it stays `task-deletion.ts`'s concern, which already brings an
 in-flight task's run to cancellation and releases its execution lease before
-the row is removed, for any Run status short of terminal.
+the row is removed, for any Run status short of terminal. FR-R3-161 made that
+the *only* deletion route. A second one existed — `QueueManager.remove`, its
+storage primitive `WorkspaceStateStore.removePendingRequest`, and a
+`queueRemover` capability the sidebar router declared and the wiring supplied —
+which dropped the row without cancelling the run, releasing the lease, or
+refreshing the queue's lifecycle, and reported "no such task" and "not
+removable" as one boolean. It was reachable only through a fallback branch the
+wiring made unreachable; all five sites are gone, and an unwired host now
+refuses `CMD_REMOVE_QUEUE_ITEM` with `queue-ops-unavailable` rather than
+deleting a task a weaker way.
 
 **What a Run leaves on its Task is one concept, not two lines.** A queue's
 single execution slot means a Run is disposed as soon as the next Task starts,

@@ -76,7 +76,6 @@ async function setup(): Promise<SetupResult> {
 
   const deps: RouterDeps = {
     executeCommand: vi.fn(async () => undefined as unknown) as unknown as RouterDeps['executeCommand'],
-    queueRemover: { remove: vi.fn(async () => true) },
     isPrimary: () => true,
     isTrusted: () => true,
     logger,

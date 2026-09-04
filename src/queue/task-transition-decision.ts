@@ -31,9 +31,47 @@ export type TaskTransitionOperation = 'mark-in-flight' | 'pause' | 'finish' | 'r
  */
 export type TaskTransitionRejectionReason =
   | 'task-not-found'
-  | 'queue-mismatch'
+  // FR-R3-161 (T053, FR-011/FR-012) — 2026-09-04. `'queue-mismatch'` stood
+  // here and is removed. It named a refusal no operator could ever receive.
+  // Every caller resolves the row *out of the queue it addressed* and then
+  // derives ownership from that same resolution, so the input was a tautology
+  // at all six computation sites and the branch below could not be taken
+  // (research F18). No code anywhere in `src/` constructed a
+  // `QueueMutationRejected('queue-mismatch', …)` by hand either (research F9,
+  // re-confirmed at T052 immediately before this deletion), so the value had
+  // no producer of any kind. An enumeration that carries a refusal the product
+  // cannot produce is a claim about behaviour that does not exist; the other
+  // way to resolve that — keep it and make it reachable — would mean inventing
+  // a cross-queue addressing path this product does not have. T061 pins the
+  // remaining count at three so restoring a fourth member cannot pass quietly.
   | 'illegal-source-status'
   | 'in-flight-ownership-conflict';
+
+/**
+ * FR-R3-161 (T062, US5 scenario 2) — the vocabulary above as a value, for the
+ * one consumer that has to recognise a reason at runtime rather than at the
+ * type level: `queue-manager.ts`, which converts a transition rejection into a
+ * `{ ok: false, reason }` result and must re-throw anything else.
+ *
+ * It used to keep its own hand-written `Set` of the same literals. Two
+ * enumerations of one vocabulary can drift, and the compiler only caught the
+ * harmless direction: a value not in the union was an error, but a union
+ * member missing from the Set was not — and that is the direction that hurts,
+ * because a new reason nobody mirrored is re-thrown at an operator instead of
+ * being reported. Deriving the Set from the union removes the second
+ * enumeration rather than testing it: `Record<TaskTransitionRejectionReason,
+ * true>` fails to compile if a member is missing *and* if a key is not a
+ * member, so this literal cannot fall behind the union in either direction.
+ */
+const EVERY_REJECTION_REASON: Record<TaskTransitionRejectionReason, true> = {
+  'task-not-found': true,
+  'illegal-source-status': true,
+  'in-flight-ownership-conflict': true
+};
+
+export const TASK_TRANSITION_REJECTION_REASONS: ReadonlySet<string> = new Set<string>(
+  Object.keys(EVERY_REJECTION_REASON)
+);
 
 export interface TaskTransitionDecisionInput {
   readonly operation: TaskTransitionOperation;
@@ -41,12 +79,12 @@ export interface TaskTransitionDecisionInput {
   readonly currentStatus: FeatureRequestStatus | undefined;
   /** Only meaningful for `'finish'`; the status being written. */
   readonly targetStatus?: TerminalRequestStatus;
-  /**
-   * Whether the row's own `queueId` names the queue actually addressed —
-   * computed by the caller via strict resolution (research.md R2), never by
-   * falling back to a guessed default queue.
-   */
-  readonly queueOwnsTask: boolean;
+  // FR-R3-161 (T055, FR-011b) — 2026-09-04. `readonly queueOwnsTask: boolean`
+  // stood here, documented as "whether the row's own `queueId` names the queue
+  // actually addressed". It fed exactly one branch, the one removed below, and
+  // no other edge in this classifier reads ownership. With that branch gone the
+  // input has no consumer, so it goes with it rather than remaining a value
+  // every caller must compute and this file must accept and ignore.
   /**
    * Only meaningful for `'mark-in-flight'`; whether the addressed queue's
    * `inFlightId` is already set to a task other than this one.
@@ -65,13 +103,18 @@ function reject(reason: TaskTransitionRejectionReason): TaskTransitionDecisionRe
 }
 
 export function decideTaskTransition(input: TaskTransitionDecisionInput): TaskTransitionDecisionResult {
-  const { operation, currentStatus, targetStatus, queueOwnsTask, queueAlreadyHasDifferentInFlight } = input;
+  const { operation, currentStatus, targetStatus, queueAlreadyHasDifferentInFlight } = input;
 
-  // Existence and ownership are checked before any edge, for every
-  // operation, in that order (contracts/task-transition-decision.md
-  // invariant 2).
+  // Existence is checked before any edge, for every operation (feature 192's
+  // contracts/task-transition-decision.md invariant 2).
+  //
+  // FR-R3-161 (T054) — `if (!queueOwnsTask) return reject('queue-mismatch')`
+  // stood on the next line, the second of two pre-edge checks; invariant 2 read
+  // "existence and ownership … in that order". Ownership is no longer checked
+  // here because the caller establishes it by construction when it resolves the
+  // row, which is why the branch was unreachable — see the note on the reason
+  // above.
   if (currentStatus === undefined) return reject('task-not-found');
-  if (!queueOwnsTask) return reject('queue-mismatch');
 
   switch (operation) {
     case 'mark-in-flight': {
@@ -136,10 +179,19 @@ export function decideTaskTransition(input: TaskTransitionDecisionInput): TaskTr
       }
       // research.md R4 — `finish` legitimately covers edges of the closed
       // transition table with one method: in-flight → any terminal outcome,
-      // and the "cancel before start" pending → canceled edge
-      // (`src/commands/cancel.ts:133`).
+      // and the "cancel before start" pending → canceled edge, reached from
+      // `runCancel` in `src/commands/cancel.ts` (named rather than cited by
+      // line: FR-R3-161 moved those lines, and a line number is the half of a
+      // reference that rots without failing anything).
       if (currentStatus === 'in-flight') return ELIGIBLE;
       if (currentStatus === 'pending' && targetStatus === 'canceled') return ELIGIBLE;
+      // FR-R3-161 (T038, FR-014) — admitting a cancellation does not halt the
+      // queue. `queue-halt-policy.ts` derives the blocking set from `failed`
+      // rows alone and states there why `canceled` is deliberately excluded;
+      // `tests/unit/queue/queue-halt-policy.test.ts` pins it. The two features
+      // meet at this line and agree without either reading the other: this
+      // table decides whether a cancellation is admitted, that predicate
+      // decides whether the queue keeps draining.
       // FR-R3-160 — the third edge: "fail before start", the sibling of the
       // cancel-before-start edge above.
       //

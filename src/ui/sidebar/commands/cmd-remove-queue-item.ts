@@ -3,59 +3,53 @@ import type { CommandHandler } from './handler-contract';
 import { ack, appendQueueAudit, handleIllegalState } from './handler-helpers';
 import { ILLEGAL_STATE_MESSAGES } from './constants';
 
-// BUG-002 (T116) — prefer the audit-aware ops surface so we can
+// BUG-002 (T116) — use the audit-aware ops surface so we can
 // (a) attribute the originating queue in the `task-removed` audit payload, and
 // (b) differentiate `unknown-task-id` from `task-not-in-pending-state` in the
-// rejection reason. Fall back to the boolean `queueRemover.remove(...)` only
-// when the host wasn't wired with a typed QueueOps surface.
+// rejection reason.
+//
+// FR-R3-161 (T046, FR-007a) — 2026-09-04. A third branch stood below, falling
+// back to a boolean `queueRemover.remove(...)` when no typed surface was wired.
+// It never ran: `activation/sidebar-router-wiring.ts` supplies `phaseOps` (the
+// `WorkflowController`, which declares `deleteTask`) in every deployment, so the
+// typed path always resolved (research F8, spec A4 — re-confirmed by T009
+// immediately before this deletion). What it did do was keep a cleanup-free
+// deletion route alive behind an unreachable branch: it removed the row without
+// releasing the lease, without a session-cleanup decision, and without a
+// refreshed lifecycle, and reported "not found or no longer pending" for both
+// causes at once.
+//
+// An unwired host is now a structured refusal rather than a weaker deletion —
+// the same `queue-ops-unavailable` the sibling task commands answer with. That
+// is a rejection an operator sees, not a silent second protocol.
 export const handler: CommandHandler<RemoveQueueItemCommand> = async (ctx, command) => {
   const ops = ctx.deps.queueOps;
   const taskDelete =
     ctx.deps.phaseOps?.deleteTask?.bind(ctx.deps.phaseOps) ?? ops?.removeTask?.bind(ops);
-  if (taskDelete) {
-    const result = await taskDelete(command.payload.id);
-    if (result.ok) {
-      await ack(ctx, 'accepted');
-      await appendQueueAudit(ctx, 'task-removed', {
-        taskId: result.taskId ?? command.payload.id,
-        queueId: result.queueId ?? null,
-        priorStatus: result.priorStatus ?? null,
-        runId: result.runId ?? null,
-        cause: 'operator',
-        sessionCleaned: result.sessionCleaned ?? false,
-        // Feature FR-R3-005 (T327) — `sessionCleaned: false` says the evidence
-        // is still on disk; this says the host declined to reach for it, which
-        // is the operator's cue to look at what `.schegent` points at. Bounded
-        // code only: the payload stays paths-free, and the refused path
-        // appears in the sanitized runtime log alone.
-        sessionCleanupRefusal: result.sessionCleanupRefusal ?? null
-      });
-    } else {
-      const reason = result.reason ?? 'not-found';
-      const human =
-        ILLEGAL_STATE_MESSAGES[reason] ?? `Cannot remove queue item: ${reason}`;
-      await handleIllegalState(ctx, reason, human);
-    }
+  if (!taskDelete) {
+    await ack(ctx, 'rejected', 'queue-ops-unavailable');
     return;
   }
-  const removed = await ctx.deps.queueRemover.remove(command.payload.id);
-  if (removed) {
+  const result = await taskDelete(command.payload.id);
+  if (result.ok) {
     await ack(ctx, 'accepted');
     await appendQueueAudit(ctx, 'task-removed', {
-      taskId: command.payload.id,
-      queueId: null,
-      priorStatus: null,
+      taskId: result.taskId ?? command.payload.id,
+      queueId: result.queueId ?? null,
+      priorStatus: result.priorStatus ?? null,
+      runId: result.runId ?? null,
       cause: 'operator',
-      sessionCleaned: false,
-      // The boolean-remover fallback runs no cleanup at all, so there is
-      // nothing to have refused.
-      sessionCleanupRefusal: null
+      sessionCleaned: result.sessionCleaned ?? false,
+      // Feature FR-R3-005 (T327) — `sessionCleaned: false` says the evidence
+      // is still on disk; this says the host declined to reach for it, which
+      // is the operator's cue to look at what `.schegent` points at. Bounded
+      // code only: the payload stays paths-free, and the refused path
+      // appears in the sanitized runtime log alone.
+      sessionCleanupRefusal: result.sessionCleanupRefusal ?? null
     });
-  } else {
-    await handleIllegalState(
-      ctx,
-      'not-found',
-      `Cannot remove queue item: not found or no longer pending`
-    );
+    return;
   }
+  const reason = result.reason ?? 'not-found';
+  const human = ILLEGAL_STATE_MESSAGES[reason] ?? `Cannot remove queue item: ${reason}`;
+  await handleIllegalState(ctx, reason, human);
 };

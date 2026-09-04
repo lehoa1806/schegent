@@ -30,10 +30,14 @@ import type {
   StopPhaseLogTailResponse
 } from '../messages';
 
-export interface QueueRemover {
-  remove(id: string): Promise<boolean>;
-}
-
+// FR-R3-161 (T047, FR-007a) — 2026-09-04. `interface QueueRemover { remove(id):
+// Promise<boolean> }` stood here, and `RouterDeps` declared a `queueRemover`
+// field of that type. Both are gone with the fallback branch T046 deleted: the
+// capability's only consumer was that branch, and a declared-but-unconsumed
+// capability is an invitation for the next handler to reach for a boolean
+// deletion route rather than the typed one. Task removal is `PhaseOps.deleteTask`
+// (`controller/task-deletion.ts`), which releases the lease, records a
+// session-cleanup decision, and distinguishes its two refusals.
 export interface QueueOps {
   retry(id: string): Promise<{ ok: boolean; reason?: string }>;
   moveUp(id: string): Promise<{ ok: boolean; reason?: string }>;
@@ -209,7 +213,6 @@ export interface ConnectedRunPort {
 
 export interface RouterDeps {
   readonly executeCommand: <T = unknown>(commandId: string, ...args: unknown[]) => Thenable<T> | Promise<T>;
-  readonly queueRemover: QueueRemover;
   readonly queueOps?: QueueOps;
   readonly phaseOps?: PhaseOps;
   /**

@@ -63,9 +63,9 @@ export async function runRestartCanceledTask(ctx: {
     // own identity is narrower than the shared classifier's 'return-to-pending'
     // edge (paused/failed/canceled all legal): it restarts a `canceled` task
     // specifically, leaving `retry()` to own paused/failed. A `decideTaskTransition`
-    // call here would be provably non-load-bearing — `queueOwnsTask` has no
-    // real ownership check to make at this call site (there is no separate
-    // "queue addressed" argument to compare against), and `'canceled'` is
+    // call here would be provably non-load-bearing — the classifier's only
+    // pre-edge check is existence, already made by `!feature` above (FR-R3-161
+    // removed the ownership input this clause used to name), and `'canceled'` is
     // always a member of the classifier's accepted set for this operation, so
     // its `.eligible` verdict could never disagree with the plain equality
     // check below. This fast-fail (before entering `store.updateQueue`) is a
@@ -89,7 +89,6 @@ export async function runRestartCanceledTask(ctx: {
       const decision = decideTaskTransition({
         operation: 'return-to-pending',
         currentStatus: current?.status,
-        queueOwnsTask: current !== undefined,
         queueAlreadyHasDifferentInFlight: false
       });
       // Thrown, not returned — a value returned from this mutator is always

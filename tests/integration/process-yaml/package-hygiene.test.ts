@@ -713,7 +713,15 @@ describe('Feature 086 T051 — importing infers no execution behavior (FR-053)',
     ''
   ].join('\n');
 
-  /** Fields and calls that would mean a run had been inferred. */
+  /**
+   * Fields and calls that would mean a run had been inferred.
+   *
+   * FR-R3-161 (T047) — `queueRemover` names a router capability the product no
+   * longer has. It stays: this is a forbidden-token list scanned over the plan,
+   * so an entry that cannot match costs nothing and dropping one would leave the
+   * gate strictly weaker than it is today. It now reads as a guard against the
+   * key being reintroduced into a plan rather than as a reference to live code.
+   */
   const EXECUTION = [
     'WorkflowRun',
     'enqueue',

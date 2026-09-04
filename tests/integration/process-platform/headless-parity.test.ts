@@ -579,7 +579,6 @@ function depsFor(store: Store, bytes?: Uint8Array) {
       store.models = value as ModelsLayer;
     },
     executeCommand: vi.fn(),
-    queueRemover: { remove: vi.fn() },
     isPrimary: () => true,
     isTrusted: () => true,
     audit: { append: async () => undefined },

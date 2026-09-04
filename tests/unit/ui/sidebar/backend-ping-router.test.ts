@@ -20,7 +20,6 @@ describe('CMD_PING_BACKEND router', () => {
     }));
     const router = new MessageRouter({
       executeCommand: async <T = unknown>() => undefined as T,
-      queueRemover: { remove: async () => false },
       isPrimary: () => false,
       isTrusted: () => true,
       logger: logger(),
@@ -39,7 +38,6 @@ describe('CMD_PING_BACKEND router', () => {
   it('rejects without the workspace-bound service', async () => {
     const router = new MessageRouter({
       executeCommand: async <T = unknown>() => undefined as T,
-      queueRemover: { remove: async () => false },
       isTrusted: () => true,
       logger: logger()
     });

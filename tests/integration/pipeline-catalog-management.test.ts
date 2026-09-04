@@ -170,7 +170,6 @@ function harness(seed: FakeStoreSeed = {}, options: HarnessOptions = {}): Harnes
   const store = new FakeCatalogStore({ phases: AUTHORED_PHASE_ROWS, ...seed });
   const deps: RouterDeps = {
     executeCommand: vi.fn().mockResolvedValue(undefined),
-    queueRemover: { remove: vi.fn().mockResolvedValue(true) },
     isPrimary: () => true,
     isTrusted: () => true,
     notifyWarning: vi.fn(),

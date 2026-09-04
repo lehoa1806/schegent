@@ -541,7 +541,6 @@ async function commitPackage(
       catalogLifecycle: fakeCatalogLifecycle(inst.store),
       readConfig: () => undefined,
       executeCommand: vi.fn(),
-      queueRemover: { remove: vi.fn() },
       audit: { append: async () => undefined },
       logger: logger()
     },

@@ -85,7 +85,6 @@ async function build(): Promise<BuiltSystem> {
       commandId === 'schegent.retryQueuedItem'
         ? (runRetryQueuedItem(args[0], opsCtx) as Promise<T>)
         : Promise.resolve(undefined as unknown as T),
-    queueRemover: queue,
     queueOps: queue,
     isPrimary: () => isPrimary.value,
     isTrusted: () => true,

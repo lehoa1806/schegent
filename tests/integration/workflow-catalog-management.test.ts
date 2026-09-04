@@ -302,7 +302,6 @@ async function commit(
   });
   const deps: Record<string, unknown> = {
     executeCommand: vi.fn(),
-    queueRemover: { remove: vi.fn() },
     isPrimary: () => true,
     isTrusted: () => true,
     notifyWarning: vi.fn(),
@@ -1116,7 +1115,6 @@ describe('Workflow catalog management — Pipeline independence (US6, T053)', ()
   function workStartingSeams() {
     return {
       executeCommand: vi.fn(),
-      queueRemover: { remove: vi.fn() },
       queueOps: {
         retry: vi.fn(),
         moveUp: vi.fn(),
@@ -1130,7 +1128,12 @@ describe('Workflow catalog management — Pipeline independence (US6, T053)', ()
 
   function expectNoSeamReached(deps: Record<string, unknown>): void {
     const spies: unknown[] = [deps.executeCommand];
-    for (const group of ['queueRemover', 'queueOps', 'phaseOps']) {
+    // FR-R3-161 (T047) — `'queueRemover'` led this list. `workStartingSeams()`
+    // no longer declares that group, because the router no longer declares the
+    // capability; iterating a group that is not there would throw on
+    // `Object.values(undefined)` rather than assert anything. The seam it stood
+    // for is gone from the product, not merely unobserved here.
+    for (const group of ['queueOps', 'phaseOps']) {
       spies.push(...Object.values(deps[group] as Record<string, unknown>));
     }
     for (const spy of spies) {

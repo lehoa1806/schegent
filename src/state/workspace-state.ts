@@ -12,6 +12,7 @@ import {
   type FeatureRequest,
   type QueueState
 } from '../queue/feature-request';
+import { withRefreshedLifecycle } from '../queue/queue-lifecycle-refresh';
 import {
   findQueue,
   makeDefaultRegistry,
@@ -530,7 +531,7 @@ export type QueueMutationRejectReason =
   // `decideTaskTransition` returns. See
   // `src/queue/task-transition-decision.ts` and
   // `specs/192-task-transitions-deletion-consent/data-model.md`.
-  | 'queue-mismatch'
+  // FR-R3-161 (T058) — `'queue-mismatch'` left here; record in that file.
   | 'illegal-source-status'
   | 'in-flight-ownership-conflict'
   | 'phase-not-found'
@@ -1930,33 +1931,21 @@ export class WorkspaceStateStore {
     );
   }
 
-  public async removePendingRequest(taskId: string): Promise<FeatureRequest> {
-    const owner = this.findTaskOwner(taskId);
-    if (!owner) {
-      throw new QueueMutationRejected('task-not-found', `Unknown task id: ${taskId}`);
-    }
-    return this.updateQueue((queue) => {
-      const target = queue.requests.find((request) => request.id === taskId);
-      if (!target) {
-        throw new QueueMutationRejected('task-not-found', `Unknown task id: ${taskId}`);
-      }
-      if (target.status !== 'pending') {
-        throw new QueueMutationRejected(
-          'task-not-in-pending-state',
-          `Task ${taskId} is not pending`
-        );
-      }
-      return {
-        queue: {
-          ...queue,
-          requests: queue.requests.filter((request) => request.id !== taskId)
-        },
-        result: target
-      };
-    }, owner.queueId,
-      this.runCommitClaim(owner.queueId)
-    );
-  }
+  // FR-R3-161 (T044, FR-007b) — 2026-09-04. `removePendingRequest` stood here
+  // and is removed with `QueueManager.remove`, its only caller in `src/` and in
+  // `tests/` alike (T010 re-confirmed both before the deletion, so no test
+  // coverage moves with it). Leaving it would have stranded a deletion
+  // primitive with a status restriction, no caller and no test — a stronger
+  // version of the defect this feature closes.
+  //
+  // Its `task-not-in-pending-state` throw site goes with it; the REASON stays
+  // in `QueueMutationRejectReason` above (T045, FR-007c). Three surviving
+  // storage operations raise it — `modifyPendingRequest`,
+  // `reorderPendingRequest` and `movePendingRequest` below — and two
+  // consumers read it: `queue-manager.ts` maps it to a distinct reorder cause,
+  // and the sidebar's message table renders it to an operator as "Cannot
+  // remove: task is no longer pending". Deleting the reason on the strength of
+  // this one producer leaving would have broken all five.
 
   public getRequest(taskId: string): FeatureRequest | null {
     return this.findTaskOwner(taskId)?.request ?? null;
@@ -1972,12 +1961,23 @@ export class WorkspaceStateStore {
       if (!target) {
         throw new QueueMutationRejected('task-not-found', `Unknown task id: ${taskId}`);
       }
+      // FR-R3-161 (T043a, FR-008) — the refresh was added here when
+      // `QueueManager.remove` was deleted. Research F7 named "no
+      // `withRefreshedLifecycle` after the row leaves" as a defect of the
+      // routine being removed; this primitive, the survivor's, had the same
+      // gap, so deleting the weaker route alone would have left the defect
+      // standing in the only route left: a queue that lost its last piece of
+      // work kept badging `running`, and the staleness survived a reload.
+      // Confined to the unheld pair by `refreshUnheldLifecycle` itself — a
+      // deletion from a held queue returns it unchanged — so this is not a
+      // second site deciding whether a queue may start. Pinned by
+      // tests/integration/task-removal-surviving-route.test.ts.
       return {
-        queue: {
+        queue: withRefreshedLifecycle({
           ...queue,
           inFlightId: queue.inFlightId === taskId ? null : queue.inFlightId,
           requests: queue.requests.filter((request) => request.id !== taskId)
-        },
+        }),
         result: target
       };
     }, owner.queueId,

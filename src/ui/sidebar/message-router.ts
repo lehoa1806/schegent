@@ -11,7 +11,6 @@ export type {
   AckPoster,
   PhaseOps,
   QueueOps,
-  QueueRemover,
   RouterDeps
 } from './commands/router-types';
 

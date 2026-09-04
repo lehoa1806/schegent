@@ -597,7 +597,6 @@ function driver(inst: Installation): Driven {
       catalogLifecycle: fakeCatalogLifecycle(inst.store),
       readConfig: () => undefined,
       executeCommand: vi.fn(),
-      queueRemover: { remove: vi.fn() },
       audit: {
         append: async (entry: AuditEntry) => {
           audits.push(entry);

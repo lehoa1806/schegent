@@ -2,6 +2,7 @@ import type { SchegentWorkflowController } from '../controller/workflow-controll
 import { resolveSoleRun } from '../controller/sole-run-resolver';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import type { QueueManager } from '../queue/queue-manager';
+import { decideTaskTransition } from '../queue/task-transition-decision';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { Notifier } from '../ui/notifications';
 import type { SanitizedLogger } from '../lib/logger';
@@ -74,7 +75,33 @@ async function cancelByTaskId(
     ctx.notifier.info('Schegent: cancel target not found.');
     return { ok: false, reason: 'not-found' };
   }
-  if (feature.status !== 'in-flight' && feature.status !== 'pending') {
+  // FR-R3-161 (FR-004, SC-001) — 2026-09-04. This guard read
+  // `feature.status !== 'in-flight' && feature.status !== 'pending'` and
+  // decided the cancellation edge on its own authority. It agreed with the
+  // closed table exactly, which is precisely what made it worth removing: a
+  // second site that reaches the same verdict by its own rule is how the two
+  // come to disagree, and the disagreement is silent, because each side is
+  // individually correct and they differ only on a status that reaches both.
+  // FR-004 counts such a site even when it is right today. Consulting the
+  // classifier and acting on its answer is not a second decision, however many
+  // places do it; deciding without consulting it is, even once.
+  //
+  // Ownership holds by construction: the row was resolved by identity above,
+  // and `queueIdForTask` below reads the queue off that same row, so there is
+  // no addressed queue for it to mismatch (research F9, F18 — the same
+  // argument that retires the `queue-mismatch` reason).
+  //
+  // The refusal keeps this route's own reason. `CancelResult.reason` is the
+  // command's vocabulary, not the classifier's, and nothing operator-visible
+  // changes here — the paused refusal stays as silent as it was, and is
+  // reported in this feature's closure record rather than fixed.
+  const admission = decideTaskTransition({
+    operation: 'finish',
+    currentStatus: feature.status,
+    targetStatus: 'canceled',
+    queueAlreadyHasDifferentInFlight: false
+  });
+  if (!admission.eligible) {
     return { ok: false, reason: 'illegal-state' };
   }
 

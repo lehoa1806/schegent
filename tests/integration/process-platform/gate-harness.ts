@@ -75,9 +75,8 @@ export function makeGateProbe(gates: GateSettings): GateProbe {
   const deps: RouterDeps = {
     executeCommand: <T = unknown>(commandId: string): Promise<T> =>
       Promise.resolve(record(`executeCommand:${commandId}`, undefined as T)),
-    queueRemover: {
-      remove: async (): Promise<boolean> => record('queueRemover.remove', false)
-    },
+    // FR-R3-161 (T047) — the `queueRemover` probe stood here. The router no
+    // longer declares the capability, so there is no seam left to record.
     queueOps: {
       retry: async () => record('queueOps.retry', okFalse),
       moveUp: async () => record('queueOps.moveUp', okFalse),

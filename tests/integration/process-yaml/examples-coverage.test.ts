@@ -197,7 +197,6 @@ async function commit(inst: Installation, plan: ImportPlan): Promise<readonly st
       refreshCatalog: async () => undefined,
       readConfig: () => undefined,
       executeCommand: vi.fn(),
-      queueRemover: { remove: vi.fn() },
       audit: { append: async () => undefined },
       logger: logger()
     },

@@ -129,7 +129,9 @@ export function createSidebarRouter(deps: SidebarRouterWiringDeps): MessageRoute
   } = deps;
 return new MessageRouter({
   executeCommand: (id, ...args) => vscode.commands.executeCommand(id, ...args),
-  queueRemover: queue,
+  // FR-R3-161 (T048, FR-007a) — 2026-09-04. `queueRemover: queue` stood here.
+  // The `QueueManager` it passed no longer carries `remove`, and the router no
+  // longer declares the capability; task removal goes through `phaseOps` below.
   queueOps: queue,
   phaseOps: controller,
   // Feature FR-R3-003 (T300) — the fenced record, not the mirror. `Memento` is

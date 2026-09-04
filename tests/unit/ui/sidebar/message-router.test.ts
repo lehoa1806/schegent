@@ -39,11 +39,18 @@ interface CapturedAuditEntry {
   correlationId?: string;
 }
 
+// FR-R3-161 (T049, FR-016 re-expressed, 7 of 7) — 2026-09-04. This double
+// carried a boolean `remove(...)`, its `removed`/`removeResult` fields, and a
+// `removeTask(...)` pass-through that called it when `removeTaskResult` was set
+// to `null`, so the router's now-deleted fallback branch could be exercised
+// through the typed surface. No `it(...)` in this file ever set that field to
+// `null` (the three that touch it at :393, :407 and :436 all assign a result
+// object), so the pass-through never ran and the boolean route was never
+// reached: narrowing the fake to the typed surface asserts nothing less than it
+// did. The field's type loses `| null` for the same reason.
 class FakeQueueOps {
-  removed: string[] = [];
-  removeResult: boolean = true;
   removeTaskCalls: string[] = [];
-  removeTaskResult: { ok: boolean; reason?: string; queueId?: string } | null = {
+  removeTaskResult: { ok: boolean; reason?: string; queueId?: string } = {
     ok: true,
     queueId: 'default'
   };
@@ -68,19 +75,10 @@ class FakeQueueOps {
   setQueuePausedStateResult: { ok: boolean; reason?: string; queueId?: string } = { ok: true };
   setQueuePausedStateThrows: Error | null = null;
 
-  async remove(id: string): Promise<boolean> {
-    this.removed.push(id);
-    return this.removeResult;
-  }
   async removeTask(
     id: string
   ): Promise<{ ok: boolean; reason?: string; queueId?: string }> {
     this.removeTaskCalls.push(id);
-    if (this.removeTaskResult === null) {
-      // Pass-through to legacy `remove(...)` so router fallback can be exercised.
-      const ok = await this.remove(id);
-      return ok ? { ok: true } : { ok: false, reason: 'unknown-task-id' };
-    }
     return this.removeTaskResult;
   }
   async retry(id: string): Promise<{ ok: boolean; reason?: string }> {
@@ -142,7 +140,6 @@ function makeRouter(opts: {
   const auditEntries: CapturedAuditEntry[] = [];
   const deps: RouterDeps = {
     executeCommand: executeCommand as unknown as RouterDeps['executeCommand'],
-    queueRemover: queueOps,
     queueOps,
     phaseOps: {
       skipPhase: vi.fn(async () => ({ ok: true })),

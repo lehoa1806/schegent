@@ -353,7 +353,6 @@ function makeAckCapture(): AckCapture {
 function makeDeps(overrides: Partial<RouterDeps> = {}): RouterDeps {
   return {
     executeCommand: vi.fn(async () => undefined as unknown) as unknown as RouterDeps['executeCommand'],
-    queueRemover: { remove: vi.fn(async () => true) },
     refreshCatalog: async () => undefined,
     isPrimary: () => true,
     isTrusted: () => true,

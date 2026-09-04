@@ -121,7 +121,7 @@ describe('retry / restart-canceled supply a drain trigger (lifecycle round-check
 
   it('restart-canceled reports the queue to drain, and draining it starts the Task', async () => {
     const task = await queue.enqueue('do the other thing');
-    expect(await queue.cancel(task.id)).toBe(true);
+    expect(await queue.finish(task.id, 'canceled')).toEqual({ ok: true });
 
     const result = await runRestartCanceledTask(restartCtx(task.id));
 
@@ -142,7 +142,7 @@ describe('retry / restart-canceled supply a drain trigger (lifecycle round-check
     expect(store.getQueue(DEFAULT_QUEUE_ID).requests).toHaveLength(0);
 
     const canceled = await queue.enqueue('another', { queueId: queueB });
-    await queue.cancel(canceled.id);
+    await queue.finish(canceled.id, 'canceled');
     const restarted = await runRestartCanceledTask(restartCtx(canceled.id));
     expect(restarted).toEqual({ ok: true, queueId: queueB });
   });
@@ -207,7 +207,7 @@ describe('queueLifecycle tracks the work on the queue (lifecycle round-check fin
     await queue.pause(task.id);
     expect(lifecycle()).toBe('running');
 
-    await queue.cancel(next.id);
+    await queue.finish(next.id, 'canceled');
     expect(lifecycle()).toBe('active-empty');
   });
 

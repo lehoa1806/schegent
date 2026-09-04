@@ -105,7 +105,6 @@ function makeRouter(): {
   const acks: CapturedAck[] = [];
   const deps: RouterDeps = {
     executeCommand: executeCommand as unknown as RouterDeps['executeCommand'],
-    queueRemover: { remove: async () => true },
     phaseOps,
     isPrimary: () => true,
     isTrusted: () => true,

@@ -362,7 +362,6 @@ function harnessFor(store: FakeCatalogStore): MessageRouter {
   // dependency this path does not have.
   const deps = {
     executeCommand: vi.fn().mockResolvedValue(undefined),
-    queueRemover: { remove: vi.fn().mockResolvedValue(true) },
     isPrimary: () => true,
     isTrusted: () => true,
     notifyWarning: vi.fn(),
