@@ -261,11 +261,18 @@ describe('PhaseControlMenu', () => {
   });
 
   it('enables override clearing only when the selected phase carries a disabled override', async () => {
+    // Feature 201 — `currentPhase` moved off the selection and
+    // `selectedPhaseIsFuture: true` was added. The fixture previously selected
+    // the Phase the runner was standing on, which the host's own
+    // `isPhaseFuture` calls not-future, so it described a situation in which
+    // Enable would have been refused. The assertion is unchanged; the inputs
+    // now describe a case the host would accept.
     const { getByTestId } = render(PhaseControlMenu, {
       props: { targetsSubjectRun: true, queueId: TEST_QUEUE_ID,
-        currentPhase: 'speckit-plan',
+        currentPhase: 'speckit-specify',
         selectedPhase: 'speckit-plan',
         selectedPhaseState: 'disabled',
+        selectedPhaseIsFuture: true,
         isPrimary: true,
         manualPauseAt: null,
         phaseOverrides: [{ phaseId: 'speckit-plan', action: 'disabled' }]
@@ -609,6 +616,7 @@ describe('PhaseControlMenu — selectedPhase targeting (FR-R3-151)', () => {
         currentPhase: 'speckit-plan',
         selectedPhase: 'speckit-implement',
         selectedPhaseState: 'disabled' as const,
+        selectedPhaseIsFuture: true,
         isPrimary: true,
         manualPauseAt: null,
         phaseOverrides: [{ phaseId: 'speckit-implement', action: 'disabled' as const }]
@@ -620,6 +628,51 @@ describe('PhaseControlMenu — selectedPhase targeting (FR-R3-151)', () => {
       queueId: TEST_QUEUE_ID,
       phaseId: 'speckit-implement'
     });
+  });
+
+  // Feature 201 (FR-006, FR-007, FR-035) — the other origin of `disabled`, at
+  // the component boundary. The lib test pins the predicate; this pins the
+  // wiring, which is a separate failure: a component that never passes the prop
+  // through would keep the lib test green and still offer a refused control.
+  it('withholds Enable for a disabled Phase the runner already bypassed', async () => {
+    const { getByTestId } = render(PhaseControlMenu, {
+      props: {
+        targetsSubjectRun: true,
+        queueId: TEST_QUEUE_ID,
+        currentPhase: 'speckit-implement',
+        selectedPhase: 'speckit-plan',
+        selectedPhaseState: 'disabled' as const,
+        selectedPhaseIsFuture: false,
+        isPrimary: true,
+        manualPauseAt: null,
+        phaseOverrides: [{ phaseId: 'speckit-plan', action: 'disabled' as const }]
+      }
+    });
+
+    expect(getByTestId('phase-control-enable').getAttribute('aria-disabled')).toBe('true');
+    await fireEvent.click(getByTestId('phase-control-enable'));
+    expect(postCommandSpy).not.toHaveBeenCalled();
+  });
+
+  // The prop is optional, so a caller that has not been updated omits it. That
+  // must withhold the control rather than offer one the host refuses — the
+  // `false` default is the component-boundary half of FR-035's fail-closed
+  // rule, and this is the case that would notice if the default were flipped.
+  it('withholds Enable when the caller supplies no futureness at all', async () => {
+    const { getByTestId } = render(PhaseControlMenu, {
+      props: {
+        targetsSubjectRun: true,
+        queueId: TEST_QUEUE_ID,
+        currentPhase: 'speckit-specify',
+        selectedPhase: 'speckit-plan',
+        selectedPhaseState: 'disabled' as const,
+        isPrimary: true,
+        manualPauseAt: null,
+        phaseOverrides: [{ phaseId: 'speckit-plan', action: 'disabled' as const }]
+      }
+    });
+
+    expect(getByTestId('phase-control-enable').getAttribute('aria-disabled')).toBe('true');
   });
 
   it('Delete dispatches the selected Phase, not the active Phase, once confirmed', async () => {

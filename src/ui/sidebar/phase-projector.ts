@@ -79,6 +79,39 @@ export function buildPhasesFromRun(run: WorkflowRun | null): PhaseTile[] {
       .map((override) => override.phaseId)
   );
 
+  const completedPhaseIds = new Set<string>(run.phasesCompleted.map((entry) => entry.phase));
+
+  // Feature 201 (FR-002, FR-003) — carry the runner's own notion of "not yet
+  // reached" onto every tile, so the surface can tell a Phase still ahead of
+  // the runner from one it reached and bypassed. `state` cannot: both project
+  // `disabled`, and only the first may be re-enabled.
+  //
+  // The three clauses are the three clauses of the host's `isPhaseFuture`
+  // (`src/controller/phase-control-decision.ts` — cited by symbol, not by line:
+  // this feature's own dated comment in that file moved the predicate 28 lines
+  // and made a line-pinned citation point at the wrong code), spelled out
+  // rather than approximated, because the whole point is that the surface stops
+  // guessing at a fact the host already decides. The third is vacuous today —
+  // `:56` above already filters removed Phases out of the tile array, so no
+  // tile can be carrying a `removed` override by the time this runs — and it
+  // is spelled anyway so the echo survives a change to that filter.
+  //
+  // Deliberately NOT derived from tile `order`, `lastResult`, iteration count,
+  // or a comparison against the active tile's index: a tile-order comparison
+  // is the specific wrong answer the residual comment in
+  // `webview-ui/src/lib/phase-control-eligibility.ts` names, because it breaks
+  // on a pipeline where the same Phase name appears at two positions.
+  //
+  // This pass runs over every tile unconditionally and before any state pass,
+  // so the member is present on all of them regardless of what state they end
+  // up in (FR-002).
+  for (const tile of tiles) {
+    tile.isFuture =
+      tile.name !== run.currentPhase &&
+      !completedPhaseIds.has(tile.name) &&
+      !removedPhaseIds.has(tile.name);
+  }
+
   // FR-R3-151 (FR-012) — a future Phase carrying a disabled override projects
   // `disabled` as soon as the override is set, not only once the runner
   // reaches and bypasses it. Applied per-tile, over the tiles array itself

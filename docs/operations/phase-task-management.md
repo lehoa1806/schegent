@@ -25,12 +25,42 @@ That last sentence is worth reading twice, because until feature 193 (`FR-R3-154
 |---|---|---|
 | Skip | `CMD_SKIP_PHASE { queueId, phaseId }` | Stores a `skipped` override for the Run's current active phase, then aborts or resumes as appropriate so execution can move past it. Refused with `phase-not-active` when `phaseId` does not name the Run's current phase. <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --> <!-- Source: src/controller/phase-control-service.ts --> <!-- Source: src/controller/phase-control-decision.ts --> |
 | Disable | `CMD_DISABLE_PHASE { queueId, phaseId }` | Stores a `disabled` override for a Phase that has not yet started. Refused with `phase-already-started` when the target is the current phase or already appears in the Run's completed-phase ledger. In the sidebar, this targets whichever Phase tile the operator selected, independent of the current active phase. <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --> <!-- Source: src/controller/phase-control-service.ts --> <!-- Source: src/controller/phase-control-decision.ts --> |
-| Enable | `CMD_ENABLE_PHASE { queueId, phaseId }` | Clears an existing `disabled` override. Refused with `no-disabled-override` when the phase carries no override, or a non-`disabled` one, and with `phase-not-future` when the phase already started despite a stale `disabled` entry — carrying *an* override is no longer sufficient by itself. Also targets the operator's selected tile in the sidebar. <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --> <!-- Source: src/controller/phase-control-service.ts --> <!-- Source: src/controller/phase-control-decision.ts --> |
-| Remove from a Task's Run | `CMD_REMOVE_TASK_PHASE { taskId, phaseId, confirmed: true }` | Stores a `removed` override. Removing an active running phase cancels its active invocation. Unlike Disable/Enable this remains available for any visible Phase state — completed, active, skipped, failed, disabled, or future — and, in the sidebar, always targets the operator's selected tile (Feature 022 FR-008–FR-013). <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --> <!-- Source: src/controller/phase-control-service.ts --> |
+| Enable | `CMD_ENABLE_PHASE { queueId, phaseId }` | Clears an existing `disabled` override, and is offered only for a Phase the Run **has not yet reached**. Refused with `no-disabled-override` when the phase carries no override, or a non-`disabled` one, and with `phase-not-future` when the phase already started despite a stale `disabled` entry — carrying *an* override is no longer sufficient by itself. The sidebar now **withholds** the control for a Phase that was reached and bypassed (a `disabled` Phase the runner ran past, which the projector reports as not-future) instead of offering it and letting the host refuse; the two answers are pinned against each other row by row. Also targets the operator's selected tile in the sidebar. <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --> <!-- Source: src/controller/phase-control-service.ts --> <!-- Source: src/controller/phase-control-decision.ts --> <!-- Source: src/ui/sidebar/phase-projector.ts --> <!-- Source: webview-ui/src/lib/phase-control-eligibility.ts --> |
+| Remove from a Task's Run | `CMD_REMOVE_TASK_PHASE { taskId, phaseId, confirmed: true }` | Stores a `removed` override. Removing an active running phase cancels its active invocation. Unlike Disable/Enable this remains available for any visible Phase state — completed, active, skipped, failed, disabled, or future — and, in the sidebar, always targets the operator's selected tile (Feature 022 FR-008–FR-013). Refusals name their own cause: see *What a refused removal means* below. <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --> <!-- Source: src/controller/phase-control-service.ts --> <!-- Source: src/controller/workflow-controller.ts --> |
 
 Skip, disable, enable, and remove validate the phase against the immutable Pipeline snapshot stored on the Run — that snapshot is never retargeted to a newer catalog definition as a side effect of any of these operations. Applying skip or disable also clears a breakpoint on the same phase. Phase overrides update the recorded planned total in the same state write so progress continues to use the effective plan. <!-- Source: src/controller/phase-control-service.ts --> <!-- Source: src/controller/phase-control-decision.ts -->
 
 These operations change only the active Run snapshot. They do not edit or publish the Phase or Pipeline definition in the catalog. <!-- Source: src/controller/phase-control-service.ts --> <!-- Source: src/state/workflow-run.ts -->
+
+### Which controls each Phase tile reaches
+
+Every state a Phase tile can be projected into, and what an operator can still do from it. No projected state is a dead end: the two rows the runner has not yet reached are the two that carry an override control, and every other row is history or the live Phase, where immutability is the intended answer. Remove is available from all seven.
+
+| Projected state | How the tile got there | Reached by the runner? | Override controls offered |
+|---|---|:--:|---|
+| `not-started` | never touched by any projector pass | no | **Disable**, Remove |
+| `disabled` | a future Phase carrying a `disabled` override | no | **Enable**, Remove |
+| `disabled` | reached, bypassed in execution, override still set | yes | Remove only — the Phase already ran past; Enable is withheld |
+| `skipped` | reached and skipped in execution, no `disabled` override | yes | Remove only |
+| `skipped` | the current Phase of a canceled Run | yes | Remove only |
+| `completed` | a non-skip result, or the current Phase of a completed Run | yes | Remove only |
+| `active` | the current Phase of a running, paused or failed Run | yes | Skip, Pause/Resume/Restart, Remove |
+
+<!-- Source: src/ui/sidebar/phase-projector.ts --> <!-- Source: src/controller/phase-control-decision.ts --> <!-- Source: webview-ui/src/lib/phase-control-eligibility.ts -->
+
+### What a refused removal means
+
+`CMD_REMOVE_TASK_PHASE` names the condition it actually observed, so a refusal identifies which fact to go and check:
+
+| Reason | What it means |
+|---|---|
+| `unknown-task-id` | the id names no Task at all — no queue row exists for it |
+| `no-run-in-flight` | the Task is real and its Queue holds no Run |
+| `no-active-run-for-task` | the Task is real, but the Run in flight on its Queue is a different one |
+| `unknown-phase-id` | the Run does not carry that Phase |
+| `phase-already-removed` | the Phase already carries a `removed` override |
+
+The checks run in that order, so an operator who fails two at once knows which reason to expect: **is the id known** (answered at the controller, against the queue's request rows) → **is there a Run at all** → **is the Run in flight this Task's** → **does the Run carry the Phase** → **is it already removed**. Ordering the existence check first is what keeps a real, queued, waiting Task from being told it does not exist. <!-- Source: src/controller/workflow-controller.ts --> <!-- Source: src/controller/phase-control-service.ts --> <!-- Source: src/queue/queue-manager.ts -->
 
 ## Edit queued Tasks
 
@@ -56,7 +86,7 @@ One table decides this, for every route: the Task transition classifier's `finis
 
 A refused cancellation reports `illegal-state` to the caller and is **otherwise silent** — no notification and no audit entry. An unknown `taskId` is different: it reports `not-found` and does notify. <!-- Source: src/commands/cancel.ts -->
 
-Use the Queue and Run identifiers from the latest sidebar snapshot. A stale `taskId`, a Queue without an active Run, or a phase absent from that Run's snapshot is rejected without redirecting the mutation to another Queue. <!-- Source: src/controller/phase-control-service.ts --> <!-- Source: src/queue/queue-manager.ts -->
+Use the Queue and Run identifiers from the latest sidebar snapshot. A stale `taskId`, a Queue without an active Run, or a phase absent from that Run's snapshot is rejected — each with its own reason, and without redirecting the mutation to another Queue. For removals, *What a refused removal means* under **Override one phase** says which reason answers which condition. <!-- Source: src/controller/phase-control-service.ts --> <!-- Source: src/queue/queue-manager.ts -->
 
 ## Audit the result
 

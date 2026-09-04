@@ -94,6 +94,12 @@
      */
     selectedPhase?: PhaseName | null;
     selectedPhaseState?: PhaseTile['state'] | null;
+    /**
+     * Feature 201 (FR-035) — whether the runner has yet to reach the selected
+     * Phase. Fail-closed `false` default; `lib/phase-control-eligibility.ts`
+     * says why it is required there and defaulted here.
+     */
+    selectedPhaseIsFuture?: boolean;
     phaseBreakpoints?: readonly { readonly phaseId: string }[];
     onRequestConfirm?: (copy: DeleteConfirmationCopy, onConfirm: () => void) => void;
   }
@@ -110,6 +116,7 @@
     phaseOverrides = [],
     selectedPhase = null,
     selectedPhaseState = null,
+    selectedPhaseIsFuture = false,
     phaseBreakpoints = [],
     onRequestConfirm
   }: Props = $props();
@@ -135,6 +142,7 @@
       manualPauseAt,
       selectedPhase,
       selectedPhaseState,
+      selectedPhaseIsFuture,
       phaseOverrides,
       phaseBreakpoints
     })

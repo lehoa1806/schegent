@@ -54,6 +54,34 @@ export type PhaseControlRejectionReason =
   | 'phase-not-future'
   | 'no-disabled-override';
 
+/**
+ * Task status is deliberately NOT an input here. Decided 2026-09-05 (Feature
+ * 201, FR-025/FR-027); the omission had never been written down, so a reader
+ * could not tell a decision from an oversight.
+ *
+ * Two grounds, and the pair is the argument — either alone is weaker:
+ *
+ * 1. STRUCTURAL. `PhaseControlService` exposes nine public mutations and eight
+ *    of them are addressed by QUEUE and receive no Task id at all
+ *    (`pauseActivePhase`, `resumeActivePhase`, `restartActivePhase`,
+ *    `skipPhase`, `disablePhase`, `enablePhase`, `setPhaseBreakpoint`,
+ *    `clearPhaseBreakpoint`); only `removeTaskPhase` is Task-addressed. A Task
+ *    status could not be populated on eight of nine call sites even if this
+ *    type asked for one — `workspace-state.ts`'s Run map is keyed by queue.
+ *
+ * 2. BEHAVIOURAL. For the ninth, no terminal Task can coexist with a Run this
+ *    classifier treats as operable. All six Task statuses are enumerated with
+ *    their answers in finding F25 of
+ *    `specs/201-phase-override-way-back/checklists/requirements.md`: `pending`
+ *    has no Run at all; `in-flight`, `paused` and `failed` are the live cases
+ *    the controls exist for; `completed` and `canceled` write the Run's
+ *    terminal status in the same sequence as the Task's, at every path that
+ *    terminates a Task. So the Run alone already carries the fact.
+ *
+ * The Run is therefore sufficient, and adding Task status would introduce a
+ * second source for one condition — the shape this codebase keeps having to
+ * unpick.
+ */
 export interface PhaseControlDecisionInput {
   readonly operation: PhaseControlOperation;
   /**

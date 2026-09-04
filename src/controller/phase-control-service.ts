@@ -442,7 +442,20 @@ export class PhaseControlService {
     const decision = decidePhaseControl({ operation: 'delete', run, targetPhaseId: phaseId });
     if (!decision.eligible) return { ok: false, reason: decision.reason };
     if (!run) return { ok: false, reason: 'no-run-in-flight' };
-    if (run.featureId !== taskId) return { ok: false, reason: 'unknown-task-id' };
+    // Feature 201 (FR-018, FR-022) — the reason names what this guard actually
+    // observed. It fires when the addressed queue holds a Run and that Run is
+    // not this Task's, which is not the same fact as "no such Task": whether
+    // the id is known is decided by the request rows, which this service does
+    // not hold, and is checked at the controller before the call reaches here.
+    // The old `unknown-task-id` told an operator with a real, queued, waiting
+    // Task that their Task did not exist.
+    //
+    // No enumeration gains a member for this: `MutationResult.reason` is a
+    // plain `string`, and the operator-facing tables (`LIFECYCLE_REFUSAL_TEXT`,
+    // `REFUSAL_TEXT`, `ILLEGAL_STATE_MESSAGES`) derive over methods that do not
+    // include `removeTaskPhase`, so adding a key there would be dead prose
+    // their own gates reject.
+    if (run.featureId !== taskId) return { ok: false, reason: 'no-active-run-for-task' };
     if (!phaseExists(run, phaseId)) return { ok: false, reason: 'unknown-phase-id' };
     if (
       run.phaseOverrides.some(

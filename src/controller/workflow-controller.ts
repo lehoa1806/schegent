@@ -883,11 +883,15 @@ export class SchegentWorkflowController {
     // Feature 093 (T036) — no `resolveControlQueue` fallback here: this control
     // already names its target by Task, so the queue is derived rather than
     // inferred, and the ambiguity the helper guards against cannot arise.
-    return this.phaseControlService.removeTaskPhase(
-      this.queue.queueIdForTask(taskId),
-      taskId,
-      phaseId
-    );
+    //
+    // Feature 201 (FR-019, FR-020, FR-039) — the STRICT resolver, and the first
+    // check of the deletion path: `queueIdForTask` guesses `DEFAULT_QUEUE_ID`
+    // for an id naming no request row, so the service described the queue an
+    // unknown Task landed on instead of the Task. Why the existence check can
+    // only live here: `tests/unit/controller/remove-task-phase-refusals.test.ts`.
+    const queueId = this.queue.queueIdForExistingTask(taskId);
+    if (queueId === null) return { ok: false, reason: 'unknown-task-id' };
+    return this.phaseControlService.removeTaskPhase(queueId, taskId, phaseId);
   }
   /** The transaction and its reasoning live in `manual-retry-override.ts`. */
   public async retryPhaseNow(queueId?: string): Promise<MutationResult> {

@@ -5,6 +5,7 @@
   import type { DeleteConfirmationCopy } from '../lib/deletion-confirmation';
   import { formatDuration } from '../lib/format-duration';
   import { pauseBadgeLabel, type PauseBadgeCause } from '../lib/pause-labels';
+  import { phaseProgressionHeader } from '../lib/phase-progression-header';
 
   interface Props {
     phases: readonly PhaseTile[];
@@ -54,18 +55,7 @@
 
   const pauseBadgeText = $derived(pauseBadgeLabel(manualPauseCause));
 
-  const headerText = $derived(
-    (() => {
-      const pipelineSuffix =
-        activePipeline && activePipeline.id !== 'standard'
-          ? ` — Pipeline: ${activePipeline.name}`
-          : '';
-      const base = activeTaskId
-        ? `Phase Progression (Active: ${activeTaskId})`
-        : 'Phase Progression';
-      return `${base}${pipelineSuffix}`;
-    })()
-  );
+  const headerText = $derived(phaseProgressionHeader(activeTaskId, activePipeline));
 
   const isLargePipeline = $derived(phases.length >= LARGE_PIPELINE_THRESHOLD);
   // Resolved once, not re-found inline per field the header menu reads off it.
@@ -152,6 +142,7 @@
       {phaseBreakpoints}
       selectedPhase={selectedPhaseId}
       selectedPhaseState={selectedTile?.state ?? null}
+      selectedPhaseIsFuture={selectedTile?.isFuture ?? false}
       {onRequestConfirm}
     />
   </header>

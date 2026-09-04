@@ -18,7 +18,12 @@
  * `aria-disabled` attribute.
  */
 
-import type { PhaseTile } from './snapshot-types';
+// Extension-bearing (Feature 201): the paired test at
+// `tests/parity/phase-control-surface-classifier-parity.test.ts` imports this
+// module from the HOST program, whose `node16` resolution requires the
+// extension that the webview's bundler resolution merely tolerates. The
+// sibling `snapshot-types.ts` already writes its cross-tree import this way.
+import type { PhaseTile } from './snapshot-types.js';
 
 /** A phase override or breakpoint record, narrowed to the field read here. */
 interface PhaseIdentified {
@@ -39,6 +44,21 @@ export interface PhaseControlEligibilityInput {
   readonly manualPauseAt: string | null;
   readonly selectedPhase: string | null;
   readonly selectedPhaseState: PhaseTile['state'] | null;
+  /**
+   * Feature 201 (FR-035) — whether the runner has yet to reach the selected
+   * Phase, read off `PhaseTile.isFuture` rather than inferred here. See
+   * `enableDisabled` below for what it closes.
+   *
+   * **Required, not optional with a default.** A caller that omits it must not
+   * compile. The tile member it comes from is optional (a snapshot may predate
+   * it), so the fail-closed `?? false` belongs at the one place that reads the
+   * tile — the component — and not here, where a default would silently make
+   * every caller look correct. This is the strongest fail-closed this boundary
+   * allows: at the component boundary, where Svelte props cannot be made to
+   * fail at compile time, the same guarantee is spelled as an explicit `false`
+   * default instead.
+   */
+  readonly selectedPhaseIsFuture: boolean;
   readonly phaseOverrides: readonly PhaseIdentified[];
   readonly phaseBreakpoints: readonly PhaseIdentified[];
 }
@@ -70,6 +90,7 @@ export function phaseControlEligibility(
     manualPauseAt,
     selectedPhase,
     selectedPhaseState,
+    selectedPhaseIsFuture,
     phaseOverrides,
     phaseBreakpoints
   } = input;
@@ -141,22 +162,36 @@ export function phaseControlEligibility(
     // override" check that left Enable clickable — and silently refused —
     // for a stale `skipped` override.
     //
-    // KNOWN RESIDUAL (code-review finding, iteration 5 — recorded, not fixed
-    // here). `state: 'disabled'` answers the override half exactly but only
-    // MOSTLY answers the future half. `src/ui/sidebar/phase-projector.ts`
-    // writes that word at two places: the FR-012 pre-pass, for a Phase the
-    // runner has not reached, and the completed-phase loop, for one it reached
-    // and bypassed (`result: 'skipped'` with the override still set — that is
-    // how FR-014 tells a disabled bypass from an ordinary skip). The host's
-    // `isPhaseFuture` is membership in `phasesCompleted`, which the second case
-    // satisfies, so it is rejected `phase-not-future` while Enable is still
-    // clickable. Nothing on `PhaseTile` distinguishes the two: `lastResult` is
+    // RESIDUAL CLOSED by Feature 201 (FR-006, FR-007) — kept here rather than
+    // deleted, because the third conjunct below is unreadable without it.
+    //
+    // The finding (code-review, iteration 5): `state: 'disabled'` answers the
+    // override half exactly but only MOSTLY answers the future half.
+    // `src/ui/sidebar/phase-projector.ts` writes that word at two places: the
+    // FR-012 pre-pass, for a Phase the runner has not reached, and the
+    // completed-phase loop, for one it reached and bypassed (`result:
+    // 'skipped'` with the override still set — that is how FR-014 tells a
+    // disabled bypass from an ordinary skip). The host's `isPhaseFuture` is
+    // membership in `phasesCompleted`, which the second case satisfies, so it
+    // was rejected `phase-not-future` while Enable was still clickable.
+    //
+    // Nothing on `PhaseTile` distinguished the two: `lastResult` is
     // `mapPhaseOutcome('skipped')`, which is `null` — the same value a
     // never-reached tile carries — and comparing tile `order` against the
-    // active Phase's would make this file a second oracle for an ordering the
-    // host resolves by membership. Closing it needs the projection to carry
-    // the fact, which is a contract change rather than a predicate change.
-    enableDisabled: !canControlSelected || selectedPhaseState !== 'disabled',
+    // active Phase's would have made this file a second oracle for an ordering
+    // the host resolves by membership, and would break outright on a pipeline
+    // carrying the same Phase name at two positions. So closing it needed the
+    // projection to carry the fact, a contract change rather than a predicate
+    // change: `PhaseTile.isFuture` now echoes the host's `isPhaseFuture`
+    // clause for clause, and `selectedPhaseIsFuture` is that fact arriving
+    // here. This file still does not decide futureness; it reads it.
+    //
+    // The `!selectedPhaseIsFuture` conjunct is what the two `disabled` origins
+    // now diverge on, and `tests/parity/phase-control-surface-classifier-parity.test.ts`
+    // asks both deciders about all seven origins so the pair cannot drift apart
+    // again silently.
+    enableDisabled:
+      !canControlSelected || selectedPhaseState !== 'disabled' || !selectedPhaseIsFuture,
     /**
      * Delete is deliberately NOT gated on `targetsSubjectRun`, and it is the
      * one control that is not: it posts

@@ -220,6 +220,24 @@ export interface PhaseTile {
   readonly displayName?: string;
   /** Feature 076 — absent means required for legacy snapshots. */
   readonly isRequired?: boolean;
+  /**
+   * Feature 201 (FR-001, FR-034) — whether the runner has yet to reach this
+   * Phase, answering the host's own `isPhaseFuture` predicate
+   * (`src/controller/phase-control-decision.ts`) rather than approximating it
+   * from tile order.
+   *
+   * The surface needs it because `state` cannot carry it: a Phase still ahead
+   * of the runner and a Phase the runner reached and bypassed both project
+   * `disabled`, and only the first may be re-enabled. Offering Enable on the
+   * second is a live control that the host then refuses.
+   *
+   * **Absence means "not known to be future", which withholds the control.**
+   * That is the fail-closed direction: a snapshot written before this member
+   * existed, or by a projector that did not set it, withholds Enable rather
+   * than offering one that will be refused. Consumers read it as
+   * `tile.isFuture ?? false`.
+   */
+  readonly isFuture?: boolean;
   readonly phaseMessage?: {
     readonly fromPhaseId: string;
     readonly entryCount: number;
