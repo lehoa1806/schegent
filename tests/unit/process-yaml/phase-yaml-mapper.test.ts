@@ -64,6 +64,13 @@ const FULL_INSTRUCTION: PhaseDefinition = {
   loopable: true,
   retryCondition: 'attempts < 3',
   forceContinueOnRetryCap: true,
+  // FR-R3-157 — BOTH cap forms, and deliberately disagreeing: the boolean says
+  // continue, the outcome says fail. A round trip that dropped either one would
+  // still produce a phase that decides something at the cap, so a fixture
+  // carrying only one form could not tell a carried field from a defaulted one.
+  // Disagreement makes the drop visible as a changed decision. Precedence is not
+  // this file's business — the mapper carries, it does not resolve (FR-007).
+  onRetryCap: 'fail',
   isRequired: false,
   runner: 'claude',
   // Feature 098 T012/T014 — both values are deliberately NOT the FR-005 defaults

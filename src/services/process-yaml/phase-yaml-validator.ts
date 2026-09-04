@@ -55,10 +55,12 @@ import {
   PHASE_HOST_VERIFICATIONS,
   PHASE_RETRY_CONDITION_MAX_LEN,
   PHASE_SIDE_EFFECTS,
+  RETRY_CAP_OUTCOMES,
   type PhaseDefinitionEffort,
   type PhaseEvidencePolicy,
   type PhaseHostVerification,
-  type PhaseSideEffects
+  type PhaseSideEffects,
+  type RetryCapOutcome
 } from '../../contracts/process-definitions';
 import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../../contracts/backend-kinds';
 import {
@@ -570,6 +572,32 @@ function validateSpec(section: YamlMappingNode, defects: ImportDefect[]): PhaseY
     defects
   );
 
+  // FR-R3-157 — the three-valued outcome, same shape as `sideEffects` above and
+  // closed to the same registry the catalog validator uses. Both routes must
+  // refuse the same set: a value this reader admitted and the catalog rejected
+  // would import clean and then fail when the Builder wrote it back.
+  //
+  // Read INDEPENDENTLY of `forceContinueOnRetryCap`, and no cross-field rule
+  // between them. A document carrying both, even contradicting each other, is
+  // valid (contract V2) — precedence is decided once, in
+  // `contracts/retry-cap-outcome.ts`, and a second opinion here is exactly the
+  // second resolution site FR-007 forbids.
+  let onRetryCap: RetryCapOutcome | undefined;
+  const onRetryCapNode = optionalScalar(section, 'onRetryCap', defects);
+  if (onRetryCapNode !== undefined) {
+    if (!(RETRY_CAP_OUTCOMES as readonly string[]).includes(onRetryCapNode.value)) {
+      defects.push(
+        defect(
+          'onRetryCap',
+          'invalid-enum',
+          `Phase onRetryCap must be one of ${RETRY_CAP_OUTCOMES.join(', ')}`
+        )
+      );
+    } else {
+      onRetryCap = onRetryCapNode.value as RetryCapOutcome;
+    }
+  }
+
   let retryCondition: string | undefined;
   const retryNode = optionalScalar(section, 'retryCondition', defects);
   if (retryNode !== undefined) {
@@ -615,6 +643,7 @@ function validateSpec(section: YamlMappingNode, defects: ImportDefect[]): PhaseY
     ...(loopable !== undefined ? { loopable } : {}),
     ...(isRequired !== undefined ? { isRequired } : {}),
     ...(forceContinueOnRetryCap !== undefined ? { forceContinueOnRetryCap } : {}),
+    ...(onRetryCap !== undefined ? { onRetryCap } : {}),
     ...(retryCondition !== undefined ? { retryCondition } : {})
   };
   return hasInstruction

@@ -52,13 +52,14 @@ const NO_CHECKABLE_CLAIMS: ReadonlyArray<{ readonly file: string; readonly reaso
     file: 'commands.md',
     reason: 'command names only, which tests/lint/readme-command-parity.test.ts already derives from the manifest'
   },
-  {
-    file: 'api-and-cli.md',
-    reason:
-      'names command ids (schegent.auto, schegent.schedule) and VS Code APIs, not setting ' +
-      'keys; readme-command-parity.test.ts derives the command list from the manifest, and ' +
-      'a VS Code API name is not derivable from anything in this repository'
-  },
+  // `api-and-cli.md` USED to be declared here — command ids and VS Code API names,
+  // neither derivable from this repository. FR-R3-157 gave it a setting key
+  // (`schegent.retry.forceContinueOnCap`, named as what an omitted `onRetryCap`
+  // inherits), so the declaration stopped being true and the entry came out rather
+  // than being reworded. That is the intended direction of travel: the page is now
+  // covered by the manifest check above like any other page, and this list stays
+  // what it claims to be — pages with genuinely nothing to check, not pages we
+  // would rather not check.
   {
     file: 'glossary.md',
     reason: 'definitions of terms; a term is not derivable from any single authority'

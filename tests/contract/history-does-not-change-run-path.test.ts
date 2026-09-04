@@ -165,6 +165,14 @@ describe('the queue model is unchanged by this feature (T083, FR-050)', () => {
     expect(declaredFields('src/queue/feature-request.ts', 'FeatureRequest')).toEqual([
       'completedAt',
       'createdAt',
+      // FR-R3-157 — added by feature 199, and additive for the same structural
+      // reason `phaseProgress` below is: the mark says a Phase was carried past
+      // an unsatisfied condition, and the Run that knows it is disposed the
+      // moment the next task starts. A mark that lived only on the Run would
+      // answer correctly until the moment an operator had reason to ask. This
+      // entry records the widening; the set stays exact, so anything ELSE
+      // appearing here still fails, which is what FR-050 guards.
+      'degradedPhases',
       'description',
       'enqueuedAt',
       'id',

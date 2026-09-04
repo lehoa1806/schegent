@@ -9,6 +9,7 @@ import {
 } from '../../../src/state/connected-workflow-run';
 import type { Memento } from '../../../src/state/workspace-state';
 import type { PhaseResult, WorkflowRun } from '../../../src/state/workflow-run';
+import type { DegradedPhaseEntry } from '../../../src/contracts/snapshot-projections';
 import { unfencedCommit } from '../../../src/state/ownership-claim';
 
 class FakeMemento implements Memento {
@@ -1119,6 +1120,195 @@ describe('FR-R3-158 — QueueManager.finish captures the settled-phase pair', ()
 
       expect(result.ok).toBe(false);
       expect(queue.findById(a.id)).toEqual(before);
+    });
+  });
+});
+
+// FR-R3-157 (T035, T036, T039, US2, contracts C3.5/C3.8/C3.9) — `finish()`
+// records the run's degraded phases on the Task, in the same write that sets the
+// terminal status; `retry()` clears them.
+//
+// It is the FR-R3-158 argument directly above, for a second field, and the reason
+// is not that the two are similar: it is that the same disposal destroys both.
+// Runs are held one per queue, so the moment a sibling starts, the failed task's
+// run — and the record of which phases it carried past their cap — is gone. A
+// degraded row that reads clean the instant the next task begins is precisely the
+// "never indistinguishable from a clean one" that FR-006 forbids, and it would
+// pass every unit test that keeps the run alive. T037 is the test that catches it
+// with the disposal actually performed; these are the narrower ones that fix the
+// capture's shape.
+describe('FR-R3-157 — QueueManager.finish captures the degraded phases', () => {
+  const DEGRADED_AUDIT: DegradedPhaseEntry = {
+    phaseId: 'audit',
+    condition: 'open_questions > 0'
+  };
+  const DEGRADED_VERIFY: DegradedPhaseEntry = {
+    phaseId: 'verify',
+    condition: 'coverage < 80'
+  };
+
+  /** A Run for `featureId`, carrying whatever degradation it accumulated. */
+  function runFor(featureId: string, degradedPhases?: readonly DegradedPhaseEntry[]): WorkflowRun {
+    // Omitted rather than set to `undefined`: `exactOptionalPropertyTypes` reads
+    // the two differently, and "the field was never written" is one of the cases
+    // under test.
+    return {
+      id: 'run-1',
+      featureId,
+      featureDir: 'specs/199',
+      status: 'failed',
+      currentPhase: 'verify',
+      currentIteration: 1,
+      startedAt: Date.now(),
+      lastTransitionAt: Date.now(),
+      phasesCompleted: [],
+      lastError: null,
+      ...(degradedPhases === undefined ? {} : { degradedPhases }),
+      delayedRetryCount: 0,
+      pendingRetryAt: null,
+      pendingRetryCause: null,
+      phaseOverrides: [],
+      manualPauseAt: null,
+      manualPauseCause: null,
+      phaseBreakpoints: [],
+      resumeTargetPhaseId: null
+    };
+  }
+
+  it('writes the phases the run carried past their cap (T035, FR-011a)', async () => {
+    const a = await queue.enqueue('degrades twice, then fails');
+    await queue.markInFlight(a.id, 'run-1');
+    await store.setRun(
+      DEFAULT_QUEUE_ID,
+      runFor(a.id, [DEGRADED_AUDIT, DEGRADED_VERIFY]),
+      unfencedCommit('test-fixture')
+    );
+
+    await queue.finish(a.id, 'failed', 'boom');
+
+    // Order is the record of which phase degraded first, so it is asserted.
+    expect(queue.findById(a.id)?.degradedPhases).toEqual([DEGRADED_AUDIT, DEGRADED_VERIFY]);
+  });
+
+  it('captures on every terminal status, with no branch on which one (T039, C3.9, FR-012)', async () => {
+    // A degraded run that later fails carries both facts, and neither displaces
+    // the other: the row says failed AND says which phase was let through. A
+    // capture that ran only on `completed` would erase the mark from exactly the
+    // rows an operator is most likely to be reading.
+    for (const status of ['completed', 'failed', 'canceled'] as const) {
+      const task = await queue.enqueue(`ends ${status}`);
+      await queue.markInFlight(task.id, 'run-1');
+      await store.setRun(DEFAULT_QUEUE_ID, runFor(task.id, [DEGRADED_AUDIT]), unfencedCommit('test-fixture'));
+
+      await queue.finish(task.id, status, status === 'failed' ? 'boom' : null);
+
+      const row = queue.findById(task.id);
+      expect(row?.status, status).toBe(status);
+      expect(row?.degradedPhases, status).toEqual([DEGRADED_AUDIT]);
+    }
+  });
+
+  it('writes no key for a run that degraded nowhere (T035, C3.6)', async () => {
+    // Absence means NOT degraded — the one place this field's semantics differ
+    // from `phaseProgress` above, where absence means unknown. So the clean case
+    // must leave the record alone rather than stamp an empty list on every task
+    // the product ever finishes.
+    for (const [label, degraded] of [
+      ['an empty list', [] as readonly DegradedPhaseEntry[]],
+      ['no field at all', undefined]
+    ] as const) {
+      const a = await queue.enqueue(`clean run with ${label}`);
+      await queue.markInFlight(a.id, 'run-1');
+      await store.setRun(DEFAULT_QUEUE_ID, runFor(a.id, degraded), unfencedCommit('test-fixture'));
+
+      await queue.finish(a.id, 'completed');
+
+      expect(queue.findById(a.id), label).not.toHaveProperty('degradedPhases');
+    }
+  });
+
+  it('writes nothing when the task has no run at all (T035)', async () => {
+    const a = await queue.enqueue('run already disposed of');
+    await queue.markInFlight(a.id, 'run-1');
+
+    await queue.finish(a.id, 'failed', 'boom');
+
+    expect(queue.findById(a.id)).not.toHaveProperty('degradedPhases');
+  });
+
+  it('does not borrow a sibling task\'s run (T035, C3.5)', async () => {
+    // The contract behind the `findRunByTask` lookup. A capture that read "the
+    // queue's current run" would stamp the finishing task with whatever its
+    // neighbour was doing — and this is the field where that is worst: the row
+    // would accuse a task of a degradation that happened to a different one.
+    const a = await queue.enqueue('the one that finishes');
+    const b = await queue.enqueue('the one that owns the run');
+    await queue.markInFlight(b.id, 'run-1');
+    await store.setRun(DEFAULT_QUEUE_ID, runFor(b.id, [DEGRADED_AUDIT]), unfencedCommit('test-fixture'));
+
+    await queue.finish(a.id, 'canceled');
+
+    expect(queue.findById(a.id)).not.toHaveProperty('degradedPhases');
+    expect(queue.findById(b.id)).not.toHaveProperty('degradedPhases');
+  });
+
+  it('leaves a refused finish wholly untouched (T035)', async () => {
+    // `pending -> completed` is the refused edge. The refusal throws before the
+    // mutation, so the capture must sit inside the transition callback and not
+    // beside the call.
+    const a = await queue.enqueue('never started');
+    const before = queue.findById(a.id);
+    await store.setRun(DEFAULT_QUEUE_ID, runFor(a.id, [DEGRADED_AUDIT]), unfencedCommit('test-fixture'));
+
+    const result = await queue.finish(a.id, 'completed');
+
+    expect(result.ok).toBe(false);
+    expect(queue.findById(a.id)).toEqual(before);
+    expect(queue.findById(a.id)).not.toHaveProperty('degradedPhases');
+  });
+
+  /**
+   * FR-R3-157 (T036, FR-013, C3.8) — retry clears the mark.
+   *
+   * The mark describes **one attempt**. A retried task starts a new one, and a
+   * surviving mark would report a degradation the current attempt has not had —
+   * accusing a run that is at that moment working correctly. FR-013 fixes the
+   * moment as well as the fact: the clear happens when the retry is requested,
+   * not when the new attempt reaches a terminal status, so there is no window in
+   * which a pending task still shows the previous attempt's doubt.
+   */
+  describe('FR-R3-157 (T036) — retry clears the mark', () => {
+    it('leaves no degradedPhases on a task returned to pending (FR-013)', async () => {
+      const a = await queue.enqueue('degrades, fails, is retried');
+      await queue.markInFlight(a.id, 'run-1');
+      await store.setRun(DEFAULT_QUEUE_ID, runFor(a.id, [DEGRADED_AUDIT]), unfencedCommit('test-fixture'));
+      await queue.finish(a.id, 'failed', 'boom');
+      expect(queue.findById(a.id)?.degradedPhases).toEqual([DEGRADED_AUDIT]);
+
+      const result = await queue.retry(a.id);
+
+      expect(result.ok).toBe(true);
+      expect(queue.findById(a.id)?.status).toBe('pending');
+      // Removed, never emptied. `degradedPhases: []` reads the same to a correct
+      // reader but puts the key on the record permanently, and the absent case
+      // then has nothing left to test.
+      expect(queue.findById(a.id)).not.toHaveProperty('degradedPhases');
+    });
+
+    it('clears it before the new attempt starts, not at its terminal status (FR-013)', async () => {
+      // The moment matters on its own. Between the retry and the new run's first
+      // phase the task is pending and visible, and if the mark were cleared only
+      // at the next `finish()` it would sit on a queued row describing a run that
+      // no longer exists. Asserted with nothing started after the retry.
+      const a = await queue.enqueue('retried and left pending');
+      await queue.markInFlight(a.id, 'run-1');
+      await store.setRun(DEFAULT_QUEUE_ID, runFor(a.id, [DEGRADED_AUDIT]), unfencedCommit('test-fixture'));
+      await queue.finish(a.id, 'failed', 'boom');
+
+      await queue.retry(a.id);
+
+      expect(queue.findById(a.id)?.status).toBe('pending');
+      expect(queue.findById(a.id)).not.toHaveProperty('degradedPhases');
     });
   });
 });

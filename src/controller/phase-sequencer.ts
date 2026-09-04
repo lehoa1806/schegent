@@ -42,6 +42,7 @@ import type {
 } from '../state/workflow-run';
 import type { PhaseDef } from '../config/pipeline-config';
 import { transition, type TransitionResult } from './phase';
+import { resolveRetryCapOutcome } from '../contracts/retry-cap-outcome';
 import type { PhaseRunOutput } from './phase-runner';
 import { toDelayedRetryCause } from './rate-limit-backoff';
 import { CAP_EXHAUSTED_CAUSE } from '../audit/audit-payload';
@@ -320,9 +321,14 @@ export class PhaseSequencer {
       pipeline: run.pipeline,
       phaseDef: activePhaseDef ?? undefined,
       ...(auditMetrics ? { metrics: auditMetrics } : {}),
-      ...(forceContinueOnRetryCapDefault !== undefined
-        ? { forceContinueOnRetryCapDefault }
-        : {}),
+      // FR-R3-157 (contract C1, FR-007) — resolved HERE, at the one call site that
+      // holds both ingredients, and passed to `transition()` already decided.
+      // `resolveRetryCapOutcome` is the only reader of the deprecated boolean in
+      // the product; `transition()` now switches on the answer and derives nothing.
+      capOutcome: resolveRetryCapOutcome(
+        activePhaseDef ?? undefined,
+        forceContinueOnRetryCapDefault
+      ),
       // Feature 194 (FR-010, C3.3) — the same count `PhaseRetryEvaluator`
       // computed for this iteration's `phase.retry_evaluated` record, so the
       // cap warning renders the identical number rather than a second

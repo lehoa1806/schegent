@@ -528,10 +528,13 @@ describe('PhaseSequencer.decideAfterPhase', () => {
   });
 
   it('threads forceContinueOnRetryCapDefault through to the advance-or-loop branch', () => {
-    // The workspace-setting default is resolved per phase decision by the
-    // driver and passed down; the sequencer's only job is to hand it to
-    // `transition()` unchanged. Same input as the cap_exhausted test above —
-    // only the default differs, so a `fail` here would mean the thread is cut.
+    // The workspace-setting default is read per phase decision by the driver and
+    // passed down. FR-R3-157 moved what the sequencer does with it: it no longer
+    // forwards the boolean to `transition()`, it resolves it through
+    // `resolveRetryCapOutcome` and forwards the OUTCOME. The assertions are
+    // unchanged and still span the whole thread — same input as the
+    // cap_exhausted test above, only the default differs, so a `fail` here means
+    // the thread is cut, now at either of the two links instead of one.
     const run = makeRun({ currentPhase: 'speckit-implement' });
     const output = makeOutput({
       result: {

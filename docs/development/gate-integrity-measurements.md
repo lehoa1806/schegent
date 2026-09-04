@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 108
+    vacuity-census-denominator: 109
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **108** |
+| Gates the detector calls **controlled** (the denominator) | **109** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -204,6 +204,22 @@ was removed. The revert route was available too — both tiers named the symbol 
 probe tests the rule the gate states rather than the two call sites that happened to break it. The rate
 stays **0.0%** — the entrant was mutated with the rest and did not survive.
 
+**Denominator movement 108 → 109 (2026-09-04, `FR-R3-157`).** One gate joined, and it joined because
+`scanning-gates-prove-they-scanned` caught it uncontrolled first — the loud direction working as
+designed, on a gate written three days earlier in this same round.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | `retry-cap-resolution-site.test.ts` (108 → 109) | Joined. Refuses a second place that DECIDES from `forceContinueOnRetryCap`: the deprecated switch loads forever, so the identifier stays declared, validated, copied and serialized in seventeen source files, and what must not exist twice is a reader. It walks `src/` and `webview-ui/src` with `readdirSync` and asserts `toEqual([])` four times — an unclassified file, a stale role, a second reader, and zero occurrences in `src/controller/phase.ts`. **It was `isScanningGate` and not `looksControlled` when it was written**, so `scanning-gates-prove-they-scanned` named it as an offender — that gate's `WITHOUT_A_CONTROL` allowlist is deliberately empty and asserted empty in both directions, so there was no exemption to take — and it stayed red until two floors were added: the scan must find at least fifteen naming sites, and it must contain `src/contracts/retry-cap-outcome.ts`, the one file whose recorded role is `reader`. |
+
+Worth recording as the mirror of the `start-failure-classification-coverage` row above. That gate
+entered the denominator **on a word** — *vacuous* in a test title — and its near miss was caught by a
+human reading the file. This one was caught by the meta-gate, which is the outcome the broad
+`PROVES_NON_EMPTY` is supposed to produce and the first time in this document it is recorded doing so
+on a new gate rather than on a reclassification. The rate stays **0.0%** — the entrant was mutated
+with the rest and did not survive, and both of its floors are stripped by `neuter` (`MIN_[A-Z_]+` and
+`toContain(`), so the survival is not an artifact of the mutation missing them.
+
 The residual is unchanged and is the note below: the detector reads for scanning **by name**, so the
 next extraction of a walk into a helper will do this again. Nothing gates that.
 
@@ -219,7 +235,11 @@ emptiness, and proves nothing about its scan. The detector's own predicate is th
 result. Nothing on disk is modified.
 
 **What this number is.** Evidence that the detector reliably notices when a gate's control idiom is
-removed. Under this specific mutation it missed nothing across 78 gates.
+removed. Under this specific mutation it has missed nothing at any denominator this section records:
+`stillCalledControlled` has printed 0 on every run. (This sentence used to carry its own copy of the
+count — **78**, the figure of the first capture, left untouched while the denominator above it climbed
+to 109. A third authority on one number, and exactly the drift the note above predicts. The
+count is gone from it rather than corrected, so it cannot go stale again.)
 
 **What this number is NOT**, and the limit matters more than the value:
 

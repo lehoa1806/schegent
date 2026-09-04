@@ -53,6 +53,12 @@ const EVERY_FIELD_ROW = {
   retryCondition: 'attempts < 2',
   isRequired: false,
   forceContinueOnRetryCap: true,
+  // FR-R3-157 — declared BESIDE the boolean, and disagreeing with it. Both are
+  // authored fields, so both must arrive; and `'continue-degraded'` is a value
+  // the boolean cannot express, so a projection that folded the pair into one
+  // could not produce it. `'fail'` would have been indistinguishable from the
+  // resolver's default for a row that declared nothing.
+  onRetryCap: 'continue-degraded',
   // Not the `claude` default, and Git-capable: `sideEffects: 'git'` is refused on
   // `codex`, whose workspace-write keeps `.git` read-only.
   runner: 'agy',

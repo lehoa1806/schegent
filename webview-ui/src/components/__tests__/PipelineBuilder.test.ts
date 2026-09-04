@@ -1592,3 +1592,86 @@ describe('PipelineBuilder — Pipeline canvas behaviour (Feature 184)', () => {
     expect(at(container, 'pipelines-phase-id-0')?.textContent.trim()).toBe('speckit-specify');
   });
 });
+
+/**
+ * FR-R3-157 (T050, FR-017, C4.6, SC-012) — the cap outcome travels the path every
+ * other authored field travels, and the surface reports success only for a change
+ * the host accepted.
+ *
+ * There is no new IPC message and this file is where that is proved: the
+ * assertions below are against `saveDefinitionDraft`, the same mock the effort,
+ * runner and required cases assert against. A new message would have shown up
+ * here as a missing call, not as a passing test.
+ */
+describe('PipelineBuilder — per-phase retry cap outcome (T050, FR-017)', () => {
+  const RETRYING_PHASE = Object.freeze({
+    id: 'gated-phase',
+    name: 'Gated',
+    version: 1,
+    instruction: 'Run.',
+    retryCondition: 'tests-passed'
+  }) as unknown as PhaseDefinition;
+
+  async function openGatedPhase(): Promise<HTMLElement> {
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: buildSnapshot([RETRYING_PHASE]), initialTab: 'phases' }
+    });
+    await fireEvent.click(
+      container.querySelector('[data-testid="phases-list-item-gated-phase"]') as HTMLButtonElement
+    );
+    await tick();
+    return container;
+  }
+
+  it('carries the chosen outcome on the accepted draft write, and reports success', async () => {
+    vi.mocked(saveDraftHelper).mockClear();
+    const container = await openGatedPhase();
+
+    await fireEvent.change(
+      container.querySelector('[data-testid="phases-retry-cap-gated-phase"]') as HTMLSelectElement,
+      { target: { value: 'continue-degraded' } }
+    );
+    await fireEvent.click(container.querySelector('[data-testid="phases-save-all"]')!);
+    await tick();
+
+    expect(saveDraftHelper).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(saveDraftHelper).mock.calls[0][0].kind).toBe('phase');
+    expect(savedBody()).toMatchObject({ id: 'gated-phase', onRetryCap: 'continue-degraded' });
+    expect(
+      container.querySelector('[data-testid="save-error-banner"]'),
+      'an accepted write reports no error'
+    ).toBeNull();
+  });
+
+  it('does not report success for a change the host refused (SC-012)', async () => {
+    // The half that regresses silently. A surface that treated the *send* as the
+    // success would leave an operator believing a phase now continues past its
+    // cap when the host kept the old definition — and the disagreement surfaces
+    // as a failed task hours later, in a run nobody connects to this edit.
+    vi.mocked(saveDraftHelper).mockClear();
+    vi.mocked(saveDraftHelper).mockResolvedValueOnce({
+      status: 'rejected',
+      reason: 'invalid',
+      result: { errors: [{ field: 'onRetryCap', code: 'invalid-value', message: 'Unknown outcome' }] }
+    });
+    const container = await openGatedPhase();
+
+    await fireEvent.change(
+      container.querySelector('[data-testid="phases-retry-cap-gated-phase"]') as HTMLSelectElement,
+      { target: { value: 'continue' } }
+    );
+    await fireEvent.click(container.querySelector('[data-testid="phases-save-all"]')!);
+    await tick();
+
+    expect(
+      container.querySelector('[data-testid="save-error-banner"]'),
+      'a refused write must say so'
+    ).not.toBeNull();
+    // And the draft is still the operator's, not the host's: a refusal that
+    // silently reverted the control would lose the edit it just refused.
+    expect(
+      (container.querySelector('[data-testid="phases-retry-cap-gated-phase"]') as HTMLSelectElement)
+        .value
+    ).toBe('continue');
+  });
+});

@@ -163,6 +163,11 @@
           "name": "phaseProgress",
           "optional": true,
           "type": "TaskPhaseProgressProjection"
+        },
+        {
+          "name": "degradedPhases",
+          "optional": true,
+          "type": "readonly DegradedPhaseEntry[]"
         }
       ]
     },

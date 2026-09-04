@@ -79,13 +79,25 @@ const SIGNATURE = 'public async drive(';
  *        source-loc-budget.test.ts reads as an ungoverned file. The whole-file
  *        margin is the binding constraint on that arm, not this one.
  *
+ *   668  FR-R3-157 (2026-09-04) — the degraded-cap mark had to be appended in the
+ *        SAME persisted transition as the phase result it describes, which meant
+ *        adding to the post-phase `advanced` literal. Seven lines there put
+ *        `drive()` at 688 and `run-driver.ts` at 1,309 — 21 lines under a 1,330
+ *        ceiling whose FR-R3-119 tight margin is 26, so the whole-file gate the
+ *        681 entry above predicted would bind is exactly what bound. Both gates
+ *        name the same response and neither has a raise path, so the whole
+ *        `advanced` fold (30 lines) moved to `services/run-advance.ts` as
+ *        `advancedRun()` — a pure function of the Run, the decision and the
+ *        phase result — replaced by an 8-line call plus a 2-line comment. The
+ *        one-write guarantee is now stated and tested where it lives.
+ *
  * Next candidates, named so the next decrement does not start with a
  * re-measurement: the four pause arms — breakpoint, delayed-retry, rate-limit,
  * verify — are roughly 230 lines between them. The probe-failure arm is NOT a
  * candidate for merging into the shared sequence: its audit emission order differs,
  * and unifying it is an observable change.
  */
-const DRIVE_MAX_LINES = 681;
+const DRIVE_MAX_LINES = 668;
 
 /** Lines from the signature to the closing brace, inclusive. */
 export function methodLineCount(source: string, signature: string): number {

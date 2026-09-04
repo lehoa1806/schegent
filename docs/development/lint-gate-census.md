@@ -19,10 +19,10 @@ predicted it: its author sampled the set and found every gate well motivated.
 
 | Figure | Value | Date | Method |
 |---|---|---|---|
-| Gate files | **190** | 2026-09-03 | `*.test.ts` under `tests/lint/` recursively |
-| Marked `unique` | 175 | 2026-09-03 | hand verdict |
-| Marked `partially redundant` | 15 | 2026-09-03 | hand verdict |
-| Marked `redundant` | 0 | 2026-09-03 | hand verdict |
+| Gate files | **191** | 2026-09-04 | `*.test.ts` under `tests/lint/` recursively |
+| Marked `unique` | 176 | 2026-09-04 | hand verdict |
+| Marked `partially redundant` | 15 | 2026-09-04 | hand verdict |
+| Marked `redundant` | 0 | 2026-09-04 | hand verdict |
 
 <!-- census:prose -->
 
@@ -296,6 +296,7 @@ changing one means updating that machinery in the same commit.
 | `retention-disclosure-parity.test.ts` | FR-R3-085 — the retention disclosure derives from the retention constants | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `retired-definition-keys-absent.test.ts` | retired definition settings keys | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `retired-identifiers.test.ts` | the historical exemption list is live | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
+| `retry-cap-resolution-site.test.ts` | FR-R3-157 (FR-007, SC-006) — one resolution site for the deprecated switch | — | unique | nothing else asks who READS `forceContinueOnRetryCap`. The type system cannot: the field stays declared, validated, copied and serialized in seventeen files by design — it loads forever — so every one of those sites type-checks whether or not it also decides from the value, and a second decision site is well-typed. `restricted-configurations-parity.test.ts` is the only other lint file naming the identifier and does so in a comment, about the workspace setting's classification. Landed red 2026-09-04 on its C1.5 half: `src/controller/phase.ts` still named the field at five lines when the gate was written (T010), and went green when resolution moved out of it (T012), into the module that is now `src/contracts/retry-cap-outcome.ts` — relocated from `controller/` at T047 so the phase editor could share the one reader rather than copy it. The search term is the field NAME, never the value `continue-degraded` — that literal already occurs in `src/services/evidence-health/evidence-health-monitor.ts` as an unrelated evidence-sink policy, so a proof written against the value would match a file that decides nothing and pass while asserting nothing; the last test pins that collision so the trap stays visible. Two vacuity controls: the scan must find at least 15 sites and must contain the resolver itself, and the ROLES allowlist may not name a file that no longer names the field |
 | `retry-condition-bound-declared-once.test.ts` | the retryCondition bound is declared exactly once (111, FR-005) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `retry-condition-stays-inert.test.ts` | T511a — the retryConditions gate keys on presence, never on contents (FR-046) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `run-request-purity.test.ts` | Feature 087 — request validation imports no host API (T033) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |

@@ -1,5 +1,9 @@
 import { validate as parseRetryCondition, evaluate as evalRetryCondition } from '../lib/retry-condition';
-import { PHASE_RETRY_CONDITION_MAX_LEN } from '../contracts/process-definitions';
+import {
+  PHASE_RETRY_CONDITION_MAX_LEN,
+  type RetryCapOutcome
+} from '../contracts/process-definitions';
+import type { DegradedPhaseEntry } from '../contracts/snapshot-projections';
 import { CAP_EXHAUSTED_CAUSE } from '../audit/audit-payload';
 
 /**
@@ -11,6 +15,19 @@ import { CAP_EXHAUSTED_CAUSE } from '../audit/audit-payload';
  * Bracketed-lowercase to match the existing `[constitution]` convention.
  */
 export const FORCE_CONTINUE_NOTIFY_TAG = '[notify] forced-continue';
+
+/**
+ * FR-R3-157 — the same line for `'continue-degraded'`, under a tag of its own.
+ *
+ * A DISTINCT tag, not a suffix on the one above, because the two outcomes differ
+ * in exactly the thing a log reader is looking for: whether a durable record was
+ * written. Sharing the tag would make `continue` and `continue-degraded`
+ * indistinguishable to anyone grepping the log — and "a degraded run is never
+ * indistinguishable from a clean one" is the whole point of the third outcome
+ * (FR-006). It also keeps `FORCE_CONTINUE_NOTIFY_TAG`'s meaning exactly what it
+ * was, which contract C2.4 requires.
+ */
+export const DEGRADED_CONTINUE_NOTIFY_TAG = '[notify] continued-degraded';
 
 // Feature 098 (T038, FR-019, FR-021) — this module's second copy of the
 // built-in Phase ids is gone, along with the `BuiltInPhaseId` type derived from
@@ -51,25 +68,22 @@ export interface PipelineLike {
   readonly phases: ReadonlyArray<{ readonly id: string; readonly retryCondition?: string }>;
 }
 
+/**
+ * What `transition()` needs to know about a Phase — and, since FR-R3-157,
+ * deliberately nothing about what it does at the retry cap.
+ *
+ * The cap outcome used to be read from a boolean on this interface. It is now
+ * resolved before the call, by `contracts/retry-cap-outcome.ts`, and arrives as
+ * `TransitionInput.capOutcome`. Removing the field from here is the substance of
+ * that rule rather than a tidy-up: while the field remained, a later edit could
+ * consult it "just this once" beside the resolved value, and the two would agree
+ * on every input except a Phase carrying both authored forms.
+ * `tests/lint/retry-cap-resolution-site.test.ts` asserts this file names it nowhere.
+ */
 export interface PhaseDefLike {
   readonly id: string;
   readonly retryCondition?: string;
   readonly isRequired?: boolean;
-  /**
-   * When the `retryCondition` is STILL truthy at the iteration cap, advance
-   * with a `[notify]` warning instead of halting `failed`.
-   *
-   * Scoped deliberately to the cap. A phase whose condition can never go
-   * falsy — one gated on a step no headless run can perform — otherwise
-   * burns every iteration and then fails the whole task, and the only ways
-   * out were to leave it failing or to record work that did not happen.
-   *
-   * This is NOT a way past a `failed` or `timeout` outcome: those are
-   * terminal and never reach the retryCondition branch at all. Forcing past
-   * a fatal-signature match is a different decision on different evidence,
-   * and `isRequired: false` is the field that already makes it.
-   */
-  readonly forceContinueOnRetryCap?: boolean;
 }
 
 export type TransitionInput = {
@@ -83,11 +97,20 @@ export type TransitionInput = {
   // SCHEGENT AUDIT LOG metrics map. Optional; absent for legacy callers.
   metrics?: Readonly<Record<string, number>>;
   /**
-   * Workspace-level default for `PhaseDefLike.forceContinueOnRetryCap`,
-   * read fresh per phase invocation from `schegent.retry.forceContinueOnCap`.
-   * The phase field overrides it; absent on both sides means `false`.
+   * FR-R3-157 (contract C2) — what this Phase does if `retryCondition` is still
+   * truthy at the cap, ALREADY RESOLVED by `contracts/retry-cap-outcome.ts` from
+   * the Phase's own fields and the workspace default.
+   *
+   * It arrives resolved rather than as the ingredients because resolution has one
+   * home (FR-007), and an input this branch could re-derive is an invitation to
+   * re-derive it slightly differently. The caller that owns both ingredients —
+   * `phase-sequencer.ts` — is the one that calls the resolver.
+   *
+   * `undefined` means `'fail'`, which is not a fourth state: it is what a caller
+   * that passes nothing has always meant, and what a workspace that configured
+   * none of this has always done.
    */
-  forceContinueOnRetryCapDefault?: boolean;
+  capOutcome?: RetryCapOutcome;
   /**
    * Feature 194 (FR-010, contract C3.3) — the consecutive-unchanged-iterations
    * count computed once by `PhaseRetryEvaluator` and surfaced on
@@ -101,7 +124,19 @@ export type TransitionInput = {
 };
 
 export type TransitionResult =
-  | { kind: 'advance'; nextPhase: Phase; nextIteration: number; warnings: string[] }
+  | {
+      kind: 'advance';
+      nextPhase: Phase;
+      nextIteration: number;
+      warnings: string[];
+      /**
+       * FR-R3-157 — set only when this advance came from a `'continue-degraded'`
+       * cap exhaustion (contract C2.5). Its ABSENCE is meaningful and is the
+       * common case: every other advance leaves it undefined, and the caller
+       * reads that as "not degraded" rather than as "unknown".
+       */
+      degraded?: DegradedPhaseEntry;
+    }
   | { kind: 'loop'; nextPhase: Phase; nextIteration: number; warnings: string[] }
   | { kind: 'halt'; status: 'failed' | 'paused'; warnings: string[]; cause?: string };
 
@@ -181,7 +216,7 @@ export function transition(input: TransitionInput): TransitionResult {
     pipeline,
     phaseDef,
     metrics,
-    forceContinueOnRetryCapDefault,
+    capOutcome,
     stalledCount
   } = input;
   const warnings: string[] = [];
@@ -266,26 +301,63 @@ export function transition(input: TransitionInput): TransitionResult {
         // claiming in this comment that it did not — the two renderings of one
         // warning must not differ in punctuation.
         //
-        // Phase field wins over the workspace default; absent on both is `false`,
-        // which is the pre-existing halt.
-        const forceContinue =
-          phaseDef?.forceContinueOnRetryCap ?? forceContinueOnRetryCapDefault ?? false;
-        if (forceContinue) {
-          const next = nextSuccessor(phase, pipeline);
-          // Feature 194 (contract C3.4) — the clause is APPENDED, never
-          // substituted: the existing text, including the UNVERIFIED
-          // declaration, is retained unchanged.
-          warnings.push(
-            `${FORCE_CONTINUE_NOTIFY_TAG} ${phase}: retryCondition still truthy at cap ` +
-              `(${iterationCap}) — forced continue to ${next}. The condition was never ` +
-              `satisfied, so whatever it gates is UNVERIFIED${stagnationClause}.`
-          );
-          return {
-            kind: 'advance',
-            nextPhase: next,
-            nextIteration: successorIteration(next, pipeline),
-            warnings
-          };
+        // FR-R3-157 (contract C2) — this branch RESOLVES NOTHING. The outcome was
+        // resolved by `contracts/retry-cap-outcome.ts` before the call, from the
+        // Phase's own fields and the workspace default; here it is only acted on.
+        // The switch replaced a `?? ?? false` coalesce of those same two inputs,
+        // and the two arms below produce byte-identical warnings, cause and result
+        // to what that coalesce produced for `true` and `false` respectively
+        // (FR-002, FR-003) — the text inside them is untouched, not re-derived.
+        switch (capOutcome) {
+          case 'continue': {
+            const next = nextSuccessor(phase, pipeline);
+            // Feature 194 (contract C3.4) — the clause is APPENDED, never
+            // substituted: the existing text, including the UNVERIFIED
+            // declaration, is retained unchanged.
+            warnings.push(
+              `${FORCE_CONTINUE_NOTIFY_TAG} ${phase}: retryCondition still truthy at cap ` +
+                `(${iterationCap}) — forced continue to ${next}. The condition was never ` +
+                `satisfied, so whatever it gates is UNVERIFIED${stagnationClause}.`
+            );
+            return {
+              kind: 'advance',
+              nextPhase: next,
+              nextIteration: successorIteration(next, pipeline),
+              warnings
+            };
+          }
+          case 'continue-degraded': {
+            // FR-R3-157 (C2.3) — the same advance as `'continue'`, computed the
+            // same way. `nextSuccessor` and `successorIteration` are called
+            // here rather than shared with the arm above deliberately: the two
+            // arms must agree on WHERE the run goes, and the way to guarantee
+            // that is for both to ask the same two functions, not for one to
+            // inherit a value the other happened to compute.
+            const next = nextSuccessor(phase, pipeline);
+            // Two claims in one sentence, per C2.3: what is unverified, and that
+            // the run now carries a durable record of it. The second half is
+            // what tells a log reader there is something to go and look at —
+            // `retrySource` is non-empty here by the branch's own guard.
+            warnings.push(
+              `${DEGRADED_CONTINUE_NOTIFY_TAG} ${phase}: retryCondition still truthy at cap ` +
+                `(${iterationCap}) — continued to ${next} and RECORDED as degraded. The ` +
+                `condition was never satisfied, so whatever it gates is ` +
+                `UNVERIFIED${stagnationClause}.`
+            );
+            return {
+              kind: 'advance',
+              nextPhase: next,
+              nextIteration: successorIteration(next, pipeline),
+              warnings,
+              // The condition AS AUTHORED, untrimmed and unnormalized (FR-009).
+              // An operator reading the mark has to be able to match it against
+              // the line in their own pipeline file.
+              degraded: { phaseId: phase, condition: retrySource }
+            };
+          }
+          case 'fail':
+          case undefined:
+            break;
         }
         // FR-010 / SC-009: cap reached + truthy condition → terminal failure
         // with a redacted cause string distinct from the fatal-CLI cause.

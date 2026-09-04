@@ -93,6 +93,14 @@ export const SPEC_KEY_ORDER = Object.freeze([
   'loopable',
   'isRequired',
   'forceContinueOnRetryCap',
+  // FR-R3-157 — the three-valued cap outcome, immediately after the boolean it
+  // supersedes. A document may carry both (contract V2) and this order is what
+  // makes that legible: consecutive lines, deprecated first, so an author
+  // reading their own file sees the pair as one decision rather than two
+  // unrelated settings pages apart. Neither is dropped on save — dropping the
+  // boolean breaks a reader that predates this key, dropping `onRetryCap`
+  // silently reverts the author's decision to the boolean's two-valued answer.
+  'onRetryCap',
   'retryCondition'
 ] as const);
 

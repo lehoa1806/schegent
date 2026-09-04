@@ -299,6 +299,21 @@ classifier — it stays `task-deletion.ts`'s concern, which already brings an
 in-flight task's run to cancellation and releases its execution lease before
 the row is removed, for any Run status short of terminal.
 
+**What a Run leaves on its Task is one concept, not two lines.** A queue's
+single execution slot means a Run is disposed as soon as the next Task starts,
+so anything about a finished Task that must outlive it is copied onto the row at
+the moment it ends: `terminalCapture` (`src/queue/terminal-capture.ts`) pairs
+the settled-phase count (FR-R3-158) with the degraded-phase list (FR-R3-157) and
+`finish` spreads both into the same object literal as the terminal status, so no
+reader observes a row carrying the status but not the evidence. `retry` drops
+both together through `withoutTerminalCapture`, since a fresh attempt is not
+degraded by, and has not reached the phase count of, a previous one — and both
+are *removed* rather than emptied, so a pre-feature record still re-persists
+byte-identical. A `continue-degraded` Phase produces a Task that **completed**,
+so it does not halt its queue under `halt-on-failure`; that trade is the reason
+the durable mark exists, and a Phase whose unsatisfied condition should stop the
+queue declares `fail` instead.
+
 **Queue cleanup is addressed, and workspace-wide reset is a separate
 operation (FR-R3-150).** Queue Detail's Clean All clears *the queue the
 operator is looking at* via `CMD_CLEAR_QUEUE { queueId }`, handled by
@@ -354,6 +369,7 @@ call, which is what keeps the one-write invariant above intact.
 <!-- Source: src/queue/queue-reset-settle.ts -->
 <!-- Source: src/queue/feature-request.ts -->
 <!-- Source: src/queue/task-transition-decision.ts -->
+<!-- Source: src/queue/terminal-capture.ts -->
 <!-- Source: src/commands/clear-queue.ts -->
 <!-- Source: src/controller/queue-runner-ack.ts -->
 <!-- Source: src/controller/runner-ack-shared.ts -->
@@ -428,6 +444,28 @@ separate, Task-level fresh-Run operation (Feature 017 FR-034) and is not a
 path through this classifier — completing it never grants permission to
 restart a Phase inside a terminal Run.
 
+**The retry-cap outcome is per-Phase and three-valued (FR-R3-157).** When a
+Phase's `retryCondition` is still truthy at its final allowed iteration, the
+Phase decides between `fail` (end failed, with the cap-exhausted cause),
+`continue` (advance, with the explicit unverified warning), and
+`continue-degraded` (advance exactly as `continue` does, *and* record on the
+**Task** that this Phase's condition was never satisfied). `phase-sequencer.ts`
+resolves that once, through `resolveRetryCapOutcome`
+(`src/contracts/retry-cap-outcome.ts`), and hands `decideRetry` the answer
+already resolved — the classifier receives an outcome, it does not derive one.
+Precedence runs the Phase's own `onRetryCap`, then its deprecated boolean
+`forceContinueOnRetryCap` under the mapping that boolean always had
+(`true` → `continue`, `false` → `fail`), then the workspace default
+`schegent.retry.forceContinueOnCap` under the same mapping, then `fail`; so
+every pipeline file already on disk keeps its behaviour and none needs editing,
+now or later. The resolver is the **only** reader of either spelling, and
+`tests/lint/retry-cap-resolution-site.test.ts` fails on a second one, because a
+second reader would disagree with the first exactly on a Phase declaring both.
+It sits in `contracts/` rather than `controller/` because the Phase editor needs
+the same answer to render its control, and a webview copy of the precedence
+would be that second reader. The `fail` path — behaviour, warning text, and
+cause value — is unchanged by this feature.
+
 The sidebar projection follows the same override, not just the completed-
 phase ledger: `ui/sidebar/phase-projector.ts#buildPhasesFromRun` marks a
 future Phase carrying a `disabled` override as `disabled` at tile
@@ -440,6 +478,8 @@ paths to a bypassed Phase remain visually distinct.
 <!-- Source: src/controller/phase-runner.ts -->
 <!-- Source: src/controller/phase-control-service.ts -->
 <!-- Source: src/controller/phase-control-decision.ts -->
+<!-- Source: src/controller/phase-sequencer.ts -->
+<!-- Source: src/contracts/retry-cap-outcome.ts -->
 <!-- Source: src/ui/sidebar/phase-projector.ts -->
 <!-- Source: src/services/run-driver.ts -->
 <!-- Source: src/services/retry-coordinator.ts -->

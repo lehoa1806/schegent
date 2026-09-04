@@ -22,7 +22,8 @@ import type {
   PhaseEvidencePolicy,
   PhaseHostVerification,
   PhaseSideEffects,
-  PhaseSourceStatus
+  PhaseSourceStatus,
+  RetryCapOutcome
 } from '../../contracts/process-definitions';
 import type {
   PhaseBinding,
@@ -113,6 +114,13 @@ interface PhaseYamlSpecBase {
   readonly loopable?: boolean;
   readonly isRequired?: boolean;
   readonly forceContinueOnRetryCap?: boolean;
+  /**
+   * FR-R3-157 — the three-valued cap outcome that supersedes the boolean above.
+   * Both may appear on one phase: this format carries what the author wrote,
+   * and precedence between them is decided in exactly one place
+   * (`contracts/retry-cap-outcome.ts`), never here.
+   */
+  readonly onRetryCap?: RetryCapOutcome;
   /** Inert text. This feature never parses, evaluates, or rewrites it (FR-012). */
   readonly retryCondition?: string;
 }

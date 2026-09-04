@@ -67,6 +67,12 @@
     onKeyDown
   }: Props = $props();
 
+  // FR-R3-157 (T043, FR-009) — an absent key and an empty list are the same
+  // answer, NOT degraded, so they are collapsed once here rather than in the
+  // markup. Two spellings of nothing reaching two renderings is exactly the
+  // distinction FR-009 says nothing may draw.
+  const degraded = $derived(task.degradedPhases ?? []);
+
   // ---------- Label truncation ----------
   const LABEL_MAX_CHARS = 256;
   let expanded = $state(false);
@@ -197,6 +203,28 @@
     {#if task.retryCount > 0}
       <span class="progress-retry" data-testid="queue-task-retry-{task.id}">
         ↻ retried {task.retryCount}&times;
+      </span>
+    {/if}
+    {#if degraded.length > 0}
+      <!--
+        FR-R3-157 (T043, C4.3) — named, never merely flagged. `phaseId` says which
+        phase was let through and `condition` says what it did not satisfy. A mark
+        carrying only the word "degraded" would leave the operator the same
+        investigation they would have had with no mark at all (FR-010).
+
+        Read straight off the row: the state is decided once on the host (C4.1),
+        so there is nothing here to derive it from — no text scanned, no tag
+        matched, no phase looked up in the pipeline, no cap rule re-applied.
+      -->
+      <span class="progress-degraded" data-testid="queue-task-degraded-{task.id}">
+        <!-- Keyed by position, not by `phaseId`: a loopable phase can reach its cap
+             on more than one visit and append a second entry under the same id, so
+             the id is not an identity here. The list is append-only and renders as
+             plain text, so position IS the identity — nothing reorders and no node
+             holds state that a wrong association could carry across. -->
+        {#each degraded as entry, index (index)}
+          <span class="degraded-phase">⚠ unverified · {entry.phaseId} · {entry.condition}</span>
+        {/each}
       </span>
     {/if}
   </span>
@@ -353,6 +381,24 @@
   .progress-retry {
     font-size: 10px;
     color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground));
+  }
+
+  /* Warning-toned, not error-toned: a degraded run COMPLETED, and borrowing the
+     failure treatment would send an operator looking for a failure (C4.3). */
+  .progress-degraded { display: flex; flex-direction: column; gap: 1px; }
+
+  .degraded-phase {
+    font-size: 10px;
+    color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground));
+    border-left: 2px solid var(--vscode-editorWarning-foreground, currentColor);
+    padding-left: 5px;
+    /* `condition` is operator-authored and rendered as authored (FR-009), up to
+       PHASE_RETRY_CONDITION_MAX_LEN. The DSL admits identifiers with no break
+       opportunity in them, and one long enough would widen this column and push
+       the rest of the row grid out rather than wrapping. Same guard `.prompt-error`
+       and `.task-label` carry above, for the same reason: the text is bounded by a
+       validator, the column is not. */
+    overflow-wrap: anywhere;
   }
 
   /* ---- TIME ---- */

@@ -4,6 +4,7 @@ import type {
   ActiveFeatureSummary,
   ActivePipelineSummary,
   CliMonitorState,
+  DegradedPhaseEntry,
   DelayedRetryState,
   LaunchProjection,
   LiveActivity,
@@ -51,7 +52,13 @@ import type {
   PhaseHostVerification,
   PhaseSideEffects,
   PhaseSourceStatus,
+  RetryCapOutcome,
 } from '../../../src/contracts/process-definitions.js';
+// FR-R3-157 (T047) — re-exported, unlike its three neighbours above, because the
+// builder's own row type names this field and must spell its type. The neighbours
+// are only ever read off a `PortablePhaseDefinition`, so nothing downstream needs
+// the bare name.
+export type { RetryCapOutcome };
 import type { PhaseCapability } from '../../../src/contracts/phase-capabilities.js';
 import type {
   PipelineInputPortType,
@@ -220,6 +227,7 @@ export type {
   ActivePipelineSummary,
   AuditCategory,
   CliMonitorState,
+  DegradedPhaseEntry,
   DelayedRetryCauseProjection,
   DelayedRetryState,
   FreshnessState,
@@ -355,6 +363,17 @@ export interface QueueItem {
    * renders nothing and looks like a task that made none.
    */
   readonly phaseProgress: TaskPhaseProgressProjection | null;
+  /**
+   * FR-R3-157 — the phases the host resolved as carried past their retry cap.
+   *
+   * Optional where `phaseProgress` above is required, and the asymmetry is the
+   * host's, mirrored rather than reasoned about again here: progress is a
+   * measurement that may be unavailable, so a row must say `null` out loud;
+   * degradation is an event that either happened or did not, so absence means
+   * NOT degraded and there is nothing to leave undecided. An empty list means
+   * the same thing and the host never writes one.
+   */
+  readonly degradedPhases?: readonly DegradedPhaseEntry[];
 }
 
 export interface QueueProjection {
@@ -520,6 +539,12 @@ export interface PortablePhaseDefinition {
   readonly spendBoundUsd?: number;
   readonly spendBoundTokens?: number;
   readonly forceContinueOnRetryCap?: boolean;
+  // FR-R3-157 (T046) — the second carrier, and a different declaration from the
+  // `QueueItem` mirror further down this file. The host projection already copies
+  // this field onto the record (`phase-catalog-projection.ts`); a shape that did
+  // not declare it would drop it on the way into the editor, which is the exact
+  // failure the note above records for `capabilities`.
+  readonly onRetryCap?: RetryCapOutcome;
 }
 
 export interface PhaseCatalogSourceRecord {

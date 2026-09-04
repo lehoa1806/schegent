@@ -3,9 +3,11 @@ import {
   transition,
   isLoopPhase,
   nextSuccessor,
+  DEGRADED_CONTINUE_NOTIFY_TAG,
   FORCE_CONTINUE_NOTIFY_TAG,
   type TransitionInput
 } from '../../../src/controller/phase';
+import { resolveRetryCapOutcome } from '../../../src/contracts/retry-cap-outcome';
 import {
   FIXTURE_PHASES,
   FIXTURE_PHASE_FIRST,
@@ -286,7 +288,8 @@ describe('Phase enum and transitions', () => {
           }],
           ['forced continue at cap', {
             ...toSecond, outcome: 'issues_remain', iteration: 5,
-            phaseDef: { ...def, retryCondition: 'pending_tasks > 0', forceContinueOnRetryCap: true },
+            phaseDef: { ...def, retryCondition: 'pending_tasks > 0' },
+            capOutcome: 'continue',
             metrics: { pending_tasks: 2 }
           }],
           // The legacy branch: no `phaseDef`, so `speckit-clarify` loops from
@@ -364,6 +367,16 @@ describe('Phase enum and transitions', () => {
       // whose retryCondition never went falsy advances instead of halting, and
       // says so under a notification tag. It is NOT a way past a `failed` or
       // `timeout` outcome — those are terminal before the cap is ever read.
+      //
+      // FR-R3-157 (decision D-I1) — `transition()` no longer takes the boolean or
+      // the workspace default; it takes the outcome those two resolve to. Each
+      // test below keeps every assertion it had and changes only how `capOutcome`
+      // is BUILT: through `resolveRetryCapOutcome`, the real production resolver,
+      // fed the same two inputs the test used to pass to `transition()` directly.
+      // The precedence claim is therefore still made end to end, through the same
+      // two collaborators the production path uses — rewriting these to pass a
+      // literal `capOutcome` instead is what would have weakened them, because
+      // three of the four would then assert the same tautology.
       const CAP_EXHAUSTED = {
         phase: 'security-audit',
         outcome: 'clean',
@@ -375,7 +388,11 @@ describe('Phase enum and transitions', () => {
       it('advances past the cap and tags the warning when the phase opts in', () => {
         const result = transition({
           ...CAP_EXHAUSTED,
-          phaseDef: { ...PHASE_DEF, forceContinueOnRetryCap: true }
+          phaseDef: PHASE_DEF,
+          capOutcome: resolveRetryCapOutcome(
+            { ...PHASE_DEF, forceContinueOnRetryCap: true },
+            undefined
+          )
         });
 
         expect(result.kind).toBe('advance');
@@ -389,7 +406,11 @@ describe('Phase enum and transitions', () => {
         const result = transition({
           ...CAP_EXHAUSTED,
           phaseDef: PHASE_DEF,
-          forceContinueOnRetryCapDefault: true
+          // `{}` rather than `PHASE_DEF`: the compiler REFUSES `PHASE_DEF` here
+          // (TS2559, no properties in common with `RetryCapDefLike`) because it
+          // states neither cap field, which is the precondition this test is
+          // about. The refusal is the proof; `{}` is what PHASE_DEF contributes.
+          capOutcome: resolveRetryCapOutcome({}, true)
         });
 
         expect(result.kind).toBe('advance');
@@ -398,8 +419,11 @@ describe('Phase enum and transitions', () => {
       it('lets an explicit phase `false` override a workspace default of true', () => {
         const result = transition({
           ...CAP_EXHAUSTED,
-          phaseDef: { ...PHASE_DEF, forceContinueOnRetryCap: false },
-          forceContinueOnRetryCapDefault: true
+          phaseDef: PHASE_DEF,
+          capOutcome: resolveRetryCapOutcome(
+            { ...PHASE_DEF, forceContinueOnRetryCap: false },
+            true
+          )
         });
 
         expect(result.kind).toBe('halt');
@@ -410,8 +434,8 @@ describe('Phase enum and transitions', () => {
         const result = transition({
           ...CAP_EXHAUSTED,
           outcome: 'failed',
-          phaseDef: { ...PHASE_DEF, forceContinueOnRetryCap: true },
-          forceContinueOnRetryCapDefault: true
+          phaseDef: PHASE_DEF,
+          capOutcome: resolveRetryCapOutcome({ ...PHASE_DEF, forceContinueOnRetryCap: true }, true)
         });
 
         expect(result.kind).toBe('halt');
@@ -421,10 +445,204 @@ describe('Phase enum and transitions', () => {
       });
 
       it('defaults off — an unset field with no default keeps the halt', () => {
-        const result = transition({ ...CAP_EXHAUSTED, phaseDef: PHASE_DEF });
+        const result = transition({
+          ...CAP_EXHAUSTED,
+          phaseDef: PHASE_DEF,
+          // `{}` for the same reason as above — a phase stating neither field.
+          capOutcome: resolveRetryCapOutcome({}, undefined)
+        });
 
         expect(result.kind).toBe('halt');
         if (result.kind === 'halt') expect(result.cause).toBe('cap_exhausted');
+      });
+    });
+
+    // FR-R3-157 (contract C2) — `transition()` no longer resolves anything at the
+    // cap. It receives an outcome already resolved by
+    // `contracts/retry-cap-outcome.ts` and switches on it. The block above still
+    // asserts the resolution PRECEDENCE end to end, composed through that same
+    // function; this block asserts the switch itself, one arm at a time.
+    describe('capOutcome — the resolved outcome at the cap (FR-R3-157)', () => {
+      const CAP_EXHAUSTED = {
+        phase: 'security-audit',
+        outcome: 'clean',
+        iteration: 5,
+        iterationCap: 5,
+        phaseDef: PHASE_DEF,
+        metrics: { open_questions: 3 }
+      } as const;
+
+      it("'fail' halts with the cap-exhausted cause (C2.1, FR-002)", () => {
+        const result = transition({ ...CAP_EXHAUSTED, capOutcome: 'fail' });
+
+        expect(result.kind).toBe('halt');
+        if (result.kind !== 'halt') return;
+        expect(result.status).toBe('failed');
+        expect(result.cause).toBe('cap_exhausted');
+        expect(result.warnings.some((w) => w.startsWith(FORCE_CONTINUE_NOTIFY_TAG))).toBe(false);
+      });
+
+      it("'continue' advances under the forced-continue tag (C2.2, FR-003)", () => {
+        const result = transition({ ...CAP_EXHAUSTED, capOutcome: 'continue' });
+
+        expect(result.kind).toBe('advance');
+        if (result.kind !== 'advance') return;
+        expect(result.nextPhase).toBe(nextSuccessor('security-audit', undefined));
+        expect(result.warnings.some((w) => w.startsWith(FORCE_CONTINUE_NOTIFY_TAG))).toBe(true);
+      });
+
+      // C2.7 — the two call sites that pass no phase definition also pass no
+      // outcome, and neither can reach this branch. Absent must nonetheless be
+      // the safe answer rather than an unhandled case.
+      it('an absent capOutcome behaves as `fail` (C2.7)', () => {
+        const result = transition({ ...CAP_EXHAUSTED });
+
+        expect(result.kind).toBe('halt');
+        if (result.kind !== 'halt') return;
+        expect(result.status).toBe('failed');
+        expect(result.cause).toBe('cap_exhausted');
+      });
+
+      // --- FR-R3-157 US2 — the third outcome (contract C2.3-C2.6) -----------
+      //
+      // `continue-degraded` is `continue` that admits what it did. It has to
+      // advance identically — same successor, same iteration — because an
+      // outcome that also changed WHERE the run went would be two decisions
+      // wearing one name, and the operator choosing it is choosing to proceed,
+      // not to reroute. What it adds is the record: a named entry, and a warning
+      // that says a durable record exists so a log reader knows to go looking.
+      describe("'continue-degraded' (C2.3-C2.6)", () => {
+        it('advances to exactly where `continue` would (C2.3, FR-004)', () => {
+          // Asserted against `continue`'s OWN result rather than against a
+          // literal successor: the claim is that the two agree, and a literal
+          // would keep passing if both drifted together.
+          const plain = transition({ ...CAP_EXHAUSTED, capOutcome: 'continue' });
+          const degraded = transition({ ...CAP_EXHAUSTED, capOutcome: 'continue-degraded' });
+
+          expect(plain.kind).toBe('advance');
+          expect(degraded.kind).toBe('advance');
+          if (plain.kind !== 'advance' || degraded.kind !== 'advance') return;
+          expect(degraded.nextPhase).toBe(plain.nextPhase);
+          expect(degraded.nextIteration).toBe(plain.nextIteration);
+        });
+
+        it('names the phase and the authored condition on the mark (C2.3, FR-009)', () => {
+          const result = transition({ ...CAP_EXHAUSTED, capOutcome: 'continue-degraded' });
+
+          expect(result.kind).toBe('advance');
+          if (result.kind !== 'advance') return;
+          // The condition is carried AS AUTHORED — not normalized, not the
+          // evaluated value. FR-009 is explicit that a mark saying only
+          // "degraded" does not satisfy it: the operator has to be able to see
+          // which gate went unverified without opening the pipeline file.
+          expect(result.degraded).toEqual({
+            phaseId: 'security-audit',
+            condition: PHASE_DEF.retryCondition
+          });
+        });
+
+        it('warns under a tag of its own, not the forced-continue one (C2.3, C2.4)', () => {
+          const result = transition({ ...CAP_EXHAUSTED, capOutcome: 'continue-degraded' });
+
+          expect(result.kind).toBe('advance');
+          if (result.kind !== 'advance') return;
+          expect(DEGRADED_CONTINUE_NOTIFY_TAG).not.toBe(FORCE_CONTINUE_NOTIFY_TAG);
+          const tagged = result.warnings.filter((w) =>
+            w.startsWith(DEGRADED_CONTINUE_NOTIFY_TAG)
+          );
+          expect(tagged, 'exactly one degraded warning, not zero and not two').toHaveLength(1);
+          // A reader who greps the forced-continue tag must not also collect
+          // these: the two outcomes differ precisely in whether a durable record
+          // was written, and a shared tag would erase that difference in the log.
+          expect(result.warnings.some((w) => w.startsWith(FORCE_CONTINUE_NOTIFY_TAG))).toBe(false);
+          // Both halves, per C2.3: what went wrong, and that it was recorded.
+          // Capitalized to match `UNVERIFIED`, which is this module's existing
+          // convention for the word a reader must not skim past.
+          expect(tagged[0]).toContain('UNVERIFIED');
+          expect(tagged[0]).toContain('RECORDED as degraded');
+        });
+
+        it('appends the stagnation clause under the same threshold (C2.3, feature 194)', () => {
+          const stalled = transition({
+            ...CAP_EXHAUSTED,
+            capOutcome: 'continue-degraded',
+            stalledCount: 4
+          });
+          const unstalled = transition({
+            ...CAP_EXHAUSTED,
+            capOutcome: 'continue-degraded',
+            stalledCount: 1
+          });
+
+          const clause = 'metrics unchanged across the last 4 comparisons';
+          expect(stalled.warnings.join(' ')).toContain(clause);
+          // The threshold is strictly > 1, as feature 194 fixed it: a count of
+          // exactly 1 is a real count that does not clear the bar.
+          expect(unstalled.warnings.join(' ')).not.toContain('metrics unchanged');
+        });
+
+        // C2.4 — the two pre-existing strings and the cause, by exact
+        // comparison. `toContain` would pass while a word was quietly added.
+        it('leaves the fail and continue paths byte-identical (C2.4, FR-002, FR-003)', () => {
+          const failed = transition({ ...CAP_EXHAUSTED, capOutcome: 'fail', stalledCount: 4 });
+          expect(failed.kind).toBe('halt');
+          if (failed.kind !== 'halt') return;
+          expect(failed.cause).toBe('cap_exhausted');
+          expect(failed.warnings).toContain(
+            'retryCondition still truthy at cap (5) on security-audit; metrics unchanged across the last 4 comparisons'
+          );
+
+          const continued = transition({
+            ...CAP_EXHAUSTED,
+            capOutcome: 'continue',
+            stalledCount: 4
+          });
+          expect(continued.warnings).toContain(
+            '[notify] forced-continue security-audit: retryCondition still truthy at cap (5) — ' +
+              'forced continue to done. The condition was never satisfied, so whatever it gates ' +
+              'is UNVERIFIED; metrics unchanged across the last 4 comparisons.'
+          );
+          expect(FORCE_CONTINUE_NOTIFY_TAG).toBe('[notify] forced-continue');
+        });
+
+        // C2.5 — the mark's absence is load-bearing. `degradedPhases` absent
+        // means NOT degraded (data-model §3), so any transition that attached
+        // `degraded` where it did not belong would mark a clean run.
+        it('attaches no mark to any other transition (C2.5)', () => {
+          const others = [
+            ['ordinary advance', transition({ ...CAP_EXHAUSTED, metrics: { open_questions: 0 } })],
+            ['loop below the cap', transition({ ...CAP_EXHAUSTED, iteration: 2 })],
+            ['halt at the cap', transition({ ...CAP_EXHAUSTED, capOutcome: 'fail' })],
+            ['plain continue at the cap', transition({ ...CAP_EXHAUSTED, capOutcome: 'continue' })],
+            [
+              'condition satisfied at the cap',
+              transition({
+                ...CAP_EXHAUSTED,
+                capOutcome: 'continue-degraded',
+                metrics: { open_questions: 0 }
+              })
+            ]
+          ] as const;
+          for (const [label, result] of others) {
+            expect(
+              'degraded' in result && result.degraded !== undefined,
+              `${label} carried a degraded mark`
+            ).toBe(false);
+          }
+        });
+
+        // C2.6 — the last phase. `continue-degraded` must resolve its successor
+        // through the same `nextSuccessor` call and invent no terminus of its own.
+        it('resolves the last phase to the same successor `continue` reaches (C2.6)', () => {
+          const last = { ...CAP_EXHAUSTED, phase: 'finalize', phaseDef: { ...PHASE_DEF, id: 'finalize' } };
+          const plain = transition({ ...last, capOutcome: 'continue' });
+          const degraded = transition({ ...last, capOutcome: 'continue-degraded' });
+
+          expect(degraded.kind).toBe('advance');
+          if (plain.kind !== 'advance' || degraded.kind !== 'advance') return;
+          expect(degraded.nextPhase).toBe(plain.nextPhase);
+          expect(degraded.nextPhase).toBe(nextSuccessor('finalize', undefined));
+        });
       });
     });
 
@@ -514,7 +732,8 @@ describe('Phase enum and transitions', () => {
       // decision is still an advance) is kept here.
       const stalled = transition({
         ...CAP_EXHAUSTED,
-        phaseDef: { ...PHASE_DEF, forceContinueOnRetryCap: true },
+        phaseDef: PHASE_DEF,
+        capOutcome: 'continue',
         stalledCount: 3
       });
       expect(stalled.kind).toBe('advance');
@@ -537,7 +756,11 @@ describe('Phase enum and transitions', () => {
       // two reach the threshold check by different routes (`undefined > 1` is
       // false by coercion, `1 > 1` by comparison), which is exactly the pair a
       // `?? 0` or a truthiness rewrite would split.
-      const forceContinue = { ...PHASE_DEF, forceContinueOnRetryCap: true };
+      // FR-R3-157 — the opt-in is now the resolved `capOutcome`, not a field on
+      // the definition. This test is about warning TEXT, so it states the outcome
+      // directly; the precedence that produces it is asserted in its own block.
+      const forceContinue = PHASE_DEF;
+      const capOutcome = 'continue' as const;
       // Spread, not `stalledCount: undefined`. The absent case must genuinely
       // omit the key — writing the property with an `undefined` value is a
       // different input under `exactOptionalPropertyTypes`, and it is the shape
@@ -547,7 +770,12 @@ describe('Phase enum and transitions', () => {
         ['absent', {}]
       ];
       for (const [label, stalled] of cases) {
-        const result = transition({ ...CAP_EXHAUSTED, phaseDef: forceContinue, ...stalled });
+        const result = transition({
+          ...CAP_EXHAUSTED,
+          phaseDef: forceContinue,
+          capOutcome,
+          ...stalled
+        });
         expect(result.kind, label).toBe('advance');
         const warning = result.warnings.find((w) => w.startsWith(FORCE_CONTINUE_NOTIFY_TAG));
         expect(warning, label).toBeDefined();

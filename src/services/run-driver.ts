@@ -12,6 +12,7 @@ import {
   nextOverridesAfterSkip,
   type PostPhaseDecision
 } from '../controller/phase-sequencer';
+import { advancedRun } from './run-advance';
 import { terminalSettler } from './run-terminal-effects';
 import { emitTerminalOutcomeAudit } from './terminal-outcome-audit';
 import {
@@ -969,29 +970,16 @@ export class RunDriver {
           nextRunnerKind !== undefined &&
           effectiveRunnerKind !== nextRunnerKind;
         if (crossesRunnerBoundary) pendingSessionReuse = false;
-        const advanced: WorkflowRun = {
-          ...run,
-          currentPhase: decision.kind === 'advance' ? decision.nextPhase : run.currentPhase,
-          currentIteration:
-            decision.kind === 'advance' || decision.kind === 'loop'
-              ? decision.nextIteration
-              : run.currentIteration,
-          lastTransitionAt: Date.now(),
-          phasesCompleted: [...run.phasesCompleted, phaseResult],
-          ...(optionalTerminalContinued
-            ? {
-                delayedRetryCount: 0,
-                pendingRetryAt: null,
-                pendingRetryCause: null
-              }
-            : {}),
-          ...(crossesRunnerBoundary
-            ? {
-                lastCliSessionId: undefined,
-                lastCliSessionRunnerKind: undefined
-              }
-            : {})
-        };
+        // FR-R3-157 (T028) — one write, including the degraded mark. See
+        // `run-advance.ts` for why the fold lives there rather than here.
+        const advanced = advancedRun({
+          run,
+          decision,
+          phaseResult,
+          optionalTerminalContinued,
+          crossesRunnerBoundary,
+          now: Date.now()
+        });
         run = await this.deps.persistTransition(run, advanced);
         if (optionalTerminalContinued) {
           await this.deps.emitOptionalPhaseFailureContinued(run, {

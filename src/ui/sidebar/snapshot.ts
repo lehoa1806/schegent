@@ -268,6 +268,20 @@ export interface QueueItem {
    * so the omission is a type error and not a blank row.
    */
   readonly phaseProgress: TaskPhaseProgressProjection | null;
+  /**
+   * FR-R3-157 (FR-011a) — the phases this task carried past their retry cap.
+   *
+   * **Optional, unlike `phaseProgress` directly above, and the difference is
+   * deliberate.** Progress is a measurement every row has: a construction site
+   * that has not worked it out must say `null` out loud, because a blank there
+   * could mean either "none" or "nobody computed it". Degradation is an event:
+   * it either happened and was recorded, or it did not happen. Absence means NOT
+   * degraded, so there is nothing for a construction site to fail to decide, and
+   * forcing every one of them to write `undefined` would add noise without
+   * adding a single catchable mistake. An empty list means the same thing and is
+   * never written.
+   */
+  readonly degradedPhases?: readonly DegradedPhaseEntry[];
 }
 
 
@@ -395,6 +409,7 @@ import type {
   ActiveFeatureSummary,
   ActivePipelineSummary,
   CliMonitorState,
+  DegradedPhaseEntry,
   DelayedRetryState,
   LaunchProjection,
   LiveActivity,
@@ -423,6 +438,7 @@ export type {
   ActivePipelineSummary,
   AuditCategory,
   CliMonitorState,
+  DegradedPhaseEntry,
   DelayedRetryCauseProjection,
   DelayedRetryState,
   FreshnessState,

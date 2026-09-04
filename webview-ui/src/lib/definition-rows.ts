@@ -18,7 +18,8 @@ import type { PhaseCapability } from '../../../src/contracts/phase-capabilities'
 import type {
   PhaseEvidencePolicy,
   PhaseHostVerification,
-  PhaseSideEffects
+  PhaseSideEffects,
+  RetryCapOutcome
 } from '../../../src/contracts/process-definitions';
 import type {
   PhaseBinding,
@@ -60,6 +61,12 @@ export interface SavePhaseRow {
   readonly retryCondition?: string;
   readonly isRequired?: boolean;
   readonly forceContinueOnRetryCap?: boolean;
+  // FR-R3-157 (T046) — declared beside the switch it supersedes, and for the same
+  // reason the ten missing names above were added: `toSavePhaseRow` walks the
+  // authored set, but a field this interface does not name cannot be typed onto a
+  // row, so the editor could not write one. Both forms stay declared indefinitely;
+  // a phase may carry either or both, and the host decides which wins.
+  readonly onRetryCap?: RetryCapOutcome;
   readonly runner?: string;
   readonly sideEffects?: PhaseSideEffects;
   readonly evidencePolicy?: PhaseEvidencePolicy;
