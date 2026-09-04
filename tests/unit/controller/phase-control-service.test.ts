@@ -412,6 +412,78 @@ describe('Phase control eligibility matrix (FR-R3-151, T1624)', () => {
     });
   });
 
+  // Feature 201 (US3, FR-018, FR-022, FR-023) — what deletion refuses, and
+  // whether the word it refuses with describes the cause.
+  //
+  // The service sees a queue id it was handed and a Task id it was asked
+  // about. It cannot tell "this Task does not exist" from "this Task exists
+  // but the queue you addressed is running something else" — both arrive as
+  // `run.featureId !== taskId`. Answering `unknown-task-id` for the second is
+  // a reason that misdescribes the cause: the operator is told their Task is
+  // unknown when it is known and merely not in flight. The id's existence is
+  // decided one layer up, at the controller, where the request rows are
+  // (T036); the service answers the question it can actually see.
+  describe('Delete refusals name their cause (Feature 201)', () => {
+    it("refuses no-active-run-for-task when the addressed queue's Run is not this Task's", async () => {
+      // The Run is real, in flight, and holds the Phase being named — so no
+      // other guard on this path can be the one that fires. Only the
+      // Task-identity comparison distinguishes this from the passing cases
+      // above, which is what makes the assertion about the reason word.
+      const run = makeThreePhaseRun();
+      const mocks = makeService(run);
+      await expectZeroWrites(mocks, async () => {
+        expect(await mocks.service.removeTaskPhase(QUEUE_ID, 'task-99', 'gamma')).toEqual({
+          ok: false,
+          reason: 'no-active-run-for-task'
+        });
+      });
+    });
+
+    it('still refuses no-run-in-flight on an idle queue', async () => {
+      // Unchanged row. Checked before the Task comparison, so it must keep
+      // winning: an idle queue has no Run to compare a Task id against, and
+      // saying the Task is not running this queue's Run would invent one.
+      const mocks = makeService(null as unknown as WorkflowRun);
+      await expectZeroWrites(mocks, async () => {
+        expect(await mocks.service.removeTaskPhase(QUEUE_ID, 'task-1', 'gamma')).toEqual({
+          ok: false,
+          reason: 'no-run-in-flight'
+        });
+      });
+    });
+
+    it('still refuses unknown-phase-id for a Phase the Run does not carry', async () => {
+      // Unchanged row, and the ordering control for the one above: the Task id
+      // is correct here, so this refusal can only come from the Phase check.
+      const mocks = makeService(makeThreePhaseRun());
+      await expectZeroWrites(mocks, async () => {
+        expect(await mocks.service.removeTaskPhase(QUEUE_ID, 'task-1', 'omega')).toEqual({
+          ok: false,
+          reason: 'unknown-phase-id'
+        });
+      });
+    });
+
+    it('still refuses phase-already-removed for a Phase already deleted', async () => {
+      // Unchanged row. Distinct from `unknown-phase-id` on purpose: the Phase
+      // is in the pipeline, so "unknown" would be false, and an operator who
+      // deleted it once should be told it is already gone rather than that it
+      // never existed.
+      const run = makeThreePhaseRun({
+        phaseOverrides: [
+          { phaseId: 'gamma', action: 'removed', setAt: 1 }
+        ] as unknown as WorkflowRun['phaseOverrides']
+      });
+      const mocks = makeService(run);
+      await expectZeroWrites(mocks, async () => {
+        expect(await mocks.service.removeTaskPhase(QUEUE_ID, 'task-1', 'gamma')).toEqual({
+          ok: false,
+          reason: 'phase-already-removed'
+        });
+      });
+    });
+  });
+
   describe('Pause / Resume — routed through the classifier without behavior change (FR-004)', () => {
     it('still refuses Pause with no in-flight Run', async () => {
       const run = makeThreePhaseRun({ status: 'completed' });

@@ -25,6 +25,12 @@ import {
  * Everything eligible: primary host, on-target surface, an active phase, a
  * future selection with no override and no breakpoint. Each case below turns
  * exactly one fact off, so what it proves is what it changed.
+ *
+ * Feature 201 — `selectedPhaseIsFuture: true` states here what "a future
+ * selection" already meant in every case written before it. The member is
+ * required rather than defaulted (see its doc), so adding it changed no
+ * expected value: it makes the origin these cases were always about legible
+ * instead of implied.
  */
 function base(over: Partial<PhaseControlEligibilityInput> = {}): PhaseControlEligibilityInput {
   return {
@@ -36,6 +42,7 @@ function base(over: Partial<PhaseControlEligibilityInput> = {}): PhaseControlEli
     manualPauseAt: null,
     selectedPhase: 'speckit-plan',
     selectedPhaseState: 'not-started',
+    selectedPhaseIsFuture: true,
     phaseOverrides: [],
     phaseBreakpoints: [],
     ...over
@@ -100,10 +107,11 @@ describe('the off-target guard', () => {
 });
 
 describe('Enable and Disable read the selected tile, not the active phase', () => {
-  it('Enable is eligible for a `disabled` selection', () => {
+  it('Enable is eligible for a `disabled` selection the runner has not reached', () => {
     const gate = phaseControlEligibility(
       base({
         selectedPhaseState: 'disabled',
+        selectedPhaseIsFuture: true,
         phaseOverrides: [{ phaseId: 'speckit-plan' }]
       })
     );
@@ -111,11 +119,38 @@ describe('Enable and Disable read the selected tile, not the active phase', () =
     expect(gate.selectedHasOverride).toBe(true);
   });
 
+  it('Enable is withheld for a `disabled` selection the runner already bypassed', () => {
+    // Feature 201 (FR-006, FR-007) — the same `state` word as the case above
+    // and the opposite answer. The projector writes `disabled` at two places:
+    // for a Phase still ahead of the runner, and for one the runner reached and
+    // bypassed with the override still set. Only the first can be re-enabled;
+    // the host answers `phase-not-future` for the second, so a clickable Enable
+    // here is a live control that produces a refusal and nothing else.
+    //
+    // These two cases differ in exactly one input. If a future change makes
+    // `enableDisabled` stop reading `selectedPhaseIsFuture`, this is the case
+    // that fails and the one above that keeps passing — which is what makes the
+    // pair a test of the conjunct rather than of the state word.
+    const gate = phaseControlEligibility(
+      base({
+        selectedPhaseState: 'disabled',
+        selectedPhaseIsFuture: false,
+        phaseOverrides: [{ phaseId: 'speckit-plan' }]
+      })
+    );
+    expect(gate.selectedHasOverride).toBe(true);
+    expect(gate.enableDisabled).toBe(true);
+  });
+
   it('Enable stays disabled for a `skipped` selection, which the host refuses', () => {
     // The closed defect: `selectedHasOverride` is true here — so the template
     // shows the Enable label — while `decidePhaseControl`'s 'enable' branch
     // requires a `disabled` override. A clickable Enable here produces a
     // refusal and nothing else.
+    //
+    // `selectedPhaseIsFuture` is left at the base's `true` on purpose: this
+    // case must keep failing for the state reason it was written about, not
+    // because feature 201's conjunct happens to also close it.
     const gate = phaseControlEligibility(
       base({
         selectedPhaseState: 'skipped',
