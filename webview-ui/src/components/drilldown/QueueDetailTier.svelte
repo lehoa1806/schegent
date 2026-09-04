@@ -116,12 +116,12 @@
   // that's the registry-level schedule mechanism `queue-manager.ts`'s own
   // header comment documents as dead in practice (Feature 097 removed its
   // only non-null writer). The armed schedule `QueueManager.clearQueue`
-  // actually resets is `QueueState`'s `scheduledStartAt`, which is not
-  // projected per-queue to the webview at all — but its pairing lifecycle
-  // value is: `data-model.md`'s scheduledStartAt/idle-pending invariant
-  // means `lifecycle === 'idle-pending'` iff a schedule is armed, and
-  // `QueueRuntime.lifecycle` (read for `paused` above) already carries it
-  // live, per queue.
+  // actually resets is `QueueState`'s `scheduledStartAt`, and that value IS
+  // projected per queue as `QueueRuntime.scheduledStartAt` (FR-R3-152) —
+  // which is what `deriveCleanAllContext` reads. An earlier revision of this
+  // comment claimed otherwise and inferred the schedule from `lifecycle ===
+  // 'idle-pending'`; that was wrong in tree, and `lib/queue-derived.ts`
+  // records why.
   const cleanAllContext = $derived(deriveCleanAllContext(snapshot, queueId));
   const cleanDisabled = $derived(
     pendingCount === 0 &&
