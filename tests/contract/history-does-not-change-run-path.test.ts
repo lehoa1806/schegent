@@ -171,6 +171,13 @@ describe('the queue model is unchanged by this feature (T083, FR-050)', () => {
       'lastError',
       'pauseCause',
       'pausedReason',
+      // FR-R3-158 — added by feature 198, not by a History surface. The pair a
+      // task settled has to outlive the Run that knew it (Runs are held one per
+      // queue, so the next task to start disposes it), which puts it on the task
+      // record by necessity rather than convenience. The pin stays exhaustive:
+      // this entry records a deliberate widening, and anything else appearing
+      // here still fails, which is what FR-050 is guarding.
+      'phaseProgress',
       'pipelineId',
       'position',
       'queueId',

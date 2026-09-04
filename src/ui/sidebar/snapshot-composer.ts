@@ -13,6 +13,7 @@ import { projectHistory } from './history-projector';
 import { projectMonitor } from './monitor-projector';
 import { buildPhasesFromRun, currentPhaseOrNull } from './phase-projector';
 import { sanitizeAndCap, projectQueue, projectQueueRows } from './queue-projector';
+import { phaseProgressContext } from './task-phase-progress';
 import {
   buildActiveFeature,
   computeIsPrimary,
@@ -175,11 +176,14 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
   // and scheduled-start into one shared context, so every queue's in-flight row
   // inherited the window Run's phase and pause cause. With one Run per queue
   // that is a visible cross-queue leak, not a harmless shared default.
+  const catalog =
+    deps.getCatalog?.() ?? { phases: [], pipelines: [], models: EMPTY_MODELS_BY_BACKEND };
   const rowContextFor = (queueId: string, state: QueueState) => {
     const run = runOf(queueId)?.run ?? null;
     return {
       sanitize,
       registry,
+      ...phaseProgressContext(run, catalog.pipelines), // FR-R3-158 — row sources 2 and 3.
       inFlightPhase: currentPhaseOrNull(run),
       inFlightId: state.inFlightId,
       inFlightManualPauseCause: run?.manualPauseCause ?? null,
@@ -198,11 +202,6 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
       ? { requestsOf: (queueId: string) => store.getRequestsForQueue!(queueId) }
       : {})
   });
-  const catalog = deps.getCatalog?.() ?? {
-    phases: [],
-    pipelines: [],
-    models: EMPTY_MODELS_BY_BACKEND
-  };
   const phaseCatalog = deps.getPhaseCatalog?.();
   // Absent means "availability is unknown", which every consumer already reads
   // as "warn about nothing" — so the fallback is empty rather than a guess.

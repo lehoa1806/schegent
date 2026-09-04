@@ -47,6 +47,7 @@ function task(id: string, overrides: Partial<QueueItem> = {}): QueueItem {
     pausedReason: null,
     currentPhase: null,
     position: 0,
+    phaseProgress: null,
     ...overrides
   };
 }

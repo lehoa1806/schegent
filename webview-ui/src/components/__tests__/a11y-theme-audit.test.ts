@@ -25,7 +25,8 @@ function buildQueueItem(): QueueItem {
     lastErrorSummary: null,
     pausedReason: null,
     currentPhase: null,
-    position: 0
+    position: 0,
+    phaseProgress: null
   });
 }
 

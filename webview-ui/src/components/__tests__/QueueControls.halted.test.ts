@@ -54,6 +54,7 @@ function buildHaltedTask(overrides: Partial<QueueItem> = {}): QueueItem {
     pausedReason: null,
     currentPhase: null,
     position: 1,
+    phaseProgress: null,
     ...overrides
   });
 }

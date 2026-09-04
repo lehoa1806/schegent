@@ -334,6 +334,28 @@ export interface RunProgressProjection {
 }
 
 /**
+ * FR-R3-158 — the phases a Task settled, and the plan it settled them out of.
+ *
+ * `RunProgressProjection` above answers the same question for the Run in
+ * flight, and only for that one: a Run is held per queue, so two failed Tasks
+ * can never both have one. This pair is the same two numbers carried per Task,
+ * so a Task can report what it settled after its Run is gone — which is the
+ * whole of the defect this shape exists to close.
+ *
+ * Both numbers come from one rule in `run-planned-total.ts`, paired in one
+ * place, so they cannot disagree. Carried as a pair rather than as two sibling
+ * fields because two fields can drift out of step and an object cannot: a count
+ * without its total is not renderable, and a total without its count is not
+ * meaningful.
+ */
+export interface TaskPhaseProgressProjection {
+  /** Distinct planned phases that settled. Never exceeds `total`. */
+  readonly settled: number;
+  /** Planned phases, with the same override exclusions applied. */
+  readonly total: number;
+}
+
+/**
  * FR-R3-130 (T1496) — aggregate stream pressure, as it stands right now.
  *
  * The audit of 2026-08-27's point about the cap-20 ceiling was that an operator can

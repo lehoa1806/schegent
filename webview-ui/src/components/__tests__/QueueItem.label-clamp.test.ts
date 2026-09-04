@@ -85,6 +85,7 @@ function pendingItem(label: string, overrides: Partial<QueueItemSnapshot> = {}):
     queueId: 'default',
     position: 0,
     pauseCause: null,
+    phaseProgress: null,
     ...overrides
   };
 }

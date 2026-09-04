@@ -72,6 +72,7 @@ function task(id: string, overrides: Partial<QueueItem> = {}): QueueItem {
     pausedReason: null,
     currentPhase: null,
     position: 0,
+    phaseProgress: null,
     ...overrides
   };
 }
@@ -1055,10 +1056,22 @@ describe('QueueDetailTier — Task row surfaces its own detail', () => {
     expect(text).not.toContain('deleted-pipeline');
   });
 
+  // FR-R3-158 (T023) — the fixture now carries the pair the host counted against
+  // this Task's own resolved Pipeline, because that count moved to the host. The
+  // assertion is unchanged and still fails if the row shows any other figure;
+  // what changed is only where the figure comes from. The counting rule itself is
+  // asserted at its new home in `tests/unit/services/settled-phase-progress.test.ts`
+  // and `tests/unit/ui/sidebar/task-phase-progress-projection.test.ts`.
   it('counts phase completion against the Task’s own resolved Pipeline (FR-003)', () => {
     const { getByTestId } = mount(
       buildSnapshot(
-        [task('a', { currentPipelineId: 'standard', currentPhase: 'speckit-plan' })],
+        [
+          task('a', {
+            currentPipelineId: 'standard',
+            currentPhase: 'speckit-plan',
+            phaseProgress: { settled: 1, total: 3 }
+          })
+        ],
         {
           pipelines: [
             { id: 'standard', name: 'Standard', phases: ['speckit-specify', 'speckit-plan', 'speckit-tasks'] }
@@ -1107,19 +1120,26 @@ describe('QueueDetailTier — Task row surfaces its own detail', () => {
     const { getByTestId } = mount(
       buildSnapshot(
         [
+          // FR-R3-158 (T023) — each row carries its own pair, which is what makes
+          // the non-borrowing claim below sharper than it was: the two rows now
+          // differ in the figure itself rather than only in the `currentPhase`
+          // both were counted from, so a row reading a sibling's field would show
+          // the wrong number rather than coincidentally the right one.
           task('live', {
             position: 0,
             status: 'in-flight',
             currentPipelineId: 'standard',
             currentPhase: 'speckit-tasks',
-            startedAt: '2026-08-12T00:00:00.000Z'
+            startedAt: '2026-08-12T00:00:00.000Z',
+            phaseProgress: { settled: 2, total: 3 }
           }),
           task('waiting', {
             position: 1,
             status: 'pending',
             currentPipelineId: 'standard',
             currentPhase: null,
-            startedAt: null
+            startedAt: null,
+            phaseProgress: { settled: 0, total: 3 }
           })
         ],
         {
@@ -1136,6 +1156,62 @@ describe('QueueDetailTier — Task row surfaces its own detail', () => {
     expect(getByTestId('queue-task-progress-waiting').textContent).toContain('0 of 3');
     expect(getByTestId('queue-task-timing-live').textContent).toMatch(/\d+[smh]/i);
     expect(getByTestId('queue-task-timing-waiting').textContent).toMatch(/waiting/i);
+  });
+
+  // FR-R3-158 (T021, FR-014, SC-008) — the row renders the pair the host sent it
+  // and computes nothing. The figure below is deliberately one no local
+  // derivation could produce: the row's pipeline lists three phases, so a webview
+  // that still counted for itself would render `of 3` and could never reach 5.
+  it('renders the host’s settled-phase pair verbatim, deriving nothing of its own (FR-014)', () => {
+    const { getByTestId } = mount(
+      buildSnapshot(
+        [
+          task('recorded', {
+            status: 'failed',
+            currentPipelineId: 'standard',
+            currentPhase: null,
+            phaseProgress: { settled: 5, total: 7 }
+          })
+        ],
+        {
+          pipelines: [
+            { id: 'standard', name: 'Standard', phases: ['speckit-specify', 'speckit-plan', 'speckit-tasks'] }
+          ]
+        }
+      )
+    );
+
+    expect(getByTestId('queue-task-progress-recorded').textContent).toContain('5 of 7');
+  });
+
+  // FR-R3-158 (T021, FR-014, SC-008) — unknown is not zero. A row whose pair the
+  // host could not resolve shows no figure at all: `0 of 0` reads as a finished
+  // run of nothing, and a placeholder dash reads as a number the operator has yet
+  // to load. Neither is true, so the row says nothing rather than saying that.
+  it('renders no progress figure at all when the host resolved no pair (SC-008)', () => {
+    const { getByTestId, queryByTestId } = mount(
+      buildSnapshot([
+        task('unknown', {
+          status: 'failed',
+          currentPipelineId: 'standard',
+          phaseProgress: null
+        })
+      ])
+    );
+
+    // The figure element is absent outright rather than present-and-blank, so
+    // there is no node a later change could quietly start filling with a zero.
+    expect(queryByTestId('queue-task-progress-text-unknown')).toBeNull();
+    // And the cell that would have held it carries no number of any kind — not
+    // `0`, not `0 of 0`, not a dash standing in for one.
+    // No `?? ''` here, unlike the two older reads of `textContent` in this file:
+    // `getByTestId` returns a non-nullable element, so the fallback is dead and
+    // `no-unnecessary-condition` counts it. Those two are baselined; a third
+    // would be a regression, so this one is written without it rather than
+    // matched to its neighbours.
+    const cell = getByTestId('queue-task-progress-unknown').textContent;
+    expect(cell).not.toMatch(/\d/);
+    expect(cell).not.toMatch(/of|phases|—|-{1,2}/);
   });
 });
 

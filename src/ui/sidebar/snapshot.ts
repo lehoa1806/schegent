@@ -257,6 +257,17 @@ export interface QueueItem {
     readonly pauseCauseCategory?: 'rate-limit' | 'fatal-signature' | 'operator-canceled';
     readonly resetsAtMs?: number;
   };
+  /**
+   * FR-R3-158 — `null` means **unknown**, never "no progress". A row with
+   * `null` renders no progress figure at all; rendering it as `0 of 0`, or as
+   * `0` against a total obtained some other way, is the defect this field
+   * replaced.
+   *
+   * Required key, nullable value: a construction site that has not decided
+   * what this task's progress is must say so with `null` rather than omit it,
+   * so the omission is a type error and not a blank row.
+   */
+  readonly phaseProgress: TaskPhaseProgressProjection | null;
 }
 
 
@@ -393,6 +404,7 @@ import type {
   RunProgressProjection,
   SessionArtifactsProjection,
   StreamPressureProjection,
+  TaskPhaseProgressProjection,
   WorkflowCatalogFieldErrorProjection,
   WorkflowStatus,
   AuditTailEntry,
@@ -429,6 +441,7 @@ export type {
   SessionArtifactsProjection,
   StreamPressureProjection,
   SubProgress,
+  TaskPhaseProgressProjection,
   WorkflowCatalogFieldErrorProjection,
   WorkflowStatus,
   AuditTailEntry,

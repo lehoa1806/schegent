@@ -113,7 +113,8 @@ const QUEUE_ITEM: QueueItem = {
   lastErrorSummary: null,
   pausedReason: null,
   currentPhase: 'speckit-plan',
-  position: 0
+  position: 0,
+  phaseProgress: null
 };
 
 /**

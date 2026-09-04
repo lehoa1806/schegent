@@ -35,7 +35,8 @@ function task(
     lastErrorSummary: overrides.lastErrorSummary ?? null,
     pausedReason: overrides.pausedReason ?? null,
     currentPhase: overrides.currentPhase ?? null,
-    position: overrides.position ?? 0
+    position: overrides.position ?? 0,
+    phaseProgress: null
   });
 }
 

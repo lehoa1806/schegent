@@ -158,6 +158,11 @@
           "name": "runPlan",
           "optional": true,
           "type": "FrozenRunPlan"
+        },
+        {
+          "name": "phaseProgress",
+          "optional": true,
+          "type": "TaskPhaseProgressProjection"
         }
       ]
     },

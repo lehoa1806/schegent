@@ -90,6 +90,7 @@ function item(overrides: Partial<QueueItemSnapshot> = {}): QueueItemSnapshot {
     queueId: 'default',
     position: 0,
     pauseCause: null,
+    phaseProgress: null,
     ...overrides
   };
 }

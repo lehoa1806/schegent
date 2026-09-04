@@ -13,6 +13,7 @@ import type {
   RunProgressProjection,
   SessionArtifactsProjection,
   StreamPressureProjection,
+  TaskPhaseProgressProjection,
   WorkflowCatalogFieldErrorProjection,
   WorkflowStatus,
   BuilderLifecycle,
@@ -237,6 +238,7 @@ export type {
   SessionArtifactsProjection,
   StreamPressureProjection,
   SubProgress,
+  TaskPhaseProgressProjection,
   WorkflowCatalogFieldErrorProjection,
   WorkflowStatus
 } from '../../../src/contracts/snapshot-projections.js';
@@ -344,6 +346,15 @@ export interface QueueItem {
     readonly pauseCauseCategory?: 'rate-limit' | 'fatal-signature' | 'operator-canceled';
     readonly resetsAtMs?: number;
   };
+  /**
+   * FR-R3-158 — the settled-phase pair the host resolved for this task.
+   * `null` means **unknown**, never "no progress": a row with `null` renders
+   * no figure at all. Required key and not optional, unlike the back-compat
+   * fields above it — a fixture that has not said what a task's progress is
+   * should be a type error, because the alternative is a row that silently
+   * renders nothing and looks like a task that made none.
+   */
+  readonly phaseProgress: TaskPhaseProgressProjection | null;
 }
 
 export interface QueueProjection {
