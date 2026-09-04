@@ -22,6 +22,10 @@ import { type ProjectedQueueRegistry } from '../../queue/queue-registry';
 import type { ManualPauseCause } from '../../state/workflow-run';
 import { projectQueues } from './queue-summary-projector';
 import {
+  resolveTaskPhaseProgress,
+  type TaskPhaseProgressContext
+} from './task-phase-progress';
+import {
   RECENT_QUEUE_MAX,
   type QueueItem,
   type QueueSummary
@@ -42,7 +46,10 @@ export function sanitizeAndCap(
   return sanitized;
 }
 
-export interface QueueProjectionContext {
+// FR-R3-158 — the settled-phase readings ride in on the same context every other
+// row field reads, so a caller that supplies neither projects `null` rather than
+// a fabricated figure. The resolution itself lives in `task-phase-progress.ts`.
+export interface QueueProjectionContext extends TaskPhaseProgressContext {
   readonly sanitize: (input: string) => string;
   readonly inFlightPhase: PhaseName | null;
   readonly inFlightId: string | null;
@@ -188,6 +195,7 @@ function toQueueItem(req: FeatureRequest, ctx: QueueProjectionContext): QueueIte
     // contract handles empty reads gracefully, so we prefer a cheap
     // snapshot-only test over a per-emission filesystem stat.
     hasOnDiskLogs: req.pipelineId !== null && req.pipelineId !== undefined,
+    phaseProgress: resolveTaskPhaseProgress(req, ctx),
     ...(pausedField !== undefined ? { paused: pausedField } : {})
   });
 }

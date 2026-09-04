@@ -24,7 +24,7 @@
   import { findQueueRuntime } from '../../lib/queue-runtime-view';
   import { buildQueueRunRows, type ConnectedRunRow } from '../../lib/queue-run-rows';
   import { findTaskPipeline, resolveTaskPipelineName } from '../../lib/resolve-pipeline-name';
-  import { deriveTaskPhaseProgress, deriveTaskTiming } from '../../lib/task-row-view';
+  import { deriveTaskTiming } from '../../lib/task-row-view';
   import { nowFine } from '../../lib/tick-store';
   import QueueTaskRow from './QueueTaskRow.svelte';
   import type { QueueItem, WorkflowSnapshot } from '../../lib/snapshot-types';
@@ -216,7 +216,17 @@
         <!-- Standalone task row with drag-and-drop wrapper -->
         {@const pipeline = findTaskPipeline(row.task, snapshot.availablePipelines)}
         {@const pipelineName = resolveTaskPipelineName(row.task, snapshot.availablePipelines)}
-        {@const progress = deriveTaskPhaseProgress(row.task, pipeline)}
+        <!--
+          FR-R3-158 (T023) — the host's figure, passed through. The row derives
+          nothing: `phaseProgress` arrives already paired with the total it was
+          counted against, and `null` means the host could not resolve one, which
+          the row renders as no figure rather than as a zero.
+
+          T024 — `pipeline` above stays. It is not the progress lookup any more;
+          `QueueTaskRow` still needs the definition for the phase-segment bar and
+          the process-id line, neither of which counts anything.
+        -->
+        {@const progress = row.task.phaseProgress}
         {@const timing = deriveTaskTiming(row.task, $nowFine)}
         {@const canReorder = isPrimary && row.task.status === 'pending'}
         <div

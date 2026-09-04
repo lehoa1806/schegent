@@ -46,7 +46,8 @@ function item(overrides: Partial<QueueItem> & { id: string; status: QueueItem['s
     currentPhase: null,
     status,
     position: 0,
-    ...rest
+    ...rest,
+    phaseProgress: null
   });
 }
 

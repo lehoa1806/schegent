@@ -1,6 +1,7 @@
 import type { FrozenRunPlan } from '../contracts/run-request';
 import type { QueuePauseSource } from './queue-registry';
 import type { QueueFailurePolicy } from '../contracts/queue-failure-policy';
+import type { TaskPhaseProgressProjection } from '../contracts/snapshot-projections';
 
 // FR-R3-132 (T1502) — moved to `src/contracts/snapshot-vocabulary.ts` so the webview
 // imports it instead of restating it. Re-exported unchanged.
@@ -106,6 +107,24 @@ export interface FeatureRequest {
    * and no `STATE_SCHEMA_VERSION` bump is needed (the feature-082 precedent).
    */
   runPlan?: FrozenRunPlan;
+  /**
+   * FR-R3-158 (FR-009) — the settled-phase pair recorded when this task
+   * reached a terminal status, so the figure outlives the Run that produced
+   * it. Runs are held one per queue, so a second failure in the same queue
+   * disposes of the first Run: without this field the earlier row's count
+   * would simply vanish, which is the defect the feature exists to end.
+   *
+   * Optional and additive, on the `runPlan` precedent directly above — a
+   * record from before this feature carries none, reads back byte-identical,
+   * and gives a migrator nothing to do. Absence means **unknown**, never
+   * "settled nothing"; a task that genuinely settled none records
+   * `{ settled: 0, total: N }`.
+   *
+   * Cleared on retry (FR-009b), so a new attempt is never reported with the
+   * previous attempt's numbers. Its reader lands with it, in the queue
+   * projector.
+   */
+  phaseProgress?: TaskPhaseProgressProjection;
 }
 
 export interface QueueState {

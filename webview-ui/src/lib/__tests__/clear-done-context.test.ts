@@ -23,7 +23,8 @@ function task(
     lastErrorSummary: null,
     pausedReason: null,
     currentPhase: null,
-    position: overrides.position ?? 0
+    position: overrides.position ?? 0,
+    phaseProgress: null
   });
 }
 

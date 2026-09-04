@@ -162,7 +162,8 @@ export const workflowSnapshot = {
           "position": 0,
           "pauseCause": null,
           "currentPipelineId": "dev-new-feature",
-          "hasOnDiskLogs": true
+          "hasOnDiskLogs": true,
+          "phaseProgress": null
         },
         {
           "id": "visual-task-pending",
@@ -180,7 +181,8 @@ export const workflowSnapshot = {
           "position": 1,
           "pauseCause": null,
           "currentPipelineId": "dev-new-feature",
-          "hasOnDiskLogs": false
+          "hasOnDiskLogs": false,
+          "phaseProgress": null
         },
         {
           "id": "visual-task-complete",
@@ -198,7 +200,8 @@ export const workflowSnapshot = {
           "position": 2,
           "pauseCause": null,
           "currentPipelineId": "dev-new-feature",
-          "hasOnDiskLogs": true
+          "hasOnDiskLogs": true,
+          "phaseProgress": null
         }
       ],
       "scheduledStartAt": null,
@@ -222,7 +225,8 @@ export const workflowSnapshot = {
       "position": 0,
       "pauseCause": null,
       "currentPipelineId": "dev-new-feature",
-      "hasOnDiskLogs": true
+      "hasOnDiskLogs": true,
+      "phaseProgress": null
     },
     "pending": [
       {
@@ -241,7 +245,8 @@ export const workflowSnapshot = {
         "position": 1,
         "pauseCause": null,
         "currentPipelineId": "dev-new-feature",
-        "hasOnDiskLogs": false
+        "hasOnDiskLogs": false,
+        "phaseProgress": null
       }
     ],
     "recent": [
@@ -261,7 +266,8 @@ export const workflowSnapshot = {
         "position": 2,
         "pauseCause": null,
         "currentPipelineId": "dev-new-feature",
-        "hasOnDiskLogs": true
+        "hasOnDiskLogs": true,
+        "phaseProgress": null
       }
     ],
     "orderedItems": [
@@ -281,7 +287,8 @@ export const workflowSnapshot = {
         "position": 0,
         "pauseCause": null,
         "currentPipelineId": "dev-new-feature",
-        "hasOnDiskLogs": true
+        "hasOnDiskLogs": true,
+        "phaseProgress": null
       },
       {
         "id": "visual-task-pending",
@@ -299,7 +306,8 @@ export const workflowSnapshot = {
         "position": 1,
         "pauseCause": null,
         "currentPipelineId": "dev-new-feature",
-        "hasOnDiskLogs": false
+        "hasOnDiskLogs": false,
+        "phaseProgress": null
       },
       {
         "id": "visual-task-complete",
@@ -317,7 +325,8 @@ export const workflowSnapshot = {
         "position": 2,
         "pauseCause": null,
         "currentPipelineId": "dev-new-feature",
-        "hasOnDiskLogs": true
+        "hasOnDiskLogs": true,
+        "phaseProgress": null
       }
     ],
     "queues": [

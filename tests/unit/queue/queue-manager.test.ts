@@ -8,6 +8,7 @@ import {
   createConnectedRun
 } from '../../../src/state/connected-workflow-run';
 import type { Memento } from '../../../src/state/workspace-state';
+import type { PhaseResult, WorkflowRun } from '../../../src/state/workflow-run';
 import { unfencedCommit } from '../../../src/state/ownership-claim';
 
 class FakeMemento implements Memento {
@@ -880,3 +881,245 @@ describe('QueueManager.hasExecutionCapacity (T072)', () => {
     expect(queue.hasExecutionCapacity(0)).toBe(true);
   });
 });
+
+// FR-R3-158 (T012, T013, T014, US1) — `finish()` records the settled-phase pair
+// on the Task, in the same write that sets the terminal status.
+//
+// It has to happen here rather than at read time because runs are held one per
+// queue (`ctx.runs[queueId]`): the moment a second task in the same queue
+// starts, the first task's run is gone, and with it every trace of how far that
+// task got. A row that lost its count when a sibling started is the reported
+// defect. So the pair is captured at the one transition every terminal status
+// passes through, and no signature change carries it — a new parameter would
+// let a terminal path forget it and blank the row (D2).
+describe('FR-R3-158 — QueueManager.finish captures the settled-phase pair', () => {
+  const PHASE_IDS = ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7'] as const;
+
+  function settled(phase: string): PhaseResult {
+    return {
+      phase,
+      iteration: 1,
+      startedAt: 10,
+      endedAt: 20,
+      result: 'clean',
+      terminationReason: 'deadline',
+      exitCode: 0,
+      stdoutSummary: '',
+      stderrSummary: '',
+      auditEntryId: null
+    };
+  }
+
+  function failedIn(phase: string): PhaseResult {
+    return { ...settled(phase), result: 'failed', terminationReason: 'error', exitCode: 1 };
+  }
+
+  /** A Run over the seven-phase plan, with whatever it managed to settle. */
+  function runFor(
+    featureId: string,
+    completed: readonly PhaseResult[],
+    withPlan = true
+  ): WorkflowRun {
+    // Omitted rather than `undefined` — `exactOptionalPropertyTypes` reads the
+    // two differently, and a run with no frozen plan is the case being built.
+    const plan = withPlan
+      ? {
+          pipeline: {
+            id: 'seven-phase',
+            name: 'Seven Phase',
+            phases: PHASE_IDS.map((id) => ({ id, name: id, instruction: `${id} prompt.` }))
+          },
+          plannedTotal: {
+            phaseCount: PHASE_IDS.length,
+            iterationCap: 10,
+            maxPhaseInvocations: PHASE_IDS.length
+          }
+        }
+      : {};
+    return {
+      id: 'run-1',
+      featureId,
+      featureDir: 'specs/198',
+      status: 'failed',
+      currentPhase: 'p6',
+      currentIteration: 1,
+      startedAt: Date.now(),
+      lastTransitionAt: Date.now(),
+      phasesCompleted: [...completed],
+      lastError: null,
+      ...plan,
+      delayedRetryCount: 0,
+      pendingRetryAt: null,
+      pendingRetryCause: null,
+      phaseOverrides: [],
+      manualPauseAt: null,
+      manualPauseCause: null,
+      phaseBreakpoints: [],
+      resumeTargetPhaseId: null
+    };
+  }
+
+  it('writes the pair the run reached when a task fails partway (T012)', async () => {
+    const a = await queue.enqueue('fails in the sixth phase');
+    await queue.markInFlight(a.id, 'run-1');
+    await store.setRun(
+      DEFAULT_QUEUE_ID,
+      runFor(a.id, [
+        settled('p1'),
+        settled('p2'),
+        settled('p3'),
+        settled('p4'),
+        settled('p5'),
+        failedIn('p6')
+      ]),
+      unfencedCommit('test-fixture')
+    );
+
+    await queue.finish(a.id, 'failed', 'boom');
+
+    expect(queue.findById(a.id)?.phaseProgress).toEqual({ settled: 5, total: 7 });
+  });
+
+  it('writes a real zero for a task that failed in its first phase (T012, FR-010)', async () => {
+    // Zero against a real total, never absence. The distinction is the whole
+    // point: this task and a task with no record of a plan must not read alike.
+    const a = await queue.enqueue('fails immediately');
+    await queue.markInFlight(a.id, 'run-1');
+    await store.setRun(DEFAULT_QUEUE_ID, runFor(a.id, [failedIn('p1')]), unfencedCommit('test-fixture'));
+
+    await queue.finish(a.id, 'failed', 'boom');
+
+    expect(queue.findById(a.id)?.phaseProgress).toEqual({ settled: 0, total: 7 });
+  });
+
+  it('captures on every terminal status, with no branch on which one (T012, FR-008)', async () => {
+    for (const status of ['completed', 'failed', 'canceled'] as const) {
+      const task = await queue.enqueue(`ends ${status}`);
+      await queue.markInFlight(task.id, 'run-1');
+      await store.setRun(
+        DEFAULT_QUEUE_ID,
+        runFor(task.id, [settled('p1'), settled('p2'), settled('p3'), settled('p4')]),
+        unfencedCommit('test-fixture')
+      );
+
+      await queue.finish(task.id, status);
+
+      expect(queue.findById(task.id)?.phaseProgress, status).toEqual({ settled: 4, total: 7 });
+    }
+  });
+
+  it('leaves a refused finish wholly untouched (T013)', async () => {
+    // `pending -> completed` is the refused edge: a task that never ran cannot
+    // have completed (`task-transition-decision.ts:164-167`; the neighbouring
+    // pre-start edges to `canceled` and `failed` are both admitted). The
+    // refusal throws before the mutation, so no field is written, this one
+    // included. A capture bolted on outside the transition callback would
+    // stamp a record the refusal was supposed to leave alone.
+    const a = await queue.enqueue('never started');
+    const before = queue.findById(a.id);
+    await store.setRun(DEFAULT_QUEUE_ID, runFor(a.id, [settled('p1')]), unfencedCommit('test-fixture'));
+
+    const result = await queue.finish(a.id, 'completed');
+
+    expect(result.ok).toBe(false);
+    expect(queue.findById(a.id)).toEqual(before);
+    expect(queue.findById(a.id)).not.toHaveProperty('phaseProgress');
+  });
+
+  it('writes nothing when the task has no run at all (T014)', async () => {
+    // Absence means unknown. A zero pair here would claim a plan existed and
+    // nothing in it ran, which is a different and false statement.
+    const a = await queue.enqueue('run already disposed of');
+    await queue.markInFlight(a.id, 'run-1');
+
+    await queue.finish(a.id, 'failed', 'boom');
+
+    expect(queue.findById(a.id)).not.toHaveProperty('phaseProgress');
+  });
+
+  it('writes nothing when the run froze no plan (T014)', async () => {
+    const a = await queue.enqueue('run without a frozen plan');
+    await queue.markInFlight(a.id, 'run-1');
+    await store.setRun(
+      DEFAULT_QUEUE_ID,
+      runFor(a.id, [settled('p1')], false),
+      unfencedCommit('test-fixture')
+    );
+
+    await queue.finish(a.id, 'failed', 'boom');
+
+    expect(queue.findById(a.id)).not.toHaveProperty('phaseProgress');
+  });
+
+  it('does not borrow a sibling task\'s run (T014)', async () => {
+    // `findRunByTask` is named after the Task for this reason. A lookup that
+    // read "the queue's run" would hand the finishing task whatever its
+    // neighbour happened to be doing, and the row would report a number it
+    // never earned.
+    const a = await queue.enqueue('the one that finishes');
+    const b = await queue.enqueue('the one that owns the run');
+    await queue.markInFlight(b.id, 'run-1');
+    await store.setRun(
+      DEFAULT_QUEUE_ID,
+      runFor(b.id, [settled('p1'), settled('p2'), settled('p3')]),
+      unfencedCommit('test-fixture')
+    );
+
+    await queue.finish(a.id, 'canceled');
+
+    expect(queue.findById(a.id)).not.toHaveProperty('phaseProgress');
+    expect(queue.findById(b.id)).not.toHaveProperty('phaseProgress');
+  });
+
+  /**
+   * FR-R3-158 (T030, FR-009b, D3) — retry discards the pair.
+   *
+   * The recorded pair describes **one attempt**. A retried task starts a new
+   * attempt, and if the old pair survived, the row would show the previous
+   * attempt's `5 of 7` while the new run worked its way up from nothing — a
+   * number that is not merely stale but actively contradicts what the operator
+   * can see happening.
+   *
+   * Clearing it returns the row to the source chain's third step, which reads
+   * `0 of 7` from the catalog: honest for work that has restarted. This is the
+   * one thing that resets the pair, which is why it needs its own test rather
+   * than being implied by the capture's.
+   */
+  describe('FR-R3-158 (T030) — retry discards the recorded pair', () => {
+    it('leaves no phaseProgress on a task returned to pending (FR-009b)', async () => {
+      const a = await queue.enqueue('fails, then is retried');
+      await queue.markInFlight(a.id, 'run-1');
+      await store.setRun(
+        DEFAULT_QUEUE_ID,
+        runFor(a.id, [settled('p1'), settled('p2'), settled('p3'), settled('p4'), settled('p5')]),
+        unfencedCommit('test-fixture')
+      );
+      await queue.finish(a.id, 'failed', 'boom');
+      expect(queue.findById(a.id)?.phaseProgress).toEqual({ settled: 5, total: 7 });
+
+      const result = await queue.retry(a.id);
+
+      expect(result.ok).toBe(true);
+      expect(queue.findById(a.id)?.status).toBe('pending');
+      // Absent, not zeroed. `{ settled: 0, total: 7 }` would be a recorded claim
+      // that a new attempt has already run and settled nothing; absence sends the
+      // row back to the catalog for its total, which is what "not started" means.
+      expect(queue.findById(a.id)).not.toHaveProperty('phaseProgress');
+    });
+
+    it('leaves the record untouched when the retry is refused', async () => {
+      // A pending task cannot be returned to pending. `decideTaskTransition`
+      // refuses and the mutation throws before any write, so a task that somehow
+      // carried a pair would keep it — the clear belongs to the transition, not
+      // to the call.
+      const a = await queue.enqueue('never failed');
+      const before = queue.findById(a.id);
+
+      const result = await queue.retry(a.id);
+
+      expect(result.ok).toBe(false);
+      expect(queue.findById(a.id)).toEqual(before);
+    });
+  });
+});
+

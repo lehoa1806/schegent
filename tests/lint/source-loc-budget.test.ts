@@ -1117,7 +1117,22 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // No new file: the method needs `store.getQueue`/`store.updateQueue`, which
       // only `QueueManager` composes for a caller outside `WorkspaceStateStore`
       // itself.
-      highWaterMark: 2259
+      //
+      // Feature 198 (T037, FR-R3-158, 2026-09-04) — 2259 → 2269: four functional
+      // lines and seven of comment. The functional four are the import of
+      // `phaseProgressPatch`, the by-Task run lookup in `finish()` that feeds it,
+      // its spread into the terminal write, and the destructure in `retry()` that
+      // drops the pair when a task returns to pending. No new file: both sites are
+      // inside existing transition writes, and pulling two spreads out of the
+      // literals they belong to would put the capture somewhere other than the
+      // write it must be atomic with. The arithmetic itself is not here — it lives
+      // in `run-planned-total.ts` and is called, which is FR-003a.
+      //
+      // Seven of the eleven are the comments at those two sites, kept on the
+      // reasoning recorded three entries above: the mark exists so that growth is
+      // a decision, and deleting the explanation to fit under it spends the next
+      // reader's time to buy a number. Exact count again, no slack.
+      highWaterMark: 2269
     }
   },
   // Speckit-auto alignment (2026-07-30) — bumped 700 → 800 to absorb two new

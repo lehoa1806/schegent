@@ -8,15 +8,33 @@
   // and drill-down chevron. It receives all derived data as props; it
   // performs no IPC and holds no snapshot-level state.
 
-  import type { QueueItem, PipelineDefinition } from '../../lib/snapshot-types';
-  import type { TaskPhaseProgress, TaskTimingLabel } from '../../lib/task-row-view';
+  import type {
+    QueueItem,
+    PipelineDefinition,
+    TaskPhaseProgressProjection
+  } from '../../lib/snapshot-types';
+  import type { TaskTimingLabel } from '../../lib/task-row-view';
   import { formatDuration } from '../../lib/format-duration';
   import { formatTimeOfDay } from '../../lib/format-time-of-day';
 
   // ---------- Phase bar segment ----------
+  //
+  // FR-R3-158 (T023, SC-007) — `completed` is gone from this union, and with it
+  // the `indexOf` that produced it. SC-007 admits no lookup of a phase's position
+  // within the pipeline's phase list anywhere in the rendering path, and shading
+  // the phases before the current one was exactly that lookup — the same
+  // inference `deriveTaskPhaseProgress` made, drawn instead of counted, and wrong
+  // in the same ways: it read a plan the surface resolved itself rather than the
+  // one the run froze, so an overridden phase still occupied a segment, and a
+  // `currentPhase` absent from that plan greyed the whole bar.
+  //
+  // What is left is what the surface can know without ordering: which phases the
+  // pipeline holds, and which one is in flight now. How many have settled is the
+  // figure beside the bar, which is the run's own answer rather than a redrawing
+  // of it.
   interface PhaseSegment {
     readonly name: string;
-    readonly state: 'completed' | 'current' | 'future';
+    readonly state: 'current' | 'planned';
   }
 
   interface Props {
@@ -24,7 +42,13 @@
     readonly rowIndex: number;
     readonly pipeline: PipelineDefinition | undefined;
     readonly pipelineName: string;
-    readonly progress: TaskPhaseProgress;
+    /**
+     * FR-R3-158 (T023, FR-014) — the host's settled-phase pair, rendered as it
+     * arrives. `null` is unknown, not zero, and is shown as no figure at all: a
+     * task record predating the feature has no answer to give, and `0 of 0` would
+     * read as a finished run of nothing.
+     */
+    readonly progress: TaskPhaseProgressProjection | null;
     readonly timing: TaskTimingLabel;
     readonly isSelected: boolean;
     readonly onSelect: () => void;
@@ -91,16 +115,14 @@
   // ---------- Phase segments ----------
   const segments = $derived.by((): readonly PhaseSegment[] => {
     if (pipeline === undefined || pipeline.phases.length === 0) return [];
-    const currentIndex = task.currentPhase === null
-      ? -1
-      : pipeline.phases.indexOf(task.currentPhase);
-    return pipeline.phases.map((phaseName, index): PhaseSegment => {
-      if (task.status === 'completed') return { name: phaseName, state: 'completed' };
-      if (currentIndex === -1) return { name: phaseName, state: 'future' };
-      if (index < currentIndex) return { name: phaseName, state: 'completed' };
-      if (index === currentIndex) return { name: phaseName, state: 'current' };
-      return { name: phaseName, state: 'future' };
-    });
+    // Name equality, not position: a membership test asks whether this segment is
+    // the phase now in flight and needs no ordering to answer. The index argument
+    // is deliberately not taken, so there is nothing here to compare against a
+    // count or a length.
+    return pipeline.phases.map((phaseName): PhaseSegment => ({
+      name: phaseName,
+      state: phaseName === task.currentPhase ? 'current' : 'planned'
+    }));
   });
 </script>
 
@@ -155,11 +177,23 @@
         {/each}
       </span>
     {/if}
-    <span class="progress-text">
-      {progress.completed} of {progress.total} phases{#if task.currentPhase}
-        <span class="progress-current-phase"> · {task.currentPhase}</span>
-      {/if}
-    </span>
+    {#if progress !== null}
+      <span class="progress-text" data-testid="queue-task-progress-text-{task.id}">
+        {progress.settled} of {progress.total} phases{#if task.currentPhase}
+          <span class="progress-current-phase"> · {task.currentPhase}</span>
+        {/if}
+      </span>
+    {:else if task.currentPhase}
+      <!--
+        FR-R3-158 (T023, FR-014) — no pair, so no figure. The phase the task is in
+        is a separate fact the row still knows, and suppressing it because a count
+        is missing would hide something true. It renders without the leading
+        separator that belongs to the figure.
+      -->
+      <span class="progress-text">
+        <span class="progress-current-phase">{task.currentPhase}</span>
+      </span>
+    {/if}
     {#if task.retryCount > 0}
       <span class="progress-retry" data-testid="queue-task-retry-{task.id}">
         ↻ retried {task.retryCount}&times;
@@ -296,14 +330,17 @@
     transition: opacity 120ms ease-out;
   }
 
-  .seg-completed { background: var(--schegent-color-active); }
-
+  /* FR-R3-158 (T023) — `seg-completed` and `seg-future` went with the ordering
+     that told them apart. The in-flight phase keeps its full-strength treatment,
+     including the paused and failed variants; every other planned phase is drawn
+     the way `seg-future` was, because "not the one in flight" is now all the bar
+     claims to know. */
   .seg-current { background: var(--schegent-color-active); opacity: 0.7; }
 
   .status-paused .seg-current { background: var(--schegent-color-warning); opacity: 1; }
   .status-failed .seg-current { background: var(--schegent-color-error); opacity: 1; }
 
-  .seg-future { background: var(--schegent-muted-fg); opacity: 0.2; }
+  .seg-planned { background: var(--schegent-muted-fg); opacity: 0.2; }
 
   .progress-text { font-size: 11px; color: var(--vscode-descriptionForeground); }
 
