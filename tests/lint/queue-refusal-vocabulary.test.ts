@@ -73,6 +73,38 @@ const WORKSPACE_STATE = read('src', 'state', 'workspace-state.ts');
 const SCHEDULE_PARSER = read('src', 'lib', 'schedule-parser.ts');
 const VALIDATORS = read('src', 'contracts', 'validators', 'queue-management.ts');
 const IPC_MODULE = read('webview-ui', 'src', 'lib', 'queue-control-ipc.ts');
+/**
+ * FR-R3-150 (code-review finding) — the queue-scoped Clean All orchestrator is
+ * a sixth emitting layer this gate could not see. `cmd-clear-queue.ts` relays
+ * `runClearQueue`'s own `reason` verbatim over the ack, so `not-primary` and
+ * `persistence-error` reach `refusalText` exactly like a `QueueManager` refusal
+ * — and A1 was green with neither mapped, because the source was never read.
+ * Whole-file rather than by method slice: the module is one orchestrator
+ * function, so there is no unrelated command's vocabulary to over-read.
+ */
+const CLEAR_QUEUE_ORCHESTRATOR = read('src', 'commands', 'clear-queue.ts');
+/**
+ * The shared outcome vocabulary, reachable on this transport since
+ * `cmd-clear-queue.ts` relays through `execAndAck` rather than a hand-rolled
+ * `executeCommand` + `ackGenericResult` pair (code-review finding, iteration
+ * 5). Derived from the `*_REASON` declarations exactly as
+ * `lifecycle-refusal-vocabulary.test.ts` does — two files apart because the
+ * first three are decisions about a *result* and the fourth is a decision about
+ * the *dispatch*.
+ */
+const SHARED_OUTCOME_SOURCES: readonly string[] = [
+  read('src', 'contracts', 'command-outcome.ts'),
+  read('src', 'ui', 'sidebar', 'commands', 'handler-helpers.ts')
+];
+
+function sharedOutcomeCodes(): readonly string[] {
+  const found = new Set<string>();
+  for (const source of SHARED_OUTCOME_SOURCES) {
+    for (const match of source.matchAll(/_REASON = '([a-z][a-z0-9-]*)'/g)) found.add(match[1]);
+  }
+  expect(found.size, 'no *_REASON constants found — the derivation is broken').toBeGreaterThan(0);
+  return [...found];
+}
 
 /**
  * `taskErrorReason` renames exactly one code on its way out. Applied here so the
@@ -112,6 +144,8 @@ function derivedCodes(): readonly string[] {
     ...codesIn(methodBody(WORKSPACE_STATE, 'public async movePendingRequest(')),
     ...codesIn(SCHEDULE_PARSER),
     ...codesIn(VALIDATORS),
+    ...codesIn(CLEAR_QUEUE_ORCHESTRATOR),
+    ...sharedOutcomeCodes(),
     ...TRANSPORT_CODES
   ];
   const mapped = raw.map((code) => HOST_RENAMES[code] ?? code);

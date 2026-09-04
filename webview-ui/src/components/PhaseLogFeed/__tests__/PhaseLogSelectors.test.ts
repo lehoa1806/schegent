@@ -39,7 +39,7 @@ function makeQueue(over: Partial<QueueProjection> = {}): QueueProjection {
     recent: [],
     orderedItems: [],
     queues: [
-      { id: 'default', name: 'Default', position: 0, state: 'active', pauseSource: null, schedule: null, taskCount: 0 }
+      { id: 'default', name: 'Default', position: 0, state: 'active', pauseSource: null, schedule: null, taskCount: 0, failurePolicy: 'halt-on-failure', failurePolicyOverride: null }
     ],
     paused: false,
     ...over

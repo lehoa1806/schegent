@@ -130,7 +130,14 @@ const HARD_RULE_ANCHORS: ReadonlyArray<string> = [
   'reach a run record without naming a queue',
   "write one queue's run entry with a partial-map write",
   'take or offer a recovery checkpoint',
-  'reintroduce drain step 4b'
+  'reintroduce drain step 4b',
+  // The compaction-window work added rule 20 and no anchor, which is the
+  // omission this list's header forbids. Anchored now. Note what the gap
+  // showed: this check asks only whether the phrase is present, so it stayed
+  // green while the rule's *index* citation was wrong and stayed wrong for 45
+  // rows. Presence and position are different invariants —
+  // `agents-rule-index.test.ts` owns the second one.
+  'give a host-spawned child an idle bound'
 ];
 
 /** The authoritative envelope file — the only one that carries the rule set. */

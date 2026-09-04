@@ -16,11 +16,12 @@
 // `QueueListView.svelte`) — restored here against this component's direct
 // `{snapshot}` prop-mounting rather than that file's global-store-driven one.
 
-import { cleanup, fireEvent, render } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import QueueIdlePendingPanel from '../QueueIdlePendingPanel.svelte';
-import { CMD_DISMISS_MIGRATION_NOTICE, CMD_START_QUEUE } from '../../../lib/messages';
+import { snapshotStore } from '../../../lib/snapshot-store.svelte';
+import { CMD_ACK, CMD_DISMISS_MIGRATION_NOTICE, CMD_START_QUEUE } from '../../../lib/messages';
 import { MUTATING_COMMAND_TYPES } from '../../../../../src/contracts/sidebar-command-metadata';
 import { DEFAULT_QUEUE_ID } from '../../../../../src/contracts/queue-identity';
 import { IDLE_GENERAL_SETTINGS } from '../../../lib/snapshot-types';
@@ -36,6 +37,32 @@ vi.mock('../../../lib/vscode-api', () => ({
   getWebviewState: () => undefined,
   setWebviewState: () => {}
 }));
+
+/**
+ * Answer the post at `callIndex` the way the host would.
+ *
+ * FR-R3-154 (T1646) — through `snapshotStore.apply({type: CMD_ACK, …})`, the
+ * store's own message entry point, so the case runs the real `applyAck`, the
+ * real `correlatedLifecycle` and the real refusal table. Mocking
+ * `lifecycle-control-ipc` instead would leave the assertion checking the mock.
+ */
+function ack(
+  callIndex: number,
+  status: 'accepted' | 'rejected',
+  reason?: string,
+  outcome?: 'accepted' | 'no-op' | 'refused' | 'failed'
+): void {
+  const result = postCommandSpy.mock.results[callIndex];
+  expect(result, `no post at index ${callIndex}`).toBeDefined();
+  const { correlationId } = result!.value as { correlationId: string };
+  snapshotStore.apply({
+    type: CMD_ACK,
+    correlationId,
+    status,
+    ...(reason !== undefined ? { reason } : {}),
+    ...(outcome !== undefined ? { outcome } : {})
+  } as never);
+}
 
 /**
  * A `QueueRuntime` carrying nothing but the identity and lifecycle this panel
@@ -215,6 +242,53 @@ describe('QueueIdlePendingPanel — idle-pending affordance (T012a, relocated fr
     expect(queryByTestId('idle-pending-chooser-host')).toBeNull();
     expect(getByTestId('idle-pending-start-queue-button')).not.toBeNull();
     expect(postCommandSpy).not.toHaveBeenCalled();
+  });
+
+  // FR-R3-154 (T1646) — this panel is the FR-018 chooser's sole dispatcher, and
+  // it closes the chooser on commit. So a refusal of the operator's chosen time
+  // had nowhere at all to land: the chooser vanished, the queue stayed
+  // idle-pending, and the Start-queue button came back as if nothing had been
+  // asked. `rejected-horizon` is the live case — the operator picks a time
+  // outside the queue's accepted range, which is a mistake only the host can
+  // detect and only this sentence can explain.
+  it('renders the refusal after the chooser closes, so a rejected time is not silent', async () => {
+    const { getByTestId, queryByTestId } = render(QueueIdlePendingPanel, {
+      props: {
+        queueId: DEFAULT_QUEUE_ID,
+        snapshot: snapshot({ lifecycle: 'idle-pending', scheduledStartAt: null })
+      }
+    });
+
+    await fireEvent.click(getByTestId('idle-pending-start-queue-button'));
+    await fireEvent.click(getByTestId('start-mode-chooser-now'));
+    expect(queryByTestId('idle-pending-start-message')).toBeNull();
+
+    ack(0, 'rejected', 'rejected-horizon', 'refused');
+
+    await waitFor(() => {
+      expect(getByTestId('idle-pending-start-message').textContent).toBe(
+        'That start time is outside the range this queue accepts.'
+      );
+    });
+    // The chooser is still gone — the report is a sentence beside the panel,
+    // not a re-opened dialog that would discard what the operator had entered.
+    expect(queryByTestId('idle-pending-chooser-host')).toBeNull();
+  });
+
+  it('says nothing when the host accepts the chosen start', async () => {
+    const { getByTestId, queryByTestId } = render(QueueIdlePendingPanel, {
+      props: {
+        queueId: DEFAULT_QUEUE_ID,
+        snapshot: snapshot({ lifecycle: 'idle-pending', scheduledStartAt: null })
+      }
+    });
+
+    await fireEvent.click(getByTestId('idle-pending-start-queue-button'));
+    await fireEvent.click(getByTestId('start-mode-chooser-now'));
+    ack(0, 'accepted', undefined, 'accepted');
+
+    await waitFor(() => expect(postCommandSpy).toHaveBeenCalledTimes(1));
+    expect(queryByTestId('idle-pending-start-message')).toBeNull();
   });
 });
 

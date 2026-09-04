@@ -328,7 +328,9 @@ export const workflowSnapshot = {
         "state": "active",
         "pauseSource": null,
         "schedule": null,
-        "taskCount": 3
+        "taskCount": 3,
+        "failurePolicy": "halt-on-failure",
+        "failurePolicyOverride": null
       }
     ],
     "paused": false,
@@ -676,6 +678,7 @@ export const workflowSnapshot = {
     "backendRunner": "claude",
     "spendMaxUsdPerRun": null,
     "spendMaxTokensPerRun": null,
+    "queueHaltOnTaskFailure": "halt-on-failure",
     "scopes": {
       "cliPath": "default",
       "loggingVerbose": "workspace",
@@ -707,7 +710,8 @@ export const workflowSnapshot = {
       "multiRootSuppressWarning": "default",
       "backendRunner": "default",
       "spendMaxUsdPerRun": "default",
-      "spendMaxTokensPerRun": "default"
+      "spendMaxTokensPerRun": "default",
+      "queueHaltOnTaskFailure": "default"
     }
   },
   "sessionArtifacts": {

@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import PhaseControlMenu from '../PhaseControlMenu.svelte';
+import { snapshotStore } from '../../lib/snapshot-store.svelte';
 import {
+  CMD_ACK,
   CMD_PAUSE_PHASE,
   CMD_RESTART_PHASE,
   CMD_RESUME_PHASE,
@@ -19,10 +21,49 @@ import { useConfirm } from '../../lib/use-confirm';
 // contract the host pins in `queue-addressed-phase-controls.test.ts`.
 const TEST_QUEUE_ID = 'q-alpha';
 
-const postCommandSpy = vi.fn();
+// FR-R3-154 (T1646) — the stub returns a `correlationId` because the real
+// `postCommand` does, and Pause/Resume/Restart/Retry-now now read it: they
+// await the ACK instead of dropping it. A bare `vi.fn()` used to be harmless
+// here for the same reason the defect was invisible in production — nothing
+// looked at the return value. It is not harmless now: `.correlationId` off
+// `undefined` throws inside the click handler, which surfaces as an unhandled
+// rejection (`vitest run` exits 1 on it) while every assertion below still
+// passes, because they all assert on the post that already happened.
+let nextCorrelationId = 0;
+const postCommandSpy = vi.fn((..._args: readonly unknown[]) => ({
+  correlationId: `corr-${++nextCorrelationId}`
+}));
 vi.mock('../../lib/vscode-api', () => ({
   postCommand: (...args: unknown[]) => postCommandSpy(...args)
 }));
+
+/**
+ * Answer the post at `callIndex` the way the host would, through the real
+ * store's real message entry point.
+ *
+ * `snapshotStore.apply({type: CMD_ACK, …})` rather than a mocked IPC module,
+ * following `QueueConfigModal.test.ts`: it runs the store's own `applyAck`, the
+ * real `correlatedLifecycle`, and the real refusal table, so the rendered
+ * sentence is the one an operator would see. Mocking the IPC module would make
+ * these cases assert the mock.
+ */
+function ack(
+  callIndex: number,
+  status: 'accepted' | 'rejected',
+  reason?: string,
+  outcome?: 'accepted' | 'no-op' | 'refused' | 'failed'
+): void {
+  const result = postCommandSpy.mock.results[callIndex];
+  expect(result, `no post at index ${callIndex}`).toBeDefined();
+  const { correlationId } = result!.value as { correlationId: string };
+  snapshotStore.apply({
+    type: CMD_ACK,
+    correlationId,
+    status,
+    ...(reason !== undefined ? { reason } : {}),
+    ...(outcome !== undefined ? { outcome } : {})
+  } as never);
+}
 
 vi.mock('../../lib/use-confirm', () => ({
   useConfirm: vi.fn().mockResolvedValue(true)
@@ -95,6 +136,115 @@ describe('PhaseControlMenu', () => {
     expect(postCommandSpy).toHaveBeenCalledWith(CMD_DISABLE_PHASE, {
       queueId: TEST_QUEUE_ID,
       phaseId: 'speckit-implement'
+    });
+  });
+
+  // FR-R3-154 (T1646) — the four lifecycle controls in this menu report what
+  // the host answered. Before this change all four posted and returned: a
+  // refusal `decidePhaseControl` had always been able to answer arrived, the
+  // store cleared the pending flag, and the operator saw a menu that had
+  // apparently done as asked. The negative control for this block is the
+  // absence assertion in the last case — a component that renders its message
+  // element unconditionally would pass the three above it.
+  describe('reports the host answer', () => {
+    function menu() {
+      return render(PhaseControlMenu, {
+        props: {
+          targetsSubjectRun: true,
+          queueId: TEST_QUEUE_ID,
+          currentPhase: 'speckit-plan',
+          selectedPhase: 'speckit-plan',
+          isPrimary: true,
+          manualPauseAt: null
+        }
+      });
+    }
+
+    it('renders a refused pause as a sentence, not a reason code', async () => {
+      const { getByTestId, queryByTestId } = menu();
+      await fireEvent.click(getByTestId('phase-control-pause'));
+      expect(queryByTestId('phase-control-message')).toBeNull();
+
+      ack(0, 'rejected', 'run-already-paused', 'refused');
+      await waitFor(() => {
+        expect(getByTestId('phase-control-message').textContent).toBe('This Run is already paused.');
+      });
+      // The code itself never reaches the operator — that is the failure the
+      // sibling `queue-control-ipc` table shipped for a release.
+      expect(getByTestId('phase-control-message').textContent).not.toContain('run-already-paused');
+    });
+
+    it('renders a refused restart of a finished Run', async () => {
+      const { getByTestId } = menu();
+      await fireEvent.click(getByTestId('phase-control-restart'));
+      ack(0, 'rejected', 'run-terminal', 'refused');
+      await waitFor(() => {
+        expect(getByTestId('phase-control-message').textContent).toBe(
+          'This Run has already finished, so its phases can no longer be changed.'
+        );
+      });
+    });
+
+    it('says nothing when the host accepts', async () => {
+      const { getByTestId, queryByTestId } = menu();
+      await fireEvent.click(getByTestId('phase-control-pause'));
+      ack(0, 'accepted', undefined, 'accepted');
+      // Nothing to tell the operator: the phase state they can already see is
+      // the report. A message on the happy path would train them to ignore it.
+      await waitFor(() => expect(postCommandSpy).toHaveBeenCalledTimes(1));
+      expect(queryByTestId('phase-control-message')).toBeNull();
+    });
+
+    it('clears the previous refusal when the control is used again', async () => {
+      const { getByTestId, queryByTestId } = menu();
+      await fireEvent.click(getByTestId('phase-control-pause'));
+      ack(0, 'rejected', 'run-already-paused', 'refused');
+      await waitFor(() => expect(getByTestId('phase-control-message')).toBeTruthy());
+
+      await fireEvent.click(getByTestId('phase-control-pause'));
+      // Cleared on dispatch, not left standing until the next answer: a stale
+      // refusal beside a control that is now working is a lie in the other
+      // direction.
+      expect(queryByTestId('phase-control-message')).toBeNull();
+      ack(1, 'accepted', undefined, 'accepted');
+      await waitFor(() => expect(postCommandSpy).toHaveBeenCalledTimes(2));
+      expect(queryByTestId('phase-control-message')).toBeNull();
+    });
+
+    // Code-review finding (iteration 5). The case above uses the SAME control
+    // twice, which is the only shape the clear used to cover: `controlMessage`
+    // was reset by the four handlers that can write it and by nobody else. Six
+    // controls dispatch without reporting — Skip, Disable, Enable, Delete and
+    // the two breakpoint actions — so a refusal from one of the four stayed on
+    // screen, in a `role="alert"`, beside whichever of the six the operator
+    // used next and which had just committed.
+    it('clears a previous control’s refusal when a non-reporting control dispatches', async () => {
+      const { getByTestId, queryByTestId } = render(PhaseControlMenu, {
+        props: {
+          targetsSubjectRun: true,
+          queueId: TEST_QUEUE_ID,
+          currentPhase: 'speckit-plan',
+          // A future, no-override selection, so Disable is eligible at the same
+          // time Pause is — the two-control sequence needs both live at once.
+          selectedPhase: 'speckit-implement',
+          selectedPhaseState: 'not-started' as const,
+          isPrimary: true,
+          manualPauseAt: null
+        }
+      });
+
+      await fireEvent.click(getByTestId('phase-control-pause'));
+      ack(0, 'rejected', 'run-already-paused', 'refused');
+      await waitFor(() => expect(getByTestId('phase-control-message')).toBeTruthy());
+
+      await fireEvent.click(getByTestId('phase-control-disable'));
+      expect(postCommandSpy).toHaveBeenCalledWith(CMD_DISABLE_PHASE, {
+        queueId: TEST_QUEUE_ID,
+        phaseId: 'speckit-implement'
+      });
+      // Disable cannot write this line; it must still not leave Pause's answer
+      // attributed to it.
+      expect(queryByTestId('phase-control-message')).toBeNull();
     });
   });
 
@@ -265,6 +415,27 @@ describe('PhaseControlMenu — retry now (lifecycle round-check finding C)', () 
     await fireEvent.click(getByTestId('phase-control-retry-now'));
 
     expect(postCommandSpy).not.toHaveBeenCalled();
+  });
+
+  // FR-R3-154 (T1646) — retry-now's post stays in the component beside its
+  // confirm (the destructive-actions lint requires the two to share a brace
+  // block), so it hands the post to `correlatedLifecycle` as a callback rather
+  // than moving into `phase-control.ts`. This case pins that the callback form
+  // reports its answer too — `already-retrying` and `not-pending-retry` are
+  // both refusals `applyManualRetryOverride` answers for a race the operator
+  // cannot see, and this was the control most likely to hit one.
+  it('renders the refusal when the host declines the retry', async () => {
+    const { getByTestId } = waiting();
+
+    await fireEvent.click(getByTestId('phase-control-retry-now'));
+    await waitFor(() => expect(postCommandSpy).toHaveBeenCalledTimes(1));
+    ack(0, 'rejected', 'already-retrying', 'refused');
+
+    await waitFor(() => {
+      expect(getByTestId('phase-control-message').textContent).toBe(
+        'A retry is already under way.'
+      );
+    });
   });
 
   it('posts retry-now against the queue named in the confirmation dialog, even if the queue changes before the operator confirms', async () => {

@@ -1,4 +1,12 @@
 import { createStateTransitionAuditEnvelope } from '../../../lib/audit-event-envelope';
+import { errorMessage } from '../../../lib/errors';
+import {
+  ackFieldsFor,
+  failed,
+  normalizeCommandResult,
+  UNRECOGNIZED_RESULT_REASON,
+  type CommandOutcome
+} from '../../../contracts/command-outcome';
 import { CMD_ACK } from '../messages';
 import type {
   CommandAckMessage,
@@ -28,6 +36,16 @@ export async function ack(
         : result !== undefined
           ? { ...base, result }
           : base;
+  await postAck(ctx, msg);
+}
+
+/**
+ * The one place an ACK reaches the transport. A post that throws is logged and
+ * dropped: the webview's correlation times out, which is what it already does
+ * for a host that has gone away, and re-throwing here would turn a delivery
+ * failure into a handler failure the router would try to ACK in turn.
+ */
+async function postAck(ctx: HandlerContext, msg: CommandAckMessage): Promise<void> {
   try {
     await ctx.postAck(msg);
   } catch (err) {
@@ -43,6 +61,82 @@ export async function exec(
   ...args: unknown[]
 ): Promise<void> {
   await Promise.resolve(ctx.deps.executeCommand(commandId, ...args));
+}
+
+/**
+ * FR-R3-154 (T1646) — `exec` for a command whose answer the route must report.
+ *
+ * `exec` above discards the resolved value, which was the mechanical reason
+ * five routes could only ACK `accepted`: the value was gone by the time the
+ * handler resumed. This one reads it, through the one function that decides
+ * what each possible shape means (`normalizeCommandResult`), including the two
+ * that carry no value — `undefined` from the Workspace Trust gate, and a throw.
+ *
+ * The catch is a SECOND conversion point, and deliberately distinct from the
+ * one T1645 put inside each command. That one converts a failure of the
+ * mutation; this one converts a failure of the dispatch — an id VS Code cannot
+ * resolve, or a command whose own conversion did not hold. Both end as a code:
+ * the sanitized message goes to the log, never into the ACK, because `reason`
+ * crosses to the webview and a message from this layer carries paths.
+ */
+export async function execForOutcome(
+  ctx: HandlerContext,
+  commandId: string,
+  ...args: unknown[]
+): Promise<CommandOutcome> {
+  try {
+    const value = await Promise.resolve(
+      ctx.deps.executeCommand<unknown>(commandId, ...args)
+    );
+    const outcome = normalizeCommandResult(value);
+    if (outcome.outcome === 'failed' && outcome.reason === UNRECOGNIZED_RESULT_REASON) {
+      ctx.deps.logger.warn(
+        `sidebar router: ${commandId} returned an unrecognized result shape`
+      );
+    }
+    return outcome;
+  } catch (err) {
+    const message = ctx.deps.logger.sanitize(errorMessage(err));
+    ctx.deps.logger.warn(`sidebar router: ${commandId} dispatch failed: ${message}`);
+    return failed(DISPATCH_FAILED_REASON);
+  }
+}
+
+/** The ACK reason for a dispatch that threw rather than answering. */
+export const DISPATCH_FAILED_REASON = 'command-dispatch-failed';
+
+/**
+ * FR-R3-154 (T1646) — post the ACK an outcome describes, correlation id
+ * included (it comes from `ctx`, so a route cannot answer another route's
+ * command). Notification is not this function's business: the registered
+ * command owns the operator copy, and a toast here would be a second, unsourced
+ * telling of the same refusal.
+ */
+export async function ackCommandOutcome(
+  ctx: HandlerContext,
+  outcome: CommandOutcome
+): Promise<void> {
+  const fields = ackFieldsFor(outcome);
+  await postAck(ctx, {
+    type: CMD_ACK,
+    correlationId: ctx.correlationId,
+    status: fields.status,
+    outcome: fields.outcome,
+    ...(fields.reason !== undefined ? { reason: fields.reason } : {})
+  });
+}
+
+/**
+ * FR-R3-154 (T1646) — execute a command and ACK exactly what it answered. The
+ * five lifecycle routes are one line each because there is nothing else for
+ * them to decide.
+ */
+export async function execAndAck(
+  ctx: HandlerContext,
+  commandId: string,
+  ...args: unknown[]
+): Promise<void> {
+  await ackCommandOutcome(ctx, await execForOutcome(ctx, commandId, ...args));
 }
 
 export async function ackGenericResult(

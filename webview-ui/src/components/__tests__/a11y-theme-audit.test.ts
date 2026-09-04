@@ -37,7 +37,9 @@ function buildQueueSummary(id: string, name: string, position: number): QueueSum
     state: 'active',
     pauseSource: null,
     schedule: null,
-    taskCount: 0
+    taskCount: 0,
+    failurePolicy: 'halt-on-failure',
+    failurePolicyOverride: null
   };
 }
 

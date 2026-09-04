@@ -173,11 +173,38 @@ describe('validateInboundMessage', () => {
   it.each([
     'CMD_PAUSE_QUEUE',
     'CMD_RESUME_QUEUE',
-    'CMD_CLEAR_COMPLETED',
     'CMD_OPEN_DASHBOARD'
   ])('%s accepts no payload', (type) => {
     expect(validateInboundMessage({ type, correlationId: 'c' }).ok).toBe(true);
   });
+
+  // FR-R3-150 (T1621a) — `CMD_CLEAR_COMPLETED` now requires a non-empty
+  // `queueId` and no other payload field; a missing/blank/oversized id or
+  // an absent payload is refused at this boundary before it ever reaches
+  // `QueueManager`.
+  it.each(['CMD_CLEAR_COMPLETED'])(
+    '%s requires a non-empty queueId and nothing else',
+    (type) => {
+      expect(
+        validateInboundMessage({ type, correlationId: 'c', payload: { queueId: 'q-1' } }).ok
+      ).toBe(true);
+      expect(validateInboundMessage({ type, correlationId: 'c' }).ok).toBe(false);
+      expect(validateInboundMessage({ type, correlationId: 'c', payload: {} }).ok).toBe(false);
+      expect(
+        validateInboundMessage({ type, correlationId: 'c', payload: { queueId: '' } }).ok
+      ).toBe(false);
+      expect(
+        validateInboundMessage({ type, correlationId: 'c', payload: { queueId: 42 } }).ok
+      ).toBe(false);
+      expect(
+        validateInboundMessage({
+          type,
+          correlationId: 'c',
+          payload: { queueId: 'q-1', extra: true }
+        }).ok
+      ).toBe(false);
+    }
+  );
 
   // The mirror of the four above, and the reason this file can shrink safely: a
   // deleted command must become UNKNOWN, not merely untested. Without this, the

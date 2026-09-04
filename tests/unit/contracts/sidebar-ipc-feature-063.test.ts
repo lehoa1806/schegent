@@ -1,52 +1,52 @@
-// Feature 063 — T005 — type-guard coverage for CMD_CLEAR_ALL and
-// CMD_SET_CONFIRM_SUPPRESSION. The drift guard
+// Feature 063 / FR-R3-150 (T1618) — type-guard coverage for CMD_CLEAR_QUEUE
+// and CMD_SET_CONFIRM_SUPPRESSION. The drift guard
 // (`sidebar-ipc-drift.test.ts`) already asserts every COMMAND_TYPES
 // literal has a registered guard; this file pins the deeper payload
 // validation that those guards perform.
 import { describe, expect, it } from 'vitest';
 import {
-  CMD_CLEAR_ALL,
+  CMD_CLEAR_QUEUE,
   CMD_SET_CONFIRM_SUPPRESSION,
-  isCmdClearAll,
+  isCmdClearQueue,
   isCmdSetConfirmSuppression
 } from '../../../src/contracts/sidebar-ipc';
 
-describe('Feature 063 — isCmdClearAll', () => {
-  it('accepts a minimal command with no payload', () => {
-    expect(isCmdClearAll({ type: CMD_CLEAR_ALL, correlationId: 'c-1' })).toBe(true);
-  });
-
-  it('accepts an empty payload object', () => {
+// FR-R3-150 (T1618) — `isCmdClearQueue` is a shallow discriminator-only
+// check, matching `isCmdClearCompleted`: deep `queueId` validation lives in
+// `validateQueueCleanupPayload` (`src/contracts/validators/queue-cleanup.ts`),
+// which is architecturally the only layer that checks payload shape for
+// this command (this file's own header comment). These cases pin that this
+// guard accepts any object-shaped payload and only checks the discriminator.
+describe('FR-R3-150 (T1618) — isCmdClearQueue', () => {
+  it('accepts a well-formed payload', () => {
     expect(
-      isCmdClearAll({ type: CMD_CLEAR_ALL, correlationId: 'c-1', payload: {} })
+      isCmdClearQueue({
+        type: CMD_CLEAR_QUEUE,
+        correlationId: 'c-1',
+        payload: { queueId: 'q-beta' }
+      })
     ).toBe(true);
   });
 
-  it('rejects payload arrays', () => {
-    expect(
-      isCmdClearAll({ type: CMD_CLEAR_ALL, correlationId: 'c-1', payload: [] })
-    ).toBe(false);
+  it('accepts a missing payload too — shape/registry validation lives one layer down', () => {
+    expect(isCmdClearQueue({ type: CMD_CLEAR_QUEUE, correlationId: 'c-1' })).toBe(true);
   });
 
-  it('rejects non-empty payloads (CMD_CLEAR_ALL takes no operator input)', () => {
+  it('rejects foreign discriminators', () => {
     expect(
-      isCmdClearAll({
-        type: CMD_CLEAR_ALL,
+      isCmdClearQueue({
+        type: 'CMD_CLEAR_COMPLETED',
         correlationId: 'c-1',
-        payload: { confirmed: true }
+        payload: { queueId: 'q-beta' }
       })
     ).toBe(false);
   });
 
-  it('rejects foreign discriminators', () => {
-    expect(isCmdClearAll({ type: 'CMD_RESET', correlationId: 'c-1' })).toBe(false);
-  });
-
   it('rejects null, undefined, primitives, and arrays', () => {
-    expect(isCmdClearAll(null)).toBe(false);
-    expect(isCmdClearAll(undefined)).toBe(false);
-    expect(isCmdClearAll('CMD_CLEAR_ALL')).toBe(false);
-    expect(isCmdClearAll([])).toBe(false);
+    expect(isCmdClearQueue(null)).toBe(false);
+    expect(isCmdClearQueue(undefined)).toBe(false);
+    expect(isCmdClearQueue('CMD_CLEAR_QUEUE')).toBe(false);
+    expect(isCmdClearQueue([])).toBe(false);
   });
 });
 

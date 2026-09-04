@@ -166,6 +166,49 @@ describe('AuditLogWriter.append', () => {
     const iterations = lines.map((l) => JSON.parse(l).iteration);
     expect(iterations).toEqual([0, 1, 2, 3, 4]);
   });
+
+  // A metric named `__proto__` must not abort the run, and must not be reported as
+  // a secret.
+  //
+  // `append()` writes only if the sanitizer and the projection agree key-for-key,
+  // and a disagreement is reported as `secret-detected` — the one signal on the
+  // evidence surface an operator has to be able to trust. The two disagreed here:
+  // `projectValue()` builds its object with `Object.fromEntries` (CreateDataProperty,
+  // so `__proto__` lands as a real own property and survives `JSON.stringify`),
+  // while `SanitizedLogger.sanitizeValue()` still assigns `out[key] = cleaned` onto
+  // a `{}` literal, which for that one key invokes the inherited setter and silently
+  // discards a number. So the projected payload stringified with the metric and the
+  // sanitized one stringified without it, every time, and the mismatch threw.
+  //
+  // The name is reachable without any operator cooperation: the parser's
+  // `METRIC_IDENT_RE` admits it, so an agent printing `__proto__: 3` in its audit
+  // block is enough. The throw propagates through `maybeEmit` and `run()`'s
+  // try/finally to `drive()`, which rethrows — a run-ending crash triggered by model
+  // output, reported to the operator as a leaked secret.
+  it('accepts a metric named __proto__ instead of rejecting the payload as a secret', async () => {
+    const writer = new AuditLogWriter({ workspaceRoot: tmpRoot }, new SanitizedLogger());
+    const metrics: Record<string, number> = Object.create(null);
+    metrics['__proto__'] = 3;
+    metrics.failing_tests = 1;
+
+    await expect(
+      writer.append({
+        runId: 'r-proto',
+        phase: 'speckit-implement',
+        iteration: 2,
+        eventType: 'phase.retry_evaluated',
+        payload: { phaseId: 'implement', metrics, decision: true, missingKeys: [], stalled: 2 },
+        outcome: 'info'
+      })
+    ).resolves.toBeTruthy();
+
+    const contents = await fs.readFile(path.join(tmpRoot, '.schegent', 'audit.log'), 'utf8');
+    expect(contents).toContain('"failing_tests":1');
+    // Dropped, not carried: `__proto__` must not reach the JSONL, because the
+    // metadata-only export copies `metrics` through as a value and a consumer that
+    // merges the export would take a prototype-pollution-shaped key with it.
+    expect(contents).not.toContain('__proto__');
+  });
 });
 
 describe('AuditLogWriter.subscribe', () => {

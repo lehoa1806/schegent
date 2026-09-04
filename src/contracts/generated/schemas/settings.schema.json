@@ -466,6 +466,21 @@
           "itemPattern": null
         },
         {
+          "key": "schegent.queue.haltOnTaskFailure",
+          "type": "enum",
+          "default": "halt-on-failure",
+          "scope": "window",
+          "enum": [
+            "halt-on-failure",
+            "continue"
+          ],
+          "minimum": null,
+          "maximum": null,
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
+        },
+        {
           "key": "schegent.retry.forceContinueOnCap",
           "type": "boolean",
           "default": false,

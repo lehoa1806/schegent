@@ -29,6 +29,7 @@
   import ScheduledStartIndicator from '../ScheduledStartIndicator.svelte';
   import StartModeChooser, { type StartQueueIntent } from '../StartModeChooser.svelte';
   import { postCommand } from '../../lib/vscode-api';
+  import { correlatedLifecycle, lifecycleMessage } from '../../lib/lifecycle-control-ipc';
   import { CMD_START_QUEUE, CMD_DISMISS_MIGRATION_NOTICE } from '../../lib/messages';
   import { defaultQueueId, findQueueRuntime } from '../../lib/queue-runtime-view';
   import { remoteLifecycleChangeStore } from '../../lib/remote-lifecycle-change-store.svelte';
@@ -69,13 +70,24 @@
     showRestartChooser = true;
   }
 
-  function onRestartChooserCommit(intent: StartQueueIntent | null): void {
+  // FR-R3-154 (T1646) — what the host answered about the last start, as one
+  // sentence, or `null` when it committed. This panel is the FR-018 chooser's
+  // sole dispatcher, so a `rejected-horizon` refusal of the operator's chosen
+  // time surfaced nowhere at all: the chooser closed and the queue stayed idle.
+  let startMessage = $state<string | null>(null);
+
+  async function onRestartChooserCommit(intent: StartQueueIntent | null): Promise<void> {
     showRestartChooser = false;
     if (intent === null) return;
+    startMessage = null;
     // Chooser already emits a `StartQueueIntent` with `source:'operator-restart'`.
     // Per FR-018 / Q6 the dispatch is once-to-the-queue — this queue, named, so
     // the host does not fall back to the default (hard rule 56).
-    postCommand(CMD_START_QUEUE, { queueId, startIntent: intent } as never);
+    startMessage = lifecycleMessage(
+      await correlatedLifecycle(
+        () => postCommand(CMD_START_QUEUE, { queueId, startIntent: intent } as never).correlationId
+      )
+    );
   }
 
   function onMigrationNoticeDismiss(): void {
@@ -103,6 +115,9 @@
     <div class="idle-pending-host" data-testid="idle-pending-chooser-host">
       <StartModeChooser onCommit={onRestartChooserCommit} />
     </div>
+  {/if}
+  {#if startMessage !== null}
+    <p class="start-message" role="alert" data-testid="idle-pending-start-message">{startMessage}</p>
   {/if}
 {/if}
 {#if remoteLifecycleChangeStore.active}
@@ -182,6 +197,14 @@
 
   .notice-text {
     flex: 1 1 auto;
+  }
+
+  /* Colour matches `QueueDetailTier`'s `.refusal`; the horizontal padding
+     matches the notices above so the sentence lines up with the panel. */
+  .start-message {
+    margin: 4px 20px 0;
+    font-size: 0.85em;
+    color: var(--vscode-errorForeground);
   }
 
   .notice-dismiss {

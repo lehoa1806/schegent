@@ -29,19 +29,25 @@ describe('queue-cleared-all audit event (Feature 063 T009/T010)', () => {
     expect(value).toBe('queue-cleared-all');
   });
 
-  it('QueueClearedAllPayload accepts the five contractual fields (acked case)', () => {
+  // FR-R3-150 (T1619c) — six fields, not five: `scheduleCleared` joined the
+  // payload when the workspace-wide reset started disarming schedules, and
+  // this key list is the assertion that would have caught it being threaded
+  // through the handler but never declared on the contract.
+  it('QueueClearedAllPayload accepts the six contractual fields (acked case)', () => {
     const payload: QueueClearedAllPayload = {
       removedPending: 3,
       removedInFlight: 1,
       pauseStateCleared: true,
       runnerState: 'acked',
-      watchdogBackoffCleared: false
+      watchdogBackoffCleared: false,
+      scheduleCleared: true
     };
     expect(Object.keys(payload).sort()).toEqual([
       'pauseStateCleared',
       'removedInFlight',
       'removedPending',
       'runnerState',
+      'scheduleCleared',
       'watchdogBackoffCleared'
     ]);
   });
@@ -52,7 +58,8 @@ describe('queue-cleared-all audit event (Feature 063 T009/T010)', () => {
       removedInFlight: 1,
       pauseStateCleared: false,
       runnerState: 'timed-out',
-      watchdogBackoffCleared: false
+      watchdogBackoffCleared: false,
+      scheduleCleared: false
     };
     expect(payload.runnerState).toBe('timed-out');
   });
@@ -63,7 +70,8 @@ describe('queue-cleared-all audit event (Feature 063 T009/T010)', () => {
       removedInFlight: 0,
       pauseStateCleared: false,
       runnerState: 'no-active-run',
-      watchdogBackoffCleared: false
+      watchdogBackoffCleared: false,
+      scheduleCleared: false
     };
     expect(payload.runnerState).toBe('no-active-run');
   });

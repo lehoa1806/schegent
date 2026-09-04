@@ -330,7 +330,7 @@ describe('FR-R3-084 — the live phase, written after it was run', () => {
 
   it('the qualification log records a run, and names every backend in it', () => {
     // The gap this closes: until 2026-08-26 the log was the ONE artifact of this
-    // item that no test read. The backlog-verification plan (`00_INDEX.md` §5)
+    // item that no test read. The backlog-verification plan (`INDEX.md` §5)
     // declined to file the canary precisely because "has it ever produced a
     // result" was not
     // checkable from a checkout; a log nothing checks is that same gap wearing a

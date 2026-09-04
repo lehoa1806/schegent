@@ -282,6 +282,15 @@ export const TRUST_GATE_EVENT_TYPES = ['trust.capability-denied'] as const;
 // contracts/cmd-clear-all.md §Idempotency).
 export const QUEUE_FULL_RESET_EVENT_TYPES = ['queue-cleared-all'] as const;
 
+// FR-R3-150 (T1620) — queue-scoped Clean All, distinct from the
+// workspace-wide `queue-cleared-all` above. Emitted by the queue-scoped
+// orchestrator (`src/commands/clear-queue.ts`) once per confirmed,
+// non-no-op `CMD_CLEAR_QUEUE`. Payload is structural counts + the addressed
+// `queueId` + a closed-enum runner-state literal, so `SECRET_PATTERNS` is
+// unchanged. Additive — no `AUDIT_SCHEMA_VERSION` bump (follows the 063
+// precedent). No event is emitted when `ClearQueueResult.wasNoop` is `true`.
+export const QUEUE_SCOPED_RESET_EVENT_TYPES = ['queue-cleared'] as const;
+
 // Feature FR-R3-006 (T348) — the workspace-state reset transaction, recorded
 // once per attempt. Deliberately one event rather than one per phase: a reset
 // either happened or it did not, and six entries describing the same operator
@@ -861,6 +870,7 @@ export const ALL_AUDIT_EVENT_TYPES = [
   ...WORKSPACE_LIFECYCLE_EVENT_TYPES,
   ...TRUST_GATE_EVENT_TYPES,
   ...QUEUE_FULL_RESET_EVENT_TYPES,
+  ...QUEUE_SCOPED_RESET_EVENT_TYPES,
   ...RESET_TRANSACTION_EVENT_TYPES,
   ...SCHEDULE_EVENT_TYPES,
   ...MIGRATION_V7_EVENT_TYPES,
@@ -905,6 +915,7 @@ export type StateMigrationEventType = (typeof STATE_MIGRATION_EVENT_TYPES)[numbe
 export type WorkspaceLifecycleEventType = (typeof WORKSPACE_LIFECYCLE_EVENT_TYPES)[number];
 export type TrustGateEventType = (typeof TRUST_GATE_EVENT_TYPES)[number];
 export type QueueFullResetEventType = (typeof QUEUE_FULL_RESET_EVENT_TYPES)[number];
+export type QueueScopedResetEventType = (typeof QUEUE_SCOPED_RESET_EVENT_TYPES)[number];
 export type ResetTransactionEventType = (typeof RESET_TRANSACTION_EVENT_TYPES)[number];
 export type ScheduleAuditEventType = (typeof SCHEDULE_EVENT_TYPES)[number];
 export type MigrationV7EventType = (typeof MIGRATION_V7_EVENT_TYPES)[number];
@@ -1180,6 +1191,30 @@ export interface QueueClearedAllPayload {
   readonly pauseStateCleared: boolean;
   readonly runnerState: 'acked' | 'timed-out' | 'no-active-run';
   readonly watchdogBackoffCleared: boolean;
+  // FR-R3-150 (T1619c) — `true` when the reset disarmed at least one queue's
+  // scheduled start. Additive and boolean: it names no queue, because this
+  // event is the workspace-wide one and the per-queue record is
+  // `scheduled-start-canceled`, which the coordinator's own `cancel()` emits
+  // per id. FR-009 requires the recorded history to state what this action
+  // affected, and before this field a disarmed timer left no trace here at all.
+  readonly scheduleCleared: boolean;
+}
+
+// FR-R3-150 (T1620) — payload for the queue-scoped `queue-cleared` audit
+// event. Bounded to the addressed `queueId` plus structural counts and
+// closed-enum literals, mirroring `QueueClearedAllPayload` above. NEVER
+// includes operator descriptions, task ids, or queue names — only the id,
+// which is the same shape `queue-created`/`queue-deleted` already carry.
+export interface QueueClearedPayload {
+  readonly queueId: string;
+  readonly removedPending: number;
+  readonly removedCompleted: number;
+  readonly removedFailed: number;
+  readonly removedCanceled: number;
+  readonly removedInFlight: number;
+  readonly pauseCleared: boolean;
+  readonly scheduleCleared: boolean;
+  readonly runnerState: 'acked' | 'timed-out' | 'no-active-run';
 }
 
 // Feature FR-R3-006 (T348) — payload for `workspace-state-reset`. Five fields,
@@ -1322,6 +1357,7 @@ export const SYSTEM_SCOPED_EVENT_TYPES: ReadonlySet<AuditEventType> = Object.fre
   new Set<AuditEventType>([
     // Queue mutation
     'queue-cleared-all',
+    'queue-cleared',
     'queue-created',
     'queue-renamed',
     'queue-deleted',

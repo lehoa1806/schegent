@@ -32,7 +32,18 @@ const HELPER_MODULE = 'webview-ui/src/lib/phase-control.ts';
 const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'webview-ui/src/lib/messages.ts',
   'webview-ui/src/lib/phase-control.ts',
-  'webview-ui/src/components/__tests__/PhaseControlMenu.test.ts'
+  'webview-ui/src/components/__tests__/PhaseControlMenu.test.ts',
+  // FR-R3-154 (T1646) — the shared helper's own unit test. It names all three
+  // constants to assert which command each dispatcher posts and which ACK each
+  // one reads back, which is the invariant this gate protects rather than a
+  // breach of it: before this file existed the helper returned `void`, so a
+  // test could pin the command name and nothing else.
+  'webview-ui/src/lib/__tests__/phase-control.test.ts',
+  // FR-R3-154 (T1646) — the correlation scaffolding's unit test. It references
+  // CMD_PAUSE_PHASE only as a sample command to drive `correlatedLifecycle`
+  // through one post/ACK round trip; it dispatches nothing of its own, and the
+  // helper above remains the only non-test module that names these constants.
+  'webview-ui/src/lib/__tests__/lifecycle-control-ipc.test.ts'
 ]);
 
 

@@ -31,23 +31,15 @@
   import QueueIdlePendingPanel from './QueueIdlePendingPanel.svelte';
   import QueueStartFailureNotice from './QueueStartFailureNotice.svelte';
   import { postCommand } from '../../lib/vscode-api';
-  import {
-    CMD_RENAME_QUEUE,
-    CMD_PAUSE_QUEUE,
-    CMD_RESUME_QUEUE,
-    CMD_CLEAR_COMPLETED,
-    CMD_CLEAR_ALL
-  } from '../../lib/messages';
+  import { CMD_RENAME_QUEUE, CMD_PAUSE_QUEUE, CMD_RESUME_QUEUE } from '../../lib/messages';
   import { queueRuntimeLabel } from '../../lib/queue-lifecycle-label';
   import {
-    defaultQueueId,
-    findQueueRuntime,
-    isWorkingARun,
-    ownsRun
+    defaultQueueId, findQueueRuntime, haltedStartFailure,
+    isWorkingARun, ownsRun
   } from '../../lib/queue-runtime-view';
-  import { confirmAndDeleteQueue, refusalText } from '../../lib/queue-control-ipc';
+  import { clearCompleted, clearQueue, confirmAndDeleteQueue, refusalText } from '../../lib/queue-control-ipc';
   import { useConfirm } from '../../lib/use-confirm';
-  import { deriveCleanAllContext } from '../../lib/queue-derived';
+  import { deriveCleanAllContext, deriveClearDoneContext } from '../../lib/queue-derived';
   import type { WorkflowSnapshot } from '../../lib/snapshot-types';
 
   interface Props {
@@ -105,7 +97,32 @@
   // `isWorkingARun` for the whole reading.
   const hasInFlight = $derived(isWorkingARun(runtime));
   const paused = $derived(runtime?.lifecycle === 'operator-paused');
+  const haltedFailure = $derived(runtime === null ? null : haltedStartFailure(runtime)); // T031
+  const haltedTask = $derived(haltedFailure === null ? null : (tasks.find((t) => t.id === haltedFailure.taskId) ?? null));
   const clearDoneDisabled = $derived(completedCount === 0);
+  // Code-review finding (LC-Q-05) — an armed scheduled start is itself
+  // something Clean All clears (`QueueManager.clearQueue` reports
+  // `wasNoop: false` for a schedule-only queue); the gate below used to omit
+  // it, so a queue whose only leftover state was a schedule showed a
+  // permanently disabled button with no way to reach the reset that closes
+  // LC-Q-05.
+  //
+  // Code-review finding — computed once here via `deriveCleanAllContext`
+  // (below), not a second, independent `runtime?.lifecycle ===
+  // 'idle-pending'` read: that context function is also what `onClean`
+  // passes to `useConfirm`, so the button-gating predicate and the
+  // confirmation copy can never read "armed schedule" two different ways.
+  // `QueueSummary.schedule` (`snapshot.queue.queues[].schedule`) is not it —
+  // that's the registry-level schedule mechanism `queue-manager.ts`'s own
+  // header comment documents as dead in practice (Feature 097 removed its
+  // only non-null writer). The armed schedule `QueueManager.clearQueue`
+  // actually resets is `QueueState`'s `scheduledStartAt`, which is not
+  // projected per-queue to the webview at all — but its pairing lifecycle
+  // value is: `data-model.md`'s scheduledStartAt/idle-pending invariant
+  // means `lifecycle === 'idle-pending'` iff a schedule is armed, and
+  // `QueueRuntime.lifecycle` (read for `paused` above) already carries it
+  // live, per queue.
+  const cleanAllContext = $derived(deriveCleanAllContext(snapshot, queueId));
   const cleanDisabled = $derived(
     pendingCount === 0 &&
       completedCount === 0 &&
@@ -114,7 +131,8 @@
       // `ownsRun`, not `hasInFlight`: Clean All clears the active Run record, so a
       // Run that has ended is still something there is to clean.
       !ownsRun(runtime) &&
-      !paused
+      !paused &&
+      !cleanAllContext.hasSchedule
   );
 
   // T008 (FR-009, data-model.md `ComposerVisibility`) — the add-work
@@ -235,26 +253,35 @@
 
   async function onClearDone(event: MouseEvent): Promise<void> {
     if (clearDoneDisabled) return;
-    const ok = await useConfirm('queue.clear-done', {
-      originatingElement: event.currentTarget as HTMLElement | null,
-      context: { completedCount }
-    });
-    if (!ok) return;
-    // CMD_CLEAR_COMPLETED carries no queueId — it is workspace-global by
-    // contract (sidebar-ipc.ts), exactly as Dashboard.svelte posted it.
-    postCommand(CMD_CLEAR_COMPLETED);
+    // FR-R3-150 (T1621b) — required, addressed to this tier's own queue.
+    // Was workspace-global by contract (always cleared Default); the
+    // sidebar route no longer relies on that fallback.
+    //
+    // Code-review finding (iteration 4, FR-011) — confirm+post+correlate now
+    // live in `clearCompleted` (mirrors `confirmAndDeleteQueue` above), so a
+    // between-confirm `unknown-queue-id` refusal reaches this line, not the void.
+    refusal = null;
+    const outcome = await clearCompleted(
+      queueId,
+      deriveClearDoneContext(snapshot, queueId),
+      event.currentTarget as HTMLElement
+    );
+    if (outcome.status === 'refused') refusal = refusalText(outcome.reason);
   }
 
   async function onClean(event: MouseEvent): Promise<void> {
     if (cleanDisabled) return;
-    const ok = await useConfirm('queue.clean-all', {
-      originatingElement: event.currentTarget as HTMLElement | null,
-      context: deriveCleanAllContext(snapshot)
-    });
-    if (!ok) return;
-    // CMD_CLEAR_ALL carries no queueId — it is workspace-global by contract
-    // (sidebar-ipc.ts), exactly as Dashboard.svelte posted it.
-    postCommand(CMD_CLEAR_ALL);
+    // FR-R3-150 (T1618/T1622d) — CMD_CLEAR_QUEUE, addressed to this tier's
+    // own queue. Replaces CMD_CLEAR_ALL, which was workspace-global by
+    // contract and reset every queue regardless of which one was open
+    // (LC-Q-01) — the workspace-wide reset survives only as the Command
+    // Palette's separate `schegent.clearAll` (FR-009).
+    //
+    // Code-review finding (iteration 4, FR-011) — see `onClearDone` above:
+    // same fix, via `clearQueue`.
+    refusal = null;
+    const outcome = await clearQueue(queueId, cleanAllContext, event.currentTarget as HTMLElement);
+    if (outcome.status === 'refused') refusal = refusalText(outcome.reason);
   }
 </script>
 
@@ -309,6 +336,7 @@
             {clearDoneDisabled}
             {cleanDisabled}
             queueLifecycle={runtime?.lifecycle ?? null}
+            {haltedTask}
             {onResume}
             {onPause}
             {onClearDone}

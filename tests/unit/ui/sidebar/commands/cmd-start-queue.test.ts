@@ -1,7 +1,16 @@
 // BUG-002 (FR-012a, T082) — cmd-start-queue handler unit tests.
-// The handler delegates to `schegent.startQueue` via the `exec` helper
-// and acks `accepted`. Error propagation is handled by the router's
-// outer try/catch; the handler itself does not catch.
+// The handler delegates to `schegent.startQueue` and acks what that command
+// answered.
+//
+// FR-R3-154 (T1646) — this header used to end "and acks `accepted`. Error
+// propagation is handled by the router's outer try/catch; the handler itself
+// does not catch." Both halves have changed, and the fake below changed with
+// them: `runStartQueueCommand` returns a `CommandOutcome` now, so a fake that
+// resolves `undefined` no longer models the host command — it models the
+// Workspace Trust gate declining to run it. The dispatch failure is converted
+// in `execForOutcome` rather than left to the router, because the router's
+// generic catch put the sanitized *error message* into the ACK reason, and the
+// reason crosses to the webview.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -12,6 +21,11 @@ import type { CommandAckMessage, StartQueueCommand } from '../../../../../src/co
 function buildCtx(opts: {
   executeCommandRejects?: boolean;
   executeCommandError?: Error;
+  // What `runStartQueueCommand` answered. An override rather than a
+  // post-construction assignment, because `ctx.deps` is `readonly` — the
+  // handler must not be able to swap its own dependencies, and a test that
+  // reached in to reassign one would type-check only by widening that.
+  result?: unknown;
 } = {}): {
   ctx: Parameters<typeof startQueueHandler>[0];
   acks: CommandAckMessage[];
@@ -31,6 +45,8 @@ function buildCtx(opts: {
     if (opts.executeCommandRejects) {
       throw opts.executeCommandError ?? new Error('no pending tasks');
     }
+    // What `runStartQueueCommand` returns for an accepted start.
+    return opts.result ?? ({ outcome: 'accepted' } as const);
   });
   const ctx = {
     deps: {
@@ -72,22 +88,62 @@ describe('cmd-start-queue handler (BUG-002, FR-012a, T082)', () => {
   it('posts ack("accepted") on success', async () => {
     const { ctx, acks } = buildCtx();
     await startQueueHandler(ctx, makeCmd());
-    expect(acks).toHaveLength(1);
-    expect(acks[0].status).toBe('accepted');
-    expect(acks[0].correlationId).toBe('test-start-queue-1');
+    // Asserted as the whole array rather than field-by-field off `acks[0]`.
+    // The indexed form reads as an opaque TypeError when the handler posted
+    // nothing — the failure mode these cases exist to catch — while this one
+    // pins the arity in the same assertion and prints the ACK that did arrive.
+    // It is also the form `mock.calls[0]` comparisons further down already use,
+    // and the one `tests/lint/compiler-strictness-ratchet.test.ts` asks for.
+    expect(acks).toEqual([
+      expect.objectContaining({
+        status: 'accepted',
+        outcome: 'accepted',
+        correlationId: 'test-start-queue-1'
+      })
+    ]);
   });
 
-  it('propagates errors from executeCommand (router catches)', async () => {
-    const { ctx } = buildCtx({
+  it('converts a dispatch failure into a failed ack rather than propagating', async () => {
+    // FR-R3-154 (T1646) — this case asserted the opposite: that the handler let
+    // the error through for the router to ACK. It did, and the router ACKed
+    // `rejected` with the sanitized error message as the reason. Converting it
+    // here keeps the message in the log and sends a code, because the reason is
+    // what crosses to the webview.
+    const { ctx, acks, warnings } = buildCtx({
       executeCommandRejects: true,
-      executeCommandError: new Error('no pending tasks in queue')
+      executeCommandError: new Error('no pending tasks in /Users/someone/ws')
     });
-    // The handler does NOT try/catch — errors propagate to the router's
-    // outer wrapper. This is by design: the router logs the error and
-    // sends a rejected ack with the error message.
-    await expect(startQueueHandler(ctx, makeCmd())).rejects.toThrow(
-      'no pending tasks in queue'
-    );
+    await expect(startQueueHandler(ctx, makeCmd())).resolves.toBeUndefined();
+    expect(acks).toEqual([
+      expect.objectContaining({
+        status: 'rejected',
+        outcome: 'failed',
+        reason: 'command-dispatch-failed'
+      })
+    ]);
+    // The no-leak claim stated over the serialized ACK rather than over
+    // `reason` alone: the code equality above would already fail if the reason
+    // changed, so what is worth asserting separately is that the absolute path
+    // reached no field of the message at all.
+    expect(JSON.stringify(acks)).not.toContain('/Users/');
+    expect(warnings.some((w) => w.includes('no pending tasks'))).toBe(true);
+  });
+
+  it('reports a refused start instead of accepting it', async () => {
+    // The defect this route carried: `runStartQueueCommand` swallowed every
+    // intent rejection, so the operator's chooser reported a start that the
+    // horizon bound had refused.
+    const { ctx, acks } = buildCtx({
+      result: { outcome: 'refused', reason: 'rejected-horizon' }
+    });
+    await startQueueHandler(ctx, makeCmd());
+    expect(acks).toEqual([
+      expect.objectContaining({
+        status: 'rejected',
+        outcome: 'refused',
+        reason: 'rejected-horizon'
+      })
+    ]);
   });
 
   it('does not ack before executeCommand resolves', async () => {
@@ -95,6 +151,7 @@ describe('cmd-start-queue handler (BUG-002, FR-012a, T082)', () => {
     const executeCommandSpy = vi.fn(async () => {
       await new Promise((r) => setTimeout(r, 10));
       execResolved = true;
+      return { outcome: 'accepted' } as const;
     });
     const acks: CommandAckMessage[] = [];
     const ctx = {

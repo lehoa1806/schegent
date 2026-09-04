@@ -75,28 +75,33 @@ export default defineConfig({
       // floor remains possible and remains deliberate — an edit in a diff, which
       // is where a decision to accept less coverage belongs.
       //
-      // Measured 2026-08-29 on darwin, branch
-      // 204-delete-unreachable-webview, after FR-R3-140's deletion:
-      // 87.75% statements (13366/15232) / 79.46% branches (4878/6139) /
-      // 81.42% functions (881/1082) / 87.75% lines.
+      // Measured 2026-09-03 on darwin, branch 193-mutation-ack-key-parity,
+      // after FR-R3-154's ACK-reading tests landed:
+      // 89.13% statements (14809/16615) / 80.67% branches (5429/6730) /
+      // 82.87% functions (953/1150) / 89.13% lines.
       //
-      // All four floors are re-derived from that one run. Deleting whole files
-      // moves the four denominators by different amounts and not all in the
-      // same direction — statements rose 84.97 → 87.75 as 407 zero-coverage
-      // statements left the denominator, functions rose 81.06 → 81.42, and
-      // branches *fell* slightly, 79.60 → 79.46. No floor may be inferred from
-      // another. Branches and functions land on the same floors they had, which
-      // is a measured result and not an untouched line.
+      // All four floors are re-derived from that one run. The denominators are
+      // not the 2026-08-29 ones — 15,232 statements became 16,615 as features
+      // 189-193 added source, so a floor carried over from that run would be
+      // pinned to a tree that no longer exists. Statements and lines rose
+      // 87.75 → 89.13, branches 79.46 → 80.67, functions 81.42 → 82.87. No
+      // floor may be inferred from another: only statements and lines had
+      // fallen past the one-point tolerance, and branches and functions are
+      // raised here from their own measured values rather than from that pair.
+      //
+      // The prior 2026-08-29 measurement (branch 204-delete-unreachable-webview,
+      // after FR-R3-140's deletion) read 87.75 / 79.46 / 81.42 / 87.75 against
+      // floors of 82 / 74 / 76 / 82.
       //
       // Five points of headroom is room for a legitimate refactor; pinning a
       // floor to what the tree happens to measure today makes the next one red
       // for nothing. Full run recorded in
       // ../docs/development/coverage-measurements.md.
       thresholds: {
-        statements: 82,
-        branches: 74,
-        functions: 76,
-        lines: 82
+        statements: 84,
+        branches: 75,
+        functions: 77,
+        lines: 84
       }
     }
   }

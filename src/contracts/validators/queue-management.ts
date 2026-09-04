@@ -16,17 +16,20 @@ import {
   CMD_MOVE_TASK,
   CMD_RENAME_QUEUE,
   CMD_SAVE_QUEUE_SETTINGS,
+  CMD_SET_QUEUE_FAILURE_POLICY,
   type SidebarCommand
 } from '../sidebar-ipc';
 import { MAX_QUEUES } from '../queue-bounds';
 import { MAX_QUEUE_NAME_LENGTH } from '../queue-bounds';
 import { QUEUE_ID_MAX, fail, hasUnexpectedKeys, ok, type IpcValidationResult } from './shared';
+import { QUEUE_FAILURE_POLICIES } from '../queue-failure-policy';
 
 type QueueCommandType =
   | typeof CMD_CREATE_QUEUE
   | typeof CMD_RENAME_QUEUE
   | typeof CMD_DELETE_QUEUE
   | typeof CMD_SAVE_QUEUE_SETTINGS
+  | typeof CMD_SET_QUEUE_FAILURE_POLICY
   | typeof CMD_MOVE_TASK;
 
 /** Every command below requires a payload object; none accepts the empty form. */
@@ -165,6 +168,42 @@ export function validateSaveQueueSettings(
     type: CMD_SAVE_QUEUE_SETTINGS,
     correlationId,
     payload: { globalConcurrencyCap: cap, defaultQueueId }
+  } as SidebarCommand);
+}
+
+/**
+ * Feature 195 (T035, FR-018, FR-019) — `policy` is validated against the
+ * closed `QUEUE_FAILURE_POLICIES` vocabulary, with `null` admitted as its own
+ * value (contract §6): "follow the workspace default", not "absent". An
+ * unrecognised non-null string is refused here rather than read as absent —
+ * unlike the stored field's own reader (`effectiveQueueFailurePolicy`),
+ * which is forward-compatible with a persisted value from a newer build;
+ * this is a fresh operator instruction on the wire and has no
+ * forward-compatibility obligation to honour.
+ */
+export function validateSetQueueFailurePolicy(
+  obj: Record<string, unknown>,
+  correlationId: string
+): IpcValidationResult {
+  const got = requirePayload(CMD_SET_QUEUE_FAILURE_POLICY, obj, correlationId, [
+    'queueId',
+    'policy'
+  ]);
+  if ('failure' in got) return got.failure;
+  const queueId = got.p['queueId'];
+  if (!isValidId(queueId)) {
+    return fail('invalid-queueId', { type: CMD_SET_QUEUE_FAILURE_POLICY, correlationId });
+  }
+  const policy = got.p['policy'];
+  const isKnownPolicy =
+    typeof policy === 'string' && (QUEUE_FAILURE_POLICIES as readonly string[]).includes(policy);
+  if (policy !== null && !isKnownPolicy) {
+    return fail('invalid-failure-policy', { type: CMD_SET_QUEUE_FAILURE_POLICY, correlationId });
+  }
+  return ok({
+    type: CMD_SET_QUEUE_FAILURE_POLICY,
+    correlationId,
+    payload: { queueId, policy }
   } as SidebarCommand);
 }
 

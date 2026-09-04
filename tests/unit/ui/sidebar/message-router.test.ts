@@ -53,8 +53,11 @@ class FakeQueueOps {
   moveUpResult: { ok: boolean; reason?: string } = { ok: true };
   moveDownCalls: string[] = [];
   moveDownResult: { ok: boolean; reason?: string } = { ok: true };
-  clearCompletedCalls: number = 0;
-  clearCompletedResult: { removed: number } = { removed: 0 };
+  clearCompletedCalls: string[] = [];
+  clearCompletedResult: { ok: boolean; reason?: string; removed: number } = {
+    ok: true,
+    removed: 0
+  };
   setQueuePausedStateCalls: Array<{
     paused: boolean;
     queueId: string | undefined;
@@ -92,8 +95,8 @@ class FakeQueueOps {
     this.moveDownCalls.push(id);
     return this.moveDownResult;
   }
-  async clearCompleted(): Promise<{ removed: number }> {
-    this.clearCompletedCalls++;
+  async clearCompleted(queueId: string): Promise<{ ok: boolean; reason?: string; removed: number }> {
+    this.clearCompletedCalls.push(queueId);
     return this.clearCompletedResult;
   }
   async setQueuePausedState(
@@ -126,7 +129,14 @@ function makeRouter(opts: {
 } {
   const queueOps = opts.queueOps ?? new FakeQueueOps();
   const executeCommand = vi.fn();
-  executeCommand.mockResolvedValue(undefined);
+  // FR-R3-154 (T1646) — routes that read their command's answer are no longer
+  // only `cmd-cancel`: the five lifecycle routes read one too, and `undefined`
+  // now means the Workspace Trust gate refused before the handler ran. So the
+  // shared fake states an acceptance rather than nothing. `{ ok: true }` is the
+  // `MutationResult` the majority of these commands return (`runCancel`,
+  // `queue-ops`), and it is understood by both readers — `ackGenericResult` and
+  // `normalizeCommandResult`. Cases asserting a refusal override it.
+  executeCommand.mockResolvedValue({ ok: true });
   const acks: CapturedAck[] = [];
   const warnings: string[] = [];
   const auditEntries: CapturedAuditEntry[] = [];
@@ -521,10 +531,14 @@ describe('MessageRouter.dispatch', () => {
       expect(acks[0].msg.status).toBe('accepted');
     });
 
-    it('CMD_CLEAR_COMPLETED calls queueOps.clearCompleted', async () => {
-      queueOps.clearCompletedResult = { removed: 4 };
-      await dispatch(router, { type: CMD_CLEAR_COMPLETED, correlationId: 'cc1' }, acks);
-      expect(queueOps.clearCompletedCalls).toBe(1);
+    it('CMD_CLEAR_COMPLETED calls queueOps.clearCompleted with the selected queueId', async () => {
+      queueOps.clearCompletedResult = { ok: true, removed: 4 };
+      await dispatch(
+        router,
+        { type: CMD_CLEAR_COMPLETED, correlationId: 'cc1', payload: { queueId: 'q-3' } },
+        acks
+      );
+      expect(queueOps.clearCompletedCalls).toEqual(['q-3']);
       expect(acks[0].msg.status).toBe('accepted');
     });
 

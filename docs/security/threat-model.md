@@ -566,3 +566,32 @@ next run asks again, which is the fail-closed direction for a grant that was nev
 <!-- Source: src/activation/git-approval.ts -->
 <!-- Source: src/state/git-plan-grants.ts -->
 <!-- Source: src/runner/backend-runner-factory.ts -->
+
+### T28 — A command acknowledgement carries an error message to the webview
+
+A new egress channel, opened by `FR-R3-154`. Five lifecycle routes used to acknowledge `accepted`
+unconditionally, which was a truthfulness defect but leaked nothing: they never reported a reason at
+all. Reporting the host's real answer means a `catch` block's output now has somewhere to go, and an
+exception message from this layer carries absolute workspace paths.
+
+The two shapes that could carry arbitrary text are converted to **fixed codes** at the one place that
+reads them. A thrown dispatch becomes `failed` with `command-dispatch-failed`; a registered command
+answering a shape no reading covers becomes `failed` with `command-result-unrecognized`. The
+sanitized message goes to the extension log and never into the acknowledgement. `accepted` carries
+no `reason` field at all, so an acceptance cannot arrive alongside an explanation of why it did not
+happen.
+
+<!-- Source: src/ui/sidebar/commands/handler-helpers.ts -->
+<!-- Source: src/contracts/command-outcome.ts -->
+<!-- Source: tests/unit/ui/sidebar/commands/cmd-start-queue.test.ts -->
+
+**Residual risk, stated rather than implied:**
+
+- **A reason from the host's own vocabulary travels verbatim and is not re-sanitized here.** That is
+  deliberate: those vocabularies belong to the mutating services (`resolveControlTarget`,
+  `PhaseControlService`, the Queue start path), and translating them at the boundary would be the
+  second eligibility oracle this feature exists to remove. The guarantee is therefore conditional on
+  those reasons being codes rather than composed strings — a host service that interpolated a path
+  into a `MutationResult.reason` would reach the webview intact. What is checked is the class where
+  the risk actually arose: the dispatch-failure path is asserted to put no absolute path in any field
+  of the acknowledgement, not merely to carry the right code.

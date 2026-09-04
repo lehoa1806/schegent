@@ -29,6 +29,7 @@ import type { AuditScope } from './audit-events';
 import type { CatalogVersionId } from './catalog-store';
 import type { ChangedFieldSummary } from './snapshot-vocabulary';
 import type { DefinitionState, ExpectedDraftVersion } from './catalog-lifecycle';
+import type { QueueFailurePolicy } from './queue-failure-policy';
 
 /**
  * Feature 083 — Workflow catalog projection. Contract:
@@ -417,6 +418,19 @@ export interface QueueSummary {
     readonly targetAt: string;
   } | null;
   readonly taskCount: number;
+  /**
+   * Feature 195 (T039, FR-014) — this queue's halt-on-failure policy as it
+   * actually runs right now: its own stored answer, or the workspace default
+   * when it has stated none. Projected from `ProjectedQueueRegistryEntry`
+   * exactly as `state` and `pauseSource` above are.
+   */
+  readonly failurePolicy: QueueFailurePolicy;
+  /**
+   * The raw per-queue override, or `null` when this queue follows the
+   * workspace default and `failurePolicy` above is standing in for it. Pairs
+   * with `failurePolicy` the way `pauseSource` pairs with `state`.
+   */
+  readonly failurePolicyOverride: QueueFailurePolicy | null;
 }
 
 /**

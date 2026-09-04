@@ -39,7 +39,11 @@ function makeAckCapture(): AckCapture {
 }
 
 function makeDeps(overrides: Partial<RouterDeps> = {}): RouterDeps {
-  const exec = vi.fn(async () => undefined as unknown);
+  // FR-R3-154 (T1645/T1646) — `runRetryPhaseNow` returns a `CommandOutcome`,
+  // and the route ACKs it. This fake used to resolve `undefined`, which now
+  // means something specific and different: the Workspace Trust gate declined
+  // to run the command. An accepted retry has to say so.
+  const exec = vi.fn(async () => ({ outcome: 'accepted' }) as unknown);
   return {
     executeCommand: exec as unknown as RouterDeps['executeCommand'],
     queueRemover: { remove: vi.fn(async () => true) },
@@ -68,7 +72,7 @@ describe('MessageRouter — CMD_RETRY_PHASE_NOW gating (FR-010)', () => {
   });
 
   it('primary windows invoke schegent.retryPhaseNow and ack accepted', async () => {
-    const execSpy = vi.fn(async () => undefined as unknown);
+    const execSpy = vi.fn(async () => ({ outcome: 'accepted' }) as unknown);
     const deps = makeDeps({ executeCommand: execSpy as unknown as RouterDeps['executeCommand'] });
     const router = new MessageRouter(deps);
     const cap = makeAckCapture();
@@ -82,6 +86,40 @@ describe('MessageRouter — CMD_RETRY_PHASE_NOW gating (FR-010)', () => {
     expect(cap.posted).toHaveLength(1);
     expect(cap.posted[0].status).toBe('accepted');
   });
+
+  // FR-R3-154 (T1646) — the header above has claimed since Feature 011 that the
+  // host "forwards its rejection reason to the ack payload". Only
+  // `secondary-window-readonly` ever was: that one is decided by the router's
+  // own primacy gate, above the command. The three the comment actually names —
+  // `no-active-run`, `not-pending-retry`, `already-retrying` — are decided
+  // inside `controller.retryPhaseNow`, and the route discarded them and ACKed
+  // `accepted`. This is the case that makes the claim true.
+  it.each(['no-active-run', 'not-pending-retry', 'already-retrying'])(
+    'forwards the %s refusal from the retry command',
+    async (reason) => {
+      const deps = makeDeps({
+        executeCommand: vi.fn(async () => ({
+          outcome: 'refused',
+          reason
+        })) as unknown as RouterDeps['executeCommand']
+      });
+      const cap = makeAckCapture();
+
+      await new MessageRouter(deps).dispatch(
+        { type: CMD_RETRY_PHASE_NOW, correlationId: 'cid-refused', payload: { queueId: 'default' } },
+        cap.post
+      );
+
+      // The whole array, not three reads off `cap.posted[0]`: an ACK that was
+      // never posted makes the indexed form throw a TypeError with no mention
+      // of the refusal it was meant to carry, and this form states the arity
+      // claim in the same assertion. Also what the `noUncheckedIndexedAccess`
+      // ratchet asks of a new indexed read.
+      expect(cap.posted).toEqual([
+        expect.objectContaining({ status: 'rejected', outcome: 'refused', reason })
+      ]);
+    }
+  );
 
   // Feature 093 (T080) — retry-now carries the addressed queue; the payload
   // is no longer empty, and the validator refuses it when the queue is absent.

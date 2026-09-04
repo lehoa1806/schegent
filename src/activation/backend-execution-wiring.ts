@@ -21,6 +21,7 @@ import {
   type GrantedUncontainedBackends
 } from '../services/backend-containment-policy';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
+import { MONITOR_STALL_THRESHOLD_MS } from '../contracts/monitor-events';
 import { HistoryStore } from '../state/history-store';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import { TelemetrySamplerImpl } from '../telemetry/telemetry-sampler';
@@ -192,7 +193,7 @@ hostSubscriptions.push({ dispose: () => void transport.flushAndDispose() });
 // interval of resolution.
 let livenessRecorder: { recordRunActivity: (o: RunActivityObservation) => void } | null = null;
 const monitor = new ClaudeCliMonitor({
-  stallThresholdMs: 90_000,
+  stallThresholdMs: MONITOR_STALL_THRESHOLD_MS,
   rateLimitMatchers: RATE_LIMIT_MATCHERS,
   monotonicNow: () => {
     const perf = (globalThis as { performance?: { now: () => number } }).performance;

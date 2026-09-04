@@ -33,23 +33,50 @@ import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { WorkspaceLockManager } from '../state/lock';
 import type { Notifier } from '../ui/notifications';
 import type { SanitizedLogger } from '../lib/logger';
+import {
+  RUNNER_ACK_POLL_INTERVAL_MS,
+  RUNNER_ACK_WINDOW_MS,
+  deriveRunnerState,
+  sleep
+} from '../controller/runner-ack-shared';
 
 // Toast copy — duplicated from `webview-ui/src/lib/action-copy.ts` so the
 // host can surface these strings without importing the webview bundle. The
 // webview file is the source of truth for human-facing copy; this module
 // is the host mirror. If either string changes, update the other.
-const CLEAN_ALL_LOCK_CONTENTION_TOAST =
-  'Clean All could not start — another operation is in progress.';
-const CLEAN_ALL_PERSISTENCE_ERROR_TOAST =
-  'Clean All could not complete — workspace state could not be written.';
-const CLEAN_ALL_RUNNER_STILL_PENDING_TOAST =
-  'Clean All completed; runner cancellation is still pending.';
-
-// Bounded poll window from FR-007. The 2s budget is split across short
-// poll intervals so the probe resolves promptly once the runner's
-// `cancelActive()` propagates through the running flag.
-const RUNNER_ACK_WINDOW_MS = 2_000;
-const RUNNER_ACK_POLL_INTERVAL_MS = 25;
+//
+// Code-review finding (iteration 4) — exported as functions, not plain
+// string constants, and taking an optional `queueId`: `clear-queue.ts`'s
+// lock-contention and persistence-error toasts are this same host-mirror
+// wording with "for {queueId}" named mid-sentence, not appended after it —
+// a plain shared constant a caller string-templates around cannot produce
+// that shape, which is why the constants used to be exported "for reuse"
+// but nothing actually imported them (the wording drifted into two
+// hand-maintained copies instead). A shared function is what makes a future
+// copy edit a one-place edit instead of a two-host-file edit that can drift,
+// for both the addressed and unaddressed wording at once.
+export function cleanAllLockContentionToast(queueId?: string): string {
+  return queueId === undefined
+    ? 'Clean All could not start — another operation is in progress.'
+    : `Clean All for ${queueId} could not start — another operation is in progress.`;
+}
+export function cleanAllPersistenceErrorToast(queueId?: string): string {
+  return queueId === undefined
+    ? 'Clean All could not complete — workspace state could not be written.'
+    : `Clean All for ${queueId} could not complete — workspace state could not be written.`;
+}
+// Code-review finding (iteration 5) — the third of the three, on the same
+// terms as the two above and for the same reason: `clear-queue.ts` renders
+// this wording with "for {queueId}" named MID-SENTENCE, and it was doing so
+// from its own inline template literal, so the file that documents "a shared
+// function is what makes a future copy edit a one-place edit" left one of its
+// three toasts as the two hand-maintained copies it warns about. All three
+// addressed forms now come from here.
+export function cleanAllRunnerStillPendingToast(queueId?: string): string {
+  return queueId === undefined
+    ? 'Clean All completed; runner cancellation is still pending.'
+    : `Clean All completed for ${queueId}; runner cancellation is still pending.`;
+}
 
 export type ClearAllResult = { ok: true } | { ok: false; reason: string };
 
@@ -65,7 +92,7 @@ export interface ClearAllCtx {
 
 export async function runClearAll(ctx: ClearAllCtx): Promise<ClearAllResult> {
   if (!(await ctx.lock.hasPrimacy())) {
-    ctx.notifier.warn(CLEAN_ALL_LOCK_CONTENTION_TOAST);
+    ctx.notifier.warn(cleanAllLockContentionToast());
     return { ok: false, reason: 'not-primary' };
   }
 
@@ -85,7 +112,7 @@ export async function runClearAll(ctx: ClearAllCtx): Promise<ClearAllResult> {
     result = await ctx.queue.clearAll(probe);
   } catch (err) {
     ctx.logger.error(`runClearAll: clearAll failed: ${(err as Error).message}`);
-    ctx.notifier.error(CLEAN_ALL_PERSISTENCE_ERROR_TOAST);
+    ctx.notifier.error(cleanAllPersistenceErrorToast());
     return { ok: false, reason: 'persistence-error' };
   }
 
@@ -104,7 +131,8 @@ export async function runClearAll(ctx: ClearAllCtx): Promise<ClearAllResult> {
         removedInFlight: result.inflightAborted ? 1 : 0,
         pauseStateCleared: result.pauseCleared,
         runnerState: deriveRunnerState(result),
-        watchdogBackoffCleared: result.watchdogCleared
+        watchdogBackoffCleared: result.watchdogCleared,
+        scheduleCleared: result.scheduleCleared
       },
       outcome: 'info'
     });
@@ -128,7 +156,7 @@ export async function runClearAll(ctx: ClearAllCtx): Promise<ClearAllResult> {
   // release lands while other drivers are still unwinding.
 
   if (result.inflightAborted && !result.runnerAcked) {
-    ctx.notifier.warn(CLEAN_ALL_RUNNER_STILL_PENDING_TOAST);
+    ctx.notifier.warn(cleanAllRunnerStillPendingToast());
   }
 
   return { ok: true };
@@ -143,16 +171,4 @@ async function waitForRunnerStop(
     await sleep(RUNNER_ACK_POLL_INTERVAL_MS);
   }
   return !controller.running;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function deriveRunnerState(result: {
-  inflightAborted: boolean;
-  runnerAcked: boolean;
-}): 'acked' | 'timed-out' | 'no-active-run' {
-  if (!result.inflightAborted) return 'no-active-run';
-  return result.runnerAcked ? 'acked' : 'timed-out';
 }

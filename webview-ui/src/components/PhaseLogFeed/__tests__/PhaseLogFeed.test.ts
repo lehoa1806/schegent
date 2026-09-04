@@ -147,7 +147,9 @@ function buildSnapshot(overrides: Partial<WorkflowSnapshot> & LegacyRunFields = 
         state: 'active' as const,
         pauseSource: null,
         schedule: null,
-        taskCount: 1
+        taskCount: 1,
+        failurePolicy: 'halt-on-failure' as const,
+        failurePolicyOverride: null
       })
     ])
   } as QueueProjection);

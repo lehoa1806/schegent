@@ -18,7 +18,7 @@ import { ZippedStreamBuffer, MAX_STREAM_BUFFER_BYTES } from '../../src/runner/zi
  * cap, and text compresses far below that, so the real figure is a measurement
  * and not a multiplication.
  *
- * The escalated-residuals decision record (`00_INDEX.md` §7) item 4 is
+ * The escalated-residuals decision record (`INDEX.md` §7) item 4 is
  * explicit: "any future mechanism work should be argued from measured resident
  * heap". So this measures, and it
  * asserts a bound DERIVED FROM THE MEASUREMENT rather than from the arithmetic.

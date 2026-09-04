@@ -24,6 +24,7 @@ import { snapshotStore } from './snapshot-store.svelte';
 // literal `'claude' | 'codex' | 'agy'` here would be a fourth place a backend
 // has to be added, and the first one nothing would fail to remind you about.
 import type { BackendRunnerKind } from './snapshot-types';
+import type { QueueFailurePolicy } from './generated/queue-failure-policy.js';
 
 const ACK_TIMEOUT_MS = 5000;
 
@@ -76,6 +77,8 @@ export interface GeneralSettingsPayload {
   readonly 'backend.runner'?: BackendRunnerKind;
   readonly 'spend.maxUsdPerRun'?: number | null;
   readonly 'spend.maxTokensPerRun'?: number | null;
+  // Feature 195 (T008) — the workspace default a queue follows absent its own opinion.
+  readonly 'queue.haltOnTaskFailure'?: QueueFailurePolicy;
 }
 
 /**
@@ -122,7 +125,10 @@ export const GENERAL_SETTINGS_PAYLOAD_KEYS = [
   // FR-R3-144 (T007)
   'backend.runner',
   'spend.maxUsdPerRun',
-  'spend.maxTokensPerRun'
+  'spend.maxTokensPerRun',
+  // Feature 195 (T008) — the workspace default a queue follows when it states
+  // no opinion of its own.
+  'queue.haltOnTaskFailure'
 ] as const;
 
 export type GeneralSettingsPayloadKey = (typeof GENERAL_SETTINGS_PAYLOAD_KEYS)[number];

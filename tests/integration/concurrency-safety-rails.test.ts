@@ -312,7 +312,10 @@ async function makeOverlapHarness(cap: number, extraQueues: readonly string[]): 
       claimFor: (queueId: string) => executionLease.claimFor(queueId)
     },
     controller: controller as unknown as SchegentWorkflowController,
-    auditWriter
+    auditWriter,
+    // Feature 195 (T012) — required port; no queue here carries a failed row,
+    // so which policy resolves is immaterial to what this file asserts.
+    failurePolicyDefault: { resolve: () => 'halt-on-failure' }
   });
 
   return {

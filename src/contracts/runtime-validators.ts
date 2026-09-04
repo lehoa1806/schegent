@@ -52,6 +52,7 @@ import {
   CMD_RENAME_QUEUE,
   CMD_DELETE_QUEUE,
   CMD_SAVE_QUEUE_SETTINGS,
+  CMD_SET_QUEUE_FAILURE_POLICY,
   CMD_MOVE_TASK,
   CMD_MODIFY_TASK,
   CMD_REORDER_TASK,
@@ -64,7 +65,7 @@ import {
   CMD_SET_PHASE_BREAKPOINT,
   CMD_CLEAR_PHASE_BREAKPOINT,
   CMD_START_QUEUE, CMD_READ_METRICS,
-  CMD_CLEAR_ALL,
+  CMD_CLEAR_QUEUE,
   CMD_SET_CONFIRM_SUPPRESSION,
   CMD_DISMISS_MIGRATION_NOTICE,
   CMD_EXPORT_PROCESS_YAML,
@@ -97,7 +98,8 @@ import {
   validateDeleteQueue,
   validateMoveTask,
   validateRenameQueue,
-  validateSaveQueueSettings
+  validateSaveQueueSettings,
+  validateSetQueueFailurePolicy
 } from './validators/queue-management';
 import {
   validatePhaseBreakpointPayload,
@@ -114,6 +116,7 @@ import {
   validateSaveDefinitionDraft
 } from './validators/catalog-lifecycle';
 import { validateReadDefinitionVersion } from './validators/catalog-history';
+import { validateQueueCleanupPayload } from './validators/queue-cleanup';
 import {
   CORRELATION_ID_MAX,
   QUEUE_ID_MAX,
@@ -176,9 +179,14 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
     case CMD_RESUME_QUEUE:
       return validateResumeQueue(obj, correlationId);
     case CMD_CLEAR_COMPLETED:
-      return validateNoPayload(CMD_CLEAR_COMPLETED, obj, correlationId);
-    case CMD_CLEAR_ALL:
-      return validateOptionalEmptyPayload(CMD_CLEAR_ALL, obj, correlationId);
+      // FR-R3-150 (T1621a) — required queueId, not the no-payload shape:
+      // the sidebar route no longer relies on `clearCompleted`'s
+      // Default-fallback default parameter.
+      return validateQueueCleanupPayload(CMD_CLEAR_COMPLETED, obj, correlationId);
+    case CMD_CLEAR_QUEUE:
+      // FR-R3-150 (T1618) — required queueId, same shape as
+      // `CMD_CLEAR_COMPLETED` above and for the same reason (FR-011).
+      return validateQueueCleanupPayload(CMD_CLEAR_QUEUE, obj, correlationId);
     case CMD_SET_CONFIRM_SUPPRESSION:
       return validateSetConfirmSuppression(obj, correlationId);
     case CMD_DISMISS_MIGRATION_NOTICE:
@@ -223,6 +231,8 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
       return validateDeleteQueue(obj, correlationId);
     case CMD_SAVE_QUEUE_SETTINGS:
       return validateSaveQueueSettings(obj, correlationId);
+    case CMD_SET_QUEUE_FAILURE_POLICY:
+      return validateSetQueueFailurePolicy(obj, correlationId);
     case CMD_MOVE_TASK:
       return validateMoveTask(obj, correlationId);
     case CMD_MODIFY_TASK:
@@ -709,24 +719,7 @@ function validateReorderTask(
 // Feature 097 — schedule control removed: validators for
 // CMD_SET_QUEUE_SCHEDULE, CMD_CLEAR_QUEUE_SCHEDULE removed because the
 // commands no longer exist.
-
-// BUG-002 (FR-012a) — generic validator for commands that accept either
-// no payload at all or an empty object `{}`. Shared by feature 020's
-// legacy CMD_START_QUEUE consumers (no longer routed through this fn,
-// kept for CMD_CLEAR_ALL).
-function validateOptionalEmptyPayload(
-  type: string,
-  obj: Record<string, unknown>,
-  correlationId: string
-): IpcValidationResult {
-  const payload = obj['payload'];
-  if (payload !== undefined) {
-    if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
-      return fail('invalid-payload', { type, correlationId });
-    }
-    if (Object.keys(payload).length > 0) {
-      return fail('unexpected-payload-fields', { type, correlationId });
-    }
-  }
-  return ok({ type, correlationId, payload: {} } as SidebarCommand);
-}
+//
+// FR-R3-150 (T1618a) — `validateOptionalEmptyPayload`, the generic
+// no-payload-or-empty-object validator, went with `CMD_CLEAR_ALL`'s retired
+// sidebar route, its last caller.

@@ -140,6 +140,7 @@ const ACTIVE_RESULT: CleanAllResult = {
   pauseSource: 'operator',
   activeRunCleared: true,
   watchdogCleared: false,
+  scheduleCleared: false,
   wasNoop: false
 };
 
@@ -151,6 +152,7 @@ const NOOP_RESULT: CleanAllResult = {
   pauseSource: null,
   activeRunCleared: false,
   watchdogCleared: false,
+  scheduleCleared: false,
   wasNoop: true
 };
 
@@ -270,6 +272,7 @@ describe('runClearAll — failure-mode translation (T020)', () => {
       pauseSource: 'cascade',
       activeRunCleared: true,
       watchdogCleared: true,
+      scheduleCleared: true,
       wasNoop: false
     });
     const ctx = buildCtx({ controller: flipping, queue });
@@ -288,7 +291,10 @@ describe('runClearAll — failure-mode translation (T020)', () => {
       removedInFlight: 1,
       pauseStateCleared: true,
       runnerState: 'acked',
-      watchdogBackoffCleared: true
+      watchdogBackoffCleared: true,
+      // FR-R3-150 (T1619c) — the disarmed-schedule flag reaches the recorded
+      // history, not just the result the handler read it off.
+      scheduleCleared: true
     });
   });
 

@@ -944,21 +944,27 @@ describe('Feature 085 T052 — import registers no destructive-action confirmati
     // An `ActionKey` is the handle a confirmation is registered under. No import
     // key exists, so there is nothing for a call site to await — the gate cannot
     // be added by accident, only deliberately and with copy to match.
+    // Feature 193 (FR-001/FR-009) — read the canonical `ACTION_KEYS` tuple.
+    // The keys used to be a hand-written union in `action-copy.ts`, which that
+    // feature replaced with a re-export of the generated mirror; slicing
+    // `action-copy.ts` after that yielded an empty string, and the two negatives
+    // below would have passed against it forever. The positive anchor is what
+    // catches that, which is why it is asserted first.
     const copy = readFileSync(
-      resolve(__dirname, '..', '..', '..', 'webview-ui', 'src', 'lib', 'action-copy.ts'),
+      resolve(__dirname, '..', '..', '..', 'src', 'contracts', 'action-keys.ts'),
       'utf8'
     );
     // Feature 100 (T514) — the member LINES, not the raw slice. This used to cut at
-    // the first `;` after the declaration, and the union now carries a comment that
-    // contains one, so the slice stopped before the keys — leaving the two negatives
+    // the first `;` after the declaration, and the union then carried a comment that
+    // contained one, so the slice stopped before the keys — leaving the two negatives
     // below passing because they were looking at prose instead of at key names.
-    // Filtering to the `|` lines fixes both halves at once: nothing is truncated, and
-    // a comment that happened to say "import" cannot fail a test about what the
-    // surface can confirm.
+    // Filtering to the quoted-member lines fixes both halves at once: nothing is
+    // truncated, and a comment that happened to say "import" cannot fail a test
+    // about what the surface can confirm.
     const keys = copy
-      .slice(copy.indexOf('export type ActionKey'), copy.indexOf('export type Severity'))
+      .slice(copy.indexOf('export const ACTION_KEYS'), copy.indexOf('] as const'))
       .split('\n')
-      .filter((line) => line.trim().startsWith('|'))
+      .filter((line) => line.trim().startsWith("'"))
       .join('\n');
     // Feature 100 (T509a, FR-049) — the positive anchor was `catalog.remove-phase`,
     // one of the four removal keys the two lifecycle keys replace. It has to be a

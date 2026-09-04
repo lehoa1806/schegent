@@ -38,7 +38,14 @@ export interface QueueOps {
   retry(id: string): Promise<{ ok: boolean; reason?: string }>;
   moveUp(id: string): Promise<{ ok: boolean; reason?: string }>;
   moveDown(id: string): Promise<{ ok: boolean; reason?: string }>;
-  clearCompleted(): Promise<{ removed: number }>;
+  // FR-R3-150 (T1621) — required, not optional. The sidebar route no longer
+  // relies on `QueueManager.clearCompleted`'s `DEFAULT_QUEUE_ID` default
+  // parameter; that default remains on the real method for the separate
+  // `schegent.clearCompleted` palette route (`queue-ops.ts`), which is not
+  // this port.
+  clearCompleted(
+    queueId: string
+  ): Promise<{ ok: boolean; reason?: string; removed: number }>;
   // `clearFailed` left this port with `CMD_CLEAR_FAILED` in the lifecycle
   // round-check of 2026-08-30 (finding D). `QueueManager` still implements it
   // for `schegent.clearFailed`; the router just has nothing that calls it.

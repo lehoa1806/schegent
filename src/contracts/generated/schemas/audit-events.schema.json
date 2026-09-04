@@ -94,6 +94,7 @@
           "multi-root.warning-shown",
           "trust.capability-denied",
           "queue-cleared-all",
+          "queue-cleared",
           "workspace-state-reset",
           "scheduled-start-armed",
           "scheduled-start-fired",

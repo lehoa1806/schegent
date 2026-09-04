@@ -34,16 +34,16 @@ npm run test:webview:coverage
 
 The webview command first checks generated queue-projection mocks, then runs Vitest with V8 coverage, and finally runs the coverage-headroom ratchet. It measures shipping `webview-ui/src/**/*.ts` and `webview-ui/src/**/*.svelte`, excluding test files and `__tests__` fixtures. Reports are written to `webview-ui/coverage/`.
 
-| Metric | Enforced floor | Recorded 2026-08-29 measurement |
+| Metric | Enforced floor | Recorded 2026-09-03 measurement |
 |---|---:|---:|
-| Statements | 82% | 87.75% (`13,366 / 15,232`) |
-| Branches | 74% | 79.46% (`4,878 / 6,139`) |
-| Functions | 76% | 81.42% (`881 / 1,082`) |
-| Lines | 82% | 87.75% |
+| Statements | 84% | 89.13% (`14,809 / 16,615`) |
+| Branches | 75% | 80.67% (`5,429 / 6,730`) |
+| Functions | 77% | 82.87% (`953 / 1,150`) |
+| Lines | 84% | 89.13% |
 
-The recorded webview run instrumented 189 source files: 104 Svelte files and 85 non-test TypeScript files. Unimported shipping components remain in the measured set and therefore count as zero rather than disappearing from the denominator.
+The recorded webview run instrumented 215 source files: 122 Svelte files and 93 non-test TypeScript files. Unimported shipping components remain in the measured set and therefore count as zero rather than disappearing from the denominator.
 
-This row replaces the 2026-08-22 measurement rather than sitting beside it: this page states current enforced values, and the history is in git. `FR-R3-140` deleted ten unreachable Svelte components, and all four floors were re-derived from the single post-deletion run — statements and lines rose, functions rose slightly, and branches *fell* slightly, so no floor was inferred from another. The instrumented-file split comes from that run and not from a filesystem count: the previous `189 / 107 / 82` was already inaccurate before the deletion, since removing ten `.svelte` files cannot take 107 to 104. See [`../architecture/webview-dead-surface-removal.md`](../architecture/webview-dead-surface-removal.md).
+This row replaces the 2026-08-29 measurement rather than sitting beside it: this page states current enforced values, and the history is in git. All four floors are re-derived from the single post-`FR-R3-154` run, and the denominators are what make that necessary rather than tidy — 15,232 statements became 16,615 as features 189-193 added source, so a floor carried over from the earlier run would be pinned to a tree that no longer exists. The headroom ratchet had flagged statements and lines only; branches and functions are raised here from their own measured values, so no floor is inferred from another. See [`../architecture/webview-dead-surface-removal.md`](../architecture/webview-dead-surface-removal.md) for the 2026-08-29 deletion that set the previous row.
 
 <!-- Source: package.json -->
 <!-- Source: webview-ui/package.json -->

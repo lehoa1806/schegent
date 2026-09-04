@@ -28,6 +28,23 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // property accessor used by the Clean All probe loop), not the pinned
   // status discriminator literal "running".
   'src/commands/clear-all.ts',
+  // FR-R3-150 (T1620) — comment-only, contrasting the queue-scoped probe's
+  // `controller.isDriving(queueId)` against the workspace-wide
+  // `controller.running` getter `clear-all.ts` uses. Same accessor name,
+  // never the pinned status discriminator literal.
+  'src/commands/clear-queue.ts',
+  // FR-R3-150 (T1620) — references `driver.running` via
+  // `SchegentWorkflowController.isDriving`, the same boolean accessor
+  // `run-session.ts` and `clear-all.ts` are already listed here for; never
+  // the pinned per-task status discriminator literal.
+  'src/controller/queue-runner-ack.ts',
+  // FR-R3-150 (code-review finding) — the shared module `clear-all.ts` and
+  // `queue-runner-ack.ts` both import from. Its header comment names
+  // `controller.running` (contrasting it with `isDriving(queueId)`, the same
+  // pairing the two entries above document) and its own `sleep` doc line
+  // says "the driver's own running flag" — both prose, never the pinned
+  // status discriminator literal, and this module holds no status field.
+  'src/controller/runner-ack-shared.ts',
   // Feature FR-R3-006 — operator-facing confirmation and refusal copy ("Any
   // running phase is cancelled first", "a phase is still running"), plus one
   // comment. Same reason `webview-ui/src/lib/action-copy.ts` is here, and this
@@ -206,7 +223,14 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // `queue-lifecycle-literal-allowlist.test.ts`, not the pinned per-task status
   // projection this guard protects; the two are distinct vocabularies and this
   // file touches only the former.
-  'webview-ui/src/lib/queue-lifecycle-label.ts'
+  'webview-ui/src/lib/queue-lifecycle-label.ts',
+  // FR-R3-150 (code-review finding) — quotes `queue-manager.ts`'s own
+  // `hasInFlight ? 'running' : hasPending ? 'idle-pending' : 'active-empty'`
+  // lifecycle ternary verbatim, to explain why `idle-pending` alone is not
+  // `hasSchedule`'s signal. The `QueueLifecycle` vocabulary this quotes from
+  // is `queue-lifecycle-label.ts`'s "deliberately narrow" surface above, not
+  // the pinned per-task status discriminator this guard protects.
+  'webview-ui/src/lib/queue-derived.ts'
 ]);
 
 function filesWithRunningLiteral(): readonly string[] {

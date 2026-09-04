@@ -89,7 +89,13 @@ export function getQueueOptions(snapshot: WorkflowSnapshot): readonly QueueSumma
       taskCount:
         snapshot.queue.pending.length +
         snapshot.queue.recent.length +
-        (snapshot.queue.inFlight ? 1 : 0)
+        (snapshot.queue.inFlight ? 1 : 0),
+      // Feature 195 (T039) — this fallback synthesizes a `QueueSummary` for a
+      // host that predates the registry projection; no failure-policy read is
+      // possible from `snapshot.queue` at all, so it reads as the literal
+      // package default, exactly as an un-opinionated queue would.
+      failurePolicy: 'halt-on-failure',
+      failurePolicyOverride: null
     }
   ];
 }

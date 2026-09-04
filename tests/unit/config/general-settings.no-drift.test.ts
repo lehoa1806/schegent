@@ -81,7 +81,14 @@ const FIELDS_ADDED_BY_144 = [
   'spendMaxTokensPerRun'
 ] as const;
 
-const NEW_FIELDS = [...FIELDS_ADDED_BY_143, ...FIELDS_ADDED_BY_144] as const;
+/** Feature 195 (T008) — one more, absent from the goldens for the same reason. */
+const FIELDS_ADDED_BY_195 = ['queueHaltOnTaskFailure'] as const;
+
+const NEW_FIELDS = [
+  ...FIELDS_ADDED_BY_143,
+  ...FIELDS_ADDED_BY_144,
+  ...FIELDS_ADDED_BY_195
+] as const;
 
 interface Golden {
   readonly values: Readonly<Record<string, unknown>>;

@@ -40,7 +40,7 @@ function makeQueueOps(): NonNullable<RouterDeps['queueOps']> {
     retry: async () => ({ ok: true }),
     moveUp: async () => ({ ok: true }),
     moveDown: async () => ({ ok: true }),
-    clearCompleted: async () => ({ removed: 0 }),
+    clearCompleted: async () => ({ ok: true, removed: 0 }),
     setQueuePausedState: async () => ({ ok: true, queueId: 'default' })
   };
 }

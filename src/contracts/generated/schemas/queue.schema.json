@@ -233,6 +233,11 @@
           "name": "migrationNotice",
           "optional": true,
           "type": "'pending' | 'dismissed'"
+        },
+        {
+          "name": "failurePolicy",
+          "optional": true,
+          "type": "QueueFailurePolicy"
         }
       ]
     }

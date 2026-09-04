@@ -368,11 +368,11 @@ const CHECKABLE: readonly CountEntry[] = ENVELOPE_PRESENT
  * and this pins that nobody quietly added it.
  *
  * The document moved on 2026-08-26: the nine `00_*` round-3 planning envelopes were
- * consolidated into `00_INDEX.md`, where the perimeter plan is §2. The measurement
+ * consolidated into `INDEX.md`, where the perimeter plan is §2. The measurement
  * itself is unchanged, which is what the fragment below is here to prove.
  */
 const DATED_MEASUREMENT = {
-  document: 'docs/features/round_3/00_INDEX.md',
+  document: 'docs/features/round_3/INDEX.md',
   // The whole measured phrase, not the bare digits. `'643'` alone would be
   // satisfied by any number containing them — `1,643 files` would pass while the
   // recorded observation had in fact been rewritten, which is exactly what this

@@ -94,7 +94,13 @@ function makeRouter(): {
   acks: CapturedAck[];
 } {
   const executeCommand = vi.fn();
-  executeCommand.mockResolvedValue(undefined);
+  // FR-R3-154 (T1645/T1646) — the palette-routed controls now return a
+  // `CommandOutcome` and the routes ACK it. `undefined` from this fake would
+  // model the Workspace Trust gate refusing, not a control that ran; the ACK
+  // assertions below are about addressing, so the fake says the control was
+  // accepted. `tests/unit/ui/sidebar/mutation-ack-truth.test.ts` owns the
+  // refusal and failure readings.
+  executeCommand.mockResolvedValue({ outcome: 'accepted' });
   const phaseOps = new RecordingPhaseOps();
   const acks: CapturedAck[] = [];
   const deps: RouterDeps = {

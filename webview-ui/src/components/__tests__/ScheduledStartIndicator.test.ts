@@ -15,15 +15,42 @@
 //       render tick (Edge Cases line 121)
 
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
-import { render, cleanup, fireEvent } from '@testing-library/svelte';
+import { render, cleanup, fireEvent, waitFor } from '@testing-library/svelte';
 import ScheduledStartIndicator from '../ScheduledStartIndicator.svelte';
 
 // Mock postCommand so we can assert dispatch calls without a real host.
+//
+// FR-R3-154 (T1646) — the correlation id is now a counter rather than the
+// constant `'corr-1'`. All three actions await their ACK through
+// `snapshotStore.onceAck`, which is keyed by that id, so a constant would make
+// a second dispatch silently overwrite the first one's listener.
+let nextCorrelationId = 0;
 vi.mock('../../lib/vscode-api', () => ({
-  postCommand: vi.fn(() => ({ correlationId: 'corr-1' }))
+  postCommand: vi.fn(() => ({ correlationId: `corr-${++nextCorrelationId}` }))
 }));
 
 import { postCommand } from '../../lib/vscode-api';
+import { snapshotStore } from '../../lib/snapshot-store.svelte';
+import { CMD_ACK } from '../../lib/messages';
+
+/** Answer the post at `callIndex` through the real store, as the host would. */
+function ack(
+  callIndex: number,
+  status: 'accepted' | 'rejected',
+  reason?: string,
+  outcome?: 'accepted' | 'no-op' | 'refused' | 'failed'
+): void {
+  const result = (postCommand as ReturnType<typeof vi.fn>).mock.results[callIndex];
+  expect(result, `no post at index ${callIndex}`).toBeDefined();
+  const { correlationId } = result!.value as { correlationId: string };
+  snapshotStore.apply({
+    type: CMD_ACK,
+    correlationId,
+    status,
+    ...(reason !== undefined ? { reason } : {}),
+    ...(outcome !== undefined ? { outcome } : {})
+  } as never);
+}
 
 /**
  * Deliberately not the default queue. Bug "there is no way to start a pending
@@ -137,6 +164,43 @@ describe('ScheduledStartIndicator — actions dispatch CMD_START_QUEUE', () => {
       queueId: QUEUE_ID,
       startIntent: { startMode: 'now', source: 'operator-restart' }
     });
+  });
+
+  // FR-R3-154 (T1646) — all three dispatch sites report the host's answer.
+  // This surface is where a silent refusal was least recoverable: the operator
+  // clicks Cancel on a schedule, the host answers `rejected-horizon` or
+  // `rejected-untrusted`, and the countdown they were trying to cancel keeps
+  // running with no explanation. The three posts share one `dispatchIntent`
+  // helper now, so one case covers the path and the fourth asserts the
+  // acceptance stays silent.
+  it('renders the refusal when the host declines the cancel', async () => {
+    const target = Date.now() + 60 * 60 * 1000;
+    const { getByTestId, queryByTestId } = render(ScheduledStartIndicator, {
+      props: { queueId: QUEUE_ID, scheduledStartAt: target }
+    });
+
+    await fireEvent.click(getByTestId('scheduled-start-cancel'));
+    expect(queryByTestId('scheduled-start-message')).toBeNull();
+    ack(0, 'rejected', 'rejected-untrusted', 'refused');
+
+    await waitFor(() => {
+      expect(getByTestId('scheduled-start-message').textContent).toBe(
+        'The workspace is not trusted, so the queue cannot be started.'
+      );
+    });
+  });
+
+  it('says nothing when the host accepts the intent', async () => {
+    const target = Date.now() + 60 * 60 * 1000;
+    const { getByTestId, queryByTestId } = render(ScheduledStartIndicator, {
+      props: { queueId: QUEUE_ID, scheduledStartAt: target }
+    });
+
+    await fireEvent.click(getByTestId('scheduled-start-now'));
+    ack(0, 'accepted', undefined, 'accepted');
+
+    await waitFor(() => expect(postCommand).toHaveBeenCalledTimes(1));
+    expect(queryByTestId('scheduled-start-message')).toBeNull();
   });
 });
 

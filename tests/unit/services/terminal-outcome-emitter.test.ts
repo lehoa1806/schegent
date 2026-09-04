@@ -39,7 +39,7 @@ import { resolve } from 'node:path';
  * state store and still open in the durable record, which is how a live host log came to
  * show four `task-execution-started` against one `task-execution-ended`
  * (`docs/audits/syslog-triage-2026-08-30.md`, finding 2b — retired 2026-08-31, its record is now
- * the envelope's `docs/features/round_3/00_INDEX.md` under `syslog-triage-2026-08-30`).
+ * the envelope's `docs/features/round_3/INDEX.md` under `syslog-triage-2026-08-30`).
  *
  * A uniqueness claim scoped to one file is not a uniqueness claim. So the emitter moved to
  * `services/terminal-outcome-audit.ts`, both routes reach it, and the count below is taken

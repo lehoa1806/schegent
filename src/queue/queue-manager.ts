@@ -25,6 +25,8 @@
 //     (cascade is overridden by an explicit operator pause; cascadedResume
 //      is a strict no-op when the entry's `pauseSource !== 'cascade'`.)
 import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
+import type { QueueFailurePolicy } from '../contracts/queue-failure-policy';
+import { errorMessage } from '../lib/errors';
 import { randomUUID } from 'crypto';
 import {
   MAX_GLOBAL_CONCURRENCY_CAP,
@@ -55,6 +57,7 @@ import {
   validateDescription
 } from './feature-request';
 import { withRefreshedLifecycle } from './queue-lifecycle-refresh';
+import { hasResettableQueueState, queueResetFields } from './queue-reset-settle';
 import { decideTaskTransition, type TaskTransitionRejectionReason } from './task-transition-decision';
 
 export interface MutationResult {
@@ -90,6 +93,16 @@ export interface ClearResult {
   removed: number;
 }
 
+// FR-R3-150 (T1621) — widens `ClearResult` with the `ok`/`reason` shape the
+// rest of this file already uses for a refusable mutation (`MutationResult`,
+// `setQueuePausedState`'s registry check); `ok`/`reason` are additive, so
+// every existing `.removed`-only reader stays correct unchanged. Named for
+// both `clearByStatus` siblings (renamed from `ClearCompletedResult`).
+export interface ClearByStatusResult extends ClearResult {
+  readonly ok: boolean;
+  readonly reason?: 'unknown-queue-id';
+}
+
 // Feature 063 (FR-005 / data-model §CleanAllResetOperation) — result of
 // `QueueManager.clearAll()`. The handler passes this through to the
 // audit writer (verbatim) and uses it to decide which toast (if any)
@@ -108,6 +121,12 @@ export interface CleanAllResult {
   readonly pauseSource: 'operator' | 'cascade' | 'retry-cap' | null;
   readonly activeRunCleared: boolean;
   readonly watchdogCleared: boolean;
+  // FR-R3-150 (T1619c) — `true` when at least one queue carried an armed
+  // scheduled start that this reset disarmed. On the result for the same
+  // reason `ClearQueueResult.scheduleCleared` is: FR-009 wants the recorded
+  // history to state what the action affected, and a disarmed timer is
+  // otherwise only inferable from a start that never came.
+  readonly scheduleCleared: boolean;
   // `true` when ALL pre-state fields were already empty — the handler
   // uses this to skip emitting an audit event for the no-op case
   // (contracts/cmd-clear-all.md §Idempotency).
@@ -119,6 +138,42 @@ export interface CleanAllResult {
 // `runDriver.running`-poll race against a 2s timer. `null` when no
 // in-flight task existed (we never have to wait on the runner).
 export type CleanAllRunnerAckProbe = () => Promise<boolean>;
+
+// FR-R3-150 (T1619, LC-Q-01/LC-Q-05) — queue-scoped Clean All. `clearAll()`
+// above resets every queue; `clearQueue()` below resets exactly one,
+// addressed by `queueId`. It is *not* implemented by filtering the
+// workspace-wide write (a queue-scoped reset is never derived that way —
+// see `clearQueue()`'s own header comment).
+//
+// Code-review finding — research.md D2's "compose `clearAll()` over this" is
+// closed as will-not-implement (tasks.md T1619b, 2026-09-03). What the two
+// methods genuinely share is the per-queue field write and the no-op
+// predicate, and those are extracted to `queue-reset-settle.ts`, whose header
+// records why the methods themselves stay separate.
+//
+// A discriminated union rather than a result with optional fields, on the
+// same precedent as `QueueDeletionImpact` above: a refusal has no impact to
+// report, and a cleared queue has no reason.
+export type ClearQueueResult =
+  | { readonly outcome: 'refused'; readonly reason: 'unknown-queue-id' }
+  | {
+      readonly outcome: 'cleared';
+      readonly queueId: string;
+      readonly wasNoop: boolean;
+      readonly removed: {
+        readonly pending: number;
+        readonly completed: number;
+        readonly failed: number;
+        readonly canceled: number;
+      };
+      readonly inflightAborted: boolean;
+      readonly runnerAcked: boolean;
+      readonly pauseCleared: boolean;
+      readonly pauseSource: QueuePauseSource;
+      readonly activeRunCleared: boolean;
+      readonly scheduleCleared: boolean;
+      readonly lifecycle: 'active-empty';
+    };
 
 export interface QueueMutationDetail extends MutationResult {
   queueId?: string;
@@ -173,7 +228,13 @@ export type QueueDeletionImpact =
     };
 
 // BUG-001 (FR-022): idempotent rejection reasons → DEBUG, not WARN.
-const IDEMPOTENT_REJECT_REASONS: ReadonlySet<string> = new Set(['not-paused', 'already-paused']);
+// Feature 195 (T036) — 'failure-policy-unchanged' joins this set for the
+// same reason: the operator asked for the state the queue is already in.
+const IDEMPOTENT_REJECT_REASONS: ReadonlySet<string> = new Set([
+  'not-paused',
+  'already-paused',
+  'failure-policy-unchanged'
+]);
 
 /**
  * Feature 092 (T050, FR-025) — how many Tasks one queue may run at once.
@@ -220,6 +281,28 @@ export interface LifecycleAuditHook {
     outcome: 'info' | 'success';
     payload: Record<string, unknown>;
   }): Promise<unknown>;
+}
+
+// Code-review finding (reuse) — the one fold both `clearAll()` and
+// `clearQueue()` need: how many of a set of Tasks are in each terminal-or-
+// pending status. Shared so the four-branch chain (and any status the two
+// resets grow to need) is written once. `clearAll()` calls this once per
+// queue over a workspace-wide loop; `clearQueue()` calls it once over a
+// single queue's own `requests`.
+function countRemovedByStatus(requests: readonly FeatureRequest[]): {
+  pending: number;
+  completed: number;
+  failed: number;
+  canceled: number;
+} {
+  const removed = { pending: 0, completed: 0, failed: 0, canceled: 0 };
+  for (const r of requests) {
+    if (r.status === 'pending') removed.pending++;
+    else if (r.status === 'completed') removed.completed++;
+    else if (r.status === 'failed') removed.failed++;
+    else if (r.status === 'canceled') removed.canceled++;
+  }
+  return removed;
 }
 
 export class QueueManager {
@@ -1114,6 +1197,51 @@ export class QueueManager {
     }
   }
 
+  /**
+   * Feature 195 (T036, FR-018, FR-019) — this queue's own halt-on-failure
+   * answer. `policy: null` removes the stored field rather than writing a
+   * concrete value: the shape gate data-model.md §2 describes — a record
+   * carrying `failurePolicy` has been touched by an operator, one without it
+   * has not — is what lets a later change to the workspace default reach
+   * exactly the queues that never stated an opinion (FR-018). A request that
+   * asks for the queue's current answer (stored or absent, matching `policy`
+   * exactly) is refused idempotently rather than written, so a redundant
+   * write never bumps `updatedAt` for nothing.
+   *
+   * No audit event (FR-023, data-model.md §7): the preference this writes is
+   * not an outcome any audit consumer classifies.
+   */
+  public async setFailurePolicy(
+    queueId: string,
+    policy: QueueFailurePolicy | null
+  ): Promise<QueueMutationDetail> {
+    return this.logMutation('queue-manager.set-failure-policy', { queueId }, async () => {
+      if (!findQueue(this.store.getQueueRegistry(), queueId)) {
+        return { ok: false, reason: 'unknown-queue-id' };
+      }
+      try {
+        const current = this.store.getQueue(queueId);
+        if ((current.failurePolicy ?? null) === policy) {
+          return { ok: false, reason: 'failure-policy-unchanged', queueId };
+        }
+        await this.store.updateQueue(
+          (queue) => {
+            if (policy === null) {
+              const { failurePolicy: _drop, ...rest } = queue;
+              return { queue: rest, result: undefined };
+            }
+            return { queue: { ...queue, failurePolicy: policy }, result: undefined };
+          },
+          queueId,
+          this.store.runCommitClaim(queueId)
+        );
+        return { ok: true, queueId };
+      } catch (err) {
+        return { ok: false, reason: this.registryErrorReason(err) };
+      }
+    });
+  }
+
   public async modifyTask(
     taskId: string,
     description: string
@@ -1531,12 +1659,36 @@ export class QueueManager {
     return this.move(featureId, 1);
   }
 
-  public async clearCompleted(queueId: string = DEFAULT_QUEUE_ID): Promise<ClearResult> {
-    return this.clearByStatus('completed', queueId);
+  // Code-review finding (iteration 4) — `clearCompleted` and `clearFailed`
+  // each hand-copied this same three-line guard. Both delegate their
+  // removal to the shared `clearByStatus`; this is the shared refusal ahead
+  // of it, so a future third `clearByStatus` sibling (or a change to the
+  // refusal shape) has one call site to edit instead of two.
+  private refuseIfUnknownQueue(queueId: string): ClearByStatusResult | null {
+    if (findQueue(this.store.getQueueRegistry(), queueId)) return null;
+    return { ok: false, reason: 'unknown-queue-id', removed: 0 };
   }
 
-  public async clearFailed(queueId: string = DEFAULT_QUEUE_ID): Promise<ClearResult> {
-    return this.clearByStatus('failed', queueId);
+  // FR-R3-150 (T1621) — refuses an unknown queue id rather than silently
+  // returning `{ removed: 0 }` (which `getQueue()`'s born-empty fallback
+  // would otherwise make indistinguishable from "known queue, nothing to
+  // clear"). The default parameter itself is unchanged and remains valid for
+  // the separate `schegent.clearCompleted` palette route (`queue-ops.ts`),
+  // which is not gated by this check — it is a trusted internal caller
+  // naming Default explicitly, not a queue id arriving over IPC (FR-011).
+  public async clearCompleted(queueId: string = DEFAULT_QUEUE_ID): Promise<ClearByStatusResult> {
+    const refusal = this.refuseIfUnknownQueue(queueId);
+    if (refusal !== null) return refusal;
+    const { removed } = await this.clearByStatus('completed', queueId);
+    return { ok: true, removed };
+  }
+
+  // `clearCompleted`'s sibling gets the same refusal.
+  public async clearFailed(queueId: string = DEFAULT_QUEUE_ID): Promise<ClearByStatusResult> {
+    const refusal = this.refuseIfUnknownQueue(queueId);
+    if (refusal !== null) return refusal;
+    const { removed } = await this.clearByStatus('failed', queueId);
+    return { ok: true, removed };
   }
 
   // Feature 063 — atomic queue + run + pause + watchdog reset (FR-005).
@@ -1565,6 +1717,16 @@ export class QueueManager {
   // work while reporting the workspace clean. The result shape is unchanged and
   // stays workspace-scoped; the one field that cannot be pluralised without
   // changing the contract is `pauseSource`, which is documented below.
+
+  // Code-review finding (reuse) — the "clear the active run snapshot" write
+  // `clearAll()`/`clearQueue()` each issued twice (pre-probe, then the
+  // BUG-003 compensating re-clear — see each call site), factored to one.
+  private async clearRunSnapshots(queueIds: readonly string[]): Promise<void> {
+    for (const queueId of queueIds) {
+      await this.store.setRun(queueId, null, this.store.runCommitClaim(queueId));
+    }
+  }
+
   public async clearAll(probe?: CleanAllRunnerAckProbe | null): Promise<CleanAllResult> {
     const queuesBefore = this.store.getQueueStates();
     const queueIdsBefore = Object.keys(queuesBefore);
@@ -1574,28 +1736,25 @@ export class QueueManager {
     const runQueueIdsBefore = Object.keys(this.store.getRunMap());
     const watchdogBefore = this.store.getWatchdog();
 
-    const removed = {
-      pending: 0,
-      completed: 0,
-      failed: 0,
-      canceled: 0
-    };
-    for (const queue of Object.values(queuesBefore)) {
-      for (const r of queue.requests) {
-        if (r.status === 'pending') removed.pending++;
-        else if (r.status === 'completed') removed.completed++;
-        else if (r.status === 'failed') removed.failed++;
-        else if (r.status === 'canceled') removed.canceled++;
-      }
-    }
+    const removed = countRemovedByStatus(
+      Object.values(queuesBefore).flatMap((queue) => queue.requests)
+    );
 
     const inflightBefore = Object.values(queuesBefore).some(
       (queue) =>
         queue.inFlightId !== null || queue.requests.some((r) => r.status === 'in-flight')
     );
-    const pausedQueueIdsBefore = queueIdsBefore.filter(
-      (id) => queuesBefore[id].queueLifecycle === 'operator-paused'
+    // Filtered over `Object.entries` rather than over `queueIdsBefore` with a
+    // `queuesBefore[id]` read in the predicate: `getQueueStates()` returns a
+    // `Record<string, QueueState>`, so an index by a key that is not there is
+    // `undefined` at runtime and a crash on the property access. Every
+    // key-and-state pair this method needs is carried from one iteration
+    // instead, which is also what `tests/lint/compiler-strictness-ratchet.test.ts`
+    // asks for under `noUncheckedIndexedAccess`.
+    const pausedEntriesBefore = Object.entries(queuesBefore).filter(
+      ([, queue]) => queue.queueLifecycle === 'operator-paused'
     );
+    const pausedQueueIdsBefore = pausedEntriesBefore.map(([id]) => id);
     const pauseBefore = pausedQueueIdsBefore.length > 0;
     // Feature 092 — `CleanAllResult.pauseSource` is one nullable field and N
     // queues may each carry their own, so it reports the reserved queue's
@@ -1606,12 +1765,11 @@ export class QueueManager {
     // FR-R3-011 — the source is read off the paused queue's own record. The
     // selection rule is unchanged: the reserved queue's source when that queue
     // was paused, otherwise the first paused queue's.
-    const pauseSourceQueueId = pausedQueueIdsBefore.includes(DEFAULT_QUEUE_ID)
-      ? DEFAULT_QUEUE_ID
-      : pausedQueueIdsBefore[0];
+    const pauseSourceEntry =
+      pausedEntriesBefore.find(([id]) => id === DEFAULT_QUEUE_ID) ?? pausedEntriesBefore[0];
     const pauseSourceBefore: CleanAllResult['pauseSource'] =
-      pauseSourceQueueId !== undefined
-        ? (queuesBefore[pauseSourceQueueId].pauseSource as CleanAllResult['pauseSource']) ?? null
+      pauseSourceEntry !== undefined
+        ? (pauseSourceEntry[1].pauseSource as CleanAllResult['pauseSource']) ?? null
         : null;
     const activeRunBefore = runQueueIdsBefore.length > 0;
     const watchdogActiveBefore =
@@ -1619,11 +1777,18 @@ export class QueueManager {
       watchdogBefore.pausedSince !== null ||
       watchdogBefore.nextPollAt !== null ||
       watchdogBefore.cause !== null;
+    // FR-R3-150 (T1619c, LC-Q-05) — a list and not a flag because step 0 has to
+    // name each queue whose timer it disarms; timers are keyed by queue id.
+    const scheduledQueueIdsBefore = Object.entries(queuesBefore)
+      .filter(([, queue]) => queue.scheduledStartAt !== null)
+      .map(([id]) => id);
+    const scheduleBefore = scheduledQueueIdsBefore.length > 0;
 
+    // LC-Q-05 — the per-queue half of this gate is the shared predicate, so the
+    // two resets cannot disagree about what "already clean" means. The Run and
+    // the watchdog are not queue-record fields, so they stay named here.
     const wasNoop =
-      Object.values(queuesBefore).every((queue) => queue.requests.length === 0) &&
-      !inflightBefore &&
-      !pauseBefore &&
+      Object.values(queuesBefore).every((queue) => !hasResettableQueueState(queue)) &&
       !activeRunBefore &&
       !watchdogActiveBefore;
 
@@ -1636,25 +1801,33 @@ export class QueueManager {
         pauseSource: null,
         activeRunCleared: false,
         watchdogCleared: false,
+        scheduleCleared: false,
         wasNoop: true
       };
     }
 
-    // 1. Clear queue items (also drops `inFlightId`), on every queue.
+    // 0. Disarm every armed timer before persisting the clear — the ordering
+    //    `setQueuePausedState`'s pause branch and `clearQueue` both use, so no
+    //    window exists where a timer is still armed against fields that already
+    //    read as cleared. Unconditional on the armed schedule, not gated on
+    //    `operator-paused`: that gate was this method's LC-Q-05 bug.
+    for (const queueId of scheduledQueueIdsBefore) {
+      if (!this.scheduledStartCancelHook) break;
+      try {
+        await this.scheduledStartCancelHook.cancel(queueId, 'operator-cancel');
+      } catch (err) {
+        this.logger?.warn(`scheduled-start cancel on clear-all failed: ${errorMessage(err)}`);
+      }
+    }
+
+    // 1. Clear queue items (also drops `inFlightId`), on every queue, and
+    //    settle the lifecycle and schedule fields with them (T1619c, LC-Q-05).
+    //    `defer-pause-release` is what leaves step 2 below the owner of an
+    //    `operator-paused` queue's release; see `queue-reset-settle.ts`.
     for (const queueId of queueIdsBefore) {
       await this.store.updateQueue(
         (queue) => ({
-          queue: {
-            ...queue,
-            requests: [],
-            inFlightId: null,
-            // FR-R3-011 — `paused: false` used to be written here too. It is not
-            // a second way of saying what step 2 says; it was the retired mirror,
-            // and writing it back would put a record on disk that the v13
-            // collapse then has to lift again on the next activation.
-            pausedReason: null,
-            updatedAt: Date.now()
-          },
+          queue: { ...queue, ...queueResetFields(queue, Date.now(), 'defer-pause-release') },
           result: undefined
         }),
         queueId,
@@ -1672,9 +1845,7 @@ export class QueueManager {
     }
 
     // 3. Clear the active run snapshot — one per queue that held one.
-    for (const queueId of runQueueIdsBefore) {
-      await this.store.setRun(queueId, null, this.store.runCommitClaim(queueId));
-    }
+    await this.clearRunSnapshots(runQueueIdsBefore);
 
     // 4. Reset watchdog backoff fields. Preserve `pollIntervalMs` (config)
     //    and `lastStatusOk` (observability scalar) — only the active-pause
@@ -1716,9 +1887,7 @@ export class QueueManager {
     //    before the clear, and re-reading would additionally clear a Run started
     //    on some *other* queue while the probe was awaited — work `clearAll`
     //    never saw and has no mandate over.
-    for (const queueId of runQueueIdsBefore) {
-      await this.store.setRun(queueId, null, this.store.runCommitClaim(queueId));
-    }
+    await this.clearRunSnapshots(runQueueIdsBefore);
 
     return {
       removed,
@@ -1728,7 +1897,115 @@ export class QueueManager {
       pauseSource: pauseSourceBefore,
       activeRunCleared: activeRunBefore,
       watchdogCleared: watchdogActiveBefore,
+      scheduleCleared: scheduleBefore,
       wasNoop: false
+    };
+  }
+
+  // FR-R3-150 (T1619) — the queue-scoped reset. Unlike `clearAll()` above,
+  // this never iterates `getQueueStates()` — every read and write below is
+  // keyed to the single addressed `queueId`, so a sibling queue's tasks,
+  // run, pause, schedule, timer, and execution claim are never read, let
+  // alone written (FR-006, LC-Q-01). Workspace-wide watchdog state (the one
+  // surface `clearAll()` also resets) is out of scope here by design
+  // (FR-007) — it is not a per-queue field.
+  //
+  // Closes LC-Q-05 for the addressed queue, in one memento write and not two:
+  // the field rule and the no-op predicate are `queue-reset-settle.ts`, which
+  // says why they are shared with `clearAll()` and why the two methods are
+  // still separate.
+  public async clearQueue(
+    queueId: string,
+    probe?: CleanAllRunnerAckProbe | null
+  ): Promise<ClearQueueResult> {
+    if (!findQueue(this.store.getQueueRegistry(), queueId)) {
+      return { outcome: 'refused', reason: 'unknown-queue-id' };
+    }
+
+    const before = this.store.getQueue(queueId);
+    const removed = countRemovedByStatus(before.requests);
+    const inflightBefore =
+      before.inFlightId !== null || before.requests.some((r) => r.status === 'in-flight');
+    const pauseBefore = before.queueLifecycle === 'operator-paused';
+    const activeRunBefore = this.store.getRun(queueId) !== null;
+    const scheduleBefore = before.scheduledStartAt !== null;
+
+    // The Run is not a queue-record field, so it is named alongside the shared
+    // predicate rather than inside it (FR-008/SC-004).
+    const wasNoop = !hasResettableQueueState(before) && !activeRunBefore;
+
+    if (wasNoop) {
+      return {
+        outcome: 'cleared',
+        queueId,
+        wasNoop: true,
+        removed,
+        inflightAborted: false,
+        runnerAcked: false,
+        pauseCleared: false,
+        pauseSource: null,
+        activeRunCleared: false,
+        scheduleCleared: false,
+        lifecycle: 'active-empty'
+      };
+    }
+
+    // Disarm the timer before persisting the clear — the same ordering
+    // `setQueuePausedState`'s pause branch already uses (cancel the external
+    // hook first, then write the fields it fed), so no window exists where
+    // the timer is still armed against fields that already read as cleared.
+    // Unconditional on `scheduleBefore`, not gated on `operator-paused` —
+    // that gate was `clearAll()`'s LC-Q-05 bug.
+    if (scheduleBefore && this.scheduledStartCancelHook) {
+      try {
+        await this.scheduledStartCancelHook.cancel(queueId, 'operator-cancel');
+      } catch (err) {
+        this.logger?.warn(`scheduled-start cancel on clear-queue failed: ${errorMessage(err)}`);
+      }
+    }
+
+    await this.store.updateQueue(
+      (queue) => ({
+        queue: { ...queue, ...queueResetFields(queue, Date.now(), 'release-pause') },
+        result: undefined
+      }),
+      queueId,
+      this.store.runCommitClaim(queueId)
+    );
+
+    if (activeRunBefore) {
+      await this.clearRunSnapshots([queueId]);
+    }
+
+    let runnerAcked = false;
+    if (inflightBefore && probe) {
+      try {
+        runnerAcked = await probe();
+      } catch {
+        runnerAcked = false;
+      }
+    }
+
+    // BUG-003 compensating re-clear (mirrors `clearAll()`'s step 6, via the
+    // shared `clearRunSnapshots`): the probe's `cancelActive()` can
+    // repopulate `run` with a canceled-status snapshot, landing after this
+    // method's own clear above.
+    if (activeRunBefore) {
+      await this.clearRunSnapshots([queueId]);
+    }
+
+    return {
+      outcome: 'cleared',
+      queueId,
+      wasNoop: false,
+      removed,
+      inflightAborted: inflightBefore,
+      runnerAcked,
+      pauseCleared: pauseBefore,
+      pauseSource: pauseBefore ? before.pauseSource : null,
+      activeRunCleared: activeRunBefore,
+      scheduleCleared: scheduleBefore,
+      lifecycle: 'active-empty'
     };
   }
 

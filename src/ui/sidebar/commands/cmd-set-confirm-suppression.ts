@@ -4,8 +4,17 @@
 //
 // Validation:
 //   1. `command.payload.actionKey` MUST be a member of the closed
-//      `KNOWN_ACTION_KEYS` set (mirrored from action-copy.ts). Unknown
-//      keys are rejected with a sanitized log line and NO memento write.
+//      `KNOWN_ACTION_KEYS` set. Unknown keys are rejected with a sanitized
+//      log line and NO memento write.
+//
+//      FR-R3-154 (T042) — this line used to say the set was "mirrored from
+//      action-copy.ts", which had the provenance backwards and pointed at a
+//      file this module does not and cannot import. `KNOWN_ACTION_KEYS` is a
+//      `Set` over `src/contracts/action-keys.ts`; `action-copy.ts` reads the
+//      generated mirror of that same tuple. Direction matters here because the
+//      comment was the reason a reader would look at the webview to find out
+//      what this handler accepts, and for eleven of eighteen keys the two
+//      answers used to differ.
 //   2. `command.payload.suppressed` is already constrained to `boolean`
 //      by the IPC type guard.
 //

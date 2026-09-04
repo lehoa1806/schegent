@@ -406,6 +406,14 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     scope: 'window',
     docLabel: 'Show confirmation prompts for destructive UI actions'
   },
+  'schegent.queue.haltOnTaskFailure': {
+    key: 'schegent.queue.haltOnTaskFailure',
+    type: 'enum',
+    default: 'halt-on-failure',
+    scope: 'window',
+    enum: ['halt-on-failure', 'continue'],
+    docLabel: 'Workspace default: stop a queue after a task fails'
+  },
   'schegent.trust.allowCustomPhases': {
     key: 'schegent.trust.allowCustomPhases',
     type: 'boolean',

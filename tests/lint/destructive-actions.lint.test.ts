@@ -58,7 +58,10 @@ const SCAN_ROOT = resolve(REPO_ROOT, 'webview-ui', 'src');
 // does not exist cannot have an ungated call site — which is why the exemption
 // list below went with them.
 const DESTRUCTIVE_COMMANDS: readonly string[] = [
-  'CMD_CLEAR_ALL',
+  // FR-R3-150 (T1618c) — CMD_CLEAR_ALL retired as a sidebar-postable command
+  // (research.md D1); CMD_CLEAR_QUEUE is its queue-scoped replacement and the
+  // one Clean All now dispatches from the webview.
+  'CMD_CLEAR_QUEUE',
   'CMD_CLEAR_COMPLETED',
   'CMD_REMOVE_QUEUE_ITEM',
   'CMD_CANCEL',
@@ -304,11 +307,21 @@ describe('Feature 063 T046 — destructive command sites must be useConfirm-gate
   // deleted `PhaseTracker.svelte`, the only component that passed
   // `run.retry-phase-now` to `useConfirm`, and no gate said anything — the copy
   // stayed in the table, typed and tested, describing a prompt nothing could
-  // raise. The key list is read from `action-copy.ts` rather than restated here,
-  // so a key added to the union is a key this check immediately demands a
+  // raise. The key list is read from the canonical source rather than restated
+  // here, so a key added to it is a key this check immediately demands a
   // consumer for.
-  const ACTION_COPY_SOURCE = readFileSync(
-    resolve(SCAN_ROOT, 'lib', 'action-copy.ts'),
+  //
+  // Feature 193 (FR-001/FR-009) — that source is now
+  // `src/contracts/action-keys.ts`'s `ACTION_KEYS` tuple. It used to be the
+  // hand-written `ActionKey` union in `action-copy.ts`, which that feature
+  // replaced with a re-export of the generated mirror; parsing `action-copy.ts`
+  // after that returned an empty list. Read the HOST tuple, not the generated
+  // webview mirror: the mirror is a derived artifact, and a gate that reads a
+  // derived copy passes when generation is stale. That the two agree is its own
+  // check (`tests/parity/action-key-parity.test.ts`,
+  // `tests/contract/action-keys-generation.test.ts`).
+  const ACTION_KEYS_SOURCE = readFileSync(
+    resolve(REPO_ROOT, 'src', 'contracts', 'action-keys.ts'),
     'utf8'
   );
 
@@ -331,12 +344,21 @@ describe('Feature 063 T046 — destructive command sites must be useConfirm-gate
    * parse TypeScript. Comments are then dropped from the capture, because the
    * key extractor matches any single-quoted run and the union demonstrably
    * carries prose — a quoted word in that prose would read as a seventeenth key.
+   *
+   * Feature 193 — the shape being parsed is now a tuple, so the terminator is
+   * `]` rather than a line-final semicolon. The truncation hazard the note above
+   * describes is unchanged in kind: `[\s\S]*?` still stops at the first `]`, and
+   * a `]` inside a comment in that tuple would still truncate the capture
+   * silently. Comment-stripping runs FIRST for exactly that reason — before the
+   * terminator is sought, not just before keys are read — so prose inside the
+   * tuple can neither end the capture early nor contribute a phantom key. The
+   * equality assertion below is what makes either failure loud.
    */
   function declaredActionKeys(): readonly string[] {
-    const union = /export type ActionKey =([\s\S]*?);[^\S\n]*\n/.exec(ACTION_COPY_SOURCE);
-    if (!union) return [];
-    const withoutComments = union[1].replace(/\/\/[^\n]*/g, '');
-    return [...withoutComments.matchAll(/'([^']+)'/g)].map((m) => m[1]);
+    const withoutComments = ACTION_KEYS_SOURCE.replace(/\/\/[^\n]*/g, '');
+    const tuple = /export const ACTION_KEYS = \[([\s\S]*?)\]/.exec(withoutComments);
+    if (!tuple) return [];
+    return [...tuple[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
   }
 
   // Keys whose prompt is deliberately raised somewhere other than a webview

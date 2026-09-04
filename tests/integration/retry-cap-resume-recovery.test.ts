@@ -128,7 +128,8 @@ describe('Feature 030 BUG-001 T057 (SC-009) — retry-cap-exhausted → operator
       store,
       queue,
       executionLease: fakeLease as never,
-      controller: fakeController as never
+      controller: fakeController as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
     });
 
     // T1612 — the seam that owns operator Start-now. Only the final step of the
@@ -236,7 +237,8 @@ describe('Feature 030 BUG-001 T057 (SC-009) — retry-cap-exhausted → operator
         // the real one — so the drain that runs is the product's, reached
         // through the product's decision about whether to run it.
         controller: { drainQueuedWork: (id?: string) => coordinator.drainIfIdle(id) },
-        logger
+        logger,
+        startFailures: { get: () => null }
       }
     );
     expect(promotedTasks).toEqual([pending.id]);

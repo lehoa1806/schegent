@@ -1,8 +1,8 @@
 import type { RestartPhaseCommand } from '../messages';
 import type { CommandHandler } from './handler-contract';
-import { ack, exec } from './handler-helpers';
+import { execAndAck } from './handler-helpers';
 
+// FR-R3-154 (T1646) — see `cmd-pause-phase.ts`.
 export const handler: CommandHandler<RestartPhaseCommand> = async (ctx, cmd) => {
-  await exec(ctx, 'schegent.restartPhase', cmd.payload.queueId);
-  await ack(ctx, 'accepted');
+  await execAndAck(ctx, 'schegent.restartPhase', cmd.payload.queueId);
 };

@@ -299,3 +299,40 @@ describe('two-queue isolation (spec.md FR-010, SC-002)', () => {
     expectUnchanged(beforeB, snapshot(store, memento, b.id, queueBId));
   });
 });
+
+describe('feature 195 (T060, FR-009) — a failed task cannot be cancelled', () => {
+  // FR-009 names retrying and removing as the only two ways out of a halt,
+  // and says cancelling is not a third — because `failed -> canceled` is not
+  // an edge in this table. `finish` is the method a cancel-of-an-in-flight-Task
+  // routes through (`src/commands/cancel.ts`), and it is the same closed
+  // table `decideTaskTransition`'s `finish` case enforces: eligible from
+  // `in-flight` unconditionally, and from `pending` only when the target is
+  // `canceled` (the cancel-before-start edge) — `failed` is neither.
+  it('refuses finish(id, "canceled") on a task that already ended failed', async () => {
+    const { queue } = await buildSystem();
+    const a = await queue.enqueue('A');
+    await queue.markInFlight(a.id, 'run-a');
+    await queue.finish(a.id, 'failed');
+    expect(queue.findById(a.id)?.status).toBe('failed');
+
+    const result = await queue.finish(a.id, 'canceled');
+
+    expect(result).toEqual({ ok: false, reason: 'illegal-source-status' });
+    expect(queue.findById(a.id)?.status).toBe('failed');
+  });
+
+  it('the pure classifier agrees: finish/canceled is refused from every status but pending and in-flight', () => {
+    const nonEligible = (['failed', 'canceled', 'completed', 'paused'] as const).map((currentStatus) =>
+      decideTaskTransition({
+        operation: 'finish',
+        currentStatus,
+        targetStatus: 'canceled',
+        queueOwnsTask: true,
+        queueAlreadyHasDifferentInFlight: false
+      })
+    );
+    for (const decision of nonEligible) {
+      expect(decision.eligible).toBe(false);
+    }
+  });
+});

@@ -52,9 +52,9 @@ included:
           Result determination (from the actual run output only):
           - If "No critical ambiguities detected" AND no questions asked → emit [SCHEGENT_STATUS: CLEAR]
           - If all coverage categories are Clear AND no questions asked → emit [SCHEGENT_STATUS: CLEAR]
-          - If ANY questions were asked and auto-accepted → emit "Open questions:" followed by a summary (controller will re-loop)
+          - If ANY questions were asked and auto-accepted → emit "Open questions:" followed by a summary of them and the answers accepted. That summary is a record of what this iteration decided; it does NOT ask for another iteration. Whether the phase loops is determined solely by the `open_questions` metric below, which is zero when every question asked was answered.
 
-          Inside the SCHEGENT AUDIT LOG block, emit `open_questions: <N>` and `resolved_questions: <N>` as top-level integer metric lines so the controller can observe progress.
+          Inside the SCHEGENT AUDIT LOG block, emit `open_questions: <N>` and `resolved_questions: <N>` as top-level integer metric lines so the controller can observe progress. `open_questions` is the count of questions still unanswered AFTER this iteration's auto-accept pass — zero whenever every question asked this iteration was answered, never the count of questions asked. `resolved_questions` is the count of questions answered during this iteration.
         model: claude-opus-5
         effort: xhigh
         retryCondition: open_questions > 0
@@ -146,17 +146,26 @@ included:
         version: 1
       spec:
         instruction: |-
+          Detect nested-repo workspace layout:
+          - Check if the workspace root contains both a repo/ subdirectory (with its own .git/) AND a specs/ directory.
+          - If BOTH exist: set is_nested_repo=true, code_root=repo/, specs_root=specs/.
+          - If NOT: set is_nested_repo=false, code_root=. (workspace root). All subsequent steps behave as before.
+          - Log the detection result.
+
           Review the implementation and finish all pending tasks:
           1. Load <feature_dir>/tasks.md and list every task not marked complete.
-          2. Cross-check the implementation against spec.md and plan.md for gaps.
-          3. Implement every remaining or incomplete task to completion.
+          2. If is_nested_repo, resolve the corresponding spec directory under specs/ by matching the feature name from feature_dir. Read spec.md and plan.md from the matched spec directory to understand the full requirement scope.
+          3. Cross-check the implementation in code_root against spec.md and plan.md for gaps.
+          4. Implement every remaining or incomplete task to completion within code_root.
 
           Then trigger code review — fix EVERY finding, loop until clean:
+          - If is_nested_repo, run /code-review targeting the repo/ subrepository's diff only. Since repo/ has its own .git/, the diff naturally excludes specs/ and other workspace-root files. All remediation MUST be applied within code_root.
           - Run /code-review against the current diff with --fix.
           - Fix every finding regardless of severity or confidence level.
           - After applying fixes, re-run /code-review until zero findings, up to 10 iterations.
 
           Then trigger security review — fix EVERY finding, loop until clean:
+          - If is_nested_repo, run /security-review targeting the repo/ subrepository's diff only. Spec files are documentation artifacts and MUST NOT be included in security review findings. All remediation MUST be applied within code_root.
           - Run /security-review against the current diff.
           - Apply a fix for every finding.
           - After applying fixes, re-run /security-review until zero findings, up to 10 iterations.

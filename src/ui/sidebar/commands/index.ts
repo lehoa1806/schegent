@@ -1,6 +1,6 @@
 import {
   CMD_CANCEL,
-  CMD_CLEAR_ALL,
+  CMD_CLEAR_QUEUE,
   CMD_CLEAR_COMPLETED,
   CMD_CLEAR_PHASE_BREAKPOINT,
   CMD_CONTINUE_WORKFLOW,
@@ -52,6 +52,7 @@ import {
   CMD_SAVE_QUEUE_SETTINGS,
   CMD_SET_CONFIRM_SUPPRESSION,
   CMD_SET_PHASE_BREAKPOINT,
+  CMD_SET_QUEUE_FAILURE_POLICY,
   CMD_SET_UNCONTAINED_BACKEND_GRANT,
   CMD_SKIP_PHASE,
   CMD_START,
@@ -62,7 +63,7 @@ import {
 import type { CommandHandler } from './handler-contract';
 
 import { handler as cancel } from './cmd-cancel';
-import { handler as clearAll } from './cmd-clear-all';
+import { handler as clearQueue } from './cmd-clear-queue';
 import { handler as clearCompleted } from './cmd-clear-completed';
 import { handler as clearPhaseBreakpoint } from './cmd-clear-phase-breakpoint';
 import { handler as continueWorkflow } from './cmd-continue-workflow';
@@ -115,6 +116,7 @@ import { handler as saveGeneralSettings } from './cmd-save-general-settings';
 import { handler as saveModels } from './cmd-save-models';
 import { handler as saveQueueSettings } from './cmd-save-queue-settings';
 import { handler as setConfirmSuppression } from './cmd-set-confirm-suppression';
+import { handler as setQueueFailurePolicy } from './cmd-set-queue-failure-policy';
 import { handler as setUncontainedBackendGrant } from './cmd-set-uncontained-backend-grant';
 import { handler as setPhaseBreakpoint } from './cmd-set-phase-breakpoint';
 import { handler as skipPhase } from './cmd-skip-phase';
@@ -136,7 +138,7 @@ export const HANDLERS: ReadonlyMap<string, CommandHandler> = new Map<
   CommandHandler
 >([
   [CMD_CANCEL, cancel as CommandHandler],
-  [CMD_CLEAR_ALL, clearAll as CommandHandler],
+  [CMD_CLEAR_QUEUE, clearQueue as CommandHandler],
   [CMD_CLEAR_COMPLETED, clearCompleted as CommandHandler],
   [CMD_CLEAR_PHASE_BREAKPOINT, clearPhaseBreakpoint as CommandHandler],
   [CMD_CONTINUE_WORKFLOW, continueWorkflow as CommandHandler],
@@ -189,6 +191,7 @@ export const HANDLERS: ReadonlyMap<string, CommandHandler> = new Map<
   [CMD_SAVE_QUEUE_SETTINGS, saveQueueSettings as CommandHandler],
   [CMD_SET_CONFIRM_SUPPRESSION, setConfirmSuppression as CommandHandler],
   [CMD_SET_PHASE_BREAKPOINT, setPhaseBreakpoint as CommandHandler],
+  [CMD_SET_QUEUE_FAILURE_POLICY, setQueueFailurePolicy as CommandHandler],
   [CMD_SET_UNCONTAINED_BACKEND_GRANT, setUncontainedBackendGrant as CommandHandler],
   [CMD_SKIP_PHASE, skipPhase as CommandHandler],
   [CMD_START, start as CommandHandler],

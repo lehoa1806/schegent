@@ -17,7 +17,7 @@
 //     releases the lock.
 //   - The fully-clean state is a no-op (`wasNoop: true`).
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { unfencedCommit } from '../../src/state/ownership-claim';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
 import { QueueManager } from '../../src/queue/queue-manager';
@@ -27,6 +27,12 @@ import type { WorkflowRun } from '../../src/state/workflow-run';
 class MockMemento implements Memento {
   public writeCount = 0;
   public lastBatch: string[] = [];
+  // FR-R3-150 (T1619c) — every persisted value, not just the key that was
+  // touched. The LC-Q-05 lockstep assertion below has to inspect the
+  // *intermediate* queue-map states, because "no persisted state pairs a
+  // non-null `scheduledStartAt` with a lifecycle other than `idle-pending`"
+  // (AGENTS rules 31-33) is a claim about each write, not about the last one.
+  public writes: Array<{ key: string; value: unknown }> = [];
   private map = new Map<string, unknown>();
   get<T>(key: string): T | undefined {
     return this.map.get(key) as T | undefined;
@@ -34,6 +40,7 @@ class MockMemento implements Memento {
   update(key: string, value: unknown): Thenable<void> {
     this.writeCount++;
     this.lastBatch.push(key);
+    this.writes.push({ key, value });
     if (value === undefined) this.map.delete(key);
     else this.map.set(key, value);
     return Promise.resolve();
@@ -107,7 +114,45 @@ async function buildPopulatedSystem(): Promise<{
   // Reset the write counter so we only count the clearAll writes.
   memento.writeCount = 0;
   memento.lastBatch = [];
+  memento.writes = [];
   return { store, queue, memento };
+}
+
+/** Arms a schedule directly on a queue record — the fixture-level equivalent
+ * of an operator choosing a scheduled start, without pulling in the
+ * coordinator. Same helper `queue-manager-clear-queue.test.ts` uses, so the
+ * queue-scoped and workspace-wide LC-Q-05 cases start from an identical
+ * persisted shape. */
+async function armSchedule(
+  store: WorkspaceStateStore,
+  queueId: string,
+  scheduledStartAt: number
+): Promise<void> {
+  await store.updateQueue(
+    (queue) => ({
+      queue: {
+        ...queue,
+        queueLifecycle: 'idle-pending',
+        scheduledStartAt,
+        scheduledStartSource: 'operator-chooser'
+      },
+      result: undefined
+    }),
+    queueId,
+    store.runCommitClaim(queueId)
+  );
+}
+
+/** Every queue-map state this memento ever persisted, oldest first. */
+function persistedQueueMaps(
+  memento: MockMemento
+): Array<Record<string, { queueLifecycle: string; scheduledStartAt: number | null }>> {
+  return memento.writes
+    .filter((w) => w.key === 'schegent.queue')
+    .map(
+      (w) =>
+        w.value as Record<string, { queueLifecycle: string; scheduledStartAt: number | null }>
+    );
 }
 
 describe('QueueManager.clearAll() — integration (T019)', () => {
@@ -131,8 +176,16 @@ describe('QueueManager.clearAll() — integration (T019)', () => {
     const afterQueue = store.getQueue(DEFAULT_QUEUE_ID);
     expect(afterQueue.requests).toEqual([]);
     expect(afterQueue.inFlightId).toBeNull();
-    expect(afterQueue.queueLifecycle).not.toBe('operator-paused');
+    // FR-R3-150 (T1619c) — was `.not.toBe('operator-paused')`, which is
+    // satisfied by a queue left badging the stale `running` it carried into
+    // the clear. The reset settles at one lifecycle, and the assertion names
+    // it.
+    expect(afterQueue.queueLifecycle).toBe('active-empty');
     expect(afterQueue.pausedReason).toBeNull();
+    expect(afterQueue.pauseSource).toBeNull();
+    expect(afterQueue.scheduledStartAt).toBeNull();
+    expect(afterQueue.scheduledStartSource).toBeNull();
+    expect(result.scheduleCleared).toBe(false);
 
     expect(store.getRun(DEFAULT_QUEUE_ID)).toBeNull();
 
@@ -331,5 +384,156 @@ describe('QueueManager.clearAll() — integration (T019)', () => {
     // handler-side audit assertions live in clear-all-handler.test.ts.
     const result = await queue.clearAll();
     expect(result).toBeDefined();
+  });
+});
+
+// FR-R3-150 (T1619c) — the workspace-wide half of LC-Q-05.
+//
+// `clearQueue()` (T1619) already disarms the addressed queue's schedule and
+// settles its lifecycle in one write. `clearAll()` did neither: its per-queue
+// write touched `requests`/`inFlightId`/`pausedReason` only, so a `running`
+// queue persisted as `running` with nothing in it, and an `idle-pending`
+// queue's armed `scheduledStartAt` survived the reset and could later start a
+// queue the operator had just wiped. Its `wasNoop` gate never inspected the
+// schedule either, so that workspace reported already-clean and wrote nothing
+// at all.
+//
+// Deferred as out-of-scope under spec.md FR-009 by T1619b; FR-009 amended
+// 2026-09-03 (see specs/188-queue-cleanup-scope/spec.md FR-009 and T1619b's
+// closure note) because "unchanged behavior" was never meant to preserve a
+// reset that leaves a timer armed against the state it cleared.
+describe('QueueManager.clearAll() — LC-Q-05 schedule and lifecycle settle (T1619c)', () => {
+  async function buildScheduledSystem(): Promise<{
+    store: WorkspaceStateStore;
+    queue: QueueManager;
+    memento: MockMemento;
+    queueBId: string;
+    cancelHook: { cancel: ReturnType<typeof vi.fn> };
+  }> {
+    const memento = new MockMemento();
+    const store = new WorkspaceStateStore(memento);
+    await store.initialize();
+    const queue = new QueueManager(store);
+    const cancelHook = { cancel: vi.fn().mockResolvedValue(undefined) };
+    queue.setScheduledStartCancelHook(cancelHook);
+
+    const created = await queue.createQueue('Queue B');
+    if (!created.ok || !created.queueId) throw new Error('fixture: createQueue failed');
+
+    memento.writeCount = 0;
+    memento.lastBatch = [];
+    memento.writes = [];
+    return { store, queue, memento, queueBId: created.queueId, cancelHook };
+  }
+
+  it('an armed schedule is the only dirty state: not a no-op, and it is disarmed', async () => {
+    const { store, queue, memento, queueBId, cancelHook } = await buildScheduledSystem();
+    // No tasks, no in-flight, no pause, no run, no watchdog backoff anywhere.
+    // Queue B's armed schedule is the whole of the workspace's dirty state.
+    await armSchedule(store, queueBId, 1_700_000_030_000);
+    memento.writeCount = 0;
+    memento.writes = [];
+
+    const result = await queue.clearAll();
+
+    expect(result.wasNoop).toBe(false);
+    expect(result.scheduleCleared).toBe(true);
+    expect(memento.writeCount).toBeGreaterThan(0);
+
+    const after = store.getQueue(queueBId);
+    expect(after.scheduledStartAt).toBeNull();
+    expect(after.scheduledStartSource).toBeNull();
+    expect(after.queueLifecycle).toBe('active-empty');
+    // The in-process timer is disarmed too — a persisted-only clear leaves a
+    // live timer that fires against fields already reading as cleared.
+    expect(cancelHook.cancel).toHaveBeenCalledTimes(1);
+    expect(cancelHook.cancel).toHaveBeenCalledWith(queueBId, 'operator-cancel');
+  });
+
+  it('disarms every armed queue and leaves unarmed queues without a hook call', async () => {
+    const { store, queue, queueBId, cancelHook } = await buildScheduledSystem();
+    const createdC = await queue.createQueue('Queue C');
+    if (!createdC.ok || !createdC.queueId) throw new Error('fixture: createQueue failed');
+    const queueCId = createdC.queueId;
+
+    await armSchedule(store, queueBId, 1_700_000_030_000);
+    await armSchedule(store, queueCId, 1_700_000_060_000);
+
+    const result = await queue.clearAll();
+
+    expect(result.scheduleCleared).toBe(true);
+    for (const id of [queueBId, queueCId]) {
+      const after = store.getQueue(id);
+      expect(after.scheduledStartAt).toBeNull();
+      expect(after.scheduledStartSource).toBeNull();
+      expect(after.queueLifecycle).toBe('active-empty');
+    }
+    // Exactly the two armed queues, never the unarmed default.
+    expect(cancelHook.cancel.mock.calls.map((c) => c[0]).sort()).toEqual(
+      [queueBId, queueCId].sort()
+    );
+  });
+
+  it('a queue carrying tasks settles at active-empty rather than a stale running', async () => {
+    const { store, queue } = await buildScheduledSystem();
+    const task = await queue.enqueue('task A');
+    await queue.markInFlight(task.id, 'run-A');
+    expect(store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle).toBe('running');
+
+    await queue.clearAll();
+
+    expect(store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle).toBe('active-empty');
+  });
+
+  it('reports scheduleCleared=false and calls no hook when nothing was armed', async () => {
+    const { queue, cancelHook } = await buildScheduledSystem();
+    await queue.enqueue('task A');
+
+    const result = await queue.clearAll();
+
+    expect(result.wasNoop).toBe(false);
+    expect(result.scheduleCleared).toBe(false);
+    expect(cancelHook.cancel).not.toHaveBeenCalled();
+  });
+
+  it('idle-pending with no armed schedule is still dirty state to clear', async () => {
+    // `setQueuePausedState`'s resume branch persists `idle-pending` with a
+    // null schedule — a queue explicitly held awaiting a start. It has no
+    // tasks, no run and no pause, so only the lifecycle marks it dirty.
+    const { store, queue } = await buildScheduledSystem();
+    await store.updateQueue(
+      (q) => ({ queue: { ...q, queueLifecycle: 'idle-pending' }, result: undefined }),
+      DEFAULT_QUEUE_ID,
+      store.runCommitClaim(DEFAULT_QUEUE_ID)
+    );
+
+    const result = await queue.clearAll();
+
+    expect(result.wasNoop).toBe(false);
+    expect(result.scheduleCleared).toBe(false);
+    expect(store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle).toBe('active-empty');
+  });
+
+  it('no persisted state pairs an armed schedule with a non-idle-pending lifecycle', async () => {
+    // AGENTS rules 31-33 / data-model.md's pairing invariant holds at every
+    // persisted state, not merely the final one — so the schedule fields and
+    // the lifecycle have to leave `idle-pending` in the SAME write.
+    const { store, queue, memento, queueBId } = await buildScheduledSystem();
+    await armSchedule(store, queueBId, 1_700_000_030_000);
+    await queue.enqueue('task A');
+    await queue.setQueuePausedState(true, DEFAULT_QUEUE_ID, 'maintenance', 'operator');
+    memento.writes = [];
+
+    await queue.clearAll();
+
+    const maps = persistedQueueMaps(memento);
+    expect(maps.length).toBeGreaterThan(0);
+    for (const map of maps) {
+      for (const [id, state] of Object.entries(map)) {
+        if (state.scheduledStartAt !== null) {
+          expect(`${id}:${state.queueLifecycle}`).toBe(`${id}:idle-pending`);
+        }
+      }
+    }
   });
 });

@@ -76,7 +76,9 @@ function summary(runtime: QueueRuntime): QueueSummary {
     state: 'active',
     pauseSource: null,
     schedule: null,
-    taskCount: runtime.tasks.length
+    taskCount: runtime.tasks.length,
+    failurePolicy: 'halt-on-failure',
+    failurePolicyOverride: null
   };
 }
 

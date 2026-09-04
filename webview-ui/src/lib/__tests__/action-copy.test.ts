@@ -19,6 +19,11 @@ import {
   renderActionBody,
   type ActionKey
 } from '../action-copy';
+// Feature 193 (T034, FR-001/FR-009) — the generated mirror of the host's
+// canonical `ACTION_KEYS` tuple. `ActionKey`/`ACTION_COPY` above must derive
+// from this, not from a second hand-written union — the test below fails if
+// a key exists in one but not the other.
+import { ACTION_KEYS as GENERATED_ACTION_KEYS } from '../generated/action-keys';
 
 const EXPECTED_KEYS: readonly ActionKey[] = [
   // Feature 100 (T509a, FR-049) — two keys where features 082/083 had four. The
@@ -64,6 +69,16 @@ const EXPECTED_KEYS: readonly ActionKey[] = [
   // a placeholder, so the prompt cannot describe a rule the runner no longer has.
   'backend.grant-uncontained'
 ];
+
+describe('ActionKey — derived from the generated host mirror (T193 US2, FR-001/FR-009)', () => {
+  it('ACTION_COPY has exactly one entry per generated ActionKey — none missing, none extra', () => {
+    expect(Object.keys(ACTION_COPY).sort()).toEqual([...GENERATED_ACTION_KEYS].sort());
+  });
+
+  it('the generated mirror declares exactly the 18 canonical keys', () => {
+    expect(GENERATED_ACTION_KEYS.length).toBe(18);
+  });
+});
 
 describe('ACTION_COPY exhaustiveness (FR-022b)', () => {
   it('contains every contractual ActionKey entry', () => {
@@ -117,56 +132,216 @@ describe('ACTION_COPY exhaustiveness (FR-022b)', () => {
 });
 
 describe('renderActionBody — placeholder resolution', () => {
-  it('queue.clean-all: full populated context renders all four summaries', () => {
+  it('queue.clean-all: full populated context renders all summaries', () => {
     const body = renderActionBody('queue.clean-all', {
+      queueId: 'q-beta',
+      queueName: 'nightly',
       pendingCount: 3,
       completedCount: 5,
       failedCount: 1,
       canceledCount: 2,
       inflightTitle: 'speckit-plan',
       pauseSource: 'operator',
-      hasActiveRun: true
+      hasActiveRun: true,
+      hasSchedule: true
     });
     expect(body).toContain('**3** pending');
     expect(body).toContain('**5** completed');
     expect(body).toContain('**1** failed');
     expect(body).toContain('**2** canceled');
+    expect(body).toContain('from **nightly**');
     expect(body).toContain('abort the running task ("speckit-plan")');
     expect(body).toContain('clear the operator pause');
+    expect(body).toContain('cancel the scheduled start');
     expect(body).toContain('clear the active workflow run');
   });
 
   it('queue.clean-all: pendingCount=0 still renders sensibly', () => {
     const body = renderActionBody('queue.clean-all', {
+      queueId: 'q-beta',
+      queueName: 'nightly',
       pendingCount: 0,
       completedCount: 0,
       failedCount: 0,
       canceledCount: 0,
       inflightTitle: null,
       pauseSource: null,
-      hasActiveRun: false
+      hasActiveRun: false,
+      hasSchedule: false
     });
     expect(body).toContain('**0** pending');
+    expect(body).toContain('from **nightly**');
     expect(body).not.toContain('abort the running task');
     expect(body).not.toContain('clear the');
+    expect(body).not.toContain('cancel the scheduled start');
   });
 
   it('queue.clean-all: cascade pause source renders the cascade summary', () => {
     const body = renderActionBody('queue.clean-all', {
+      queueId: 'q-beta',
+      queueName: 'nightly',
       pendingCount: 1,
       completedCount: 0,
       failedCount: 0,
       canceledCount: 0,
       inflightTitle: null,
       pauseSource: 'cascade',
-      hasActiveRun: false
+      hasActiveRun: false,
+      hasSchedule: false
     });
     expect(body).toContain('clear the cascade pause');
   });
 
-  it('queue.clear-done: substitutes the completedCount', () => {
-    const body = renderActionBody('queue.clear-done', { completedCount: 7 });
+  it('queue.clean-all: an armed schedule with nothing else to reset still names it (LC-Q-05)', () => {
+    const body = renderActionBody('queue.clean-all', {
+      queueId: 'q-beta',
+      queueName: 'nightly',
+      pendingCount: 0,
+      completedCount: 0,
+      failedCount: 0,
+      canceledCount: 0,
+      inflightTitle: null,
+      pauseSource: null,
+      hasActiveRun: false,
+      hasSchedule: true
+    });
+    expect(body).toContain('cancel the scheduled start');
+  });
+
+  it('queue.clear-done: substitutes the completedCount and queue name', () => {
+    const body = renderActionBody('queue.clear-done', {
+      queueId: 'q-beta',
+      queueName: 'nightly',
+      completedCount: 7
+    });
     expect(body).toContain('**7** completed tasks');
+    expect(body).toContain('from **nightly**');
+  });
+
+  // Code-review finding — `String.prototype.replace` interprets `$`-prefixed
+  // sequences in a STRING replacement even when the search pattern is a plain
+  // string, not a RegExp. Queue names are operator-authored with no character
+  // restriction, so a name built from one of those sequences must render
+  // literally, not be swallowed as a substitution directive.
+  it('renders a queueName containing $-substitution sequences literally, for both templates', () => {
+    const cleanAllBody = renderActionBody('queue.clean-all', {
+      queueId: 'q-beta',
+      queueName: 'Prod $&',
+      pendingCount: 0,
+      completedCount: 0,
+      failedCount: 0,
+      canceledCount: 0,
+      inflightTitle: null,
+      pauseSource: null,
+      hasActiveRun: false,
+      hasSchedule: false
+    });
+    expect(cleanAllBody).toContain('from **Prod $&**');
+
+    const clearDoneBody = renderActionBody('queue.clear-done', {
+      queueId: 'q-beta',
+      queueName: 'Prod $$',
+      completedCount: 1
+    });
+    expect(clearDoneBody).toContain('from **Prod $$**');
+  });
+
+  // Code-review finding — the same `$`-substitution risk as `queueName` above,
+  // for `inflightTitle`: it is an operator-authored task title with no
+  // character restriction, substituted into the same STRING-replacement
+  // chain. A task named e.g. "Fix $&" must render literally, not have `$&`
+  // expanded to the matched `{inflightSummary}` placeholder text.
+  it('renders an inflightTitle containing $-substitution sequences literally', () => {
+    const body = renderActionBody('queue.clean-all', {
+      queueId: 'q-beta',
+      queueName: 'nightly',
+      pendingCount: 0,
+      completedCount: 0,
+      failedCount: 0,
+      canceledCount: 0,
+      inflightTitle: 'Fix $&',
+      pauseSource: null,
+      hasActiveRun: false,
+      hasSchedule: false
+    });
+    expect(body).toContain('abort the running task ("Fix $&")');
+  });
+
+  // Code-review finding (iteration 4) — a queue named or a task titled
+  // exactly like a LATER placeholder token in the chain used to get
+  // re-matched and corrupted by that later `.replace()` call, since each
+  // call in a chain re-scans the whole accumulated string rather than only
+  // the original template. The single-pass substitution fixes this
+  // regardless of which placeholder the operator-authored text collides
+  // with, or which order the chain used to run in.
+  it('renders a queueName matching a later placeholder token literally, not re-substituted', () => {
+    const body = renderActionBody('queue.clean-all', {
+      queueId: 'q-beta',
+      queueName: '{pauseSummary}',
+      pendingCount: 0,
+      completedCount: 0,
+      failedCount: 0,
+      canceledCount: 0,
+      inflightTitle: null,
+      pauseSource: 'operator',
+      hasActiveRun: false,
+      hasSchedule: false
+    });
+    expect(body).toContain('from **{pauseSummary}**');
+    expect(body).toContain(', and clear the operator pause');
+  });
+
+  it('renders an inflightTitle matching a later placeholder token literally, not re-substituted', () => {
+    const body = renderActionBody('queue.clean-all', {
+      queueId: 'q-beta',
+      queueName: 'nightly',
+      pendingCount: 0,
+      completedCount: 0,
+      failedCount: 0,
+      canceledCount: 0,
+      inflightTitle: '{scheduleSummary}',
+      pauseSource: null,
+      hasActiveRun: false,
+      hasSchedule: true
+    });
+    expect(body).toContain('abort the running task ("{scheduleSummary}")');
+    expect(body).toContain(', and cancel the scheduled start');
+  });
+
+  // Code-review finding (iteration 5) — the two cases above were the only two
+  // moved onto the single pass; every other templated body still chained
+  // `.replace(string, value)`, so both hazards were live everywhere else. These
+  // cover the three remaining shapes: a value colliding with a LATER token, a
+  // value containing a `$`-sequence, and a template whose placeholder set the
+  // case did not fully cover.
+  it('renders a definitionName matching a later placeholder token literally', () => {
+    const body = renderActionBody('catalog.deactivate-definition', {
+      definitionId: 'phase-plan',
+      definitionName: '{kindLabel}',
+      kindLabel: 'phase'
+    });
+    expect(body).toContain('Removes **{kindLabel}** (`phase-plan`)');
+    expect(body).toContain('from the active phase catalog');
+  });
+
+  it('renders a taskTitle containing $-substitution sequences literally', () => {
+    expect(renderActionBody('run.modify-task', { taskTitle: '$&' })).toBe(
+      'Saves the edited payload for **$&**.'
+    );
+    expect(renderActionBody('history.rerun', { taskTitle: 'Ship $`v2' })).toBe(
+      'Re-enqueues **Ship $`v2** as a new run.'
+    );
+  });
+
+  it('names the queue in the delete confirmation instead of leaving the token', () => {
+    const body = renderActionBody('queue.delete', {
+      queueName: 'nightly',
+      pendingTaskCount: 2,
+      connectedRunCount: 0
+    });
+    expect(body).toBe(
+      'Deletes **nightly**, along with **2** pending tasks. This cannot be undone.'
+    );
   });
 
   // FR-R3-153 (FR-011, T1639) — one case per status; the wording must name

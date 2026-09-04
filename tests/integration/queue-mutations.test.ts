@@ -200,7 +200,10 @@ describe('Queue mutations integration (T044)', () => {
     expect(remainingIds).not.toContain(c.id);
 
     // clearCompleted removes B
-    await sys.router.dispatch({ type: CMD_CLEAR_COMPLETED, correlationId: 'cc1' }, sys.postAck);
+    await sys.router.dispatch(
+      { type: CMD_CLEAR_COMPLETED, correlationId: 'cc1', payload: { queueId: DEFAULT_QUEUE_ID } },
+      sys.postAck
+    );
     expect(sys.acks.at(-1)?.status).toBe('accepted');
     expect(sys.queue.list().map((r) => r.id)).toEqual([a.id]);
   });

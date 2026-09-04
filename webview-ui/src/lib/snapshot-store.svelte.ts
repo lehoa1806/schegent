@@ -24,6 +24,13 @@ import type {
 export interface AckResult {
   readonly status: 'accepted' | 'rejected';
   readonly reason?: string;
+  // FR-R3-154 (T1646) — which of the host's four words this ACK carries, when
+  // the answering command has one. Optional on the wire and optional here: the
+  // five lifecycle commands populate it, every other command leaves it absent,
+  // and `status` stays the field every existing consumer reads. A listener that
+  // wants the distinction between "refused" and "already in that state" reads
+  // this; one that only needs pass/fail ignores it and is unaffected.
+  readonly outcome?: CommandAckMessage['outcome'];
   // Feature 020 — optional typed payload from the read-only phase-log
   // IPC surface (see webview-ui/src/lib/phase-log-ipc.ts for the
   // canonical caller). Helpers that don't need it can ignore it.
@@ -271,7 +278,15 @@ class SnapshotStore {
     if (listener) {
       this._ackListeners.delete(msg.correlationId);
       try {
-        listener({ status: msg.status, reason: msg.reason, result: msg.result });
+        listener({
+          status: msg.status,
+          reason: msg.reason,
+          result: msg.result,
+          // FR-R3-154 (T1646) — forwarded rather than dropped. This call used
+          // to name three of the four fields the message carries, so the
+          // `outcome` the host had just started sending stopped here.
+          outcome: msg.outcome
+        });
       } catch {
         // listener errors must not propagate into the host-message bus
       }

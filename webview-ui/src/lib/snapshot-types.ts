@@ -62,6 +62,10 @@ import type {
 } from '../../../src/contracts/workflow-definitions.js';
 
 import type { CatalogKind, CatalogVersionId } from '../../../src/contracts/catalog-store.js';
+// Feature 195 (T008) — the generated mirror, not the host source: this is the
+// one field on `GeneralSettings` sourced from a contract this feature added,
+// on the same terms as `ActionKey` above.
+import type { QueueFailurePolicy } from './generated/queue-failure-policy.js';
 import type { HistoryTerminalStatus } from '../../../src/contracts/history-identity.js';
 import type { PhaseDefinitionEffort } from '../../../src/contracts/process-definitions.js';
 
@@ -708,6 +712,11 @@ export interface GeneralSettings {
   readonly backendRunner: BackendRunnerKind;
   readonly spendMaxUsdPerRun: number | null;
   readonly spendMaxTokensPerRun: number | null;
+  // Feature 195 (T008) — mirrors the host's `general-settings-keys.ts` field
+  // of the same name; a key missing here is a default that silently becomes
+  // whatever the code says, exactly as the note on `retryForceContinueOnCap`
+  // above states.
+  readonly queueHaltOnTaskFailure: QueueFailurePolicy;
   readonly scopes: {
     readonly cliPath: SettingScope;
     readonly loggingVerbose: SettingScope;
@@ -740,6 +749,7 @@ export interface GeneralSettings {
     readonly backendRunner: SettingScope;
     readonly spendMaxUsdPerRun: SettingScope;
     readonly spendMaxTokensPerRun: SettingScope;
+    readonly queueHaltOnTaskFailure: SettingScope;
   };
 }
 
@@ -805,6 +815,8 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   backendRunner: DEFAULT_BACKEND,
   spendMaxUsdPerRun: null,
   spendMaxTokensPerRun: null,
+  // Feature 195 (T008) — manifest default, matching the host idle snapshot.
+  queueHaltOnTaskFailure: 'halt-on-failure',
   scopes: Object.freeze({
     cliPath: 'default',
     loggingVerbose: 'default',
@@ -836,7 +848,8 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
     multiRootSuppressWarning: 'default',
     backendRunner: 'default',
     spendMaxUsdPerRun: 'default',
-    spendMaxTokensPerRun: 'default'
+    spendMaxTokensPerRun: 'default',
+    queueHaltOnTaskFailure: 'default'
   })
 });
 
@@ -916,14 +929,27 @@ export interface QueueRuntime {
    * `null` when its last start attempt did not fail. Mirrors the host's
    * `QueueRuntime.startFailure`, which carries the reasoning.
    *
-   * `summary` has already been through the host's sanitizer, so the surfaces
-   * render it as text and never re-derive it.
+   * `summary` and `taskName` have already been through the host's sanitizer,
+   * so the surfaces render them as text and never re-derive them.
+   *
+   * Feature 195 (T028, FR-007, FR-008) — widened to the same discrimination
+   * as the host: `kind: 'halted'` is a halt-on-failure report, naming the
+   * failed task rather than an admission call's error.
    */
-  readonly startFailure: {
-    readonly admission: 'admitNew' | 'admitResume';
-    readonly at: string;
-    readonly summary: string | null;
-  } | null;
+  readonly startFailure:
+    | {
+        readonly kind: 'admission';
+        readonly admission: 'admitNew' | 'admitResume';
+        readonly at: string;
+        readonly summary: string | null;
+      }
+    | {
+        readonly kind: 'halted';
+        readonly taskId: string;
+        readonly taskName: string;
+        readonly at: string;
+      }
+    | null;
   /** Pending Tasks on this queue, derived from its own rows — never a total. */
   readonly pendingCount: number;
   /**

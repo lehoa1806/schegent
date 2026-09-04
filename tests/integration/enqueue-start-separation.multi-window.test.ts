@@ -79,7 +79,8 @@ async function makeWindow(
     store,
     queue,
     executionLease: new ExecutionLeaseManager(store, lock.id, clock, noopScheduler),
-    controller: controller as unknown as SchegentWorkflowController
+    controller: controller as unknown as SchegentWorkflowController,
+    failurePolicyDefault: { resolve: () => 'halt-on-failure' }
   });
   const coordinator = new ScheduledStartCoordinator({
     store,

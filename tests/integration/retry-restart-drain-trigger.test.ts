@@ -69,7 +69,8 @@ describe('retry / restart-canceled supply a drain trigger (lifecycle round-check
       store,
       queue,
       executionLease: lease as never,
-      controller: controller as never
+      controller: controller as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
     });
   });
 

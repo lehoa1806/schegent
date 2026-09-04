@@ -668,6 +668,26 @@ const generated = new Map([
       'webview-ui/src/lib/fatal-signature-registry.ts',
       projectFatalSignatures('src/lib/fatal-signature-registry.ts')
     )
+  ],
+  [
+    // Feature 193 (T038, FR-001/FR-009) — the canonical `ActionKey` tuple.
+    // Same relationship as `retry-condition.ts` above: a genuine full-file
+    // mirror, since the source has no imports of its own to drag in.
+    'webview-ui/src/lib/generated/action-keys.ts',
+    assertParses(
+      'webview-ui/src/lib/generated/action-keys.ts',
+      mirrorWholeFile('src/contracts/action-keys.ts')
+    )
+  ],
+  [
+    // Feature 195 (T006, FR-001) — the queue failure-policy vocabulary. Same
+    // relationship as `action-keys.ts` above: a genuine full-file mirror,
+    // since the source is deliberately import-free (see that file's header).
+    'webview-ui/src/lib/generated/queue-failure-policy.ts',
+    assertParses(
+      'webview-ui/src/lib/generated/queue-failure-policy.ts',
+      mirrorWholeFile('src/contracts/queue-failure-policy.ts')
+    )
   ]
 ]);
 

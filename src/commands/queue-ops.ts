@@ -124,7 +124,18 @@ export async function runClearCompleted(ctx: QueueOpsCtx): Promise<void> {
   if (!(await ensurePrimary(ctx))) return;
   try {
     const result = await ctx.queue.clearCompleted();
-    if (result.removed === 0) {
+    // Code-review finding (iteration 4) — `ClearByStatusResult.ok` was
+    // widened onto `clearCompleted` alongside the `unknown-queue-id` guard
+    // (T1621), but this Command Palette route calls it with no `queueId`
+    // (defaulting to `DEFAULT_QUEUE_ID`, D6) and kept reading only
+    // `.removed`. Unreachable while the reserved default queue exists (it
+    // cannot be deleted — `queue-control-ipc.ts`'s
+    // `default-queue-undeletable` refusal), but a silent narrowing of a
+    // widened contract back to its old shape is worth closing rather than
+    // leaving for the day that stops being true.
+    if (!result.ok) {
+      ctx.notifier.error('Schegent: clear completed failed — the default queue was not found.');
+    } else if (result.removed === 0) {
       ctx.notifier.info('Schegent: no completed items to clear.');
     } else {
       ctx.notifier.info(`Schegent: cleared ${result.removed} completed item(s).`);
@@ -139,7 +150,11 @@ export async function runClearFailed(ctx: QueueOpsCtx): Promise<void> {
   if (!(await ensurePrimary(ctx))) return;
   try {
     const result = await ctx.queue.clearFailed();
-    if (result.removed === 0) {
+    // Code-review finding — see `runClearCompleted` above; the same
+    // widened-but-unread `.ok` gap, on its sibling.
+    if (!result.ok) {
+      ctx.notifier.error('Schegent: clear failed failed — the default queue was not found.');
+    } else if (result.removed === 0) {
       ctx.notifier.info('Schegent: no failed items to clear.');
     } else {
       ctx.notifier.info(`Schegent: cleared ${result.removed} failed item(s).`);

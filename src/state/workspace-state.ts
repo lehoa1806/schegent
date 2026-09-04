@@ -1619,7 +1619,7 @@ export class WorkspaceStateStore {
      *
      * **Required**, and delivered as its own change after the Run commit point's
      * half landed, which is the order the escalated-residuals decision record
-     * (`00_INDEX.md` §7) item 2 sets. Folding the two into one change is what
+     * (`INDEX.md` §7) item 2 sets. Folding the two into one change is what
      * that record forbids: the Run path is the one the review measured and the
      * one a stale host reaches first, and a single change that moved both would
      * have made the smaller

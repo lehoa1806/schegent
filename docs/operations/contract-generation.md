@@ -31,7 +31,9 @@ gate before pushing.
 
 ## Generated artifacts
 
-The generator currently owns ten files:
+The generator currently owns eleven files. It says so itself on every run —
+`Generated 11 contract artifact(s)` is the size of the map it wrote, so a
+regeneration that grows the set contradicts a stale count here out loud:
 
 ```text
 src/contracts/generated/
@@ -48,6 +50,9 @@ src/contracts/generated/
 webview-ui/src/lib/
 ├── fatal-signature-registry.ts
 └── retry-condition.ts
+
+webview-ui/src/lib/generated/
+└── action-keys.ts
 ```
 
 Do not edit these files by hand. Change the authoritative source, regenerate,
@@ -91,15 +96,26 @@ payload merely because the generator can enumerate other contract families.
 
 ## Generated webview sources
 
-The two webview files have different generation modes:
+The webview files have different generation modes:
 
 - `webview-ui/src/lib/retry-condition.ts` is the complete host
   `src/lib/retry-condition.ts` source under a generated banner.
+- `webview-ui/src/lib/generated/action-keys.ts` is the same mode — the complete
+  `src/contracts/action-keys.ts` source, which is possible because that module
+  imports nothing. It is here because the alternative was tried and failed:
+  before feature 193 (`FR-R3-154`) the host allowlist and the webview
+  `ActionKey` union were two hand-maintained lists with comments on each side
+  asserting they matched. They did not. The webview offered sixteen keys against
+  eleven the host accepted, so five confirmation dialogs wrote a "don't ask
+  again" the host rejected as `unknown-action-key`, and the operator was asked
+  again anyway. A mirror makes that drift a `contracts:check` failure naming
+  this file rather than a preference that silently does not stick.
 - `webview-ui/src/lib/fatal-signature-registry.ts` is a named AST projection.
   It includes the shared types, stream literals, and signature registry, but
   intentionally excludes host-only matching and classification logic.
 
 <!-- Source: scripts/generate-contract-schemas.mjs -->
+<!-- Source: src/contracts/action-keys.ts -->
 <!-- Source: tests/parity/retry-condition-parity.test.ts -->
 <!-- Source: tests/parity/fatal-signatures-parity.test.ts -->
 
@@ -112,7 +128,7 @@ the declaration.
 
 ## Change workflow
 
-1. Edit the handwritten source of truth. Do not begin in `generated/` or either
+1. Edit the handwritten source of truth. Do not begin in `generated/` or any
    generated webview file.
 2. Run `npm run contracts:generate`.
 3. Review every generated diff. Confirm literal additions/removals, optionality,

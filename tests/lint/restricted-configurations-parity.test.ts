@@ -171,8 +171,10 @@ describe('restrictedConfigurations parity (FR-R3-136 T1526c)', () => {
     // arbitrate. A memento is not a configuration and there is no disposition to
     // write for it; the untrusted window's protection for the cap is that it
     // starts no runs at all.
-    expect(workspaceSettableKeys()).toHaveLength(27);
-    expect(Object.keys(CONFIGURATION_SENSITIVITY)).toHaveLength(27);
+    // Feature 195 (T008) — 27 -> 28. `schegent.queue.haltOnTaskFailure` arrived,
+    // classified `run-shape` for the same reason `retry.forceContinueOnCap` is.
+    expect(workspaceSettableKeys()).toHaveLength(28);
+    expect(Object.keys(CONFIGURATION_SENSITIVITY)).toHaveLength(28);
     expect(derivedRestrictedConfigurations()).toHaveLength(14);
     expect(EXECUTABLE_AUTHORITY_PROPERTIES).toHaveLength(9);
 
@@ -184,7 +186,7 @@ describe('restrictedConfigurations parity (FR-R3-136 T1526c)', () => {
       capability: 2,
       'operator-signal': 4,
       evidence: 8,
-      'run-shape': 13
+      'run-shape': 14
     });
     // The classes that produce the list, stated once so a reclassification of the
     // POLICY (rather than of a property) is also a visible edit.

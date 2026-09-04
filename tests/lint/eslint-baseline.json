@@ -279,7 +279,7 @@
     },
     "@typescript-eslint/no-unused-vars": {
       "host": 1,
-      "webview": 10,
+      "webview": 8,
       "owner": {
         "decision": "D9 — Six baseline entries, each owned",
         "reference": "specs/112-webview-lint-and-type-aware-rules/plan.md"
@@ -291,7 +291,6 @@
       "webviewFiles": {
         "src/components/PhaseLogFeed/__tests__/PhaseLogSelectors.test.ts": 1,
         "src/components/PhaseLogFeed/parts/ToolCallCard.svelte": 1,
-        "src/components/PhaseProgression.svelte": 2,
         "src/components/QueueInputForm.svelte": 1,
         "src/components/__tests__/builder-save-draft.test.ts": 1,
         "src/components/__tests__/process-import-state.test.ts": 1,

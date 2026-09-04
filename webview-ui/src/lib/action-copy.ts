@@ -14,44 +14,28 @@ import type { QueueItemStatus } from '../../../src/contracts/snapshot-projection
 // than restate it; see the `queue.remove-item` case in `renderActionBody`.
 import { truncateLabel } from './deletion-confirmation';
 
-export type ActionKey =
-  | 'queue.clean-all'
-  | 'queue.clear-done'
-  | 'queue.remove-item'
-  | 'queue.cancel-item'
-  | 'queue.pause'
-  | 'queue.resume'
-  | 'run.retry-phase-now'
-  | 'run.restart-canceled'
-  | 'run.modify-task'
-  | 'history.rerun'
-  | 'workspace.reset'
-  | 'run.skip-phase'
-  // Feature 100 (T509a, FR-049) — two keys replace the four catalog removal keys
-  // of features 082/083. Those were one per kind plus a whole-layer reset, because
-  // a removal was an omission from a whole-array write and the array was per-kind.
-  // A lifecycle operation names one definition of any kind, so the kind became a
-  // parameter; and a layer reset is no longer one write the store can make, so it
-  // is no longer one decision the operator can take.
-  | 'catalog.deactivate-definition'
-  | 'catalog.discard-draft'
-  | 'run.overwrite-output'
-  | 'queue.delete'
-  // FR-R3-143 (T042) — turning every other prompt off is itself a decision worth
-  // one prompt, and only in that direction. Turning them back ON needs no
-  // confirmation, and gets none for free: `useConfirm` reads
-  // `snapshot.confirmationsEnabled`, which is still `true` while disabling and
-  // already `false` while enabling, so the asymmetry is the existing
-  // short-circuit rather than a hand-written branch beside it.
-  | 'settings.disable-confirmations'
-  // FR-R3-144 (T033, FR-007) — granting a backend permission to run without an
-  // OS-enforced bound. One prompt per backend, because the grant is per backend:
-  // accepting it for `agy` says nothing about `claude`, and a surface that asked
-  // once and applied the answer to both would be the boolean FR-R3-125 removed.
-  //
-  // Revoking is deliberately unconfirmed (C7-3). Asking before NARROWING a
-  // permission teaches operators to click through the prompt that matters.
-  | 'backend.grant-uncontained';
+// Feature 193 (T039, FR-001/FR-009) — `ActionKey` is derived from the
+// generated mirror of the host's canonical `ACTION_KEYS` tuple
+// (`src/contracts/action-keys.ts`), not from a second hand-written union.
+// This file used to declare its own 18-member union; two pieces of its
+// per-key rationale are not restated anywhere else in this module and are
+// recorded here instead, next to the type they used to sit inside:
+//
+// - `settings.disable-confirmations` — turning every other prompt off is
+//   itself a decision worth one prompt, and only in that direction. Turning
+//   prompts back ON needs no confirmation, and gets none for free:
+//   `useConfirm` reads `snapshot.confirmationsEnabled`, which is still
+//   `true` while disabling and already `false` while enabling, so the
+//   asymmetry is the existing short-circuit rather than a hand-written
+//   branch beside it (FR-R3-143, T042).
+// - `backend.grant-uncontained` — one prompt per backend, because the grant
+//   is per backend: accepting it for `agy` says nothing about `claude`, and
+//   a surface that asked once and applied the answer to both would be the
+//   boolean FR-R3-125 removed. Revoking is deliberately unconfirmed (C7-3):
+//   asking before NARROWING a permission teaches operators to click through
+//   the prompt that matters (FR-R3-144, T033, FR-007).
+import type { ActionKey } from './generated/action-keys';
+export type { ActionKey };
 
 export type Severity = 'info' | 'caution' | 'destructive';
 
@@ -66,6 +50,8 @@ export interface ActionCopyEntry {
 // these shapes to type-check placeholder access at compile time.
 export type ActionCopyContext = {
   'queue.clean-all': {
+    readonly queueId: string;
+    readonly queueName: string;
     readonly pendingCount: number;
     readonly completedCount: number;
     readonly failedCount: number;
@@ -73,8 +59,16 @@ export type ActionCopyContext = {
     readonly inflightTitle: string | null;
     readonly pauseSource: 'operator' | 'cascade' | 'retry-cap' | null;
     readonly hasActiveRun: boolean;
+    // FR-R3-150 (T1622a) — feeds the schedule-only no-op-adjacent copy path:
+    // a queue whose only leftover state is an armed schedule still has
+    // something Clean All will clear (LC-Q-05).
+    readonly hasSchedule: boolean;
   };
-  'queue.clear-done': { readonly completedCount: number };
+  'queue.clear-done': {
+    readonly queueId: string;
+    readonly queueName: string;
+    readonly completedCount: number;
+  };
   // FR-R3-153 (FR-011) — `status` drives the status-branching consequence
   // sentence in `renderActionBody` below; the wording must name the real
   // consequence of removing *this* task, not a generic one.
@@ -149,13 +143,13 @@ export const ACTION_COPY: Readonly<Record<ActionKey, ActionCopyEntry>> = Object.
   'queue.clean-all': {
     title: 'Clean All — wipe the queue?',
     bodyTemplate:
-      'You are about to remove **{pendingCount}** pending, **{completedCount}** completed, **{failedCount}** failed, and **{canceledCount}** canceled tasks{inflightSummary}{pauseSummary}{runSummary}. This cannot be undone.',
+      'You are about to remove **{pendingCount}** pending, **{completedCount}** completed, **{failedCount}** failed, and **{canceledCount}** canceled tasks from **{queueName}**{inflightSummary}{pauseSummary}{scheduleSummary}{runSummary}. This cannot be undone.',
     confirmLabel: 'Clean All',
     severity: 'destructive'
   },
   'queue.clear-done': {
     title: 'Clear Done — remove completed tasks?',
-    bodyTemplate: 'Removes **{completedCount}** completed tasks from the queue.',
+    bodyTemplate: 'Removes **{completedCount}** completed tasks from **{queueName}**.',
     confirmLabel: 'Clear Done',
     severity: 'caution'
   },
@@ -343,6 +337,36 @@ function removeItemBody(status: QueueItemStatus, taskTitle: string): string {
 // Render a body template with its typed context. The function is generic
 // over `ActionKey` so the type checker rejects passing the wrong context
 // shape (e.g. `{ taskTitle }` to `renderActionBody('queue.pause', …)`).
+// Code-review finding (iteration 4, generalized in iteration 5) — a single pass
+// over a lookup table, not a chain of `.replace()` calls, for EVERY templated
+// body. Three separate hazards, all closed here at once and none of them
+// closable per-call:
+//
+//   1. RE-SCAN. Each call in a chain re-scans the WHOLE accumulated string,
+//      including text a prior call just substituted in — so an operator-authored
+//      value (no character restriction on `createQueue`/`renameQueue`/task
+//      titles/definition names) that happens to contain the literal text of a
+//      placeholder later in the chain gets matched and corrupted by that later
+//      call. A definition named `{kindLabel}` really did rewrite
+//      `catalog.deactivate-definition`'s own later substitution.
+//   2. `$`-SEQUENCES. `String.prototype.replace` treats `$&`, `` $` ``, `$'`
+//      and `$$` as special in a STRING replacement value, even with a string
+//      pattern — so a task titled `$&` rendered as the placeholder token it was
+//      replacing. A function replacer's return value is never scanned for them.
+//   3. FIRST-OCCURRENCE-ONLY. A string pattern replaces one occurrence, so a
+//      template that ever names the same placeholder twice silently keeps the
+//      second literal.
+//
+// A single regex pass visits each position in the ORIGINAL template exactly
+// once, substituted values are never fed back in as search input, and every
+// occurrence is covered — so this holds regardless of chain order and survives
+// future placeholders being added in any order. Written once rather than per
+// case because "remember the hazard when you add the second placeholder" is
+// exactly the instruction that was not remembered eight times.
+function substitute(template: string, values: Readonly<Record<string, string>>): string {
+  return template.replace(/\{(\w+)\}/g, (token, key: string) => values[key] ?? token);
+}
+
 export function renderActionBody<K extends ActionKey>(
   actionKey: K,
   context: ActionCopyContext[K]
@@ -351,26 +375,25 @@ export function renderActionBody<K extends ActionKey>(
   switch (actionKey) {
     case 'queue.clean-all': {
       const ctx = context as ActionCopyContext['queue.clean-all'];
-      return entry.bodyTemplate
-        .replace('{pendingCount}', String(ctx.pendingCount))
-        .replace('{completedCount}', String(ctx.completedCount))
-        .replace('{failedCount}', String(ctx.failedCount))
-        .replace('{canceledCount}', String(ctx.canceledCount))
-        .replace(
-          '{inflightSummary}',
-          ctx.inflightTitle !== null
-            ? `, abort the running task ("${ctx.inflightTitle}")`
-            : ''
-        )
-        .replace(
-          '{pauseSummary}',
-          ctx.pauseSource !== null ? `, and clear the ${ctx.pauseSource} pause` : ''
-        )
-        .replace('{runSummary}', ctx.hasActiveRun ? ', and clear the active workflow run' : '');
+      return substitute(entry.bodyTemplate, {
+        pendingCount: String(ctx.pendingCount),
+        completedCount: String(ctx.completedCount),
+        failedCount: String(ctx.failedCount),
+        canceledCount: String(ctx.canceledCount),
+        queueName: ctx.queueName,
+        inflightSummary:
+          ctx.inflightTitle !== null ? `, abort the running task ("${ctx.inflightTitle}")` : '',
+        pauseSummary: ctx.pauseSource !== null ? `, and clear the ${ctx.pauseSource} pause` : '',
+        scheduleSummary: ctx.hasSchedule ? ', and cancel the scheduled start' : '',
+        runSummary: ctx.hasActiveRun ? ', and clear the active workflow run' : ''
+      });
     }
     case 'queue.clear-done': {
       const ctx = context as ActionCopyContext['queue.clear-done'];
-      return entry.bodyTemplate.replace('{completedCount}', String(ctx.completedCount));
+      return substitute(entry.bodyTemplate, {
+        completedCount: String(ctx.completedCount),
+        queueName: ctx.queueName
+      });
     }
     case 'queue.remove-item': {
       // Code-review fix (2026-09-03) — `taskDeleteConfirmation` always ran
@@ -388,46 +411,44 @@ export function renderActionBody<K extends ActionKey>(
     case 'run.modify-task':
     case 'history.rerun': {
       const ctx = context as { readonly taskTitle: string };
-      return entry.bodyTemplate.replace('{taskTitle}', ctx.taskTitle);
+      return substitute(entry.bodyTemplate, { taskTitle: ctx.taskTitle });
     }
     case 'queue.cancel-item': {
       const ctx = context as ActionCopyContext['queue.cancel-item'];
-      return entry.bodyTemplate
-        .replace('{taskTitle}', ctx.taskTitle)
-        .replace(
-          '{runningSuffix}',
-          ctx.isRunning ? ' It is currently running and will be terminated.' : ''
-        );
+      return substitute(entry.bodyTemplate, {
+        taskTitle: ctx.taskTitle,
+        runningSuffix: ctx.isRunning ? ' It is currently running and will be terminated.' : ''
+      });
     }
     case 'run.retry-phase-now':
     case 'run.skip-phase': {
       const ctx = context as ActionCopyContext['run.retry-phase-now' | 'run.skip-phase'];
-      return entry.bodyTemplate.replace('{phaseName}', ctx.phaseName);
+      return substitute(entry.bodyTemplate, { phaseName: ctx.phaseName });
     }
     case 'catalog.deactivate-definition': {
       const ctx = context as ActionCopyContext['catalog.deactivate-definition'];
-      return entry.bodyTemplate
-        .replace('{definitionName}', ctx.definitionName)
-        .replace('{definitionId}', ctx.definitionId)
-        .replace('{kindLabel}', ctx.kindLabel);
+      return substitute(entry.bodyTemplate, {
+        definitionName: ctx.definitionName,
+        definitionId: ctx.definitionId,
+        kindLabel: ctx.kindLabel
+      });
     }
     case 'catalog.discard-draft': {
       const ctx = context as ActionCopyContext['catalog.discard-draft'];
-      return entry.bodyTemplate
-        .replace('{definitionName}', ctx.definitionName)
-        .replace('{definitionId}', ctx.definitionId)
-        .replace(
-          '{entrySummary}',
-          ctx.removesEntry
-            ? ` This ${ctx.kindLabel} has never been published, so discarding removes it entirely.`
-            : ` The published ${ctx.kindLabel} stays active and is not affected.`
-        );
+      return substitute(entry.bodyTemplate, {
+        definitionName: ctx.definitionName,
+        definitionId: ctx.definitionId,
+        entrySummary: ctx.removesEntry
+          ? ` This ${ctx.kindLabel} has never been published, so discarding removes it entirely.`
+          : ` The published ${ctx.kindLabel} stays active and is not affected.`
+      });
     }
     case 'run.overwrite-output': {
       const ctx = context as ActionCopyContext['run.overwrite-output'];
-      return entry.bodyTemplate
-        .replace('{portName}', ctx.portName)
-        .replace('{target}', ctx.target);
+      return substitute(entry.bodyTemplate, {
+        portName: ctx.portName,
+        target: ctx.target
+      });
     }
     case 'queue.delete': {
       const ctx = context as ActionCopyContext['queue.delete'];
@@ -443,16 +464,23 @@ export function renderActionBody<K extends ActionKey>(
           `**${ctx.connectedRunCount}** bound connected ${plural(ctx.connectedRunCount, 'run')}`
         );
       }
-      return entry.bodyTemplate.replace(
-        '{impactSummary}',
-        parts.length === 0 ? '' : `, along with ${parts.join(' and ')}`
-      );
+      // `queueName` is substituted because the template names it and the
+      // context carries it. It was omitted here, so the one destructive prompt
+      // whose whole job is to name the queue being deleted rendered the literal
+      // `Deletes **{queueName}**` — visible on every delete, and the kind of
+      // omission a chain of positional `.replace` calls hides (nothing relates
+      // the calls to the template's placeholder set).
+      return substitute(entry.bodyTemplate, {
+        queueName: ctx.queueName,
+        impactSummary: parts.length === 0 ? '' : `, along with ${parts.join(' and ')}`
+      });
     }
     case 'backend.grant-uncontained': {
       const ctx = context as ActionCopyContext['backend.grant-uncontained'];
-      return entry.bodyTemplate
-        .replace('{refusal}', ctx.refusal)
-        .replace('{label}', ctx.label);
+      return substitute(entry.bodyTemplate, {
+        refusal: ctx.refusal,
+        label: ctx.label
+      });
     }
     case 'queue.pause':
     case 'queue.resume':

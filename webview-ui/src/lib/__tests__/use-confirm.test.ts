@@ -98,7 +98,7 @@ afterEach(() => {
 describe('useConfirm', () => {
   it('(a) suppressed action with confirmationsEnabled === true resolves true without mounting the modal', async () => {
     state.suppressedKeys.add('queue.clear-done');
-    const p = useConfirm('queue.clear-done', { context: { completedCount: 3 } });
+    const p = useConfirm('queue.clear-done', { context: { queueId: 'q-1', queueName: 'Q1', completedCount: 3 } });
     expect(getDialog()).toBeNull();
     await expect(p).resolves.toBe(true);
   });
@@ -156,7 +156,7 @@ describe('useConfirm', () => {
   });
 
   it('(e) confirming with checkbox ticked posts CMD_SET_CONFIRM_SUPPRESSION', async () => {
-    const p = useConfirm('queue.clear-done', { context: { completedCount: 1 } });
+    const p = useConfirm('queue.clear-done', { context: { queueId: 'q-1', queueName: 'Q1', completedCount: 1 } });
     await tick();
     // Toggle the suppression checkbox via the bound property + input
     // event to drive Svelte's two-way binding.
@@ -177,7 +177,7 @@ describe('useConfirm', () => {
   });
 
   it('(e2) confirming with checkbox UNticked does NOT post CMD_SET_CONFIRM_SUPPRESSION', async () => {
-    const p = useConfirm('queue.clear-done', { context: { completedCount: 1 } });
+    const p = useConfirm('queue.clear-done', { context: { queueId: 'q-1', queueName: 'Q1', completedCount: 1 } });
     await tick();
     getButton('confirm-dialog-confirm').click();
     await expect(p).resolves.toBe(true);
@@ -196,7 +196,7 @@ describe('useConfirm', () => {
   });
 
   it('Cancel button resolves false and does NOT persist suppression even with the box ticked', async () => {
-    const p = useConfirm('queue.clear-done', { context: { completedCount: 1 } });
+    const p = useConfirm('queue.clear-done', { context: { queueId: 'q-1', queueName: 'Q1', completedCount: 1 } });
     await tick();
     const checkbox = getCheckbox();
     checkbox.checked = true;

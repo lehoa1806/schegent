@@ -134,7 +134,10 @@ describe('Feature 011 — general-settings allowlist', () => {
         // revoke from a stale draft. It has its own per-backend command.
         'backend.runner',
         'spend.maxUsdPerRun',
-        'spend.maxTokensPerRun'
+        'spend.maxTokensPerRun',
+        // Feature 195 (T008) — the workspace default a queue follows when it
+        // states no opinion of its own.
+        'queue.haltOnTaskFailure'
       ])
     );
   });

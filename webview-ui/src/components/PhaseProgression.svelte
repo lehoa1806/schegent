@@ -1,8 +1,8 @@
 <script lang="ts">
   import type { ActivePipelineSummary, ActiveFeatureSummary, PhaseTile, DelayedRetryState } from '../lib/snapshot-types';
   import PhaseControlMenu from './PhaseControlMenu.svelte';
-  import { phaseDeleteConfirmation, type DeleteConfirmationCopy } from '../lib/deletion-confirmation';
-  import { removeTaskPhase } from '../lib/phase-control';
+  // FR-R3-151 moved deletion to `PhaseControlMenu` (`selectedPhase`); only the copy type is used here.
+  import type { DeleteConfirmationCopy } from '../lib/deletion-confirmation';
   import { formatDuration } from '../lib/format-duration';
   import { pauseBadgeLabel, type PauseBadgeCause } from '../lib/pause-labels';
 
@@ -68,6 +68,8 @@
   );
 
   const isLargePipeline = $derived(phases.length >= LARGE_PIPELINE_THRESHOLD);
+  // Resolved once, not re-found inline per field the header menu reads off it.
+  const selectedTile = $derived(phases.find((p) => p.name === selectedPhaseId) ?? null);
   const activePhase = $derived(phases.find((phase) => phase.state === 'active')?.name ?? null);
   // Drives the countdown badge below and the header menu's Retry now control.
   const isWaitingRetry = $derived(delayedRetry?.pendingRetryAt != null);
@@ -149,9 +151,7 @@
       {phaseOverrides}
       {phaseBreakpoints}
       selectedPhase={selectedPhaseId}
-      selectedPhaseState={selectedPhaseId
-        ? phases.find((p) => p.name === selectedPhaseId)?.state ?? null
-        : null}
+      selectedPhaseState={selectedTile?.state ?? null}
       {onRequestConfirm}
     />
   </header>

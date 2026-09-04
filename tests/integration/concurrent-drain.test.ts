@@ -147,7 +147,10 @@ async function makeWindow(
       release: (queueId: string) => executionLease.release(queueId),
       claimFor: (queueId: string) => executionLease.claimFor(queueId)
     },
-    controller: controller as unknown as SchegentWorkflowController
+    controller: controller as unknown as SchegentWorkflowController,
+    // Feature 195 (T012) — required port; no queue here carries a failed row,
+    // so which policy resolves is immaterial to what this file asserts.
+    failurePolicyDefault: { resolve: () => 'halt-on-failure' }
   });
 
   return {

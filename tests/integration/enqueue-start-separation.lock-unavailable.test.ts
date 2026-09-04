@@ -98,7 +98,8 @@ async function makeFixture(): Promise<Fixture> {
     store,
     queue,
     executionLease: new ExecutionLeaseManager(store, lock.id, clock, noopScheduler),
-    controller: controller as unknown as SchegentWorkflowController
+    controller: controller as unknown as SchegentWorkflowController,
+    failurePolicyDefault: { resolve: () => 'halt-on-failure' }
   });
 
   // Mutable cell so each test can flip the probe value at fire time.

@@ -3,8 +3,8 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 /**
- * FR-R3-153 (T1637) — every Task status writer must route through the shared
- * `decideTaskTransition` classifier before writing.
+ * FR-R3-153 (T1637) — every Task status writer ENROLLED BELOW must route
+ * through the shared `decideTaskTransition` classifier before writing.
  *
  * WHY A SOURCE-TEXT CENSUS AND NOT A BEHAVIOR TEST. Modeled directly on
  * `tests/lint/phase-control-decision-census.test.ts` (FR-R3-151): a behavior
@@ -12,6 +12,28 @@ import { describe, expect, it } from 'vitest';
  * instead of calling the shared function, which is exactly the drift this
  * feature closes. Scanning each writer's own source text for the call is the
  * cheap, durable guard (contracts/task-transition-decision.md invariant 8).
+ *
+ * WHAT THIS CANNOT DO, stated because the first sentence used to overstate it.
+ * `WRITERS` is a hand-maintained registry, so this file discovers nothing: it
+ * checks the writers it lists and is silent about any writer it does not. The
+ * sentence above originally read "every Task status writer", which was not true
+ * of the tree it was committed against — `QueueManager.cancel` writes
+ * `status: 'canceled'` behind its own inline `status !== 'pending'` guard and is
+ * not enrolled here. That is the exact drift shape this census exists to catch,
+ * one level up: an inline reimplementation of a check the classifier owns.
+ *
+ * `cancel` is deliberately NOT enrolled yet, and the reason is a design question
+ * rather than an oversight. The classifier's four operations are
+ * `mark-in-flight`, `pause`, `finish`, and `return-to-pending`; routing `cancel`
+ * through `finish` would hand it `finish`'s source-state rule and thereby make
+ * in-flight → canceled legal, which cancel's own guard forbids today and which
+ * would need session cleanup and lease release it does not perform. Enrolling it
+ * therefore means adding a `cancel` operation with its own row in the table, not
+ * reusing one — filed as residue in
+ * `docs/audits/round-3-lifecycle-batch-gap-evaluation.md`. Until then this
+ * header says what the file actually proves. A census that claims completeness
+ * it does not have is worse than one that names its own boundary, because the
+ * claim is what stops the next reader from checking.
  */
 
 interface WriterLocation {

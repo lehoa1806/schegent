@@ -199,6 +199,16 @@ export const CONFIGURATION_SENSITIVITY = Object.freeze({
     sensitivity: 'run-shape',
     reason: 'bounds retries inside a run'
   },
+  // Feature 195 (FR-001) — same argument as `retry.forceContinueOnCap` above:
+  // it decides whether a queue keeps starting tasks after one fails, but that
+  // decision has nothing to act on until a Run may start, which an untrusted
+  // window never does.
+  'schegent.queue.haltOnTaskFailure': {
+    sensitivity: 'run-shape',
+    reason:
+      'decides whether a queue keeps starting tasks after one fails, and an ' +
+      'untrusted window starts no tasks to begin with'
+  },
   'schegent.spend.maxTokensPerRun': {
     sensitivity: 'run-shape',
     reason: 'a per-run spend ceiling, and an untrusted window spends nothing'

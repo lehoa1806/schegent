@@ -20,6 +20,7 @@
 
   import { nowFine, nowCoarse } from '../lib/tick-store';
   import { postCommand } from '../lib/vscode-api';
+  import { correlatedLifecycle, lifecycleMessage } from '../lib/lifecycle-control-ipc';
   import { CMD_START_QUEUE } from '../lib/messages';
   import StartModeChooser, { type StartQueueIntent } from './StartModeChooser.svelte';
   import { findQueueRuntime } from '../lib/queue-runtime-view';
@@ -102,24 +103,30 @@
     return `${yyyy}-${mm}-${dd} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
 
+  // FR-R3-154 (T1646) — what the host answered about the last of these three
+  // start intents, as one sentence, or `null` when it committed. All three
+  // dispatch `CMD_START_QUEUE` with a `startIntent`, which is the branch of
+  // `runStartQueueCommand` that reports a real outcome rather than the
+  // documented asynchronous acceptance of a bare drain pass — so
+  // `rejected-horizon` and `start-intent-no-change` are both reachable from
+  // this surface, and neither reached a listener before.
+  let startMessage = $state<string | null>(null);
+
+  async function dispatchIntent(intent: StartQueueIntent): Promise<void> {
+    startMessage = null;
+    startMessage = lifecycleMessage(
+      await correlatedLifecycle(
+        () => postCommand(CMD_START_QUEUE, { queueId, startIntent: intent } as never).correlationId
+      )
+    );
+  }
+
   function onCancel(): void {
-    postCommand(CMD_START_QUEUE, {
-      queueId,
-      startIntent: {
-        startMode: 'cancel-schedule',
-        source: 'operator-restart'
-      }
-    } as never);
+    void dispatchIntent({ startMode: 'cancel-schedule', source: 'operator-restart' });
   }
 
   function onStartNow(): void {
-    postCommand(CMD_START_QUEUE, {
-      queueId,
-      startIntent: {
-        startMode: 'now',
-        source: 'operator-restart'
-      }
-    } as never);
+    void dispatchIntent({ startMode: 'now', source: 'operator-restart' });
   }
 
   function onChange(): void {
@@ -131,7 +138,7 @@
     if (intent === null) return;
     // Chooser already emits a `StartQueueIntent` with
     // `source: 'operator-restart'` (T027 simplification — Feature 065).
-    postCommand(CMD_START_QUEUE, { queueId, startIntent: intent } as never);
+    void dispatchIntent(intent);
   }
 </script>
 
@@ -172,6 +179,10 @@
       <StartModeChooser onCommit={onChooserCommit} />
     </div>
   {/if}
+
+  {#if startMessage !== null}
+    <p class="start-message" role="alert" data-testid="scheduled-start-message">{startMessage}</p>
+  {/if}
 </div>
 
 <style>
@@ -186,6 +197,12 @@
   }
   .countdown {
     font-weight: 600;
+  }
+  /* Colour matches `QueueDetailTier`'s `.refusal`. */
+  .start-message {
+    margin: 0;
+    font-size: 0.85em;
+    color: var(--vscode-errorForeground);
   }
   .resolved-fire-time {
     font-size: 0.85em;

@@ -58,7 +58,9 @@ function queueSummary(id: string): QueueSummary {
     state: 'active',
     pauseSource: null,
     schedule: null,
-    taskCount: 1
+    taskCount: 1,
+    failurePolicy: 'halt-on-failure',
+    failurePolicyOverride: null
   });
 }
 

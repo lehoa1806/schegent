@@ -30,6 +30,10 @@ import {
   CMD_SET_CONFIRM_SUPPRESSION
 } from '../../src/ui/sidebar/messages';
 import type { CommandAckMessage } from '../../src/ui/sidebar/messages';
+// Feature 193 (T033, FR-002/FR-004) — the canonical 18-entry tuple, so the
+// parametrized round trip below covers every key the host now recognizes,
+// not just the pre-widening subset the tests above were written against.
+import { ACTION_KEYS } from '../../src/contracts/action-keys';
 
 class MockMemento implements Memento {
   public writes: Array<{ key: string; value: unknown }> = [];
@@ -245,4 +249,42 @@ describe('CMD_SET_CONFIRM_SUPPRESSION — integration round trip (T044, FR-021)'
     expect(value.version).toBe(1);
     expect(value.suppressedActionKeys).toContain('queue.pause');
   });
+});
+
+// Feature 193 (T033, FR-002/FR-004) — parametrized over all 18 canonical
+// keys, rather than the pre-widening subset exercised above. Each key gets
+// its own `setup()`/`cleanup()` so a failure on one key cannot leak memento
+// state into the next.
+describe('CMD_SET_CONFIRM_SUPPRESSION — round trip over every canonical ActionKey (T033)', () => {
+  let env: SetupResult;
+  beforeEach(async () => {
+    env = await setup();
+  });
+  afterEach(async () => {
+    await env.cleanup();
+  });
+
+  it.each(ACTION_KEYS)(
+    'accepts %s, persists it to the memento, and surfaces it in the snapshot',
+    async (actionKey) => {
+      await env.router.dispatch(
+        {
+          type: CMD_SET_CONFIRM_SUPPRESSION,
+          correlationId: `c-${actionKey}`,
+          payload: { actionKey, suppressed: true }
+        },
+        env.postAck
+      );
+
+      // The whole array: this case runs once per canonical key, so the failure
+      // worth reading is "key K was refused" or "key K produced no ACK at all",
+      // and `env.acks[0].status` renders the second as a TypeError. The arity
+      // is part of the claim too — one dispatch, one ACK.
+      expect(env.acks).toEqual([expect.objectContaining({ status: 'accepted' })]);
+      expect(env.store.getConfirmSuppression().suppressedActionKeys).toContain(actionKey);
+
+      const snap = env.projector.project();
+      expect(snap.confirmSuppression!.suppressedActionKeys).toContain(actionKey);
+    }
+  );
 });

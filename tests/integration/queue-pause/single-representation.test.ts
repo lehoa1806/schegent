@@ -96,7 +96,8 @@ async function makeHarness(memento: FakeMemento = new FakeMemento()): Promise<Ha
       // pretending to a fence this double never had.
       claimFor: () => null
     },
-    controller: controller as unknown as SchegentWorkflowController
+    controller: controller as unknown as SchegentWorkflowController,
+    failurePolicyDefault: { resolve: () => 'halt-on-failure' }
   });
 
   return {

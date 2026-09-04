@@ -52,7 +52,7 @@ export const SIDEBAR_COMMAND_TYPES = [
   "CMD_SET_PHASE_BREAKPOINT",
   "CMD_CLEAR_PHASE_BREAKPOINT",
   "CMD_START_QUEUE",
-  "CMD_CLEAR_ALL",
+  "CMD_CLEAR_QUEUE",
   "CMD_SET_CONFIRM_SUPPRESSION",
   "CMD_DISMISS_MIGRATION_NOTICE",
   "CMD_READ_METRICS",
@@ -62,7 +62,8 @@ export const SIDEBAR_COMMAND_TYPES = [
   "CMD_LAUNCH_PIPELINE",
   "CMD_LAUNCH_WORKFLOW",
   "CMD_CONTINUE_WORKFLOW",
-  "CMD_SET_UNCONTAINED_BACKEND_GRANT"
+  "CMD_SET_UNCONTAINED_BACKEND_GRANT",
+  "CMD_SET_QUEUE_FAILURE_POLICY"
 ] as const;
 
 export const HOST_MESSAGE_TYPES = [
@@ -142,6 +143,7 @@ export const AUDIT_EVENT_TYPES = [
   "multi-root.warning-shown",
   "trust.capability-denied",
   "queue-cleared-all",
+  "queue-cleared",
   "workspace-state-reset",
   "scheduled-start-armed",
   "scheduled-start-fired",
@@ -218,6 +220,7 @@ export const SETTINGS_KEYS = [
   "schegent.loop.maxIterations",
   "schegent.models",
   "schegent.multiRoot.suppressWarning",
+  "schegent.queue.haltOnTaskFailure",
   "schegent.retry.forceContinueOnCap",
   "schegent.retry.maxAttempts",
   "schegent.spend.maxTokensPerRun",

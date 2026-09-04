@@ -36,6 +36,7 @@ import { wirePhaseExecution } from './activation/phase-execution-wiring';
 import { createStage2Producers, type Stage2Producers } from './activation/stage2-producers';
 import { wireTrustGrant } from './activation/trust-grant-wiring';
 import { closeStage2Resources } from './activation/stage2-teardown';
+import type { QueueFailurePolicy } from './contracts/queue-failure-policy';
 
 /**
  * FR-R3-136 (FR-005) — the one live read of Workspace Trust in this file, and a
@@ -453,6 +454,14 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       // claimed them.
       executionLease: executionLeases,
       startFailures: queueStartFailures,
+      // Feature 195 (T016, FR-001, FR-018) — the workspace default, read per
+      // drain attempt on the same terms as `getForceContinueOnRetryCap` just
+      // below: never cached at activation, so a mid-session change reaches
+      // the next attempt to start work on a queue without a reload.
+      getQueueFailurePolicyDefault: () =>
+        vscode.workspace
+          .getConfiguration('schegent', vscode.Uri.file(workspaceRoot))
+          .get<QueueFailurePolicy>('queue.haltOnTaskFailure', 'halt-on-failure'),
       ...runSafety,
       getRetryCap: () => {
         // Feature 056 Track 4 (FR-023..FR-026) — the configured retry
@@ -610,9 +619,10 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     getCatalog: () => catalogSession.catalog,
     controller,
     queue,
-    lock,
+    lock, executionLease: executionLeases, // FR-R3-150 — direct per-queue lease release (D5).
     historyStore,
-    getWorkspaceFolders: () => vscode.workspace.workspaceFolders
+    getWorkspaceFolders: () => vscode.workspace.workspaceFolders,
+    queueStartFailures
   });
   phaseLogTail.bindDashboardBridge(uiWiring.dashboardBridge);
   output.log(`activated; cli=${cliPath}, cap=${iterationCap}, pollIntervalMin=${pollIntervalMinutes}`);

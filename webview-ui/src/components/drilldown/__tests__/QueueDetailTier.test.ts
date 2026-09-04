@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import QueueDetailTier from '../QueueDetailTier.svelte';
 import {
   CMD_ACK,
-  CMD_CLEAR_ALL,
+  CMD_CLEAR_QUEUE,
   CMD_CLEAR_COMPLETED,
   CMD_DELETE_QUEUE,
   CMD_MOVE_QUEUE_ITEM_DOWN,
@@ -76,17 +76,26 @@ function task(id: string, overrides: Partial<QueueItem> = {}): QueueItem {
   };
 }
 
-function summary(id: string, name: string, position: number): QueueSummary {
+function summary(
+  id: string,
+  name: string,
+  position: number,
+  schedule: QueueSummary['schedule'] = null
+): QueueSummary {
   // Feature 097 (T012) removed the registry-schedule UI (Mechanism B); the
-  // wire field stays mandatory but dormant — always null here.
+  // wire field stays mandatory but dormant — null in every case but the
+  // LC-Q-05 one below that needs an armed schedule to prove the Clean All
+  // gate accounts for it.
   return {
     id,
     name,
     position,
     state: 'active',
     pauseSource: null,
-    schedule: null,
-    taskCount: 0
+    schedule,
+    taskCount: 0,
+    failurePolicy: 'halt-on-failure',
+    failurePolicyOverride: null
   };
 }
 
@@ -129,8 +138,18 @@ function buildSnapshot(
       readonly name: string;
       readonly phases: readonly string[];
     }[];
+    /**
+     * FR-R3-150 (T1622) — Default's own Tasks, for the handful of cases that
+     * mount this tier on `default` itself and need something on it to clean.
+     * Defaults to the single unrelated pending Task every other case's
+     * sibling-isolation assertions read as "not mine".
+     */
+    readonly defaultTasks?: readonly QueueItem[];
+    /** Code-review finding (LC-Q-05) — `q-beta`'s armed scheduled start, if any. */
+    readonly betaSchedule?: QueueSummary['schedule'];
   } = {}
 ): WorkflowSnapshot {
+  const defaultTasks = overrides.defaultTasks ?? [task('other-queue-task', { position: 0, label: 'not mine' })];
   return Object.freeze({
     schemaVersion: 4,
     isPrimary: true,
@@ -140,7 +159,8 @@ function buildSnapshot(
         name: 'Default',
         position: 0,
         lifecycle: 'running',
-        tasks: [task('other-queue-task', { position: 0, label: 'not mine' })]
+        pendingCount: defaultTasks.filter((item) => item.status === 'pending').length,
+        tasks: defaultTasks
       }),
       buildQueueRuntime({
         queueId: 'q-beta',
@@ -157,10 +177,10 @@ function buildSnapshot(
       inFlight: null,
       pending: Object.freeze([]),
       recent: Object.freeze([]),
-      orderedItems: Object.freeze([task('other-queue-task', { label: 'not mine' })]),
+      orderedItems: Object.freeze(defaultTasks),
       queues: Object.freeze([
         summary('default', 'Default', 0),
-        summary('q-beta', 'nightly', 1)
+        summary('q-beta', 'nightly', 1, overrides.betaSchedule ?? null)
       ]),
       paused: false
     }),
@@ -284,7 +304,15 @@ describe('QueueDetailTier — this queue’s work (FR-057)', () => {
     expect(throughput).toMatch(/1\s*failed/i);
   });
 
-  it('pauses THIS queue, not the workspace default', async () => {
+  // FR-R3-154 (T044) — renamed from "pauses THIS queue, not the workspace
+  // default". The assertion is a dispatch check: it reads `postCommandSpy` and
+  // never reads an ACK, so nothing here observes the queue being paused. The
+  // old name claimed the outcome, which is the class of stale test-name this
+  // feature closes. Replacing the assertion with an outcome-based one is
+  // `FR-R3-150`'s scope (it owns the queue-addressed control surface), so this
+  // is the relabel alternative FR-012 allows: the name now states exactly what
+  // the body verifies, and the gap stays visible instead of reading as covered.
+  it('dispatches CMD_PAUSE_QUEUE naming this queue, not the workspace default', async () => {
     const { getByTestId } = mount(
       buildSnapshot([task('live', { status: 'in-flight' })], {
         inFlightRun: buildInFlightRun({ runId: 'live' })
@@ -300,7 +328,11 @@ describe('QueueDetailTier — this queue’s work (FR-057)', () => {
   // handlers through this tier's own `queueId`, not `Dashboard.svelte`'s
   // removed optional-`queueId` branch. Pause is covered above; these three
   // cover the remaining handlers the mount wires up.
-  it('resumes THIS queue when it is paused', async () => {
+  // FR-R3-154 (T044) — renamed from "resumes THIS queue when it is paused",
+  // for the reason given on the pause case above. The `operator-paused`
+  // snapshot is a precondition for the button being rendered as Resume, not
+  // evidence that the resume took effect.
+  it('dispatches CMD_RESUME_QUEUE naming this queue while it is paused', async () => {
     const { getByTestId } = mount(
       buildSnapshot([task('waiting', { position: 0, status: 'pending' })], {
         lifecycle: 'operator-paused'
@@ -319,7 +351,20 @@ describe('QueueDetailTier — this queue’s work (FR-057)', () => {
 
     await fireEvent.click(getByTestId('dashboard-queue-clear-done'));
 
-    expect(postCommandSpy).toHaveBeenCalledWith(CMD_CLEAR_COMPLETED);
+    // FR-R3-150 (T1621b) — addressed to this tier's own queue, not the
+    // bare command envelope that used to (silently) mean Default.
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_CLEAR_COMPLETED, { queueId: 'q-beta' });
+  });
+
+  it('clears Default’s completed Tasks when Default is the queue on screen', async () => {
+    const { getByTestId } = mount(
+      buildSnapshot([], { defaultTasks: [task('done', { status: 'completed' })] }),
+      { queueId: 'default' }
+    );
+
+    await fireEvent.click(getByTestId('dashboard-queue-clear-done'));
+
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_CLEAR_COMPLETED, { queueId: 'default' });
   });
 
   it('cleans all of THIS queue’s finished and pending Tasks', async () => {
@@ -329,7 +374,53 @@ describe('QueueDetailTier — this queue’s work (FR-057)', () => {
 
     await fireEvent.click(getByTestId('dashboard-queue-clean'));
 
-    expect(postCommandSpy).toHaveBeenCalledWith(CMD_CLEAR_ALL);
+    // FR-R3-150 (T1618/T1622d) — CMD_CLEAR_QUEUE, addressed to this tier's
+    // own queue. Replaces the bare CMD_CLEAR_ALL envelope, which reset every
+    // queue in the workspace regardless of which one was open (LC-Q-01).
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_CLEAR_QUEUE, { queueId: 'q-beta' });
+  });
+
+  it('cleans Default when Default is the queue on screen', async () => {
+    const { getByTestId } = mount(
+      buildSnapshot([], { defaultTasks: [task('done', { status: 'completed' })] }),
+      { queueId: 'default' }
+    );
+
+    await fireEvent.click(getByTestId('dashboard-queue-clean'));
+
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_CLEAR_QUEUE, { queueId: 'default' });
+  });
+
+  // Code-review finding (iteration 4, FR-011) — CMD_CLEAR_QUEUE/
+  // CMD_CLEAR_COMPLETED were posted fire-and-forget: nothing on this tier
+  // listened for the ack, so an `unknown-queue-id` refusal (the queue was
+  // deleted from another window between opening the confirmation and
+  // confirming it) reached no one. Both now surface on the same shared
+  // refusal line `deleteThisQueue`'s refusals already use.
+  it('surfaces a Clean All refusal on the shared refusal line', async () => {
+    const { getByTestId } = mount(
+      buildSnapshot([task('done', { position: 0, status: 'completed' })])
+    );
+
+    await fireEvent.click(getByTestId('dashboard-queue-clean'));
+    ack(0, 'rejected', 'unknown-queue-id');
+
+    await vi.waitFor(() =>
+      expect(getByTestId('queue-control-refusal').textContent).toMatch(/no longer exists/i)
+    );
+  });
+
+  it('surfaces a Clear Done refusal on the shared refusal line', async () => {
+    const { getByTestId } = mount(
+      buildSnapshot([task('done', { position: 0, status: 'completed' })])
+    );
+
+    await fireEvent.click(getByTestId('dashboard-queue-clear-done'));
+    ack(0, 'rejected', 'unknown-queue-id');
+
+    await vi.waitFor(() =>
+      expect(getByTestId('queue-control-refusal').textContent).toMatch(/no longer exists/i)
+    );
   });
 
   it('disables Clear Done when this queue has no completed Tasks', () => {
@@ -372,6 +463,21 @@ describe('QueueDetailTier — this queue’s work (FR-057)', () => {
 
   it('enables Clean All when this queue is paused, even with an otherwise empty queue', () => {
     const { getByTestId } = mount(buildSnapshot([], { lifecycle: 'operator-paused' }));
+
+    expect((getByTestId('dashboard-queue-clean') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  // Code-review finding (LC-Q-05) — an armed scheduled start is itself
+  // something Clean All clears (`QueueManager.clearQueue` reports
+  // `wasNoop: false` for exactly this state); the gate used to only check
+  // tasks/run/pause and left this queue permanently unreachable via the button.
+  it('enables Clean All when this queue’s only leftover state is an armed schedule (LC-Q-05)', () => {
+    const { getByTestId } = mount(
+      buildSnapshot([], {
+        lifecycle: 'idle-pending',
+        betaSchedule: { expression: 'in 30m', kind: 'relative', targetAt: '2026-08-12T00:30:00.000Z' }
+      })
+    );
 
     expect((getByTestId('dashboard-queue-clean') as HTMLButtonElement).disabled).toBe(false);
   });
@@ -1186,6 +1292,7 @@ describe('QueueDetailTier — a Run that has ended is not a Run in flight', () =
 // is worth a case that reads `q-beta` and would fail on a default-queue read.
 describe('QueueDetailTier — a failed start on this queue', () => {
   const FAILURE = Object.freeze({
+    kind: 'admission' as const,
     admission: 'admitResume' as const,
     at: '2026-08-12T00:00:00.000Z',
     summary: 'the backend refused the run'

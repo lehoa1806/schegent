@@ -1,6 +1,6 @@
 # Command Palette reference
 
-This is the manifest-parity index for every command Schegent contributes to the VS Code Command Palette. The full boundary contract—including accepted arguments, eight registered-only command IDs, all 61 webview messages, guards, and backend argv—is in [API and command reference](api-and-cli.md).
+This is the manifest-parity index for every command Schegent contributes to the VS Code Command Palette. The full boundary contract—including accepted arguments, nine registered-only command IDs, all 61 webview messages, guards, and backend argv—is in [API and command reference](api-and-cli.md).
 
 <!-- Source: package.json -->
 <!-- Source: src/activation/ui-wiring.ts -->
@@ -21,7 +21,7 @@ This is the manifest-parity index for every command Schegent contributes to the 
 | `schegent.retryQueuedItem` | Schegent: Retry Queued Item | Retry the addressed queued item. | <!-- Source: package.json --><!-- Source: src/commands/queue-ops.ts --> |
 | `schegent.moveQueuedItemUp` | Schegent: Move Queued Item Up | Move the addressed pending item one position up. | <!-- Source: package.json --><!-- Source: src/commands/queue-ops.ts --> |
 | `schegent.moveQueuedItemDown` | Schegent: Move Queued Item Down | Move the addressed pending item one position down. | <!-- Source: package.json --><!-- Source: src/commands/queue-ops.ts --> |
-| `schegent.clearCompleted` | Schegent: Clear Completed Queue Items | Remove completed queue items. | <!-- Source: package.json --><!-- Source: src/commands/queue-ops.ts --> |
+| `schegent.clearCompleted` | Schegent: Clear Completed Queue Items | Remove the default queue's completed items. `CMD_CLEAR_COMPLETED`, the sidebar's own route to the same capability, addresses whichever queue is open instead (FR-R3-150). | <!-- Source: package.json --><!-- Source: src/commands/queue-ops.ts --> |
 | `schegent.clearFailed` | Schegent: Clear Failed Queue Items | Remove failed queue items. | <!-- Source: package.json --><!-- Source: src/commands/queue-ops.ts --> |
 | `schegent.rerunFromHistory` | Schegent: Rerun From History | Enqueue a new run from an eligible history entry. | <!-- Source: package.json --><!-- Source: src/commands/rerun-from-history.ts --> |
 | `schegent.showActiveRun` | Schegent: Show Active Run | Reveal the Schegent Activity Bar and announce the selected Run. | <!-- Source: package.json --><!-- Source: src/commands/show-active-run.ts --> |

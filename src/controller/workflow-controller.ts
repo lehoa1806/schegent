@@ -5,7 +5,7 @@ import type { SchegentStatusBar } from '../ui/status-bar';
 import type { Notifier } from '../ui/notifications';
 import type { SanitizedLogger } from '../lib/logger';
 import type { WorkspaceLockManager } from '../state/lock';
-import { RunSessionRegistry, type RunSession } from './run-session';
+import { RunSessionRegistry } from './run-session';
 import { resolveControlTarget } from './sole-run-resolver';
 import { shouldContinueConversation, clearedPauseFieldsOnResume } from './resume-pause-fields';
 import type { SanitizedError, WorkflowRun } from '../state/workflow-run';
@@ -18,6 +18,7 @@ import type { HistoryStore } from '../state/history-store';
 import { createHistoryRecorder, type HistoryRecorder } from '../services/history-recorder';
 import { AutoDrainCoordinator } from '../services/auto-drain-coordinator';
 import type { ExecutionLeasePort, QueueStartFailurePort } from '../services/auto-drain-coordinator';
+import type { QueueFailurePolicy } from '../contracts/queue-failure-policy';
 import { releaseExecutionLeaseForTerminalRun } from '../services/execution-lease-release';
 import { ExecutionLeaseManager } from '../state/execution-lease';
 import { EMPTY_CATALOG, type PipelineCatalog } from '../config/pipeline-config';
@@ -112,6 +113,8 @@ export interface WorkflowControllerDeps {
   executionLease?: ExecutionLeasePort;
   /** Feature 187 — the drain's report channel; see `QueueStartFailurePort`. */
   startFailures?: QueueStartFailurePort | null;
+  /** Feature 195 (FR-001) — read per drain attempt, like `getForceContinueOnRetryCap`. Absent falls back to `'halt-on-failure'`. */
+  getQueueFailurePolicyDefault?: () => QueueFailurePolicy;
 }
 
 export interface StartNewOptions {
@@ -233,6 +236,9 @@ export class SchegentWorkflowController {
       // happens once, here, at the seam.
       auditWriter: auditWriter ? { append: (e) => auditWriter.append(e as never) } : null,
       startFailures: deps.startFailures ?? null,
+      failurePolicyDefault: {
+        resolve: () => deps.getQueueFailurePolicyDefault?.() ?? 'halt-on-failure'
+      },
       logger
     });
     this.retryCoordinator = new RetryCoordinator({
@@ -298,7 +304,7 @@ export class SchegentWorkflowController {
       // seams. Every call site in the service already had its `queueId` in hand,
       // so what changed is that the answer now comes from that queue's session
       // instead of from the window's one driver.
-      isDriving: (queueId) => this.sessions.peek(queueId)?.driver.running === true,
+      isDriving: this.isDriving.bind(this), // bound, not re-wrapped — see the method below
       noteActivePhaseOverrideAbort: (queueId, runId, phaseId) =>
         this.sessions.peek(queueId)?.driver.noteActivePhaseOverrideAbort(runId, phaseId),
       armIsContinue: (queueId) => this.sessions.acquire(queueId).isContinueGate.arm(),
@@ -401,10 +407,9 @@ export class SchegentWorkflowController {
   }
 
   /**
-   * Feature 093 (T042) — window-scoped: is *any* session driving? This is the
-   * C-4 aggregate shape SC-012 exempts, and it is what the two remaining
-   * consumers actually mean — drain step 4b ("is this window busy?", deleted by
-   * T081) and Clean All's runner-ack probe ("has everything stopped?").
+   * Feature 093 (T042) — window-scoped: is *any* session driving? The C-4 aggregate shape SC-012
+   * exempts, and what its one consumer means: workspace-wide Clean All's probe. Addressed sibling:
+   * `isDriving` below (FR-R3-150 T1620); `runner-ack-shared.ts` says why neither substitutes.
    */
   public get running(): boolean {
     return this.sessions.all().some((session) => session.driver.running);
@@ -434,10 +439,11 @@ export class SchegentWorkflowController {
    * `deleteTask`, the phase controls — name their queue.
    */
   public cancelActive(queueId?: string): void {
-    const targets: readonly (RunSession | null)[] =
-      queueId === undefined ? this.sessions.all() : [this.sessions.peek(queueId)];
+    const targets = queueId === undefined ? this.sessions.all() : [this.sessions.peek(queueId)];
     for (const session of targets) session?.driver.cancelActive();
   }
+
+  public isDriving(queueId: string): boolean { return this.sessions.peek(queueId)?.driver.running === true; } // FR-R3-150 (T1620) — see queue-runner-ack.ts
 
   /**
    * FR-R3-103 (FR-046, FR-047) — this window lost the execution fence, so every child it is
@@ -693,14 +699,36 @@ export class SchegentWorkflowController {
    * for the resumed Run to finish.
    */
   public async admitResume(queueId: string, customPrompt?: string): Promise<ResumeAdmission> {
+    let admission: ResumeAdmission = NOT_RESUMED;
     try {
-      return await this.resumeExistingOnQueue(queueId, customPrompt);
+      admission = await this.resumeExistingOnQueue(queueId, customPrompt);
+      return admission;
     } finally {
       // Feature 093 (T044) — every early return below leaves without driving,
       // and an entry point may already have armed this queue's gate (which
       // creates the session). Without this the refused resume would strand a
       // session holding a cap slot for a Run that never started.
-      this.sessions.disposeIfEnded(queueId);
+      //
+      // Code-review finding — scoped to the refusal, and disarming first.
+      //
+      //   - SCOPED, because it also ran on the admitted path, where the drive is
+      //     only just scheduled: `guardedDrive` returns a promise and the driver
+      //     has not flipped `running` yet, so for a Run whose persisted status
+      //     is terminal (a `failed` Run being retried is admitted here — only
+      //     `completed`/`canceled` are refused) this disposed the session of the
+      //     Run it had just admitted, taking the armed gate with it.
+      //   - DISARMING FIRST, because disposal was the only thing clearing a
+      //     stale arm, and it does not fire on the common refusal: a `paused`
+      //     Run is non-terminal, so a declined consent left the bit set and the
+      //     queue's next drive — possibly a brand-new Task from `admitNew` —
+      //     consumed a `true` armed for a different conversation entirely.
+      //     `disposeIfEnded` now refuses an armed session outright, so saying
+      //     "this continuation is spent" here is also what keeps the cap slot
+      //     from being stranded by the refusal.
+      if (!admission.resumed) {
+        this.sessions.peek(queueId)?.isContinueGate.disarm();
+        this.sessions.disposeIfEnded(queueId);
+      }
     }
   }
 
@@ -1011,8 +1039,32 @@ export class SchegentWorkflowController {
     // can still have been replaced (`deleteTask` cancels and the drain starts the
     // next Task) while the aborting driver is mid-flight. Dropping the check
     // would merge that successor's `phaseOverrides` into this Run's write.
-    const queueId = this.queue.queueIdForTask(next.featureId);
-    const latest = this.store.getRun(queueId);
+    //
+    // Code-review finding — resolved from the RUN first, and never from
+    // `queueIdForTask`, whose own docstring says why: it "falls back to the
+    // reserved queue when the Task row is gone", which "is safe for a mutation
+    // that then finds nothing" but not for a write. This is a write, and its
+    // sibling commit point in `terminal-transition-coordinator.ts` already says
+    // the same thing in the same words.
+    //
+    // The Task row IS gone here on a live path. `QueueManager.clearQueue` empties
+    // `requests` and deletes the Run record BEFORE it runs the runner-ack probe
+    // that cancels the driver, so the `canceled` transition the driver then
+    // persists resolved to `DEFAULT_QUEUE_ID` and stamped a foreign, terminal Run
+    // over whatever the default queue held in flight — while the compensating
+    // re-clear afterwards clears only the queue being cleaned, so the corruption
+    // stayed. Cleaning a non-default queue could therefore kill the default
+    // queue's unrelated Run.
+    //
+    // Order: the Run's own record (exact — run ids are `randomUUID()`, so
+    // `findRunById` matches at most one queue), then the Task row if it still
+    // exists (the successor case above, where no record carries this id and the
+    // merge is correctly skipped), then nothing. Writing nothing is the honest
+    // outcome when neither exists: there is no record to advance, and the
+    // terminal intent is still journalled below for activation to replay.
+    const located = this.store.findRunById(next.id);
+    const queueId = located?.queueId ?? this.queue.queueIdForExistingTask(next.featureId);
+    const latest = located?.run ?? (queueId !== null ? this.store.getRun(queueId) : null);
     const merged =
       latest?.id === next.id
         ? {
@@ -1033,6 +1085,7 @@ export class SchegentWorkflowController {
           }
         : next;
     await this.terminalTransitions?.begin(merged);
+    if (queueId === null) return merged;
     await this.store.setRun(queueId, merged, this.store.runCommitClaim(queueId));
     return merged;
   }

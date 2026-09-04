@@ -73,7 +73,7 @@
           "CMD_SET_PHASE_BREAKPOINT",
           "CMD_CLEAR_PHASE_BREAKPOINT",
           "CMD_START_QUEUE",
-          "CMD_CLEAR_ALL",
+          "CMD_CLEAR_QUEUE",
           "CMD_SET_CONFIRM_SUPPRESSION",
           "CMD_DISMISS_MIGRATION_NOTICE",
           "CMD_READ_METRICS",
@@ -83,7 +83,8 @@
           "CMD_LAUNCH_PIPELINE",
           "CMD_LAUNCH_WORKFLOW",
           "CMD_CONTINUE_WORKFLOW",
-          "CMD_SET_UNCONTAINED_BACKEND_GRANT"
+          "CMD_SET_UNCONTAINED_BACKEND_GRANT",
+          "CMD_SET_QUEUE_FAILURE_POLICY"
         ]
       },
       "uniqueItems": true

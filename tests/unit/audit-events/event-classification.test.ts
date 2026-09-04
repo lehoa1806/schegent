@@ -107,6 +107,9 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   'trust.capability-denied': 'system',
   // Queue full reset (system)
   'queue-cleared-all': 'system',
+  // FR-R3-150 (T1620) — queue-scoped Clean All (system), same reasoning as
+  // queue-cleared-all above.
+  'queue-cleared': 'system',
   // Feature FR-R3-006 — the workspace-state reset transaction (system). Its
   // subject is the whole workspace state rather than any one Run, and it carries
   // no runId, so there is nothing for the Activity Feed to attach it to.
@@ -341,6 +344,7 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'multi-root.warning-shown':
         case 'trust.capability-denied':
         case 'queue-cleared-all':
+        case 'queue-cleared': // FR-R3-150 (T1620)
         case 'workspace-state-reset':
         case 'scheduled-start-armed':
         case 'scheduled-start-fired':

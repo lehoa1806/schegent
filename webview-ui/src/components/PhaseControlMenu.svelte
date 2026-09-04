@@ -17,7 +17,9 @@
     type DeleteConfirmationCopy,
     type DeleteConfirmationStatus
   } from '../lib/deletion-confirmation';
+  import { phaseControlEligibility } from '../lib/phase-control-eligibility';
   import { useConfirm } from '../lib/use-confirm';
+  import { correlatedLifecycle, lifecycleMessage } from '../lib/lifecycle-control-ipc';
   import { postCommand } from '../lib/vscode-api';
   import { CMD_RETRY_PHASE_NOW } from '../lib/messages';
   import type { PhaseName, PhaseTile } from '../lib/snapshot-types';
@@ -112,69 +114,31 @@
     onRequestConfirm
   }: Props = $props();
 
-  const hasActivePhase = $derived(currentPhase !== null);
-  const isManuallyPaused = $derived(manualPauseAt !== null);
   /**
-   * The conjunct every `queueId`-addressed, active-phase control shares
-   * (Pause/Resume/Restart/Skip/Retry-now), spelled once rather than repeated
-   * per control — the off-target defect was in part a shape where each
-   * control restated its own precondition, so a missing conjunct was
-   * invisible.
+   * Every "may this control be clicked" question, answered in one place.
+   *
+   * The predicates and their rationale live in
+   * `lib/phase-control-eligibility.ts`: they are a pure function of these
+   * props, and FR-R3-154's ACK reporting took this component past the
+   * 500-line component budget, which is the seam that budget exists to find.
+   * Reading them through one `$derived` also means the off-target guard is
+   * applied by construction rather than restated per control — the shape the
+   * off-target defect hid in.
    */
-  const canControlRun = $derived(isPrimary && targetsSubjectRun && hasActivePhase);
-  const pauseDisabled = $derived(!canControlRun || isManuallyPaused);
-  const resumeDisabled = $derived(!canControlRun || !isManuallyPaused);
-  const restartDisabled = $derived(!canControlRun);
-  const skipDisabled = $derived(!canControlRun);
-  /**
-   * Shares `canControlRun` with its siblings rather than restating it. The
-   * off-target conjunct is the load-bearing one: `isWaitingRetry` is read off
-   * the displayed surface while `CMD_RETRY_PHASE_NOW` is addressed by `queueId`
-   * alone, so without it a countdown shown for one Task would shortcut the
-   * backoff of whichever Run the queue happens to be executing.
-   */
-  const retryNowDisabled = $derived(!canControlRun);
-
-  /**
-   * FR-R3-151 (FR-010) — Disable and Enable are queue-addressed the same way
-   * Pause/Resume/Restart/Skip are (both post `queueId`), so they share the
-   * same `isPrimary && targetsSubjectRun` off-target guard those controls
-   * do — but they target the operator's *selected* tile, not the Run's
-   * active Phase, so the third conjunct is `selectedPhase !== null` rather
-   * than `hasActivePhase`. A `null` selection disables the control; it does
-   * NOT fall back to `currentPhase` (that fallback was the defect this
-   * feature closes).
-   */
-  const canControlSelected = $derived(isPrimary && targetsSubjectRun && selectedPhase !== null);
-  // FR-R3-151 (FR-005) — mirrors `decidePhaseControl`'s 'disable' branch:
-  // eligible only when the selection is still future. `not-started` is the
-  // projector's (T014) exact spelling of that same test.
-  const disableDisabled = $derived(!canControlSelected || selectedPhaseState !== 'not-started');
-  // The button-label toggle below still asks "any override" — Enable is
-  // still the right label for a `skipped` selection too, and
-  // `showSetBreakpoint` wants "any override" as well; `enableDisabled` below
-  // is the one that must be precise about which override.
-  const selectedHasOverride = $derived(
-    selectedPhase !== null && phaseOverrides.some((override) => override.phaseId === selectedPhase)
+  const gate = $derived(
+    phaseControlEligibility({
+      isPrimary,
+      targetsSubjectRun,
+      currentPhase,
+      activeTaskId,
+      activeRunId,
+      manualPauseAt,
+      selectedPhase,
+      selectedPhaseState,
+      phaseOverrides,
+      phaseBreakpoints
+    })
   );
-  // FR-R3-151 (FR-006) — mirrors `decidePhaseControl`'s 'enable' branch:
-  // eligible only when future AND disabled-overridden. `disabled` is the
-  // projector's exact spelling of both at once, closing the earlier "any
-  // override" check that left Enable clickable — and silently refused —
-  // for a stale `skipped` override.
-  const enableDisabled = $derived(!canControlSelected || selectedPhaseState !== 'disabled');
-  /**
-   * Delete is deliberately NOT gated on `targetsSubjectRun`, and it is the one
-   * control that is not: it posts `removeTaskPhase(activeTaskId, selectedPhase)`
-   * — a Task id and a phase drawn from the *displayed* set, both of which
-   * describe the surface's own subject, and `removeTaskPhase` resolves its own
-   * queue from the Task id rather than taking one, so there is no off-target
-   * Run to guard against the way there is for `queueId`-addressed controls.
-   * The bug report proposed conjoining the guard into every `*Disabled`; that
-   * over-applies, and this is the exception. FR-R3-151 (FR-010) moves its
-   * target from `currentPhase` to `selectedPhase`, unchanged otherwise.
-   */
-  const deleteDisabled = $derived(!isPrimary || selectedPhase === null || activeTaskId === null);
 
   /**
    * Why a control is greyed out, when the reason is the address rather than the
@@ -188,46 +152,15 @@
     return targetsSubjectRun ? base : OFF_TARGET_TITLE;
   }
 
-  // Feature 028 US3 — breakpoint action visibility.
-  // "Pause when reached" surfaces when:
-  //   - the operator is on the primary host (gates mutation IPC),
-  //   - a phase tile is selected that is pending (not active/completed/disabled),
-  //   - the selected phase has no skip/disable/remove override,
-  //   - the selected phase has no breakpoint already armed,
-  //   - the active run id is known so the IPC can target it.
-  // (`selectedHasOverride` above already answers the second bullet.)
-  const selectedHasBreakpoint = $derived(
-    selectedPhase !== null &&
-      phaseBreakpoints.some((bp) => bp.phaseId === selectedPhase)
-  );
-  const selectedIsPending = $derived(
-    selectedPhase !== null && selectedPhaseState === 'not-started'
-  );
-  //   - Off-target — the surface's subject is the Run `activeRunId` names. Both
-  //     breakpoint actions post `activeRunId` (the executing Run) together with
-  //     `selectedPhase` (a tile from the displayed set), so on a mismatched
-  //     surface they arm a breakpoint on one Run at a phase named by another.
-  //     Hidden rather than disabled, matching how they already behave when
-  //     there is no pending phase to arm.
-  const showSetBreakpoint = $derived(
-    isPrimary &&
-      targetsSubjectRun &&
-      activeRunId !== null &&
-      selectedIsPending &&
-      !selectedHasOverride &&
-      !selectedHasBreakpoint
-  );
-  const showClearBreakpoint = $derived(
-    isPrimary && targetsSubjectRun && activeRunId !== null && selectedHasBreakpoint
-  );
-
   function onSetBreakpoint(): void {
-    if (!showSetBreakpoint || activeRunId === null || selectedPhase === null) return;
+    if (!gate.showSetBreakpoint || activeRunId === null || selectedPhase === null) return;
+    controlMessage = null;
     void setPhaseBreakpoint(activeRunId, selectedPhase, queueId);
   }
 
   function onClearBreakpoint(): void {
-    if (!showClearBreakpoint || activeRunId === null || selectedPhase === null) return;
+    if (!gate.showClearBreakpoint || activeRunId === null || selectedPhase === null) return;
+    controlMessage = null;
     void clearPhaseBreakpoint(activeRunId, selectedPhase, queueId);
   }
 
@@ -235,26 +168,50 @@
     return disabled ? 'true' : 'false';
   }
 
-  function onPause(): void {
-    if (pauseDisabled) return;
-    pausePhase(queueId);
+  // FR-R3-154 (T1646) — what the host answered about the last control, as one
+  // sentence, or `null` when it committed. Same shape and same `role="alert"`
+  // treatment as `QueueDetailTier`'s refusal line, so a refused Pause reads the
+  // way a refused Clear already does. Cleared before each dispatch: a stale
+  // sentence beside a control that has since succeeded is its own lie.
+  //
+  // Code-review finding (iteration 5) — "each dispatch" now means each, which
+  // it did not. Only the four controls that can WRITE this line cleared it, so
+  // the six that cannot — Skip, Disable, Enable, Delete, and the two
+  // breakpoint actions — left the previous control's answer standing. A Pause
+  // refused `run-already-paused` followed by a Disable that committed rendered
+  // "This Run is already paused." in a `role="alert"` beside the control that
+  // had just worked, attributing one control's refusal to another's success.
+  // Every dispatch below therefore clears it, whether or not it can set it.
+  let controlMessage = $state<string | null>(null);
+
+  async function onPause(): Promise<void> {
+    if (gate.pauseDisabled) return;
+    controlMessage = null;
+    controlMessage = lifecycleMessage(await pausePhase(queueId));
   }
 
   let resumePromptStr = $state('');
 
-  function onResume(): void {
-    if (resumeDisabled) return;
-    resumePhase(queueId, resumePromptStr.trim() || undefined);
+  async function onResume(): Promise<void> {
+    if (gate.resumeDisabled) return;
+    controlMessage = null;
+    // Captured before the `await`: `$props()` bindings are live, and the input
+    // is cleared as soon as the post goes out so the operator is not left
+    // looking at a prompt that has already been sent.
+    const prompt = resumePromptStr.trim() || undefined;
     resumePromptStr = '';
+    controlMessage = lifecycleMessage(await resumePhase(queueId, prompt));
   }
 
-  function onRestart(): void {
-    if (restartDisabled || currentPhase === null) return;
-    restartPhase(currentPhase, queueId);
+  async function onRestart(): Promise<void> {
+    if (gate.restartDisabled || currentPhase === null) return;
+    controlMessage = null;
+    const targetPhase = currentPhase; // live-binding capture, as in `onSkip`
+    controlMessage = lifecycleMessage(await restartPhase(targetPhase, queueId));
   }
 
   async function onSkip(event: MouseEvent): Promise<void> {
-    if (skipDisabled || currentPhase === null) return;
+    if (gate.skipDisabled || currentPhase === null) return;
     // `$props()` bindings are live: capture before the confirm's `await`, so
     // Confirm dispatches what the dialog named, not whatever is current later.
     const targetPhase = currentPhase;
@@ -264,6 +221,10 @@
       context: { phaseName: targetPhase }
     });
     if (!confirmed) return;
+    // Cleared here rather than before the confirm: a cancelled dialog is not a
+    // dispatch, and wiping the previous answer for it would hide a refusal the
+    // operator had not finished reading.
+    controlMessage = null;
     skipPhase(targetPhase, targetQueueId);
   }
 
@@ -274,25 +235,37 @@
    * That module records the reason; this is the scope it was waiting for.
    */
   async function onRetryNow(event: MouseEvent): Promise<void> {
-    if (retryNowDisabled || !isWaitingRetry || currentPhase === null) return;
+    if (gate.retryNowDisabled || !isWaitingRetry || currentPhase === null) return;
     const targetQueueId = queueId; // live-binding capture, as in `onSkip`
     const confirmed = await useConfirm('run.retry-phase-now', {
       originatingElement: event.currentTarget as HTMLElement,
       context: { phaseName: currentPhase }
     });
     if (!confirmed) return;
-    postCommand(CMD_RETRY_PHASE_NOW, { queueId: targetQueueId });
+    controlMessage = null;
+    // FR-R3-154 (T1646) — the `postCommand` stays in this scope, beside its
+    // `useConfirm`, exactly as the comment above requires; it is now passed to
+    // `correlatedLifecycle` as the `post` callback so the ACK is read instead
+    // of discarded. `no-active-run`, `not-pending-retry` and `already-retrying`
+    // are the three refusals this reached no listener for.
+    controlMessage = lifecycleMessage(
+      await correlatedLifecycle(
+        () => postCommand(CMD_RETRY_PHASE_NOW, { queueId: targetQueueId }).correlationId
+      )
+    );
   }
 
   // FR-R3-151 (FR-010) — Disable, Enable, and Delete all target
   // `selectedPhase`, the tile the operator selected, never `currentPhase`.
   function onDisable(): void {
-    if (disableDisabled || selectedPhase === null) return;
+    if (gate.disableDisabled || selectedPhase === null) return;
+    controlMessage = null;
     disablePhase(selectedPhase, queueId);
   }
 
   function onEnable(): void {
-    if (enableDisabled || selectedPhase === null) return;
+    if (gate.enableDisabled || selectedPhase === null) return;
+    controlMessage = null;
     enablePhase(selectedPhase, queueId);
   }
 
@@ -310,7 +283,7 @@
   }
 
   function onDelete(): void {
-    if (deleteDisabled || selectedPhase === null || activeTaskId === null) return;
+    if (gate.deleteDisabled || selectedPhase === null || activeTaskId === null) return;
     // Same live-binding hazard as `onSkip`, sharper here: `onConfirm` below
     // doesn't run until the operator acts on the dialog, by which a re-render
     // could change the selection/task. Capturing both ties Confirm to what
@@ -319,13 +292,18 @@
     const targetTaskId = activeTaskId;
     const copy = phaseDeleteConfirmation(targetPhase, toDeleteConfirmationStatus(selectedPhaseState));
     if (onRequestConfirm) {
-      onRequestConfirm(copy, () => removeTaskPhase(targetTaskId, targetPhase));
+      // Cleared inside the callback, for `onSkip`'s reason: the dispatch is the
+      // confirm, not the click.
+      onRequestConfirm(copy, () => {
+        controlMessage = null;
+        removeTaskPhase(targetTaskId, targetPhase);
+      });
     }
   }
 </script>
 
 <div class="phase-control-menu" data-testid="phase-control-menu">
-  {#if isManuallyPaused}
+  {#if gate.isManuallyPaused}
     <div class="resume-group">
       <input
         type="text"
@@ -339,7 +317,7 @@
         type="button"
         data-testid="phase-control-resume"
         aria-label="Resume active phase"
-        aria-disabled={aria(resumeDisabled)}
+        aria-disabled={aria(gate.resumeDisabled)}
         title={controlTitle('Resume active phase')}
         onclick={onResume}
       >Resume</button>
@@ -349,7 +327,7 @@
       type="button"
       data-testid="phase-control-pause"
       aria-label="Pause active phase"
-      aria-disabled={aria(pauseDisabled)}
+      aria-disabled={aria(gate.pauseDisabled)}
       title={controlTitle('Pause active phase')}
       onclick={onPause}
     >Pause</button>
@@ -359,7 +337,7 @@
       type="button"
       data-testid="phase-control-retry-now"
       aria-label="Retry the active phase now instead of waiting out the backoff"
-      aria-disabled={aria(retryNowDisabled)}
+      aria-disabled={aria(gate.retryNowDisabled)}
       title={controlTitle('Retry now instead of waiting out the backoff')}
       onclick={onRetryNow}
     >Retry now</button>
@@ -368,7 +346,7 @@
     type="button"
     data-testid="phase-control-restart"
     aria-label="Restart active phase"
-    aria-disabled={aria(restartDisabled)}
+    aria-disabled={aria(gate.restartDisabled)}
     title={controlTitle('Restart active phase')}
     onclick={onRestart}
   >Restart</button>
@@ -376,16 +354,16 @@
     type="button"
     data-testid="phase-control-skip"
     aria-label="Skip active phase"
-    aria-disabled={aria(skipDisabled)}
+    aria-disabled={aria(gate.skipDisabled)}
     title={controlTitle('Skip active phase')}
     onclick={onSkip}
   >Skip</button>
-  {#if selectedHasOverride}
+  {#if gate.selectedHasOverride}
     <button
       type="button"
       data-testid="phase-control-enable"
       aria-label="Enable selected phase"
-      aria-disabled={aria(enableDisabled)}
+      aria-disabled={aria(gate.enableDisabled)}
       title={controlTitle('Enable selected phase')}
       onclick={onEnable}
     >Enable</button>
@@ -394,7 +372,7 @@
       type="button"
       data-testid="phase-control-disable"
       aria-label="Disable selected phase"
-      aria-disabled={aria(disableDisabled)}
+      aria-disabled={aria(gate.disableDisabled)}
       title={controlTitle('Disable selected phase')}
       onclick={onDisable}
     >Disable</button>
@@ -404,11 +382,11 @@
     class="destructive"
     data-testid="phase-control-delete"
     aria-label="Delete selected phase from pipeline"
-    aria-disabled={aria(deleteDisabled)}
+    aria-disabled={aria(gate.deleteDisabled)}
     title="Remove the selected phase from this task's pipeline (requires confirmation)"
     onclick={onDelete}
   >Delete</button>
-  {#if showSetBreakpoint}
+  {#if gate.showSetBreakpoint}
     <button
       type="button"
       data-testid="phase-control-set-breakpoint"
@@ -417,7 +395,7 @@
       onclick={onSetBreakpoint}
     >Pause when reached</button>
   {/if}
-  {#if showClearBreakpoint}
+  {#if gate.showClearBreakpoint}
     <button
       type="button"
       data-testid="phase-control-clear-breakpoint"
@@ -425,6 +403,9 @@
       title="Cancel scheduled pause for this phase"
       onclick={onClearBreakpoint}
     >Cancel scheduled pause</button>
+  {/if}
+  {#if controlMessage !== null}
+    <p class="control-message" role="alert" data-testid="phase-control-message">{controlMessage}</p>
   {/if}
 </div>
 
@@ -434,6 +415,17 @@
     flex-wrap: wrap;
     gap: 4px;
     align-items: center;
+  }
+
+  /* FR-R3-154 (T1646) — takes the whole row rather than sitting between two
+     buttons: the menu is a wrapping flex row, so an inline sentence would
+     reflow the controls it is reporting on. Colour matches
+     `QueueDetailTier`'s `.refusal`. */
+  .control-message {
+    flex-basis: 100%;
+    margin: 2px 0 0;
+    font-size: 12px;
+    color: var(--vscode-errorForeground);
   }
 
   button {
