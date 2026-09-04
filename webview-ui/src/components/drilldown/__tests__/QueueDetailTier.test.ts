@@ -76,23 +76,20 @@ function task(id: string, overrides: Partial<QueueItem> = {}): QueueItem {
   };
 }
 
-function summary(
-  id: string,
-  name: string,
-  position: number,
-  schedule: QueueSummary['schedule'] = null
-): QueueSummary {
+function summary(id: string, name: string, position: number): QueueSummary {
   // Feature 097 (T012) removed the registry-schedule UI (Mechanism B); the
-  // wire field stays mandatory but dormant — null in every case but the
-  // LC-Q-05 one below that needs an armed schedule to prove the Clean All
-  // gate accounts for it.
+  // wire field stays mandatory but dormant, and is null in every case here.
+  // Nothing in `webview-ui/src` reads it any more. This helper used to take a
+  // `schedule` argument so the LC-Q-05 case below could arm one; that is what
+  // made LC-Q-05 vacuous, and the armed schedule it now sets is
+  // `QueueRuntime.scheduledStartAt` — see `betaScheduledStartAt` below.
   return {
     id,
     name,
     position,
     state: 'active',
     pauseSource: null,
-    schedule,
+    schedule: null,
     taskCount: 0,
     failurePolicy: 'halt-on-failure',
     failurePolicyOverride: null
@@ -145,8 +142,21 @@ function buildSnapshot(
      * sibling-isolation assertions read as "not mine".
      */
     readonly defaultTasks?: readonly QueueItem[];
-    /** Code-review finding (LC-Q-05) — `q-beta`'s armed scheduled start, if any. */
-    readonly betaSchedule?: QueueSummary['schedule'];
+    /**
+     * Code-review finding (LC-Q-05) — `q-beta`'s armed scheduled start, if any.
+     *
+     * `QueueRuntime.scheduledStartAt`, not `QueueSummary.schedule`. This
+     * override named the latter until the baseline pass that corrected it,
+     * while `deriveCleanAllContext` has read the former since FR-R3-150's
+     * iteration-5 review (`lib/queue-derived.ts`): `QueueSummary.schedule` is
+     * the registry-level mechanism Feature 097 left permanently null, so a
+     * fixture arming it built a queue with no schedule by any measure
+     * production recognizes, and LC-Q-05 asserted against a gate it had no way
+     * to move. The sibling fixture in `lib/__tests__/clean-all-context.test.ts`
+     * was corrected at the time; this one was missed and went red once the host
+     * suite could reach the webview stages again (FR-R3-160).
+     */
+    readonly betaScheduledStartAt?: number | null;
   } = {}
 ): WorkflowSnapshot {
   const defaultTasks = overrides.defaultTasks ?? [task('other-queue-task', { position: 0, label: 'not mine' })];
@@ -169,6 +179,7 @@ function buildSnapshot(
         lifecycle: overrides.lifecycle ?? 'running',
         inFlightRun: overrides.inFlightRun ?? null,
         startFailure: overrides.startFailure ?? null,
+        scheduledStartAt: overrides.betaScheduledStartAt ?? null,
         pendingCount: betaTasks.filter((item) => item.status === 'pending').length,
         tasks: betaTasks
       })
@@ -180,7 +191,7 @@ function buildSnapshot(
       orderedItems: Object.freeze(defaultTasks),
       queues: Object.freeze([
         summary('default', 'Default', 0),
-        summary('q-beta', 'nightly', 1, overrides.betaSchedule ?? null)
+        summary('q-beta', 'nightly', 1)
       ]),
       paused: false
     }),
@@ -475,11 +486,29 @@ describe('QueueDetailTier — this queue’s work (FR-057)', () => {
     const { getByTestId } = mount(
       buildSnapshot([], {
         lifecycle: 'idle-pending',
-        betaSchedule: { expression: 'in 30m', kind: 'relative', targetAt: '2026-08-12T00:30:00.000Z' }
+        // 30 minutes past the snapshot's own `producedAt`, the reading the
+        // "in 30m" relative schedule this case used to express as a
+        // `QueueSummary.schedule` record now arrives as.
+        betaScheduledStartAt: Date.parse('2026-08-12T00:30:00.000Z')
       })
     );
 
     expect((getByTestId('dashboard-queue-clean') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  // The negative half of the case above, and the reason it cannot quietly go
+  // vacuous a second time: `idle-pending` on its own must NOT enable the
+  // button. Two superseded iterations of the gate inferred "a schedule is
+  // armed" from that lifecycle alone (`lib/queue-derived.ts` records both as
+  // wrong in tree); under either of them this case fails and the one above
+  // passes for the wrong reason. Together they pin `scheduledStartAt` as the
+  // only thing that moves the gate.
+  it('leaves Clean All disabled when an idle-pending queue has no schedule armed', () => {
+    const { getByTestId } = mount(
+      buildSnapshot([], { lifecycle: 'idle-pending', betaScheduledStartAt: null })
+    );
+
+    expect((getByTestId('dashboard-queue-clean') as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('enqueues added work onto THIS queue', async () => {
