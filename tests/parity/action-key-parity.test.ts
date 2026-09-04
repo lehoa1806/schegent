@@ -84,7 +84,6 @@ async function setup(): Promise<SetupResult> {
 
   const deps: RouterDeps = {
     executeCommand: (async () => undefined) as unknown as RouterDeps['executeCommand'],
-    queueRemover: { remove: async () => true },
     isPrimary: () => true,
     isTrusted: () => true,
     logger,

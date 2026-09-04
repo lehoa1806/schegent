@@ -136,7 +136,6 @@ function buildHarness(): Harness {
   const store = new FakeCatalogStore();
   const deps: RouterDeps = {
     executeCommand: vi.fn().mockResolvedValue(undefined),
-    queueRemover: { remove: vi.fn().mockResolvedValue(true) },
     isPrimary: () => true,
     isTrusted: () => true,
     notifyWarning: vi.fn(),

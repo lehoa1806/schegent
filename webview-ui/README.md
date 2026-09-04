@@ -531,7 +531,17 @@ call still carries no payload at all.
 Feature 022 widens deletion commands:
 
 - `CMD_REMOVE_QUEUE_ITEM` requires `{ id, confirmed: true }` and can remove
-  any task status after `ConfirmDeleteDialog.svelte` confirmation.
+  any task status after `ConfirmDeleteDialog.svelte` confirmation. FR-R3-161
+  left it with exactly **one** host-side implementation. The router used to
+  declare a second capability alongside the typed one — a boolean
+  `queueRemover.remove(id)` reached by a fallback branch when no typed surface
+  was wired — which dropped the row without cancelling the task's run or
+  releasing its lease, and collapsed "no such task" and "not removable" into a
+  bare `false`. The capability, the branch and the wiring that supplied it are
+  all removed. An unwired host is now a structured refusal
+  (`queue-ops-unavailable`, the same one the sibling task commands answer
+  with), never a weaker deletion; the webview contract for the command is
+  otherwise unchanged.
 - `CMD_REMOVE_TASK_PHASE` requires `{ taskId, phaseId, confirmed: true }` and
   removes a task-scoped phase override without changing the global pipeline.
 

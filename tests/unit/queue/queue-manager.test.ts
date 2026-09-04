@@ -197,22 +197,41 @@ describe('QueueManager.pause', () => {
   });
 });
 
-describe('QueueManager.cancel', () => {
-  it('cancels a pending request and returns true', async () => {
+describe('QueueManager.finish — cancellation', () => {
+  it('cancels a pending request', async () => {
     const a = await queue.enqueue('A');
-    expect(await queue.cancel(a.id)).toBe(true);
+    expect(await queue.finish(a.id, 'canceled')).toEqual({ ok: true });
     expect(queue.findById(a.id)?.status).toBe('canceled');
   });
 
-  it('refuses to cancel an in-flight request', async () => {
-    const a = await queue.enqueue('A');
-    await queue.markInFlight(a.id, 'run-1');
-    expect(await queue.cancel(a.id)).toBe(false);
-    expect(queue.findById(a.id)?.status).toBe('in-flight');
-  });
+  // FR-R3-161 (T034) — 2026-09-04. **Deliberate removal 1 of 4.**
+  // `it('refuses to cancel an in-flight request')` stood here: it enqueued a
+  // task, marked it in-flight, and asserted `queue.cancel()` returned `false`
+  // and left the row `in-flight`.
+  //
+  // It is removed rather than re-expressed because the product no longer has
+  // the behaviour it asserted. That refusal was `QueueManager.cancel`'s own
+  // inline rule, and it was the divergence this feature exists to close: the
+  // closed table admits `in-flight → canceled` under `finish`, which is what
+  // the operator's cancel does and always did. Re-expressing the assertion
+  // against `finish` would assert the opposite of what `finish` does; leaving
+  // it green would require keeping the routine.
+  //
+  // Nothing is left unpinned. The admitted edge is asserted directly in
+  // `tests/integration/task-transition-decision.test.ts` — as a cell of the
+  // `finish → canceled` table, so it cannot be dropped without failing that
+  // file's coverage pin — and end to end through the operator's route
+  // (research F1, F17; spec FR-016 deliberately removed, 1 of 4).
 
-  it('returns false for unknown id', async () => {
-    expect(await queue.cancel('unknown')).toBe(false);
+  it('refuses an unknown task id', async () => {
+    // FR-R3-161 (T031) — `cancel` answered `false` for both "no such task" and
+    // "wrong status", so the assertion could not tell them apart. `finish`
+    // names the reason, which is the same behaviour reported at the width the
+    // closed table already decides it at.
+    expect(await queue.finish('unknown', 'canceled')).toEqual({
+      ok: false,
+      reason: 'task-not-found'
+    });
   });
 });
 
@@ -245,37 +264,30 @@ describe('QueueManager.findById', () => {
   });
 });
 
-describe('QueueManager.remove', () => {
-  it('removes a pending request entirely and renumbers positions', async () => {
-    const a = await queue.enqueue('A');
-    const b = await queue.enqueue('B');
-    const c = await queue.enqueue('C');
-    expect(await queue.remove(b.id)).toBe(true);
-    const remaining = queue.list();
-    expect(remaining.map((r) => r.id)).toEqual([a.id, c.id]);
-    expect(remaining[0].position).toBe(0);
-    expect(remaining[1].position).toBe(1);
-  });
-
-  it('returns false and is a no-op for in-flight items', async () => {
-    const a = await queue.enqueue('A');
-    await queue.markInFlight(a.id, 'run-1');
-    expect(await queue.remove(a.id)).toBe(false);
-    expect(queue.findById(a.id)?.status).toBe('in-flight');
-  });
-
-  it('returns false for unknown id', async () => {
-    expect(await queue.remove('missing')).toBe(false);
-  });
-
-  it('returns false for completed or canceled items', async () => {
-    const a = await queue.enqueue('A');
-    await queue.markInFlight(a.id, 'run-1');
-    await queue.finish(a.id, 'completed');
-    expect(await queue.remove(a.id)).toBe(false);
-    expect(queue.findById(a.id)?.status).toBe('completed');
-  });
-});
+// FR-R3-161 (T041/T042, FR-016) — 2026-09-04. `describe('QueueManager.remove')`
+// stood here, with four assertions on the cleanup-free removal routine T043
+// deletes. Their dispositions, one category each, per FR-016:
+//
+//   * 'returns false and is a no-op for in-flight items' and 'returns false for
+//     completed or canceled items' — **deliberately removed**, 2 and 3 of 4.
+//     Both pinned the deleted primitive's own `status !== 'pending'` guard,
+//     which the surviving route deliberately does not have: `removeTask` removes
+//     a row in any status and the block below asserts so at two of them. Their
+//     subject is gone with their subject's method, so re-expressing them is
+//     impossible rather than inconvenient. The protection they were reaching
+//     for — nothing deletes a live Task without cancelling its Run first — is
+//     one layer up and is pinned by **FR-008a / T004** in
+//     tests/integration/task-deletion-cancel-before-remove.test.ts, which landed
+//     before this deletion so the area was never uncovered (research F16).
+//   * 'removes a pending request entirely and renumbers positions' and 'returns
+//     false for unknown id' — **re-expressed, and the re-expression already
+//     existed**: the block below asserts both claims against `removeTask`, each
+//     strictly more than its counterpart here did (the first also pins
+//     `queueId`, the second names `unknown-task-id` where this one accepted a
+//     bare `false`). Recorded because FR-016's enumeration counted twelve call
+//     sites and these two were not among them — the same planning-time
+//     undercount T056 records for `queueOwnsTask`. Nothing was rewritten for
+//     them and nothing needed to be.
 
 // BUG-002 (T118) — `removeTask` is the audit-aware sibling of `remove`.
 // Returns the canonical `{ ok, reason?, queueId? }` mutation detail so
@@ -570,7 +582,7 @@ describe('QueueManager.retry', () => {
 
   it('accepts canceled', async () => {
     const a = await queue.enqueue('A');
-    await queue.cancel(a.id);
+    await queue.finish(a.id, 'canceled');
     expect((await queue.retry(a.id)).ok).toBe(true);
     expect(queue.findById(a.id)?.status).toBe('pending');
   });

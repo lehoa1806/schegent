@@ -134,7 +134,6 @@ async function dispatch(
 
   const deps: RouterDeps = {
     executeCommand,
-    queueRemover: { remove: async () => true },
     isPrimary: () => true,
     isTrusted: () => true,
     notifyWarning: (message: string) => {
@@ -278,7 +277,6 @@ describe('FR-R3-154 (T1644) — mutation ACKs report the host result', () => {
             ? { outcome: 'refused', reason: 'no-active-run' }
             : { outcome: 'accepted' }
         )) as unknown as RouterDeps['executeCommand'],
-      queueRemover: { remove: async () => true },
       isPrimary: () => true,
       isTrusted: () => true,
       notifyWarning: () => undefined,

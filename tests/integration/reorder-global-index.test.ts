@@ -171,7 +171,6 @@ async function makeHarness(
   const auditEntries: CapturedAuditEntry[] = [];
   const deps: RouterDeps = {
     executeCommand: (async () => undefined) as RouterDeps['executeCommand'],
-    queueRemover: { remove: async () => false },
     queueOps: {
       retry: async () => ({ ok: true }),
       moveUp: (id: string) => manager.moveUp(id),

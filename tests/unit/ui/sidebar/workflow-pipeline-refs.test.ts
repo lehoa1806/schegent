@@ -53,9 +53,11 @@ describe('collectWorkflowPipelineRefs', () => {
   });
 
   it('drops a request canceled before it ever started', () => {
-    // `QueueManager.cancel()` only reaches a *pending* request and leaves
-    // `runId` null, so "has it started?" alone would report a canceled Workflow
-    // as a live consumer and block a removal nothing is waiting on.
+    // A request cancelled before it started keeps a null `runId`, so "has it
+    // started?" alone would report a canceled Workflow as a live consumer and
+    // block a removal nothing is waiting on (FR-R3-161 T032a: this named the
+    // queue manager's removed `cancel()`; the reason holds unchanged for
+    // `finish(id, 'canceled')` from `pending`).
     expect(
       collectWorkflowPipelineRefs([
         request({ id: 'wf-a', pipelineId: 'custom-flow', status: 'canceled', runId: null })

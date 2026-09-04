@@ -6,13 +6,26 @@
 // `RunStateMap` entry, or timestamps (spec FR-004, SC-001), and a valid edge
 // on one queue never touches a sibling queue's state (spec FR-010, SC-002).
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import { readFileSync, readdirSync } from 'fs';
+import { join, resolve } from 'path';
 import { unfencedCommit } from '../../src/state/ownership-claim';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
 import { QueueManager } from '../../src/queue/queue-manager';
 import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 import type { WorkflowRun } from '../../src/state/workflow-run';
-import { decideTaskTransition } from '../../src/queue/task-transition-decision';
+import {
+  decideTaskTransition,
+  TASK_TRANSITION_REJECTION_REASONS,
+  type TaskTransitionDecisionResult,
+  type TaskTransitionRejectionReason
+} from '../../src/queue/task-transition-decision';
+import type { FeatureRequestStatus, TerminalRequestStatus } from '../../src/queue/feature-request';
+import { runCancel } from '../../src/commands/cancel';
+import { SanitizedLogger } from '../../src/lib/logger';
+import type { SchegentWorkflowController } from '../../src/controller/workflow-controller';
+import type { AuditLogWriter } from '../../src/audit/audit-log-writer';
+import type { Notifier } from '../../src/ui/notifications';
 
 class MockMemento implements Memento {
   public writeCount = 0;
@@ -160,21 +173,27 @@ describe('closed transition table — refused cells (spec.md FR-006-FR-010, SC-0
     expectUnchanged(before, snapshot(store, memento, a.id, DEFAULT_QUEUE_ID));
   });
 
-  it('refuses marking a task in-flight while addressing the wrong queue (classifier level)', () => {
-    // Unreachable through QueueManager's own public writers today — none of
-    // markInFlight/finish/pause takes a caller-supplied queue id distinct
-    // from the task's own row, so there is no real call shape that
-    // "addresses a different queue." The classifier still owns this cell of
-    // the closed table (research.md R2's `queueOwnsTask` field), tested
-    // directly here.
-    const decision = decideTaskTransition({
-      operation: 'mark-in-flight',
-      currentStatus: 'pending',
-      queueOwnsTask: false,
-      queueAlreadyHasDifferentInFlight: false
-    });
-    expect(decision).toEqual({ eligible: false, reason: 'queue-mismatch' });
-  });
+  // FR-R3-161 (T059, FR-011a) — 2026-09-04. `it('refuses marking a task
+  // in-flight while addressing the wrong queue (classifier level)', …)` stood
+  // here. It constructed `queueOwnsTask: false` by hand and asserted the
+  // resulting `'queue-mismatch'`, and its own comment recorded why it had to:
+  // "Unreachable through QueueManager's own public writers today — none of
+  // markInFlight/finish/pause takes a caller-supplied queue id distinct from
+  // the task's own row, so there is no real call shape that addresses a
+  // different queue."
+  //
+  // This is **coverage replacement, not coverage loss**. The cell it pinned no
+  // longer exists: the input and the branch are gone, and what replaces the
+  // assertion is stronger than it was. It asserted that one hand-built input
+  // produced one reason; T061 asserts the vocabulary has exactly three members,
+  // so restoring a fourth — this one or any other — fails, and T062 asserts the
+  // queue manager's runtime Set cannot drift from that vocabulary. A test that
+  // could only be reached by constructing an input no caller constructs was
+  // pinning the classifier's willingness to answer a question nothing asked.
+  //
+  // Nothing else in this file changes shape. T027's coverage pin still requires
+  // a row for every status and every terminal target; the ~15 remaining
+  // `queueOwnsTask: true` sites lost a field, not a case.
 });
 
 describe('closed transition table — accepted cells', () => {
@@ -271,7 +290,6 @@ describe('closed transition table — accepted cells', () => {
         operation: 'finish',
         currentStatus: 'pending',
         targetStatus: 'failed',
-        queueOwnsTask: true,
         queueAlreadyHasDifferentInFlight: false
       })
     ).toEqual({ eligible: true });
@@ -375,12 +393,565 @@ describe('feature 195 (T060, FR-009) — a failed task cannot be cancelled', () 
         operation: 'finish',
         currentStatus,
         targetStatus: 'canceled',
-        queueOwnsTask: true,
         queueAlreadyHasDifferentInFlight: false
       })
     );
     for (const decision of nonEligible) {
       expect(decision.eligible).toBe(false);
+    }
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// FR-R3-161 (feature 200) — the whole table, stated rather than derived.
+//
+// The blocks above grew one cell at a time, each added by the feature that
+// needed it, and each written as the shape its own feature cared about. What
+// none of them state is the table as a whole: the six statuses across the four
+// operations, with `finish` expanded over its three terminal targets, every
+// cell present whether or not some feature once argued about it.
+//
+// Asserted against `decideTaskTransition` directly and NOT through the queue
+// writers (spec FR-002, research D6). The route is asserted separately below,
+// as a second reading of the same table. Asserting only through a route would
+// let a future inline guard at that route satisfy the matrix while the
+// classifier disagreed with it — which is not hypothetical: this feature found
+// exactly that guard in `src/commands/cancel.ts` and closed it (see the
+// route-agreement block at the end of this file).
+//
+// The expectations below are literals, transcribed from
+// specs/200-cancel-removal-transition-table/data-model.md. They are not
+// computed from the classifier's own predicates, because a table derived from
+// the implementation restates it instead of pinning it.
+// ───────────────────────────────────────────────────────────────────────────
+
+const ALL_STATUSES = ['pending', 'in-flight', 'paused', 'completed', 'canceled', 'failed'] as const;
+
+type ExpectedCell =
+  | { readonly eligible: true }
+  | { readonly eligible: false; readonly reason: TaskTransitionRejectionReason };
+
+/** Shorthands, so each row below reads as a row of the table it transcribes. */
+const YES: ExpectedCell = { eligible: true };
+const NO: ExpectedCell = { eligible: false, reason: 'illegal-source-status' };
+
+type StatusRow = Readonly<Record<FeatureRequestStatus, ExpectedCell>>;
+
+/**
+ * `mark-in-flight`. Only the two statuses that are finished in both senses stay
+ * refused; `failed` is deliberately eligible (an operator repointing a halted
+ * workflow resumes it directly), as are `in-flight` and `paused`, which are
+ * re-affirmations of a task this queue already holds.
+ */
+const MARK_IN_FLIGHT: StatusRow = {
+  pending: YES,
+  'in-flight': YES,
+  paused: YES,
+  completed: NO,
+  canceled: NO,
+  failed: YES
+};
+
+/** `pause`. One source status. */
+const PAUSE: StatusRow = {
+  pending: NO,
+  'in-flight': YES,
+  paused: NO,
+  completed: NO,
+  canceled: NO,
+  failed: NO
+};
+
+/** `return-to-pending`. Paused work and both recoverable terminal outcomes. */
+const RETURN_TO_PENDING: StatusRow = {
+  pending: NO,
+  'in-flight': NO,
+  paused: YES,
+  completed: NO,
+  canceled: YES,
+  failed: YES
+};
+
+/**
+ * `finish`, expanded over its three terminal targets. The two `pending` cells
+ * that are `YES` are the pre-start edges: an outcome reachable without ever
+ * executing. `pending -> completed` stays refused for the same reason — a task
+ * that never ran cannot have completed — which is what keeps "finish from
+ * pending" from becoming a general escape hatch.
+ */
+const FINISH: Readonly<Record<TerminalRequestStatus, StatusRow>> = {
+  completed: {
+    pending: NO,
+    'in-flight': YES,
+    paused: NO,
+    completed: NO,
+    canceled: NO,
+    failed: NO
+  },
+  canceled: {
+    pending: YES,
+    'in-flight': YES,
+    paused: NO,
+    completed: NO,
+    canceled: NO,
+    failed: NO
+  },
+  failed: {
+    pending: YES,
+    'in-flight': YES,
+    paused: NO,
+    completed: NO,
+    canceled: NO,
+    failed: NO
+  }
+};
+
+describe('FR-R3-161 (FR-002) — the closed table asserted whole, against the classifier', () => {
+  it.each(ALL_STATUSES)('mark-in-flight from %s', (currentStatus) => {
+    expect(
+      decideTaskTransition({
+        operation: 'mark-in-flight',
+        currentStatus,
+        queueAlreadyHasDifferentInFlight: false
+      })
+    ).toEqual(MARK_IN_FLIGHT[currentStatus]);
+  });
+
+  it.each(ALL_STATUSES)('pause from %s', (currentStatus) => {
+    expect(
+      decideTaskTransition({
+        operation: 'pause',
+        currentStatus,
+        queueAlreadyHasDifferentInFlight: false
+      })
+    ).toEqual(PAUSE[currentStatus]);
+  });
+
+  it.each(ALL_STATUSES)('return-to-pending from %s', (currentStatus) => {
+    expect(
+      decideTaskTransition({
+        operation: 'return-to-pending',
+        currentStatus,
+        queueAlreadyHasDifferentInFlight: false
+      })
+    ).toEqual(RETURN_TO_PENDING[currentStatus]);
+  });
+
+  const finishCells = (['completed', 'canceled', 'failed'] as const).flatMap((targetStatus) =>
+    ALL_STATUSES.map((currentStatus) => ({ targetStatus, currentStatus }))
+  );
+
+  it.each(finishCells)('finish($currentStatus -> $targetStatus)', ({ currentStatus, targetStatus }) => {
+    expect(
+      decideTaskTransition({
+        operation: 'finish',
+        currentStatus,
+        targetStatus,
+        queueAlreadyHasDifferentInFlight: false
+      })
+    ).toEqual(FINISH[targetStatus][currentStatus]);
+  });
+
+  // The table above is 36 cells; this pins that none of them was quietly
+  // dropped from the parameterisation, which is how a data-driven matrix
+  // shrinks without anyone noticing.
+  it('covers every cell of the table: 6 statuses x (3 operations + 3 finish targets)', () => {
+    expect(ALL_STATUSES).toHaveLength(6);
+    expect(finishCells).toHaveLength(18);
+    expect(Object.keys(FINISH)).toEqual(['completed', 'canceled', 'failed']);
+    for (const row of [MARK_IN_FLIGHT, PAUSE, RETURN_TO_PENDING, ...Object.values(FINISH)]) {
+      expect(Object.keys(row).sort()).toEqual([...ALL_STATUSES].sort());
+    }
+  });
+
+  // Existence and ownership are checked before any edge, for every operation,
+  // in that order — so an absent row is `task-not-found` even for an operation
+  // whose source-status row would have refused it anyway.
+  it.each(['mark-in-flight', 'pause', 'finish', 'return-to-pending'] as const)(
+    'refuses %s on an absent row with task-not-found, before any edge is consulted',
+    (operation) => {
+      expect(
+        decideTaskTransition({
+          operation,
+          currentStatus: undefined,
+          targetStatus: 'canceled',
+          queueAlreadyHasDifferentInFlight: false
+        })
+      ).toEqual({ eligible: false, reason: 'task-not-found' });
+    }
+  );
+
+  // `mark-in-flight` alone: the ownership check runs FIRST, before this task's
+  // own status is looked at. Every one of the six statuses — including the
+  // three the row above admits — is refused the same way when a genuinely
+  // different task already holds the queue's one execution slot.
+  it.each(ALL_STATUSES)(
+    'refuses mark-in-flight from %s with in-flight-ownership-conflict when another task holds the slot',
+    (currentStatus) => {
+      expect(
+        decideTaskTransition({
+          operation: 'mark-in-flight',
+          currentStatus,
+          queueAlreadyHasDifferentInFlight: true
+        })
+      ).toEqual({ eligible: false, reason: 'in-flight-ownership-conflict' });
+    }
+  );
+
+  // FR-006 — the target check is a runtime check as well as a compile-time
+  // narrowing, and it runs before the source status is consulted: `in-flight`
+  // is eligible for all three real targets above and is refused here.
+  //
+  // The key is OMITTED rather than passed as an explicit `undefined`. The two
+  // reach the same branch — `task-transition-decision.ts:68` destructures the
+  // value and `:134` tests it for `undefined`, so neither form is visible to
+  // the classifier as anything but an absent target — and the omitted form is
+  // the one `exactOptionalPropertyTypes` accepts, which the ratchet in
+  // `tests/lint/compiler-strictness-ratchet.test.ts` requires of a new site.
+  it.each(ALL_STATUSES)('refuses finish from %s when the target is absent', (currentStatus) => {
+    expect(
+      decideTaskTransition({
+        operation: 'finish',
+        currentStatus,
+        queueAlreadyHasDifferentInFlight: false
+      })
+    ).toEqual({ eligible: false, reason: 'illegal-source-status' });
+  });
+
+  it.each(['pending', 'in-flight', 'paused'] as const)(
+    'refuses finish from in-flight when the target is the non-terminal status %s',
+    (targetStatus) => {
+      expect(
+        decideTaskTransition({
+          operation: 'finish',
+          currentStatus: 'in-flight',
+          // @ts-expect-error — a non-terminal target is a compile error AND a
+          // runtime refusal; `targetStatus` is still an ordinary string at the
+          // boundary a caller crosses to get here.
+          targetStatus,
+          queueAlreadyHasDifferentInFlight: false
+        })
+      ).toEqual({ eligible: false, reason: 'illegal-source-status' });
+    }
+  );
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// FR-R3-161 — the two cells this feature turns on.
+//
+// Both are already in the table above. They are pinned again here, by name and
+// with their evidence, because the table proves they hold today while these
+// two say what is lost if they stop holding. A narrowing of either would fail
+// a test whose title states the edge it removed.
+// ───────────────────────────────────────────────────────────────────────────
+describe('FR-R3-161 — the two cancellation cells the removed routine argued with', () => {
+  it('pending -> canceled under finish is eligible (cancel before start)', () => {
+    expect(
+      decideTaskTransition({
+        operation: 'finish',
+        currentStatus: 'pending',
+        targetStatus: 'canceled',
+        queueAlreadyHasDifferentInFlight: false
+      })
+    ).toEqual({ eligible: true });
+  });
+
+  // FR-R3-161 (research.md F3) — 2026-09-04. `QueueManager.cancel`, removed by
+  // this feature, refused this edge with a guard of its own, and the census
+  // header's stated reason for not enrolling that routine described only the
+  // routine's own divergent rule. The table has
+  // admitted the edge since it shipped; the second protocol was the thing that
+  // disagreed with it, and this feature deletes the second protocol rather
+  // than teaching it to agree.
+  it('in-flight -> canceled under finish is eligible (the edge the deleted routine forbade)', () => {
+    expect(
+      decideTaskTransition({
+        operation: 'finish',
+        currentStatus: 'in-flight',
+        targetStatus: 'canceled',
+        queueAlreadyHasDifferentInFlight: false
+      })
+    ).toEqual({ eligible: true });
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// FR-R3-161 (FR-002, FR-003) — the same table read a second time, through the
+// operator's own route.
+//
+// **Corrected against measurement.** research.md F19 predicted that cancelling
+// a paused Task through `runCancel` reaches `cancel.ts`'s no-live-run branch,
+// is refused `illegal-source-status` by the classifier, and is reported to the
+// operator with "cancel failed — the task could not be finalized". All three
+// clauses are false, and the tests below assert what the route actually does:
+//
+//   - the row is refused at `cancel.ts`'s admission guard, with the route's own
+//     reason `illegal-state`, before the classifier is consulted;
+//   - no audit entry is appended, because the row never reaches the branch that
+//     appends one — so FR-018a's audit-before-decide observation does not apply
+//     to a paused row at all;
+//   - nothing is notified and nothing is logged: the refusal is silent.
+//
+// The affordance claim was wrong too. `webview-ui/src/components/
+// QueueItemActions.svelte` renders Cancel only for an in-flight row, so the
+// paused refusal is not reachable from the sidebar; it is reachable by command
+// id with a taskId, which is the path exercised here.
+//
+// Constraint C5 — assert the current behaviour, do not fix the FR-018a
+// observations. Neither the returned reason nor the silence is changed by this
+// feature; both are reported in the closure record instead.
+// ───────────────────────────────────────────────────────────────────────────
+
+function makeCancelDeps(): {
+  controller: SchegentWorkflowController;
+  audit: AuditLogWriter & { append: ReturnType<typeof vi.fn> };
+  notifier: Notifier & { info: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> };
+  logger: SanitizedLogger;
+} {
+  return {
+    controller: { cancelActive: vi.fn() } as unknown as SchegentWorkflowController,
+    audit: { append: vi.fn(async () => {}) } as unknown as AuditLogWriter & {
+      append: ReturnType<typeof vi.fn>;
+    },
+    notifier: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as unknown as Notifier & {
+      info: ReturnType<typeof vi.fn>;
+      error: ReturnType<typeof vi.fn>;
+    },
+    logger: new SanitizedLogger()
+  };
+}
+
+/** Drive a freshly enqueued task to `status` through the real writers. */
+async function seedTaskAt(queue: QueueManager, status: FeatureRequestStatus): Promise<string> {
+  const task = await queue.enqueue(`task-${status}`);
+  if (status === 'pending') return task.id;
+  await queue.markInFlight(task.id, `run-${status}`);
+  if (status === 'in-flight') return task.id;
+  if (status === 'paused') {
+    await queue.pause(task.id);
+    return task.id;
+  }
+  await queue.finish(task.id, status);
+  return task.id;
+}
+
+describe('FR-R3-161 (FR-003) — cancelling a paused Task through the production command', () => {
+  it('is refused, silently, with the route\'s own reason and before the classifier is consulted', async () => {
+    const { store, queue } = await buildSystem();
+    const deps = makeCancelDeps();
+    const taskId = await seedTaskAt(queue, 'paused');
+    expect(queue.findById(taskId)?.status).toBe('paused');
+
+    const result = await runCancel({ ...deps, store, queue, taskId });
+
+    expect(result).toEqual({ ok: false, reason: 'illegal-state' });
+    expect(queue.findById(taskId)?.status).toBe('paused');
+    // Not `illegal-source-status`: the route refuses in its own vocabulary.
+    // The classifier agrees on the verdict — see the agreement test below —
+    // but the reason the operator's route returns is the route's.
+    expect(deps.controller.cancelActive).not.toHaveBeenCalled();
+  });
+
+  it('appends no audit entry, because the row never reaches the branch that appends one', async () => {
+    const { store, queue } = await buildSystem();
+    const deps = makeCancelDeps();
+    const taskId = await seedTaskAt(queue, 'paused');
+
+    await runCancel({ ...deps, store, queue, taskId });
+
+    // FR-018a's first observation — the audit entry is written before the
+    // transition is decided — is real, and is deliberately not fixed here. It
+    // does not apply to a paused row: this row is refused earlier than that.
+    expect(deps.audit.append).not.toHaveBeenCalled();
+  });
+
+  it('reports nothing to the operator: the refusal is silent', async () => {
+    const { store, queue } = await buildSystem();
+    const deps = makeCancelDeps();
+    const taskId = await seedTaskAt(queue, 'paused');
+
+    await runCancel({ ...deps, store, queue, taskId });
+
+    // research.md F19 claimed this refusal was "already reported to the
+    // operator explicitly rather than passing as a success". It is not
+    // reported at all. It does not pass as a success either — the caller gets
+    // `{ ok: false }` — but nothing reaches the operator. Reported in the
+    // closure record; not fixed here, because a new operator-visible message
+    // is outside what this feature claims.
+    expect(deps.notifier.info).not.toHaveBeenCalled();
+    expect(deps.notifier.error).not.toHaveBeenCalled();
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// FR-R3-161 (FR-004, SC-001, US1 acceptance scenario 4) — exactly one site
+// decides whether a cancellation is admitted.
+//
+// FR-004 defines the unit SC-001 counts: a site is a place that reaches a
+// verdict on whether a cancellation is admitted, either by consulting the
+// classifier and acting on the verdict, or by deciding the same question
+// itself. Consulting is not a second decision however many places do it;
+// deciding without consulting is, even once.
+//
+// **Why the name search alone would be a false green.** The anchor here is the
+// classifier's own name, `decideTaskTransition` — never the status value
+// `'canceled'`, which is also written onto a WorkflowRun in five other modules
+// (research F14), so a value-anchored search matches code this criterion was
+// not written about and proves nothing. But a name-anchored search has the
+// opposite blind spot, and it is the one that matters: a site that decides
+// WITHOUT consulting the classifier does not contain the classifier's name, so
+// no search for that name can see it. This is not hypothetical. Before this
+// feature, `src/commands/cancel.ts` refused a cancellation from its own
+// admission guard, and every search for the classifier's name returned "one
+// decision site" while two existed.
+//
+// So the claim is made in three parts, and the third is what earns it:
+//   1. one rule set — the classifier is declared exactly once under `src/`;
+//   2. the operator's route reaches its verdict THROUGH that rule set;
+//   3. the route and the rule set agree on all six statuses — the assertion an
+//      inline guard cannot survive, whatever it is named.
+// ───────────────────────────────────────────────────────────────────────────
+
+const SRC_ROOT = resolve(__dirname, '../../src');
+const CLASSIFIER = 'decideTaskTransition';
+
+function collectSourceFiles(dir: string, acc: string[] = []): string[] {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) collectSourceFiles(full, acc);
+    else if (entry.name.endsWith('.ts')) acc.push(full);
+  }
+  return acc;
+}
+
+describe('FR-R3-161 (SC-001) — one cancellation decision site', () => {
+  it('declares the classifier exactly once under src/', () => {
+    const declaring = collectSourceFiles(SRC_ROOT).filter((file) =>
+      new RegExp(`export function ${CLASSIFIER}\\b`).test(readFileSync(file, 'utf8'))
+    );
+
+    expect(declaring.map((f) => f.slice(SRC_ROOT.length + 1))).toEqual([
+      'queue/task-transition-decision.ts'
+    ]);
+  });
+
+  it('the operator\'s cancellation route reaches its verdict through the classifier', () => {
+    // The pin for FR-004's "deciding without consulting it is a second site,
+    // even once". A hand-rolled admission test at this route — which is what
+    // was here before — fails this, because the name it must contain is the
+    // classifier's, and a guard that decides for itself does not call it.
+    const route = readFileSync(join(SRC_ROOT, 'commands/cancel.ts'), 'utf8');
+
+    const call = route.indexOf(`${CLASSIFIER}(`);
+    expect(call, `${CLASSIFIER} is not called in commands/cancel.ts`).toBeGreaterThan(-1);
+    expect(route.indexOf('.eligible', call)).toBeGreaterThan(call);
+  });
+
+  it.each(ALL_STATUSES)(
+    'the route and the classifier agree on cancelling a %s task',
+    async (status) => {
+      const { store, queue } = await buildSystem();
+      const deps = makeCancelDeps();
+      const taskId = await seedTaskAt(queue, status);
+
+      const routeSaidYes = (await runCancel({ ...deps, store, queue, taskId })).ok;
+      const classifierSaysYes = decideTaskTransition({
+        operation: 'finish',
+        currentStatus: status,
+        targetStatus: 'canceled',
+        queueAlreadyHasDifferentInFlight: false
+      }).eligible;
+
+      expect(routeSaidYes).toBe(classifierSaysYes);
+    }
+  );
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// FR-R3-161 (Phase 7, US5) — the refusal vocabulary itself.
+//
+// Phase 6 removed `'queue-mismatch'` because nothing could produce it. These
+// three assertions are what make that a *replacement* for the direct-call test
+// deleted at T059 rather than a loss: that test pinned one hand-built input
+// against one reason; these pin the whole vocabulary, in both directions, for
+// every operation.
+// ───────────────────────────────────────────────────────────────────────────
+
+describe('FR-R3-161 US5 — the refusal vocabulary is closed, mirrored, and uniform', () => {
+  it('T061 — has exactly three members, by name and by count (contract C1.1)', () => {
+    // Exhaustive by construction. `Record<TaskTransitionRejectionReason, true>`
+    // is a compile error if a member of the union is missing from this literal,
+    // and a compile error if a key here is not a member of the union — so the
+    // literal cannot drift from the type in either direction. What it cannot do
+    // on its own is stop the union from *growing*: a fourth member plus a
+    // fourth key compiles. The count below is what a human then has to change
+    // deliberately, which is the point — restoring `'queue-mismatch'` quietly
+    // is exactly what this fails on.
+    const everyReason: Record<TaskTransitionRejectionReason, true> = {
+      'task-not-found': true,
+      'illegal-source-status': true,
+      'in-flight-ownership-conflict': true
+    };
+    expect(Object.keys(everyReason).sort()).toEqual([
+      'illegal-source-status',
+      'in-flight-ownership-conflict',
+      'task-not-found'
+    ]);
+  });
+
+  it('T062 — the runtime set the queue manager classifies with is that same vocabulary', () => {
+    // `queue-manager.ts` converts a transition rejection into `{ ok: false,
+    // reason }` and re-throws anything else, so it needs the vocabulary as a
+    // value. It used to hold its own copy of the literals; the copy is what let
+    // `'queue-mismatch'` sit in it after nothing could produce it. The set is
+    // now derived from the union, and this pins the derivation: a member the
+    // set does not carry would be re-thrown at an operator instead of reported.
+    expect([...TASK_TRANSITION_REJECTION_REASONS].sort()).toEqual([
+      'illegal-source-status',
+      'in-flight-ownership-conflict',
+      'task-not-found'
+    ]);
+    // Fail-closed in the other direction too: a reason from outside the
+    // vocabulary — every commit-fence reason, for instance — must not classify
+    // as a transition rejection, or the queue manager would swallow it.
+    expect(TASK_TRANSITION_REJECTION_REASONS.has('queue-mismatch')).toBe(false);
+    expect(TASK_TRANSITION_REJECTION_REASONS.has('stale-ownership-fence')).toBe(false);
+  });
+
+  it('T063 — a refusal from any of the four operations has one shape (US5 scenario 1)', () => {
+    // One reader, no `operation` argument, no per-operation narrowing: if any
+    // operation could refuse in a different shape this would not compile.
+    const reasonOf = (result: TaskTransitionDecisionResult): TaskTransitionRejectionReason => {
+      if (result.eligible) throw new Error('expected a refusal, got an eligible verdict');
+      return result.reason;
+    };
+    const refusals: readonly TaskTransitionDecisionResult[] = [
+      decideTaskTransition({
+        operation: 'mark-in-flight',
+        currentStatus: 'completed',
+        queueAlreadyHasDifferentInFlight: false
+      }),
+      decideTaskTransition({
+        operation: 'finish',
+        currentStatus: 'pending',
+        targetStatus: 'completed',
+        queueAlreadyHasDifferentInFlight: false
+      }),
+      decideTaskTransition({
+        operation: 'pause',
+        currentStatus: 'pending',
+        queueAlreadyHasDifferentInFlight: false
+      }),
+      decideTaskTransition({
+        operation: 'return-to-pending',
+        currentStatus: 'completed',
+        queueAlreadyHasDifferentInFlight: false
+      })
+    ];
+    expect(refusals).toHaveLength(4);
+    for (const refusal of refusals) {
+      expect(TASK_TRANSITION_REJECTION_REASONS.has(reasonOf(refusal))).toBe(true);
     }
   });
 });

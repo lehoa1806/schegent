@@ -268,7 +268,18 @@ describe('a connected run under repeat and overlapping starts', () => {
     // shape a crash or an external removal leaves behind. Reading that as "still
     // running" would leave the connected run permanently unstartable, so the
     // probe answers settled.
-    expect(await harness.queue.remove(first.queueItemId)).toBe(true);
+    //
+    // FR-R3-161 (T050, FR-016 re-simulated, 1 of 1) — 2026-09-04. This read
+    // `harness.queue.remove(first.queueItemId)`, a boolean routine that dropped
+    // the row and did nothing else. It was never an operator's removal route;
+    // it was only the shortest way to make a row vanish, which is why the case
+    // reached for it. That routine is gone, so the disappearance is produced one
+    // layer lower, at the storage primitive — under the queue API, which is what
+    // "out-of-band" means here. The claim is unchanged and the assertion is
+    // slightly stronger in shape: the removed row comes back, so the case names
+    // WHICH row went rather than only that something did.
+    const vanished = await harness.store.removeRequest(first.queueItemId);
+    expect(vanished.id).toBe(first.queueItemId);
 
     const admitted = await continueAt(launcher, harness, 'n-rollback', ROLLBACK_REQUEST);
     expect(admitted.outcome).toBe('started');

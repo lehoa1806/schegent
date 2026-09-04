@@ -354,7 +354,6 @@ async function commit(command: PublishPackageCommand, store: FakeCatalogStore): 
       refreshCatalog: async () => undefined,
       readConfig: () => undefined,
       executeCommand: vi.fn(),
-      queueRemover: { remove: vi.fn() },
       audit: {
         append: async (entry: AuditEntry) => {
           audits.push(entry);

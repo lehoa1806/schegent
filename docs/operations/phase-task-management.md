@@ -39,6 +39,22 @@ These operations change only the active Run snapshot. They do not edit or publis
 | Change description | `CMD_MODIFY_TASK { taskId, description }` | Updates the matching Task and emits `task-modified` after success. <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --> <!-- Source: src/ui/sidebar/commands/cmd-modify-task.ts --> |
 | Reorder | `CMD_REORDER_TASK { taskId, newPosition }` | Moves the Task within the unified queue order and emits a canonical `task-reordered` decision. <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --> <!-- Source: src/ui/sidebar/commands/cmd-reorder-task.ts --> |
 | Restart a canceled Task | `CMD_RESTART_CANCELED_TASK { taskId }` | Changes a matching canceled Task back to pending; other states are refused. <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --> <!-- Source: src/ui/sidebar/commands/cmd-restart-canceled-task.ts --> |
+| Cancel a Task | `CMD_CANCEL { taskId }` | Ends the addressed Task as `canceled`. Legal from `pending` and from `in-flight`, refused from every other status — see the matrix below. An in-flight Task whose Queue holds a matching running Run also has that Run canceled and its lease released; a pending Task, or an in-flight one with no matching Run, only finalizes the queue row. Emits `task-canceled`. Omitting `taskId` cancels the window's active Run instead of a named Task. <!-- Source: src/contracts/sidebar-ipc.ts --> <!-- Source: src/commands/cancel.ts --> |
+
+### Which cancellations are legal
+
+One table decides this, for every route: the Task transition classifier's `finish → canceled` column. The operator's command consults it rather than carrying its own copy, so what the sidebar refuses and what the queue refuses cannot drift apart. <!-- Source: src/queue/task-transition-decision.ts --> <!-- Source: src/commands/cancel.ts -->
+
+| Task status | Cancel | Result |
+|---|:---:|---|
+| `pending` | yes | finalized without starting; no Run is involved |
+| `in-flight` | yes | a matching running Run is canceled first, then the row is finalized |
+| `paused` | no | refused; resume or leave it, a paused Task is not cancellable in place |
+| `completed` | no | refused; already terminal |
+| `canceled` | no | refused; already terminal |
+| `failed` | no | refused; already terminal |
+
+A refused cancellation reports `illegal-state` to the caller and is **otherwise silent** — no notification and no audit entry. An unknown `taskId` is different: it reports `not-found` and does notify. <!-- Source: src/commands/cancel.ts -->
 
 Use the Queue and Run identifiers from the latest sidebar snapshot. A stale `taskId`, a Queue without an active Run, or a phase absent from that Run's snapshot is rejected without redirecting the mutation to another Queue. <!-- Source: src/controller/phase-control-service.ts --> <!-- Source: src/queue/queue-manager.ts -->
 

@@ -351,7 +351,6 @@ function depsFor(store: Store, audit: Recorder, bytes?: Uint8Array): RouterDeps 
     catalogLifecycle: fakeCatalogLifecycle(store),
     refreshCatalog: async () => undefined,
     executeCommand: vi.fn(),
-    queueRemover: { remove: vi.fn() },
     isPrimary: () => true,
     isTrusted: () => true,
     audit: audit.port,

@@ -54,7 +54,6 @@ function makeRouter(opts: { isPrimary?: () => boolean } = {}): {
   const logger = new SanitizedLogger([sink]);
   const deps: RouterDeps = {
     executeCommand: (async () => undefined) as RouterDeps['executeCommand'],
-    queueRemover: { remove: async () => true },
     queueOps: makeQueueOps(),
     isPrimary: opts.isPrimary ?? (() => true),
     isTrusted: () => true,

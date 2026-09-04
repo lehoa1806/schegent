@@ -233,7 +233,6 @@ async function commit(command: PublishPackageCommand, store: FakeCatalogStore): 
       refreshCatalog: async () => undefined,
       readConfig: () => undefined,
       executeCommand: vi.fn(),
-      queueRemover: { remove: vi.fn() },
       audit: {
         append: async (entry: AuditEntry) => {
           audits.push(entry);
@@ -548,7 +547,6 @@ describe('Feature 084 — a secondary window refuses the write (T061, QS-33, FR-
       executeCommand: vi.fn(
         async () => undefined as unknown
       ) as unknown as RouterDeps['executeCommand'],
-      queueRemover: { remove: vi.fn(async () => true) },
       catalogStore: store,
       refreshCatalog: async () => undefined,
       readPhaseConfig: () => ({

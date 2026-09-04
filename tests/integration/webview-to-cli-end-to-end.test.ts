@@ -171,7 +171,6 @@ async function buildHarness(overrides: { isPrimary?: boolean; isTrusted?: boolea
       }
       return undefined;
     }) as unknown as RouterDeps['executeCommand'],
-    queueRemover: { remove: vi.fn(async () => true) },
     isPrimary: () => overrides.isPrimary ?? true,
     isTrusted: () => overrides.isTrusted ?? true,
     logger

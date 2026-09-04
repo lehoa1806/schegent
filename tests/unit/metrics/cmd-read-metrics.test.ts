@@ -146,6 +146,11 @@ describe('cmd-read-metrics handler (Feature 073, T003)', () => {
 
   it('performs no mutation of workflow/task/queue state — only reads and acks', async () => {
     const { ctx } = buildCtx();
+    // FR-R3-161 (T047) — `queueRemover` names a router capability the product no
+    // longer has. It stays: the assertion is that the key is ABSENT from the
+    // metrics handler's deps, so a key that can no longer exist still satisfies
+    // it, and dropping the entry would leave one fewer capability asserted
+    // absent. It now guards reintroduction rather than naming live code.
     const mutatingKeys = ['executeCommand', 'queueRemover', 'phaseLogService'];
     for (const key of mutatingKeys) {
       expect((ctx.deps as unknown as Record<string, unknown>)[key]).toBeUndefined();

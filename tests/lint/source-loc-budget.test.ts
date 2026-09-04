@@ -916,6 +916,13 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // in `src/queue/task-transition-decision.ts`. Four lines of literals, three of
       // comment pointing at the decision that added them.
       //
+      // FR-R3-161 (T060, 2026-09-04) — the first of those three members is gone.
+      // Nothing in the product could produce `'queue-mismatch'`, so it left every
+      // vocabulary that carried it, this union included. The arithmetic above is
+      // history and stays as written; the enumeration beside it was not, and a
+      // stale comment fails no test, which is why the removal named this line
+      // explicitly instead of trusting a search to reach it.
+      //
       // Feature 195 (T039, 2026-09-04) — 2873 → 2902: `getProjectedQueueRegistry`
       // gained an optional `workspaceFailurePolicyDefault` parameter and now builds
       // a second per-queue map (`failurePolicyByQueueId`) alongside the existing

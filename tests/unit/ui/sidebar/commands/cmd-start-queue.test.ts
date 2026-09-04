@@ -51,7 +51,6 @@ function buildCtx(opts: {
   const ctx = {
     deps: {
       executeCommand: executeCommandSpy,
-      queueRemover: { remove: vi.fn() },
       logger,
       audit: { append: vi.fn() }
     },
@@ -157,7 +156,6 @@ describe('cmd-start-queue handler (BUG-002, FR-012a, T082)', () => {
     const ctx = {
       deps: {
         executeCommand: executeCommandSpy,
-        queueRemover: { remove: vi.fn() },
         logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), sanitize: (s: string) => s },
         audit: { append: vi.fn() }
       },
