@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 109
+    vacuity-census-denominator: 110
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **109** |
+| Gates the detector calls **controlled** (the denominator) | **110** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -222,6 +222,29 @@ with the rest and did not survive, and both of its floors are stripped by `neute
 
 The residual is unchanged and is the note below: the detector reads for scanning **by name**, so the
 next extraction of a walk into a helper will do this again. Nothing gates that.
+
+**Denominator movement 109 → 110 (2026-09-05, `FR-R3-163`).** One gate joined, controlled on its
+first run — the quiet case, and the one this document has the least of.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | `sidebar-answer-handling.test.ts` (109 → 110) | Joined. Refuses two shapes in the sidebar command routes — defaulting an absent host answer to a literal asserting success, and asserting that answer into shape with a cast — and separately holds the route census as an empty set difference in both directions. It walks `src/ui/sidebar/commands/` through `source-scan.ts` and carries `MIN_ROUTES = 50`, which `PROVES_NON_EMPTY` recognises by the `MIN_\w+` form, so `scanning-gates-prove-they-scanned` was **green on it from the first run** and there was no near miss to record. |
+
+Worth recording for the opposite reason to the row above it. `retry-cap-resolution-site` entered
+after the meta-gate caught it uncontrolled; this one entered already controlled, because the floor
+was written before the gate was first run rather than added under a red. That is the cheaper order
+and it is worth naming as the norm to aim at, not as a lucky outcome.
+
+Its census half also produced a finding this document should keep, because it is a vacuity failure
+the detector cannot see. The first demonstration pointed the scan root at an empty directory to
+prove the floor was live; both set-difference assertions went **green** — because the gate resolves
+`index.ts` relative to that same root, so one wrong root empties both "independent" sources at once
+and every difference is trivially empty. The floor in the first `describe` caught it, two blocks
+away. The fix was to give the census half its own two floors rather than let it lean on a distant
+one. **Two sources that share a root are one source**, and nothing in the detector's `PROVES_NON_EMPTY`
+signal could have told them apart — it reads for the presence of a floor, not for whether the floor
+covers the assertion beside it. The rate stays **0.0%**: the entrant was mutated with the rest and
+did not survive.
 
 **Why this keeps happening, said plainly.** Two authorities on one figure — a line a test asserts
 against a live run, and a table a human maintains — will drift unless something reads both. Nothing

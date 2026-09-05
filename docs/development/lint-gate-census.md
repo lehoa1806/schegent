@@ -19,10 +19,17 @@ predicted it: its author sampled the set and found every gate well motivated.
 
 | Figure | Value | Date | Method |
 |---|---|---|---|
-| Gate files | **191** | 2026-09-04 | `*.test.ts` under `tests/lint/` recursively |
-| Marked `unique` | 176 | 2026-09-04 | hand verdict |
-| Marked `partially redundant` | 15 | 2026-09-04 | hand verdict |
-| Marked `redundant` | 0 | 2026-09-04 | hand verdict |
+| Gate files | **192** | 2026-09-05 | `*.test.ts` under `tests/lint/` recursively |
+| Marked `unique` | 176 | 2026-09-05 | hand verdict |
+| Marked `partially redundant` | 16 | 2026-09-05 | hand verdict |
+| Marked `redundant` | 0 | 2026-09-05 | hand verdict |
+
+The three verdict rows sum to the gate-file count, so they are one measurement and carry one
+date. `FR-R3-163` moved the total 191 → 192 and `partially redundant` 15 → 16 on 2026-09-05;
+the first draft of that edit bumped only the rows whose values changed, leaving **192** dated
+2026-09-04 — a day on which there were 191. Mixed dates across figures a sum constrains is
+itself the defect, because it claims they were counted at moments when they could not all
+have held.
 
 <!-- census:prose -->
 
@@ -309,6 +316,7 @@ changing one means updating that machinery in the same commit.
 | `self-certification-disclosed.test.ts` | self-certification is disclosed | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `settings-field-bounds-parity.test.ts` | every `min`/`max` a General Settings field advertises is the bound the host validator enforces | partly by `settings-schema-parity.test.ts`, which holds the manifest to `SETTINGS_SCHEMA`; nothing else compared either against the numbers the Svelte control shows the operator | unique | a control offering a range the host rejects fails the save with no warning at the moment of typing. The manifest and the schema agreeing says nothing about the third copy, which is the one on screen |
 | `settings-group-heading-parity.test.ts` | each of the four settings-group components renders the heading its `docs/reference/settings.md` section is titled with | — | unique | the visual baselines cannot substitute: all three settings screenshots passed 3/3 against baselines captured before the groups existed, because the group renders either way and the diff sits under `maxDiffPixelRatio`. A one-word heading drift is invisible to a pixel gate and visible to this one |
+| `sidebar-answer-handling.test.ts` | FR-R3-163 — sidebar routes do not read an absent answer as success | partly by `tests/unit/ui/sidebar/commands/cmd-cancel.test.ts` and `retry-and-restart-answer-outcomes.test.ts`, which hold the three corrected routes **by name**; nothing holds the other fifty-two, and no type or compiler flag holds any of them | partially redundant | those two siblings are unit tests, which are **not** successors under the retirement rule above, and per-route coverage is exactly the control that failed here: the defect reached three routes precisely because each was written one at a time and nobody was reading the population. Both forbidden shapes are ordinary well-typed TypeScript — `result ?? { ok: true }` is a legal nullish default and `result as { ok: boolean }` is the escape hatch working as designed — so no strictness-ratchet flag reaches either, and a fifty-sixth route added next month inherits nothing from the three unit tests. Landed red 2026-09-05 against the uncorrected tree on **exactly three** files (`cmd-cancel.ts`, `cmd-retry-queue-item.ts`, `cmd-restart-canceled-task.ts`) with the **other fifty-two green in the same run** — that second half is the soundness control, since a term red on fifty routes would prove only that it is too wide. The narrowing is carried by its own fixtures and by inline near-miss controls that must stay unmatched (`result ?? { ok: false, reason: 'x' }`, `result ?? undefined`, `payload ?? { taskId }`, `handler as CommandHandler`, `x as const`) — `as CommandHandler` alone appears about sixty times in `index.ts:136-201` legitimately. Load-bearing probe: add a new `cmd-*.ts` route defaulting its host answer with `?? { ok: true }`; every unit test above stays green, and this gate fails on CASE A |
 | `snapshot-mirror-census.test.ts` | FR-R3-132 — the snapshot mirror imports what it does not decide | partly by `webview-host-import-direction.test.ts`, which decides WHERE the webview may import from; nothing else asks whether it imported at all | unique | the parity tests compare specific fields on specific shapes; none counts duplication or checks a union for a missing member. Landed red 2026-08-28 against 51 byte-identical declarations, and its union half independently rediscovered the live defect the measurement had found — `QueueSummary.pauseSource` omitting `'retry-cap'`. **Its own first version walked three host directories and reported zero remaining copies; a review pointed at four in `src/services/`, and widening the walk to `src/` turned zero into fifteen.** Two earlier drafts were wrong in the other direction too: one read string literals out of JSDoc, one read a module specifier as a union member. All four corrections are recorded in the source |
 | `source-loc-budget.test.ts` | large source file LOC budgets | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `source-marker-targets.test.ts` | provenance markers name a real file (FR-R3-063) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
