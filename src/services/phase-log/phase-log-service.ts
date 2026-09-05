@@ -12,10 +12,18 @@
 
 import { readPhaseLog } from './phase-log-reader';
 import type { ReadPhaseLogRequest, ReadPhaseLogResponse } from '../../contracts/sidebar-ipc';
+import type { PhaseProgress } from './types';
+// Feature 203 (D7, F13, F22) — an ERASED type import, so no value crosses the
+// service → ui direction and `dependency-direction.test.ts`, which governs value
+// imports, is unaffected. Precedent: `continuation-service.ts` imports
+// `ChildRunStateReader` from `../../ui/sidebar/connected-run-projector` the same
+// way. `Pick` rather than the whole interface: the service reads two fields and
+// the type should say so.
+import type { QueueItem } from '../../ui/sidebar/snapshot';
 
 export interface PhaseLogSnapshotView {
   readonly queue: {
-    readonly inFlight: { readonly id: string } | null;
+    readonly inFlight: Pick<QueueItem, 'id' | 'currentPhase'> | null;
     readonly pending: readonly { readonly id: string }[];
     readonly recent: readonly { readonly id: string }[];
     readonly queues: readonly { readonly id: string }[];
@@ -60,6 +68,10 @@ export function createPhaseLogService(deps: PhaseLogServiceDeps): PhaseLogServic
         return validation;
       }
       const isInFlight = validation.isInFlight;
+      // Feature 203 (D7, FR-016) — task-level and phase-level are different
+      // questions and now have different answers. `isInFlight` below is
+      // unchanged (X4); `progress` is the one a card may quote.
+      const progress = validation.progress;
       // The webview passes FeatureRequest.id as `taskId`, but the
       // session directory on disk is named after the WorkflowRun.id
       // (stored as FeatureRequest.runId). Resolve the actual runId
@@ -72,6 +84,7 @@ export function createPhaseLogService(deps: PhaseLogServiceDeps): PhaseLogServic
         workspaceRoot: deps.workspaceRoot,
         selection: resolvedSelection,
         isInFlight,
+        progress,
         caps: {
           perFieldBytes: deps.caps?.perFieldBytes ?? DEFAULT_PER_FIELD_BYTES,
           maxEntries: deps.caps?.maxEntries ?? DEFAULT_MAX_ENTRIES
@@ -85,11 +98,34 @@ export function createPhaseLogService(deps: PhaseLogServiceDeps): PhaseLogServic
 }
 
 type SelectionValidation =
-  | { readonly outcome: 'success'; readonly isInFlight: boolean }
+  | {
+      readonly outcome: 'success';
+      readonly isInFlight: boolean;
+      readonly progress: PhaseProgress;
+    }
   | {
       readonly outcome: 'failure';
       readonly reason: 'unknown-tuple';
     };
+
+/**
+ * Feature 203 (D7, FR-016, FR-017) — the four cases, stated once.
+ *
+ * `unknown` is reserved for the one situation where the answer is genuinely not
+ * available: the task is running and the snapshot has not named a phase. It is
+ * NOT the same as `not-running`, and the classifier must not render it as a
+ * progress claim — a card saying "output is still coming" is a promise this
+ * reader would be in no position to make.
+ */
+function derivePhaseProgress(
+  inFlight: PhaseLogSnapshotView['queue']['inFlight'],
+  inFlightMatch: boolean,
+  phaseId: string
+): PhaseProgress {
+  if (!inFlightMatch || inFlight === null) return 'not-running';
+  if (inFlight.currentPhase === null) return 'unknown';
+  return inFlight.currentPhase === phaseId ? 'running' : 'not-running';
+}
 
 function validateSelection(
   selection: ReadPhaseLogRequest['selection'],
@@ -126,7 +162,11 @@ function validateSelection(
     return { outcome: 'failure', reason: 'unknown-tuple' };
   }
 
-  return { outcome: 'success', isInFlight: inFlightMatch };
+  return {
+    outcome: 'success',
+    isInFlight: inFlightMatch,
+    progress: derivePhaseProgress(snapshot.queue.inFlight, inFlightMatch, selection.phaseId)
+  };
 }
 
 function nonEmpty(value: unknown): value is string {

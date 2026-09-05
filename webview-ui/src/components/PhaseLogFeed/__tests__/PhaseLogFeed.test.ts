@@ -257,7 +257,7 @@ beforeEach(() => {
       entries: [makePushEntry(1, 'historical-init', 'system')],
       skippedLines: 0,
       truncatedCount: 0,
-      verboseDiagnosticsState: { kind: 'enabled-with-sessions' },
+      verboseDiagnosticsState: { kind: 'entries-present' },
       isInFlight: true
     }
   });
@@ -658,7 +658,7 @@ describe('Feature 021 T046 (BUG-001 Defect A) — cold-start cascade', () => {
           entries: [],
           skippedLines: 0,
           truncatedCount: 0,
-          verboseDiagnosticsState: { kind: 'enabled-no-sessions-for-tuple' },
+          verboseDiagnosticsState: { kind: 'phase-not-recorded' },
           isInFlight: false
         }
       })
@@ -670,7 +670,7 @@ describe('Feature 021 T046 (BUG-001 Defect A) — cold-start cascade', () => {
           entries: [makePushEntry(1, 'recent-log', 'system')],
           skippedLines: 0,
           truncatedCount: 0,
-          verboseDiagnosticsState: { kind: 'enabled-with-sessions' },
+          verboseDiagnosticsState: { kind: 'entries-present' },
           isInFlight: false
         }
       });
@@ -769,7 +769,7 @@ describe('cold-start fallback — a completed Run has no current phase', () => {
           entries: [makePushEntry(1, 'historical-init', 'system')],
           skippedLines: 0,
           truncatedCount: 0,
-          verboseDiagnosticsState: { kind: 'enabled-with-sessions' },
+          verboseDiagnosticsState: { kind: 'entries-present' },
           isInFlight: false
         }
       } as PhaseLogReadResult;

@@ -214,7 +214,7 @@ beforeEach(() => {
       entries: [],
       skippedLines: 0,
       truncatedCount: 0,
-      verboseDiagnosticsState: { kind: 'enabled-with-sessions' },
+      verboseDiagnosticsState: { kind: 'no-iteration-recorded' },
       isInFlight: false
     }
   });

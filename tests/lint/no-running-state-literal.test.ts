@@ -158,6 +158,49 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // happens to share the substring, never the pinned per-task status
   // discriminator, which this file neither reads nor writes.
   'src/services/auto-drain-coordinator.ts',
+  // Feature 203 (D1, D7, FR-016) — the phase-log empty-kind vocabulary and the
+  // phase-granularity progress discriminator it is derived from. Neither is the
+  // pinned per-task status projection this guard protects: `PhaseProgress` is a
+  // vocabulary of its own, in the same class as the `BackendPingState` and
+  // `QueueLifecycle` discriminators `backend-ping-service.ts` and
+  // `feature-request.ts` are already listed above for, and no file in this module
+  // reads or writes a `WorkflowRunStatus`.
+  //
+  // Two of the four occurrences are unavoidable by construction rather than by
+  // preference: `phase-running-no-output` is a MEMBER NAME fixed by the feature's
+  // empty-kind vocabulary contract (V1), so the substring travels with the member
+  // wherever the member is declared or returned. Renaming the member to dodge a
+  // text scan would be the trade `src/runner/process-tree.ts` above is listed for
+  // refusing.
+  //
+  // Declares both the member and the `PhaseProgress` union.
+  'src/services/phase-log/types.ts',
+  // Compares `progress === 'running'` and returns the member.
+  'src/services/phase-log/verbose-diagnostics-detector.ts',
+  // Derives `PhaseProgress` from the snapshot's in-flight Task, so it is the one
+  // file here that WRITES a `running` value — of that union, never of the
+  // per-task status one, which it never sees.
+  'src/services/phase-log/phase-log-service.ts',
+  // Comment-only: one doc line naming the member a caller that omitted `progress`
+  // could no longer produce. Same case as `src/runner/claude-cli.ts` above.
+  'src/services/phase-log/phase-log-reader.ts',
+  //
+  // The webview half of the same adjudication, added when the vocabulary reached
+  // the surface (T045, T043). Both files are handed the classification and nothing
+  // else — neither reads a `WorkflowRunStatus`, and the host contract they import
+  // from is `src/services/phase-log/types.ts`, listed above.
+  //
+  // Selects the card with `banner.kind === 'phase-running-no-output'` and repeats
+  // the member in the testid and in the `data-empty-kind` key the member-to-card
+  // bijection is asserted through, so the substring arrives three times by
+  // construction. Its card title, "This phase is running", is a sentence an
+  // operator reads — the same class as `webview-ui/src/lib/action-copy.ts` and
+  // `src/commands/reset.ts` above.
+  'webview-ui/src/components/PhaseLogFeed/PhaseLogEmptyStates.svelte',
+  // Comment-only: one line naming the member whose card would otherwise survive a
+  // live append, which is the reason the branch beside it reclassifies. Same case
+  // as `src/services/phase-log/phase-log-reader.ts` directly above.
+  'webview-ui/src/lib/phase-log-store.svelte.ts',
   // Feature 065 — v6→v7 derivation table maps (inFlight, paused, pending)
   // tuples to a `queueLifecycle` value; `'running'` appears as a target.
   'src/state/queue-state-migrator.ts',

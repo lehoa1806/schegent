@@ -4,6 +4,16 @@ import type {
   CMD_STOP_PHASE_LOG_TAIL,
   CommandBase
 } from '../sidebar-ipc';
+// Feature 203 (FR-005, FR-022, D6, V2) — the banner has exactly one definition,
+// in the service module that also produces it. The member is produced host-side
+// and crosses the boundary as part of the answer, so the boundary states the
+// shape by importing it rather than by restating it. The restatement below had
+// already drifted: it typed `settingKey` as `string` where the host declares the
+// literal `'schegent.logging.verbose'`. Importing resolves that by construction
+// — after this the two cannot disagree. Precedent:
+// `src/contracts/sidebar-ipc/process-yaml.ts:21`, qualified because two files in
+// this tree are named `process-yaml.ts` and both are long enough to hold line 21.
+import type { VerboseDiagnosticsBanner } from '../../services/phase-log/types';
 
 // Selection fields are identifiers only. Host-owned snapshot data resolves
 // filesystem paths after validation at the IPC boundary.
@@ -45,10 +55,7 @@ export type ReadPhaseLogResponse =
         }[];
         readonly skippedLines: number;
         readonly truncatedCount: number;
-        readonly verboseDiagnosticsState:
-          | { readonly kind: 'enabled-with-sessions' }
-          | { readonly kind: 'enabled-no-sessions-for-tuple' }
-          | { readonly kind: 'disabled-no-sessions'; readonly settingKey: string };
+        readonly verboseDiagnosticsState: VerboseDiagnosticsBanner;
         readonly isInFlight: boolean;
       };
     }

@@ -298,9 +298,15 @@ export function createPhaseLogStore(
       setState({ ...cur, tailSessionId: null });
       return;
     }
+    // Feature 203 (T043, D8) — the classification describes the log on screen,
+    // so appending to that log has to move it too. Without this, a feed the
+    // host classified `phase-running-no-output` keeps its "nothing yet" card
+    // while the output arrives beneath it. Only the appending branch does this:
+    // the two returns above append nothing and leave the classification alone.
     setState({
       ...cur,
-      entries: Object.freeze([...cur.entries, payload.entry])
+      entries: Object.freeze([...cur.entries, payload.entry]),
+      verboseDiagnosticsState: { kind: 'entries-present' }
     });
   }
 

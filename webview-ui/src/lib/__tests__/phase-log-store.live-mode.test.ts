@@ -425,3 +425,124 @@ describe('reset() preserves isLiveMode (FR-015 persistence intent)', () => {
     expect(store.isLiveMode()).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Feature 203 (T043, T044, D8) — the classification is a claim about the log on
+// screen, so whoever changes what is on screen owns keeping it true.
+//
+// `handlePush` appends live entries beneath a feed the host classified before
+// the tail attached. Without the transition below, a phase classified
+// `phase-running-no-output` keeps its "nothing yet" card while its output
+// arrives underneath it — the card and the rows disagreeing on the same screen.
+// It lives in the STORE suite rather than the feed's, because the store is
+// where the state changes; the feed only renders what it is handed (risk R8).
+// ---------------------------------------------------------------------------
+
+const RUNNING_WITH_NO_OUTPUT = Object.freeze({
+  outcome: 'success',
+  manifest: Object.freeze({
+    iterations: Object.freeze([1]),
+    selectedIteration: 1,
+    entries: Object.freeze([]),
+    skippedLines: 0,
+    truncatedCount: 0,
+    verboseDiagnosticsState: Object.freeze({ kind: 'phase-running-no-output' }),
+    isInFlight: true
+  })
+});
+
+const SELECTION = Object.freeze({
+  queueId: 'q-1',
+  taskId: 'run-1',
+  pipelineId: 'standard',
+  phaseId: 'speckit-plan',
+  iterationN: 1
+});
+
+function makeEntry(seq: number, kind = 'assistant-text'): unknown {
+  return Object.freeze({
+    seq,
+    kind,
+    ts: null,
+    body: Object.freeze({ text: `line ${seq}` }),
+    bodyTruncated: null
+  });
+}
+
+/**
+ * A store already showing the "running, nothing yet" card with a tail attached,
+ * plus the captured push callback the host would drive.
+ */
+async function storeShowingRunningCard(): Promise<{
+  store: ReturnType<typeof createPhaseLogStore>;
+  push: (payload: unknown) => void;
+}> {
+  let captured: ((payload: unknown) => void) | null = null;
+  const store = createPhaseLogStore(
+    async () => RUNNING_WITH_NO_OUTPUT as never,
+    {
+      start: async () => ({ outcome: 'success', sessionId: 's-1', mechanism: 'fs.watch' }),
+      stop: async () => ({ outcome: 'success', sessionId: 's-1' }),
+      subscribe: (cb: (payload: never) => void) => {
+        captured = cb as (payload: unknown) => void;
+        return () => {
+          captured = null;
+        };
+      }
+    } as never
+  );
+  store.setSelection({ ...SELECTION }, { origin: 'cascade' });
+  await store.reload();
+  await store.startTail({ selection: { ...SELECTION } });
+  if (captured === null) {
+    throw new Error('startTail did not subscribe, so no push could be delivered');
+  }
+  return { store, push: captured };
+}
+
+describe('Feature 203 T044 — a live entry retires the card that said there were none', () => {
+  it('is showing the running-no-output card with no entries before any push', async () => {
+    // The arrangement is asserted rather than assumed. Without this, a store
+    // that failed to load would satisfy the transition below by starting from
+    // the wrong state.
+    const { store } = await storeShowingRunningCard();
+    expect(store.state.entries).toHaveLength(0);
+    expect(store.state.verboseDiagnosticsState).toEqual({ kind: 'phase-running-no-output' });
+    expect(store.state.tailSessionId).toBe('s-1');
+  });
+
+  it('reclassifies to entries-present when a pushed entry is appended', async () => {
+    const { store, push } = await storeShowingRunningCard();
+    push({ tailSessionId: 's-1', entrySeq: 1, entry: makeEntry(1) });
+    expect(store.state.entries).toHaveLength(1);
+    expect(store.state.verboseDiagnosticsState).toEqual({ kind: 'entries-present' });
+  });
+
+  it('stays entries-present as further entries arrive', async () => {
+    const { store, push } = await storeShowingRunningCard();
+    push({ tailSessionId: 's-1', entrySeq: 1, entry: makeEntry(1) });
+    push({ tailSessionId: 's-1', entrySeq: 2, entry: makeEntry(2) });
+    expect(store.state.entries).toHaveLength(2);
+    expect(store.state.verboseDiagnosticsState).toEqual({ kind: 'entries-present' });
+  });
+
+  it('leaves the classification alone for a push it drops', async () => {
+    // A stale session's push appends nothing, so it must not claim entries are
+    // present either. The two have to move together or the card outlives its
+    // subject in the other direction.
+    const { store, push } = await storeShowingRunningCard();
+    push({ tailSessionId: 's-stale', entrySeq: 1, entry: makeEntry(1) });
+    expect(store.state.entries).toHaveLength(0);
+    expect(store.state.verboseDiagnosticsState).toEqual({ kind: 'phase-running-no-output' });
+  });
+
+  it('leaves the classification alone for the tail-ended terminator', async () => {
+    // The terminator is not appended to the visible log — the LIVE badge going
+    // away is the cue — so it must not reclassify either.
+    const { store, push } = await storeShowingRunningCard();
+    push({ tailSessionId: 's-1', entrySeq: 1, entry: makeEntry(1, 'tail-ended') });
+    expect(store.state.entries).toHaveLength(0);
+    expect(store.state.tailSessionId).toBeNull();
+    expect(store.state.verboseDiagnosticsState).toEqual({ kind: 'phase-running-no-output' });
+  });
+});

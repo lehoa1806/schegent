@@ -105,23 +105,18 @@
   const hasNoEntries = $derived(
     !state.loading && state.entries.length === 0
   );
-  // When the host returns a banner (`enabled-no-sessions-for-tuple` or
-  // `disabled-no-sessions`) AND the reading pane has no rows, show the
-  // empty-state card in place of the reading pane. The "enabled with
-  // sessions" banner is informational only — the pane renders normally.
-  // Bug "the phase log that asked for a phase named done" (2026-09-02), second
-  // finding — a selection naming a task but no phase never completes a tuple,
-  // so no banner ever arrives, so `showEmptyCard` stayed false and the reading
-  // pane rendered its own nothing. `hasNoEntries` is required as well, so a
-  // stale read's content is never hidden behind guidance.
+  // Feature 203 (T041, T042, D8, FR-014, SC-004) — the card choice is the
+  // host's classification and nothing else: `entries-present` renders the
+  // reading pane, every other member renders its card. `hasNoEntries` survives
+  // only below, because a selection naming a task but no phase never completes
+  // a tuple, so no classification ever arrives for it (FR-019, X6).
   const noPhaseSelected = $derived(
     hasNoEntries && state.selection.taskId !== null && state.selection.phaseId === null
   );
   const showEmptyCard = $derived(
     noPhaseSelected ||
-      (hasNoEntries &&
-        state.verboseDiagnosticsState !== null &&
-        state.verboseDiagnosticsState.kind !== 'enabled-with-sessions')
+      (state.verboseDiagnosticsState !== null &&
+        state.verboseDiagnosticsState.kind !== 'entries-present')
   );
 
   const selectedRunner = $derived.by(() => {
@@ -464,7 +459,11 @@
   />
 
   {#if showEmptyCard}
-    <PhaseLogEmptyStates banner={state.verboseDiagnosticsState} {noPhaseSelected} />
+    <PhaseLogEmptyStates
+      banner={state.verboseDiagnosticsState}
+      {noPhaseSelected}
+      skippedLines={state.skippedLines}
+    />
   {:else}
     <PhaseLogReadingPane
       entries={state.entries}
