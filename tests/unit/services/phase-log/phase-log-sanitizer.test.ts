@@ -123,6 +123,7 @@ async function readerEntries(): Promise<readonly PhaseLogDisplayEntry[]> {
     workspaceRoot: tmpDir,
     selection: SELECTION,
     isInFlight: false,
+    progress: 'not-running',
     caps: { perFieldBytes: 64 * 1024, maxEntries: 1000 },
     sanitize
   });

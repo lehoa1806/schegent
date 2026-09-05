@@ -57,6 +57,18 @@ const TYPE_ONLY_ALLOWLIST: ReadonlyArray<{ readonly module: string; readonly rea
       'are not bundled, so nothing reaches the untrusted surface. `KEY_SPECS` is not a ' +
       'contracts candidate: it carries validators, not a shape, and CLAUDE.md hard rule 011 ' +
       'names its location'
+  },
+  {
+    // Assembled for the reason given above CONTRACTS_QUEUE_IDENTITY.
+    module: ['src', 'services', 'phase-log', 'phase-log-reader'].join('/'),
+    reason:
+      '2026-09-05 — feature 203 (T005). Imported by ONE webview test, as a value, so the five ' +
+      'reachable empty situations render from the manifest the REAL reader produces against ' +
+      'real on-disk fixtures. A hand-copied manifest would be worthless here: four of those ' +
+      'five situations produce a BYTE-IDENTICAL manifest, which is the defect the feature ' +
+      'exists to remove, so a hand-written one would encode the belief under test. Tests are ' +
+      'not bundled, so nothing reaches the untrusted surface. Not a contracts candidate — it ' +
+      'is a filesystem reader, not a shape'
   }
 ];
 

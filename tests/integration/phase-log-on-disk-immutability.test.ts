@@ -141,6 +141,7 @@ describe('Feature 029 T033 — phase-log on-disk immutability (SC-005)', () => {
       workspaceRoot: tmpDir,
       selection: SELECTION,
       isInFlight: true,
+      progress: 'running',
       caps: { perFieldBytes: 4096, maxEntries: 500 },
       sanitize
     });

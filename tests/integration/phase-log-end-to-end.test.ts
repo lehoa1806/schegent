@@ -92,7 +92,7 @@ function makeService(h: Harness, isInFlight: boolean) {
     readVerboseSetting: () => true,
     getSnapshot: () => ({
       queue: {
-        inFlight: isInFlight ? { id: RUN_ID } : null,
+        inFlight: isInFlight ? { id: RUN_ID, currentPhase: PHASE_ID } : null,
         pending: [],
         recent: isInFlight ? [] : [{ id: RUN_ID }],
         queues: [{ id: QUEUE_ID }]
@@ -122,7 +122,7 @@ function makeServiceWithSplitIds(h: Harness, isInFlight: boolean) {
     readVerboseSetting: () => true,
     getSnapshot: () => ({
       queue: {
-        inFlight: isInFlight ? { id: TASK_ID } : null,
+        inFlight: isInFlight ? { id: TASK_ID, currentPhase: PHASE_ID } : null,
         pending: [],
         recent: isInFlight ? [] : [{ id: TASK_ID }],
         queues: [{ id: QUEUE_ID }]
@@ -201,7 +201,7 @@ describe('Feature 020 T057 — phase-log end-to-end', () => {
     expect(success.manifest.skippedLines).toBe(0);
     expect(success.manifest.truncatedCount).toBe(0);
     expect(success.manifest.verboseDiagnosticsState.kind).toBe(
-      'enabled-with-sessions'
+      'entries-present'
     );
     expect(success.manifest.isInFlight).toBe(false);
   });

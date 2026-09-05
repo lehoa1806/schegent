@@ -12,13 +12,14 @@ import { resolvePhaseDirPath, resolveStreamJsonlPath } from './phase-log-path';
 // tail session so a reopened phase and a watched one redact identically.
 import { sanitizeDisplayEntryBody } from './phase-log-sanitizer';
 import { truncateDisplayEntryBody } from './phase-log-truncator';
-import { detectVerboseDiagnosticsState } from './verbose-diagnostics-detector';
+import { classifyEmptyKind } from './verbose-diagnostics-detector';
 import { readBoundedTail } from '../../lib/bounded-read';
 import type {
   IterationManifest,
   PhaseLogDisplayEntry,
   PhaseLogReadResult,
-  PhaseLogSelection
+  PhaseLogSelection,
+  PhaseProgress
 } from './types';
 
 interface ReadCaps {
@@ -33,6 +34,18 @@ interface ReadIterationManifestArgs {
     'queueId' | 'taskId' | 'pipelineId' | 'phaseId' | 'iterationN'
   >;
   readonly isInFlight: boolean;
+  /**
+   * Feature 203 (D7, FR-016, risk R2) — progress at PHASE granularity, derived
+   * by the service. `isInFlight` above is task-level and stays as it is; a card
+   * that claims "still producing output" needs this one instead.
+   *
+   * REQUIRED, deliberately. Optional with an `unknown` default would let a
+   * future caller omit it and silently get a reader that can never produce
+   * `phase-running-no-output` — the exact class of silent degradation this
+   * feature exists to remove. Every caller states its progress claim, including
+   * the ones whose claim is that they cannot tell.
+   */
+  readonly progress: PhaseProgress;
   readonly caps: ReadCaps;
   readonly sanitize: (s: string) => string;
   readonly readSetting?: () => boolean;
@@ -65,21 +78,29 @@ export async function readIterationManifest(
     pipelineId: args.selection.pipelineId,
     phaseId: args.selection.phaseId
   });
-  const iterations = await discoverIterations(phaseDir);
-  const verboseDiagnosticsState = await detectVerboseDiagnosticsState({
-    workspaceRoot: args.workspaceRoot,
-    selection: args.selection,
-    readSetting: args.readSetting ?? (() => false)
-  });
+  // Feature 203 (D3) — the one observation of the phase directory. Everything
+  // downstream classifies from `discovery`; nothing re-resolves this path.
+  const discovery = await discoverIterations(phaseDir);
+  const iterations = discovery.outcome === 'listed' ? discovery.iterations : [];
+  const settingOn = (args.readSetting ?? (() => false))();
+  const progress: PhaseProgress = args.progress;
 
   if (iterations.length === 0) {
+    // Feature 203 (T034, D2, FR-004, FR-008) — every one of these four
+    // situations used to return this same manifest with a label chosen by
+    // whether the directory happened to exist.
     return {
       iterations: [],
       selectedIteration: null,
       entries: [],
       skippedLines: 0,
       truncatedCount: 0,
-      verboseDiagnosticsState,
+      verboseDiagnosticsState: classifyEmptyKind({
+        discovery,
+        settingOn,
+        progress,
+        entryCount: 0
+      }),
       isInFlight: args.isInFlight
     };
   }
@@ -123,17 +144,23 @@ export async function readIterationManifest(
         denied.code = opened.errno;
         throw denied;
       }
-      // Everything else reads as an absent log rather than as an error the
-      // operator can act on, which is what the ENOENT branch below already
-      // decided for a phase log that is not there: the panel shows an empty
-      // iteration, and the refusal is not something the panel can explain.
+      // Feature 203 (T035, D2, F20) — everything else still returns an empty
+      // manifest, but it no longer returns an unlabelled one. The split keys on
+      // "errno is not ENOENT" and on nothing else: opening the stream path when
+      // it is a directory succeeds on POSIX and fails EISDIR on Windows, and a
+      // symlinked leaf carries no errno at all. All three are the same
+      // situation for the operator — the path is there and is not a log — so
+      // the branch must not name a code or a platform.
       return {
         iterations,
         selectedIteration,
         entries: [],
         skippedLines: 0,
         truncatedCount: 0,
-        verboseDiagnosticsState,
+        verboseDiagnosticsState:
+          opened.errno === 'ENOENT'
+            ? { kind: 'record-vanished' }
+            : { kind: 'record-path-refused' },
         isInFlight: args.isInFlight
       };
     }
@@ -150,13 +177,18 @@ export async function readIterationManifest(
     const code = (err as NodeJS.ErrnoException).code;
     if (code === 'ENOENT') {
       // Race: iteration discovered then file deleted between calls.
+      //
+      // Feature 203 (T036, D2, FR-003) — the SAME member as the ENOENT refusal
+      // above, deliberately. Two code paths, one operator situation: an
+      // iteration exists and its stream does not. A distinct member here would
+      // be an enumeration of code paths rather than of situations.
       return {
         iterations,
         selectedIteration,
         entries: [],
         skippedLines: 0,
         truncatedCount: 0,
-        verboseDiagnosticsState,
+        verboseDiagnosticsState: { kind: 'record-vanished' },
         isInFlight: args.isInFlight
       };
     }
@@ -205,7 +237,15 @@ export async function readIterationManifest(
     // FR-R3-052 — omitted when nothing was skipped, so the field's presence is
     // itself the signal rather than a zero every caller has to interpret.
     ...(skippedBytes > 0 ? { skippedLeadingBytes: skippedBytes } : {}),
-    verboseDiagnosticsState,
+    // Feature 203 (T037, D2, FR-007) — the only site that can reach
+    // `entries-present`, and it reaches it by counting the entries it is about
+    // to return. `entries-present` with zero entries is unconstructible here.
+    verboseDiagnosticsState: classifyEmptyKind({
+      discovery,
+      settingOn,
+      progress,
+      entryCount: entries.length
+    }),
     isInFlight: args.isInFlight
   };
 }

@@ -2,7 +2,7 @@
 //
 // A helper rather than an inline `postCommand` in the component, following
 // `openVerboseSetting` (`phase-log-ipc.ts:122`) and the convention its caller
-// states at `PhaseLogEmptyStates.svelte:8`: IPC posts live in `lib/`, so the
+// states at `PhaseLogEmptyStates.svelte:20`: IPC posts live in `lib/`, so the
 // dispatcher lint can see every sender in one place.
 //
 // Fire-and-forget. The host opens the settings editor; nothing here waits for

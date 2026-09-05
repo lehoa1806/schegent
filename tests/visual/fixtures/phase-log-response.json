@@ -11,7 +11,7 @@
     ],
     "skippedLines": 0,
     "truncatedCount": 0,
-    "verboseDiagnosticsState": { "kind": "enabled-with-sessions" },
+    "verboseDiagnosticsState": { "kind": "entries-present" },
     "isInFlight": true
   }
 }
