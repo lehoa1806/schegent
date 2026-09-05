@@ -75,8 +75,14 @@ describe('ActionKey — derived from the generated host mirror (T193 US2, FR-001
     expect(Object.keys(ACTION_COPY).sort()).toEqual([...GENERATED_ACTION_KEYS].sort());
   });
 
-  it('the generated mirror declares exactly the 18 canonical keys', () => {
-    expect(GENERATED_ACTION_KEYS.length).toBe(18);
+  it('the generated mirror declares a non-empty set of canonical keys', () => {
+    // Non-emptiness, not cardinality. `:75` above asserts the real property —
+    // set equality between the copy table and the generated mirror — and that
+    // assertion passes when BOTH sides are empty. These two floors are what
+    // stop it: one per side, because a floor on the mirror alone leaves the
+    // copy-table side unchecked (FR-021, SC-009).
+    expect(GENERATED_ACTION_KEYS.length).toBeGreaterThan(0);
+    expect(Object.keys(ACTION_COPY).length).toBeGreaterThan(0);
   });
 });
 

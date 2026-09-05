@@ -3,6 +3,7 @@ import { errorMessage } from '../../../lib/errors';
 import {
   ackFieldsFor,
   failed,
+  fromMutationResult,
   normalizeCommandResult,
   UNRECOGNIZED_RESULT_REASON,
   type CommandOutcome
@@ -139,15 +140,37 @@ export async function execAndAck(
   await ackCommandOutcome(ctx, await execForOutcome(ctx, commandId, ...args));
 }
 
+/**
+ * FR-R3-163 (feature 202) — ACK a result the caller already holds, through the
+ * same converter every other route uses.
+ *
+ * The hand-written mapping this replaces produced the same `status` and the same
+ * `reason` for all three inputs — `fromMutationResult` falls back to
+ * `UNEXPLAINED_REJECTION_REASON`, which is the literal `'operation-rejected'`
+ * that used to sit here (`command-outcome.ts:79`). So this deletes a duplicate
+ * of a constant rather than changing a value, and no caller needs an edit. What
+ * they gain is the `outcome` field, which this helper alone among the ack paths
+ * did not set — additive and optional by the contract's own comment at
+ * `host-messages.ts:12-19` (FR-011, FR-012, FR-013, F41).
+ *
+ * FOURTEEN callers, not seventeen. Seventeen routes called this helper at the
+ * diff base and all seventeen gain the field; three of them — `cmd-cancel`,
+ * `cmd-retry-queue-item`, `cmd-restart-canceled-task` — were moved onto
+ * `execAndAck` by this same feature, so fourteen reach the field through here
+ * and three reach it through the dispatching path. Both figures are correct for
+ * different populations, and writing either one without its population is
+ * finding F49 (`specs/202-cancel-ack-outcomes/research.md` Part 3b).
+ *
+ * Reachable outcomes are `accepted` and `refused` ONLY. `no-op` and `failed` are
+ * unreachable through this path because of the argument's shape: every `!ok`
+ * becomes `refused`, and a result in hand cannot have failed to dispatch
+ * (FR-032).
+ */
 export async function ackGenericResult(
   ctx: HandlerContext,
   result: { ok: boolean; reason?: string }
 ): Promise<void> {
-  await ack(
-    ctx,
-    result.ok ? 'accepted' : 'rejected',
-    result.ok ? undefined : result.reason ?? 'operation-rejected'
-  );
+  await ackCommandOutcome(ctx, fromMutationResult(result));
 }
 
 export async function ackMutationResult(

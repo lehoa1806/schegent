@@ -3,8 +3,7 @@
  * between the host's canonical `ACTION_KEYS` tuple
  * (`src/contracts/action-keys.ts`) and the webview's generated mirror
  * (`webview-ui/src/lib/generated/action-keys.ts`), plus a full host
- * suppression-validator/store/snapshot round trip for every one of the 18
- * canonical keys.
+ * suppression-validator/store/snapshot round trip for every canonical key.
  *
  * Per the action-key contract's invariant 3 ("two-artifact provenance"), the
  * host tuple and the webview mirror are imported here from two independently
@@ -129,9 +128,13 @@ describe('ActionKey host/webview parity + suppression round trip (T032, FR-010)'
     expect(hostContent).not.toContain('GENERATED FILE');
   });
 
-  it('the webview mirror declares exactly the 18 canonical keys, matching the host tuple', () => {
-    expect(HOST_ACTION_KEYS.length).toBe(18);
-    expect(webviewActionKeys.length).toBe(18);
+  it('the webview mirror declares exactly the keys the host tuple declares', () => {
+    // Non-emptiness, not cardinality. The property under test is the set
+    // equality on the third line; these two exist only so that equality cannot
+    // pass over two empty arrays — which is what a broken import or a mirror
+    // regenerated from nothing would produce (FR-020, FR-021, FR-022).
+    expect(HOST_ACTION_KEYS.length).toBeGreaterThan(0);
+    expect(webviewActionKeys.length).toBeGreaterThan(0);
     expect([...webviewActionKeys].sort()).toEqual([...HOST_ACTION_KEYS].sort());
   });
 
@@ -144,7 +147,7 @@ describe('ActionKey host/webview parity + suppression round trip (T032, FR-010)'
       await env.cleanup();
     });
 
-    it('accepts and persists a suppression write for every one of the 18 canonical keys', async () => {
+    it('accepts and persists a suppression write for every canonical key', async () => {
       for (const actionKey of webviewActionKeys) {
         await env.router.dispatch(
           {
@@ -168,9 +171,15 @@ describe('ActionKey host/webview parity + suppression round trip (T032, FR-010)'
       expect(missingFromSnapshot, `missing from snapshot: ${missingFromSnapshot.join(', ')}`).toEqual([]);
     });
 
-    // Unknown-string control (FR-003): widening the accepted set from 11 to
-    // 18 must not change the shape of the rejection — an arbitrary string
-    // outside the canonical set is still rejected.
+    // Unknown-string control (FR-003): widening the accepted set beyond the
+    // original 11 (feature 193) must not change the shape of the rejection — an
+    // arbitrary string outside the canonical set is still rejected.
+    //
+    // The 11 stays deliberately. It is a dated measurement of what the set held
+    // when this control was written, and under the convention in
+    // `tests/lint/asserted-counts.test.ts` correcting a past measurement to the
+    // present value is falsification, not maintenance. The terminal figure was
+    // dropped instead, because that one did read as the current size (T050).
     it('rejects an unrecognized action key exactly as before widening', async () => {
       await env.router.dispatch(
         {

@@ -443,17 +443,51 @@ describe('MessageRouter.dispatch', () => {
     expect(built.auditEntries.filter((e) => e.eventType === 'task-removed')).toHaveLength(0);
   });
 
-  it('sends rejected ack with sanitized reason on dispatch error', async () => {
+  // The subject here is the ROUTER's own catch-all sanitization, not any one
+  // route. It used to be driven through `CMD_CANCEL`, which was a route that
+  // let a dispatch throw propagate; feature 202 (FR-032) moved cancel onto
+  // `execForOutcome`, which catches the throw inside the handler, so cancel no
+  // longer reaches this path at all. Re-pointed at `CMD_START` — the one
+  // remaining route that still calls `executeCommand` without catching — so the
+  // property keeps its coverage rather than losing it to the route that used to
+  // carry it. Cancel's replacement behaviour is pinned directly below.
+  it('sends rejected ack with sanitized reason when a handler lets a dispatch error propagate', async () => {
     executeCommand.mockRejectedValueOnce(new Error('boom: Bearer abcdefghijklmnopqrst'));
     await dispatch(
       router,
-      { type: CMD_CANCEL, correlationId: 'c8', payload: { taskId: 'task-error' } },
+      {
+        type: CMD_START,
+        correlationId: 'c8',
+        payload: { description: 'add login', queueId: 'default' }
+      },
       acks
     );
     expect(acks[0].msg.status).toBe('rejected');
     expect(acks[0].msg.reason).toBeDefined();
     expect(acks[0].msg.reason).not.toContain('abcdefghijklmnopqrst');
     expect(acks[0].msg.reason).toContain('[REDACTED]');
+  });
+
+  // Feature 202 (FR-007, FR-032, data-model.md §1.1) — the same throw, through
+  // the corrected cancel route, is answered with a CODE and never a message.
+  // That asymmetry is the contract, not an omission: the reason crosses to the
+  // webview, and a message from this layer can carry a workspace path, so the
+  // sanitized text goes to the extension log instead. Asserting the absence of
+  // the secret AND the absence of the sanitizer's own marker is what
+  // distinguishes "the message was redacted" from "no message crossed at all" —
+  // only the second is what this route now does.
+  it('answers a dispatch error on the corrected cancel route with a code, not a sanitized message', async () => {
+    executeCommand.mockRejectedValueOnce(new Error('boom: Bearer abcdefghijklmnopqrst'));
+    await dispatch(
+      router,
+      { type: CMD_CANCEL, correlationId: 'c8b', payload: { taskId: 'task-error' } },
+      acks
+    );
+    expect(acks[0].msg.status).toBe('rejected');
+    expect(acks[0].msg.outcome).toBe('failed');
+    expect(acks[0].msg.reason).toBe('command-dispatch-failed');
+    expect(acks[0].msg.reason).not.toContain('abcdefghijklmnopqrst');
+    expect(acks[0].msg.reason).not.toContain('[REDACTED]');
   });
 
   describe('Queue mutating commands (T042)', () => {
