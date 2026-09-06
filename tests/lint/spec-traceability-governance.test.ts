@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, resolve } from 'node:path';
+import { basename, resolve, sep } from 'node:path';
 import { resolveGovernanceScope } from './envelope-presence';
+import { reviewDateMarkerNames } from './review-dates';
 
 const EXECUTION_REPO_ROOT = resolve(__dirname, '..', '..');
 const ENVELOPE_ROOT = resolve(EXECUTION_REPO_ROOT, '..');
@@ -133,8 +134,18 @@ describe('spec traceability governance', () => {
    *     tasks got, and each already carries its own requirement below.
    *   * A spec with no `tasks.md` has no task state to compare. Judging it would mean
    *     inventing one.
+   *
+   * `Ready` JOINED THE SET ON 2026-09-06 (`FR-R3-170`). It was never an exemption —
+   * it is simply absent from the list above, with no reason given, which is how
+   * the docblock's own argument about "the identical defect one word over" came
+   * to apply to the rule that makes it. `Ready` means specified and not yet
+   * started, so a fully-ticked `Ready` spec is the same contradiction as a
+   * fully-ticked `Draft`. Measured that day: `181-settings-surface-truth`, 46
+   * ticked and 0 unticked, sitting at `Ready`. The other two `Ready` specs carry
+   * no checkboxes at all, so `taskState` returns `none` and this rule does not
+   * reach them — correctly, as neither claims finished work.
    */
-  const STATUSES_CLAIMING_UNFINISHED = new Set(['Draft', 'In Progress']);
+  const STATUSES_CLAIMING_UNFINISHED = new Set(['Draft', 'Ready', 'In Progress']);
 
   /** Case-insensitive by requirement, not by accident. See the docblock. */
   const TICKED = /^\s*- \[[xX]\]/m;
@@ -184,6 +195,190 @@ describe('spec traceability governance', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  /**
+   * FR-R3-170 — `Verification Pending` was the one word in the vocabulary that
+   * obliged nothing.
+   *
+   * Until this rule, the status appeared in this file exactly once: as an ABSENCE
+   * from `STATUSES_CLAIMING_UNFINISHED`, which exempts it from the rule above.
+   * That exemption is right and stays — unticked tasks genuinely do agree with
+   * "awaiting verification". What was missing is the other half. Nothing was owed
+   * in return, so a spec could rest there indefinitely with no owner, no date, and
+   * no statement of what was actually being waited on.
+   *
+   * Measured 2026-09-06 across the three specs then holding the status: zero
+   * occurrences of `backlog owner`, `review date` or `revisit` between them.
+   * `014-wake-up` had said it for 25 days about a capability deleted from the
+   * product on 2026-08-12 — 68 ticked tasks and nothing left to verify. Both rules
+   * above passed over it in silence: not `Complete`, so the first never fired; not
+   * in `STATUSES_CLAIMING_UNFINISHED`, so the second did not either.
+   *
+   * WHY THE DATE IS NOT IN THE SPEC. `dated-review-records.test.ts` resolves its
+   * root as `repo/` and scans `repo/docs/**` for review-date markers, failing on
+   * any it does not have registered. `specs/` is outside that scan, so a date
+   * authored in a spec would be watched by nothing and registered nowhere — a
+   * sixth marker home, which is the shape `FR-R3-134` spent a cycle removing. The
+   * spec names the record; the record carries the date.
+   *
+   * WHY THE LINK IS RESOLVED AND NOT MERELY MATCHED. A link checked for shape
+   * alone can be broken, or can point at a document no gate watches, and still
+   * satisfy the rule — an obligation that obliges nothing, which is this feature's
+   * own defect one level down. Rather than import the registry and couple two
+   * gates, this asserts the target is a file under `repo/docs/` carrying a
+   * review-date marker. The other gate separately fails on any marker under
+   * `repo/docs/` that is not registered, so between them the target is registered.
+   * (`**Successor**:` below still has the shape-only weakness. Fixing it was out
+   * of scope for the item that wrote this, and it is noted so the next reader does
+   * not mistake it for a considered difference.)
+   */
+  const VERIFICATION_PENDING_FIELDS = [
+    // Reused, not duplicated: `Deferred` already reads this field name below, and
+    // "who owes this" is one question deserving one answer.
+    { name: '**Backlog owner**:', pattern: /^\*\*Backlog owner\*\*:\s*\S.+$/m },
+    { name: '## Evidence owed', pattern: /^## Evidence owed\s*$/m },
+    { name: '**Review record**:', pattern: /^\*\*Review record\*\*:\s*\[[^\]]+\]\([^)]+\)\s*$/m }
+  ] as const;
+
+  const DOCS_ROOT = resolve(EXECUTION_REPO_ROOT, 'docs');
+
+  /** True when a document carries a review-date marker, whatever it is named. */
+  const isDated = (file: string): boolean =>
+    reviewDateMarkerNames(readFileSync(file, 'utf8')).length > 0;
+
+  /** The `**Review record**:` href, resolved against the spec that carries it. */
+  function reviewRecordTarget(specPath: string, body: string): string | null {
+    const href = /^\*\*Review record\*\*:\s*\[[^\]]+\]\(([^)]+)\)\s*$/m.exec(body)?.[1];
+    if (href === undefined) return null;
+    return resolve(specPath, '..', href.replace(/#.*$/, ''));
+  }
+
+  /** Every obligation a `Verification Pending` body fails to meet, named for a reader. */
+  function missingVerificationObligations(specPath: string, body: string): string[] {
+    // Annotated `string[]` and not left to inference: `as const` above makes the
+    // mapped result a literal union, and the three link diagnoses pushed below are
+    // not members of it.
+    const missing: string[] = VERIFICATION_PENDING_FIELDS.filter(
+      (field) => !field.pattern.test(body)
+    ).map((field) => field.name);
+    const target = reviewRecordTarget(specPath, body);
+    if (target === null) return missing;
+
+    if (!existsSync(target)) {
+      missing.push('**Review record**: names a file that does not exist');
+    } else if (!target.startsWith(DOCS_ROOT + sep)) {
+      missing.push('**Review record**: must point under repo/docs/, the only tree the registry watches');
+    } else if (!isDated(target)) {
+      missing.push('**Review record**: target carries no review-date marker, so no gate watches its date');
+    }
+    return missing;
+  }
+
+  it('names exactly the obligation a Verification Pending spec is missing', () => {
+    // FR-011 — the control that survives the population emptying. Every spec could
+    // leave `Verification Pending` tomorrow and the rule below would go vacuously
+    // green; this fixture is what still fails if the predicate rots. Same idiom as
+    // the checkbox-spelling fixture above.
+    const dir = mkdtempSync(resolve(tmpdir(), 'schegent-verification-owed-'));
+    try {
+      // Any dated record in the watched tree proves the accepting branch. Found
+      // rather than named, so this fixture outlives the retirement of whichever
+      // record the specs happen to point at today.
+      const dated = readdirSync(DOCS_ROOT, { recursive: true, withFileTypes: true })
+        .filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
+        .map((entry) => resolve(entry.parentPath, entry.name))
+        .find(isDated);
+      expect(dated, 'fixture premise: repo/docs/ holds at least one dated record').toBeDefined();
+      const registered = dated!;
+
+      const unwatched = resolve(dir, 'not-in-docs.md');
+      writeFileSync(unwatched, '<!-- interactive-verification-review-date: 2026-12-06 -->\n');
+
+      const owner = '**Backlog owner**: the repository operator\n';
+      const owed = '## Evidence owed\n\nAn observation only a human at a dev host can make.\n';
+      const record = (href: string) => `**Review record**: [register](${href})\n`;
+      const at = (name: string, contents: string) => {
+        const file = resolve(dir, name);
+        writeFileSync(file, contents);
+        return file;
+      };
+
+      const good = at('good.md', owner + owed + record(registered));
+      expect(missingVerificationObligations(good, owner + owed + record(registered))).toEqual([]);
+
+      const noOwner = owed + record(registered);
+      expect(missingVerificationObligations(at('a.md', noOwner), noOwner)).toEqual([
+        '**Backlog owner**:'
+      ]);
+
+      const noEvidence = owner + record(registered);
+      expect(missingVerificationObligations(at('b.md', noEvidence), noEvidence)).toEqual([
+        '## Evidence owed'
+      ]);
+
+      const noRecord = owner + owed;
+      expect(missingVerificationObligations(at('c.md', noRecord), noRecord)).toEqual([
+        '**Review record**:'
+      ]);
+
+      // FR-003a / SC-009 — the three ways a well-shaped link still obliges nothing.
+      const broken = owner + owed + record('./no-such-record.md');
+      expect(
+        missingVerificationObligations(at('d.md', broken), broken),
+        'a link matching the shape but resolving to nothing must not satisfy the rule'
+      ).toEqual(['**Review record**: names a file that does not exist']);
+
+      const outside = owner + owed + record(unwatched);
+      expect(
+        missingVerificationObligations(at('e.md', outside), outside),
+        'a real file outside repo/docs/ is watched by no registry'
+      ).toEqual(['**Review record**: must point under repo/docs/, the only tree the registry watches']);
+
+      // A real document in the watched tree that carries no marker. The registry
+      // has no opinion on it — most of `repo/docs/` is undated prose — so location
+      // alone cannot be the test. `README.md` is the docs index: it exists for as
+      // long as `DOCS_ROOT` does, and a review date on an index would be strange.
+      const undated = resolve(DOCS_ROOT, 'README.md');
+      expect(existsSync(undated), 'fixture premise: repo/docs/README.md exists').toBe(true);
+      const noMarker = owner + owed + record(undated);
+      expect(
+        missingVerificationObligations(at('f.md', noMarker), noMarker),
+        'a real document in the watched tree still owes a date; being findable is not being dated'
+      ).toEqual([
+        '**Review record**: target carries no review-date marker, so no gate watches its date'
+      ]);
+
+      const empty = '';
+      expect(missingVerificationObligations(at('g.md', empty), empty)).toEqual([
+        '**Backlog owner**:',
+        '## Evidence owed',
+        '**Review record**:'
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('requires every Verification Pending spec to name an owner, owed evidence and a dated record', () => {
+    const invalid = artifacts
+      .filter((artifact) => artifact.status === 'Verification Pending')
+      .map((artifact) => ({
+        name: basename(artifact.directory),
+        missing: missingVerificationObligations(artifact.specPath, artifact.body)
+      }))
+      .filter((entry) => entry.missing.length > 0)
+      .map((entry) => `${entry.name}: ${entry.missing.join('; ')}`);
+    expect(
+      invalid,
+      "`Verification Pending` means an observation is owed that no gate can make. Say who " +
+        'owes it (`**Backlog owner**:`), what would end the wait (`## Evidence owed`), and ' +
+        'link the dated record under `repo/docs/` that carries the review date ' +
+        '(`**Review record**:`). Without a date the wait has no end, which is the state this ' +
+        'rule exists to make impossible. Do NOT move the spec to `Deferred` to escape this — ' +
+        '`Deferred` means unstarted and blocked, and a built feature awaiting an observation ' +
+        'is neither.'
+    ).toEqual([]);
   });
 
   it('requires every Superseded spec to name a successor link', () => {

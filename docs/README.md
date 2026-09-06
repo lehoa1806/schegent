@@ -178,6 +178,7 @@ drifts unnoticed, because the readers who would catch an error never get there.
 - [Data retention and deletion](operations/data-retention-and-deletion.md)
 - [Inspect audit logs](operations/inspect-audit-logs.md)
 - [Inspect raw transcripts](operations/inspect-raw-transcripts.md)
+- [Interactive verification register](operations/interactive-verification-register.md) — **opened 2026-09-06**: the interactive dev-host evidence specs `067` and `068` still owe, who owes it, what would close it, and the date it is re-read on
 - [Licenses](operations/licenses.md)
 - [Concurrent-run resource measurement](operations/concurrent-run-resource-measurement.md)
 - [Concurrent-run isolation measurement](operations/concurrent-run-isolation-measurement.md) — attribution outcomes at concurrency 1/2/4/8, and the recommended cap of 2

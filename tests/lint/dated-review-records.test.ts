@@ -31,7 +31,7 @@ import { readFileSync } from 'node:fs';
 import { relative, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { filesUnder } from './source-scan';
-import { readReviewDate, reviewIsDue } from './review-dates';
+import { readReviewDate, reviewDateMarkerNames, reviewIsDue } from './review-dates';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const read = (path: string): string => readFileSync(resolve(REPO_ROOT, path), 'utf8');
@@ -102,6 +102,30 @@ const RECORDS: readonly DatedRecord[] = [
       'reject-at-build Vite plugin',
       'cannot see'
     ]
+  },
+  {
+    // FR-R3-170 — the first entry that is neither a deferral nor a decision. It
+    // is a DEBT: two specs are built and waiting on an operator at a dev host,
+    // and until this record existed the wait had no owner and no end. The status
+    // word `Verification Pending` was the whole of the claim, and it obliged
+    // nothing — `014-wake-up` held it for 25 days after its capability was
+    // deleted from the product, with two governance rules passing over it in
+    // silence.
+    //
+    // It is registered here rather than dated in the specs themselves because
+    // this scan reads `repo/docs/**` and cannot see `specs/`. A date authored in
+    // a spec would be watched by nothing and registered nowhere — the sixth
+    // marker home, which is the shape FR-R3-134 built this registry to remove.
+    document: 'docs/operations/interactive-verification-register.md',
+    marker: 'interactive-verification-review-date',
+    defers: 'the interactive dev-host evidence owed by specs 067 and 068 (FR-R3-170)',
+    mustMention: [
+      'Who owes this',
+      'What would close this',
+      'Whether anybody actually looked',
+      'T036 is not owed',
+      'cannot see'
+    ]
   }
 ];
 
@@ -116,9 +140,10 @@ describe('FR-R3-134 — every dated deferral is watched, and the registry is com
   it('registers at least the deferrals this round produced', () => {
     // The control. Every assertion below is a per-record loop; an emptied
     // registry would make all of them vacuous and report green.
-    // Raised 4 -> 5 by FR-R3-169 (FR-014). A floor that does not move when the
-    // set does is a floor the new member is not standing on.
-    expect(RECORDS.length).toBeGreaterThanOrEqual(5);
+    // Raised 4 -> 5 by FR-R3-169 (FR-014), then 5 -> 6 by FR-R3-170 (FR-009). A
+    // floor that does not move when the set does is a floor the new member is
+    // not standing on.
+    expect(RECORDS.length).toBeGreaterThanOrEqual(6);
     expect(new Set(RECORDS.map((entry) => entry.marker)).size, 'markers must be distinct').toBe(
       RECORDS.length
     );
@@ -161,7 +186,6 @@ describe('FR-R3-134 — every dated deferral is watched, and the registry is com
     // remembered to append to. Three separate gate files could not answer "which
     // records carry a dated review?", which is how the canary deferral was
     // written with no date at all and noticed by nobody for a day.
-    const marker = /<!--\s*([a-z][a-z0-9-]*-review-date)\s*:\s*\d{4}-\d{2}-\d{2}\s*-->/g;
     const registered = new Set(RECORDS.map((entry) => `${entry.document}::${entry.marker}`));
     const excluded = new Set(NOT_A_RECORD);
     const unregistered: string[] = [];
@@ -171,10 +195,7 @@ describe('FR-R3-134 — every dated deferral is watched, and the registry is com
       const rel = relative(REPO_ROOT, absolute);
       if (excluded.has(rel)) continue;
       scanned += 1;
-      // Destructured with a default: an indexed capture read needs a guard that
-      // `noUncheckedIndexedAccess` requires and `no-unnecessary-condition` calls
-      // dead. A default is true under both readings.
-      for (const [, name = ''] of readFileSync(absolute, 'utf8').matchAll(marker)) {
+      for (const name of reviewDateMarkerNames(readFileSync(absolute, 'utf8'))) {
         if (!registered.has(`${rel}::${name}`)) unregistered.push(`${rel} (${name})`);
       }
     }
