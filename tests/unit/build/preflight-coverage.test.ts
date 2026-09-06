@@ -189,8 +189,29 @@ describe('the preflight chain reaches every gate CI runs', () => {
     const preflight = scripts()[PREFLIGHT];
     expect(preflight).toContain('npm run build:host && npm run package:smoke');
     expect(preflight.indexOf('test:visual')).toBeLessThan(preflight.indexOf('package:smoke'));
-    // FR-024 — `verify:all` stays build-free. The preflight calls it, so a build
-    // moved in there would make the preflight build twice.
-    expect(scripts()['verify:all']).not.toContain('npm run build');
+    // FR-024's build-free clause was SUPERSEDED by FR-R3-169 (FR-019) on
+    // 2026-09-06, and this is where that is recorded rather than quietly deleted.
+    //
+    // It read: *"`verify:all` stays build-free. The preflight calls it, so a build
+    // moved in there would make the preflight build twice."* Both halves were true
+    // when written. What has changed is not the cost but the premise: the host
+    // tests that wanted `dist/webview` used to excuse themselves when it was
+    // absent, and the two `no-remote-refs` / `bundle-content` gates added by 208
+    // FAIL instead. A build-free `verify:all` is now a `verify:all` that is red on
+    // a fresh clone, and — measured — `ci:fast` reached the host suite through it
+    // BEFORE `test:visual`, the chain's only other build, ever ran. The ordering
+    // FR-024 assumed was already not holding.
+    //
+    // So the preflight does now build the webview twice, deliberately, for one
+    // `vite build`. Reclaiming it by deleting either build reintroduces the defect
+    // for whichever script is invoked on its own, which is why both are asserted.
+    // `tests/lint/webview-build-precedes-host-suite.test.ts` owns the general rule;
+    // these two lines are the record that the duplication is a decision.
+    expect(scripts()['verify:all']).toContain('npm run build:webview');
+    expect(scripts()['test:visual']).toContain('npm run build:webview');
+    // FR-024's OTHER half is untouched and still asserted: the fast chain runs no
+    // packaging step, so `package:smoke` stays an explicit preflight step after an
+    // explicit host build (FR-023) rather than something `verify:all` drags in.
+    expect(scripts()['verify:all']).not.toContain('package:smoke');
   });
 });
