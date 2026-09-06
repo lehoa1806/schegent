@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, resolve, sep } from 'node:path';
 import { resolveGovernanceScope } from './envelope-presence';
@@ -381,24 +389,158 @@ describe('spec traceability governance', () => {
     ).toEqual([]);
   });
 
-  it('requires every Superseded spec to name a successor link', () => {
+  // THE TWO RULES BELOW WERE THE LAST TWO THAT ASSERTED WITHOUT SAYING WHY.
+  //
+  // `FR-R3-170` made `Verification Pending` oblige an owner, owed evidence and a
+  // RESOLVED link to a dated record, and it wrote down two things it was leaving:
+  // that `**Successor**:` still matched link SHAPE without resolving anything, and
+  // that neither of these rules had a failure message or a control. Both gaps are
+  // the same gap one word over — the argument its docblock makes about `Ready`.
+  //
+  // WHAT A BARE `toEqual([])` COSTS. A reader who trips it is shown a spec
+  // directory name and nothing else: not which field is missing, not what the
+  // field is for, not what to write. Every other rule in this file spends a
+  // sentence on that, because the failure message is the only part of a gate most
+  // people ever read.
+  //
+  // WHY A FIXTURE AND NOT A FLOOR. Three specs are `Superseded` and two are
+  // `Deferred` today, so neither rule is vacuous this morning. But both filter a
+  // list and expect nothing left, so both go green the day the population empties,
+  // and a floor of three would fail the day a supersession is legitimately
+  // retired — punishing the correct action. The fixtures below hold the predicate
+  // to its meaning on inputs the repository does not have to keep supplying.
+  //
+  // NOT BUILT: successor CYCLES. `A -> B -> A` resolves at every hop and sends the
+  // reader nowhere. Following the chain means reading the successor's own status
+  // and body, and the chain can leave the `Superseded` population in one step, so
+  // it is a different rule rather than a stronger clause of this one. All three
+  // supersessions today point at `Complete` specs. Named here so the next reader
+  // finds it decided rather than missed.
+
+  /** The `**Successor**:` href, resolved against the spec that carries it. */
+  function successorTarget(specPath: string, body: string): string | null {
+    const href = /^\*\*Successor\*\*:\s*\[[^\]]+\]\(([^)]+)\)\s*$/m.exec(body)?.[1];
+    if (href === undefined) return null;
+    return resolve(specPath, '..', href.replace(/#.*$/, ''));
+  }
+
+  /** Every obligation a `Superseded` body fails to meet, named for a reader. */
+  function missingSuccession(specPath: string, body: string): string[] {
+    const target = successorTarget(specPath, body);
+    if (target === null) return ['**Successor**:'];
+    if (!existsSync(target)) return ['**Successor**: names a file that does not exist'];
+    if (target === specPath) return ['**Successor**: points at the spec that carries it'];
+    if (basename(target) !== 'spec.md') {
+      return ['**Successor**: must name another feature’s spec.md, not some other document'];
+    }
+    return [];
+  }
+
+  const DEFERRAL_FIELDS = [
+    { name: '## Deferral rationale', pattern: /^## Deferral rationale\s*$/m },
+    // The same field `Verification Pending` reads above, deliberately. "Who owes
+    // this" is one question and it deserves one answer, whichever status asks it.
+    { name: '**Backlog owner**:', pattern: /^\*\*Backlog owner\*\*:\s*\S.+$/m }
+  ] as const;
+
+  /** Every obligation a `Deferred` body fails to meet, named for a reader. */
+  function missingDeferral(body: string): string[] {
+    return DEFERRAL_FIELDS.filter((field) => !field.pattern.test(body)).map((field) => field.name);
+  }
+
+  it('names exactly the obligation a Superseded spec is missing', () => {
+    const dir = mkdtempSync(resolve(tmpdir(), 'schegent-succession-'));
+    try {
+      // The carrier exists on disk so the self-reference case below reaches the
+      // self check rather than tripping the existence check first.
+      const carrier = resolve(dir, 'spec.md');
+      writeFileSync(carrier, '# the superseded spec\n');
+      mkdirSync(resolve(dir, 'successor'));
+      writeFileSync(resolve(dir, 'successor', 'spec.md'), '# a real successor\n');
+      writeFileSync(resolve(dir, 'notes.md'), '# a real document that is not a spec\n');
+      const line = (href: string) => `**Successor**: [next](${href})\n`;
+
+      const good = line('./successor/spec.md');
+      expect(missingSuccession(carrier, good)).toEqual([]);
+
+      expect(missingSuccession(carrier, '# no successor line at all\n')).toEqual([
+        '**Successor**:'
+      ]);
+
+      // The three ways a well-shaped link still sends the reader nowhere. Before
+      // this rule resolved anything, all three passed.
+      expect(
+        missingSuccession(carrier, line('../078-webview-decomposition/spec.md')),
+        'a link matching the shape but resolving to nothing must not satisfy the rule'
+      ).toEqual(['**Successor**: names a file that does not exist']);
+
+      expect(
+        missingSuccession(carrier, line('./spec.md')),
+        'a spec cannot be its own successor: that is a supersession with no destination'
+      ).toEqual(['**Successor**: points at the spec that carries it']);
+
+      expect(
+        missingSuccession(carrier, line('./notes.md')),
+        'superseded work is continued by another FEATURE, so the target is a spec.md'
+      ).toEqual(['**Successor**: must name another feature’s spec.md, not some other document']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('names exactly the obligation a Deferred spec is missing', () => {
+    const rationale = '## Deferral rationale\n\nBlocked on hardware nobody here has.\n';
+    const owner = '**Backlog owner**: the repository operator\n';
+
+    expect(missingDeferral(rationale + owner)).toEqual([]);
+    expect(missingDeferral(owner)).toEqual(['## Deferral rationale']);
+    expect(missingDeferral(rationale)).toEqual(['**Backlog owner**:']);
+    expect(missingDeferral('')).toEqual(['## Deferral rationale', '**Backlog owner**:']);
+
+    // A field name with nothing after it is the silence the field exists to break,
+    // and it is the cheapest way to satisfy a gate that only looks for the label.
+    expect(
+      missingDeferral(`${rationale}**Backlog owner**:\n`),
+      'an owner field with no owner after it is not an owner'
+    ).toEqual(['**Backlog owner**:']);
+  });
+
+  it('requires every Superseded spec to name a successor that resolves', () => {
     const invalid = artifacts
       .filter((artifact) => artifact.status === 'Superseded')
-      .filter((artifact) => !/^\*\*Successor\*\*:\s*\[[^\]]+\]\([^)]+\)\s*$/m.test(artifact.body))
-      .map((artifact) => basename(artifact.directory));
-    expect(invalid).toEqual([]);
+      .map((artifact) => ({
+        name: basename(artifact.directory),
+        missing: missingSuccession(artifact.specPath, artifact.body)
+      }))
+      .filter((entry) => entry.missing.length > 0)
+      .map((entry) => `${entry.name}: ${entry.missing.join('; ')}`);
+    expect(
+      invalid,
+      '`Superseded` means this work continues somewhere else, so the spec must say WHERE with a ' +
+        '`**Successor**:` link that resolves to another feature’s `spec.md`. A link that merely ' +
+        'looks like a link leaves the reader at a dead end holding a status word that promised ' +
+        'them a destination. Do NOT retire the spec instead — a superseded spec is the record of ' +
+        'why the successor exists, and deleting it is how that reason gets lost.'
+    ).toEqual([]);
   });
 
   it('requires every Deferred spec to carry a rationale and backlog owner', () => {
     const invalid = artifacts
       .filter((artifact) => artifact.status === 'Deferred')
-      .filter(
-        (artifact) =>
-          !/^## Deferral rationale\s*$/m.test(artifact.body) ||
-          !/^\*\*Backlog owner\*\*:\s*\S.+$/m.test(artifact.body)
-      )
-      .map((artifact) => basename(artifact.directory));
-    expect(invalid).toEqual([]);
+      .map((artifact) => ({
+        name: basename(artifact.directory),
+        missing: missingDeferral(artifact.body)
+      }))
+      .filter((entry) => entry.missing.length > 0)
+      .map((entry) => `${entry.name}: ${entry.missing.join('; ')}`);
+    expect(
+      invalid,
+      '`Deferred` means understood, unstarted and blocked. Say what blocks it (`## Deferral ' +
+        'rationale`) and who carries it until it unblocks (`**Backlog owner**:`). Without both, ' +
+        '`Deferred` is indistinguishable from abandoned, and nobody can tell whether the ' +
+        'blocking condition still holds. Do NOT use `Deferred` for work that is built and ' +
+        'awaiting an observation — that is `Verification Pending`, and it obliges a dated record.'
+    ).toEqual([]);
   });
 
   it.skipIf(!ENVELOPE_HERE)(
