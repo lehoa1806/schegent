@@ -169,6 +169,8 @@ else. <!-- Source: src/services/capability-enforcement-plan.ts --><!-- Source: s
 
 All operator-visible logger sinks receive text after the single code-resident redaction set. A new sink that bypasses `SanitizedLogger`, or a secret pattern duplicated elsewhere, breaks the mitigation.
 
+The sanitizer reaches that set by rebuilding each object it cleans onto a fresh one, and the same rebuild shape appears elsewhere in the tree. The [prototype rebuild census](prototype-rebuild-census.md) enumerates every enumerated-key rebuild in `src/` and records, per site, whether it is reachable from model- or CLI-derived input. It is a measurement, not a gate.
+
 <!-- Source: src/lib/logger.ts -->
 
 ### T2 — Untrusted webview mutating host state

@@ -239,6 +239,29 @@ function compileUnion(caseInsensitive: boolean): RegExp | null {
 const SECRET_UNION_CS: RegExp | null = compileUnion(false);
 const SECRET_UNION_CI: RegExp | null = compileUnion(true);
 
+/**
+ * The one own key that `out[key] = value` cannot create.
+ *
+ * `Object.prototype` defines an accessor for this name, so assigning it on a
+ * plain object invokes the setter instead of creating an own data property.
+ * `Object.keys` still enumerates it when it *is* an own key — which is exactly
+ * what `JSON.parse` produces from model or CLI output.
+ *
+ * The name matches `src/audit/audit-payload.ts`, which declares the same
+ * literal for the same concept, so one grep finds every site in the tree that
+ * knows about this key. The two are independent declarations, not a shared
+ * import: these modules have no dependency edge.
+ */
+const PROTOTYPE_SETTER_KEY = '__proto__';
+
+/**
+ * Where a `__proto__` own key's sanitized value goes instead. Brackets follow
+ * the module's existing `[CIRCULAR]` convention — they mark a place the
+ * sanitizer acted on. The name is inert: re-parsing a log line containing it
+ * creates an ordinary own key and invokes no setter.
+ */
+const PROTO_RENAME_KEY = '[__proto__]';
+
 export interface LogSink {
   appendLine(line: string): void;
 }
@@ -320,6 +343,32 @@ export class SanitizedLogger {
    *
    * `SECRET_PATTERNS` remains the single source of truth — every
    * string leaf passes through `this.sanitize(leaf)` exactly once.
+   *
+   * FR-R3-166 — the caller ordering this method no longer depends on.
+   * The trigger is: *log a model-derived object without projecting it
+   * first.* `JSON.parse` of model or CLI output can produce an own
+   * `__proto__` key, and until FR-R3-166 the object branch below lost
+   * such a key's value or let it become the result's prototype.
+   *
+   * Two live callers were surveyed and both are safe, but by two
+   * unrelated upstream guards, neither of which is a property of this
+   * class and neither of which is discoverable from this file:
+   *
+   * - `src/audit/audit-log-writer.ts` sanitizes an entry whose
+   *   `payload` has already passed finding 24's projection, which
+   *   skips the key outright (`src/audit/audit-payload.ts`). Note the
+   *   guard's actual width: it covers `payload` alone. The entry's
+   *   other fields are spread in unprojected, and an object spread
+   *   creates genuine own properties — so the ordering protects less
+   *   than it appears to.
+   * - `src/controller/phase-sidecar-reader.ts` sanitizes entries from
+   *   `parsePhaseMessageEnv`, whose key allowlist rejects any name not
+   *   matching `/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/`. `__proto__` fails on
+   *   its leading underscore and never reaches this method.
+   *
+   * A third caller would inherit neither guard. The object branch now
+   * holds the property itself, so the ordering is no longer
+   * load-bearing for this hazard.
    */
   public sanitizeRecord<T extends Record<string, unknown>>(record: T): T {
     return this.sanitizeValue(record, new WeakSet<object>()) as T;
@@ -345,18 +394,91 @@ export class SanitizedLogger {
       seen.delete(input);
       return out;
     }
+    /**
+     * FR-R3-166 (2026-09-05) — the disposition of an own `__proto__` key.
+     *
+     * The defect: this branch rebuilds onto a fresh `{}` and copies enumerated
+     * keys with `out[key] = cleaned`. For an own `__proto__` key —
+     * `JSON.parse('{"__proto__":…}')` produces exactly that — the assignment
+     * creates no own property; it runs the `Object.prototype.__proto__`
+     * setter. A string value is silently discarded. An object value becomes
+     * the *result's* prototype, so the sanitized record answers reads with
+     * model-derived data that appears on no key. The global `Object.prototype`
+     * is not affected; the damage is confined to the returned instance.
+     *
+     * The ruling: **rename, do not preserve and do not drop.** The value is
+     * kept under `PROTO_RENAME_KEY`, or the first unoccupied
+     * `[__proto__](n)` if the input already carries that name.
+     *
+     * Weighed against feature 194's finding 24, which refused to let the
+     * sanitizer carry the literal name `__proto__` into a durable sink (see
+     * `src/audit/audit-payload.ts`, where the projection skips the key
+     * outright). That reasoning governs this path too: the audit log is
+     * structured and is read back, so a `"__proto__"` key sitting in durable
+     * evidence is a hazard waiting for the next component that rebuilds an
+     * object from it — which is the thing finding 24 declined. Renaming
+     * carries the same information into the sink with strictly less hazard.
+     * Dropping was refused separately: silent loss is the defect above,
+     * and a drop that leaves no trace reproduces it under a better name.
+     *
+     * The hazard is the key *name*, not the assignment mechanism, so no
+     * `Object.fromEntries`, `defineProperty`, or `Object.create(null)` is
+     * needed. Every key that is not `__proto__` takes the identical
+     * assignment it took before this change, which makes "unchanged for
+     * ordinary input" a property of the code path rather than a measurement.
+     * (`Object.create(null)` was measured and eliminated: it fails the
+     * `Object.getPrototypeOf(result) === Object.prototype` boundary on every
+     * input rather than fixing it on one.)
+     *
+     * A `__proto__` value that sanitizes to `undefined` is still elided, the
+     * same as any other key. That is elision, not loss.
+     *
+     * Asserted by `tests/unit/lib/logger-proto-key.test.ts`, which reads the
+     * behaviour rather than this comment.
+     */
     if (typeof input === 'object') {
       if (seen.has(input as object)) return '[CIRCULAR]';
       seen.add(input as object);
       const out: Record<string, unknown> = {};
-      for (const key of Object.keys(input as Record<string, unknown>)) {
+      const keys = Object.keys(input as Record<string, unknown>);
+      for (const key of keys) {
         const cleaned = this.sanitizeValue((input as Record<string, unknown>)[key], seen);
-        if (cleaned !== undefined) out[key] = cleaned;
+        if (cleaned === undefined) continue;
+        out[key === PROTOTYPE_SETTER_KEY ? this.protoRenameTarget(keys) : key] = cleaned;
       }
       seen.delete(input as object);
       return out;
     }
     return undefined;
+  }
+
+  /**
+   * The rename target for a `__proto__` own key: the first name in
+   * `[__proto__]`, `[__proto__](2)`, `[__proto__](3)`, … that the input does
+   * not already use.
+   *
+   * Chosen against the input's key set rather than the output's, so no input
+   * value can be displaced — the rename must not introduce the silent loss it
+   * exists to remove. The result is a function of the key set alone, not of
+   * enumeration order. The loop terminates because each iteration yields a
+   * fresh distinct candidate and only finitely many can be occupied; it runs
+   * at all only for an input that already carries a `__proto__` own key.
+   *
+   * The key set is hashed once rather than scanned per candidate. Both review
+   * passes on FR-R3-166 raised the same bound on the linear form: an input
+   * carrying one `__proto__` key alongside N `[__proto__](n)` decoys walks N
+   * candidates against an N-element scan. Neither live caller can present that
+   * input — `src/audit/audit-payload.ts` drops the key before this method is
+   * reachable, and `src/controller/phase-sidecar-reader.ts` admits no key
+   * outside `/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/` — so this is a bound for the
+   * next caller, not a repair. `Set.has` and `Array.includes` agree on
+   * strings, so the behaviour is unchanged.
+   */
+  private protoRenameTarget(ownKeys: readonly string[]): string {
+    const occupied = new Set(ownKeys);
+    let target = PROTO_RENAME_KEY;
+    for (let n = 2; occupied.has(target); n += 1) target = `${PROTO_RENAME_KEY}(${n})`;
+    return target;
   }
 
   private write(level: string, message: string): void {
