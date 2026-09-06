@@ -129,3 +129,70 @@ Retention differs by artifact: audit archives, unredacted session artifacts, pri
 <!-- Source: src/lib/runtime-log/runtime-log-sink.ts -->
 <!-- Source: src/monitor/cli-transport-sink.ts -->
 <!-- Source: src/services/history/history-description-store.ts -->
+
+## Scheduled entries left by earlier releases
+
+Releases 014, 024 and 031 shipped a Wake up scheduler that installed a real entry in the operating
+system's scheduler so a wake-up could fire while VS Code was closed. Commit `f702c0b2` (2026-08-12)
+deleted that feature **and** the cleanup machinery that used to remove those entries, so the current
+release cannot uninstall what an earlier one installed. A machine that enabled Wake up before that
+date still has the entry, and removing it is a manual step.
+
+What the orphan does is fire on its schedule and fail. The entry invokes an absolute path to a
+runner bundle that no longer exists, so each firing is a process that exits immediately; output was
+already redirected to `/dev/null` at install time. It consumes no Claude allocation and reaches no
+workspace. It is stale scheduler state, not a live capability — but it is state that nothing will
+clean up on your behalf, and it will outlive the extension itself if you uninstall Schegent.
+
+Only one of these was installed, chosen by platform at install time. Check the ones listed for your
+platform; a command that finds nothing means that mechanism was not the one used.
+
+**macOS — launchd.** The entry is the label `com.schegent.wakeup`:
+
+```text
+launchctl list | grep com.schegent.wakeup
+launchctl unload ~/Library/LaunchAgents/com.schegent.wakeup.plist
+rm ~/Library/LaunchAgents/com.schegent.wakeup.plist
+```
+
+**macOS and Linux — cron.** The entry is a single crontab line carrying the trailing marker
+`# schegent-wakeup`. Remove that one line and leave the rest of the crontab alone:
+
+```text
+crontab -l | grep schegent-wakeup
+crontab -l | grep -v '# schegent-wakeup' | crontab -
+```
+
+**Linux — systemd user units.** The entry is a timer and its service, under
+`$XDG_CONFIG_HOME/systemd/user` or `~/.config/systemd/user`:
+
+```text
+systemctl --user list-timers schegent-wakeup.timer
+systemctl --user disable --now schegent-wakeup.timer
+rm -f ~/.config/systemd/user/schegent-wakeup.timer ~/.config/systemd/user/schegent-wakeup.service
+systemctl --user daemon-reload
+```
+
+**Windows — Task Scheduler.** The entry is the task `Schegent\WakeUp`:
+
+```text
+schtasks /Query /TN "Schegent\WakeUp"
+schtasks /Delete /TN "Schegent\WakeUp" /F
+```
+
+Removing the scheduled entry does not remove what it wrote. Wake up kept its own records under
+`<globalStorage>/wakeup/` — `invocations.log` with its numbered rotations, and the session log the
+runner appended captured CLI output to. Nothing reads those files any more and no retention sweep
+covers them, because the code that owned both was deleted with the feature. They are inert and safe
+to delete; they are listed here so the deletion is a decision rather than a discovery.
+
+This page is the whole of the documented removal procedure. There is no command, setting, or
+migration in the current release that performs it, and none is planned — the feature is withdrawn,
+not deprecated.
+
+<!-- Source: src/wakeup/platforms/launchd.ts (deleted in f702c0b2) -->
+<!-- Source: src/wakeup/platforms/cron.ts (deleted in f702c0b2) -->
+<!-- Source: src/wakeup/platforms/systemd-user.ts (deleted in f702c0b2) -->
+<!-- Source: src/wakeup/platforms/task-scheduler.ts (deleted in f702c0b2) -->
+<!-- Source: src/wakeup/invocation-log.ts (deleted in f702c0b2) -->
+<!-- Source: src/cleanup/wakeup-cleanup.ts (deleted in f702c0b2) -->
