@@ -1,4 +1,13 @@
-// Drift guard for the hard-rule index in the workspace-root AGENTS.md.
+// Drift guard for the hard-rule index in the envelope's `docs/hard-rules.md`.
+//
+// THE RULES MOVED on 2026-09-05. They were 826 of AGENTS.md's 1,058 lines and
+// are now a file of their own; AGENTS.md, CLAUDE.md and repo/AGENTS.md all
+// point at it and carry no rule text. Nothing about the rules themselves
+// changed — same 67, same order, same ordinals — so this gate is repointed,
+// not rewritten. `SECTION_HEADING` is now `## The rules` because the file's
+// own title is the old section heading, and the preamble above that heading is
+// deliberately outside the numbered set: a "- **Never**" bullet written into
+// it is a rule the index cannot cite, which the first test below still catches.
 //
 // The index at `### Index — read the rows your change touches` cites each hard
 // rule twice over: by its opening words and by an ordinal. Both citations are
@@ -18,7 +27,7 @@
 // That is the shape this test is for: not a missing rule, which a reader might
 // notice, but a correct-looking index that points one rule off. The existing
 // `agents-claude-parity.test.ts` cannot catch it. Its `HARD_RULE_ANCHORS` check
-// asks whether a phrase appears *somewhere* in AGENTS.md, which stayed true
+// asks whether a phrase appears *somewhere* in the rule file, which stayed true
 // throughout — an existence check is blind to an ordinal, by construction.
 //
 // WHAT IT DOES NOT DO. It does not check that a rule is indexed under the
@@ -39,10 +48,13 @@ import * as path from 'path';
 import { envelopePresent } from './envelope-presence';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
-// The authoritative rule set is the workspace-root AGENTS.md, not repo/AGENTS.md.
-const AGENTS_PATH = path.resolve(REPO_ROOT, '..', 'AGENTS.md');
+// The authoritative rule set is the envelope's docs/hard-rules.md. Neither
+// AGENTS.md carries rule text; `agents-claude-parity.test.ts` enforces that.
+const RULES_PATH = path.resolve(REPO_ROOT, '..', 'docs', 'hard-rules.md');
+/** How the file is named in failure output, so a line number is clickable. */
+const RULES_DISPLAY = 'docs/hard-rules.md';
 
-const SECTION_HEADING = '## Hard rules when changing host code';
+const SECTION_HEADING = '## The rules';
 const RULE_BULLET = /^- \*\*Never\*\* /;
 // `- *opening words* (rule 12)` — the index citation form.
 const INDEX_BULLET = /^- \*(.+)\* \(rule (\d+)\)$/;
@@ -66,17 +78,17 @@ function squash(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
-function loadAgents(): {
+function loadRules(): {
   lines: readonly string[];
   sectionStart: number;
   sectionEnd: number;
 } {
-  const lines = fs.readFileSync(AGENTS_PATH, 'utf8').split(/\r?\n/);
+  const lines = fs.readFileSync(RULES_PATH, 'utf8').split(/\r?\n/);
   const sectionStart = lines.findIndex((l) => l.trim() === SECTION_HEADING);
   expect(
     sectionStart,
-    `AGENTS.md no longer contains the heading "${SECTION_HEADING}". This test ` +
-      'locates the rules by that heading; if it was renamed, rename it here too.'
+    `${RULES_DISPLAY} no longer contains the heading "${SECTION_HEADING}". This ` +
+      'test locates the rules by that heading; if it was renamed, rename it here too.'
   ).toBeGreaterThanOrEqual(0);
   // The section runs to the next same-level heading, or to end of file.
   const rest = lines.findIndex(
@@ -128,7 +140,7 @@ function matchRules(rules: readonly Rule[], phrase: string): Rule[] {
 }
 
 // FR-R3-118 (FR-049) — the rule set this gate re-derives lives ABOVE `REPO_ROOT`,
-// and `repo/` cloned on its own is a supported way to work here. `loadAgents()`
+// and `repo/` cloned on its own is a supported way to work here. `loadRules()`
 // below is an unguarded `readFileSync`, so without this the whole file raises
 // ENOENT in such a clone and takes `vitest run` — therefore `test:host`,
 // `verify:all` and `gate` — down with it. Skipping is the same answer
@@ -137,13 +149,13 @@ function matchRules(rules: readonly Rule[], phrase: string): Rule[] {
 // twelfth shape for it.
 //
 // `tests/lint/no-unguarded-parent-read.test.ts` did not catch the omission:
-// `AGENTS_PATH` names a FILE, so its `isAboveRepoRoot` check computes
-// `relative(AGENTS_PATH, REPO_ROOT) === '../repo'` and reads false, and
+// `RULES_PATH` names a FILE, so its `isAboveRepoRoot` check computes
+// `relative(RULES_PATH, REPO_ROOT) === '../../repo'` and reads false, and
 // `readFileSync(NAME, …)` matches neither of its `resolve(NAME,`/`join(NAME,`
 // indirect-use patterns. Two independent blind spots, either one sufficient.
-describe.skipIf(!envelopePresent())('AGENTS.md hard-rule index', () => {
+describe.skipIf(!envelopePresent())('docs/hard-rules.md rule index', () => {
   it('numbers every rule in the section and nothing outside it', () => {
-    const { lines, sectionStart, sectionEnd } = loadAgents();
+    const { lines, sectionStart, sectionEnd } = loadRules();
     const rules = collectRules(lines, sectionStart, sectionEnd);
     expect(rules.length).toBeGreaterThan(0);
 
@@ -154,17 +166,17 @@ describe.skipIf(!envelopePresent())('AGENTS.md hard-rule index', () => {
           RULE_BULLET.test(line) &&
           (number <= sectionStart || number > sectionEnd)
       )
-      .map(({ number }) => `AGENTS.md:${number}`);
+      .map(({ number }) => `${RULES_DISPLAY}:${number}`);
     expect(
       strays,
-      'A "- **Never**" bullet outside the hard-rules section is not part of the ' +
+      'A "- **Never**" bullet outside the rules section is not part of the ' +
         'numbered set, so the index cannot cite it and this test cannot check ' +
         'it. Move it into the section, or stop phrasing it as a hard rule.'
     ).toEqual([]);
   });
 
   it('cites each rule by an ordinal that names that same rule', () => {
-    const { lines, sectionStart, sectionEnd } = loadAgents();
+    const { lines, sectionStart, sectionEnd } = loadRules();
     const rules = collectRules(lines, sectionStart, sectionEnd);
     const citations = collectCitations(lines, sectionStart, sectionEnd);
     expect(citations.length).toBeGreaterThan(0);
@@ -174,14 +186,14 @@ describe.skipIf(!envelopePresent())('AGENTS.md hard-rule index', () => {
       const hits = matchRules(rules, citation.phrase);
       if (hits.length === 0) {
         wrong.push(
-          `AGENTS.md:${citation.line} cites "(rule ${citation.ordinal})" for ` +
+          `${RULES_DISPLAY}:${citation.line} cites "(rule ${citation.ordinal})" for ` +
             `"${citation.phrase}", but no rule opens with those words.`
         );
         continue;
       }
       if (hits.length > 1) {
         wrong.push(
-          `AGENTS.md:${citation.line} quotes "${citation.phrase}", which opens ` +
+          `${RULES_DISPLAY}:${citation.line} quotes "${citation.phrase}", which opens ` +
             `${hits.length} rules (${hits
               .map((h) => `rule ${h.ordinal}`)
               .join(', ')}). Quote more of the opening line so it names one.`
@@ -192,9 +204,9 @@ describe.skipIf(!envelopePresent())('AGENTS.md hard-rule index', () => {
       const actual = hits[0];
       if (actual.ordinal !== citation.ordinal) {
         wrong.push(
-          `AGENTS.md:${citation.line} cites "(rule ${citation.ordinal})" but ` +
+          `${RULES_DISPLAY}:${citation.line} cites "(rule ${citation.ordinal})" but ` +
             `"${citation.phrase}" is rule ${actual.ordinal} ` +
-            `(AGENTS.md:${actual.line}).`
+            `(${RULES_DISPLAY}:${actual.line}).`
         );
       }
     }
@@ -210,7 +222,7 @@ describe.skipIf(!envelopePresent())('AGENTS.md hard-rule index', () => {
   });
 
   it('indexes every rule exactly once', () => {
-    const { lines, sectionStart, sectionEnd } = loadAgents();
+    const { lines, sectionStart, sectionEnd } = loadRules();
     const rules = collectRules(lines, sectionStart, sectionEnd);
     const citations = collectCitations(lines, sectionStart, sectionEnd);
 
@@ -221,7 +233,7 @@ describe.skipIf(!envelopePresent())('AGENTS.md hard-rule index', () => {
 
     const missing = rules
       .filter((rule) => !counts.has(rule.ordinal))
-      .map((rule) => `rule ${rule.ordinal} (AGENTS.md:${rule.line})`);
+      .map((rule) => `rule ${rule.ordinal} (${RULES_DISPLAY}:${rule.line})`);
     expect(
       missing,
       'A hard rule the index does not mention is a rule a contributor routed ' +
@@ -244,7 +256,7 @@ describe.skipIf(!envelopePresent())('AGENTS.md hard-rule index', () => {
   });
 
   it('asserts its own rule count, and the count is right', () => {
-    const { lines, sectionStart, sectionEnd } = loadAgents();
+    const { lines, sectionStart, sectionEnd } = loadRules();
     const rules = collectRules(lines, sectionStart, sectionEnd);
     const body = lines.slice(sectionStart, sectionEnd).join('\n');
 
@@ -260,7 +272,7 @@ describe.skipIf(!envelopePresent())('AGENTS.md hard-rule index', () => {
       Number(claim?.[1]),
       `The index claims ${claim?.[1]} rules; the section holds ${rules.length}. ` +
         'The last rule is at ' +
-        `AGENTS.md:${rules[rules.length - 1]?.line}. Note the dated FR-R3-121 ` +
+        `${RULES_DISPLAY}:${rules[rules.length - 1]?.line}. Note the dated FR-R3-121 ` +
         'measurement in the same section is deliberately NOT this number and ' +
         'must not be "corrected" to agree with today\'s tree.'
     ).toBe(rules.length);
