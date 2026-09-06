@@ -178,7 +178,7 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
     );
 
     phaseRunnerMock.run.mockResolvedValue({
-      result: { kind: 'clean', auditEntry: null as never },
+      result: { kind: 'clean', auditEntry: null },
       outcome: 'clean',
       terminationReason: 'token',
       stdoutSummary: '',
@@ -258,7 +258,7 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
 
     function cleanPhase(): void {
       phaseRunnerMock.run.mockResolvedValue({
-        result: { kind: 'clean', auditEntry: null as never },
+        result: { kind: 'clean', auditEntry: null },
         outcome: 'clean',
         terminationReason: 'token',
         stdoutSummary: '',
@@ -566,7 +566,7 @@ describe('RunDriver Audit Emissions (Feature 072)', () => {
     );
 
     phaseRunnerMock.run.mockResolvedValue({
-      result: { kind: 'clean', auditEntry: null as never },
+      result: { kind: 'clean', auditEntry: null },
       outcome: 'clean',
       terminationReason: 'token',
       stdoutSummary: '',
