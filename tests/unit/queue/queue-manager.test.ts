@@ -62,13 +62,13 @@ describe('QueueManager.enqueue', () => {
 
   it('omits pipelineId when no options are provided (T033, US2)', async () => {
     const a = await queue.enqueue('feature A');
-    expect(a.pipelineId).toBeUndefined();
-    expect(queue.findById(a.id)?.pipelineId).toBeUndefined();
+    expect(a.pipelineId).toBeUndefined(); // 2026-09-06 coincidental: a queue request, not a phase.retry_evaluated payload
+    expect(queue.findById(a.id)?.pipelineId).toBeUndefined(); // 2026-09-06 coincidental: a queue request, not a phase.retry_evaluated payload
   });
 
   it('omits pipelineId when options.pipelineId is undefined (T033, US2)', async () => {
     const a = await queue.enqueue('feature A', { pipelineId: undefined });
-    expect(a.pipelineId).toBeUndefined();
+    expect(a.pipelineId).toBeUndefined(); // 2026-09-06 coincidental: a queue request, not a phase.retry_evaluated payload
   });
 });
 
@@ -577,7 +577,7 @@ describe('QueueManager.retry', () => {
     expect(reset.retryCount).toBe(1);
     expect(reset.lastError).toBeNull();
     expect(reset.completedAt).toBeNull();
-    expect(reset.runId).toBeNull();
+    expect(reset.runId).toBeNull(); // 2026-09-06 coincidental: a queue task, not the audit envelope
   });
 
   it('accepts canceled', async () => {

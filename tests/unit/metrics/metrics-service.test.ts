@@ -572,7 +572,7 @@ describe('readMetrics (Feature 073 Phase 2 Foundational)', () => {
       await writeFile(auditLog, lines.join('\n') + '\n', 'utf8');
       const result = await readMetrics(workspaceRoot);
       const phase = findPhase(result, 'run-1', 'speckit-plan', 1);
-      expect(phase.outcome).toBeUndefined();
+      expect(phase.outcome).toBeUndefined(); // 2026-09-06 coincidental: a metrics phase record, not the audit envelope
       expect(phase.endTime).toBeUndefined();
       expect(phase.durationMs).toBeUndefined();
     });

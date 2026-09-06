@@ -466,7 +466,7 @@ describe('buildLaunchProjection — ports', () => {
 
     const [described, plain] = entriesOf(projection!.pipelines);
     expect(described!.description).toBe('Ships it');
-    expect(plain!.description).toBeUndefined();
+    expect(plain!.description).toBeUndefined(); // 2026-09-06 coincidental: a launch projection entry, not the CmdStart IPC command
   });
 
   it('names each entry by its kind as well as its id (FR-014)', () => {

@@ -61,6 +61,11 @@ describe('validateInboundMessage — phase-log commands (020 BUG-001)', () => {
       if (result.ok) {
         expect(
           (result.command as { payload: { selection: { iterationN: number | null } } }).payload
+            // 2026-09-06 coincidental: the receiver is the CMD_READ_PHASE_LOG selection, whose
+            // `iterationN` is `number | null` and whose null means "host picks the latest
+            // iteration". The unconditional `iterationN: number` at
+            // specs/028-advanced-phase-pausing/contracts/audit-events.md:55 declares the
+            // `phase-breakpoint-fired` audit payload, a different record that shares the name.
             .selection.iterationN
         ).toBeNull();
       }
@@ -73,6 +78,9 @@ describe('validateInboundMessage — phase-log commands (020 BUG-001)', () => {
       if (result.ok) {
         expect(
           (result.command as { payload: { selection: { iterationN: number | null } } }).payload
+            // 2026-09-06 coincidental: same as the case above — this is the CMD_READ_PHASE_LOG
+            // selection coercing an omitted `iterationN` to null, not the `phase-breakpoint-fired`
+            // audit payload whose `iterationN: number` is unconditional.
             .selection.iterationN
         ).toBeNull();
       }

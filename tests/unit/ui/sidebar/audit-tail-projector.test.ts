@@ -169,7 +169,7 @@ describe('projectAuditEntry (Feature 068 additive fields)', () => {
     const projected = projectAuditEntry(
       entry({ phase: 'done', payload: { summary: 'x' } })
     );
-    expect(projected.phaseId).toBeUndefined();
+    expect(projected.phaseId).toBeUndefined(); // 2026-09-06 coincidental: a sidebar projection row, not the audit payload
   });
 
   it("normalizes outcome 'success' to 'success'", () => {
@@ -184,7 +184,7 @@ describe('projectAuditEntry (Feature 068 additive fields)', () => {
 
   it("leaves outcome undefined when envelope outcome is 'info'", () => {
     const projected = projectAuditEntry(entry({ outcome: 'info' }));
-    expect(projected.outcome).toBeUndefined();
+    expect(projected.outcome).toBeUndefined(); // 2026-09-06 coincidental: a sidebar projection row, not the audit envelope
   });
 
   it("uses host-generated metadata for cli-invocation summaries", () => {

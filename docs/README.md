@@ -212,6 +212,9 @@ drifts unnoticed, because the readers who would catch an error never get there.
 
 ### Development
 
+- [Absent-field assertion classification](development/absent-field-classification.md) — how an
+  absent-field assertion is judged against a payload contract, how a contradiction is resolved, and
+  what the gate that produces the register does not read (FR-R3-167)
 - [Coverage measurements](development/coverage-measurements.md)
 - [Gate integrity measurements](development/gate-integrity-measurements.md) — the vacuity detector's
   false-negative rate, the zero-offender enumeration, the product-versus-suite coverage split, and the

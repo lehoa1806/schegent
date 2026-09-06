@@ -157,17 +157,34 @@ function bannerFor(kind: CardKind): VerboseDiagnosticsBanner {
   return kind === 'diagnostics-disabled' ? { kind, settingKey: SETTING_KEY } : { kind };
 }
 
+/*
+ * The two `.textContent` reads below dropped a `?? ''`, and that is not this feature's subject.
+ * `develop` carries a `no-unnecessary-condition` regression here, unrecorded in
+ * `tests/lint/eslint-baseline.json`, which makes `lint:webview` red before this branch touches
+ * anything; feature 206 cannot verify green on top of it, so it is repaired here rather than worked
+ * around. Measured on a pristine `develop` worktree at `1a8cccef`: 263 against a baseline of 260 —
+ * these two, and one in `phase-log-store.live-mode.test.ts`, which carries the same note.
+ *
+ * Dropping the guard is correct and not merely lint-appeasement. `lib.dom.d.ts` declares
+ * `Node.textContent` as `string | null`, and then `Element` — with `Attr`, `CharacterData` and
+ * `DocumentFragment` — overrides it with a split accessor, `get(): string` and
+ * `set(value: string | null)`, because per the DOM specification only `Document` and `DocumentType`
+ * read back null. `getByTestId` returns an `HTMLElement`, so the override is the declaration that
+ * applies. The read cannot be null: the coalesce was dead at runtime as well as unnecessary by type,
+ * and nothing here is being narrowed to satisfy the rule.
+ */
+
 /** The card's visible text, whitespace collapsed so markup wrapping cannot hide a phrase. */
 function cardText(kind: CardKind): string {
   const { getByTestId } = render(PhaseLogEmptyStates, { props: { banner: bannerFor(kind) } });
-  return (getByTestId(`phase-log-empty-${kind}`).textContent ?? '').replace(/\s+/g, ' ').trim();
+  return getByTestId(`phase-log-empty-${kind}`).textContent.replace(/\s+/g, ' ').trim();
 }
 
 function noPhaseCardText(): string {
   const { getByTestId } = render(PhaseLogEmptyStates, {
     props: { banner: null, noPhaseSelected: true }
   });
-  return (getByTestId('phase-log-empty-no-phase').textContent ?? '').replace(/\s+/g, ' ').trim();
+  return getByTestId('phase-log-empty-no-phase').textContent.replace(/\s+/g, ' ').trim();
 }
 
 /**

@@ -189,7 +189,7 @@ describe('Feature 065 BUG-006 (T070) — queue-pause selection stability (FR-027
     });
     expect(resumedProjection.inFlight?.id).toBe(enq.id);
     expect(resumedProjection.inFlight?.status).toBe('in-flight');
-    expect(resumedProjection.inFlight?.paused).toBeUndefined();
+    expect(resumedProjection.inFlight?.paused).toBeUndefined(); // 2026-09-06 coincidental: a projected task row, not QueueState
   });
 
   it('paused row coexists with pending rows without dropping any task (no selection fallthrough)', async () => {
@@ -222,6 +222,6 @@ describe('Feature 065 BUG-006 (T070) — queue-pause selection stability (FR-027
       pauseSource: 'operator-paused'
     });
     // Pending task carries no paused enrichment.
-    expect(projection.pending.find((t) => t.id === b.id)?.paused).toBeUndefined();
+    expect(projection.pending.find((t) => t.id === b.id)?.paused).toBeUndefined(); // 2026-09-06 coincidental: a projected task row, not QueueState
   });
 });

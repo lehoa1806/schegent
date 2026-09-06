@@ -28,7 +28,7 @@ import { filesMatching, filesUnder } from './source-scan';
  *
  * The term is anchored at the literal `true`, not at the `??` operator. A bare
  * nullish-coalescing scan would flag `?? { ok: false, reason: … }`, which is a
- * *pessimistic* default and therefore correct code (rule 67, AGENTS.md:987-989).
+ * *pessimistic* default and therefore correct code (rule 67, docs/hard-rules.md:860-862).
  */
 export const ABSENT_ANSWER_AS_SUCCESS = String.raw`\?\?\s*\{\s*ok\s*:\s*true`;
 

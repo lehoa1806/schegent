@@ -13,7 +13,7 @@
 // below are forbidden. Each of them is a way of asking the manifest's SHAPE
 // what kind of nothing this is, and the shape cannot answer.
 //
-// RULE 67 (AGENTS.md:985-992 at HEAD) — A gate that only asserts an absence
+// RULE 67 (docs/hard-rules.md:858-862) — A gate that only asserts an absence
 // passes identically when its extraction silently matches nothing, and reports
 // green about a block it never read. Two narrowings answer that here:
 //
