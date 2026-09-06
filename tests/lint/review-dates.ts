@@ -21,6 +21,23 @@ export function readReviewDate(body: string, marker: string): string | null {
   return pattern.exec(body)?.[1] ?? null;
 }
 
+/**
+ * Every review-date marker name in `body`, in order of appearance.
+ *
+ * The reader above needs a marker name it already knows. Two callers need the
+ * opposite question — *"is this document dated at all, whatever the marker is
+ * called?"* — and `FR-R3-170` was about to make that two copies of the marker
+ * SYNTAX, in two gate files, which is the shape `FR-R3-134` removed one level up.
+ * A caller that only wants the boolean reads `.length`.
+ */
+export function reviewDateMarkerNames(body: string): string[] {
+  const pattern = /<!--\s*([a-z][a-z0-9-]*-review-date)\s*:\s*\d{4}-\d{2}-\d{2}\s*-->/g;
+  // Destructured with a default: an indexed capture read needs a guard that
+  // `noUncheckedIndexedAccess` requires and `no-unnecessary-condition` calls
+  // dead. A default is true under both readings.
+  return [...body.matchAll(pattern)].map(([, name = '']) => name);
+}
+
 /** True when `today` is on or after the review date. */
 export function reviewIsDue(reviewDate: string, today: Date): boolean {
   // Compared as ISO strings on purpose: a `Date` comparison drags a timezone into a
