@@ -219,6 +219,10 @@ drifts unnoticed, because the readers who would catch an error never get there.
 - [Gate integrity measurements](development/gate-integrity-measurements.md) — the vacuity detector's
   false-negative rate, the zero-offender enumeration, the product-versus-suite coverage split, and the
   re-verified webview dead-code classification (FR-R3-088)
+- [IPC validator fuzz: the hazard map](development/ipc-fuzz-hazard-map.md) — which of the six
+  adversarial input classes the example suite already drives at `validateInboundMessage`, the two
+  construction notes that decide whether a generated case is real or inert, and what the property
+  deliberately does not cover (FR-R3-168)
 - [Lint and type-aware rules](development/lint-and-type-aware-rules.md)
 
 ### Release
