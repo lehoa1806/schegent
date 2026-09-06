@@ -83,6 +83,25 @@ const RECORDS: readonly DatedRecord[] = [
     marker: 'canary-review-date',
     defers: 'the first live backend canary run (FR-R3-129)',
     mustMention: ['is OWED', 'Trigger for the first run', 'version-drift']
+  },
+  {
+    // FR-R3-169 — the first entry here that is not a deferral. The CSP
+    // supply-chain policy was DECIDED, and the build-time check it was chosen
+    // for went unwritten from 2026-05-10 to 2026-09-06. It is registered for the
+    // same reason the four above are: its three reversal conditions are events
+    // no gate can observe, so the date is the only thing that makes anyone
+    // re-read them. A decision whose reversal conditions have quietly lapsed is
+    // as much a posture nobody chose as an expired deferral is.
+    document: 'docs/security/csp-supply-chain-record.md',
+    marker: 'csp-supply-chain-review-date',
+    defers: 'the reject-at-build option and the remote-asset ban it rests on (FR-R3-169)',
+    mustMention: [
+      'What would reverse this',
+      'remote font, stylesheet or script',
+      'vscode-webview://',
+      'reject-at-build Vite plugin',
+      'cannot see'
+    ]
   }
 ];
 
@@ -97,7 +116,9 @@ describe('FR-R3-134 — every dated deferral is watched, and the registry is com
   it('registers at least the deferrals this round produced', () => {
     // The control. Every assertion below is a per-record loop; an emptied
     // registry would make all of them vacuous and report green.
-    expect(RECORDS.length).toBeGreaterThanOrEqual(4);
+    // Raised 4 -> 5 by FR-R3-169 (FR-014). A floor that does not move when the
+    // set does is a floor the new member is not standing on.
+    expect(RECORDS.length).toBeGreaterThanOrEqual(5);
     expect(new Set(RECORDS.map((entry) => entry.marker)).size, 'markers must be distinct').toBe(
       RECORDS.length
     );
