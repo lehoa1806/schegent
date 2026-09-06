@@ -65,12 +65,30 @@ export async function deleteTaskWithSessionCleanup(
   const { logger, queue, store } = deps;
   logger.info(`Workflow operation triggered: deleteTask`, { taskId });
   const feature = queue.findById(taskId);
-  if (feature?.status === 'in-flight') {
+  // The guard read `feature?.status === 'in-flight'` and was the whole of the
+  // deleted-paused-task defect (docs/features/bugs/DONE_a-deleted-paused-task-
+  // strands-its-run-and-deadlocks-its-queue.md). A phase-paused Task's ROW
+  // reads `paused` — `QueueManager.pause` moves it out of `in-flight` — while
+  // its Run stays non-terminal and keeps the queue's Run slot, its session and
+  // its execution lease. The whole block below was skipped for that
+  // combination, and `removeTask` then deleted the only row that could address
+  // the Run it left behind: drain step 3 refuses to start anything else on the
+  // queue, and every cancel, resume and retry route resolves by row identity,
+  // so all of them refuse it at once.
+  //
+  // FR-R3-153 widened the *inner* check for exactly this class of bug and left
+  // this one narrow, so control never reached the fix. Reading the row's status
+  // here is not merely too narrow, it is the wrong question: what decides
+  // whether the cancel sequence must run is whether a non-terminal Run is
+  // pointing at this Task, and the two checks below already answer that
+  // completely. `run.featureId === feature.id` establishes ownership — it is
+  // load-bearing now rather than redundant, and the T040 note that proposed
+  // retiring it is retracted below.
+  if (feature) {
     // Feature 093 (T023) — pattern B. Reading ambiently asked whether the one
     // workspace Run happened to be this Task's; in a window running several it
     // would have cancelled a bystander's Run whenever it was not. The queue
-    // answers *which* Run, and the `featureId` comparison below is left for
-    // T040 to retire, so this phase changes addressing and nothing else.
+    // answers *which* Run.
     const queueId = queue.queueIdForTask(taskId);
     const run = store.getRun(queueId);
     // FR-R3-153 (T1640, research.md R6) — widened from `run.status ===
@@ -84,6 +102,9 @@ export async function deleteTaskWithSessionCleanup(
     // queue-manager.ts). Any non-terminal Run status must go through this
     // same cancel/release sequence before the row is removed (spec FR-013,
     // FR-018).
+    // The ownership half of the pair. It is what makes the widened guard above
+    // safe: a `pending` row on a queue whose Run belongs to a sibling reaches
+    // here and stops, because the Run it found is not this Task's.
     if (run?.featureId === feature.id && !isTerminalRunStatus(run.status)) {
       // Feature 093 (T042) — addressed. Cancelling ambiently here would have
       // aborted every Run in the window because one Task was deleted.
@@ -93,16 +114,31 @@ export async function deleteTaskWithSessionCleanup(
         status: 'canceled',
         lastTransitionAt: Date.now()
       };
-      // Guarded: FR-R3-077 made this commit point fenced, so it can refuse when
-      // this window's lease has moved on or the ownership record cannot be read.
-      // The driver is already cancelled by the line above, so a throw here would
-      // strand the deletion partway — no lease release, no `removeTask`, no
-      // session cleanup — with the row still reading `running` and nothing left
-      // running to repair it. The cleanup below is what has to happen either way.
+      // FR-R3-077 made this commit point fenced, so it can refuse when this
+      // window's lease has moved on or the ownership record cannot be read.
+      //
+      // This used to warn and carry on to `removeTask`, on the reasoning that a
+      // refused deletion strands the row with nothing left running to repair
+      // it. That produced the same orphan the row-status guard above produced —
+      // driver cancelled, Run still non-terminal in the store, row gone — on a
+      // path no widening of that guard reaches, so it is reversed here rather
+      // than left as the surviving half of the defect.
+      //
+      // The reason is stronger than the smaller of two costs. A refusal at a
+      // fenced commit means this window's execution lease has moved on: another
+      // window owns the queue and is answering for its Run. A window with no
+      // standing to write the Run has no standing to delete the row that
+      // addresses it either. Both halves survive, both stay addressable by id,
+      // and the operator can retry — which is not true of an orphaned Run.
+      //
+      // The lease is deliberately not released on the way out. The Run the
+      // store still holds is non-terminal, and releasing on its behalf would
+      // hand the queue away while it still owns it (hard rule 4).
       try {
         await store.setRun(queueId, canceled, store.runCommitClaim(queueId));
       } catch (error) {
         logger.warn(`task-deletion: canceled run not persisted: ${(error as Error).message}`);
+        return { ok: false, reason: 'run-cancel-not-committed' };
       }
       // Feature 093 (T068b, FR-028) — no window-primacy release here either.
       // Deleting one Task cancelled one queue's Run; primacy is the window's

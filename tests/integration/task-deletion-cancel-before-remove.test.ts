@@ -155,6 +155,47 @@ async function seedInFlightTaskWithRun(
   return { taskId: feature.id };
 }
 
+/**
+ * The other half of the same situation: the Task ROW reads `paused`, because
+ * the operator paused the phase and `QueueManager.pause` moved the row out of
+ * `in-flight`. The Run is `paused` too and still owns the queue's Run slot, its
+ * session and its execution lease.
+ *
+ * `seedInFlightTaskWithRun` above cannot express this. Its rows are all
+ * `in-flight` — that is the delayed-retry shape, where the Run pauses itself
+ * and the row never learns. Here the row moved and the Run did not, which is
+ * the combination the deletion path used to skip entirely.
+ */
+async function seedPausedTaskWithPausedRun(runId: string): Promise<{ taskId: string }> {
+  const feature = await queue.enqueue('task the operator paused mid-phase');
+  await queue.markInFlight(feature.id, runId);
+  await queue.pause(feature.id);
+  expect(queue.findById(feature.id)?.status).toBe('paused');
+  const now = Date.now();
+  const run: WorkflowRun = {
+    id: runId,
+    featureId: feature.id,
+    featureDir: 'specs/000',
+    status: 'paused',
+    currentPhase: 'speckit-analyze',
+    currentIteration: 1,
+    startedAt: now,
+    lastTransitionAt: now,
+    phasesCompleted: [],
+    lastError: null,
+    delayedRetryCount: 0,
+    pendingRetryAt: null,
+    pendingRetryCause: null,
+    phaseOverrides: [],
+    manualPauseAt: now,
+    manualPauseCause: 'operator-paused',
+    phaseBreakpoints: [],
+    resumeTargetPhaseId: null
+  };
+  await store.setRun(DEFAULT_QUEUE_ID, run, unfencedCommit('test-fixture'));
+  return { taskId: feature.id };
+}
+
 describe('Feature 200 FR-008a — cancel and persist before the row is removed', () => {
   // Both non-terminal Run statuses a live Task can carry. `running` is the
   // obvious one; `paused` is a delayed-retry countdown, where the Run waits to
@@ -202,11 +243,72 @@ describe('Feature 200 FR-008a — cancel and persist before the row is removed',
     }
   );
 
-  // FR-008a's second half. The controller guards the cancel/persist step behind
-  // a `try`/`catch` so a refused fenced commit cannot strand the deletion
-  // partway. That tolerance must not extend to the *ordering*: a failed persist
-  // still has to have been attempted, and released, before the row goes.
-  it('still cancels and releases before removing the row when the canceled-run commit is refused', async () => {
+  // The row status the `it.each` above cannot reach, and the one that shipped
+  // the defect: `paused`. `QueueManager.pause` moves the row out of
+  // `in-flight`, and the guard on the cancel sequence used to read the ROW's
+  // status, so an operator-paused Run went through none of it — no cancel, no
+  // persisted `canceled`, no lease release — and `removeTask` then deleted the
+  // only row that could address the Run it left behind.
+  //
+  // Same transcript as the in-flight cases, deliberately: which status the row
+  // happens to carry is not a reason for the sequence to differ. The Run is
+  // non-terminal, so it is cancelled and persisted before the row goes.
+  it('deleting a PAUSED task whose Run is paused cancels, persists and releases before removing the row', async () => {
+    const order: string[] = [];
+    const observed: { runStatusAtRemoval?: string | undefined } = {};
+    const { taskId } = await seedPausedTaskWithPausedRun('R-operator-paused');
+
+    const result = await deleteTaskWithSessionCleanup(makeRecordingDeps(order, observed), taskId);
+
+    expect(result.ok).toBe(true);
+    expect(order).toEqual([
+      'cancelActive',
+      'setRun:canceled',
+      'releaseLease',
+      'removeTask',
+      'sessionCleanup'
+    ]);
+    expect(observed.runStatusAtRemoval).toBe('canceled');
+
+    // The half that was actually being lost: no Run outlives its row. A
+    // non-terminal Run left in the map here is invisible to `findById`, so
+    // every cancel, resume and retry route refuses it by identity while drain
+    // step 3 keeps refusing to start anything else on its queue.
+    expect(queue.findById(taskId)).toBeNull();
+    expect(store.getRun(DEFAULT_QUEUE_ID)?.status).toBe('canceled');
+    expect(store.findRunByTask(taskId)?.run.status ?? 'canceled').toBe('canceled');
+  });
+
+  // A pending task on a queue whose Run belongs to a DIFFERENT task. The guard
+  // that used to read the row's status made this case safe by accident; the
+  // ownership comparison is what actually makes it safe, and it is now the only
+  // thing standing between a pending deletion and a sibling's live Run.
+  it('deleting a pending task does not touch a sibling Run executing on the same queue', async () => {
+    const order: string[] = [];
+    const { taskId: runningTaskId } = await seedInFlightTaskWithRun('R-sibling', 'running');
+    const pending = await queue.enqueue('a pending row that owns no Run');
+
+    const result = await deleteTaskWithSessionCleanup(makeRecordingDeps(order), pending.id);
+
+    expect(result.ok).toBe(true);
+    expect(order).toEqual(['removeTask']);
+    expect(store.getRun(DEFAULT_QUEUE_ID)?.status).toBe('running');
+    expect(store.getRun(DEFAULT_QUEUE_ID)?.featureId).toBe(runningTaskId);
+  });
+
+  // FR-008a's second half, reversed by the deleted-paused-task bug report.
+  //
+  // The cancel/persist step sat behind a `try`/`catch` that warned and carried
+  // on to `removeTask`. That produced the same orphan the row-status guard did,
+  // on a path no widening of that guard reaches: driver cancelled, Run still
+  // non-terminal in the store, row gone.
+  //
+  // It is refused instead, and the reason is stronger than "the smaller cost".
+  // FR-R3-077 made this commit fenced, so a refusal means this window's
+  // execution lease has moved on — another window owns the queue. A window with
+  // no standing to write the Run has no standing to remove the row that
+  // addresses it either. Both halves survive, and the deletion is retryable.
+  it('refuses the deletion, keeping both halves, when the canceled-run commit is refused', async () => {
     const order: string[] = [];
     const { taskId } = await seedInFlightTaskWithRun('R-refused', 'running');
 
@@ -224,13 +326,17 @@ describe('Feature 200 FR-008a — cancel and persist before the row is removed',
 
     const result = await deleteTaskWithSessionCleanup(refusing, taskId);
 
-    expect(result.ok).toBe(true);
-    expect(order).toEqual([
-      'cancelActive',
-      'setRun:canceled',
-      'releaseLease',
-      'removeTask',
-      'sessionCleanup'
-    ]);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('run-cancel-not-committed');
+    // Attempted, then stopped. The lease is not released either: the Run the
+    // store still holds is non-terminal, and releasing on its behalf would hand
+    // the queue away while it still owns it.
+    expect(order).toEqual(['cancelActive', 'setRun:canceled']);
+    expect(order).not.toContain('removeTask');
+    expect(order).not.toContain('sessionCleanup');
+
+    // Both halves, intact and still addressable by id.
+    expect(queue.findById(taskId)).not.toBeNull();
+    expect(store.getRun(DEFAULT_QUEUE_ID)?.status).toBe('running');
   });
 });

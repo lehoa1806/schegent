@@ -335,6 +335,69 @@ describe('Feature 034 T005 — WorkflowController.deleteTask cleanup wiring', ()
     setRunSpy.mockRestore();
   });
 
+  // The deleted-paused-task defect, through the product's real route.
+  // See docs/features/bugs/DONE_a-deleted-paused-task-strands-its-run-and-
+  // deadlocks-its-queue.md.
+  //
+  // The `it.each` below already deletes a `paused` task, and passed throughout
+  // the whole life of the bug, because it seeds no Run — so nothing it asserts
+  // can reach the guard. The row and the Run TOGETHER are the case: the row
+  // reads `paused` (the operator paused the phase), the Run reads `paused` and
+  // is still holding the queue.
+  it('paused task whose Run is still paused — cancel and terminal persist run BEFORE cleanup', async () => {
+    const runId = 'R5';
+    const feature = await queue.enqueue('operator-paused mid-phase');
+    await queue.markInFlight(feature.id, runId);
+    await queue.pause(feature.id);
+    expect(queue.findById(feature.id)?.status).toBe('paused');
+
+    const now = Date.now();
+    const run: WorkflowRun = {
+      id: runId,
+      featureId: feature.id,
+      featureDir: 'specs/000',
+      status: 'paused',
+      currentPhase: 'speckit-analyze',
+      currentIteration: 1,
+      startedAt: now,
+      lastTransitionAt: now,
+      phasesCompleted: [],
+      lastError: null,
+      delayedRetryCount: 0,
+      pendingRetryAt: null,
+      pendingRetryCause: null,
+      phaseOverrides: [],
+      manualPauseAt: now,
+      manualPauseCause: 'operator-paused',
+      phaseBreakpoints: [],
+      resumeTargetPhaseId: null
+    };
+    await store.setRun(DEFAULT_QUEUE_ID, run, unfencedCommit('test-fixture'));
+    await seedSessionArtifacts(runId);
+
+    const order: string[] = [];
+    const cleanupSpy = vi.fn(async () => {
+      order.push('cleanup');
+      return { cleaned: true };
+    });
+    const controller = makeController(cleanupSpy);
+    const cancelSpy = vi.spyOn(controller, 'cancelActive').mockImplementation(() => {
+      order.push('cancel');
+    });
+
+    const result = await controller.deleteTask(feature.id);
+
+    expect(result.ok).toBe(true);
+    expect(cancelSpy).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(['cancel', 'cleanup']);
+    // No Run outlives its row. This is the assertion the bug is about: the
+    // record left behind was non-terminal, so drain step 3 read the queue as
+    // occupied forever while `findById` refused every route that could have
+    // ended it.
+    expect(queue.findById(feature.id)).toBeNull();
+    expect(store.getRun(DEFAULT_QUEUE_ID)?.status).toBe('canceled');
+  });
+
   // FR-R3-153 (T1640, spec FR-014) — deletion completes correctly for every
   // one of the six visible statuses, not only the two already exercised
   // above (pending via the null-runId case, completed via seedTerminalTask).
