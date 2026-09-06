@@ -152,6 +152,13 @@ export function scheduledStartFromQueueState(source: {
  * through the identical `sanitizeAndCap`, on `taskName` rather than `message`:
  * the failed task's name is operator-authored content on the same terms as
  * every other string this function already sanitizes.
+ *
+ * BUG-004 — `kind: 'stranded-run'` carries no operator-authored string at all:
+ * a run id and a phase id, both host-generated. It is projected here anyway,
+ * beside the other two, because this is the one function allowed to decide what
+ * of a report reaches the wire — a producer that shipped its own fields around
+ * this seam would be the second such decision, and the next one after it would
+ * carry a message.
  */
 export function projectStartFailure(
   raw: QueueStartFailure | null | undefined,
@@ -166,6 +173,14 @@ export function projectStartFailure(
       // since it never came from the operator) keeps that guarantee on the
       // pathological path where sanitizing the description empties it.
       taskName: sanitizeAndCap(raw.taskName, sanitize) ?? raw.taskId,
+      at: new Date(raw.at).toISOString()
+    });
+  }
+  if (raw.kind === 'stranded-run') {
+    return Object.freeze({
+      kind: 'stranded-run',
+      runId: raw.runId,
+      phase: raw.phase,
       at: new Date(raw.at).toISOString()
     });
   }

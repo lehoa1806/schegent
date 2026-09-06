@@ -1156,3 +1156,199 @@ describe('AutoDrainCoordinator — the report a failed start leaves on its queue
     expect(startFailures.clear).toHaveBeenCalledWith('q-b');
   });
 });
+
+// BUG-004 — step 3's occupant refusal, and the one shape of it that never
+// re-asks itself.
+//
+// A queue held by a live Run is the ordinary case: that Run reaches a terminal
+// status, its termination sweeps the whole registry, and this refusal is asked
+// again. A queue held by a Run whose Task row was deleted is not — every route
+// that could end that Run (cancel by id, the palette's sole-run cancel, resume,
+// retry) resolves the row first and refuses when there is none, so nothing ends
+// it and nothing re-asks. Before this block, both read identically from outside:
+// `drainQueue` returned `false` and said nothing.
+//
+// What these pin is the separation. Reporting every non-terminal occupant would
+// put a failure notice on every busy queue, which is how a surface stops being
+// read.
+describe('AutoDrainCoordinator — the Run that holds a queue and cannot be reached', () => {
+  const HELD = 'q-held';
+  const OTHER = 'q-other';
+
+  interface Occupant {
+    readonly id: string;
+    readonly featureId: string;
+    readonly status: string;
+    readonly currentPhase: string;
+  }
+
+  function strandedSetup(options: {
+    /** Read fresh on every drain, so a test can free the queue between two. */
+    readonly occupant: () => Occupant | null;
+    /** Task rows per queue id. A queue absent from the map holds none. */
+    readonly rows?: ReadonlyMap<string, readonly { readonly id: string }[]>;
+    /** Whether a pending head exists — `false` stops the drain at step 5, before
+     *  step 7's own `clear`, so a `clear` assertion can only be step 3's. */
+    readonly pending?: boolean;
+    readonly withPort?: boolean;
+  }) {
+    const rows = options.rows ?? new Map<string, readonly { readonly id: string }[]>();
+    const ids = rows.size > 0 ? [...rows.keys()] : [HELD];
+    const startFailures = { recordFailure: vi.fn(), clear: vi.fn() };
+    const getQueueRegistry = vi.fn(() => ({
+      entries: ids.map((id, position) => ({ id, position })),
+      updatedAt: 0
+    }));
+    const admitNew = vi.fn(async () => ({ completed: Promise.resolve() }));
+    const coord = new AutoDrainCoordinator({
+      store: {
+        getQueue: vi.fn((queueId: string) => ({
+          queueLifecycle: 'active-empty' as QueueLifecycle,
+          pauseSource: null,
+          inFlightId: null,
+          requests: rows.get(queueId) ?? []
+        })),
+        getRun: vi.fn(() => options.occupant()),
+        getQueueRegistry
+      } as never,
+      queue: {
+        peekNextPending: vi.fn(() =>
+          options.pending === false ? null : { id: 'task-next', description: 'next' }
+        ),
+        hasQueueCapacity: vi.fn(() => true),
+        hasExecutionCapacity: vi.fn(() => true),
+        hasWorkspaceCapacity: vi.fn(() => true)
+      } as never,
+      executionLease: {
+        tryAcquire: vi.fn(async () => ({ acquired: true, ownerId: 'w-1' })),
+        release: vi.fn(async () => undefined)
+      } as never,
+      controller: {
+        admitNew,
+        admitResume: vi.fn(async () => ({ resumed: false, completed: Promise.resolve() })),
+        liveRunCount: 0
+      } as never,
+      startFailures: options.withPort === false ? null : startFailures,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' as const }
+    });
+    return { coord, startFailures, getQueueRegistry, admitNew };
+  }
+
+  const stranded: Occupant = {
+    id: 'run-stranded',
+    featureId: 'task-deleted',
+    status: 'paused',
+    currentPhase: 'implement'
+  };
+
+  it('records the Run holding the queue when no Task row anywhere addresses it', async () => {
+    const s = strandedSetup({ occupant: () => stranded });
+
+    await s.coord.drainIfIdle(HELD);
+
+    expect(s.startFailures.recordFailure).toHaveBeenCalledWith(HELD, {
+      kind: 'stranded-run',
+      runId: 'run-stranded',
+      phase: 'implement'
+    });
+  });
+
+  it('reports nothing for the ordinary held queue — its Task row is right there', async () => {
+    // The distinction the whole block exists for. This Run is reachable: the
+    // operator can cancel or resume it, and when it ends its own sweep re-asks.
+    const s = strandedSetup({
+      occupant: () => stranded,
+      rows: new Map([[HELD, [{ id: 'task-deleted' }]]])
+    });
+
+    await s.coord.drainIfIdle(HELD);
+
+    expect(s.startFailures.recordFailure).not.toHaveBeenCalled();
+  });
+
+  it('reports nothing when the Task row moved to another queue', async () => {
+    // The row is not on the Run's own queue, and the Run is still addressable —
+    // the same reason `reconcileOrphanedRuns` asks across every queue rather
+    // than the one the Run is parked on.
+    const s = strandedSetup({
+      occupant: () => stranded,
+      rows: new Map([
+        [HELD, []],
+        [OTHER, [{ id: 'task-deleted' }]]
+      ])
+    });
+
+    await s.coord.drainIfIdle(HELD);
+
+    expect(s.startFailures.recordFailure).not.toHaveBeenCalled();
+  });
+
+  it('refuses the queue either way — the report is not a second gate', async () => {
+    const reported = strandedSetup({ occupant: () => stranded });
+    const ordinary = strandedSetup({
+      occupant: () => stranded,
+      rows: new Map([[HELD, [{ id: 'task-deleted' }]]])
+    });
+
+    await reported.coord.drainIfIdle(HELD);
+    await ordinary.coord.drainIfIdle(HELD);
+
+    expect(reported.admitNew).not.toHaveBeenCalled();
+    expect(ordinary.admitNew).not.toHaveBeenCalled();
+  });
+
+  it('clears the report once the queue is no longer held', async () => {
+    let occupant: Occupant | null = stranded;
+    const s = strandedSetup({ occupant: () => occupant, pending: false });
+
+    await s.coord.drainIfIdle(HELD);
+    expect(s.startFailures.recordFailure).toHaveBeenCalledTimes(1);
+
+    occupant = null;
+    await s.coord.drainIfIdle(HELD);
+
+    // `pending: false` stops this drain at step 5, so step 7's own `clear`
+    // cannot be what answered here.
+    expect(s.startFailures.clear).toHaveBeenCalledWith(HELD);
+  });
+
+  it('clears the report once the Run becomes addressable again', async () => {
+    // Still held, but by a Run the operator can now reach. A report left
+    // standing here would tell them to reload a window for a Run they can
+    // simply cancel.
+    const rows = new Map<string, readonly { readonly id: string }[]>([[HELD, []]]);
+    const s = strandedSetup({ occupant: () => stranded, rows, pending: false });
+
+    await s.coord.drainIfIdle(HELD);
+    expect(s.startFailures.recordFailure).toHaveBeenCalledTimes(1);
+
+    rows.set(HELD, [{ id: 'task-deleted' }]);
+    await s.coord.drainIfIdle(HELD);
+
+    expect(s.startFailures.clear).toHaveBeenCalledWith(HELD);
+  });
+
+  it('does not clear a report it did not write', async () => {
+    // `clear` on this path drops exactly what step 3 recorded. An admission
+    // report from a previous attempt belongs to step 7 and is not step 3's to
+    // erase — the queue below was never reported as held.
+    const s = strandedSetup({ occupant: () => null, pending: false });
+
+    await s.coord.drainIfIdle(HELD);
+
+    expect(s.startFailures.clear).not.toHaveBeenCalled();
+  });
+
+  it('does not even look for the Task row when no port is wired', async () => {
+    // The reason `startFailures` is optional, restated for this step: the
+    // gate-order tests assert which collaborators a refusal consulted, and a
+    // registry scan that ran without a reader would change that answer for a
+    // reason unrelated to the gate under test.
+    const s = strandedSetup({ occupant: () => stranded, withPort: false });
+
+    await s.coord.drainIfIdle(HELD);
+
+    expect(s.getQueueRegistry).not.toHaveBeenCalled();
+    expect(s.admitNew).not.toHaveBeenCalled();
+  });
+});

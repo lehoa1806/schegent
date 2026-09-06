@@ -79,6 +79,24 @@
     </span>
     <span class="retry-note">Retry or remove that task to let this queue continue.</span>
   </div>
+{:else if startFailure !== null && startFailure.kind === 'stranded-run'}
+  <!-- BUG-004 — the run with no task row. Here rather than in a notice of its
+       own for the reason the halted branch above gives, and it is the case that
+       most needs saying: the other two describe an attempt that failed and will
+       be retried, this one describes a queue that will not try again. The note
+       names a reload because no control can reach the run — every cancel,
+       resume and retry resolves the task row first, and there is none. -->
+  <div class="start-failure halted" role="status" data-testid="queue-stranded-run-{queueId}">
+    <div class="headline">
+      <span class="attempt">Blocked</span>
+      <span class="age" data-testid="queue-stranded-run-age-{queueId}">{age}</span>
+    </div>
+    <span class="summary" data-testid="queue-stranded-run-detail-{queueId}">
+      A run with no task is holding this queue, stopped in
+      <strong>{startFailure.phase}</strong>.
+    </span>
+    <span class="retry-note">Reload the window to release it.</span>
+  </div>
 {/if}
 
 <style>

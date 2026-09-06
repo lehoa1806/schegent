@@ -22,7 +22,7 @@ import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
 import type { FeatureRequest } from '../queue/feature-request';
 import type { QueueManager } from '../queue/queue-manager';
 import type { OwnershipClaim, WorkspaceStateStore } from '../state/workspace-state';
-import { isTerminalRunStatus } from '../state/workflow-run';
+import { isTerminalRunStatus, type WorkflowRun } from '../state/workflow-run';
 import type { SchegentWorkflowController } from '../controller/workflow-controller';
 import type { SanitizedLogger } from '../lib/logger';
 import { effectiveQueueFailurePolicy, type QueueFailurePolicy } from '../contracts/queue-failure-policy';
@@ -99,6 +99,7 @@ export interface QueueStartFailurePort {
     failure:
       | { readonly kind: 'admission'; readonly admission: 'admitNew' | 'admitResume'; readonly message: string }
       | { readonly kind: 'halted'; readonly taskId: string; readonly taskName: string }
+      | { readonly kind: 'stranded-run'; readonly runId: string; readonly phase: string }
   ): void;
   clear(queueId: string): void;
 }
@@ -249,6 +250,19 @@ export class AutoDrainCoordinator {
    * coordinator wrote, without giving `QueueStartFailurePort` a read side.
    */
   private readonly haltedQueues = new Set<string>();
+
+  /**
+   * BUG-004 — which queues step 3 most recently reported as held by a stranded
+   * Run. Exactly the `haltedQueues` device above, for exactly its reason: the
+   * clearing branch below step 3's occupant check drops the report THIS
+   * coordinator wrote and no other, which it cannot ask `QueueStartFailurePort`
+   * about (that port has no read side, by design).
+   *
+   * A successful start also clears the registry, and it cannot clobber a report
+   * this set is still tracking: reaching step 7 means passing the occupant
+   * check, and the clearing branch sits on that path.
+   */
+  private readonly strandedQueues = new Set<string>();
 
   /**
    * Feature 093 (T049a) — the Runs this coordinator started that have not yet
@@ -466,9 +480,22 @@ export class AutoDrainCoordinator {
     // it sits **before** step 6's `tryAcquire`, so the paused Run's execution
     // lease is never touched — a refusal after the acquire would reach step 7's
     // release path and strip the lease out from under a Run that still owns it.
+    //
+    // BUG-004 — and this is the one reading in the seven steps that can refuse
+    // forever. The paragraph above is why the two readings can disagree at all;
+    // when they do because the occupant's Task row was DELETED, no control can
+    // reach the Run (every cancel, resume and retry route resolves the row
+    // first), so nothing ends it, and no terminal Run re-asks this refusal for
+    // this queue. `reportStrandedOccupant` names that case and only that case.
+    // It changes no verdict — the `return false` below is the same refusal it
+    // always was, on the same reading — so this is not a second gate.
     if (!this.queue.hasQueueCapacity(queueId)) return false;
     const occupant = this.store.getRun(queueId);
-    if (occupant !== null && !isTerminalRunStatus(occupant.status)) return false;
+    if (occupant !== null && !isTerminalRunStatus(occupant.status)) {
+      this.reportStrandedOccupant(queueId, occupant);
+      return false;
+    }
+    this.clearStrandedReport(queueId);
     // Step 4 — the workspace is at its concurrency ceiling. A wait, not an
     // error: nothing is written and nothing is signalled, and the next sweep
     // (from a different cursor position) will try again.
@@ -516,6 +543,71 @@ export class AutoDrainCoordinator {
     } finally {
       this.reservedStarts -= 1;
     }
+  }
+
+  /**
+   * BUG-004 — report step 3's occupant refusal, but only when it is the one
+   * that will never be re-asked.
+   *
+   * A non-terminal occupant is the ORDINARY state of a queue with work in
+   * flight, and reporting every one of them would put a failure notice on every
+   * busy queue and a refusal on every Start pressed against one — noise that
+   * would teach the operator to ignore the surface that matters. What separates
+   * the deadlock is that the occupant's Task row is gone: `deleteTask` used to
+   * remove the row while leaving a non-terminal Run behind (this bug's Part 1),
+   * and the result is a Run that cannot be canceled, resumed or retried, because
+   * all three resolve the row first.
+   *
+   * Whether the report exists changes nothing about whether the queue starts.
+   * The refusal is the caller's, unconditional, and identical either way.
+   *
+   * Gated on the port being wired for the reason its own declaration gives: the
+   * gate-order unit tests assert that no collaborator past the failing step was
+   * consulted, and a scan that ran without a reader would make that assertion
+   * true or false for reasons unrelated to the gate under test.
+   */
+  private reportStrandedOccupant(queueId: string, occupant: WorkflowRun): void {
+    if (this.startFailures === null) return;
+    if (this.taskRowExistsAnywhere(occupant.featureId)) {
+      // Addressable again — the row was restored or moved back. Drop the report
+      // rather than leaving one that now describes a Run the operator can reach.
+      this.clearStrandedReport(queueId);
+      return;
+    }
+    this.strandedQueues.add(queueId);
+    this.startFailures.recordFailure(queueId, {
+      kind: 'stranded-run',
+      runId: occupant.id,
+      phase: occupant.currentPhase
+    });
+  }
+
+  /**
+   * Drops the stranded report this coordinator wrote for `queueId`, and only
+   * that one. See `strandedQueues` for why the membership check is what makes
+   * "only that one" true.
+   */
+  private clearStrandedReport(queueId: string): void {
+    if (!this.strandedQueues.delete(queueId)) return;
+    this.startFailures?.clear(queueId);
+  }
+
+  /**
+   * Whether any queue in the registry still holds a Task row with this id — the
+   * same question `reconcileOrphanedRuns` asks of persisted state at load, asked
+   * here of live state.
+   *
+   * Across ALL queues rather than the Run's own, for the reason that module
+   * gives: a Task that moved between queues is still addressable, so the Run
+   * naming it is still cancellable and this is not the stranded case.
+   */
+  private taskRowExistsAnywhere(taskId: string): boolean {
+    for (const entry of this.store.getQueueRegistry().entries) {
+      if (this.store.getQueue(entry.id).requests.some((request) => request.id === taskId)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**

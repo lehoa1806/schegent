@@ -37,6 +37,15 @@
  *
  * Registry semantics are unchanged by the widening: one entry per queue,
  * later replaces earlier, a successful start clears (`clear`).
+ *
+ * BUG-004 — `kind: 'stranded-run'` is the third, on the same terms: a Run holds
+ * the queue's one Run slot and no Task row anywhere addresses it, so no control
+ * can end it and the queue never drains again. It belongs in THIS registry, and
+ * not merely in the log, for the reason stated at the top of this file: every
+ * other reading of step 3 leaves a Run something later ends, and a terminal Run
+ * re-asks the refusal. This one leaves a Run nothing can end. Which occupant
+ * qualifies is decided at the single site that reads it — the drain's step 3 —
+ * and never re-derived from this record.
  */
 export type QueueStartFailure =
   | {
@@ -62,6 +71,20 @@ export type QueueStartFailure =
        */
       readonly taskName: string;
       readonly at: number;
+    }
+  | {
+      readonly kind: 'stranded-run';
+      /**
+       * The holding Run's own id, and the phase it stopped in. Both are
+       * host-generated — a run id and a phase id — so neither is operator-authored
+       * content and neither is a path. They still pass through the projection seam
+       * unchanged rather than around it, because "which strings may skip the
+       * sanitizer" is a decision that belongs in one function
+       * (`projectStartFailure`), not in each producer.
+       */
+      readonly runId: string;
+      readonly phase: string;
+      readonly at: number;
     };
 
 export class QueueStartFailureRegistry {
@@ -84,14 +107,29 @@ export class QueueStartFailureRegistry {
     failure:
       | { readonly kind: 'admission'; readonly admission: 'admitNew' | 'admitResume'; readonly message: string }
       | { readonly kind: 'halted'; readonly taskId: string; readonly taskName: string }
+      | { readonly kind: 'stranded-run'; readonly runId: string; readonly phase: string }
   ): void {
+    // One clock read for the whole call, and the fields written out per kind
+    // rather than spread from the argument: a spread would carry whatever a
+    // caller happened to pass, and this registry's records reach the wire.
+    const at = this.now();
+    if (failure.kind === 'admission') {
+      this.byQueue.set(
+        queueId,
+        Object.freeze({ kind: 'admission', admission: failure.admission, at, message: failure.message })
+      );
+      return;
+    }
+    if (failure.kind === 'halted') {
+      this.byQueue.set(
+        queueId,
+        Object.freeze({ kind: 'halted', taskId: failure.taskId, taskName: failure.taskName, at })
+      );
+      return;
+    }
     this.byQueue.set(
       queueId,
-      Object.freeze(
-        failure.kind === 'admission'
-          ? { kind: 'admission', admission: failure.admission, at: this.now(), message: failure.message }
-          : { kind: 'halted', taskId: failure.taskId, taskName: failure.taskName, at: this.now() }
-      )
+      Object.freeze({ kind: 'stranded-run', runId: failure.runId, phase: failure.phase, at })
     );
   }
 
