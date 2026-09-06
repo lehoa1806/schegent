@@ -436,7 +436,7 @@ describe('Feature 085 T057 — absent and empty are the same document (research 
     // cannot be collapsed into one representation.
     const text = documentFor({ label: '', definition: NOTHING_OPTIONAL, include: false });
     expect(text).not.toContain('description');
-    expect(readPackage(text).pipeline).not.toHaveProperty('description');
+    expect(readPackage(text).pipeline).not.toHaveProperty('description'); // 2026-09-06 coincidental: a parsed pipeline definition, not the CmdStart IPC command
   });
 });
 

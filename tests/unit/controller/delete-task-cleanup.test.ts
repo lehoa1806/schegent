@@ -149,7 +149,7 @@ describe('Feature 034 T005 — WorkflowController.deleteTask cleanup wiring', ()
   it('null runId (pending task) → ok:true, sessionCleaned:false, no fs syscall', async () => {
     const feature = await queue.enqueue('pending feature');
     // No markInFlight — runId stays null.
-    expect(queue.findById(feature.id)?.runId).toBeNull();
+    expect(queue.findById(feature.id)?.runId).toBeNull(); // 2026-09-06 coincidental: a queue task, not the audit envelope
 
     const cleanupSpy = vi.fn<
       (input: {

@@ -162,7 +162,7 @@ describe('FR-R3-011 — cascade versus operator precedence on the single value',
     await h.queue.cascadedResume(DEFAULT_QUEUE_ID);
 
     expect(h.pauseOf().lifecycle).not.toBe('operator-paused');
-    expect(h.pauseOf().source).toBeNull();
+    expect(h.pauseOf().source).toBeNull(); // 2026-09-06 coincidental: the queue's pause state, not a queue-paused event payload
     expect(h.projectedPauseOf()).toEqual({ state: 'active', source: null });
   });
 

@@ -231,7 +231,7 @@ describe('Feature 026 T020a — speckit-bugfix fails fast on empty feature point
     expect(starts[0].payload.phaseId).toBe('bugfix-report');
     expect(ends.length).toBe(1);
     expect(ends[0].phase).toBe('bugfix-report');
-    expect(ends[0].payload).not.toHaveProperty('phaseId');
+    expect(ends[0].payload).not.toHaveProperty('phaseId'); // 2026-09-06 coincidental: a phase-end payload, not phase.retry_evaluated; the phase is on the envelope, asserted above
     expect(ends[0].outcome === 'success' || ends[0].outcome === 'clean').toBe(false);
 
     // None of the downstream phases emitted phase-start before failure.

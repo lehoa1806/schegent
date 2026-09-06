@@ -230,6 +230,11 @@ describe('resolveColdStartFallback (Feature 021 T043 / BUG-001 Defect A)', () =>
     expect(fallback?.taskId).toBe('run-with-logs');
     expect(fallback?.pipelineId).toBe('standard');
     expect(fallback?.phaseId).toBe('speckit-plan');
+    // 2026-09-06 coincidental: `fallback` is a PhaseLogSelection, whose `iterationN` is
+    // `number | null` (webview-ui/src/lib/phase-log-store.svelte.ts:43) and whose null means "no
+    // iteration chosen yet". The unconditional `iterationN: number` at
+    // specs/028-advanced-phase-pausing/contracts/audit-events.md:55 declares the
+    // `phase-breakpoint-fired` audit payload, a different record that shares the name.
     expect(fallback?.iterationN).toBeNull();
     expect(fallback?.followMode).toBe('manual');
     expect(fallback?.manualLevel).toBe('task');

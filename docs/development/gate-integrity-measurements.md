@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 110
+    vacuity-census-denominator: 111
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **110** |
+| Gates the detector calls **controlled** (the denominator) | **111** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -245,6 +245,22 @@ one. **Two sources that share a root are one source**, and nothing in the detect
 signal could have told them apart — it reads for the presence of a floor, not for whether the floor
 covers the assertion beside it. The rate stays **0.0%**: the entrant was mutated with the rest and
 did not survive.
+
+**Denominator movement 110 → 111 (2026-09-06, `FR-R3-167`).** One gate joined, controlled on its
+first run.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | `absent-field-census.test.ts` (110 → 111) | Joined. Re-derives the absent-field census on every run — every assertion in `tests/` and in the webview suite under `webview-ui/src/` that says a field is not there, cross-referenced against the discovered payload contracts — and fails on a contract-governed absence carrying no adjacent dated decision note. It walks both corpora through `source-scan.ts` and holds the result as an empty set in six places, so it is a scanning gate by the detector's definition. Controlled by `MIN_TEST_FILES`, `MIN_ASSERTIONS` and `MIN_CONTRACT_DOCUMENTS`, which `PROVES_NON_EMPTY` recognises by the `MIN_\w+` form, and by naming `docs/reference/audit-events.md` in a `toContain`, so `scanning-gates-prove-they-scanned` was green on it from the first run. |
+
+The entry is worth one further note, because the gate's floors are doing something slightly different
+from the ones above them. Most floors in this census protect one scan. This gate has two corpora that
+can empty independently — the test tree and the contract set — and emptying *either* would make its
+central assertion pass over nothing, so it carries a floor for each rather than one for the pair. The
+lesson recorded on the row above this one, that two sources sharing a root are one source, is the
+reason: these two do not share a root, and the gate proves it by reporting which roots it read.
+
+The rate stays **0.0%**: the entrant was mutated with the rest and did not survive.
 
 **Why this keeps happening, said plainly.** Two authorities on one figure — a line a test asserts
 against a live run, and a table a human maintains — will drift unless something reads both. Nothing

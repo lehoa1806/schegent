@@ -117,7 +117,7 @@ describe('runRestartCanceledTask — BUG-001', () => {
     expect(result.ok).toBe(true);
     const restarted = queue.findById(feature.id)!;
     expect(restarted.status).toBe('pending');
-    expect(restarted.runId).toBeNull();
+    expect(restarted.runId).toBeNull(); // 2026-09-06 coincidental: a queue task, not the audit envelope
     expect(restarted.startedAt).toBeNull();
     expect(restarted.completedAt).toBeNull();
     expect(restarted.lastError).toBeNull();

@@ -168,7 +168,7 @@ describe('queue-projector — paused-task composition (T069 / BUG-006)', () => {
       scheduledStartAt: null
     });
 
-    expect(projection.pending[0].paused).toBeUndefined();
+    expect(projection.pending[0].paused).toBeUndefined(); // 2026-09-06 coincidental: a projected task row, not QueueState
   });
 
   it('does not synthesize system-paused metadata when scheduledStartSource is null', () => {

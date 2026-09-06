@@ -244,7 +244,7 @@ describe('FR-R3-158 (T015) — the source chain, one source at a time', () => {
     ).orderedItems;
 
     for (const row of rows) {
-      expect(row.phaseProgress, row.id).toBeNull();
+      expect(row.phaseProgress, row.id).toBeNull(); // 2026-09-06 coincidental: `row.id` is expect's message argument; the assertion is on row.phaseProgress
     }
   });
 });

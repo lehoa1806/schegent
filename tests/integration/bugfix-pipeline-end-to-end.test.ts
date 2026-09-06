@@ -248,8 +248,8 @@ describe('Feature 026 T019 — speckit-bugfix happy-path end-to-end', () => {
       expect(evt.payload.pipelineId).toBe(SPECKIT_BUGFIX_PIPELINE_ID);
     }
     for (const evt of ends) {
-      expect(evt.payload).not.toHaveProperty('pipelineId');
-      expect(evt.payload).not.toHaveProperty('phaseId');
+      expect(evt.payload).not.toHaveProperty('pipelineId'); // 2026-09-06 coincidental: a phase-end payload, not phase.retry_evaluated
+      expect(evt.payload).not.toHaveProperty('phaseId'); // 2026-09-06 coincidental: a phase-end payload; the phase is on the envelope, asserted above
     }
   });
 

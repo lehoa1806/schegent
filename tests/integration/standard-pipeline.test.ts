@@ -167,8 +167,8 @@ describe('Spec-kit New Feature Pipeline end-to-end (T026, US1)', () => {
       expect(entry.payload).not.toHaveProperty('timeoutMs');
     }
     for (const entry of ends) {
-      expect(entry.payload).not.toHaveProperty('pipelineId');
-      expect(entry.payload).not.toHaveProperty('phaseId');
+      expect(entry.payload).not.toHaveProperty('pipelineId'); // 2026-09-06 coincidental: a phase-end payload, not phase.retry_evaluated
+      expect(entry.payload).not.toHaveProperty('phaseId'); // 2026-09-06 coincidental: a phase-end payload; the phase is on the envelope
       expect(entry.payload).toHaveProperty('fileChangeCounts');
       expect(entry.payload).toHaveProperty('toolCategoryCounts');
     }

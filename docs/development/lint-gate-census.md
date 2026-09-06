@@ -19,10 +19,10 @@ predicted it: its author sampled the set and found every gate well motivated.
 
 | Figure | Value | Date | Method |
 |---|---|---|---|
-| Gate files | **194** | 2026-09-05 | `*.test.ts` under `tests/lint/` recursively |
-| Marked `unique` | 178 | 2026-09-05 | hand verdict |
-| Marked `partially redundant` | 16 | 2026-09-05 | hand verdict |
-| Marked `redundant` | 0 | 2026-09-05 | hand verdict |
+| Gate files | **195** | 2026-09-06 | `*.test.ts` under `tests/lint/` recursively |
+| Marked `unique` | 179 | 2026-09-06 | hand verdict |
+| Marked `partially redundant` | 16 | 2026-09-06 | hand verdict |
+| Marked `redundant` | 0 | 2026-09-06 | hand verdict |
 
 <!-- census:prose -->
 The three verdict rows sum to the gate-file count, so they are one measurement and carry one
@@ -160,6 +160,7 @@ changing one means updating that machinery in the same commit.
 |---|---|---|---|---|
 | `a11y-baseline-shrinks.test.ts` | FR-R3-131 — the a11y baseline shrinks or stays put | partly by `a11y-policy-parity.test.ts`, which now reads this gate's `MAX_ACCEPTED_ENTRIES` and pins the accepted count to it | unique | the ceiling and its no-slack half are asserted only here; the sibling checks the two gates agree about the file, not that the ratchet exists. Driven red 2026-08-28 by appending one probe entry: `accepts 1 finding(s), over its recorded ceiling of 0` |
 | `a11y-policy-parity.test.ts` | FR-R3-091 — the conformance target is one claim, not three | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
+| `absent-field-census.test.ts` | FR-R3-167 — a contract-governed absence needs an adjacent dated decision note | — | unique | nothing else in the tree reads the payload contracts against the test suite. The four `tests/unit/lint/absent-field-census-*.test.ts` files exercise this gate's own module — the scanner, the note grammar, the contract reader, the classifier — and are unit tests of the method, not a second reading of the tree; they would all stay green if the corpus walk returned nothing |
 | `actions-retirement-claims.test.ts` | FR-R3-099 — the retired claims are historical, never present-tense | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `activation-events-declared.test.ts` | the activation surface is declared and bounded (111, FR-016, FR-017) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `activation-trust-classification.test.ts` | src/activation trust classification (FR-R3-136 T1525a) | `command-trust-dispositions.test.ts` (the command surface only) | unique | its siblings assert what a trust gate DOES once someone has written one — that every command id carries a disposition, that the router is handed a posture. This one asserts that every module under `src/activation/` has been CLASSIFIED at all: one of four verdicts, in the file, saying where its acts are gated or why it has none. That sweep is what found the two producer acts no task list had named — the ownership election and the phase-log-tail audit append — and the module count is derived from the directory listing, so a module added without a verdict fails here and nowhere else |

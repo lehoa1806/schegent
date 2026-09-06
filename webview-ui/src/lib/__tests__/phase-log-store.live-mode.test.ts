@@ -477,16 +477,27 @@ async function storeShowingRunningCard(): Promise<{
   store: ReturnType<typeof createPhaseLogStore>;
   push: (payload: unknown) => void;
 }> {
-  let captured: ((payload: unknown) => void) | null = null;
+  // Not this feature's subject. `develop` carries a `no-unnecessary-condition` regression here,
+  // unrecorded in `tests/lint/eslint-baseline.json`, which makes `lint:webview` red before this
+  // branch touches anything; feature 206 cannot verify green on top of it, so it is repaired here
+  // rather than worked around. Measured on a pristine `develop` worktree at `1a8cccef`: 263 against
+  // a baseline of 260, one finding here and two in `PhaseLogEmptyStates.test.ts`.
+  //
+  // A one-slot array rather than a `let … | null`: the only writes happen inside the `subscribe`
+  // closure, which TypeScript's flow analysis does not see, so it reads the guard below against the
+  // initialiser and calls `captured === null` always true. `.at(0)` is `T | undefined` by signature,
+  // so the guard is necessary by type rather than defensive against it, and the runtime check still
+  // fails loudly if no subscribe ever landed.
+  const captured: ((payload: unknown) => void)[] = [];
   const store = createPhaseLogStore(
     async () => RUNNING_WITH_NO_OUTPUT as never,
     {
       start: async () => ({ outcome: 'success', sessionId: 's-1', mechanism: 'fs.watch' }),
       stop: async () => ({ outcome: 'success', sessionId: 's-1' }),
       subscribe: (cb: (payload: never) => void) => {
-        captured = cb as (payload: unknown) => void;
+        captured.push(cb as (payload: unknown) => void);
         return () => {
-          captured = null;
+          captured.length = 0;
         };
       }
     } as never
@@ -494,10 +505,15 @@ async function storeShowingRunningCard(): Promise<{
   store.setSelection({ ...SELECTION }, { origin: 'cascade' });
   await store.reload();
   await store.startTail({ selection: { ...SELECTION } });
-  if (captured === null) {
+  // `.at(0)`, not `.at(-1)`: this helper drives exactly one `startTail`, so there is one
+  // subscription and first and latest are the same callback. Should a second ever land without an
+  // intervening unsubscribe, first-wins is the reading that keeps the test pinned to the
+  // subscription it arranged.
+  const push = captured.at(0);
+  if (push === undefined) {
     throw new Error('startTail did not subscribe, so no push could be delivered');
   }
-  return { store, push: captured };
+  return { store, push };
 }
 
 describe('Feature 203 T044 — a live entry retires the card that said there were none', () => {

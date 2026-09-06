@@ -12,7 +12,7 @@
 // iterate it rather than restate it: a gate written against an erased union
 // would carry a fifth copy, and be the one copy nothing checks.
 //
-// RULE 67 (AGENTS.md:985-992 at HEAD) — THE NARROWING, STATED (V3.1, F17).
+// RULE 67 (docs/hard-rules.md:858-862) — THE NARROWING, STATED (V3.1, F17).
 // This gate searches for MEMBER STRING LITERALS, which are distinctive. It does
 // NOT search for `verboseDiagnosticsState`, which is not: F17 records a file
 // that carries that identifier while never comparing it (the store forwards the

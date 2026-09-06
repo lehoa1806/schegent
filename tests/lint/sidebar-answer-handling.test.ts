@@ -29,7 +29,7 @@ import { linesMatching } from './source-scan';
  * > shapes named above. The support modules are IN scope deliberately: a
  * > forbidden shape in the shared helper would put every one of its callers into
  * > the defect at once, and a file excluded by name is a second place for the
- * > shape to hide (rule 67, AGENTS.md:987-989). The scan is non-recursive, so a
+ * > shape to hide (rule 67, docs/hard-rules.md:860-862). The scan is non-recursive, so a
  * > future subdirectory does not silently enlarge the population.
  * >
  * > It does not examine `src/contracts/command-outcome.ts`, where the *correct*
@@ -63,7 +63,7 @@ import { linesMatching } from './source-scan';
  * The remedy is to rewrite the prose so it describes the shape without quoting
  * it, exactly as those fixtures now do. It is NOT to add an exemption: an
  * exemption list is a second place for a route to hide (rule 67,
- * AGENTS.md:987-989).
+ * docs/hard-rules.md:860-862).
  */
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const HANDLERS_DIR = resolve(REPO_ROOT, 'src', 'ui', 'sidebar', 'commands');

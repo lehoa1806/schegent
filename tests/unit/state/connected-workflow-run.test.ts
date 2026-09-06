@@ -392,7 +392,7 @@ describe('connected run — the queue binding (FR-041, FR-045, FR-046)', () => {
 
   it('resolves an absent binding to the default queue on read (FR-046)', () => {
     const run = started();
-    expect(run.queueId).toBeUndefined();
+    expect(run.queueId).toBeUndefined(); // 2026-09-06 coincidental: a WorkflowRun, not a ScheduleEventPayloadCore
     expect(resolveBoundQueueId(run)).toBe(DEFAULT_QUEUE_ID);
     // No migration entry: a record with no binding satisfies the invariants as
     // it stands, which is what lets it load rather than be lifted.

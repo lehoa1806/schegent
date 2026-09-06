@@ -728,7 +728,7 @@ describe('Feature 086 T063 — absent and empty are the same document (research 
     // be collapsed into one representation.
     const text = documentFor({ label: '', definition: MINIMAL, mode: 'references' });
     expect(text).not.toContain('description');
-    expect(readPackage(text).workflow).not.toHaveProperty('description');
+    expect(readPackage(text).workflow).not.toHaveProperty('description'); // 2026-09-06 coincidental: a parsed workflow definition, not the CmdStart IPC command
   });
 
   it('derives inclusion from the graph, not from what the caller supplied', () => {
