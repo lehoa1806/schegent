@@ -268,27 +268,15 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   // asked for rather than a half-cleared one. Reasoning in `reset-wiring.ts`.
   const completedResetGeneration = await completeInterruptedResetOnActivation(store, logger);
 
-  // Feature 030 — `initialize()` returns the v5 → v6 migration audit events;
-  // they are forwarded through `auditWriter.append` once the writer exists
-  // (constructed below). Empty array when no migration occurred.
-  let v6MigrationEvents: readonly import('./state/queue-state-migrator').StateMigratedV5ToV6AuditEvent[] = [];
-  // Feature 065 — v6 → v7 migration audit events; same forwarding contract.
-  let v7MigrationEvents: readonly import('./state/queue-state-migrator').StateMigratedV6ToV7AuditEvent[] = [];
-  // Feature 093 — v10 → v11 per-queue Run-record reshape; same forwarding
-  // contract, and destructured here rather than left on the result object,
-  // which is how feature 092's v10 events went unaudited.
-  let v11MigrationEvents: readonly import('./state/run-state-migrator').RunStateMigrationAuditEvent[] = [];
-  // FR-R3-010 — v11 → v12 per-queue history partition; same forwarding contract,
-  // and destructured here for the same reason.
-  let v12MigrationEvents: readonly import('./state/history-state-migrator').HistoryStateMigrationAuditEvent[] = [];
-  let runRepairEvents: readonly import('./state/workflow-run-migrator').WorkflowRunRepairedAuditEvent[] = [];
+  // Features 030 / 065 / 093 and FR-R3-010 — `initialize()` reports the audit
+  // events its migration ladder produced, forwarded through `auditWriter.append`
+  // once the writer exists (constructed below). Held as ONE binding rather than
+  // one `let` per kind: the per-kind form cost three edits in three separate
+  // places for every new kind, and missing one of the three is how feature 092's
+  // v10 events shipped unaudited.
+  let migrationEvents: import('./state/workspace-state').InitializeResult;
   try {
-    const initResult = await store.initialize();
-    v6MigrationEvents = initResult.v6MigrationEvents;
-    v7MigrationEvents = initResult.v7MigrationEvents;
-    v11MigrationEvents = initResult.v11MigrationEvents;
-    v12MigrationEvents = initResult.v12MigrationEvents;
-    runRepairEvents = initResult.runRepairEvents;
+    migrationEvents = await store.initialize();
   } catch (err) {
     void vscode.window.showErrorMessage(
       `Schegent: ${(err as Error).message}`,
@@ -356,11 +344,12 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     rotationSizeMB,
     rotationMaxAgeDays,
     completedResetGeneration,
-    v6MigrationEvents,
-    v7MigrationEvents,
-    v11MigrationEvents,
-    v12MigrationEvents,
-    runRepairEvents
+    v6MigrationEvents: migrationEvents.v6MigrationEvents,
+    v7MigrationEvents: migrationEvents.v7MigrationEvents,
+    v11MigrationEvents: migrationEvents.v11MigrationEvents,
+    v12MigrationEvents: migrationEvents.v12MigrationEvents,
+    orphanedRunEvents: migrationEvents.orphanedRunEvents,
+    runRepairEvents: migrationEvents.runRepairEvents
   });
   // FR-R3-119 — extracted to `src/activation/backend-execution-wiring.ts`. 148
   // lines constructing the monitor, sampler, runner registry and their

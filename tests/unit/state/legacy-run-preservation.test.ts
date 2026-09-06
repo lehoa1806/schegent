@@ -283,13 +283,22 @@ describe('a run persisted before this platform survives migration (T020, FR-021,
     const run = store.getRun(DEFAULT_QUEUE_ID);
     expect(run).not.toBeNull();
     expect(run!.id).toBe('run-legacy-paused');
-    expect(run!.status).toBe('paused');
     expect(run!.pipeline).toEqual(SNAPSHOT);
     expect(run!.phasesCompleted.map((entry) => entry.auditEntryId)).toEqual([
       'audit-legacy-draft-1'
     ]);
     expect(run!.manualPauseCause).toBe('operator-paused');
-    expect(run!.pendingRetryCause).toBe('rate_limit');
+    // This memento holds a Run and no queue key at all, so the Task the Run
+    // addresses has no row anywhere and the load-time orphan reconciler ends it.
+    // FR-021 is about the record surviving migration, and it does — every field
+    // above is the legacy one, read back through the current runtime. What the
+    // repair changes is only the two fields below, and the reason is that a
+    // `paused` Run whose row is gone can no longer be resumed, cancelled or
+    // retried by any route, while it does still hold the queue's occupancy gate
+    // shut. `pendingRetryCause` clears with the status because a canceled Run
+    // has no armed retry; the module header carries the full argument.
+    expect(run!.status).toBe('canceled');
+    expect(run!.pendingRetryCause).toBeNull();
     // The open advanced the version, which is the forward-only step itself.
     expect(memento.raw(KEYS.schemaVersionNumeric)).toBe(STATE_SCHEMA_VERSION);
   });

@@ -129,6 +129,35 @@ function persistRunWithPendingRetry(
     resumeTargetPhaseId: null
   };
   void memento.update('schegent.run', run);
+  // The Task row the Run addresses. It used to be left out, which made this a
+  // workspace holding a Run whose Task exists in no queue — a state the runtime
+  // cannot reach (a Run in retry backoff is a queued Task waiting to resume) and
+  // one the load-time orphan reconciler now ends on sight, clearing the very
+  // `pendingRetryAt` this suite is about. Seeding the row is what the fixture
+  // always meant.
+  void memento.update('schegent.queue', {
+    requests: [
+      {
+        id: 'feat-1',
+        description: 'the task in retry backoff',
+        addedAt: 1,
+        updatedAt: 1,
+        status: 'in-flight',
+        runId: 'run-1',
+        retryCount: 1,
+        attempts: [],
+        phaseHistory: []
+      }
+    ],
+    inFlightId: 'feat-1',
+    paused: false,
+    pausedReason: null,
+    updatedAt: 1,
+    queueLifecycle: 'running',
+    pauseSource: null,
+    scheduledStartAt: null,
+    scheduledStartSource: null
+  });
   return run;
 }
 

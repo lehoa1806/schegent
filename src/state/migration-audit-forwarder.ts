@@ -5,6 +5,8 @@
 //   - v6 → v7 enqueue/start-separation lift (Feature 065)
 //   - v10 → v11 per-queue Run-record reshape (Feature 093)
 //   - v11 → v12 per-queue history partition (FR-R3-010)
+//   - Runs ended at load because their Task row was gone (the deleted-paused-
+//     task deadlock; not a version step, see the reconciler's own note)
 //   - workflow-run repair events (legacy)
 //
 // Each forwarding loop swallows append errors and logs a sanitized
@@ -17,6 +19,7 @@ import type {
 import type { RunStateMigrationAuditEvent } from './run-state-migrator';
 import type { HistoryStateMigrationAuditEvent } from './history-state-migrator';
 import type { WorkflowRunRepairedAuditEvent } from './workflow-run-migrator';
+import type { OrphanedRunCanceledAuditEvent } from './orphaned-run-reconciler';
 import type { SanitizedLogger } from '../lib/logger';
 import { errorMessage } from '../lib/errors';
 import type { RunRecordQuarantinedPayload } from '../contracts/audit-events';
@@ -59,6 +62,14 @@ export interface MigrationAuditEvents {
   // because a migrator that reaches the audit writer is a migrator that can fail
   // activation on an I/O error.
   readonly v12MigrationEvents: readonly HistoryStateMigrationAuditEvent[];
+  /**
+   * Runs ended at load because their Task row was gone from every queue.
+   *
+   * Optional, on the same reasoning as `quarantineEvents` below: every existing
+   * caller and test constructs this object unchanged, and absent means none,
+   * which is the common case.
+   */
+  readonly orphanedRunEvents?: readonly OrphanedRunCanceledAuditEvent[];
   readonly runRepairEvents: readonly WorkflowRunRepairedAuditEvent[];
   /**
    * FR-R3-111 — records quarantined during `initialize()`. Optional so every existing caller and
@@ -209,6 +220,30 @@ export async function forwardMigrationAuditEvents(
       });
     } catch (err) {
       logger.warn(`state-migrated-v11-to-v12 audit append failed: ${(err as Error).message}`);
+    }
+  }
+  // A Run ended because the Task row addressing it was gone. `runId` IS carried
+  // here, unlike the reshape events above: this Run existed, executed and was
+  // stopped by the repair, so an auditor correlating on it reaches a real
+  // history. `outcome: 'failure'` for the same reason the quarantine below uses
+  // it — the state this host was handed was broken, and the repair is the
+  // record of the breakage, not a routine step.
+  for (const event of events.orphanedRunEvents ?? []) {
+    try {
+      await auditWriter.append({
+        runId: event.runId,
+        phase: 'state-migration',
+        iteration: 0,
+        eventType: event.type,
+        payload: {
+          queueId: event.queueId,
+          runId: event.runId,
+          priorStatus: event.priorStatus
+        },
+        outcome: 'failure'
+      });
+    } catch (err) {
+      logger.warn(`run-canceled-task-row-removed audit append failed: ${errorMessage(err)}`);
     }
   }
   for (const event of events.runRepairEvents) {

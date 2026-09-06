@@ -114,9 +114,18 @@ describe('pre-082 persisted state loads unchanged (T066)', () => {
     // Feature 093 (T027) — the persisted shape moved, so the assertion reads
     // one level deeper. The claim is unchanged and is still the one worth
     // making: the v10 → v11 reshape happens **once**, on the first load, and a
-    // second load of an already-reshaped record is a no-op. Comparing the
-    // entry under its queue against the pre-feature fixture keeps the
-    // byte-for-byte half honest — the reshape moved the Run, it did not edit it.
+    // second load of an already-reshaped record is a no-op.
+    //
+    // The byte-for-byte half now compares against the fixture's Run with the
+    // orphan reconciler's two edits applied, rather than against the fixture
+    // verbatim. This captured workspace predates the v6 → v7 enqueue/start
+    // separation: its running Task lived in `inFlightId` and never had a row in
+    // `requests`, so the migrator drops the dangling pointer and the Run is left
+    // addressing a Task no queue holds. The load-time reconciler ends it, which
+    // is the whole point of that repair — left `paused`, it would hold the
+    // default queue's occupancy gate shut with nothing able to reach it. What
+    // this test is for still holds exactly: no field appears, disappears, or
+    // changes beyond that one deliberate transition.
     const { memento, fixture } = await seededStore();
     const afterFirst = JSON.stringify(memento.get<Record<string, WorkflowRun>>(KEYS.run));
     const second = new WorkspaceStateStore(memento);
@@ -124,7 +133,11 @@ describe('pre-082 persisted state loads unchanged (T066)', () => {
     expect(JSON.stringify(memento.get<Record<string, WorkflowRun>>(KEYS.run))).toBe(afterFirst);
     const persisted = memento.get<Record<string, WorkflowRun>>(KEYS.run);
     expect(Object.keys(persisted ?? {})).toEqual([DEFAULT_QUEUE_ID]);
-    expect(persisted?.[DEFAULT_QUEUE_ID]).toEqual(fixture[KEYS.run]);
+    expect(persisted?.[DEFAULT_QUEUE_ID]).toEqual({
+      ...(fixture[KEYS.run] as WorkflowRun),
+      status: 'canceled',
+      lastTransitionAt: persisted?.[DEFAULT_QUEUE_ID]?.lastTransitionAt
+    });
   });
 
   it('re-snapshotting a legacy definition reproduces the persisted shape', async () => {

@@ -343,6 +343,16 @@ describe('KEYS.queue is untouched by the v11 migration (T011, guarantee 1)', () 
     expect(Object.keys(memento.get(KEYS.run) as object)).toEqual([OTHER_QUEUE]);
   });
 
+  // FR-006 is a claim about not LOSING the record, and that is what is asserted
+  // here: the Run is still in the map, under the default queue, and the reassign
+  // event fired. It is no longer asserted byte-identical, because a second repair
+  // later in the same ladder now has something to say about it.
+  //
+  // The two compose rather than collide. This migration files an unattributable
+  // Run under a queue so the reshape does not drop it; the orphan reconciler
+  // then observes that `task-nowhere` is a row in no queue and ends the Run, so
+  // it cannot hold that queue's occupancy gate shut forever. Preserving a Run is
+  // the migration's job; deciding it has no work left to do is not.
   it('reassigns a Run whose task belongs to no queue, rather than dropping it (FR-006)', async () => {
     const orphan = buildWorkflowRun({ id: 'run-orphan', featureId: 'task-nowhere' });
     seedV10Workspace(memento, orphan);
@@ -351,9 +361,16 @@ describe('KEYS.queue is untouched by the v11 migration (T011, guarantee 1)', () 
 
     const result = await new WorkspaceStateStore(memento).initialize();
 
-    expect(memento.get(KEYS.run)).toEqual({ [DEFAULT_QUEUE_ID]: orphan });
+    const persisted = memento.get(KEYS.run) as Record<string, { id: string; status: string }>;
+    expect(Object.keys(persisted)).toEqual([DEFAULT_QUEUE_ID]);
+    expect(persisted[DEFAULT_QUEUE_ID]).toMatchObject({
+      ...orphan,
+      status: 'canceled',
+      lastTransitionAt: expect.any(Number) as unknown as number
+    });
     expect(result.v11MigrationEvents.map((event) => event.type)).toContain(
       'run-reassigned-to-default-queue'
     );
+    expect(result.orphanedRunEvents.map((event) => event.runId)).toEqual(['run-orphan']);
   });
 });
