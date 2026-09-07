@@ -58,6 +58,33 @@ export interface StartQueueCommandArg {
   readonly startIntent?: StartQueueIntent;
 }
 
+/**
+ * The report the drain pass just made, read back as this command's outcome.
+ *
+ * Feature 195 (T018, FR-021) established the read for `halted`; BUG-004 adds
+ * `stranded-run` beside it and gives the pair one home, because the two drain
+ * sites below both need the same answer. Before that, only the no-intent branch
+ * asked — so the Start button on an `idle-pending` queue, which is the branch
+ * that carries an intent, ACKed `accepted` for a queue that could not start and
+ * never would.
+ *
+ * Both are reads of what the drain wrote, never a second evaluation: the halt
+ * predicate lives at step 2a and the stranded-occupant predicate at step 3, one
+ * call site each (research D5). An `admission` report is deliberately not here —
+ * it belongs to a *previous* attempt that threw, and the queue's own surface
+ * already carries it; turning it into this attempt's refusal would report a
+ * stale failure as a fresh one.
+ */
+function outcomeAfterDrain(
+  deps: StartQueueCommandDeps,
+  queueId: string | undefined
+): CommandOutcome {
+  const report = deps.startFailures.get(queueId ?? DEFAULT_QUEUE_ID);
+  if (report?.kind === 'halted') return refused('queue-halted-on-failed-task');
+  if (report?.kind === 'stranded-run') return refused('queue-blocked-by-stranded-run');
+  return ACCEPTED;
+}
+
 export async function runStartQueueCommand(
   arg: StartQueueCommandArg | undefined,
   deps: StartQueueCommandDeps
@@ -70,6 +97,11 @@ export async function runStartQueueCommand(
       if (result.outcome === 'applied') {
         if (result.lifecycleAfter === 'running') {
           await deps.controller.drainQueuedWork(queueId);
+          // The intent applied — the lifecycle really did move — and the drain
+          // it triggered still could not start anything, for one of the two
+          // reasons that will not resolve themselves. The applied intent is not
+          // what the operator asked for; a started queue is.
+          return outcomeAfterDrain(deps, queueId);
         }
         return ACCEPTED;
       }
@@ -93,19 +125,15 @@ export async function runStartQueueCommand(
     // was accepted", which is what the `StartQueueCommand` contract in
     // `src/contracts/sidebar-ipc.ts` says this branch promises.
     //
-    // Feature 195 (T018, FR-021, SC-011, SC-012) — the one exception. The
-    // drain pass just above is the single site that evaluates the halt
-    // (research D5); this command reads what it wrote rather than asking the
-    // question again, and reports a halt as a refusal rather than as the
-    // asynchronous acceptance every other decline gets. Retrying or removing
-    // the failed task remain the only two ways out of a halt — this branch
-    // adds no third one.
+    // Feature 195 (T018, FR-021, SC-011, SC-012) — the exceptions, now two and
+    // both in `outcomeAfterDrain`. The drain pass just above is the single site
+    // that evaluates each of them; this command reads what it wrote rather than
+    // asking either question again, and reports them as refusals rather than as
+    // the asynchronous acceptance every other decline gets. Retrying or removing
+    // the failed task remain the only two ways out of a halt — this branch adds
+    // no third one.
     await deps.controller.drainQueuedWork(queueId);
-    const report = deps.startFailures.get(queueId ?? DEFAULT_QUEUE_ID);
-    if (report?.kind === 'halted') {
-      return refused('queue-halted-on-failed-task');
-    }
-    return ACCEPTED;
+    return outcomeAfterDrain(deps, queueId);
   } catch (err) {
     deps.logger.warn(`startQueue: ${(err as Error).message}`);
     // A code, not the caught error's message: this value crosses to the webview.

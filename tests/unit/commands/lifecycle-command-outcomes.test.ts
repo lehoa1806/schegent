@@ -368,6 +368,96 @@ describe('FR-R3-154 (T1645) — Start Queue returns the start outcome', () => {
   });
 });
 
+type StartFailureReport = ReturnType<StartQueueCommandDeps['startFailures']['get']>;
+
+/** `startDeps` with a report already written for `QUEUE` by the drain pass. */
+function startDepsReporting(
+  rec: Recorded,
+  intent: IntentResult,
+  report: StartFailureReport
+): ReturnType<typeof startDeps> {
+  const deps = startDeps(rec, intent);
+  return { ...deps, startFailures: { get: (queueId: string) => (queueId === QUEUE ? report : null) } };
+}
+
+const HALTED = Object.freeze({
+  kind: 'halted',
+  taskId: 'T-1',
+  taskName: 'the failed task',
+  at: 1
+} as const);
+const STRANDED = Object.freeze({
+  kind: 'stranded-run',
+  runId: 'R-1',
+  phase: 'speckit-analyze',
+  at: 1
+} as const);
+
+describe('Start Queue reads back what its own drain pass reported', () => {
+  // Feature 195 (FR-021) put `queue-halted-on-failed-task` on the no-intent
+  // branch; BUG-004 adds `queue-blocked-by-stranded-run` and extends both to the
+  // intent branch. That extension is the part with no prior coverage at all: the
+  // Start button on an `idle-pending` queue posts a `startIntent`, so the branch
+  // the operator actually presses was the one that could not refuse.
+  it.each([
+    [HALTED, 'queue-halted-on-failed-task'],
+    [STRANDED, 'queue-blocked-by-stranded-run']
+  ] as const)('refuses a bare drain pass that reported %o', async (report, reason) => {
+    const rec = recorder();
+    const deps = startDepsReporting(rec, { outcome: 'applied' }, report);
+    expect(await runStartQueueCommand({ queueId: QUEUE }, deps)).toEqual({
+      outcome: 'refused',
+      reason
+    });
+    // The drain still ran — this is a reading of its answer, not a gate in front
+    // of it. A command that refused without draining would never let the queue
+    // recover on the pass that clears the report.
+    expect(deps.drains).toEqual([QUEUE]);
+  });
+
+  it.each([
+    [HALTED, 'queue-halted-on-failed-task'],
+    [STRANDED, 'queue-blocked-by-stranded-run']
+  ] as const)('refuses an applied start intent that reported %o', async (report, reason) => {
+    const rec = recorder();
+    const deps = startDepsReporting(
+      rec,
+      { outcome: 'applied', lifecycleAfter: 'running' },
+      report
+    );
+    expect(
+      await runStartQueueCommand(
+        { queueId: QUEUE, startIntent: { startMode: 'now', source: 'operator-restart' } },
+        deps
+      )
+    ).toEqual({ outcome: 'refused', reason });
+    expect(deps.drains).toEqual([QUEUE]);
+  });
+
+  it('accepts when the report belongs to a previous failed attempt', async () => {
+    // An `admission` report is a step-7 throw the queue's own surface already
+    // shows, and the drain re-offers the queue when a Run ends. Reporting it as
+    // this attempt's refusal would name a stale failure as a fresh one.
+    const rec = recorder();
+    const deps = startDepsReporting(
+      rec,
+      { outcome: 'applied' },
+      Object.freeze({ kind: 'admission', admission: 'admitNew', at: 1, message: 'spawn failed' })
+    );
+    expect(await runStartQueueCommand({ queueId: QUEUE }, deps)).toEqual({ outcome: 'accepted' });
+  });
+
+  it('reads the report for the queue the command addressed', async () => {
+    // `startDepsReporting` answers only for `QUEUE`; a command that read the
+    // default queue's report regardless of `queueId` would refuse here.
+    const rec = recorder();
+    const deps = startDepsReporting(rec, { outcome: 'applied' }, STRANDED);
+    expect(await runStartQueueCommand({ queueId: 'another-queue' }, deps)).toEqual({
+      outcome: 'accepted'
+    });
+  });
+});
+
 describe('FR-R3-154 (T1645) — no command leaks an error message as a reason', () => {
   it('every failure reason is a code, across all five commands', async () => {
     // One assertion over the whole set, because "the reason crosses to the

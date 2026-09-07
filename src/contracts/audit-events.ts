@@ -443,6 +443,37 @@ export interface RunResumePayload {
   readonly liveness?: 'alive' | 'dead' | 'unrecorded' | 'unanswerable';
 }
 
+/**
+ * A non-terminal Run whose Task row no longer exists in any queue, ended at
+ * load.
+ *
+ * WHY THERE IS AN EVENT AT ALL. This is a repair the operator did not ask for,
+ * made to state they can no longer see — the row that named the Run is gone, so
+ * nothing on any surface says the Run was ever there. A repair nobody can read
+ * about is indistinguishable from the deadlock it fixes, which is the whole
+ * complaint the `run-record-quarantined` family answers one key over.
+ *
+ * PAYLOAD DISCIPLINE. Queue id, run id, and the closed status the Run carried
+ * before it was ended. No task description, no feature directory, no phase
+ * name: the first is operator-authored and the other two can carry a path.
+ * `priorStatus` is a `WorkflowRunStatus` literal, so it is a closed code by
+ * construction rather than by review.
+ *
+ * A DISTINCT TYPE, not `run-record-repaired` with a widened reason — the same
+ * choice, for the same stated reason, as `history-record-repaired` below: one
+ * type covering both repairs would make "which half of the pair was missing" a
+ * question the payload could not answer. That is also why there is no `reason`
+ * field here; its only value would repeat the event type.
+ */
+export const RUN_RECONCILIATION_EVENT_TYPES = ['run-canceled-task-row-removed'] as const;
+export type RunReconciliationEventType = (typeof RUN_RECONCILIATION_EVENT_TYPES)[number];
+
+export interface RunCanceledTaskRowRemovedPayload {
+  readonly queueId: string;
+  readonly runId: string;
+  readonly priorStatus: 'running' | 'paused';
+}
+
 export const MIGRATION_V11_EVENT_TYPES = [
   'state-migrated-v10-to-v11',
   'run-reassigned-to-default-queue',
@@ -885,6 +916,8 @@ export const ALL_AUDIT_EVENT_TYPES = [
   ...RUN_RESUME_EVENT_TYPES,
   // FR-R3-111 — a corrupt Run record preserved rather than destroyed.
   ...RUN_QUARANTINE_EVENT_TYPES,
+  // A Run whose Task row was deleted out from under it, ended at load.
+  ...RUN_RECONCILIATION_EVENT_TYPES,
   ...PROCESS_TREE_EVENT_TYPES,
   ...METRICS_EVENT_TYPES,
   ...PROCESS_EXCHANGE_EVENT_TYPES,
@@ -1410,6 +1443,11 @@ export const SYSTEM_SCOPED_EVENT_TYPES: ReadonlySet<AuditEventType> = Object.fre
     'state-migrated-v11-to-v12',
     'history-entries-unattributed',
     'history-record-repaired',
+    // A Run ended at load because its Task row was gone. System-scoped on the
+    // same reasoning as `run-reassigned-to-default-queue` above, and with one
+    // more besides: the Task this Run named has been deleted, so the Activity
+    // Feed has no row to file the entry against even after Runs start.
+    'run-canceled-task-row-removed',
     // Feature 065 — scheduled-start lifecycle / idle-pending transitions
     'scheduled-start-armed',
     'scheduled-start-fired',

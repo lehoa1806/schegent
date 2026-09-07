@@ -627,6 +627,12 @@ export interface QueueRuntime {
    * admission call's error. `taskName` is sanitized through the same
    * `sanitizeAndCap` as `summary` above (FR-024, AGENTS.md rule 2) — this is
    * the one string in the feature that is verbatim operator-authored content.
+   *
+   * BUG-004 — `kind: 'stranded-run'` is the third: a Run holds this queue's one
+   * Run slot and no Task row anywhere addresses it, so no control can end it
+   * and the queue will not drain again on its own. Both of its fields are
+   * host-generated identifiers, so neither is sanitized content; the drain's
+   * step 3 is the single site that decides an occupant qualifies.
    */
   readonly startFailure:
     | {
@@ -639,6 +645,12 @@ export interface QueueRuntime {
         readonly kind: 'halted';
         readonly taskId: string;
         readonly taskName: string;
+        readonly at: string;
+      }
+    | {
+        readonly kind: 'stranded-run';
+        readonly runId: string;
+        readonly phase: string;
         readonly at: string;
       }
     | null;

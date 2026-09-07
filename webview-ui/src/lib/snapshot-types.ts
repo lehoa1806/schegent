@@ -971,6 +971,11 @@ export interface QueueRuntime {
    * Feature 195 (T028, FR-007, FR-008) — widened to the same discrimination
    * as the host: `kind: 'halted'` is a halt-on-failure report, naming the
    * failed task rather than an admission call's error.
+   *
+   * BUG-004 — and `kind: 'stranded-run'`, a Run holding the queue that no
+   * control can reach because its Task row is gone. `runId` and `phase` are
+   * host-generated identifiers, so unlike the two above they are not sanitized
+   * text; the surface still renders them as text and derives nothing from them.
    */
   readonly startFailure:
     | {
@@ -983,6 +988,12 @@ export interface QueueRuntime {
         readonly kind: 'halted';
         readonly taskId: string;
         readonly taskName: string;
+        readonly at: string;
+      }
+    | {
+        readonly kind: 'stranded-run';
+        readonly runId: string;
+        readonly phase: string;
         readonly at: string;
       }
     | null;

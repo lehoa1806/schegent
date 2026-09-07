@@ -212,7 +212,14 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   // FR-R3-111 — task-scoped: it names the queue whose Run record was preserved, and the operator
   // reading it is asking what happened to THAT Run. System scope would put it in the window feed,
   // where it would be true and unattributable.
-  'run-record-quarantined': 'task'
+  'run-record-quarantined': 'task',
+  // System, and it is the near-neighbour of the entry above that goes the other
+  // way. `run-record-quarantined` is task-scoped because the operator asking
+  // "what happened to THAT Run" still has a row to read the answer beside. Here
+  // the row is precisely what is gone — that is the event — so a task-scoped
+  // entry would hang off nothing, which is the failure mode both notes above
+  // call true and unattributable.
+  'run-canceled-task-row-removed': 'system'
 };
 
 function assertExhaustive(value: never): never {
@@ -390,7 +397,8 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'run-invocation-aborted-on-supersession': // FR-R3-103 — the supersession abort
         case 'evidence-deleted': // FR-R3-127 — an operator action on a Run's evidence
         case 'evidence-exported': // FR-R3-127
-        case 'run-record-quarantined': { // FR-R3-111 — a corrupt record preserved, not destroyed
+        case 'run-record-quarantined': // FR-R3-111 — a corrupt record preserved, not destroyed
+        case 'run-canceled-task-row-removed': { // a Run ended at load, its Task row gone
           const scope = classifyAuditEvent(evt);
           expect(scope === 'task' || scope === 'system').toBe(true);
           break;

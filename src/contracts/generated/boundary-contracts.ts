@@ -176,6 +176,7 @@ export const AUDIT_EVENT_TYPES = [
   "run-resume-declined-orphan-alive",
   "run-invocation-aborted-on-supersession",
   "run-record-quarantined",
+  "run-canceled-task-row-removed",
   "process-tree-unconfirmed",
   "metrics-view-opened",
   "process-exchange-export",

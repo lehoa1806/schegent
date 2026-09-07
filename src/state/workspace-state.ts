@@ -57,6 +57,10 @@ import {
   type RunStateMap,
   type RunStateMigrationAuditEvent
 } from './run-state-migrator';
+import {
+  reconcileOrphanedRuns,
+  type OrphanedRunCanceledAuditEvent
+} from './orphaned-run-reconciler';
 import { DELAYED_RETRY_CAP } from '../contracts/retry-bounds';
 import { HISTORY_UNATTRIBUTED_QUEUE_ID } from '../contracts/queue-identity';
 import {
@@ -756,6 +760,12 @@ export interface InitializeResult {
   // correlatable, and an operator asking why a queue came back paused after an
   // upgrade needs to see which representation said so.
   v13MigrationEvents: readonly QueuePauseCollapseAuditEvent[];
+  // One per Run ended at load because its Task row was gone from every queue.
+  // Same forwarding contract as the migration events above, and it rides in the
+  // same result for the same reason — the store has no audit writer during
+  // `initialize()`. Not keyed on a schema shape, unlike its neighbours: see
+  // `reconcileOrphanedRunsIfNeeded()` for why it still runs from the ladder.
+  orphanedRunEvents: readonly OrphanedRunCanceledAuditEvent[];
   // Feature 056 — emitted when persisted WorkflowRun snapshots are repaired.
   runRepairEvents: readonly WorkflowRunRepairedAuditEvent[];
 }
@@ -1145,8 +1155,48 @@ export class WorkspaceStateStore {
       v10MigrationEvents: await this.migrateV9ToV10IfNeeded(),
       v11MigrationEvents: await this.migrateV10ToV11IfNeeded(),
       v12MigrationEvents: await this.migrateV11ToV12IfNeeded(),
-      v13MigrationEvents: await this.migrateV12ToV13IfNeeded()
+      v13MigrationEvents: await this.migrateV12ToV13IfNeeded(),
+      orphanedRunEvents: await this.reconcileOrphanedRunsIfNeeded()
     };
+  }
+
+  /**
+   * A standing invariant, not a version step: no non-terminal Run outlives the
+   * Task row that addresses it. Why the repair ENDS the Run rather than deleting
+   * it, and why it is a pure function, is in `orphaned-run-reconciler.ts`; what
+   * belongs here is why it runs from the ladder.
+   *
+   * Every step above is keyed on a shape and stops applying once that shape is
+   * gone. This one asks the same question on every open, forever, because the
+   * state it repairs is produced at runtime rather than by an old schema. The
+   * ladder is still where it belongs: it runs on every branch of `initialize()`,
+   * and its ORDER here is load-bearing — after `migrateV9ToV10IfNeeded()` so the
+   * registry is in map shape, and after `migrateV10ToV11IfNeeded()` so `KEYS.run`
+   * is a map rather than a bare Run. Earlier, it would read one or both keys in a
+   * shape it does not understand and conclude that every Task row is missing.
+   * That is also why it cannot live in `normalizeRunForInitialize()`, the other
+   * load-path site touching `KEYS.run`: as its own note says, that one runs
+   * before the registry is migrated, where queue membership is unanswerable.
+   *
+   * One `update()`, only when a Run actually changed, so a rejected write leaves
+   * the previous state for the next open to re-attempt.
+   */
+  private async reconcileOrphanedRunsIfNeeded(): Promise<
+    readonly OrphanedRunCanceledAuditEvent[]
+  > {
+    const raw = this.memento.get<unknown>(KEYS.run);
+    if (!isRunStateMap(raw)) return [];
+    const result = reconcileOrphanedRuns(
+      raw,
+      // `queueIdForPersistedTask` scans `requests` and nothing else, which is the
+      // right question: a dangling `inFlightId` is not a surviving reference to a
+      // Task — `queue-state-migrator.ts` drops a pointer naming no row on sight.
+      (taskId) => this.queueIdForPersistedTask(taskId) !== null,
+      Date.now()
+    );
+    if (!result.changed) return [];
+    await this.memento.update(KEYS.run, result.runs);
+    return result.events;
   }
 
   private async migrateV9ToV10IfNeeded(): Promise<readonly StateMigratedV9ToV10AuditEvent[]> {

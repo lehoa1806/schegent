@@ -214,6 +214,15 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // `src/state/workflow-run-migrator.ts` above is here for; a migrator that
   // could not name the statuses could not recognise the shape it migrates.
   'src/state/run-state-migrator.ts',
+  // Comment-only, twice. The header quotes `run-state-migrator.ts`'s own
+  // rationale verbatim — "a queue stuck forever on work nothing is running" —
+  // because this module is that argument's mirror image and paraphrasing the
+  // sentence it answers would weaken it; and the `NonTerminalRunStatus` doc names
+  // THIS gate as the reason the status literals stay in `workflow-run.ts`. The
+  // module compares statuses only through `isTerminalRunStatus` and writes only
+  // `'canceled'`; it holds no `'running'` literal at all, which is the case the
+  // sixteen comment-only precedents above were added for.
+  'src/state/orphaned-run-reconciler.ts',
   'src/telemetry/platform/platform-ps.ts',
   'src/telemetry/platform/platform-windows.ts',
   'src/ui/sidebar/phase-projector.ts',

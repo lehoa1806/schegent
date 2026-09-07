@@ -931,7 +931,31 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // writes, the same shape `migrationNotice` already used. No new method, no
       // new file — the two existing normalisation/projection sites this feature's
       // stored field has to pass through.
-      highWaterMark: 2902
+      //
+      // Orphaned-run reconciliation (2026-09-06) — 2902 → 2952. A deleted Task
+      // row left its non-terminal Run in `KEYS.run`, and the drain's occupancy
+      // gate then refused to start anything on that queue forever, with no route
+      // left to end the Run because every cancel and resume path resolves the
+      // Task by row identity first. The load path is the only place that can
+      // clear one already persisted in the field.
+      //
+      // The repair is NOT here. `src/state/orphaned-run-reconciler.ts` holds all
+      // of it — a pure function over the Run map and a row-exists predicate, with
+      // its own tests — following the `run-quarantine.ts` and `git-plan-grants.ts`
+      // precedents above. What landed in this file is the seam that has to be
+      // here because the memento is: one import, one field on `InitializeResult`,
+      // one ladder step, and a twelve-line method that reads `KEYS.run`, hands
+      // the store's own `queueIdForPersistedTask` over as the predicate, and
+      // performs the single write.
+      //
+      // Of the 50, eighteen are code. The rest is why a standing invariant runs
+      // from a version ladder and why its position in that ladder is load-bearing
+      // — it needs `KEYS.queue` in map shape and `KEYS.run` in v11 shape, so
+      // running it earlier would have it read both in a shape it does not
+      // understand and conclude that every Task row is missing. The first draft
+      // was +62; the compression moved the repair's own rationale to the module
+      // header, where its reader already is.
+      highWaterMark: 2952
     }
   },
   // Feature 077 — public facade and every state-projection collaborator have
@@ -1718,7 +1742,15 @@ describe('large source file LOC budgets', () => {
     // sharing one AGENTS.md rule written four times, and the fifth arrived
     // here — Feature 195's `getQueueFailurePolicyDefault` — which is what put
     // the function over. What left was configuration reading, not composition.
-    'src/extension.ts:wireStage2': 414
+    //
+    // 414 -> 403 (2026-09-06). No extraction: the six `let`s holding
+    // `initialize()`'s migration audit events collapsed into the one binding
+    // they always were. Each new event kind had cost three lines in three
+    // places — declaration, assignment, argument — and the load-time orphan
+    // reconciler was the kind that put the function over. Missing one of those
+    // three edits is how feature 092's v10 events shipped unaudited, so the
+    // per-kind form was a defect as well as a length.
+    'src/extension.ts:wireStage2': 403
   };
 
   /** Top-level function declarations and their extents, brace-counted. */
@@ -1801,7 +1833,7 @@ describe('large source file LOC budgets', () => {
     //
     // The two numbers being equal is the point. Lowering the exemption is a
     // two-line edit that shows up in review as a pair; raising it fails here.
-    const CEILING: Readonly<Record<string, number>> = { 'src/extension.ts:wireStage2': 414 };
+    const CEILING: Readonly<Record<string, number>> = { 'src/extension.ts:wireStage2': 403 };
     for (const [key, allowed] of Object.entries(LEGACY_FUNCTION_EXEMPTIONS)) {
       expect(allowed, `${key}: an exemption may be lowered, never raised`).toBeLessThanOrEqual(
         CEILING[key] ?? 0

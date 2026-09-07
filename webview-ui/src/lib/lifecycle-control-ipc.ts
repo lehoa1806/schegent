@@ -79,9 +79,10 @@ export type LifecycleControlResult =
  *   - `guarded-run-service`'s `applyStartQueueIntent` — the start-intent
  *     outcomes, renamed once on the way out (`noop` → `start-intent-no-change`,
  *     see `commands/start-queue.ts` for why that one gets a name of its own)
- *   - `commands/start-queue.ts`'s own no-intent branch — `queue-halted-on-
- *     failed-task`, read from the drain's report rather than a second
- *     predicate (Feature 195, FR-021)
+ *   - `commands/start-queue.ts`'s `outcomeAfterDrain`, on both branches that
+ *     drain — `queue-halted-on-failed-task` (Feature 195, FR-021) and
+ *     `queue-blocked-by-stranded-run` (BUG-004), each read from the drain's own
+ *     report rather than from a second predicate
  *   - `contracts/command-outcome.ts` — the three transport reasons it
  *     synthesises, and `commands/*.ts`'s five `*-failed` codes
  *   - `ui/sidebar/message-router.ts` — the primacy gate
@@ -121,6 +122,12 @@ const LIFECYCLE_REFUSAL_TEXT: Readonly<Record<string, string>> = Object.freeze({
   // rather than evaluating a predicate of its own (`commands/start-queue.ts`).
   'queue-halted-on-failed-task':
     'This queue is halted because a task failed. Retry or remove it to continue.',
+  // BUG-004 — the second such reading, from both branches of the same command.
+  // It names the recovery because there is no control that performs it: the run
+  // holding the queue has no task row left, so nothing in the UI addresses it,
+  // and the reconciler that ends it runs when the workspace state is loaded.
+  'queue-blocked-by-stranded-run':
+    'A run with no task is holding this queue. Reload the window to release it.',
   // Transport — `command-outcome.ts` and the router's primacy gate.
   'workspace-not-trusted': 'The workspace is not trusted, so this control is unavailable.',
   'command-dispatch-failed': 'The control could not be carried out. Check the log and try again.',

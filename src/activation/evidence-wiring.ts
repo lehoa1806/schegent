@@ -18,7 +18,7 @@ import type { CatalogSession } from './catalog-loading';
 import type { GeneralSettingsConfig } from '../config/general-settings';
 import { forwardMigrationAuditEvents } from '../state/migration-audit-forwarder';
 
-/** The five event bundles `store.initialize()` reports, typed by their consumer. */
+/** The six event bundles `store.initialize()` reports, typed by their consumer. */
 type MigrationEvents = Parameters<typeof forwardMigrationAuditEvents>[0];
 import { recordCompletedInterruptedReset } from '../commands/reset-wiring';
 import { maybeShowMultiRootWarning } from '../state/multi-root-warning';
@@ -31,12 +31,12 @@ import { getCanonicalWorkspaceRoot } from '../state/workspace-folder-picker';
  * The sixth extraction out of `wireStage2()`. 91 lines, sixteen bindings in,
  * four out.
  *
- * WHY THE MIGRATION EVENTS ARE PARAMETERS. `v6`/`v7`/`v11`/`v12` and the run-repair
- * events are produced by `store.initialize()` at the very top of activation and
- * consumed here, because the audit writer is the first thing that exists which can
- * record them. They are passed rather than re-derived: the store reports them once,
- * and asking twice would either return nothing the second time or re-run a
- * migration.
+ * WHY THE MIGRATION EVENTS ARE PARAMETERS. `v6`/`v7`/`v11`/`v12`, the orphaned-run
+ * cancellations and the run-repair events are produced by `store.initialize()` at
+ * the very top of activation and consumed here, because the audit writer is the
+ * first thing that exists which can record them. They are passed rather than
+ * re-derived: the store reports them once, and asking twice would either return
+ * nothing the second time or re-run a migration.
  *
  * WHY THE TWO READERS ARE THUNKS, unchanged from the original. Both re-read on
  * every call so a catalog reload — which reassigns `catalogSession.workflowCatalog`
@@ -59,6 +59,12 @@ export interface EvidenceWiringDeps {
   readonly v7MigrationEvents: MigrationEvents['v7MigrationEvents'];
   readonly v11MigrationEvents: MigrationEvents['v11MigrationEvents'];
   readonly v12MigrationEvents: MigrationEvents['v12MigrationEvents'];
+  // `NonNullable` because the forwarder declares this one optional — older
+  // callers that build a `MigrationAuditEvents` literal predate it — while
+  // `initialize()` always reports it. Inheriting the optionality here would put
+  // an `| undefined` in this contract that no caller can produce, and passing it
+  // on fails `exactOptionalPropertyTypes` at the forwarding call below.
+  readonly orphanedRunEvents: NonNullable<MigrationEvents['orphanedRunEvents']>;
   readonly runRepairEvents: MigrationEvents['runRepairEvents'];
 }
 
@@ -103,6 +109,7 @@ export async function wireEvidence(deps: EvidenceWiringDeps): Promise<EvidenceWi
     v7MigrationEvents,
     v11MigrationEvents,
     v12MigrationEvents,
+    orphanedRunEvents,
     runRepairEvents
   } = deps;
 
@@ -166,6 +173,7 @@ const replayEvidenceBacklog = async (): Promise<void> => {
       v7MigrationEvents,
       v11MigrationEvents,
       v12MigrationEvents,
+      orphanedRunEvents,
       runRepairEvents,
       // FR-R3-111 — drained where the writer exists; `initialize()` buffers it before that.
       quarantineEvents: store.drainRunQuarantineEvents()

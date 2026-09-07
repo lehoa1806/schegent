@@ -87,7 +87,12 @@ describe('restart hydration coherence (US5 / T039 / FR-030)', () => {
     await store.setQueue({
       requests: [
         {
-          id: 'q-1',
+          // The row id is the Run's `featureId`, which is what makes this pair
+          // a workspace that could exist. It read `q-1` against a Run pointing
+          // at `feat-1` — a Run whose Task row is nowhere, which the load-time
+          // orphan reconciler now ends on sight. Nothing below asserts the id,
+          // only the shared `runId` this test is actually about.
+          id: 'feat-1',
           description: 'foo',
           addedAt: 1,
           updatedAt: 1,
@@ -98,7 +103,7 @@ describe('restart hydration coherence (US5 / T039 / FR-030)', () => {
           phaseHistory: []
         } as never
       ],
-      inFlightId: 'q-1',
+      inFlightId: 'feat-1',
       paused: false,
       pausedReason: null,
       updatedAt: 1,

@@ -19,6 +19,10 @@ const NOW = Date.parse('2026-09-02T10:35:00.000Z');
 
 type AdmissionFailure = Extract<NonNullable<QueueRuntime['startFailure']>, { kind: 'admission' }>;
 type HaltedFailure = Extract<NonNullable<QueueRuntime['startFailure']>, { kind: 'halted' }>;
+type StrandedFailure = Extract<
+  NonNullable<QueueRuntime['startFailure']>,
+  { kind: 'stranded-run' }
+>;
 
 function failure(overrides: Partial<AdmissionFailure> = {}): AdmissionFailure {
   return {
@@ -35,6 +39,16 @@ function haltedFailure(overrides: Partial<HaltedFailure> = {}): HaltedFailure {
     kind: 'halted',
     taskId: 't-1',
     taskName: 'ingest data',
+    at: '2026-09-02T10:30:00.000Z',
+    ...overrides
+  };
+}
+
+function strandedFailure(overrides: Partial<StrandedFailure> = {}): StrandedFailure {
+  return {
+    kind: 'stranded-run',
+    runId: 'run-17',
+    phase: 'speckit-analyze',
     at: '2026-09-02T10:30:00.000Z',
     ...overrides
   };
@@ -143,5 +157,45 @@ describe('QueueStartFailureNotice — the halted kind (feature 195, T029)', () =
     const text = getByTestId('queue-halted-q-1').textContent.toLowerCase();
     expect(text).toContain('retry');
     expect(text).toContain('remove');
+  });
+});
+
+describe('QueueStartFailureNotice — the stranded-run kind (BUG-004)', () => {
+  it('says a run with no task is holding the queue, and where it stopped', () => {
+    const { getByTestId } = render(QueueStartFailureNotice, {
+      props: { queueId: 'q-1', startFailure: strandedFailure(), nowMs: NOW }
+    });
+    const text = getByTestId('queue-stranded-run-q-1').textContent;
+    expect(text.toLowerCase()).toContain('no task');
+    expect(text).toContain('speckit-analyze');
+  });
+
+  it('names the recovery, because no control on this surface performs it', () => {
+    // The distinction from the other two kinds. Both of those describe an
+    // attempt that will be re-offered; this one describes a queue that will not
+    // try again on its own, so the notice has to say what the operator must do.
+    const { getByTestId } = render(QueueStartFailureNotice, {
+      props: { queueId: 'q-1', startFailure: strandedFailure(), nowMs: NOW }
+    });
+    const text = getByTestId('queue-stranded-run-q-1').textContent.toLowerCase();
+    expect(text).toContain('reload');
+    expect(text).not.toContain('again');
+  });
+
+  it('does not print the run id, which names nothing the operator can address', () => {
+    const { getByTestId } = render(QueueStartFailureNotice, {
+      props: { queueId: 'q-1', startFailure: strandedFailure({ runId: 'run-17' }), nowMs: NOW }
+    });
+    expect(getByTestId('queue-stranded-run-q-1').textContent).not.toContain('run-17');
+  });
+
+  it('renders neither of the other two notices, and is announced like them', () => {
+    const { getByTestId, queryByTestId } = render(QueueStartFailureNotice, {
+      props: { queueId: 'q-1', startFailure: strandedFailure(), nowMs: NOW }
+    });
+    expect(queryByTestId('queue-start-failure-q-1')).toBeNull();
+    expect(queryByTestId('queue-halted-q-1')).toBeNull();
+    expect(getByTestId('queue-stranded-run-q-1').getAttribute('role')).toBe('status');
+    expect(getByTestId('queue-stranded-run-age-q-1').textContent).toContain('5m ago');
   });
 });

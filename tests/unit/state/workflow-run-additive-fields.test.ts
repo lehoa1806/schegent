@@ -95,9 +95,27 @@ describe('a Run persisted before feature 087 reads back unchanged (T036)', () =>
     }
   });
 
+  // The fixture's Run addresses a Task that has no row in `requests` — this
+  // workspace was captured before the v6 → v7 enqueue/start separation, when the
+  // running Task lived in `inFlightId` alone. The migrator drops that dangling
+  // pointer and the load-time orphan reconciler then ends the Run, so `status`
+  // and `lastTransitionAt` are the two fields that legitimately differ from the
+  // captured bytes. Everything this test is actually about — that feature 087
+  // injects none of its three fields on a read or a write — is unaffected, and
+  // `expectedRun()` keeps that honest by spelling out the only permitted drift
+  // rather than loosening the comparison.
+  function expectedRun(fixture: Record<string, unknown>, actual: WorkflowRun | null): WorkflowRun {
+    return {
+      ...(fixture[KEYS.run] as WorkflowRun),
+      status: 'canceled',
+      lastTransitionAt: actual?.lastTransitionAt as number
+    };
+  }
+
   it('returns the persisted Run and queue byte-for-byte', async () => {
     const { store, fixture } = await seededStore();
-    expect(store.getRun(DEFAULT_QUEUE_ID)).toEqual(fixture[KEYS.run]);
+    const run = store.getRun(DEFAULT_QUEUE_ID);
+    expect(run).toEqual(expectedRun(fixture, run));
     expect(store.getQueue(DEFAULT_QUEUE_ID).requests).toEqual(
       (fixture[KEYS.queue] as { requests: readonly unknown[] }).requests
     );
@@ -118,7 +136,12 @@ describe('a Run persisted before feature 087 reads back unchanged (T036)', () =>
     // `run-state-migrator-v10-to-v11.test.ts` already owns; the claim here is
     // that a write through the real setter adds no field to the Run itself.
     const persisted = memento.get<Record<string, unknown>>(KEYS.run);
-    expect(JSON.stringify(persisted?.[DEFAULT_QUEUE_ID])).toBe(JSON.stringify(fixture[KEYS.run]));
+    expect(persisted?.[DEFAULT_QUEUE_ID]).toEqual(expectedRun(fixture, run));
+    // The byte-level half of the claim, which deep equality alone would not
+    // make: no key is added, removed, or reordered by the round trip.
+    expect(Object.keys(persisted?.[DEFAULT_QUEUE_ID] as object)).toEqual(
+      Object.keys(fixture[KEYS.run] as object)
+    );
   });
 
   it('re-persists every queue item with the same fields it was read with', async () => {
