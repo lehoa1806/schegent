@@ -211,6 +211,17 @@ export interface PipelineCatalogResolution {
   /** One revision for the one layer (FR-044), derived from the store's manifest (FR-044a). */
   readonly revision: string;
   readonly warnings: readonly PipelineCatalogWarning[];
+  /**
+   * BUG-001 (101) — the saved-but-unpublished rows, for the Builder's Library alone.
+   * See `PhaseCatalogResolution.draftOnlyRecords` for why this is a second list
+   * and not more of `records`.
+   *
+   * A draft Pipeline's bindings are still validated against the **effective**
+   * Phase catalog and never against another draft (hard rule 38): the author sees
+   * the same defects the publish gate will raise, and a draft Phase cannot make a
+   * draft Pipeline look resolvable.
+   */
+  readonly draftOnlyRecords: readonly PipelineSourceRecord[];
 }
 
 export type PipelineCatalogMutation =

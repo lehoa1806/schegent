@@ -185,6 +185,16 @@ export interface WorkflowCatalogResolution {
   /** One revision for the one layer (FR-044), derived from the store's manifest (FR-044a). */
   readonly revision: string;
   readonly warnings: readonly WorkflowCatalogWarning[];
+  /**
+   * BUG-001 (101) — the saved-but-unpublished rows, for the Builder's Library alone.
+   * See `PhaseCatalogResolution.draftOnlyRecords` for why this is a second list
+   * and not more of `records`.
+   *
+   * A draft Workflow's graph is validated against the **effective** Pipeline
+   * catalog, for the reason a draft Pipeline's bindings are: the node references
+   * the author has to fix are the ones publication will refuse.
+   */
+  readonly draftOnlyRecords: readonly WorkflowSourceRecord[];
 }
 
 export type WorkflowCatalogMutation =

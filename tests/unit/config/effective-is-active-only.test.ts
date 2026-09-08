@@ -22,7 +22,7 @@
 // the entire mechanism.
 
 import { describe, expect, it } from 'vitest';
-import { storedRows } from '../../../src/catalog';
+import { storedDraftOnlyRows, storedRows } from '../../../src/catalog';
 import { resolvePhaseCatalog } from '../../../src/config/process-catalog';
 import { resolvePipelineCatalog } from '../../../src/config/pipeline-catalog';
 import { resolveWorkflowCatalog } from '../../../src/config/workflow-catalog';
@@ -121,8 +121,15 @@ describe('T505 — the effective Phase catalog is the Active versions only (FR-0
 
   it('does not even give the draft-only Phase a source record', () => {
     // Not merely absent from `effective` but absent from `records` too. A draft is
-    // not a row awaiting repair — the Builder reads it from the store's draft
-    // pointer, and the resolver is never told it exists.
+    // not a row awaiting repair, and `records` is read by launch, export, preflight
+    // and the run planner — a draft there would be executable work.
+    //
+    // BUG-001 (101) corrected the rationale this comment used to carry. It said the
+    // resolver "is never told it exists", which was the reason the Builder lost a
+    // just-saved definition: the row existed nowhere, so the surface that has to
+    // show it had nothing to show. The resolver IS told now, through
+    // `draftOnlyRows`, and keeps the row in `draftOnlyRecords` — a second list this
+    // assertion still holds over, because the separation is the point.
     expect(resolved.records.map((record) => record.phaseId)).toEqual([PUBLISHED]);
   });
 
@@ -255,6 +262,158 @@ describe('T505 — publication is the only way into the effective catalog', () =
       expect(rows).toHaveLength(1);
       expect(JSON.stringify(rows)).not.toContain(DRAFT_ONLY);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BUG-001 (101) — the draft rows the resolvers are now handed stay in their own list.
+//
+// The fix gave each resolver an optional `draftOnlyRows` so the Builder can list a
+// saved-but-unpublished definition. That is a new way for a draft body to reach a
+// resolver, and every property above is a statement about what a resolver must
+// NOT do with one. Passing the rows and re-asserting the same properties is what
+// keeps the fix from quietly becoming the leak the file was written to rule out.
+// ---------------------------------------------------------------------------
+
+describe('BUG-001 (101) — a draft row reaches `draftOnlyRecords` and nothing else', () => {
+  const phaseSnapshot = snapshotWith('phase', PHASE_BODY);
+  const phase = resolvePhaseCatalog({
+    rows: storedRows(phaseSnapshot, 'phase'),
+    draftOnlyRows: storedDraftOnlyRows(phaseSnapshot, 'phase'),
+    revision: 'r1'
+  });
+
+  const planCatalog = resolvePhaseCatalog({
+    rows: [{ ...(PHASE_BODY('plan') as object) }],
+    revision: 'r1'
+  });
+  const pipelineSnapshot = snapshotWith('pipeline', PIPELINE_BODY);
+  const pipeline = resolvePipelineCatalog({
+    rows: storedRows(pipelineSnapshot, 'pipeline'),
+    draftOnlyRows: storedDraftOnlyRows(pipelineSnapshot, 'pipeline'),
+    revision: 'r1',
+    phaseCatalog: planCatalog.effective
+  });
+
+  const standard = {
+    pipelineId: 'standard',
+    name: 'Standard',
+    version: 1,
+    phaseIds: ['plan'],
+    inputs: [],
+    outputs: [],
+    bindings: [],
+    recommendedNext: []
+  };
+  const workflowSnapshot = snapshotWith('workflow', WORKFLOW_BODY);
+  const workflow = resolveWorkflowCatalog({
+    rows: storedRows(workflowSnapshot, 'workflow'),
+    draftOnlyRows: storedDraftOnlyRows(workflowSnapshot, 'workflow'),
+    revision: 'r1',
+    pipelineCatalog: {
+      effective: [standard],
+      records: [
+        {
+          key: 'standard::0',
+          pipelineId: 'standard',
+          status: 'effective' as const,
+          definition: standard,
+          display: {},
+          errors: []
+        }
+      ]
+    }
+  });
+
+  const KINDS = [
+    { name: 'phase', resolved: phase, idOf: (row: { phaseId: string }) => row.phaseId },
+    {
+      name: 'pipeline',
+      resolved: pipeline,
+      idOf: (row: { pipelineId: string }) => row.pipelineId
+    },
+    {
+      name: 'workflow',
+      resolved: workflow,
+      idOf: (row: { workflowId: string }) => row.workflowId
+    }
+  ] as const;
+
+  describe.each(KINDS)('$name', ({ resolved, idOf }) => {
+    it('carries the draft as its own source record', () => {
+      // The half the Builder needs, and the half that did not exist before: without
+      // this the operator saves a new definition and watches it vanish.
+      expect(resolved.draftOnlyRecords.map((record) => idOf(record as never))).toEqual([
+        DRAFT_ONLY
+      ]);
+    });
+
+    it('keeps the draft out of `effective`', () => {
+      // FR-007. `effective` is what a run gets.
+      expect(JSON.stringify(resolved.effective)).not.toContain(DRAFT_ONLY);
+    });
+
+    it('keeps the draft out of `records`', () => {
+      // FR-009 and hard rule 64. `records` is read by launch, export and preflight,
+      // so a draft here is a definition the operator never published becoming
+      // triggerable.
+      expect(resolved.records.map((record) => idOf(record as never))).toEqual([PUBLISHED]);
+    });
+
+    it('reports no warning about the draft', () => {
+      // A draft's defects belong to its author, not to the workspace's catalog
+      // advisories — a soft-cap or duplicate warning raised by unpublished work
+      // would be the host complaining about something it does not run.
+      expect(resolved.warnings).toEqual([]);
+    });
+  });
+
+  it('does not let a draft invalidate the published definition it shadows', () => {
+    // The sharpest failure the two-list shape rules out. A new definition saved
+    // under an id that is already published is a duplicate — and if the two lists
+    // were checked together, the duplicate rule would flip the PUBLISHED row to
+    // `invalid` and drop it from `effective`. An unpublished edit would then have
+    // changed what runs, which is the one thing FR-009 forbids by name.
+    const collidingSnapshot: CatalogSnapshot = {
+      ...phaseSnapshot,
+      definitions: phaseSnapshot.definitions.map((definition) =>
+        definition.id === DRAFT_ONLY
+          ? { ...definition, draftBody: PHASE_BODY(PUBLISHED) }
+          : definition
+      )
+    };
+    const resolved = resolvePhaseCatalog({
+      rows: storedRows(collidingSnapshot, 'phase'),
+      draftOnlyRows: storedDraftOnlyRows(collidingSnapshot, 'phase'),
+      revision: 'r1'
+    });
+    expect(resolved.effective.map((definition) => definition.phaseId)).toEqual([PUBLISHED]);
+    expect(resolved.records[0].status).toBe('effective');
+    expect(resolved.records[0].errors).toEqual([]);
+  });
+
+  it('gives the two lists distinct record keys', () => {
+    // The colliding case again, at the surface that consumes it: the Builder renders
+    // both lists in one keyed `{#each}`, where two rows sharing a key is a render
+    // error rather than a wrong badge.
+    const collidingSnapshot: CatalogSnapshot = {
+      ...phaseSnapshot,
+      definitions: phaseSnapshot.definitions.map((definition) =>
+        definition.id === DRAFT_ONLY
+          ? { ...definition, draftBody: PHASE_BODY(PUBLISHED) }
+          : definition
+      )
+    };
+    const resolved = resolvePhaseCatalog({
+      rows: storedRows(collidingSnapshot, 'phase'),
+      draftOnlyRows: storedDraftOnlyRows(collidingSnapshot, 'phase'),
+      revision: 'r1'
+    });
+    const keys = [
+      ...resolved.records.map((record) => record.key),
+      ...resolved.draftOnlyRecords.map((record) => record.key)
+    ];
+    expect(new Set(keys).size).toBe(keys.length);
   });
 });
 
