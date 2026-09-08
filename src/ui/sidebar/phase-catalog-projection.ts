@@ -13,7 +13,8 @@
 
 import {
   PHASE_RETRY_CONDITION_MAX_LEN,
-  type PhaseDefinition
+  type PhaseDefinition,
+  type PhaseSourceRecord
 } from '../../contracts/process-definitions';
 import type { BackendRunnerKind } from '../../contracts/backend-kinds';
 import type { ResolvedPhaseCatalog } from '../../config/process-catalog';
@@ -158,34 +159,51 @@ export function composePhaseCatalogProjection(
   if (!phaseCatalog) return undefined;
   const { sanitize, availableModels, defaultRunnerKind } = options;
   const lifecycleOf = options.lifecycle ?? NO_BUILDER_LIFECYCLE;
+  const projectRecord = (record: PhaseSourceRecord) => {
+    const definition = record.definition
+      ? projectPhaseDefinition(record.definition, sanitize)
+      : null;
+    const runner = definition?.runner ?? defaultRunnerKind;
+    // Keyed by the record's own `phaseId`, not by its `key`: the key carries a
+    // positional suffix for the Library's repair affordance, and the manifest
+    // knows a definition only by its id.
+    const lifecycle = lifecycleOf(record.phaseId);
+    return Object.freeze({
+      key: catalogText(record.key, sanitize, KEY_MAX),
+      phaseId: catalogText(record.phaseId, sanitize, PHASE_ID_MAX),
+      status: record.status,
+      definition,
+      display: projectDisplay(record.display, sanitize),
+      errors: Object.freeze(record.errors.map((error) => Object.freeze({
+        field: catalogText(error.field, sanitize, FIELD_MAX),
+        code: catalogText(error.code, sanitize, CODE_MAX),
+        message: catalogText(error.message, sanitize, MESSAGE_MAX)
+      }))),
+      ...(definition?.model !== undefined
+        ? { modelAvailable: (availableModels[runner] ?? []).includes(definition.model) }
+        : {}),
+      ...(lifecycle !== undefined ? { lifecycle } : {})
+    });
+  };
   return Object.freeze({
     state: 'ready' as const,
-    records: Object.freeze(phaseCatalog.records.map((record) => {
-      const definition = record.definition
-        ? projectPhaseDefinition(record.definition, sanitize)
-        : null;
-      const runner = definition?.runner ?? defaultRunnerKind;
-      // Keyed by the record's own `phaseId`, not by its `key`: the key carries a
-      // positional suffix for the Library's repair affordance, and the manifest
-      // knows a definition only by its id.
-      const lifecycle = lifecycleOf(record.phaseId);
-      return Object.freeze({
-        key: catalogText(record.key, sanitize, KEY_MAX),
-        phaseId: catalogText(record.phaseId, sanitize, PHASE_ID_MAX),
-        status: record.status,
-        definition,
-        display: projectDisplay(record.display, sanitize),
-        errors: Object.freeze(record.errors.map((error) => Object.freeze({
-          field: catalogText(error.field, sanitize, FIELD_MAX),
-          code: catalogText(error.code, sanitize, CODE_MAX),
-          message: catalogText(error.message, sanitize, MESSAGE_MAX)
-        }))),
-        ...(definition?.model !== undefined
-          ? { modelAvailable: (availableModels[runner] ?? []).includes(definition.model) }
-          : {}),
-        ...(lifecycle !== undefined ? { lifecycle } : {})
-      });
-    })),
+    // BUG-001 (101) — the resolved rows, then the saved-but-unpublished ones. Both go
+    // through the same projector, so a draft row is sanitized and capped by the
+    // code that has always done it rather than by a second path beside it.
+    //
+    // Appended rather than interleaved because that is where the row already sat:
+    // an unsaved new Phase is added at the end of the editor's list, so a save
+    // leaves it exactly where the operator last saw it. `lifecycle` needs no
+    // special handling — the lookup is keyed by definition id, and a draft-only
+    // definition has an entry like any other.
+    //
+    // `effective` below is untouched: a draft is not part of what runs (100
+    // FR-007), and the launch surface reads a record's `lifecycle.state` before it
+    // offers anything, so a `draft` row contributes no launchable.
+    records: Object.freeze([
+      ...phaseCatalog.records.map(projectRecord),
+      ...phaseCatalog.draftOnlyRecords.map(projectRecord)
+    ]),
     effective: Object.freeze(
       phaseCatalog.effective.map((definition) => projectPhaseDefinition(definition, sanitize))
     ),

@@ -10,7 +10,7 @@ import {
 import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../contracts/backend-kinds';
 import { resolvePhaseCatalog, type ResolvedPhaseCatalog } from './process-catalog';
 import { resolvePipelineCatalog, type ResolvedPipelineCatalog } from './pipeline-catalog';
-import { storedRows } from '../catalog';
+import { storedDraftOnlyRows, storedRows } from '../catalog';
 import type { CatalogSnapshot } from '../contracts/catalog-store';
 
 /**
@@ -133,14 +133,24 @@ export function loadCatalog(
   snapshot: CatalogSnapshot,
   reader?: CatalogConfigReader
 ): LoadCatalogResult {
+  // BUG-001 (101) — `draftOnlyRows` beside `rows`, out of the one snapshot, so the two
+  // lists cannot describe different reads. They stay separate all the way to the
+  // Builder projection: `rows` is what the workspace runs, and a saved-but-
+  // unpublished definition is not part of that (100 FR-007/FR-009) — it is only
+  // something the Library has to keep showing its author.
   const phaseCatalog = resolvePhaseCatalog({
     rows: storedRows(snapshot, 'phase'),
+    draftOnlyRows: storedDraftOnlyRows(snapshot, 'phase'),
     revision: snapshot.revisions.phase
   });
   // Pipeline bindings and Phase references resolve against the effective Phase
-  // catalog, so the Phase catalog must be resolved first (FR-011).
+  // catalog, so the Phase catalog must be resolved first (FR-011). A draft Phase is
+  // not in `effective`, so a draft Pipeline binding it reports an unknown-Phase
+  // error — which is the truth: publishing that Pipeline today would bind nothing
+  // (hard rule 38).
   const pipelineCatalog = resolvePipelineCatalog({
     rows: storedRows(snapshot, 'pipeline'),
+    draftOnlyRows: storedDraftOnlyRows(snapshot, 'pipeline'),
     revision: snapshot.revisions.pipeline,
     phaseCatalog: phaseCatalog.effective
   });

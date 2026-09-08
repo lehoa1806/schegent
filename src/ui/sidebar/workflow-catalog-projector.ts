@@ -14,7 +14,10 @@
 // persisted, never written to a `WorkflowRun`, never audited (C10).
 
 import type { PipelineDefinition } from '../../contracts/pipeline-definitions';
-import type { WorkflowCatalogResolution } from '../../contracts/workflow-definitions';
+import type {
+  WorkflowCatalogResolution,
+  WorkflowSourceRecord
+} from '../../contracts/workflow-definitions';
 import { deriveWorkflowPorts } from '../../config/workflow-derived-ports';
 import { DISPLAY_TEXT_MAX, projectAuthoredDisplay } from './display-projection';
 import {
@@ -91,7 +94,7 @@ export function projectWorkflowCatalog(
 ): WorkflowCatalogProjection {
   const { sanitize } = options;
   const lifecycleOf = options.lifecycle ?? NO_BUILDER_LIFECYCLE;
-  const records: WorkflowCatalogSourceProjection[] = catalog.records.map((record) => {
+  const projectRecord = (record: WorkflowSourceRecord): WorkflowCatalogSourceProjection => {
     const derived = record.definition
       ? deriveWorkflowPorts(record.definition, options.effectivePipelines)
       : { inputs: [], outputs: [] };
@@ -128,8 +131,17 @@ export function projectWorkflowCatalog(
       ),
       ...(lifecycle !== undefined ? { lifecycle } : {})
     });
-  });
+  };
+  // BUG-001 (101) — the resolved rows, then the saved-but-unpublished ones, through the
+  // one projector. See `phase-catalog-projection.ts` for why they are appended and
+  // why `effective` stays as it was.
+  const records: WorkflowCatalogSourceProjection[] = [
+    ...catalog.records.map(projectRecord),
+    ...catalog.draftOnlyRecords.map(projectRecord)
+  ];
 
+  // Counted over the resolved rows only. The truncation advisory is a statement
+  // about the stored catalog, and a draft's defects belong to its author.
   const truncated = catalog.records.filter(
     (record) => record.errors.length > ERRORS_PER_RECORD_MAX
   ).length;
