@@ -23,6 +23,7 @@ import {
   saveDefinitionDraft,
   type LifecycleResult
 } from '../../lib/catalog-lifecycle';
+import { identityAt, reselectIndex, type DefinitionIdentity } from '../../lib/builder-selection';
 import { pipelineRowId } from '../../lib/definition-rows';
 import {
   formatPipelineSaveRejection,
@@ -39,6 +40,11 @@ export interface PipelineCatalogStoreOptions {
   readonly getSnapshot: () => WorkflowSnapshot;
   readonly onSaveError: (message: string) => void;
   readonly onSaveAccepted: () => void;
+}
+
+/** BUG-002 (101) — a Pipeline row's identity, for re-selection after an adopt. */
+function pipelineIdentity(row: MutablePipeline): DefinitionIdentity {
+  return { sourceKey: row.sourceKey, id: row.id };
 }
 
 export class PipelineCatalogStore {
@@ -94,11 +100,18 @@ export class PipelineCatalogStore {
     const acceptedRefresh = this.#saveAccepted && revision !== this.#adopted;
     const shouldAdopt = this.#adopted === '' || this.mutation === null || acceptedRefresh;
     if (revision === this.#adopted || !shouldAdopt) return;
+    // BUG-002 (101) — captured BEFORE the rows are replaced, because
+    // `selectedIndex` indexes the list about to be discarded. This used to be
+    // set to `null`, which closed the flow canvas and its inspector on every
+    // lifecycle write; re-selection by identity is what `builder-selection.ts`
+    // is for, and it keeps the containment — a Pipeline the projection no
+    // longer carries stays deselected.
+    const open = identityAt(this.pipelines, this.selectedIndex, pipelineIdentity);
     this.pipelines = catalog.records.map(sourceRecordToMutablePipeline);
     this.#adopted = revision;
     this.savePending = false;
     this.#clearMutation();
-    this.selectedIndex = null;
+    this.selectedIndex = reselectIndex(this.pipelines, open, pipelineIdentity);
   }
 
   /** Called from a component `$effect`; snapshots every settled row change. */

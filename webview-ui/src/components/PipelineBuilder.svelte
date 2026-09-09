@@ -6,6 +6,7 @@
     saveDefinitionDraft,
     type LifecycleResult
   } from '../lib/catalog-lifecycle';
+  import { identityAt, reselectIndex } from '../lib/builder-selection';
   import { saveModels as saveModelsHelper } from '../lib/save-models';
   import ModelCatalogEditor from './PipelineBuilderEditors/ModelCatalogEditor.svelte';
   import PhaseCatalogEditor from './PipelineBuilderEditors/PhaseCatalogEditor.svelte';
@@ -91,6 +92,8 @@
       snapshot.isPrimary === true &&
       workspaceTrust
   );
+  /** BUG-002 (101) — a Phase row's identity, for re-selection after an adopt. */
+  const phaseIdentity = (row: MutablePhase) => ({ sourceKey: row.sourceKey, id: row.id });
   function showSaveError(reason: string): void {
     saveError = reason;
     if (saveErrorTimer !== null) clearTimeout(saveErrorTimer);
@@ -125,12 +128,20 @@
       const acceptedRefresh = phaseSaveAccepted && revision !== adoptedPhaseRevision;
       const shouldAdopt = adoptedPhaseRevision === '' || phaseMutation === null || acceptedRefresh;
       if (revision !== adoptedPhaseRevision && shouldAdopt) {
+        // BUG-002 (101) — captured BEFORE the rows are replaced, because the
+        // selection is an index into the list about to be discarded. Adopting
+        // used to set it to `null`, which closed the editor on every lifecycle
+        // write — the save the operator had just asked for included, and with it
+        // the `DefinitionLifecyclePanel` that is the only way to publish the
+        // draft that save had written.
+        const openPhase = identityAt(phases, selectedPhaseIndex, phaseIdentity);
         phases = catalog.records.map(sourceRecordToMutable);
         adoptedPhaseRevision = revision;
         phaseSavePending = false;
         phaseMutation = null;
         phaseMutationSourceKey = null;
-        selectedPhaseIndex = null; phaseSaveAccepted = false; phaseRebasePending = false;
+        selectedPhaseIndex = reselectIndex(phases, openPhase, phaseIdentity);
+        phaseSaveAccepted = false; phaseRebasePending = false;
       }
     }
   });
