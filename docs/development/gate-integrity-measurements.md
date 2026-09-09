@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 111
+    vacuity-census-denominator: 112
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **111** |
+| Gates the detector calls **controlled** (the denominator) | **112** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -259,6 +259,30 @@ can empty independently — the test tree and the contract set — and emptying 
 central assertion pass over nothing, so it carries a floor for each rather than one for the pair. The
 lesson recorded on the row above this one, that two sources sharing a root are one source, is the
 reason: these two do not share a root, and the gate proves it by reporting which roots it read.
+
+**Denominator movement 111 → 112 (2026-09-08, `BUG-001` Phase 8 / `FR-009`, `SC-011`).** One gate
+joined, controlled on its first run.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | `autocompact-override-injection-sites.test.ts` (111 → 112) | Joined. Holds `FR-009`'s closed set: exactly two places under `src/` assign `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` — the phase site, which reads the operator setting through an accessor, and the internal compaction spawn, which fixes `'1'` because that invocation exists only where the host has already decided to compact now. It walks `src/` through `source-scan.ts` and partitions every occurrence into assignment / comment / other. Controlled by a floor on total occurrences and a floor on the comment partition, both in the `toBeGreaterThan` form `PROVES_NON_EMPTY` recognises, and by naming both governed files in a `toEqual` against a declared constant rather than against whatever the scan happened to return. |
+
+Two notes, because this gate's vacuity risk sits somewhere the entries above it do not. First, its
+central assertion is an **exact size**, not an empty set difference, so the usual failure mode — an
+empty scan passing over nothing — cannot occur: `toHaveLength(2)` over an empty scan fails. The floors
+are there for the *partition* assertions beside it, which an empty scan would satisfy in the wrong
+direction. That is why they are floors on the occurrence total and on the comment partition rather than
+one floor on the assignment count the gate is actually about.
+
+Second, and the reason this gate could have been vacuous in a way no floor would catch: it classifies
+occurrences, so it is only worth anything if the classifier discriminates. A gate that scored every
+mention as an assignment would report three sites where there are two — and the third would be
+`phase-runner.ts`'s JSDoc, which spells the variable **with its value** in prose. That line is live in
+the tree, not hypothetical, and it is what hard rule 67 is about: proving a single-resolution-site rule
+by searching a field's value rather than its name. So the gate carries a named control asserting that
+this specific JSDoc is not scored, plus five fixture-based negative controls for the classifier. Strip
+its floors and it still refuses; strip the classifier and it reports a defect that does not exist. As
+with the entrant above, the mutation that matters is not the one this census models.
 
 The rate stays **0.0%**: the entrant was mutated with the rest and did not survive.
 

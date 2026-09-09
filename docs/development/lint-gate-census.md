@@ -19,10 +19,10 @@ predicted it: its author sampled the set and found every gate well motivated.
 
 | Figure | Value | Date | Method |
 |---|---|---|---|
-| Gate files | **196** | 2026-09-06 | `*.test.ts` under `tests/lint/` recursively |
-| Marked `unique` | 179 | 2026-09-06 | hand verdict |
-| Marked `partially redundant` | 17 | 2026-09-06 | hand verdict |
-| Marked `redundant` | 0 | 2026-09-06 | hand verdict |
+| Gate files | **197** | 2026-09-09 | `*.test.ts` under `tests/lint/` recursively |
+| Marked `unique` | 179 | 2026-09-09 | hand verdict |
+| Marked `partially redundant` | 18 | 2026-09-09 | hand verdict |
+| Marked `redundant` | 0 | 2026-09-09 | hand verdict |
 
 <!-- census:prose -->
 The three verdict rows sum to the gate-file count, so they are one measurement and carry one
@@ -176,6 +176,7 @@ changing one means updating that machinery in the same commit.
 | `audit-vocabulary-unchanged-by-195.test.ts` | feature 195 introduces no audit event type | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `authored-fields-are-documented.test.ts` | every authored Phase field reaches the operator documentation | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `authored-fields-have-readers.test.ts` | every authored Phase field has a reader, or says why not | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
+| `autocompact-override-injection-sites.test.ts` | the override injection sites are a closed set of two (012, FR-009, SC-011) | `tests/unit/controller/phase-runner.test.ts` (the phase site), `tests/unit/runner/spawn-env-parity.test.ts` (the compactor site) — each for deletion only | partially redundant | those two pin each site's behaviour: the runner exports the accessor's value as a string and omits the key when the accessor returns nothing, and the compaction spawn carries the variable at `'1'`. So DELETING either site fails them, and that half of the overlap is complete. Neither can see the direction SC-011 is about. A THIRD assignment added anywhere under `src/` leaves both green, because a test that drives two call sites cannot notice a site it never drives — and a third site is how the setting stops having one answer to "what does this tune?", which is BUG-001's subject. Neither reads the requirement markers either, so a site could exist governed by nothing. The probe that shows it load-bearing is the tree it landed in: the compactor site carried no FR-009 marker, and this gate failed there — 10 passed, 1 failed, naming the unmarked site — until T073 wrote one |
 | `autonomy-bounds-disclosure-parity.test.ts` | FR-R3-112 — the autonomy-bounds disclosure derives from the bounds | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `backend-kind-placement.test.ts` | FR-R3-089 — backend identity is imported from contracts, not from the factory | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `backend-permission-posture.test.ts` | backend permission posture | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
