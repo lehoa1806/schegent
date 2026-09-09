@@ -233,6 +233,15 @@ export async function compactClaudeSession(inputs: SessionCompactionInputs): Pro
       maxDurationMs: COMPACTION_MAX_DURATION_MS,
       cliPath: inputs.cliPath,
       cwd: inputs.cwd,
+      // Feature 012 FR-009 — a host-internal maintenance invocation may set this
+      // key without reading `schegent.claude.autoCompactPctOverride`, and this
+      // call is the closed set's one member. The value is fixed rather than read
+      // because the setting answers a different question: it says at what fill
+      // level the CLI should compact on its own, and this invocation exists only
+      // where the host has already decided to compact now. An operator threshold
+      // applied here would defeat the call rather than tune it. The reason the
+      // runner forces compaction at all is in the `sessionReuse` contract in
+      // `phase-runner.ts`, and is not restated here.
       env: { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '1' },
       // FR-R3-049 — via the shared helper.
       ...policyRequestFields(inputs),
