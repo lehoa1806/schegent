@@ -156,6 +156,13 @@ Unredacted transcripts and verbose diagnostics can contain prompts, source code,
 <!-- Source: webview-ui/src/lib/action-copy.ts -->
 <!-- Source: src/state/capability-trust-resolver.ts -->
 
+`schegent.claude.autoCompactPctOverride` exports the variable; whether the CLI then compacts anything is the CLI's decision, and there are runs where it does not. The threshold governs a session Claude Code has accepted, so a session already too large to be admitted is refused before the threshold is consulted — on that run the override is exported and never fires. Schegent's own pre-phase compaction is the path that would otherwise bound such a session; when that invocation is refused, the phase starts cold with no prior context, and the audit log records a `warning` carrying `outcome: failure` and `reasonCode: session-compaction-failed-fresh-session`. Tuning this value changes when an accepted session is compacted. It is not a bound on how large a session may grow, and a run that ends `clean` may still have begun with the override transported and inert.
+
+Internal session compaction sets the same variable to `1` on its own invocation and does not read this setting; that invocation exists only where the host has already decided to compact, so an operator threshold would defeat it rather than tune it.
+
+<!-- Source: src/controller/phase-runner.ts -->
+<!-- Source: src/controller/session-compactor.ts -->
+
 ## Evidence privacy profiles
 
 `FR-R3-127`. The evidence store's posture is four settings — `schegent.logging.verbose`,
