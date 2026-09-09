@@ -47,7 +47,7 @@ import {
   summarize
 } from './phase-outcome-mapper';
 import { resolveHostVerification } from '../config/phase-runner-policy';
-import { COMPACTION_MODEL_ID, compactClaudeSession } from './session-compactor';
+import { COMPACTION_MODEL_ID, compactClaudeSession, compactionFailureRecord } from './session-compactor';
 import { RequiredEvidenceUnavailableError } from '../lib/errors';
 // Compatibility re-export; canonical owner is phase-sidecar-reader.
 export { composePhaseMessagePath };
@@ -514,10 +514,13 @@ export class PhaseRunner {
         effectiveSessionReuse = false;
         effectiveIsContinue = false;
         effectiveResumeSessionId = undefined;
+        // Two different failures arrive here. Which one is decided ONCE, in the
+        // compactor, and read here as a record — never re-derived from the message.
+        const failure = compactionFailureRecord(err);
         // `detail` is the CLI's own account of the refusal, already bounded and
-        // redacted by `failureExcerpt`; without it this line named a phase and no
+        // redacted by `boundedExcerpt`; without it this line named a phase and no
         // cause. The message, never `err` — a stack does not belong in this sink.
-        this.logger.warn('session-compact-failed (phase starts cold: no prior context)', {
+        this.logger.warn(failure.warning, {
           phase: inputs.phase,
           iteration: inputs.iteration,
           detail: err instanceof Error ? err.message : 'unknown error'
@@ -529,7 +532,7 @@ export class PhaseRunner {
           eventType: 'warning',
           payload: {
             ...this.pipelineMeta(inputs),
-            reasonCode: 'session-compaction-failed-fresh-session'
+            reasonCode: failure.reasonCode
           },
           outcome: 'failure'
         });

@@ -1875,6 +1875,47 @@ describe('Feature 074 — Multi-Backend Runner Resolution & Session Reset', () =
     );
   });
 
+  // The other compaction failure, which for a year arrived under the code above. A
+  // session the CLI declines to ADMIT is refused in seconds with the bound untouched,
+  // and the phase starts cold for a reason no bound can be tuned to fix. Same
+  // behaviour, different fact — so the trail says which one happened, and an operator
+  // reading `session-compaction-failed` is no longer told to look at a timeout.
+  it('names the refusal when the session was too large to admit', async () => {
+    let invocation = 0;
+    cliRunner = makeFakeRunner(async () => {
+      invocation += 1;
+      return invocation === 1
+        ? makeRawOutput({ exitCode: 1, stderr: 'Prompt is too long\n' })
+        : makeRawOutput({ command: 'claude --resume owned-session phase' });
+    });
+    runner = new PhaseRunner(
+      cliRunner,
+      new PromptBuilder(),
+      auditWriter,
+      new SanitizedLogger()
+    );
+
+    const result = await runner.run({
+      ...baseInputs,
+      sessionReuse: true,
+      resumeSessionId: 'owned-session'
+    });
+
+    expect(result.outcome).toBe('clean');
+    // The downgrade is unchanged: this is a recording fix, not a behaviour change.
+    const invokeMock = cliRunner.invoke as ReturnType<typeof vi.fn>;
+    expect(invokeMock.mock.calls[1][0]).not.toHaveProperty('resumeSessionId');
+    expect(auditWriter.append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'warning',
+        outcome: 'failure',
+        payload: expect.objectContaining({
+          reasonCode: 'session-too-large-to-compact-fresh-session'
+        })
+      })
+    );
+  });
+
   // The compaction `cli-invocation` stamped `inputs.phaseDef.model` and
   // `inputs.phaseDef.effort` — the PHASE's model and effort — on an invocation the host
   // spawns with `COMPACTION_MODEL_ID` and no effort at all. So the audit log attributed

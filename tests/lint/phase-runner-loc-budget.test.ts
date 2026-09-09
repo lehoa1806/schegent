@@ -358,7 +358,28 @@ const BUDGETS = [
   // about a field on `raw`, asked at the one site that acts on the answer, and a
   // module boundary around it would add indirection without removing
   // responsibility.
-  { path: 'src/controller/phase-runner.ts', max: 1_144 },
+  //
+  // Bugfix 2026-09-10 — 1144 → 1147 for the compaction failure RECORD. Three lines:
+  // one local, two of note, and the import gained a name without gaining a line
+  // because every import in that file is on one.
+  //
+  // WHAT IT BUYS. Two opposite failures were recorded under one code. A compaction
+  // that RAN and did not finish says the bound was reached; a session the CLI would
+  // not ADMIT says the bound was never approached — refused in 74 s of a 300 s
+  // window on the run this was filed from. Both wrote
+  // `session-compaction-failed-fresh-session`, so the trail sent an operator to tune
+  // a timeout that had nothing to do with it, and the one distinction that decides
+  // whether more time would help was the one thing not recorded.
+  //
+  // NO RESPONSIBILITY WAS ADDED, which is what makes this headroom rather than a
+  // split. The classification is made once, in `session-compactor.ts`, where the
+  // process facts and the CLI's own account are both already in hand; the shell
+  // reads two fields off the record it is handed, exactly as it already read one
+  // string for `detail`. The note that remains here is the single thing a reader
+  // could get wrong — re-deriving the kind from the message, which would be a second
+  // oracle disagreeing with the first the next time the vendor rephrases anything —
+  // and the reasoning for it lives beside the classifier, not here.
+  { path: 'src/controller/phase-runner.ts', max: 1_147 },
   // FR-R3-052 / H-03 (2026-08-24) — 400 → 415 for the size check that was
   // missing. `stat()` was already called here and only `isFile()` was read, so
   // `readFile()` took a multi-GiB sidecar wholly into memory. The bound, the
