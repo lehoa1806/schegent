@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 112
+    vacuity-census-denominator: 113
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **112** |
+| Gates the detector calls **controlled** (the denominator) | **113** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -283,6 +283,25 @@ by searching a field's value rather than its name. So the gate carries a named c
 this specific JSDoc is not scored, plus five fixture-based negative controls for the classifier. Strip
 its floors and it still refuses; strip the classifier and it reports a defect that does not exist. As
 with the entrant above, the mutation that matters is not the one this census models.
+
+The rate stays **0.0%**: the entrant was mutated with the rest and did not survive.
+
+**Denominator movement 112 → 113 (2026-09-08, `BUG-001` / `FR-009`).** One gate joined, controlled on
+its first run.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | `completed-awaiting-exit-has-a-reader.test.ts` (112 → 113) | Joined. Refuses the state that shipped `BUG-001`: `completedAwaitingExit` set correctly by `src/runner/claude-cli.ts`, documented precisely in `src/runner/invocation-result.ts`, and consulted by no controller — so `PhaseRunner` read exit 143 as the backend's verdict when 143 was its own SIGTERM after `FR-025`'s settle window, failing a `finalize` phase that had merged 165 files. It walks `src/controller/` and `src/runner/` with `readdirSync` and asserts a **non-empty** reader set, which is the reverse of this census's usual shape — most gates here hold an empty set difference, so their vacuity risk is an empty scan passing; this one's is an empty scan *failing* for the wrong reason and being loosened. Controlled by a floor on files walked and by naming `controller/phase-runner.ts` in a `toContain`. |
+
+Its real control is neither of those, and it is worth naming because it is the one shape this census
+has no other example of. The gate's load-bearing assertions are that **prose does not count**: three
+synthetic fixtures — a block comment, a line comment, and a bare type member — each mentioning the
+field, each required to strip to nothing. Without them the gate would have passed on the pre-fix tree,
+because that tree discussed this field at length in two modules. Verified against `HEAD` while the fix
+was uncommitted: `invocation-result.ts` **mentioned** the field and did not read it, and
+`src/controller/` did not mention it at all. A gate whose subject is *"a field with mentions and no
+reader"* can only be non-vacuous if it can tell the two apart, so the mutation that matters here is
+not stripping its floors — it is removing the comment stripper.
 
 The rate stays **0.0%**: the entrant was mutated with the rest and did not survive.
 

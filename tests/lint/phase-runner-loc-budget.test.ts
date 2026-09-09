@@ -336,7 +336,29 @@ const BUDGETS = [
   // inside a window-scoped evaluator. Two forwarders would have cost more here
   // and read no better: the optional argument is the same question ("which of
   // this Run's phases?") with "all of them" as an answer.
-  { path: 'src/controller/phase-runner.ts', max: 1_114 },
+  //
+  // BUG-001 / FR-009 (2026-09-08) — 1114 → 1144, for `completedAwaitingExit`'s
+  // FIRST READER. The same shape as the `evidencePolicy` bump above and the
+  // `timeoutSeconds` HOLD below it: a field the runner set correctly, documented
+  // precisely, and no code path consulted. Here that cost a `finalize` phase that
+  // had passed 9 of 9 checks and merged 165 files, failed on exit 143 — the
+  // runner's own SIGTERM after FR-025's settle window, read back as the backend's
+  // verdict.
+  //
+  // WHY +30 AND NOT +2. The predicate is one expression; the rest is the argument
+  // for it. Two arms already enforced this rule inline and a state that overrides
+  // nothing reached one of them unsurveyed, so the next reader needs to know why
+  // the check is a derived rule rather than a third conjunct, and why it cannot
+  // reach the timeout arms. A draft that stated only the mechanism measured +12
+  // and is not recorded as the better outcome: the deleted half is the half that
+  // stops the conjunct being added back.
+  //
+  // Not extracted to its own module, unlike `effective-phase-timeout.ts`. That
+  // one moved an EFFECT the shell was performing; this is a two-line question
+  // about a field on `raw`, asked at the one site that acts on the answer, and a
+  // module boundary around it would add indirection without removing
+  // responsibility.
+  { path: 'src/controller/phase-runner.ts', max: 1_144 },
   // FR-R3-052 / H-03 (2026-08-24) — 400 → 415 for the size check that was
   // missing. `stat()` was already called here and only `isFile()` was read, so
   // `readFile()` took a multi-GiB sidecar wholly into memory. The bound, the

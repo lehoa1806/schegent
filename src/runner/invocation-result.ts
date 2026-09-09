@@ -244,6 +244,22 @@ export interface RawInvocationOutput {
    * failure. `killed` stays `false` on this path so the controller does
    * not treat it as an operator cancellation. `undefined` from a
    * non-runner fixture is equivalent to `false`.
+   *
+   * WHO READS IT, AND WHY THAT SENTENCE IS HERE (FR-009, BUG-001).
+   * `hostExitStatusIsAttributable()` in `src/controller/phase-runner.ts` is the
+   * consumer of the classification the paragraph above promises, and
+   * `specs/145-host-verifiable-gates/contracts/host-verification.md` is the
+   * contract that requires it. For the whole life of that feature there was no
+   * consumer: the field was produced here, documented here, and read nowhere in
+   * `src/controller/`, so "classified by its parsed outcome" held on paper while
+   * FR-R3-058's `exit-code` basis failed such an invocation on the SIGTERM this
+   * path triggers — `128 + 15` from the grace-terminate below, read as the host's
+   * verdict. Two contracts contradicted each other in silence and the arm order
+   * decided. `tests/lint/completed-awaiting-exit-has-a-reader.test.ts` now fails
+   * if the field loses its last reader.
+   *
+   * The exit status this path yields is therefore NOT host evidence. It is
+   * Schegent's own, and anything judging a phase on provenance must exclude it.
    */
   completedAwaitingExit?: boolean;
   /**

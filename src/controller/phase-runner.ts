@@ -75,6 +75,27 @@ function verdictBasisOf(inputs: PhaseRunInputs): 'exit-code' | 'model-token' {
   return requiresHostVerification(inputs) ? 'exit-code' : 'model-token';
 }
 
+/**
+ * FR-009 (BUG-001) — is this exit status one the BACKEND produced?
+ *
+ * `exit-code` is a proxy for the host's verdict, and a proxy is only as good as
+ * its provenance. Schegent produces an exit status of its own: when the backend
+ * emits its terminal result and then does not exit, the runner grace-terminates
+ * the lingering process on feature 030's FR-025 settle window and the process
+ * tree reports SIGTERM's `128 + 15`. Failing a phase on that number is the runner
+ * reporting its own signal back to itself as the host's evidence — the
+ * self-certification FR-R3-058 exists to prevent, inverted.
+ *
+ * A derived rule rather than a conjunct per arm (plan D5): the next
+ * runner-authored termination reason is a one-line change here. Narrow by
+ * construction — the flag requires an OBSERVED terminal result, so it cannot
+ * reach the timeout or deadline arms above, which fail deliberately and
+ * correctly. See specs/145-host-verifiable-gates/contracts/host-verification.md.
+ */
+function hostExitStatusIsAttributable(raw: RawInvocationOutput): boolean {
+  return raw.completedAwaitingExit !== true;
+}
+
 export interface PhaseRunInputs {
   phase: Phase;
   phaseDef?: PhaseDef;
@@ -767,7 +788,12 @@ export class PhaseRunner {
     if (result.kind === 'clean' && raw.exitCode !== null && raw.exitCode !== 0) {
       // FR-R3-058 — for a sensitive Phase the exit status decides. A warning was
       // the whole enforcement before: logged, and advanced anyway.
-      if (requiresHostVerification(inputs)) {
+      //
+      // FR-009 (BUG-001) — and only if the status is the BACKEND's. A
+      // runner-authored one falls through to the warning below and is classified
+      // on its parsed outcome, which is what `invocation-result.ts` has always
+      // specified for `completedAwaitingExit` under BOTH bases.
+      if (requiresHostVerification(inputs) && hostExitStatusIsAttributable(raw)) {
         const verificationEntry = await this.appendAudit(inputs, 'phase-end', 'failure', {
           ...this.pipelineMeta(inputs),
           outcome: 'failed',
@@ -808,10 +834,14 @@ export class PhaseRunner {
           phaseMessage: null
         };
       }
+      // FR-009 — the flag rides this log because the two cases reaching it are
+      // otherwise indistinguishable where an operator sees them: a backend that
+      // ran the work and exited non-zero, and one terminated for lingering.
       this.logger.warn('phase-runner: clean result with non-zero exit code', {
         phase: inputs.phase,
         iteration: inputs.iteration,
-        exitCode: raw.exitCode
+        exitCode: raw.exitCode,
+        completedAwaitingExit: raw.completedAwaitingExit === true
       });
     }
 
