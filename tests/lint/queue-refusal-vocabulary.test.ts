@@ -133,8 +133,20 @@ const WEBVIEW_SYNTHESISED: readonly string[] = ['timeout', 'unexpected-accept'];
  * this module does not post — `CMD_CREATE_QUEUE` and `CMD_RENAME_QUEUE` keep
  * their pre-existing call sites (see the module header). Named here so its
  * absence is a recorded decision rather than an oversight A1 has to allow.
+ *
+ * Feature 195 (T064, FR-025) — `missing-confirmation` joins it for the same
+ * reason. `validateAttestTaskCompleted` lives in the same validator file, so
+ * the whole-file scan below reaches it, but `CMD_ATTEST_TASK_COMPLETED` is
+ * posted from `QueueItemActions.svelte` beside the row's other five actions
+ * (retry, cancel, remove, restart, modify), all of which are fire-and-forget
+ * and surface a refusal through the host notifier rather than `refusalText`.
+ * Relocating it here to earn an entry would be the tidiness-only diff this
+ * module's own header declines to make for create and rename.
  */
-const NOT_POSTED_FROM_THIS_MODULE: readonly string[] = ['invalid-queue-name'];
+const NOT_POSTED_FROM_THIS_MODULE: readonly string[] = [
+  'invalid-queue-name',
+  'missing-confirmation'
+];
 
 function derivedCodes(): readonly string[] {
   const raw = [

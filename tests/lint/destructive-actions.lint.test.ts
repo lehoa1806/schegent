@@ -3,7 +3,7 @@
 // wrapped by `useConfirm(actionKey)` so the operator-facing confirmation
 // flow gates the destructive side effect.
 //
-// The 13 destructive commands are the ones that mutate persisted queue,
+// The 14 destructive commands are the ones that mutate persisted queue,
 // run, workspace, or catalog state in a user-visible way. Each has an
 // `ActionKey` entry in `webview-ui/src/lib/action-copy.ts`, but the table is a
 // superset: it also carries keys for destructive decisions that are not commands
@@ -47,7 +47,7 @@ import { filesUnder } from './source-scan';
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const SCAN_ROOT = resolve(REPO_ROOT, 'webview-ui', 'src');
 
-// The 13 commands that the action-copy table gates. Adding a new
+// The 14 commands that the action-copy table gates. Adding a new
 // destructive command means adding it here AND to ACTION_COPY (the
 // pinned-key unit test at `webview-ui/src/lib/__tests__/action-copy.test.ts`
 // keeps the latter honest).
@@ -84,7 +84,14 @@ const DESTRUCTIVE_COMMANDS: readonly string[] = [
   // Feature 100 (T509a, FR-050) — throwing away unpublished work. The one
   // lifecycle operation that destroys content with no version record behind it,
   // and the only way a draft-only definition leaves the catalog entirely.
-  'CMD_DISCARD_DEFINITION_DRAFT'
+  'CMD_DISCARD_DEFINITION_DRAFT',
+  // Feature 195 (T064, FR-025) — attested completion. Destructive in the sense
+  // this gate exists for even though it deletes nothing: it moves the task into
+  // `completed`, which no transition returns from (192's invariant 4), so it
+  // spends the operator's ability to retry. FR-025 also requires the assertion
+  // be explicit and never inferred, and this gate is what makes the prompt the
+  // only way the webview can reach the command.
+  'CMD_ATTEST_TASK_COMPLETED'
 ];
 
 // Empty since FR-R3-140. The exemption stays declared because the filter
@@ -395,7 +402,11 @@ describe('Feature 063 T046 — destructive command sites must be useConfirm-gate
   // FR-R3-144 (T033) — 17 → 18 with `backend.grant-uncontained`, the settings
   // control that waives OS-enforced containment for a backend. Raised in the same
   // change as the union, which is what the note above asks for.
-  const DECLARED_ACTION_KEY_COUNT = 18;
+  //
+  // Feature 195 (T064, FR-025) — 18 → 19 with `queue.attest-completed`, the
+  // third exit from a halted queue. Same discipline: raised in the change that
+  // added the key.
+  const DECLARED_ACTION_KEY_COUNT = 19;
 
   it('reads every key the ActionKey union declares, and no others', () => {
     expect(

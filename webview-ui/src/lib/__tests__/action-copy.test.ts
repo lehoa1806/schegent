@@ -67,7 +67,12 @@ const EXPECTED_KEYS: readonly ActionKey[] = [
   // run may do on the machine: the enforcement refuses the spawn today, and after
   // this write it does not. The body is the refusal's own sentence, carried in as
   // a placeholder, so the prompt cannot describe a rule the runner no longer has.
-  'backend.grant-uncontained'
+  'backend.grant-uncontained',
+  // Feature 195 (T064, FR-025) — asserting that a failed task's work happened
+  // outside the tool. In this table because it is the one exit from a halt that
+  // is not undoable: `completed` is a status no transition returns from, so the
+  // prompt is where the operator learns that choosing it spends the retry.
+  'queue.attest-completed'
 ];
 
 describe('ActionKey — derived from the generated host mirror (T193 US2, FR-001/FR-009)', () => {
@@ -118,6 +123,12 @@ describe('ACTION_COPY exhaustiveness (FR-022b)', () => {
       // interrupt, and neither of these does.
       'catalog.deactivate-definition',
       'catalog.discard-draft',
+      // Feature 195 (T064, FR-025) — sorts first among the `queue.` keys.
+      // Destructive on the same basis as `backend.grant-uncontained` above:
+      // nothing is deleted, and nothing can be undone either. A task recorded
+      // as completed cannot be returned to `failed`, so the retry the operator
+      // still had before the prompt is gone after it.
+      'queue.attest-completed',
       'queue.clean-all',
       // Feature 095 — dropping a queue drops the pending Tasks on it. Sorts
       // after `queue.clean-all` and before `run.overwrite-output`.

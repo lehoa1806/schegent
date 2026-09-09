@@ -43,7 +43,8 @@ import {
   CMD_RETRY_QUEUE_ITEM,
   CMD_CANCEL,
   CMD_REMOVE_QUEUE_ITEM,
-  CMD_RESTART_CANCELED_TASK
+  CMD_RESTART_CANCELED_TASK,
+  CMD_ATTEST_TASK_COMPLETED
 } from '../../lib/messages';
 import { useConfirm } from '../../lib/use-confirm';
 
@@ -124,7 +125,14 @@ describe('QueueItemActions (FR-036 tightened, BUG-004)', () => {
       expect(container.querySelectorAll('button').length).toBe(2);
     });
 
-    it('failed row renders Retry plus Delete', () => {
+    // Feature 195 (T064, FR-025) — was "Retry plus Delete", asserting two
+    // buttons. The failed row's action set genuinely gained a third member:
+    // attested completion, for the task neither retry nor remove can serve.
+    // The old title and count were correct for what they asserted and are
+    // updated here rather than excused — an exhaustiveness assertion that
+    // still names two of three actions is the defect T064 closes, one layer
+    // down.
+    it('failed row renders Retry plus Attest plus Delete', () => {
       const { container, queryByTestId } = render(QueueItemActions, {
         props: { item: buildItem({ status: 'failed' }), isPrimary: true }
       });
@@ -132,8 +140,9 @@ describe('QueueItemActions (FR-036 tightened, BUG-004)', () => {
       expect(retry).not.toBeNull();
       expect(retry?.textContent?.trim()).toBe('↻');
       expect(queryByTestId('queue-item-cancel-q-1')).toBeNull();
+      expect(queryByTestId('queue-item-attest-q-1')).not.toBeNull();
       expect(queryByTestId('queue-item-remove-q-1')).not.toBeNull();
-      expect(container.querySelectorAll('button').length).toBe(2);
+      expect(container.querySelectorAll('button').length).toBe(3);
     });
 
     // Feature 065 BUG-009 T080 (FR-026) — Retry (↻) is also available for
@@ -385,6 +394,95 @@ describe('QueueItemActions (FR-036 tightened, BUG-004)', () => {
       });
       await fireEvent.click(getByTestId('queue-item-remove-q-1'));
       await tick();
+      expect(postCommandSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  // Feature 195 (T064, FR-025, FR-026) — the third way out of a halt.
+  //
+  // A task whose phase committed an irreversible side effect and was *then*
+  // recorded failed can be served by neither of FR-009's two exits: retry
+  // repeats the side effect, remove destroys the record the operator wants to
+  // keep. So the operator attests the outcome instead, and the halt ends by
+  // FR-003's recomputation with nothing stored.
+  //
+  // The affordance lives on this component rather than on either surface T064
+  // names, because `QueueControls.svelte` renders *this* component for the row
+  // its halt names (T031) — so one affordance reaches the queue header and the
+  // row list both, and `QueueControls` keeps its documented property of adding
+  // no IPC call of its own.
+  describe('attested completion (T064, FR-025)', () => {
+    it('offers the affordance on a failed row and on no other status', () => {
+      for (const status of ['pending', 'in-flight', 'paused', 'completed', 'canceled'] as const) {
+        const { queryByTestId, unmount } = render(QueueItemActions, {
+          props: { item: buildItem({ status }), isPrimary: true }
+        });
+        expect(queryByTestId('queue-item-attest-q-1')).toBeNull();
+        unmount();
+      }
+      const { queryByTestId } = render(QueueItemActions, {
+        props: { item: buildItem({ status: 'failed' }), isPrimary: true }
+      });
+      expect(queryByTestId('queue-item-attest-q-1')).not.toBeNull();
+    });
+
+    it('posts CMD_ATTEST_TASK_COMPLETED with the row taskId once confirmed', async () => {
+      const { getByTestId } = render(QueueItemActions, {
+        props: { item: buildItem({ status: 'failed' }), isPrimary: true }
+      });
+
+      await fireEvent.click(getByTestId('queue-item-attest-q-1'));
+      await tick();
+
+      expect(postCommandSpy).toHaveBeenCalledWith(CMD_ATTEST_TASK_COMPLETED, {
+        taskId: 'q-1',
+        confirmed: true
+      });
+    });
+
+    it('asks for the attestation by its own action key, naming the task', async () => {
+      const { getByTestId } = render(QueueItemActions, {
+        props: { item: buildItem({ status: 'failed' }), isPrimary: true }
+      });
+
+      await fireEvent.click(getByTestId('queue-item-attest-q-1'));
+      await tick();
+
+      expect(useConfirmMock).toHaveBeenCalledWith(
+        'queue.attest-completed',
+        expect.objectContaining({
+          context: expect.objectContaining({ taskTitle: 'Add filters' })
+        })
+      );
+    });
+
+    // FR-025: "the operator MUST assert that outcome explicitly; the system
+    // MUST NOT infer it". A dismissed prompt is not an assertion, so nothing
+    // may be posted — the click alone must never reach the host.
+    it('posts nothing when the operator dismisses the prompt', async () => {
+      useConfirmMock.mockResolvedValueOnce(false);
+      const { getByTestId } = render(QueueItemActions, {
+        props: { item: buildItem({ status: 'failed' }), isPrimary: true }
+      });
+
+      await fireEvent.click(getByTestId('queue-item-attest-q-1'));
+      await tick();
+
+      expect(postCommandSpy).not.toHaveBeenCalled();
+    });
+
+    it('is aria-disabled and inert in a non-primary window', async () => {
+      const { getByTestId } = render(QueueItemActions, {
+        props: { item: buildItem({ status: 'failed' }), isPrimary: false }
+      });
+
+      const button = getByTestId('queue-item-attest-q-1');
+      expect(button.getAttribute('aria-disabled')).toBe('true');
+
+      await fireEvent.click(button);
+      await tick();
+
+      expect(useConfirmMock).not.toHaveBeenCalled();
       expect(postCommandSpy).not.toHaveBeenCalled();
     });
   });

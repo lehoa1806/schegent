@@ -1,4 +1,5 @@
 import {
+  CMD_ATTEST_TASK_COMPLETED,
   CMD_CANCEL,
   CMD_CLEAR_QUEUE,
   CMD_CLEAR_COMPLETED,
@@ -128,6 +129,12 @@ export const MUTATING_COMMAND_REASONS = Object.freeze({
   // answer, or the removal of it (`policy: null`, "follow the workspace
   // default"). Mutating: writes or removes `QueueState.failurePolicy`.
   [CMD_SET_QUEUE_FAILURE_POLICY]: 'queue failure-policy write',
+  // Feature 195 (T064, FR-025) — attested completion. Mutating: it writes the
+  // task's status, and out of `failed` into a status no transition returns from
+  // (192's invariant 4), so it is also the least reversible of the three exits
+  // from a halt. `ATTEST_` matches no `mutating-command-name-gate` pattern, so
+  // the lint would not have caught an omission here — this entry is deliberate.
+  [CMD_ATTEST_TASK_COMPLETED]: 'attested task completion',
   [CMD_MOVE_TASK]: 'task move between queues',
   // FR-R3-144 (T017, D-2) — grant or revoke one backend's uncontained posture.
   // The most consequential write in this table: it decides whether a backend

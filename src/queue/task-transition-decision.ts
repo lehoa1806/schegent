@@ -90,6 +90,24 @@ export interface TaskTransitionDecisionInput {
    * `inFlightId` is already set to a task other than this one.
    */
   readonly queueAlreadyHasDifferentInFlight: boolean;
+  /**
+   * FR-025 (feature 195, T063) — 2026-09-08. Whether an operator has
+   * explicitly asserted that this task's work completed. Only meaningful for
+   * `'finish'` with `targetStatus: 'completed'`, and it is the only extra
+   * condition anywhere in this table beyond a pair of statuses.
+   *
+   * **Optional, and absent means not attested.** A caller that omits it is
+   * refused, so refusal is the default and forgetting the field cannot widen
+   * the table — the direction that matters, since the other one only costs a
+   * legitimate operator a second attempt.
+   *
+   * Nothing may infer this from run state, exit code, or audit content
+   * (FR-025). It carries an operator's assertion from the command that made
+   * it, and invariant 6 still forbids this function from reading anything but
+   * the fields it is handed — so this is the whole of what it knows about the
+   * attestation.
+   */
+  readonly operatorAttestedCompletion?: boolean;
 }
 
 export type TaskTransitionDecisionResult =
@@ -103,7 +121,13 @@ function reject(reason: TaskTransitionRejectionReason): TaskTransitionDecisionRe
 }
 
 export function decideTaskTransition(input: TaskTransitionDecisionInput): TaskTransitionDecisionResult {
-  const { operation, currentStatus, targetStatus, queueAlreadyHasDifferentInFlight } = input;
+  const {
+    operation,
+    currentStatus,
+    targetStatus,
+    queueAlreadyHasDifferentInFlight,
+    operatorAttestedCompletion
+  } = input;
 
   // Existence is checked before any edge, for every operation (feature 192's
   // contracts/task-transition-decision.md invariant 2).
@@ -217,6 +241,38 @@ export function decideTaskTransition(input: TaskTransitionDecisionInput): TaskTr
       // stays refused below, because a task that never ran cannot have completed.
       // Both admitted pre-start edges name an outcome reachable without executing.
       if (currentStatus === 'pending' && targetStatus === 'failed') return ELIGIBLE;
+      // FR-025 (feature 195, T063, BUG-001) — 2026-09-08. Edge 4: attested
+      // completion, and the first terminal → terminal edge in this table.
+      //
+      // Read the sentence three lines up carefully, because it is why this edge
+      // had to be added rather than merely used. `failed -> completed` was
+      // refused by the fallthrough below, not by any rule about it: the reason
+      // recorded above reasons about `pending -> completed`, and "a task that
+      // never ran cannot have completed" is a statement about a task that never
+      // ran. A task whose phase committed an irreversible side effect and was
+      // THEN recorded `failed` has run, and that sentence does not reach it.
+      // The case was unconsidered, not decided against — which is easy to miss,
+      // because an enumeration whose stated reason covers one of its neighbours
+      // reads exactly like one that covers them all.
+      //
+      // Feature 195's queue halts on a `failed` row and had two ways out, both
+      // of which change the row: retry re-runs the phase (repeating the side
+      // effect) and removal deletes it (destroying the record that the work
+      // happened). This is the third, and the only one that leaves the row.
+      //
+      // The gate is the operator's assertion and nothing else. `completed`
+      // is already non-blocking, so the halt then ends by the same
+      // recomputation FR-003 requires, with nothing stored about it.
+      //
+      // Justification and scope: specs/192-task-transitions-deletion-consent/
+      // contracts/task-transition-decision.md, invariant 4, "Edge 4 — attested
+      // completion" (the amendment that invariant's last sentence demands).
+      // Note what stays refused: `failed -> canceled` — which feature 195's own
+      // FR-009 guard proves and whose meaning FR-026 requires be left intact —
+      // and `paused`/`canceled -> completed`.
+      if (currentStatus === 'failed' && targetStatus === 'completed' && operatorAttestedCompletion === true) {
+        return ELIGIBLE;
+      }
       return reject('illegal-source-status');
     }
 

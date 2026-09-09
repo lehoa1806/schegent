@@ -184,7 +184,15 @@ describe('every Task status writer routes through decideTaskTransition (FR-R3-15
     ).toEqual([]);
   });
 
-  it('reports the population as five enrolled and four exempt (contract C5)', () => {
+  // Feature 195 (T063, FR-025, BUG-001) — 2026-09-08. Five enrolled became
+  // six: `QueueManager.attestCompleted`, the writer behind FR-025's attested
+  // `failed -> completed` edge. It needed no `EXEMPTIONS` row and no change to
+  // the derivation — the mechanical rule selected it and `isEnrolled`
+  // classified it, because it routes through `decideTaskTransition` like the
+  // other five. This count was the whole of the required edit, which is the
+  // gate working as feature 200's FR-009 intended: a new status writer is a
+  // failing assertion naming the new site, not an invisible addition.
+  it('reports the population as six enrolled and four exempt (contract C5)', () => {
     const enrolled = CANDIDATES.filter(isEnrolled);
     const exempt = CANDIDATES.filter((site) => !isEnrolled(site));
 
@@ -192,7 +200,7 @@ describe('every Task status writer routes through decideTaskTransition (FR-R3-15
       { enrolled: enrolled.length, exempt: exempt.length, total: CANDIDATES.length },
       `derived population changed.\nenrolled:\n  ${enrolled.map(describeSite).join('\n  ')}\n` +
         `exempt:\n  ${exempt.map(describeSite).join('\n  ')}`
-    ).toEqual({ enrolled: 5, exempt: 4, total: 9 });
+    ).toEqual({ enrolled: 6, exempt: 4, total: 10 });
   });
 
   it('imports decideTaskTransition in every file that has an enrolled candidate', () => {

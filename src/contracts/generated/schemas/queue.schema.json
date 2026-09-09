@@ -168,6 +168,11 @@
           "name": "degradedPhases",
           "optional": true,
           "type": "readonly DegradedPhaseEntry[]"
+        },
+        {
+          "name": "completionProvenance",
+          "optional": true,
+          "type": "CompletionProvenance"
         }
       ]
     },

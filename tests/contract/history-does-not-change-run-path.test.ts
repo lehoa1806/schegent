@@ -164,6 +164,15 @@ describe('the queue model is unchanged by this feature (T083, FR-050)', () => {
     // and the right resolution is to keep it on the history record instead.
     expect(declaredFields('src/queue/feature-request.ts', 'FeatureRequest')).toEqual([
       'completedAt',
+      // FR-026 — added by feature 195 (T065), and the field FR-050 has the most
+      // reason to be suspicious of, because it exists to be *read* later. The
+      // widening is still not History's: the marker says the operator asserted
+      // this task's outcome rather than the host observing it, and the record it
+      // qualifies is the task's own `status`, so a copy on the history record
+      // would be a second representation of a fact this row already holds — the
+      // shape `QueueState.paused` is a monument to. History may read it; that is
+      // exactly what FR-050 permits and what it forbids adding for.
+      'completionProvenance',
       'createdAt',
       // FR-R3-157 — added by feature 199, and additive for the same structural
       // reason `phaseProgress` below is: the mark says a Phase was carried past

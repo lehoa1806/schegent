@@ -31,7 +31,11 @@ vi.mock('../../lib/snapshot-store.svelte', () => ({
   }
 }));
 
-import { CMD_RETRY_QUEUE_ITEM, CMD_REMOVE_QUEUE_ITEM } from '../../lib/messages';
+import {
+  CMD_RETRY_QUEUE_ITEM,
+  CMD_REMOVE_QUEUE_ITEM,
+  CMD_ATTEST_TASK_COMPLETED
+} from '../../lib/messages';
 
 beforeEach(() => {
   postCommandSpy.mockReset();
@@ -131,5 +135,33 @@ describe('QueueControls — halted task actions in the queue header (FR-009)', (
 
     expect(getByTestId(`queue-item-retry-${task.id}`).getAttribute('aria-disabled')).toBe('true');
     expect(getByTestId(`queue-item-remove-${task.id}`).getAttribute('aria-disabled')).toBe('true');
+  });
+
+  // Feature 195 (T064, FR-025) — the header reports the halt, so it must state
+  // every way out of it, not two of three. This surface gains no dispatch of
+  // its own: the affordance arrives with `QueueItemActions`, the same way retry
+  // and remove already do, which is why the assertions below are about the
+  // header *reaching* the third exit rather than about a new IPC path.
+  it('offers attested completion beside retry and remove (T064, FR-025)', () => {
+    const task = buildHaltedTask();
+    const { queryByTestId } = render(QueueControls, {
+      props: defaultProps({ haltedTask: task })
+    });
+
+    expect(queryByTestId(`queue-item-attest-${task.id}`)).not.toBeNull();
+  });
+
+  it('dispatches CMD_ATTEST_TASK_COMPLETED for the named task on a confirmed attestation', async () => {
+    const task = buildHaltedTask();
+    const { getByTestId } = render(QueueControls, {
+      props: defaultProps({ haltedTask: task })
+    });
+
+    await fireEvent.click(getByTestId(`queue-item-attest-${task.id}`));
+
+    expect(postCommandSpy).toHaveBeenCalledWith(
+      CMD_ATTEST_TASK_COMPLETED,
+      expect.objectContaining({ taskId: task.id, confirmed: true })
+    );
   });
 });

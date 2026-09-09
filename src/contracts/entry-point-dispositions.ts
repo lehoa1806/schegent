@@ -42,6 +42,13 @@ export const MUTATING_COMMAND_IDS = Object.freeze({
   'schegent.cancel': 'workflow cancellation',
   'schegent.restartCanceledTask': 'canceled task restart',
   'schegent.retryQueuedItem': 'queue item retry',
+  // Feature 195 (T064, FR-025) — the third exit from a halted queue, beside the
+  // retry above and removal. Registered-only (no `package.json` entry), same
+  // shape as `schegent.clearQueue` and `schegent.setQueueFailurePolicy` below:
+  // called from `cmd-attest-task-completed.ts`'s sidebar handler alone, because
+  // the assertion is about one named task the operator is looking at and a
+  // palette entry would offer it with no row in front of it.
+  'schegent.attestTaskCompleted': 'attested task completion',
   'schegent.moveQueuedItemUp': 'queue reorder',
   'schegent.moveQueuedItemDown': 'queue reorder',
   'schegent.clearAll': 'queue full reset',

@@ -177,6 +177,13 @@ export const CMD_SET_UNCONTAINED_BACKEND_GRANT = 'CMD_SET_UNCONTAINED_BACKEND_GR
 // answer, or `null` to follow the workspace default. Mutating: writes (or,
 // for `null`, removes) `QueueState.failurePolicy`.
 export const CMD_SET_QUEUE_FAILURE_POLICY = 'CMD_SET_QUEUE_FAILURE_POLICY' as const;
+// Feature 195 (T064, FR-025) — the operator asserts that a `failed` task's work
+// actually completed outside the tool, so the halt it caused ends without a
+// re-run and without discarding the row. Mutating: it writes the task's status.
+// The name carries no mutating verb prefix, so the naming-convention lint would
+// not have caught an omission from `MUTATING_COMMAND_REASONS` — that entry is
+// deliberate, as `CMD_LAUNCH_PIPELINE`'s and the two Workflow ones are.
+export const CMD_ATTEST_TASK_COMPLETED = 'CMD_ATTEST_TASK_COMPLETED' as const;
 
 // -- Host message literals (host → webview) ----------------------------------
 
@@ -247,7 +254,8 @@ export const COMMAND_TYPES = [
   CMD_LAUNCH_WORKFLOW,
   CMD_CONTINUE_WORKFLOW,
   CMD_SET_UNCONTAINED_BACKEND_GRANT,
-  CMD_SET_QUEUE_FAILURE_POLICY
+  CMD_SET_QUEUE_FAILURE_POLICY,
+  CMD_ATTEST_TASK_COMPLETED
 ] as const;
 
 export const HOST_MESSAGE_TYPES = [STATE_SNAPSHOT, CMD_ACK, MSG_PHASE_LOG_ENTRY] as const;
@@ -322,11 +330,11 @@ export type {
 // literal, the SIDEBAR_COMMAND_TYPES entry, this re-export, the SidebarCommand
 // member, and the COMMAND_GUARDS entry.
 import type {
-  CreateQueueCommand, DeleteQueueCommand, MoveTaskCommand,
+  AttestTaskCompletedCommand, CreateQueueCommand, DeleteQueueCommand, MoveTaskCommand,
   RenameQueueCommand, SaveQueueSettingsCommand,
   SetQueueFailurePolicyCommand } from './sidebar-ipc/queue';
 export type {
-  CreateQueueCommand, DeleteQueueCommand, MoveTaskCommand,
+  AttestTaskCompletedCommand, CreateQueueCommand, DeleteQueueCommand, MoveTaskCommand,
   RenameQueueCommand, SaveQueueSettingsCommand,
   SetQueueFailurePolicyCommand } from './sidebar-ipc/queue';
 
@@ -666,7 +674,8 @@ export type SidebarCommand =
   | LaunchWorkflowCommand
   | ContinueWorkflowCommand
   | SetUncontainedBackendGrantCommand
-  | SetQueueFailurePolicyCommand;
+  | SetQueueFailurePolicyCommand
+  | AttestTaskCompletedCommand;
 
 // -- Runtime guards ----------------------------------------------------------
 //
@@ -828,6 +837,15 @@ export function isCmdSetQueueFailurePolicy(
   value: unknown
 ): value is SetQueueFailurePolicyCommand {
   return isObjectWithType(value, CMD_SET_QUEUE_FAILURE_POLICY);
+}
+// Feature 195 (T064, FR-025) — discriminator only. The `confirmed: true` check
+// that makes this an assertion rather than a click lives in the ingress gate
+// (`runtime-validators.ts`), which is the single site allowed to decide whether
+// the operator asserted anything.
+export function isCmdAttestTaskCompleted(
+  value: unknown
+): value is AttestTaskCompletedCommand {
+  return isObjectWithType(value, CMD_ATTEST_TASK_COMPLETED);
 }
 export function isCmdMoveTask(value: unknown): value is MoveTaskCommand {
   return isObjectWithType(value, CMD_MOVE_TASK);
@@ -1062,6 +1080,7 @@ export const COMMAND_GUARDS: Readonly<
   [CMD_DELETE_QUEUE]: isCmdDeleteQueue,
   [CMD_SAVE_QUEUE_SETTINGS]: isCmdSaveQueueSettings,
   [CMD_SET_QUEUE_FAILURE_POLICY]: isCmdSetQueueFailurePolicy,
+  [CMD_ATTEST_TASK_COMPLETED]: isCmdAttestTaskCompleted,
   [CMD_MOVE_TASK]: isCmdMoveTask,
   [CMD_MODIFY_TASK]: isCmdModifyTask,
   [CMD_REORDER_TASK]: isCmdReorderTask,

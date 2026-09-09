@@ -64,7 +64,8 @@ import {
   CMD_SAVE_QUEUE_SETTINGS,
   CMD_MOVE_TASK,
   CMD_SET_UNCONTAINED_BACKEND_GRANT,
-  CMD_SET_QUEUE_FAILURE_POLICY
+  CMD_SET_QUEUE_FAILURE_POLICY,
+  CMD_ATTEST_TASK_COMPLETED
 } from '../../../../src/ui/sidebar/messages';
 import { MUTATING_COMMAND_TYPES } from '../../../../src/contracts/sidebar-command-metadata';
 import { isMutatingCommand } from '../../../../src/ui/sidebar/message-router';
@@ -175,7 +176,12 @@ const PINNED_MUTATING_COMMANDS: ReadonlyArray<string> = [
   // `QueueState.failurePolicy`, the same shape as `CMD_SAVE_QUEUE_SETTINGS`
   // above: a secondary window must not reshape one queue's mutation policy
   // any more than it may reshape the registry.
-  CMD_SET_QUEUE_FAILURE_POLICY
+  CMD_SET_QUEUE_FAILURE_POLICY,
+  // Feature 195 (T064, FR-025) — attested completion. Writes the task's status,
+  // and out of `failed` into a status no transition returns from, so a secondary
+  // window doing it on the operator's behalf would spend a retry that operator
+  // still had. The strongest reason on this table for a task-scoped write.
+  CMD_ATTEST_TASK_COMPLETED
 ];
 
 // Feature 089 T026 (FR-027) — commands whose own declaration in
@@ -246,20 +252,20 @@ describe('Feature 012 T050 — MUTATING_COMMANDS pinned-list regression', () => 
   // workspace for no safety gain. Import commits through the existing
   // CMD_PUBLISH_PACKAGE, which IS gated, so the exchange feature adds no
   // mutating command.
-  it('does NOT gate CMD_EXPORT_PROCESS_YAML as mutating, and leaves the pinned list at 44', () => {
+  it('does NOT gate CMD_EXPORT_PROCESS_YAML as mutating, and leaves the pinned list at 45', () => {
     expect(isMutatingCommand(CMD_EXPORT_PROCESS_YAML)).toBe(false);
     expect(PINNED_MUTATING_COMMANDS).not.toContain(CMD_EXPORT_PROCESS_YAML);
-    expect(PINNED_MUTATING_COMMANDS).toHaveLength(44);
+    expect(PINNED_MUTATING_COMMANDS).toHaveLength(45);
   });
 
   // Feature 084 T032 (FR-031, FR-032). Preflight reads the operator's chosen
   // document once and returns a plan. It writes no configuration and moves no
   // layer revision, so it is not mutating either; the write it precedes goes
   // through CMD_PUBLISH_PACKAGE, which is gated.
-  it('does NOT gate CMD_PREFLIGHT_PROCESS_YAML as mutating, and leaves the pinned list at 44', () => {
+  it('does NOT gate CMD_PREFLIGHT_PROCESS_YAML as mutating, and leaves the pinned list at 45', () => {
     expect(isMutatingCommand(CMD_PREFLIGHT_PROCESS_YAML)).toBe(false);
     expect(PINNED_MUTATING_COMMANDS).not.toContain(CMD_PREFLIGHT_PROCESS_YAML);
-    expect(PINNED_MUTATING_COMMANDS).toHaveLength(44);
+    expect(PINNED_MUTATING_COMMANDS).toHaveLength(45);
   });
 });
 

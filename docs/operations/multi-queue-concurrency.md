@@ -54,10 +54,41 @@ pre-feature behaviour — a failed Task does not stop the Queue from starting it
 rows.
 
 Nothing about a halt is stored: the verdict is recomputed from the Queue's own rows on every
-admission attempt. Two actions end a halt, and both are ordinary Task actions with no
-separate acknowledgement step: retrying the failed Task, or removing it. A Queue that keeps a
-failed row as history — rather than clearing or retrying it — stays halted until the operator
-acts on that row.
+admission attempt. Three actions end a halt, and all three are ordinary Task actions on the
+failed row with no separate acknowledgement step: retrying the failed Task, removing it, or
+marking it completed. A Queue that keeps a failed row as history — rather than acting on it —
+stays halted until the operator does. There is no control that clears a halt as such, because
+there is no stored halt to clear: each of the three ends it by changing what the recomputation
+reads.
+
+### Marking a failed Task completed
+
+The third action exists for the one case the first two cannot serve: a Task whose Phase
+committed an irreversible side effect and was *then* recorded `failed` — a commit that landed
+before the host lost the process, for instance. Retrying repeats the side effect; removing
+destroys the record that the work happened. Marking the Task completed leaves the row in place
+and lets the Queue continue.
+
+Use it only when the work really was done. It is not a way to dismiss a failure, and the
+product is built so that it cannot quietly become one:
+
+- **The operator asserts the outcome; nothing infers it.** No exit code, run state, or log
+  content produces this outcome. It is offered only as the ✓ control on a `failed` row, and
+  only an operator's own click reaches it.
+- **It is confirmed as a destructive action**, and the confirmation states the consequence
+  rather than asking politely. `completed` is a status no transition returns from, so marking a
+  Task completed spends its remaining retry: once recorded, that Task can no longer be retried.
+- **`failed` rows only.** The transition table admits this outcome from `failed` and from no
+  other status, so it cannot be used to reach past a Task that is paused, cancelled, or still
+  running.
+- **The failure is not erased.** The row keeps the error it terminated with and the moment it
+  terminated, and carries a marker recording that the completion was attested by an operator
+  rather than verified by the host — so a later reader can tell the two apart from the row
+  itself.
+
+An attested Task is `completed`, which is outside the blocking set, so the halt ends by the
+same recomputation as any other exit. Nothing is stored about the halt, and no acknowledgement
+or audit event is added.
 
 An explicit `Start Queue` request against a halted Queue is refused, naming the failed Task in
 the reason; a scheduled start due on a halted Queue releases the Queue exactly as it does
@@ -77,6 +108,7 @@ policy needs changing to get that behaviour.
 
 <!-- Source: src/contracts/queue-failure-policy.ts -->
 <!-- Source: src/queue/queue-halt-policy.ts -->
+<!-- Source: src/queue/task-transition-decision.ts -->
 <!-- Source: src/contracts/retry-cap-outcome.ts -->
 <!-- Source: src/queue/terminal-capture.ts -->
 <!-- Source: src/services/auto-drain-coordinator.ts -->

@@ -35,7 +35,24 @@ import { filesUnder } from './source-scan';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const SRC_ROOT = resolve(REPO_ROOT, 'src');
-const UI_WIRING = resolve(SRC_ROOT, 'activation', 'ui-wiring.ts');
+
+/**
+ * Where a guarded registration may live.
+ *
+ * Was `ui-wiring.ts` alone. Feature 195 (T064) made that assumption false
+ * rather than merely narrow: `registerStage2Ui()` reached the 400-line
+ * composition-root bound, and `source-loc-budget.test.ts` answers that by
+ * requiring new registrations to move into `src/activation/*-wiring.ts`
+ * modules — so `schegent.retryQueuedItem` now registers in
+ * `queue-item-exit-wiring.ts`, beside the attested-completion command that
+ * shares its drain trigger.
+ *
+ * Reading every activation module keeps this gate's assertion exactly as
+ * strict: a command id that appears in none of them still fails as
+ * unregistered, which is the failure mode that matters. What it stops doing is
+ * failing for a registration that exists and moved.
+ */
+const ACTIVATION_ROOT = resolve(SRC_ROOT, 'activation');
 
 /**
  * Where the drain that has no command to hang off it lives, and the call that
@@ -127,16 +144,22 @@ function scanPendingWriters(): readonly string[] {
  * separated array and the next `registerGuardedCommand(` is an unambiguous
  * terminator — and a block that over-reads would only ever make this check more
  * permissive in a way the `null`-registration test below would catch.
+ *
+ * Searched per file rather than over a concatenation of them, so a block can
+ * never run past the end of the module it started in.
  */
-function registrationBlock(source: string, commandId: string): string | null {
-  const start = source.indexOf(`'${commandId}'`);
-  if (start === -1) return null;
-  const next = source.indexOf('registerGuardedCommand(', start);
-  return source.slice(start, next === -1 ? source.length : next);
+function registrationBlock(commandId: string): string | null {
+  for (const abs of filesUnder(ACTIVATION_ROOT, { extensions: ['.ts'] })) {
+    const source = readFileSync(abs, 'utf8');
+    const start = source.indexOf(`'${commandId}'`);
+    if (start === -1) continue;
+    const next = source.indexOf('registerGuardedCommand(', start);
+    return source.slice(start, next === -1 ? source.length : next);
+  }
+  return null;
 }
 
 describe('Lifecycle round-check finding A — a pending transition must trigger a drain', () => {
-  const uiWiringSource = readFileSync(UI_WIRING, 'utf8');
   const scanned = scanPendingWriters();
 
   it('finds the pending-write literal in source (the scan is not broken)', () => {
@@ -170,9 +193,9 @@ describe('Lifecycle round-check finding A — a pending transition must trigger 
     const missing: string[] = [];
     for (const writer of PENDING_WRITERS) {
       if (writer.commandId === null) continue;
-      const block = registrationBlock(uiWiringSource, writer.commandId);
+      const block = registrationBlock(writer.commandId);
       if (block === null) {
-        missing.push(`${writer.commandId} — no registration found in ui-wiring.ts`);
+        missing.push(`${writer.commandId} — no registration found under src/activation/`);
         continue;
       }
       if (!block.includes('drainQueuedWork')) {
@@ -196,7 +219,7 @@ describe('Lifecycle round-check finding A — a pending transition must trigger 
     const bare: string[] = [];
     for (const writer of PENDING_WRITERS) {
       if (writer.commandId === null) continue;
-      const block = registrationBlock(uiWiringSource, writer.commandId);
+      const block = registrationBlock(writer.commandId);
       if (block !== null && /drainQueuedWork\(\s*\)/.test(block)) bare.push(writer.commandId);
     }
     expect(

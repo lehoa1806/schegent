@@ -20,8 +20,7 @@ import {
   runMoveQueuedItemDown,
   runMoveQueuedItemUp,
   runPauseQueue,
-  runResumeQueue,
-  runRetryQueuedItem
+  runResumeQueue
 } from '../commands/queue-ops';
 import { runRerunFromHistory } from '../commands/rerun-from-history';
 import { runRestartCanceledTask } from '../commands/restart-canceled-task';
@@ -43,6 +42,7 @@ import {
   type StartQueueCommandArg
 } from '../commands/start-queue';
 import { registerQueueFailurePolicyCommand } from './queue-failure-policy-wiring';
+import { registerQueueItemExitCommands } from './queue-item-exit-wiring';
 import type { PipelineCatalog } from '../config/pipeline-config';
 import type { SchegentWorkflowController } from '../controller/workflow-controller';
 import { errorMessage } from '../lib/errors';
@@ -452,18 +452,13 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
     registerGuardedCommand(guard, 'schegent.exportAuditLog', () =>
       runExportAuditLog({ workspaceRoot: deps.workspaceRoot, notifier: deps.notifier })
     ),
-    registerGuardedCommand(guard, 'schegent.retryQueuedItem', async (arg) => {
-      const result = await runRetryQueuedItem(arg, queueOpsCtx);
-      if (result.ok) {
-        // Same omission, same fix as `schegent.restartCanceledTask` above. This
-        // is also the sidebar's Retry (↻): `cmd-retry-queue-item` delegates
-        // here rather than calling `queueOps.retry()` itself, so the two retry
-        // affordances share this one trigger instead of forking around it.
-        void deps.controller.drainQueuedWork(result.queueId).catch((err) =>
-          deps.logger.warn(`retryQueuedItem: auto-drain failed: ${errorMessage(err)}`)
-        );
-      }
-      return result;
+    // Feature 195 (T064) — retry and attested completion, the two queue-item
+    // exits that must offer the queue a drain; extracted together for the
+    // reason `queue-item-exit-wiring.ts` records.
+    ...registerQueueItemExitCommands(guard, {
+      queueOps: queueOpsCtx,
+      controller: deps.controller,
+      logger: deps.logger
     }),
     registerGuardedCommand(guard, 'schegent.moveQueuedItemUp', (arg) =>
       runMoveQueuedItemUp(arg, queueOpsCtx)
