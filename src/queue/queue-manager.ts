@@ -47,6 +47,8 @@ import {
   type QueuePauseSource
 } from './queue-registry';
 import {
+  // Feature 195 (T065, FR-026).
+  type CompletionProvenance,
   type FeatureRequest,
   type FeatureRequestFailure,
   type FeatureRequestPauseCause,
@@ -661,6 +663,79 @@ export class QueueManager {
               : r
           ),
           inFlightId: queue.inFlightId === featureId ? null : queue.inFlightId
+        }),
+        result: { ok: true }
+      };
+    });
+  }
+
+  /**
+   * FR-025 (feature 195, T063, BUG-001) — 2026-09-08. The third way out of a
+   * halted queue: record that a failed task's work completed, without
+   * re-running it and without discarding its row.
+   *
+   * It exists for the case the other two cannot serve — a task whose phase
+   * committed an irreversible side effect and was *then* recorded `failed`.
+   * `retry` would repeat the side effect; `removeTask` would destroy the
+   * record that the work happened.
+   *
+   * **A separate method rather than a flag on `finish`, deliberately.** FR-025
+   * requires the operator to assert the outcome explicitly and forbids the
+   * system inferring it. `finish` is the generic terminal-write path every
+   * failure handler in the product already calls; an `operatorAttested` option
+   * on it would put the attestation one argument away from every one of those
+   * call sites. Here there is exactly one caller that can attest, and it is
+   * reached only from the operator's own command.
+   *
+   * The halt then ends with nothing added: `completed` is already outside the
+   * blocking set, so `evaluateQueueHalt` simply stops naming this row on the
+   * next pass (FR-003 — the halt was never stored, so there is nothing to
+   * clear). No new lifecycle value, no acknowledgement field, no audit event.
+   *
+   * Fields are preserved, not refreshed. `completedAt` keeps the moment the
+   * task actually terminated and `lastError` keeps the failure it terminated
+   * with: both are truthful evidence that this row failed and was later
+   * attested, and overwriting either to match the attestation would erase the
+   * history FR-026 exists to make readable. `inFlightId` is not touched
+   * because edge 4 admits only from `failed`, and `finish` cleared the pointer
+   * when it wrote that status — a clear here could never fire.
+   */
+  public async attestCompleted(featureId: string): Promise<MutationResult> {
+    const now = Date.now();
+    const ownerQueueId = this.queueIdForTask(featureId);
+    return this.runTaskTransitionMutation(ownerQueueId, (queue) => {
+      const current = queue.requests.find((r) => r.id === featureId);
+      const decision = decideTaskTransition({
+        operation: 'finish',
+        currentStatus: current?.status,
+        targetStatus: 'completed',
+        queueAlreadyHasDifferentInFlight: false,
+        operatorAttestedCompletion: true
+      });
+      if (!decision.eligible) {
+        throw new QueueMutationRejected(
+          decision.reason,
+          `Cannot attest ${featureId} completed: ${decision.reason}`
+        );
+      }
+      return {
+        queue: withRefreshedLifecycle({
+          ...queue,
+          requests: queue.requests.map((r) =>
+            r.id === featureId
+              ? {
+                  ...r,
+                  status: 'completed' as FeatureRequestStatus,
+                  // T065 (FR-026, SC-017) — written in the same `updateQueue`
+                  // call as the status it qualifies, so the pair cannot be
+                  // split. This is the only site that writes it: the marker
+                  // means "the operator asserted this", and this method is the
+                  // only route by which an operator can.
+                  completionProvenance: 'operator-attested' as CompletionProvenance,
+                  updatedAt: now
+                }
+              : r
+          )
         }),
         result: { ok: true }
       };

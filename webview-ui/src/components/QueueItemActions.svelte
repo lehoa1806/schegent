@@ -16,7 +16,9 @@
     CMD_CANCEL,
     CMD_REMOVE_QUEUE_ITEM,
     CMD_MODIFY_TASK,
-    CMD_RESTART_CANCELED_TASK
+    CMD_RESTART_CANCELED_TASK,
+    // Feature 195 (T064, FR-025) — the third exit from a halted queue.
+    CMD_ATTEST_TASK_COMPLETED
   } from '../lib/messages';
   import { snapshotStore } from '../lib/snapshot-store.svelte';
   import { useConfirm } from '../lib/use-confirm';
@@ -52,6 +54,17 @@
   // this path and the failed-row Retry shipped without a drain trigger.)
   // Distinct from the failed-row Retry path.
   const showRestartCanceled = $derived(status === 'canceled');
+  // Feature 195 (T064, FR-025) — attested completion, offered on `failed` rows
+  // and no others. `failed` is the only status the transition table admits the
+  // edge from (192's invariant 4, edge 4), so a wider condition would render a
+  // control whose every click the host refuses.
+  //
+  // It lives on this component, not on the two surfaces T064 names, because
+  // `QueueControls.svelte` renders this component for the halted row — so one
+  // affordance here reaches both, and that header keeps its documented property
+  // of adding no IPC call of its own. `QueueStartFailureNotice.svelte` is
+  // read-only by intent and states the third exit in prose instead.
+  const showAttestCompleted = $derived(status === 'failed');
   const disabled = $derived(!isPrimary);
   const ariaDisabled = $derived(disabled ? 'true' : 'false');
 
@@ -95,6 +108,20 @@
     });
     if (!ok) return;
     postCommand(CMD_RESTART_CANCELED_TASK, { taskId: item.id });
+  }
+  // Feature 195 (T064, FR-025) — the operator asserts the work happened, and
+  // the assertion travels with the command as `confirmed: true`. The prompt is
+  // not a courtesy here: FR-025 requires the outcome be asserted explicitly and
+  // forbids the system inferring it, so a dismissed prompt must post nothing,
+  // and the ingress validator refuses a payload that arrives without the flag.
+  async function onAttestCompleted(event: MouseEvent): Promise<void> {
+    if (disabled) return;
+    const ok = await useConfirm('queue.attest-completed', {
+      originatingElement: event.currentTarget as HTMLElement | null,
+      context: { taskTitle: item.label }
+    });
+    if (!ok) return;
+    postCommand(CMD_ATTEST_TASK_COMPLETED, { taskId: item.id, confirmed: true });
   }
   async function onRequestRemove(event: MouseEvent): Promise<void> {
     if (disabled) return;
@@ -202,6 +229,16 @@
       aria-disabled={ariaDisabled}
       onclick={onRetry}
     >↻</button>
+  {/if}
+  {#if showAttestCompleted}
+    <button
+      type="button"
+      data-testid="queue-item-attest-{item.id}"
+      aria-label={`Mark '${labelHint}' as completed`}
+      title={`Mark '${labelHint}' as completed`}
+      aria-disabled={ariaDisabled}
+      onclick={onAttestCompleted}
+    >✓</button>
   {/if}
   {#if showRestartCanceled}
     <button

@@ -2,7 +2,9 @@
 //
 // T009: the core halt scenario. T059: the halted queue's projection does not
 // misattribute a pause. T021: the two ways a halt clears. T017: the explicit
-// start refusal. All four share `queue-halt-fixture.ts`'s real
+// start refusal. T062 (BUG-001, 2026-09-08): the third way out, attested
+// completion — written to fail differently from both of T021's exits, for the
+// reason recorded above it. All five share `queue-halt-fixture.ts`'s real
 // `WorkspaceStateStore` + `QueueManager` + `AutoDrainCoordinator`, because the
 // feature's central claim — the halt is *derived*, not stored — is only
 // provable against production code, not a hand-rolled model of it.
@@ -215,5 +217,72 @@ describe('feature 195 (T017, FR-021, SC-011, SC-012) — an explicit start is re
     if (outcome.outcome !== 'accepted') {
       expect(outcome.reason).toBe('queue-halted-on-failed-task');
     }
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Feature 195 (T062, FR-025, SC-015) — the third way out.
+//
+// Added 2026-09-08 under BUG-001. T021 above proves the two ways out the
+// requirements closed at, and both of them CHANGE THE ROW: retry re-invokes
+// the phase (its `started` ends `[first.id, first.id]`), and remove deletes
+// the row. Neither serves the case BUG-001 found — a task whose phase
+// committed an irreversible side effect and was *then* recorded `failed`.
+// Re-running it repeats the side effect; removing it destroys the record that
+// the work happened.
+//
+// So this scenario is deliberately built to fail differently from both: it
+// asserts `first.id` appears EXACTLY ONCE in `started` (which retry violates)
+// and that the row is still present afterwards (which remove violates). A
+// scenario that only asserted "the queue moved on" would be satisfied by the
+// remove exit and would prove nothing new.
+// ───────────────────────────────────────────────────────────────────────────
+
+describe('feature 195 (T062, FR-025, SC-015) — an attested completion ends the halt', () => {
+  it('starts the next row without re-invoking the phase and without discarding the row', async () => {
+    const h = await makeHaltHarness('halt-on-failure');
+    const first = await h.queue.enqueue('row-1');
+    const second = await h.queue.enqueue('row-2');
+
+    await h.autoDrain.drainIfIdle(DEFAULT_QUEUE_ID);
+    expect(h.started).toEqual([first.id]);
+    await h.finish(DEFAULT_QUEUE_ID, 'failed');
+
+    await h.autoDrain.drainIfIdle(DEFAULT_QUEUE_ID);
+    expect(h.started).toEqual([first.id]);
+
+    const attested = await h.queue.attestCompleted(first.id);
+    expect(attested).toEqual({ ok: true });
+
+    await h.autoDrain.drainIfIdle(DEFAULT_QUEUE_ID);
+
+    // SC-015's three clauses, in order.
+    //
+    // (1) the queue starts work again on the next pass, and (2) the phase is
+    // not re-invoked: `second.id` is here and `first.id` appears once. No
+    // clearing step of this feature's own ran — the halt is gone because the
+    // row it named is no longer `failed`, by FR-003's same recomputation.
+    expect(h.started).toEqual([first.id, second.id]);
+
+    // (3) the row survives, which is the clause that separates this exit from
+    // removal. Asserted on the stored record, not on a projection.
+    const row = h.store.getQueue(DEFAULT_QUEUE_ID).requests.find((r) => r.id === first.id);
+    expect(row).toBeDefined();
+    expect(row?.status).toBe('completed');
+  });
+
+  // FR-026's first half, at the route rather than at the classifier — feature
+  // 200's FR-002 precedent: assert the decision and its delivery separately,
+  // so a future inline guard at the route cannot satisfy one while disagreeing
+  // with the other. T066 asserts the same edge against the classifier.
+  it('is refused on a task that has not failed, leaving the row untouched', async () => {
+    const h = await makeHaltHarness('halt-on-failure');
+    const pending = await h.queue.enqueue('row-1');
+
+    const outcome = await h.queue.attestCompleted(pending.id);
+
+    expect(outcome).toEqual({ ok: false, reason: 'illegal-source-status' });
+    const row = h.store.getQueue(DEFAULT_QUEUE_ID).requests.find((r) => r.id === pending.id);
+    expect(row?.status).toBe('pending');
   });
 });

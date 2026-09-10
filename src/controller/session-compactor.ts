@@ -131,7 +131,7 @@ function cliAccount(text: string): string | null {
 }
 
 /**
- * The CLI's own account of why it declined, bounded and redacted.
+ * The CLI's own account of why it declined, whole and unredacted.
  *
  * The throw below used to report `exit=1, killed=false, timedOut=false` and nothing else,
  * and the caller logs only phase and iteration. So the one sentence that named the bad
@@ -143,14 +143,17 @@ function cliAccount(text: string): string | null {
  * on stderr, and the compaction invocation's stdout is stream-json whose `result` field
  * carries the message when stderr is empty. `null` when neither has one — a child whose
  * only output was a handshake has no account of itself, and the process facts alone read
- * correctly. Redaction goes through the caller's `sanitize` — the shared pattern set,
- * never a second copy of it.
+ * correctly.
+ *
+ * WHOLE AND UNREDACTED IS THE POINT, and is why this is separate from the bounding below.
+ * Two things read this account: a log line, which must be short and redacted, and the
+ * classification, which is a verdict about what happened. Deriving the verdict from the
+ * bounded string would make it depend on where in its own output the CLI put the sentence.
+ * Whitespace is collapsed HERE so both readers see the same text — a refusal that wrapped
+ * is the same refusal, and matching across a line break is the whole reason the collapse
+ * cannot live on the display side alone.
  */
-function failureExcerpt(
-  logger: SanitizedLogger,
-  stdout: unknown,
-  stderr: unknown
-): string | null {
+function failureAccount(stdout: unknown, stderr: unknown): string | null {
   const read = (stream: unknown): string => {
     if (typeof stream === 'string') return stream;
     if (
@@ -165,12 +168,87 @@ function failureExcerpt(
     return '';
   };
   const account = cliAccount(read(stderr)) ?? cliAccount(read(stdout));
-  if (account === null) return null;
-  const text = account.replace(/\s+/g, ' ');
-  const redacted = logger.sanitize(text);
+  return account === null ? null : account.replace(/\s+/g, ' ');
+}
+
+/**
+ * The account cut to a log line's size and put through the shared redaction set —
+ * `logger.sanitize`, never a second copy of the patterns.
+ */
+function boundedExcerpt(logger: SanitizedLogger, account: string): string {
+  const redacted = logger.sanitize(account);
   return redacted.length > FAILURE_EXCERPT_MAX_CHARS
     ? `${redacted.slice(0, FAILURE_EXCERPT_MAX_CHARS)}...`
     : redacted;
+}
+
+/**
+ * Which of the two compaction failures happened.
+ *
+ * `invocation-failed` — compaction RAN and did not finish. Killed, timed out, or exited
+ * non-zero with something else to say. The bound was reached or the child broke.
+ *
+ * `session-too-large` — the CLI would not ADMIT the session, so there was no compaction
+ * to bound. This is the failure the host's pre-phase compaction exists to prevent and
+ * cannot: the request carries the oversized transcript PLUS a new prompt, so a session
+ * already past the limit is refused at the door. It is refused in seconds with the bound
+ * untouched — 74 s of a 300 s window on the run this was filed from.
+ */
+export type CompactionFailureKind = 'invocation-failed' | 'session-too-large';
+
+/**
+ * The sentence Claude Code uses when it declines to admit a request at all.
+ *
+ * Matched case-insensitively against the collapsed account, and it is the vendor's
+ * wording rather than a contract — so this is a best-effort read of someone else's text,
+ * and the failure mode when that wording changes is stated rather than guarded: the
+ * refusal classifies as `invocation-failed` and the record says exactly what it said
+ * before this distinction existed. Degrading to the previous behaviour is the reason a
+ * marker is acceptable here at all.
+ */
+const SESSION_TOO_LARGE_MARKER = 'prompt is too long';
+
+/** The compaction failure, carrying which of the two it was. */
+export class SessionCompactionError extends Error {
+  readonly kind: CompactionFailureKind;
+
+  constructor(message: string, kind: CompactionFailureKind) {
+    super(message);
+    this.name = 'SessionCompactionError';
+    this.kind = kind;
+  }
+}
+
+/**
+ * What the caller records for a compaction failure: one reason code, one warning line.
+ *
+ * ONE resolution site. The caller reads the fields off this record and never inspects the
+ * message, so the sentence above is matched in exactly one place; a second reader that
+ * re-derived the kind from the text would be a second oracle, and the two would disagree
+ * the first time the vendor rephrased anything.
+ *
+ * Anything that is not this compactor's own error falls to the general record — the
+ * runner's `invoke` can throw before there is any account to read, and the code that was
+ * already on record is the honest answer for a failure nothing classified. The general
+ * code is unchanged from the day it was added, so records written before this split, and
+ * `docs/reference/settings.md`, still mean what they say.
+ */
+export function compactionFailureRecord(err: unknown): {
+  readonly reasonCode: string;
+  readonly warning: string;
+} {
+  const kind = err instanceof SessionCompactionError ? err.kind : 'invocation-failed';
+  return kind === 'session-too-large'
+    ? {
+        reasonCode: 'session-too-large-to-compact-fresh-session',
+        warning:
+          'session-too-large-to-compact (refused before the bound; phase starts cold, ' +
+          'and starting cold is what clears it)'
+      }
+    : {
+        reasonCode: 'session-compaction-failed-fresh-session',
+        warning: 'session-compact-failed (phase starts cold: no prior context)'
+      };
 }
 
 export interface SessionCompactionInputs {
@@ -233,6 +311,15 @@ export async function compactClaudeSession(inputs: SessionCompactionInputs): Pro
       maxDurationMs: COMPACTION_MAX_DURATION_MS,
       cliPath: inputs.cliPath,
       cwd: inputs.cwd,
+      // Feature 012 FR-009 — a host-internal maintenance invocation may set this
+      // key without reading `schegent.claude.autoCompactPctOverride`, and this
+      // call is the closed set's one member. The value is fixed rather than read
+      // because the setting answers a different question: it says at what fill
+      // level the CLI should compact on its own, and this invocation exists only
+      // where the host has already decided to compact now. An operator threshold
+      // applied here would defeat the call rather than tune it. The reason the
+      // runner forces compaction at all is in the `sessionReuse` contract in
+      // `phase-runner.ts`, and is not restated here.
       env: { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '1' },
       // FR-R3-049 — via the shared helper.
       ...policyRequestFields(inputs),
@@ -260,10 +347,16 @@ export async function compactClaudeSession(inputs: SessionCompactionInputs): Pro
     await inputs.onCommand(raw.command);
   }
   if (raw.exitCode !== 0 || raw.killed || raw.timedOut) {
-    const detail = failureExcerpt(inputs.logger, raw.stdoutBuffer, raw.stderrBuffer);
-    throw new Error(
+    const account = failureAccount(raw.stdoutBuffer, raw.stderrBuffer);
+    const detail = account === null ? null : boundedExcerpt(inputs.logger, account);
+    throw new SessionCompactionError(
       `compaction invocation failed (exit=${raw.exitCode ?? 'signal'}, killed=${raw.killed}, timedOut=${raw.timedOut})` +
-        (detail === null ? '' : `: ${detail}`)
+        (detail === null ? '' : `: ${detail}`),
+      // Absence of the sentence is not a refusal. A silent child said nothing, and the
+      // more specific of the two claims must not be the one made on no evidence.
+      account !== null && account.toLowerCase().includes(SESSION_TOO_LARGE_MARKER)
+        ? 'session-too-large'
+        : 'invocation-failed'
     );
   }
   inputs.logger.info(

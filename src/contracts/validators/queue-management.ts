@@ -11,6 +11,7 @@
 // malformed message is refused before `MessageRouter` dispatches it.
 
 import {
+  CMD_ATTEST_TASK_COMPLETED,
   CMD_CREATE_QUEUE,
   CMD_DELETE_QUEUE,
   CMD_MOVE_TASK,
@@ -30,6 +31,7 @@ type QueueCommandType =
   | typeof CMD_DELETE_QUEUE
   | typeof CMD_SAVE_QUEUE_SETTINGS
   | typeof CMD_SET_QUEUE_FAILURE_POLICY
+  | typeof CMD_ATTEST_TASK_COMPLETED
   | typeof CMD_MOVE_TASK;
 
 /** Every command below requires a payload object; none accepts the empty form. */
@@ -204,6 +206,44 @@ export function validateSetQueueFailurePolicy(
     type: CMD_SET_QUEUE_FAILURE_POLICY,
     correlationId,
     payload: { queueId, policy }
+  } as SidebarCommand);
+}
+
+/**
+ * Feature 195 (T064, FR-025) — `{ taskId, confirmed: true }`.
+ *
+ * This is the single site that decides whether the operator asserted the
+ * outcome; nothing downstream re-checks it. Deliberately not an option on
+ * `validateTaskIdPayload` in the barrel: that shape's two commands accept a
+ * bare taskId, and widening it to take confirmation "when present" would make
+ * the gate conditional on the sender.
+ *
+ * Refused without the literal `true` — `'yes'` and `1` are coercions, and an
+ * assertion read out of a coercion is the inference FR-025 rules out. It is
+ * therefore stricter than `validateDeleteQueue` above, which admits absence
+ * because its first round trip legitimately carries no answer yet; there is no
+ * such round trip here.
+ */
+export function validateAttestTaskCompleted(
+  obj: Record<string, unknown>,
+  correlationId: string
+): IpcValidationResult {
+  const got = requirePayload(CMD_ATTEST_TASK_COMPLETED, obj, correlationId, [
+    'taskId',
+    'confirmed'
+  ]);
+  if ('failure' in got) return got.failure;
+  const taskId = got.p['taskId'];
+  if (!isValidId(taskId)) {
+    return fail('invalid-taskId', { type: CMD_ATTEST_TASK_COMPLETED, correlationId });
+  }
+  if (got.p['confirmed'] !== true) {
+    return fail('missing-confirmation', { type: CMD_ATTEST_TASK_COMPLETED, correlationId });
+  }
+  return ok({
+    type: CMD_ATTEST_TASK_COMPLETED,
+    correlationId,
+    payload: { taskId, confirmed: true }
   } as SidebarCommand);
 }
 

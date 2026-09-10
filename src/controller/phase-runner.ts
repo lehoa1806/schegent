@@ -47,7 +47,7 @@ import {
   summarize
 } from './phase-outcome-mapper';
 import { resolveHostVerification } from '../config/phase-runner-policy';
-import { COMPACTION_MODEL_ID, compactClaudeSession } from './session-compactor';
+import { COMPACTION_MODEL_ID, compactClaudeSession, compactionFailureRecord } from './session-compactor';
 import { RequiredEvidenceUnavailableError } from '../lib/errors';
 // Compatibility re-export; canonical owner is phase-sidecar-reader.
 export { composePhaseMessagePath };
@@ -73,6 +73,27 @@ function requiresHostVerification(inputs: PhaseRunInputs): boolean {
 
 function verdictBasisOf(inputs: PhaseRunInputs): 'exit-code' | 'model-token' {
   return requiresHostVerification(inputs) ? 'exit-code' : 'model-token';
+}
+
+/**
+ * FR-009 (BUG-001) — is this exit status one the BACKEND produced?
+ *
+ * `exit-code` is a proxy for the host's verdict, and a proxy is only as good as
+ * its provenance. Schegent produces an exit status of its own: when the backend
+ * emits its terminal result and then does not exit, the runner grace-terminates
+ * the lingering process on feature 030's FR-025 settle window and the process
+ * tree reports SIGTERM's `128 + 15`. Failing a phase on that number is the runner
+ * reporting its own signal back to itself as the host's evidence — the
+ * self-certification FR-R3-058 exists to prevent, inverted.
+ *
+ * A derived rule rather than a conjunct per arm (plan D5): the next
+ * runner-authored termination reason is a one-line change here. Narrow by
+ * construction — the flag requires an OBSERVED terminal result, so it cannot
+ * reach the timeout or deadline arms above, which fail deliberately and
+ * correctly. See specs/145-host-verifiable-gates/contracts/host-verification.md.
+ */
+function hostExitStatusIsAttributable(raw: RawInvocationOutput): boolean {
+  return raw.completedAwaitingExit !== true;
 }
 
 export interface PhaseRunInputs {
@@ -493,10 +514,13 @@ export class PhaseRunner {
         effectiveSessionReuse = false;
         effectiveIsContinue = false;
         effectiveResumeSessionId = undefined;
+        // Two different failures arrive here. Which one is decided ONCE, in the
+        // compactor, and read here as a record — never re-derived from the message.
+        const failure = compactionFailureRecord(err);
         // `detail` is the CLI's own account of the refusal, already bounded and
-        // redacted by `failureExcerpt`; without it this line named a phase and no
+        // redacted by `boundedExcerpt`; without it this line named a phase and no
         // cause. The message, never `err` — a stack does not belong in this sink.
-        this.logger.warn('session-compact-failed (phase starts cold: no prior context)', {
+        this.logger.warn(failure.warning, {
           phase: inputs.phase,
           iteration: inputs.iteration,
           detail: err instanceof Error ? err.message : 'unknown error'
@@ -508,7 +532,7 @@ export class PhaseRunner {
           eventType: 'warning',
           payload: {
             ...this.pipelineMeta(inputs),
-            reasonCode: 'session-compaction-failed-fresh-session'
+            reasonCode: failure.reasonCode
           },
           outcome: 'failure'
         });
@@ -767,7 +791,12 @@ export class PhaseRunner {
     if (result.kind === 'clean' && raw.exitCode !== null && raw.exitCode !== 0) {
       // FR-R3-058 — for a sensitive Phase the exit status decides. A warning was
       // the whole enforcement before: logged, and advanced anyway.
-      if (requiresHostVerification(inputs)) {
+      //
+      // FR-009 (BUG-001) — and only if the status is the BACKEND's. A
+      // runner-authored one falls through to the warning below and is classified
+      // on its parsed outcome, which is what `invocation-result.ts` has always
+      // specified for `completedAwaitingExit` under BOTH bases.
+      if (requiresHostVerification(inputs) && hostExitStatusIsAttributable(raw)) {
         const verificationEntry = await this.appendAudit(inputs, 'phase-end', 'failure', {
           ...this.pipelineMeta(inputs),
           outcome: 'failed',
@@ -808,10 +837,14 @@ export class PhaseRunner {
           phaseMessage: null
         };
       }
+      // FR-009 — the flag rides this log because the two cases reaching it are
+      // otherwise indistinguishable where an operator sees them: a backend that
+      // ran the work and exited non-zero, and one terminated for lingering.
       this.logger.warn('phase-runner: clean result with non-zero exit code', {
         phase: inputs.phase,
         iteration: inputs.iteration,
-        exitCode: raw.exitCode
+        exitCode: raw.exitCode,
+        completedAwaitingExit: raw.completedAwaitingExit === true
       });
     }
 

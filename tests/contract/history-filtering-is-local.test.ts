@@ -98,7 +98,13 @@ describe('the command registry is unchanged by this feature (T040, FR-023)', () 
     // 43 -> 44 on 2026-09-04: feature 195 (FR-R3-156) added
     // CMD_SET_QUEUE_FAILURE_POLICY, the per-queue halt-on-failure override.
     // `null` removes the stored override rather than writing a concrete value.
-    expect(MUTATING_COMMAND_TYPES).toHaveLength(44);
+    //
+    // 44 -> 45 on 2026-09-08: feature 195 (T064, BUG-001, FR-025) added
+    // CMD_ATTEST_TASK_COMPLETED, the third exit from a halted queue. Mutating
+    // for the strongest reason in the table: it writes `completed`, which
+    // 192's invariant 4 admits no return from, so the write spends the
+    // operator's remaining retry as well as changing the status.
+    expect(MUTATING_COMMAND_TYPES).toHaveLength(45);
     expect(MUTATING_COMMANDS.size).toBe(MUTATING_COMMAND_TYPES.length);
   });
 

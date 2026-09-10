@@ -133,6 +133,11 @@ export type ActionCopyContext = {
     label: string;
     refusal: string;
   };
+  // Feature 195 (T064, FR-025) — the task's own title and nothing else. No
+  // status placeholder, unlike `queue.remove-item`: the affordance is offered on
+  // `failed` rows only, so a branch on status here would describe a case that
+  // cannot reach the prompt.
+  'queue.attest-completed': { readonly taskTitle: string };
 };
 
 // Authoritative copy table (v1, English). Adding a new key here AND to
@@ -292,6 +297,29 @@ export const ACTION_COPY: Readonly<Record<ActionKey, ActionCopyEntry>> = Object.
       'from this section at any time.',
     confirmLabel: 'Allow Uncontained',
     severity: 'destructive'
+  },
+  // Feature 195 (T064, FR-025) — the body carries the whole requirement, in
+  // three sentences that each exist for a clause of it:
+  //
+  //   * what it records and why the queue moves on;
+  //   * that it is for work that really happened — FR-025 forbids offering this
+  //     as a way to dismiss a failure whose work did not, and a prompt that
+  //     described only the effect would be exactly that offer;
+  //   * that retry is gone afterwards, because `completed` is a status no
+  //     transition returns from (192's invariant 4). An operator who wanted a
+  //     re-run and picked this instead cannot get back.
+  //
+  // `destructive`, not `caution`, for that third reason: nothing is deleted, but
+  // the ability to retry the task is spent, and there is no control that returns
+  // it. Same basis as `backend.grant-uncontained` — irreversibility, not deletion.
+  'queue.attest-completed': {
+    title: 'Mark this task as completed?',
+    bodyTemplate:
+      'Records **{taskTitle}** as completed and lets the queue continue. ' +
+      'Use this only when the work really was done outside Schegent — it is not a way to ' +
+      'dismiss a failure. Once recorded, the task can no longer be retried.',
+    confirmLabel: 'Mark Completed',
+    severity: 'destructive'
   }
 } satisfies Record<ActionKey, ActionCopyEntry>);
 
@@ -407,8 +435,14 @@ export function renderActionBody<K extends ActionKey>(
       const ctx = context as ActionCopyContext['queue.remove-item'];
       return removeItemBody(ctx.status, truncateLabel(ctx.taskTitle));
     }
+    // Feature 195 (T064) — `queue.attest-completed` joins this group rather than
+    // getting a case of its own: its context is the same single `taskTitle`, and
+    // the three sentences its body needs are static text in the table above. The
+    // note sits ahead of the group because `no-fallthrough` reads a comment
+    // between two case labels as the body of the first one.
     case 'run.restart-canceled':
     case 'run.modify-task':
+    case 'queue.attest-completed':
     case 'history.rerun': {
       const ctx = context as { readonly taskTitle: string };
       return substitute(entry.bodyTemplate, { taskTitle: ctx.taskTitle });

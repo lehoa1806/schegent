@@ -1163,7 +1163,45 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // reasoning recorded three entries above: the mark exists so that growth is
       // a decision, and deleting the explanation to fit under it spends the next
       // reader's time to buy a number. Exact count again, no slack.
-      highWaterMark: 2269
+      //
+      // Feature 195 (T063, BUG-001, FR-025, 2026-09-08) — 2269 → 2330:
+      // `attestCompleted`, the third exit from a halted queue. One insertion of
+      // 67 lines and no deletions — 35 of method beside `finish`/`pause`/`retry`,
+      // 31 of doc comment above it, one blank between. The mark moves 61 rather
+      // than 67 because the file sat six lines under it: the entry below claimed
+      // an exact count and the FR-R3-158 work that followed came in six short of
+      // it, so those six are spent here rather than left as slack nobody decided
+      // to grant.
+      //
+      // Extraction was considered and rejected on the same grounds as the Clean
+      // All primitive two entries above, and more narrowly: the method is one
+      // `runTaskTransitionMutation` call, and both that private helper and the
+      // private `store` it closes over are members of this class. A sibling
+      // module could not reach either, so the extraction would have to take the
+      // whole transition family with it — a refactor of the four methods this
+      // task does not touch, to move the fifth.
+      //
+      // The doc comment is the larger half and is the part worth keeping. It
+      // records why this is a method rather than an `operatorAttested` flag on
+      // `finish` (a flag would put the attestation one argument from every
+      // failure handler in the product, which is exactly what FR-025's ban on
+      // inferring the outcome excludes), and why `completedAt` and `lastError`
+      // are preserved rather than refreshed (they are the evidence that this row
+      // failed and was later attested — the history FR-026 exists to make
+      // readable). Both are decisions a reader would otherwise re-litigate at
+      // the first sight of the method. Exact count again, no slack.
+      //
+      // Feature 195 (T065, FR-026, SC-017, 2026-09-08) — 2330 → 2338: eight
+      // lines, none of them a new responsibility. Two are the
+      // `CompletionProvenance` type import; six are `attestCompleted` writing
+      // `completionProvenance: 'operator-attested'` into the row it already
+      // rewrites, five of those the comment recording why the marker is written
+      // in the same `updateQueue` call as the status it qualifies — the pair
+      // cannot be split, which is the whole reason it is not a second write.
+      // Nothing to extract: the field's declaration and its doc comment live in
+      // `src/queue/feature-request.ts`, and what is here is one property in an
+      // existing object literal. Exact count again, no slack.
+      highWaterMark: 2338
     }
   },
   // Speckit-auto alignment (2026-07-30) — bumped 700 → 800 to absorb two new

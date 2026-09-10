@@ -124,17 +124,48 @@ describe('PhaseRunner.run — BUG-002 completed-but-non-exiting classification',
   });
 
   it('classifies a completedAwaitingExit invocation (marker seen, process lingered) as clean', async () => {
+    // `exitCode: null` — the process was gone before a status could be collected.
+    // One of two shapes this path produces, and NOT the one the field reported.
+    // Kept because it documents the other; see the sibling case below for why it
+    // could not be the only one.
     const cliRunner = makeFakeRunner(async () =>
       makeRawOutput({
         completedAwaitingExit: true,
         timedOut: false,
         killed: false,
-        exitCode: null,
-
+        exitCode: null
       })
     );
     const out = await newRunner(cliRunner).run(baseInputs);
     expect(out.outcome).toBe('clean');
+  });
+
+  // SC-007 (BUG-001) — the same state with the exit code a SIGTERM'd process tree
+  // ACTUALLY reports.
+  //
+  // The case above passed for four features while `PhaseRunner` failed this state
+  // in the field, because `null` is the one value the non-zero-exit arm's
+  // `exitCode !== null && exitCode !== 0` guard cannot see. The fixture routed
+  // around the defect instead of exercising it: a terminated process tree reports
+  // `128 + 15`, not `null` + signal, and modelling only the shape the arm ignores
+  // is what made the gap invisible here and in the host-verification suite alike.
+  //
+  // This file's subject is the completion-vs-timeout classification (FR-025), so
+  // the assertion is that a numeric code does not change it. The sensitive-phase
+  // half of SC-007 lives in `phase-runner-host-verification.test.ts`, where the
+  // arm that reads the code is under test.
+  it('classifies the same invocation as clean when the terminated process reports 143', async () => {
+    const cliRunner = makeFakeRunner(async () =>
+      makeRawOutput({
+        completedAwaitingExit: true,
+        timedOut: false,
+        killed: false,
+        exitCode: 143
+      })
+    );
+    const out = await newRunner(cliRunner).run(baseInputs);
+    expect(out.outcome).toBe('clean');
+    expect(out.result.kind).toBe('clean');
   });
 
   it('still classifies a genuine no-output idle stall as timeout', async () => {

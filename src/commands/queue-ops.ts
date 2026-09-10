@@ -2,6 +2,7 @@ import type { QueueManager, MutationResult } from '../queue/queue-manager';
 import type { WorkspaceLockManager } from '../state/lock';
 import type { Notifier } from '../ui/notifications';
 import type { SanitizedLogger } from '../lib/logger';
+import { errorMessage } from '../lib/errors';
 
 export interface QueueOpsCtx {
   queue: QueueManager;
@@ -84,6 +85,57 @@ export async function runRetryQueuedItem(
   } catch (err) {
     ctx.logger.error(`runRetryQueuedItem failed: ${(err as Error).message}`);
     ctx.notifier.error(`Schegent: retry failed.`);
+    return { ok: false, reason: 'unexpected-error' };
+  }
+}
+
+/**
+ * Feature 195 (T064, FR-025) — the third exit from a halted queue, as a host
+ * command.
+ *
+ * Shaped like `runRetryQueuedItem` above, and for the same reason: the halt ends
+ * only when the queue is offered a drain, and `AutoDrainCoordinator` is
+ * edge-triggered, so the caller needs both whether the attestation took and
+ * which queue to sweep. It writes nothing of its own — `QueueManager.attestCompleted`
+ * is the single call site in the product capable of attesting (see its doc), and
+ * a second status writer here is exactly what that design excludes.
+ *
+ * No consent check. The operator's assertion was made at the prompt and carried
+ * on the wire as `confirmed: true`, which the ingress validator refuses without;
+ * re-deciding it here would make two sites responsible for one question.
+ */
+export type AttestTaskCompletedResult =
+  | { ok: true; queueId: string }
+  | { ok: false; reason: string };
+
+export async function runAttestTaskCompleted(
+  arg: unknown,
+  ctx: QueueOpsCtx
+): Promise<AttestTaskCompletedResult> {
+  if (!(await ensurePrimary(ctx))) return { ok: false, reason: 'not-primary' };
+  const id = expectId(arg);
+  if (!id) {
+    ctx.notifier.warn('Schegent: marking a task completed requires a queue item id.');
+    return { ok: false, reason: 'invalid-id' };
+  }
+  try {
+    // Resolved before the mutation, as in `runRetryQueuedItem`: the row is only
+    // guaranteed to be readable while the Task is still there.
+    const queueId = ctx.queue.queueIdForTask(id);
+    const result = await ctx.queue.attestCompleted(id);
+    if (!result.ok) {
+      notifyMutationFailure(ctx, 'Mark completed', result);
+      return { ok: false, reason: result.reason ?? 'illegal-state' };
+    }
+    return { ok: true, queueId };
+  } catch (err) {
+    // `errorMessage` rather than the `Error` cast its seven neighbours use:
+    // `catch` binds `unknown`, and FR-R3-110 holds that cast's baseline
+    // shrink-only, so a new site takes the helper. (Spelling the cast out here
+    // would itself count as a site — `no-new-error-cast.test.ts` counts the
+    // literal, comments included.)
+    ctx.logger.error(`runAttestTaskCompleted failed: ${errorMessage(err)}`);
+    ctx.notifier.error(`Schegent: marking the task completed failed.`);
     return { ok: false, reason: 'unexpected-error' };
   }
 }

@@ -150,13 +150,28 @@ describe('QueueStartFailureNotice — the halted kind (feature 195, T029)', () =
     expect(queryByTestId('queue-start-failure-q-1')).toBeNull();
   });
 
-  it('states the two ways out, not an acknowledgement step', () => {
+  // Feature 195 (T064, FR-025) — was "states the two ways out". FR-009 named
+  // two and FR-025 adds a third, so a notice that reports the halt and names
+  // two of the three exits sends the operator of an already-committed task
+  // looking for a control that is right there. Still no acknowledgement step
+  // and still no button on this component: it is read-only by intent (see its
+  // header), so the third exit is stated in the same prose as the other two
+  // and the affordance itself lives on `QueueItemActions`.
+  it('states the three ways out, not an acknowledgement step', () => {
     const { getByTestId } = render(QueueStartFailureNotice, {
       props: { queueId: 'q-1', startFailure: haltedFailure(), nowMs: NOW }
     });
     const text = getByTestId('queue-halted-q-1').textContent.toLowerCase();
     expect(text).toContain('retry');
     expect(text).toContain('remove');
+    expect(text).toContain('completed');
+  });
+
+  it('renders no control of its own for any of the three exits', () => {
+    const { getByTestId } = render(QueueStartFailureNotice, {
+      props: { queueId: 'q-1', startFailure: haltedFailure(), nowMs: NOW }
+    });
+    expect(getByTestId('queue-halted-q-1').querySelectorAll('button').length).toBe(0);
   });
 });
 

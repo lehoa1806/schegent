@@ -73,6 +73,26 @@ export type FeatureRequestRerunReason = 'manual' | 'retry-active' | 'auto-drain'
 
 export type FeatureRequestPauseCause = 'phase-paused' | 'manually-paused-task';
 
+/**
+ * Feature 195 (T065, FR-026, SC-017) — how a `completed` row came to be
+ * `completed`, when the answer is not "the host watched it succeed".
+ *
+ * **One member, and that is the shape rather than an unfinished union.** The
+ * alternative reading is the field's own absence, and absence is not a
+ * convention here — it is provable. Before T063 there was exactly one edge into
+ * `completed` and it was the host's (`QueueManager.finish`), so no stored row
+ * carrying no marker can have been attested, including every row written before
+ * this feature existed. Adding `'host-verified'` as a second member would
+ * therefore record nothing a reader cannot already conclude, at the cost of
+ * putting a provenance argument on `finish` — the generic terminal-write path
+ * every failure handler in the product calls, which is the exact coupling T063
+ * refused when it made attestation a separate method.
+ *
+ * A future third route into `completed` adds a member here and needs no
+ * migrator, because absence keeps meaning what it already means.
+ */
+export type CompletionProvenance = 'operator-attested';
+
 export interface FeatureRequestRerun {
   readonly originalRunId: string;
   readonly originalDescription: string;
@@ -144,6 +164,45 @@ export interface FeatureRequest {
    * attempt's doubt.
    */
   degradedPhases?: readonly DegradedPhaseEntry[];
+  /**
+   * Feature 195 (T065, FR-026, SC-017) — present when the operator asserted
+   * this task's outcome rather than the host observing it.
+   *
+   * **A fact about the task, never about the halt.** SC-008 forbids storing
+   * anything that describes a halt, and this is not that: it says how this row
+   * reached its status, and it is written on a row that may never have halted
+   * anything. The halt still ends by FR-003's recomputation with nothing stored
+   * — see `QueueManager.attestCompleted`, which writes this and no flag.
+   *
+   * **A marker beside the status, not a seventh `FeatureRequestStatus`.** A new
+   * member of that union would fail the blocking census's exhaustiveness
+   * enforcement with no registered expectation (data-model.md §5) and break
+   * FR-025's promise of no new vocabulary. Attested and verified completions
+   * are identical under the census's own question — is this row blocking — and
+   * differ only in provenance, which is why provenance is a separate field.
+   *
+   * Optional and additive, on the `degradedPhases` precedent directly above, so
+   * a pre-feature record reads back byte-identical and no `STATE_SCHEMA_VERSION`
+   * bump or migrator is needed (FR-017, research D2). **Absence means the host
+   * verified the outcome** — see `CompletionProvenance` for why that is a
+   * provable reading and not a default.
+   *
+   * **Nothing in the host reads it, by requirement.** FR-026 asks that an
+   * attested outcome be distinguishable "so a later reader can tell", and
+   * SC-017 measures exactly that: an assertion over the stored record, in
+   * `tests/integration/completion-provenance.test.ts`. This is deliberately not
+   * the `completedAwaitingExit` defect that
+   * `tests/lint/completed-awaiting-exit-has-a-reader.test.ts` was written for:
+   * that field's absence made the host decide something wrongly, whereas this
+   * one is required to change no decision at all — FR-025 admits the attested
+   * exit precisely because it needs no machinery, and a host reader branching on
+   * provenance would be the machinery it promised not to add.
+   *
+   * Not cleared on retry, unlike the two fields above, because it cannot
+   * survive one: `retry` admits only `failed | canceled | paused`, and a row
+   * carrying this marker is `completed`.
+   */
+  completionProvenance?: CompletionProvenance;
 }
 
 export interface QueueState {

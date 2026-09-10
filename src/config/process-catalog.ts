@@ -12,6 +12,18 @@ import { phaseRunnerPolicyError } from './phase-runner-policy';
 export const PHASE_CATALOG_SOFT_CAP = 50;
 const SYNTHETIC_PHASE_ID_PREFIX = '?invalid-';
 
+/**
+ * What a draft-only row's `key` is prefixed with (101 BUG-001).
+ *
+ * `${phaseId}::${index}` is unique within one list and the two lists are indexed
+ * independently, so a draft whose body claims an id an active row also claims
+ * would key identically to it — and the Library renders both lists in one keyed
+ * `{#each}`, where a duplicate key is a render error rather than a wrong badge.
+ * Declared beside the synthetic-id prefix because both are reserved key text:
+ * neither can occur in an id, which is what keeps the namespaces apart.
+ */
+export const DRAFT_KEY_PREFIX = 'draft::';
+
 export function phaseSourceIdentity(row: unknown, index: number): string {
   if (row && typeof row === 'object' && !Array.isArray(row)) {
     const value = row as Record<string, unknown>;
@@ -79,6 +91,23 @@ function parseRows(rows: readonly unknown[], defaultVersion: number): MutableSou
       errors
     };
   });
+}
+
+/** The parsed records as the resolution carries them, under an optional key prefix. */
+function freezeRecords(
+  records: readonly MutableSourceRecord[],
+  keyPrefix: string
+): PhaseSourceRecord[] {
+  return records.map((record) =>
+    Object.freeze({
+      key: `${keyPrefix}${record.key}`,
+      phaseId: record.phaseId,
+      status: record.status,
+      definition: record.definition,
+      display: record.display,
+      errors: Object.freeze([...record.errors])
+    })
+  );
 }
 
 function duplicateError(phaseId: string): PhaseFieldError {
@@ -176,10 +205,27 @@ export function phaseDefinitionToPhaseDef(definition: PhaseDefinition): PhaseDef
  * therefore changes nothing about what runs until it is published (FR-008,
  * FR-009); publication is the only event that moves a body into this function's
  * input. `tests/unit/config/effective-is-active-only.test.ts` pins it.
+ *
+ * **BUG-001 (101) — `draftOnlyRows` is the Builder's half of that, and it is separate all
+ * the way through.** The Builder has to list a definition the operator saved and
+ * has not published, and the sentence above is why it had nothing to list: no
+ * active body, no row, no record. These rows are parsed by the same `parseRows` and
+ * returned as `draftOnlyRecords`, which the Library projection reads and no other
+ * consumer does. They never join `records`, never reach `effective` or
+ * `effectivePhaseDefs`, and never contribute a warning — every one of those is read
+ * by something that decides what runs or what may be launched.
  */
 export function resolvePhaseCatalog(input: {
   readonly rows: readonly unknown[] | undefined;
   readonly revision: string;
+  /**
+   * The draft bodies of the definitions that have no active one (101 BUG-001).
+   *
+   * Supplied by `storedDraftOnlyRows`. Omitted by every caller resolving the
+   * catalog to decide something — launch, export, preflight, semantics — so the
+   * default is no draft rows at all rather than a filter each of them repeats.
+   */
+  readonly draftOnlyRows?: readonly unknown[];
 }): ResolvedPhaseCatalog {
   const records = parseRows(input.rows ?? [], 1);
   invalidateDuplicates(records);
@@ -193,16 +239,7 @@ export function resolvePhaseCatalog(input: {
     effectivePhaseDefs.push(phaseDefinitionToPhaseDef(record.definition));
   }
 
-  const frozenRecords: PhaseSourceRecord[] = records.map((record) =>
-    Object.freeze({
-      key: record.key,
-      phaseId: record.phaseId,
-      status: record.status,
-      definition: record.definition,
-      display: record.display,
-      errors: Object.freeze([...record.errors])
-    })
-  );
+  const frozenRecords = freezeRecords(records, '');
   const warnings = [];
   if (effective.length > PHASE_CATALOG_SOFT_CAP) {
     warnings.push(
@@ -227,6 +264,25 @@ export function resolvePhaseCatalog(input: {
     effective: Object.freeze(effective),
     effectivePhaseDefs: Object.freeze(effectivePhaseDefs),
     revision: input.revision,
-    warnings: Object.freeze(warnings)
+    warnings: Object.freeze(warnings),
+    draftOnlyRecords: resolveDraftOnlyRecords(input.draftOnlyRows)
   });
+}
+
+/**
+ * The draft-only rows as source records (101 BUG-001).
+ *
+ * `invalidateDuplicates` runs over these rows ALONE, never over the two lists
+ * together. Folding them would let a draft flip a published row to `invalid` and
+ * so drop it out of `effective` — an unpublished edit changing what runs, which is
+ * the one thing FR-009 forbids by name. Draft-against-draft is still caught, and
+ * that is the collision an author can act on.
+ */
+function resolveDraftOnlyRecords(
+  rows: readonly unknown[] | undefined
+): readonly PhaseSourceRecord[] {
+  if (rows === undefined || rows.length === 0) return Object.freeze([]);
+  const records = parseRows(rows, 1);
+  invalidateDuplicates(records);
+  return Object.freeze(freezeRecords(records, DRAFT_KEY_PREFIX));
 }

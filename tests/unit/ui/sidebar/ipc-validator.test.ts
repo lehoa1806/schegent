@@ -230,4 +230,71 @@ describe('validateInboundMessage', () => {
   // era's `mutation`/`expectedRevision` as refusals. Leaving the old blocks here
   // would have kept a row of green rejection tests that now pass because the
   // command name is unknown, which is coverage in name only.
+
+  // Feature 195 (T064, FR-025) — the attested completion's ingress.
+  //
+  // `confirmed: true` is required on the wire, the same shape
+  // `CMD_REMOVE_QUEUE_ITEM` has carried since it gained a consent step. It is
+  // not decoration: FR-025 says the operator must assert the outcome
+  // explicitly and the system must not infer it, so the assertion is a fact
+  // the message carries and this gate is where its absence is refused. A UI
+  // that forgets the confirmation therefore cannot attest, rather than
+  // attesting silently.
+  describe('CMD_ATTEST_TASK_COMPLETED (feature 195, T064, FR-025)', () => {
+    const type = 'CMD_ATTEST_TASK_COMPLETED';
+
+    it('accepts a confirmed attestation for one task', () => {
+      const result = validateInboundMessage({
+        type,
+        correlationId: 'c',
+        payload: { taskId: 'task-7', confirmed: true }
+      });
+      expect(result.ok).toBe(true);
+    });
+
+    it('refuses an unconfirmed attestation', () => {
+      expect(
+        validateInboundMessage({ type, correlationId: 'c', payload: { taskId: 'task-7' } }).ok
+      ).toBe(false);
+      expect(
+        validateInboundMessage({
+          type,
+          correlationId: 'c',
+          payload: { taskId: 'task-7', confirmed: false }
+        }).ok
+      ).toBe(false);
+      // Truthy is not `true`. An assertion inferred from a coercion is exactly
+      // what FR-025 forbids.
+      expect(
+        validateInboundMessage({
+          type,
+          correlationId: 'c',
+          payload: { taskId: 'task-7', confirmed: 'yes' }
+        }).ok
+      ).toBe(false);
+    });
+
+    it('refuses a missing, empty or non-string taskId', () => {
+      expect(validateInboundMessage({ type, correlationId: 'c' }).ok).toBe(false);
+      expect(
+        validateInboundMessage({ type, correlationId: 'c', payload: { confirmed: true } }).ok
+      ).toBe(false);
+      expect(
+        validateInboundMessage({ type, correlationId: 'c', payload: { taskId: '', confirmed: true } }).ok
+      ).toBe(false);
+      expect(
+        validateInboundMessage({ type, correlationId: 'c', payload: { taskId: 42, confirmed: true } }).ok
+      ).toBe(false);
+    });
+
+    it('refuses an undeclared payload field', () => {
+      expect(
+        validateInboundMessage({
+          type,
+          correlationId: 'c',
+          payload: { taskId: 'task-7', confirmed: true, status: 'completed' }
+        }).ok
+      ).toBe(false);
+    });
+  });
 });

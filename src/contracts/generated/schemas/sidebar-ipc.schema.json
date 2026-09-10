@@ -84,7 +84,8 @@
           "CMD_LAUNCH_WORKFLOW",
           "CMD_CONTINUE_WORKFLOW",
           "CMD_SET_UNCONTAINED_BACKEND_GRANT",
-          "CMD_SET_QUEUE_FAILURE_POLICY"
+          "CMD_SET_QUEUE_FAILURE_POLICY",
+          "CMD_ATTEST_TASK_COMPLETED"
         ]
       },
       "uniqueItems": true

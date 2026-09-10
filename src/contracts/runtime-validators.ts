@@ -53,6 +53,8 @@ import {
   CMD_DELETE_QUEUE,
   CMD_SAVE_QUEUE_SETTINGS,
   CMD_SET_QUEUE_FAILURE_POLICY,
+  // Feature 195 (T064, FR-025).
+  CMD_ATTEST_TASK_COMPLETED,
   CMD_MOVE_TASK,
   CMD_MODIFY_TASK,
   CMD_REORDER_TASK,
@@ -94,6 +96,7 @@ import { validateContinueWorkflow, validateLaunchWorkflow } from './validators/w
 import { validateSetUncontainedBackendGrant } from './validators/uncontained-grant';
 import { validateSetConfirmSuppression, validateStartQueue } from './validators/queue';
 import {
+  validateAttestTaskCompleted,
   validateCreateQueue,
   validateDeleteQueue,
   validateMoveTask,
@@ -233,6 +236,11 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
       return validateSaveQueueSettings(obj, correlationId);
     case CMD_SET_QUEUE_FAILURE_POLICY:
       return validateSetQueueFailurePolicy(obj, correlationId);
+    // Feature 195 (T064, FR-025) — the confirmed variant of the taskId shape.
+    // This arm is the single site that decides whether the operator asserted
+    // the outcome; nothing downstream re-checks it (FR-025).
+    case CMD_ATTEST_TASK_COMPLETED:
+      return validateAttestTaskCompleted(obj, correlationId);
     case CMD_MOVE_TASK:
       return validateMoveTask(obj, correlationId);
     case CMD_MODIFY_TASK:

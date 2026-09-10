@@ -196,9 +196,15 @@ describe('a document may not name a command that does not exist (FR-R3-127)', ()
     // wherever it actually registers.
     const guardedIn = (rel: string): number =>
       read(rel).split('registerGuardedCommand(').length - 1;
+    //
+    // Feature 195 (T064) — `queue-item-exit-wiring.ts` joins it for the same
+    // reason, and it is the second, so the note above is a pattern rather than
+    // an exception: the composition root is at its function bound, and every
+    // registration added from here lands in a module of its own.
     const stage2 =
       guardedIn('src/activation/ui-wiring.ts') +
-      guardedIn('src/activation/queue-failure-policy-wiring.ts');
+      guardedIn('src/activation/queue-failure-policy-wiring.ts') +
+      guardedIn('src/activation/queue-item-exit-wiring.ts');
     const stage1 = guardedIn('src/extension.ts');
     expect(stage1, 'Stage 1 registers no command through the guard helper').toBeGreaterThan(0);
     expect(stage2, 'Stage 2 registers no command through the guard helper').toBeGreaterThan(15);

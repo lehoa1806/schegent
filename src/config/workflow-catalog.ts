@@ -11,6 +11,7 @@ import type {
   WorkflowSourceStatus
 } from '../contracts/workflow-definitions';
 import { PIPELINE_ID_PATTERN } from './pipeline-definition-validator';
+import { DRAFT_KEY_PREFIX } from './process-catalog';
 import { validateWorkflowGraph } from './workflow-graph-validator';
 import {
   WORKFLOW_ID_MAX_LEN,
@@ -152,6 +153,24 @@ function parseRows(
   });
 }
 
+/** The parsed records as the resolution carries them, under an optional key prefix. */
+function freezeRecords(
+  records: readonly MutableSourceRecord[],
+  keyPrefix: string
+): WorkflowSourceRecord[] {
+  return records.map((record) =>
+    Object.freeze({
+      key: `${keyPrefix}${record.key}`,
+      workflowId: record.workflowId,
+      status: record.status,
+      definition: record.definition,
+      display: record.display,
+      nodePipelineIds: Object.freeze([...record.nodePipelineIds]),
+      errors: Object.freeze([...record.errors])
+    })
+  );
+}
+
 function duplicateError(workflowId: string): WorkflowFieldError {
   return workflowFieldError(
     workflowId,
@@ -229,11 +248,23 @@ function softCapWarnings(
  * reaches this function, and neither does a draft Pipeline the graph validator would otherwise
  * resolve a node against. Publication is the single event that admits a body to the effective
  * catalog (FR-008, FR-009).
+ *
+ * **BUG-001 (101) — `draftOnlyRows` is the Builder's half.** The sentence above is why the Library
+ * had nothing to list for a Workflow the operator had just saved. See `resolvePhaseCatalog` for
+ * why the two lists stay separate all the way to the projection.
  */
 export function resolveWorkflowCatalog(input: {
   readonly rows: readonly unknown[] | undefined;
   readonly revision: string;
   readonly pipelineCatalog: WorkflowPipelineContext;
+  /**
+   * The draft bodies of the Workflows that have no active one (101 BUG-001).
+   *
+   * Graph-validated against the same `pipelineCatalog` as `rows` — the effective
+   * Pipelines, never a draft one. A node the author has to repair is a node
+   * publication would refuse.
+   */
+  readonly draftOnlyRows?: readonly unknown[];
 }): WorkflowCatalogResolution {
   const invalidPipelines = invalidPipelineCauses(input.pipelineCatalog);
   const rows = input.rows ?? [];
@@ -247,22 +278,36 @@ export function resolveWorkflowCatalog(input: {
     effective.push(record.definition);
   }
 
-  const frozenRecords: WorkflowSourceRecord[] = records.map((record) =>
-    Object.freeze({
-      key: record.key,
-      workflowId: record.workflowId,
-      status: record.status,
-      definition: record.definition,
-      display: record.display,
-      nodePipelineIds: Object.freeze([...record.nodePipelineIds]),
-      errors: Object.freeze([...record.errors])
-    })
-  );
+  const frozenRecords = freezeRecords(records, '');
 
   return Object.freeze({
     records: Object.freeze(frozenRecords),
     effective: Object.freeze(effective),
     revision: input.revision,
-    warnings: Object.freeze(softCapWarnings(rows, effective))
+    warnings: Object.freeze(softCapWarnings(rows, effective)),
+    draftOnlyRecords: resolveDraftOnlyRecords(
+      input.draftOnlyRows,
+      input.pipelineCatalog,
+      invalidPipelines
+    )
   });
+}
+
+/**
+ * The draft-only rows as source records (101 BUG-001).
+ *
+ * `invalidateDuplicates` runs over these rows alone — see `resolvePhaseCatalog`'s
+ * sibling for why folding the two lists would let an unpublished edit change what
+ * runs. The soft-cap warning is computed from `rows` and `effective` only, so a
+ * draft cannot push the catalog over an advisory limit it is not part of.
+ */
+function resolveDraftOnlyRecords(
+  rows: readonly unknown[] | undefined,
+  pipelineCatalog: WorkflowPipelineContext,
+  invalidPipelines: ReadonlyMap<string, string>
+): readonly WorkflowSourceRecord[] {
+  if (rows === undefined || rows.length === 0) return Object.freeze([]);
+  const records = parseRows(rows, pipelineCatalog, invalidPipelines);
+  invalidateDuplicates(records);
+  return Object.freeze(freezeRecords(records, DRAFT_KEY_PREFIX));
 }

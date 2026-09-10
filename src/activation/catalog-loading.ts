@@ -13,7 +13,13 @@ import type { PipelineCatalog } from '../config/pipeline-config';
 import { loadCatalog, type CatalogConfigReader } from '../config/pipeline-config-loader';
 import type { ResolvedPhaseCatalog } from '../config/process-catalog';
 import { resolveWorkflowCatalog } from '../config/workflow-catalog';
-import { emptyCatalogSnapshot, snapshotOfRead, storedIds, storedRows } from '../catalog';
+import {
+  emptyCatalogSnapshot,
+  snapshotOfRead,
+  storedDraftOnlyRows,
+  storedIds,
+  storedRows
+} from '../catalog';
 import type { CatalogStore } from '../catalog/catalog-store';
 import type { Digest } from '../catalog/ports';
 import type {
@@ -101,8 +107,14 @@ export function loadAndReportCatalog(
   }
 
   const { catalog, phaseCatalog, pipelineCatalog } = result;
+  // BUG-001 (101) — `draftOnlyRows` from the same snapshot as `rows`, matching what
+  // `loadCatalog` above did for the other two kinds. The graph is still validated
+  // against the **effective** Pipeline catalog, so a draft Workflow naming a draft
+  // Pipeline reports it as unknown rather than resolving against something the
+  // workspace does not run.
   const workflowCatalog = resolveWorkflowCatalog({
     rows: storedRows(snapshot, 'workflow'),
+    draftOnlyRows: storedDraftOnlyRows(snapshot, 'workflow'),
     revision: snapshot.revisions.workflow,
     pipelineCatalog
   });

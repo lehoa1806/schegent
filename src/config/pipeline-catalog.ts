@@ -10,6 +10,7 @@ import type { PhaseDefinition } from '../contracts/process-definitions';
 import type { PipelineDef } from './pipeline-config';
 import { validatePipelineBindings } from './pipeline-binding-validator';
 import { validatePipelineDefinition } from './pipeline-definition-validator';
+import { DRAFT_KEY_PREFIX } from './process-catalog';
 
 /** Advisory ceiling on effective Pipelines; exceeding it warns and never blocks (FR-033). */
 export const PIPELINE_CATALOG_SOFT_CAP = 20;
@@ -116,6 +117,23 @@ function parseRows(
       errors
     };
   });
+}
+
+/** The parsed records as the resolution carries them, under an optional key prefix. */
+function freezeRecords(
+  records: readonly MutableSourceRecord[],
+  keyPrefix: string
+): PipelineSourceRecord[] {
+  return records.map((record) =>
+    Object.freeze({
+      key: `${keyPrefix}${record.key}`,
+      pipelineId: record.pipelineId,
+      status: record.status,
+      definition: record.definition,
+      display: record.display,
+      errors: Object.freeze([...record.errors])
+    })
+  );
 }
 
 function duplicateError(pipelineId: string): PipelineFieldError {
@@ -265,11 +283,24 @@ function unavailableModelWarnings(
  * until it is published (FR-008). The `phaseCatalog` this validates bindings
  * against is that same active-only set one level down, so a draft Phase cannot
  * make a Pipeline resolve either.
+ *
+ * **BUG-001 (101) — `draftOnlyRows` is the Builder's half.** Absent from `records` is
+ * correct for every consumer that decides something and wrong for the one surface
+ * whose job is to show unfinished work, which had nothing to show. See
+ * `resolvePhaseCatalog` for why the two lists stay separate.
  */
 export function resolvePipelineCatalog(input: {
   readonly rows: readonly unknown[] | undefined;
   readonly revision: string;
   readonly phaseCatalog: readonly PhaseDefinition[];
+  /**
+   * The draft bodies of the Pipelines that have no active one (101 BUG-001).
+   *
+   * Validated against the same `phaseCatalog` as `rows` — the effective Phases,
+   * never a draft Phase (hard rule 38). An author fixing a draft Pipeline is
+   * fixing it against the catalog publication will judge it by.
+   */
+  readonly draftOnlyRows?: readonly unknown[];
   /**
    * Model ids the host currently offers per runner, for the FR-035 advisory.
    *
@@ -298,16 +329,7 @@ export function resolvePipelineCatalog(input: {
     effectivePipelineDefs.push(pipelineDefinitionToPipelineDef(record.definition));
   }
 
-  const frozenRecords: PipelineSourceRecord[] = records.map((record) =>
-    Object.freeze({
-      key: record.key,
-      pipelineId: record.pipelineId,
-      status: record.status,
-      definition: record.definition,
-      display: record.display,
-      errors: Object.freeze([...record.errors])
-    })
-  );
+  const frozenRecords = freezeRecords(records, '');
 
   const warnings: PipelineCatalogWarning[] = [
     ...softCapWarnings(effective),
@@ -329,6 +351,29 @@ export function resolvePipelineCatalog(input: {
     effective: Object.freeze(effective),
     effectivePipelineDefs: Object.freeze(effectivePipelineDefs),
     revision: input.revision,
-    warnings: Object.freeze(warnings)
+    warnings: Object.freeze(warnings),
+    draftOnlyRecords: resolveDraftOnlyRecords(
+      input.draftOnlyRows,
+      input.phaseCatalog,
+      knownPhaseIds
+    )
   });
+}
+
+/**
+ * The draft-only rows as source records (101 BUG-001).
+ *
+ * `invalidateDuplicates` runs over these rows alone — see `resolvePhaseCatalog`'s
+ * sibling for why folding the two lists would let an unpublished edit change what
+ * runs.
+ */
+function resolveDraftOnlyRecords(
+  rows: readonly unknown[] | undefined,
+  effectivePhases: readonly PhaseDefinition[],
+  knownPhaseIds: ReadonlySet<string>
+): readonly PipelineSourceRecord[] {
+  if (rows === undefined || rows.length === 0) return Object.freeze([]);
+  const records = parseRows(rows, 1, effectivePhases, knownPhaseIds);
+  invalidateDuplicates(records);
+  return Object.freeze(freezeRecords(records, DRAFT_KEY_PREFIX));
 }

@@ -77,7 +77,16 @@
     <span class="summary" data-testid="queue-halted-task-{queueId}">
       Stopped because <strong>{startFailure.taskName}</strong> failed.
     </span>
-    <span class="retry-note">Retry or remove that task to let this queue continue.</span>
+    <!-- Feature 195 (T064, FR-025) — was "Retry or remove that task". FR-009
+         named two exits and was explicit that it is not a closed enumeration;
+         FR-025 adds the third, for the task whose work already happened outside
+         the tool. Prose only, no button: this component is read-only by intent
+         (see its header), and the control itself is on `QueueItemActions`,
+         which the queue header renders for this same row. -->
+    <span class="retry-note">
+      Retry or remove that task to let this queue continue — or, if its work was
+      already completed elsewhere, mark it completed from the queue.
+    </span>
   </div>
 {:else if startFailure !== null && startFailure.kind === 'stranded-run'}
   <!-- BUG-004 — the run with no task row. Here rather than in a notice of its

@@ -1599,6 +1599,51 @@ describe('PhaseRunner.run', () => {
       });
     });
 
+    // Feature 012 SC-012 (b), added 2026-09-08 under BUG-001.
+    //
+    // The event is named `auto-compact-override-applied`, and "applied" is a
+    // word a reader can easily take as "compaction happened". BUG-001 is the
+    // case where it did not: the variable is exported, the CLI honours it, and
+    // a session already too large to admit is refused upstream of the
+    // threshold. The event name is not being changed — it is accurate about
+    // what it reports, which is an injection — so the payload is what has to
+    // stay honest. It carries the injection facts and the pipeline metadata
+    // every audit payload carries, and nothing that would let a reader conclude
+    // an effect.
+    it('carries injection facts only, and claims no effect', async () => {
+      cliRunner = makeFakeRunner(async () => makeRawOutput());
+      runner = new PhaseRunner(
+        cliRunner,
+        new PromptBuilder(),
+        auditWriter,
+        new SanitizedLogger(),
+        null,
+        null,
+        null,
+        { readAutoCompactPctOverride: () => 80 }
+      );
+      await runner.run(baseInputs);
+      const appendFn = auditWriter.append as ReturnType<typeof vi.fn>;
+      const payload = appendFn.mock.calls.find(
+        (c) => c[0].eventType === 'auto-compact-override-applied'
+      )![0].payload as Record<string, unknown>;
+
+      // The vocabulary pin. A new key here is a deliberate act and has to be
+      // read against the sentence above before it is added to this list.
+      expect(Object.keys(payload).sort()).toEqual(['phaseId', 'runId', 'runner', 'value']);
+
+      // And the shape-independent half, so a payload that grows a field cannot
+      // smuggle an effect claim past a key-set that someone updated by rote.
+      const claimsEffect = Object.keys(payload).filter((key) =>
+        /compact(ed|ion)|reclaim|reduc|shrunk|threshold|fired|effective|occurred/i.test(key)
+      );
+      expect(
+        claimsEffect,
+        'The override event reports that a value was injected into the CLI env. Whether the CLI ' +
+          'then compacted anything is not observable here and must not be asserted by this payload.'
+      ).toEqual([]);
+    });
+
     it('does NOT emit auto-compact-override-applied when accessor returns undefined', async () => {
       cliRunner = makeFakeRunner(async () => makeRawOutput());
       runner = new PhaseRunner(
@@ -1813,11 +1858,59 @@ describe('Feature 074 — Multi-Backend Runner Resolution & Session Reset', () =
     const invokeMock = cliRunner.invoke as ReturnType<typeof vi.fn>;
     expect(invokeMock.mock.calls[1][0]).not.toHaveProperty('resumeSessionId');
     expect(invokeMock.mock.calls[1][0]).not.toHaveProperty('sessionReuse');
+    // Feature 012 SC-012 (a), added 2026-09-08 under BUG-001 — the record must
+    // carry `outcome: 'failure'` and not only the reason code. The run itself
+    // ends `clean` (asserted above), so the trail is the ONLY place a reader can
+    // learn the phase began with no prior context. A warning with no failure
+    // outcome reads as an aside; this is the difference between a log line and
+    // evidence that compaction did not happen.
     expect(auditWriter.append).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: 'warning',
+        outcome: 'failure',
         payload: expect.objectContaining({
           reasonCode: 'session-compaction-failed-fresh-session'
+        })
+      })
+    );
+  });
+
+  // The other compaction failure, which for a year arrived under the code above. A
+  // session the CLI declines to ADMIT is refused in seconds with the bound untouched,
+  // and the phase starts cold for a reason no bound can be tuned to fix. Same
+  // behaviour, different fact — so the trail says which one happened, and an operator
+  // reading `session-compaction-failed` is no longer told to look at a timeout.
+  it('names the refusal when the session was too large to admit', async () => {
+    let invocation = 0;
+    cliRunner = makeFakeRunner(async () => {
+      invocation += 1;
+      return invocation === 1
+        ? makeRawOutput({ exitCode: 1, stderr: 'Prompt is too long\n' })
+        : makeRawOutput({ command: 'claude --resume owned-session phase' });
+    });
+    runner = new PhaseRunner(
+      cliRunner,
+      new PromptBuilder(),
+      auditWriter,
+      new SanitizedLogger()
+    );
+
+    const result = await runner.run({
+      ...baseInputs,
+      sessionReuse: true,
+      resumeSessionId: 'owned-session'
+    });
+
+    expect(result.outcome).toBe('clean');
+    // The downgrade is unchanged: this is a recording fix, not a behaviour change.
+    const invokeMock = cliRunner.invoke as ReturnType<typeof vi.fn>;
+    expect(invokeMock.mock.calls[1][0]).not.toHaveProperty('resumeSessionId');
+    expect(auditWriter.append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'warning',
+        outcome: 'failure',
+        payload: expect.objectContaining({
+          reasonCode: 'session-too-large-to-compact-fresh-session'
         })
       })
     );

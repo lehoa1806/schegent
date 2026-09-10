@@ -1,4 +1,5 @@
 import {
+  CMD_ATTEST_TASK_COMPLETED,
   CMD_CANCEL,
   CMD_CLEAR_QUEUE,
   CMD_CLEAR_COMPLETED,
@@ -62,6 +63,7 @@ import {
 } from '../messages';
 import type { CommandHandler } from './handler-contract';
 
+import { handler as attestTaskCompleted } from './cmd-attest-task-completed';
 import { handler as cancel } from './cmd-cancel';
 import { handler as clearQueue } from './cmd-clear-queue';
 import { handler as clearCompleted } from './cmd-clear-completed';
@@ -137,6 +139,7 @@ export const HANDLERS: ReadonlyMap<string, CommandHandler> = new Map<
   string,
   CommandHandler
 >([
+  [CMD_ATTEST_TASK_COMPLETED, attestTaskCompleted as CommandHandler],
   [CMD_CANCEL, cancel as CommandHandler],
   [CMD_CLEAR_QUEUE, clearQueue as CommandHandler],
   [CMD_CLEAR_COMPLETED, clearCompleted as CommandHandler],

@@ -52,6 +52,7 @@
     validateWorkflowDraft,
     type WorkflowDraftError
   } from './workflow-catalog-state';
+  import { reselectIndex, type DefinitionIdentity } from '../../lib/builder-selection';
   import CatalogEmptyState from '../Builder/CatalogEmptyState.svelte';
   import WorkflowFlowBuilder from './WorkflowFlowBuilder.svelte';
   import WorkflowFlowTopBar from './WorkflowFlowTopBar.svelte';
@@ -69,6 +70,18 @@
   /** Rows the operator created but the host has not accepted yet. */
   let drafts = $state<MutableWorkflow[]>([]);
   let selectedKey = $state<string | null>(null);
+  /**
+   * BUG-002 (101) — the authored id behind `selectedKey`.
+   *
+   * A record's key carries its position in the manifest listing
+   * (`${workflowId}::${index}`) and a draft's is the editor's own
+   * `${workflowId}::draft`, so the key of the open Workflow changes under an
+   * accepted save and under any write that reorders the listing. This is what
+   * survives that, and the re-selection effect below is where the two are
+   * reconciled. Held rather than derived: by the time that effect runs, `rows`
+   * no longer contains the row the id would have been read off.
+   */
+  let selectedId = $state<string | null>(null);
   let saveError = $state<string | null>(null);
   /** The revision submitted with the in-flight save; null when none is. */
   let submittedRevision = $state<string | null>(null);
@@ -131,6 +144,36 @@
     }
   });
 
+  /**
+   * BUG-002 (101) — re-point `selectedKey` at the open Workflow when the
+   * projection re-keys it, instead of leaving it pointed at a key no row has.
+   *
+   * A stale `selectedKey` resolves `selected` to `null`, which is how the save
+   * above closed the canvas: the draft it cleared was the row the key named, and
+   * the record that replaced it carries a different one. Nothing here selects a
+   * Workflow the operator did not — `reselectIndex` matches on identity, so a
+   * key that is genuinely gone clears the selection rather than moving it.
+   */
+  $effect(() => {
+    if (selectedKey === null) return;
+    if (rows.some((row) => row.sourceKey === selectedKey)) return;
+    const index = reselectIndex(rows, { sourceKey: selectedKey, id: selectedId ?? '' }, identity);
+    select(index === null ? null : rows[index].sourceKey);
+  });
+
+  /** A Workflow row's identity: its record key, and the id underneath it. */
+  function identity(row: MutableWorkflow): DefinitionIdentity {
+    return { sourceKey: row.sourceKey, id: row.workflowId };
+  }
+
+  /** The one place `selectedKey` moves, so `selectedId` cannot fall behind it. */
+  function select(key: string | null): void {
+    selectedKey = key;
+    selectedId = key === null
+      ? null
+      : (rows.find((row) => row.sourceKey === key)?.workflowId ?? selectedId);
+  }
+
   const draftErrors = $derived<readonly WorkflowDraftError[]>(
     selected
       ? validateWorkflowDraft(
@@ -181,7 +224,7 @@
   /** Stage a freshly built draft as the selection; both creation paths end here. */
   function selectNewDraft(draft: MutableWorkflow): void {
     drafts = [...drafts, draft];
-    selectedKey = draft.sourceKey;
+    select(draft.sourceKey);
     saveError = null;
   }
 
@@ -311,7 +354,7 @@
     {selected}
     {selectedKey}
     {lifecycleByKey}
-    onselect={(key) => (selectedKey = key)}
+    onselect={(key) => select(key)}
   />
 
   <WorkflowToolbar

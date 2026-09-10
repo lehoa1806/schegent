@@ -3,7 +3,9 @@ import {
   COMPACTION_IDLE_TIMEOUT_MS,
   COMPACTION_MAX_DURATION_MS,
   COMPACTION_MODEL_ID,
-  compactClaudeSession
+  SessionCompactionError,
+  compactClaudeSession,
+  compactionFailureRecord
 } from '../../../src/controller/session-compactor';
 import { MONITOR_STALL_THRESHOLD_MS } from '../../../src/contracts/monitor-events';
 import { SanitizedLogger } from '../../../src/lib/logger';
@@ -190,6 +192,22 @@ describe('session compaction failure reporting', () => {
     expect(message).toMatch(/claude login/);
   });
 
+  // Whole, but on ONE line. The collapse serves two readers now — this message, which
+  // becomes a log line, and the classification below — and only the second had a test.
+  // A multi-line message breaks the line-oriented sink it is written to, which is the
+  // reason the collapse existed before anything was classified.
+  it('reports a multi-line refusal as a single line', async () => {
+    const { runner } = makeRunner({
+      exitCode: 1,
+      stderr: 'compaction refused\nrun `claude login` and retry\n'
+    });
+    const message = await compactClaudeSession(inputs(runner)).then(
+      () => 'did not throw',
+      (err: Error) => err.message
+    );
+    expect(message).not.toMatch(/\n/);
+  });
+
   // The excerpt is model-controlled text on its way into a log line, so it goes through
   // the shared redaction set — `logger.sanitize`, never a second copy of the patterns.
   it('redacts a secret that reached the CLI output', async () => {
@@ -203,5 +221,112 @@ describe('session compaction failure reporting', () => {
     );
     expect(message).toMatch(/auth failed/);
     expect(message).not.toMatch(/sk-ant-api03-AAAA/);
+  });
+});
+
+describe('session compaction failure classification', () => {
+  // TWO DIFFERENT EVENTS ARRIVED UNDER ONE NAME. A compaction that RAN and did not
+  // finish (killed, timed out, or a bounded child that never returned) and a session
+  // the CLI would not ADMIT at all are opposite facts: the first says the bound was
+  // reached, the second says the bound was never approached. The run this was filed
+  // from spent 74 s of a 300 s bound and was refused, and the only record said
+  // `session-compact-failed`, which reads as the first. An operator tuning the bound
+  // would have been tuning a number that had nothing to do with it.
+  const classify = async (outcome: FakeOutcome): Promise<string> => {
+    const { runner } = makeRunner(outcome);
+    return compactClaudeSession(inputs(runner)).then(
+      () => 'did not throw',
+      (err: unknown) =>
+        err instanceof SessionCompactionError ? err.kind : `not a compaction error: ${String(err)}`
+    );
+  };
+
+  it('marks a session the CLI would not admit as too large', async () => {
+    expect(
+      await classify({
+        exitCode: 1,
+        stdout: '{"type":"result","result":"Prompt is too long","session_id":"abc"}\n'
+      })
+    ).toBe('session-too-large');
+  });
+
+  it('marks a compaction that ran and did not finish as an invocation failure', async () => {
+    expect(await classify({ exitCode: 1, stderr: 'model not found\n' })).toBe(
+      'invocation-failed'
+    );
+  });
+
+  // A child whose only output was a handshake has no account of itself. Absence of a
+  // refusal is not a refusal, and guessing from the process facts alone would put the
+  // more alarming of the two codes on the case with the least evidence.
+  it('marks a silent child as an invocation failure, not a refusal', async () => {
+    expect(await classify({ exitCode: null })).toBe('invocation-failed');
+  });
+
+  // The sentence is matched after whitespace is collapsed, for the same reason the
+  // excerpt collapses it: a refusal that wraps is the same refusal. Matching the raw
+  // text would report the general code for a line break.
+  it('recognises the refusal when the CLI wrapped its sentence across lines', async () => {
+    expect(await classify({ exitCode: 1, stderr: 'Prompt is too\nlong\n' })).toBe(
+      'session-too-large'
+    );
+  });
+
+  // ORDER IS THE POINT. The excerpt is bounded at 600 characters for a log line; the
+  // classification is a verdict about what happened. Classifying the bounded string
+  // would make the verdict depend on where the CLI put its sentence, so this pins the
+  // sentence PAST the bound and still expects it read.
+  it('classifies the whole account, not the excerpt the bound left behind', async () => {
+    const message = await classify({
+      exitCode: 1,
+      stderr: `${'x'.repeat(700)} Prompt is too long\n`
+    });
+    expect(message).toBe('session-too-large');
+  });
+
+  // THE COMPOUND SENTENCE, decided deliberately rather than left to fall out. The CLI
+  // says both things at once when a session is too large AND its own recovery could not
+  // run: "Prompt is too long · automatic compaction failed: <why the recovery failed>".
+  // That is the exact shape of the invalid-model incident, and it classifies as a
+  // refusal — because on the facts it IS one. The session was not admitted; a second
+  // fault stopped the CLI from fixing that itself. The reason code answers "was this
+  // request admitted?", and `detail` still carries the whole sentence, so the second
+  // fault is not lost to the reader who has to act on it.
+  it('reads a refusal compounded with another fault as a refusal', async () => {
+    expect(
+      await classify({
+        exitCode: 1,
+        stdout:
+          '{"type":"result","result":"Prompt is too long \\u00b7 automatic compaction failed: ' +
+          "There's an issue with the selected model (claude-haiku-4-6)." +
+          ' It may not exist or you may not have access to it."}\n'
+      })
+    ).toBe('session-too-large');
+  });
+
+  it('gives the two kinds different reason codes and different warnings', () => {
+    const tooLarge = compactionFailureRecord(
+      new SessionCompactionError('refused', 'session-too-large')
+    );
+    const ran = compactionFailureRecord(
+      new SessionCompactionError('killed', 'invocation-failed')
+    );
+    expect(tooLarge.reasonCode).not.toBe(ran.reasonCode);
+    expect(tooLarge.warning).not.toBe(ran.warning);
+    // The code already on record, and in `docs/reference/settings.md`, keeps its
+    // meaning: it is the mode it always described. Only the new mode is new.
+    expect(ran.reasonCode).toBe('session-compaction-failed-fresh-session');
+  });
+
+  // The compactor rethrows the runner's own error untouched when `invoke` throws, and
+  // that error is not this class. Anything unrecognised must fall to the code that was
+  // already there rather than to the more specific claim.
+  it('falls back to the general record for an error it did not raise', () => {
+    expect(compactionFailureRecord(new Error('spawn ENOENT')).reasonCode).toBe(
+      'session-compaction-failed-fresh-session'
+    );
+    expect(compactionFailureRecord('not an error at all').reasonCode).toBe(
+      'session-compaction-failed-fresh-session'
+    );
   });
 });

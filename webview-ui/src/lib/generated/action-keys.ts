@@ -35,7 +35,12 @@ export const ACTION_KEYS = [
   'run.overwrite-output',
   'queue.delete',
   'settings.disable-confirmations',
-  'backend.grant-uncontained'
+  'backend.grant-uncontained',
+  // Feature 195 (T064, FR-025) — attested completion. Recognized as a
+  // destructive action because `completed` is a status no transition returns
+  // from (192's invariant 4): attesting spends the operator's ability to retry
+  // the task, which is exactly the loss a confirmation exists to name.
+  'queue.attest-completed'
 ] as const;
 
 export type ActionKey = (typeof ACTION_KEYS)[number];

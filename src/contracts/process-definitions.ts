@@ -399,6 +399,27 @@ export interface PhaseCatalogResolution {
   /** One revision for the one layer (FR-044). Derived from the store's manifest (FR-044a). */
   readonly revision: string;
   readonly warnings: readonly PhaseCatalogWarning[];
+  /**
+   * BUG-001 (101) — the rows of the definitions that are saved and not published, for
+   * the Builder's Library and for nothing else.
+   *
+   * **A second list rather than more of `records`.** `records` is what the launch
+   * surface, the export selection, the import preflight and the definition
+   * semantics all read; an unpublished definition appearing there would become
+   * launchable and referenceable, which is exactly what 100 FR-009 and hard rule
+   * 64 forbid. Keeping it separate makes "a draft changes nothing about what runs"
+   * a property of the shape instead of a rule every consumer has to remember.
+   *
+   * Parsed and validated by the same row parser `records` uses, so a defect in a
+   * draft is reported to its author the same way — but never folded into
+   * `warnings`, which is a statement about the effective catalog and so about
+   * work the workspace can actually execute.
+   *
+   * Empty for every caller that does not pass `draftOnlyRows`. It is required
+   * rather than optional so a resolver cannot silently omit it, which is the
+   * shape of the defect it was added to fix.
+   */
+  readonly draftOnlyRecords: readonly PhaseSourceRecord[];
 }
 
 export type PhaseCatalogMutation =

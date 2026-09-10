@@ -171,6 +171,56 @@ describe('a sensitive phase is not advanced by its own claim (FR-R3-058)', () =>
     expect(warnings?.warnings).toContain('host-verification-failed');
   });
 
+  // FR-009 / SC-007 (BUG-001) — the exit status the gate reads must be one the
+  // BACKEND produced.
+  //
+  // Both cases below are the same raw output as the `exitCode: 3` case above but
+  // for one field, and they must reach the opposite verdict. The 143 is not the
+  // backend's: the runner parsed the terminal `{"type":"result"}` line, waited out
+  // FR-025's settle window, and SIGTERM'd a process that would not exit, so the
+  // process tree reported `128 + 15`. Reading that as the host's verdict is the
+  // runner reporting its own signal back to itself.
+  //
+  // Observed in the field on a `finalize` phase that had passed 9 of 9 checks, run
+  // the host's own `npm run verify` twice at exit 0, committed 165 files and merged
+  // them into `develop`. The durable record said the phase that performed the merge
+  // failed, and the queue halted on it.
+  //
+  // THE NUMERIC CODE IS THE POINT. The only pre-existing fixture for this state
+  // (`phase-runner-completion.test.ts`) pins `exitCode: null`, and `null` is the one
+  // value the enforcing arm's `exitCode !== null && exitCode !== 0` guard cannot
+  // see — so it passed with the defect present. Modelling only `null` + signal is
+  // what made this invisible.
+  it('SC-007 — advances a marked phase whose non-zero exit the RUNNER authored', async () => {
+    const { output, entries } = await runWith(
+      { completedAwaitingExit: true, timedOut: false, killed: false, exitCode: 143 },
+      SENSITIVE
+    );
+    expect(output.outcome).toBe('clean');
+    expect(output.terminationReason).toBe('token');
+    expect(output.result.kind).toBe('clean');
+
+    // Not merely "did not fail": the cause must not be recorded either. A phase
+    // that advanced while its record says host verification failed is the same
+    // defect one layer out.
+    const recorded = entries
+      .filter((e) => e.eventType === 'phase-end')
+      .flatMap((e) => (e.payload as { warnings?: readonly string[] }).warnings ?? []);
+    expect(recorded).not.toContain('host-verification-failed');
+  });
+
+  it('SC-007 — the same runner-authored exit advances an unmarked phase (control)', async () => {
+    // The control. FR-R3-117 resolves an unmarked load-bearing phase to
+    // `exit-code` as well, so this pair does not contrast enforcement with its
+    // absence -- it contrasts a declared basis with a resolved one, and the two
+    // must not disagree about a field that does not change completion semantics.
+    const { output } = await runWith(
+      { completedAwaitingExit: true, timedOut: false, killed: false, exitCode: 143 },
+      ORDINARY
+    );
+    expect(output.outcome).toBe('clean');
+  });
+
   it('does not advance a marked phase that timed out, however clean the token', async () => {
     const { output } = await runWith({ timedOut: true }, SENSITIVE);
     expect(output.outcome).not.toBe('clean');

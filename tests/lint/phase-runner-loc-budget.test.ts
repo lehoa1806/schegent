@@ -336,7 +336,50 @@ const BUDGETS = [
   // inside a window-scoped evaluator. Two forwarders would have cost more here
   // and read no better: the optional argument is the same question ("which of
   // this Run's phases?") with "all of them" as an answer.
-  { path: 'src/controller/phase-runner.ts', max: 1_114 },
+  //
+  // BUG-001 / FR-009 (2026-09-08) — 1114 → 1144, for `completedAwaitingExit`'s
+  // FIRST READER. The same shape as the `evidencePolicy` bump above and the
+  // `timeoutSeconds` HOLD below it: a field the runner set correctly, documented
+  // precisely, and no code path consulted. Here that cost a `finalize` phase that
+  // had passed 9 of 9 checks and merged 165 files, failed on exit 143 — the
+  // runner's own SIGTERM after FR-025's settle window, read back as the backend's
+  // verdict.
+  //
+  // WHY +30 AND NOT +2. The predicate is one expression; the rest is the argument
+  // for it. Two arms already enforced this rule inline and a state that overrides
+  // nothing reached one of them unsurveyed, so the next reader needs to know why
+  // the check is a derived rule rather than a third conjunct, and why it cannot
+  // reach the timeout arms. A draft that stated only the mechanism measured +12
+  // and is not recorded as the better outcome: the deleted half is the half that
+  // stops the conjunct being added back.
+  //
+  // Not extracted to its own module, unlike `effective-phase-timeout.ts`. That
+  // one moved an EFFECT the shell was performing; this is a two-line question
+  // about a field on `raw`, asked at the one site that acts on the answer, and a
+  // module boundary around it would add indirection without removing
+  // responsibility.
+  //
+  // Bugfix 2026-09-10 — 1144 → 1147 for the compaction failure RECORD. Three lines:
+  // one local, two of note, and the import gained a name without gaining a line
+  // because every import in that file is on one.
+  //
+  // WHAT IT BUYS. Two opposite failures were recorded under one code. A compaction
+  // that RAN and did not finish says the bound was reached; a session the CLI would
+  // not ADMIT says the bound was never approached — refused in 74 s of a 300 s
+  // window on the run this was filed from. Both wrote
+  // `session-compaction-failed-fresh-session`, so the trail sent an operator to tune
+  // a timeout that had nothing to do with it, and the one distinction that decides
+  // whether more time would help was the one thing not recorded.
+  //
+  // NO RESPONSIBILITY WAS ADDED, which is what makes this headroom rather than a
+  // split. The classification is made once, in `session-compactor.ts`, where the
+  // process facts and the CLI's own account are both already in hand; the shell
+  // reads two fields off the record it is handed, exactly as it already read one
+  // string for `detail`. The note that remains here is the single thing a reader
+  // could get wrong — re-deriving the kind from the message, which would be a second
+  // oracle disagreeing with the first the next time the vendor rephrases anything —
+  // and the reasoning for it lives beside the classifier, not here.
+  { path: 'src/controller/phase-runner.ts', max: 1_147 },
   // FR-R3-052 / H-03 (2026-08-24) — 400 → 415 for the size check that was
   // missing. `stat()` was already called here and only `isFile()` was read, so
   // `readFile()` took a multi-GiB sidecar wholly into memory. The bound, the

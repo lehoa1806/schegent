@@ -17,6 +17,9 @@ import type { WorkflowRun } from '../../src/state/workflow-run';
 import {
   decideTaskTransition,
   TASK_TRANSITION_REJECTION_REASONS,
+  // Feature 195 (T066) — the sufficiency gate enumerates the exits by asking
+  // the classifier every question that could yield one, so it builds inputs.
+  type TaskTransitionDecisionInput,
   type TaskTransitionDecisionResult,
   type TaskTransitionRejectionReason
 } from '../../src/queue/task-transition-decision';
@@ -399,6 +402,191 @@ describe('feature 195 (T060, FR-009) — a failed task cannot be cancelled', () 
     for (const decision of nonEligible) {
       expect(decision.eligible).toBe(false);
     }
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// feature 195 (T066, SC-016) — the exit set from the blocking outcome is
+// SUFFICIENT, not merely closed.
+//
+// PAIRED WITH T060 DIRECTLY ABOVE, AND THE PAIRING IS THE WHOLE POINT. T060
+// asks what the table REFUSES from `failed`, and proves `failed -> canceled` is
+// not an edge. A table that admitted nothing whatsoever from `failed` would
+// answer that question exactly as a correct one does — every assertion in T060
+// is an expected refusal, so a stricter table cannot fail any of them. That is
+// asserted below rather than argued, and it is why exclusivity passing has
+// never implied sufficiency.
+//
+// This is the check the feature was missing. FR-009's exit set was verified for
+// exclusivity at T060 and the surface it described was still unusable for the
+// case BUG-001 found: a task recorded `failed` after its phase had already
+// committed, where retrying repeats an irreversible side effect and removing
+// destroys the record that the work happened. Both admitted exits were
+// disqualified for that operator, and nothing failed.
+//
+// DERIVED FROM THE CLASSIFIER, NOT TRANSCRIBED — the opposite choice from the
+// 36-cell matrix below, on purpose. That matrix transcribes, because its job is
+// to pin a table against drift. A sufficiency claim cannot be written that way:
+// a transcribed exit set reports whatever this file says it is, and the failure
+// mode being guarded against is precisely the real set being emptier than the
+// document. So the exits are enumerated by asking the classifier every question
+// that could produce one.
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * SC-016's two disqualifiers, as properties of an exit rather than as a list of
+ * which exits are acceptable. An exit qualifies when it has neither.
+ */
+interface ExitProperties {
+  /** Puts the task back on the run path, so its phase can be invoked again. */
+  readonly reRunsTheTask: boolean;
+  /** Leaves no row for the task, so the record that the work happened is gone. */
+  readonly discardsTheRow: boolean;
+}
+
+/**
+ * Every question that could yield an exit from a status, asked of the
+ * classifier and keyed by an operator-facing label.
+ *
+ * `finish` is expanded over its three targets, and over
+ * `operatorAttestedCompletion` in both settings: edge 4 is admitted only with
+ * the flag set, so an enumeration that omitted it would report a smaller exit
+ * set than the real one — the direction that hides the defect this block exists
+ * to catch. `remove` is absent because it is not a transition at all: it
+ * deletes the row rather than moving it, so the classifier is never asked. It
+ * is added by hand in the table below, where its disqualification is the point.
+ */
+function admittedExitsFrom(currentStatus: FeatureRequestStatus): readonly string[] {
+  const questions: readonly (readonly [string, TaskTransitionDecisionInput])[] = [
+    ['mark-in-flight', { operation: 'mark-in-flight', currentStatus, queueAlreadyHasDifferentInFlight: false }],
+    ['pause', { operation: 'pause', currentStatus, queueAlreadyHasDifferentInFlight: false }],
+    ['return-to-pending', { operation: 'return-to-pending', currentStatus, queueAlreadyHasDifferentInFlight: false }],
+    ...(['completed', 'canceled', 'failed'] as const).flatMap(
+      (targetStatus) =>
+        [
+          [
+            `finish -> ${targetStatus}`,
+            { operation: 'finish' as const, currentStatus, targetStatus, queueAlreadyHasDifferentInFlight: false }
+          ],
+          [
+            `finish -> ${targetStatus} (attested)`,
+            {
+              operation: 'finish' as const,
+              currentStatus,
+              targetStatus,
+              queueAlreadyHasDifferentInFlight: false,
+              operatorAttestedCompletion: true
+            }
+          ]
+        ] as readonly (readonly [string, TaskTransitionDecisionInput])[]
+    )
+  ];
+
+  return questions.filter(([, input]) => decideTaskTransition(input).eligible).map(([label]) => label);
+}
+
+/**
+ * What each exit from `failed` does to the task, judged against SC-016's two
+ * clauses. Written out rather than computed, because these are facts about the
+ * product's behaviour after the transition — not about the transition table —
+ * and a table that derived them from the classifier would be asking the
+ * classifier to grade itself.
+ *
+ * `Partial` is load-bearing rather than decoration: `Record<string, …>` would
+ * claim every string has a judgement, which would make the lookup below total
+ * and the guard after it unreachable — the guard is the thing that catches an
+ * exit this table has not judged, so the type has to admit the gap it guards.
+ */
+const EXIT_PROPERTIES: Readonly<Partial<Record<string, ExitProperties>>> = {
+  // FR-008's retry exit. `failed -> pending` hands the row back to the drain,
+  // which is the whole purpose and also the disqualification: the phase that
+  // committed the side effect runs again.
+  'return-to-pending': { reRunsTheTask: true, discardsTheRow: false },
+  // Repointing a halted workflow directly at a task, which the transcribed
+  // `MARK_IN_FLIGHT` row below admits from `failed`. Same disqualification by a
+  // shorter route — it is in-flight again without passing through the drain.
+  'mark-in-flight': { reRunsTheTask: true, discardsTheRow: false },
+  // FR-007's remove exit, and the one exit that is not a transition. It ends
+  // the halt by deleting the row (feature 192, invariant 5 — removal deletes,
+  // it does not mark), which is exactly the second clause.
+  remove: { reRunsTheTask: false, discardsTheRow: true },
+  // FR-025's attested exit, added by T063. Neither clause: the row stays and
+  // carries its `lastError` and `completedAt`, and `completed` is outside the
+  // blocking set so no further pass names it — which is how the halt ends with
+  // nothing stored about it (FR-003).
+  'finish -> completed (attested)': { reRunsTheTask: false, discardsTheRow: false }
+};
+
+describe('feature 195 (T066, SC-016) — the exit set from `failed` is sufficient', () => {
+  it('every admitted exit from `failed` has a recorded judgement, and vice versa', () => {
+    // Non-vacuity in both directions, and the reason this test comes first. The
+    // sufficiency assertion below reads `EXIT_PROPERTIES`, so an exit the
+    // classifier admits and this file forgot would be judged by nothing at all,
+    // and a judgement for an exit the classifier no longer admits would keep
+    // answering after its subject was withdrawn. `remove` is the one deliberate
+    // asymmetry: it never appears in the derived set because it is not a
+    // transition, so it is excluded here by name rather than by silence.
+    const derived = admittedExitsFrom('failed');
+    const judged = Object.keys(EXIT_PROPERTIES).filter((label) => label !== 'remove');
+
+    expect([...derived].sort()).toEqual([...judged].sort());
+  });
+
+  it('at least one admitted exit neither re-runs the task nor discards its row', () => {
+    // SC-016 as written. `remove` is included in the candidate set even though
+    // the classifier never yields it, because leaving it out would make the
+    // criterion easier to satisfy by hiding one of the two exits that fail it.
+    const candidates = [...admittedExitsFrom('failed'), 'remove'];
+    const qualifying = candidates.filter((label) => {
+      const properties = EXIT_PROPERTIES[label];
+      if (properties === undefined) throw new Error(`unjudged exit from failed: ${label}`);
+      return !properties.reRunsTheTask && !properties.discardsTheRow;
+    });
+
+    expect(
+      qualifying,
+      'FR-009 exclusivity can pass with an empty qualifying set — that is BUG-001. SC-016 ' +
+        'requires at least one exit that leaves the row in place without running it again.'
+    ).not.toEqual([]);
+    // Named as well as counted, so the failure says which exit was withdrawn
+    // rather than only that the set shrank.
+    expect(qualifying).toContain('finish -> completed (attested)');
+  });
+
+  it('the qualifying exit survives its own round trip, row and evidence intact', () => {
+    // The two clauses measured on the real writers rather than read off the
+    // table above. "Does not discard the row" is the row still being there;
+    // "does not re-run the task" is the status it lands in — `completed`, which
+    // the transcribed `MARK_IN_FLIGHT` row refuses, so nothing can put an
+    // attested task back in flight without a separate operator transition that
+    // this table does not have. The end-to-end form, with the phase counted and
+    // the drain actually run, is T062's scenario in
+    // `tests/integration/queue-halt-on-failure.test.ts`.
+    expect(MARK_IN_FLIGHT.completed).toEqual(NO);
+  });
+
+  it("T060's assertions are all refusals, so an empty exit set is invisible to them", () => {
+    // The pairing, asserted. Every decision T060 inspects is expected
+    // ineligible, which means no change that made the table STRICTER could fail
+    // that block — including the change that removed the last usable way out of
+    // `failed`. This is not a restatement of T060; it is the statement that
+    // T060 cannot be the test SC-016 asks for.
+    const t060Subjects = (['failed', 'canceled', 'completed', 'paused'] as const).map((currentStatus) =>
+      decideTaskTransition({
+        operation: 'finish',
+        currentStatus,
+        targetStatus: 'canceled',
+        queueAlreadyHasDifferentInFlight: false
+      })
+    );
+
+    expect(t060Subjects.every((decision) => decision.eligible === false)).toBe(true);
+    // And the converse half: the edge T060 proves refused is not the edge this
+    // block requires admitted, so satisfying SC-016 did not cost FR-009 its
+    // exclusivity. `failed -> canceled` stays refused with the flag set too —
+    // the attestation widens one cell, not the row.
+    expect(admittedExitsFrom('failed')).not.toContain('finish -> canceled');
+    expect(admittedExitsFrom('failed')).not.toContain('finish -> canceled (attested)');
   });
 });
 

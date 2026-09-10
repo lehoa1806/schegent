@@ -151,6 +151,11 @@ const NOT_QUEUE_ADDRESSED: ReadonlyMap<string, string> = new Map([
   ['CMD_CANCEL', TASK_ADDRESSED],
   ['CMD_REMOVE_QUEUE_ITEM', TASK_ADDRESSED],
   ['CMD_RETRY_QUEUE_ITEM', TASK_ADDRESSED],
+  // Feature 195 (T064, FR-025) — the sibling of the retry above, and addressed
+  // the same way for the reason that matters most here: the halt belongs to
+  // whichever queue holds the failed row, so letting the wire name a queue is
+  // exactly how the halt's owner and the attestation's target could disagree.
+  ['CMD_ATTEST_TASK_COMPLETED', TASK_ADDRESSED],
   ['CMD_MOVE_QUEUE_ITEM_UP', TASK_ADDRESSED],
   ['CMD_MOVE_QUEUE_ITEM_DOWN', TASK_ADDRESSED],
   ['CMD_MODIFY_TASK', TASK_ADDRESSED],

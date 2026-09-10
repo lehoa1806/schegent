@@ -75,11 +75,18 @@ export interface PhaseCatalogFieldErrorProjection {
 
 export interface PhaseCatalogSourceProjection {
   /**
-   * `${phaseId}::${index}`, unique over the one layer.
+   * `${phaseId}::${index}`, unique over `records` as a whole — or
+   * `draft::${phaseId}::${index}` for a saved-but-unpublished definition.
    *
    * Feature 099 (T489a, FR-043) — was `${scope}:${phaseId}` with a positional
    * de-duplication suffix, because two layers could hold the same id. One layer
    * cannot, so the resolver's own key carries through unchanged.
+   *
+   * BUG-001 (101) — `records` is now two concatenated lists, the resolved rows and the
+   * draft-only ones, indexed independently. A draft claiming an id an active row
+   * also claims would key identically without the prefix, and the Library renders
+   * both in one keyed `{#each}` where a duplicate key is a render error. Still not
+   * an id: read `phaseId` for that, and `lifecycle.state` to tell the two apart.
    */
   readonly key: string;
   readonly phaseId: string;
@@ -121,7 +128,11 @@ export interface PipelineCatalogFieldErrorProjection {
 }
 
 export interface PipelineCatalogSourceProjection {
-  /** `${pipelineId}::${index}`, unique over the one layer (FR-043). */
+  /**
+   * `${pipelineId}::${index}` (FR-043), or `draft::${pipelineId}::${index}` for a
+   * saved-but-unpublished definition. See `PhaseCatalogSourceProjection.key` for
+   * why the prefix exists (101 BUG-001).
+   */
   readonly key: string;
   readonly pipelineId: string;
   readonly status: PipelineSourceStatus;
@@ -154,7 +165,11 @@ export interface PipelineCatalogProjection {
 
 
 export interface WorkflowCatalogSourceProjection {
-  /** `${workflowId}::${index}`, unique over the one layer (FR-043). */
+  /**
+   * `${workflowId}::${index}` (FR-043), or `draft::${workflowId}::${index}` for a
+   * saved-but-unpublished definition. See `PhaseCatalogSourceProjection.key` for
+   * why the prefix exists (101 BUG-001).
+   */
   readonly key: string;
   readonly workflowId: string;
   readonly status: WorkflowSourceStatus;
