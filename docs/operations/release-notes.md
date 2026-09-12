@@ -9,6 +9,41 @@ This file is the release workflow's stable pointer for changes that affect opera
 Recorded as they land, so the first release note is assembled from evidence rather than
 from memory.
 
+### A window that loses the primacy election keeps contesting (`FR-032`, 2026-09-12)
+
+Exactly one VS Code window per workspace drives Runs. That window used to be chosen once,
+at activation, and a window that lost stayed passive for the rest of its life. When the
+window holding primacy exited *without* releasing its lease — a crash, a force quit, a
+machine suspended — the record it left behind still reads as live for fifteen seconds, so
+a replacement window opened inside that span lost the election correctly and then never
+asked again. The reported instance sat for 6h28m with persisted Runs untouched, and the
+only recovery was restarting VS Code. A window now contests on every heartbeat until it
+wins, and installs its recovery producers at the moment it wins rather than only at
+activation.
+
+**Who is affected**: anyone who opens more than one VS Code window on the same workspace,
+and anyone whose primary window has ever exited uncleanly.
+
+**What you may need to do**: nothing.
+
+**The accepted consequence — closing the primary window hands the workspace to the
+survivor.** With two windows open on one workspace, the second begins driving persisted
+Runs within roughly 15–20 seconds of the first ceasing to beat: the fifteen-second
+staleness threshold, rounded up to the next five-second heartbeat. This is the intended
+behaviour rather than a side effect of the fix. The alternative considered was to contest
+only while a Run is pending, and it was rejected because it makes takeover depend on state
+the losing window cannot see. Operator decision, 2026-09-12: always contest. There is no
+setting that pins a window as non-driving — primacy is a property of the workspace lease,
+not a per-window rank.
+
+**What happens to Runs you already have**: nothing changes on disk, and a takeover cannot
+double-drive a Run. The resume path claims the queue's execution lease before it marks
+anything in flight (`FR-R3-070`), so a window that gains primacy while another is still
+executing declines rather than spawning a second process.
+
+**What you gain**: a crashed or force-quit host no longer strands every persisted Run on
+that workspace until somebody notices and restarts VS Code.
+
 ### BREAKING — a Phase is judged on its exit status by default (`FR-R3-117`, 2026-08-27)
 
 A Phase that declares nothing used to advance on the model's own report of its work. It
