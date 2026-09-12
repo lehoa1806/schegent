@@ -129,6 +129,17 @@ export interface Stage2Producers {
   run(): Promise<void>;
   /** Whether the producers have already run in this window. */
   hasRun(): boolean;
+  /**
+   * FR-032 (BUG-001) — install the recovery producers a lost election skipped.
+   *
+   * The late-primacy occasion, sibling to the late-trust occasion `run()` serves.
+   * `primacy-gain-wiring.ts` calls it from `lock.onPrimacyGained`, and the
+   * `result` it passes is the one the WINNING contest produced — not the one
+   * activation recorded, which reads `acquired: false` in exactly the case this
+   * method exists for. Idempotent: a window that has already installed them
+   * returns without doing anything, and the preamble never runs a second time.
+   */
+  installRecovery(result: { acquired: boolean; ownerId: string }): Promise<void>;
 }
 
 export function createStage2Producers(deps: Stage2ProducerDeps): Stage2Producers {
@@ -150,6 +161,17 @@ export function createStage2Producers(deps: Stage2ProducerDeps): Stage2Producers
 
   let ran = false;
   let running: Promise<void> | null = null;
+  /**
+   * FR-032 (BUG-001) — THE SECOND LATCH, and the reason there are two.
+   *
+   * `ran` means "the trust-scoped preamble has run", and a window that LOSES the
+   * election runs that preamble in full — it still records its migration events,
+   * still probes the mount, still scans for backends. So `ran` is true in the
+   * one state where recovery has not been installed, and reusing it to guard a
+   * later gain would make the gain a guaranteed no-op. This latch tracks the
+   * other thing: whether the five primacy-gated installers have been installed.
+   */
+  let installedRecovery = false;
 
   const runOnce = async (): Promise<void> => {
     if (!isWorkspaceTrusted()) {
@@ -203,6 +225,49 @@ export function createStage2Producers(deps: Stage2ProducerDeps): Stage2Producers
     // Also fire-and-forget, also not primacy-gated: knowing which backends are
     // installed is this machine's fact, and every window's UI shows it.
     void backendCapabilities.scan();
+
+    // FR-032 (BUG-001) — the five installers below are now a call away, with the
+    // result the election above just produced. Nothing about the activation path
+    // changed: same five, same order, same gates, same verdict, one frame
+    // deeper. What changed is REACHABILITY. They have to be installable a second
+    // time, from a primacy gain this window has not won yet, and a block nested
+    // inside `runOnce` is reachable only by running the whole preamble again.
+    await installRecoveryProducers(lockResult);
+  };
+
+  /**
+   * The five FR-R3-070 recovery installers, gated on an election result.
+   *
+   * WHERE THIS IS DECLARED IS PART OF THE CONTRACT, in both directions.
+   *
+   * Outer scope, because `installRecovery` on the returned object has to reach
+   * it: a helper declared inside `runOnce` is reachable only from inside one
+   * activation, which is the opposite of what FR-032 needs.
+   *
+   * Below the election, because rule 1 of `elect-before-recovering.test.ts` is a
+   * TEXTUAL ordering over this file — every recovery landmark must appear after
+   * `const lockResult = await lock.tryAcquire()`. Hoisting these up beside the
+   * latches would turn all five red at once while changing no behaviour, which
+   * is exactly the kind of move that gate exists to catch.
+   *
+   * THE PARAMETER NAME IS ALSO PART OF IT. Rule 2 wants `lockResult.acquired`
+   * within 400 stripped chars of each landmark and `GATE_COUNT` counts that
+   * exact literal five times, so `lockResult` is a contract with the gate rather
+   * than a local preference. It shadows nothing: `runOnce`'s binding of the same
+   * name is out of scope here, and this one is whichever result the caller won.
+   */
+  const installRecoveryProducers = async (lockResult: {
+    acquired: boolean;
+    ownerId: string;
+  }): Promise<void> => {
+    if (installedRecovery) return;
+    // Latched only where a win was installed. On a refusal this assigns the
+    // `false` it already holds, so the five `else` branches below still record
+    // why they declined and a later gain still finds the latch open. Spelled as
+    // an assignment rather than `if (lockResult.acquired) { … }` because that
+    // literal is what `GATE_COUNT` counts, and a sixth occurrence of it fails
+    // the gate over a latch that is not an installer.
+    installedRecovery = lockResult.acquired;
 
     if (lockResult.acquired) {
       try {
@@ -326,6 +391,17 @@ export function createStage2Producers(deps: Stage2ProducerDeps): Stage2Producers
         running = null;
       });
       return running;
+    },
+    async installRecovery(result: { acquired: boolean; ownerId: string }): Promise<void> {
+      // AWAIT THE IN-FLIGHT RUN FIRST. The contest interval fires on its own
+      // clock, so a gain can land while `run()` is still suspended on a
+      // landmark. Installing from underneath it would let a resume read a run
+      // map `replayTerminalTransitions()` has not reconciled yet — a Run whose
+      // completion was journalled but not projected would be resumed as if it
+      // were still running, which is the ordering the preamble exists to
+      // establish. `running` is the same handle the concurrent-grant case uses.
+      if (running) await running;
+      await installRecoveryProducers(result);
     }
   };
 }

@@ -45,7 +45,17 @@ interface Recorder {
   trusted: boolean;
 }
 
-function recorder(options: { trusted: boolean; acquired?: boolean }): Recorder {
+function recorder(options: {
+  trusted: boolean;
+  acquired?: boolean;
+  /**
+   * FR-032 — suspends the first awaited landmark, so a primacy gain can be
+   * delivered while `run()` is still in flight. Nothing else in this fixture can
+   * produce that interleaving: every landmark resolves immediately, so the
+   * mid-activation case would otherwise be a claim no test could make.
+   */
+  holdReplay?: Promise<void>;
+}): Recorder {
   const calls: string[] = [];
   const lines: string[] = [];
   const logger = new SanitizedLogger([{ appendLine: (line: string) => lines.push(line) }]);
@@ -101,6 +111,7 @@ function recorder(options: { trusted: boolean; acquired?: boolean }): Recorder {
     },
     runSafety: {
       replayTerminalTransitions: async () => {
+        await options.holdReplay;
         note('runSafety.replayTerminalTransitions', undefined);
       },
       sweepCheckpointRetention: async () => note('runSafety.sweepCheckpointRetention', undefined)
@@ -306,5 +317,126 @@ describe('stage 2 producers: nothing happens in an untrusted window', () => {
     expect(r.calls).toContain('startMountProbe');
     expect(r.calls).toContain('backendCapabilities.scan');
     expect(r.lines.some((line) => line.includes('window is not primary'))).toBe(true);
+  });
+
+  // FR-032 / SC-011 (BUG-001) — the other half of the case above.
+  //
+  // The non-primary window at line 290 was, until this feature, the window's
+  // permanent condition: the election happened once and nothing asked again, so
+  // an incumbent that died without releasing left a survivor that had done its
+  // own writes and would never install a recovery producer. `installRecovery` is
+  // the late occasion for the same five installers the activation path gates, and
+  // it is deliberately shaped like the late TRUST grant beside it — same object,
+  // same latch discipline, no second preamble.
+  //
+  // FR-032's last sentence — an untrusted window installs nothing — needs no case
+  // here and could not get one: it holds by construction, because line 164's
+  // window performs no act at all, the election is an act, and a window that never
+  // elects never arms the interval a gain could arrive on.
+
+  /** Everything `run()` does regardless of the election. None of it repeats. */
+  const PREAMBLE = Object.freeze(EVERY_ACT.filter((act) => !PRIMACY_GATED.includes(act)));
+
+  const flush = async (): Promise<void> => {
+    for (let round = 0; round < 8; round += 1) await Promise.resolve();
+  };
+
+  it('installs the five recovery producers when primacy arrives later, re-running no preamble', async () => {
+    const r = recorder({ trusted: true, acquired: false });
+    const producers = createStage2Producers(r.deps);
+
+    await producers.run();
+    await flush();
+    for (const installer of PRIMACY_GATED) {
+      expect(r.calls, `${installer} must not run before the gain`).not.toContain(installer);
+    }
+
+    await producers.installRecovery({ acquired: true, ownerId: 'window-a' });
+    await flush();
+
+    for (const installer of PRIMACY_GATED) {
+      expect(r.calls, `${installer} must run once primacy is won`).toContain(installer);
+    }
+    for (const act of PREAMBLE) {
+      expect(
+        r.calls.filter((call) => call === act),
+        `${act} is this window's own work and was already done; a gain must not repeat it`
+      ).toHaveLength(1);
+    }
+  });
+
+  it('installs nothing on a gain that reports a lost election', async () => {
+    // The subscriber passes on whatever the lock handed it. A result whose
+    // `acquired` is false is not a gain, and must take the same five `else`
+    // branches activation took.
+    const r = recorder({ trusted: true, acquired: false });
+    const producers = createStage2Producers(r.deps);
+
+    await producers.run();
+    await producers.installRecovery({ acquired: false, ownerId: 'window-a' });
+    await flush();
+
+    for (const installer of PRIMACY_GATED) {
+      expect(r.calls, `${installer} must not run without a win`).not.toContain(installer);
+    }
+  });
+
+  it('is a no-op on a second gain', async () => {
+    // The same shape as the second-grant case above, and for the same reason: the
+    // interval keeps contesting, so a window that regains a fence it already holds
+    // must not install a second copy of every recovery producer.
+    const won = { acquired: true, ownerId: 'window-a' };
+    const r = recorder({ trusted: true, acquired: false });
+    const producers = createStage2Producers(r.deps);
+
+    await producers.run();
+    await producers.installRecovery(won);
+    await flush();
+    const afterFirst = r.calls.length;
+
+    await producers.installRecovery(won);
+    await producers.installRecovery(won);
+    await flush();
+
+    expect(r.calls.length).toBe(afterFirst);
+    expect(r.calls.filter((call) => call === 'controller.scheduleAutoDrain')).toHaveLength(1);
+  });
+
+  it('does not let a gain mid-activation overtake the terminal-transition replay', async () => {
+    // The sibling of the concurrent-grant case. A gain can land while `run()` is
+    // still suspended — the contest interval fires on its own clock — and the
+    // installers must still see the reconciled run map, or a resume decides
+    // against a Run whose completion was journalled and not yet projected.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const r = recorder({ trusted: true, acquired: false, holdReplay: held });
+    const producers = createStage2Producers(r.deps);
+
+    const activation = producers.run();
+    await flush();
+    // Suspended inside `replayTerminalTransitions`, past the election.
+    expect(r.calls).toContain('lock.tryAcquire');
+    expect(r.calls).toContain('startMountProbe');
+    expect(r.calls).not.toContain('runSafety.replayTerminalTransitions');
+
+    const installed = producers.installRecovery({ acquired: true, ownerId: 'window-a' });
+    await flush();
+    expect(r.calls, 'a gain must not install over an unfinished replay').not.toContain(
+      'scheduledStartCoordinator.reArm'
+    );
+
+    release();
+    await Promise.all([activation, installed]);
+    await flush();
+
+    expect(r.calls.indexOf('runSafety.replayTerminalTransitions')).toBeLessThan(
+      r.calls.indexOf('scheduledStartCoordinator.reArm')
+    );
+    expect(r.calls.filter((call) => call === 'lock.tryAcquire')).toHaveLength(1);
+    for (const installer of PRIMACY_GATED) {
+      expect(r.calls).toContain(installer);
+    }
   });
 });
