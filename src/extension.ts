@@ -35,6 +35,7 @@ import { wireLivePicture } from './activation/live-picture-wiring';
 import { wirePhaseExecution } from './activation/phase-execution-wiring';
 import { createStage2Producers, type Stage2Producers } from './activation/stage2-producers';
 import { wireTrustGrant } from './activation/trust-grant-wiring';
+import { wirePrimacyGain } from './activation/primacy-gain-wiring';
 import { closeStage2Resources } from './activation/stage2-teardown';
 import {
   readForceContinueOnRetryCap,
@@ -611,9 +612,9 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     replayEvidenceBacklog,
     runSafety,
     backendCapabilities,
-    startMountProbe,
-    refreshCatalog
+    startMountProbe, refreshCatalog // FR-032 — paired to fund the push below; why in that module.
   });
+  disposables.push(wirePrimacyGain({ logger, lock, producers }));
   await producers.run();
 
   const dispose = async (): Promise<void> => {

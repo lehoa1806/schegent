@@ -31,9 +31,17 @@ export const systemScheduler: Scheduler = {
 };
 
 /**
- * The per-workspace window-primacy lease. Its tenure is activation-to-disposal:
- * acquired in `extension.ts` at activation, released at `dispose()`, and nowhere
- * else (feature 093, FR-028 / FR-032a).
+ * The per-workspace window-primacy lease. Its tenure ends at disposal: first
+ * claimed from `extension.ts` at activation, released at `dispose()`, and
+ * released nowhere else (feature 093, FR-028 / FR-032a).
+ *
+ * FR-032 (BUG-001) amends the START of that tenure and nothing else. A window
+ * that loses the activation election keeps contesting on its own interval and
+ * may become primary later, so acquisition is no longer a single moment —
+ * `tick()` carries why, and `onPrimacyGained` is how anyone finds out. The
+ * release side is untouched: there is still exactly one release site, and a
+ * contending window's interval is stopped by the same `release()` that stops a
+ * primary window's heartbeat.
  *
  * Deliberately **no** scope wrapper. Feature 034's `withLock(scope, fn)` released
  * in a `finally`, which made a window-scoped lease end at a Run-scoped moment:
@@ -94,6 +102,11 @@ export class WorkspaceLockManager {
   /** FR-R3-103 — listeners for fence loss; see `onFenceLost`. */
   private readonly fenceLostListeners = new Set<() => void>();
 
+  /** FR-032 — listeners for a primacy gain won on a tick; see `onPrimacyGained`. */
+  private readonly primacyGainedListeners = new Set<
+    (result: { acquired: boolean; ownerId: string }) => void
+  >();
+
   private readonly store: WorkspaceStateStore;
   private readonly ownerId: string;
   private readonly clock: Clock;
@@ -130,6 +143,20 @@ export class WorkspaceLockManager {
    * every caller does the same thing with both — `commands/resume.ts` raises
    * `LockHeldError` and the schedule path defers to the watchdog's next tick —
    * and a third arm would be a distinction no caller acts on.
+   *
+   * FR-032 (BUG-001) — THE INTERVAL IS ARMED ON BOTH BRANCHES. It used to be
+   * armed only where the claim succeeded, which gave a refused window no clock
+   * of its own: it asked once, at activation, inside the fifteen seconds during
+   * which a dead host's lease still reads fresh, lost correctly, and never asked
+   * again. `tick()` is what the interval runs, and it is the branch that turns
+   * this from a heartbeat into a heartbeat-or-contest.
+   *
+   * This method stays SILENT about the outcome either way. Its first caller is
+   * activation, which reads the returned result directly and has no subscriber
+   * yet, and its second is `heartbeat()`'s inline re-acquisition, which is a
+   * window regaining a fence it never stopped driving under. Announcing either
+   * would install recovery over a window that already has it. `tick()` owns the
+   * notification because `tick()` is the only site where a gain is news.
    */
   public async tryAcquire(): Promise<{ acquired: boolean; ownerId: string }> {
     const now = this.clock.now();
@@ -142,6 +169,7 @@ export class WorkspaceLockManager {
     if (outcome.outcome !== 'acquired') {
       this.fence = null;
       const recorded = outcome.outcome === 'held' ? outcome.ownerId : this.ownerOfRecord();
+      this.startHeartbeat();
       return { acquired: false, ownerId: recorded ?? this.ownerId };
     }
     this.fence = outcome.fence;
@@ -273,6 +301,51 @@ export class WorkspaceLockManager {
   }
 
   /**
+   * What the interval runs: beat if this window is primary, contest if it is not.
+   *
+   * FR-032 (BUG-001) — THE ELECTION HAS A LIFETIME. Primacy used to be decided
+   * once, at activation, and a window that lost it stayed non-primary until VS
+   * Code restarted. The losing case is not rare and not benign: an incumbent
+   * host that dies without releasing leaves a lease that reads fresh for
+   * `STALENESS_THRESHOLD_MS`, so a replacement window opened inside that window
+   * contests, loses *correctly*, and then never asks again — the reported
+   * instance sat there for 6h28m with persisted Runs nobody was driving.
+   *
+   * BRANCHING ON THE FENCE, not on a remembered verdict. `fence === null` is the
+   * authoritative statement "this window holds no claim", maintained by every
+   * path that can end one — the refused acquire, the rejected beat — so the
+   * branch cannot disagree with the record the way a cached boolean could.
+   *
+   * The contest costs one `ownership.acquire` per beat from a non-primary
+   * window, at exactly the rate a primary window already writes its heartbeat.
+   * That symmetry is the point: the protocol's write rate is unchanged by who
+   * wins, so a workspace with two windows open costs what a workspace with one
+   * window and one crashed host has always cost.
+   *
+   * THE NOTIFICATION IS ONLY HERE. `tryAcquire()`'s other two callers are
+   * activation and the fence-loss path, and neither is a gain a subscriber
+   * should act on; SC-011 pins the count at exactly one across a gain → loss →
+   * gain cycle, which holds by construction because this is the only site.
+   * Listener errors are swallowed for the reason `heartbeat()` gives for its
+   * own: one bad callback must not leave the window permanently non-primary.
+   */
+  public async tick(): Promise<void> {
+    if (this.fence !== null) {
+      await this.heartbeat();
+      return;
+    }
+    const result = await this.tryAcquire();
+    if (!result.acquired) return;
+    for (const listener of this.primacyGainedListeners) {
+      try {
+        listener(result);
+      } catch {
+        /* a listener must not be able to undo a win this window already holds */
+      }
+    }
+  }
+
+  /**
    * Register a callback for the moment this window loses its fence.
    *
    * FR-R3-103 (FR-046). The driver uses it to run the same abort ladder an operator cancel
@@ -282,6 +355,33 @@ export class WorkspaceLockManager {
   public onFenceLost(listener: () => void): { dispose: () => void } {
     this.fenceLostListeners.add(listener);
     return { dispose: () => this.fenceLostListeners.delete(listener) };
+  }
+
+  /**
+   * Register a callback for the moment this window WINS primacy on a tick.
+   *
+   * FR-032 (BUG-001). `stage2-producers.ts` uses it to install the five recovery
+   * producers it declined to install at activation, and `primacy-gain-wiring.ts`
+   * is the one subscriber.
+   *
+   * IT CARRIES THE RESULT, where `onFenceLost` carries nothing. That asymmetry is
+   * deliberate rather than an inconsistency: a fence loss is a fact with no
+   * payload — the window is no longer primary and every subscriber does the same
+   * thing about it — whereas every recovery installer is gated on the election
+   * result, so a subscriber handed nothing would have to re-read a verdict from
+   * somewhere, and the only verdict in scope at the producers is the one
+   * activation recorded, which reads `acquired: false` in precisely the case
+   * this event exists to repair.
+   *
+   * Returns a disposer, for `onFenceLost`'s stated reason: a window that
+   * registered and then disposed must not keep a dead graph reachable from a
+   * long-lived lock manager.
+   */
+  public onPrimacyGained(
+    listener: (result: { acquired: boolean; ownerId: string }) => void
+  ): { dispose: () => void } {
+    this.primacyGainedListeners.add(listener);
+    return { dispose: () => this.primacyGainedListeners.delete(listener) };
   }
 
   public async release(): Promise<void> {
@@ -300,7 +400,7 @@ export class WorkspaceLockManager {
   private startHeartbeat(): void {
     if (this.heartbeatHandle) return;
     this.heartbeatHandle = this.scheduler.setInterval(() => {
-      void this.heartbeat();
+      void this.tick();
     }, HEARTBEAT_INTERVAL_MS);
   }
 

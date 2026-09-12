@@ -60,13 +60,16 @@ export class ManualScheduler implements Scheduler {
     };
   }
 }
-// Deliberately no `tick()` helper. Both managers arm their interval with
-// `() => { void this.heartbeat(); }`, so firing the callback returns `undefined`
-// and there is nothing to await — a helper that looked like it awaited the beat
-// would let a test assert on a record the beat had not written yet, and against
-// real storage that is a flake rather than a failure. Tests that need a beat to
-// have landed call `heartbeat()` directly; that the interval is armed at the
-// production cadence is asserted in `tests/unit/state/lock.test.ts`.
+// Deliberately no helper that fires an interval entry. Both managers arm theirs
+// with a `void`-ed call — `() => { void this.tick(); }` on the lock manager since
+// FR-032, `() => { void this.heartbeat(); }` on the execution-lease manager — so
+// firing the callback returns `undefined` and there is nothing to await. A helper
+// that looked like it awaited the beat would let a test assert on a record the
+// beat had not written yet, and against real storage that is a flake rather than
+// a failure. Tests that need a beat or a contest to have landed call
+// `heartbeat()` or `tick()` directly; that the interval is armed at the
+// production cadence, on both election outcomes, is asserted in
+// `tests/unit/state/lock.test.ts`.
 
 export interface OwnershipFsFaults {
   /**
