@@ -381,7 +381,13 @@ export const workflowSnapshot = {
     "signal": null,
     "detectedIssues": [],
     "msSinceLastStdout": 2000,
-    "msSinceLastStderr": null
+    "msSinceLastStderr": null,
+    // Feature 211 — `null` deliberately: this fixture backs the visual goldens,
+    // and an unbounded invocation renders the monitor row exactly as it did
+    // before the bound existed. A value here would change every golden that
+    // includes the row, which is a different change than this one.
+    "maxDurationMs": null,
+    "deadlineApproaching": false
   },
   "telemetry": {
     "pid": 4242,

@@ -49,6 +49,9 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   // both are statements about one Run's subprocesses, not about the host.
   'monitor-helper-invocation-exited': 'task',
   'monitor-chunk-declined': 'task',
+  // Feature 211 — task scope: the bound belongs to one Run's invocation, not
+  // to the host, even though the setting that sets it is host-wide.
+  'monitor-deadline-approaching': 'task',
   // Audit pipeline housekeeping (system)
   'audit-rotated': 'system',
   'audit-retention-applied': 'system',
@@ -308,6 +311,7 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'monitor-invocation-summary':
         case 'monitor-helper-invocation-exited':
         case 'monitor-chunk-declined':
+        case 'monitor-deadline-approaching':
         case 'audit-rotated':
         case 'audit-retention-applied':
         case 'audit-hydration-warning':

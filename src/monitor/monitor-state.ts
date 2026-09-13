@@ -57,6 +57,30 @@ export interface CliMonitorState extends CliTransportAggregate {
   readonly detectedIssues: ReadonlyArray<'rate_limited' | 'stall'>;
   readonly msSinceLastStdout: number | null;
   readonly msSinceLastStderr: number | null;
+  /**
+   * Feature 211 — the absolute wall-clock bound this Run's invocation was armed
+   * with, or `null` when it was armed with none.
+   *
+   * `startedAt` above is half of the question an operator asks of a long phase —
+   * how close is it to the cap that will kill it — and this is the other half. It
+   * used to exist only inside the runner's own closure, which is why the surface
+   * could show a phase two minutes from termination and look no different from
+   * one two minutes in.
+   *
+   * `null` means unbounded and MUST NOT be replaced by the setting's default
+   * anywhere downstream: an invocation with no deadline rendered as six hours
+   * from one is a worse answer than no answer.
+   */
+  readonly maxDurationMs: number | null;
+  /**
+   * Feature 211 — whether this invocation has crossed
+   * `APPROACH_THRESHOLD_FRACTION` of the bound above.
+   *
+   * Latched once and never cleared for the life of the invocation, matching the
+   * one audit record: the crossing is a fact about the invocation, not a level
+   * the reading can fall back below.
+   */
+  readonly deadlineApproaching: boolean;
 }
 
 /**
@@ -109,6 +133,11 @@ export function buildIdleMonitorState(runId: string, phase: PhaseName, startedAt
     declinedChunks: 0,
     detectedIssues: Object.freeze([]) as ReadonlyArray<'rate_limited' | 'stall'>,
     msSinceLastStdout: null,
-    msSinceLastStderr: null
+    msSinceLastStderr: null,
+    // Feature 211 — an idle state has no invocation, so it has no bound. Seeding
+    // the setting's default here is the specific defect FR-009 forbids: it would
+    // put a six-hour limit on a surface for something that is not running.
+    maxDurationMs: null,
+    deadlineApproaching: false
   });
 }

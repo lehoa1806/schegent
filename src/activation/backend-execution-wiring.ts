@@ -299,9 +299,15 @@ const monitorHook: MonitorSidecarHook = (event) => {
     // this argument the monitor adopts nothing, every exit latches, and a
     // pre-phase compaction ends its Run's monitoring — the defect intact with
     // all of its plumbing in place.
+    // Feature 211 — `maxDurationMs` is a pure pass-through. The wiring performs
+    // no arithmetic and applies no default: a missing bound stays `null` all the
+    // way to the monitor, which arms no approach timer for it. Substituting the
+    // setting's default here would make an unbounded invocation warn about a
+    // deadline that will never fire.
     monitor.onSpawnPid(event.runId, event.pid, {
       id: event.invocationId,
-      helperInvocation: event.helperInvocation
+      helperInvocation: event.helperInvocation,
+      maxDurationMs: event.maxDurationMs
     });
     // FR-R3-103 (FR-041) — persist the tree's identity so a later host can ask
     // whether it is still alive before resuming into the same worktree.

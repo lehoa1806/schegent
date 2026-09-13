@@ -19,6 +19,7 @@
 // column states which figure applies where, and the value comes from the same
 // vocabulary table the usage parser reads.
 import { DELAYED_RETRY_CAP } from '../contracts/retry-bounds';
+import { APPROACH_THRESHOLD_FRACTION } from '../contracts/monitor-events';
 import { SUPPORTED_BACKENDS } from '../contracts/backend-kinds';
 import {
   SPEND_BOUND_KEY_BY_DENOMINATION,
@@ -84,9 +85,14 @@ export function autonomyBounds(): readonly AutonomyBoundEntry[] {
       source: '`schegent.invocation.idleTimeoutSeconds`'
     },
     {
+      // Feature 211 — the only row whose crossing is announced before it happens.
+      // The percentage is derived, like every other figure here: written by hand it
+      // would be a fifth place the threshold lives, and the one an operator reads.
+      // `Math.round` because `0.7 * 100` is `70.00000000000001` — the current 0.8 is
+      // exact, but the next value of the constant need not be.
       risk: 'A chatty child the idle window never catches',
       bound: `${seconds(numberDefault('invocation.maxDurationSeconds'))} wall clock`,
-      onCrossing: 'the invocation is terminated',
+      onCrossing: `an approach is recorded at ${Math.round(APPROACH_THRESHOLD_FRACTION * 100)}% of it, then the invocation is terminated`,
       source: '`schegent.invocation.maxDurationSeconds`'
     },
     {

@@ -213,3 +213,51 @@ describe('projectAuditEntry (Feature 068 additive fields)', () => {
     expect(projected.summary).toContain('claude phase');
   });
 });
+
+/**
+ * Feature 211 (T012) — `monitor-deadline-approaching` carries `outcome: 'info'`,
+ * and `'info'` does not categorize on its own: `categorize` keys off the event
+ * type after the `'failure'` check, so without an explicit branch the approach
+ * record reaches the `'system'` default and renders as housekeeping. It is not
+ * housekeeping — it is the one notice an operator gets before the wall-clock cap
+ * kills a phase.
+ *
+ * `'failure'` was rejected for the same reason it is not one: the tail renders a
+ * failure outcome as an error line, and an invocation approaching its bound has
+ * not failed and may well finish. So the category is asserted here rather than
+ * inferred from the outcome.
+ */
+describe('projectAuditEntry (Feature 211 deadline-approach record)', () => {
+  function approaching(overrides: Partial<AuditEntry> = {}): AuditEntry {
+    return entry({
+      eventType: 'monitor-deadline-approaching',
+      outcome: 'info',
+      payload: {
+        elapsedMs: 17_280_000,
+        maxDurationMs: 21_600_000,
+        invocationId: 'claude-cli#2',
+        helperInvocation: false
+      },
+      ...overrides
+    });
+  }
+
+  it('projects to the warning category, not the system default', () => {
+    expect(projectAuditEntry(approaching()).category).toBe('warning');
+  });
+
+  it('does not project an error outcome — the approach is not a failure', () => {
+    // 2026-09-13 deliberate: `outcome` is declared on the audit record, and the
+    // record really does carry one — `'info'`. The absence is downstream of that.
+    // `AuditTailEntry.outcome` is narrower than `AuditOutcome`: `normalizeOutcome`
+    // admits only `'success'` and `'failure'`, and everything else — `'info'`
+    // included — is `undefined`. So the assertion is that the record does not
+    // arrive carrying `'error'`, which is what the tail renders as a failed step.
+    // The category above is where the approach's rendering is actually pinned.
+    expect(projectAuditEntry(approaching()).outcome).toBeUndefined();
+  });
+
+  it('is task-scoped: the bound belongs to one Run, not to the host', () => {
+    expect(projectAuditEntry(approaching()).scope).toBe('task');
+  });
+});

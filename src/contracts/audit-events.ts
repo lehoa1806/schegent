@@ -154,7 +154,26 @@ export const MONITOR_EVENT_TYPES = [
   // Additive — no `AUDIT_SCHEMA_VERSION` bump (follows 028 / 030 / 031 / 032
   // precedent). Neither payload carries a path, and both are scalars.
   'monitor-helper-invocation-exited',
-  'monitor-chunk-declined'
+  'monitor-chunk-declined',
+  // Feature 211 — the invocation has crossed `APPROACH_THRESHOLD_FRACTION` of
+  // its absolute wall-clock bound and is still running.
+  //
+  // The three bounds on an invocation are all terminal-or-nothing: the idle
+  // window, the stall detector, and `maxDurationSeconds`. A phase that keeps
+  // producing output trips none of the first two, so the wall-clock cap used to
+  // kill it with nothing written first — the operator saw a six-hour silence
+  // and a SIGTERM, and read it as a hang. This is the record that makes the
+  // distance to the bound answerable from the audit log alone.
+  //
+  // `outcome: 'info'` — an approach is not a failure, and `'failure'` renders
+  // as an error line in the audit tail. The tail's `categorize` is given an
+  // explicit `warning` branch for this type rather than letting it fall to the
+  // `system` default.
+  //
+  // Additive — no `AUDIT_SCHEMA_VERSION` bump (028 / 030 / 031 / 032 and 093
+  // BUG-001 above are the precedent). The payload is four scalars: elapsed,
+  // the bound, the invocation id, and whether it was a helper. No path.
+  'monitor-deadline-approaching'
 ] as const;
 
 export const AUDIT_PIPELINE_EVENT_TYPES = [

@@ -6,6 +6,7 @@ import type {
   InvocationRequest,
   RawInvocationOutput
 } from './invocation-result';
+import { armedMaxDurationMs } from './invocation-result';
 import type {
   BackendRunner,
   MonitorSidecarEvent,
@@ -399,6 +400,7 @@ export class ClaudeCliRunner implements BackendRunner {
         runId: request.runId ?? null,
         invocationId,
         helperInvocation: request.helperInvocation === true,
+        maxDurationMs: armedMaxDurationMs(request),
         pid: child.pid ?? null
       });
 
@@ -494,18 +496,21 @@ export class ClaudeCliRunner implements BackendRunner {
       // narrowing and the lint's type-driven condition check would call
       // every read below unnecessary. A function entry resets narrowing.
       const deadlineFired = (): boolean => deadlineExceeded;
+      // Feature 211 — the same oracle the `started` event reported above, so
+      // the bound the monitor warns against is the bound this timer arms.
+      const deadlineBoundMs = armedMaxDurationMs(request);
       const deadlineTimer =
-        request.maxDurationMs !== undefined && request.maxDurationMs > 0
+        deadlineBoundMs !== null
           ? setTimeout(() => {
               this._logger.info(
                 '[ClaudeCliRunner] invocation deadline exceeded ' +
-                  `maxDurationMs=${request.maxDurationMs} ` +
+                  `maxDurationMs=${deadlineBoundMs} ` +
                   `elapsedMs=${Date.now() - invocationStartedAt} ` +
                   `phase=${request.phase} iteration=${request.iteration}`
               );
               deadlineExceeded = true;
               this.terminate(child, attribution);
-            }, request.maxDurationMs)
+            }, deadlineBoundMs)
           : null;
       const resetIdleTimer = (): void => {
         clearTimeout(timer);

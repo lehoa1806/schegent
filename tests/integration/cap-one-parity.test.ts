@@ -625,7 +625,11 @@ describe('Feature 093 BUG-001 (T103a, SC-010) — at cap 1, a compaction before 
    * would put the sampler on a `ps` poll against someone else's process.
    */
   const started = (runId: string, invocationId: string, helperInvocation: boolean): void => {
-    wiring.monitorHook({ kind: 'started', runId, invocationId, helperInvocation, pid: null });
+    // `maxDurationMs: null` — these spawns arm no wall-clock deadline, and this
+    // suite is about cap-one parity, not about the bound.
+    wiring.monitorHook({
+      kind: 'started', runId, invocationId, helperInvocation, maxDurationMs: null, pid: null
+    });
   };
   const stdout = (runId: string, invocationId: string, line: string): void => {
     wiring.monitorHook({ kind: 'stdout-chunk', runId, invocationId, chunk: `${line}\n` });

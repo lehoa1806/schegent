@@ -10,6 +10,7 @@ import type { CliTransportRecorder } from './cli-transport-sink';
 import { ActivityCoalescer, type ActivityRecorder } from './activity-coalescer';
 import { StallDetector, type ClearTimeoutFn, type SetTimeoutFn } from './stall-detector';
 import { LineFramer, DEFAULT_MAX_LINE_UNITS, type FramedOutput } from '../lib/line-framer';
+import { APPROACH_THRESHOLD_FRACTION } from '../contracts/monitor-events';
 
 export type RateLimitMatcher = { regex: RegExp; cause: string };
 
@@ -73,6 +74,14 @@ export interface SidecarInvocation {
   readonly id: string;
   /** A host-internal helper on the Run's behalf, not the Run's phase invocation. */
   readonly helperInvocation: boolean;
+  /**
+   * Feature 211 — the absolute wall-clock bound the runner armed a deadline
+   * with, or `null` when it armed none. The monitor's only supply of it: the
+   * bound is host configuration the runner resolves per invocation, and reading
+   * the setting here instead would let the warning and the kill drift apart the
+   * first time an operator changed it mid-run.
+   */
+  readonly maxDurationMs: number | null;
 }
 
 /**
@@ -158,6 +167,50 @@ interface InternalState {
   stderrFramingReported: boolean;
   lastRateLimitAtMonotonic: number | null;
   terminal: boolean;
+  /**
+   * Feature 211 — one approach timer per invocation this Run has spawned with a
+   * bound, keyed by invocation id.
+   *
+   * Keyed by invocation and not per-Run because a Run's invocations do not share
+   * a deadline: `runPhase` spawns a pre-phase compaction bounded in seconds and
+   * then the phase invocation bounded in hours, and both land on this one state
+   * (that sharing is what Feature 093 BUG-001 was made of). A single per-Run
+   * latch would let the compaction's approach consume it and silence the phase's
+   * — the record that actually matters.
+   *
+   * The key IS the latch: an entry exists from arming onwards, and firing sets
+   * its `handle` to `null` rather than deleting it, so the same invocation can
+   * never arm or record twice (FR-001). Bounded by the invocations of one Run,
+   * and released on every terminal path.
+   */
+  approachTimers: Map<string, ApproachTimer>;
+  /**
+   * Feature 211 — the bound of the invocation this Run adopted, or `null` when
+   * it has none. Supplied by the runner at spawn and never read from
+   * configuration (FR-017); the helper's shorter bound never lands here, because
+   * it is not the deadline the Run will be killed at.
+   */
+  maxDurationMs: number | null;
+  /** Feature 211 (FR-010) — whether the adopted invocation crossed its threshold. */
+  deadlineApproaching: boolean;
+}
+
+/**
+ * Feature 211 — an armed (or already-fired) approach timer.
+ *
+ * Everything the handler needs is captured here at arming time rather than
+ * looked up when it fires: the invocation whose deadline this is may no longer
+ * be the one `state.invocationId` names, and its bound may not be the one
+ * `state.maxDurationMs` holds. A helper's record must report the helper's own
+ * bound, not the phase's.
+ */
+interface ApproachTimer {
+  /** Wall clock at spawn — the reference `elapsedMs` is measured from. */
+  readonly armedAtMonotonic: number;
+  readonly maxDurationMs: number;
+  readonly helperInvocation: boolean;
+  /** The live handle, or `null` once this invocation's one record has been written. */
+  handle: unknown;
 }
 
 const DEFAULT_RATE_LIMIT_CLUSTER_MS = 5_000;
@@ -229,6 +282,11 @@ export class ClaudeCliMonitor {
     // Feature 093 (T046) — dispose only THIS Run's detector. Restarting a Run
     // still replaces its own state and timer; a sibling's are untouched.
     this.disposeDetector(runId);
+    // Feature 211 — and its approach timers, for the same reason: the state
+    // object holding them is replaced below, which unreferences them without
+    // stopping them. A restarted Run's previous invocations are over.
+    const previous = this.states.get(runId);
+    if (previous) this.clearApproachTimers(previous);
     // FR-R3-008 (T376) — a new invocation resets the counters below, so it must
     // be able to flush on its first chunk. Inheriting the previous phase's window
     // would leave the persisted counters showing that phase's higher totals for
@@ -268,7 +326,10 @@ export class ClaudeCliMonitor {
       stdoutFramingReported: false,
       stderrFramingReported: false,
       lastRateLimitAtMonotonic: null,
-      terminal: false
+      terminal: false,
+      approachTimers: new Map(),
+      maxDurationMs: null,
+      deadlineApproaching: false
     };
     this.states.set(runId, state);
     this.latestRunId = runId;
@@ -333,9 +394,108 @@ export class ClaudeCliMonitor {
         state.helperInvocations.add(invocation.id);
       } else if (state.invocationId === null) {
         state.invocationId = invocation.id;
+        // Feature 211 — the bound travels with the invocation the Run adopts, so
+        // it lands here and not at the `helperInvocation` branch above: the
+        // compaction's 60 s bound is not the deadline this Run will be killed at,
+        // and a surface reading "23 min of 60 s" would be worse than no figure.
+        state.maxDurationMs = invocation.maxDurationMs;
       }
+      this.armApproachTimer(state, invocation);
     }
     this.notify();
+  }
+
+  /**
+   * Feature 211 (T014) — arm the one-shot approach timer for an invocation.
+   *
+   * Here and not in `onStart`, because the bound belongs to a spawn and `onStart`
+   * fires before there is one. Armed once at spawn and never rearmed, which is
+   * what makes it predict the deadline it is about: the absolute bound is armed
+   * at spawn, is not reset by output, and is not suspended by backpressure
+   * (FR-006), so this timer must do none of those three either. That is also why
+   * it is a bare `setTimeout` rather than a `StallDetector` — the detector banks
+   * time across `pause()`, and inheriting that would make the warning arrive
+   * after the kill it exists to precede.
+   */
+  private armApproachTimer(state: InternalState, invocation: SidecarInvocation): void {
+    const bound = invocation.maxDurationMs;
+    // FR-005 — no bound, no timer. Nothing will kill this invocation on the
+    // clock, so there is nothing to warn about.
+    if (bound === null || bound <= 0) return;
+    // The key is the latch, so an invocation that already has one has either its
+    // timer running or its record written. Neither wants a second timer.
+    if (state.approachTimers.has(invocation.id)) return;
+    const setTimeoutFn = this.opts.setTimeout ?? ((cb, ms) => setTimeout(cb, ms));
+    // Floored: `bound * 0.8` is exact for every whole-second bound the setting can
+    // produce, but not for every real number, and a fractional delay rounds the
+    // one direction that is safe. Early is a slightly longer runway; late is a
+    // warning that arrives after the kill.
+    const delayMs = Math.floor(bound * APPROACH_THRESHOLD_FRACTION);
+    const entry: ApproachTimer = {
+      armedAtMonotonic: this.opts.monotonicNow(),
+      maxDurationMs: bound,
+      helperInvocation: invocation.helperInvocation,
+      handle: null
+    };
+    state.approachTimers.set(invocation.id, entry);
+    entry.handle = setTimeoutFn(() => this.handleDeadlineApproaching(state.runId, invocation.id), delayMs);
+  }
+
+  /**
+   * Feature 211 (T015) — the approach record, modelled on `handleStall`.
+   *
+   * One difference from `handleStall`, and it is deliberate: there is no
+   * `pausedAtMonotonic` guard. A stall is a claim about a child that has gone
+   * quiet, and a suspended workflow has gone quiet for a known reason. The
+   * absolute deadline does not care — it keeps running through a suspension and
+   * will kill the invocation on wall-clock time — so suppressing the warning
+   * while suspended would suppress exactly the case an operator most needs it in.
+   */
+  private handleDeadlineApproaching(runId: string, invocationId: string): void {
+    const state = this.states.get(runId);
+    if (!state || state.terminal) return;
+    const timer = state.approachTimers.get(invocationId);
+    // `handle === null` means this invocation's record is already written. The
+    // latch lives here rather than in the writer: `appendAudit` does not
+    // deduplicate, and nothing downstream of it could tell a second record from
+    // a second crossing.
+    if (!timer || timer.handle === null) return;
+    timer.handle = null;
+    if (state.invocationId === invocationId) state.deadlineApproaching = true;
+    this.appendAudit(
+      runId,
+      'monitor-deadline-approaching',
+      {
+        // Observed, not nominal (FR-002). A busy event loop fires a timer late,
+        // and reporting the threshold it was armed at would quietly turn this
+        // record into a restatement of the arithmetic an operator is reading it
+        // to check.
+        elapsedMs: this.opts.monotonicNow() - timer.armedAtMonotonic,
+        maxDurationMs: timer.maxDurationMs,
+        invocationId,
+        helperInvocation: timer.helperInvocation
+      },
+      'info'
+    );
+    this.notify();
+  }
+
+  /**
+   * Feature 211 — release approach timers. One invocation's when it is named, the
+   * Run's remaining ones when it is not.
+   *
+   * Called on every terminal path, so a finished invocation cannot warn about a
+   * deadline it will never reach — and so a host that outlives its Runs is not
+   * holding a six-hour timer per invocation it has already forgotten.
+   */
+  private clearApproachTimers(state: InternalState, invocationId?: string): void {
+    const clearTimeoutFn =
+      this.opts.clearTimeout ?? ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>));
+    for (const [id, timer] of state.approachTimers) {
+      if (invocationId !== undefined && id !== invocationId) continue;
+      if (timer.handle !== null) clearTimeoutFn(timer.handle);
+      state.approachTimers.delete(id);
+    }
   }
 
   public onStdoutChunk(runId: string | null, chunk: string, invocationId?: string | null): void {
@@ -470,6 +630,11 @@ export class ClaudeCliMonitor {
     // recoverable, whereas an unrecognised exit ending nothing is BUG-001 again
     // with the deadline as the only backstop.
     this.disposeDetector(state.runId);
+    // Feature 211 — every one of this Run's invocations is finished with it. A
+    // helper's timer can still be armed here (a Run can end before its helper
+    // reaches its own threshold), and firing it after the exit would warn about
+    // a deadline nothing is counting down to any more.
+    this.clearApproachTimers(state);
     // FR-R3-008 (T376) — release the coalescing window without flushing a final
     // observation. A flush here would race the driver's own terminal `setRun`,
     // and it would make the write count depend on invocation count rather than on
@@ -631,6 +796,11 @@ export class ClaudeCliMonitor {
       // 4412 chunks declined" is the sentence that would have named BUG-001 on
       // sight; the two numbers are only worth anything next to each other.
       declinedChunks: state.declinedChunks,
+      // Feature 211 — straight from the spawn event, with no arithmetic and no
+      // fallback. The monitor never reads the setting: the runner resolved the
+      // bound per invocation and is the only thing that knows which one it armed.
+      maxDurationMs: state.maxDurationMs,
+      deadlineApproaching: state.deadlineApproaching,
       detectedIssues: Object.freeze(state.detectedIssues.slice()) as ReadonlyArray<'rate_limited' | 'stall'>,
       msSinceLastStdout: paused
         ? null
@@ -671,6 +841,12 @@ export class ClaudeCliMonitor {
   public dispose(): void {
     for (const detector of this.detectors.values()) {
       detector.dispose();
+    }
+    // Feature 211 — an approach timer outlives the state map otherwise, and the
+    // bound it is waiting out is measured in hours. `states.clear()` below drops
+    // the only reference to them, not the timers themselves.
+    for (const state of this.states.values()) {
+      this.clearApproachTimers(state);
     }
     this.detectors.clear();
     this.listeners.clear();
@@ -724,6 +900,10 @@ export class ClaudeCliMonitor {
     args: { exitCode: number | null; signal: string | null; killed: boolean; timedOut: boolean }
   ): void {
     const clean = !args.timedOut && !args.killed && (args.exitCode ?? 1) === 0;
+    // Feature 211 — this helper's own approach timer, and only this one. The Run
+    // is still starting and its phase invocation's timer, if armed, is counting
+    // down to a deadline that is still real.
+    this.clearApproachTimers(state, invocationId);
     this.appendAudit(
       state.runId,
       'monitor-helper-invocation-exited',

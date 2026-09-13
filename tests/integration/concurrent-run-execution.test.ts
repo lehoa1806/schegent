@@ -928,7 +928,9 @@ describe('Feature 093 BUG-001 (T103, SC-019) — a compaction before the phase d
    * process. Nothing below is about the sampler.
    */
   const started = (runId: string, invocationId: string, helperInvocation: boolean): void => {
-    hook({ kind: 'started', runId, invocationId, helperInvocation, pid: null });
+    // `maxDurationMs: null` — these spawns arm no wall-clock deadline, and this
+    // suite is about concurrent-run attribution, not about the bound.
+    hook({ kind: 'started', runId, invocationId, helperInvocation, maxDurationMs: null, pid: null });
   };
   const stdout = (runId: string, invocationId: string, line: string): void => {
     hook({ kind: 'stdout-chunk', runId, invocationId, chunk: `${line}\n` });

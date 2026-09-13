@@ -427,6 +427,16 @@ reset). Evidence distinguishes the two terminations — `timeout` for a child
 that went quiet, `deadline` for one that ran long — end to end: raw output,
 monitor events, transcript, and the phase-end audit record.
 
+Feature 211 added the only thing either bound writes *before* it fires. The
+monitor arms a third timer per invocation, at `APPROACH_THRESHOLD_FRACTION`
+(0.8) of the wall-clock bound, and appends one `monitor-deadline-approaching`
+record when it crosses — elapsed as observed, the bound, the invocation id, and
+whether it was a helper. It is deliberately not a `StallDetector`: that one
+suspends under sink backpressure and banks the paused time, and a warning that
+inherited those semantics would arrive after the kill it exists to predict. The
+record is informational and terminal-adjacent only in subject: it changes no
+status, stops nothing, and the deadline it observes is unchanged.
+
 Workflows compose multiple Pipeline Runs. Connected-run state identifies the
 Workflow graph node, child Run, revision, and continuation position so a later
 node cannot be continued against stale graph state. Conditions are structured

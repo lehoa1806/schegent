@@ -790,6 +790,7 @@ describe('StateProjector monitor projection (T023)', () => {
     exitCode: number | null; signal: string | null; declinedChunks: number;
     detectedIssues: ReadonlyArray<'rate_limited' | 'stall'>;
     msSinceLastStdout: number | null; msSinceLastStderr: number | null;
+    maxDurationMs: number | null; deadlineApproaching: boolean;
   }> = {}) {
     return {
       runId: overrides.runId ?? 'r1',
@@ -811,7 +812,11 @@ describe('StateProjector monitor projection (T023)', () => {
       declinedChunks: overrides.declinedChunks ?? 0,
       detectedIssues: overrides.detectedIssues ?? ([] as ReadonlyArray<'rate_limited' | 'stall'>),
       msSinceLastStdout: overrides.msSinceLastStdout ?? null,
-      msSinceLastStderr: overrides.msSinceLastStderr ?? null
+      msSinceLastStderr: overrides.msSinceLastStderr ?? null,
+      // Feature 211 — an invocation the runner armed no deadline for is the
+      // default here, because that is what every pre-211 call site meant.
+      maxDurationMs: overrides.maxDurationMs ?? null,
+      deadlineApproaching: overrides.deadlineApproaching ?? false
     };
   }
 
@@ -837,6 +842,60 @@ describe('StateProjector monitor projection (T023)', () => {
     expect(snap.monitor!.runId).toBe('r1');
     expect(snap.monitor!.stdoutLines).toBe(5);
     expect(snap.monitor!.msSinceLastStdout).toBe(1_500);
+    p.dispose();
+  });
+
+  /**
+   * Feature 211 (T018) — the bound travels to the webview beside `startedAt`.
+   *
+   * `startedAt` alone says when an invocation began, which is the numerator of a
+   * question an operator cannot finish: how close is this to the cap that will
+   * kill it. The denominator is the bound, and it was never projected.
+   */
+  it('projects the invocation bound beside startedAt when one is in force', async () => {
+    const monitor = makeFakeMonitor({
+      initial: buildMonitorState({ status: 'running', maxDurationMs: 21_600_000 })
+    });
+    const p = new StateProjector({
+      store, audit, ownerId: 'this-window', debounceMs: 100, monitor
+    });
+    p.start();
+    const snap = p.getCurrentSnapshot();
+    expect(snap.monitor!.startedAt).toBe('2026-05-10T12:00:00.000Z');
+    expect(snap.monitor!.maxDurationMs).toBe(21_600_000);
+    expect(snap.monitor!.deadlineApproaching).toBe(false);
+    p.dispose();
+  });
+
+  it('projects null for an invocation with no bound, not the settings default', async () => {
+    // The default is 21600 s, and substituting it here would render a countdown
+    // to a deadline that will never fire — an unbounded invocation reported as
+    // six hours from termination (FR-009).
+    const monitor = makeFakeMonitor({
+      initial: buildMonitorState({ status: 'running', maxDurationMs: null })
+    });
+    const p = new StateProjector({
+      store, audit, ownerId: 'this-window', debounceMs: 100, monitor
+    });
+    p.start();
+    const snap = p.getCurrentSnapshot();
+    expect(snap.monitor!.maxDurationMs).toBeNull();
+    p.dispose();
+  });
+
+  it('projects deadlineApproaching once the invocation has crossed its threshold', async () => {
+    const monitor = makeFakeMonitor({
+      initial: buildMonitorState({
+        status: 'running',
+        maxDurationMs: 21_600_000,
+        deadlineApproaching: true
+      })
+    });
+    const p = new StateProjector({
+      store, audit, ownerId: 'this-window', debounceMs: 100, monitor
+    });
+    p.start();
+    expect(p.getCurrentSnapshot().monitor!.deadlineApproaching).toBe(true);
     p.dispose();
   });
 

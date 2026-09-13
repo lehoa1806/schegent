@@ -277,14 +277,73 @@ describe('FR-R3-007 — the monitor projection is unchanged', () => {
     // healthy for six hours. Zero for every healthy Run, so nothing renders
     // differently until something is actually being dropped.
     const ADDED_BY_BUG_001 = ['declinedChunks'];
+    // Feature 211 (T019), added deliberately per the note above.
+    //
+    // The bound and whether it has been crossed. `startedAt` was already here and
+    // is half of the question an operator asks of a long phase — "how far is this
+    // from the cap that kills it" — and the other half was only ever in the
+    // runner's own closure. Both are `null`/`false` for an invocation the runner
+    // armed no deadline for, so nothing renders differently for one.
+    const ADDED_BY_211 = ['maxDurationMs', 'deadlineApproaching'];
 
     const keys = Object.keys(h.compose().monitor!);
     expect(keys.slice().sort()).toEqual(
-      [...PRE_FEATURE_FIELDS, ...ADDED_BY_THIS_FEATURE, ...ADDED_BY_BUG_001].sort()
+      [...PRE_FEATURE_FIELDS, ...ADDED_BY_THIS_FEATURE, ...ADDED_BY_BUG_001, ...ADDED_BY_211].sort()
     );
     for (const field of PRE_FEATURE_FIELDS) {
       expect(keys, `${field} is a reading the webview already rendered`).toContain(field);
     }
+  });
+
+  /**
+   * Feature 211 (T019) — the bound reaches the projection from the spawn event,
+   * through the real monitor rather than a hand-built state.
+   *
+   * The census above proves the field names are published; this proves a value
+   * gets into them. The supply path is the `started` sidecar event and nothing
+   * else: no setting is read here, so a bound that never left the runner would
+   * still project `null` and the census would still pass.
+   */
+  it('projects the bound the spawn event carried, and null when it carried none', () => {
+    const bounded = harness();
+    bounded.monitor.onStart('run-1', 'speckit-implement', 1);
+    bounded.monitor.onSpawnPid('run-1', 501, {
+      id: 'claude-cli#2',
+      helperInvocation: false,
+      maxDurationMs: 21_600_000
+    });
+    expect(bounded.compose().monitor!.maxDurationMs).toBe(21_600_000);
+    expect(bounded.compose().monitor!.deadlineApproaching).toBe(false);
+
+    const unbounded = harness();
+    unbounded.monitor.onStart('run-2', 'speckit-implement', 1);
+    unbounded.monitor.onSpawnPid('run-2', 502, {
+      id: 'claude-cli#2',
+      helperInvocation: false,
+      maxDurationMs: null
+    });
+    expect(unbounded.compose().monitor!.maxDurationMs).toBeNull();
+  });
+
+  it('does not project a helper invocation bound as the Run bound', () => {
+    // The pre-phase compaction is bounded in seconds and the phase it precedes in
+    // hours. Projecting the helper's would put "23 min of 60 s" on the surface,
+    // and the Run is not being killed at the helper's bound.
+    const h = harness();
+    h.monitor.onStart('run-1', 'speckit-implement', 1);
+    h.monitor.onSpawnPid('run-1', 500, {
+      id: 'claude-cli#1',
+      helperInvocation: true,
+      maxDurationMs: 60_000
+    });
+    expect(h.compose().monitor!.maxDurationMs).toBeNull();
+
+    h.monitor.onSpawnPid('run-1', 501, {
+      id: 'claude-cli#2',
+      helperInvocation: false,
+      maxDurationMs: 21_600_000
+    });
+    expect(h.compose().monitor!.maxDurationMs).toBe(21_600_000);
   });
 
   it('keeps projecting a paused invocation — only a terminal one drops', () => {

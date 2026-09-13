@@ -7,6 +7,7 @@ import type { SanitizedLogger } from '../lib/logger';
 import { waitForChildCompletion } from './child-completion';
 import { awaitStdinDelivery, writePromptToStdin } from './child-stdin';
 import type { InvocationOutputSink, InvocationRequest, RawInvocationOutput } from './invocation-result';
+import { armedMaxDurationMs } from './invocation-result';
 import { OutputSinkBackpressure } from './output-sink-backpressure';
 import { ZippedStreamBuffer } from './zipped-stream-buffer';
 import { processTreeSpawnOptions, escalateAndReportTree } from './process-tree';
@@ -124,7 +125,8 @@ export class ProcessLifecycleRunner {
     try {
       this.emit({
         kind: 'started', runId: request.runId ?? null, invocationId,
-        helperInvocation: request.helperInvocation === true, pid: child.pid ?? null
+        helperInvocation: request.helperInvocation === true,
+        maxDurationMs: armedMaxDurationMs(request), pid: child.pid ?? null
       });
       // FR-R3-047 — attach-then-write through the shared helper. The previous
       // shape was a synchronous try/catch around the write, which cannot see the
@@ -164,9 +166,12 @@ export class ProcessLifecycleRunner {
       // narrowing and the lint's type-driven condition check would call
       // every read below unnecessary. A function entry resets narrowing.
       const deadlineFired = (): boolean => deadlineExceeded;
+      // Feature 211 — the same oracle the `started` event reported above, so
+      // the bound the monitor warns against is the bound this timer arms.
+      const deadlineBoundMs = armedMaxDurationMs(request);
       const deadlineTimer =
-        request.maxDurationMs !== undefined && request.maxDurationMs > 0
-          ? setTimeout(() => { deadlineExceeded = true; this.terminate(child, attribution); }, request.maxDurationMs)
+        deadlineBoundMs !== null
+          ? setTimeout(() => { deadlineExceeded = true; this.terminate(child, attribution); }, deadlineBoundMs)
           : null;
       const backpressure = new OutputSinkBackpressure(outputSink, () => clearTimeout(timer), reset);
       child.stdout?.on('data', (chunk: string) => {

@@ -121,6 +121,22 @@ export type MonitorSidecarEvent =
        * would be a second place for the same fact to be wrong.
        */
       readonly helperInvocation: boolean;
+      /**
+       * Feature 211 — the absolute wall-clock bound this invocation's deadline
+       * timer was armed with, or `null` when the runner armed no deadline.
+       *
+       * Read from the same `InvocationRequest.maxDurationMs` the deadline is
+       * armed from, at the same moment, so the warning and the kill can never be
+       * measured against different numbers. The monitor has no other supply of
+       * this value: it is host configuration the runner resolves per invocation,
+       * and re-reading the setting in the monitor would let the two drift the
+       * first time an operator changed it mid-run.
+       *
+       * On this arm alone, for the reason `helperInvocation` above is: it is
+       * asked once, at adoption, and every later event is matched by
+       * `invocationId`.
+       */
+      readonly maxDurationMs: number | null;
       readonly pid: number | null;
     }
   | {

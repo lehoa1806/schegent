@@ -232,6 +232,28 @@ export interface InvocationRequest {
   effectiveFatalSignatures?: ReadonlyArray<EffectiveSignature>;
 }
 
+/**
+ * Feature 211 — the wall-clock bound a runner will actually arm for this
+ * request, or `null` when it will arm none.
+ *
+ * One oracle for a predicate that had been written out at each arming site.
+ * The monitor now receives this bound on the `started` event and warns at
+ * `APPROACH_THRESHOLD_FRACTION` of it, so "is a deadline in force, and what is
+ * it" has to have one answer: a runner that armed a timer while reporting
+ * `null` warns about nothing, and one that reported a bound it never armed
+ * warns about a kill that will not come. Both runners call this for the value
+ * they report AND for the guard on the timer they arm, which is what makes the
+ * two agree structurally rather than by inspection.
+ *
+ * `undefined` and `0` both mean no bound — see `maxDurationMs` above. Negative
+ * values are excluded for the same reason `> 0` always guarded this: a past
+ * deadline is not a deadline.
+ */
+export function armedMaxDurationMs(request: InvocationRequest): number | null {
+  const bound = request.maxDurationMs;
+  return bound !== undefined && bound > 0 ? bound : null;
+}
+
 import type { ZippedStreamBuffer } from './zipped-stream-buffer';
 import type {
   EffectiveSignature,
