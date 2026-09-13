@@ -99,9 +99,20 @@ describe('spec traceability governance', () => {
   });
 
   it('does not classify specs as Complete while tasks remain unchecked', () => {
+    // This rule and the `all-ticked` rule below are the two directions of one table, so they must
+    // agree about what a task is. Until 2026-09-14 they did not: this one carried its own inline
+    // `/^- \[ \]/m`, narrower than the shared `UNTICKED` even for list items — it lacked the `\s*`,
+    // so an indented task was invisible here and visible there.
+    //
+    // Measured effect of the repair today: none. The census finds no unticked box in the table or
+    // no-space dialects anywhere in the tree, and no indented one either, so no spec changes
+    // verdict. That is stated rather than left implied, because the next reader to find a change
+    // that fixes nothing observable will otherwise be right to delete it. What is being fixed is
+    // the rule's definition, not its current output: nothing prevents the next table-dialect spec
+    // from leaving a box open, and before this it would have been read as having no tasks at all.
     const invalid = artifacts
       .filter((artifact) => artifact.status === 'Complete' && existsSync(artifact.tasksPath))
-      .filter((artifact) => /^- \[ \]/m.test(readFileSync(artifact.tasksPath, 'utf8')))
+      .filter((artifact) => UNTICKED.test(readFileSync(artifact.tasksPath, 'utf8')))
       .map((artifact) => basename(artifact.directory));
     expect(invalid).toEqual([]);
   });
@@ -152,19 +163,94 @@ describe('spec traceability governance', () => {
    * ticked and 0 unticked, sitting at `Ready`. The other two `Ready` specs carry
    * no checkboxes at all, so `taskState` returns `none` and this rule does not
    * reach them — correctly, as neither claims finished work.
+   *
+   * ── CORRECTION, 2026-09-14 (feature 214) ──────────────────────────────────
+   * The four sentences immediately above are kept verbatim and are WRONG. They are
+   * not stale — they were false on the day they were written, and the way they
+   * became false is worth more than the space they cost, which is why FR-027 says
+   * annotate rather than delete.
+   *
+   * `187-admission-failure-notice` was one of the "other two `Ready` specs". It does
+   * not carry "no checkboxes at all": it carries 29, all ticked, written as bolded
+   * leading table cells (`| **[x] T001** |`). Its implementation had shipped and was
+   * wired. It is precisely the contradiction this rule exists to catch, and it sat
+   * one line below a sentence certifying that it could not exist.
+   *
+   * The dating is not ambiguous. `187/tasks.md` has exactly one commit — `c51dcfc`,
+   * 2026-09-02 — and it already carried all 29 ticks. The sentence above landed in
+   * `82bb92a8` on 2026-09-06, four days later. Nothing overtook it.
+   *
+   * HOW IT HAPPENED, because the mechanism is the point: the author scanned with
+   * `TICKED` as it then stood, saw no match, and recorded the regex's blind spot as
+   * a property of the file. That is the exact failure mode diagnosed two paragraphs
+   * up, about the case dialect — "a scan matching only `- [x]` reads every one of
+   * them as having no tasks — which the exemption below then excuses". It was closed
+   * for `[X]` and committed one dialect over, in the next paragraph, using the
+   * instrument's own blind spot as the evidence that the exemption was sound.
+   *
+   * The lesson is in `TICKED`'s docblock now: a measurement cannot certify its own
+   * coverage, so the dialect set was enumerated across the whole tree rather than
+   * inferred from what the pattern happened to find.
+   * ──────────────────────────────────────────────────────────────────────────
    */
   const STATUSES_CLAIMING_UNFINISHED = new Set(['Draft', 'Ready', 'In Progress']);
 
-  /** Case-insensitive by requirement, not by accident. See the docblock. */
-  const TICKED = /^\s*- \[[xX]\]/m;
-  const UNTICKED = /^\s*- \[ \]/m;
+  /**
+   * Case-insensitive by requirement, not by accident. See the docblock.
+   *
+   * THREE DIALECTS, because the tree writes three (feature 214, measured 2026-09-14 over every
+   * `tasks.md` under `specs/`). Every checkbox-shaped construct at the head of a line reduces to:
+   *
+   *   `- [x]` / `- [X]` / `- [ ]`   7906   Markdown list
+   *   `| **[x]` / `| **[X]`           60   leading table cell, bolded
+   *   `-[x]`                          26   list item missing the space after the dash
+   *
+   * and nothing else. The set is closed and was enumerated by hand, which is the condition
+   * feature 213's Clarification Q4 places on widening a gate — extend where the uncovered set can
+   * be listed, decline anything needing a heuristic over prose.
+   *
+   * THE `^`-ANCHOR IS LOAD-BEARING, not tidiness. Two occurrences in the tree quote the notation
+   * inside a sentence (``marked `[X]` ``), and five specs describe this very rule in prose
+   * (``  `Complete` may not be claimed while a `- [ ]` remains ``). A pattern that matched brackets
+   * anywhere would read those sentences as tasks and invent an unticked box in five `Complete`
+   * specs. That false positive was actually produced by the first, cruder measurement taken while
+   * investigating this — it briefly looked like a second, opposite defect — so the anchor is here
+   * to keep a known mistake from being re-made in code.
+   */
+  const TICKED = /^\s*(?:-[ ]?|\|\s*\*\*)\[[xX]\]/m;
+  const UNTICKED = /^\s*(?:-[ ]?|\|\s*\*\*)\[ \]/m;
 
-  function taskState(tasksPath: string): 'none' | 'all-ticked' | 'has-unticked' {
+  /**
+   * `'none'` used to mean three different things, and the exemptions below were written for only
+   * one of them. A `tasks.md` that exists but carries no checkbox this file recognises is NOT the
+   * same as no `tasks.md`: the first is a file whose completion is unknowable, the second has no
+   * task state to be wrong about. Collapsing them is what let `187` sit at `Ready` with 29 of 29
+   * tasks ticked while this gate reported green. They get separate values so the register below
+   * can govern one without excusing the other.
+   */
+  function taskState(tasksPath: string): 'none' | 'unreadable' | 'all-ticked' | 'has-unticked' {
     if (!existsSync(tasksPath)) return 'none';
     const body = readFileSync(tasksPath, 'utf8');
     if (UNTICKED.test(body)) return 'has-unticked';
-    return TICKED.test(body) ? 'all-ticked' : 'none';
+    return TICKED.test(body) ? 'all-ticked' : 'unreadable';
   }
+
+  /**
+   * Directories whose `tasks.md` deliberately carries no checkbox in any dialect, each with what
+   * it carries instead. Seeded 2026-09-14 from a census of the whole tree, not from whatever the
+   * first run happened to print — a register populated by copying an error message just launders
+   * the current state into permission.
+   *
+   * Adding an entry is a decision someone makes on purpose. That is the whole point: before this
+   * map, the same specs were exempt silently and for free, and the hole could grow without anyone
+   * choosing to grow it.
+   */
+  const TASKS_WITHOUT_CHECKBOXES = new Map<string, string>([
+    ['180-builder-tab-order', 'tasks.md is a set of narrative headings, no checkbox column'],
+    ['182-settings-tab-coverage', 'tasks.md is a coverage table with no checkbox column'],
+    ['183-backend-naming', 'tasks.md is a set of narrative headings, no checkbox column'],
+    ['184-pipeline-canvas', 'tasks.md is a set of narrative headings, no checkbox column'],
+  ]);
 
   it('does not claim a spec is unfinished when every task is ticked', () => {
     const invalid = artifacts
@@ -180,25 +266,84 @@ describe('spec traceability governance', () => {
     ).toEqual([]);
   });
 
-  it('scans both checkbox spellings, so a capital [X] is not read as no tasks', () => {
-    // FR-R3-123 / FR-005a. 80 specs use `- [X]`. A case-sensitive scan reads them as
-    // task-less and the `none` branch exempts them, so this fixture is what stands
-    // between the rule above and a no-op over half the tree.
+  it('does not silently exempt a tasks.md it cannot read', () => {
+    // The rule above can only fire on a spec whose task state this file can determine. Before
+    // 2026-09-14 a `tasks.md` written in an unrecognised dialect returned `none` and dropped out
+    // of every rule keyed on task state — indistinguishable from having no `tasks.md` at all, and
+    // exempt for the same reason, which was a reason that did not apply to it.
+    //
+    // So this is the rule that keeps the rule above honest. Widening the patterns fixed the
+    // dialects the tree writes today; this fixes the shape of the hole, so the next dialect nobody
+    // anticipated fails loudly instead of joining a silent exemption.
+    const unreadable = artifacts
+      .filter((artifact) => taskState(artifact.tasksPath) === 'unreadable')
+      .map((artifact) => basename(artifact.directory))
+      .filter((directory) => !TASKS_WITHOUT_CHECKBOXES.has(directory));
+    expect(
+      unreadable,
+      'These specs have a tasks.md carrying no checkbox this gate recognises, so their ' +
+        'completion is unknowable and every task-state rule above skips them. There are two ' +
+        'exits and both are deliberate: write the tasks as checkboxes in one of the three ' +
+        'dialects TICKED documents, or add the directory to TASKS_WITHOUT_CHECKBOXES with a ' +
+        'reason saying what the file carries instead. Do NOT widen TICKED to make this pass ' +
+        'unless you have first enumerated the new dialect across specs/ — a pattern guessed ' +
+        'from one file is how the blind spot this rule closes was created.'
+    ).toEqual([]);
+  });
+
+  it('reads every checkbox dialect the tree writes, and reads prose as prose', () => {
+    // FR-R3-123 / FR-005a, extended by feature 214. Two separate no-op risks are pinned here.
+    //
+    // Too narrow: 80 specs mark tasks `- [X]`, 5 mix in `-[x]`, and `187` writes all 29 of its
+    // tasks as table cells. Any of those unread means the rules above skip the spec entirely.
+    //
+    // Too wide: 5 specs describe this rule in prose and 2 quote the notation mid-sentence. A
+    // pattern matching brackets anywhere reads those as tasks, and the `Complete` rule then
+    // reports an unticked box in specs that have none. The last two cases are that control, and
+    // they are not hypothetical — the false positive was produced for real during this
+    // feature's investigation before the anchor was made explicit.
     const dir = mkdtempSync(resolve(tmpdir(), 'schegent-status-truth-'));
     try {
       const upper = resolve(dir, 'upper.md');
       const lower = resolve(dir, 'lower.md');
       const mixed = resolve(dir, 'mixed.md');
+      const nospace = resolve(dir, 'nospace.md');
+      const table = resolve(dir, 'table.md');
+      const tableMixed = resolve(dir, 'table-mixed.md');
+      const prose = resolve(dir, 'prose.md');
       const empty = resolve(dir, 'empty.md');
       writeFileSync(upper, '- [X] T001 done\n- [X] T002 done\n');
       writeFileSync(lower, '- [x] T001 done\n');
       writeFileSync(mixed, '- [X] T001 done\n- [ ] T002 not done\n');
+      writeFileSync(nospace, '-[x] T001 done\n-[X] T002 done\n');
+      writeFileSync(table, '| **[x] T001** | did the thing |\n| **[X] T002** | did it again |\n');
+      writeFileSync(tableMixed, '| **[x] T001** | done |\n| **[ ] T002** | not done |\n');
+      writeFileSync(
+        prose,
+        '# Notes\n\n' +
+          'The gate says `Complete` may not be claimed while a `- [ ]` remains, and a\n' +
+          'fully-ticked spec may not still say `Draft`. Tasks are marked `[X]` when done.\n'
+      );
       writeFileSync(empty, '# Tasks\n\nNo checkboxes here.\n');
 
       expect(taskState(upper), 'a capital [X] must count as ticked').toBe('all-ticked');
       expect(taskState(lower), 'a lowercase [x] must count as ticked').toBe('all-ticked');
       expect(taskState(mixed), 'an unticked box outranks ticked ones').toBe('has-unticked');
-      expect(taskState(empty), 'no checkboxes is no task state').toBe('none');
+      expect(taskState(nospace), 'a list item without the space after the dash is still a task').toBe(
+        'all-ticked'
+      );
+      expect(taskState(table), 'a bolded leading table cell is still a task').toBe('all-ticked');
+      expect(taskState(tableMixed), 'an unticked table cell outranks ticked ones').toBe(
+        'has-unticked'
+      );
+      expect(
+        taskState(prose),
+        'a sentence quoting the notation is prose, not a task list — matching it would invent ' +
+          'an unticked task in every spec that documents this rule'
+      ).toBe('unreadable');
+      expect(taskState(empty), 'a file with no checkbox is unreadable, not task-free').toBe(
+        'unreadable'
+      );
       expect(taskState(resolve(dir, 'absent.md')), 'a missing file is no task state').toBe('none');
     } finally {
       rmSync(dir, { recursive: true, force: true });
