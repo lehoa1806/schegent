@@ -161,7 +161,15 @@ describe('backend posture emission funnel (FR-R3-064)', () => {
   it('the funnel still calls the recorder, before phase-start', () => {
     const text = read(FUNNEL);
     const call = text.indexOf('await this.postureRecorder.recordOnce(');
-    const phaseStart = text.indexOf("await this.appendAudit(inputs, 'phase-start'");
+    // 2026-09-13 (feature 212, FR-002): re-anchored. The funnel stopped writing
+    // the `phase-start` row with a bare `appendAudit` and now writes it through
+    // `attemptRecorder.begin()`, which needs the row's own `AuditEntry.id` back
+    // as the attempt identifier. The old anchor string vanished with that
+    // change, and BOTH `indexOf`s would then read -1 — which the assertions
+    // below catch, and which is why they are here rather than a lone ordering
+    // compare. The invariant is unchanged: posture is context for the phase's
+    // record, so it is recorded before the record exists.
+    const phaseStart = text.indexOf('await this.attemptRecorder.begin(');
     expect(call).toBeGreaterThan(-1);
     expect(phaseStart).toBeGreaterThan(-1);
     expect(call).toBeLessThan(phaseStart);

@@ -514,6 +514,100 @@ describe('ClaudeCliRunner — BUG-002 completion-marker grace-terminate', () => 
     expect(raw.timedOut).toBe(false);
   });
 
+  // Feature 212 / T027 (FR-005, FR-014) — `sawTerminalResult`, the envelope
+  // fact this backend reports out.
+  //
+  // WHY THIS IS NOT `completedAwaitingExit`
+  //
+  // The plan named `completedAwaitingExit` as the source fact. It is not one.
+  // That flag is the AND of two things — an envelope arrived AND the process was
+  // still running when the settle window expired — so on every phase that exits
+  // promptly after its result, which is every healthy phase, it is `false`. A
+  // host reading it as "no envelope" would stamp `resultEnvelope: 'absent'` on
+  // the whole fleet: the same fabricated fact, in the same audit field, that this
+  // feature exists to remove. The first test below is that exact case, and it is
+  // the one that makes the distinction load-bearing rather than stylistic.
+  //
+  // It is also a LATCH. `sawCompletionMarker` is cleared by the next event line
+  // (`:592`) because the settle window needs "is the envelope still the last
+  // thing we saw"; envelope presence needs the opposite rule, so the two are
+  // separate variables set at the same point rather than one variable read twice.
+  describe('the envelope fact this backend reports out (feature 212)', () => {
+    it('reports received on a run that exits promptly after its result', async () => {
+      const child = makeFakeChild(true);
+      const spawnFn: SpawnFn = () => {
+        setTimeout(
+          () => child.stdout.emit(
+            'data',
+            COMPLETE_OUTPUT + '{"type":"result","subtype":"success"}\n'
+          ),
+          10
+        );
+        setTimeout(() => {
+          child.exitCode = 0;
+          child.emit('exit', 0, null);
+          child.emit('close', 0, null);
+        }, 20);
+        return child as unknown as ChildProcess;
+      };
+      const runner = new ClaudeCliRunner(spawnFn);
+      const p = runner.invoke({ ...baseReq, timeoutMs: 90 * 60_000 });
+      await vi.advanceTimersByTimeAsync(30);
+
+      const raw = await p;
+      expect(raw.sawTerminalResult).toBe(true);
+      // The point of the test: the ordinary, healthy, envelope-bearing run is
+      // exactly where the rejected source fact reads `false`.
+      expect(raw.completedAwaitingExit).toBeFalsy();
+      expect(raw.timedOut).toBe(false);
+      expect(child.kill).not.toHaveBeenCalled();
+    });
+
+    it('reports absent when output arrived but no result envelope ever did', async () => {
+      const child = makeFakeChild(true);
+      const spawnFn: SpawnFn = () => {
+        // Content only — including the audit close marker, which is forgeable by
+        // anything the model prints and is NOT an envelope. See the file header.
+        setTimeout(() => child.stdout.emit('data', COMPLETE_OUTPUT), 10);
+        return child as unknown as ChildProcess;
+      };
+      const runner = new ClaudeCliRunner(spawnFn);
+      const p = runner.invoke({ ...baseReq, timeoutMs: 60_000 });
+      await vi.advanceTimersByTimeAsync(60_000 + 20);
+
+      const raw = await p;
+      // `false`, not absent: this backend watched, so it is entitled to the claim.
+      expect(raw.sawTerminalResult).toBe(false);
+      expect(raw.timedOut).toBe(true);
+    });
+
+    it('does not count a suppressed history replay as this invocation envelope', async () => {
+      // The latch is set in the branch that ACCEPTS the result, not at the
+      // detection, so a replayed result the runner deliberately ignores cannot
+      // make a resumed invocation claim an envelope it never received.
+      const child = makeFakeChild(true);
+      const spawnFn: SpawnFn = () => {
+        setTimeout(
+          () => child.stdout.emit('data', '{"type":"result","subtype":"success"}\n'),
+          10
+        );
+        return child as unknown as ChildProcess;
+      };
+      const runner = new ClaudeCliRunner(spawnFn);
+      const p = runner.invoke({
+        ...baseReq,
+        timeoutMs: 60_000,
+        sessionReuse: true,
+        resumeSessionId: 'owned-session'
+      });
+      await vi.advanceTimersByTimeAsync(60_000 + 20);
+
+      const raw = await p;
+      expect(raw.sawTerminalResult).toBe(false);
+      expect(raw.timedOut).toBe(true);
+    });
+  });
+
   it('still trips the idle timeout when no output and no marker arrive (stall backstop)', async () => {
     const child = makeFakeChild(true);
     const spawnFn: SpawnFn = () => child as unknown as ChildProcess; // never emits data or exit

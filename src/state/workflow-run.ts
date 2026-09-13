@@ -151,6 +151,17 @@ export interface TerminalTransitionIntent {
 // FR-R3-075 — 'deadline' is the absolute wall-clock bound; 'timeout' remains
 // the idle stall. An operator reading a stopped phase needs to know whether it
 // went quiet or ran long, so the two are never collapsed.
+//
+// Feature 212 (FR-004) — 'pre_spawn_refusal' is the attempt refused before any
+// child process existed, distinct from 'error', which describes a child that ran
+// and went wrong. Spelled identically here and in the projected `phase-end`
+// cause, deliberately unlike the cap classification, which reaches the audit as
+// two spellings in ONE record: `cause: 'cap_exhausted'` and
+// `terminationReason: 'cap-exhausted'`. The hyphen form is not a member of this
+// union — `appendCapExhaustedPhaseEnd()` writes it into a payload typed
+// `Record<string, unknown>` (src/controller/phase-runner.ts), which is exactly how it
+// escaped this vocabulary. `projectPhaseEnd()` records the consequence
+// (audit-payload.ts:654-656).
 export type TerminationReason =
   | 'deadline'
   | 'token'
@@ -160,7 +171,8 @@ export type TerminationReason =
   | 'error'
   | 'rate_limit'
   | 'timeout'
-  | 'cancel';
+  | 'cancel'
+  | 'pre_spawn_refusal';
 
 export interface SanitizedError {
   code: string;
@@ -200,6 +212,14 @@ export interface PhaseResult {
   stdoutSummary: string;
   stderrSummary: string;
   auditEntryId: string | null;
+  /**
+   * Feature 212 (FR-006, FR-014) — whether the backend's end-of-invocation
+   * result envelope was received. Three-state by construction: 'received',
+   * 'absent', or the field missing, which means UNKNOWN and must never be read
+   * as either value. Records persisted before this feature carry no such field,
+   * permanently, and no migration can invent one.
+   */
+  resultEnvelope?: 'received' | 'absent';
 }
 
 export type DelayedRetryCause = 'transient_error' | 'rate_limit';

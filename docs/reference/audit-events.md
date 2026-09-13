@@ -81,14 +81,17 @@ spawned command.
 Two classification fields are worth naming, because both are narrowed rather
 than passed through (feature 194):
 
-- **`phase-end.cause`** — a closed vocabulary of exactly one member,
-  `cap_exhausted`, written when a phase's `retryCondition` was still truthy at
-  its iteration cap. `projectPhaseEnd()` admits that literal and nothing else, so
-  the redacted fatal-signature text the emitter puts on the same field for a
-  fatal-signature failure — which includes operator-added patterns — never
-  reaches disk; the reason survives in `terminationReason`. The field is **absent**
-  on every other failure, and that absence is what distinguishes a cap exhaustion
-  from a generic failure, so it is never filled in with a placeholder.
+- **`phase-end.cause`** — a closed vocabulary of exactly two members (feature 212
+  widened it from one). `cap_exhausted` is written when a phase's `retryCondition`
+  was still truthy at its iteration cap; `pre_spawn_refusal` when the phase was
+  refused before any backend process was started, so there is no exit code, no
+  output and no result to classify. `projectPhaseEnd()` admits those two literals
+  and nothing else, so the redacted fatal-signature text the emitter puts on the
+  same field for a fatal-signature failure — which includes operator-added
+  patterns — never reaches disk; the reason survives in `terminationReason`. The
+  field is **absent** on every other failure, and that absence is what
+  distinguishes those two from a generic failure, so it is never filled in with a
+  placeholder.
 - **`phase.retry_evaluated.stalled`** — a positive integer counting consecutive
   comparisons in which every metric the condition references held its value.
   There is no bespoke projector for this event type; the field reaches disk
@@ -98,7 +101,27 @@ than passed through (feature 194):
   a `0`. The full presence rule is published in
   `specs/010-pipeline-resilience/contracts/audit-events.md`.
 
+Feature 212 added two more `phase-end` fields, both narrowed the same way:
+
+- **`phase-end.attemptId`** — which attempt this terminal record closes. It is
+  the `phase-start` row's own `AuditEntry.id`, carried forward rather than minted
+  again, so a reader pairs a start with its end by identity instead of by
+  position in the file. That matters because `(runId, phase, iteration)` does not
+  identify an attempt: a retried phase produces several rows under one such
+  triple. `projectPhaseEnd()` admits the field only in the shape the writer mints
+  — a UUID — and omits anything else, so a value of another shape cannot ride the
+  field onto disk.
+- **`phase-end.resultEnvelope`** — whether the backend produced its
+  end-of-invocation result envelope, as one of exactly two literals:
+  `received`, or `absent` for an invocation that ran and produced none.
+  **An absent field means UNKNOWN and must never be read as either value.** A
+  backend that does not report the fact omits it, and so does a phase refused
+  before any process started — writing `absent` there would claim an invocation
+  that never happened. Counting terminations that produced no verdict means
+  counting `resultEnvelope: "absent"`, not counting the field's absence.
+
 <!-- Source: src/audit/audit-payload.ts -->
+<!-- Source: src/controller/phase-attempt-recorder.ts -->
 <!-- Source: tests/unit/audit/audit-payload-v3.test.ts -->
 
 Generic projected values have a maximum nesting depth of four, strings are
@@ -169,21 +192,32 @@ envelope's identity, timestamp, event type, phase, iteration, outcome, and
 schema version. Payload export is restricted to counts, structural result
 fields, and a small set of closed-vocabulary classification strings — `metrics`,
 `fileChangeCounts`, `toolCategoryCounts`, `exitCode`, `terminationReason`,
-omitted-evidence counts, `outcome`, `cause` and `stalled` (both feature 194).
+omitted-evidence counts, `outcome`, `cause` and `stalled` (both feature 194), and
+`attemptId` and `resultEnvelope` (both feature 212). Without the last two the
+counts-only export could answer neither question feature 212 exists to answer:
+which attempt a terminal row closes, and how many terminations produced no
+verdict.
 
-The two feature-194 fields are value-checked by `createCountsOnlyAuditExport()` in
+The feature-194 and feature-212 fields are value-checked by `createCountsOnlyAuditExport()` in
 `src/commands/export-audit.ts`, not merely allowlisted, because that function parses
 whatever bytes are on disk rather than what the current writer produces — an entry a
 pre-feature-194 build wrote, or a future regression, can carry anything. The check is
-scoped by `(eventType, field)`: on `phase-end` only the literal `cap_exhausted` survives,
-matching the write path, where `projectPhaseEnd()` narrows the field to that one value and
-so keeps CLI-derived fatal-signature text out of `payload.cause`. Other event families
+scoped by `(eventType, field)`: on `phase-end` only the literals `cap_exhausted`
+and `pre_spawn_refusal` survive (feature 212 added the second), matching the write
+path, where `projectPhaseEnd()` narrows the field to those two values and so keeps
+CLI-derived fatal-signature text out of `payload.cause`. Widening the vocabulary
+did not widen what a value may be: both members are code-resident literals matched
+by identity against exported constants, never text derived from the CLI or the
+model. Other event families
 carry their own `cause` vocabularies (`phase-breakpoint-cleared`, `task-reordered`,
 `monitor-rate-limited`, the backend-ping failures, the delayed-retry pauses), and those are
 admitted by shape — a short lowercase token — rather than re-enumerated in the export.
-`stalled` must be a positive whole number. **A rejected value exports as `null`, not as an
-absent field**: absence is load-bearing for both fields (a `phase-end` with no `cause` is a
-generic failure; an absent `stalled` means the stagnation rule did not apply), so silently
+`stalled` must be a positive whole number. `attemptId` must match the UUID shape the
+writer mints, checked against the same exported pattern the projection uses rather than a
+second copy of it, and `resultEnvelope` must be `received` or `absent`. **A rejected value
+exports as `null`, not as an absent field**: absence is load-bearing for all four fields (a
+`phase-end` with no `cause` is a generic failure; an absent `stalled` means the stagnation
+rule did not apply; an absent `resultEnvelope` means UNKNOWN, permanently), so silently
 dropping a value the guard disbelieves would rewrite a tamper signal into a meaningful
 reading.
 

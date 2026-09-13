@@ -31,6 +31,25 @@ export const AUDIT_PAYLOAD_TRUNCATION_MARKER = '...';
  */
 export const CAP_EXHAUSTED_CAUSE = 'cap_exhausted';
 
+/**
+ * Feature 212 (FR-004) — the attempt was refused BEFORE any child process
+ * existed. Two refusals are in this class today, both deliberate and both raised
+ * from inside `PhaseRunner`'s try: `UncontainedBackendRefusedError`
+ * (`src/runner/backend-runner-factory.ts:142`) and `CapabilityNotEnforceableError`
+ * (`src/runner/claude-cli.ts:230`).
+ *
+ * Safe to project for the same reason `CAP_EXHAUSTED_CAUSE` is: a code-resident
+ * literal carrying no CLI- or model-derived content, matched by identity against
+ * this constant rather than passed through from `payload.cause`. Hard rule 23
+ * holds unchanged.
+ *
+ * ONE SPELLING. This same string is the `TerminationReason` member
+ * (`src/state/workflow-run.ts`), deliberately unlike the `cap_exhausted` /
+ * `cap-exhausted` split recorded in `projectPhaseEnd()`'s `terminationReason`
+ * note below (`:654-656`).
+ */
+export const PRE_SPAWN_REFUSAL_CAUSE = 'pre_spawn_refusal';
+
 export type AuditPermissionMode =
   | 'read-only'
   | 'workspace-write'
@@ -126,16 +145,55 @@ export interface PhaseEndPayloadV3 {
    * phase failure. Distinct from `terminationReason`, which stays present on every
    * record and is never widened by this field.
    */
-  readonly cause?: typeof CAP_EXHAUSTED_CAUSE;
+  readonly cause?: typeof CAP_EXHAUSTED_CAUSE | typeof PRE_SPAWN_REFUSAL_CAUSE;
+  /**
+   * Feature 212 (FR-002) — the `phase-start` row's own `AuditEntry.id`, which is
+   * what pairs this terminal record with the attempt that opened it.
+   *
+   * No new identifier scheme: the writer already mints a `randomUUID()` per row
+   * (`src/audit/audit-log-writer.ts:317`) and `appendAudit` already returns it;
+   * before this feature the caller simply discarded it. `(runId, phase,
+   * iteration)` is NOT a substitute — the retained logs hold one such triple
+   * covering four distinct attempts — and neither is ordinal position, which
+   * mis-pairs precisely when a record is missing (FR-003).
+   *
+   * Absent on every row written before this feature.
+   */
+  readonly attemptId?: string;
+  /**
+   * Feature 212 (FR-005, FR-014) — whether the backend's end-of-invocation
+   * envelope was received. A SEPARATE FIELD, not a cause value: cause and
+   * envelope-presence are orthogonal, and "deadline with a result" must stay
+   * distinguishable from "deadline with none".
+   *
+   * Omitted rather than defaulted when unknown, following the `verdictBasis`
+   * rule below — defaulting would assert something nobody recorded.
+   */
+  readonly resultEnvelope?: 'received' | 'absent';
   readonly metrics: Readonly<Record<string, number>>;
-  readonly fileChangeCounts: Readonly<{
+  /**
+   * Feature 212 (FR-008, FR-009) — OPTIONAL as of this feature, and the three
+   * count fields below move as one group.
+   *
+   * They were built unconditionally from `countArray`, which yields `0` for an
+   * absent input, so "the phase demonstrably changed nothing" and "the audit
+   * block was never parsed" were recorded identically. Present means the block
+   * was parsed; absent means the counts are unknown.
+   *
+   * `omittedToolEvidenceCount` is in this group because it is FR-009's COMMAND
+   * count (`countArray(payload.commandsExecuted)`): a zero there reads as
+   * "demonstrably ran no commands", the same false statement the file counts
+   * make. `toolCategoryCounts` is deliberately NOT in it — `projectMetrics` of
+   * an absent value returns `{}`, an empty map rather than a counted zero.
+   */
+  readonly fileChangeCounts?: Readonly<{
     created: number;
     modified: number;
     deleted: number;
   }>;
   readonly toolCategoryCounts: Readonly<Record<string, number>>;
-  readonly omittedFileEvidenceCount: number;
-  readonly omittedToolEvidenceCount: number;
+  readonly omittedFileEvidenceCount?: number;
+  readonly omittedToolEvidenceCount?: number;
   /**
    * Diagnostic codes, drawn from `RECORDABLE_PHASE_END_WARNINGS`, that
    * explain the recorded `outcome`.
@@ -485,6 +543,26 @@ function projectPhaseEndWarnings(value: unknown): ProjectedWarnings {
   return { recorded: Object.freeze(recorded), omitted };
 }
 
+/**
+ * The attempt identifier in the only shape anything mints one: the
+ * `randomUUID()` in src/audit/audit-log-writer.ts that stamps every
+ * `AuditEntry.id`.
+ *
+ * Admitted by shape rather than by type and length for the reason
+ * `CLOSED_CAUSE_TOKEN` exists in src/commands/export-audit.ts -- a path has a
+ * separator and a dot (AGENTS.md rule 22) -- and because `projectPhaseEnd` is a
+ * bespoke projector: it builds its result field by field and so never runs the
+ * `PATH_OR_ENDPOINT_RE` pass the generic projection applies to residual
+ * strings. A length bound alone would let any 64-character string through that
+ * gap and onto disk.
+ *
+ * Nothing can reach here with a non-UUID today: both producers pass the
+ * writer-minted `entry.id`, and `PhaseAttempt.close` sets the field AFTER
+ * spreading the caller's payload, so no caller can replace it. This keeps that
+ * true if a second producer ever appears.
+ */
+export const ATTEMPT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 function projectPhaseEnd(payload: Record<string, unknown>): PhaseEndPayloadV3 {
   const rawOutcome = stringValue(payload.outcome, 'malformed');
   // `malformed` is the resolution for a value from outside the vocabulary, not the default
@@ -507,11 +585,56 @@ function projectPhaseEnd(payload: Record<string, unknown>): PhaseEndPayloadV3 {
     const value = payload[key];
     if (typeof value === 'number' && Number.isFinite(value)) legacyMetrics[key] = value;
   }
-  const created = countArray(payload.filesCreated ?? payload.files_created);
-  const modified = countArray(payload.filesModified ?? payload.files_modified);
-  const deleted = countArray(payload.filesDeleted ?? payload.files_deleted);
-  const omittedTools = countArray(payload.commandsExecuted ?? payload.commands_executed);
+  const rawCreated = payload.filesCreated ?? payload.files_created;
+  const rawModified = payload.filesModified ?? payload.files_modified;
+  const rawDeleted = payload.filesDeleted ?? payload.files_deleted;
+  const rawCommands = payload.commandsExecuted ?? payload.commands_executed;
+  const created = countArray(rawCreated);
+  const modified = countArray(rawModified);
+  const deleted = countArray(rawDeleted);
+  const omittedTools = countArray(rawCommands);
+  // Feature 212 (FR-008, FR-009) — WAS THE AUDIT BLOCK PARSED AT ALL?
+  //
+  // `countArray` yields 0 for an absent value, so the four counts below recorded
+  // "the phase demonstrably changed nothing" and "we never read the block" as the
+  // same `{0, 0, 0}` / `0`. A terminated phase that had in fact written files
+  // therefore reported that it had done nothing.
+  //
+  // The distinguishing fact is already in hand: a parsed block yields ARRAYS —
+  // empty ones when nothing happened — and an unparsed one yields nothing at all.
+  // So presence of any one array is the evidence, and the three derived counts are
+  // emitted or omitted together on it. Absent then means UNKNOWN (FR-014), which
+  // is the only honest reading of a block nobody read.
+  //
+  // ANY one, NOT all four, and the difference is not defensive slack. No writer
+  // in this tree emits four: `PhaseRunner.auditEvidenceFields()` forwards three
+  // and has never forwarded `files_deleted`. Under `.every()` the four-element
+  // list is unsatisfiable in production and EVERY phase-end row would lose its
+  // counts — the exact FR-008 failure this block exists to prevent, arrived at by
+  // reading `.some()` as the sloppy half of the pair. Pinned by
+  // `audit-payload-v3.test.ts` §"reads the shape the writer ACTUALLY emits",
+  // because the fixtures around it all pass four and cannot see this.
+  const auditBlockParsed = [rawCreated, rawModified, rawDeleted, rawCommands].some((value) =>
+    Array.isArray(value)
+  );
   const warnings = projectPhaseEndWarnings(payload.warnings);
+  // Feature 212 (FR-002) — the `phase-start` row's `AuditEntry.id`. Shape-checked
+  // like every other carried value: this projection never trusts the shape of what
+  // it is handed, even for a field only this codebase writes. See `ATTEMPT_ID_RE`
+  // for why the shape and not just the length.
+  const rawAttemptId = payload.attemptId;
+  const attemptId =
+    typeof rawAttemptId === 'string' && ATTEMPT_ID_RE.test(rawAttemptId)
+      ? rawAttemptId
+      : undefined;
+  // Feature 212 (FR-005, FR-014) — closed two-member set, omitted rather than
+  // defaulted when absent or unrecognised, exactly as `verdictBasis` is below.
+  // Defaulting either way would assert an envelope fact nobody observed.
+  const rawResultEnvelope = payload.resultEnvelope;
+  const resultEnvelope =
+    rawResultEnvelope === 'received' || rawResultEnvelope === 'absent'
+      ? rawResultEnvelope
+      : undefined;
   // FR-R3-117 — closed set, and omitted rather than defaulted when absent or
   // unrecognised. Defaulting would assert a basis nobody recorded.
   const rawBasis = payload.verdictBasis;
@@ -536,10 +659,22 @@ function projectPhaseEnd(payload: Record<string, unknown>): PhaseEndPayloadV3 {
   // to widen the field's value set; scoping the fix to the one safe, closed-vocabulary
   // member is how that holds for the fatal-signature member too, rather than merely by
   // omission.
-  const cause = payload.cause === CAP_EXHAUSTED_CAUSE ? CAP_EXHAUSTED_CAUSE : undefined;
+  //
+  // Feature 212 (FR-004) adds a second member on exactly the same terms: matched by
+  // IDENTITY against an exported constant, never by passing `payload.cause` through.
+  // Widening the match to a passthrough would reopen the fatal-signature leak this
+  // paragraph exists to keep closed.
+  const cause =
+    payload.cause === CAP_EXHAUSTED_CAUSE
+      ? CAP_EXHAUSTED_CAUSE
+      : payload.cause === PRE_SPAWN_REFUSAL_CAUSE
+        ? PRE_SPAWN_REFUSAL_CAUSE
+        : undefined;
   return Object.freeze({
     outcome,
     ...(verdictBasis !== undefined ? { verdictBasis } : {}),
+    ...(attemptId !== undefined ? { attemptId } : {}),
+    ...(resultEnvelope !== undefined ? { resultEnvelope } : {}),
     exitCode: payload.exitCode === null ? null : numberValue(payload.exitCode, 0),
     // No `?? payload.cause` arm. It was there to reach a stated cause when
     // `terminationReason` and `reason` were both absent, and it made this
@@ -560,10 +695,20 @@ function projectPhaseEnd(payload: Record<string, unknown>): PhaseEndPayloadV3 {
     ),
     ...(cause !== undefined ? { cause } : {}),
     metrics: Object.freeze(legacyMetrics),
-    fileChangeCounts: Object.freeze({ created, modified, deleted }),
+    ...(auditBlockParsed
+      ? { fileChangeCounts: Object.freeze({ created, modified, deleted }) }
+      : {}),
     toolCategoryCounts: projectMetrics(payload.toolCategoryCounts),
-    omittedFileEvidenceCount: created + modified + deleted,
-    omittedToolEvidenceCount: omittedTools,
+    // All three on one predicate — see `auditBlockParsed`. `omittedToolEvidenceCount`
+    // is FR-009's COMMAND count, and its zero makes the same false claim the file
+    // counts do. `toolCategoryCounts` above stays unconditional: an empty map already
+    // reads as "nothing recorded" rather than as a counted zero.
+    ...(auditBlockParsed
+      ? {
+          omittedFileEvidenceCount: created + modified + deleted,
+          omittedToolEvidenceCount: omittedTools
+        }
+      : {}),
     ...(warnings.recorded.length > 0 ? { warnings: warnings.recorded } : {}),
     ...(warnings.omitted > 0 ? { omittedWarningCount: warnings.omitted } : {})
   });

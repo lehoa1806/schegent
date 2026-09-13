@@ -185,7 +185,11 @@ describe('backend posture — every route reaches the funnel (FR-R3-064)', () =>
   it('the funnel emits the posture record before phase-start', () => {
     const text = read(PHASE_RUNNER);
     const emission = text.indexOf('await this.postureRecorder.recordOnce(');
-    const phaseStart = text.indexOf("await this.appendAudit(inputs, 'phase-start'");
+    // Feature 212 — `phase-start` is now appended by `PhaseAttemptRecorder.begin`,
+    // which also opens the attempt the terminal record pairs with. The ROW is
+    // unchanged and so is the property under test; only the call that writes it
+    // moved, so this locator follows it rather than the ordering being relaxed.
+    const phaseStart = text.indexOf('await this.attemptRecorder.begin(');
     expect(emission).toBeGreaterThan(-1);
     expect(phaseStart).toBeGreaterThan(-1);
     expect(

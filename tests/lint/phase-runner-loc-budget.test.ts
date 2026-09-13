@@ -379,7 +379,183 @@ const BUDGETS = [
   // could get wrong — re-deriving the kind from the message, which would be a second
   // oracle disagreeing with the first the next time the vendor rephrases anything —
   // and the reasoning for it lives beside the classifier, not here.
-  { path: 'src/controller/phase-runner.ts', max: 1_147 },
+  // Feature 212 (FR-001 through FR-003, 2026-09-13) — 1147 → 1283 for the
+  // attempt/terminal pairing. 136 lines, of which 73 are code and 63 are the
+  // notes below; the mechanism itself is in `phase-attempt-recorder.ts`.
+  //
+  // WHAT IT BUYS. A phase could be recorded as attempted and never recorded as
+  // finished. `phase-start` was appended at the top of `runInner`, and the five
+  // arms that write `phase-end` are all reached by RETURNING — so every path
+  // that THREW (a containment refusal from `resolveRunner`, a required-evidence
+  // failure, any unexpected error) left a start row with nothing after it. The
+  // retained logs cannot distinguish those from a phase still running, because
+  // `(runId, phase, iteration)` is not unique: `21d88fae`/`speckit-specify`/1
+  // carries four attempts. The addition is a holder, a `finally` that closes
+  // whatever is still open, and a helper the existing arms route through so they
+  // stamp the attempt they close.
+  //
+  // WHY IT IS NOT CHEAPER. The obvious shape — write the terminal record
+  // unconditionally in the `finally` — is 20 lines shorter and wrong: the five
+  // arms return normally THROUGH that `finally`, so the most common paths in the
+  // log would each grow a second, contradictory `phase-end`. The seam must amend
+  // rather than duplicate, and the claim has to be made where the row is written.
+  // Hence `appendPhaseEnd`: one call that appends and claims, rather than two the
+  // next arm can get half right.
+  //
+  // WHY THE COMMENTS ARE HALF OF IT. Three of the notes record a trap that cost
+  // real time to find and is invisible at the call site: an ABSENT `exitCode`
+  // projects to `0` in `audit-payload.ts`, and `files_created: x ?? []` records a
+  // measured zero rather than an absence. Both would have this feature write the
+  // same false "finished cleanly, changed nothing" it exists to remove. The
+  // fourth records why `close()` must not throw from inside a `finally`.
+  //
+  // NO RESPONSIBILITY WAS ADDED. `PhaseAttemptRecorder` owns pairing, exactly-once
+  // and the outcome mapping, in the shape `backend-posture-recorder.ts` and
+  // `capability-decision-recorder.ts` already established; this shell opens an
+  // attempt, hands arms their claim, and closes what is left.
+  // Feature 212 (FR-005, FR-006, FR-014, 2026-09-13) — 1283 → 1335 for the
+  // envelope fact. 52 lines, of which 20 are code: one optional field on
+  // `PhaseRunOutput`, one on `AttemptRef`, the four-line read at the invocation
+  // boundary, a four-line `envelopeField()` spreadable, and its seven spread
+  // sites (six returns plus `appendPhaseEnd`).
+  //
+  // WHAT IT BUYS. US1 made the terminal record exist; without this it says only
+  // that the phase ended. `resultEnvelope` is what makes it answer the question
+  // the feature was opened for — did the backend produce a verdict, or was one
+  // discarded at the bound — and it reaches the persisted `PhaseResult`, so the
+  // answer survives the run.
+  //
+  // WHY A SPREADABLE AND NOT A FIELD. The value is three-state and the third
+  // state is an OMISSION: a backend that does not report the fact must leave the
+  // key off entirely, because on an audit payload `{ resultEnvelope: undefined }`
+  // and no key at all are different rows, and a present key reads as a value
+  // somebody measured (FR-014). Seven sites each writing that conditional inline
+  // is seven chances to write `?? 'absent'` instead, which is the fabricated fact
+  // this feature exists to remove — so the conditional is written once.
+  //
+  // WHY THE READ IS NOT ONE TERNARY. `plan.md` named `completedAwaitingExit` as
+  // the source fact. It is the AND of "an envelope arrived" and "the process was
+  // still running at the settle window", so it is `false` on every phase that
+  // exits promptly after its result — that is, on every healthy phase. Reading it
+  // here would have stamped `'absent'` on the entire fleet. The runner now
+  // latches the same `isTerminalResultLine` detection it already ran
+  // (`claude-cli.ts`), and the guard above the assignment is what keeps a backend
+  // that reports nothing reading as unknown rather than as a denial.
+  //
+  // Raised again 1335 → 1371 on 2026-09-13 by feature 212 US3 (FR-008, FR-009),
+  // +36 net: +32 across six payload sites and one new helper, and +4 more from
+  // the two `close()` calls, below.
+  //
+  // THE +4. `resultEnvelope: attemptRef.resultEnvelope` passed a possibly
+  // `undefined` value to an optional property at the run() seam and in the
+  // cancel arm. Both are now conditional spreads. The compiler-strictness
+  // ratchet named them under `exactOptionalPropertyTypes` — but the flag only
+  // pointed at the FR-014 defect already there: a key written as `undefined` is
+  // a key somebody answered, which is the thing this feature exists to stop.
+  //
+  // WHAT IT BUYS, and it is mostly a DELETION dressed as a raise. Five of the
+  // six sites got SHORTER: `files_created: audit.entry?.filesCreated ?? []`
+  // (three lines) became one spread, and the cancel arm's nine-line inline
+  // conditional became one. The raise is the 35-line `auditEvidenceFields()`
+  // docblock plus per-arm notes, and the docblock is the point — this is the
+  // second time the `?? []` form has been written into this file by someone who
+  // read it as a harmless default.
+  //
+  // WHY IT IS NOT ONE. `auditBlockParsed()` decides whether the phase-end
+  // projection records counts by asking whether ANY of the four raw values is
+  // an array. `?? []` supplies three, so the projection's omission branch was
+  // unreachable from this file: every terminated phase recorded
+  // `{created: 0, modified: 0, deleted: 0}` and `omittedFileEvidenceCount: 0` —
+  // "demonstrably changed nothing" — for work nobody measured. The bound arms
+  // had the mirror defect by the opposite route: they carried no counts at all,
+  // so a phase killed at its deadline after real work was recorded as having
+  // done none. Both are now `...this.auditEvidenceFields(audit.entry)`.
+  //
+  // WHY A HELPER AND NOT SIX INLINE TERNARIES. Six is the count that matters.
+  // The cancel arm was fixed in isolation under T021 and stayed correct while
+  // the five beside it stayed wrong, because a per-site fix leaves the next
+  // arm's author reading the site next door — which still said `?? []`. One
+  // callee means the argument is written once and the next arm inherits it.
+  // Raised again 1371 → 1395 on 2026-09-13, +24, and every line is REVIEW
+  // REMEDIATION of the three raises above rather than new capability. Three
+  // fixes account for all of it: 8 lines for the capability-refusal retraction
+  // (1 code, 7 comment), 6 for the claim-ordering paragraph, 10 for the cancel
+  // arm's note. The stale-citation pass that ran beside them rewrote comment
+  // text in place and cost nothing.
+  //
+  // WHAT IT BUYS. Each one closes a hole the raise above had opened rather than
+  // closed:
+  //
+  //   - The capability-refusal retraction. (SUPERSEDED by the 1395 → 1407 raise
+  //     below, which replaced the flag it retracted; the entry stands as the
+  //     record of what this raise bought, and its code line is quoted as it read
+  //     at the time rather than repointed at a line that no longer exists.)
+  //     A capability refusal is raised while the argv is being ASSEMBLED — every
+  //     adapter calls `capabilityArgs` before it spawns — so the flag set just
+  //     above it over-claims, and the seam classified these as `'error'`. That
+  //     made `PRE_SPAWN_REFUSAL_CAUSE` unreachable by the one error type it was
+  //     written for: the cause existed, was exported, was projected, and no path
+  //     could produce it. The seven comment lines are the reason it keys on the
+  //     error TYPE and not on position — position is precisely what was wrong.
+  //
+  //   - Claiming the attempt BEFORE the append, not after. `appendAudit` is
+  //     bounded for the caller, and a rejection there says "you were not told
+  //     this landed", never "the write was abandoned" (`src/lib/io-barrier.ts`).
+  //     Claiming on success therefore left the attempt open for a row already on
+  //     its way to disk, and the seam wrote a SECOND terminal record for it —
+  //     two `phase-end` rows for one attempt, which reads as an ambiguity rather
+  //     than as the gap FR-002 is trying to make visible. Mutating the order back
+  //     produces `['phase-end', 'phase-end']` in the backend-posture suite.
+  //
+  //   - The cancel arm through `appendPhaseEnd`, not `close()`. `close()`
+  //     swallows a failed append deliberately, because it is reached from a
+  //     `finally` where a throw would replace the error already propagating. This
+  //     arm is not in one, so borrowing that swallow dropped the terminal record,
+  //     marked the attempt closed so the seam would not retry, and reported the
+  //     phase as merely cancelled — reopening the exact `phase-start`-with-no-
+  //     `phase-end` gap FR-001 exists to close, on the one path that had to be
+  //     fixed to notice it.
+  //
+  // WHY IT IS NOT EXTRACTABLE. Two of the three are a single statement each, in
+  // the arm that owns the fact; there is nothing to move. The third is a call
+  // swap that moved work OUT of this file, into the `appendPhaseEnd` callee the
+  // other five arms already share. The comments are the cost, and they are the
+  // point: all three defects were invisible at the call site and each read as
+  // correct until the row on disk was inspected.
+  // Raised 1395 → 1407 on 2026-09-13, +12, and again every line is REVIEW
+  // REMEDIATION rather than new capability — of the raise immediately above this
+  // time. Net of the removed `spawnAttempted = true` statement the twelve are: a
+  // 10-line field docblock on `AttemptRef`, a 2-line widening of the catch to a
+  // block, and comment rewrites in place at the two classification sites.
+  //
+  // WHAT IT BUYS. The retraction above fixed ONE instance of a defect and left
+  // the mechanism that produced it. `spawnAttempted` answered "did control reach
+  // `invoke()`", and the seam read that as "was this phase refused" — two
+  // different questions that agree only at the two throw sites anyone had looked
+  // at. They part company across the whole window between `begin()` and the
+  // spawn, which holds two audit appends, the raw-transcript start, the capture
+  // handle and the fatal-signature read. `appendRequiredAudit` turns a refused
+  // write into `RequiredEvidenceUnavailableError`, so an evidence-sink outage was
+  // written to disk as `terminationReason: 'pre_spawn_refusal'` with
+  // `cause: PRE_SPAWN_REFUSAL_CAUSE` — a durable claim that an operator's
+  // containment policy stopped a phase, in the one field FR-004 exists to make
+  // countable. An incident review censusing that cause read a backend-posture
+  // problem and never learned the log could not be written.
+  //
+  // `preSpawnRefusal` asks the question the record actually makes: it is set only
+  // where a refusal NAMES itself, by `isCapabilityRefusal` or the containment
+  // predicate beside it, and the default is `error` — what an unclassified throw
+  // has always meant. The inversion is the fix; the two predicates are the whole
+  // of the new logic.
+  //
+  // WHY IT IS NOT EXTRACTABLE. The classification is two boolean reads in the
+  // `finally` and one assignment in the catch, each in the arm that owns the
+  // fact. There is no unit here to move — moving it would mean handing a callee
+  // the `catch (err: unknown)` binding to re-narrow, which is the coupling the
+  // predicates already remove. The ten comment lines are the cost and, as with
+  // the three above, the point: the defect read as correct at both call sites and
+  // was visible only in the row on disk.
+  { path: 'src/controller/phase-runner.ts', max: 1_407 },
   // FR-R3-052 / H-03 (2026-08-24) — 400 → 415 for the size check that was
   // missing. `stat()` was already called here and only `isFile()` was read, so
   // `readFile()` took a multi-GiB sidecar wholly into memory. The bound, the

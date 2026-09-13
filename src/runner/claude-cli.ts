@@ -444,6 +444,14 @@ export class ClaudeCliRunner implements BackendRunner {
       // reports `completedAwaitingExit` (NOT `timedOut`) so the captured result
       // is classified on its merits rather than discarded as a timeout failure.
       let sawCompletionMarker = false;
+      // Feature 212 (FR-005) — the same detection, latched. `sawCompletionMarker`
+      // is deliberately CLEARED by any later stream-json event, because the
+      // settle window above needs "is the envelope still the last thing we saw".
+      // Envelope presence is a different question and needs the opposite rule:
+      // once seen, always seen. A suppressed history replay does not count, so
+      // this is set in the same branch that accepts the marker rather than at the
+      // detection itself.
+      let sawTerminalResult = false;
       let completedAwaitingExit = false;
       const stdoutFramer = new LineFramer();
       let reportedFramingLoss = false;
@@ -579,6 +587,7 @@ export class ClaudeCliRunner implements BackendRunner {
                 );
               } else {
                 sawCompletionMarker = true;
+                sawTerminalResult = true;
               }
             } else if (isStreamJsonEventLine(line)) {
               sawCompletionMarker = false;
@@ -724,6 +733,10 @@ export class ClaudeCliRunner implements BackendRunner {
         timedOut,
         ...(deadlineFired() ? { deadlineExceeded: true } : {}),
         completedAwaitingExit,
+        // Feature 212 — always reported by THIS backend, so `false` here is a
+        // measurement rather than a silence. Other runners omit it and read as
+        // unknown; see the field's docblock.
+        sawTerminalResult,
         durationMs: Date.now() - start,
         diagnosticWarnings,
         command,

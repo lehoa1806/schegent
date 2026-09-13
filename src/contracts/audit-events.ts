@@ -1394,12 +1394,18 @@ export interface TaskReorderedPayload {
 // { readonly cause?: string }` stood here with zero readers repo-wide, and
 // feature 194 is what made it contradictory: `PhaseEndPayloadV3` — re-exported
 // from THIS module at the top of the file — now declares the same field on the
-// same event as the closed literal `cap_exhausted`, and the whole delta rests on
-// that vocabulary being closed to it. A consumer reaching for the type named
+// same event as a closed set of code-resident literals, and the whole delta rests
+// on that vocabulary being closed to it. A consumer reaching for the type named
 // after the field got `string` and could write a fatal-signature branch the
 // projection guarantees is dead. Nothing referenced it and no gate compared the
 // two, so it is deleted rather than narrowed: one declaration, in the module
 // that owns the projection.
+//
+// Feature 212 (FR-004, 2026-09-13) — that set gains a second member,
+// `pre_spawn_refusal`, and the re-export is what keeps this module in step: the
+// vocabulary is widened once, where the projection matches it by identity against
+// an exported constant. Closed is the property that matters here, not the count;
+// a passthrough would break the argument above whatever its arity.
 
 // Feature 073 — payload for `metrics-view-opened` (FR-022 adoption
 // tracking). Bounded to a single session identifier — no workspace root

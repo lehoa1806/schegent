@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 113
+    vacuity-census-denominator: 114
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **113** |
+| Gates the detector calls **controlled** (the denominator) | **114** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -1396,3 +1396,20 @@ direction a control page must never take. The pattern now requires `node` within
 the field read, and three tests build a tree per direction — `engines.vscode` must not flip it,
 `engines.node` must, and `>=22.11.0` must read as floor 22 rather than the **0** that a minimum over
 every digit in the string returned before review.
+
+**Denominator movement 113 → 114 (2026-09-13, feature 212 / `FR-005`, `FR-014`).** One gate joined,
+controlled on its first run.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | `result-envelope-unknown-is-unwritten.test.ts` (113 → 114) | Joined. Walks `src/` with `filesUnder` and holds an empty set of unguarded writes, which is this census's usual shape and so carries its usual vacuity risk: a renamed field, a moved `src/`, or a matcher that quietly stops matching all produce an empty scan, and an empty scan satisfies "no unguarded writes" for free. Controlled by a floor of three write sites — four exist today, so the floor admits a fifth without failing and refuses the disappearance of all of them. |
+
+The rate stays **0.0%**: the entrant was mutated with the rest and did not survive.
+
+Its floor is not the only control, and the second one is worth naming because this census has no other
+example of it. A floor answers *did the scan find anything*; it cannot answer *is the thing it found
+the thing the gate claims to find*. So both matchers are asserted against known-bad and known-good
+text — the three spellings this tree actually writes, the optional declaration that must NOT count as a
+write, and the three near-misses (`?.`, `??`, plain truthiness) that must not count as guards. That
+half is what a floor cannot reach: a matcher loosened until it matches a guard that does not guard
+would keep the floor satisfied and the census green while the gate asserted nothing.

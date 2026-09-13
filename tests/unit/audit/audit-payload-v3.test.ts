@@ -3,10 +3,13 @@ import {
   AUDIT_PAYLOAD_MAX_ARRAY_LENGTH,
   AUDIT_PAYLOAD_MAX_STRING_LENGTH,
   AUDIT_PAYLOAD_TRUNCATION_MARKER,
+  CAP_EXHAUSTED_CAUSE,
   PHASE_END_OUTCOMES,
+  PRE_SPAWN_REFUSAL_CAUSE,
   RECORDABLE_PHASE_END_WARNINGS,
   projectAuditPayload
 } from '../../../src/audit/audit-payload';
+import { AUDIT_SCHEMA_VERSION } from '../../../src/contracts/audit-events';
 import type { PhaseOutcome } from '../../../src/controller/phase';
 
 describe('audit payload schema v3', () => {
@@ -446,5 +449,202 @@ describe('phase-end outcome vocabulary', () => {
       'timeout',
       'transient_error'
     ]);
+  });
+});
+
+/**
+ * Feature 212 (FR-002, FR-004, FR-005, FR-008, FR-009, FR-014) — the new facts
+ * on a terminal record, asserted at the one layer that reaches disk.
+ *
+ * `project()` calls `projectAuditPayload` and reads the RETURNED record, never
+ * the object handed to it. That is the whole point of the helper: a test that
+ * inspects the payload it just built asserts what the emitter intended and would
+ * still pass with the projection deleted. T013 deletes a line to prove these do
+ * not. The template is `phase-end-verdict-basis.test.ts`.
+ *
+ * Absence is asserted with `'field' in record` rather than `toBeUndefined()`,
+ * because the two are not the same claim: FR-014 says a missing field means
+ * UNKNOWN permanently, and a field present with the value `undefined` is a
+ * different record shape that `toBeUndefined()` would accept.
+ */
+describe('phase-end attempt pairing and envelope presence (feature 212)', () => {
+  const project = (payload: Record<string, unknown>): Record<string, unknown> =>
+    projectAuditPayload('phase-end', payload) as unknown as Record<string, unknown>;
+
+  const ATTEMPT_ID = '3f2a5c18-9b47-4e60-a1d2-7c8e5f0b6d93';
+
+  /**
+   * An audit block that WAS parsed and reported nothing: four arrays, all empty.
+   * This is the shape that separates FR-008 from FR-009 — the counts here are
+   * measured zeros and must be recorded, while the same zeros derived from an
+   * absent block must not be.
+   */
+  const parsedEmptyBlock = {
+    files_created: [],
+    files_modified: [],
+    files_deleted: [],
+    commands_executed: []
+  };
+
+  it('carries the attempt identifier (FR-002)', () => {
+    expect(project({ outcome: 'failed', attemptId: ATTEMPT_ID }).attemptId).toBe(ATTEMPT_ID);
+  });
+
+  it('omits the attempt identifier rather than defaulting it when absent', () => {
+    expect('attemptId' in project({ outcome: 'failed' })).toBe(false);
+  });
+
+  it('omits an attempt identifier that is not a bounded string', () => {
+    expect('attemptId' in project({ outcome: 'failed', attemptId: 42 })).toBe(false);
+    expect('attemptId' in project({ outcome: 'failed', attemptId: '' })).toBe(false);
+    expect('attemptId' in project({ outcome: 'failed', attemptId: 'x'.repeat(65) })).toBe(false);
+  });
+
+  /**
+   * `projectPhaseEnd` builds its result field by field, so the residual-string
+   * pass that rejects paths elsewhere in the projection never sees this field.
+   * A length bound alone would put any of these on disk (AGENTS.md rule 22);
+   * the shape check is what keeps them off it.
+   */
+  it('omits an attempt identifier that is a well-formed string of the wrong shape', () => {
+    const wrongShape = [
+      '/Users/someone/workspace/schegent/.schegent/audit.log',
+      'C:\\Users\\someone\\audit.log',
+      'https://example.invalid/attempts/1',
+      'attempt 3f2a5c18 failed while writing',
+      `${ATTEMPT_ID} `,
+      ATTEMPT_ID.replace(/-/g, '')
+    ];
+    for (const attemptId of wrongShape) {
+      expect('attemptId' in project({ outcome: 'failed', attemptId })).toBe(false);
+    }
+  });
+
+  it('carries a received result envelope (FR-005)', () => {
+    expect(project({ outcome: 'failed', resultEnvelope: 'received' }).resultEnvelope).toBe('received');
+  });
+
+  it('carries an absent result envelope (FR-005)', () => {
+    expect(project({ outcome: 'failed', resultEnvelope: 'absent' }).resultEnvelope).toBe('absent');
+  });
+
+  it('omits the envelope fact rather than defaulting it when unknown (FR-014)', () => {
+    // The permanent reading, not a migration window. No reader may infer that a
+    // record lacking this field had an envelope, so the projection must not
+    // manufacture one either.
+    //
+    // Both forms, deliberately. The `in` check is the stronger one — it fails an
+    // implementation that writes the key with an explicit `undefined`, which
+    // serialises to a MISSING field in JSON but is a present key in memory, and
+    // that difference decides whether a census sees two populations or three.
+    // The value check is what a reader of the record actually performs.
+    expect('resultEnvelope' in project({ outcome: 'failed' })).toBe(false);
+    expect(project({ outcome: 'failed' }).resultEnvelope).toBeUndefined(); // 2026-09-13 deliberate: the projected phase-end record, the exact object written to audit.log
+  });
+
+  it('omits a value outside the closed two-member set', () => {
+    expect('resultEnvelope' in project({ outcome: 'failed', resultEnvelope: 'maybe' })).toBe(false);
+  });
+
+  it('carries the pre-spawn refusal cause (FR-004)', () => {
+    expect(project({ outcome: 'failed', cause: PRE_SPAWN_REFUSAL_CAUSE }).cause)
+      .toBe(PRE_SPAWN_REFUSAL_CAUSE);
+  });
+
+  it('still carries the cap-exhausted cause', () => {
+    // The widening added a member; it did not replace one. Feature 194's own
+    // record depends on this value continuing to survive the projection.
+    expect(project({ outcome: 'failed', cause: CAP_EXHAUSTED_CAUSE }).cause).toBe(CAP_EXHAUSTED_CAUSE);
+  });
+
+  it('omits a cause outside the vocabulary rather than passing it through', () => {
+    // Hard rule 23. The match is by identity against the exported constants, so
+    // redacted fatal-signature text cannot reach disk under this key.
+    expect('cause' in project({ outcome: 'failed', cause: 'Error: /Users/someone/secret.ts:12' }))
+      .toBe(false);
+  });
+
+  it('omits all three counts together when the audit block was not parsed (FR-009)', () => {
+    // All three, not just the file half. `omittedToolEvidenceCount` is the
+    // command count, and a zero there reads as "demonstrably ran no commands" —
+    // the same false statement the file counts make.
+    const record = project({ outcome: 'failed', terminationReason: 'deadline' });
+
+    expect('fileChangeCounts' in record).toBe(false);
+    expect('omittedFileEvidenceCount' in record).toBe(false);
+    expect('omittedToolEvidenceCount' in record).toBe(false);
+
+    // The `in` form above is the assertion that matters — it separates "absent"
+    // from "present and undefined", and only the first is a record that says
+    // nothing. These three say the weaker thing, and carry the dated note the
+    // census asks for so a later reader knows which receiver was meant.
+    expect(record.fileChangeCounts).toBeUndefined(); // 2026-09-13 deliberate: the projected phase-end record, the exact object written to audit.log
+    expect(record.omittedFileEvidenceCount).toBeUndefined(); // 2026-09-13 deliberate: same record; a number here would be a count nobody took
+    expect(record.omittedToolEvidenceCount).toBeUndefined(); // 2026-09-13 deliberate: same record; a number here would be a command count nobody took
+  });
+
+  it('records measured zeros when the audit block was parsed and empty (FR-008)', () => {
+    // The contrast that makes the rule above meaningful rather than a blanket
+    // ban on zero: here the phase demonstrably changed nothing, and that is a
+    // finding worth recording.
+    const record = project({ outcome: 'clean', ...parsedEmptyBlock });
+
+    expect(record.fileChangeCounts).toEqual({ created: 0, modified: 0, deleted: 0 });
+    expect(record.omittedFileEvidenceCount).toBe(0);
+    expect(record.omittedToolEvidenceCount).toBe(0);
+
+    // Stated as presence too, mirroring the FR-009 test above. The value
+    // assertions already imply it — `undefined` is not `0` — but the pair reads
+    // as one decision when both halves are phrased in the same terms.
+    expect('fileChangeCounts' in record).toBe(true);
+    expect('omittedFileEvidenceCount' in record).toBe(true);
+    expect('omittedToolEvidenceCount' in record).toBe(true);
+  });
+
+  it('reads the shape the writer ACTUALLY emits as parsed (FR-008)', () => {
+    // `parsedEmptyBlock` above carries all four arrays. No writer in this tree
+    // emits four: `PhaseRunner.auditEvidenceFields()` forwards `files_created`,
+    // `files_modified` and `commands_executed` and has never forwarded
+    // `files_deleted` — `develop` omitted it from all three inline copies this
+    // feature replaced, so the field set is unchanged and the omission predates
+    // 212. Every fixture here therefore tests a payload production never
+    // produces, and the gap is not hypothetical: tightening `auditBlockParsed`
+    // from `.some()` to `.every()` — a reading the surrounding comment invites,
+    // since it calls a parsed block one that "yields ARRAYS" — passes all 238
+    // audit tests AND the full-path tests in `phase-runner-outcome.test.ts`,
+    // while stripping the counts from every phase-end row the product writes.
+    //
+    // So this fixture is the writer's shape, deliberately three-keyed, and it
+    // exists to fail when the predicate stops admitting it.
+    const record = project({
+      outcome: 'deadline',
+      terminationReason: 'deadline',
+      files_created: ['specs/001-mock/spec.md'],
+      files_modified: ['README.md'],
+      commands_executed: ['npm test']
+    });
+
+    expect('fileChangeCounts' in record).toBe(true);
+    expect('omittedFileEvidenceCount' in record).toBe(true);
+    expect('omittedToolEvidenceCount' in record).toBe(true);
+    // `deleted: 0` is the false zero the omission above produces — a count of a
+    // list nobody forwarded, on every row. Pinned rather than accepted: whoever
+    // forwards `filesDeleted` will land here, and that is the intended place to
+    // find out that this assertion, not the projection, is what needs changing.
+    expect(record.fileChangeCounts).toEqual({ created: 1, modified: 1, deleted: 0 });
+  });
+
+  it('leaves toolCategoryCounts alone in both cases', () => {
+    // An empty map, not a counted zero: `projectMetrics` of an absent value
+    // returns `{}`, which claims nothing about how many tools ran.
+    expect(project({ outcome: 'failed' }).toolCategoryCounts).toEqual({});
+    expect(project({ outcome: 'clean', ...parsedEmptyBlock }).toolCategoryCounts).toEqual({});
+  });
+
+  it('does not bump AUDIT_SCHEMA_VERSION — every new field is additive', () => {
+    // The 028 / 030 / 031 / 032 / FR-R3-117 precedent. New optional fields on an
+    // existing event break no reader, and FR-009's omission is a narrowing of
+    // what gets written rather than a shape a v3 reader cannot parse.
+    expect(AUDIT_SCHEMA_VERSION).toBe(3);
   });
 });
