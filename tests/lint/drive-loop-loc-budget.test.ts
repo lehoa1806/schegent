@@ -91,13 +91,28 @@ const SIGNATURE = 'public async drive(';
  *        phase result — replaced by an 8-line call plus a 2-line comment. The
  *        one-write guarantee is now stated and tested where it lives.
  *
+ *   664  FR-R3-175 (T1758, 2026-09-13) — an activation resume was dropping the
+ *        persisted CLI conversation silently, and the line that says so has to be
+ *        emitted where the disposition is DECIDED, which is this loop (the
+ *        controller that triggers the resume holds only a prediction the
+ *        per-phase runner-kind resolution can falsify). So the feature needed
+ *        `drive()` to do one more thing, and this budget names the response:
+ *        extract another arm. The 8-line `resolveSessionDispatch({...})` literal
+ *        and the new once-per-drive reporting both went to
+ *        `services/session-disposition.ts` as `SessionDispositionReporter`,
+ *        replaced by a 4-line call — a net decrement even though the method
+ *        gained a responsibility. `run-driver.ts` itself moved 1,290 → 1,291,
+ *        which keeps 39 lines under its 1,330 ceiling against a `tightMargin` of
+ *        26, so the whole-file gate that bound the 681 and 668 entries does not
+ *        bind here.
+ *
  * Next candidates, named so the next decrement does not start with a
  * re-measurement: the four pause arms — breakpoint, delayed-retry, rate-limit,
  * verify — are roughly 230 lines between them. The probe-failure arm is NOT a
  * candidate for merging into the shared sequence: its audit emission order differs,
  * and unifying it is an observable change.
  */
-const DRIVE_MAX_LINES = 668;
+const DRIVE_MAX_LINES = 664;
 
 /** Lines from the signature to the closing brace, inclusive. */
 export function methodLineCount(source: string, signature: string): number {

@@ -426,6 +426,13 @@ describe('PhaseRunner — the pre-spawn refusal is recorded (feature 212)', () =
     // different and false statement about a phase that never started.
     expect('files_created' in payload).toBe(false);
     expect('files_modified' in payload).toBe(false);
+    // The fourth key (FR-R3-171). This list checked three because the writer
+    // only ever forwarded three. A pre-spawn refusal never reaches
+    // `auditEvidenceFields()` — every call site is inside `runInner`, after the
+    // process ran — so no form of that helper can put evidence here. What these
+    // four assert together is that this arm never ACQUIRES file evidence, and
+    // the deleted key belongs in the list for the same reason the others do.
+    expect('files_deleted' in payload).toBe(false);
     expect('commands_executed' in payload).toBe(false);
     expect('fileChangeCounts' in payload).toBe(false);
   });

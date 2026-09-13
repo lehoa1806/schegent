@@ -12,6 +12,7 @@ import { PromptBuilder } from '../../../src/runner/prompt-builder';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import type { ClaudeCliRunner } from '../../../src/runner/claude-cli';
 import type { AuditLogWriter } from '../../../src/audit/audit-log-writer';
+import { projectAuditPayload } from '../../../src/audit/audit-payload';
 import type { RawInvocationOutput, InvocationRequest } from '../../../src/runner/invocation-result';
 import type { AuditEntry, AuditEntryFields } from '../../../src/audit/audit-entry';
 import type { InvocationResult } from '../../../src/parser/stdout-parser';
@@ -442,6 +443,58 @@ describe('PhaseRunner.run — a terminated phase reports what it did (feature 21
     expect('files_created' in payload).toBe(false);
     expect('files_modified' in payload).toBe(false);
     expect('commands_executed' in payload).toBe(false);
+  });
+
+  it('carries the deleted list through to a real deletion count (FR-R3-171, FR-002, SC-001)', async () => {
+    // The defect FR-R3-171 filed, asserted at the layer that actually has it.
+    // `auditEvidenceFields()` forwards `files_created`, `files_modified` and
+    // `commands_executed` and has never forwarded `files_deleted`, so a phase
+    // that deleted two files wrote a `phase-end` row saying it deleted none.
+    // That `deleted: 0` is structural, not measured, and nothing on the row
+    // tells it apart from a phase that looked and genuinely found nothing.
+    //
+    // Driven end to end rather than asserted on the projection alone, and the
+    // reason is load-bearing: the projection ALREADY counts `files_deleted`
+    // correctly whenever the payload carries it (`audit-payload-v3.test.ts`
+    // "turns model-reported file and command lists into counts only"). A
+    // projection-level version of this test passes on the unfixed tree, so it
+    // would be a [RED] test that is never red -- the vacuous-guard defect this
+    // same feature exists to close. Only the writer drops the list.
+    const payload = await driveCounts(
+      { deadlineExceeded: true, timedOut: false, exitCode: null },
+      AUDIT_BLOCK.replace('files_deleted: []', 'files_deleted: ["src/old.ts", "docs/stale.md"]')
+    );
+    expect(payload.files_deleted).toEqual(['src/old.ts', 'docs/stale.md']);
+
+    const row = projectAuditPayload('phase-end', payload) as {
+      fileChangeCounts?: { created: number; modified: number; deleted: number };
+    };
+    expect(row.fileChangeCounts?.deleted).toBe(2);
+  });
+
+  it('leaves all four counts absent on a row from an unparsed block (FR-003, SC-002)', async () => {
+    // NOT a [RED] test. This passes before the deletion forward lands and must
+    // still pass after, because the forward is precisely the change that could
+    // turn an unparsed block into four zeroes: write `files_deleted:
+    // entry?.filesDeleted ?? []` outside the `entry ?` guard and every phase
+    // killed at its bound starts claiming it demonstrably deleted nothing.
+    //
+    // The FR-009 test above pins three payload keys; this pins the fourth and
+    // carries it through to the projected row, which is where SC-002's "all
+    // four count fields" actually live.
+    const payload = await driveCounts(
+      { deadlineExceeded: true, timedOut: false, exitCode: null },
+      'no audit block here at all'
+    );
+    expect('files_deleted' in payload).toBe(false);
+
+    const row = projectAuditPayload('phase-end', payload) as Record<string, unknown>;
+    // Key presence, not `toBeUndefined()`: an absent key and a key present with
+    // the value `undefined` both satisfy the latter, and only the first is a
+    // record that says nothing about what the phase did.
+    expect('fileChangeCounts' in row).toBe(false);
+    expect('omittedFileEvidenceCount' in row).toBe(false);
+    expect('omittedToolEvidenceCount' in row).toBe(false);
   });
 
   it('records measured emptiness when the block WAS parsed and empty (FR-008)', async () => {

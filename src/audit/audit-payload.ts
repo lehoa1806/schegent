@@ -606,14 +606,26 @@ function projectPhaseEnd(payload: Record<string, unknown>): PhaseEndPayloadV3 {
   // emitted or omitted together on it. Absent then means UNKNOWN (FR-014), which
   // is the only honest reading of a block nobody read.
   //
-  // ANY one, NOT all four, and the difference is not defensive slack. No writer
-  // in this tree emits four: `PhaseRunner.auditEvidenceFields()` forwards three
-  // and has never forwarded `files_deleted`. Under `.every()` the four-element
-  // list is unsatisfiable in production and EVERY phase-end row would lose its
-  // counts — the exact FR-008 failure this block exists to prevent, arrived at by
-  // reading `.some()` as the sloppy half of the pair. Pinned by
-  // `audit-payload-v3.test.ts` §"reads the shape the writer ACTUALLY emits",
-  // because the fixtures around it all pass four and cannot see this.
+  // ANY one, NOT all four, and the difference is not defensive slack. The
+  // argument used to be that no writer emitted four — `auditEvidenceFields()`
+  // forwarded three and never `files_deleted`, so `.every()` was unsatisfiable
+  // in production. FR-R3-171 closed that omission and the writer now emits all
+  // four, which removes the old argument without touching the conclusion.
+  //
+  // The real reason `.some()` is correct is that there is no middle state. A
+  // parsed block yields ARRAYS — empty ones when nothing happened — and an
+  // unparsed one yields NO ARRAYS AT ALL, never a partial set. So any one array
+  // is already conclusive evidence that the block was read, and demanding four
+  // buys nothing against the case this predicate exists to separate while
+  // costing the counts on every payload that carries a subset: an audit record
+  // written by an older build, a hand-constructed one, any future writer that
+  // forwards less than the full set. Each of those WAS read, and `.every()`
+  // would record it as unread.
+  //
+  // Pinned by `audit-payload-v3.test.ts` §"reads the shape the writer ACTUALLY
+  // emits", which asserts the writer's four-key shape AND a partial one — the
+  // partial case is what kills the `.every()` mutant now that the four-key
+  // shape no longer can.
   const auditBlockParsed = [rawCreated, rawModified, rawDeleted, rawCommands].some((value) =>
     Array.isArray(value)
   );

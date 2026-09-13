@@ -64,6 +64,70 @@ export interface TerminalRecordInputs {
 }
 
 /**
+ * What one termination reason does to the envelope outcome: pin it, or defer to
+ * the standing mapping. `'standing'` is disjoint from every `AuditOutcome`
+ * member, so the narrowing in `terminalAuditOutcome()` is a fact the compiler
+ * knows rather than a convention a reader has to keep.
+ */
+type TerminalOutcomeRule = AuditOutcome | 'standing';
+
+/**
+ * FR-R3-172 (FR-010, FR-011, T1742, T1743) — the site that must know every
+ * member of `TerminationReason`, and the reason it is this one.
+ *
+ * WHY THIS SITE. It is the only place in the tree where a reason's VALUE changes
+ * a result. Every other consumer forwards the reason — onto an audit payload,
+ * onto the persisted Run, into a status string — and forwarding is correct for a
+ * member the forwarder has never heard of, because it does not have to
+ * understand a string to carry it. This function does not carry the reason; it
+ * answers a question about it, and there is no answer that is right for a reason
+ * it has never heard of. Its fall-through arm is not "no opinion": it is the
+ * claim that this reason follows the standing mapping, and that claim has
+ * already been wrong once. `cancel` takes `'info'` precisely because the
+ * standing mapping said `'failure'` and would have reclassified every operator
+ * cancel as a system failure; the argument is above `terminalAuditOutcome()`.
+ *
+ * WHY THE OTHER CONSUMERS NEED NOT. Obliging a forwarder to enumerate the union
+ * would be the decorative check FR-012 prohibits: it would make the compiler ask
+ * a question whose answer is the same for every member, train the next author to
+ * answer it by copying the line above, and put a second place to edit behind
+ * every new reason without putting a second decision there.
+ *
+ * THE CAVEAT, stated rather than hidden, because FR-012's bar has to be cleared
+ * honestly: 8 of the 10 entries below are `'standing'`, so the map is mostly one
+ * value repeated. That is what makes it a total map and not a decision table.
+ * The bar is cleared anyway, for a reason that survives the count — the entry a
+ * new member is forced to add IS the decision its author would otherwise never
+ * be asked to make, and the two non-`'standing'` entries are proof the question
+ * is live. Both arrived with feature 212: one diverges from the standing mapping
+ * and the other agrees with it, which is only known because someone checked.
+ *
+ * WHY NOT THE LINT-TIER PIN. FR-012's alternative was available and is declined.
+ * `tests/lint/backend-runner-kind-exhaustive.test.ts` — V8's named precedent —
+ * recovers its vocabulary by matching a `case '…':` regex against file text. This
+ * feature's own T1775 is repairing a guard that failed in exactly that way on
+ * exactly this union: `tests/unit/controller/process-tree-degradation.test.ts`
+ * slices `TerminationReason` out of the source between two text needles, feature
+ * 212 appended `pre_spawn_refusal` past the closing needle, and the slice became
+ * the empty string with both assertions still passing on it. A second text
+ * scraper over this union would be a second instance of the defect this feature
+ * exists to remove. A total map fails in the compiler instead, where a missing
+ * key is a named error and cannot degrade into an empty set.
+ */
+const TERMINAL_OUTCOME_RULES: Readonly<Record<TerminationReason, TerminalOutcomeRule>> = {
+  cancel: 'info',
+  pre_spawn_refusal: 'failure',
+  deadline: 'standing',
+  token: 'standing',
+  open_questions: 'standing',
+  remaining_issues: 'standing',
+  iteration_cap: 'standing',
+  error: 'standing',
+  rate_limit: 'standing',
+  timeout: 'standing'
+};
+
+/**
  * The envelope-level `AuditEntry.outcome` for a terminal record.
  *
  * Fixed here, in code, rather than left to each call site: `AuditOutcome` is
@@ -99,6 +163,12 @@ export interface TerminalRecordInputs {
  * `appendPhaseEnd` — so this function is not a second opinion about the
  * ordinary paths.
  *
+ * The two named cases and the "everything else" above are the two shapes of
+ * entry in `TERMINAL_OUTCOME_RULES`, which is where they are now written. They
+ * moved there to oblige a new member to pick one (FR-010); the mapping they
+ * describe is unchanged, and the argument for each stays here with the
+ * behaviour it explains.
+ *
  * Cited by symbol, not by line. Feature 212 grew `phase-runner.ts` by 273 lines
  * and moved every one of these anchors; a re-derived number would be wrong again
  * on the next edit to that file, and a wrong citation is worse than none because
@@ -108,8 +178,8 @@ export function terminalAuditOutcome(
   outcome: PhaseEndOutcome,
   terminationReason: TerminationReason
 ): AuditOutcome {
-  if (terminationReason === 'cancel') return 'info';
-  if (terminationReason === 'pre_spawn_refusal') return 'failure';
+  const rule = TERMINAL_OUTCOME_RULES[terminationReason];
+  if (rule !== 'standing') return rule;
   return outcome === 'clean' ? 'success' : outcome === 'failed' ? 'failure' : 'info';
 }
 

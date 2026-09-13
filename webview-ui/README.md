@@ -715,7 +715,8 @@ invalid status, bounded field errors, both writable-layer revisions, warnings,
 and each row's `consumingWorkflowIds`. `availablePipelines` remains the
 effective runtime-only list. Built-ins are read-only and offer duplicate only.
 
-Ownership, given `PipelineBuilder.svelte`'s 500-line component budget:
+Ownership, given the per-component LOC budget `PipelineBuilder.svelte` sits under, which is
+`MAX_LINES` in [`tests/lint/svelte-component-loc-budget.test.ts`](../tests/lint/svelte-component-loc-budget.test.ts):
 
 | File | Owns |
 |---|---|
@@ -772,7 +773,8 @@ That capability is deliberately **distinct** from `pipelineOverrides` — see
 its per-capability trust scopes section. The webview fails closed when a host
 bundle omits the field.
 
-Ownership, given `PipelineBuilder.svelte`'s 500-line component budget:
+Ownership, given the per-component LOC budget `PipelineBuilder.svelte` sits under, which is
+`MAX_LINES` in [`tests/lint/svelte-component-loc-budget.test.ts`](../tests/lint/svelte-component-loc-budget.test.ts):
 
 | File | Owns |
 |---|---|

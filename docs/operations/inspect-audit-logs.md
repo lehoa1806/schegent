@@ -153,6 +153,19 @@ phase killed at its absolute deadline or idle timeout, refused before spawn, or
 cancelled mid-flight looks like. Read the missing case as *unknown*, never as
 *nothing happened*: a phase can create files and then be killed.
 
+**One exception, and it is historical.** The `deleted` member of that triple was
+not forwarded by the writer until 2026-09-13. The phase runner handed the
+projection the created, modified and command lists and dropped the deleted one,
+so the projection counted an absent value as `0`. In a row written before that
+date, a `deleted: 0` is therefore **not** a measurement — it is the same
+absent-versus-zero confusion described above, occurring inside a row that is
+otherwise honest. Nothing in the row distinguishes the two cases: the schema
+version did not change, so the row's timestamp is the only discriminator. The
+`created` and `modified` members were always real. `omittedFileEvidenceCount`
+sums all three, so in those same rows it under-reports by however many paths the
+phase deleted; `omittedToolEvidenceCount` is unaffected, because the command
+list was always forwarded.
+
 `omittedToolEvidenceCount` is the one to be most careful with, because its zero
 reads as a positive claim about what the phase **ran**. A `0` there says the
 projection dropped no commands; an absent field says nobody counted, and the

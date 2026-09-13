@@ -6,17 +6,27 @@ import ts from 'typescript';
 /**
  * FR-R3-110 (FR-105, FR-106) — two compiler options adopted progressively, under a ratchet.
  *
- * WHY THEY ARE NOT SIMPLY TURNED ON. `noUncheckedIndexedAccess` produces **1,279** diagnostics
- * across this tree and `exactOptionalPropertyTypes` produces **142**. Turning either on in
- * `tsconfig.json` would break the build until every site was rewritten — and rewriting 1,279
- * sites in one change is precisely the bulk refactor FR-106 forbids and `AGENTS.md`'s work-style
- * rule bans as a drive-by. A diff that large has near-zero review value and non-zero risk.
+ * WHY THEY ARE NOT SIMPLY TURNED ON. Each produces a four- or three-figure diagnostic count across
+ * this tree; the numbers are in `RATCHET` below, which is the only place in this file that states
+ * them. Turning either on in `tsconfig.json` would break the build until every one of those sites
+ * was rewritten — and a rewrite that size in one change is precisely the bulk refactor FR-106
+ * forbids and `AGENTS.md`'s work-style rule bans as a drive-by. A diff that large has near-zero
+ * review value and non-zero risk.
  *
  * WHY THEY ARE NOT SIMPLY DEFERRED EITHER. The absence matters: core state is
  * `Record<queueId, …>` maps, and `noUncheckedIndexedAccess` is the option that makes
  * `map[id].field` a compile error instead of a runtime `undefined`. Part of the price is already
- * visible as the 342-entry `no-unnecessary-condition` lint baseline — checks the codebase writes
- * by hand because the compiler was not asked to.
+ * visible as the `no-unnecessary-condition` lint baseline in `tests/lint/eslint-baseline.json` —
+ * checks the codebase writes by hand because the compiler was not asked to.
+ *
+ * FR-R3-176 (T1763) — this docblock used to open with "**1,279** diagnostics … and **142**" and
+ * to call the lint baseline "342-entry". All three were transcribed copies of numbers owned
+ * elsewhere: the first two by `RATCHET` forty lines below, which this very file decremented to
+ * 1,277 on 2026-08-27 without updating the prose above it, and the third by
+ * `eslint-baseline.json`, which had since fallen to 340. A gate that measures a count and then
+ * misstates it in its own header is the defect it exists to catch, one level up. They are now
+ * cited rather than copied. The convention and the decision not to align this gate with the lint
+ * pass are in `docs/development/lint-and-type-aware-rules.md`.
  *
  * SO: MEASURED, PINNED, SHRINK-ONLY. This is `FR-R3-039`/`FR-R3-088`'s recorded mechanism applied
  * to a compiler flag. The count is absorbed, growth is refused, and the flag graduates into
@@ -58,8 +68,9 @@ const RATCHET: ReadonlyArray<{
     src: 173,
     why:
       'core state is Record<queueId, …>; this flag is what turns map[id].field from a runtime ' +
-      'undefined into a compile error. The 342-entry no-unnecessary-condition baseline is part ' +
-      'of the price already being paid by hand'
+      'undefined into a compile error. The no-unnecessary-condition baseline in ' +
+      'tests/lint/eslint-baseline.json, which owns its own count, is part of the price already ' +
+      'being paid by hand'
   },
   {
     flag: 'exactOptionalPropertyTypes',

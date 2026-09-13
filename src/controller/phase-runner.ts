@@ -27,6 +27,10 @@ import { unwrapStreamJson } from '../parser/stream-json-unwrapper';
 import { detectCreditError } from '../parser/credit-error-detector';
 import type { RawTranscriptMode, TerminationReason } from '../state/workflow-run';
 import type { PhaseDef } from '../config/pipeline-config';
+import {
+  CAP_EXHAUSTED_TERMINATION_REASON,
+  type CapExhaustedPhaseEndPayload
+} from './cap-exhausted-payload';
 import { assertPhaseRunnerPolicy } from '../config/phase-runner-policy';
 import type { RawInvocationOutput, VerboseDiagnosticTarget } from '../runner/invocation-result';
 import { composeVerboseDiagnosticPath } from '../audit/verbose-diagnostic-path';
@@ -755,9 +759,10 @@ export class PhaseRunner {
     // completed-but-non-exiting run (clean stdout, FR-025) from an idle stall.
     const rateLimit = detectCreditError(raw.stdoutBuffer, raw.stderrBuffer, raw.exitCode);
     const audit = parseAuditLogBlock(unwrappedStream.text);
+    const stderrTail = typeof raw.stderrBuffer === 'string' ? raw.stderrBuffer : raw.stderrBuffer.getTrailingLines(100);
     const parsedResult = parseInvocation({
       stdout: unwrappedStream.text,
-      stderr: typeof raw.stderrBuffer === 'string' ? raw.stderrBuffer : raw.stderrBuffer.getTrailingLines(100),
+      stderr: stderrTail,
       exitCode: raw.exitCode,
       rateLimit,
       auditEntry: audit.entry,
@@ -816,7 +821,7 @@ export class PhaseRunner {
         outcome: 'failed',
         terminationReason: 'error',
         stdoutSummary: this.logger.sanitize(summarize(unwrappedStream.text)),
-        stderrSummary: this.logger.sanitize(summarize(typeof raw.stderrBuffer === 'string' ? raw.stderrBuffer : raw.stderrBuffer.getTrailingLines(100))),
+        stderrSummary: this.logger.sanitize(summarize(stderrTail)),
         exitCode: raw.exitCode,
         auditEntryId: auditEntry.id,
         ...this.envelopeField(attemptRef),
@@ -856,13 +861,7 @@ export class PhaseRunner {
         outcome: 'failed',
         terminationReason: 'deadline',
         stdoutSummary: this.logger.sanitize(summarize(unwrappedStream.text)),
-        stderrSummary: this.logger.sanitize(
-          summarize(
-            typeof raw.stderrBuffer === 'string'
-              ? raw.stderrBuffer
-              : raw.stderrBuffer.getTrailingLines(100)
-          )
-        ),
+        stderrSummary: this.logger.sanitize(summarize(stderrTail)),
         exitCode: raw.exitCode,
         auditEntryId: auditEntry.id,
         ...this.envelopeField(attemptRef),
@@ -903,7 +902,7 @@ export class PhaseRunner {
         outcome: 'timeout',
         terminationReason: 'timeout',
         stdoutSummary: this.logger.sanitize(summarize(unwrappedStream.text)),
-        stderrSummary: this.logger.sanitize(summarize(typeof raw.stderrBuffer === 'string' ? raw.stderrBuffer : raw.stderrBuffer.getTrailingLines(100))),
+        stderrSummary: this.logger.sanitize(summarize(stderrTail)),
         exitCode: raw.exitCode,
         auditEntryId: auditEntry.id,
         ...this.envelopeField(attemptRef),
@@ -951,7 +950,7 @@ export class PhaseRunner {
         outcome: 'failed',
         terminationReason: 'cancel',
         stdoutSummary: this.logger.sanitize(summarize(unwrappedStream.text)),
-        stderrSummary: this.logger.sanitize(summarize(typeof raw.stderrBuffer === 'string' ? raw.stderrBuffer : raw.stderrBuffer.getTrailingLines(100))),
+        stderrSummary: this.logger.sanitize(summarize(stderrTail)),
         exitCode: raw.exitCode,
         auditEntryId: auditEntry.id,
         ...this.envelopeField(attemptRef),
@@ -998,13 +997,7 @@ export class PhaseRunner {
           outcome: 'failed',
           terminationReason: 'error',
           stdoutSummary: this.logger.sanitize(summarize(unwrappedStream.text)),
-          stderrSummary: this.logger.sanitize(
-            summarize(
-              typeof raw.stderrBuffer === 'string'
-                ? raw.stderrBuffer
-                : raw.stderrBuffer.getTrailingLines(100)
-            )
-          ),
+          stderrSummary: this.logger.sanitize(summarize(stderrTail)),
           exitCode: raw.exitCode,
           auditEntryId: verificationEntry.id,
           ...this.envelopeField(attemptRef),
@@ -1104,7 +1097,7 @@ export class PhaseRunner {
       outcome,
       terminationReason,
       stdoutSummary: this.logger.sanitize(summarize(unwrappedStream.text)),
-      stderrSummary: this.logger.sanitize(summarize(typeof raw.stderrBuffer === 'string' ? raw.stderrBuffer : raw.stderrBuffer.getTrailingLines(100))),
+      stderrSummary: this.logger.sanitize(summarize(stderrTail)),
       exitCode: raw.exitCode,
       auditEntryId: auditEntry.id,
       ...this.envelopeField(attemptRef),
@@ -1255,25 +1248,26 @@ export class PhaseRunner {
     pipelineId?: string;
     phaseDef?: PhaseDef;
   }): Promise<void> {
-    const payload: Record<string, unknown> = {
+    const authoredTimeoutMs = authoredPhaseTimeoutMs(inputs.phaseDef);
+    const payload: CapExhaustedPhaseEndPayload = {
       ...(inputs.pipelineId === undefined ? {} : { pipelineId: inputs.pipelineId }),
       phaseId: inputs.phaseDef?.id ?? inputs.phase,
       runner: inputs.phaseDef?.runner ?? this.runnerRegistry?.getGlobalDefault() ?? DEFAULT_BACKEND,
       outcome: 'failed',
-      terminationReason: 'cap-exhausted',
+      terminationReason: CAP_EXHAUSTED_TERMINATION_REASON,
       // The constant, not the literal: `projectPhaseEnd()` gates this field on
-      // identity with it (`payload.cause === CAP_EXHAUSTED_CAUSE`), and this
-      // payload is typed `Record<string, unknown>`, so a literal here couples
-      // the sole producer to the projection allowlist through an unchecked
-      // string. Changing the constant's value would silently strip the field
-      // again — the Delta 1 defect this function's note above describes.
+      // identity with it (`payload.cause === CAP_EXHAUSTED_CAUSE`), so a literal
+      // here would couple the sole producer to the projection allowlist through
+      // a string neither side checks. Changing the constant's value would
+      // silently strip the field again — the Delta 1 defect this function's note
+      // above describes. The same argument now applies one field up, which is
+      // why `terminationReason` reads from a constant too (T1744).
       cause: CAP_EXHAUSTED_CAUSE,
-      exitCode: null
+      exitCode: null,
+      ...(inputs.phaseDef?.model ? { model: inputs.phaseDef.model } : {}),
+      ...(inputs.phaseDef?.effort ? { effort: inputs.phaseDef.effort } : {}),
+      ...(authoredTimeoutMs === undefined ? {} : { timeoutMs: authoredTimeoutMs })
     };
-    if (inputs.phaseDef?.model) payload.model = inputs.phaseDef.model;
-    if (inputs.phaseDef?.effort) payload.effort = inputs.phaseDef.effort;
-    const authoredTimeoutMs = authoredPhaseTimeoutMs(inputs.phaseDef);
-    if (authoredTimeoutMs !== undefined) payload.timeoutMs = authoredTimeoutMs;
     await this.appendRequiredAudit({
       runId: inputs.runId,
       phase: inputs.phase,
@@ -1358,12 +1352,14 @@ export class PhaseRunner {
   private auditEvidenceFields(entry: AuditEntryFields | null | undefined): {
     files_created?: string[];
     files_modified?: string[];
+    files_deleted?: string[];
     commands_executed?: string[];
   } {
     return entry
       ? {
           files_created: entry.filesCreated,
           files_modified: entry.filesModified,
+          files_deleted: entry.filesDeleted,
           commands_executed: entry.commandsExecuted
         }
       : {};

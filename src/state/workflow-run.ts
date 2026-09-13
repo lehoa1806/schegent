@@ -161,7 +161,18 @@ export interface TerminalTransitionIntent {
 // union — `appendCapExhaustedPhaseEnd()` writes it into a payload typed
 // `Record<string, unknown>` (src/controller/phase-runner.ts), which is exactly how it
 // escaped this vocabulary. `projectPhaseEnd()` records the consequence
-// (audit-payload.ts:654-656).
+// (audit-payload.ts, the `cause` field's docblock).
+//
+// FR-R3-172 (FR-013, FR-015, T1744, 2026-09-14) — AMENDED, not replaced: the
+// paragraph above is what was true, and it is how the escape is still found. The
+// seam it names is now shut. That payload is typed
+// `CapExhaustedPhaseEndPayload` (src/controller/cap-exhausted-payload.ts), which
+// admits this union plus one named constant for the hyphen form and nothing
+// else, so a second non-member cannot leave the same way unannounced. The VALUE
+// is unchanged and stays divergent on purpose — it is on disk in every
+// cap-exhaustion row already written, and the cost of renaming it is borne by
+// records nobody can go back and edit. This union was not widened to accommodate
+// it, and must not be: the exception is named at the one site that needs it.
 export type TerminationReason =
   | 'deadline'
   | 'token'

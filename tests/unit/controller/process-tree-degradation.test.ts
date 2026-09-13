@@ -115,19 +115,48 @@ describe('process-tree degradation recorder (FR-R3-083)', () => {
   });
 });
 
+const UNION_DECLARATION = 'export type TerminationReason';
+
 describe('the degraded path adds no state-schema change (FR-036, SC-010)', () => {
   it('leaves TerminationReason untouched', () => {
     // FR-R3-054 §5 named the union's closure and its migration story as the reason
     // a new member did not ship. The audit event is the shape that does not need
     // one, so this asserts the thing that would have been the cost.
+    //
+    // FR-R3-172 (FR-049, SC-017, T1775, 2026-09-13) — THE EXTRACTION BELOW WAS
+    // REWRITTEN, because the previous one had stopped extracting anything. It
+    // bounded the union by slicing up to `| 'cancel';`, which was the last member
+    // when it was written. Feature 212 appended `pre_spawn_refusal` after it; that
+    // moved the semicolon off the `cancel` line, the closing needle stopped
+    // matching, `indexOf` returned -1, and the end bound landed BELOW the start.
+    // `slice` yielded the empty string, and both assertions at the bottom passed
+    // against nothing — quietly, for the whole of feature 212. A guard that cannot
+    // fail is worse than no guard: it is a green check standing in for one.
+    //
+    // The bound is now the union's own terminator instead of any member of it, so
+    // the next append cannot invalidate it the way the last one did. Pinning a
+    // second member literal was the repair explicitly rejected: it would have
+    // restored the assertion and rearmed the identical trap for whoever appends
+    // the next member.
+    //
+    // The bound checks come FIRST, and that ordering is the point of the repair as
+    // much as the bound itself. An extraction that finds nothing has to FAIL here,
+    // where the message says which bound went missing, rather than hand an empty
+    // string to the two assertions it exists to feed.
     const source = readFileSync(
       resolve(__dirname, '..', '..', '..', 'src', 'state', 'workflow-run.ts'),
       'utf8'
     );
-    const union = source.slice(
-      source.indexOf('export type TerminationReason'),
-      source.indexOf("| 'cancel';") + "| 'cancel';".length
-    );
+    const start = source.indexOf(UNION_DECLARATION);
+    expect(start).toBeGreaterThanOrEqual(0);
+    const terminator = source.indexOf(';', start);
+    expect(terminator).toBeGreaterThan(start);
+
+    const union = source.slice(start, terminator + 1);
+    expect(union).toContain(UNION_DECLARATION);
+    expect(union).toContain('|');
+    expect(union.endsWith(';')).toBe(true);
+
     expect(union).not.toContain('degraded');
     expect(union).not.toContain('tree');
   });

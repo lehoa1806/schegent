@@ -2,6 +2,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { relative, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import { blankCommentsBounded } from './absent-field-census';
 import { ENVELOPE_ROOT, envelopePresent } from './envelope-presence';
 import { filesUnder } from './source-scan';
 
@@ -84,10 +85,50 @@ import { filesUnder } from './source-scan';
  * bookkeeping, not a check. Records are still checked for dead bare names, which
  * is the class the item was filed for. `../` is not matched at all: every
  * qualified citation in both trees is root-relative, and a directory-relative
- * form would need a third resolution mode to buy nothing. Prose nouns like
- * "settings.md" outside backticks are nobody's business. It skips fenced code
+ * form would need a third resolution mode to buy nothing. It skips fenced code
  * blocks, for the reason `envelope-doc-liveness.sh` skips them: quoted material
  * is not a citation the document makes.
+ *
+ * UNBACKTICKED CITATIONS ARE READ TOO, AND REPORTED, NEVER ENFORCED — feature
+ * 213 (FR-R3-173, FR-020/FR-021), 2026-09-13. The sentence this header used to
+ * carry, that prose nouns outside backticks are nobody's business, turned out to
+ * be load-bearing in the wrong direction. A sweep of the two trees found 46
+ * unbackticked `name.ext:NN` citations in code comments alone, and the gate's own
+ * exposure is larger: 42 in the live tier and 1,022 in dated records. Eight live
+ * ones fail the rules already written here, and none needs a new rule — they cite
+ * line 1448 of a 1,007-line file, 1181 of a 659-line one, 812 of a 192-line one.
+ * They were invisible for want of a backtick.
+ *
+ * THE EXTRACTION IS NARROWED, not merely un-backticked, and this is the whole
+ * reason the pass is admissible. Dropping the backtick over raw text produced
+ * twelve live findings of which four were false, every one of them a fabricated
+ * path inside a STRING LITERAL — a stack trace under test, a redaction fixture, a
+ * gate's own synthetic input. Restricting extraction to comment spans removed
+ * four of four and kept eight of eight. That is a lexical boundary the language
+ * already draws, decided by a scanner and not by a reader's judgement about what
+ * a sentence means, which is the line the clarification session drew: extend
+ * where the uncovered set is hand-enumerable, decline anything needing a
+ * heuristic over prose. `blankCommentsBounded` does the scanning, so no second
+ * tokenizer exists to disagree with the first.
+ *
+ * IT REPORTS AND DOES NOT BLOCK, by requirement (FR-021) and on the merits. The
+ * findings are real, but repairing them means rewriting citations in files this
+ * feature does not otherwise touch, which FR-022 prohibits; and a gate that
+ * arrives already failing gets switched off rather than satisfied. So the pass
+ * prints what it finds and asserts nothing about the count. What IS asserted is
+ * that it still finds anything at all — a report is the one gate shape that goes
+ * quiet without going red, which is the founding defect of this very file one
+ * level up. No ledger entry is added for what it reports, either: `KNOWN_ABSENT`
+ * waives the BLOCKING record check, and waiving a check that cannot fail would
+ * record a permission nobody needs. Whoever makes this pass block adds them then.
+ *
+ * WHAT THE REPORT DOES NOT CLAIM. Semantic staleness is still unchecked, and it
+ * is the larger half: four of five sampled stale citations resolve green here,
+ * because the file is long enough to hold the line and this gate never asks what
+ * the line says. Two blind spots in the patterns are known and unfixed — a
+ * backticked citation hard-wrapped mid-token is skipped as a fragment, and a
+ * comma-joined multi-range `NN-MM,PP-QQ` is not matched at all. Both are recorded
+ * in `docs/development/lint-gate-census.md` with the measurement behind them.
  */
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
@@ -325,7 +366,106 @@ function extract(
   return out;
 }
 
-function references(): readonly Reference[] {
+/** The same two shapes with the backticks dropped. Read by the reporting pass only. */
+const UNMARKED_BARE = new RegExp('(' + NAME + '):(\\d+)(?:-(\\d+))?', 'g');
+const UNMARKED_QUALIFIED = new RegExp(
+  '(\\./' + NAME + '|(?:[A-Za-z0-9._-]+/)+' + NAME + '):(\\d+)(?:-(\\d+))?',
+  'g'
+);
+
+/**
+ * A source file's comment characters, at the offsets they already had.
+ *
+ * The inverse of the blanker rather than a second scanner: a character is comment
+ * exactly where the blanked text holds a space the source did not. Line geometry
+ * survives, so a match's line here is its line in the file.
+ *
+ * A file the scan budget could not finish is read as ALL CODE, which is the
+ * direction that under-reports. Calling it all comment would admit every string
+ * literal in it, and the four false positives this narrowing exists to remove
+ * were all string literals.
+ */
+function commentsOnly(source: string): string {
+  const { text, unscannable } = blankCommentsBounded(source);
+  if (unscannable !== null) return source.replace(/[^\n]/g, ' ');
+  let out = '';
+  for (let k = 0; k < source.length; k += 1) {
+    const char = source[k] ?? '';
+    if (char === '\n') {
+      out += '\n';
+      continue;
+    }
+    out += text[k] === ' ' && char !== ' ' ? char : ' ';
+  }
+  return out;
+}
+
+/**
+ * Unbackticked citations: comment spans in code, non-fenced prose in Markdown.
+ *
+ * Backticked occurrences are skipped rather than re-read — those are the blocking
+ * pass's, and counting an occurrence under both rules would make the report's
+ * numbers unattributable to either.
+ */
+export function scanUnmarked(
+  source: string,
+  markdown: boolean,
+  display: string,
+  home: string,
+  isRecord: boolean
+): readonly Reference[] {
+  const out: Reference[] = [];
+  let fenced = false;
+  (markdown ? source : commentsOnly(source)).split('\n').forEach((text, index) => {
+    if (markdown && /^\s*(```|~~~)/.test(text)) {
+      fenced = !fenced;
+      return;
+    }
+    if (fenced) return;
+    // A qualified path also matches the bare shape at its basename. Qualified
+    // runs first and claims its span, so each occurrence is read exactly once.
+    const claimed: { from: number; to: number }[] = [];
+    for (const [pattern, qualified] of [
+      [UNMARKED_QUALIFIED, true],
+      [UNMARKED_BARE, false]
+    ] as const) {
+      for (const match of text.matchAll(pattern)) {
+        const raw = match.at(0) ?? '';
+        const start = match.index;
+        const end = start + raw.length;
+        if (qualified) claimed.push({ from: start, to: end });
+        else if (claimed.some((span) => start >= span.from && start < span.to)) continue;
+        const before = start === 0 ? '' : text.charAt(start - 1);
+        if (before === '`' && text.charAt(end) === '`') continue;
+        const target = match.at(1) ?? '';
+        if (directoryRelative(target)) continue;
+        out.push({
+          from: display,
+          line: index + 1,
+          target,
+          qualified,
+          home,
+          cited: Number(match.at(3) ?? match.at(2) ?? '0'),
+          raw,
+          record: isRecord
+        });
+      }
+    }
+  });
+  return out;
+}
+
+const extractUnmarked: Extractor = (abs, display, home, isRecord) =>
+  scanUnmarked(readFileSync(abs, 'utf8'), abs.endsWith('.md'), display, home, isRecord);
+
+type Extractor = (
+  abs: string,
+  display: string,
+  home: string,
+  isRecord: boolean
+) => readonly Reference[];
+
+function references(extractor: Extractor = extract): readonly Reference[] {
   const out: Reference[] = [];
   const collect = (root: string, roots: readonly string[], prefix: string): void => {
     for (const abs of treeFiles(root, roots)) {
@@ -333,7 +473,7 @@ function references(): readonly Reference[] {
       const rel = relative(root, abs);
       if (prefix === 'repo/' && rel === SELF) continue;
       const isRecord = RECORD_PREFIXES.some((p) => rel.startsWith(p));
-      out.push(...extract(abs, prefix + rel, root, isRecord));
+      out.push(...extractor(abs, prefix + rel, root, isRecord));
     }
   };
   collect(REPO_ROOT, SCAN_ROOTS.repo, 'repo/');
@@ -381,6 +521,10 @@ const all = references();
 const verdictOf = (ref: Reference): Verdict =>
   classify(ref.cited, candidatesFor(ref).map(lineCount));
 const show = (ref: Reference): string => `${ref.from}:${ref.line}  ${ref.raw}`;
+const unmarked = references(extractUnmarked);
+/** The unbackticked scanner over a literal source, for the controls below. */
+const probe = (source: string, markdown: boolean): readonly Reference[] =>
+  scanUnmarked(source, markdown, 'probe', REPO_ROOT, false);
 
 describe('bare-basename file:line references resolve (FR-R3-145 follow-up)', () => {
   it('finds references and files at all', () => {
@@ -503,6 +647,112 @@ describe('bare-basename file:line references resolve (FR-R3-145 follow-up)', () 
   it('excludes exactly one file from the live tier, this one', () => {
     // The self-exclusion is a real hole and is bounded here rather than trusted.
     expect(SELF).toBe('tests/lint/basename-line-references.test.ts');
+  });
+
+  // ---- the unbackticked pass: reported, never enforced (FR-021) ----
+
+  it('REPORTS unbackticked citations, and fails on none of them', () => {
+    const live = unmarked.filter((ref) => !ref.record);
+    const unresolved = live
+      .map((ref) => ({ ref, verdict: verdictOf(ref) }))
+      .filter((row) => row.verdict !== 'resolved');
+    // Records are asked the one question records are asked: a bare name that
+    // names no file. `KNOWN_ABSENT` filters the report so it carries only what
+    // is not already written down, not because the ledger waives anything here.
+    const deadNames = [
+      ...new Set(
+        unmarked
+          .filter(
+            (ref) =>
+              ref.record &&
+              !ref.qualified &&
+              !KNOWN_ABSENT.has(ref.target) &&
+              verdictOf(ref) === 'dead'
+          )
+          .map((ref) => ref.target)
+      )
+    ].sort();
+
+    console.log(
+      [
+        '',
+        'unbackticked citations — REPORT ONLY, nothing below fails this gate',
+        `  extracted: ${unmarked.length} (${live.length} live, ${unmarked.length - live.length} record)`,
+        `  live, not resolving: ${unresolved.length}`,
+        ...unresolved.map(
+          ({ ref, verdict }) =>
+            `    ${verdict.toUpperCase().padEnd(9)} ${show(ref)}` +
+            (verdict === 'stale'
+              ? ` -> ${candidatesFor(ref)
+                  .map((c) => `${c.display} is ${lineCount(c)} lines`)
+                  .join(', ')}`
+              : '')
+        ),
+        `  record, dead basename not in KNOWN_ABSENT: ${deadNames.length} distinct`,
+        ...deadNames.map((base) => `    ${base}`),
+        '  repairing these is out of scope for the feature that added this pass (FR-022).',
+        ''
+      ].join('\n')
+    );
+
+    // The only assertions are against the report going quiet. A filter over
+    // nothing reports zero findings and looks exactly like a clean tree, which
+    // is the defect in the checker the header describes.
+    expect(
+      unmarked.length,
+      'no unbackticked citation was extracted at all; the pass is reading nothing'
+    ).toBeGreaterThan(600);
+    expect(
+      live.length,
+      'no unbackticked citation was found in the live tier; comment extraction is not running'
+    ).toBeGreaterThan(20);
+    expect(
+      unmarked.some((ref) => ref.qualified) && unmarked.some((ref) => !ref.qualified),
+      'the report reads only one of the two shapes'
+    ).toBe(true);
+  });
+
+  it('CONTROL: reads a citation in a comment and not the same one in a string', () => {
+    // The narrowing the whole pass rests on, driven directly rather than
+    // inferred from the corpus happening to contain one of each. The string
+    // literal is the exact shape of all four false positives the raw pattern
+    // produced: a fabricated path that is test input, not a claim about the tree.
+    const rows = probe(
+      [
+        'const fixture = "extension.ts:900";',
+        '// see extension.ts:901',
+        '/* and phase.ts:902 */',
+        'expect(redact("a")).toBe("/Users/someone/secret.ts:12");'
+      ].join('\n'),
+      false
+    );
+    expect(rows.map((ref) => ref.raw)).toEqual(['extension.ts:901', 'phase.ts:902']);
+    // Line geometry survives the blanking, so a match's line is still its line.
+    expect(rows.map((ref) => ref.line)).toEqual([2, 3]);
+  });
+
+  it('CONTROL: a backticked citation is left to the blocking pass, not read twice', () => {
+    const rows = probe('see `extension.ts:901` and extension.ts:902', true);
+    expect(rows.map((ref) => ref.raw)).toEqual(['extension.ts:902']);
+  });
+
+  it('CONTROL: a qualified path is read once, as qualified, and a range cites its end', () => {
+    const rows = probe('src/extension.ts:902 and phase-log.ts:59-70', true);
+    expect(rows.map((ref) => ref.target)).toEqual(['src/extension.ts', 'phase-log.ts']);
+    expect(rows.map((ref) => ref.qualified)).toEqual([true, false]);
+    // The basename inside the qualified path is not also counted as a bare one,
+    // and the range's END is the cited line, as in the blocking pass.
+    expect(rows.map((ref) => ref.cited)).toEqual([902, 70]);
+  });
+
+  it('CONTROL: Markdown prose is read and a fenced block is not', () => {
+    const rows = probe(['cites extension.ts:901', '```', 'extension.ts:902', '```'].join('\n'), true);
+    expect(rows.map((ref) => ref.raw)).toEqual(['extension.ts:901']);
+  });
+
+  it('CONTROL: `..` is refused here too, by the same guard', () => {
+    expect(probe('../AGENTS.md:5', true)).toEqual([]);
+    expect(probe('a/../b.ts:5', true)).toEqual([]);
   });
 
   // ---- controls: the classifier's own behaviour, driven directly ----
