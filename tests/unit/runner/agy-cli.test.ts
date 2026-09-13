@@ -321,12 +321,22 @@ describe('AgyCliRunner.invoke', () => {
     expect(result.cliSessionId).toBe('agy-conv-123');
     // Feature 093 (T046) — every sidecar event names its Run; this request
     // carries none, so the runner stamps `null` rather than guessing.
+    //
+    // Feature 093 BUG-001 (T100) — and every one names its invocation, which a
+    // request cannot decline to carry. Matched by shape rather than by value:
+    // the id is minted from a process-wide counter, so its number depends on how
+    // many invocations ran before this one. `invocation-identity.ts` owns the
+    // format; what this assertion pins is that the stamp is here at all.
+    const invocationId = expect.stringMatching(/^agy-cli#\d+$/) as unknown as string;
     expect(events).toContainEqual({
       kind: 'stdout-chunk',
       runId: null,
+      invocationId,
       chunk: '{"type":"result","conversation_id":"agy-conv-123"}\n'
     });
-    expect(events).toContainEqual({ kind: 'stderr-chunk', runId: null, chunk: 'progress\n' });
+    expect(events).toContainEqual({
+      kind: 'stderr-chunk', runId: null, invocationId, chunk: 'progress\n'
+    });
     expect(outputSink.write).toHaveBeenCalledWith(
       'stdout',
       '{"type":"result","conversation_id":"agy-conv-123"}\n'

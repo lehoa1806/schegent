@@ -130,7 +130,50 @@ export const MONITOR_EVENT_TYPES = [
   'monitor-invocation-completed',
   'monitor-invocation-failed',
   'monitor-invocation-canceled',
-  'monitor-invocation-summary'
+  'monitor-invocation-summary',
+  // Feature 093 BUG-001 (T102a) — the two events the fix needs, both of them
+  // records of something the monitor previously did in silence.
+  //
+  // `monitor-helper-invocation-exited`: a host-internal helper spawned on the
+  // Run's behalf — today only the pre-phase compaction — has ended. It is NOT
+  // one of the three invocation-terminal events above, and that distinction is
+  // the whole fix: the compaction's exit used to be written as the Run's, which
+  // ended the Run's monitoring while its phase child had six hours left to run.
+  // A helper that dies badly is still a fact about the Run, so it is reported
+  // here rather than dropped, with `outcome: 'failure'` when it exits unclean —
+  // the audit tail renders that as an error line, which is what a compaction
+  // crash deserves.
+  //
+  // `monitor-chunk-declined`: output arrived for a Run that cannot accept it.
+  // The handlers used to `return` on that condition without leaving a trace,
+  // which is why BUG-001 read as "the phase produced nothing" for six hours
+  // instead of "the monitor refused 4,000 chunks". Emitted once per (run,
+  // cause) on the sink's warn-once pattern, and the running total rides on the
+  // Run's monitor state.
+  //
+  // Additive — no `AUDIT_SCHEMA_VERSION` bump (follows 028 / 030 / 031 / 032
+  // precedent). Neither payload carries a path, and both are scalars.
+  'monitor-helper-invocation-exited',
+  'monitor-chunk-declined',
+  // Feature 211 — the invocation has crossed `APPROACH_THRESHOLD_FRACTION` of
+  // its absolute wall-clock bound and is still running.
+  //
+  // The three bounds on an invocation are all terminal-or-nothing: the idle
+  // window, the stall detector, and `maxDurationSeconds`. A phase that keeps
+  // producing output trips none of the first two, so the wall-clock cap used to
+  // kill it with nothing written first — the operator saw a six-hour silence
+  // and a SIGTERM, and read it as a hang. This is the record that makes the
+  // distance to the bound answerable from the audit log alone.
+  //
+  // `outcome: 'info'` — an approach is not a failure, and `'failure'` renders
+  // as an error line in the audit tail. The tail's `categorize` is given an
+  // explicit `warning` branch for this type rather than letting it fall to the
+  // `system` default.
+  //
+  // Additive — no `AUDIT_SCHEMA_VERSION` bump (028 / 030 / 031 / 032 and 093
+  // BUG-001 above are the precedent). The payload is four scalars: elapsed,
+  // the bound, the invocation id, and whether it was a helper. No path.
+  'monitor-deadline-approaching'
 ] as const;
 
 export const AUDIT_PIPELINE_EVENT_TYPES = [

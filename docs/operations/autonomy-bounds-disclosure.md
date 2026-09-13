@@ -29,7 +29,7 @@ bounded is visible rather than inferred.
 | A phase that never converges | 10 iterations | force-advance or fail, per the phase | `schegent.loop.maxIterations` |
 | A failure that repeats | 5 delayed retries | pause, resumable by the operator | `DELAYED_RETRY_CAP` in src/contracts/retry-bounds.ts |
 | A child that stops producing output | 1.5 h idle | the invocation is terminated | `schegent.invocation.idleTimeoutSeconds` |
-| A chatty child the idle window never catches | 6.0 h wall clock | the invocation is terminated | `schegent.invocation.maxDurationSeconds` |
+| A chatty child the idle window never catches | 6.0 h wall clock | an approach is recorded at 80% of it, then the invocation is terminated | `schegent.invocation.maxDurationSeconds` |
 | Spend, on a backend that reports cost | no bound by default; USD, per run | pause, resumable; **never** a terminal transition | `schegent.spend.maxUsdPerRun`, or `spendBoundUsd` on a Phase |
 | Spend, on a backend that reports tokens and no cost | no bound by default; tokens, per run | pause, resumable; **never** a terminal transition | `schegent.spend.maxTokensPerRun`, or `spendBoundTokens` on a Phase |
 

@@ -69,6 +69,12 @@ function normalizeOutcome(outcome: AuditOutcome): 'success' | 'error' | 'pending
 function categorize(eventType: AuditEventType, outcome: AuditOutcome): AuditCategory {
   if (eventType === 'error' || outcome === 'failure') return 'error';
   if (eventType === 'warning') return 'warning';
+  // Feature 211 — mapped explicitly rather than inherited. The approach record
+  // carries `outcome: 'info'` because it is not a failure, and `'info'` does not
+  // categorize on its own: without this line it reaches the `'system'` default
+  // below and renders as housekeeping, which is the one thing the notice before
+  // a wall-clock kill must not look like.
+  if (eventType === 'monitor-deadline-approaching') return 'warning';
   if (eventType === 'cli-invocation') return 'cli-invocation';
   if (eventType === 'file-write') return 'file-write';
   if (eventType === 'phase-start' || eventType === 'phase-end' || eventType === 'loop-iteration') {

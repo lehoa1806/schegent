@@ -52,8 +52,11 @@ class FakeAudit {
 }
 
 class FakeLogger {
+  public warnings: string[] = [];
   public sanitize = (s: string): string => s;
-  public warn = (_msg: string): void => { /* swallow */ };
+  public warn = (msg: string): void => {
+    this.warnings.push(msg);
+  };
 }
 
 /**
@@ -78,6 +81,7 @@ function makeMonitor(): {
   fakeTimer: FakeSetTimeout;
   audit: FakeAudit;
   transport: FakeTransport;
+  logger: FakeLogger;
   advance: (ms: number) => void;
 } {
   const clock = new FakeClock();
@@ -102,7 +106,7 @@ function makeMonitor(): {
     clock.advance(ms);
     fakeTimer.fireDue();
   };
-  return { monitor, clock, fakeTimer, audit, transport, advance };
+  return { monitor, clock, fakeTimer, audit, transport, logger, advance };
 }
 
 describe('ClaudeCliMonitor state machine', () => {
@@ -510,5 +514,353 @@ describe('ClaudeCliMonitor per-Run isolation (Feature 093 FR-024)', () => {
     expect(mc.monitor.getStateMap()).toEqual({});
     expect(mc.monitor.getCurrentState()).toBeNull();
     expect(mc.fakeTimer.timers).toHaveLength(0);
+  });
+});
+
+/**
+ * Feature 093 BUG-001 (T099) — one `onStart`, two subprocesses.
+ *
+ * Every other test in this file drives exactly one subprocess per `onStart`, which
+ * is why the whole suite is green against a defect that cost a Run six hours of
+ * monitoring. These are the first that do not.
+ *
+ * The shape in the field: `runPhase` compacts the session before it invokes the
+ * phase, T057 stamps the Run's id onto that compaction child so its transcript is
+ * attributed to the Run, and the compaction exits in seconds. `onExit` latches
+ * `terminal` on the FIRST exit it sees under a run id, so the compaction's exit
+ * ended the Run as far as the monitor was concerned: the phase child ran for
+ * 21600129 ms with its output uncounted, its status reading `completed`, its stall
+ * detector disposed, and nothing but the 6-hour absolute deadline left to stop it.
+ *
+ * The monitor cannot be told which invocation is the phase's in advance — `onStart`
+ * fires before anything is spawned. It has to recognise it on arrival, from the
+ * `started` event, which is why these tests speak through `onSpawnPid`.
+ */
+describe('ClaudeCliMonitor helper-invocation adoption (Feature 093 BUG-001)', () => {
+  let mc: ReturnType<typeof makeMonitor>;
+  beforeEach(() => {
+    mc = makeMonitor();
+  });
+
+  /** The pre-phase compaction: a host-internal helper spawned on the Run's behalf. */
+  const HELPER = { id: 'claude-cli#1', helperInvocation: true, maxDurationMs: null };
+  /** The phase invocation itself — the one whose lifetime IS the Run's phase. */
+  const PHASE = { id: 'claude-cli#2', helperInvocation: false, maxDurationMs: null };
+  const OK = { exitCode: 0, signal: null, killed: false, timedOut: false };
+  const FAILED = { exitCode: 1, signal: null, killed: false, timedOut: false };
+  const TERMINAL_EVENTS = [
+    'monitor-invocation-completed',
+    'monitor-invocation-failed',
+    'monitor-invocation-canceled'
+  ];
+
+  function terminalEvents(): Array<string | undefined> {
+    return mc.audit.entries
+      .map((e) => e.eventType)
+      .filter((t) => TERMINAL_EVENTS.includes(t ?? ''));
+  }
+
+  function declinedEntries(): Array<Partial<AuditEntry>> {
+    return mc.audit.entries.filter((e) => e.eventType === 'monitor-chunk-declined');
+  }
+
+  /** The driver's sequence for one phase preceded by a compaction, up to the phase's spawn. */
+  function compactThenSpawnPhase(): void {
+    mc.monitor.onStart('run-1', 'speckit-review', null);
+    mc.monitor.onSpawnPid('run-1', 501, HELPER);
+    mc.monitor.onStdoutChunk('run-1', 'compacting\n', HELPER.id);
+    mc.monitor.onExit('run-1', OK, HELPER.id);
+    mc.monitor.onSpawnPid('run-1', 502, PHASE);
+  }
+
+  it('counts and forwards the phase invocation\'s output after a helper has exited', () => {
+    compactThenSpawnPhase();
+    mc.monitor.onStdoutChunk('run-1', 'phase line 1\nphase line 2\n', PHASE.id);
+
+    const state = mc.monitor.getCurrentState('run-1')!;
+    // Three: the helper's line counts too. A compaction is work done on the Run's
+    // behalf and its transcript is the Run's evidence — that is why T057 stamped the
+    // run id onto it in the first place. What must not happen is the helper's *exit*
+    // ending the Run; attribution of its output was never the problem.
+    expect(state.stdoutLines).toBe(3);
+    const lines = mc.transport.records.filter((r) => r.runId === 'run-1').map((r) => r.line);
+    expect(lines).toEqual(['compacting', 'phase line 1', 'phase line 2']);
+  });
+
+  it('does not read completed while the phase child is still alive', () => {
+    compactThenSpawnPhase();
+    mc.monitor.onStdoutChunk('run-1', 'working\n', PHASE.id);
+
+    const state = mc.monitor.getCurrentState('run-1')!;
+    expect(state.status).toBe('running');
+    expect(state.exitCode).toBeNull();
+  });
+
+  it('keeps the stall detector armed after the helper exits', () => {
+    compactThenSpawnPhase();
+    mc.monitor.onStdoutChunk('run-1', 'working\n', PHASE.id);
+    mc.advance(90_000);
+
+    const state = mc.monitor.getCurrentState('run-1')!;
+    expect(state.status).toBe('stalled');
+    expect(state.detectedIssues).toContain('stall');
+    expect(mc.audit.entries.find((e) => e.eventType === 'monitor-stall')).toBeDefined();
+  });
+
+  it('reports the helper\'s exit against the Run without ending the Run', () => {
+    compactThenSpawnPhase();
+
+    // Visible — a compaction that crashes is a fact about the Run, and swallowing it
+    // would trade one silence for another.
+    const helperExit = mc.audit.entries.find(
+      (e) => (e.payload as { invocationId?: string } | undefined)?.invocationId === HELPER.id
+    );
+    expect(helperExit).toBeDefined();
+    // But not terminal: no invocation-completed/failed/canceled, no summary.
+    expect(terminalEvents()).toEqual([]);
+    expect(mc.audit.entries.filter((e) => e.eventType === 'monitor-invocation-summary')).toHaveLength(0);
+  });
+
+  it('treats the phase invocation\'s exit as the Run\'s one terminal event', () => {
+    compactThenSpawnPhase();
+    mc.monitor.onStdoutChunk('run-1', 'working\n', PHASE.id);
+    mc.monitor.onExit('run-1', FAILED, PHASE.id);
+
+    const state = mc.monitor.getCurrentState('run-1')!;
+    // The phase's outcome, not the helper's. Today this reads `completed` — the
+    // compaction's exit code, reported as the Run's.
+    expect(state.status).toBe('failed');
+    expect(state.exitCode).toBe(1);
+    expect(terminalEvents()).toEqual(['monitor-invocation-failed']);
+    expect(mc.audit.entries.filter((e) => e.eventType === 'monitor-invocation-summary')).toHaveLength(1);
+    expect(mc.fakeTimer.timers).toHaveLength(0);
+  });
+
+  // FR-018a — the instrumentation half. `cli-transport-sink.ts` was cleared as a
+  // suspect from the field logs in minutes because it counts and reports its own
+  // drops; the monitor could not be, because `if (!state || state.terminal) return;`
+  // discarded six hours of output without leaving a single record that it had.
+  it('counts declined chunks and reports them once per cause', () => {
+    compactThenSpawnPhase();
+    mc.monitor.onExit('run-1', OK, PHASE.id);
+    mc.monitor.onStdoutChunk('run-1', 'after the end\n', PHASE.id);
+    mc.monitor.onStderrChunk('run-1', 'also after the end\n', PHASE.id);
+
+    const state = mc.monitor.getCurrentState('run-1')!;
+    expect(state.declinedChunks).toBe(2);
+    const declined = declinedEntries();
+    expect(declined).toHaveLength(1);
+    expect((declined[0]?.payload as { cause?: string } | undefined)?.cause).toBe('run-terminal');
+  });
+
+  // The other decline site, and the one the audit cannot hold: there is no Run to
+  // file it under, so it goes to the host log — once, however many arrive.
+  it('reports a chunk for an unknown Run rather than dropping it in silence', () => {
+    mc.monitor.onStdoutChunk('run-never-started', 'orphan\n', PHASE.id);
+    mc.monitor.onStdoutChunk('run-never-started', 'orphan again\n', PHASE.id);
+
+    expect(mc.logger.warnings).toHaveLength(1);
+    expect(mc.logger.warnings[0]).toContain('run-never-started');
+    expect(declinedEntries()).toHaveLength(0);
+    // Never the chunk's content: that belongs to the bounded transport sink alone.
+    expect(mc.logger.warnings[0]).not.toContain('orphan');
+  });
+
+  // The inverse, and the reason T104 can revert the latch and watch this stay green:
+  // a Run with no helper must behave exactly as it did before any of this landed.
+  it('a Run whose whole life is one invocation is unchanged', () => {
+    mc.monitor.onStart('run-1', 'speckit-review', null);
+    mc.monitor.onSpawnPid('run-1', 502, PHASE);
+    mc.monitor.onStdoutChunk('run-1', 'hello\n', PHASE.id);
+    mc.monitor.onExit('run-1', OK, PHASE.id);
+
+    const state = mc.monitor.getCurrentState('run-1')!;
+    expect(state.status).toBe('completed');
+    expect(state.pid).toBe(502);
+    expect(state.stdoutLines).toBe(1);
+    expect(terminalEvents()).toEqual(['monitor-invocation-completed']);
+    expect(mc.audit.entries.filter((e) => e.eventType === 'monitor-invocation-summary')).toHaveLength(1);
+    expect(mc.fakeTimer.timers).toHaveLength(0);
+
+    // A duplicate exit for the adopted invocation is still suppressed.
+    mc.monitor.onExit('run-1', FAILED, PHASE.id);
+    expect(terminalEvents()).toEqual(['monitor-invocation-completed']);
+  });
+});
+
+/**
+ * Feature 211 (T011) — the approach record.
+ *
+ * Three timers bound a CLI invocation and all three were terminal-or-nothing.
+ * A phase that keeps producing output resets the idle window on every chunk and
+ * never reaches `MONITOR_STALL_THRESHOLD_MS`, so `maxDurationSeconds` used to
+ * terminate it with nothing written beforehand — the field incident read as a
+ * six-hour hang because that is exactly what the log showed.
+ *
+ * These tests drive the monitor's injectable clock and `setTimeout`, as the
+ * stall tests above do. No real long-running child, and no six-hour fixture:
+ * the bound under test is 100_000 ms and the threshold falls at 80_000.
+ */
+describe('ClaudeCliMonitor deadline-approach record (Feature 211)', () => {
+  let mc: ReturnType<typeof makeMonitor>;
+  beforeEach(() => {
+    mc = makeMonitor();
+  });
+
+  const BOUND_MS = 100_000;
+  const THRESHOLD_MS = 80_000;
+  /** A phase invocation with a wall-clock bound in force. */
+  const BOUNDED = { id: 'claude-cli#2', helperInvocation: false, maxDurationMs: BOUND_MS };
+  /** The same invocation with no bound — the pre-152 idle-only shape. */
+  const UNBOUNDED = { id: 'claude-cli#2', helperInvocation: false, maxDurationMs: null };
+  const OK = { exitCode: 0, signal: null, killed: false, timedOut: false };
+
+  function approachRecords(): Array<Partial<AuditEntry>> {
+    return mc.audit.entries.filter((e) => e.eventType === 'monitor-deadline-approaching');
+  }
+
+  it('records the approach exactly once, at the threshold, carrying elapsed and the bound', () => {
+    mc.monitor.onStart('run-1', 'speckit-review', null);
+    mc.monitor.onSpawnPid('run-1', 501, BOUNDED);
+
+    mc.advance(THRESHOLD_MS - 1);
+    expect(approachRecords()).toHaveLength(0);
+
+    mc.advance(1);
+    const records = approachRecords();
+    expect(records).toHaveLength(1);
+    expect(records[0]?.outcome).toBe('info');
+    expect(records[0]?.payload).toMatchObject({
+      elapsedMs: THRESHOLD_MS,
+      maxDurationMs: BOUND_MS,
+      invocationId: BOUNDED.id,
+      helperInvocation: false
+    });
+  });
+
+  it('does not record a second time as the invocation runs on', () => {
+    mc.monitor.onStart('run-1', 'speckit-review', null);
+    mc.monitor.onSpawnPid('run-1', 501, BOUNDED);
+
+    mc.advance(THRESHOLD_MS);
+    expect(approachRecords()).toHaveLength(1);
+
+    // Output keeps arriving and the clock keeps running: neither re-arms it.
+    mc.monitor.onStdoutChunk('run-1', 'still working\n', BOUNDED.id);
+    mc.advance(BOUND_MS);
+    mc.advance(BOUND_MS);
+    expect(approachRecords()).toHaveLength(1);
+  });
+
+  it('records nothing when the invocation exits before the threshold', () => {
+    mc.monitor.onStart('run-1', 'speckit-review', null);
+    mc.monitor.onSpawnPid('run-1', 501, BOUNDED);
+    mc.advance(THRESHOLD_MS - 5_000);
+    mc.monitor.onExit('run-1', OK, BOUNDED.id);
+
+    // The timer is released on the terminal path, so time passing after the exit
+    // cannot produce a warning about a deadline the invocation will never reach.
+    mc.advance(BOUND_MS);
+    expect(approachRecords()).toHaveLength(0);
+    expect(mc.fakeTimer.timers).toHaveLength(0);
+  });
+
+  it('arms no timer and records nothing when no bound is in force', () => {
+    mc.monitor.onStart('run-1', 'speckit-review', null);
+    const before = mc.fakeTimer.timers.length;
+    mc.monitor.onSpawnPid('run-1', 501, UNBOUNDED);
+    expect(mc.fakeTimer.timers.length).toBe(before);
+
+    mc.advance(BOUND_MS * 3);
+    expect(approachRecords()).toHaveLength(0);
+  });
+
+  it('fires on wall-clock time across a suspension, unlike the stall detector', () => {
+    mc.monitor.onStart('run-1', 'speckit-review', null);
+    mc.monitor.onSpawnPid('run-1', 501, BOUNDED);
+
+    // Suspended for most of the window. The stall detector banks this time and
+    // resumes where it left off; the absolute deadline does not, and neither may
+    // the warning that predicts it — a warning that arrived after the kill would
+    // be worse than none.
+    mc.monitor.onWorkflowPaused('run-1');
+    mc.advance(THRESHOLD_MS);
+    expect(approachRecords()).toHaveLength(1);
+    expect(approachRecords()[0]?.payload).toMatchObject({ maxDurationMs: BOUND_MS });
+
+    mc.monitor.onWorkflowResumed('run-1');
+    mc.advance(BOUND_MS);
+    expect(approachRecords()).toHaveLength(1);
+  });
+
+  it('measures the elapsed it observed, not the nominal threshold', () => {
+    mc.monitor.onStart('run-1', 'speckit-review', null);
+    mc.monitor.onSpawnPid('run-1', 501, BOUNDED);
+
+    // The fake timer fires on the first advance at or past its due time, so a
+    // coarse advance lands late — exactly as a busy event loop does. The record
+    // must report what the clock said, so an operator can check the arithmetic
+    // rather than trust it (FR-002).
+    mc.advance(THRESHOLD_MS + 1_500);
+    expect(approachRecords()[0]?.payload).toMatchObject({ elapsedMs: THRESHOLD_MS + 1_500 });
+  });
+
+  it('distinguishes a helper invocation from the phase invocation', () => {
+    const helper = { id: 'claude-cli#1', helperInvocation: true, maxDurationMs: BOUND_MS };
+    mc.monitor.onStart('run-1', 'speckit-review', null);
+    mc.monitor.onSpawnPid('run-1', 500, helper);
+    mc.advance(THRESHOLD_MS);
+
+    const records = approachRecords();
+    expect(records).toHaveLength(1);
+    expect(records[0]?.payload).toMatchObject({
+      invocationId: helper.id,
+      helperInvocation: true
+    });
+  });
+
+  it('flips deadlineApproaching on the projected state when the phase invocation crosses', () => {
+    mc.monitor.onStart('run-1', 'speckit-review', null);
+    mc.monitor.onSpawnPid('run-1', 501, BOUNDED);
+    expect(mc.monitor.getCurrentState()?.deadlineApproaching).toBe(false);
+
+    mc.advance(THRESHOLD_MS);
+    expect(mc.monitor.getCurrentState()?.deadlineApproaching).toBe(true);
+    expect(mc.monitor.getCurrentState()?.maxDurationMs).toBe(BOUND_MS);
+  });
+
+  it('a helper crossing its own bound leaves the Run flag alone', () => {
+    // The flag describes the invocation the Run will be killed with, and the
+    // helper is not it. A surface reading "approaching its deadline" because a
+    // 10 s compaction crossed 8 s would be worse than no flag.
+    const helper = { id: 'claude-cli#1', helperInvocation: true, maxDurationMs: 10_000 };
+    mc.monitor.onStart('run-1', 'speckit-review', null);
+    mc.monitor.onSpawnPid('run-1', 500, helper);
+    mc.advance(8_000);
+
+    expect(approachRecords()).toHaveLength(1);
+    expect(mc.monitor.getCurrentState()?.deadlineApproaching).toBe(false);
+  });
+
+  it('a helper crossing its own bound does not consume the phase invocation latch', () => {
+    // The pre-phase compaction is bounded at 60s while the phase it precedes has
+    // six hours. One latch per Run would let the helper's approach suppress the
+    // phase's — the record that actually matters.
+    const helper = { id: 'claude-cli#1', helperInvocation: true, maxDurationMs: 10_000 };
+    mc.monitor.onStart('run-1', 'speckit-review', null);
+    mc.monitor.onSpawnPid('run-1', 500, helper);
+    mc.monitor.onSpawnPid('run-1', 501, BOUNDED);
+
+    mc.advance(8_000);
+    expect(approachRecords()).toHaveLength(1);
+
+    mc.advance(THRESHOLD_MS - 8_000);
+    const records = approachRecords();
+    expect(records).toHaveLength(2);
+    expect(records[1]?.payload).toMatchObject({
+      invocationId: BOUNDED.id,
+      helperInvocation: false,
+      maxDurationMs: BOUND_MS
+    });
   });
 });

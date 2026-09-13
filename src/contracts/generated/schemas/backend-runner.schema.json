@@ -54,6 +54,11 @@
           "type": "string"
         },
         {
+          "name": "helperInvocation",
+          "optional": true,
+          "type": "boolean"
+        },
+        {
           "name": "prompt",
           "optional": false,
           "type": "string"

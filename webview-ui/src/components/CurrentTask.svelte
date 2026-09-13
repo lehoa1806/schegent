@@ -13,7 +13,11 @@
   const summary = $derived(liveActivity?.summary ?? null);
   const monitor = $derived(snapshotStore.monitor);
   const freshnessLabel = $derived(mapFreshnessLabel(freshness, staleSeconds));
-  const monitorLine = $derived(monitor !== null ? formatMonitorLine(monitor.status, monitor.msSinceLastStdout) : null);
+  const monitorLine = $derived(
+    monitor !== null
+      ? formatMonitorLine(monitor.status, monitor.msSinceLastStdout, monitor.startedAt, monitor.maxDurationMs)
+      : null
+  );
   // Feature 033 — ephemeral telemetry projection. The host clears this
   // to `null` one publish after the runner's `exited` event; the field
   // is optional on the snapshot for legacy-tolerance, so we treat
@@ -34,10 +38,35 @@
     return state;
   }
 
-  function formatMonitorLine(status: MonitorStatus, ms: number | null): string {
+  function formatMonitorLine(
+    status: MonitorStatus,
+    ms: number | null,
+    startedAt: string,
+    maxDurationMs: number | null
+  ): string {
     const label = status.replace('_', ' ');
-    if (ms === null || !Number.isFinite(ms)) return label;
-    return `${label} / stdout ${formatDuration(ms)}`;
+    const head = ms === null || !Number.isFinite(ms) ? label : `${label} / stdout ${formatDuration(ms)}`;
+    return `${head}${formatBoundSegment(startedAt, maxDurationMs)}`;
+  }
+
+  /**
+   * Feature 211 — elapsed against the invocation's absolute bound, or nothing.
+   *
+   * Empty string when no bound is in force, so the line renders exactly as it did
+   * before this feature: a permanent "of --" is furniture, and substituting the
+   * setting's default would assert a limit this invocation does not have.
+   *
+   * Elapsed is measured from `startedAt` and refreshes when the host publishes,
+   * which for a live invocation is every chunk. That makes it a few seconds
+   * coarse and, against a bound measured in hours, a few seconds is below what
+   * the reading is for — which is also why this is not a countdown or a bar.
+   */
+  function formatBoundSegment(startedAt: string, maxDurationMs: number | null): string {
+    if (maxDurationMs === null || !Number.isFinite(maxDurationMs) || maxDurationMs <= 0) return '';
+    const startedMs = Date.parse(startedAt);
+    if (!Number.isFinite(startedMs)) return '';
+    const elapsedMs = Math.max(0, Date.now() - startedMs);
+    return ` / ${formatDuration(elapsedMs)} of ${formatDuration(maxDurationMs)}`;
   }
 
   function formatTelemetryLine(snap: TelemetrySnapshot): string {

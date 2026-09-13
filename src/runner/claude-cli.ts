@@ -6,6 +6,7 @@ import type {
   InvocationRequest,
   RawInvocationOutput
 } from './invocation-result';
+import { armedMaxDurationMs } from './invocation-result';
 import type {
   BackendRunner,
   MonitorSidecarEvent,
@@ -28,6 +29,7 @@ import { waitForChildCompletion } from './child-completion';
 import { awaitStdinDelivery, writePromptToStdin } from './child-stdin';
 import { LineFramer, DEFAULT_MAX_LINE_UNITS } from '../lib/line-framer';
 import { processTreeSpawnOptions, escalateAndReportTree } from './process-tree';
+import { nextInvocationId } from './invocation-identity';
 
 // Feature 030 BUG-002 — after the invocation's terminal stream-json result line
 // (`{"type":"result"}`) appears in stdout, the runner waits at most this long
@@ -243,11 +245,18 @@ export class ClaudeCliRunner implements BackendRunner {
    * which left `cancelActive()` at deactivation orphaning every child but one
    * and `hasActiveProcess` reporting `false` while a subprocess was alive.
    *
-   * Keyed by a per-runner invocation token rather than by run id: an
-   * invocation need not name a Run (contract harnesses do not), so a run-keyed
-   * map would collide anonymous invocations onto one entry and reintroduce the
-   * same clobber. The token also makes the exit-path delete exact — an
-   * invocation removes its own entry and no other.
+   * Keyed by an invocation identity rather than by run id: an invocation need
+   * not name a Run (contract harnesses do not), so a run-keyed map would collide
+   * anonymous invocations onto one entry and reintroduce the same clobber. The
+   * identity also makes the exit-path delete exact — an invocation removes its
+   * own entry and no other.
+   *
+   * Feature 093 BUG-001 (T100) — that key is now the string
+   * `nextInvocationId()` mints, which is the same value the sidecar events carry.
+   * It was a private per-instance counter, which is unique enough for a map this
+   * runner owns and not unique enough to cross the contract; minting a second
+   * token beside it would leave one invocation with two identities that can
+   * drift.
    */
   /**
    * FR-R3-083 — the run id travels WITH the child, so `cancelActive()` (which
@@ -257,10 +266,9 @@ export class ClaudeCliRunner implements BackendRunner {
    * useful one.
    */
   private readonly active = new Map<
-    number,
+    string,
     TreeAttribution & { readonly child: ChildProcess }
   >();
-  private nextInvocationToken = 1;
 
   /**
    * FR-R3-083 — children whose surviving group has already been REPORTED.
@@ -372,7 +380,7 @@ export class ClaudeCliRunner implements BackendRunner {
     // A single slot self-healed on a throw because the next spawn overwrote it;
     // a map entry would leak, and a leaked entry makes `hasActiveProcess`
     // permanently true.
-    const invocationToken = this.nextInvocationToken++;
+    const invocationId = nextInvocationId('claude-cli');
     const attribution: TreeAttribution = {
       runId: request.runId ?? null,
       phase: request.phase,
@@ -386,8 +394,15 @@ export class ClaudeCliRunner implements BackendRunner {
         env: buildSpawnEnv(request)
       });
       this._logger.info(`[ClaudeCliRunner] Spawned CLI: ${command}, PID=${child.pid}`);
-      this.active.set(invocationToken, { child, ...attribution });
-      this.emitHook({ kind: 'started', runId: request.runId ?? null, pid: child.pid ?? null });
+      this.active.set(invocationId, { child, ...attribution });
+      this.emitHook({
+        kind: 'started',
+        runId: request.runId ?? null,
+        invocationId,
+        helperInvocation: request.helperInvocation === true,
+        maxDurationMs: armedMaxDurationMs(request),
+        pid: child.pid ?? null
+      });
 
       // FR-R3-047 — attach-then-write through the shared helper. The previous
       // shape caught synchronously around the write, and the comment claiming the
@@ -481,18 +496,21 @@ export class ClaudeCliRunner implements BackendRunner {
       // narrowing and the lint's type-driven condition check would call
       // every read below unnecessary. A function entry resets narrowing.
       const deadlineFired = (): boolean => deadlineExceeded;
+      // Feature 211 — the same oracle the `started` event reported above, so
+      // the bound the monitor warns against is the bound this timer arms.
+      const deadlineBoundMs = armedMaxDurationMs(request);
       const deadlineTimer =
-        request.maxDurationMs !== undefined && request.maxDurationMs > 0
+        deadlineBoundMs !== null
           ? setTimeout(() => {
               this._logger.info(
                 '[ClaudeCliRunner] invocation deadline exceeded ' +
-                  `maxDurationMs=${request.maxDurationMs} ` +
+                  `maxDurationMs=${deadlineBoundMs} ` +
                   `elapsedMs=${Date.now() - invocationStartedAt} ` +
                   `phase=${request.phase} iteration=${request.iteration}`
               );
               deadlineExceeded = true;
               this.terminate(child, attribution);
-            }, request.maxDurationMs)
+            }, deadlineBoundMs)
           : null;
       const resetIdleTimer = (): void => {
         clearTimeout(timer);
@@ -567,7 +585,7 @@ export class ClaudeCliRunner implements BackendRunner {
             }
         }
         if (!outputBackpressure.isBlocked) resetIdleTimer();
-        this.emitHook({ kind: 'stdout-chunk', runId: request.runId ?? null, chunk });
+        this.emitHook({ kind: 'stdout-chunk', runId: request.runId ?? null, invocationId, chunk });
         if (diagnosticWriter && verboseTarget) {
           diagnosticWrites.push(diagnosticWriter.teeStream(verboseTarget, chunk));
         }
@@ -577,7 +595,7 @@ export class ClaudeCliRunner implements BackendRunner {
         stderrScanner?.append(chunk);
         outputBackpressure.write('stderr', child.stderr!, chunk);
         if (!outputBackpressure.isBlocked) resetIdleTimer();
-        this.emitHook({ kind: 'stderr-chunk', runId: request.runId ?? null, chunk });
+        this.emitHook({ kind: 'stderr-chunk', runId: request.runId ?? null, invocationId, chunk });
         if (diagnosticWriter && verboseTarget) {
           diagnosticWrites.push(diagnosticWriter.teeVerbose(verboseTarget, chunk));
         }
@@ -660,6 +678,7 @@ export class ClaudeCliRunner implements BackendRunner {
       this.emitHook({
         kind: 'exited',
         runId: request.runId ?? null,
+        invocationId,
         exitCode,
         signal: exitSignal,
         killed,
@@ -717,7 +736,7 @@ export class ClaudeCliRunner implements BackendRunner {
           : {})
       };
     } finally {
-      this.active.delete(invocationToken);
+      this.active.delete(invocationId);
     }
   }
 

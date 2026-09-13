@@ -7,9 +7,11 @@ import type { SanitizedLogger } from '../lib/logger';
 import { waitForChildCompletion } from './child-completion';
 import { awaitStdinDelivery, writePromptToStdin } from './child-stdin';
 import type { InvocationOutputSink, InvocationRequest, RawInvocationOutput } from './invocation-result';
+import { armedMaxDurationMs } from './invocation-result';
 import { OutputSinkBackpressure } from './output-sink-backpressure';
 import { ZippedStreamBuffer } from './zipped-stream-buffer';
 import { processTreeSpawnOptions, escalateAndReportTree } from './process-tree';
+import { nextInvocationId } from './invocation-identity';
 
 export type ProcessSpawnFn = (
   command: string,
@@ -29,11 +31,17 @@ export class ProcessLifecycleRunner {
    * which left `cancelAll()` at deactivation orphaning every child but one and
    * `hasActiveProcess` reporting `false` while a subprocess was still alive.
    *
-   * Keyed by a per-runner invocation token rather than by run id: an
-   * invocation need not name a Run (contract harnesses do not), so a run-keyed
-   * map would collide anonymous invocations onto one entry and reintroduce the
-   * same clobber. The token also makes the exit-path delete exact — an
-   * invocation removes its own entry and no other.
+   * Keyed by an invocation identity rather than by run id: an invocation need
+   * not name a Run (contract harnesses do not), so a run-keyed map would collide
+   * anonymous invocations onto one entry and reintroduce the same clobber. The
+   * identity also makes the exit-path delete exact — an invocation removes its
+   * own entry and no other.
+   *
+   * Feature 093 BUG-001 (T100) — that key is now the string `nextInvocationId()`
+   * mints, which is the same value the sidecar events carry. It was a private
+   * per-instance counter, which is unique enough for a map this runner owns and
+   * not unique enough to cross the contract; minting a second token beside it
+   * would leave one invocation with two identities that can drift.
    */
   /**
    * FR-R3-083 — the run id travels WITH the child.
@@ -45,10 +53,9 @@ export class ProcessLifecycleRunner {
    * produce an attributable record instead of an anonymous one.
    */
   private readonly active = new Map<
-    number,
+    string,
     TreeAttribution & { readonly child: ChildProcess }
   >();
-  private nextInvocationToken = 1;
 
   /**
    * FR-R3-083 — children whose surviving group has already been REPORTED.
@@ -105,18 +112,22 @@ export class ProcessLifecycleRunner {
       // kept mutating the workspace after a terminal state was recorded.
       ...processTreeSpawnOptions()
     });
-    const invocationToken = this.nextInvocationToken++;
+    const invocationId = nextInvocationId(this.label);
     const attribution: TreeAttribution = {
       runId: request.runId ?? null,
       phase: request.phase,
       iteration: request.iteration
     };
-    this.active.set(invocationToken, { child, ...attribution });
+    this.active.set(invocationId, { child, ...attribution });
     // Feature 093 (T046a) — `finally`, not a trailing statement. A single slot
     // self-healed on a throw because the next spawn overwrote it; a map entry
     // would leak, and a leaked entry makes `hasActiveProcess` permanently true.
     try {
-      this.emit({ kind: 'started', runId: request.runId ?? null, pid: child.pid ?? null });
+      this.emit({
+        kind: 'started', runId: request.runId ?? null, invocationId,
+        helperInvocation: request.helperInvocation === true,
+        maxDurationMs: armedMaxDurationMs(request), pid: child.pid ?? null
+      });
       // FR-R3-047 — attach-then-write through the shared helper. The previous
       // shape was a synchronous try/catch around the write, which cannot see the
       // asynchronous 'error' event; with no listener anywhere, EPIPE reached the
@@ -155,18 +166,23 @@ export class ProcessLifecycleRunner {
       // narrowing and the lint's type-driven condition check would call
       // every read below unnecessary. A function entry resets narrowing.
       const deadlineFired = (): boolean => deadlineExceeded;
+      // Feature 211 — the same oracle the `started` event reported above, so
+      // the bound the monitor warns against is the bound this timer arms.
+      const deadlineBoundMs = armedMaxDurationMs(request);
       const deadlineTimer =
-        request.maxDurationMs !== undefined && request.maxDurationMs > 0
-          ? setTimeout(() => { deadlineExceeded = true; this.terminate(child, attribution); }, request.maxDurationMs)
+        deadlineBoundMs !== null
+          ? setTimeout(() => { deadlineExceeded = true; this.terminate(child, attribution); }, deadlineBoundMs)
           : null;
       const backpressure = new OutputSinkBackpressure(outputSink, () => clearTimeout(timer), reset);
       child.stdout?.on('data', (chunk: string) => {
         stdoutBuffer.append(chunk); backpressure.write('stdout', child.stdout!, chunk);
-        if (!backpressure.isBlocked) reset(); this.emit({ kind: 'stdout-chunk', runId: request.runId ?? null, chunk });
+        if (!backpressure.isBlocked) reset();
+        this.emit({ kind: 'stdout-chunk', runId: request.runId ?? null, invocationId, chunk });
       });
       child.stderr?.on('data', (chunk: string) => {
         stderrBuffer.append(chunk); backpressure.write('stderr', child.stderr!, chunk);
-        if (!backpressure.isBlocked) reset(); this.emit({ kind: 'stderr-chunk', runId: request.runId ?? null, chunk });
+        if (!backpressure.isBlocked) reset();
+        this.emit({ kind: 'stderr-chunk', runId: request.runId ?? null, invocationId, chunk });
       });
       let onAbort: (() => void) | null = null;
       if (request.cancellationSignal) {
@@ -215,7 +231,7 @@ export class ProcessLifecycleRunner {
       if (completion.stdioCloseTimedOut) this.logger.warn(`${this.label}: stdio close grace expired`);
       const signal = completion.signal ?? (child as { signalCode?: NodeJS.Signals | null }).signalCode ?? null;
       this.emit({
-        kind: 'exited', runId: request.runId ?? null,
+        kind: 'exited', runId: request.runId ?? null, invocationId,
         exitCode: completion.exitCode, signal, killed, timedOut,
         ...(deadlineFired() ? { deadlineExceeded: true } : {})
       });
@@ -235,7 +251,7 @@ export class ProcessLifecycleRunner {
             }
           : {}) };
     } finally {
-      this.active.delete(invocationToken);
+      this.active.delete(invocationId);
     }
   }
 

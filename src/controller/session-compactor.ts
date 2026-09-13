@@ -306,6 +306,17 @@ export async function compactClaudeSession(inputs: SessionCompactionInputs): Pro
       // compaction is invisible to the Run it is stalling. Stamping affects
       // nothing but those events — never argv, env, or any spawn decision.
       runId: inputs.runId,
+      // Feature 093 BUG-001 (T101) — and it is a HELPER, not the phase.
+      //
+      // The stamp above is retained and this marker is what makes retaining it
+      // safe. Both subprocesses reach the monitor under one run id, and the
+      // monitor ended the Run on the first exit under that id — this one. Every
+      // later event about the phase was then dropped by a `terminal` latch
+      // nothing could clear: no output capture, no live status, no exit event,
+      // and a disposed stall detector, for the whole six hours of a wedged
+      // `speckit-review`. Removing the run id would have fixed that by making
+      // this invocation anonymous again, at the price T057 already refused.
+      helperInvocation: true,
       prompt: COMPACTION_PROMPT,
       timeoutMs: COMPACTION_IDLE_TIMEOUT_MS,
       maxDurationMs: COMPACTION_MAX_DURATION_MS,

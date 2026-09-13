@@ -284,6 +284,18 @@ export interface CliMonitorState {
   readonly detectedIssues: ReadonlyArray<'rate_limited' | 'stall'>;
   readonly msSinceLastStdout: number | null;
   readonly msSinceLastStderr: number | null;
+  /**
+   * Feature 211 — the invocation's absolute wall-clock bound, or `null` when it
+   * has none. See `CliMonitorState` in `src/monitor/monitor-state.ts`, which this
+   * contract type is the webview-facing half of.
+   *
+   * Declared here as well as there because this type is deliberately narrower
+   * than the runtime object and the webview reads THIS one: a field added only
+   * to the monitor's state never reaches the surface (FR-016).
+   */
+  readonly maxDurationMs: number | null;
+  /** Feature 211 — whether the invocation has crossed the approach threshold. */
+  readonly deadlineApproaching: boolean;
 }
 
 export interface ActivePipelineSummary {
