@@ -62,6 +62,20 @@ import { AuditLogWriter } from '../../src/audit/audit-log-writer';
 import type { Notifier } from '../../src/ui/notifications';
 import { RETRY_BUFFER_MS } from '../../src/contracts/retry-bounds';
 import { isTerminalRunStatus, type WorkflowRun } from '../../src/state/workflow-run';
+import type * as vscode from 'vscode';
+import {
+  wireBackendExecution,
+  type BackendExecutionWiring,
+  type BackendExecutionWiringDeps
+} from '../../src/activation/backend-execution-wiring';
+import type { MonitorSidecarHook } from '../../src/contracts/backend-runner';
+import {
+  CLI_TRANSPORT_DIRECTORY,
+  CLI_TRANSPORT_FILE_NAME
+} from '../../src/monitor/cli-transport-sink';
+import { EvidenceHealthMonitor } from '../../src/services/evidence-health/evidence-health-monitor';
+import { disposeWorkspaceFolderPicker } from '../../src/state/workspace-folder-picker';
+import { workspace as vscodeWorkspace } from '../__stubs__/vscode';
 
 let tmpRoot: string;
 let h: Harness;
@@ -827,5 +841,189 @@ describe('Feature FR-R3-003 (T307, FR-028, SC-009) — the tenure holds under fe
     // rather than an ordering detail.
     expect(isTerminalRunStatus(h.store.getRun(QUEUE_B)?.status ?? 'running')).toBe(false);
     await runToTerminal(QUEUE_B, b.runId);
+  });
+});
+
+/**
+ * Feature 093 BUG-001 (T103, SC-019) — a Run outlives its subprocesses.
+ *
+ * `runPhase` compacts the session before it invokes the phase, and T057 stamps
+ * the Run's id onto that compaction child on purpose: its transcript is the
+ * Run's evidence too. What the monitor did with that is the defect. It latched
+ * `terminal` on the FIRST exit it saw under the run id — the compaction's, a few
+ * seconds in — and every branch downstream opens with `if (!state ||
+ * state.terminal) return;`. So the phase child ran to the six-hour deadline with
+ * its output uncounted and unwritten, the Run's status reading `completed`, and
+ * the stall detector already disposed.
+ *
+ * **This fixture calls the production dispatch.** `wiring.monitorHook` is the
+ * function the window installs on its runners, reached through
+ * `wireBackendExecution` rather than reconstructed here, because the fix is
+ * three arguments of that function — `helperInvocation` on the spawn and
+ * `invocationId` on the chunks and on the exit — and a fixture holding its own
+ * copy of the dispatch asserts only that its copy forwards them. The rest of the
+ * graph is real for the same reason: the real `ClaudeCliMonitor`, the real
+ * transport sink, and the real `.schegent/cli-transport.log` under this test's
+ * workspace, so "captured" means a line an operator could read back.
+ *
+ * **Why the counts must be compared per invocation and not per Run.** Both
+ * numbers are zero when the defect is present — nothing is counted because
+ * nothing is accepted — and `0 === 0` is an equality that passes. `SC-019` asks
+ * for the equality *and* for both sides to be non-zero, and this file asserts
+ * the pair; `claude-cli-monitor.test.ts` holds the unit-level half.
+ */
+describe('Feature 093 BUG-001 (T103, SC-019) — a compaction before the phase does not blind the Run', () => {
+  const PHASE = 'speckit-review';
+  const COMPACTION_LINE = 'compacting the session transcript';
+  const PHASE_LINES = ['phase line one', 'phase line two', 'phase line three'];
+  // Shaped like `nextInvocationId()`'s output rather than copied from it: the
+  // monitor treats these as opaque keys and the counter is process-wide, so
+  // pinning the numbers a previous test happened to leave would make this file
+  // order-dependent for nothing.
+  const COMPACTION_INVOCATION = 'claude-cli#compaction';
+  const PHASE_INVOCATION = 'claude-cli#phase';
+
+  const disposables: vscode.Disposable[] = [];
+  const hostSubscriptions: { dispose(): unknown }[] = [];
+  let wiring: BackendExecutionWiring;
+  let hook: MonitorSidecarHook;
+  let root: string;
+
+  beforeEach(async () => {
+    // `realpath` because the sink proves containment against a resolved path and
+    // macOS hands `mkdtemp` a `/var` symlink; the picker caches the first answer
+    // it is given, so it is cleared on both sides of the test.
+    root = await fs.realpath(tmpRoot);
+    disposeWorkspaceFolderPicker();
+    vscodeWorkspace.workspaceFolders = [{ uri: { fsPath: root, scheme: 'file' } }];
+    const deps: BackendExecutionWiringDeps = {
+      workspaceRoot: root,
+      cliPath: '/usr/local/bin/claude',
+      logger: h.logger,
+      store: h.store,
+      auditWriter: new AuditLogWriter({ workspaceRoot: root }, h.logger),
+      disposables,
+      hostSubscriptions,
+      evidenceHealth: new EvidenceHealthMonitor(),
+      processEnvironmentPolicy: { mode: 'minimal', inheritProcessEnv: false }
+    };
+    wiring = wireBackendExecution(deps);
+    hook = wiring.monitorHook;
+  });
+
+  afterEach(async () => {
+    await wiring.transport.flushAndDispose();
+    wiring.monitor.dispose();
+    for (const entry of [...disposables, ...hostSubscriptions]) entry.dispose();
+    disposables.length = 0;
+    hostSubscriptions.length = 0;
+    vscodeWorkspace.workspaceFolders = undefined;
+    disposeWorkspaceFolderPicker();
+  });
+
+  /**
+   * `pid: null`, which is a real value on this arm and not a stand-in: the hook
+   * only starts a telemetry series when a pid arrives, and a pid this test
+   * invented would put the sampler on a `ps` poll against someone else's
+   * process. Nothing below is about the sampler.
+   */
+  const started = (runId: string, invocationId: string, helperInvocation: boolean): void => {
+    hook({ kind: 'started', runId, invocationId, helperInvocation, pid: null });
+  };
+  const stdout = (runId: string, invocationId: string, line: string): void => {
+    hook({ kind: 'stdout-chunk', runId, invocationId, chunk: `${line}\n` });
+  };
+  const exited = (runId: string, invocationId: string): void => {
+    hook({
+      kind: 'exited',
+      runId,
+      invocationId,
+      exitCode: 0,
+      signal: null,
+      killed: false,
+      timedOut: false
+    });
+  };
+
+  /** The field sequence, up to the point where the phase child is mid-flight. */
+  async function compactionThenLivePhase(): Promise<AdmittedRun> {
+    const a = await h.admit(QUEUE_A, 'work on queue A');
+    await h.atGate(a.runId);
+    wiring.monitor.onStart(a.runId, PHASE, null);
+
+    started(a.runId, COMPACTION_INVOCATION, true);
+    stdout(a.runId, COMPACTION_INVOCATION, COMPACTION_LINE);
+    exited(a.runId, COMPACTION_INVOCATION);
+
+    started(a.runId, PHASE_INVOCATION, false);
+    return a;
+  }
+
+  async function readTransportLines(): Promise<
+    Array<{ runId: string; phase: string; stream: string; line: string }>
+  > {
+    const raw = await fs.readFile(
+      path.join(root, CLI_TRANSPORT_DIRECTORY, CLI_TRANSPORT_FILE_NAME),
+      'utf8'
+    );
+    return raw
+      .split('\n')
+      .filter((entry) => entry.trim().length > 0)
+      .map((entry) => {
+        // `<stamp>\t<runId>\t<phase>\t<stream>\t<line>`, and the line is joined
+        // back because only the four leading fields are tab-delimited.
+        const [, runId = '', phase = '', stream = '', ...rest] = entry.split('\t');
+        return { runId, phase, stream, line: rest.join('\t') };
+      });
+  }
+
+  it("captures every line of the phase's output and counts exactly those lines", async () => {
+    const a = await compactionThenLivePhase();
+
+    // Bracketing the phase invocation is what makes this a count OF THAT
+    // INVOCATION. `stdoutLines` is a Run-level total and the Run's total already
+    // includes the compaction's line, so the delta is the only honest reading.
+    const beforePhaseOutput = wiring.monitor.getCurrentState(a.runId)?.stdoutLines ?? -1;
+    for (const line of PHASE_LINES) stdout(a.runId, PHASE_INVOCATION, line);
+    const afterPhaseOutput = wiring.monitor.getCurrentState(a.runId)?.stdoutLines ?? -1;
+    exited(a.runId, PHASE_INVOCATION);
+
+    await wiring.transport.flushAndDispose();
+    const captured = await readTransportLines();
+    const capturedForPhase = captured.filter(
+      (record) => record.runId === a.runId && PHASE_LINES.includes(record.line)
+    );
+    const reportedForPhase = afterPhaseOutput - beforePhaseOutput;
+
+    // SC-019, both halves. The equality alone is satisfied by the defect — a
+    // declined chunk is neither written nor counted, so it reads 0 === 0 — which
+    // is why the non-zero assertion is the one that goes red on a revert.
+    expect(reportedForPhase).toBeGreaterThan(0);
+    expect(capturedForPhase.map((record) => record.line)).toEqual(PHASE_LINES);
+    expect(capturedForPhase).toHaveLength(reportedForPhase);
+
+    // And the pair is tied to the invocation rather than to the Run: the Run's
+    // own total is one larger, because the compaction's transcript is this Run's
+    // evidence and is captured under its id. An assertion written against the
+    // Run's total would be comparing 4 against 3 here and 1 against 0 under the
+    // defect — wrong in both directions, and wrong in a way that would have been
+    // fixed by loosening the comparison rather than by fixing the monitor.
+    expect(captured.filter((record) => record.line === COMPACTION_LINE)).toHaveLength(1);
+    expect(wiring.monitor.getCurrentState(a.runId)?.stdoutLines).toBe(reportedForPhase + 1);
+    expect(wiring.monitor.getCurrentState(a.runId)?.declinedChunks).toBe(0);
+  });
+
+  it("leaves the Run's monitoring live while the phase child is still running", async () => {
+    const a = await compactionThenLivePhase();
+    for (const line of PHASE_LINES) stdout(a.runId, PHASE_INVOCATION, line);
+
+    // The compaction exited cleanly several statements ago. Nothing about that
+    // exit is the Run's: its status is the phase child's status, and its exit
+    // code is unset because the invocation this Run is waiting on has not ended.
+    const state = wiring.monitor.getCurrentState(a.runId);
+    expect(state?.status).toBe('running');
+    expect(state?.exitCode).toBeNull();
+    expect(state?.stdoutLines).toBe(PHASE_LINES.length + 1);
+    expect(state?.declinedChunks).toBe(0);
   });
 });

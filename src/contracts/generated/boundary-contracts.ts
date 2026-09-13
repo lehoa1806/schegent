@@ -95,6 +95,8 @@ export const AUDIT_EVENT_TYPES = [
   "monitor-invocation-failed",
   "monitor-invocation-canceled",
   "monitor-invocation-summary",
+  "monitor-helper-invocation-exited",
+  "monitor-chunk-declined",
   "audit-rotated",
   "audit-retention-applied",
   "audit-hydration-warning",

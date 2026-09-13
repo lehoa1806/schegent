@@ -21,6 +21,7 @@ import {
   type GrantedUncontainedBackends
 } from '../services/backend-containment-policy';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
+import type { MonitorSidecarHook } from '../contracts/backend-runner';
 import { MONITOR_STALL_THRESHOLD_MS } from '../contracts/monitor-events';
 import { HistoryStore } from '../state/history-store';
 import type { WorkspaceStateStore } from '../state/workspace-state';
@@ -108,6 +109,18 @@ export interface BackendExecutionWiring {
    */
   readonly transport: BoundedTransport;
   readonly sampler: TelemetrySamplerImpl;
+  /**
+   * Feature 093 BUG-001 (T103) — the sidecar dispatch the registry was built
+   * with, by reference.
+   *
+   * Here for one reason: the forwarding it performs is the fix, and the fix is
+   * three arguments wide. A fixture that re-implements this dispatch asserts
+   * that its own copy forwards them, which is a claim about the fixture. The
+   * integration regression calls this instead, so a dropped `helperInvocation`
+   * or a dropped `invocationId` fails it. Nothing in the host reads this field;
+   * every event reaches it through the runner the registry holds.
+   */
+  readonly monitorHook: MonitorSidecarHook;
   readonly runnerRegistry: BackendRunnerRegistry;
   readonly historyStore: HistoryStore;
   readonly promptBuilder: PromptBuilder;
@@ -267,6 +280,78 @@ const spawnIdentityRecorder = createSpawnIdentityRecorder({
 // stood at activation; repeating it per phase would turn one misconfiguration
 // into a log entry on every run.
 for (const problem of readUncontainedGrant().problems) logger.warn(problem.message);
+// Feature 093 (T046) — forward each event to the Run that produced it.
+// The hook stays one window-level function; only the addressing changes.
+//
+// Feature 093 BUG-001 (T103) — named here and returned on the wiring rather
+// than left anonymous inside the registry's options. Three of its arguments are
+// now the whole of the fix — `helperInvocation` on the spawn, `invocationId` on
+// the two chunk branches and on the exit — and each one is invisible to a test
+// that retypes this dispatch instead of calling it: such a fixture passes while
+// the window an operator runs still ends its Run on the compaction's exit. So
+// the integration regression drives THIS function, and the only way to give it
+// one is to have a name for it.
+const monitorHook: MonitorSidecarHook = (event) => {
+  if (event.kind === 'started') {
+    // Feature 093 BUG-001 (T103) — the identity travels with the event that
+    // announces the spawn, and this is the only place it can be handed over:
+    // `onStart` has already fired by now, before anything was spawned. Without
+    // this argument the monitor adopts nothing, every exit latches, and a
+    // pre-phase compaction ends its Run's monitoring — the defect intact with
+    // all of its plumbing in place.
+    monitor.onSpawnPid(event.runId, event.pid, {
+      id: event.invocationId,
+      helperInvocation: event.helperInvocation
+    });
+    // FR-R3-103 (FR-041) — persist the tree's identity so a later host can ask
+    // whether it is still alive before resuming into the same worktree.
+    void spawnIdentityRecorder.recordSpawn(event.runId, event.pid);
+    if (event.pid !== null) {
+      // FR-R3-081 — remembered so the exit can name WHICH child it was. The
+      // `'exited'` event carries the run id and not the pid, and with more
+      // than one run sampled a sampler that has to guess stops the wrong
+      // series: the survivor goes unsampled and the dead pid is polled until
+      // the window closes.
+      if (event.runId !== null) samplerPidByRun.set(event.runId, event.pid);
+      sampler.start(event.pid, Date.now());
+    }
+  } else if (event.kind === 'stdout-chunk') {
+    monitor.onStdoutChunk(event.runId, event.chunk, event.invocationId);
+  } else if (event.kind === 'stderr-chunk') {
+    monitor.onStderrChunk(event.runId, event.chunk, event.invocationId);
+  } else if (event.kind === 'exited') {
+    // FR-R3-103 — cleared at reaped exit, so a finished Run does not read as an orphan.
+    void spawnIdentityRecorder.clearOnExit(event.runId);
+    monitor.onExit(
+      event.runId,
+      {
+        exitCode: event.exitCode,
+        signal: event.signal,
+        killed: event.killed,
+        timedOut: event.timedOut
+      },
+      // Feature 093 BUG-001 (T103) — which child exited, so the monitor can
+      // answer whether it was the one whose life is this Run's phase.
+      event.invocationId
+    );
+    const exitedPid = event.runId === null ? undefined : samplerPidByRun.get(event.runId);
+    if (event.runId !== null) samplerPidByRun.delete(event.runId);
+    sampler.stop({
+      signal: event.signal as NodeJS.Signals | null,
+      ...(exitedPid === undefined ? {} : { pid: exitedPid })
+    });
+  } else {
+    // FR-R3-083 — best-effort by design; arrives after the phase has ended.
+    //
+    // `else`, not `else if (event.kind === 'tree-unconfirmed')`: the four
+    // branches above exhaust the event union, so that re-test is a comparison
+    // the compiler has already made — `no-unnecessary-condition` reports it as
+    // always true. The `satisfies` keeps what the removed comparison implied: a
+    // sixth event kind stops compiling on this line instead of silently
+    // arriving in the tree-unconfirmed branch and being recorded as one.
+    void treeDegradationRecorder.record(event satisfies { kind: 'tree-unconfirmed' });
+  }
+};
 const runnerRegistry = new BackendRunnerRegistry({
   // FR-R3-056 (H-01), reshaped by FR-R3-125 — the shipped posture. Unset reads as
   // the manifest default (`[]`), so a fresh install refuses every uncontained
@@ -284,54 +369,7 @@ const runnerRegistry = new BackendRunnerRegistry({
   // FR-R3-125 (FR-007) — so the factory can state the compounding case
   // (no OS bound AND the full ambient environment) where both facts are known.
   environmentMode: processEnvironmentPolicy.mode,
-  // Feature 093 (T046) — forward each event to the Run that produced it.
-  // The hook stays one window-level function; only the addressing changes.
-  monitorHook: (event) => {
-    if (event.kind === 'started') {
-      monitor.onSpawnPid(event.runId, event.pid);
-      // FR-R3-103 (FR-041) — persist the tree's identity so a later host can ask
-      // whether it is still alive before resuming into the same worktree.
-      void spawnIdentityRecorder.recordSpawn(event.runId, event.pid);
-      if (event.pid !== null) {
-        // FR-R3-081 — remembered so the exit can name WHICH child it was. The
-        // `'exited'` event carries the run id and not the pid, and with more
-        // than one run sampled a sampler that has to guess stops the wrong
-        // series: the survivor goes unsampled and the dead pid is polled until
-        // the window closes.
-        if (event.runId !== null) samplerPidByRun.set(event.runId, event.pid);
-        sampler.start(event.pid, Date.now());
-      }
-    } else if (event.kind === 'stdout-chunk') {
-      monitor.onStdoutChunk(event.runId, event.chunk);
-    } else if (event.kind === 'stderr-chunk') {
-      monitor.onStderrChunk(event.runId, event.chunk);
-    } else if (event.kind === 'exited') {
-      // FR-R3-103 — cleared at reaped exit, so a finished Run does not read as an orphan.
-      void spawnIdentityRecorder.clearOnExit(event.runId);
-      monitor.onExit(event.runId, {
-        exitCode: event.exitCode,
-        signal: event.signal,
-        killed: event.killed,
-        timedOut: event.timedOut
-      });
-      const exitedPid = event.runId === null ? undefined : samplerPidByRun.get(event.runId);
-      if (event.runId !== null) samplerPidByRun.delete(event.runId);
-      sampler.stop({
-        signal: event.signal as NodeJS.Signals | null,
-        ...(exitedPid === undefined ? {} : { pid: exitedPid })
-      });
-    } else {
-      // FR-R3-083 — best-effort by design; arrives after the phase has ended.
-      //
-      // `else`, not `else if (event.kind === 'tree-unconfirmed')`: the four
-      // branches above exhaust the event union, so that re-test is a comparison
-      // the compiler has already made — `no-unnecessary-condition` reports it as
-      // always true. The `satisfies` keeps what the removed comparison implied: a
-      // sixth event kind stops compiling on this line instead of silently
-      // arriving in the tree-unconfirmed branch and being recorded as one.
-      void treeDegradationRecorder.record(event satisfies { kind: 'tree-unconfirmed' });
-    }
-  },
+  monitorHook,
   probeTransport: true,
   logger
 }, backendKind);
@@ -367,6 +405,7 @@ const verboseAccessor = {
     monitor,
     transport,
     sampler,
+    monitorHook,
     runnerRegistry,
     historyStore,
     promptBuilder,

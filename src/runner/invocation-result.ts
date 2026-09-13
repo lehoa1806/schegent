@@ -53,6 +53,27 @@ export interface InvocationRequest {
    * attributing them to whichever Run happened to start most recently.
    */
   runId?: string;
+  /**
+   * Feature 093 BUG-001 (T101) — this spawn is a host-internal HELPER on the
+   * Run's behalf, not the Run's phase invocation.
+   *
+   * One setter today: the pre-phase session compaction in
+   * `src/controller/session-compactor.ts`. It carries the phase's `runId` above
+   * and must keep carrying it (T057: a stalling compaction that belongs to no
+   * Run is a stall nobody can name), so `runId` alone cannot tell the monitor
+   * which of a Run's subprocesses is the one the phase is waiting on — and the
+   * monitor ended the Run on the first exit it saw under that id, which was this
+   * one, six hours before the phase's.
+   *
+   * Carried for exactly one thing, like `runId`: it is stamped onto the
+   * `started` sidecar event so the monitor can tell the two apart on arrival.
+   * `onStart` fires before the phase's own spawn, so the monitor cannot be told
+   * the phase invocation's identity in advance; recognition is the only option
+   * open to it. It does NOT influence argv, env, timeouts, or any spawn
+   * decision. Optional, and absent means "the phase's own invocation", because
+   * that is what every construction site but one is.
+   */
+  helperInvocation?: boolean;
   prompt: string;
   timeoutMs: number;
   /**

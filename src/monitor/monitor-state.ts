@@ -45,6 +45,15 @@ export interface CliMonitorState extends CliTransportAggregate {
   readonly lastProgressAt: string | null;
   readonly exitCode: number | null;
   readonly signal: string | null;
+  /**
+   * FR-018a (T102a) — chunks this Run's monitor refused, for any reason.
+   *
+   * Not part of `CliTransportAggregate`, and that is the point: the aggregate
+   * answers "how much did the CLI say", this answers "how much did we throw
+   * away", and BUG-001 is what happens when only the first question can be
+   * asked. Zero for every healthy Run.
+   */
+  readonly declinedChunks: number;
   readonly detectedIssues: ReadonlyArray<'rate_limited' | 'stall'>;
   readonly msSinceLastStdout: number | null;
   readonly msSinceLastStderr: number | null;
@@ -97,6 +106,7 @@ export function buildIdleMonitorState(runId: string, phase: PhaseName, startedAt
     lastOutputAt: null,
     exitCode: null,
     signal: null,
+    declinedChunks: 0,
     detectedIssues: Object.freeze([]) as ReadonlyArray<'rate_limited' | 'stall'>,
     msSinceLastStdout: null,
     msSinceLastStderr: null

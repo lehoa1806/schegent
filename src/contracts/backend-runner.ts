@@ -75,14 +75,70 @@ export type TreeEscalation = 'sigterm-then-sigkill';
  * stream. `runId` is `null` only when the invocation carried none (fakes and
  * older callers); the monitor treats that as "no attributable Run" and ignores
  * the event rather than guessing.
+ *
+ * Feature 093 BUG-001 (T100) — and `invocationId` names the SPAWN whose
+ * subprocess produced it.
+ *
+ * A Run outlives its subprocesses: the pre-phase session compaction is a second
+ * CLI child stamped with the same `runId` as the phase it precedes, by
+ * `session-compactor.ts` and deliberately (T057). So `runId` alone cannot answer
+ * "did the thing this Run is waiting on just exit?", and the monitor answered it
+ * with the first exit it saw under the id — which was the compaction's, six
+ * hours before the phase's. Everything the monitor reports after that first exit
+ * was dropped by a `terminal` latch nothing could clear.
+ *
+ * REQUIRED and non-nullable, unlike `runId`. An invocation that carries no Run
+ * is ordinary; an event with no invocation is not, because an event exists only
+ * because a spawn happened. Requiring it makes the compiler the thing that
+ * stamps every emit site, which is the point: the identity has to be unique
+ * across the MERGED stream the monitor consumes, and a per-runner counter is
+ * unique only per runner instance — two runners each emit an invocation numbered
+ * 1, which is T046a's collision moved to a new key. `nextInvocationId()` in
+ * `src/runner/invocation-identity.ts` is the single site that answers this, and
+ * it is the only thing either runner may key an invocation by.
+ *
+ * `tree-unconfirmed` below does NOT carry it, and that is a decision rather than
+ * an omission: it is not a lifecycle event of the monitored invocation. It is a
+ * report about a process group that outlived one, it fires after the phase has
+ * ended, it reaches the audit path and never the monitor's state machine, and
+ * its attribution already travels as a `TreeAttribution`. Adding the field there
+ * would widen a payload that has nowhere to put it to work.
  */
 export type MonitorSidecarEvent =
-  | { readonly kind: 'started'; readonly runId: string | null; readonly pid: number | null }
-  | { readonly kind: 'stdout-chunk'; readonly runId: string | null; readonly chunk: string }
-  | { readonly kind: 'stderr-chunk'; readonly runId: string | null; readonly chunk: string }
+  | {
+      readonly kind: 'started';
+      readonly runId: string | null;
+      readonly invocationId: string;
+      /**
+       * Feature 093 BUG-001 (T101) — a host-internal helper spawned on the Run's
+       * behalf (the pre-phase session compaction), not the Run's own phase
+       * invocation. Read straight off `InvocationRequest.helperInvocation`,
+       * where the reasoning lives.
+       *
+       * On this arm alone, because it is only ever asked once: the monitor uses
+       * it to decide which invocation to adopt, and every later event about that
+       * invocation is matched by `invocationId`. A copy on the other three arms
+       * would be a second place for the same fact to be wrong.
+       */
+      readonly helperInvocation: boolean;
+      readonly pid: number | null;
+    }
+  | {
+      readonly kind: 'stdout-chunk';
+      readonly runId: string | null;
+      readonly invocationId: string;
+      readonly chunk: string;
+    }
+  | {
+      readonly kind: 'stderr-chunk';
+      readonly runId: string | null;
+      readonly invocationId: string;
+      readonly chunk: string;
+    }
   | {
       readonly kind: 'exited';
       readonly runId: string | null;
+      readonly invocationId: string;
       readonly exitCode: number | null;
       readonly signal: string | null;
       readonly killed: boolean;

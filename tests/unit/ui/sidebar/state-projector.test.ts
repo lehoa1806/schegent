@@ -787,7 +787,7 @@ describe('StateProjector monitor projection (T023)', () => {
     startedAt: string; lastStdoutAt: string | null; lastStderrAt: string | null;
     lastProgressAt: string | null; stdoutLines: number; stderrLines: number;
     firstOutputAt: string | null; lastOutputAt: string | null;
-    exitCode: number | null; signal: string | null;
+    exitCode: number | null; signal: string | null; declinedChunks: number;
     detectedIssues: ReadonlyArray<'rate_limited' | 'stall'>;
     msSinceLastStdout: number | null; msSinceLastStderr: number | null;
   }> = {}) {
@@ -807,6 +807,8 @@ describe('StateProjector monitor projection (T023)', () => {
       lastOutputAt: overrides.lastOutputAt ?? null,
       exitCode: overrides.exitCode ?? null,
       signal: overrides.signal ?? null,
+      // Feature 093 BUG-001 (T102a) — zero for a Run nothing was declined for.
+      declinedChunks: overrides.declinedChunks ?? 0,
       detectedIssues: overrides.detectedIssues ?? ([] as ReadonlyArray<'rate_limited' | 'stall'>),
       msSinceLastStdout: overrides.msSinceLastStdout ?? null,
       msSinceLastStderr: overrides.msSinceLastStderr ?? null

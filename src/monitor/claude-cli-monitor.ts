@@ -61,8 +61,64 @@ export interface ClaudeCliMonitorOptions {
 
 export type StateChangeListener = (state: CliMonitorState | null) => void;
 
+/**
+ * Feature 093 BUG-001 (T102) — the two facts a `started` sidecar event carries
+ * about the spawn behind it.
+ *
+ * One value rather than two positional arguments, for the reason `TreeAttribution`
+ * gives: an id and a flag passed side by side are two arguments a call site can
+ * transpose without becoming ill-typed at every site.
+ */
+export interface SidecarInvocation {
+  readonly id: string;
+  /** A host-internal helper on the Run's behalf, not the Run's phase invocation. */
+  readonly helperInvocation: boolean;
+}
+
+/**
+ * FR-018a (T102a) — why a chunk was refused.
+ *
+ * Two reasons, because there are two `return`s: the Run has already ended, or
+ * there is no such Run. Both were silent, and the silence is what made six
+ * hours of dropped output look like a phase that produced nothing.
+ */
+export type ChunkDeclineCause = 'run-terminal' | 'unknown-run';
+
 interface InternalState {
   runId: string;
+  /**
+   * Feature 093 BUG-001 (T102) — which SPAWN this Run's state is tracking, or
+   * `null` while it is tracking none.
+   *
+   * A Run outlives its subprocesses. `onStart` fires once per phase iteration
+   * and BEFORE anything is spawned, so at that moment there is nothing to name —
+   * `null` is the honest description of what `onStart` has always recorded, not
+   * a placeholder. The invocation is adopted on arrival instead, at the first
+   * `started` that is not a helper's, which is `onSpawnPid` below.
+   *
+   * Adopted once and kept. Re-adopting on a later non-helper `started` would
+   * quietly move which exit ends the Run, and the host spawns exactly one phase
+   * invocation per `onStart`.
+   */
+  invocationId: string | null;
+  /**
+   * Feature 093 BUG-001 (T102a) — every invocation this Run was told is a helper.
+   *
+   * A set rather than a single id because nothing in the contract promises one
+   * helper per phase, and because the alternative — inferring "helper" from
+   * "arrived before the adopted invocation" — would make the fix depend on
+   * spawn ordering, which is the assumption BUG-001 is made of.
+   *
+   * Populated at the helper's `started`, so a helper whose `started` never
+   * reached the monitor is treated as the Run's own invocation. That is the
+   * deliberate failure direction: a Run that ends early is recoverable and
+   * visible, a Run that never ends is the six-hour deadline again.
+   */
+  helperInvocations: Set<string>;
+  /** FR-018a (T102a) — chunks this Run could not accept. See `noteDeclinedChunk`. */
+  declinedChunks: number;
+  /** One audit event per cause, on `cli-transport-sink.ts`'s warn-once pattern. */
+  declineReported: Set<ChunkDeclineCause>;
   phase: PhaseName;
   status: MonitorStatus;
   pid: number | null;
@@ -112,6 +168,16 @@ const DEFAULT_RATE_LIMIT_CLUSTER_MS = 5_000;
  */
 const MAX_SETTLED_STATES = 32;
 
+/**
+ * FR-018a (T102a) — how many distinct unknown Runs get their own report.
+ *
+ * The set that backs this is the only thing here keyed by an id no state
+ * bounds, so it is bounded by hand. Past the cap the reporting stops and the
+ * total keeps climbing, which is the right way round: the counter is what says
+ * how bad it is, and the per-id detail past 32 says nothing new.
+ */
+const MAX_UNKNOWN_RUN_REPORTS = 32;
+
 export class ClaudeCliMonitor {
   /**
    * Feature 093 (T046) — one entry per executing Run, not one slot per window.
@@ -137,6 +203,17 @@ export class ClaudeCliMonitor {
   private readonly rateLimitClusterMs: number;
   /** FR-R3-008 (T376) — per-Run rate limiter in front of the liveness write. */
   private readonly activity: ActivityCoalescer;
+  /**
+   * FR-018a (T102a) — chunks refused for Runs this monitor has never heard of.
+   *
+   * Monitor-scoped and not per-Run for the reason the cause is named: there is
+   * no Run state to hold them. A scalar total and a bounded set of ids already
+   * reported, so an unknown run id cannot grow this without limit the way a
+   * `Map` keyed by it would — `states` is evicted, and a parallel map keyed by
+   * the same ids would outlive every eviction.
+   */
+  private declinedForUnknownRuns = 0;
+  private readonly unknownRunsReported = new Set<string>();
 
   constructor(opts: ClaudeCliMonitorOptions) {
     this.opts = opts;
@@ -161,6 +238,11 @@ export class ClaudeCliMonitor {
     const monotonic = this.opts.monotonicNow();
     const state: InternalState = {
       runId,
+      // Feature 093 BUG-001 (T102) — nothing has been spawned yet. See the field.
+      invocationId: null,
+      helperInvocations: new Set(),
+      declinedChunks: 0,
+      declineReported: new Set(),
       phase,
       status: 'starting',
       pid,
@@ -220,16 +302,48 @@ export class ClaudeCliMonitor {
     this.notify();
   }
 
-  public onSpawnPid(runId: string | null, pid: number | null): void {
+  /**
+   * Feature 093 BUG-001 (T102) — the `started` sidecar event, and so the one
+   * place a Run's invocation is adopted.
+   *
+   * THIS method and not `onStart`, which is the driver's call and fires before
+   * any spawn: there is no identity in existence for it to be given, and a
+   * parameter with one possible value is surface, not plumbing. Recognition on
+   * arrival is the only option the ordering leaves open, and this is where the
+   * arrival lands — the wiring has routed `started` here since T046.
+   *
+   * `invocation` defaults to `null` so the pre-feature call sites and the
+   * monitor's own harnesses compile and behave unchanged; a `null` invocation
+   * adopts nothing, exactly as before.
+   */
+  public onSpawnPid(
+    runId: string | null,
+    pid: number | null,
+    invocation: SidecarInvocation | null = null
+  ): void {
     const state = this.resolve(runId);
     if (!state) return;
     state.pid = pid;
+    if (invocation !== null) {
+      if (invocation.helperInvocation) {
+        // Feature 093 BUG-001 (T102a) — remembered here because this is the only
+        // event that says so. `exited` carries the id and not the marker, so an
+        // exit can only be recognised as a helper's against what its `started`
+        // recorded.
+        state.helperInvocations.add(invocation.id);
+      } else if (state.invocationId === null) {
+        state.invocationId = invocation.id;
+      }
+    }
     this.notify();
   }
 
-  public onStdoutChunk(runId: string | null, chunk: string): void {
+  public onStdoutChunk(runId: string | null, chunk: string, invocationId?: string | null): void {
     const state = this.resolve(runId);
-    if (!state || state.terminal) return;
+    if (!state || state.terminal) {
+      this.noteDeclinedChunk(runId, state, 'stdout', chunk, invocationId ?? null);
+      return;
+    }
     const detector = this.detectors.get(state.runId) ?? null;
     if (state.status === 'starting') {
       state.status = 'running';
@@ -269,9 +383,12 @@ export class ClaudeCliMonitor {
     this.notify();
   }
 
-  public onStderrChunk(runId: string | null, chunk: string): void {
+  public onStderrChunk(runId: string | null, chunk: string, invocationId?: string | null): void {
     const state = this.resolve(runId);
-    if (!state || state.terminal) return;
+    if (!state || state.terminal) {
+      this.noteDeclinedChunk(runId, state, 'stderr', chunk, invocationId ?? null);
+      return;
+    }
     const detector = this.detectors.get(state.runId) ?? null;
     if (state.status === 'starting') {
       state.status = 'running';
@@ -318,12 +435,40 @@ export class ClaudeCliMonitor {
     this.notify();
   }
 
+  /**
+   * Feature 093 BUG-001 (T102/T102a) — `invocationId` names the subprocess that
+   * exited, which is not the same question as which Run it belonged to.
+   *
+   * That conflation IS the bug. `runPhase` compacts the session before it
+   * invokes the phase and T057 stamps the Run's id onto the compaction child so
+   * its transcript is attributed to the Run; this method then latched `terminal`
+   * on the first exit it saw under that id, which was the compaction's, seconds
+   * in. Everything downstream is guarded by `state.terminal`, so the phase child
+   * that ran for the next six hours had its output uncounted, its status reading
+   * `completed`, its stall detector already disposed, and nothing but the
+   * absolute deadline left to end it.
+   *
+   * A helper's exit is reported and returns; only the Run's own invocation ends
+   * the Run.
+   */
   public onExit(
     runId: string | null,
-    args: { exitCode: number | null; signal: string | null; killed: boolean; timedOut: boolean }
+    args: { exitCode: number | null; signal: string | null; killed: boolean; timedOut: boolean },
+    invocationId?: string | null
   ): void {
     const state = this.resolve(runId);
     if (!state || state.terminal) return;
+    const exited = invocationId ?? null;
+    if (exited !== null && state.helperInvocations.has(exited)) {
+      this.noteHelperExit(state, exited, args);
+      return;
+    }
+    // Anything else ends the Run: the adopted invocation, an exit that names no
+    // invocation (every pre-T100 call site, and the monitor's own harnesses), and
+    // an id this Run was never told about. The last of those is the deliberate
+    // default — an unrecognised exit ending a Run early is visible and
+    // recoverable, whereas an unrecognised exit ending nothing is BUG-001 again
+    // with the deadline as the only backstop.
     this.disposeDetector(state.runId);
     // FR-R3-008 (T376) — release the coalescing window without flushing a final
     // observation. A flush here would race the driver's own terminal `setRun`,
@@ -482,6 +627,10 @@ export class ClaudeCliMonitor {
       ...projectTransportAggregate(state),
       exitCode: state.exitCode,
       signal: state.signal,
+      // FR-018a (T102a) — beside the line counts deliberately. "3 lines captured,
+      // 4412 chunks declined" is the sentence that would have named BUG-001 on
+      // sight; the two numbers are only worth anything next to each other.
+      declinedChunks: state.declinedChunks,
       detectedIssues: Object.freeze(state.detectedIssues.slice()) as ReadonlyArray<'rate_limited' | 'stall'>,
       msSinceLastStdout: paused
         ? null
@@ -555,6 +704,95 @@ export class ClaudeCliMonitor {
       detector.dispose();
       this.detectors.delete(runId);
     }
+  }
+
+  /**
+   * Feature 093 BUG-001 (T102a) — a helper's exit, reported and survived.
+   *
+   * Reported, because a compaction that crashed or was killed is a fact about
+   * the Run and the point of this fix is to stop the monitor being silent about
+   * subprocesses it declines to act on. Survived, because the Run's phase child
+   * has not been spawned yet when this arrives.
+   *
+   * Nothing here touches `terminal`, the detector, the framers or the status:
+   * the Run is still starting, and the next thing it will see is the phase's own
+   * `started`.
+   */
+  private noteHelperExit(
+    state: InternalState,
+    invocationId: string,
+    args: { exitCode: number | null; signal: string | null; killed: boolean; timedOut: boolean }
+  ): void {
+    const clean = !args.timedOut && !args.killed && (args.exitCode ?? 1) === 0;
+    this.appendAudit(
+      state.runId,
+      'monitor-helper-invocation-exited',
+      {
+        invocationId,
+        exitCode: args.exitCode,
+        signal: args.signal,
+        killed: args.killed,
+        timedOut: args.timedOut,
+        // From this phase's `onStart`, not from the helper's own spawn, which the
+        // monitor is never told. For the pre-phase compaction the two coincide to
+        // within the host's own dispatch; the name says which one it is so no
+        // reader has to assume.
+        msSincePhaseStart: this.opts.monotonicNow() - state.startedAtMonotonic - state.pausedTotalMs
+      },
+      clean ? 'info' : 'failure'
+    );
+    this.notify();
+  }
+
+  /**
+   * FR-018a (T102a) — the instrumentation the two `return`s never had.
+   *
+   * `cli-transport-sink.ts` was cleared as a suspect for BUG-001 in minutes,
+   * because it counts every line it drops and warns once per (path, cause). The
+   * monitor could not be cleared or convicted at all: it discarded six hours of
+   * a phase's output through `if (!state || state.terminal) return;` and left
+   * nothing behind saying it had. Counted always, reported once per cause.
+   *
+   * The chunk's content is never logged or audited — it is CLI output, and the
+   * bounded sink is the only place that is allowed to hold it. Only its size
+   * travels.
+   */
+  private noteDeclinedChunk(
+    runId: string | null,
+    state: InternalState | null,
+    stream: 'stdout' | 'stderr',
+    chunk: string,
+    invocationId: string | null
+  ): void {
+    if (state === null) {
+      this.declinedForUnknownRuns += 1;
+      // The logger rather than the audit, because the audit is per-Run and this
+      // is output for a Run that does not exist: there is no phase to file it
+      // under and inventing one would be a worse record than none.
+      const id = typeof runId === 'string' && runId.length > 0 ? runId : '(unnamed)';
+      if (!this.unknownRunsReported.has(id) && this.unknownRunsReported.size < MAX_UNKNOWN_RUN_REPORTS) {
+        this.unknownRunsReported.add(id);
+        this.opts.logger.warn(
+          `[monitor] declined ${stream} chunk for unknown run ${this.opts.logger.sanitize(id)}` +
+            ` (invocation ${invocationId ?? 'unnamed'}); ${this.declinedForUnknownRuns} declined for unknown runs so far`
+        );
+      }
+      return;
+    }
+    state.declinedChunks += 1;
+    if (state.declineReported.has('run-terminal')) return;
+    state.declineReported.add('run-terminal');
+    this.appendAudit(
+      state.runId,
+      'monitor-chunk-declined',
+      {
+        cause: 'run-terminal' satisfies ChunkDeclineCause,
+        stream,
+        invocationId,
+        chars: chunk.length
+      },
+      'failure'
+    );
   }
 
   private handleStall(runId: string): void {

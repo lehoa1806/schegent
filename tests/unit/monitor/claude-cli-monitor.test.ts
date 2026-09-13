@@ -52,8 +52,11 @@ class FakeAudit {
 }
 
 class FakeLogger {
+  public warnings: string[] = [];
   public sanitize = (s: string): string => s;
-  public warn = (_msg: string): void => { /* swallow */ };
+  public warn = (msg: string): void => {
+    this.warnings.push(msg);
+  };
 }
 
 /**
@@ -78,6 +81,7 @@ function makeMonitor(): {
   fakeTimer: FakeSetTimeout;
   audit: FakeAudit;
   transport: FakeTransport;
+  logger: FakeLogger;
   advance: (ms: number) => void;
 } {
   const clock = new FakeClock();
@@ -102,7 +106,7 @@ function makeMonitor(): {
     clock.advance(ms);
     fakeTimer.fireDue();
   };
-  return { monitor, clock, fakeTimer, audit, transport, advance };
+  return { monitor, clock, fakeTimer, audit, transport, logger, advance };
 }
 
 describe('ClaudeCliMonitor state machine', () => {
@@ -510,5 +514,176 @@ describe('ClaudeCliMonitor per-Run isolation (Feature 093 FR-024)', () => {
     expect(mc.monitor.getStateMap()).toEqual({});
     expect(mc.monitor.getCurrentState()).toBeNull();
     expect(mc.fakeTimer.timers).toHaveLength(0);
+  });
+});
+
+/**
+ * Feature 093 BUG-001 (T099) — one `onStart`, two subprocesses.
+ *
+ * Every other test in this file drives exactly one subprocess per `onStart`, which
+ * is why the whole suite is green against a defect that cost a Run six hours of
+ * monitoring. These are the first that do not.
+ *
+ * The shape in the field: `runPhase` compacts the session before it invokes the
+ * phase, T057 stamps the Run's id onto that compaction child so its transcript is
+ * attributed to the Run, and the compaction exits in seconds. `onExit` latches
+ * `terminal` on the FIRST exit it sees under a run id, so the compaction's exit
+ * ended the Run as far as the monitor was concerned: the phase child ran for
+ * 21600129 ms with its output uncounted, its status reading `completed`, its stall
+ * detector disposed, and nothing but the 6-hour absolute deadline left to stop it.
+ *
+ * The monitor cannot be told which invocation is the phase's in advance — `onStart`
+ * fires before anything is spawned. It has to recognise it on arrival, from the
+ * `started` event, which is why these tests speak through `onSpawnPid`.
+ */
+describe('ClaudeCliMonitor helper-invocation adoption (Feature 093 BUG-001)', () => {
+  let mc: ReturnType<typeof makeMonitor>;
+  beforeEach(() => {
+    mc = makeMonitor();
+  });
+
+  /** The pre-phase compaction: a host-internal helper spawned on the Run's behalf. */
+  const HELPER = { id: 'claude-cli#1', helperInvocation: true };
+  /** The phase invocation itself — the one whose lifetime IS the Run's phase. */
+  const PHASE = { id: 'claude-cli#2', helperInvocation: false };
+  const OK = { exitCode: 0, signal: null, killed: false, timedOut: false };
+  const FAILED = { exitCode: 1, signal: null, killed: false, timedOut: false };
+  const TERMINAL_EVENTS = [
+    'monitor-invocation-completed',
+    'monitor-invocation-failed',
+    'monitor-invocation-canceled'
+  ];
+
+  function terminalEvents(): Array<string | undefined> {
+    return mc.audit.entries
+      .map((e) => e.eventType)
+      .filter((t) => TERMINAL_EVENTS.includes(t ?? ''));
+  }
+
+  function declinedEntries(): Array<Partial<AuditEntry>> {
+    return mc.audit.entries.filter((e) => e.eventType === 'monitor-chunk-declined');
+  }
+
+  /** The driver's sequence for one phase preceded by a compaction, up to the phase's spawn. */
+  function compactThenSpawnPhase(): void {
+    mc.monitor.onStart('run-1', 'speckit-review', null);
+    mc.monitor.onSpawnPid('run-1', 501, HELPER);
+    mc.monitor.onStdoutChunk('run-1', 'compacting\n', HELPER.id);
+    mc.monitor.onExit('run-1', OK, HELPER.id);
+    mc.monitor.onSpawnPid('run-1', 502, PHASE);
+  }
+
+  it('counts and forwards the phase invocation\'s output after a helper has exited', () => {
+    compactThenSpawnPhase();
+    mc.monitor.onStdoutChunk('run-1', 'phase line 1\nphase line 2\n', PHASE.id);
+
+    const state = mc.monitor.getCurrentState('run-1')!;
+    // Three: the helper's line counts too. A compaction is work done on the Run's
+    // behalf and its transcript is the Run's evidence — that is why T057 stamped the
+    // run id onto it in the first place. What must not happen is the helper's *exit*
+    // ending the Run; attribution of its output was never the problem.
+    expect(state.stdoutLines).toBe(3);
+    const lines = mc.transport.records.filter((r) => r.runId === 'run-1').map((r) => r.line);
+    expect(lines).toEqual(['compacting', 'phase line 1', 'phase line 2']);
+  });
+
+  it('does not read completed while the phase child is still alive', () => {
+    compactThenSpawnPhase();
+    mc.monitor.onStdoutChunk('run-1', 'working\n', PHASE.id);
+
+    const state = mc.monitor.getCurrentState('run-1')!;
+    expect(state.status).toBe('running');
+    expect(state.exitCode).toBeNull();
+  });
+
+  it('keeps the stall detector armed after the helper exits', () => {
+    compactThenSpawnPhase();
+    mc.monitor.onStdoutChunk('run-1', 'working\n', PHASE.id);
+    mc.advance(90_000);
+
+    const state = mc.monitor.getCurrentState('run-1')!;
+    expect(state.status).toBe('stalled');
+    expect(state.detectedIssues).toContain('stall');
+    expect(mc.audit.entries.find((e) => e.eventType === 'monitor-stall')).toBeDefined();
+  });
+
+  it('reports the helper\'s exit against the Run without ending the Run', () => {
+    compactThenSpawnPhase();
+
+    // Visible — a compaction that crashes is a fact about the Run, and swallowing it
+    // would trade one silence for another.
+    const helperExit = mc.audit.entries.find(
+      (e) => (e.payload as { invocationId?: string } | undefined)?.invocationId === HELPER.id
+    );
+    expect(helperExit).toBeDefined();
+    // But not terminal: no invocation-completed/failed/canceled, no summary.
+    expect(terminalEvents()).toEqual([]);
+    expect(mc.audit.entries.filter((e) => e.eventType === 'monitor-invocation-summary')).toHaveLength(0);
+  });
+
+  it('treats the phase invocation\'s exit as the Run\'s one terminal event', () => {
+    compactThenSpawnPhase();
+    mc.monitor.onStdoutChunk('run-1', 'working\n', PHASE.id);
+    mc.monitor.onExit('run-1', FAILED, PHASE.id);
+
+    const state = mc.monitor.getCurrentState('run-1')!;
+    // The phase's outcome, not the helper's. Today this reads `completed` — the
+    // compaction's exit code, reported as the Run's.
+    expect(state.status).toBe('failed');
+    expect(state.exitCode).toBe(1);
+    expect(terminalEvents()).toEqual(['monitor-invocation-failed']);
+    expect(mc.audit.entries.filter((e) => e.eventType === 'monitor-invocation-summary')).toHaveLength(1);
+    expect(mc.fakeTimer.timers).toHaveLength(0);
+  });
+
+  // FR-018a — the instrumentation half. `cli-transport-sink.ts` was cleared as a
+  // suspect from the field logs in minutes because it counts and reports its own
+  // drops; the monitor could not be, because `if (!state || state.terminal) return;`
+  // discarded six hours of output without leaving a single record that it had.
+  it('counts declined chunks and reports them once per cause', () => {
+    compactThenSpawnPhase();
+    mc.monitor.onExit('run-1', OK, PHASE.id);
+    mc.monitor.onStdoutChunk('run-1', 'after the end\n', PHASE.id);
+    mc.monitor.onStderrChunk('run-1', 'also after the end\n', PHASE.id);
+
+    const state = mc.monitor.getCurrentState('run-1')!;
+    expect(state.declinedChunks).toBe(2);
+    const declined = declinedEntries();
+    expect(declined).toHaveLength(1);
+    expect((declined[0]?.payload as { cause?: string } | undefined)?.cause).toBe('run-terminal');
+  });
+
+  // The other decline site, and the one the audit cannot hold: there is no Run to
+  // file it under, so it goes to the host log — once, however many arrive.
+  it('reports a chunk for an unknown Run rather than dropping it in silence', () => {
+    mc.monitor.onStdoutChunk('run-never-started', 'orphan\n', PHASE.id);
+    mc.monitor.onStdoutChunk('run-never-started', 'orphan again\n', PHASE.id);
+
+    expect(mc.logger.warnings).toHaveLength(1);
+    expect(mc.logger.warnings[0]).toContain('run-never-started');
+    expect(declinedEntries()).toHaveLength(0);
+    // Never the chunk's content: that belongs to the bounded transport sink alone.
+    expect(mc.logger.warnings[0]).not.toContain('orphan');
+  });
+
+  // The inverse, and the reason T104 can revert the latch and watch this stay green:
+  // a Run with no helper must behave exactly as it did before any of this landed.
+  it('a Run whose whole life is one invocation is unchanged', () => {
+    mc.monitor.onStart('run-1', 'speckit-review', null);
+    mc.monitor.onSpawnPid('run-1', 502, PHASE);
+    mc.monitor.onStdoutChunk('run-1', 'hello\n', PHASE.id);
+    mc.monitor.onExit('run-1', OK, PHASE.id);
+
+    const state = mc.monitor.getCurrentState('run-1')!;
+    expect(state.status).toBe('completed');
+    expect(state.pid).toBe(502);
+    expect(state.stdoutLines).toBe(1);
+    expect(terminalEvents()).toEqual(['monitor-invocation-completed']);
+    expect(mc.audit.entries.filter((e) => e.eventType === 'monitor-invocation-summary')).toHaveLength(1);
+    expect(mc.fakeTimer.timers).toHaveLength(0);
+
+    // A duplicate exit for the adopted invocation is still suppressed.
+    mc.monitor.onExit('run-1', FAILED, PHASE.id);
+    expect(terminalEvents()).toEqual(['monitor-invocation-completed']);
   });
 });

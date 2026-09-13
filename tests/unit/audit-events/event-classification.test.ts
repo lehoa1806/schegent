@@ -45,6 +45,10 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   'monitor-invocation-failed': 'task',
   'monitor-invocation-canceled': 'task',
   'monitor-invocation-summary': 'task',
+  // Feature 093 BUG-001 (T102a) — task scope like every other monitor event:
+  // both are statements about one Run's subprocesses, not about the host.
+  'monitor-helper-invocation-exited': 'task',
+  'monitor-chunk-declined': 'task',
   // Audit pipeline housekeeping (system)
   'audit-rotated': 'system',
   'audit-retention-applied': 'system',
@@ -302,6 +306,8 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'monitor-invocation-failed':
         case 'monitor-invocation-canceled':
         case 'monitor-invocation-summary':
+        case 'monitor-helper-invocation-exited':
+        case 'monitor-chunk-declined':
         case 'audit-rotated':
         case 'audit-retention-applied':
         case 'audit-hydration-warning':

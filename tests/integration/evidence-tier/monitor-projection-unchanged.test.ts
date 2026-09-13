@@ -267,9 +267,21 @@ describe('FR-R3-007 — the monitor projection is unchanged', () => {
     // over which they accumulated is what the per-line timestamps used to be the
     // only record of, so removing that writer had to add these two.
     const ADDED_BY_THIS_FEATURE = ['firstOutputAt', 'lastOutputAt'];
+    // Feature 093 BUG-001 (T102a), added deliberately per the note above.
+    //
+    // `projectMonitor` returns the monitor's state object itself, so a field on
+    // `CliMonitorState` is a field the webview receives. That is the decision
+    // T102a took and this is where it is recorded: "3 lines captured, 4,412
+    // chunks declined" is the sentence that names the defect on sight, and a
+    // capture count with no decline count beside it is what let a Run look
+    // healthy for six hours. Zero for every healthy Run, so nothing renders
+    // differently until something is actually being dropped.
+    const ADDED_BY_BUG_001 = ['declinedChunks'];
 
     const keys = Object.keys(h.compose().monitor!);
-    expect(keys.slice().sort()).toEqual([...PRE_FEATURE_FIELDS, ...ADDED_BY_THIS_FEATURE].sort());
+    expect(keys.slice().sort()).toEqual(
+      [...PRE_FEATURE_FIELDS, ...ADDED_BY_THIS_FEATURE, ...ADDED_BY_BUG_001].sort()
+    );
     for (const field of PRE_FEATURE_FIELDS) {
       expect(keys, `${field} is a reading the webview already rendered`).toContain(field);
     }
