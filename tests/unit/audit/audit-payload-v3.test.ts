@@ -602,36 +602,59 @@ describe('phase-end attempt pairing and envelope presence (feature 212)', () => 
   });
 
   it('reads the shape the writer ACTUALLY emits as parsed (FR-008)', () => {
-    // `parsedEmptyBlock` above carries all four arrays. No writer in this tree
-    // emits four: `PhaseRunner.auditEvidenceFields()` forwards `files_created`,
-    // `files_modified` and `commands_executed` and has never forwarded
-    // `files_deleted` — `develop` omitted it from all three inline copies this
-    // feature replaced, so the field set is unchanged and the omission predates
-    // 212. Every fixture here therefore tests a payload production never
-    // produces, and the gap is not hypothetical: tightening `auditBlockParsed`
-    // from `.some()` to `.every()` — a reading the surrounding comment invites,
-    // since it calls a parsed block one that "yields ARRAYS" — passes all 238
-    // audit tests AND the full-path tests in `phase-runner-outcome.test.ts`,
-    // while stripping the counts from every phase-end row the product writes.
+    // FR-R3-171 CLOSED THE OMISSION THIS BLOCK WAS WRITTEN AROUND.
     //
-    // So this fixture is the writer's shape, deliberately three-keyed, and it
-    // exists to fail when the predicate stops admitting it.
+    // It used to read: no writer in this tree emits four keys, because
+    // `PhaseRunner.auditEvidenceFields()` forwarded `files_created`,
+    // `files_modified` and `commands_executed` and had never forwarded
+    // `files_deleted`. That was true from before feature 212 until FR-R3-171,
+    // and it made `deleted: 0` a structural artefact on every `phase-end` row
+    // the product wrote — a count of a list nobody forwarded, indistinguishable
+    // from a phase that looked and found nothing.
+    //
+    // The forward now carries all four, so this fixture is four-keyed and the
+    // deletion count below is a real measurement. What has NOT changed is why
+    // the block exists: it is the writer's shape, and it exists to fail when
+    // the predicate stops admitting it. Tightening `auditBlockParsed` from
+    // `.some()` to `.every()` — a reading the projection's own comment invites,
+    // since it calls a parsed block one that "yields ARRAYS" — must still be
+    // caught here.
     const record = project({
       outcome: 'deadline',
       terminationReason: 'deadline',
       files_created: ['specs/001-mock/spec.md'],
       files_modified: ['README.md'],
+      files_deleted: ['specs/001-mock/stale-plan.md'],
       commands_executed: ['npm test']
     });
 
     expect('fileChangeCounts' in record).toBe(true);
     expect('omittedFileEvidenceCount' in record).toBe(true);
     expect('omittedToolEvidenceCount' in record).toBe(true);
-    // `deleted: 0` is the false zero the omission above produces — a count of a
-    // list nobody forwarded, on every row. Pinned rather than accepted: whoever
-    // forwards `filesDeleted` will land here, and that is the intended place to
-    // find out that this assertion, not the projection, is what needs changing.
-    expect(record.fileChangeCounts).toEqual({ created: 1, modified: 1, deleted: 0 });
+    expect(record.fileChangeCounts).toEqual({ created: 1, modified: 1, deleted: 1 });
+
+    // AND the partial shape, which is what now carries the `.every()` kill.
+    //
+    // Before FR-R3-171 the writer's own three-keyed payload was the counter-
+    // example: `.every()` could not be satisfied in production, so tightening
+    // the predicate stripped the counts from every row and this fixture caught
+    // it. Now that the writer emits four, the fixture above satisfies `.every()`
+    // too — so on its own it would let that mutant through, and the assertion
+    // meant to pin the predicate would have quietly stopped pinning anything.
+    //
+    // The argument for `.some()` never rested on the writer's key count. It
+    // rests on there being no middle state: a parsed block yields arrays and an
+    // unparsed one yields none, so ANY array is sufficient evidence. A payload
+    // carrying fewer than four — an older audit record, a hand-built one, any
+    // future writer that forwards a subset — was read, and must keep its counts.
+    const partial = project({
+      outcome: 'deadline',
+      terminationReason: 'deadline',
+      files_created: ['specs/001-mock/spec.md']
+    });
+
+    expect('fileChangeCounts' in partial).toBe(true);
+    expect(partial.fileChangeCounts).toEqual({ created: 1, modified: 0, deleted: 0 });
   });
 
   it('leaves toolCategoryCounts alone in both cases', () => {

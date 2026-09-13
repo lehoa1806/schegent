@@ -63,7 +63,7 @@ implementations** sharing a scan helper and differing only by a constant and an 
 **name-cluster overlap**.
 
 **What that found.** One cluster, evidenced rather than suspected: **twelve** of the thirteen
-`no-inline-*` gates are one rule implemented twelve times, across roughly 930 lines. Diffing two of
+`no-inline-*` gates are one rule implemented twelve times, across **794 lines**. Diffing two of
 them leaves the command constant, the allowlist and the prose; several say in their own headers
 that they *"mirror the established pattern at"* a named sibling. And
 `no-inline-backend-ping-ipc.test.ts` does the same job in **15 lines**, which is what makes this
@@ -77,6 +77,19 @@ evidence rather than an impression.
 > Left visible rather than edited away, because it is exactly the limit this section states — and
 > because a consolidation that had trusted "thirteen" would have folded a Svelte template gate into
 > an IPC allowlist table.
+
+> **Re-measured 2026-09-14** (`FR-R3-174`, T1754). The total above read **roughly 930 lines** until
+> now, and the correction directly above it is what made that wrong. Dropping
+> `no-inline-queue-item-template.test.ts` from the family removed a **77-line** member from the very
+> set the total sums. The membership was corrected; the number that membership determines was left
+> alone, one clause away, for eighteen days.
+>
+> That is the failure this re-measurement exists to exhibit, and it is why **794** is now derived
+> rather than transcribed: `tests/lint/asserted-counts.test.ts` registers this claim against the
+> twelve files themselves, and its entry also pins the family at twelve, so neither a resized member
+> nor a thirteenth one can pass silently again. The exemplar's **15 lines** beside it is deliberately
+> *not* registered — see the decision in
+> `docs/operations/asserted-counts-sweep.md` for which figures earned an entry and which did not.
 
 **Relied on.** That a gate's `describe` title describes its rule.
 
@@ -153,6 +166,147 @@ invisible to the meta-gates that read them. The classifiable-gate count fell **8
 `allowlist-entries-still-apply` found 2 gates where it expects 3. Both caught it and both were
 taught the new call — but a shared idiom is load-bearing for the machinery that reads it, and
 changing one means updating that machinery in the same commit.
+
+## Extension decided: `basename-line-references.test.ts` reads unbackticked citations — 2026-09-13
+
+Feature 213 (FR-020, T1748), in the four-field shape
+`specs/213-claims-nothing-verifies/contracts/sweep-outputs.md` §C4 requires of every decision this
+cycle makes. **Recorded here rather than in the feature directory** because this file already holds
+the tree's gate verdicts, and "zero retirements is a valid outcome" above is this decision's own
+shape one level up: a decision about gate coverage, written in the affirmative whichever way it goes.
+
+**Decision.** Extend the existing gate's extraction to **unbackticked** citations, as a **reporting**
+check inside `tests/lint/basename-line-references.test.ts` — no new file, no second resolver. In code
+files the extraction reads **comment ranges only**; in Markdown it keeps the existing non-fenced-prose
+rule. The **semantic-staleness** check is declined. The **backtick convention** is declined as the
+answer, and adopted only as the shape this feature's own repairs already use.
+
+**Citations in commit messages are out of scope**, named here because the citation sweep hands one to
+this decision by name: commit `90189b72`'s body attributes a removal to `e2bf9ad`, a ref that resolves
+in no branch of this repository. The class is real and is this same defect one level up. It is
+declined because a commit body is immutable once written, so a gate over it can only report history it
+cannot repair, and because this gate's scan roots are the working tree — a pass over `git log` is a
+different instrument with a different failure mode, not an extension of this one. Reopened if the tree
+adopts a commit-message citation convention a hook can check at *write* time, which is the only point
+where such a citation can still be fixed.
+
+**Measurement.** `specs/213-claims-nothing-verifies/decisions.md` §M6 sized the class; §D-US4a
+re-measured it after the three repairs: 140 citations in code comments, 46 unbackticked, 86 already
+read by this gate, 40 unbackticked inside its scan roots. §M6's sample found the sharper fact —
+**four of five semantically stale citations are green today**, because they are backticked, in scope,
+and resolve to a file long enough to hold the line.
+
+T1748 then measured this gate's own exposure, which is the number the decision actually rests on,
+because §M6 counted code comments and this gate also scans `.md`:
+
+| | Live tier | Dated records |
+|---|---|---|
+| `NAME:NN` shapes in scope | 260 | 5,233 |
+| already backticked, so already read | 218 | 4,189 |
+| **newly admitted by dropping the backtick** | **42** | **1,022** |
+| of those, failing the gate's own rules | 12 | 33 dead bare names, 10 distinct |
+| after restricting code files to comment ranges | **8** | unchanged (Markdown has no comments) |
+| genuine defects among them | **7** | **5, across 3 basenames** |
+
+**Reason.** Clarification Q4 fixed the rule before either sweep ran: *extend or register where the
+uncovered set is small enough to enumerate by hand; decline any option requiring a heuristic over
+prose.* Both halves decide a different part of this, and both were settled by measurement rather than
+by argument.
+
+*Small enough to enumerate by hand* is not asserted — the whole set is enumerated here. Specimens
+are fenced throughout this section, for the reason the gate itself gives for skipping fences: quoted
+material is not a citation the document makes, and a record that cannot exhibit a stale citation
+without failing on it is unwritable.
+
+The live tier's seven are six unbackticked comments and one backticked citation this gate cannot
+parse. Not one is marginal drift — every one cites past the end of a file by a wide margin:
+
+```text
+cited                             file length   margin
+workflow-controller.ts:1448           1007      +441
+src/extension.ts:1157                  659      +498
+src/extension.ts:1181                  659      +522
+extension.ts:936    (bare)             659      +277
+state-projector.ts:796-812             192      +620
+PipelineCatalogEditor.svelte:310-325   153      +172   (backticked; see blind spots)
+```
+
+Every one is refused by the **reachability** rule this gate already has. Nothing new has to be
+invented to catch them; they were invisible for want of a backtick. The record tier's five are three
+deleted components — `AuditTail.svelte` and `QueueGlobalActions.svelte` (deleted by `16de985b`) and
+`cmd-save-phases.ts` (by `e77a82bb`) — and both commits are **already cited in `KNOWN_ABSENT`** for
+their siblings. Three names, in a ledger whose shape already fits them; that is what makes the set
+hand-enumerable, which is all Q4's rule asks.
+
+**No ledger entry is added for them, though**, and the reason is worth stating because the opposite
+looks tidier. `KNOWN_ABSENT` waives the **blocking** record check. This extension does not block, so
+there is nothing to waive: an entry would record a standing permission against a check that cannot
+fail, and this tree has already had dead allowlists removed from three gates for being exactly that.
+The report names all three and the census names their deleting commits, which is the information a
+reader actually needs. Whoever later makes this pass block adds the entries in that change, where
+the waiver means something.
+
+*Decline any option requiring a heuristic over prose* is what kills the semantic-staleness check,
+and the cost of declining is stated rather than hidden: §M6 shows semantic staleness is the larger
+half of the real defect, and this decision leaves it uncovered. Asking whether line 812 still
+*carries the claim* is a judgement about prose, and the strongest counter-argument on record — the
+`asserted-counts.test.ts` docblock's, that a prose heuristic produces false positives and a gate with
+false positives gets switched off — applies to it in full.
+
+**That counter-argument was engaged against the extraction too, by experiment.** Dropping the
+backtick over raw text produced **12** live-tier failures, and four of them were false:
+
+```text
+citing file                           the specimen                       what it actually is
+history-sanitization.test.ts          a thrown stack trace               fixture input
+command-trust-dispositions.test.ts    'synthetic.ts:2'                   fabricated path
+audit-payload-v3.test.ts              /Users/someone/secret.ts:12        redaction input
+workflow-pin-outcomes.test.ts         ci.yml:4, under a workflow dir        expected output
+```
+
+**All four sit inside string literals**, and none is a claim the file makes about the tree. The
+fourth specimen is abbreviated above on purpose: written in full it names a CI directory this
+repository does not have, and `current-control-claims.test.ts` reads that as a live claim — which is
+this section's own subject arriving one level up, and a second reason a record must quote carefully.
+Restricting extraction to comment ranges removed four of four and kept eight of eight — a lexical
+distinction the language already makes, decided by the parser and not by a reader's judgement about
+intent. So the registry's objection is answered by construction rather than overridden. Had the false
+positives survived that rule, the honest answer would have been to decline this option too.
+
+**Two blind spots found while measuring, neither about backticks**, both in the extraction pattern.
+Each is a backticked, in-scope citation this gate has never read:
+
+- **Line-wrapped citations are invisible.** `empty-situation-coverage.test.ts` hard-wraps a
+  backticked citation mid-token, breaking after the hyphen in `webview-host-import-`. The gate reads
+  line by line, so it sees a fragment carrying one backtick and skips it. The unbackticked pass
+  reports it dead; the file exists and the citation is sound. This is the eighth live-tier hit and
+  the one genuine false positive that survives the comment rule. **It is not fixed**, and the reason
+  is the rule that shaped the decision above: reading it would mean joining physical lines before
+  extracting, which turns a line-by-line reader into one that must decide where a wrapped citation
+  ends — a judgement over prose, which Q4's rule declines. Its cost is bounded and known at one
+  false positive, which is also why the extension ships as a reporting check rather than a blocking
+  one.
+- **Multi-range citations are invisible.** `PipelineToolbar.test.ts` cites two ranges of
+  `PipelineCatalogEditor.svelte` as a single comma-joined token. The pattern requires the closing
+  backtick immediately after `NN-MM`, so a comma-list is not extracted at all — and that file is
+  **153 lines**, so both ranges are stale (tabulated above). Invisible for a reason that has nothing
+  to do with backticks. The blocking pass still cannot see it; the reporting pass added by T1749
+  does, incidentally, because without the closing backtick the first range matches on its own. So
+  it is now reported and still not enforced, which is the right place for it: the citation is
+  genuinely stale, and FR-022 confines this feature's repairs to three named sites.
+
+**Revisit condition.** The semantic check is reopened when a **mechanical** discriminator exists for
+it — a citation carrying a symbol name beside its location can be checked by string presence, which
+is a lookup rather than a judgement. T1746 and T1747 repaired all four of this feature's citations
+into exactly that form, so the tree is beginning to accumulate the evidence such a check would need.
+Until then the answer is no, and the reason is the registry's, not indifference. The extraction
+decision itself is settled.
+
+The **two extraction blind spots** above are reopened on a different trigger, stated separately
+because this condition does not cover them: when either stops being a single known instance — a
+second hard-wrapped citation, or a second comma-joined multi-range. The argument for carrying each is
+that one instance is cheaper to name than a pattern that must guess where a citation ends; a second
+instance is the evidence that the shape recurs, and it retires that argument.
 
 ## The census
 
@@ -251,19 +405,19 @@ changing one means updating that machinery in the same commit.
 | `no-html-interpolation-in-activity-feed.test.ts` | Feature 029 T044 — no {@html} in Activity Feed components (FR-017) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `no-identity-less-cancel.test.ts` | Feature 017 BUG-001 — every CMD_CANCEL dispatch carries a taskId | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `no-implicit-default-queue.test.ts` | FR-R3-002 — the implicit Default queue does not grow back | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
-| `no-inline-backend-ping-ipc.test.ts` | CMD_PING_BACKEND single webview call site | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 12 implementations, ~930 lines: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
-| `no-inline-catalog-history-ipc.test.ts` | Feature 101 T055 — no inline CMD_READ_DEFINITION_VERSION references | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 12 implementations, ~930 lines: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
-| `no-inline-phase-breakpoint-ipc.test.ts` | Feature 028 T043 — no inline phase-breakpoint IPC imports in webview | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 12 implementations, ~930 lines: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
-| `no-inline-phase-control.test.ts` | Feature 017 — no inline phase-control command dispatch | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 12 implementations, ~930 lines: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
-| `no-inline-phase-log-ipc.test.ts` | Feature 020 T010 — no inline phase-log IPC imports in webview | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 12 implementations, ~930 lines: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
-| `no-inline-process-yaml-ipc.test.ts` | Phase exchange single webview call site | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 12 implementations, ~930 lines: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
+| `no-inline-backend-ping-ipc.test.ts` | CMD_PING_BACKEND single webview call site | `no-inline-backend-ping-ipc.test.ts` (same rule, the family's shortest implementation) | partially redundant | one rule, 12 implementations, sized under "What that found" above: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
+| `no-inline-catalog-history-ipc.test.ts` | Feature 101 T055 — no inline CMD_READ_DEFINITION_VERSION references | `no-inline-backend-ping-ipc.test.ts` (same rule, the family's shortest implementation) | partially redundant | one rule, 12 implementations, sized under "What that found" above: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
+| `no-inline-phase-breakpoint-ipc.test.ts` | Feature 028 T043 — no inline phase-breakpoint IPC imports in webview | `no-inline-backend-ping-ipc.test.ts` (same rule, the family's shortest implementation) | partially redundant | one rule, 12 implementations, sized under "What that found" above: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
+| `no-inline-phase-control.test.ts` | Feature 017 — no inline phase-control command dispatch | `no-inline-backend-ping-ipc.test.ts` (same rule, the family's shortest implementation) | partially redundant | one rule, 12 implementations, sized under "What that found" above: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
+| `no-inline-phase-log-ipc.test.ts` | Feature 020 T010 — no inline phase-log IPC imports in webview | `no-inline-backend-ping-ipc.test.ts` (same rule, the family's shortest implementation) | partially redundant | one rule, 12 implementations, sized under "What that found" above: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
+| `no-inline-process-yaml-ipc.test.ts` | Phase exchange single webview call site | `no-inline-backend-ping-ipc.test.ts` (same rule, the family's shortest implementation) | partially redundant | one rule, 12 implementations, sized under "What that found" above: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
 | `no-inline-queue-item-template.test.ts` | Feature 065 BUG-009 T079 — single-render-path queue row template | — | unique | NOT part of the no-inline-*-ipc family despite the prefix: it pins the single render path of a Svelte row template, not a command's call sites. Corrected 2026-08-27 — see Method |
-| `no-inline-read-metrics-ipc.test.ts` | Feature 073 T005 — no inline CMD_READ_METRICS references | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 12 implementations, ~930 lines: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
-| `no-inline-reorder-ipc.test.ts` | Feature 030 T030 — no inline reorder IPC references | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 12 implementations, ~930 lines: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
-| `no-inline-run-launcher-ipc.test.ts` | Feature 087 T059 — no inline CMD_LAUNCH_PIPELINE references | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 12 implementations, ~930 lines: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
-| `no-inline-save-catalog.test.ts` | no inline Model Catalog save IPC calls | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 12 implementations, ~930 lines: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
-| `no-inline-save-general-settings.test.ts` | Feature 012 T052 — no inline CMD_SAVE_GENERAL_SETTINGS references | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 12 implementations, ~930 lines: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
-| `no-inline-workflow-run-ipc.test.ts` | Feature 088 T042 — no inline connected-run command references | `no-inline-backend-ping-ipc.test.ts` (same rule, 15 lines) | partially redundant | one rule, 12 implementations, ~930 lines: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
+| `no-inline-read-metrics-ipc.test.ts` | Feature 073 T005 — no inline CMD_READ_METRICS references | `no-inline-backend-ping-ipc.test.ts` (same rule, the family's shortest implementation) | partially redundant | one rule, 12 implementations, sized under "What that found" above: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
+| `no-inline-reorder-ipc.test.ts` | Feature 030 T030 — no inline reorder IPC references | `no-inline-backend-ping-ipc.test.ts` (same rule, the family's shortest implementation) | partially redundant | one rule, 12 implementations, sized under "What that found" above: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
+| `no-inline-run-launcher-ipc.test.ts` | Feature 087 T059 — no inline CMD_LAUNCH_PIPELINE references | `no-inline-backend-ping-ipc.test.ts` (same rule, the family's shortest implementation) | partially redundant | one rule, 12 implementations, sized under "What that found" above: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
+| `no-inline-save-catalog.test.ts` | no inline Model Catalog save IPC calls | `no-inline-backend-ping-ipc.test.ts` (same rule, the family's shortest implementation) | partially redundant | one rule, 12 implementations, sized under "What that found" above: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
+| `no-inline-save-general-settings.test.ts` | Feature 012 T052 — no inline CMD_SAVE_GENERAL_SETTINGS references | `no-inline-backend-ping-ipc.test.ts` (same rule, the family's shortest implementation) | partially redundant | one rule, 12 implementations, sized under "What that found" above: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
+| `no-inline-workflow-run-ipc.test.ts` | Feature 088 T042 — no inline connected-run command references | `no-inline-backend-ping-ipc.test.ts` (same rule, the family's shortest implementation) | partially redundant | one rule, 12 implementations, sized under "What that found" above: "this command has one call site, here is its allowlist". Several name the sibling they were copied from. The RULE per command is unique and stays; the MACHINERY is 12 copies |
 | `no-legacy-pause-mirror-write.test.ts` | FR-R3-011 — the legacy queue-pause mirror is never written by live code | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `no-legacy-setpaused.test.ts` | Feature 030 BUG-001 T056 (SC-008) — no legacy setPaused | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `no-legacy-surface-name.test.ts` | Feature 101 FR-002 — the retired surface name appears on no surface | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |

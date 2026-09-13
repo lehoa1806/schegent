@@ -234,7 +234,8 @@
           "ownsResumeSession": false,
           "isContinue": false,
           "sessionReuse": false,
-          "resumePrompt": "Continue safely without foreign session state."
+          "resumePrompt": "Continue safely without foreign session state.",
+          "freshSessionCause": "session-id-not-owned"
         }
       }
     },

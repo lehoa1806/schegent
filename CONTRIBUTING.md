@@ -18,7 +18,7 @@ you there, not before.**
 |---|---|---|
 | 1 | [`README.md`](README.md) | what the product is, and what it deliberately is not |
 | 2 | this file, to the end | how to get a checkout that builds, and what a PR is expected to carry |
-| 3 | [`../AGENTS.md`](../AGENTS.md) — the **index** at the head of its hard-rules section, then only the subsystems your change touches | the authority on host-code invariants. It is 872 lines and you are not expected to read all of them; the index exists to route you |
+| 3 | [`../AGENTS.md`](../AGENTS.md) — the **index** at the head of its hard-rules section, then only the subsystems your change touches | the authority on host-code invariants. Its hard rules are numbered and you are not expected to read all of them; the index at the head of that section exists to route you to the ones your change touches |
 | 4 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | the module boundaries a change is judged against, including which directory is the composition root |
 | 5 | [`docs/security/threat-model.md`](docs/security/threat-model.md) | what this product claims to prevent and what it explicitly does not. Read before touching audit, logging, IPC or process execution |
 | 6 | [`docs/development/lint-gate-census.md`](docs/development/lint-gate-census.md) | one line per gate. You will trip one; this is how you find out what it wanted without reading 151 files |

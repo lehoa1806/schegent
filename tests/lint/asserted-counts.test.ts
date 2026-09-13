@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -242,6 +242,53 @@ function vscodeEngineFloorMinor(): number {
   return Number(match[1]);
 }
 
+/**
+ * FR-R3-174 (feature 213) — the size of the `no-inline-*` duplication the lint
+ * gate census recommends consolidating.
+ *
+ * THE ONLY LINE-COUNT FIGURE IN THIS REGISTRY, and it earned the entry by
+ * failing in a way no other did. The census corrected the family's MEMBERSHIP on
+ * 2026-08-27 — `no-inline-queue-item-template.test.ts` shares the prefix and not
+ * the rule — and left the TOTAL those members sum to untouched, one clause away,
+ * still reading "roughly 930". Dropping a 77-line member cannot leave a sum
+ * alone. T1754's decision in `docs/operations/asserted-counts-sweep.md` records
+ * why the other five live line-count figures the sweep found were resolved by
+ * citation instead of by an entry here.
+ *
+ * The exclusion is derived from the same place the census states it, so the two
+ * cannot disagree silently, and the family size is pinned: a thirteenth member
+ * changes the recommendation, not just the arithmetic, and must not slip in
+ * under a number that still adds up.
+ *
+ * `wc -l` semantics on purpose. `source-loc-budget.test.ts` counts
+ * `split(/\r?\n/).length`, which is one higher per file and would put this 12
+ * lines off the figure the census actually measured — a mismatch of convention
+ * reading exactly like a drifted claim.
+ */
+const NO_INLINE_FAMILY_SIZE = 12;
+const NO_INLINE_NOT_IN_FAMILY = 'no-inline-queue-item-template.test.ts';
+
+function noInlineFamilyLines(): number {
+  const directory = resolve(REPO, 'tests/lint');
+  const members = readdirSync(directory)
+    .filter((name) => name.startsWith('no-inline-') && name.endsWith('.test.ts'))
+    .filter((name) => name !== NO_INLINE_NOT_IN_FAMILY)
+    .sort();
+  if (members.length !== NO_INLINE_FAMILY_SIZE) {
+    throw new Error(
+      `asserted-counts: the no-inline-* family is ${members.length} gates, not ` +
+        `${NO_INLINE_FAMILY_SIZE}. The census claims one rule implemented ${NO_INLINE_FAMILY_SIZE} ` +
+        'times; a change in membership changes its recommendation, not only its arithmetic. Update ' +
+        'the census section and this constant together, and check whether the new gate is really in ' +
+        `the family — ${NO_INLINE_NOT_IN_FAMILY} shares the prefix and is not.`
+    );
+  }
+  return members.reduce((total, name) => {
+    const body = readFileSync(join(directory, name), 'utf8');
+    return total + body.split('\n').length - (body.endsWith('\n') ? 1 : 0);
+  }, 0);
+}
+
 /** The corpus fixture. */
 function corpusCases(): number {
   const body = readDocument('repo/tests/evals/fixtures/backend-outcomes.json');
@@ -333,6 +380,22 @@ const REGISTRY: readonly CountEntry[] = [
       "run's holder is gone, and the review found it saying 30 against a code value of 15 — the one " +
       'timing number in the corpus whose drift doubles a wait made under pressure (FR-R3-073). The ' +
       'sentence names its producer, and this entry is what fails when the constant moves.'
+  },
+  {
+    document: 'repo/docs/development/lint-gate-census.md',
+    claim: 'one rule implemented twelve times, across **794 lines**',
+    stated: 794,
+    producer: 'the twelve no-inline-* gates in repo/tests/lint/, summed',
+    derive: noInlineFamilyLines,
+    why:
+      'REGISTERED because it is the only line-count figure the FR-R3-174 sweep found whose drift ' +
+      "changes the conclusion its sentence draws: the census recommends consolidating this family " +
+      'and the total IS the prize, so a stale total argues for work at a size nobody measured. It ' +
+      'had already drifted, and by the sharpest possible route — the 2026-08-27 correction three ' +
+      'lines below it removed a 77-line member from the family and left the sum reading "roughly ' +
+      '930". The other five live figures in that sweep were resolved by citation rather than by an ' +
+      'entry here, because a red on them would say only that a file was edited; see ' +
+      'docs/operations/asserted-counts-sweep.md for that decision and its four fields.'
   },
   {
     document: 'repo/docs/tutorials/developer-setup.md',

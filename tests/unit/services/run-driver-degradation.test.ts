@@ -277,7 +277,8 @@ describe('run-driver — the degraded mark is persisted with its phase result (F
  * FR-R3-157 (T040, FR-010/FR-010a, contract C3.10) — finalize is handed the fact.
  *
  * WHAT "THE INPUT FINALIZE IS HANDED" IS, AND WHY THE TEST IS SHAPED THIS WAY.
- * `PhaseRunInputs` carries no Run (`src/controller/phase-runner.ts:78-98`), so
+ * `PhaseRunInputs` carries no Run — the interface in
+ * `src/controller/phase-runner.ts` declares no Run-typed field — so
  * there is no field on the dispatch argument to look for and a test that searched
  * for one would be asserting a design this feature does not have. The input a
  * phase is actually handed is the Run state it executes against: the persisted Run

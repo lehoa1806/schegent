@@ -21,8 +21,8 @@ import { ZippedStreamBuffer } from '../../src/runner/zipped-stream-buffer';
 //       event carries the saved `model`.
 //
 // The flow exercises the router validator path (T013a) + the catalog
-// merge (built-in vs user) + the runtime emission at
-// `phase-runner.ts:172-176`. The host-side validators reject malformed
+// merge (built-in vs user) + the runtime emission onto `startPayload` in
+// `phase-runner.ts`. The host-side validators reject malformed
 // rows; the integration test uses only well-formed rows.
 //
 // Feature 100 (T514) — the override arrives one definition at a time, on
@@ -529,7 +529,8 @@ describe('Feature 026 T025a — a custom Pipeline mixing effort+model (US3, SC-0
     // 'xhigh' across all three phases. Feature 099 (T496f, FR-042) — the title
     // read "falls back to the next-precedence layer", and the body's own comment
     // already said workspace-step-b has no fallback, so `model` is absent on its
-    // phase-start payload (no empty-string, no null — see phase-runner.ts:172-176).
+    // phase-start payload (no empty-string, no null — see the conditional
+    // `startPayload.model` assignment in `phase-runner.ts`).
     // With one catalog that absence is the whole claim, and the title now says so.
     const { auditLog } = await runHarness({
       phases: makeCustomPhases({ omitModelOn: 'workspace-step-b' }),

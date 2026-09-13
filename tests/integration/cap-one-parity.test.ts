@@ -673,6 +673,13 @@ describe('Feature 093 BUG-001 (T103a, SC-010) — at cap 1, a compaction before 
     // `noUncheckedIndexedAccess`, which the strictness ratchet applies and the
     // lint does not — a guard written against one of those is a new finding for
     // the other, and both gates run.
+    //
+    // FR-R3-176: the convention, and the decision not to align the two gates,
+    // now live in docs/development/lint-and-type-aware-rules.md under "Indexed
+    // reads, and the one form that satisfies both gates". This comment stays —
+    // it is what an author editing THIS line reads, and the document is what an
+    // author writing a new indexed read reads. Neither replaces the other, so
+    // if one changes, change the other.
     const dispatched = harness.invocations.at(0);
     // Thrown rather than `expect`ed: these two narrow the types the rest of the
     // block reads, and an `expect` that fails still falls through to a line that

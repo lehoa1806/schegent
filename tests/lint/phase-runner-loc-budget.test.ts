@@ -463,8 +463,8 @@ const BUDGETS = [
   //
   // WHY IT IS NOT ONE. `auditBlockParsed()` decides whether the phase-end
   // projection records counts by asking whether ANY of the four raw values is
-  // an array. `?? []` supplies three, so the projection's omission branch was
-  // unreachable from this file: every terminated phase recorded
+  // an array. `?? []` supplied three — four since FR-R3-171 — so the omission
+  // branch was unreachable from this file: every terminated phase recorded
   // `{created: 0, modified: 0, deleted: 0}` and `omittedFileEvidenceCount: 0` —
   // "demonstrably changed nothing" — for work nobody measured. The bound arms
   // had the mirror defect by the opposite route: they carried no counts at all,
@@ -555,7 +555,26 @@ const BUDGETS = [
   // predicates already remove. The ten comment lines are the cost and, as with
   // the three above, the point: the defect read as correct at both call sites and
   // was visible only in the row on disk.
-  { path: 'src/controller/phase-runner.ts', max: 1_407 },
+  //
+  // FR-R3-172 (T1744, 2026-09-14) — 1,407 → 1,403, a ratchet DOWN, noted for the
+  // same reason the 364 → 363 entry below is: the ceiling follows the file down
+  // rather than banking the four lines for an addition that would then arrive
+  // with no note at all.
+  //
+  // The work was an addition, and the margin was zero, so the response this gate
+  // names is the one that ran. `appendCapExhaustedPhaseEnd()` built its row in a
+  // payload typed `Record<string, unknown>`, which is how `cap-exhausted` — not
+  // a member of `TerminationReason` — reached every persisted cap-exhaustion row
+  // without anything being able to see it was not in the vocabulary. Closing
+  // that seam costs a type and a named constant for the one divergence, plus the
+  // argument for why the value cannot simply be renamed; all three went to
+  // `src/controller/cap-exhausted-payload.ts`, the fourth thing to leave this
+  // file after the three recorder modules. What stayed here is an import and a
+  // literal that now reads from the constant, and the two `if (…) payload.x = …`
+  // mutations the closed type made into conditional spreads — net four lines
+  // shorter with the seam shut. No budget in this table or the sibling table was
+  // raised (SC-015).
+  { path: 'src/controller/phase-runner.ts', max: 1_403 },
   // FR-R3-052 / H-03 (2026-08-24) — 400 → 415 for the size check that was
   // missing. `stat()` was already called here and only `isFile()` was read, so
   // `readFile()` took a multi-GiB sidecar wholly into memory. The bound, the

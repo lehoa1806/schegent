@@ -31,7 +31,7 @@ import {
   DEFAULT_BACKEND,
   type BackendRunnerKind
 } from '../contracts/backend-kinds';
-import { resolveSessionDispatch } from './session-dispatch-policy';
+import { SessionDispositionReporter } from './session-disposition';
 import type { BackendAvailabilityProbe } from './backend-capability-service';
 import type {
   OptionalPhaseFailureContinuedPayload,
@@ -203,8 +203,12 @@ export class RunDriver {
   private carriedIssues: Array<{ tag?: string; summary: string }> | string[] = [];
   private readonly overriddenActivePhaseAborts = new Set<string>();
   private readonly sequencer = new PhaseSequencer();
+  /** FR-R3-175 (SC-010) — per-drive; cleared in `endOfDriveReset()`. */
+  private readonly sessionDisposition: SessionDispositionReporter;
 
-  constructor(private readonly deps: RunDriverDeps) {}
+  constructor(private readonly deps: RunDriverDeps) {
+    this.sessionDisposition = new SessionDispositionReporter(deps.logger);
+  }
 
   public get running(): boolean {
     return this.isRunning;
@@ -598,13 +602,9 @@ export class RunDriver {
         }
         const requestedContinue = pendingIsContinue;
         pendingIsContinue = false;
-        const sessionDispatch = resolveSessionDispatch({
+        const sessionDispatch = this.sessionDisposition.resolve(run, effectiveRunnerKind, {
           requestedContinue,
-          pendingSessionReuse,
-          resumePrompt: run.resumePrompt,
-          persistedSessionId: run.lastCliSessionId,
-          persistedSessionRunnerKind: run.lastCliSessionRunnerKind,
-          effectiveRunnerKind
+          pendingSessionReuse
         });
         if (run.resumePrompt !== undefined) {
           const nextRun = { ...run };
@@ -1094,6 +1094,7 @@ export class RunDriver {
     this.isRunning = false;
     this.cancellationController = null;
     this.carriedIssues = [];
+    this.sessionDisposition.reset();
     this.deps.runner.evictStagnationTracker(run.id);
   }
 
