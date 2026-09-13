@@ -176,3 +176,55 @@ describe('PhaseRunner.run — BUG-002 completed-but-non-exiting classification',
     expect(out.outcome).toBe('timeout');
   });
 });
+
+// Feature 212 (FR-001, FR-011) — the already-working path must not gain a second
+// terminal record. Five arms of `run()` write their own `phase-end` and then
+// return normally through the shared `finally` seam, so an unconditional write
+// there would duplicate the most common records in the retained logs.
+//
+// Driven on a default installation: no verbose accessor, no stream diagnostics,
+// no sidecar. FR-011 says the terminal record must not depend on optional
+// diagnostics, and this is where that is measured rather than assumed.
+describe('PhaseRunner.run — exactly one terminal record on the normal path (feature 212)', () => {
+  function makeIdRecordingWriter(): { writer: AuditLogWriter; written: AuditEntry[] } {
+    const written: AuditEntry[] = [];
+    let counter = 0;
+    const writer = {
+      append: vi.fn(async (entry: Omit<AuditEntry, 'id' | 'timestamp'>): Promise<AuditEntry> => {
+        const full: AuditEntry = { id: `audit-${++counter}`, timestamp: '2026-09-13T00:00:00Z', ...entry };
+        written.push(full);
+        return full;
+      }),
+      logPath: '/tmp/.schegent/audit.log'
+    } as unknown as AuditLogWriter;
+    return { writer, written };
+  }
+
+  async function driveOnce(overrides: MockRawOutput = {}): Promise<AuditEntry[]> {
+    const cliRunner = makeFakeRunner(async () => makeRawOutput(overrides));
+    const { writer, written } = makeIdRecordingWriter();
+    await new PhaseRunner(cliRunner, new PromptBuilder(), writer, new SanitizedLogger()).run(
+      baseInputs
+    );
+    return written;
+  }
+
+  it('writes one phase-end for a clean run, paired to the phase-start row', async () => {
+    const written = await driveOnce();
+    const starts = written.filter((e) => e.eventType === 'phase-start');
+    const ends = written.filter((e) => e.eventType === 'phase-end');
+    expect(starts).toHaveLength(1);
+    expect(ends).toHaveLength(1);
+    expect((ends[0]!.payload as Record<string, unknown>).attemptId).toBe(starts[0]!.id);
+    expect(ends[0]!.outcome).toBe('success');
+  });
+
+  it('writes one phase-end for an idle-stall timeout, not two', async () => {
+    // The timeout arm at `:737` writes its own record and then returns through
+    // the same seam — the duplication case this asserts against.
+    const written = await driveOnce({ timedOut: true, exitCode: null, stdout: '' });
+    const ends = written.filter((e) => e.eventType === 'phase-end');
+    expect(ends).toHaveLength(1);
+    expect((ends[0]!.payload as Record<string, unknown>).terminationReason).toBe('timeout');
+  });
+});

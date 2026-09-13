@@ -19,6 +19,9 @@ import {
 import { MAX_QUEUES } from '../../../src/contracts/queue-bounds';
 import { SUPPORTED_BACKENDS } from '../../../src/contracts/backend-kinds';
 import { RequiredEvidenceUnavailableError } from '../../../src/lib/errors';
+import { UncontainedBackendRefusedError } from '../../../src/services/backend-containment-policy';
+import { CapabilityNotEnforceableError } from '../../../src/services/capability-refusal';
+import { PRE_SPAWN_REFUSAL_CAUSE } from '../../../src/audit/audit-payload';
 import { ZippedStreamBuffer } from '../../../src/runner/zipped-stream-buffer';
 import type { ClaudeCliRunner } from '../../../src/runner/claude-cli';
 import type { AuditLogWriter } from '../../../src/audit/audit-log-writer';
@@ -339,4 +342,307 @@ describe('PhaseRunner — backend posture record (FR-R3-064)', () => {
 
     expect(postureEntries(entries).length).toBe(before + 1);
   }, 30_000);
+});
+
+// Feature 212 (FR-001, FR-004, FR-008, FR-009) — the refusal that left no record.
+//
+// A containment refusal is thrown by `resolveRunner()`, which `PhaseRunner.runInner`
+// calls INSIDE the invocation try, whose catch re-throws. So it lands
+// after `phase-start` and before `cli-invocation`: the attempt is on disk, the
+// spawn never happened, and until this feature nothing closed it. The absence of
+// the `cli-invocation` row is what located the throw in the retained logs, so it
+// is asserted here rather than left implied.
+describe('PhaseRunner — the pre-spawn refusal is recorded (feature 212)', () => {
+  function refusingRegistry(): unknown {
+    return {
+      getOrCreate: vi.fn(() => {
+        throw new UncontainedBackendRefusedError('codex', 'no containment available');
+      }),
+      getGlobalDefault: vi.fn(() => 'codex'),
+      observedCliVersion: vi.fn(async () => null)
+    };
+  }
+
+  function writtenRecordingWriter(): { writer: AuditLogWriter; written: AuditEntry[] } {
+    const written: AuditEntry[] = [];
+    let counter = 0;
+    const writer = {
+      append: vi.fn(async (entry: Appended): Promise<AuditEntry> => {
+        const full: AuditEntry = { id: `audit-${++counter}`, timestamp: '2026-09-13T00:00:00Z', ...entry };
+        written.push(full);
+        return full;
+      }),
+      logPath: '/tmp/.schegent/audit.log'
+    } as unknown as AuditLogWriter;
+    return { writer, written };
+  }
+
+  async function driveRefusal(): Promise<{ written: AuditEntry[]; error: unknown }> {
+    const { writer, written } = writtenRecordingWriter();
+    const runner = new PhaseRunner(
+      refusingRegistry() as never,
+      new PromptBuilder(),
+      writer,
+      new SanitizedLogger()
+    );
+    let error: unknown = null;
+    try {
+      await runner.run({ ...baseInputs, phaseDef: phaseDefFor('codex') });
+    } catch (err) {
+      error = err;
+    }
+    return { written, error };
+  }
+
+  it('closes the attempt with exactly one terminal record paired to the phase-start row', async () => {
+    const { written } = await driveRefusal();
+    const starts = written.filter((e) => e.eventType === 'phase-start');
+    const ends = written.filter((e) => e.eventType === 'phase-end');
+    expect(starts).toHaveLength(1);
+    expect(ends).toHaveLength(1);
+    expect((ends[0]!.payload as Record<string, unknown>).attemptId).toBe(starts[0]!.id);
+  });
+
+  it('records the pre-spawn cause, an UNKNOWN envelope, and a failure outcome', async () => {
+    const { written } = await driveRefusal();
+    const end = written.find((e) => e.eventType === 'phase-end')!;
+    const payload = end.payload as Record<string, unknown>;
+    expect(payload.terminationReason).toBe('pre_spawn_refusal');
+    expect(payload.cause).toBe(PRE_SPAWN_REFUSAL_CAUSE);
+    // NOT `'absent'`. Three contracts define that value as the positive claim
+    // that the invocation RAN and no envelope arrived (`PhaseRunOutput.resultEnvelope`,
+    // `invocation-result.ts`, `workflow-run.ts`). No child existed here, so the
+    // key is omitted and means UNKNOWN (FR-014) — recording `'absent'` would put
+    // every refusal into the population FR-007 counts as ran-without-a-verdict.
+    expect('resultEnvelope' in payload).toBe(false);
+    // The envelope-level verdict, asserted rather than left as a comment.
+    expect(end.outcome).toBe('failure');
+  });
+
+  it('records no file or command counts for a phase that never ran (FR-009)', async () => {
+    const { written } = await driveRefusal();
+    const payload = written.find((e) => e.eventType === 'phase-end')!.payload as Record<string, unknown>;
+    // A zero here would read as "demonstrably changed nothing", which is a
+    // different and false statement about a phase that never started.
+    expect('files_created' in payload).toBe(false);
+    expect('files_modified' in payload).toBe(false);
+    expect('commands_executed' in payload).toBe(false);
+    expect('fileChangeCounts' in payload).toBe(false);
+  });
+
+  it('still propagates the refusal, and writes no cli-invocation row', async () => {
+    const { written, error } = await driveRefusal();
+    expect(error).toBeInstanceOf(UncontainedBackendRefusedError);
+    expect(written.filter((e) => e.eventType === 'cli-invocation')).toHaveLength(0);
+  });
+});
+
+// Feature 212 (FR-001, FR-003, FR-004) — the third termination path.
+//
+// The containment refusal above and the cancellation in `phase-runner-outcome`
+// each had a test; a throw OUT OF `invoke()` had none, and it is the path whose
+// classification is the most delicate. A throw from inside `invoke()` MAY have
+// left a child alive, so it must stay `error` — but a capability refusal is
+// raised while the argv is still being assembled and provably has no child, so
+// it must not. Nothing pinned either half, and a refactor of that seam would
+// have flipped both silently.
+describe('PhaseRunner — a throw out of invoke() (feature 212)', () => {
+  function throwingRunner(error: Error): ClaudeCliRunner {
+    return {
+      invoke: vi.fn(async () => {
+        throw error;
+      }),
+      cancelActive: vi.fn(() => false),
+      hasActiveProcess: false
+    } as unknown as ClaudeCliRunner;
+  }
+
+  async function drive(error: Error): Promise<{ written: Appended[]; thrown: unknown }> {
+    const { writer, entries } = makeRecordingAuditWriter();
+    const runner = new PhaseRunner(
+      throwingRunner(error) as never,
+      new PromptBuilder(),
+      writer,
+      new SanitizedLogger()
+    );
+    let thrown: unknown = null;
+    try {
+      await runner.run({ ...baseInputs, runId: 'run-invoke-throw' });
+    } catch (err) {
+      thrown = err;
+    }
+    return { written: entries, thrown };
+  }
+
+  const endOf = (written: Appended[]): Record<string, unknown> =>
+    written.find((e) => e.eventType === 'phase-end')!.payload as Record<string, unknown>;
+
+  it('closes the attempt with exactly one terminal record', async () => {
+    const { written, thrown } = await drive(new Error('backend blew up'));
+    expect(thrown).toBeInstanceOf(Error);
+    expect(written.filter((e) => e.eventType === 'phase-start')).toHaveLength(1);
+    expect(written.filter((e) => e.eventType === 'phase-end')).toHaveLength(1);
+  });
+
+  it('records `error`, not a refusal that may have left a child alive', async () => {
+    const payload = endOf((await drive(new Error('backend blew up'))).written);
+    expect(payload.terminationReason).toBe('error');
+    // The conservative direction, and the whole reason the seam claims a refusal
+    // only where an error type names itself one: this throw names nothing, and a
+    // child may be alive behind it.
+    expect('cause' in payload).toBe(false);
+  });
+
+  it('omits the envelope fact rather than guessing it after a spawn', async () => {
+    const payload = endOf((await drive(new Error('backend blew up'))).written);
+    expect('resultEnvelope' in payload).toBe(false);
+  });
+
+  it('classifies a capability refusal as pre-spawn, since the argv never finished', async () => {
+    // Raised by `capabilityArgs()` during argv assembly in every adapter —
+    // claude-cli `:336` vs its spawn at `:390`, codex-cli `:84`, agy-cli `:121`.
+    // No child can exist, so the flag set before `invoke()` over-claims and the
+    // catch retracts it. Without that retraction an operator censusing
+    // `cause == pre_spawn_refusal` never sees this population at all.
+    // A refusal the enforcement plan actually produces: `agy` expresses only
+    // `process-spawn`, so a phase withholding `network` is refused
+    // (`capability-enforcement-plan.ts` SURFACES.agy).
+    const { written } = await drive(new CapabilityNotEnforceableError('agy', ['network']));
+    const payload = endOf(written);
+    expect(payload.terminationReason).toBe('pre_spawn_refusal');
+    expect(payload.cause).toBe(PRE_SPAWN_REFUSAL_CAUSE);
+    expect('resultEnvelope' in payload).toBe(false);
+  });
+});
+
+// Feature 212 (FR-003) — the append that lands after the caller gave up.
+//
+// `AuditLogWriter.append` is bounded for the CALLER (`APPEND_TIMEOUT_MS`), and
+// `src/lib/io-barrier.ts` says what that bound means: a rejection says "you were
+// not told this landed", not that the write was abandoned. An arm that claimed
+// the attempt only after a successful append therefore left it open for a row
+// already on its way to disk, and the `finally` seam wrote a SECOND terminal
+// record for the same `attemptId` — one `success`, one `error/failed`, with no
+// way for a reader to tell which is the verdict. That is strictly worse than the
+// gap this feature removes, so the claim happens before the append.
+describe('PhaseRunner — a phase-end append that rejects (feature 212)', () => {
+  it('never writes a second terminal record for an attempt whose row may have landed', async () => {
+    const attempted: string[] = [];
+    let counter = 0;
+    const writer = {
+      append: vi.fn(async (entry: Appended): Promise<AuditEntry> => {
+        attempted.push(entry.eventType);
+        if (entry.eventType === 'phase-end') {
+          // Verbatim the shape `boundForCaller` produces at the 5 s bound.
+          throw new Error('audit append timed out after 5000ms');
+        }
+        return { id: `audit-${++counter}`, timestamp: '2026-09-13T00:00:00Z', ...entry };
+      }),
+      logPath: '/tmp/.schegent/audit.log'
+    } as unknown as AuditLogWriter;
+
+    const runner = new PhaseRunner(
+      makeFakeRunner() as never,
+      new PromptBuilder(),
+      writer,
+      new SanitizedLogger()
+    );
+    await expect(
+      runner.run({ ...baseInputs, runId: 'run-phase-end-reject' })
+    ).rejects.toBeInstanceOf(RequiredEvidenceUnavailableError);
+
+    // ONE attempt, not two. The count is of appends TRIED, not appends stored:
+    // the point is that the seam never reached for a second row, and a stored
+    // count cannot see that because neither row is stored.
+    expect(attempted.filter((e) => e === 'phase-end')).toHaveLength(1);
+  });
+});
+
+// Feature 212 (FR-004) — a failed audit write is not a policy decision.
+//
+// The seam classified every throw by POSITION: one boolean, "did control reach
+// `invoke()`", with `pre_spawn_refusal` as the default for everything before it.
+// But `pre_spawn_refusal` and `PRE_SPAWN_REFUSAL_CAUSE` are a positive claim
+// about WHY the phase stopped — the backend was refused on policy grounds — and
+// the window before the flag is set holds work that has nothing to do with
+// policy: two audit appends, the raw-transcript start, the capture handle, the
+// operator fatal-signature read. Each throws on its own account, and each was
+// written down as a refusal that never happened.
+//
+// The audit append is the one that matters most, because it inverts the record's
+// own meaning: `appendRequiredAudit` converts a refused write into a
+// `RequiredEvidenceUnavailableError`, so a transient outage of the evidence sink
+// became a DURABLE statement that an operator's containment policy stopped the
+// phase. An incident review censusing `cause == pre_spawn_refusal` reads a
+// backend-posture problem and never learns the log could not be written.
+//
+// So the classification is by error TYPE now — the same lesson the capability
+// refusal taught one line into the catch above, applied to the whole window
+// rather than to one call. The two refusals name themselves; everything else is
+// `error`, which is what an unclassified throw has always meant.
+describe('PhaseRunner — a pre-spawn throw that is not a refusal (feature 212)', () => {
+  async function driveAuditFailure(): Promise<{ entries: Appended[]; thrown: unknown }> {
+    const entries: Appended[] = [];
+    let counter = 0;
+    const writer = {
+      append: vi.fn(async (entry: Appended): Promise<AuditEntry> => {
+        // The optional-evidence row written between `phase-start` and the spawn.
+        // Any of the window's calls would do; this one is reachable with a single
+        // accessor and needs no runner that half-succeeds.
+        if (entry.eventType === 'auto-compact-override-applied') {
+          throw new Error('audit append timed out after 5000ms');
+        }
+        entries.push(entry);
+        return { id: `audit-${++counter}`, timestamp: '2026-09-13T00:00:00Z', ...entry };
+      }),
+      logPath: '/tmp/.schegent/audit.log'
+    } as unknown as AuditLogWriter;
+
+    const runner = new PhaseRunner(
+      makeFakeRunner() as never,
+      new PromptBuilder(),
+      writer,
+      new SanitizedLogger(),
+      null,
+      null,
+      null,
+      { readAutoCompactPctOverride: () => 80 }
+    );
+    let thrown: unknown = null;
+    try {
+      await runner.run({ ...baseInputs, runId: 'run-pre-spawn-audit-failure' });
+    } catch (err) {
+      thrown = err;
+    }
+    return { entries, thrown };
+  }
+
+  it('records `error` for an audit-write failure, not a refusal nobody made', async () => {
+    const { entries, thrown } = await driveAuditFailure();
+    // The window is genuinely entered and the throw is genuinely the audit one —
+    // asserted, so a future edit that stops reaching this line fails here rather
+    // than passing the classification test vacuously.
+    expect(thrown).toBeInstanceOf(RequiredEvidenceUnavailableError);
+
+    const end = entries.find((e) => e.eventType === 'phase-end');
+    expect(end).toBeDefined();
+    const payload = end!.payload as Record<string, unknown>;
+    expect(payload.terminationReason).toBe('error');
+    // And no `cause`. Writing one here would not merely mislabel the reason: it
+    // would put this row into the very census `PRE_SPAWN_REFUSAL_CAUSE` exists to
+    // make countable, where every member is supposed to be a policy refusal.
+    expect('cause' in payload).toBe(false);
+  });
+
+  it('still closes the attempt, paired to its phase-start row (FR-001, FR-002)', async () => {
+    const { entries } = await driveAuditFailure();
+    const starts = entries.filter((e) => e.eventType === 'phase-start');
+    const ends = entries.filter((e) => e.eventType === 'phase-end');
+    expect(starts).toHaveLength(1);
+    expect(ends).toHaveLength(1);
+    // The misclassification fix must not cost the terminal record itself: the
+    // gap FR-001 closes is the row being absent, and `error` vs `pre_spawn_refusal`
+    // is a question that only arises once the row is there.
+    expect((ends[0]!.payload as Record<string, unknown>).attemptId).toBe('audit-1');
+  });
 });

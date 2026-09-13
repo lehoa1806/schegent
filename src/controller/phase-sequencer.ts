@@ -308,7 +308,13 @@ export class PhaseSequencer {
       exitCode: output.exitCode,
       stdoutSummary: output.stdoutSummary,
       stderrSummary: output.stderrSummary,
-      auditEntryId: output.auditEntryId
+      auditEntryId: output.auditEntryId,
+      // Feature 212 (FR-006) — carried, not recomputed, and OMITTED when the
+      // runner reported nothing. A key present with `undefined` would serialize
+      // away anyway, but it reads as a field somebody answered; see FR-014.
+      ...(output.resultEnvelope !== undefined
+        ? { resultEnvelope: output.resultEnvelope }
+        : {})
     };
 
     const auditMetrics =

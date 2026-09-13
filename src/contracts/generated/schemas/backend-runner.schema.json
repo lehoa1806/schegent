@@ -204,6 +204,11 @@
           "type": "boolean"
         },
         {
+          "name": "sawTerminalResult",
+          "optional": true,
+          "type": "boolean"
+        },
+        {
           "name": "stdinDeliveryFailed",
           "optional": true,
           "type": "boolean"

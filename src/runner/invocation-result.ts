@@ -306,6 +306,24 @@ export interface RawInvocationOutput {
    */
   completedAwaitingExit?: boolean;
   /**
+   * Feature 212 (FR-005, FR-006) — did this invocation ever produce the
+   * backend's end-of-invocation result envelope?
+   *
+   * A LATCH, not a state: set once when the envelope is first seen and never
+   * cleared. That is the distinction from `completedAwaitingExit` above, which
+   * answers a different question — "was the envelope the LAST thing seen, and
+   * has the process still not exited?" — and is therefore `false` on every one
+   * that exited normally, envelope and all. Reading that field as an answer to
+   * this one would mark every successful phase in the system envelope-less.
+   *
+   * Three-state by omission, and the omission is meaningful (FR-014). A backend
+   * that does not report the fact leaves this ABSENT, and absent means UNKNOWN:
+   * no reader may take it as either `true` or `false`. `false` is a claim — the
+   * invocation ran and no envelope ever arrived — and only a backend that
+   * watched for one may make it.
+   */
+  sawTerminalResult?: boolean;
+  /**
    * FR-R3-047 (H-04) — `true` iff writing the prompt to the child's stdin
    * FAILED. Absent is equivalent to `false`, so a non-runner fixture that omits
    * it reads as a healthy delivery.

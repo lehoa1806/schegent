@@ -33,7 +33,7 @@ describe('audit-event-envelope (017, T021)', () => {
       now: new Date('2026-05-13T00:00:00.000Z')
     });
 
-    expect(envelope.correlationId).toBeNull();
+    expect(envelope.correlationId).toBeNull(); // 2026-09-13 coincidental: the factory's envelope is the writer's input, not a persisted row — audit-log-writer.ts:325 coalesces `correlationId ?? runId` on the way to disk
     expect(envelope.priorState).toBeNull();
     expect(envelope.newState).toBeNull();
     expect(envelope.actor).toEqual({ kind: 'system', id: 'migration' });

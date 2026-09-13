@@ -30,16 +30,20 @@ schema-v3 rows.
 <!-- Source: src/commands/export-audit.ts -->
 
 The metadata-only export removes `runId`, `correlationId`, and all payload keys
-except `cause`, `exitCode`, `fileChangeCounts`, `metrics`,
-`omittedFileEvidenceCount`, `omittedToolEvidenceCount`, `outcome`, `stalled`,
-`terminationReason`, and `toolCategoryCounts`. `cause` and `stalled` are also
+except `attemptId`, `cause`, `exitCode`, `fileChangeCounts`, `metrics`,
+`omittedFileEvidenceCount`, `omittedToolEvidenceCount`, `outcome`,
+`resultEnvelope`, `stalled`, `terminationReason`, and `toolCategoryCounts`. Four
+of those are also
 value-checked on the way out, because the export reads whatever bytes are on disk
 rather than what the current writer produces. The check is scoped by event type:
-on `phase-end` only the literal `cap_exhausted` survives, while the other families
+on `phase-end` only the literals `cap_exhausted` and `pre_spawn_refusal` survive
+as a `cause`, while the other families
 that carry a `cause` — `phase-breakpoint-cleared`, `task-reordered`,
 `monitor-rate-limited`, the backend-ping failures, the delayed-retry pauses — keep
 their own vocabularies, admitted by shape as a short lowercase token. `stalled`
-must be a positive whole number. A rejected value exports as `null` rather than
+must be a positive whole number, `attemptId` must be the UUID shape the writer
+mints, and `resultEnvelope` must be `received` or `absent`. A rejected value
+exports as `null` rather than
 being dropped, so a field that was on disk never reads as one that was never
 recorded. It retains the audit event ID,
 timestamp, event type, phase, iteration, outcome, and schema version. Rows from
@@ -133,6 +137,116 @@ Specialized v3 projections reduce CLI invocations to execution metadata and
 Phase file/tool evidence to counts.
 <!-- Source: src/audit/audit-payload.ts -->
 <!-- Source: tests/unit/audit/audit-payload-v3.test.ts -->
+
+On a `phase-end` row, **an absent count is not a zero.** Three fields behave this
+way, and all three are omitted together:
+
+- `fileChangeCounts` — the `{created, modified, deleted}` triple;
+- `omittedFileEvidenceCount` — file paths the projection dropped;
+- `omittedToolEvidenceCount` — commands the projection dropped.
+
+They are written only when the phase's audit block was actually parsed. So
+`"fileChangeCounts": {"created": 0, "modified": 0, "deleted": 0}` is a
+measurement — the block was read and listed nothing — while the fields being
+missing means the phase ended before anything could be read, which is what a
+phase killed at its absolute deadline or idle timeout, refused before spawn, or
+cancelled mid-flight looks like. Read the missing case as *unknown*, never as
+*nothing happened*: a phase can create files and then be killed.
+
+`omittedToolEvidenceCount` is the one to be most careful with, because its zero
+reads as a positive claim about what the phase **ran**. A `0` there says the
+projection dropped no commands; an absent field says nobody counted, and the
+phase may have executed anything at all. When you need to know whether a
+terminated phase touched the tree, `terminationReason` tells you why the row
+exists and these three fields tell you whether the question was ever asked.
+<!-- Source: src/audit/audit-payload.ts -->
+<!-- Source: src/controller/phase-runner.ts -->
+<!-- Source: tests/unit/audit/audit-payload-v3.test.ts -->
+<!-- Source: tests/unit/controller/phase-runner-outcome.test.ts -->
+
+## Pair a phase start with its end
+
+Every `phase-start` row is an attempt, and every `phase-end` row carries
+`payload.attemptId` — the `phase-start` row's own `id`. Pair on that field, never
+on position in the file and never on `(runId, phase, iteration)`: a retried phase
+produces several attempts under one such triple, and interleaved runs put other
+rows between a start and its end.
+
+```bash
+# Attempts that were opened and never closed.
+jq -r 'select(.eventType == "phase-start") | .id' .schegent/audit.log | sort > /tmp/started
+jq -r 'select(.eventType == "phase-end") | .payload.attemptId // empty' \
+  .schegent/audit.log | sort > /tmp/ended
+comm -23 /tmp/started /tmp/ended
+```
+
+Output here means a phase began and the host never recorded how it ended. An
+attempt closed twice — the same `attemptId` on two `phase-end` rows — is the
+other failure worth checking for, and means the same thing in reverse: the two
+rows disagree and neither is the verdict.
+
+```bash
+jq -r 'select(.eventType == "phase-end") | .payload.attemptId // empty' \
+  .schegent/audit.log | sort | uniq -d
+```
+
+Rows written before feature 212 shipped carry no `attemptId` at all. They are
+excluded above rather than reported as unpaired, which is why `// empty` is
+there: an archive that predates the field would otherwise read as one long
+outage.
+
+Age is not the only reason a `phase-end` row carries no `attemptId`, so do not
+read a bare one on a current build as a half-finished rollout. The controller
+appends its own cap-exhaustion row through
+`PhaseRunner.appendCapExhaustedPhaseEnd()`, called from `src/services/run-driver.ts`,
+after the runner has already closed the attempt with a terminal row of its own.
+That row states a run-level verdict rather than the end of an attempt, so it
+carries no `attemptId` by design and pairs with nothing. It is the only row in
+the file with `terminationReason` `cap-exhausted`, which is how to separate the
+expected ones from the rest:
+
+```bash
+# `phase-end` rows with no attemptId, grouped by why they exist.
+jq -r 'select(.eventType == "phase-end" and (.payload.attemptId | not))
+  | .payload.terminationReason // "(none)"' .schegent/audit.log | sort | uniq -c
+```
+
+`cap-exhausted` counts are expected at any age. Anything else here is either a
+pre-212 archive or the gap worth chasing.
+<!-- Source: src/controller/phase-attempt-recorder.ts -->
+<!-- Source: src/controller/phase-runner.ts -->
+<!-- Source: src/services/run-driver.ts -->
+<!-- Source: src/audit/audit-payload.ts -->
+
+## Count terminations that produced no verdict
+
+`payload.resultEnvelope` on a `phase-end` row says whether the backend produced
+its end-of-invocation result envelope. It has three readings, and the third is
+the one to get right:
+
+- `"received"` — the invocation ran and a verdict arrived.
+- `"absent"` — the invocation **ran** and no verdict arrived. This is the
+  population to count.
+- **the field is missing** — UNKNOWN. Either the backend does not report the
+  fact, or no process ever started (a phase refused before spawn, which carries
+  `"cause": "pre_spawn_refusal"`). Never read a missing field as `"absent"`:
+  doing so counts refusals as backends that ran and went silent, which is the
+  opposite diagnosis.
+
+```bash
+# Ran, produced no verdict.
+jq -c 'select(.eventType == "phase-end" and .payload.resultEnvelope == "absent")' \
+  .schegent/audit.log
+
+# The three readings, as a census.
+jq -r 'select(.eventType == "phase-end")
+       | .payload.resultEnvelope // "unknown"' .schegent/audit.log |
+  sort | uniq -c | sort -nr
+```
+
+<!-- Source: src/controller/phase-runner.ts -->
+<!-- Source: src/audit/audit-payload.ts -->
+<!-- Source: tests/unit/controller/phase-runner-backend-posture.test.ts -->
 
 The full entry then passes through the shared sanitizer. If sanitization would
 change the projected payload, the writer rejects the append as

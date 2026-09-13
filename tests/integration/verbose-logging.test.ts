@@ -212,6 +212,16 @@ function normalizeAuditLog(raw: string): string {
         delete obj.payload.endTimestamp;
         delete obj.payload.durationMs;
         delete obj.payload.diagnosticsEnabled;
+        // Feature 212 — `attemptId` is the `phase-start` row's `AuditEntry.id`,
+        // so it is a fresh `randomUUID()` per run and belongs with `id`, `runId`
+        // and `correlationId` above rather than with the payload facts below.
+        // It is normalized away for the identical reason: comparing it would
+        // make the claim "differs ONLY by the declared flag" unexpressible,
+        // since two runs never share a UUID. What the field is FOR — that the
+        // terminal row carries the same id its `phase-start` row was given — is
+        // an intra-run pairing, which this cross-run comparison cannot express
+        // at all and which `phase-attempt-recorder.test.ts` asserts directly.
+        delete obj.payload.attemptId;
       }
       // FR-R3-112 — the hash chain, normalized away for the same reason as `id` and `timestamp`.
       // `prevDigest` is a function of every preceding byte, so once the two runs differ by the

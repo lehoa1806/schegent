@@ -2,7 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { parseAuditLogLineDetailed } from '../parser/audit-log-parser';
-import { CAP_EXHAUSTED_CAUSE } from '../audit/audit-payload';
+import { ATTEMPT_ID_RE, CAP_EXHAUSTED_CAUSE, PRE_SPAWN_REFUSAL_CAUSE } from '../audit/audit-payload';
 import type { Notifier } from '../ui/notifications';
 
 const COUNT_KEYS = new Set([
@@ -28,10 +28,22 @@ const COUNT_KEYS = new Set([
   // which can include entries a pre-feature-194 build wrote (before that
   // projection existed) or a future regression in it. The value check below
   // is deliberate defense-in-depth against those cases, not a redundant
-  // duplicate of the write-path guarantee: for `phase-end` only the literal
-  // `cap_exhausted` survives, regardless of which build wrote the line.
+  // duplicate of the write-path guarantee: for `phase-end` only the literals
+  // `cap_exhausted` and `pre_spawn_refusal` (feature 212) survive, regardless of
+  // which build wrote the line.
   'cause',
-  'stalled'
+  'stalled',
+  // Feature 212 (FR-002, FR-007) — the two fields this feature added to
+  // `phase-end`. Without them the counts-only export cannot answer either
+  // question the feature exists to answer: WHICH attempt a terminal row closes,
+  // and HOW MANY terminations produced no envelope. FR-007 in particular
+  // requires that second count be obtainable directly rather than by
+  // differencing two event types, and an auditor handed only this export had no
+  // way to obtain it at all. Both get a value check below for the same reason
+  // `cause` does — this function parses whatever bytes are on disk, including
+  // lines written by a build that predates the projection constraining them.
+  'attemptId',
+  'resultEnvelope'
 ]);
 
 /**
@@ -69,13 +81,48 @@ const CLOSED_CAUSE_TOKEN = /^[a-z][a-z0-9_-]{0,31}$/;
  */
 function guardedPayloadValue(eventType: string, key: string, value: unknown): unknown {
   if (key === 'cause') {
+    // Feature 212 (FR-004) — the `phase-end` arm is an enumeration of that event's
+    // closed vocabulary, so a value added to the vocabulary must be added here too.
+    // Left out, this guard would not merely fail to recognise the new cause: it
+    // would rewrite every row carrying it to `null`, and by the paragraph above
+    // that null reads as "on disk and disbelieved" — a tamper signal — rather than
+    // as "never recorded".
     const ok = eventType === 'phase-end'
-      ? value === CAP_EXHAUSTED_CAUSE
+      ? value === CAP_EXHAUSTED_CAUSE || value === PRE_SPAWN_REFUSAL_CAUSE
       : typeof value === 'string' && CLOSED_CAUSE_TOKEN.test(value);
     return ok ? value : null;
   }
   if (key === 'stalled') {
     const ok = typeof value === 'number' && Number.isInteger(value) && value > 0;
+    return ok ? value : null;
+  }
+  // Feature 212 (FR-005) — a closed two-member set. A third value on disk is a
+  // line this build did not write, and by the rule above it exports as `null`
+  // rather than being filtered: the field WAS there and this export will not
+  // carry what it found.
+  //
+  // BOTH of the arms below are scoped by event type, per this function's opening
+  // rule. The scoping is the OPPOSITE shape to `cause`'s and costs nothing for
+  // it: `cause` spans five event families, so its guard must widen to admit
+  // each one, whereas these two fields belong to `phase-end` and to nothing
+  // else — the writer hardcodes that event type at both sites that mint them.
+  // A single family name cannot drift the way an enumeration of five can.
+  //
+  // So a row of any OTHER type carrying one of these keys is not a field this
+  // guard should pass along uninspected; it is the anomaly the `null` exists to
+  // report. Without the event-type test the key name alone would admit it, and
+  // a UUID-shaped string on, say, a monitor row would export as though it
+  // paired that row to an attempt — a pairing FR-002 never defines.
+  if (key === 'resultEnvelope') {
+    const ok = eventType === 'phase-end' && (value === 'received' || value === 'absent');
+    return ok ? value : null;
+  }
+  // Feature 212 (FR-002) — the shape the writer mints, shared with the
+  // projection rather than restated here; two copies of a shape are two shapes
+  // as soon as one is edited.
+  if (key === 'attemptId') {
+    const ok =
+      eventType === 'phase-end' && typeof value === 'string' && ATTEMPT_ID_RE.test(value);
     return ok ? value : null;
   }
   return value;

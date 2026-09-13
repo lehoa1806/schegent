@@ -7,8 +7,16 @@ import { DEFAULT_BACKEND, type BackendRunnerKind } from '../contracts/backend-ki
 import type { PromptBuilder } from '../runner/prompt-builder';
 import type { ExecutionEnvelope } from '../contracts/run-request';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
-import { CAP_EXHAUSTED_CAUSE, projectAuditPayload } from '../audit/audit-payload';
-import type { AuditEntry } from '../audit/audit-entry';
+import {
+  CAP_EXHAUSTED_CAUSE,
+  PRE_SPAWN_REFUSAL_CAUSE,
+  projectAuditPayload
+} from '../audit/audit-payload';
+import {
+  PhaseAttemptRecorder,
+  type PhaseAttempt
+} from './phase-attempt-recorder';
+import type { AuditEntry, AuditEntryFields } from '../audit/audit-entry';
 import type { RawTranscriptWriter } from '../audit/raw-transcript-writer';
 import type { SanitizedLogger } from '../lib/logger';
 import { parseAuditLogBlock } from '../parser/audit-log-parser';
@@ -29,6 +37,8 @@ import {
   type BackendPostureAccessor
 } from './backend-posture-recorder';
 import type { CapabilityRefusalEventType } from '../contracts/audit-events';
+import { isCapabilityRefusal } from '../services/capability-refusal';
+import { isUncontainedBackendRefusal } from '../services/backend-containment-policy';
 import { authoredPhaseTimeoutMs, effectivePhaseTimeoutMs } from './effective-phase-timeout';
 import {
   capabilityRequestFields,
@@ -204,6 +214,17 @@ export interface PhaseRunOutput {
    * computation. Absent under the same rule `stalled` is absent under.
    */
   stalledCount?: number;
+  /**
+   * Feature 212 (FR-006) — did the backend produce its end-of-invocation result
+   * envelope? Carried onto the persisted `PhaseResult` so a run that ended with
+   * no envelope stays distinguishable, after the fact, from one that ended with
+   * a verdict — the distinction the deadline arm used to erase.
+   *
+   * ABSENT MEANS UNKNOWN (FR-014). A backend that does not report the fact omits
+   * this, and no reader may read the omission as `'absent'`; `'absent'` is the
+   * positive claim that the invocation ran and no envelope arrived.
+   */
+  resultEnvelope?: 'received' | 'absent';
 }
 
 export interface VerboseDiagnosticsAccessor {
@@ -247,11 +268,43 @@ export interface ManualPauseAccessor {
   isManualPauseRequested(): boolean;
 }
 
+/**
+ * Feature 212 (FR-001) — the in-flight attempt, shared between `run()`'s
+ * `finally` and the `runInner` body that opens and closes it.
+ *
+ * `attempt` is null only before the `phase-start` row exists: a phase refused
+ * before that point was never recorded as attempted, so there is nothing to
+ * pair and nothing to report (FR-002).
+ */
+interface AttemptRef {
+  attempt: PhaseAttempt | null;
+  /**
+   * Set ONLY on the two error types that are provably a refusal, never on
+   * position. It read "did control reach `invoke()`" before, making
+   * `pre_spawn_refusal` the default for the whole window between `begin()` and
+   * the spawn — and that window is not policy: two audit appends live in it, the
+   * raw-transcript start, the capture handle, the fatal-signature read. Each
+   * throws on its own account, and `appendRequiredAudit` converts a refused write
+   * into `RequiredEvidenceUnavailableError`, so an outage of the evidence sink
+   * was recorded — durably — as an operator's containment policy stopping the
+   * phase. Naming the refusals leaves every other throw `error`, which is what an
+   * unclassified failure has always meant.
+   */
+  preSpawnRefusal: boolean;
+  /**
+   * Written ONCE, where the invocation returns, so a path that never got an answer
+   * reports the unknown it has. Raw — `envelopeField` derives the published reading.
+   * `| undefined` is deliberate: only an audit payload tells unset and `undefined` apart.
+   */
+  sawTerminalResult?: boolean | undefined;
+}
+
 export class PhaseRunner {
   /** FR-R3-064 — see `BackendPostureRecorder`; this shell only calls it. */
   private readonly postureRecorder: BackendPostureRecorder;
 
-
+  /** Feature 212 (FR-001, FR-015) — see `PhaseAttemptRecorder`; this shell only calls it. */
+  private readonly attemptRecorder: PhaseAttemptRecorder;
 
   private readonly sidecarReader: PhaseSidecarReader;
   private readonly retryEvaluator: PhaseRetryEvaluator;
@@ -309,6 +362,12 @@ export class PhaseRunner {
     this.postureRecorder = new BackendPostureRecorder(backendPostureAccessor, (entry) =>
       this.appendRequiredAudit(entry)
     );
+    // Feature 212 (FR-001, FR-010) — one writer, injected. The recorder owns
+    // both ends of an attempt; it opens no second path to disk.
+    this.attemptRecorder = new PhaseAttemptRecorder(
+      (entry) => this.appendRequiredAudit(entry),
+      logger
+    );
     this.sidecarReader = new PhaseSidecarReader(auditWriter, logger);
     this.retryEvaluator = new PhaseRetryEvaluator(
       auditWriter,
@@ -359,9 +418,54 @@ export class PhaseRunner {
       runId: inputs.runId,
       iteration: inputs.iteration
     });
+    // Feature 212 (FR-001) — the attempt, reachable from the `finally` below.
+    // A holder rather than a field on `this`: `runInner` is where the attempt is
+    // opened and this is the only construct that survives the re-throw out of the
+    // catch around `invoke()`, so the two need a reference in common and nothing
+    // else does. State on the instance would outlive the phase that owns it.
+    const attemptRef: AttemptRef = { attempt: null, preSpawnRefusal: false };
     try {
-      return await this.runInner(inputs);
+      return await this.runInner(inputs, attemptRef);
     } finally {
+      // The seam AMENDS; it does not duplicate. Five arms below write their own
+      // `phase-end` and return normally through here, and each claims the attempt
+      // as it writes — so `close()` on an already-closed attempt does nothing.
+      // What reaches this call is the set of paths that wrote nothing: the throws.
+      //
+      // `close()` never throws, and that is load-bearing rather than tidy: an
+      // exception raised inside a `finally` REPLACES the one already propagating,
+      // so a failed audit append here would swallow the very refusal the record
+      // exists to report and hand the caller an audit error instead.
+      await attemptRef.attempt?.close({
+        outcome: 'failed',
+        // `pre_spawn_refusal` only for a throw that NAMED itself one. Everything
+        // else — a failure after `invoke()` that may have left a child alive, and
+        // every incidental throw before it — is `error`: under-claiming, never
+        // claiming a refusal that did not happen. See `AttemptRef`.
+        terminationReason: attemptRef.preSpawnRefusal ? 'pre_spawn_refusal' : 'error',
+        // WHATEVER WAS MEASURED, and nothing when nothing was (FR-014). Not
+        // `'absent'` on the pre-spawn branch: three contracts define that value as
+        // the positive claim that the INVOCATION RAN and no envelope arrived
+        // (`PhaseRunOutput.resultEnvelope` here, `invocation-result.ts`,
+        // `workflow-run.ts`), so writing it
+        // where no child ever existed puts refusals into the very population
+        // FR-007 counts. Unknown is the honest reading, and `cause` below carries
+        // the fact that is actually known. Spread, not `resultEnvelope: <maybe
+        // undefined>`: a key written as `undefined` is a key somebody answered.
+        ...this.envelopeField(attemptRef),
+        payload: {
+          ...this.pipelineMeta(inputs),
+          // EXPLICIT `null`. The projection reads an ABSENT `exitCode` as `0`
+          // (`audit-payload.ts`), which would record a clean exit for a phase
+          // that never produced one — the same false zero as the counts below.
+          exitCode: null,
+          ...(attemptRef.preSpawnRefusal ? { cause: PRE_SPAWN_REFUSAL_CAUSE } : {})
+          // No `verdictBasis`: it names the basis on which a verdict was formed,
+          // and no verdict was formed. No file or command counts either — absent
+          // is what makes the projection omit all three rather than record the
+          // `{0,0,0}` that reads as "demonstrably changed nothing" (FR-009).
+        }
+      });
       this.logger.debug('phase-runner.lock-released', {
         ...pipelineAttribution,
         phaseId: debugPhaseId,
@@ -370,7 +474,7 @@ export class PhaseRunner {
     }
   }
 
-  private async runInner(inputs: PhaseRunInputs): Promise<PhaseRunOutput> {
+  private async runInner(inputs: PhaseRunInputs, attemptRef: AttemptRef): Promise<PhaseRunOutput> {
     // Feature 028 — US2: future-phase breakpoint check. Read the accessor at
     // the dispatch boundary (never cached on the runner) so a breakpoint
     // added via the sidebar mid-run applies to the very next phase
@@ -472,7 +576,16 @@ export class PhaseRunner {
     // the probe, its TTL cache and its failure handling.
     this.observedCliVersion = await observedVersionOf(this.runnerRegistry, inputs.cliPath);
     Object.assign(startPayload, cliVersionFields(this.observedCliVersion, effectiveRunnerKind, this.logger));
-    await this.appendAudit(inputs, 'phase-start', 'info', startPayload);
+    // Feature 212 (FR-002) — the attempt identifier is this row's own
+    // `AuditEntry.id`, which the writer already mints and this line already
+    // received and discarded. Nothing new is generated: a second identifier is a
+    // second thing that can disagree. Failure semantics are unchanged — the
+    // recorder appends through `appendRequiredAudit`, exactly as before, and a
+    // phase whose attempt cannot be recorded still does not proceed.
+    attemptRef.attempt = await this.attemptRecorder.begin(
+      { runId: inputs.runId, phase: inputs.phase, iteration: inputs.iteration },
+      startPayload
+    );
 
     this.logger.info(`phase-start ${inputs.phase} iter=${inputs.iteration}`);
     // Feature 010 FR-024: read schegent.logging.verbose at run() entry
@@ -553,7 +666,12 @@ export class PhaseRunner {
       getEffectiveSignatures(this.fatalSignaturesAccessor?.readOperatorAdditions() ?? []);
     let raw: RawInvocationOutput;
     try {
-      raw = await this.resolveRunner(inputs).invoke({
+      // Split from the `invoke()` call deliberately. `resolveRunner` is where a
+      // containment refusal is thrown (`backend-runner-factory.ts`); the catch
+      // below is where both refusals are named. Kept as two statements because
+      // the split is what makes the two throw sites separable at all.
+      const backendRunner = this.resolveRunner(inputs);
+      raw = await backendRunner.invoke({
         effectiveFatalSignatures,
         phase: inputs.phase,
         iteration: inputs.iteration,
@@ -591,9 +709,24 @@ export class PhaseRunner {
         ...capabilityRequestFields(inputs)
       }, rawTranscriptCapture ?? undefined);
     } catch (err) {
+      // THE two refusals, and the only place either is claimed. A containment
+      // refusal comes from `resolveRunner` above, before any runner exists; a
+      // capability refusal is raised while the argv is being ASSEMBLED — every
+      // adapter calls `capabilityArgs` before it spawns (claude-cli `:336` vs
+      // `:390`, codex-cli `:84`, agy-cli `:121`). Neither can have left a child,
+      // which is exactly what `PRE_SPAWN_REFUSAL_CAUSE` asserts. By error type,
+      // not by position: see `AttemptRef` for what position got wrong.
+      if (isCapabilityRefusal(err) || isUncontainedBackendRefusal(err)) {
+        attemptRef.preSpawnRefusal = true;
+      }
       await rawTranscriptCapture?.dispose();
       throw err;
     }
+
+    // Feature 212 (FR-005) — the one place the envelope fact is read, at the one
+    // point every arm below is downstream of. Raw here because `undefined` is a
+    // backend that does not report the fact; `envelopeField` makes it a reading.
+    attemptRef.sawTerminalResult = raw.sawTerminalResult;
 
     await this.appendAudit(inputs, 'cli-invocation', 'info', projectAuditPayload('cli-invocation', {
       runner: effectiveRunnerKind,
@@ -662,7 +795,7 @@ export class PhaseRunner {
     // still reports `[constitution]` findings, and pinning that list to one element
     // erased them. specs/132-child-stdin-completion/contracts/stdin-delivery.md.
     if (raw.stdinDeliveryFailed && result.kind === 'clean') {
-      const auditEntry = await this.appendAudit(inputs, 'phase-end', 'failure', {
+      const auditEntry = await this.appendPhaseEnd(attemptRef, inputs, 'failure', {
         ...this.pipelineMeta(inputs),
         outcome: 'failed',
         verdictBasis: verdictBasisOf(inputs),
@@ -674,9 +807,9 @@ export class PhaseRunner {
         ...this.invocationMetricPayload(raw, effectiveRunnerKind),
         // The parse was clean, so the audit block WAS read: a run that changed the
         // workspace while answering a truncated prompt must not record {0,0,0}.
-        files_created: audit.entry?.filesCreated ?? [],
-        files_modified: audit.entry?.filesModified ?? [],
-        commands_executed: audit.entry?.commandsExecuted ?? []
+        // Feature 212 (FR-009): "clean parse" and "block present" are still two
+        // facts, and `?? []` here claimed the second from the first.
+        ...this.auditEvidenceFields(audit.entry)
       });
       return {
         result: { kind: 'malformed', warnings: ['stdin-delivery-failed'], auditEntry: audit.entry },
@@ -686,6 +819,7 @@ export class PhaseRunner {
         stderrSummary: this.logger.sanitize(summarize(typeof raw.stderrBuffer === 'string' ? raw.stderrBuffer : raw.stderrBuffer.getTrailingLines(100))),
         exitCode: raw.exitCode,
         auditEntryId: auditEntry.id,
+        ...this.envelopeField(attemptRef),
         // The errno, never the prompt. The prompt is operator content.
         warnings: [`prompt delivery to the backend failed (${raw.stdinErrorCode ?? 'unknown'})`],
         phaseMessage: null
@@ -703,13 +837,19 @@ export class PhaseRunner {
       raw.deadlineExceeded === true &&
       (result.kind !== 'clean' || requiresHostVerification(inputs))
     ) {
-      const auditEntry = await this.appendAudit(inputs, 'phase-end', 'failure', {
+      const auditEntry = await this.appendPhaseEnd(attemptRef, inputs, 'failure', {
         ...this.pipelineMeta(inputs),
         outcome: 'deadline',
         verdictBasis: verdictBasisOf(inputs),
         terminationReason: 'deadline',
         warnings: raw.diagnosticWarnings,
-        ...this.invocationMetricPayload(raw, effectiveRunnerKind)
+        ...this.invocationMetricPayload(raw, effectiveRunnerKind),
+        // Feature 212 (FR-008) — the salvage this feature is named for. A phase
+        // killed at its deadline had usually done real work first, and this arm
+        // carried no evidence of it at all: the record showed a phase that
+        // started and ended, and nothing in between. Where the block was read,
+        // what it says survives the kill.
+        ...this.auditEvidenceFields(audit.entry)
       });
       return {
         result: { kind: 'malformed', warnings: ['deadline'], auditEntry: null },
@@ -725,6 +865,7 @@ export class PhaseRunner {
         ),
         exitCode: raw.exitCode,
         auditEntryId: auditEntry.id,
+        ...this.envelopeField(attemptRef),
         warnings: ['phase exceeded its absolute invocation deadline'],
         phaseMessage: null
       };
@@ -734,7 +875,7 @@ export class PhaseRunner {
     // unless the Phase marked itself sensitive (FR-R3-058). See
     // specs/145-host-verifiable-gates/contracts/host-verification.md.
     if (raw.timedOut && (result.kind !== 'clean' || requiresHostVerification(inputs))) {
-      const auditEntry = await this.appendAudit(inputs, 'phase-end', 'failure', {
+      const auditEntry = await this.appendPhaseEnd(attemptRef, inputs, 'failure', {
         ...this.pipelineMeta(inputs),
         outcome: 'timeout',
         verdictBasis: verdictBasisOf(inputs),
@@ -750,7 +891,12 @@ export class PhaseRunner {
         // omission the general way: the code now rides
         // `invocationMetricPayload`, so no arm can omit it again.
         warnings: raw.diagnosticWarnings,
-        ...this.invocationMetricPayload(raw, effectiveRunnerKind)
+        ...this.invocationMetricPayload(raw, effectiveRunnerKind),
+        // Feature 212 (FR-008) — same salvage as the deadline arm above. Listed
+        // here too rather than hoisted: the two arms are adjacent and
+        // near-identical, which is exactly the shape where one gets a fix and
+        // the other silently keeps the defect.
+        ...this.auditEvidenceFields(audit.entry)
       });
       return {
         result: { kind: 'malformed', warnings: ['timeout'], auditEntry: null },
@@ -760,6 +906,7 @@ export class PhaseRunner {
         stderrSummary: this.logger.sanitize(summarize(typeof raw.stderrBuffer === 'string' ? raw.stderrBuffer : raw.stderrBuffer.getTrailingLines(100))),
         exitCode: raw.exitCode,
         auditEntryId: auditEntry.id,
+        ...this.envelopeField(attemptRef),
         warnings: ['phase timed out'],
         phaseMessage: null
       };
@@ -770,6 +917,35 @@ export class PhaseRunner {
         ...this.pipelineMeta(inputs),
         reason: 'killed'
       });
+      // Feature 212 (FR-001) — the `cancel` row above is left exactly as it was. It is not a
+      // terminal record: nothing reading `phase-end` rows sees it, which is how a cancelled phase
+      // came to have an attempt and no outcome. This adds the terminal record beside it rather
+      // than converting it.
+      //
+      // Through `appendPhaseEnd` like the other five arms, NOT `close()`. `close()` swallows a
+      // failed append on purpose — it is reached from a `finally`, where a throw would replace the
+      // error already propagating — and this arm is not in one. Borrowing that swallow here would
+      // drop the terminal record, mark the attempt closed so the seam will not retry, and report
+      // the phase as merely cancelled: the exact `phase-start`-with-no-`phase-end` gap FR-001
+      // exists to close, reopened on the one path that had to be fixed to notice it. The `cancel`
+      // row above already fails the phase on an append failure; this one now does too.
+      //
+      // `'info'` is the audit outcome `terminalAuditOutcome` maps `cancel` to, and stays the
+      // reference for the seam's own call.
+      await this.appendPhaseEnd(attemptRef, inputs, 'info', {
+        ...this.pipelineMeta(inputs),
+        outcome: 'failed',
+        terminationReason: 'cancel',
+        verdictBasis: verdictBasisOf(inputs),
+        // `null` on this path by construction (the arm's own condition), and
+        // passed explicitly for the same reason as the seam: an ABSENT
+        // `exitCode` would project to `0`.
+        exitCode: raw.exitCode,
+        // Conditional, never `?? []`. An empty array is a MEASUREMENT — it
+        // says the phase demonstrably created nothing — and a kill before the
+        // audit block was parsed measured nothing at all (FR-009).
+        ...this.auditEvidenceFields(audit.entry)
+      });
       return {
         result: { kind: 'malformed', warnings: ['cancelled'], auditEntry: null },
         outcome: 'failed',
@@ -778,6 +954,7 @@ export class PhaseRunner {
         stderrSummary: this.logger.sanitize(summarize(typeof raw.stderrBuffer === 'string' ? raw.stderrBuffer : raw.stderrBuffer.getTrailingLines(100))),
         exitCode: raw.exitCode,
         auditEntryId: auditEntry.id,
+        ...this.envelopeField(attemptRef),
         warnings: ['phase cancelled'],
         phaseMessage: null
       };
@@ -797,7 +974,7 @@ export class PhaseRunner {
       // on its parsed outcome, which is what `invocation-result.ts` has always
       // specified for `completedAwaitingExit` under BOTH bases.
       if (requiresHostVerification(inputs) && hostExitStatusIsAttributable(raw)) {
-        const verificationEntry = await this.appendAudit(inputs, 'phase-end', 'failure', {
+        const verificationEntry = await this.appendPhaseEnd(attemptRef, inputs, 'failure', {
           ...this.pipelineMeta(inputs),
           outcome: 'failed',
           verdictBasis: verdictBasisOf(inputs),
@@ -805,9 +982,7 @@ export class PhaseRunner {
           terminationReason: 'error',
           warnings: ['host-verification-failed', ...(result.warnings ?? [])],
           ...this.invocationMetricPayload(raw, effectiveRunnerKind),
-          files_created: audit.entry?.filesCreated ?? [],
-          files_modified: audit.entry?.filesModified ?? [],
-          commands_executed: audit.entry?.commandsExecuted ?? []
+          ...this.auditEvidenceFields(audit.entry)
         });
         this.logger.warn('phase-runner: host verification failed on a sensitive phase', {
           phase: inputs.phase,
@@ -832,6 +1007,7 @@ export class PhaseRunner {
           ),
           exitCode: raw.exitCode,
           auditEntryId: verificationEntry.id,
+          ...this.envelopeField(attemptRef),
           // The exit code, never output content. The number is the finding.
           warnings: [`host verification failed: exit code ${raw.exitCode}`],
           phaseMessage: null
@@ -903,9 +1079,9 @@ export class PhaseRunner {
     // sink from putting a path in one.
     combinedWarnings.push(...(this.evidenceHealthDrain?.drainPathRefusals() ?? []));
 
-    const auditEntry = await this.appendAudit(
+    const auditEntry = await this.appendPhaseEnd(
+      attemptRef,
       inputs,
-      'phase-end',
       outcome === 'clean' ? 'success' : outcome === 'failed' ? 'failure' : 'info',
       {
         ...this.pipelineMeta(inputs),
@@ -914,13 +1090,11 @@ export class PhaseRunner {
         exitCode: raw.exitCode,
         terminationReason,
         ...this.invocationMetricPayload(raw, effectiveRunnerKind),
-        files_created: audit.entry?.filesCreated ?? [],
-        files_modified: audit.entry?.filesModified ?? [],
-        commands_executed: audit.entry?.commandsExecuted ?? [],
+        ...this.auditEvidenceFields(audit.entry),
         warnings: combinedWarnings.length > 0 ? combinedWarnings : undefined,
         // FR-005 — redacted fatal-cause text. It no longer reaches disk: feature
-        // 194's `projectPhaseEnd()` narrows `payload.cause` to `cap_exhausted`, so
-        // the writer drops this member; the reason survives in terminationReason.
+        // 194's `projectPhaseEnd()` narrows `payload.cause` to two code-resident
+        // literals; the writer drops this one, the reason survives in terminationReason.
         ...(fatalCause ? { cause: fatalCause } : {})
       }
     );
@@ -933,6 +1107,7 @@ export class PhaseRunner {
       stderrSummary: this.logger.sanitize(summarize(typeof raw.stderrBuffer === 'string' ? raw.stderrBuffer : raw.stderrBuffer.getTrailingLines(100))),
       exitCode: raw.exitCode,
       auditEntryId: auditEntry.id,
+      ...this.envelopeField(attemptRef),
       warnings: ('warnings' in result ? result.warnings : []) ?? [],
       phaseMessage,
       cliSessionId: raw.cliSessionId,
@@ -1107,6 +1282,91 @@ export class PhaseRunner {
       payload,
       outcome: 'failure'
     });
+  }
+
+  /**
+   * Feature 212 (FR-003) — append a `phase-end` row AND claim the attempt it
+   * closes, so the seam in `run()` knows this path already reported.
+   *
+   * The two halves are one call deliberately. Split apart, an arm that appended
+   * and forgot to claim would produce a second terminal record from the seam —
+   * and the pairing FR-002 asserts would be satisfied twice, which reads as an
+   * ambiguity rather than as the gap it actually is.
+   *
+   * `attemptRef.attempt` is nullable so the arms need no null-guard of their
+   * own: a run that reaches an arm always has one, and one that somehow does not
+   * still writes its row.
+   *
+   * The whole ref rather than the attempt alone, because the envelope fact
+   * belongs on every one of these rows and reaches them all from here — five
+   * arms each remembering to spread it is five chances to forget.
+   *
+   * CLAIMED BEFORE THE APPEND, never after. The append is bounded for the caller
+   * and a rejection does not mean the row was abandoned (`src/lib/io-barrier.ts`),
+   * so claiming on success would leave the attempt open for a row already on its
+   * way to disk — and the seam would then write a second terminal record for it.
+   * `close()` orders itself the same way, for the same reason.
+   */
+  private async appendPhaseEnd(
+    attemptRef: AttemptRef,
+    inputs: PhaseRunInputs,
+    outcome: 'success' | 'failure' | 'info',
+    payload: Record<string, unknown>
+  ): Promise<AuditEntry> {
+    const attempt = attemptRef.attempt;
+    attempt?.markClosedBy(null);
+    const entry = await this.appendAudit(inputs, 'phase-end', outcome, {
+      ...payload,
+      ...this.envelopeField(attemptRef),
+      ...(attempt ? { attemptId: attempt.attemptId } : {})
+    });
+    attempt?.recordTerminalEntryId(entry.id);
+    return entry;
+  }
+
+  /**
+   * Feature 212 (FR-014) — the envelope fact as a spreadable, OMITTED when
+   * unknown. Never `{ resultEnvelope: undefined }`: on an audit payload the two
+   * differ, and a present key reads as a value somebody reported.
+   *
+   * Derived HERE so the guard and the value it guards are one name on one line —
+   * the only shape the gate checks; `ASSIGNMENT` in its test file says why.
+   */
+  private envelopeField(attemptRef: AttemptRef): { resultEnvelope?: 'received' | 'absent' } {
+    const saw = attemptRef.sawTerminalResult;
+    const resultEnvelope = saw === undefined ? undefined : saw ? 'received' : 'absent';
+    return resultEnvelope !== undefined ? { resultEnvelope } : {};
+  }
+
+  /**
+   * Feature 212 (FR-008, FR-009) — the phase's file and command evidence, or
+   * NOTHING. There is no third option here and in particular `?? []` is not one.
+   *
+   * `auditBlockParsed()` in the phase-end projection decides whether to record
+   * counts by asking whether any of these four values is an array. An empty
+   * array is therefore not a neutral default: it is the evidence that the block
+   * WAS read, and it makes the projection write `{created: 0, modified: 0,
+   * deleted: 0}` and `omittedFileEvidenceCount: 0` for a phase nobody measured.
+   * Every one of those fields is then a false statement — "demonstrably changed
+   * nothing" where the truth is "killed before we could look".
+   *
+   * The distinction the feature turns on, one layer up from the projection:
+   * absence says nobody looked, zero says somebody looked and found nothing.
+   * Only a parsed block can say the second, so only a parsed block gets to
+   * write the keys at all.
+   */
+  private auditEvidenceFields(entry: AuditEntryFields | null | undefined): {
+    files_created?: string[];
+    files_modified?: string[];
+    commands_executed?: string[];
+  } {
+    return entry
+      ? {
+          files_created: entry.filesCreated,
+          files_modified: entry.filesModified,
+          commands_executed: entry.commandsExecuted
+        }
+      : {};
   }
 
   private async appendAudit(
