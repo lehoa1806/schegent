@@ -1,9 +1,20 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "cases": [
     {
       "id": "clean-completion",
       "description": "A structurally complete backend response advances cleanly.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured. The clean path is the class a recording would be easiest to obtain for, and it is still synthesized: a captured turn carries session_id, usage figures and tool_result file contents that FR-019's bound keeps out of the corpus."
+      },
+      "backends": [
+        "claude",
+        "codex",
+        "agy"
+      ],
+      "envelope": null,
+      "envelopeNullReason": "Authored as already-unwrapped model text. Routed through unwrapStreamJson these lines parse as no JSON object at all, so the unwrapper would take the !sawAnyLine raw-passthrough branch (stream-json-unwrapper.ts:112) and return them byte-for-byte; entering downstream is the same input with one fewer unasserted hop.",
       "output": {
         "stdoutLines": [
           "Implementation complete.",
@@ -25,6 +36,17 @@
     {
       "id": "clarification-loop",
       "description": "Open questions pause advancement and retain their structural outcome.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured. The prose follows the host's own open-questions convention rather than transcribing a backend turn."
+      },
+      "backends": [
+        "claude",
+        "codex",
+        "agy"
+      ],
+      "envelope": null,
+      "envelopeNullReason": "Authored as already-unwrapped model text. Routed through unwrapStreamJson these lines parse as no JSON object at all, so the unwrapper would take the !sawAnyLine raw-passthrough branch (stream-json-unwrapper.ts:112) and return them byte-for-byte; entering downstream is the same input with one fewer unasserted hop.",
       "output": {
         "stdoutLines": [
           "Open questions:",
@@ -46,6 +68,17 @@
     {
       "id": "remaining-issues",
       "description": "Tagged remaining issues stay machine-readable and do not advance.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured. The bracketed tag is the host's convention, chosen to exercise the tagged-issues path; no live turn was recorded."
+      },
+      "backends": [
+        "claude",
+        "codex",
+        "agy"
+      ],
+      "envelope": null,
+      "envelopeNullReason": "Authored as already-unwrapped model text. Routed through unwrapStreamJson these lines parse as no JSON object at all, so the unwrapper would take the !sawAnyLine raw-passthrough branch (stream-json-unwrapper.ts:112) and return them byte-for-byte; entering downstream is the same input with one fewer unasserted hop.",
       "output": {
         "stdoutLines": [
           "Remaining issues:",
@@ -67,6 +100,17 @@
     {
       "id": "malformed-audit-block",
       "description": "A missing required audit field is surfaced and ambiguous prose cannot advance.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured. The defect under test is a missing required audit field, produced by deleting one from a valid block rather than by waiting for a backend that omits it."
+      },
+      "backends": [
+        "claude",
+        "codex",
+        "agy"
+      ],
+      "envelope": null,
+      "envelopeNullReason": "Authored as already-unwrapped model text. Routed through unwrapStreamJson these lines parse as no JSON object at all, so the unwrapper would take the !sawAnyLine raw-passthrough branch (stream-json-unwrapper.ts:112) and return them byte-for-byte; entering downstream is the same input with one fewer unasserted hop.",
       "output": {
         "stdoutLines": [
           "Work may be complete, but no terminal contract was emitted."
@@ -88,6 +132,17 @@
     {
       "id": "fatal-signature",
       "description": "A fatal CLI signature wins over an otherwise clean contract.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured. The stderr line quotes a built-in FATAL_SIGNATURES entry directly; reproducing it live would mean invoking a real CLI with a deliberately bad flag."
+      },
+      "backends": [
+        "claude",
+        "codex",
+        "agy"
+      ],
+      "envelope": null,
+      "envelopeNullReason": "Authored as already-unwrapped model text. Routed through unwrapStreamJson these lines parse as no JSON object at all, so the unwrapper would take the !sawAnyLine raw-passthrough branch (stream-json-unwrapper.ts:112) and return them byte-for-byte; entering downstream is the same input with one fewer unasserted hop.",
       "output": {
         "stdoutLines": [
           "[SCHEGENT_STATUS: CLEAR]"
@@ -110,6 +165,17 @@
     {
       "id": "rate-limit",
       "description": "A hard backend rate limit maps to the dedicated paused outcome.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured. Recording this class means exhausting a real account's quota, which an offline suite may not do (FR-009)."
+      },
+      "backends": [
+        "claude",
+        "codex",
+        "agy"
+      ],
+      "envelope": null,
+      "envelopeNullReason": "Authored with no model text at all: stdoutLines is empty, so there is nothing for unwrapStreamJson to unwrap. The verdict here is decided from stderr and the exit code, both of which sit outside the envelope tier entirely.",
       "output": {
         "stdoutLines": [],
         "stderrLines": [
@@ -130,6 +196,17 @@
     {
       "id": "truncated-output",
       "description": "A retained clean tail cannot prove the discarded middle was safe.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured. Truncation is imposed by the host's own buffer bound, so the fixture sets the truncated flag directly rather than generating megabytes of output to trip it."
+      },
+      "backends": [
+        "claude",
+        "codex",
+        "agy"
+      ],
+      "envelope": null,
+      "envelopeNullReason": "Authored as already-unwrapped model text. Routed through unwrapStreamJson these lines parse as no JSON object at all, so the unwrapper would take the !sawAnyLine raw-passthrough branch (stream-json-unwrapper.ts:112) and return them byte-for-byte; entering downstream is the same input with one fewer unasserted hop.",
       "output": {
         "stdoutLines": [
           "[SCHEGENT_STATUS: CLEAR]"
@@ -151,6 +228,17 @@
     {
       "id": "internal-execution-error",
       "description": "A non-zero exit with no termination token is transient, not fatal, so the phase halts without ending the run.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured. The result line copies the shape of the backend's documented error envelope rather than a recorded failure."
+      },
+      "backends": [
+        "claude",
+        "codex",
+        "agy"
+      ],
+      "envelope": null,
+      "envelopeNullReason": "Authored as already-unwrapped model text, and deliberately not routed through the unwrapper: the second line is a parseable JSON object, so unwrapStreamJson would set sawAnyLine, find no model text and return the raw lines through the drift branch (stream-json-unwrapper.ts:116) rather than the passthrough branch (:112). The bytes are identical either way, but this case pins the transient-error classification, not an unwrapper branch; T021 covers the drift branch with a case authored for it.",
       "output": {
         "stdoutLines": [
           "Analyzing the specification...",
@@ -172,6 +260,17 @@
     {
       "id": "session-continuation",
       "description": "An exact backend-owned session is resumed with the recovery prompt.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured. The session id is a fixture literal; a real one is a credential-adjacent value FR-019 keeps out of the corpus."
+      },
+      "backends": [
+        "claude",
+        "codex",
+        "agy"
+      ],
+      "envelope": null,
+      "envelopeNullReason": "Authored as already-unwrapped model text. Routed through unwrapStreamJson these lines parse as no JSON object at all, so the unwrapper would take the !sawAnyLine raw-passthrough branch (stream-json-unwrapper.ts:112) and return them byte-for-byte; entering downstream is the same input with one fewer unasserted hop.",
       "output": {
         "stdoutLines": [
           "[SCHEGENT_STATUS: CLEAR]"
@@ -207,6 +306,17 @@
     {
       "id": "runner-switch",
       "description": "A session owned by another backend is never attached after a runner switch.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured, for the same reason as session-continuation: the ids are fixture literals chosen to differ in owner, not recorded values."
+      },
+      "backends": [
+        "claude",
+        "codex",
+        "agy"
+      ],
+      "envelope": null,
+      "envelopeNullReason": "Authored as already-unwrapped model text. Routed through unwrapStreamJson these lines parse as no JSON object at all, so the unwrapper would take the !sawAnyLine raw-passthrough branch (stream-json-unwrapper.ts:112) and return them byte-for-byte; entering downstream is the same input with one fewer unasserted hop.",
       "output": {
         "stdoutLines": [
           "[SCHEGENT_STATUS: CLEAR]"
@@ -241,7 +351,18 @@
     },
     {
       "id": "prompt-injection-in-output",
-      "description": "FR-R3-084 \u00a73.4 \u2014 a backend whose output carries an INSTRUCTION aimed at the host. The status token is the host's own protocol, so text claiming a clean result, or telling the host to ignore its rules, must be treated as CONTENT and never as a verdict. Only the real token decides, and here there is none.",
+      "description": "FR-R3-084 §3.4 — a backend whose output carries an INSTRUCTION aimed at the host. The status token is the host's own protocol, so text claiming a clean result, or telling the host to ignore its rules, must be treated as CONTENT and never as a verdict. Only the real token decides, and here there is none.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured, and deliberately so. Writing the injected instruction ourselves is what keeps a real adversarial turn out of the corpus and keeps the text under test inspectable."
+      },
+      "backends": [
+        "claude",
+        "codex",
+        "agy"
+      ],
+      "envelope": null,
+      "envelopeNullReason": "Authored as already-unwrapped model text. Routed through unwrapStreamJson these lines parse as no JSON object at all, so the unwrapper would take the !sawAnyLine raw-passthrough branch (stream-json-unwrapper.ts:112) and return them byte-for-byte; entering downstream is the same input with one fewer unasserted hop.",
       "output": {
         "stdoutLines": [
           "I could not finish the task.",
@@ -260,6 +381,905 @@
         "terminationReason": "remaining_issues",
         "auditEntryPresent": true,
         "mayAdvance": false
+      }
+    },
+    {
+      "id": "envelope-claude-assistant",
+      "description": "Claude's assistant envelope unwraps to model text before the parser sees a byte.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured. FR-008b: a verbatim stream-json recording of a real turn carries session_id, usage figures and whole file contents inside tool_result blocks. This frame is built from the fields unwrapStreamJson actually reads and nothing else."
+      },
+      "backends": [
+        "claude"
+      ],
+      "envelope": {
+        "shape": "claude-assistant",
+        "lines": [
+          "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Implementation complete.\\n[SCHEGENT_STATUS: CLEAR]\"}]}}"
+        ],
+        "note": "Minimal by construction: type, message.content, the block type and its text. Every other field a real assistant frame carries is read by no verdict reader (FR-008c)."
+      },
+      "covers": [
+        "unwrapper:unwrapped-model-text"
+      ],
+      "output": {
+        "stdoutLines": [],
+        "stderrLines": [],
+        "exitCode": 0,
+        "auditBlock": "valid",
+        "truncated": false
+      },
+      "expected": {
+        "parserKind": "clean",
+        "phaseOutcome": "clean",
+        "terminationReason": "token",
+        "auditEntryPresent": true,
+        "mayAdvance": true,
+        "unwrappedText": "Implementation complete.\n[SCHEGENT_STATUS: CLEAR]",
+        "apiError": null
+      }
+    },
+    {
+      "id": "envelope-codex-item-completed",
+      "description": "Codex's item_completed envelope unwraps to model text before the parser sees a byte.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured, for the same FR-008b reason as the claude frame beside it."
+      },
+      "backends": [
+        "codex"
+      ],
+      "envelope": {
+        "shape": "codex-item-completed",
+        "lines": [
+          "{\"type\":\"item_completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"Implementation complete.\\n[SCHEGENT_STATUS: CLEAR]\"}}"
+        ],
+        "note": "The item_completed spelling. Shares a branch with agy (stream-json-unwrapper.ts:66) but not a discriminator value, so each spelling carries its own case."
+      },
+      "covers": [
+        "unwrapper:unwrapped-model-text"
+      ],
+      "output": {
+        "stdoutLines": [],
+        "stderrLines": [],
+        "exitCode": 0,
+        "auditBlock": "valid",
+        "truncated": false
+      },
+      "expected": {
+        "parserKind": "clean",
+        "phaseOutcome": "clean",
+        "terminationReason": "token",
+        "auditEntryPresent": true,
+        "mayAdvance": true,
+        "unwrappedText": "Implementation complete.\n[SCHEGENT_STATUS: CLEAR]",
+        "apiError": null
+      }
+    },
+    {
+      "id": "envelope-agy-item-completed",
+      "description": "Agy's dotted item.completed envelope unwraps to model text before the parser sees a byte.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured, for the same FR-008b reason as the two frames beside it."
+      },
+      "backends": [
+        "agy"
+      ],
+      "envelope": {
+        "shape": "agy-item-completed",
+        "lines": [
+          "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"Implementation complete.\\n[SCHEGENT_STATUS: CLEAR]\"}}"
+        ],
+        "note": "The dotted spelling the unwrapper accepts alongside item_completed so transcripts from earlier CLI versions stay replayable. A case per spelling, because a regression that drops one leaves the other passing."
+      },
+      "covers": [
+        "unwrapper:unwrapped-model-text"
+      ],
+      "output": {
+        "stdoutLines": [],
+        "stderrLines": [],
+        "exitCode": 0,
+        "auditBlock": "valid",
+        "truncated": false
+      },
+      "expected": {
+        "parserKind": "clean",
+        "phaseOutcome": "clean",
+        "terminationReason": "token",
+        "auditEntryPresent": true,
+        "mayAdvance": true,
+        "unwrappedText": "Implementation complete.\n[SCHEGENT_STATUS: CLEAR]",
+        "apiError": null
+      }
+    },
+    {
+      "id": "envelope-raw-passthrough",
+      "description": "Plain text on stdout is passed through untouched, with sawAnyLine never set.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured. This is the shape a backend run without --output-format stream-json produces, and it is the branch the eleven original cases were implicitly relying on without any case stating it."
+      },
+      "backends": [
+        "claude",
+        "codex",
+        "agy"
+      ],
+      "envelope": {
+        "shape": "raw-passthrough",
+        "lines": [
+          "Implementation complete.",
+          "[SCHEGENT_STATUS: CLEAR]"
+        ],
+        "note": "Not JSON, by definition: the property under test is that no line parses as a JSON object, so sawAnyLine stays false and the unwrapper returns rawText at :112. Claimed for all three backends because the branch is taken before any shape dispatch — nothing about it varies by backend."
+      },
+      "covers": [
+        "unwrapper:raw-passthrough"
+      ],
+      "output": {
+        "stdoutLines": [],
+        "stderrLines": [],
+        "exitCode": 0,
+        "auditBlock": "valid",
+        "truncated": false
+      },
+      "expected": {
+        "parserKind": "clean",
+        "phaseOutcome": "clean",
+        "terminationReason": "token",
+        "auditEntryPresent": true,
+        "mayAdvance": true,
+        "unwrappedText": "Implementation complete.\n[SCHEGENT_STATUS: CLEAR]",
+        "apiError": null
+      }
+    },
+    {
+      "id": "envelope-drift-claude-tool-use-only",
+      "description": "A frame the unwrapper cannot read falls back to raw stream-json, and the termination token survives inside it as literal bytes.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured. Reproducing this live means running a backend whose envelope schema has moved, which is a condition of the vendor CLI rather than of this repository."
+      },
+      "backends": [
+        "claude"
+      ],
+      "envelope": {
+        "shape": "claude-assistant",
+        "lines": [
+          "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"echo [SCHEGENT_STATUS: CLEAR]\"}}]}}"
+        ],
+        "note": "The frame parses, so sawAnyLine is set, but no branch flips hasModelText — so the unwrapper returns the RAW stream-json at :116 and the classifier is handed JSON. Claimed for this backend only: the failure to set hasModelText happens inside this shape branch, and the other two shapes reach the same return by their own."
+      },
+      "covers": [
+        "unwrapper:raw-fallback-on-drift"
+      ],
+      "output": {
+        "stdoutLines": [],
+        "stderrLines": [],
+        "exitCode": 0,
+        "auditBlock": "valid",
+        "truncated": false
+      },
+      "expected": {
+        "parserKind": "clean",
+        "phaseOutcome": "clean",
+        "terminationReason": "token",
+        "auditEntryPresent": true,
+        "mayAdvance": true,
+        "unwrappedText": "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"echo [SCHEGENT_STATUS: CLEAR]\"}}]}}",
+        "apiError": null
+      }
+    },
+    {
+      "id": "envelope-drift-codex-non-agent-item",
+      "description": "A frame the unwrapper cannot read falls back to raw stream-json, and the termination token survives inside it as literal bytes.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured. Reproducing this live means running a backend whose envelope schema has moved, which is a condition of the vendor CLI rather than of this repository."
+      },
+      "backends": [
+        "codex"
+      ],
+      "envelope": {
+        "shape": "codex-item-completed",
+        "lines": [
+          "{\"type\":\"item_completed\",\"item\":{\"type\":\"reasoning\",\"text\":\"Next: echo [SCHEGENT_STATUS: CLEAR]\"}}"
+        ],
+        "note": "The frame parses, so sawAnyLine is set, but no branch flips hasModelText — so the unwrapper returns the RAW stream-json at :116 and the classifier is handed JSON. Claimed for this backend only: the failure to set hasModelText happens inside this shape branch, and the other two shapes reach the same return by their own."
+      },
+      "covers": [
+        "unwrapper:raw-fallback-on-drift"
+      ],
+      "output": {
+        "stdoutLines": [],
+        "stderrLines": [],
+        "exitCode": 0,
+        "auditBlock": "valid",
+        "truncated": false
+      },
+      "expected": {
+        "parserKind": "clean",
+        "phaseOutcome": "clean",
+        "terminationReason": "token",
+        "auditEntryPresent": true,
+        "mayAdvance": true,
+        "unwrappedText": "{\"type\":\"item_completed\",\"item\":{\"type\":\"reasoning\",\"text\":\"Next: echo [SCHEGENT_STATUS: CLEAR]\"}}",
+        "apiError": null
+      }
+    },
+    {
+      "id": "envelope-drift-agy-non-agent-item",
+      "description": "A frame the unwrapper cannot read falls back to raw stream-json, and the termination token survives inside it as literal bytes.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured. Reproducing this live means running a backend whose envelope schema has moved, which is a condition of the vendor CLI rather than of this repository."
+      },
+      "backends": [
+        "agy"
+      ],
+      "envelope": {
+        "shape": "agy-item-completed",
+        "lines": [
+          "{\"type\":\"item.completed\",\"item\":{\"type\":\"reasoning\",\"text\":\"Next: echo [SCHEGENT_STATUS: CLEAR]\"}}"
+        ],
+        "note": "The frame parses, so sawAnyLine is set, but no branch flips hasModelText — so the unwrapper returns the RAW stream-json at :116 and the classifier is handed JSON. Claimed for this backend only: the failure to set hasModelText happens inside this shape branch, and the other two shapes reach the same return by their own."
+      },
+      "covers": [
+        "unwrapper:raw-fallback-on-drift"
+      ],
+      "output": {
+        "stdoutLines": [],
+        "stderrLines": [],
+        "exitCode": 0,
+        "auditBlock": "valid",
+        "truncated": false
+      },
+      "expected": {
+        "parserKind": "clean",
+        "phaseOutcome": "clean",
+        "terminationReason": "token",
+        "auditEntryPresent": true,
+        "mayAdvance": true,
+        "unwrappedText": "{\"type\":\"item.completed\",\"item\":{\"type\":\"reasoning\",\"text\":\"Next: echo [SCHEGENT_STATUS: CLEAR]\"}}",
+        "apiError": null
+      }
+    },
+    {
+      "id": "envelope-api-error-exit-zero",
+      "description": "An upstream API error on a zero exit is malformed, and the mapper floors it at issues_remain rather than failed.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured. Recording this class means provoking a real upstream 529, which an offline suite may not do (FR-009)."
+      },
+      "backends": [
+        "claude",
+        "codex",
+        "agy"
+      ],
+      "envelope": {
+        "shape": "claude-assistant",
+        "lines": [
+          "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Partial work; the upstream turn failed.\"}]}}",
+          "{\"type\":\"result\",\"is_error\":true,\"terminal_reason\":\"overloaded_error\",\"errors\":[\"upstream returned 529\"]}"
+        ],
+        "note": "The terminal frame carries is_error, which processLine reads at :35 — before the type dispatch and regardless of it. That is why this entry is claimed for all three backends from one case while the drift branch beside it is not: the api-error read involves no shape branch at all, whereas drift is reached from inside three different ones. The assistant frame is here only so unwrappedText is model text rather than the raw stream; the branch under test does not depend on it."
+      },
+      "covers": [
+        "unwrapper:api-error-detected"
+      ],
+      "output": {
+        "stdoutLines": [],
+        "stderrLines": [],
+        "exitCode": 0,
+        "auditBlock": "valid",
+        "truncated": false
+      },
+      "expected": {
+        "parserKind": "malformed",
+        "phaseOutcome": "issues_remain",
+        "terminationReason": "remaining_issues",
+        "auditEntryPresent": true,
+        "mayAdvance": false,
+        "unwrappedText": "Partial work; the upstream turn failed.",
+        "apiError": {
+          "isError": true,
+          "terminalReason": "overloaded_error",
+          "errors": [
+            "upstream returned 529"
+          ]
+        },
+        "resultWarningIncludes": "[api_error] overloaded_error"
+      }
+    },
+    {
+      "id": "envelope-api-error-nonzero-exit",
+      "description": "The same upstream API error on a non-zero exit is failed, which is the mapper sub-branch its zero-exit twin does not reach.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured. Recording this class means provoking a real upstream 529, which an offline suite may not do (FR-009)."
+      },
+      "backends": [
+        "claude",
+        "codex",
+        "agy"
+      ],
+      "envelope": {
+        "shape": "claude-assistant",
+        "lines": [
+          "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Partial work; the upstream turn failed.\"}]}}",
+          "{\"type\":\"result\",\"is_error\":true,\"terminal_reason\":\"overloaded_error\",\"errors\":[\"upstream returned 529\"]}"
+        ],
+        "note": "The terminal frame carries is_error, which processLine reads at :35 — before the type dispatch and regardless of it. That is why this entry is claimed for all three backends from one case while the drift branch beside it is not: the api-error read involves no shape branch at all, whereas drift is reached from inside three different ones. The assistant frame is here only so unwrappedText is model text rather than the raw stream; the branch under test does not depend on it."
+      },
+      "covers": [
+        "unwrapper:api-error-detected"
+      ],
+      "output": {
+        "stdoutLines": [],
+        "stderrLines": [],
+        "exitCode": 1,
+        "auditBlock": "valid",
+        "truncated": false
+      },
+      "expected": {
+        "parserKind": "malformed",
+        "phaseOutcome": "failed",
+        "terminationReason": "error",
+        "auditEntryPresent": true,
+        "mayAdvance": false,
+        "unwrappedText": "Partial work; the upstream turn failed.",
+        "apiError": {
+          "isError": true,
+          "terminalReason": "overloaded_error",
+          "errors": [
+            "upstream returned 529"
+          ]
+        },
+        "resultWarningIncludes": "[api_error] overloaded_error"
+      }
+    },
+    {
+      "id": "credit-matcher-out-of-usage",
+      "description": "An out-of-usage notice on stderr is a hard rate limit, distinct from the generic matcher above it.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured. Recording this class means exhausting a real account against a real vendor, which an offline suite may not do (FR-009). The stderr line is phrased to match one RATE_LIMIT_MATCHERS entry and no earlier one, and the case asserts which."
+      },
+      "backends": [
+        "claude",
+        "codex",
+        "agy"
+      ],
+      "envelope": null,
+      "envelopeNullReason": "Authored with no model text at all: stdoutLines is empty, so there is nothing for unwrapStreamJson to unwrap. The verdict here is decided from stderr and the exit code, both of which sit outside the envelope tier entirely.",
+      "covers": [
+        "credit-detector:matcher:out-of-usage",
+        "credit-detector:branch:stderr-match"
+      ],
+      "output": {
+        "stdoutLines": [],
+        "stderrLines": [
+          "You are out of extra usage; the allowance resets at 15:00 PT."
+        ],
+        "exitCode": 1,
+        "auditBlock": "none",
+        "truncated": false
+      },
+      "expected": {
+        "parserKind": "rate_limited",
+        "phaseOutcome": "rate_limited",
+        "terminationReason": "rate_limit",
+        "auditEntryPresent": false,
+        "mayAdvance": false,
+        "creditDetection": {
+          "matched": true,
+          "cause": "out-of-usage"
+        }
+      }
+    },
+    {
+      "id": "credit-matcher-credits-exhausted",
+      "description": "An exhausted credit balance on stderr is a hard rate limit.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured. Recording this class means exhausting a real account against a real vendor, which an offline suite may not do (FR-009). The stderr line is phrased to match one RATE_LIMIT_MATCHERS entry and no earlier one, and the case asserts which."
+      },
+      "backends": [
+        "claude",
+        "codex",
+        "agy"
+      ],
+      "envelope": null,
+      "envelopeNullReason": "Authored with no model text at all: stdoutLines is empty, so there is nothing for unwrapStreamJson to unwrap. The verdict here is decided from stderr and the exit code, both of which sit outside the envelope tier entirely.",
+      "covers": [
+        "credit-detector:matcher:credits-exhausted",
+        "credit-detector:branch:stderr-match"
+      ],
+      "output": {
+        "stdoutLines": [],
+        "stderrLines": [
+          "Your credits are exhausted for this billing period."
+        ],
+        "exitCode": 1,
+        "auditBlock": "none",
+        "truncated": false
+      },
+      "expected": {
+        "parserKind": "rate_limited",
+        "phaseOutcome": "rate_limited",
+        "terminationReason": "rate_limit",
+        "auditEntryPresent": false,
+        "mayAdvance": false,
+        "creditDetection": {
+          "matched": true,
+          "cause": "credits-exhausted"
+        }
+      }
+    },
+    {
+      "id": "credit-matcher-quota-exceeded",
+      "description": "An exceeded quota on stderr is a hard rate limit.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured. Recording this class means exhausting a real account against a real vendor, which an offline suite may not do (FR-009). The stderr line is phrased to match one RATE_LIMIT_MATCHERS entry and no earlier one, and the case asserts which."
+      },
+      "backends": [
+        "claude",
+        "codex",
+        "agy"
+      ],
+      "envelope": null,
+      "envelopeNullReason": "Authored with no model text at all: stdoutLines is empty, so there is nothing for unwrapStreamJson to unwrap. The verdict here is decided from stderr and the exit code, both of which sit outside the envelope tier entirely.",
+      "covers": [
+        "credit-detector:matcher:quota-exceeded",
+        "credit-detector:branch:stderr-match"
+      ],
+      "output": {
+        "stdoutLines": [],
+        "stderrLines": [
+          "Monthly quota exceeded for this workspace."
+        ],
+        "exitCode": 1,
+        "auditBlock": "none",
+        "truncated": false
+      },
+      "expected": {
+        "parserKind": "rate_limited",
+        "phaseOutcome": "rate_limited",
+        "terminationReason": "rate_limit",
+        "auditEntryPresent": false,
+        "mayAdvance": false,
+        "creditDetection": {
+          "matched": true,
+          "cause": "quota-exceeded"
+        }
+      }
+    },
+    {
+      "id": "credit-matcher-session-limit",
+      "description": "A session limit on stderr is a hard rate limit.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured. Recording this class means exhausting a real account against a real vendor, which an offline suite may not do (FR-009). The stderr line is phrased to match one RATE_LIMIT_MATCHERS entry and no earlier one, and the case asserts which."
+      },
+      "backends": [
+        "claude",
+        "codex",
+        "agy"
+      ],
+      "envelope": null,
+      "envelopeNullReason": "Authored with no model text at all: stdoutLines is empty, so there is nothing for unwrapStreamJson to unwrap. The verdict here is decided from stderr and the exit code, both of which sit outside the envelope tier entirely.",
+      "covers": [
+        "credit-detector:matcher:session-limit",
+        "credit-detector:branch:stderr-match"
+      ],
+      "output": {
+        "stdoutLines": [],
+        "stderrLines": [
+          "You have hit your session limit; try again after 18:00 PT."
+        ],
+        "exitCode": 1,
+        "auditBlock": "none",
+        "truncated": false
+      },
+      "expected": {
+        "parserKind": "rate_limited",
+        "phaseOutcome": "rate_limited",
+        "terminationReason": "rate_limit",
+        "auditEntryPresent": false,
+        "mayAdvance": false,
+        "creditDetection": {
+          "matched": true,
+          "cause": "session-limit"
+        }
+      }
+    },
+    {
+      "id": "credit-exit-429-without-diagnostic",
+      "description": "A 429 exit status alone is a hard rate limit, with no stderr text for any matcher to read.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured, for the same FR-009 reason as the matcher cases. The shape it stands for is a gateway that closes the turn on status alone."
+      },
+      "backends": [
+        "claude",
+        "codex",
+        "agy"
+      ],
+      "envelope": null,
+      "envelopeNullReason": "Authored as already-unwrapped model text. Routed through unwrapStreamJson these lines parse as no JSON object at all, so the unwrapper would take the !sawAnyLine raw-passthrough branch (stream-json-unwrapper.ts:112) and return them byte-for-byte; entering downstream is the same input with one fewer unasserted hop.",
+      "covers": [
+        "credit-detector:branch:exit-429"
+      ],
+      "output": {
+        "stdoutLines": [
+          "The backend closed the turn without writing a diagnostic."
+        ],
+        "stderrLines": [],
+        "exitCode": 429,
+        "auditBlock": "none",
+        "truncated": false
+      },
+      "expected": {
+        "parserKind": "rate_limited",
+        "phaseOutcome": "rate_limited",
+        "terminationReason": "rate_limit",
+        "auditEntryPresent": false,
+        "mayAdvance": false,
+        "creditDetection": {
+          "matched": true,
+          "cause": "rate-limit"
+        }
+      }
+    },
+    {
+      "id": "credit-stdout-sigil-out-of-credits",
+      "description": "An out_of_credits sigil in the stdout trailing window is a hard rate limit, read from stdout rather than stderr.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured, for the same FR-009 reason as the matcher cases. The line is built from the two tokens matchLine tests for and nothing else."
+      },
+      "backends": [
+        "claude",
+        "codex",
+        "agy"
+      ],
+      "envelope": null,
+      "envelopeNullReason": "Carried as raw stdout rather than as an envelope on purpose. In production detectCreditError reads raw.stdoutBuffer (phase-runner.ts:760) — the untransformed bytes, before any unwrap — so the sigil this case is about is seen pre-unwrap. Declaring an envelope would hand the detector the unwrapped model text instead, which is not the input the branch under test ever sees.",
+      "covers": [
+        "credit-detector:branch:sigil-out-of-credits"
+      ],
+      "output": {
+        "stdoutLines": [
+          "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"rejected\",\"reason\":\"out_of_credits\"}}"
+        ],
+        "stderrLines": [],
+        "exitCode": 1,
+        "auditBlock": "none",
+        "truncated": false
+      },
+      "expected": {
+        "parserKind": "rate_limited",
+        "phaseOutcome": "rate_limited",
+        "terminationReason": "rate_limit",
+        "auditEntryPresent": false,
+        "mayAdvance": false,
+        "creditDetection": {
+          "matched": true,
+          "cause": "out-of-credits"
+        }
+      }
+    },
+    {
+      "id": "credit-stdout-sigil-rate-limit",
+      "description": "A rejected rate_limit_event with no out_of_credits marker is a rate limit rather than an exhausted balance.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured, for the same FR-009 reason as the matcher cases. Paired with the out_of_credits case so the precedence between the two sigils is asserted rather than assumed."
+      },
+      "backends": [
+        "claude",
+        "codex",
+        "agy"
+      ],
+      "envelope": null,
+      "envelopeNullReason": "Carried as raw stdout rather than as an envelope on purpose. In production detectCreditError reads raw.stdoutBuffer (phase-runner.ts:760) — the untransformed bytes, before any unwrap — so the sigil this case is about is seen pre-unwrap. Declaring an envelope would hand the detector the unwrapped model text instead, which is not the input the branch under test ever sees.",
+      "covers": [
+        "credit-detector:branch:sigil-rate-limit"
+      ],
+      "output": {
+        "stdoutLines": [
+          "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"rejected\"}}"
+        ],
+        "stderrLines": [],
+        "exitCode": 1,
+        "auditBlock": "none",
+        "truncated": false
+      },
+      "expected": {
+        "parserKind": "rate_limited",
+        "phaseOutcome": "rate_limited",
+        "terminationReason": "rate_limit",
+        "auditEntryPresent": false,
+        "mayAdvance": false,
+        "creditDetection": {
+          "matched": true,
+          "cause": "rate-limit"
+        }
+      }
+    },
+    {
+      "id": "credit-soft-warn-allowed-warning",
+      "description": "A courtesy allowed_warning is suppressed: the run is not rate-limited, so it is retried rather than parked for hours.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured, for the same FR-009 reason as the matcher cases. This is the suppression half of the detector and the half with no return value to read: the branch returns null, so only an assertion that the run was NOT rate-limited can witness it."
+      },
+      "backends": [
+        "claude",
+        "codex",
+        "agy"
+      ],
+      "envelope": null,
+      "envelopeNullReason": "Carried as raw stdout rather than as an envelope on purpose. In production detectCreditError reads raw.stdoutBuffer (phase-runner.ts:760) — the untransformed bytes, before any unwrap — so the sigil this case is about is seen pre-unwrap. Declaring an envelope would hand the detector the unwrapped model text instead, which is not the input the branch under test ever sees.",
+      "covers": [
+        "credit-detector:branch:soft-warn-allowed_warning"
+      ],
+      "output": {
+        "stdoutLines": [
+          "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"allowed_warning\",\"resets_at\":\"18:00\"}}"
+        ],
+        "stderrLines": [],
+        "exitCode": 1,
+        "auditBlock": "none",
+        "truncated": false
+      },
+      "expected": {
+        "parserKind": "transient_error",
+        "phaseOutcome": "transient_error",
+        "terminationReason": "error",
+        "auditEntryPresent": false,
+        "mayAdvance": false,
+        "creditDetection": {
+          "matched": false,
+          "cause": ""
+        }
+      }
+    },
+    {
+      "id": "credit-soft-warn-allow",
+      "description": "A plain allow status is suppressed too, and is not swept up by the allowed_warning test that precedes it.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured, for the same FR-009 reason as the matcher cases. This is the suppression half of the detector and the half with no return value to read: the branch returns null, so only an assertion that the run was NOT rate-limited can witness it."
+      },
+      "backends": [
+        "claude",
+        "codex",
+        "agy"
+      ],
+      "envelope": null,
+      "envelopeNullReason": "Carried as raw stdout rather than as an envelope on purpose. In production detectCreditError reads raw.stdoutBuffer (phase-runner.ts:760) — the untransformed bytes, before any unwrap — so the sigil this case is about is seen pre-unwrap. Declaring an envelope would hand the detector the unwrapped model text instead, which is not the input the branch under test ever sees.",
+      "covers": [
+        "credit-detector:branch:soft-warn-allow"
+      ],
+      "output": {
+        "stdoutLines": [
+          "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"allow\",\"resets_at\":\"18:00\"}}"
+        ],
+        "stderrLines": [],
+        "exitCode": 1,
+        "auditBlock": "none",
+        "truncated": false
+      },
+      "expected": {
+        "parserKind": "transient_error",
+        "phaseOutcome": "transient_error",
+        "terminationReason": "error",
+        "auditEntryPresent": false,
+        "mayAdvance": false,
+        "creditDetection": {
+          "matched": false,
+          "cause": ""
+        }
+      }
+    },
+    {
+      "id": "fatal-autocompact-on-stdout",
+      "description": "A both-streams fatal signature matches on stdout, which is the stream the stderr-scoped signature can never be found on.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured. Reproducing it live means driving a real CLI into an autocompact loop, which is a multi-hour condition the suite may not provoke."
+      },
+      "backends": [
+        "claude",
+        "codex",
+        "agy"
+      ],
+      "envelope": null,
+      "envelopeNullReason": "Authored as already-unwrapped model text. Routed through unwrapStreamJson these lines parse as no JSON object at all, so the unwrapper would take the !sawAnyLine raw-passthrough branch (stream-json-unwrapper.ts:112) and return them byte-for-byte; entering downstream is the same input with one fewer unasserted hop.",
+      "covers": [
+        "fatal-detector:signature:Autocompact is thrashing",
+        "fatal-detector:stream:stdout",
+        "fatal-detector:branch:stdout-match"
+      ],
+      "output": {
+        "stdoutLines": [
+          "Autocompact is thrashing; the turn cannot continue."
+        ],
+        "stderrLines": [],
+        "exitCode": 0,
+        "auditBlock": "valid",
+        "truncated": false
+      },
+      "expected": {
+        "parserKind": "malformed",
+        "phaseOutcome": "failed",
+        "terminationReason": "error",
+        "auditEntryPresent": true,
+        "mayAdvance": false,
+        "fatalClassification": {
+          "matched": true,
+          "signature": "Autocompact is thrashing"
+        }
+      }
+    },
+    {
+      "id": "fatal-operator-defined-signature",
+      "description": "An operator-registered pattern is fatal on the same footing as the built-in floor, and is attributed to the operator rather than to the code.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured. The pattern is a fixture marker with no meaning to any real CLI, which is the point: it can only match because the operator registered it."
+      },
+      "backends": [
+        "claude",
+        "codex",
+        "agy"
+      ],
+      "envelope": null,
+      "envelopeNullReason": "Authored as already-unwrapped model text. Routed through unwrapStreamJson these lines parse as no JSON object at all, so the unwrapper would take the !sawAnyLine raw-passthrough branch (stream-json-unwrapper.ts:112) and return them byte-for-byte; entering downstream is the same input with one fewer unasserted hop.",
+      "covers": [
+        "fatal-detector:source:operator-defined"
+      ],
+      "output": {
+        "stdoutLines": [
+          "schegent-fixture-fatal-marker: the operator-registered pattern fired."
+        ],
+        "stderrLines": [],
+        "exitCode": 1,
+        "auditBlock": "none",
+        "truncated": false
+      },
+      "parseInputs": {
+        "operatorFatalSignatures": [
+          "schegent-fixture-fatal-marker"
+        ]
+      },
+      "expected": {
+        "parserKind": "malformed",
+        "phaseOutcome": "failed",
+        "terminationReason": "error",
+        "auditEntryPresent": false,
+        "mayAdvance": false,
+        "fatalClassification": {
+          "matched": true,
+          "signature": "schegent-fixture-fatal-marker"
+        }
+      }
+    },
+    {
+      "id": "fatal-suppressed-by-stream-scope",
+      "description": "A stderr-scoped signature appearing on stdout does not fail the phase, which is the 2026-08-16 incident in fixture form.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured. The incident it stands for was a speckit-implement phase reading this repository's own ARCHITECTURE.md, which quotes the pattern verbatim; the phase was failed at 3.6 hours on exit code 0. A recording would have to carry that file."
+      },
+      "backends": [
+        "claude",
+        "codex",
+        "agy"
+      ],
+      "envelope": null,
+      "envelopeNullReason": "Authored as already-unwrapped model text. Routed through unwrapStreamJson these lines parse as no JSON object at all, so the unwrapper would take the !sawAnyLine raw-passthrough branch (stream-json-unwrapper.ts:112) and return them byte-for-byte; entering downstream is the same input with one fewer unasserted hop.",
+      "covers": [
+        "fatal-detector:branch:stream-scope-suppression"
+      ],
+      "output": {
+        "stdoutLines": [
+          "error: unknown option '--unsafe-flag'",
+          "[SCHEGENT_STATUS: CLEAR]"
+        ],
+        "stderrLines": [],
+        "exitCode": 0,
+        "auditBlock": "valid",
+        "truncated": false
+      },
+      "expected": {
+        "parserKind": "clean",
+        "phaseOutcome": "clean",
+        "terminationReason": "token",
+        "auditEntryPresent": true,
+        "mayAdvance": true,
+        "fatalClassification": {
+          "matched": false
+        }
+      }
+    },
+    {
+      "id": "fatal-suppressed-by-structured-envelope",
+      "description": "A both-streams signature quoted inside a stream-json frame does not fail the phase: a line opening with a brace is not a CLI diagnostic.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured, and minimal by FR-008b: a real tool_result frame carrying a file would put that whole file in the corpus."
+      },
+      "backends": [
+        "claude",
+        "codex",
+        "agy"
+      ],
+      "envelope": null,
+      "envelopeNullReason": "Carried as raw stdout rather than as an envelope on purpose. The suppression under test is about what a line LOOKS like to isDiagnosticLine, and in production the stream fatal scan runs over the untransformed stream lines. Declaring an envelope would route the line through unwrapStreamJson and hand the detector unwrapped text, which is the opposite of the branch under test.",
+      "covers": [
+        "fatal-detector:branch:isDiagnosticLine:structured-envelope"
+      ],
+      "output": {
+        "stdoutLines": [
+          "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":\"Autocompact is thrashing\"}]}}",
+          "[SCHEGENT_STATUS: CLEAR]"
+        ],
+        "stderrLines": [],
+        "exitCode": 0,
+        "auditBlock": "valid",
+        "truncated": false
+      },
+      "expected": {
+        "parserKind": "clean",
+        "phaseOutcome": "clean",
+        "terminationReason": "token",
+        "auditEntryPresent": true,
+        "mayAdvance": true,
+        "fatalClassification": {
+          "matched": false
+        }
+      }
+    },
+    {
+      "id": "fatal-suppressed-by-line-length",
+      "description": "A both-streams signature inside a line longer than a CLI diagnostic can be does not fail the phase.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured. The padding is filler rather than a real payload precisely because FR-019 bounds what the corpus may carry; the property under test is the line's length, not its content."
+      },
+      "backends": [
+        "claude",
+        "codex",
+        "agy"
+      ],
+      "envelope": null,
+      "envelopeNullReason": "Carried as raw stdout rather than as an envelope on purpose. The suppression under test is about what a line LOOKS like to isDiagnosticLine, and in production the stream fatal scan runs over the untransformed stream lines. Declaring an envelope would route the line through unwrapStreamJson and hand the detector unwrapped text, which is the opposite of the branch under test.",
+      "covers": [
+        "fatal-detector:branch:isDiagnosticLine:over-length"
+      ],
+      "output": {
+        "stdoutLines": [
+          "tool_result(read docs/hard-rules.md): Autocompact is thrashing ................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................",
+          "[SCHEGENT_STATUS: CLEAR]"
+        ],
+        "stderrLines": [],
+        "exitCode": 0,
+        "auditBlock": "valid",
+        "truncated": false
+      },
+      "expected": {
+        "parserKind": "clean",
+        "phaseOutcome": "clean",
+        "terminationReason": "token",
+        "auditEntryPresent": true,
+        "mayAdvance": true,
+        "fatalClassification": {
+          "matched": false
+        }
       }
     }
   ]
