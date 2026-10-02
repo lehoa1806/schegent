@@ -76,8 +76,9 @@ license check — run inside the attested gate command (`npm run gate`), which i
 release is bound to. The other two do not, and the difference matters more than the
 count: `npm audit` runs locally but only when an operator invokes it, for the reason its
 row states; Dependabot does not run here at all, it runs on GitHub, and it opens pull
-requests that nothing then checks. There is no remote enforcement point, so a control
-outside the gate is a control nothing runs for you.
+requests that nothing then checks. What governs those is a merge rule the operator follows,
+not a check: see [gate recording](docs/operations/gate-recording.md). There is no remote
+enforcement point, so a control outside the gate is a control nothing runs for you.
 
 > **This sentence was false for ~32 hours, from 2026-08-27 00:15 +0700 to 2026-08-28, and
 > `FR-R3-135` is why it is true now.** The controls were inside the `gate` script chain the
@@ -106,7 +107,7 @@ outside the gate is a control nothing runs for you.
 | npm audit | Root and `webview-ui` lockfiles, **operator-invoked** (`npm run security:audit`) | `npm audit --audit-level=low`; it does not auto-fix or commit. **Not in the attested gate**, and the reason is stated rather than left to inference: it queries the npm registry, so a gate containing it would fail for want of a network — and a gate that fails for reasons unrelated to the tree is a gate people learn to bypass with `--no-verify`. Before this item it had no local home at all: the deleted `security-audit.yml` was its only caller. <!-- Source: package.json --> |
 | Workflow pin check | Any workflow file that reappears | `scripts/check-workflow-pins.mjs` requires immutable 40-character SHA pins. With no workflows present it reports *nothing to pin* rather than *passed* — a latent guard against a re-added, unpinned workflow. <!-- Source: package.json --><!-- Source: scripts/check-workflow-pins.mjs --> |
 | License check | Root manifest and the license operations record | `scripts/check-licenses.mjs` checks that `LICENSE.md` and `docs/operations/licenses.md` exist and that the manifest has a truthy `license` field; it does not inspect dependency licenses. <!-- Source: package.json --><!-- Source: scripts/check-licenses.mjs --> |
-| Dependabot | Root and `webview-ui` npm manifests; weekly Monday minor/patch updates; major updates ignored | Still configured, and it opens pull requests — but **nothing runs checks on them any more**. A Dependabot pull request now arrives unverified. <!-- Source: .github/dependabot.yml --> |
+| Dependabot | Root and `webview-ui` npm manifests; weekly Monday minor/patch updates; major updates ignored | Still configured, and it opens pull requests — but **nothing runs checks on them any more**. A Dependabot pull request now arrives unverified. It is merged into `develop` only from a commit that carries a passing `npm run gate:record` record naming that commit, and that is a rule the operator follows, not a check ([gate recording](docs/operations/gate-recording.md)). <!-- Source: .github/dependabot.yml --><!-- Source: docs/operations/gate-recording.md --> |
 
 ### Durability of the evidence writes
 

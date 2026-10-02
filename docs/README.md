@@ -176,6 +176,7 @@ drifts unnoticed, because the readers who would catch an error never get there.
 - [Contract generation](operations/contract-generation.md)
 - [Dashboard UI](operations/dashboard-ui.md)
 - [Data retention and deletion](operations/data-retention-and-deletion.md)
+- [Gate recording](operations/gate-recording.md) — **declared 2026-10-02**: what a `npm run gate:record` record is and is not, and the rule that binds a bot-proposed dependency change to one, with how to perform it
 - [Inspect audit logs](operations/inspect-audit-logs.md)
 - [Inspect raw transcripts](operations/inspect-raw-transcripts.md)
 - [Interactive verification register](operations/interactive-verification-register.md) — **opened 2026-09-06**: the interactive dev-host evidence specs `067` and `068` still owe, who owes it, what would close it, and the date it is re-read on

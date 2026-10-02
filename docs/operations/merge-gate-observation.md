@@ -12,6 +12,12 @@
 > control was is recorded in
 > [withdrawn CI controls](../release/withdrawn-ci-controls.md).
 
+> **Pointer, 2026-10-02.** This page does not govern merges, and it does not say what governs a
+> bot-proposed dependency change. That rule is recorded, in four fields with how to perform it, in
+> [gate recording](gate-recording.md): a bot-proposed dependency change is merged into `develop` only
+> from a commit that carries a passing `npm run gate:record` record naming that commit; nothing on
+> GitHub checks it, so the rule holds only as far as the operator follows it.
+
 This runbook separates three questions that are easy to collapse into one:
 
 1. Does the checked-in workflow declare a trigger for the integration branch?
