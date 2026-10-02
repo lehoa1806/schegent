@@ -528,6 +528,7 @@
     "ci": "npm run typecheck && npm run typecheck:webview && npm run typecheck:tests && npm run lint && npm run lint:webview && npm run build:webview && npm run test:coverage && npm run test:webview:coverage && npm run test:evals && npm run test:visual && npm run a11y && npm run test:perf && npm run test:e2e && npm run build && npm run package:smoke && npm run test:integration",
     "gate": "npm run contracts:check && npm run docs:check && npm run security:secrets && npm run security:actions && npm run license:check && npm run ci",
     "gate:record": "node scripts/record-gate-run.mjs",
+    "gate:distance": "node scripts/gate-distance.mjs",
     "release:preflight": "node scripts/require-local-gate.mjs",
     "sbom": "node scripts/generate-sbom.mjs",
     "package": "npm run sbom && vsce package --no-dependencies",
