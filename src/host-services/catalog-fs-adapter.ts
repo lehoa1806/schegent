@@ -143,7 +143,11 @@ export function createCatalogFsAdapter(
     if (walk === null) {
       return { outcome: 'refused', reason: 'escapes-root', errno: CONTAINMENT_ERRNO };
     }
-    return openWithinRootByPath(walk.root, provenPath, { flags, fileMode: FILE_MODE });
+    return openWithinRootByPath(walk.root, provenPath, {
+      flags,
+      createDirs: false,
+      fileMode: FILE_MODE
+    });
   };
 
   /**

@@ -19,10 +19,10 @@ predicted it: its author sampled the set and found every gate well motivated.
 
 | Figure | Value | Date | Method |
 |---|---|---|---|
-| Gate files | **200** | 2026-09-13 | `*.test.ts` under `tests/lint/` recursively |
-| Marked `unique` | 181 | 2026-09-13 | hand verdict |
-| Marked `partially redundant` | 19 | 2026-09-13 | hand verdict |
-| Marked `redundant` | 0 | 2026-09-13 | hand verdict |
+| Gate files | **201** | 2026-10-01 | `*.test.ts` under `tests/lint/` recursively |
+| Marked `unique` | 181 | 2026-10-01 | hand verdict |
+| Marked `partially redundant` | 20 | 2026-10-01 | hand verdict |
+| Marked `redundant` | 0 | 2026-10-01 | hand verdict |
 
 <!-- census:prose -->
 The three verdict rows sum to the gate-file count, so they are one measurement and carry one
@@ -367,6 +367,7 @@ instance is the evidence that the shape recurs, and it retires that argument.
 | `elect-before-recovering.test.ts` | FR-R3-070 — activation elects before it recovers | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `empty-catch-declares-intent.test.ts` | Feature 112 empty catches declare intent | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `eslint-baseline.test.ts` | Feature 112 eslint baseline shape | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
+| `evidence-sink-mode-census.test.ts` | Feature 217 evidence-sink mode census | `SafeOpenOptions` in `src/lib/safe-open.ts` (a helper write with no mode, at a typed call only); `safe-open-migration.test.ts` (a raw call in a module on none of its lists, refused for routing, not for mode) | partially redundant | the union makes an `'a'`, `'w'` or `'wx'` open with no `fileMode`, or `createDirs: true` with no `dirMode`, a compile error, so that half of the overlap is complete wherever the checker sees the options typed. A cast past it (`{ flags: 'a' } as SafeOpenOptions`) compiles — probed 2026-10-01 — and leaves the mode unread, which is why this gate reads the literal. `safe-open-migration` flags a FILE, not a site, and only for a call on an `fs`-prefixed receiver or an injected port type: a raw `open` from a named import, or a new site in a module already on one of its lists, passes it, and what it does refuse it refuses for routing, never for a missing mode. Nothing else asserts that `chmod` lives only in `src/lib/narrow-mode.ts` (feature 217 FR-007), that every raw writing reach names its mode or carries a stated disposition, that a namespace handed on whole is followed or refused, or that a disposition still covers a site. Measured 2026-10-01 by TypeScript AST with import-binding resolution: 532 source files, 155 reaches (41 writing, 2 changing a mode), 24 writing helper calls outside the helper, 12 dispositions. The probes that show it load-bearing: three applied mutants, each red — strike the raw-transcript `chmod` disposition, disable the `fileMode` check, empty the fs module set — and the ten synthetic sites of T1804a, each failing with its file named |
 | `expansion-freeze.test.ts` | FR-R3-086 §5 — the expansion freeze holds | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `gate-integrity/coverage-split.test.ts` | FR-R3-088 — product coverage is reported separately from suite coverage | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `gate-integrity/mutation-controls.test.ts` | FR-R3-088 — mutation controls, derived from real source files | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |

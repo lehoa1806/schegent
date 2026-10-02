@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 114
+    vacuity-census-denominator: 115
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **114** |
+| Gates the detector calls **controlled** (the denominator) | **115** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -1413,3 +1413,26 @@ text — the three spellings this tree actually writes, the optional declaration
 write, and the three near-misses (`?.`, `??`, plain truthiness) that must not count as guards. That
 half is what a floor cannot reach: a matcher loosened until it matches a guard that does not guard
 would keep the floor satisfied and the census green while the gate asserted nothing.
+
+**Denominator movement 114 → 115 (2026-10-02, feature 217 / `FR-R3-179`, `FR-008`).** One gate joined,
+controlled on its first run. Attribution is by census membership rather than by the net count: the
+controlled set was computed at `HEAD` and in the working tree, and this file is the only gate that joined
+and none left, which matters because the same feature also edited three other gates in this directory.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | `evidence-sink-mode-census.test.ts` (114 → 115) | Joined. Refuses a path `src/` creates without `src/lib/safe-open.ts` and without a stated disposition, and a `chmod` outside `src/lib/narrow-mode.ts`. The subject set is the scan rather than a list of sinks: every `.ts` file under `src/` is parsed by TypeScript and each file's own imports say which of its names reach `node:fs`, so a sink nobody remembered to list is still a subject. It asserts `toEqual([])` over one verdict, which is this census's usual shape with its usual risk, and here the risk is sharper than a moved directory: a binding resolution that quietly stopped resolving would empty the scan and give the cleanest possible result. Controlled by three floors set well under what they measured on 2026-10-01 (more than 400 files against 532, more than 120 filesystem reaches against 155, more than 18 writing helper calls against 24) and two presences — the raw `open` and `mkdir` the helper forwards through, and the one permitted `chmod` — since a scan blind to those is blind to the same call anywhere else. |
+
+The floors answer *did the scan reach anything*; the second control answers *does the verdict fail what
+it claims to fail*, which no floor can. Ten cases each add one deliberately non-conforming synthetic
+source to the real scan and judge the result through the same `verdict` the gate calls, so every failure
+they see is the synthetic file's: an open with no `fileMode`, a directory-creating open with no
+`dirMode`, options the census cannot read, a raw open with no mode, a raw open with a mode and no reason,
+a second narrowing mechanism, a namespace handed on where the scan cannot follow it, a port that hands a
+creating member on, a new site inside a file that already carries a reason, and a disposition whose site
+has gone. A guard beside them asserts that the directory the synthetic sources claim to sit in does not
+exist, so a failure those cases see can only be the synthetic source's and never a real file's at the
+same path.
+
+The rate stays **0.0%**: the entrant was mutated with the rest and did not survive
+(`mutated=115 stillCalledControlled=0`).

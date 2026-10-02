@@ -2,6 +2,8 @@ import * as fsp from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import * as path from 'node:path';
 
+import { NON_OWNER_BITS, narrowMode, noticeFor, type NarrowingNotice } from './narrow-mode';
+
 /**
  * FR-R3-053 (H-02) — open a file under a trusted root without ever letting a
  * symlink decide where the bytes go, and RETAIN the descriptor so the pathname
@@ -73,8 +75,70 @@ export type SafeOpenRefusal =
   /** A syscall failed, so nothing could be proven. */
   | 'io-failed';
 
+/**
+ * Feature 217 (FR-004, FR-008) — what an open may ask for, shaped so a writer
+ * cannot leave a mode out.
+ *
+ * A mode passed to `open` or `mkdir` is the only thing that decides what a NEW
+ * path grants, and omitting it hands that decision to the process umask: 0644
+ * and 0755 under the common 022. Two evidence sinks did exactly that and still
+ * compiled, because both modes were optional. So any open that can create or
+ * write declares the leaf's mode, and any open that may create directories
+ * declares theirs; only a read may declare neither, because it creates nothing.
+ * `tests/lint/evidence-sink-mode-census.test.ts` holds the writes that never
+ * reach this type at all.
+ *
+ * Every declared mode is owner-only, and the narrowing a writing open performs
+ * relies on it: `narrowMode` keeps the bits the declared mode also allows, so
+ * a wider declaration would report a file as narrowed to the mode it already
+ * had. A caller holding a union of flags, `'r' | 'w'` say, passes
+ * `createDirs: false` as well, which is how the checker tells its open from one
+ * that creates directories.
+ */
+export type SafeOpenOptions =
+  | {
+      /** Read an existing file. Creates nothing, so declares no mode. */
+      readonly flags: 'r';
+      readonly createDirs?: false;
+      readonly dirMode?: undefined;
+      readonly fileMode?: number;
+    }
+  | {
+      /** Node open flags for the leaf, e.g. `'a'` for append. */
+      readonly flags: 'a' | 'w' | 'wx';
+      readonly createDirs?: false;
+      readonly dirMode?: undefined;
+      /**
+       * The leaf's mode when this open creates it, and the mode an existing leaf
+       * is narrowed to when it grants anything beyond its owner.
+       */
+      readonly fileMode: number;
+    }
+  | {
+      readonly flags: 'a' | 'w' | 'wx';
+      /** Create missing intermediate directories. Each is created with `dirMode`. */
+      readonly createDirs: true;
+      /**
+       * The mode each created directory gets, and the mode each directory the
+       * walk passes through is narrowed to when it grants anything beyond its
+       * owner. Never applied to `root`.
+       */
+      readonly dirMode: number;
+      readonly fileMode: number;
+    };
+
 export type SafeOpenResult =
-  | { readonly outcome: 'opened'; readonly handle: fsp.FileHandle }
+  | {
+      readonly outcome: 'opened';
+      readonly handle: fsp.FileHandle;
+      /**
+       * Feature 217 (FR-002, FR-006) — what this open narrowed, path-free, in walk
+       * order: directories nearest the root first, then the leaf. Empty when all
+       * it reached was already owner-only. An evidence writer reports it; any
+       * other caller may ignore it, because the narrowing has happened either way.
+       */
+      readonly narrowing: readonly NarrowingNotice[];
+    }
   | {
       readonly outcome: 'refused';
       readonly reason: SafeOpenRefusal;
@@ -212,14 +276,6 @@ function invalidSegment(segment: string): boolean {
   );
 }
 
-/**
- * Walk `segments` under `root`, refusing a symlink at every component, creating
- * intermediate directories when asked, and return an open handle to the leaf.
- *
- * `root` itself is trusted by the caller and is NOT re-verified here: it is the
- * caller's own workspace root, and a caller that cannot trust it has a different
- * problem than this function can solve.
- */
 type SafeOpenRefusalResult = Extract<SafeOpenResult, { outcome: 'refused' }>;
 
 /**
@@ -229,13 +285,22 @@ type SafeOpenRefusalResult = Extract<SafeOpenResult, { outcome: 'refused' }>;
  * `lstat`, never `stat`, so a symlink is reported AS a symlink rather than as
  * whatever it points at. That is the check the old `path.join` + `mkdir -p` had
  * none of.
+ *
+ * Feature 217 — `widened` lists the components whose `lstat` showed bits beyond
+ * the owner, read from the `lstat` the walk already makes, so finding them costs
+ * no syscall. The walk narrows nothing itself: `openWithinRoot` does that once
+ * its open has succeeded, so a refused open leaves everything as it found it.
  */
 async function walkDirectories(
   root: string,
   segments: readonly string[],
   options: { readonly createDirs?: boolean; readonly dirMode?: number }
-): Promise<{ readonly outcome: 'ready'; readonly directory: string } | SafeOpenRefusalResult> {
+): Promise<
+  | { readonly outcome: 'ready'; readonly directory: string; readonly widened: readonly string[] }
+  | SafeOpenRefusalResult
+> {
   let current = root;
+  const widened: string[] = [];
   for (const segment of segments) {
     current = path.join(current, segment);
     let stat: Awaited<ReturnType<typeof fsp.lstat>> | null = null;
@@ -262,8 +327,9 @@ async function walkDirectories(
     }
     if (stat.isSymbolicLink()) return refuse('symlink-component') as SafeOpenRefusalResult;
     if (!stat.isDirectory()) return refuse('not-a-directory') as SafeOpenRefusalResult;
+    if ((stat.mode & NON_OWNER_BITS) !== 0) widened.push(current);
   }
-  return { outcome: 'ready', directory: current };
+  return { outcome: 'ready', directory: current, widened };
 }
 
 /**
@@ -280,7 +346,8 @@ export async function walkDirectoriesWithinRoot(
   root: string,
   segments: readonly string[]
 ): Promise<{ readonly outcome: 'ready'; readonly directory: string } | SafeOpenRefusalResult> {
-  return walkDirectories(root, segments, { createDirs: false });
+  const walked = await walkDirectories(root, segments, { createDirs: false });
+  return walked.outcome === 'refused' ? walked : { outcome: 'ready', directory: walked.directory };
 }
 
 /**
@@ -293,11 +360,20 @@ export async function walkDirectoriesWithinRoot(
  * checkpoints or diagnostics would have found a stray dotfile with no
  * explanation. A directory is a legitimate thing to want and should not have to
  * be spelled as a file.
+ *
+ * Feature 217 — `dirMode` is required, for the reason `SafeOpenOptions` gives,
+ * and it applies only to the directories this call creates. Neither ensure
+ * helper narrows an existing directory, because a walked component is not always
+ * the caller's own: `raw-transcript-writer.ts` anchors at the OS temp
+ * directory's parent, and when its spool root IS the OS temp directory the
+ * walk's one component is that shared directory. A caller that wants narrowing
+ * opens through `openWithinRoot`, or narrows the directory it prepares itself
+ * (`verbose-diagnostic-writer.ts`).
  */
 export async function ensureDirWithinRoot(
   root: string,
   segments: readonly string[],
-  dirMode?: number
+  dirMode: number
 ): Promise<{ readonly outcome: 'ready' } | SafeOpenRefusalResult> {
   // One walk, two shapes: this is the anchor primitive minus the returned
   // path, delegated so the next containment fix lands in exactly one place.
@@ -327,7 +403,7 @@ export async function ensureDirWithinRoot(
 export async function ensureAnchorWithinRoot(
   root: string,
   segments: readonly string[],
-  dirMode?: number
+  dirMode: number
 ): Promise<{ readonly outcome: 'ready'; readonly anchor: string } | SafeOpenRefusalResult> {
   if (segments.length === 0 || segments.some(invalidSegment)) {
     return refuse('escapes-root') as SafeOpenRefusalResult;
@@ -338,17 +414,21 @@ export async function ensureAnchorWithinRoot(
     : { outcome: 'ready', anchor: walked.directory };
 }
 
+/**
+ * Walk `segments` under `root`, refusing a symlink at every component, creating
+ * intermediate directories when asked, and return an open handle to the leaf.
+ *
+ * `root` itself is trusted by the caller and is NOT re-verified here: it is the
+ * caller's own workspace root, and a caller that cannot trust it has a different
+ * problem than this function can solve.
+ *
+ * Feature 217 — a writing open also narrows, in place, what it walked through
+ * and opened; see `narrowAfterOpen`.
+ */
 export async function openWithinRoot(
   root: string,
   segments: readonly string[],
-  options: {
-    /** Node open flags for the leaf, e.g. `'a'` for append. */
-    readonly flags: string;
-    /** Create missing intermediate directories. Each is created with this mode. */
-    readonly createDirs?: boolean;
-    readonly dirMode?: number;
-    readonly fileMode?: number;
-  }
+  options: SafeOpenOptions
 ): Promise<SafeOpenResult> {
   if (segments.length === 0 || segments.some(invalidSegment)) {
     return refuse('escapes-root');
@@ -423,18 +503,58 @@ export async function openWithinRoot(
     return refuse('io-failed', errno);
   }
 
+  let leafMode: number;
   try {
     const stat = await handle.stat();
     if (!stat.isFile()) {
       await handle.close();
       return refuse('not-a-regular-file');
     }
+    leafMode = stat.mode;
   } catch (error) {
     await handle.close().catch(() => undefined);
     return refuse('io-failed', errnoOf(error));
   }
 
-  return { outcome: 'opened', handle };
+  const narrowing = await narrowAfterOpen(walked.widened, leaf, leafMode, options);
+  return { outcome: 'opened', handle, narrowing };
+}
+
+/**
+ * Feature 217 (FR-002, FR-006, FR-009) — narrow what a successful writing open
+ * walked through and opened, in place: no recreate, no truncate, so a
+ * hash-chained log stays the same file.
+ *
+ * Only after the open succeeded, so a refusal changes nothing. Only the
+ * directories the walk passed through, never `root`: the root is the caller's
+ * (a workspace, VS Code's global storage, a configured log root) and its mode
+ * is not this helper's to decide. Only to the modes the caller declared, and
+ * `narrowMode` only ever clears bits, so nothing ends wider than it was. A read
+ * narrows nothing, because it declared nothing to narrow to.
+ *
+ * The leaf is judged from the `fstat` already made, so a leaf that is owner-only
+ * costs no syscall. A `refused-symlink` or `unsupported` outcome does not fail
+ * the open: the descriptor is already proven, and the caller is told instead.
+ */
+async function narrowAfterOpen(
+  widened: readonly string[],
+  leaf: string,
+  leafMode: number,
+  options: SafeOpenOptions
+): Promise<readonly NarrowingNotice[]> {
+  const notices: NarrowingNotice[] = [];
+  if (options.flags === 'r') return notices;
+  if (options.dirMode !== undefined) {
+    for (const directory of widened) {
+      const notice = noticeFor('directory', await narrowMode(directory, options.dirMode));
+      if (notice !== null) notices.push(notice);
+    }
+  }
+  if ((leafMode & NON_OWNER_BITS) !== 0) {
+    const notice = noticeFor('file', await narrowMode(leaf, options.fileMode));
+    if (notice !== null) notices.push(notice);
+  }
+  return notices;
 }
 
 /**
@@ -477,7 +597,7 @@ function toFlagBits(flags: string): number {
 export async function openWithinRootByPath(
   root: string,
   absolutePath: string,
-  options: Parameters<typeof openWithinRoot>[2]
+  options: SafeOpenOptions
 ): Promise<SafeOpenResult> {
   const segments = segmentsUnderRoot(root, absolutePath);
   if (segments === null) return refuse('escapes-root');

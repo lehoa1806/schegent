@@ -87,6 +87,44 @@ counts after audit rotation; and checkpoints are manual recovery material.
 <!-- Source: src/metrics/terminal-run-rollup-recorder.ts -->
 <!-- Source: src/services/run-checkpoint-service.ts -->
 
+### Who can read them
+
+On POSIX the structured audit, the runtime log, the CLI transport log and the
+verbose diagnostics are owner-only: files `0600`, directories `0700`. Each sink
+declares those modes when it creates a path, and narrows an existing path that
+grants access beyond its owner the next time it opens it. Narrowing changes
+permission bits only. The file is not recreated or truncated, so its contents
+and the audit hash chain are unchanged. It only ever removes access: a path
+already stricter than these modes keeps its own.
+
+| Sink | Owner-only paths | An existing wider path is narrowed |
+| --- | --- | --- |
+| Structured audit | `.schegent/`, `audit.log`, `audit.log.cuts`, and the timestamped archives | `audit.log` on the next append and `audit.log.cuts` on the next prune record. Archives are narrowed where they lie by the retention sweep, which runs when the host starts and after each rotation. |
+| Runtime log | The live file, its numbered generations, and every directory between the allowed root and the file | On the next record. Generations are narrowed the first time the sink opens a destination. |
+| CLI transport | `.schegent/`, `cli-transport.log`, and `.1`–`.3` | On the next record. Generations are narrowed the first time the sink opens the log. |
+| Verbose diagnostics | Every directory from `.schegent/` down to `iter-<N>/`, plus `stream.jsonl` and `verbose.log` | When each invocation prepares its directory and on each write. |
+
+The backend process writes `debug.json` and `phase-message.env` into the
+diagnostics directory itself, under its own umask. The `0700` directories above
+them, `.schegent/` among them, are what keep those two files private.
+
+A rotated file that is a symbolic link keeps its mode and is reported; the link
+is not followed. The audit, runtime-log and transport sinks each report a
+distinct finding once, as a warning that names the sink and the mode it found,
+never the path. The diagnostics writer records a narrowing at `INFO`, and a path
+it could not make private as a warning. A platform that does not enforce POSIX
+modes, such as Windows, cannot apply the narrowing. There each sink reports
+`not-applied` rather than describing the file as private. Schegent does not
+change Windows access-control lists.
+
+<!-- Source: src/lib/narrow-mode.ts -->
+<!-- Source: src/lib/safe-open.ts -->
+<!-- Source: src/lib/evidence-narrowing.ts -->
+<!-- Source: src/audit/audit-log-writer.ts -->
+<!-- Source: src/lib/runtime-log/runtime-log-sink.ts -->
+<!-- Source: src/monitor/cli-transport-sink.ts -->
+<!-- Source: src/audit/verbose-diagnostic-writer.ts -->
+
 ## Raw transcripts
 
 Raw transcripts are intentionally unredacted. For each invocation they record
@@ -134,7 +172,9 @@ The files are unredacted and best-effort. Run, Pipeline, and Phase identifiers
 must match the safe path-segment grammar, and the composed directory must stay
 under `.schegent/sessions/`. The setting is read when each phase invocation
 starts, so a toggle affects the next invocation rather than the one already in
-flight.
+flight. On POSIX the directories are `0700` and the files the host writes are
+`0600`; [Who can read them](#who-can-read-them) covers the two the backend
+writes itself.
 
 <!-- Source: src/audit/verbose-diagnostic-path.ts -->
 <!-- Source: src/audit/verbose-diagnostic-writer.ts -->
@@ -168,7 +208,10 @@ The runtime accessor re-reads level, path, and rotation settings on each emit.
 The default level is `INFO`; the default rotation threshold is 5 MiB; and the
 default is three generations. Allowed ranges are 64 KiB through 1 GiB and zero
 through twenty generations. A failed path is suppressed until the settings
-save callback clears suppression.
+save callback clears suppression. On POSIX the log and its generations are
+`0600`, and every directory between the allowed root and the file is narrowed
+to owner-only, one the operator chose included; the allowed root is never
+changed. See [Who can read them](#who-can-read-them).
 
 <!-- Source: src/lib/runtime-log/runtime-log-settings.ts -->
 <!-- Source: src/lib/runtime-log/runtime-log-sink.ts -->
@@ -179,7 +222,8 @@ The CLI transport sink records one tab-separated line as
 retains paths because path-bearing CLI output is operationally useful, but it
 uses the same secret sanitizer as the host logger. Capture is best-effort: an
 I/O failure warns and the phase continues. Its bounds are code-resident at 5
-MiB and three generations, or at most four files per workspace.
+MiB and three generations, or at most four files per workspace. On POSIX every
+one of those files is `0600` inside a `0700` `.schegent/`.
 
 <!-- Source: src/monitor/cli-transport-sink.ts -->
 <!-- Source: tests/unit/monitor/cli-transport-sink.test.ts -->

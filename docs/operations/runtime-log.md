@@ -23,6 +23,11 @@ Production allows an absolute destination only under the canonical workspace, ex
 <!-- Source: src/lib/runtime-log/runtime-log-path.ts -->
 <!-- Source: src/lib/runtime-log/runtime-log-sink.ts -->
 
+On POSIX the log and its numbered generations are `0600`. A directory the sink creates is `0700`. Every existing directory between the allowed root and the file is narrowed to owner-only when the sink opens the log, including one you chose, such as `logs/` in `logs/syslog`. The allowed root itself is never changed. A directory that other local accounts read therefore loses their access, so give the log a directory of its own. [Who can read them](../concepts/sessions-and-logs.md#who-can-read-them) covers every evidence sink.
+
+<!-- Source: src/lib/runtime-log/runtime-log-sink.ts -->
+<!-- Source: src/lib/safe-open.ts -->
+
 All four settings are re-read on each log emission. A level, path, or rotation change can therefore affect the next event without reloading the Extension Host.
 
 <!-- Source: src/lib/runtime-log/runtime-log-settings.ts -->

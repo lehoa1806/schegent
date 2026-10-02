@@ -34,7 +34,13 @@ describe('openWithinRoot refuses a symlink at any component', () => {
   });
 
   const open = (segments: readonly string[], createDirs = true) =>
-    openWithinRoot(root, segments, { flags: 'a', createDirs, dirMode: 0o700 });
+    openWithinRoot(
+      root,
+      segments,
+      createDirs
+        ? { flags: 'a', createDirs: true, dirMode: 0o700, fileMode: 0o600 }
+        : { flags: 'a', fileMode: 0o600 }
+    );
 
   posixOnly('opens and writes through a clean path', async () => {
     const result = await open(['.schegent', 'audit.log']);
@@ -81,7 +87,12 @@ describe('openWithinRoot refuses a symlink at any component', () => {
       ['.schegent', ''],
       []
     ]) {
-      const result = await openWithinRoot(root, segments, { flags: 'a', createDirs: true });
+      const result = await openWithinRoot(root, segments, {
+        flags: 'a',
+        createDirs: true,
+        dirMode: 0o700,
+        fileMode: 0o600
+      });
       expect(result).toMatchObject({ outcome: 'refused', reason: 'escapes-root' });
     }
   });
@@ -100,7 +111,12 @@ describe('openWithinRoot refuses a symlink at any component', () => {
 
   posixOnly('rejects a flags value it cannot translate, rather than guessing', async () => {
     await expect(
-      openWithinRoot(root, ['x.log'], { flags: 'a+' })
+      openWithinRoot(
+        root,
+        ['x.log'],
+        // @ts-expect-error -- 'a+' is outside the accepted flags; the runtime refusal is the claim
+        { flags: 'a+' }
+      )
     ).rejects.toThrow(/unsupported flags/);
   });
 });
@@ -125,7 +141,8 @@ describe('openWithinRootByPath derives the segments and keeps the same rules', (
     const result = await openWithinRootByPath(root, path.join(root, 'a', 'b.log'), {
       flags: 'a',
       createDirs: true,
-      dirMode: 0o700
+      dirMode: 0o700,
+      fileMode: 0o600
     });
     expect(result.outcome).toBe('opened');
     if (result.outcome !== 'opened') return;
@@ -135,12 +152,15 @@ describe('openWithinRootByPath derives the segments and keeps the same rules', (
   it('refuses a path outside the root', async () => {
     // The derivation IS the check: `path.relative` yields a `..` prefix and the
     // walk never starts.
-    const result = await openWithinRootByPath(root, path.join(outside, 'x.log'), { flags: 'a' });
+    const result = await openWithinRootByPath(root, path.join(outside, 'x.log'), {
+      flags: 'a',
+      fileMode: 0o600
+    });
     expect(result).toMatchObject({ outcome: 'refused', reason: 'escapes-root' });
   });
 
   it('refuses the root itself, which names no leaf to open', async () => {
-    const result = await openWithinRootByPath(root, root, { flags: 'a' });
+    const result = await openWithinRootByPath(root, root, { flags: 'a', fileMode: 0o600 });
     expect(result).toMatchObject({ outcome: 'refused', reason: 'escapes-root' });
   });
 
@@ -149,7 +169,9 @@ describe('openWithinRootByPath derives the segments and keeps the same rules', (
     await fs.symlink(outside, path.join(root, 'linked'));
     const result = await openWithinRootByPath(root, path.join(root, 'linked', 'x.log'), {
       flags: 'a',
-      createDirs: true
+      createDirs: true,
+      dirMode: 0o700,
+      fileMode: 0o600
     });
     expect(result).toMatchObject({ outcome: 'refused', reason: 'symlink-component' });
     expect(await fs.readdir(outside)).toEqual([]);
@@ -271,7 +293,10 @@ describe('ensureAnchorWithinRoot creates a store anchor beneath a higher trusted
     // The primitive's contract boundary, pinned: creating an anchor is THIS
     // function's job; openWithinRoot on a missing chain (no createDirs) still
     // refuses rather than creating.
-    const result = await openWithinRoot(path.join(root, 'never-made'), ['a.txt'], { flags: 'w' });
+    const result = await openWithinRoot(path.join(root, 'never-made'), ['a.txt'], {
+      flags: 'w',
+      fileMode: 0o600
+    });
     expect(result.outcome).toBe('refused');
   });
 
@@ -279,5 +304,207 @@ describe('ensureAnchorWithinRoot creates a store anchor beneath a higher trusted
     for (const segments of [[], ['..'], ['a', '..', 'b'], ['/abs'], ['a/b']]) {
       expect((await ensureAnchorWithinRoot(root, segments, 0o700)).outcome).toBe('refused');
     }
+  });
+});
+
+/**
+ * Feature 217 (FR-002, FR-004, FR-006) — an open through the helper leaves what
+ * it creates or writes owner-only, including paths that existed before it ran.
+ *
+ * A declared mode only applies when a path is CREATED. Every workspace that
+ * predates this feature already has its evidence directory and files, so a
+ * helper that only passed the mode to `mkdir`/`open` would leave the measured
+ * exposure exactly where it was. The narrowing is what reaches those.
+ */
+describe('openWithinRoot narrows what it creates or writes to owner-only (feature 217)', () => {
+  const OWNER_ONLY_FILE = 0o600;
+  const OWNER_ONLY_DIR = 0o700;
+  const WIDENED_FILE = 0o644;
+  const WIDENED_DIR = 0o755;
+
+  let root: string;
+
+  beforeEach(async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-safeopen-modes-'));
+    root = path.join(base, 'root');
+    await fs.mkdir(root);
+  });
+
+  afterEach(async () => {
+    await fs.rm(path.dirname(root), { recursive: true, force: true });
+  });
+
+  const modeOf = async (p: string): Promise<number> => (await fs.lstat(p)).mode & 0o777;
+
+  const appendOpen = (segments: readonly string[]) =>
+    openWithinRoot(root, segments, {
+      flags: 'a',
+      createDirs: true,
+      dirMode: OWNER_ONLY_DIR,
+      fileMode: OWNER_ONLY_FILE
+    });
+
+  posixOnly('creates every missing directory and the file owner-only, and reports nothing to narrow', async () => {
+    const result = await appendOpen(['.schegent', 'sessions', 'audit.log']);
+    expect(result.outcome).toBe('opened');
+    if (result.outcome !== 'opened') return;
+    await result.handle.close();
+
+    expect(await modeOf(path.join(root, '.schegent'))).toBe(OWNER_ONLY_DIR);
+    expect(await modeOf(path.join(root, '.schegent', 'sessions'))).toBe(OWNER_ONLY_DIR);
+    expect(await modeOf(path.join(root, '.schegent', 'sessions', 'audit.log'))).toBe(
+      OWNER_ONLY_FILE
+    );
+    expect(result.narrowing).toEqual([]);
+  });
+
+  posixOnly('narrows an existing widened directory below the root, and never the root itself', async () => {
+    // The root is the caller's trust anchor -- the workspace folder, or the OS
+    // temp directory for the transcript spool. Changing its mode would be this
+    // fix reaching outside the evidence it exists to protect.
+    await fs.chmod(root, WIDENED_DIR);
+    await fs.mkdir(path.join(root, '.schegent'));
+    await fs.chmod(path.join(root, '.schegent'), WIDENED_DIR);
+
+    const result = await appendOpen(['.schegent', 'audit.log']);
+    expect(result.outcome).toBe('opened');
+    if (result.outcome !== 'opened') return;
+    await result.handle.close();
+
+    expect(await modeOf(path.join(root, '.schegent'))).toBe(OWNER_ONLY_DIR);
+    expect(await modeOf(root), 'the root is not the helper to change').toBe(WIDENED_DIR);
+    expect(result.narrowing).toEqual([
+      { scope: 'directory', outcome: 'narrowed', previousMode: WIDENED_DIR }
+    ]);
+  });
+
+  posixOnly('narrows an existing widened file in place on a writing open (FR-002)', async () => {
+    await fs.mkdir(path.join(root, '.schegent'), { mode: OWNER_ONLY_DIR });
+    const file = path.join(root, '.schegent', 'audit.log');
+    await fs.writeFile(file, 'line\n');
+    await fs.chmod(file, WIDENED_FILE);
+    const before = await fs.lstat(file);
+
+    const result = await appendOpen(['.schegent', 'audit.log']);
+    expect(result.outcome).toBe('opened');
+    if (result.outcome !== 'opened') return;
+    await result.handle.write('more\n');
+    await result.handle.close();
+
+    const after = await fs.lstat(file);
+    expect(after.mode & 0o777).toBe(OWNER_ONLY_FILE);
+    expect(after.ino, 'narrowed, not recreated').toBe(before.ino);
+    expect(await fs.readFile(file, 'utf8'), 'appended to, not truncated').toBe('line\nmore\n');
+    expect(result.narrowing).toEqual([
+      { scope: 'file', outcome: 'narrowed', previousMode: WIDENED_FILE }
+    ]);
+  });
+
+  posixOnly('narrows the leaf through openWithinRootByPath as well', async () => {
+    const file = path.join(root, 'logs', 'runtime.log');
+    await fs.mkdir(path.dirname(file), { mode: OWNER_ONLY_DIR });
+    await fs.writeFile(file, '');
+    await fs.chmod(file, WIDENED_FILE);
+
+    const result = await openWithinRootByPath(root, file, {
+      flags: 'a',
+      createDirs: true,
+      dirMode: OWNER_ONLY_DIR,
+      fileMode: OWNER_ONLY_FILE
+    });
+    expect(result.outcome).toBe('opened');
+    if (result.outcome !== 'opened') return;
+    await result.handle.close();
+
+    expect(await modeOf(file)).toBe(OWNER_ONLY_FILE);
+  });
+
+  posixOnly('narrows only the leaf when the open does not create directories', async () => {
+    // An open with no `createDirs` declares no directory mode, so the directories
+    // it merely traverses are not its to change.
+    await fs.mkdir(path.join(root, 'store'));
+    await fs.chmod(path.join(root, 'store'), WIDENED_DIR);
+    const file = path.join(root, 'store', 'catalog.json');
+    await fs.writeFile(file, '{}');
+    await fs.chmod(file, WIDENED_FILE);
+
+    const result = await openWithinRoot(root, ['store', 'catalog.json'], {
+      flags: 'w',
+      fileMode: OWNER_ONLY_FILE
+    });
+    expect(result.outcome).toBe('opened');
+    if (result.outcome !== 'opened') return;
+    await result.handle.close();
+
+    expect(await modeOf(file)).toBe(OWNER_ONLY_FILE);
+    expect(await modeOf(path.join(root, 'store'))).toBe(WIDENED_DIR);
+  });
+
+  posixOnly('never changes the mode of what a read-only open reads', async () => {
+    await fs.mkdir(path.join(root, 'docs'));
+    await fs.chmod(path.join(root, 'docs'), WIDENED_DIR);
+    const file = path.join(root, 'docs', 'notes.txt');
+    await fs.writeFile(file, 'shared on purpose');
+    await fs.chmod(file, WIDENED_FILE);
+
+    const result = await openWithinRoot(root, ['docs', 'notes.txt'], { flags: 'r' });
+    expect(result.outcome).toBe('opened');
+    if (result.outcome !== 'opened') return;
+    await result.handle.close();
+
+    expect(await modeOf(file)).toBe(WIDENED_FILE);
+    expect(await modeOf(path.join(root, 'docs'))).toBe(WIDENED_DIR);
+    expect(result.narrowing).toEqual([]);
+  });
+
+  posixOnly('never widens a directory stricter than the declared mode', async () => {
+    await fs.mkdir(path.join(root, 'strict'));
+    await fs.writeFile(path.join(root, 'strict', 'audit.log'), '');
+    await fs.chmod(path.join(root, 'strict'), 0o500);
+    try {
+      const result = await openWithinRoot(root, ['strict', 'audit.log'], {
+        flags: 'a',
+        createDirs: true,
+        dirMode: OWNER_ONLY_DIR,
+        fileMode: OWNER_ONLY_FILE
+      });
+      if (result.outcome === 'opened') await result.handle.close();
+      expect(await modeOf(path.join(root, 'strict')), 'not widened to 0700').toBe(0o500);
+    } finally {
+      // Restore write so the teardown can remove it.
+      await fs.chmod(path.join(root, 'strict'), OWNER_ONLY_DIR);
+    }
+  });
+});
+
+describe('openWithinRoot requires a mode for any open that can create or write (FR-008, SC-002)', () => {
+  it('rejects the omission at the call site, before the code can run', () => {
+    // Compile-time assertions: `npm run typecheck` covers this file, and each
+    // `@ts-expect-error` fails the build the moment the line it marks compiles.
+    // The functions are never called, so nothing here touches the disk.
+    const root = os.tmpdir();
+    const rejected = [
+      // @ts-expect-error -- a writing flag with no fileMode
+      () => openWithinRoot(root, ['x'], { flags: 'a' }),
+      // @ts-expect-error -- an exclusive create with no fileMode
+      () => openWithinRoot(root, ['x'], { flags: 'wx', createDirs: false }),
+      // @ts-expect-error -- createDirs with no dirMode
+      () => openWithinRoot(root, ['x'], { flags: 'a', createDirs: true, fileMode: 0o600 }),
+      // @ts-expect-error -- the by-path form carries the same rule
+      () => openWithinRootByPath(root, path.join(root, 'x'), { flags: 'w' })
+    ];
+    const accepted = [
+      () => openWithinRoot(root, ['x'], { flags: 'r' }),
+      () => openWithinRoot(root, ['x'], { flags: 'w', fileMode: 0o600 }),
+      () =>
+        openWithinRootByPath(root, path.join(root, 'x'), {
+          flags: 'a',
+          createDirs: true,
+          dirMode: 0o700,
+          fileMode: 0o600
+        })
+    ];
+    expect(rejected).toHaveLength(4);
+    expect(accepted).toHaveLength(3);
   });
 });

@@ -9,6 +9,15 @@ as a record of every byte emitted by a CLI.
 <!-- Source: src/audit/audit-payload.ts -->
 <!-- Source: src/contracts/audit-events.ts -->
 
+On POSIX the log, its archives and `audit.log.cuts` are `0600` inside a `0700`
+`.schegent/`. A file left wider by an earlier release is narrowed in place: the
+live log on the next append, archives by the retention sweep at host start. Its
+lines and hash chain are unchanged, so `npm run audit:verify` reads it as
+before. [Who can read them](../concepts/sessions-and-logs.md#who-can-read-them)
+covers every evidence sink.
+<!-- Source: src/audit/audit-log-writer.ts -->
+<!-- Source: src/lib/safe-open.ts -->
+
 ## Open or export the active log
 
 Run **Schegent: Show Audit Log** from the Command Palette

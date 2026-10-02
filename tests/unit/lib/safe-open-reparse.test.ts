@@ -97,7 +97,7 @@ describe('the POSIX leaf path is unchanged (FR-020, SC-006)', () => {
     // The `wx`/`a`/`w` case: on a platform without O_NOFOLLOW the new lstat sees
     // ENOENT, which is the ordinary state of a file about to be created. Reading it
     // as a refusal would break every exclusive create, including the mount probe's.
-    const result = await openWithinRoot(root, ['fresh.txt'], { flags: 'wx' });
+    const result = await openWithinRoot(root, ['fresh.txt'], { flags: 'wx', fileMode: 0o600 });
     expect(result.outcome).toBe('opened');
     if (result.outcome === 'opened') await result.handle.close();
   });

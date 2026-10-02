@@ -318,3 +318,139 @@ describe('FR-R3-005 — runtime-log mutations are contained at the point of effe
     expect(sink.isSuppressed(targetPath, 'not-contained')).toBe(true);
   });
 });
+
+/**
+ * Feature 217 (FR-003, FR-004, FR-005) — the runtime log is owner-only, and so
+ * is every file a rotation leaves behind.
+ *
+ * Run with `containmentRoots`, the production shape: production always supplies
+ * them (`destructive-fs-requires-containment.test.ts` holds the wiring to it),
+ * and they are what route the append and the rotation successor through the
+ * shared open helper. The rootless branch serves the older unit tests' injected
+ * filesystem. Every assertion reads the mode back from disk.
+ */
+describe('feature 217 — the runtime log is owner-only, rotations included', () => {
+  const OWNER_ONLY_FILE = 0o600;
+  const OWNER_ONLY_DIR = 0o700;
+  const WIDENED_FILE = 0o644;
+
+  /** POSIX-only: `mode` is not an enforceable concept on Windows. */
+  const posixOnly = process.platform === 'win32' ? it.skip : it;
+
+  const modeOf = async (p: string): Promise<number> => (await nodeFs.lstat(p)).mode & 0o777;
+
+  /** A file an earlier release left behind, at the mode the umask gave it. */
+  async function leaveWidened(file: string, contents: string): Promise<void> {
+    await nodeFs.writeFile(file, contents);
+    await nodeFs.chmod(file, WIDENED_FILE);
+  }
+
+  function sinkFor(
+    maxBytes: number,
+    maxGenerations: number,
+    fallback: SanitizedLogger = fallbackLogger()
+  ): RuntimeLogSink {
+    return new RuntimeLogSink({
+      accessor: accessorFor({ level: 'INFO', path: targetPath, maxBytes, maxGenerations }),
+      fallbackLogger: fallback,
+      containmentRoots: () => [allowedRoot],
+      ...spiedFs()
+    });
+  }
+
+  posixOnly('creates the log owner-only and narrows the directory that holds it', async () => {
+    // `beforeEach` made `logs` under the process umask, which is how a directory
+    // an earlier release created looks: 0755 under the common 022.
+    const sink = sinkFor(65_536, 3);
+    sink.appendLine(line('first'));
+    await sink.flushPendingWrites();
+
+    expect(await modeOf(targetPath)).toBe(OWNER_ONLY_FILE);
+    expect(await modeOf(path.join(allowedRoot, 'logs'))).toBe(OWNER_ONLY_DIR);
+  });
+
+  posixOnly('creates the successor a rotation leaves behind owner-only (FR-005)', async () => {
+    const sink = sinkFor(64, 2);
+    for (const marker of ['first', 'second', 'third']) {
+      sink.appendLine(line(marker));
+      await sink.flushPendingWrites();
+    }
+
+    expect(await read(`${targetPath}.2`)).toBe(`${line('first')}\n`);
+    expect(await read(targetPath)).toBe(`${line('third')}\n`);
+    expect(await modeOf(targetPath), 'the file the rotation created').toBe(OWNER_ONLY_FILE);
+    expect(await modeOf(`${targetPath}.1`)).toBe(OWNER_ONLY_FILE);
+    expect(await modeOf(`${targetPath}.2`)).toBe(OWNER_ONLY_FILE);
+  });
+
+  posixOnly('leaves the log owner-only when it truncates in place', async () => {
+    // With no generations retained a full log is truncated rather than moved, and
+    // truncating keeps the mode it finds unless the truncating open narrows it.
+    await leaveWidened(targetPath, 'x'.repeat(64));
+    const sink = sinkFor(64, 0);
+    sink.appendLine(line('fresh'));
+    await sink.flushPendingWrites();
+
+    expect(await read(targetPath)).toBe(`${line('fresh')}\n`);
+    expect(await modeOf(targetPath)).toBe(OWNER_ONLY_FILE);
+  });
+
+  posixOnly('narrows a log and generations an earlier release left widened, in place (FR-004)', async () => {
+    await leaveWidened(targetPath, 'earlier\n');
+    await leaveWidened(`${targetPath}.1`, 'older\n');
+    await leaveWidened(`${targetPath}.keep-me`, 'operator file\n');
+    const before = await nodeFs.lstat(targetPath);
+
+    const sink = sinkFor(65_536, 3);
+    sink.appendLine(line('later'));
+    await sink.flushPendingWrites();
+
+    const after = await nodeFs.lstat(targetPath);
+    expect(after.mode & 0o777).toBe(OWNER_ONLY_FILE);
+    expect(after.ino, 'narrowed, not recreated').toBe(before.ino);
+    expect(await read(targetPath)).toBe(`earlier\n${line('later')}\n`);
+    expect(await modeOf(`${targetPath}.1`)).toBe(OWNER_ONLY_FILE);
+    expect(await read(`${targetPath}.1`), 'narrowed, not rewritten').toBe('older\n');
+    expect(
+      await modeOf(`${targetPath}.keep-me`),
+      'a non-numeric suffix belongs to the operator'
+    ).toBe(WIDENED_FILE);
+  });
+
+  posixOnly('says what it narrowed, once per kind, without naming the path', async () => {
+    await leaveWidened(targetPath, '');
+    await leaveWidened(`${targetPath}.1`, '');
+    const fallback = fallbackLogger();
+    const sink = sinkFor(65_536, 3, fallback);
+    sink.appendLine(line('one'));
+    sink.appendLine(line('two'));
+    await sink.flushPendingWrites();
+
+    const narrowing = fallback.warnings.filter((w) => w.includes('owner-only'));
+    expect(narrowing).toEqual([
+      expect.stringMatching(/directory.*\b755\b/),
+      expect.stringMatching(/file.*\b644\b/)
+    ]);
+    for (const warning of narrowing) {
+      expect(warning).toContain('runtime-log-sink');
+      expect(warning, 'path-free').not.toContain(allowedRoot);
+      expect(warning).not.toContain('runtime.log');
+    }
+    expect(sink.isSuppressed(targetPath), 'a narrowing is not a failure').toBe(false);
+    expect(await read(targetPath)).toContain('two');
+  });
+
+  posixOnly('never narrows through a symbolic link a generation slot holds (FR-003)', async () => {
+    const outsider = path.join(escapedRoot, 'not-evidence.txt');
+    await leaveWidened(outsider, 'someone else\n');
+    await nodeFs.symlink(outsider, `${targetPath}.1`);
+
+    const sink = sinkFor(65_536, 3);
+    sink.appendLine(line('still written'));
+    await sink.flushPendingWrites();
+
+    expect(await modeOf(outsider), 'the link target is untouched').toBe(WIDENED_FILE);
+    expect(await read(targetPath)).toContain('still written');
+    expect(sink.isSuppressed(targetPath), 'skipped, not a reason to stop logging').toBe(false);
+  });
+});

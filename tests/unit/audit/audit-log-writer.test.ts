@@ -3,6 +3,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { AuditLogWriter } from '../../../src/audit/audit-log-writer';
+import { verifyAuditChainAt } from '../../../src/audit/audit-chain';
 import { SanitizedLogger } from '../../../src/lib/logger';
 
 let tmpRoot: string;
@@ -287,5 +288,112 @@ describe('AuditLogWriter.subscribe', () => {
     expect(received).toHaveLength(1);
     expect(JSON.stringify(received[0])).not.toContain('Bearer');
     expect(JSON.stringify(received[0])).not.toContain('abcdefghijklmnopqrst');
+  });
+});
+
+/**
+ * Feature 217 (FR-002, FR-003) — the audit chain is owner-only, and narrowing an
+ * existing widened log leaves it the SAME file. The chain is hash-linked, so a
+ * recreate or truncate to change the mode would break the very record whose
+ * exposure is being fixed. Every assertion reads the mode back from disk.
+ */
+describe('AuditLogWriter — owner-only evidence (feature 217)', () => {
+  /** POSIX-only: `mode` is not an enforceable concept on Windows. */
+  const posixOnly = process.platform === 'win32' ? it.skip : it;
+
+  const modeOf = async (p: string): Promise<number> => (await fs.lstat(p)).mode & 0o777;
+
+  const entry = (iteration: number): Parameters<AuditLogWriter['append']>[0] => ({
+    runId: 'r-217',
+    phase: 'speckit-implement',
+    iteration,
+    eventType: 'phase-end',
+    payload: {},
+    outcome: 'success'
+  });
+
+  posixOnly('narrows a log an earlier release left widened, in place, and the chain still verifies (FR-002)', async () => {
+    const auditDir = path.join(tmpRoot, '.schegent');
+    const logFile = path.join(auditDir, 'audit.log');
+    const earlier = new AuditLogWriter({ workspaceRoot: tmpRoot }, new SanitizedLogger());
+    await earlier.append(entry(1));
+    await earlier.append(entry(2));
+    // What a release that predates the declared modes left behind under umask 022.
+    await fs.chmod(logFile, 0o644);
+    await fs.chmod(auditDir, 0o755);
+    const before = await fs.lstat(logFile);
+    const earlierBytes = await fs.readFile(logFile, 'utf8');
+
+    const logger = new SanitizedLogger();
+    const warn = vi.spyOn(logger, 'warn');
+    const writer = new AuditLogWriter({ workspaceRoot: tmpRoot }, logger);
+    await writer.append(entry(3));
+
+    const after = await fs.lstat(logFile);
+    expect(after.mode & 0o777).toBe(0o600);
+    expect(await modeOf(auditDir)).toBe(0o700);
+    expect(after.ino, 'narrowed, not recreated').toBe(before.ino);
+    const contents = await fs.readFile(logFile, 'utf8');
+    expect(contents.startsWith(earlierBytes), 'not truncated').toBe(true);
+    expect(contents.trim().split('\n')).toHaveLength(3);
+    expect(verifyAuditChainAt(auditDir)?.verdict).toMatchObject({ ok: true, entries: 3 });
+
+    const narrowing = warn.mock.calls
+      .map(([message]) => String(message))
+      .filter((message) => message.includes('owner-only'));
+    expect(narrowing).toEqual([
+      expect.stringMatching(/directory.*\b755\b/),
+      expect.stringMatching(/file.*\b644\b/)
+    ]);
+    for (const message of narrowing) {
+      expect(message, 'path-free').not.toContain(tmpRoot);
+      expect(message).not.toContain('audit.log');
+    }
+  });
+
+  posixOnly('narrows the archives retention keeps, and never an operator file beside them', async () => {
+    const auditDir = path.join(tmpRoot, '.schegent');
+    const rotating = new AuditLogWriter(
+      { workspaceRoot: tmpRoot, rotationSizeBytes: 1 },
+      new SanitizedLogger()
+    );
+    await rotating.append(entry(1));
+    await rotating.append(entry(2));
+    const archive = (await fs.readdir(auditDir)).find((name) => /^audit\.log\.\d{8}-\d{6}/.test(name));
+    expect(archive, 'the rotation left an archive').toBeDefined();
+    const archivePath = path.join(auditDir, archive as string);
+    // A rename keeps the mode, so an archive rotated out of a widened log is widened too.
+    await fs.chmod(archivePath, 0o644);
+    const archived = await fs.readFile(archivePath, 'utf8');
+    const operatorFile = path.join(auditDir, 'audit.log.backup');
+    await fs.writeFile(operatorFile, 'operator copy\n');
+    await fs.chmod(operatorFile, 0o644);
+
+    const writer = new AuditLogWriter({ workspaceRoot: tmpRoot }, new SanitizedLogger());
+    await writer.append(entry(3));
+
+    expect(await modeOf(archivePath)).toBe(0o600);
+    expect(await fs.readFile(archivePath, 'utf8'), 'narrowed, not rewritten').toBe(archived);
+    expect(await modeOf(operatorFile), 'not an archive Schegent wrote').toBe(0o644);
+    expect(verifyAuditChainAt(auditDir)?.verdict).toMatchObject({ ok: true, entries: 3 });
+  });
+
+  posixOnly('never narrows through a symbolic link an archive slot holds (FR-003)', async () => {
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-audit-outside-'));
+    try {
+      const outsider = path.join(outside, 'not-evidence.txt');
+      await fs.writeFile(outsider, 'someone else\n');
+      await fs.chmod(outsider, 0o644);
+      await fs.mkdir(path.join(tmpRoot, '.schegent'), { recursive: true });
+      await fs.symlink(outsider, path.join(tmpRoot, '.schegent', 'audit.log.20260901-120000'));
+
+      const writer = new AuditLogWriter({ workspaceRoot: tmpRoot }, new SanitizedLogger());
+      await writer.append(entry(1));
+
+      expect(await modeOf(outsider), 'the link target is untouched').toBe(0o644);
+      expect(await fs.readFile(path.join(tmpRoot, '.schegent', 'audit.log'), 'utf8')).toContain('r-217');
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true });
+    }
   });
 });

@@ -186,6 +186,7 @@ export function createDiskOwnershipFs(anchor: {
     if (walk === null) throw containmentError('escapes-root');
     const result = await openWithinRootByPath(walk.root, proven, {
       flags,
+      createDirs: false,
       fileMode: FILE_MODE
     });
     if (result.outcome === 'refused') throw refusalError(file, result.reason, result.errno);

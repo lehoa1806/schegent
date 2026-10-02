@@ -12,6 +12,7 @@ import {
   projectAuditPayload
 } from './audit-payload';
 import { ensureSchegentGitignore } from './schegent-gitignore';
+import { NarrowingReporter, narrowRotatedFiles } from '../lib/evidence-narrowing';
 import { openWithinRoot, openWithinRootByPath, type SafeOpenRefusal } from '../lib/safe-open';
 import {
   resolveContainedLink,
@@ -95,6 +96,15 @@ const AUDIT_LOG_NAME = 'audit.log';
 const AUDIT_CUTS_NAME = 'audit.log.cuts';
 
 /**
+ * Feature 217 (FR-004) — owner-only, declared once for every open that writes,
+ * and the mode an archive retention keeps is narrowed to. The audit chain is
+ * evidence of what ran on this machine, and a 022 umask made it readable by
+ * every local account.
+ */
+const AUDIT_DIR_MODE = 0o700;
+const AUDIT_FILE_MODE = 0o600;
+
+/**
  * The CHAIN's ordering barrier: how long append N+1 waits for append N to
  * really settle before giving up on ordering.
  *
@@ -160,6 +170,10 @@ export class AuditLogWriter {
   private gitignoreEnsure: Promise<void> | null = null;
   /** FR-R3-112 — one-shot chain seed; see `ensureChainSeeded`. */
   private chainSeed: Promise<void> | null = null;
+  /** Feature 217 (FR-003, data-model.md §2) — says once, path-free, what narrowing found. */
+  private readonly narrowing = new NarrowingReporter('audit log:', (message) =>
+    this.logger.warn(message)
+  );
 
   constructor(
     config: Partial<AuditLogConfig> & { workspaceRoot: string },
@@ -465,11 +479,12 @@ export class AuditLogWriter {
     const opened = await openWithinRoot(
       this.config.workspaceRoot,
       [SCHEGENT_DIR_NAME, AUDIT_LOG_NAME],
-      { flags: 'a', createDirs: true, dirMode: 0o700, fileMode: 0o600 }
+      { flags: 'a', createDirs: true, dirMode: AUDIT_DIR_MODE, fileMode: AUDIT_FILE_MODE }
     );
     if (opened.outcome === 'refused') {
       throw new AuditPathRefusedError(opened.reason, opened.errno);
     }
+    this.narrowing.report(opened.narrowing);
     try {
       // No timeout here. Whoever needs a bound wraps this; the chain needs the
       // real settlement, and racing it away in here is what lost the ordering.
@@ -576,6 +591,13 @@ export class AuditLogWriter {
       if (now - entry.mtimeMs > this.config.retentionMaxArchiveAgeMs) continue;
       keep.add(entry.fullPath);
     }
+    // Feature 217 (FR-005) — an archive is the live log renamed, and a rename
+    // keeps the mode, so a log an earlier release left widened leaves widened
+    // archives behind it that no open ever reaches. Narrowed where they lie,
+    // before the prune below, which removes only what is not kept.
+    this.narrowing.report(
+      await narrowRotatedFiles([...keep], AUDIT_FILE_MODE, [this.config.workspaceRoot])
+    );
     // FR-R3-112 (FR-126a) — a prune is the legitimate operation that looks most like
     // tampering, so it leaves a record saying what it removed. The lines are read BEFORE the
     // unlink, because after it the boundary digests are gone and the gap becomes
@@ -653,7 +675,7 @@ export class AuditLogWriter {
     const opened = await openWithinRoot(
       this.config.workspaceRoot,
       [SCHEGENT_DIR_NAME, AUDIT_CUTS_NAME],
-      { flags: 'a', createDirs: true, dirMode: 0o700, fileMode: 0o600 }
+      { flags: 'a', createDirs: true, dirMode: AUDIT_DIR_MODE, fileMode: AUDIT_FILE_MODE }
     );
     if (opened.outcome === 'refused') {
       // Bounded and path-free, like every other refusal warning here. Not thrown: the prune
@@ -665,6 +687,7 @@ export class AuditLogWriter {
       );
       return;
     }
+    this.narrowing.report(opened.narrowing);
     try {
       await opened.handle.write(`${JSON.stringify(record)}\n`, null, 'utf8');
     } catch (err) {
