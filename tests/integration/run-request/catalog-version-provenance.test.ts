@@ -238,7 +238,7 @@ async function withHarness(
   try {
     await body(harness);
   } finally {
-    harness.cleanup();
+    await harness.cleanup();
   }
 }
 

@@ -29,8 +29,8 @@ beforeEach(async () => {
   h = await makeHarness();
 });
 
-afterEach(() => {
-  h.cleanup();
+afterEach(async () => {
+  await h.cleanup();
 });
 
 describe('Feature 065 (T044) — offline-elapsed re-arm (FR-011 / FR-012 / FR-014 / SC-003)', () => {
@@ -121,7 +121,7 @@ describe('Feature 065 (T044) — offline-elapsed re-arm (FR-011 / FR-012 / FR-01
         scheduledStartAt: elapsedAt
       });
     } finally {
-      h2.cleanup();
+      await h2.cleanup();
     }
   });
 

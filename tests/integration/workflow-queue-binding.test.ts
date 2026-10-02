@@ -101,8 +101,8 @@ beforeEach(async () => {
   await harness.store.setGlobalConcurrencyCap(3);
 });
 
-afterEach(() => {
-  harness.cleanup();
+afterEach(async () => {
+  await harness.cleanup();
 });
 
 /** Open a connected run bound to `queueId`, starting at `n-triage`. */

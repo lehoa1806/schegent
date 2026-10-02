@@ -23,8 +23,8 @@ beforeEach(async () => {
   h = await makeHarness();
 });
 
-afterEach(() => {
-  h.cleanup();
+afterEach(async () => {
+  await h.cleanup();
 });
 
 describe('Feature 065 (T039) — User Story 4: cancel / change / convert-to-now (FR-015)', () => {

@@ -69,8 +69,8 @@ describe('a connected run whose child fails', () => {
     coordinator = makeCoordinatorDeps(harness, children);
   });
 
-  afterEach(() => {
-    harness.cleanup();
+  afterEach(async () => {
+    await harness.cleanup();
   });
 
   /**

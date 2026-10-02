@@ -38,6 +38,7 @@ import type { PipelineCatalog, PipelineDef } from '../../src/config/pipeline-con
 import type { SchegentWorkflowController } from '../../src/controller/workflow-controller';
 import type { SanitizedLogger } from '../../src/lib/logger';
 import type { AuditLogWriter } from '../../src/audit/audit-log-writer';
+import { removeTempRoot } from '../temp-root-cleanup';
 
 export class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -231,7 +232,7 @@ export interface Harness {
   readonly autoDrain: AutoDrainCoordinator;
   readonly workspaceRoot: string;
   readonly ownerId: string;
-  cleanup: () => void;
+  cleanup: () => Promise<void>;
 }
 
 export async function makeHarness(opts: {
@@ -347,13 +348,12 @@ export async function makeHarness(opts: {
     autoDrain,
     workspaceRoot,
     ownerId,
-    cleanup() {
+    async cleanup() {
       try {
-        fs.rmSync(workspaceRoot, { recursive: true, force: true });
-      } catch {
-        // ignore
+        await removeTempRoot(workspaceRoot);
+      } finally {
+        coordinator.dispose();
       }
-      coordinator.dispose();
     }
   };
 }

@@ -37,8 +37,8 @@ beforeEach(async () => {
   h = await makeHarness();
 });
 
-afterEach(() => {
-  h.cleanup();
+afterEach(async () => {
+  await h.cleanup();
 });
 
 function makeRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {

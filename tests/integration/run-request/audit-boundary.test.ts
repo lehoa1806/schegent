@@ -202,7 +202,7 @@ describe('no audit event carries what the operator composed (FR-047, SC-010)', (
         expect(text, `audit leaked the ${field} sentinel`).not.toContain(sentinel);
       }
     } finally {
-      harness.cleanup();
+      await harness.cleanup();
     }
   });
 
@@ -213,7 +213,7 @@ describe('no audit event carries what the operator composed (FR-047, SC-010)', (
 
       expect(auditText(harness)).not.toContain(harness.workspaceRoot);
     } finally {
-      harness.cleanup();
+      await harness.cleanup();
     }
   });
 
@@ -227,7 +227,7 @@ describe('no audit event carries what the operator composed (FR-047, SC-010)', (
 
       expect(harness.audit.entries.length).toBeGreaterThan(0);
     } finally {
-      harness.cleanup();
+      await harness.cleanup();
     }
   });
 
@@ -249,7 +249,7 @@ describe('no audit event carries what the operator composed (FR-047, SC-010)', (
         }
       }
     } finally {
-      harness.cleanup();
+      await harness.cleanup();
     }
   });
 });
@@ -264,7 +264,7 @@ describe('a refused submission audits the refusal, never the content', () => {
 
       expect(harness.audit.entries).toEqual([]);
     } finally {
-      harness.cleanup();
+      await harness.cleanup();
     }
   });
 
@@ -289,7 +289,7 @@ describe('a refused submission audits the refusal, never the content', () => {
         expect(text).not.toContain(sentinel);
       }
     } finally {
-      harness.cleanup();
+      await harness.cleanup();
     }
   });
 
@@ -312,7 +312,7 @@ describe('a refused submission audits the refusal, never the content', () => {
       expect(text).toContain('[redacted]');
       expect(text).not.toContain(SENTINEL.secret);
     } finally {
-      harness.cleanup();
+      await harness.cleanup();
     }
   });
 });

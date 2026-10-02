@@ -31,17 +31,12 @@ const rel = (abs: string): string => relative(REPO_ROOT, abs).replaceAll('\\', '
 /**
  * Files permitted to spell the removal themselves.
  *
- * The helper obviously may. `global-temp-root.ts` is the vitest `globalSetup`
- * that owns the run root itself: it runs after every worker has exited, so there
- * is nothing left writing and nothing to race.
+ * The helper obviously may.
  */
 const SELF = 'tests/lint/temp-root-cleanup-is-shared.test.ts';
 
 const ALLOWED: ReadonlySet<string> = new Set([
   HELPER,
-  // The vitest `globalSetup` that owns the run root. It runs after every worker
-  // has exited, so there is nothing left writing and nothing to race.
-  'tests/global-temp-root.ts',
   // This file quotes every forbidden variant as a fixture, to prove the patterns
   // still match. Excluded by name rather than by a pattern carve-out, which
   // would weaken the rule for everyone.
@@ -57,6 +52,10 @@ const HAND_ROLLED_RETRY = /rm\([^)]*recursive:\s*true[^)]*maxRetries/;
 
 /** A recursive `rm` whose failure is discarded. */
 const SWALLOWED = /rm\([^)]*recursive:\s*true[^)]*\)\s*\.catch\(/;
+
+/** The same, synchronously: a recursive `rmSync` closing a `try` whose `catch` holds only comments. */
+const SWALLOWED_SYNC =
+  /rmSync\([^)]*recursive:\s*true[^)]*\);?\s*\}\s*catch\s*(?:\([^)]*\))?\s*\{\s*(?:\/\/[^\n]*\s*|\/\*[\s\S]*?\*\/\s*)*\}/;
 
 /** A retry loop keyed on the error codes this race produces. */
 const RETRY_LOOP = /code\s*!==\s*'ENOTEMPTY'|catch[\s\S]{0,200}ENOTEMPTY[\s\S]{0,200}setTimeout/;
@@ -82,7 +81,7 @@ describe('temp-root cleanup has one implementation', () => {
     const offenders = testSources().filter((file) => {
       if (ALLOWED.has(file)) return false;
       const src = readFileSync(resolve(REPO_ROOT, file), 'utf8');
-      return HAND_ROLLED_RETRY.test(src) || SWALLOWED.test(src) || RETRY_LOOP.test(src);
+      return HAND_ROLLED_RETRY.test(src) || SWALLOWED.test(src) || SWALLOWED_SYNC.test(src) || RETRY_LOOP.test(src);
     });
     expect(
       offenders,
@@ -101,11 +100,26 @@ describe('temp-root cleanup has one implementation', () => {
     expect(HAND_ROLLED_RETRY.test('await fs.rm(d, { recursive: true, force: true, maxRetries: 10 });')).toBe(true);
     expect(SWALLOWED.test('await fs.rm(d, { recursive: true, force: true }).catch(() => undefined);')).toBe(true);
     expect(RETRY_LOOP.test("if (code !== 'ENOTEMPTY' && code !== 'EBUSY') throw err;")).toBe(true);
+    // Found on 2026-10-01 (FR-R3-181, T1824) in a harness `cleanup()`, which the
+    // promise form above cannot see.
+    expect(
+      SWALLOWED_SYNC.test(
+        'try {\n  fs.rmSync(workspaceRoot, { recursive: true, force: true });\n} catch {\n  // ignore\n}'
+      )
+    ).toBe(true);
+    expect(SWALLOWED_SYNC.test('try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ }')).toBe(
+      true
+    );
     // And the sanctioned call is not mistaken for any of them.
     const sanctioned = 'await removeTempRoot(tmpRoot);';
     expect(HAND_ROLLED_RETRY.test(sanctioned)).toBe(false);
     expect(SWALLOWED.test(sanctioned)).toBe(false);
+    expect(SWALLOWED_SYNC.test(sanctioned)).toBe(false);
     expect(RETRY_LOOP.test(sanctioned)).toBe(false);
+    // A catch that does something is not a swallow, and neither is a non-recursive
+    // `rmdirSync`, which fails on a directory with other contents by design.
+    expect(SWALLOWED_SYNC.test('try { fs.rmSync(d, { recursive: true }); } catch (e) { report(e); }')).toBe(false);
+    expect(SWALLOWED_SYNC.test('try { fs.rmdirSync(d); } catch { /* may have other contents */ }')).toBe(false);
     // A plain recursive rm is NOT forbidden: most are not teardown of a live
     // run, and a rule that flagged all 134 would be noise rather than a gate.
     expect(HAND_ROLLED_RETRY.test('await fs.rm(d, { recursive: true, force: true });')).toBe(false);

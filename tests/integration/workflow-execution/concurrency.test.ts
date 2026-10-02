@@ -63,8 +63,8 @@ describe('a connected run under repeat and overlapping starts', () => {
     coordinator = makeCoordinatorDeps(harness, children);
   });
 
-  afterEach(() => {
-    harness.cleanup();
+  afterEach(async () => {
+    await harness.cleanup();
   });
 
   /** Launch and settle the first node, leaving `n-ship` offered and nothing running. */
