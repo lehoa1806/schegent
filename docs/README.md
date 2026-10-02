@@ -225,6 +225,10 @@ drifts unnoticed, because the readers who would catch an error never get there.
   construction notes that decide whether a generated case is real or inert, and what the property
   deliberately does not cover (FR-R3-168)
 - [Lint and type-aware rules](development/lint-and-type-aware-rules.md)
+- [Size-gate entry condition](development/size-gate-entry-condition.md) — **decided 2026-10-01**:
+  every `src/` file of 1,000 lines or more carries a ceiling or a waiver in the size gate's table. The
+  measured distribution, each rejected threshold with the count it would have captured, and what
+  would move it (FR-R3-183)
 
 ### Release
 
