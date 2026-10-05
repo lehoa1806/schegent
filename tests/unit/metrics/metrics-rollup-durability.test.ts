@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -199,6 +199,34 @@ describe('FR-R3-082 — a trim loses history, never totals (T1091, T1092)', () =
     const after = await readMetricsRollup(workspaceRoot, logger);
     const composed = composeCumulativeTotals(after.records, [], after.carryForward);
     expect(composed.rollupRuns).toBe(runsBefore + 1);
+  }, 30_000);
+
+  /** POSIX-only: `mode` is not an enforceable concept on Windows. */
+  const posixOnly = process.platform === 'win32' ? it.skip : it;
+  /** What umask 022 leaves a file at. */
+  const WIDENED_FILE = 0o644;
+
+  posixOnly('says what the trim narrowed when a crashed trim left a widened temp (feature 217, FR-003)', async () => {
+    // The temp is opened `w` and published by rename, so the mode it is narrowed
+    // to is the mode the rollup is left at, and the narrowing is the trim's to
+    // report.
+    await seed(5, 1);
+    const padded =
+      `${' '.repeat(9 * 1024 * 1024)}\n` +
+      (await fs.readFile(metricsRollupPath(workspaceRoot), 'utf8'));
+    await fs.writeFile(metricsRollupPath(workspaceRoot), padded);
+    const leftover = `${metricsRollupPath(workspaceRoot)}.trim`;
+    await fs.writeFile(leftover, 'partial');
+    await fs.chmod(leftover, WIDENED_FILE);
+    const trimLogger = new SanitizedLogger();
+    const warn = vi.spyOn(trimLogger, 'warn');
+
+    await new SmallWindowWriter({ workspaceRoot, logger: trimLogger }).append(record('run-trigger', 1));
+
+    expect((await fs.stat(metricsRollupPath(workspaceRoot))).mode & 0o777).toBe(0o600);
+    expect(
+      warn.mock.calls.map(([message]) => String(message)).filter((message) => message.startsWith('metrics rollup:'))
+    ).toEqual(['metrics rollup: an evidence file granted access beyond its owner (mode 644); narrowed to owner-only']);
   }, 30_000);
 });
 

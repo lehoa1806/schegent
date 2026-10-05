@@ -50,7 +50,11 @@ function makeLock(): WorkspaceLockManager {
 async function seedSession(tmpRoot: string, runId: string): Promise<{ sessionDir: string; rawFile: string }> {
   const sessionDir = path.join(tmpRoot, '.schegent', 'sessions', runId);
   const iterDir = path.join(sessionDir, 'diagnostics', 'pipe', 'phase', 'iter-1');
-  await fs.mkdir(iterDir, { recursive: true });
+  // Owner-only, as the extension creates this tree since feature 217. A
+  // .schegent left at the umask's 0755 is narrowed by the audit log's next
+  // append, which reports it through warn, and the first case asserts that
+  // warn is never called.
+  await fs.mkdir(iterDir, { recursive: true, mode: 0o700 });
   await fs.writeFile(path.join(iterDir, 'stream.jsonl'), '{"type":"system"}\n', 'utf8');
   const rawFile = path.join(tmpRoot, '.schegent', 'sessions', `raw-${runId}.log`);
   await fs.writeFile(rawFile, 'transcript bytes\n', 'utf8');

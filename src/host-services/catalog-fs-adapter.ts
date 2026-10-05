@@ -31,6 +31,9 @@ import type {
   StoreWritability
 } from '../catalog/ports';
 import { tempNameFor } from '../catalog/atomic-write';
+import { NarrowingReporter } from '../lib/evidence-narrowing';
+import type { SanitizedLogger } from '../lib/logger';
+import { narrowMode, noticeFor } from '../lib/narrow-mode';
 import { resolveContainedLink, resolveContainedTarget } from '../lib/path-containment';
 import {
   ensureAnchorWithinRoot,
@@ -93,13 +96,21 @@ function nextTempToken(): string {
  * boundary and everything beneath it judged `contained`. Judged from the
  * workspace root, an escaping store link refuses; one that stays inside the
  * workspace is still admitted.
+ *
+ * Feature 217 (FR-003) — `logger` is where the store says, once and path-free,
+ * what narrowing its directories and files found. The port returns values and
+ * carries no diagnostics, so the adapter is handed the channel instead. The host
+ * passes its logger (`createHostCatalogStore`); a test that builds the adapter
+ * bare is told nothing.
  */
 export function createCatalogFsAdapter(
-  anchor: { readonly workspaceRoot: string; readonly storeRoot: string } | null
+  anchor: { readonly workspaceRoot: string; readonly storeRoot: string } | null,
+  logger?: Pick<SanitizedLogger, 'warn'>
 ): CatalogFsPort {
   const workspaceRoot = anchor === null ? null : anchor.workspaceRoot;
   const storeRoot = anchor === null ? null : anchor.storeRoot;
   const roots = workspaceRoot === null ? [] : [workspaceRoot];
+  const narrowing = new NarrowingReporter('catalog store:', (message) => logger?.warn(message));
 
   const pathFor = (at: StoreSegments): string | null =>
     storeRoot === null ? null : path.join(storeRoot, ...at);
@@ -133,7 +144,8 @@ export function createCatalogFsAdapter(
   /**
    * Open an already-proven path through the safe walk from the workspace root
    * — defence in depth beneath the judgment above it, on the same terms as
-   * `ownership-fs.ts`.
+   * `ownership-fs.ts`. What the open narrowed is reported here, so no caller
+   * below can drop it.
    */
   const openContained = async (
     provenPath: string,
@@ -143,7 +155,13 @@ export function createCatalogFsAdapter(
     if (walk === null) {
       return { outcome: 'refused', reason: 'escapes-root', errno: CONTAINMENT_ERRNO };
     }
-    return openWithinRootByPath(walk.root, provenPath, { flags, fileMode: FILE_MODE });
+    const opened = await openWithinRootByPath(walk.root, provenPath, {
+      flags,
+      createDirs: false,
+      fileMode: FILE_MODE
+    });
+    if (opened.outcome === 'opened') narrowing.report(opened.narrowing);
+    return opened;
   };
 
   /**
@@ -262,7 +280,41 @@ export function createCatalogFsAdapter(
     const walk = await walkRootFor(verdict.resolved);
     if (walk === null) return false;
     const made = await ensureAnchorWithinRoot(walk.root, walk.segments, DIR_MODE);
-    return made.outcome === 'ready';
+    if (made.outcome === 'refused') return false;
+    await narrowStoreChain(anchorMade.anchor, made.anchor);
+    return true;
+  };
+
+  /**
+   * Feature 217 (FR-006) — narrow the store's own directories, by name, from its
+   * anchor down to `directory`. The ensure walk creates them owner-only but
+   * leaves one that already exists as it found it.
+   *
+   * By name rather than through `dirMode` on the open, because the open walks the
+   * RESOLVED path from the workspace root: for a store an in-workspace link
+   * relocated, that walk passes through the operator's own directories, which are
+   * not this store's to narrow. Each outcome is reported, as the opens' file
+   * narrowing is.
+   *
+   * A directory found to be a link stops the chain. The ensure walk refused
+   * links, so one there now was swapped in since, and every directory below it
+   * would be reached through it (FR-003).
+   */
+  const narrowStoreChain = async (anchorDirectory: string, directory: string): Promise<void> => {
+    let current = anchorDirectory;
+    if (!(await narrowStoreDirectory(current))) return;
+    for (const segment of segmentsUnderRoot(anchorDirectory, directory) ?? []) {
+      current = path.join(current, segment);
+      if (!(await narrowStoreDirectory(current))) return;
+    }
+  };
+
+  /** Narrow and report one store directory; `false` when it is a link and the chain must stop. */
+  const narrowStoreDirectory = async (directory: string): Promise<boolean> => {
+    const notice = noticeFor('directory', await narrowMode(directory, DIR_MODE));
+    if (notice === null) return true;
+    narrowing.report([notice]);
+    return notice.outcome !== 'refused-symlink';
   };
 
   return {

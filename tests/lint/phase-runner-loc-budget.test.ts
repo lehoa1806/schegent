@@ -574,6 +574,12 @@ const BUDGETS = [
   // mutations the closed type made into conditional spreads — net four lines
   // shorter with the seam shut. No budget in this table or the sibling table was
   // raised (SC-015).
+  //
+  // Feature 217 (FR-R3-183, 2026-10-01) — unchanged here. source-loc-budget.test.ts
+  // now holds this file as well, by a waiver whose mark is 1,404 in that gate's
+  // count, which is this 1,403 by `wc -l`: its entry condition requires every file
+  // of 1,000 lines or more to be in its own table. Growing the file means raising
+  // both; docs/development/size-gate-entry-condition.md says why there are two.
   { path: 'src/controller/phase-runner.ts', max: 1_403 },
   // FR-R3-052 / H-03 (2026-08-24) — 400 → 415 for the size check that was
   // missing. `stat()` was already called here and only `isFile()` was read, so

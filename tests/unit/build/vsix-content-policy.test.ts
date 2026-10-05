@@ -104,3 +104,35 @@ describe('the package carries no repository tooling configuration', () => {
     }
   });
 });
+
+/**
+ * FR-R3-181 (FR-028) — a leaked test scratch root stays out of the package, by two rules.
+ *
+ * Global setup now sweeps every `.tmp/vitest-<pid>/` root whose run is provably gone, which makes
+ * the allowlist look redundant for `.tmp/`. It is not, and it must not be relaxed on those grounds:
+ * the sweep runs only when the suite does, so a package built after a crash and before the next
+ * test run still meets whatever the crash left. The ignore rule fixes the cause seen on 2026-08-23;
+ * the allowlist is what catches the next cause nobody predicted.
+ */
+describe('a leaked test scratch root stays out of the package', () => {
+  /** Two files under a dead run's root. Which files does not matter to a closed list. */
+  const LEAKED_ROOT = ['.tmp/vitest-50939/.gitignore', '.tmp/vitest-50939/audit.log'] as const;
+
+  it('ignores the scratch directory in .vscodeignore', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const ignore = readFileSync(resolve(__dirname, '..', '..', '..', '.vscodeignore'), 'utf8');
+    expect(ignore.split('\n').some((line) => line.trim() === '.tmp/**')).toBe(true);
+  });
+
+  it('would reject the root if it reached the archive anyway', async () => {
+    const { assertAllowedEntryNames } = await import('../../../scripts/check-vsix-smoke.mjs');
+    const names = await plausiblePackagedNames();
+    for (const name of LEAKED_ROOT) {
+      expect(
+        () => assertAllowedEntryNames([...names, `extension/${name}`]),
+        `${name} must not be an allowed entry`
+      ).toThrow(/unexpected packaged file extension\/\.tmp\/vitest-50939\//);
+    }
+  });
+});

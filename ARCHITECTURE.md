@@ -619,7 +619,11 @@ against the root per operation, and create store chains only through the
 safe-open anchor walk — so a cloned workspace arriving with `.schegent`,
 `.schegent/catalog`, or `.schegent/ownership` symlinked out of the workspace
 refuses instead of adopting the link target as its own boundary, while a link
-that stays inside the workspace is admitted. The
+that stays inside the workspace is admitted. Each store narrows its own
+directories to owner-only by name, and nothing above them (FR-R3-179): the
+opens walk the resolved path from the workspace root, and for a store an
+in-workspace link relocated, that walk passes through the operator's own
+directories, which are not the store's to change. The
 separate execution lease is per queue and lasts from admission to terminal
 transition. This split prevents a Run from releasing window primacy while still
 letting separate queues carry independent execution ownership.
@@ -658,6 +662,66 @@ restricted to the canonical workspace, extension global storage, or OS
 temporary root. Recovery checkpoints live in extension global storage and can
 contain unredacted Git patches, so they have their own restrictive permissions
 and retention service.
+
+**Evidence at rest is owner-only (FR-R3-179).** Evidence files are declared
+`0o600` and evidence directories `0o700`. `SafeOpenOptions` makes `fileMode`
+required on a writing open and `dirMode` required on one that creates
+directories, so an omitted mode does not compile unless a cast or a computed key
+whose type is wider than one literal hides it from the checker, or a setter with
+no getter declares a mode it never holds. The helper refuses each of those
+before it creates anything, as it does any mode that is not an integer from 0 to
+`0o7777`, and it reads each option and path segment once, so what it checks is
+what it uses. A declared mode applies only when a path is created, so a path an
+earlier release made under the umask is narrowed in place by the one routine
+that narrows a mode, `narrowMode` in `src/lib/narrow-mode.ts`. It only clears
+bits of the mode it read, refuses a symbolic link rather than following it, and
+never recreates or truncates, so a hash-chained log stays the same file.
+`openWithinRoot` narrows the leaf a writing open reaches and, when the open
+declares a `dirMode`, each directory it walks through below the caller's root,
+and returns what it narrowed as path-free notices.
+`src/lib/evidence-narrowing.ts` narrows the rotated generations and archives no
+open reaches, and its `NarrowingReporter` is how a writer says what was
+narrowed: under the writer's name, never a path, each distinct message once, and
+a report that cannot be delivered never fails the write. Every writer that
+narrows reports through it except the verbose diagnostic writer, which keeps its
+own. That writer and the catalog and ownership stores narrow the directories
+they prepare themselves. `tests/lint/evidence-sink-mode-census.test.ts` fails on
+any place `src/` creates a path through `node:fs` or VS Code's `workspace.fs`
+without the helper, or calls `chmod`, `lchmod` or `fchmod` outside
+`narrow-mode.ts`, unless that place carries a stated reason, and a raw call that
+can declare a mode fails without one whatever its reason. Outside the helper, an
+open through it fails too unless its options are a bare literal the census can
+read whole, every key spelled out once as a property or a getter, none spread in
+and none `__proto__`, that declares each mode the open needs: a `fileMode` unless
+its flags only read, and a `dirMode` whenever its `createDirs` may be true,
+whatever its flags. It
+fails any use of the helper's name but a call that spells it, bare or after a
+dot, an import or export under that name, and a type (`typeof openWithinRoot`),
+since it never reads what any other use passes the helper. It reads a mode
+change in every member syntax the source spells: after a dot, in brackets, and
+as a key a declaration or assignment destructures, where a name in brackets or a
+computed key counts when it is a literal string, bare or under parentheses,
+`as`, `satisfies`, `!` or `<T>`. It reads `workspace.fs` after the dotted chain
+that names it: on the workspace `vscode` exports, under any name the import
+gives it or through the module, and on any other value spelled `workspace`. A
+name through which it cannot follow `node:fs` or VS Code's `workspace` fails too
+rather than passing unread: a `node:fs` module handed on untyped or indexed in
+brackets; `vscode`, the workspace it exports, or any workspace's `fs` read any
+way but a dotted member; an import alias; a `require` or `import()` of either
+module or of one named at run time; `require` used any way but a direct call or
+`require.resolve`; and a re-export. It reads syntax, not types, so what lies
+past those forms is outside what it sees, and review is the control for each: a
+cast past a port's declared interface; a `chmod` or a helper whose name the
+source does not spell, as a key any other expression computes or reflection over
+its receiver; a `workspace` the import does not bind, reached other than by that
+dotted chain; a module loaded any other way, such as by `module.require`, a
+function `createRequire` returns or `process.getBuiltinModule`; a file VS Code
+writes other than through `workspace.fs`, such as by `workspace.applyEdit` or a
+document's `save()`; and a path or mode that a process the host spawns creates
+or changes.
+<!-- Source: src/lib/narrow-mode.ts -->
+<!-- Source: src/lib/evidence-narrowing.ts -->
+<!-- Source: src/lib/safe-open.ts -->
 
 Metrics are read-only projections over the retained audit corpus plus durable
 rollups. Detail coverage follows the evidence retention window; cumulative

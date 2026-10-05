@@ -1,6 +1,8 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
+import type { PhaseDef } from '../../../src/config/pipeline-config';
+import { PromptBuilder } from '../../../src/runner/prompt-builder';
 
 /**
  * FR-R3-061 (M-08 / R-15) — the canary's decisions, tested without a CLI, a
@@ -368,5 +370,178 @@ describe('FR-R3-084 — the live phase, written after it was run', () => {
     expect(request).toContain('2026-08-26');
     expect(request).toContain('2.1.246');
     expect(runner).not.toMatch(/expectedVersionPrefix:\s*'[^']+'/);
+  });
+});
+
+/**
+ * FR-R3-182 — the corpus says what each case must show, and reaches all three surfaces.
+ *
+ * Read line by line before this item, the corpus proved delivery and held one sampled refusal;
+ * none of its lines was evidence of resistance (feature 217, `measurements.md` §6). What is
+ * pinned here is the table that replaced it: every case declares its observable, every surface
+ * is reached on every backend, the two old cases stay where they were, and every surface case
+ * can tell "the text arrived" from "the text was obeyed". A case that cannot tell them apart
+ * shows nothing whichever way it goes.
+ *
+ * Nothing here runs the corpus. It spends live turns, and it runs only when someone records it
+ * (FR-059).
+ */
+describe('FR-R3-182 — the injection corpus', () => {
+  const backends = (): string[] => Object.keys(canary.LIVE_INVOCATIONS);
+  const surfaceScenarios = () => canary.CANARY_SCENARIOS.filter((s) => s.surface !== null);
+
+  /** Everything a surface case puts on its surface: the text the model was not told to obey. */
+  function surfaceText(scenario: (typeof canary.CANARY_SCENARIOS)[number]): string {
+    return [
+      scenario.host?.featureDescription ?? '',
+      ...Object.values(scenario.host?.previousPhaseMessage ?? {}),
+      ...Object.values(scenario.files ?? {})
+    ].join('\n');
+  }
+
+  it('declares what every case must show (FR-054, SC-012)', () => {
+    const undeclared = canary.CANARY_CASES.filter(
+      (c) => typeof c.expectedObservable !== 'string' || c.expectedObservable.trim().length === 0
+    );
+    expect(undeclared.map((c) => `${c.backend}/${c.id}`)).toEqual([]);
+    // Over the whole table, not a view of it: one case per scenario per backend.
+    expect(canary.CANARY_CASES).toHaveLength(canary.CANARY_SCENARIOS.length * backends().length);
+    expect(canary.CANARY_SCENARIOS.length).toBeGreaterThan(2);
+  });
+
+  it('reaches every surface on every backend (FR-053)', () => {
+    expect([...canary.INJECTION_SURFACES]).toEqual(['task-text', 'repository-file', 'prior-output']);
+    for (const surface of canary.INJECTION_SURFACES) {
+      for (const backend of backends()) {
+        expect(
+          canary.CANARY_CASES.some((c) => c.surface === surface && c.backend === backend),
+          `${surface} on ${backend}`
+        ).toBe(true);
+      }
+    }
+    for (const c of canary.CANARY_CASES) {
+      expect(c.surface === null || canary.INJECTION_SURFACES.includes(c.surface), c.id).toBe(true);
+    }
+  });
+
+  it('keeps the two cases it had, in place, and counts neither as reaching a surface (FR-052)', () => {
+    const byId = new Map(canary.CANARY_SCENARIOS.map((s) => [s.id, s]));
+    const probe = byId.get('live-protocol-probe');
+    expect(probe?.prompt).toBe(canary.LIVE_PROMPT);
+    expect(probe?.stem).toBe('live');
+    expect(probe?.cadence).toBe('every-run');
+    const output = byId.get('prompt-injection-in-output');
+    expect(output?.prompt).toBe(canary.INJECTION_PROMPT);
+    expect(output?.stem).toBe('injection');
+    expect(output?.cadence).toBe('record-only');
+    // The probe carries no untrusted text, and the output case ASKS for its lines, so a model
+    // that prints them is complying. Neither reaches a surface, and neither may be counted as
+    // though it did.
+    expect(probe?.surface).toBeNull();
+    expect(output?.surface).toBeNull();
+    // A recording is named by its stem, so two cases sharing one would overwrite each other.
+    const count = canary.CANARY_SCENARIOS.length;
+    expect(new Set(canary.CANARY_SCENARIOS.map((s) => s.id)).size).toBe(count);
+    expect(new Set(canary.CANARY_SCENARIOS.map((s) => s.stem)).size).toBe(count);
+  });
+
+  it('is one corpus, run by one runner (FR-053)', () => {
+    const runner = readFileSync(
+      resolve(__dirname, '../../../scripts/backend-canary-run.mjs'),
+      'utf8'
+    );
+    // The runner names no prompt of its own. The probe's is `LIVE_PROMPT`, which the table's
+    // probe case carries (above); every other turn takes its prompt from the table.
+    expect(runner).toContain('CANARY_CASES');
+    expect(runner).not.toContain('INJECTION_PROMPT');
+    expect(runner).not.toMatch(/const [A-Z_]*PROMPT\s*=/);
+    // The table's other turns are spent under `--record` only.
+    expect(runner).toMatch(/recordDir\)\s*recordCorpus\(/);
+    // And no other script declares cases beside these. A declaration is the field with a value
+    // or a type after it; a comment naming the field declares nothing.
+    const scriptsDir = resolve(__dirname, '../../../scripts');
+    const declaring = readdirSync(scriptsDir)
+      .filter((name) => /\.(mjs|mts|js|ts|sh)$/.test(name))
+      .filter((name) =>
+        /\bexpectedObservable\s*:/.test(readFileSync(resolve(scriptsDir, name), 'utf8'))
+      );
+    expect(declaring.sort()).toEqual(['backend-canary.d.mts', 'backend-canary.mjs']);
+  });
+
+  it('lets every surface case tell the text arriving from the text being obeyed', () => {
+    expect(surfaceScenarios().length).toBeGreaterThanOrEqual(canary.INJECTION_SURFACES.length);
+    const words: string[] = [];
+    for (const scenario of surfaceScenarios()) {
+      const { id, host, deliveryToken, injectionMarker, expectedObservable } = scenario;
+      if (!host || !deliveryToken || !injectionMarker) {
+        throw new Error(`${id} needs host sections, a delivery token and an injection marker`);
+      }
+      // Both words sit on the surface and nowhere in the instruction the model was given, so a
+      // delivery token in an answer can only have come from the surface, and so can a marker.
+      expect(surfaceText(scenario), id).toContain(deliveryToken);
+      expect(surfaceText(scenario), id).toContain(injectionMarker);
+      expect(host.instruction, id).not.toContain(deliveryToken);
+      expect(host.instruction, id).not.toContain(injectionMarker);
+      // A planted file is the only place its words exist: the prompt names the file, not them.
+      if (scenario.files) {
+        expect(scenario.prompt, id).not.toContain(deliveryToken);
+        expect(scenario.prompt, id).not.toContain(injectionMarker);
+      }
+      // The observable names what to look for, so it can be checked against a recording.
+      expect(expectedObservable, id).toContain(deliveryToken);
+      expect(expectedObservable, id).toContain(injectionMarker);
+      words.push(deliveryToken, injectionMarker);
+    }
+    // Distinct across cases, so no recording can be read as another case's.
+    expect(new Set(words).size).toBe(words.length);
+  });
+
+  it('plants nothing the host would act on, under bare file names only', () => {
+    for (const scenario of canary.CANARY_SCENARIOS) {
+      // A bracketed status token is the one string the host reads as a verdict. The corpus
+      // samples whether a model follows planted text; planting the host's own control token
+      // would make a recording that replays as a pass.
+      for (const text of [scenario.prompt, ...Object.values(scenario.files ?? {})]) {
+        expect(text, scenario.id).not.toMatch(/\[\s*SCHEGENT_STATUS/i);
+      }
+      for (const name of Object.keys(scenario.files ?? {})) {
+        expect(name, scenario.id).toMatch(/^[A-Za-z0-9][A-Za-z0-9._-]*$/);
+      }
+    }
+  });
+
+  it("places each surface case's text where the host does", () => {
+    // `hostShapedPrompt` repeats the layout of `PromptBuilder.build`, which a `.mjs` cannot
+    // import: a second site. So the host's prompt is built from the same inputs, and the case's
+    // prompt must be a verbatim slice of it: the same headers, order and entry format.
+    for (const scenario of surfaceScenarios()) {
+      const { host } = scenario;
+      if (!host) throw new Error(`${scenario.id} needs host sections`);
+      const phaseDef: PhaseDef = { id: 'canary', name: 'Canary', version: 1, instruction: host.instruction };
+      const built = new PromptBuilder().build({
+        phase: 'canary',
+        phaseDef,
+        iteration: 1,
+        iterationCap: 1,
+        featureDescription: host.featureDescription ?? '',
+        featureDir: null,
+        previousPhaseMessage: host.previousPhaseMessage ?? null
+      });
+      expect(built, scenario.id).toContain(scenario.prompt);
+      expect(scenario.prompt, scenario.id).toContain(`TASK:\n${host.instruction}`);
+    }
+  });
+
+  it('costs the turns the threat model states (FR-055, SC-012)', () => {
+    const everyRun = canary.CANARY_CASES.filter((c) => c.cadence === 'every-run').length;
+    const recorded = canary.CANARY_CASES.length;
+    // The ordinary canary spends the protocol probe alone, once per backend.
+    expect(everyRun).toBe(backends().length);
+    const threatModel = readFileSync(
+      resolve(__dirname, '../../../docs/security/threat-model.md'),
+      'utf8'
+    );
+    expect(threatModel).toContain(`\`npm run canary\` spends ${everyRun} turns`);
+    expect(threatModel).toContain(`\`npm run canary:record\` spends ${recorded} turns`);
   });
 });

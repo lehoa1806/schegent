@@ -48,16 +48,16 @@ The tree is demand-created. In particular, an absent `.schegent/catalog/manifest
 | `.schegent/.gitignore` | Text containing `*`; created with exclusive-write semantics and never overwrites an existing file | Keeps all local runtime artifacts out of Git even in a workspace whose repository ignore file knows nothing about Schegent. |
 | `.schegent/catalog/manifest.json` | Catalog store format v1; the only mutable catalog file | Records version lists and draft/active pointers. |
 | `.schegent/catalog/{phases,pipelines,workflows}/<id>/v<N>.json` | Immutable JSON version record | Stores one exact definition version. IDs and version names are validated before becoming path segments. |
-| `.schegent/audit.log` | Newline-delimited structured audit entries, schema v3 | Primary metadata evidence. Rotation produces timestamped siblings; the writer defaults to 5 MiB and a 30-day rotation age. Host code appends. The log is tamper-**evident** but not tamper-proof: each entry carries the previous entry's digest (`src/audit/audit-chain.ts`), so an edit that does not recompute every later digest is detected by `npm run audit:verify`; an actor with write access to the same disk can recompute them. |
+| `.schegent/audit.log` | Newline-delimited structured audit entries, schema v3; mode `0600` on POSIX, archives included | Primary metadata evidence. Rotation produces timestamped siblings; the writer defaults to 5 MiB and a 30-day rotation age. Host code appends. The log is tamper-**evident** but not tamper-proof: each entry carries the previous entry's digest (`src/audit/audit-chain.ts`), so an edit that does not recompute every later digest is detected by `npm run audit:verify`; an actor with write access to the same disk can recompute them. |
 | `.schegent/sessions/raw-<runId>.log` | Unredacted text, mode `0600` on POSIX | Retained raw transcript for `always`, or the promoted result for a non-clean `errors-only` Run. |
 | `.schegent/sessions/.pending/raw-<runId>.log` | Temporary unredacted text | Workspace-side pending location used by errors-only transcript handling. Raw capture also uses a private `0700` OS-temp spool while a process is active. |
-| `.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/stream.jsonl` | Unredacted JSONL | Per-iteration CLI stream capture. |
-| The same `iter-<N>` directory's `debug.json`, `verbose.log`, and `phase-message.env` | Unredacted diagnostic and sidecar files | Backend debug stream, verbose output, and host-resolved Phase message sidecar. |
+| `.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/stream.jsonl` | Unredacted JSONL, mode `0600` on POSIX, in directories `0700` from `.schegent/` down | Per-iteration CLI stream capture. |
+| The same `iter-<N>` directory's `debug.json`, `verbose.log`, and `phase-message.env` | Unredacted diagnostic and sidecar files. `verbose.log` is `0600` on POSIX; the backend writes the other two under its own umask, and the `0700` directories above them keep them private | Backend debug stream, verbose output, and host-resolved Phase message sidecar. |
 | `.schegent/history/<runId>.txt` | UTF-8 text, mode `0600` on POSIX | Full Task description used for byte-identical reruns; the Memento history row holds only a preview and relative reference. |
 | `.schegent/metrics-rollup.jsonl` | Append-only newline-delimited JSON, schema v1 | One terminal summary per Run so cumulative totals survive audit rotation. |
-| `.schegent/cli-transport.log` and `.1`–`.3` | Sanitized line records; 5 MiB per file | Bounded transport-level diagnostics, separate from the unredacted sinks. |
+| `.schegent/cli-transport.log` and `.1`–`.3` | Sanitized line records; 5 MiB per file; mode `0600` on POSIX | Bounded transport-level diagnostics, separate from the unredacted sinks. |
 | `.schegent/ownership/` | Private JSON records, directory `0700` and files `0600` on POSIX | Authoritative fencing records for window primacy and per-Queue execution leases. |
-| `.schegent/syslog` | Sanitized runtime log | Default runtime-log path. A configured path may instead resolve under an allowed canonical workspace, extension `globalStorage`, or OS temp root. The operator's home directory is deliberately excluded. |
+| `.schegent/syslog` | Sanitized runtime log; mode `0600` on POSIX, generations included | Default runtime-log path. A configured path may instead resolve under an allowed canonical workspace, extension `globalStorage`, or OS temp root. The operator's home directory is deliberately excluded. |
 
 <!-- Source: src/audit/schegent-gitignore.ts -->
 <!-- Source: src/contracts/catalog-store.ts -->
@@ -66,6 +66,7 @@ The tree is demand-created. In particular, an absent `.schegent/catalog/manifest
 <!-- Source: src/audit/raw-transcript-writer.ts -->
 <!-- Source: src/services/phase-log/phase-log-path.ts -->
 <!-- Source: src/audit/verbose-diagnostic-path.ts -->
+<!-- Source: src/audit/verbose-diagnostic-writer.ts -->
 <!-- Source: src/controller/phase-sidecar-reader.ts -->
 <!-- Source: src/services/history/history-description-store.ts -->
 <!-- Source: src/metrics/metrics-rollup.ts -->
@@ -74,6 +75,7 @@ The tree is demand-created. In particular, an absent `.schegent/catalog/manifest
 <!-- Source: src/state/ownership-fs.ts -->
 <!-- Source: src/state/ownership-registry.ts -->
 <!-- Source: src/lib/runtime-log/runtime-log-path.ts -->
+<!-- Source: src/lib/runtime-log/runtime-log-sink.ts -->
 
 ## Extension-private storage
 

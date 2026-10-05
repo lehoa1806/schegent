@@ -261,11 +261,14 @@ describe('FR-R3-005 — destructive filesystem calls route through the containme
     // FR-R3-119 — the ownership wiring moved with the leases into
     // `src/activation/workspace-session.ts`. The back-reference property this
     // asserts is unchanged; only the file holding the call is different.
+    // Feature 217 (FR-003) — the adapter may take the logger it reports
+    // narrowing through as a second argument. It names no directory, so the
+    // back-reference is still the only directory the shape admits.
     const source = stripComments(read('src/activation/workspace-session.ts'));
     const call = /useOwnershipStorage\s*\(([\s\S]*?)\)\s*;/.exec(source);
     expect(call, 'the useOwnershipStorage call must be readable').not.toBeNull();
     expect(
-      /createDiskOwnershipFs\s*\(\s*\{\s*workspaceRoot,\s*(\w+)\s*\}\s*\)\s*,\s*\1\s*$/.test(
+      /createDiskOwnershipFs\s*\(\s*\{\s*workspaceRoot,\s*(\w+)\s*\}\s*(?:,\s*\w+\s*)?\)\s*,\s*\1\s*$/.test(
         call![1]!.trim()
       ),
       'createDiskOwnershipFs must take { workspaceRoot, <dir> } with the same <dir> ' +

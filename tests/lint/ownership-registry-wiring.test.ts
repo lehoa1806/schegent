@@ -121,9 +121,10 @@ const EXTENSION_SOURCE = stripComments(read(EXTENSION));
 function ownershipDirectoryExpression(args: string): string {
   // FR-R3-069 — the adapter takes { workspaceRoot, <dir> }; the directory to
   // follow is the second shorthand property. The bare-identifier form is kept
-  // so the helper still reads the pre-152 shape if it ever returns.
+  // so the helper still reads the pre-152 shape if it ever returns. Feature 217
+  // (FR-003) — an optional second argument, the logger, names no directory.
   const identifier =
-    /^\s*createDiskOwnershipFs\s*\(\s*\{\s*workspaceRoot,\s*(\w+)\s*\}\s*\)/.exec(args)?.[1] ??
+    /^\s*createDiskOwnershipFs\s*\(\s*\{\s*workspaceRoot,\s*(\w+)\s*\}\s*(?:,\s*\w+\s*)?\)/.exec(args)?.[1] ??
     /^\s*createDiskOwnershipFs\s*\(\s*(\w+)\s*\)/.exec(args)?.[1];
   if (identifier === undefined) return args;
   const binding = new RegExp(`\\bconst\\s+${identifier}\\s*=([^;]*);`).exec(EXTENSION_SOURCE);

@@ -388,15 +388,15 @@ describe('CliTransportSink — sanitization', () => {
   });
 });
 
-describe('CliTransportSink — bounded by rotation', () => {
-  /** A record is 5 attribution/format bytes plus the line; keep the arithmetic visible. */
-  function recordBytes(line: string): number {
-    return Buffer.byteLength(
-      `2026-05-10T12:00:00.000Z\trun-1\tspeckit-plan\tstdout\t${line}\n`,
-      'utf8'
-    );
-  }
+/** A record is 5 attribution/format bytes plus the line; keep the arithmetic visible. */
+function recordBytes(line: string): number {
+  return Buffer.byteLength(
+    `2026-05-10T12:00:00.000Z\trun-1\tspeckit-plan\tstdout\t${line}\n`,
+    'utf8'
+  );
+}
 
+describe('CliTransportSink — bounded by rotation', () => {
   it('rotates the live file to .1 once the next record would exceed the bound', async () => {
     const line = 'a'.repeat(50);
     const size = recordBytes(line);
@@ -528,6 +528,192 @@ describe('CliTransportSink — bounded by rotation', () => {
       await listTransportFiles(),
       'a new session that assumed zero bytes would grow the file without bound'
     ).toEqual([CLI_TRANSPORT_FILE_NAME, `${CLI_TRANSPORT_FILE_NAME}.1`]);
+  });
+});
+
+/**
+ * Feature 217 (FR-004, FR-005, FR-007) — the capture is owner-only, and so is
+ * every file a rotation leaves behind.
+ *
+ * The measured gap was two opens that declared no mode: the append open, and the
+ * successor a rotation creates through `writeFile`. Under the common 022 umask both
+ * landed 0644, readable by every local account, carrying raw CLI output. Every
+ * assertion reads the mode back from disk.
+ */
+describe('CliTransportSink — owner-only evidence (feature 217)', () => {
+  const OWNER_ONLY_FILE = 0o600;
+  const OWNER_ONLY_DIR = 0o700;
+  const WIDENED_FILE = 0o644;
+  const WIDENED_DIR = 0o755;
+
+  /** POSIX-only: `mode` is not an enforceable concept on Windows. */
+  const posixOnly = process.platform === 'win32' ? it.skip : it;
+
+  const modeOf = async (p: string): Promise<number> => (await fs.lstat(p)).mode & 0o777;
+  const directory = (): string => path.join(workspaceRoot, CLI_TRANSPORT_DIRECTORY);
+
+  /** A file an earlier release left behind, at the mode the umask gave it. */
+  async function leaveWidened(file: string, contents: string): Promise<void> {
+    await fs.writeFile(file, contents, 'utf8');
+    await fs.chmod(file, WIDENED_FILE);
+  }
+
+  const record = (sink: CliTransportSink, line: string): void =>
+    sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line });
+
+  posixOnly('creates the directory and the live file owner-only', async () => {
+    const sink = makeSink(countingAccessor());
+    record(sink, 'first');
+    await sink.flushPendingWrites();
+
+    expect(await modeOf(directory())).toBe(OWNER_ONLY_DIR);
+    expect(await modeOf(livePath())).toBe(OWNER_ONLY_FILE);
+  });
+
+  posixOnly('creates the successor a rotation leaves behind owner-only (FR-005)', async () => {
+    const line = 'h'.repeat(40);
+    const sink = makeSink(countingAccessor({ maxBytes: recordBytes(line), maxGenerations: 2 }));
+    for (let index = 0; index < 3; index += 1) record(sink, line);
+    await sink.flushPendingWrites();
+
+    expect(await listTransportFiles()).toEqual([
+      CLI_TRANSPORT_FILE_NAME,
+      `${CLI_TRANSPORT_FILE_NAME}.1`,
+      `${CLI_TRANSPORT_FILE_NAME}.2`
+    ]);
+    expect(await modeOf(livePath()), 'the file the rotation created').toBe(OWNER_ONLY_FILE);
+    expect(await modeOf(`${livePath()}.1`)).toBe(OWNER_ONLY_FILE);
+    expect(await modeOf(`${livePath()}.2`)).toBe(OWNER_ONLY_FILE);
+  });
+
+  posixOnly('leaves the live file owner-only when it truncates in place', async () => {
+    // With no generations retained, a full file is truncated rather than moved.
+    // Truncating keeps the mode it finds, so a widened file stays widened unless
+    // the truncating open narrows it.
+    const line = 'i'.repeat(40);
+    await fs.mkdir(directory(), { mode: OWNER_ONLY_DIR });
+    await leaveWidened(livePath(), 'x'.repeat(recordBytes(line)));
+
+    const sink = makeSink(countingAccessor({ maxBytes: recordBytes(line), maxGenerations: 0 }));
+    record(sink, line);
+    await sink.flushPendingWrites();
+
+    expect(await readLive()).not.toContain('x');
+    expect(await modeOf(livePath())).toBe(OWNER_ONLY_FILE);
+  });
+
+  posixOnly('narrows a live file an earlier release left widened, in place (FR-002)', async () => {
+    await fs.mkdir(directory());
+    await fs.chmod(directory(), WIDENED_DIR);
+    await leaveWidened(livePath(), 'earlier\n');
+    const before = await fs.lstat(livePath());
+
+    const sink = makeSink(countingAccessor());
+    record(sink, 'later');
+    await sink.flushPendingWrites();
+
+    const after = await fs.lstat(livePath());
+    expect(after.mode & 0o777).toBe(OWNER_ONLY_FILE);
+    expect(after.ino, 'narrowed, not recreated').toBe(before.ino);
+    expect(await readLive()).toMatch(/^earlier\n.*later\n$/s);
+    expect(await modeOf(directory())).toBe(OWNER_ONLY_DIR);
+  });
+
+  posixOnly('narrows the generations an earlier release left widened, and nothing else (FR-004)', async () => {
+    await fs.mkdir(directory(), { mode: OWNER_ONLY_DIR });
+    await leaveWidened(`${livePath()}.1`, 'older\n');
+    await leaveWidened(`${livePath()}.2`, 'oldest\n');
+    await leaveWidened(`${livePath()}.keep-me`, 'operator file\n');
+
+    // One record that fits: no rotation runs, so the generations are only
+    // reached if the sink narrows what it finds when it starts writing.
+    const sink = makeSink(countingAccessor());
+    record(sink, 'now');
+    await sink.flushPendingWrites();
+
+    expect(await modeOf(`${livePath()}.1`)).toBe(OWNER_ONLY_FILE);
+    expect(await modeOf(`${livePath()}.2`)).toBe(OWNER_ONLY_FILE);
+    expect(
+      await modeOf(`${livePath()}.keep-me`),
+      'a non-numeric suffix belongs to the operator'
+    ).toBe(WIDENED_FILE);
+    expect(await fs.readFile(`${livePath()}.2`, 'utf8'), 'narrowed, not rewritten').toBe(
+      'oldest\n'
+    );
+  });
+
+  posixOnly('lists the generations again at the next open when a listing failed (FR-004)', async () => {
+    const line = 'j'.repeat(40);
+    await fs.mkdir(directory(), { mode: OWNER_ONLY_DIR });
+    await leaveWidened(`${livePath()}.1`, 'older\n');
+    let listingFails = true;
+    const sink = track(
+      new CliTransportSink({
+        settings: countingAccessor({ maxBytes: recordBytes(line), maxGenerations: 2 }),
+        sanitize: (text) => text,
+        logger,
+        now: () => new Date('2026-05-10T12:00:00.000Z'),
+        readdir: async (target) => {
+          if (listingFails) throw Object.assign(new Error('busy'), { code: 'EMFILE' });
+          return fs.readdir(target);
+        }
+      })
+    );
+
+    record(sink, line);
+    await sink.flushPendingWrites();
+    expect(await modeOf(`${livePath()}.1`), 'not listed, so not reached').toBe(WIDENED_FILE);
+
+    // The append handle is held, so the next open is the successor a rotation
+    // leaves, and the rotation shifts the widened generation to `.2` first.
+    listingFails = false;
+    record(sink, line);
+    await sink.flushPendingWrites();
+    expect(await fs.readFile(`${livePath()}.2`, 'utf8')).toBe('older\n');
+    expect(await modeOf(`${livePath()}.2`)).toBe(OWNER_ONLY_FILE);
+  });
+
+  posixOnly('says what it narrowed, once, without naming the path', async () => {
+    await fs.mkdir(directory());
+    await fs.chmod(directory(), WIDENED_DIR);
+    await leaveWidened(livePath(), '');
+    await leaveWidened(`${livePath()}.1`, '');
+    await leaveWidened(`${livePath()}.2`, '');
+
+    const sink = makeSink(countingAccessor());
+    for (let index = 0; index < 3; index += 1) {
+      record(sink, `line-${index}`);
+      await sink.flushPendingWrites();
+    }
+
+    const narrowing = warnings.filter((w) => w.includes('owner-only'));
+    expect(narrowing, 'one line per kind of change, not one per file or per record').toEqual([
+      expect.stringMatching(/directory.*\b755\b/),
+      expect.stringMatching(/file.*\b644\b/)
+    ]);
+    for (const warning of narrowing) {
+      expect(warning, 'path-free').not.toContain(workspaceRoot);
+      expect(warning).not.toContain(CLI_TRANSPORT_FILE_NAME);
+    }
+  });
+
+  posixOnly('never narrows through a symbolic link a generation slot holds (FR-003)', async () => {
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-cli-transport-outside-'));
+    try {
+      const target = path.join(outside, 'not-evidence.txt');
+      await leaveWidened(target, 'someone else\n');
+      await fs.mkdir(directory(), { mode: OWNER_ONLY_DIR });
+      await fs.symlink(target, `${livePath()}.1`);
+
+      const sink = makeSink(countingAccessor());
+      record(sink, 'still captured');
+      await sink.flushPendingWrites();
+
+      expect(await modeOf(target), 'the link target is untouched').toBe(WIDENED_FILE);
+      expect(await readLive(), 'capture carries on').toContain('still captured');
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true });
+    }
   });
 });
 

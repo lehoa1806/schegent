@@ -1,4 +1,5 @@
 import type { SanitizedLogger } from '../lib/logger';
+import type { NarrowingNotice } from '../lib/narrow-mode';
 import { openWithinRoot } from '../lib/safe-open';
 
 const GITIGNORE_BODY = [
@@ -7,6 +8,9 @@ const GITIGNORE_BODY = [
   '*',
   ''
 ].join('\n');
+
+const SCHEGENT_DIR_NAME = '.schegent';
+const GITIGNORE_NAME = '.gitignore';
 
 /**
  * Best-effort self-ignore for the workspace-local runtime directory.
@@ -17,14 +21,18 @@ const GITIGNORE_BODY = [
  * local `.schegent/.gitignore` that ignores the directory's contents.
  *
  * Existing files are never overwritten: an operator-managed ignore file wins.
+ *
+ * Feature 217 (FR-003) — returns what the walk narrowed, for the caller to
+ * report through its own reporter. The drop runs before a writer's first open,
+ * so on a fresh but widened `.schegent/` it is this open that narrows it, and
+ * the operator should read that from the writer they know rather than from a
+ * helper with no sink of its own. `[]` when the file is already there or the
+ * open was refused: neither reaches a mode.
  */
-const SCHEGENT_DIR_NAME = '.schegent';
-const GITIGNORE_NAME = '.gitignore';
-
 export async function ensureSchegentGitignore(
   workspaceRoot: string,
   logger: SanitizedLogger
-): Promise<void> {
+): Promise<readonly NarrowingNotice[]> {
   // FR-R3-053 (H-02) — through the safe walk, not `mkdir -p` + `writeFile`.
   // This function runs BEFORE the first audit append, so when `.schegent` was a
   // symlink it was this call that created the escape: the append was then merely
@@ -39,12 +47,12 @@ export async function ensureSchegentGitignore(
   if (opened.outcome === 'refused') {
     // EEXIST is the normal case on every run after the first: the file is
     // already there and an operator-managed one wins. Not a warning.
-    if (opened.errno === 'EEXIST') return;
+    if (opened.errno === 'EEXIST') return [];
     logger.warn('schegent gitignore ensure refused', {
       reason: opened.reason,
       errno: opened.errno
     });
-    return;
+    return [];
   }
   try {
     await opened.handle.write(GITIGNORE_BODY, null, 'utf8');
@@ -53,4 +61,5 @@ export async function ensureSchegentGitignore(
   } finally {
     await opened.handle.close().catch(() => undefined);
   }
+  return opened.narrowing;
 }

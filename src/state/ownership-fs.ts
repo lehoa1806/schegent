@@ -18,6 +18,9 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
+import { NarrowingReporter } from '../lib/evidence-narrowing';
+import type { SanitizedLogger } from '../lib/logger';
+import { narrowMode, noticeFor } from '../lib/narrow-mode';
 import { resolveContainedLink, resolveContainedTarget } from '../lib/path-containment';
 import type { FileHandle } from 'fs/promises';
 import {
@@ -93,13 +96,22 @@ let tempCounter = 0;
  * Judged from the workspace root, a symlinked store component refuses by name
  * (`symlink-component`), while a link that stays inside the workspace is still
  * admitted. Both parameters are required for the FR-R3-005 reason.
+ *
+ * Feature 217 (FR-003) — `logger` is where the store says, once and path-free,
+ * what narrowing its directory and records found. The port carries no
+ * diagnostics, so the adapter is handed the channel instead. Activation passes
+ * its logger; a test that builds the adapter bare is told nothing.
  */
-export function createDiskOwnershipFs(anchor: {
-  readonly workspaceRoot: string;
-  readonly ownershipDir: string;
-}): OwnershipFs {
+export function createDiskOwnershipFs(
+  anchor: {
+    readonly workspaceRoot: string;
+    readonly ownershipDir: string;
+  },
+  logger?: Pick<SanitizedLogger, 'warn'>
+): OwnershipFs {
   const { workspaceRoot } = anchor;
   const roots = [workspaceRoot];
+  const narrowing = new NarrowingReporter('ownership store:', (message) => logger?.warn(message));
   const containmentError = (reason: string): NodeJS.ErrnoException =>
     Object.assign(new Error(`ownership storage refused: containment ${reason}`), {
       code: 'ESCHEGENTCONTAINMENT'
@@ -186,9 +198,11 @@ export function createDiskOwnershipFs(anchor: {
     if (walk === null) throw containmentError('escapes-root');
     const result = await openWithinRootByPath(walk.root, proven, {
       flags,
+      createDirs: false,
       fileMode: FILE_MODE
     });
     if (result.outcome === 'refused') throw refusalError(file, result.reason, result.errno);
+    narrowing.report(result.narrowing);
     return result.handle;
   };
   return {
@@ -205,6 +219,15 @@ export function createDiskOwnershipFs(anchor: {
       if (walk === null) throw containmentError('escapes-root');
       const made = await ensureAnchorWithinRoot(walk.root, walk.segments, DIR_MODE);
       if (made.outcome === 'refused') throw refusalError(dir, made.reason, made.errno);
+      // Feature 217 (FR-006) — the walk creates the store owner-only but leaves
+      // one that already exists as it found it, so the store narrows its own
+      // directory here, by name. Not through `dirMode` on the opens: they walk
+      // the RESOLVED path from the workspace root, and for a store an
+      // in-workspace link relocated, that walk passes through the operator's own
+      // directories, which are not this store's to narrow. The outcome is
+      // reported, as the opens' file narrowing is.
+      const notice = noticeFor('directory', await narrowMode(made.anchor, DIR_MODE));
+      if (notice !== null) narrowing.report([notice]);
     },
     async list(dir) {
       // Same reasoning as ensureDir: the registry lists only its own

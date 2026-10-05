@@ -1,5 +1,18 @@
 # Schegent Dependabot policy — see specs/037-dependabot/spec.md
 # Major-version bumps are intentionally excluded (FR-012); open manually if desired.
+#
+# What governs what this opens (FR-R3-178, decided 2026-10-02): a bot-proposed dependency change
+# is merged into `develop` only from a commit that carries a passing `npm run gate:record` record
+# naming that commit; nothing on GitHub checks it, so the rule holds only as far as the operator
+# follows it.
+#
+# The procedure applies accepted proposals as one commit on a branch from `develop`, and that
+# commit is the one recorded and merged, not the bot's branch.
+# tests/lint/dependency-change-scope.test.ts pins the declared range of 18 of the 21 root
+# devDependencies, so a root proposal that moves one of those fails it at its own head, and that
+# commit moves the pin too. Any other proposal can pass the pin, and the recorded gate run is then
+# the only check. Decision, measurement, reason, revisit condition and the steps:
+# docs/operations/gate-recording.md.
 version: 2
 updates:
   - package-ecosystem: "npm"

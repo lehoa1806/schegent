@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { relative, resolve, sep } from 'node:path';
 import { envelopePresent } from './envelope-presence';
+import { filesUnder } from './source-scan';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const ENVELOPE_ROOT = resolve(REPO_ROOT, '..');
@@ -45,9 +46,9 @@ interface WaivedEntry {
      * The file's size when this waiver was last reconciled — a ratchet, not a
      * ceiling.
      *
-     * The decision these two files carry retired the *budget* as a forcing
-     * function: neither is forced to extract helpers, and neither gets an
-     * arbitrary number to fit under. That decision stands. What it left behind
+     * The decision workspace-state.ts and queue-manager.ts carry retired the
+     * *budget* as a forcing function: neither is forced to extract helpers, and
+     * neither gets an arbitrary number to fit under. That decision stands. What it left behind
      * was no forcing function at all, and the 2026-08-22 architecture review
      * called that out as STATE-1 — "a waiver that removed the forcing function
      * without replacing it".
@@ -93,6 +94,15 @@ const WAIVER_FACTOR = 3;
 function tightMargin(maxLines: number): number {
   return Math.max(25, Math.floor(maxLines * 0.02));
 }
+
+/**
+ * Feature 217 (FR-039, FR-040) — the size at which a source file has to be in
+ * an explicit state. Chosen against the measured three-state distribution, and
+ * recorded with that distribution and every threshold it rejected in
+ * `ENTRY_CONDITION_RECORD`, which also says what would move it.
+ */
+const ENTRY_CONDITION_LINES = 1_000;
+const ENTRY_CONDITION_RECORD = 'docs/development/size-gate-entry-condition.md';
 
 /**
  * THE NOTES BELOW ARE RECORD, NOT INSTRUCTION (FR-R3-143 T056).
@@ -1393,7 +1403,77 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // returning rather than throwing, per this feature's closed transition
   // table), adding ten measured lines. 192 lines measured; 225 keeps the same
   // 25-line-plus margin this file's ceiling has always carried.
-  { path: 'src/services/run-terminal-effects.ts', maxLines: 225 }
+  { path: 'src/services/run-terminal-effects.ts', maxLines: 225 },
+  // Feature 217 (FR-R3-183; FR-041, FR-043) — the seven files the entry condition
+  // captured when it arrived. Every file at or above `ENTRY_CONDITION_LINES` has to
+  // carry an entry now, and these were the seven that carried none. Each is placed
+  // by its entry alone: nothing was split and no helper extracted to bring a file
+  // under the line (FR-046). Why 1,000, the distribution it was chosen from, and
+  // what would move it are in docs/development/size-gate-entry-condition.md.
+  //
+  // The five ceilings take the form this table already gives files of their size
+  // (run-driver.ts, sidebar-ipc.ts, workflow-controller.ts): about forty lines
+  // above the file, which clears `tightMargin` at each of them and sits far inside
+  // `WAIVER_FACTOR`. Every count here is this gate's, one above `wc -l`, measured
+  // 2026-10-01 once the feature's first workstream had landed.
+  //
+  // 1,281. The first workstream took it from 1,155 (FR-004, FR-005): every open
+  // declares the owner-only modes, a rotation's successor opens through the
+  // checked walk instead of a modeless `writeFile`, and rotated generations are
+  // narrowed where they lie. The ceiling is taken from that count, not from the
+  // one the review saw.
+  { path: 'src/monitor/cli-transport-sink.ts', maxLines: 1_320 },
+  // 1,186, unchanged by this feature.
+  { path: 'src/ui/sidebar/snapshot.ts', maxLines: 1_225 },
+  // 1,100, unchanged by this feature.
+  { path: 'src/monitor/claude-cli-monitor.ts', maxLines: 1_140 },
+  // 1,018, and captured only because the first workstream took it from 899
+  // (FR-004, FR-005): the rollover's successor opens through the checked walk and
+  // rotated generations are narrowed where they lie. It gets an entry rather than
+  // a trim back under 1,000, because cutting that work to slip below the condition
+  // is the gaming FR-046 exists to stop.
+  { path: 'src/lib/runtime-log/runtime-log-sink.ts', maxLines: 1_060 },
+  // 1,008, unchanged by this feature, and the same size as workflow-controller.ts,
+  // which already carried a ceiling.
+  { path: 'src/state/queue-state-migrator.ts', maxLines: 1_050 },
+  // The two the filing named by hand. Both are larger than every ceiling in this
+  // table, and the review calls audit-events.ts "the most likely next god-file".
+  // They take a waiver because it is the tighter bound: a plain ceiling has to keep
+  // more than `tightMargin` of room nobody decides on, and a mark at the file's
+  // size keeps none, so the next added line needs a diff that moves the number.
+  // It is also the form their two larger peers above carry. Neither file is asked
+  // to shrink.
+  //
+  // audit-events.ts had no stated size anywhere. phase-runner.ts had one, which the
+  // filing missed: feature 057's tests/lint/phase-runner-loc-budget.test.ts holds it
+  // at 1,403 by `wc -l`, which is 1,404 by this gate's count, the mark below. The
+  // entry condition reads only this table, so the file needs its entry here as
+  // well, and growing it now means raising both numbers.
+  {
+    path: 'src/contracts/audit-events.ts',
+    waiver: {
+      decision:
+        'audit-events.ts and phase-runner.ts are accepted at their measured size and given ' +
+        'no room to grow: neither is required to shrink, and neither may get longer unless ' +
+        'its highWaterMark is raised in a diff that says why',
+      decidedOn: '2026-10-01',
+      reference: 'repo/docs/development/size-gate-entry-condition.md',
+      highWaterMark: 1551
+    }
+  },
+  // The second file of the same 2026-10-01 decision; see the waiver above.
+  {
+    path: 'src/controller/phase-runner.ts',
+    waiver: {
+      decision:
+        'audit-events.ts and phase-runner.ts are accepted at their measured size and given ' +
+        'no room to grow: neither is required to shrink, and neither may get longer unless ' +
+        'its highWaterMark is raised in a diff that says why',
+      decidedOn: '2026-10-01',
+      reference: 'repo/docs/development/size-gate-entry-condition.md',
+      highWaterMark: 1404
+    }
+  }
 ];
 
 function lineCount(path: string): number {
@@ -1960,7 +2040,7 @@ describe('large source file LOC budgets', () => {
         `The waiver retired the ceiling, not the forcing function. Either keep the ` +
         `addition size-neutral, extract the new behaviour into its own module, or raise ` +
         `the mark in this file and say why in the commit — the point is that growing ` +
-        `these two takes a decision rather than happening quietly.`
+        `a waived file takes a decision rather than happening quietly.`
     ).toEqual([]);
   });
 
@@ -1993,5 +2073,123 @@ describe('large source file LOC budgets', () => {
       .map((name) => ({ name, lines: lineCount(`src/ui/sidebar/${name}`) }))
       .filter(({ lines }) => lines > 300);
     expect(offenders).toEqual([]);
+  });
+
+  /**
+   * Feature 217 (FR-041, FR-042, SC-010) — the entry condition.
+   *
+   * The file-level checks above start from BUDGETS, and the two that scan the
+   * tree reach only the sidebar projectors and the composition root. Anywhere
+   * else, this gate bounded a file only if the table named it, and sixteen of 530
+   * source files were named. The one other gate that bounds whole files,
+   * phase-runner-loc-budget.test.ts, names four. This one starts from the whole
+   * of `src/`, every `.ts` file in it. A file at or above `ENTRY_CONDITION_LINES`
+   * has to be in one of the two states the table already knows, a ceiling or a
+   * waiver, and a file that reaches it unlisted fails here, named with its size.
+   *
+   * The match reads the `path` field of every entry and never a particular path
+   * (hard rule 67). A test naming the files it expects passes for ever after one
+   * rename, and says nothing about the next file to grow this large.
+   */
+  interface ScannedFile {
+    readonly path: string;
+    readonly lines: number;
+  }
+
+  interface EntryConditionVerdict {
+    readonly unentered: readonly string[];
+    readonly message: string;
+  }
+
+  /** Every `src/**` TypeScript file, repo-relative and `/`-separated, as BUDGETS spells paths. */
+  function scanSourceFiles(): readonly ScannedFile[] {
+    return filesUnder(resolve(REPO_ROOT, 'src'), { extensions: ['.ts'] })
+      .map((absolute) => relative(REPO_ROOT, absolute).split(sep).join('/'))
+      .map((path) => ({ path, lines: lineCount(path) }));
+  }
+
+  /**
+   * The verdict over any scan and any table: the real pair below, and the
+   * synthetic files that prove it can fail. One function, so the demonstration
+   * exercises the predicate the gate enforces rather than a copy of it.
+   */
+  function entryConditionVerdict(
+    scannedFiles: readonly ScannedFile[],
+    entries: readonly BudgetEntry[]
+  ): EntryConditionVerdict {
+    const unentered = scannedFiles
+      .filter((file) => file.lines >= ENTRY_CONDITION_LINES)
+      .filter((file) => !entries.some((entry) => entry.path === file.path))
+      .map((file) => `${file.path}: ${file.lines} lines`);
+    const message =
+      `At or above the entry condition of ${ENTRY_CONDITION_LINES} lines, with no entry in ` +
+      `BUDGETS:\n  ${unentered.join('\n  ')}\n\n` +
+      `A source file this large is in one of three states, and its author chooses which:\n` +
+      `  1. reduce it below ${ENTRY_CONDITION_LINES} lines, where it needs no entry;\n` +
+      `  2. declare a ceiling, { path, maxLines }, more than tightMargin above the file and ` +
+      `within ${WAIVER_FACTOR}x it;\n` +
+      `  3. declare a waiver, { path, waiver: { decision, decidedOn, reference, highWaterMark } }, ` +
+      `quoting the decision, with the ISO date it was taken, a reference that is a path to where ` +
+      `it is written down, and the file's size as the mark.\n` +
+      `Why the condition is ${ENTRY_CONDITION_LINES}, and what would move it: ${ENTRY_CONDITION_RECORD}`;
+    return { unentered, message };
+  }
+
+  it(`every source file at or above ${ENTRY_CONDITION_LINES} lines carries an entry (FR-041)`, () => {
+    const scanned = scanSourceFiles();
+    const scannedPaths = new Set(scanned.map((file) => file.path));
+    const unscanned = BUDGETS.map((entry) => entry.path).filter((path) => !scannedPaths.has(path));
+    expect(
+      unscanned,
+      'the scan has to see every file the table names, or it is not reading the tree the table bounds'
+    ).toEqual([]);
+
+    const verdict = entryConditionVerdict(scanned, BUDGETS);
+    expect(verdict.unentered, verdict.message).toEqual([]);
+  });
+
+  it('the entry condition fires on a file that reaches it unlisted (SC-010, FR-042)', () => {
+    // Composed at runtime, never written as one `src/…` literal:
+    // `lint-anchor-grounding.test.ts` requires every such literal in a lint to
+    // exist, and these deliberately do not. The last assertion here says so.
+    const fixtureDir = ['src', 'fixture'].join('/');
+    const below: ScannedFile = { path: `${fixtureDir}/below.ts`, lines: ENTRY_CONDITION_LINES - 1 };
+    const at: ScannedFile = { path: `${fixtureDir}/at.ts`, lines: ENTRY_CONDITION_LINES };
+    const above: ScannedFile = { path: `${fixtureDir}/above.ts`, lines: ENTRY_CONDITION_LINES + 200 };
+
+    const verdict = entryConditionVerdict([below, at, above], BUDGETS);
+
+    expect(verdict.unentered, 'at the condition is captured; one line under it is not').toEqual([
+      'src/fixture/at.ts: 1000 lines',
+      'src/fixture/above.ts: 1200 lines'
+    ]);
+    expect(verdict.message).toContain('src/fixture/above.ts: 1200 lines');
+    expect(verdict.message).toContain('1. reduce it below 1000 lines');
+    expect(verdict.message).toContain('2. declare a ceiling');
+    expect(verdict.message).toContain('3. declare a waiver');
+    expect(verdict.message).toContain('ISO date');
+    expect(
+      existsSync(resolve(REPO_ROOT, ENTRY_CONDITION_RECORD)),
+      'the message sends the author to the record, so the record has to be there'
+    ).toBe(true);
+
+    // Either explicit state satisfies it, and only the `path` field is read.
+    const ceiling: CeilingEntry = { path: above.path, maxLines: above.lines + 100 };
+    const waiver: WaivedEntry = {
+      path: above.path,
+      waiver: {
+        decision: 'a synthetic decision, quoted',
+        decidedOn: '2026-10-01',
+        reference: ENTRY_CONDITION_RECORD,
+        highWaterMark: above.lines
+      }
+    };
+    expect(entryConditionVerdict([above], [...BUDGETS, ceiling]).unentered).toEqual([]);
+    expect(entryConditionVerdict([above], [...BUDGETS, waiver]).unentered).toEqual([]);
+
+    expect(
+      existsSync(resolve(REPO_ROOT, fixtureDir)),
+      `${fixtureDir} exists, so these fixtures read as claims about files in the tree`
+    ).toBe(false);
   });
 });

@@ -24,7 +24,7 @@ import {
   redactLiveEnvelope,
   stdinPayloadFor,
   LIVE_PROMPT,
-  INJECTION_PROMPT
+  CANARY_CASES
 } from './backend-canary.mjs';
 
 /** The hard wall-clock deadline on the live turn. */
@@ -104,9 +104,9 @@ const LIVE_CWD = mkdtempSync(resolve(tmpdir(), 'schegent-canary-'));
 //
 // A failure here is left to surface as that backend's own drift, with the CLI's
 // reason attached, rather than being pre-empted by a guess about why git is absent.
-{
+function initProbeDir(dir) {
   const init = spawnSync('git', ['init', '--quiet'], {
-    cwd: LIVE_CWD,
+    cwd: dir,
     encoding: 'utf8',
     shell: false,
     timeout: 30_000
@@ -117,6 +117,26 @@ const LIVE_CWD = mkdtempSync(resolve(tmpdir(), 'schegent-canary-'));
         'a backend that requires a trusted directory will report drifted'
     );
   }
+}
+
+initProbeDir(LIVE_CWD);
+
+/**
+ * A fresh probe directory holding `files`, for a corpus case that plants them.
+ *
+ * Its own directory, never `LIVE_CWD`, so a planted file reaches only the case
+ * that planted it. Git-initialised for the reason `LIVE_CWD` is. Not cleaned up,
+ * for the reason `LIVE_CWD` is not: a canary that deletes directories has a
+ * destructive path in it. The names are the corpus's own bare file names, which
+ * `tests/unit/build/backend-canary.test.ts` pins, so none can leave the directory.
+ */
+function plantedProbeDir(files) {
+  const dir = mkdtempSync(resolve(tmpdir(), 'schegent-canary-'));
+  initProbeDir(dir);
+  for (const [name, content] of Object.entries(files)) {
+    writeFileSync(resolve(dir, name), content, 'utf8');
+  }
+  return dir;
 }
 
 function versionProbe(command) {
@@ -196,35 +216,40 @@ function liveProbe(backend, command) {
 }
 
 /**
- * The injection-shaped scenario, recorded only.
+ * The corpus's record-only cases on one backend, recorded only.
  *
  * Run under `--record` alone, so the ordinary canary spends ONE turn per backend
- * and regenerating fixtures is what costs six. Its verdict is deliberately not
- * folded into the canary's state: whether an injected envelope classifies safely
- * is a question for the host's parsers, and those live in TypeScript this script
- * cannot import. So this half records, and
- * `tests/unit/build/canary-live-records.test.ts` classifies -- which keeps
- * `src/parser` the only reader of a backend envelope (FR-082).
+ * and regenerating the recordings is what costs the rest (`CANARY_CASES`; the
+ * threat model states the count). No verdict is folded into the canary's state.
+ * Whether an envelope classifies safely is a question for the host's parsers,
+ * which live in TypeScript this script cannot import; whether a model obeyed a
+ * planted instruction is a question for whoever reads the recording against the
+ * case's `expectedObservable`, never for a classifier here (FR-060). So this half
+ * records, and `tests/unit/build/canary-live-records.test.ts` replays -- which
+ * keeps `src/parser` the only reader of a backend envelope (FR-082).
  */
-function recordInjectionScenario(backend, command) {
+function recordCorpus(backend, command) {
   const args = liveArgsFor(backend);
   if (!args || !recordDir) return;
-  const result = spawnSync(command, args, {
-    input: stdinPayloadFor(backend, INJECTION_PROMPT),
-    cwd: LIVE_CWD,
-    encoding: 'utf8',
-    shell: false,
-    timeout: LIVE_TIMEOUT_MS
-  });
-  if ((result.stdout ?? '').length === 0) {
-    console.error(`[backend-canary] ${backend}: injection scenario produced no output, not recorded`);
-    return;
+  const cases = CANARY_CASES.filter((c) => c.backend === backend && c.cadence === 'record-only');
+  for (const scenario of cases) {
+    const result = spawnSync(command, args, {
+      input: stdinPayloadFor(backend, scenario.prompt),
+      cwd: scenario.files ? plantedProbeDir(scenario.files) : LIVE_CWD,
+      encoding: 'utf8',
+      shell: false,
+      timeout: LIVE_TIMEOUT_MS
+    });
+    if ((result.stdout ?? '').length === 0) {
+      console.error(`[backend-canary] ${backend}: ${scenario.id} produced no output, not recorded`);
+      continue;
+    }
+    writeFileSync(
+      resolve(recordDir, `${backend}-${scenario.stem}.jsonl`),
+      redactLiveEnvelope(result.stdout),
+      'utf8'
+    );
   }
-  writeFileSync(
-    resolve(recordDir, `${backend}-injection.jsonl`),
-    redactLiveEnvelope(result.stdout),
-    'utf8'
-  );
 }
 
 /**
@@ -255,7 +280,7 @@ const results = BACKENDS.map(({ backend, command }) => {
   // A CLI that is not installed is never asked for a turn. Beyond that there is
   // nothing to gate on: the turn is what answers the question.
   const liveResult = version.ok === true ? liveProbe(backend, command) : undefined;
-  if (version.ok === true && recordDir) recordInjectionScenario(backend, command);
+  if (version.ok === true && recordDir) recordCorpus(backend, command);
   return runnerBackendResult({ backend, versionProbe: version, liveProbe: liveResult });
 });
 

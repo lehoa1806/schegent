@@ -3,6 +3,8 @@ import * as path from 'node:path';
 import { openWithinRoot } from '../lib/safe-open';
 import { resolveContainedLink } from '../lib/path-containment';
 import { boundForCaller } from '../lib/io-barrier';
+import { NarrowingReporter } from '../lib/evidence-narrowing';
+import type { NarrowingNotice } from '../lib/narrow-mode';
 import { ensureSchegentGitignore } from '../audit/schegent-gitignore';
 // A real `SanitizedLogger` with no sinks discards everything, and it TYPECHECKS.
 // A hand-rolled stub had to be laundered through `as unknown as`, which disabled
@@ -115,6 +117,13 @@ export interface MountProbeDeps {
    * which parameter a test happened to pass.
    */
   readonly dropIgnoreFile?: boolean;
+  /**
+   * Feature 217 (FR-003) — where the probe says, once and path-free, what its
+   * writes narrowed. The ignore-file drop and the exclusive create both walk
+   * `.schegent/` with a declared mode. Omitted, the probe says nothing about it,
+   * and the verdict stays the only mount finding either way.
+   */
+  readonly logger?: Pick<SanitizedLogger, 'warn'>;
 }
 
 /**
@@ -160,7 +169,8 @@ function errnoOf(error: unknown): string {
  */
 async function realExclusiveCreate(
   workspaceRoot: string,
-  segments: readonly string[]
+  segments: readonly string[],
+  report: (notices: readonly NarrowingNotice[]) => void
 ): Promise<ExclusiveCreateObservation> {
   const result = await openWithinRoot(workspaceRoot, segments, {
     flags: 'wx',
@@ -170,6 +180,9 @@ async function realExclusiveCreate(
   });
   if (result.outcome === 'opened') {
     await result.handle.close().catch(() => undefined);
+    // The verdict is classified from this create, so a sink that throws must not
+    // read as the mount failing to create; `NarrowingReporter` keeps the throw.
+    report(result.narrowing);
     return { outcome: 'created' };
   }
   // `safe-open` refuses by REASON, not by errno, and the two must not share a
@@ -278,9 +291,11 @@ export async function probeMountCapability(
   const leaf = `.mount-probe.${process.pid}.${probeCounter}.${Date.now().toString(36)}`;
   const segments = [...PROBE_SEGMENTS_PREFIX, leaf];
   const disposed = (): boolean => deps.isDisposed?.() === true;
+  const narrowing = new NarrowingReporter('mount capability:', (message) => deps.logger?.warn(message));
   const create =
     deps.exclusiveCreate ??
-    ((s: readonly string[]) => realExclusiveCreate(deps.workspaceRoot, s));
+    ((s: readonly string[]) =>
+      realExclusiveCreate(deps.workspaceRoot, s, (notices) => narrowing.report(notices)));
 
   // `schegent-gitignore.ts` states the invariant: every writer that creates
   // `.schegent/` also drops the local ignore file. This probe creates the directory
@@ -321,7 +336,9 @@ export async function probeMountCapability(
     if (disposed()) return { capability: 'undetermined', cause: 'probe-disposed' };
     if (deps.dropIgnoreFile !== false) {
       await raceSettled(
-        ensureSchegentGitignore(deps.workspaceRoot, new SanitizedLogger([])).catch(() => undefined),
+        ensureSchegentGitignore(deps.workspaceRoot, new SanitizedLogger([]))
+          .then((notices) => narrowing.report(notices))
+          .catch(() => undefined),
         timeoutMs
       );
     }

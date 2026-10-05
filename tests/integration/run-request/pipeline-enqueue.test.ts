@@ -171,7 +171,7 @@ describe('a submission that fails validation leaves nothing behind (SC-002)', ()
       expect(accepted).toBe(false);
       expect(after).toBe(before);
     } finally {
-      harness.cleanup();
+      await harness.cleanup();
     }
   });
 
@@ -182,7 +182,7 @@ describe('a submission that fails validation leaves nothing behind (SC-002)', ()
 
       expect(writes.keys).toEqual([]);
     } finally {
-      harness.cleanup();
+      await harness.cleanup();
     }
   });
 
@@ -195,7 +195,7 @@ describe('a submission that fails validation leaves nothing behind (SC-002)', ()
 
       expect(JSON.stringify(catalog().pipelines)).toBe(pristine);
     } finally {
-      harness.cleanup();
+      await harness.cleanup();
     }
   });
 
@@ -211,7 +211,7 @@ describe('a submission that fails validation leaves nothing behind (SC-002)', ()
       expect(accepted).toBe(false);
       expect(after).toBe(before);
     } finally {
-      harness.cleanup();
+      await harness.cleanup();
     }
   });
 });
@@ -226,7 +226,7 @@ describe('a submission that passes validation performs exactly one durable write
       expect(writes.rowAdding).toBe(1);
       expect(harness.store.getQueue('default').requests).toHaveLength(1);
     } finally {
-      harness.cleanup();
+      await harness.cleanup();
     }
   });
 
@@ -244,7 +244,7 @@ describe('a submission that passes validation performs exactly one durable write
       // queue row written, the run store untouched.
       expect(harness.memento.get(KEYS.run)).toEqual({});
     } finally {
-      harness.cleanup();
+      await harness.cleanup();
     }
   });
 
@@ -261,7 +261,7 @@ describe('a submission that passes validation performs exactly one durable write
       ]);
       expect(row?.runPlan?.frozenAt).toBe(NOW);
     } finally {
-      harness.cleanup();
+      await harness.cleanup();
     }
   });
 
@@ -279,7 +279,7 @@ describe('a submission that passes validation performs exactly one durable write
       );
       expect(raw[0]?.runPlan?.pipeline?.phases?.[0]?.instruction).toBe('Compose the thing.');
     } finally {
-      harness.cleanup();
+      await harness.cleanup();
     }
   });
 
@@ -294,7 +294,7 @@ describe('a submission that passes validation performs exactly one durable write
       expect(new Set(writes.keys)).toEqual(new Set([KEYS.queue]));
       expect(writes.rowAdding).toBe(1);
     } finally {
-      harness.cleanup();
+      await harness.cleanup();
     }
   });
 
@@ -307,7 +307,7 @@ describe('a submission that passes validation performs exactly one durable write
 
       expect(JSON.stringify(catalog().pipelines)).toBe(pristine);
     } finally {
-      harness.cleanup();
+      await harness.cleanup();
     }
   });
 });

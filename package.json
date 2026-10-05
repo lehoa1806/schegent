@@ -402,8 +402,8 @@
           "type": "string",
           "default": "",
           "scope": "resource",
-          "description": "Runtime debug log file path. Empty string resolves to `<workspaceRoot>/.schegent/syslog`. Workspace-relative paths are accepted unless they contain `..`. Absolute paths are accepted only beneath the workspace, Schegent global storage, or the OS temporary directory; the operator home directory is not an allowed root. The parent directory is auto-created on first write; the file is created with mode 0644 on POSIX.",
-          "markdownDescription": "Runtime debug log file path. Empty string resolves to `<workspaceRoot>/.schegent/syslog`. Workspace-relative paths are accepted unless they contain `..`. Absolute paths are accepted only beneath the workspace, Schegent global storage, or the OS temporary directory; the operator home directory is not an allowed root. The parent directory is auto-created on first write; the file is created with mode `0644` on POSIX."
+          "description": "Runtime debug log file path. Empty string resolves to `<workspaceRoot>/.schegent/syslog`. Workspace-relative paths are accepted unless they contain `..`. Absolute paths are accepted only beneath the workspace, Schegent global storage, or the OS temporary directory; the operator home directory is not an allowed root. The parent directory is auto-created on first write. On POSIX the file and its numbered generations are owner-only (0600), and every existing directory between the allowed root and the file, one you chose included, is narrowed to owner-only when the log is opened; the allowed root itself is never changed.",
+          "markdownDescription": "Runtime debug log file path. Empty string resolves to `<workspaceRoot>/.schegent/syslog`. Workspace-relative paths are accepted unless they contain `..`. Absolute paths are accepted only beneath the workspace, Schegent global storage, or the OS temporary directory; the operator home directory is not an allowed root. The parent directory is auto-created on first write. On POSIX the file and its numbered generations are owner-only (`0600`), and every existing directory between the allowed root and the file, one you chose included, is narrowed to owner-only when the log is opened; the allowed root itself is never changed."
         },
         "schegent.logging.runtimeLogMaxBytes": {
           "type": "integer",
@@ -528,6 +528,7 @@
     "ci": "npm run typecheck && npm run typecheck:webview && npm run typecheck:tests && npm run lint && npm run lint:webview && npm run build:webview && npm run test:coverage && npm run test:webview:coverage && npm run test:evals && npm run test:visual && npm run a11y && npm run test:perf && npm run test:e2e && npm run build && npm run package:smoke && npm run test:integration",
     "gate": "npm run contracts:check && npm run docs:check && npm run security:secrets && npm run security:actions && npm run license:check && npm run ci",
     "gate:record": "node scripts/record-gate-run.mjs",
+    "gate:distance": "node scripts/gate-distance.mjs",
     "release:preflight": "node scripts/require-local-gate.mjs",
     "sbom": "node scripts/generate-sbom.mjs",
     "package": "npm run sbom && vsce package --no-dependencies",

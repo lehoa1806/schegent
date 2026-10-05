@@ -33,10 +33,25 @@ import * as fs from 'node:fs/promises';
  * Nine files rediscovering one race is what a missing helper looks like.
  *
  * WHY IT STILL THROWS. `maxRetries` covers a directory that is *transiently*
- * busy. A cleanup that fails for 500ms is not transient, and swallowing that
- * would trade a loud test failure for a silent disk leak. If this throws, the
- * question to ask is what is still holding the directory open — not how to
- * suppress it.
+ * busy. A removal still failing once the retries are spent is not transient, and
+ * swallowing that would trade a loud test failure for a silent disk leak. If this
+ * throws, the question to ask is what is still holding the directory open — not
+ * how to suppress it.
+ *
+ * HOW LONG THE RETRIES TAKE. Node retries each level of the tree on its own, and a
+ * parent's retry re-runs its whole subtree, so the wait compounds with depth. A
+ * failure at the root itself is retried for 2.75 s (50 ms, then 100, … up to
+ * 500). One level down the same hold took 33 s — eleven attempts, each spending
+ * the 2.75 s below, and 2.75 s of waiting between them — and every further level
+ * multiplies by about eleven again (measured 2026-10-01, Node 24.21, macOS,
+ * against an immutable file; the factor checked to four levels with a smaller
+ * budget). A transient race clears long before any of that; a persistent hold
+ * deep in a tree stalls the caller for that long before this throws.
+ *
+ * NO SYNCHRONOUS TWIN. `rmSync` takes the same options, but on Node 24.21 on macOS
+ * it does not wait between its retries: against the same hold it gave up in 1 ms,
+ * and a hold released after 300 ms still failed it. A synchronous teardown that
+ * needs this tolerance has to become async.
  */
 export async function removeTempRoot(dir: string): Promise<void> {
   await fs.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });

@@ -55,11 +55,19 @@
 // Feature FR-R3-005's containment rule applies in full: rotation renames and
 // unlinks are proven against the workspace root through the one oracle in
 // `src/lib/path-containment.ts` before they run.
+//
+// Feature 217 (FR-004, FR-005): owner-only. Raw CLI output is the content of
+// this file, so every open the sink makes declares `TRANSPORT_FILE_MODE` and
+// `TRANSPORT_DIR_MODE`, the successor a rotation creates included, and the
+// open narrows a file or directory an earlier release left wider. Generations
+// are renamed into place and keep the mode they were born with, so they are
+// narrowed where they lie once per destination.
 
 import * as fs from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import * as path from 'node:path';
 
+import { listGenerations, NarrowingReporter, narrowRotatedFiles } from '../lib/evidence-narrowing';
 import { openWithinRootByPath, type SafeOpenRefusal } from '../lib/safe-open';
 import { KeyBlockLineRedactor } from '../lib/logger';
 import type { SanitizedLogger } from '../lib/logger';
@@ -74,6 +82,14 @@ export const CLI_TRANSPORT_DIRECTORY = '.schegent';
 
 /** The live file. Generations are `<name>.1` … `<name>.N` beside it. */
 export const CLI_TRANSPORT_FILE_NAME = 'cli-transport.log';
+
+/**
+ * Feature 217 (FR-004) — owner-only. Before this, the append open and the
+ * rotation's successor both declared no mode, so a 022 umask gave every local
+ * account read access to raw CLI output.
+ */
+const TRANSPORT_FILE_MODE = 0o600;
+const TRANSPORT_DIR_MODE = 0o700;
 
 /**
  * Per-generation ceiling, matching the runtime log's default. With
@@ -188,7 +204,7 @@ interface WriteFileFn {
   (target: string, data: string): Promise<void>;
 }
 interface MkdirFn {
-  (target: string, opts: { recursive: true }): Promise<unknown>;
+  (target: string, opts: { recursive: true; mode?: number }): Promise<unknown>;
 }
 interface RenameFn {
   (oldPath: string, newPath: string): Promise<void>;
@@ -233,7 +249,12 @@ export interface CliTransportSinkDeps {
   ) => string;
   readonly logger: Pick<SanitizedLogger, 'warn'>;
   readonly now?: () => Date;
-  /** Injection points, each defaulting to the matching `fs.promises` call. */
+  /**
+   * Injection points, each defaulting to the matching `fs.promises` call —
+   * except the two write ports, which default to nothing: with neither
+   * injected, the append and the rotation's successor both open through the
+   * checked walk, which is the only place a mode is declared.
+   */
   readonly appendFile?: AppendFn;
   readonly writeFile?: WriteFileFn;
   readonly mkdir?: MkdirFn;
@@ -338,7 +359,8 @@ export class CliTransportSink implements CliTransportRecorder {
   ) => string;
   private readonly logger: Pick<SanitizedLogger, 'warn'>;
   private readonly now: () => Date;
-  private readonly writeFile: WriteFileFn;
+  /** Feature 217 — the successor's failure-injection seam; see `writeSuccessor`. */
+  private readonly writeFilePort: WriteFileFn | undefined;
   private readonly mkdir: MkdirFn;
   private readonly rename: RenameFn;
   private readonly unlink: UnlinkFn;
@@ -423,6 +445,20 @@ export class CliTransportSink implements CliTransportRecorder {
    */
   private readonly appendHandles = new Map<string, { handle: FileHandle; root: string }>();
 
+  /** Feature 217 (FR-003, data-model.md §2) — says once, path-free, what narrowing found. */
+  private readonly narrowing = new NarrowingReporter('[cli-transport]', (message) =>
+    this.emitWarning(message)
+  );
+
+  /**
+   * Feature 217 (FR-005) — destinations whose generations have been narrowed.
+   *
+   * Once per destination is enough: the generations an earlier release left
+   * widened are narrowed the first time this sink opens the destination, and
+   * every generation after that is a file this sink created or narrowed, renamed.
+   */
+  private readonly generationsNarrowed = new Set<string>();
+
   /**
    * FR-R3-137 — the disposal's two fields.
    *
@@ -450,7 +486,7 @@ export class CliTransportSink implements CliTransportRecorder {
     this.sanitizeStreamLine = deps.sanitizeStreamLine;
     this.logger = deps.logger;
     this.now = deps.now ?? ((): Date => new Date());
-    this.writeFile = deps.writeFile ?? fs.writeFile;
+    this.writeFilePort = deps.writeFile;
     this.appendFilePort = deps.appendFile;
     this.mkdir = deps.mkdir ?? fs.mkdir;
     this.rename = deps.rename ?? fs.rename;
@@ -727,7 +763,7 @@ export class CliTransportSink implements CliTransportRecorder {
       // into the rotated generation and appends there forever.
       await this.closeAppendHandle(targetPath);
       if (!(await this.rotate(settings))) return;
-      if (await this.writeWithParentRecovery(this.writeFile, targetPath, data)) {
+      if (await this.writeSuccessor(settings, data)) {
         this.bytesOnDisk.set(targetPath, dataBytes);
       }
       return;
@@ -933,11 +969,93 @@ export class CliTransportSink implements CliTransportRecorder {
   }
 
   /**
-   * The write helper both the append and the post-rotation create go through.
-   * A missing parent directory is recovered once — the `.schegent` directory
-   * may not exist on a workspace's first phase — and any other failure warns
-   * once for its cause and drops the record.
+   * The file a rotation leaves at the live path: the successor after a shift,
+   * or the live file itself, truncated, when no generations are kept.
+   *
+   * Feature 217 (FR-005) — opened through the checked walk with both modes
+   * declared, exactly like the append. It used to be `fs.writeFile` on the
+   * pathname with no mode, so every file a rotation created was the umask's to
+   * decide, and a truncate kept whatever mode it found. Not held afterwards:
+   * the next record opens its own append descriptor, as it always has.
+   *
+   * An injected `writeFile` port is honoured for the reason the `appendFile`
+   * port is: the failure-mode tests drive causes a real filesystem cannot
+   * produce on demand. Production supplies neither.
    */
+  private async writeSuccessor(settings: CliTransportSettings, data: string): Promise<boolean> {
+    const targetPath = settings.path;
+    if (this.writeFilePort !== undefined) {
+      return this.writeWithParentRecovery(this.writeFilePort, targetPath, data);
+    }
+    const handle = await this.openThroughWalk(targetPath, settings.root, 'w');
+    if (handle === null) return false;
+    try {
+      await handle.write(data, null, 'utf8');
+      return true;
+    } catch (error) {
+      this.warn(targetPath, mapFailureCause(errnoCode(error)));
+      return false;
+    } finally {
+      await handle.close().catch(() => undefined);
+    }
+  }
+
+  /**
+   * Feature 217 — every open this sink makes through the walk: both modes
+   * declared, what the open narrowed said once, and the destination's
+   * generations narrowed the first time it is opened. A refusal warns for its
+   * cause and answers `null`, which the caller reads as a dropped record.
+   */
+  private async openThroughWalk(
+    targetPath: string,
+    root: string,
+    flags: 'a' | 'w'
+  ): Promise<FileHandle | null> {
+    const opened = await openWithinRootByPath(root, targetPath, {
+      flags,
+      createDirs: true,
+      dirMode: TRANSPORT_DIR_MODE,
+      fileMode: TRANSPORT_FILE_MODE
+    });
+    if (opened.outcome === 'refused') {
+      this.warn(targetPath, mapSafeOpenRefusal(opened.reason));
+      return null;
+    }
+    this.narrowing.report(opened.narrowing);
+    await this.narrowGenerationsOnce(targetPath, root);
+    return opened.handle;
+  }
+
+  /**
+   * Feature 217 (FR-004, FR-005) — narrow the generations beside `targetPath`
+   * where they lie. A rotation renames, and a rename keeps the mode, so the
+   * generations a widened live file was rotated into are widened too, and no
+   * open ever reaches them. A first record that overflows rotates the widened
+   * live file before any open has narrowed it, which is why this runs after
+   * the successor's open as well as the append's.
+   *
+   * Only after an open through the walk succeeded, so a refused destination is
+   * never touched; and only what the stale-generation sweep would also call a
+   * generation, so an operator's `<live>.keep-me` keeps its mode.
+   *
+   * Marked before the listing, so opens that overlap list once; unmarked when
+   * the directory could not be listed, so the next open lists again rather than
+   * leaving the generations widened for the life of the sink. The append handle
+   * is held, so for this sink the next open is usually a rotation's successor.
+   */
+  private async narrowGenerationsOnce(targetPath: string, root: string): Promise<void> {
+    if (this.generationsNarrowed.has(targetPath)) return;
+    this.generationsNarrowed.add(targetPath);
+    const generations = await listGenerations(targetPath, this.readdir);
+    if (generations === null) {
+      this.generationsNarrowed.delete(targetPath);
+      return;
+    }
+    this.narrowing.report(
+      await narrowRotatedFiles(generations, TRANSPORT_FILE_MODE, [root], this.containmentFs)
+    );
+  }
+
   /**
    * FR-R3-080 (T1065) — the append descriptor for `targetPath`, opened through
    * the checked walk and held until the destination's identity can change.
@@ -969,16 +1087,27 @@ export class CliTransportSink implements CliTransportRecorder {
       if (held.root === root) return held.handle;
       await this.closeAppendHandle(targetPath);
     }
-    const opened = await openWithinRootByPath(root, targetPath, {
-      flags: 'a',
-      createDirs: true
-    });
-    if (opened.outcome === 'refused') {
-      this.warn(targetPath, mapSafeOpenRefusal(opened.reason));
+    const handle = await this.openThroughWalk(targetPath, root, 'a');
+    if (handle === null) return null;
+    // Feature 217 — the open now awaits its narrowing as well as the walk, so
+    // the close sweep can run in between. A handle it never saw would have no
+    // owner left to close it, for the reason the check at the top gives.
+    if (this.closeSweepHasRun()) {
+      await handle.close().catch(() => undefined);
       return null;
     }
-    this.appendHandles.set(targetPath, { handle: opened.handle, root });
-    return opened.handle;
+    this.appendHandles.set(targetPath, { handle, root });
+    return handle;
+  }
+
+  /**
+   * `descriptorsReleased`, read through an accessor. The checker carries the
+   * check at the top of `appendHandleFor` across its awaits and would call a
+   * second read of the field dead, but the close sweep sets it while a write is
+   * suspended. A function entry resets that narrowing.
+   */
+  private closeSweepHasRun(): boolean {
+    return this.descriptorsReleased;
   }
 
   private async closeAppendHandle(targetPath: string): Promise<void> {
@@ -988,6 +1117,12 @@ export class CliTransportSink implements CliTransportRecorder {
     await held.handle.close().catch(() => undefined);
   }
 
+  /**
+   * The write helper the injected ports go through. A missing parent directory
+   * is recovered once — the `.schegent` directory may not exist on a
+   * workspace's first phase — and any other failure warns once for its cause
+   * and drops the record.
+   */
   private async writeWithParentRecovery(
     write: AppendFn | WriteFileFn,
     targetPath: string,
@@ -1000,7 +1135,7 @@ export class CliTransportSink implements CliTransportRecorder {
       const code = errnoCode(error);
       if (code === 'ENOENT') {
         try {
-          await this.mkdir(path.dirname(targetPath), { recursive: true });
+          await this.mkdir(path.dirname(targetPath), { recursive: true, mode: TRANSPORT_DIR_MODE });
           await write(targetPath, data);
           return true;
         } catch {

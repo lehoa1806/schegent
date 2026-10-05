@@ -241,3 +241,79 @@ describe('mount capability probe (FR-R3-083)', () => {
     expect([first.capability, second.capability]).toEqual(['supported', 'supported']);
   });
 });
+
+describe('mount capability probe — says what its writes narrowed (feature 217, FR-003)', () => {
+  /** POSIX-only: `mode` is not an enforceable concept on Windows. */
+  const posixOnly = process.platform === 'win32' ? it.skip : it;
+  /** What umask 022 leaves a directory at. */
+  const WIDENED_DIR = 0o755;
+  const DIRECTORY_NARROWED =
+    'mount capability: an evidence directory granted access beyond its owner (mode 755); narrowed to owner-only';
+
+  const widenedSchegent = async (): Promise<string> => {
+    const schegent = path.join(workspaceRoot, '.schegent');
+    await fs.mkdir(schegent);
+    await fs.chmod(schegent, WIDENED_DIR);
+    return schegent;
+  };
+  const modeOf = async (p: string): Promise<number> => (await fs.lstat(p)).mode & 0o777;
+
+  posixOnly('says once, path-free, what the ignore-file drop narrowed', async () => {
+    // The drop runs before either create, so it is the open that reaches a fresh
+    // but widened `.schegent/`; the creates then find it owner-only.
+    const schegent = await widenedSchegent();
+    const messages: string[] = [];
+
+    const verdict = await probeMountCapability({
+      workspaceRoot,
+      logger: { warn: (message: string) => void messages.push(message) }
+    });
+
+    expect(verdict.capability).toBe('supported');
+    expect(await modeOf(schegent)).toBe(0o700);
+    expect(messages).toEqual([DIRECTORY_NARROWED]);
+  });
+
+  posixOnly('says what its own exclusive create narrowed when no ignore file is dropped', async () => {
+    const schegent = await widenedSchegent();
+    const messages: string[] = [];
+
+    const verdict = await probeMountCapability({
+      workspaceRoot,
+      dropIgnoreFile: false,
+      logger: { warn: (message: string) => void messages.push(message) }
+    });
+
+    expect(verdict.capability).toBe('supported');
+    expect(await modeOf(schegent)).toBe(0o700);
+    expect(messages).toEqual([DIRECTORY_NARROWED]);
+  });
+
+  posixOnly('narrows without a logger and says nothing', async () => {
+    const schegent = await widenedSchegent();
+
+    const verdict = await probeMountCapability({ workspaceRoot });
+
+    expect(verdict.capability).toBe('supported');
+    expect(await modeOf(schegent)).toBe(0o700);
+  });
+
+  posixOnly('does not let a failing logger become a mount finding', async () => {
+    // The report runs inside the create the verdict is classified from. A throw
+    // there would read as an I/O failure of the mount.
+    const schegent = await widenedSchegent();
+
+    const verdict = await probeMountCapability({
+      workspaceRoot,
+      dropIgnoreFile: false,
+      logger: {
+        warn: () => {
+          throw new Error('sink unavailable');
+        }
+      }
+    });
+
+    expect(verdict).toMatchObject({ capability: 'supported', cause: 'exclusive-create-holds' });
+    expect(await modeOf(schegent)).toBe(0o700);
+  });
+});

@@ -176,6 +176,7 @@ drifts unnoticed, because the readers who would catch an error never get there.
 - [Contract generation](operations/contract-generation.md)
 - [Dashboard UI](operations/dashboard-ui.md)
 - [Data retention and deletion](operations/data-retention-and-deletion.md)
+- [Gate recording](operations/gate-recording.md) — **declared 2026-10-02**: what a `npm run gate:record` record is and is not, and the rule that binds a bot-proposed dependency change to one, with how to perform it; the recording cadence for every merge into `develop`, and `npm run gate:distance`, which reports how far the record is from `HEAD`
 - [Inspect audit logs](operations/inspect-audit-logs.md)
 - [Inspect raw transcripts](operations/inspect-raw-transcripts.md)
 - [Interactive verification register](operations/interactive-verification-register.md) — **opened 2026-09-06**: the interactive dev-host evidence specs `067` and `068` still owe, who owes it, what would close it, and the date it is re-read on
@@ -225,6 +226,10 @@ drifts unnoticed, because the readers who would catch an error never get there.
   construction notes that decide whether a generated case is real or inert, and what the property
   deliberately does not cover (FR-R3-168)
 - [Lint and type-aware rules](development/lint-and-type-aware-rules.md)
+- [Size-gate entry condition](development/size-gate-entry-condition.md) — **decided 2026-10-01**:
+  every `src/` file of 1,000 lines or more carries a ceiling or a waiver in the size gate's table. The
+  measured distribution, each rejected threshold with the count it would have captured, and what
+  would move it (FR-R3-183)
 
 ### Release
 

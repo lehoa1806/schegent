@@ -51,9 +51,15 @@ claim.** That is the whole obligation, and §3 says when it bites.
 ## 4. The cost bound, and why the monthly row is not a gate
 
 **One run is one turn per backend**, on a fixed trivial prompt, with a 120-second wall-clock deadline
-per turn and no workspace mutation. That is the bound: three turns for three backends, and the
-`--record` mode replays from fixtures at zero cost when the question is "does the parser still handle
-what we last saw".
+per turn and no workspace mutation. That is the bound: three turns for three backends.
+
+The `--record` mode, `npm run canary:record`, is the costlier run, not a cheaper one: it re-records
+every case of the canary corpus. The threat model states its cost in turns and
+[the decision](../security/threat-model.md#injection-corpus-recorded-on-demand-never-per-release--2026-10-02)
+that keeps it off every release. What costs nothing is the replay:
+`tests/unit/build/canary-live-records.test.ts` reads the committed recordings through the host's
+parsers inside `npm run gate`, which answers "does the parser still handle what we last saw". Until
+2026-10-02 this paragraph said the `--record` mode was that replay; it spends live turns.
 
 The monthly row is a recommendation because the alternative is worse. A scheduled gate that spends the
 operator's quota without being asked is a gate that gets disabled, and a disabled gate is a cadence of

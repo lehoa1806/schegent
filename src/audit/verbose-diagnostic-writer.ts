@@ -1,5 +1,5 @@
 import * as path from 'path';
-import * as fs from 'fs/promises';
+import { narrowMode, noticeFor, type NarrowingNotice } from '../lib/narrow-mode';
 import { ensureDirWithinRoot, openWithinRoot } from '../lib/safe-open';
 import type { SanitizedLogger } from '../lib/logger';
 import type { VerboseDiagnosticTarget } from '../runner/invocation-result';
@@ -23,14 +23,13 @@ type Slot = 'directory' | 'stream' | 'verbose';
  * and raw model output.
  *
  * `mode` is a POSIX concept. On a platform that does not enforce it these values
- * are inert, which `recordModeLimitation` states rather than letting the file be
- * described as private.
+ * are inert, which `narrowMode` reports as `unsupported` and this writer records
+ * as a warning, rather than letting the file be described as private.
  */
 const DIAGNOSTIC_DIR_MODE = 0o700;
 const DIAGNOSTIC_FILE_MODE = 0o600;
 
-/** Bits that must never be set on a diagnostic path: group and other, all classes. */
-const NON_OWNER_BITS = 0o077;
+const OCTAL_RADIX = 8;
 
 /**
  * Best-effort sibling sink for `--debug-to-file`, `--output-format
@@ -82,7 +81,15 @@ export class VerboseDiagnosticWriter {
       // required, never loosen one that is already stricter. An operator (or an
       // umask) who made it 0o500 meant it, and widening that to 0o700 would be
       // this fix causing the exposure it exists to remove.
-      await this.tightenIfPermissive(target, 'directory', target.directory, DIAGNOSTIC_DIR_MODE);
+      //
+      // Feature 217 (FR-007) — through the product's one narrowing routine, which
+      // began life here. `ensureDirWithinRoot` creates but never narrows, so this
+      // directory is narrowed by name.
+      const narrowed = noticeFor(
+        'directory',
+        await narrowMode(target.directory, DIAGNOSTIC_DIR_MODE)
+      );
+      if (narrowed !== null) this.recordNarrowing(target, 'directory', narrowed);
       this.preparedDirs.add(target.directory);
     } catch (err) {
       this.recordWarning(
@@ -125,15 +132,21 @@ export class VerboseDiagnosticWriter {
         this.recordWarning(target, slot, `verbose diagnostic ${slot} refused: ${opened.reason}`);
         return;
       }
+      // Same reasoning as the directory: the mode applies on creation, so a file
+      // written before this change stays readable until it is tightened. The
+      // exposure is identical, so the treatment is.
+      //
+      // Feature 217 — the open has already narrowed this file, and every
+      // directory it walked through, with the modes declared above; what is left
+      // here is saying so.
+      for (const notice of opened.narrowing) {
+        this.recordNarrowing(target, notice.scope === 'directory' ? 'directory' : slot, notice);
+      }
       try {
         await opened.handle.write(chunk, null, 'utf8');
       } finally {
         await opened.handle.close().catch(() => undefined);
       }
-      // Same reasoning as the directory: the mode applies on creation, so a file
-      // written before this change stays readable until it is tightened. The
-      // exposure is identical, so the treatment is.
-      await this.tightenIfPermissive(target, slot, file, DIAGNOSTIC_FILE_MODE);
     } catch (err) {
       this.recordWarning(
         target,
@@ -144,50 +157,35 @@ export class VerboseDiagnosticWriter {
   }
 
   /**
-   * Narrow a path's mode to `desired` if it currently grants anything outside the
-   * owner. Never widens. Records what it did, because silently changing a
-   * permission is the same class of surprise as silently leaving one open.
+   * Record what a narrowing did, because silently changing a permission is the
+   * same class of surprise as silently leaving one open. A narrowing is an
+   * informational line; a path that could not be made private is a warning,
+   * so it is never described as private.
    *
-   * A platform that cannot report or enforce modes lands in the catch, which
-   * records the limitation rather than letting the caller believe the path is
-   * private.
+   * Feature 217 — the notice is path-free: it carries an errno-shaped code, never
+   * the platform's message, which can name the path.
    */
-  private async tightenIfPermissive(
-    target: VerboseDiagnosticTarget,
-    slot: Slot,
-    pathname: string,
-    desired: number
-  ): Promise<void> {
-    try {
-      // `lstat`, not `stat`, and refuse a symlink outright. `stat` reports the
-      // TARGET's mode and `chmod` changes the TARGET (POSIX has no `lchmod` on
-      // Linux, and Node follows the link), so on a path an attacker can plant a
-      // symlink into this would become a chmod-an-arbitrary-file primitive.
-      // Bounded -- the mask only ever clears bits, so the worst case is stripping
-      // access from a file someone else owns the name of, not granting any -- but
-      // the diagnostics directory is inside the workspace, and refusing costs
-      // nothing: a real diagnostic path is never a symlink.
-      const stat = await fs.lstat(pathname);
-      if (stat.isSymbolicLink()) {
+  private recordNarrowing(target: VerboseDiagnosticTarget, slot: Slot, notice: NarrowingNotice): void {
+    switch (notice.outcome) {
+      case 'narrowed':
+        this.logger.info(
+          `verbose diagnostic ${slot} mode tightened to owner-only (was ${notice.previousMode.toString(OCTAL_RADIX)})`
+        );
+        return;
+      case 'refused-symlink':
         this.recordWarning(
           target,
           slot,
           `verbose diagnostic ${slot} mode not enforced: path is a symbolic link`
         );
         return;
-      }
-      const current = stat.mode & 0o777;
-      if ((current & NON_OWNER_BITS) === 0) return;
-      await fs.chmod(pathname, current & desired);
-      this.logger.info(
-        `verbose diagnostic ${slot} mode tightened to owner-only (was ${current.toString(8)})`
-      );
-    } catch (err) {
-      this.recordWarning(
-        target,
-        slot,
-        `verbose diagnostic ${slot} mode could not be enforced: ${(err as Error).message}`
-      );
+      case 'unsupported':
+        this.recordWarning(
+          target,
+          slot,
+          `verbose diagnostic ${slot} mode could not be enforced: ${notice.code}`
+        );
+        return;
     }
   }
 

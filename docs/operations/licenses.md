@@ -134,7 +134,9 @@ new dependency, and the manual review below is now the whole of it.
 Dependabot opens weekly root and webview npm update pull requests and groups
 several related toolchains; major updates are ignored for manual handling. It is
 GitHub-native and needs no workflow, so it survived the retirement — but nothing
-checks what it opens. The weekly `npm audit --audit-level=low` against both
+checks what it opens. What it opens is merged into `develop` only from a commit that
+carries a passing `npm run gate:record` record naming that commit, and that is a rule
+the operator follows, not a check ([gate recording](gate-recording.md)). The weekly `npm audit --audit-level=low` against both
 lockfiles was retired with the workflows; the same audit is now
 `npm run security:audit`, operator-invoked, on no schedule and outside the
 attested gate. These address dependency freshness and known vulnerabilities.

@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { Readable, Writable } from 'node:stream';
@@ -174,8 +174,10 @@ describe('FR-R3-084 §3.4 — the injection-shaped scenario, live half', () => {
    * token decides an outcome, and there is none in any of these envelopes.
    *
    * The deterministic twin is `prompt-injection-in-output` in
-   * `tests/evals/fixtures/backend-outcomes.json`, which gates every PR on
-   * hand-written lines. What it cannot establish is that a REAL CLI's envelope --
+   * `tests/evals/fixtures/backend-outcomes.json`, which runs in `test:evals`
+   * inside `npm run gate` on hand-written lines. (Until 2026-10-02 this said it
+   * "gates every PR"; nothing runs on a PR.) What it cannot establish is that a
+   * REAL CLI's envelope --
    * with the injection nested inside stream-json, agy's `event` rows or codex's
    * `item.completed` -- classifies the same way. That is what these do.
    */
@@ -220,6 +222,36 @@ describe('FR-R3-084 §3.4 — the injection-shaped scenario, live half', () => {
     const claude = record('claude', 'injection');
     expect(claude).not.toContain('SCHEGENT_STATUS: CLEAR');
     expect(claude).toContain('instructions');
+  });
+});
+
+describe('FR-R3-182 — which corpus cases have a recording', () => {
+  /**
+   * The corpus gained nine record-only cases on 2026-10-02, one per surface per backend, and
+   * none has been recorded: recording spends live turns, and that work spent none. So the
+   * recordings here are still the six of 2026-08-26 (the protocol probe and the output case,
+   * per backend), and this pins that, so the threat model's count of recorded cases stays true.
+   *
+   * Recording the rest makes this fail, on purpose. Each new recording needs its own replay
+   * assertions here, and the threat model's dated count needs changing with it.
+   */
+  it('holds a recording for the cases recorded on 2026-08-26, and for no other', async () => {
+    const canary = await import('../../../scripts/backend-canary.mjs');
+    const fileOf = (c: { backend: string; stem: string }): string => `${c.backend}-${c.stem}.jsonl`;
+    const onDisk = readdirSync(FIXTURES)
+      .filter((name) => name.endsWith('.jsonl'))
+      .sort();
+    const declared = new Set(canary.CANARY_CASES.map(fileOf));
+    expect(onDisk.filter((name) => !declared.has(name)), 'a recording no case declares').toEqual(
+      []
+    );
+    expect(onDisk).toEqual(
+      ['agy', 'claude', 'codex'].flatMap((b) => [`${b}-injection.jsonl`, `${b}-live.jsonl`])
+    );
+    // What is missing is the surface cases, all of them, and nothing else.
+    const unrecorded = canary.CANARY_CASES.filter((c) => !onDisk.includes(fileOf(c)));
+    expect(unrecorded.filter((c) => c.surface === null).map((c) => c.id)).toEqual([]);
+    expect(unrecorded).toHaveLength(canary.INJECTION_SURFACES.length * BACKENDS.length);
   });
 });
 

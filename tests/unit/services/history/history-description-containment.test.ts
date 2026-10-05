@@ -68,3 +68,48 @@ describe('FR-R3-080 — the description write refuses a swapped component', () =
     expect(await store.read(ref!)).toEqual({ outcome: 'read', text: 'second' });
   });
 });
+
+describe('Feature 217 (FR-003) — the description store says what its write narrowed', () => {
+  /** POSIX-only: `mode` is not an enforceable concept on Windows. */
+  const posixOnly = process.platform === 'win32' ? it.skip : it;
+  /** What umask 022 leaves a directory at. */
+  const WIDENED_DIR = 0o755;
+
+  posixOnly('narrows a widened `.schegent` and says so once, path-free', async () => {
+    const { workspaceRoot, store, warn } = await harness();
+    const schegent = path.join(workspaceRoot, '.schegent');
+    await fs.chmod(schegent, WIDENED_DIR);
+    await store.write('run-a', 'first');
+    // Widened again between two writes: the second narrowing is real, and the
+    // store has already said this once.
+    await fs.chmod(schegent, WIDENED_DIR);
+    await store.write('run-b', 'second');
+
+    expect((await fs.lstat(schegent)).mode & 0o777).toBe(0o700);
+    expect(warn.mock.calls.map((call) => String(call[0]))).toEqual([
+      'history-description: an evidence directory granted access beyond its owner (mode 755); narrowed to owner-only'
+    ]);
+  });
+
+  // The report sits between the open and the close of its handle, and this
+  // store takes any `warn`, not only the logger that never throws.
+  posixOnly('keeps the write when the logger throws on the line it reports', async () => {
+    const { workspaceRoot } = await harness();
+    const schegent = path.join(workspaceRoot, '.schegent');
+    await fs.chmod(schegent, WIDENED_DIR);
+    const store = new HistoryDescriptionStore({
+      workspaceRoot,
+      logger: {
+        warn: () => {
+          throw new Error('sink unavailable');
+        }
+      }
+    });
+
+    expect(await store.write('run-c', 'operator description')).toBe('.schegent/history/run-c.txt');
+    expect(await fs.readFile(path.join(schegent, 'history', 'run-c.txt'), 'utf8')).toBe(
+      'operator description'
+    );
+    expect((await fs.lstat(schegent)).mode & 0o777).toBe(0o700);
+  });
+});

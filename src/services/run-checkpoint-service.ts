@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { SanitizedLogger } from '../lib/logger';
+import { NarrowingReporter } from '../lib/evidence-narrowing';
 import { resolveDiffBase } from '../lib/git-diff-base';
 import { resolveContainedLink } from '../lib/path-containment';
 import type { WorkflowRun } from '../state/workflow-run';
@@ -75,6 +76,9 @@ type CheckpointDecision =
 
 /** Private recovery checkpoints captured immediately before Git-capable phases. */
 export class RunCheckpointService {
+  /** Feature 217 (FR-003, data-model.md §2) — says once, path-free, what narrowing found. */
+  private readonly narrowing = new NarrowingReporter('checkpoint:', (message) => this.logger.warn(message));
+
   /**
    * @param countInFlightRuns Feature 093 (T053, FR-022a) — how many Runs could
    *   currently hold uncommitted work in the shared worktree. Required rather
@@ -353,6 +357,7 @@ export class RunCheckpointService {
       );
       return false;
     }
+    this.narrowing.report(opened.narrowing);
     try {
       await opened.handle.write(body, null, 'utf8');
       return true;

@@ -31,6 +31,7 @@ import {
 } from '../catalog';
 import { createDefinitionSemantics } from '../config/definition-semantics';
 import { CATALOG_DIRECTORY_SEGMENTS, createCatalogFsAdapter } from '../host-services/catalog-fs-adapter';
+import type { SanitizedLogger } from '../lib/logger';
 import { getCanonicalWorkspaceRoot } from '../state/workspace-folder-picker';
 
 /** Epoch milliseconds, the store's one time representation (FR-021a). */
@@ -86,14 +87,19 @@ export function isCatalogActivationTrusted(): boolean {
  *                       passes `retainedHistoryPlans(historyStore.list())`, and
  *                       the `list()` belongs inside the thunk — hoisting it out
  *                       is the smallest cache there is, and FR-042 forbids it.
+ * @param logger Feature 217 (FR-003) — where the store's filesystem says, once
+ *                       and path-free, what narrowing its directories and files
+ *                       found. Activation passes its logger; a caller that omits
+ *                       it is told nothing.
  */
 export function createHostCatalogStore(
   enumeratePlans: () => Iterable<RunVersionCarrier> = () => [],
-  enumerateRetained: () => Iterable<RunVersionCarrier> = () => []
+  enumerateRetained: () => Iterable<RunVersionCarrier> = () => [],
+  logger?: Pick<SanitizedLogger, 'warn'>
 ): CatalogStore | null {
   if (!isCatalogActivationTrusted()) return null;
   return createCatalogStore({
-    fs: createCatalogFsAdapter(catalogStoreAnchor()),
+    fs: createCatalogFsAdapter(catalogStoreAnchor(), logger),
     clock: systemClock,
     digest: nodeDigest,
     provenance: createQueueRunProvenance(enumeratePlans, enumerateRetained)
