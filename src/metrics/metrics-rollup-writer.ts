@@ -14,6 +14,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { ensureSchegentGitignore } from '../audit/schegent-gitignore';
+import { NarrowingReporter } from '../lib/evidence-narrowing';
 import { boundForCaller, holdOrdering } from '../lib/io-barrier';
 import { streamRollup } from './metrics-rollup-stream';
 import type { SanitizedLogger } from '../lib/logger';
@@ -98,6 +99,10 @@ export class MetricsRollupWriter {
    */
   private pendingWrite: Promise<void> = Promise.resolve();
   private gitignoreEnsure: Promise<void> | null = null;
+  /** Feature 217 (FR-003, data-model.md §2) — says once, path-free, what narrowing found. */
+  private readonly narrowing = new NarrowingReporter('metrics rollup:', (message) =>
+    this.deps.logger.warn(message)
+  );
   /**
    * Run ids already present in the file, loaded once and then maintained in
    * memory. Lazily loaded so construction costs nothing at activation.
@@ -183,7 +188,11 @@ export class MetricsRollupWriter {
   }
 
   private async write(line: string): Promise<void> {
-    this.gitignoreEnsure ??= ensureSchegentGitignore(this.deps.workspaceRoot, this.deps.logger);
+    // Feature 217 (FR-003) — the drop runs before the first append's open, so on
+    // a fresh but widened `.schegent/` it is the drop that narrows it.
+    this.gitignoreEnsure ??= ensureSchegentGitignore(this.deps.workspaceRoot, this.deps.logger).then(
+      (notices) => this.narrowing.report(notices)
+    );
     await this.gitignoreEnsure;
 
     // FR-R3-082 (T1089) — the I/O barrier, in the shape `FR-R3-050` established
@@ -257,6 +266,7 @@ export class MetricsRollupWriter {
         code: opened.reason === 'io-failed' ? opened.errno : 'path-refused'
       });
     }
+    this.narrowing.report(opened.narrowing);
     try {
       await opened.handle.write(line, null, 'utf8');
     } finally {
@@ -375,6 +385,7 @@ export class MetricsRollupWriter {
           code: 'path-refused'
         });
       }
+      this.narrowing.report(opened.narrowing);
       try {
         await opened.handle.write(header + body, null, 'utf8');
       } finally {

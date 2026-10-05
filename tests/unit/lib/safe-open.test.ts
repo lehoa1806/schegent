@@ -17,6 +17,35 @@ import {
  */
 const posixOnly = process.platform === 'win32' ? it.skip : it;
 
+/**
+ * Segments whose constructor's `Symbol.species` builds any copy made through it,
+ * as `map`, `filter`, `concat` and `slice` make theirs, even the prototype's. Such
+ * a copy answers its first read of element 0 with `first` and every later read
+ * with `later`. `built` counts the copies made that way.
+ */
+function speciesShifty(
+  values: readonly string[],
+  first: string,
+  later: string
+): { readonly segments: string[]; readonly built: () => number } {
+  let built = 0;
+  function Shifty(length: number): string[] {
+    built += 1;
+    let reads = 0;
+    return new Proxy(new Array<string>(length), {
+      get: (target, key, receiver) => {
+        if (key !== '0') return Reflect.get(target, key, receiver);
+        reads += 1;
+        return reads === 1 ? first : later;
+      }
+    });
+  }
+  const segments = Object.defineProperty([...values], 'constructor', {
+    value: { [Symbol.species]: Shifty }
+  });
+  return { segments, built: () => built };
+}
+
 describe('openWithinRoot refuses a symlink at any component', () => {
   let root: string;
   let outside: string;
@@ -95,6 +124,90 @@ describe('openWithinRoot refuses a symlink at any component', () => {
       });
       expect(result).toMatchObject({ outcome: 'refused', reason: 'escapes-root' });
     }
+  });
+
+  posixOnly('walks the segments it checked: an element read twice cannot step out of the root', async () => {
+    // An element can be a getter. Read again after the check, this one answers '..',
+    // which would put the file in the root's parent and narrow that directory, which
+    // is the caller's and not the helper's to change.
+    const base = path.dirname(root);
+    await fs.chmod(base, 0o755);
+    let reads = 0;
+    const segments = Object.defineProperty(['d', 'x.log'], 0, {
+      get: () => {
+        reads += 1;
+        return reads === 1 ? 'd' : '..';
+      }
+    });
+    const result = await open(segments);
+    expect(result.outcome).toBe('opened');
+    if (result.outcome === 'opened') await result.handle.close();
+    expect((await fs.readdir(base)).sort()).toEqual(['outside', 'root']);
+    expect((await fs.lstat(base)).mode & 0o777).toBe(0o755);
+    expect(await fs.readdir(path.join(root, 'd'))).toEqual(['x.log']);
+    expect(reads).toBe(1);
+  });
+
+  posixOnly('opens the segments it checked: an option read after the check cannot rewrite them', async () => {
+    // The options are read after the check, so a getter among them that rewrote the
+    // caller's array would open a leaf the check never saw.
+    const segments = ['x.log'];
+    const result = await openWithinRoot(root, segments, {
+      flags: 'a',
+      get fileMode(): number {
+        segments[0] = '../escaped.log';
+        return 0o600;
+      }
+    });
+    expect(result.outcome).toBe('opened');
+    if (result.outcome === 'opened') await result.handle.close();
+    expect((await fs.readdir(path.dirname(root))).sort()).toEqual(['outside', 'root']);
+    expect(await fs.readdir(root)).toEqual(['x.log']);
+  });
+
+  posixOnly('copies the segments itself rather than asking the array for a copy', async () => {
+    // Asked for a copy, by its own `slice` say, the caller's array could hand back one
+    // whose element answers differently when read again.
+    let reads = 0;
+    const shifty = Object.defineProperty(['d', 'x.log'], 0, {
+      get: () => {
+        reads += 1;
+        return reads === 1 ? 'd' : '..';
+      }
+    });
+    const segments = Object.defineProperty(['d', 'x.log'], 'slice', { value: () => shifty });
+    const result = await open(segments);
+    expect(result.outcome).toBe('opened');
+    if (result.outcome === 'opened') await result.handle.close();
+    expect((await fs.readdir(path.dirname(root))).sort()).toEqual(['outside', 'root']);
+    expect(await fs.readdir(path.join(root, 'd'))).toEqual(['x.log']);
+    expect(reads).toBe(0);
+  });
+
+  posixOnly('copies the segments without the array choosing the copy through its species', async () => {
+    // `map`, `filter`, `concat` and the prototype's `slice` build their copy through
+    // the array's constructor. This one builds a copy whose first element answers
+    // '..' when read again, which would put the file in the root's parent and
+    // narrow that directory.
+    const base = path.dirname(root);
+    await fs.chmod(base, 0o755);
+    const { segments, built } = speciesShifty(['d', 'x.log'], 'd', '..');
+    const result = await open(segments);
+    expect(result.outcome).toBe('opened');
+    if (result.outcome === 'opened') await result.handle.close();
+    expect((await fs.readdir(base)).sort()).toEqual(['outside', 'root']);
+    expect((await fs.lstat(base)).mode & 0o777).toBe(0o755);
+    expect(await fs.readdir(path.join(root, 'd'))).toEqual(['x.log']);
+    expect(built()).toBe(0);
+  });
+
+  posixOnly('throws on a hole in the segments before it creates anything', async () => {
+    // A copy that kept the hole would pass the check, since `some` skips holes, and
+    // the walk would create `d` before failing on it.
+    const segments: string[] = ['d'];
+    segments[2] = 'x.log';
+    await expect(open(segments)).rejects.toThrow(TypeError);
+    expect(await fs.readdir(root)).toEqual([]);
   });
 
   posixOnly('refuses when an intermediate component is a regular file', async () => {
@@ -305,6 +418,56 @@ describe('ensureAnchorWithinRoot creates a store anchor beneath a higher trusted
       expect((await ensureAnchorWithinRoot(root, segments, 0o700)).outcome).toBe('refused');
     }
   });
+
+  posixOnly('walks the segments it checked: an element read twice cannot step out of the root', async () => {
+    // Read again after the check, this element names a directory beside the root,
+    // and the walk would create the anchor there.
+    let reads = 0;
+    const segments = Object.defineProperty(['store'], 0, {
+      get: () => {
+        reads += 1;
+        return reads === 1 ? 'store' : '../escaped';
+      }
+    });
+    const made = await ensureAnchorWithinRoot(root, segments, 0o700);
+    expect((await fs.readdir(path.dirname(root))).sort()).toEqual(['outside', 'root']);
+    expect(made).toEqual({ outcome: 'ready', anchor: path.join(root, 'store') });
+    expect(reads).toBe(1);
+  });
+
+  posixOnly('copies the segments itself rather than asking the array for a copy', async () => {
+    // As in `openWithinRoot`: a copy the caller's array made of itself could be one
+    // whose element answers differently when read again.
+    let reads = 0;
+    const shifty = Object.defineProperty(['store'], 0, {
+      get: () => {
+        reads += 1;
+        return reads === 1 ? 'store' : '../escaped';
+      }
+    });
+    const segments = Object.defineProperty(['store'], 'slice', { value: () => shifty });
+    const made = await ensureAnchorWithinRoot(root, segments, 0o700);
+    expect((await fs.readdir(path.dirname(root))).sort()).toEqual(['outside', 'root']);
+    expect(made).toEqual({ outcome: 'ready', anchor: path.join(root, 'store') });
+    expect(reads).toBe(0);
+  });
+
+  posixOnly('copies the segments without the array choosing the copy through its species', async () => {
+    // As in `openWithinRoot`: a copy built through the array's constructor could be
+    // one whose element names a directory beside the root when read again.
+    const { segments, built } = speciesShifty(['store'], 'store', '../escaped');
+    const made = await ensureAnchorWithinRoot(root, segments, 0o700);
+    expect((await fs.readdir(path.dirname(root))).sort()).toEqual(['outside', 'root']);
+    expect(made).toEqual({ outcome: 'ready', anchor: path.join(root, 'store') });
+    expect(built()).toBe(0);
+  });
+
+  posixOnly('throws on a hole in the segments before it creates anything', async () => {
+    const segments: string[] = ['store'];
+    segments[2] = 'ownership';
+    await expect(ensureAnchorWithinRoot(root, segments, 0o700)).rejects.toThrow(TypeError);
+    expect(await fs.readdir(root)).toEqual([]);
+  });
 });
 
 /**
@@ -457,6 +620,30 @@ describe('openWithinRoot narrows what it creates or writes to owner-only (featur
     expect(result.narrowing).toEqual([]);
   });
 
+  posixOnly('changes nothing when the open is refused, even after its walk found what is widened', async () => {
+    // `.schegent/.gitignore` is opened create-exclusive, and on every run after
+    // the first that open is refused EEXIST. The walk has already found the
+    // widened directory by then; only a successful open narrows it.
+    await fs.mkdir(path.join(root, '.schegent'));
+    await fs.chmod(path.join(root, '.schegent'), WIDENED_DIR);
+    const file = path.join(root, '.schegent', '.gitignore');
+    await fs.writeFile(file, '*\n');
+    await fs.chmod(file, WIDENED_FILE);
+
+    const result = await openWithinRoot(root, ['.schegent', '.gitignore'], {
+      flags: 'wx',
+      createDirs: true,
+      dirMode: OWNER_ONLY_DIR,
+      fileMode: OWNER_ONLY_FILE
+    });
+    if (result.outcome === 'opened') await result.handle.close();
+
+    expect(result).toEqual({ outcome: 'refused', reason: 'io-failed', errno: 'EEXIST' });
+    expect(await modeOf(path.join(root, '.schegent'))).toBe(WIDENED_DIR);
+    expect(await modeOf(file)).toBe(WIDENED_FILE);
+    expect(await fs.readFile(file, 'utf8'), 'not truncated').toBe('*\n');
+  });
+
   posixOnly('never widens a directory stricter than the declared mode', async () => {
     await fs.mkdir(path.join(root, 'strict'));
     await fs.writeFile(path.join(root, 'strict', 'audit.log'), '');
@@ -506,5 +693,183 @@ describe('openWithinRoot requires a mode for any open that can create or write (
     ];
     expect(rejected).toHaveLength(4);
     expect(accepted).toHaveLength(3);
+  });
+});
+
+describe('the helper refuses a mode that is not one, before it creates anything (FR-008)', () => {
+  let root: string;
+
+  beforeEach(async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-safeopen-unmoded-'));
+    root = path.join(base, 'root');
+    await fs.mkdir(root);
+  });
+
+  afterEach(async () => {
+    await fs.rm(path.dirname(root), { recursive: true, force: true });
+  });
+
+  // The setter-only modes reach the helper past the checker with no directive and no
+  // cast: a setter with no getter is typed as what it takes and reads as `undefined`.
+  const unmoded = {
+    set mode(_: number) {
+      // Setter only: reading the mode gives `undefined`.
+    }
+  }.mode;
+
+  posixOnly('refuses a writing open whose fileMode reads as undefined, under every writing flag', async () => {
+    for (const flags of ['a', 'w', 'wx'] as const) {
+      await expect(
+        openWithinRoot(root, ['logs', 'x.log'], {
+          flags,
+          createDirs: true,
+          dirMode: 0o700,
+          set fileMode(_: number) {
+            // Setter only: reading the mode gives `undefined`.
+          }
+        }),
+        flags
+      ).rejects.toThrow(/fileMode must be a mode/);
+      expect(await fs.readdir(root), flags).toEqual([]);
+    }
+  });
+
+  posixOnly('refuses a declared fileMode that is not a mode on a read too, since the open is handed it', async () => {
+    // A read need declare no mode, but a caller holding a union of flags declares one
+    // for both, and `open` is handed it whatever the flags. Unchecked, a value Node
+    // rejects came back as an I/O failure, and one it accepts was passed through.
+    await fs.writeFile(path.join(root, 'x.log'), 'line\n');
+    for (const fileMode of [Number.NaN, -1, 0o10000]) {
+      await expect(openWithinRoot(root, ['x.log'], { flags: 'r', fileMode }), String(fileMode)).rejects.toThrow(
+        /fileMode must be a mode/
+      );
+    }
+    for (const options of [{ flags: 'r' }, { flags: 'r', fileMode: 0o600 }] as const) {
+      const read = await openWithinRoot(root, ['x.log'], options);
+      expect(read.outcome, JSON.stringify(options)).toBe('opened');
+      if (read.outcome === 'opened') await read.handle.close();
+    }
+  });
+
+  posixOnly('refuses an open that creates directories whose dirMode reads as undefined', async () => {
+    await expect(
+      openWithinRoot(root, ['logs', 'x.log'], {
+        flags: 'a',
+        createDirs: true,
+        dirMode: unmoded,
+        fileMode: 0o600
+      })
+    ).rejects.toThrow(/dirMode must be a mode/);
+    expect(await fs.readdir(root)).toEqual([]);
+  });
+
+  posixOnly('refuses a declared dirMode that is not a mode, which a writing open would narrow to', async () => {
+    // Without the refusal the open succeeds and narrows the directory it walked to
+    // `0o755 & NaN`, which is 0.
+    const store = path.join(root, 'store');
+    await fs.mkdir(store);
+    await fs.chmod(store, 0o755);
+    try {
+      await expect(
+        openWithinRoot(root, ['store', 'x.log'], { flags: 'a', fileMode: 0o600, dirMode: Number.NaN as never })
+      ).rejects.toThrow(/dirMode must be a mode/);
+      expect((await fs.lstat(store)).mode & 0o777).toBe(0o755);
+      expect(await fs.readdir(store)).toEqual([]);
+    } finally {
+      // Restore access, so a failure here still leaves the teardown a tree it can remove.
+      await fs.chmod(store, 0o700);
+    }
+  });
+
+  posixOnly('refuses a walk whose dirMode reads as undefined, through either entry', async () => {
+    await expect(ensureDirWithinRoot(root, ['a', 'b'], unmoded)).rejects.toThrow(/dirMode must be a mode/);
+    await expect(ensureAnchorWithinRoot(root, ['a', 'b'], unmoded)).rejects.toThrow(/dirMode must be a mode/);
+    expect(await fs.readdir(root)).toEqual([]);
+  });
+
+  posixOnly('takes a mode to be an integer from 0 to 0o7777', async () => {
+    for (const mode of [Number.NaN, -1, 1.5, 0o10000, '600' as never]) {
+      await expect(ensureDirWithinRoot(root, ['bad'], mode), String(mode)).rejects.toThrow(
+        /dirMode must be a mode/
+      );
+    }
+    expect(await fs.readdir(root)).toEqual([]);
+    expect((await ensureDirWithinRoot(root, ['none'], 0)).outcome).toBe('ready');
+    expect((await ensureDirWithinRoot(root, ['every'], 0o7777)).outcome).toBe('ready');
+  });
+
+  posixOnly('refuses a flags value it cannot translate before it creates anything', async () => {
+    await expect(
+      openWithinRoot(
+        root,
+        ['logs', 'x.log'],
+        // @ts-expect-error -- 'a+' is outside the accepted flags; the runtime refusal is the claim
+        { flags: 'a+', createDirs: true, dirMode: 0o700, fileMode: 0o600 }
+      )
+    ).rejects.toThrow(/unsupported flags/);
+    expect(await fs.readdir(root)).toEqual([]);
+  });
+
+  posixOnly('reads each option once, so the mode it checked is the mode it uses', async () => {
+    // A getter can answer differently each time it is read, so a check of one read
+    // proves nothing about the next. One open creates a directory and the leaf, the
+    // other narrows both, so every step that uses an option is reached.
+    const wide = path.join(root, 'wide');
+    await fs.mkdir(wide);
+    await fs.chmod(wide, 0o755);
+    await fs.writeFile(path.join(wide, 'x.log'), '');
+    await fs.chmod(path.join(wide, 'x.log'), 0o644);
+    const opens = [
+      { label: 'creates', segments: ['made', 'x.log'] },
+      { label: 'narrows', segments: ['wide', 'x.log'] }
+    ];
+    for (const { label, segments } of opens) {
+      const reads = { flags: 0, createDirs: 0, dirMode: 0, fileMode: 0 };
+      const result = await openWithinRoot(root, segments, {
+        get flags(): 'a' {
+          reads.flags += 1;
+          return 'a';
+        },
+        get createDirs(): true {
+          reads.createDirs += 1;
+          return true;
+        },
+        get dirMode(): number {
+          reads.dirMode += 1;
+          return 0o700;
+        },
+        get fileMode(): number {
+          reads.fileMode += 1;
+          return 0o600;
+        }
+      });
+      expect(result.outcome, label).toBe('opened');
+      if (result.outcome === 'opened') await result.handle.close();
+      expect(reads, label).toEqual({ flags: 1, createDirs: 1, dirMode: 1, fileMode: 1 });
+    }
+    expect((await fs.lstat(wide)).mode & 0o777).toBe(0o700);
+    expect((await fs.lstat(path.join(wide, 'x.log'))).mode & 0o777).toBe(0o600);
+  });
+
+  posixOnly('narrows a widened leaf whose flags getter reads as r after its first read', async () => {
+    // Read again after the open, this getter would skip the narrowing, leaving the
+    // file it appended to readable by others, with no notice.
+    const file = path.join(root, 'audit.log');
+    await fs.writeFile(file, 'line\n');
+    await fs.chmod(file, 0o644);
+    let reads = 0;
+    const result = await openWithinRoot(root, ['audit.log'], {
+      get flags(): 'a' | 'r' {
+        reads += 1;
+        return reads === 1 ? 'a' : 'r';
+      },
+      createDirs: false,
+      fileMode: 0o600
+    });
+    expect(result.outcome).toBe('opened');
+    if (result.outcome !== 'opened') return;
+    await result.handle.close();
+    expect(result.narrowing).toEqual([{ scope: 'file', outcome: 'narrowed', previousMode: 0o644 }]);
+    expect((await fs.lstat(file)).mode & 0o777).toBe(0o600);
   });
 });

@@ -88,6 +88,26 @@ These variables are implementation controls, not extension-user configuration.
 | `TEMP` | filesystem path | `.tmp/vitest-<pid>` during Vitest | Redirects Windows-compatible test scratch files into the same isolated root. |
 | `GIT_CEILING_DIRECTORIES` | filesystem path | Absolute repository `.tmp` directory during Vitest | Stops scratch repositories from discovering the developer checkout while walking parent directories. |
 
+A run that is killed never reaches its teardown, so its `vitest-<pid>` root
+stays behind (FR-R3-181). Before it creates its own root, Vitest global setup
+sweeps `.tmp/` for those roots. It removes one only when its pid is provably
+gone, or is held by a process that started more than ten minutes after the root
+was last written; a root whose holder's start time cannot be read is kept, and
+the run's own root is never examined. Setup prints one line on every run, a
+clean `.tmp/` included:
+
+```text
+scratch sweep: found=<N> removed=<N> skipped=<N>
+```
+
+`found` counts every entry in `.tmp/`, run root or not, and `skipped` every
+entry the sweep left, so `found` is always `removed + skipped`. Only a root
+whose removal failed is also named on stderr; a root that is kept, and an
+entry that is not a run root, is counted and not named. Teardown removes the
+run's own root through the shared cleanup helper, and a removal that fails is
+reported on stderr, `scratch teardown: … left for the next run's sweep`, not
+swallowed.
+
 <!-- Source: esbuild.config.mjs -->
 <!-- Source: src/services/run-driver.ts -->
 <!-- Source: playwright.config.ts -->

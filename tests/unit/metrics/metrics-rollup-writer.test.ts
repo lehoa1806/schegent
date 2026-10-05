@@ -170,6 +170,48 @@ describe('MetricsRollupWriter — append (FR-R3-009, T387)', () => {
   });
 });
 
+describe('MetricsRollupWriter — says what its opens narrowed (feature 217, FR-003)', () => {
+  /** POSIX-only: `mode` is not an enforceable concept on Windows. */
+  const posixOnly = process.platform === 'win32' ? it.skip : it;
+  /** What umask 022 leaves a directory and a file at. */
+  const WIDENED_DIR = 0o755;
+  const WIDENED_FILE = 0o644;
+
+  const narrowings = (logger: ReturnType<typeof testLogger>): string[] =>
+    logger.warnings.map((warning) => warning.message).filter((message) => message.startsWith('metrics rollup:'));
+
+  posixOnly('narrows a widened rollup on the next append and says so, path-free', async () => {
+    const logger = testLogger();
+    const writer = new MetricsRollupWriter({ workspaceRoot, logger });
+    await writer.append(append({ runId: 'run-1' }));
+    await chmod(rollupPath(), WIDENED_FILE);
+
+    await writer.append(append({ runId: 'run-2' }));
+
+    expect((await stat(rollupPath())).mode & 0o777).toBe(0o600);
+    expect(narrowings(logger)).toEqual([
+      'metrics rollup: an evidence file granted access beyond its owner (mode 644); narrowed to owner-only'
+    ]);
+  });
+
+  posixOnly('says what the ignore-file drop narrowed before the first append', async () => {
+    // The drop runs first and walks `.schegent/` with a declared mode, so on a
+    // fresh but widened directory it is that open, not the append's, that
+    // narrows it.
+    const schegent = join(workspaceRoot, '.schegent');
+    await mkdir(schegent);
+    await chmod(schegent, WIDENED_DIR);
+    const logger = testLogger();
+
+    await new MetricsRollupWriter({ workspaceRoot, logger }).append(append());
+
+    expect((await stat(schegent)).mode & 0o777).toBe(0o700);
+    expect(narrowings(logger)).toEqual([
+      'metrics rollup: an evidence directory granted access beyond its owner (mode 755); narrowed to owner-only'
+    ]);
+  });
+});
+
 describe('MetricsRollupWriter — idempotence per run id (FR-R3-009, T388)', () => {
   it('records a repeated terminal transition once', async () => {
     const writer = new MetricsRollupWriter({ workspaceRoot, logger: testLogger() });

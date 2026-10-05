@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   describeNarrowing,
   listGenerations,
+  NarrowingReporter,
   narrowRotatedFiles
 } from '../../../src/lib/evidence-narrowing';
 
@@ -16,8 +17,8 @@ import {
  * The sink suites prove the reporter's once-only, path-free lines and the
  * operator's non-numeric suffixes through each sink. What no sink test reaches
  * is pinned here: the words for a platform that could not narrow, the padding
- * of a mode with no owner bits, a directory that cannot be listed, and a
- * rotated file outside every root.
+ * of a mode with no owner bits, a sink that throws, a directory that cannot be
+ * listed, and a rotated file outside every root.
  */
 
 const OWNER_ONLY_FILE = 0o600;
@@ -50,12 +51,34 @@ describe('describeNarrowing — the words an operator reads', () => {
   });
 });
 
+describe('NarrowingReporter — a sink that throws', () => {
+  const WIDENED_FILE_NOTICE = { scope: 'file', outcome: 'narrowed', previousMode: WIDENED_FILE } as const;
+
+  it('keeps the throw out of the caller, and says the line on the next report instead', () => {
+    const delivered: string[] = [];
+    let sinkAvailable = false;
+    const reporter = new NarrowingReporter('evidence:', (message) => {
+      if (!sinkAvailable) throw new Error('sink unavailable');
+      delivered.push(message);
+    });
+
+    expect(() => reporter.report([WIDENED_FILE_NOTICE])).not.toThrow();
+    sinkAvailable = true;
+    reporter.report([WIDENED_FILE_NOTICE]);
+    reporter.report([WIDENED_FILE_NOTICE]);
+
+    expect(delivered).toEqual([
+      'evidence: an evidence file granted access beyond its owner (mode 644); narrowed to owner-only'
+    ]);
+  });
+});
+
 describe('listGenerations — the rotated files beside a live log', () => {
-  it('lists nothing when the directory cannot be read, rather than failing the write', async () => {
+  it('answers null when the directory cannot be read: not a failed write, and not an empty directory', async () => {
     const unreadable = (): Promise<readonly string[]> =>
       Promise.reject(Object.assign(new Error('denied'), { code: 'EACCES' }));
 
-    await expect(listGenerations(path.join('evidence', 'syslog'), unreadable)).resolves.toEqual([]);
+    await expect(listGenerations(path.join('evidence', 'syslog'), unreadable)).resolves.toBeNull();
   });
 
   it('keeps a purely numeric suffix of the live name, and nothing that only resembles one', async () => {

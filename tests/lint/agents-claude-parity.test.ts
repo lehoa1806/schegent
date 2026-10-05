@@ -147,7 +147,11 @@ const HARD_RULE_ANCHORS: ReadonlyArray<string> = [
   // green while the rule's *index* citation was wrong and stayed wrong for 45
   // rows. Presence and position are different invariants —
   // `agents-rule-index.test.ts` owns the second one.
-  'give a host-spawned child an idle bound'
+  'give a host-spawned child an idle bound',
+  // Feature 217 (FR-R3-179) — one rule, two invariants, so two anchors: an
+  // evidence open declares its mode, and a mode is narrowed in one routine.
+  'open an evidence path without declaring its mode',
+  'narrow a mode anywhere but `repo/src/lib/narrow-mode.ts`'
 ];
 
 /** The authoritative file — the only one that carries the rule set. */

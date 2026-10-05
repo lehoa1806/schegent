@@ -526,6 +526,11 @@ export class RuntimeLogSink implements LogSink {
    * Only after an open through the walk succeeded, so a refused destination is
    * never touched; and only what the stale-generation sweep would also call a
    * generation, so an operator's `<live>.bak` keeps its mode.
+   *
+   * Marked before the listing, so opens that overlap list once; unmarked when
+   * the directory could not be listed, so the next open lists again rather than
+   * leaving the generations widened for the life of the sink. The append handle
+   * is held, so the next open is usually a rotation's successor.
    */
   private async narrowGenerationsOnce(
     targetPath: string,
@@ -534,6 +539,10 @@ export class RuntimeLogSink implements LogSink {
     if (this.generationsNarrowed.has(targetPath)) return;
     this.generationsNarrowed.add(targetPath);
     const generations = await listGenerations(targetPath, this.readdir);
+    if (generations === null) {
+      this.generationsNarrowed.delete(targetPath);
+      return;
+    }
     this.narrowing.report(
       await narrowRotatedFiles(generations, RUNTIME_LOG_FILE_MODE, roots, this.containmentFs)
     );

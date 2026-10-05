@@ -23,6 +23,7 @@ import * as path from 'node:path';
 import { promises as fs } from 'node:fs';
 import type { SanitizedLogger } from '../../lib/logger';
 import { historyErrorCode } from './error-code';
+import { NarrowingReporter } from '../../lib/evidence-narrowing';
 import { openWithinRoot, openWithinRootByPath } from '../../lib/safe-open';
 import {
   resolveContainedForWrite,
@@ -123,6 +124,10 @@ export type HistoryDescriptionReadOutcome =
 export class HistoryDescriptionStore {
   private readonly workspaceRoot: string;
   private readonly logger: Pick<SanitizedLogger, 'warn'>;
+  /** Feature 217 (FR-003, data-model.md §2) — says once, path-free, what narrowing found. */
+  private readonly narrowing = new NarrowingReporter('history-description:', (message) =>
+    this.logger.warn(message)
+  );
 
   constructor(deps: HistoryDescriptionStoreDeps) {
     this.workspaceRoot = deps.workspaceRoot;
@@ -190,6 +195,7 @@ export class HistoryDescriptionStore {
         this.logger.warn(`history-description: write refused (${detail}) ref=${ref}`);
         return null;
       }
+      this.narrowing.report(opened.narrowing);
       try {
         await opened.handle.write(text, null, 'utf8');
       } finally {

@@ -144,6 +144,21 @@ describe('narrowMode — the single narrowing mechanism', () => {
     expect(await modeOf(readOnly)).toBe(0o400);
   });
 
+  posixOnly('clears every non-owner bit even when the mode it is handed keeps some', async () => {
+    // `desired` is owner-only at every call site, but nothing in its type says so:
+    // a caller declaring `0o644` would otherwise be told `narrowed` while group and
+    // other could still read the file.
+    const file = path.join(base, 'audit.log');
+    await fs.writeFile(file, 'x');
+    await fs.chmod(file, WIDENED_DIR);
+
+    expect(await narrowMode(file, WIDENED_FILE)).toEqual({
+      outcome: 'narrowed',
+      previousMode: WIDENED_DIR
+    });
+    expect(await modeOf(file)).toBe(OWNER_ONLY_FILE);
+  });
+
   posixOnly('reports a mode change the platform accepted but did not apply, rather than claiming it', async () => {
     const file = path.join(base, 'audit.log');
     await fs.writeFile(file, 'x');

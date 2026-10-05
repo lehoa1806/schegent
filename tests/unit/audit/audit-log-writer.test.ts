@@ -396,4 +396,26 @@ describe('AuditLogWriter — owner-only evidence (feature 217)', () => {
       await fs.rm(outside, { recursive: true, force: true });
     }
   });
+
+  posixOnly('says what the ignore-file drop narrowed, through its own subject (FR-003)', async () => {
+    // The ignore file is dropped before the first append, and its open walks
+    // `.schegent/` with a declared mode. So on a fresh but widened directory it
+    // is that open, not the append's, that narrows it: the append then finds
+    // `.schegent/` already owner-only and has nothing to say.
+    const WIDENED_DIR = 0o755;
+    const auditDir = path.join(tmpRoot, '.schegent');
+    await fs.mkdir(auditDir);
+    await fs.chmod(auditDir, WIDENED_DIR);
+    const logger = new SanitizedLogger();
+    const warn = vi.spyOn(logger, 'warn');
+
+    await new AuditLogWriter({ workspaceRoot: tmpRoot }, logger).append(entry(1));
+
+    expect(await modeOf(auditDir)).toBe(0o700);
+    expect(
+      warn.mock.calls.map(([message]) => String(message)).filter((message) => message.startsWith('audit log:'))
+    ).toEqual([
+      'audit log: an evidence directory granted access beyond its owner (mode 755); narrowed to owner-only'
+    ]);
+  });
 });

@@ -642,6 +642,37 @@ describe('CliTransportSink — owner-only evidence (feature 217)', () => {
     );
   });
 
+  posixOnly('lists the generations again at the next open when a listing failed (FR-004)', async () => {
+    const line = 'j'.repeat(40);
+    await fs.mkdir(directory(), { mode: OWNER_ONLY_DIR });
+    await leaveWidened(`${livePath()}.1`, 'older\n');
+    let listingFails = true;
+    const sink = track(
+      new CliTransportSink({
+        settings: countingAccessor({ maxBytes: recordBytes(line), maxGenerations: 2 }),
+        sanitize: (text) => text,
+        logger,
+        now: () => new Date('2026-05-10T12:00:00.000Z'),
+        readdir: async (target) => {
+          if (listingFails) throw Object.assign(new Error('busy'), { code: 'EMFILE' });
+          return fs.readdir(target);
+        }
+      })
+    );
+
+    record(sink, line);
+    await sink.flushPendingWrites();
+    expect(await modeOf(`${livePath()}.1`), 'not listed, so not reached').toBe(WIDENED_FILE);
+
+    // The append handle is held, so the next open is the successor a rotation
+    // leaves, and the rotation shifts the widened generation to `.2` first.
+    listingFails = false;
+    record(sink, line);
+    await sink.flushPendingWrites();
+    expect(await fs.readFile(`${livePath()}.2`, 'utf8')).toBe('older\n');
+    expect(await modeOf(`${livePath()}.2`)).toBe(OWNER_ONLY_FILE);
+  });
+
   posixOnly('says what it narrowed, once, without naming the path', async () => {
     await fs.mkdir(directory());
     await fs.chmod(directory(), WIDENED_DIR);

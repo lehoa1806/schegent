@@ -1,16 +1,32 @@
 // Feature 217 (FR-008, SC-002, SC-003) — every path the product creates for
 // itself declares its mode, and exactly one routine narrows a path that exists.
 //
-// FR-008 has two halves. The first is the type split in `src/lib/safe-open.ts`:
-// a writing open that omits `fileMode`, or a directory-creating one that omits
+// FR-008 has two halves. The first is the type split in `src/lib/safe-open.ts`: a
+// writing open that omits `fileMode`, or a directory-creating one that omits
 // `dirMode`, no longer compiles. That is the half the checker can provide, and it
-// covers only code that calls the helper. A sink that never calls it is invisible
-// to the type system — `fsp.open(p, 'a')` typechecks with no mode at all — and
-// that is how the CLI transport log and the runtime log came to be written 0o644
+// covers only code that calls the helper, and there only options whose keys the
+// checker knows: a cast past the type compiles (`{ flags: 'a' } as SafeOpenOptions`),
+// and so does a computed key whose type is wider than one literal
+// (`{ flags: 'r', [key]: 'w' }`), and so does a setter with no getter
+// (`set fileMode(_: number) {}`), which the checker types as what it takes and which
+// reads as `undefined`, each able to leave a mode out. The helper refuses such a mode
+// when it runs, before it creates anything, which turns the leak into an error in the
+// field; this gate fails it before it ships. A sink that never calls the helper is
+// invisible to the type system — `fsp.open(p, 'a')` typechecks with no mode at all —
+// and that is how the CLI transport log and the runtime log came to be written 0o644
 // under a 022 umask, readable by every local account
 // (specs/217-evidence-posture-and-bounds/measurements.md). This gate is the second
-// half: it finds every place `src/` creates a path without the helper, and fails
-// unless that place is the helper itself or carries a stated reason.
+// half: within the reach set out below, it finds each place `src/` creates a path
+// through `node:fs` or VS Code's `workspace.fs` without the helper, and fails unless
+// that place is the helper itself or carries a stated reason. It reads each open
+// through the helper too, and fails one unless its options are a bare literal it can
+// read whole, declaring each mode the open needs: a `fileMode` unless its flags only
+// read, and a `dirMode` whenever its `createDirs` may be true, whatever its flags.
+// Options built elsewhere fail, as do a literal under a cast and one with a spread, a
+// key it cannot spell, a key spelled twice, a `__proto__` key, and a key given a
+// setter or a method where a value belongs. It reads the helper's name wherever the
+// source spells it, and fails each use but a call that spells it (bare or after a
+// dot), an import or export under that name, and a type (`typeof openWithinRoot`).
 //
 // The subject set is the scan. Nothing here lists which modules are sinks: every
 // `.ts` file under `src/` is parsed by TypeScript, and each file's own imports say
@@ -27,15 +43,43 @@
 // counts. A namespace handed on whole is followed when the hand-off types it as an
 // interface declared in the same file (`filesystem: ContainmentFs = nodeFs`): such a
 // port reaches only the members it declares, and each member counts as a reference.
-// Any other name the scan cannot follow — an untyped hand-off, a port declared in
-// another module or extending one, a `require`, a dynamic `import()` — fails rather
-// than passing unread. The scan reads syntax, not types, so a hand-off it follows is
-// bounded by what the interface declares; a cast past the interface is outside what
-// any syntactic gate can see, and the reviewer is the control for that. Two further
-// reaches are not `node:fs` at all: VS Code's `workspace.fs` creates files and
-// takes no mode, and a `chmod` on any receiver is a second narrowing mechanism,
-// which FR-007 and SC-003 forbid outside `src/lib/narrow-mode.ts`
-// (contracts/narrow-mode.md, invariant 4).
+// Any other name the scan reads but cannot follow fails rather than passing unread:
+// an untyped hand-off, a port declared in another module or extending one, a
+// namespace indexed in brackets, an import alias (`import later = fs.promises`), a
+// `require` or a dynamic `import()` of `node:fs`, of `vscode` or of a module named
+// at run time, `require` used any way but a direct call or `require.resolve`, and
+// an `export … from` or an `export import … = require(…)` that hands the module to a
+// file whose own imports never name it.
+//
+// Two further reaches are not `node:fs` at all. VS Code's `workspace.fs` creates
+// files and takes no mode, and its members are read after the dotted chain that
+// names it: `workspace.fs` on the workspace an import from `vscode` binds, under any
+// name the import gives it (`ws.fs`) or through the module (`vscode.workspace.fs`),
+// and on any other value spelled `workspace`, a local, a parameter or a property
+// (`deps.workspace.fs`). The bound workspace, any workspace's `fs`, and the module
+// that carries them fail as a namespace does when read any way but a dotted member:
+// handed on whole, destructured, indexed in brackets, or wrapped (in parentheses,
+// `as`, `satisfies`, `!` or `<T>`). A `chmod`, `lchmod` or `fchmod`, whether
+// synchronous or not, on any receiver is a second narrowing mechanism, which FR-007
+// and SC-003 forbid outside `src/lib/narrow-mode.ts` (contracts/narrow-mode.md,
+// invariant 4). Each is read in every member syntax the source spells: after a dot,
+// in brackets, and as a key a declaration or assignment destructures. A name in
+// brackets or a computed key is read when it is a literal string, quoted or a
+// template with no substitution, bare or wrapped.
+//
+// The scan reads syntax, not types, so a hand-off it follows is bounded by what the
+// interface declares, and what lies past the forms above is outside it. The reviewer
+// is the control for each: a cast past a port's interface; a `chmod` or a helper
+// whose name the source does not spell, as a key any other expression computes or
+// reflection over its receiver (`Reflect.get`, `Object.entries`); a `workspace` the
+// import does not bind, reached other than by that chain (under another name,
+// wrapped, in brackets or destructured), since only the spelled chain marks it as
+// VS Code's; a module loaded any other way (`module.require`, a function
+// `createRequire` returns, `process.getBuiltinModule`, code evaluated from a
+// string); a file VS Code writes other than through `workspace.fs` (a
+// `WorkspaceEdit` applied by `workspace.applyEdit`, `workspace.save` or `saveAs`, a
+// document's own `save()`); and a path or mode that a process the host spawns
+// creates or changes.
 //
 // Hard rule 67: the gate searches call expressions and field NAMES — `fileMode`,
 // `dirMode`, a `mode` property — and never a mode value or a path string. A gate
@@ -61,6 +105,9 @@ const HELPER_FILE = 'src/lib/safe-open.ts';
 const NARROWING_FILE = 'src/lib/narrow-mode.ts';
 
 const NODE_FS_MODULES = new Set(['fs', 'node:fs', 'fs/promises', 'node:fs/promises']);
+
+/** VS Code's API, whose `workspace.fs` creates files and takes no mode. */
+const VSCODE_MODULES = new Set(['vscode']);
 
 /**
  * `node:fs` entries that create a path or open one for writing: the subjects.
@@ -115,13 +162,19 @@ const HELPER_OPENS = new Set(['openWithinRoot', 'openWithinRootByPath']);
 /** The helper's directory creators. Each takes a required `dirMode` third. */
 const HELPER_WALKS = new Set(['ensureDirWithinRoot', 'ensureAnchorWithinRoot']);
 
+const isHelperName = (name: string): boolean => HELPER_OPENS.has(name) || HELPER_WALKS.has(name);
+
 /** The fields a mode is declared through, by name (rule 67). */
 const DECLARED_FIELDS = new Set(['fileMode', 'dirMode']);
+
+/** A mode a helper call must declare. */
+type Need = 'fileMode' | 'dirMode';
 
 /**
  * - `writes`: creates a path, or opens one for writing.
  * - `changes-mode`: a `chmod`.
- * - `unresolved`: reaches `node:fs` through a name the scan cannot follow.
+ * - `unresolved`: reaches `node:fs` or VS Code's `workspace`, or may, through a name the
+ *   scan cannot follow.
  * - `other`: reaches the filesystem and does neither; counted, never judged.
  */
 type Kind = 'writes' | 'changes-mode' | 'unresolved' | 'other';
@@ -141,8 +194,14 @@ interface Occurrence {
    * the call has nowhere the scan can read one.
    */
   readonly declared: readonly string[] | null;
-  /** A helper open that creates directories, and so must declare `dirMode` as well. */
-  readonly createsDirs: boolean;
+  /**
+   * The modes a helper call must declare. A walk needs `dirMode`. An open needs
+   * `fileMode` unless its flags only read, and `dirMode` when it spells a `createDirs`
+   * other than the bare `false`, whatever its flags, since the walk creates
+   * directories for a read too. Options the scan cannot read need both. Empty for
+   * every other reach.
+   */
+  readonly needs: readonly Need[];
 }
 
 type Shape = Omit<Occurrence, 'file' | 'line'>;
@@ -266,15 +325,15 @@ const DISPOSITIONS: readonly Disposition[] = [
 // The scan
 // ---------------------------------------------------------------------------
 
-interface FsBindings {
-  /** Local names bound to a whole `node:fs` module, or to its `promises` object. */
+interface ModuleBindings {
+  /** Local names bound to a whole module, or to `node:fs`'s `promises` object. */
   readonly namespaces: ReadonlySet<string>;
   /** Local names bound to one entry, mapped to the entry's own name. */
   readonly entries: ReadonlyMap<string, string>;
 }
 
-/** Which names in this file reach `node:fs`, read from its imports. Types reach nothing. */
-function fsBindings(source: ts.SourceFile): FsBindings {
+/** Which names in this file reach one of `modules`, read from its imports. Types reach nothing. */
+function importBindings(source: ts.SourceFile, modules: ReadonlySet<string>): ModuleBindings {
   const namespaces = new Set<string>();
   const entries = new Map<string, string>();
   for (const statement of source.statements) {
@@ -284,7 +343,7 @@ function fsBindings(source: ts.SourceFile): FsBindings {
         !statement.isTypeOnly &&
         ts.isExternalModuleReference(reference) &&
         ts.isStringLiteral(reference.expression) &&
-        NODE_FS_MODULES.has(reference.expression.text)
+        modules.has(reference.expression.text)
       ) {
         namespaces.add(statement.name.text);
       }
@@ -292,7 +351,7 @@ function fsBindings(source: ts.SourceFile): FsBindings {
     }
     if (!ts.isImportDeclaration(statement)) continue;
     const specifier = statement.moduleSpecifier;
-    if (!ts.isStringLiteral(specifier) || !NODE_FS_MODULES.has(specifier.text)) continue;
+    if (!ts.isStringLiteral(specifier) || !modules.has(specifier.text)) continue;
     const clause = statement.importClause;
     if (clause === undefined || clause.isTypeOnly) continue;
     if (clause.name !== undefined) namespaces.add(clause.name.text);
@@ -312,18 +371,27 @@ function fsBindings(source: ts.SourceFile): FsBindings {
   return { namespaces, entries };
 }
 
+/** Whether this qualified name is, or begins, the module reference of an import alias. */
+function aliasesAnImport(name: ts.QualifiedName): boolean {
+  let outer: ts.Node = name;
+  while (ts.isQualifiedName(outer.parent)) outer = outer.parent;
+  const holder = outer.parent;
+  return ts.isImportEqualsDeclaration(holder) && holder.moduleReference === outer;
+}
+
 /**
  * Whether this identifier evaluates its binding. A declaration, a property name, or
- * a type position names something without reaching it.
+ * a type position names something without reaching it. An import alias evaluates the
+ * name it begins with (`import later = fs.promises`), so that name is a reference.
  */
 function isValueReference(id: ts.Identifier): boolean {
   const parent = id.parent;
+  if (ts.isImportEqualsDeclaration(parent)) return parent.moduleReference === id;
+  if (ts.isQualifiedName(parent)) return parent.left === id && aliasesAnImport(parent);
   if (
     ts.isImportClause(parent) ||
     ts.isNamespaceImport(parent) ||
     ts.isImportSpecifier(parent) ||
-    ts.isImportEqualsDeclaration(parent) ||
-    ts.isQualifiedName(parent) ||
     ts.isTypeQueryNode(parent) ||
     ts.isTypeReferenceNode(parent)
   ) {
@@ -356,20 +424,52 @@ function callOf(site: ts.Expression): ts.CallExpression | null {
   return ts.isCallExpression(parent) && parent.expression === site ? parent : null;
 }
 
-function propertyNamed(object: ts.ObjectLiteralExpression, name: string): ts.Expression | null {
-  for (const property of object.properties) {
-    if (ts.isShorthandPropertyAssignment(property) && property.name.text === name) {
-      return property.name;
-    }
-    if (
-      ts.isPropertyAssignment(property) &&
-      (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)) &&
-      property.name.text === name
-    ) {
-      return property.initializer;
-    }
-  }
-  return null;
+/**
+ * What an options literal gives a property under any key the source spells (`flags`,
+ * `'flags'`, `['flags']`): its value, or for an accessor or a method the declaration
+ * itself, whose value this scan does not read. Of a key spelled twice it gives the
+ * first, and no verdict turns on that: a helper's options that spell one are
+ * unreadable, and a raw call's `mode` counts only by being there.
+ */
+function propertyNamed(object: ts.ObjectLiteralExpression, name: string): ts.Node | null {
+  const property = object.properties.find(
+    (candidate) => candidate.name !== undefined && spelledKey(candidate.name) === name
+  );
+  if (property === undefined) return null;
+  if (ts.isPropertyAssignment(property)) return property.initializer;
+  return ts.isShorthandPropertyAssignment(property) ? property.name : property;
+}
+
+/** The key that, bare or quoted, sets an object literal's prototype. */
+const PROTOTYPE_SETTER_KEY = '__proto__';
+
+/**
+ * Whether this scan can tell what each property of an options literal sets: every key
+ * spelled, none twice, none `__proto__`, and each given a value or a getter. A spread,
+ * a key it cannot spell (`[key]`) or a second spelling can each set an option out of
+ * its sight. JavaScript keeps the last of two spellings, and the second compiles
+ * behind a cast that widens it (`['fileMode' as string]: undefined`), past the checker
+ * and past a scan that reads a mode's name and never its value. A `__proto__` key,
+ * bare or quoted, sets the literal's prototype, and the helper reads each option the
+ * literal leaves out through it. The checker rejects the key, and a `@ts-expect-error`
+ * compiles past that. A computed one sets no prototype and fails all the same. A
+ * setter with no getter spells its key and gives it no value: the checker types it as
+ * what the setter takes, so `set fileMode(_: number) {}` satisfies a required mode,
+ * and the helper reads `undefined`. A method's value is a function, never a mode. A
+ * getter's value is what it returns, which this scan does not read, as it reads no
+ * other value.
+ */
+function readableOptions(object: ts.ObjectLiteralExpression): boolean {
+  const keys = object.properties.map((property) =>
+    property.name === undefined ? null : spelledKey(property.name)
+  );
+  return (
+    !object.properties.some(
+      (property) => ts.isSetAccessorDeclaration(property) || ts.isMethodDeclaration(property)
+    ) &&
+    keys.every((key) => key !== null && key !== PROTOTYPE_SETTER_KEY) &&
+    new Set(keys).size === keys.length
+  );
 }
 
 /** Every identifier written in an expression: `options.fileMode` gives both names. */
@@ -384,7 +484,7 @@ function namesIn(node: ts.Node): string[] {
 }
 
 /** A flag that opens for writing. One the scan cannot read is assumed to. */
-function writesFlag(flag: ts.Expression): boolean {
+function writesFlag(flag: ts.Node): boolean {
   return !ts.isStringLiteralLike(flag) || /[wa+]/.test(flag.text);
 }
 
@@ -393,7 +493,7 @@ function writesFlag(flag: ts.Expression): boolean {
  * property of the options, or `mkdir`'s positional mode. `null` when there is none
  * the scan can read; an options object built elsewhere declares nothing visible.
  */
-function modeExpression(entry: string, args: ts.NodeArray<ts.Expression>): ts.Expression | null {
+function modeExpression(entry: string, args: ts.NodeArray<ts.Expression>): ts.Node | null {
   const bare = entry.replace(/Sync$/, '');
   // `.at()`, not brackets, wherever the read is guarded: it is the one form the
   // linter and the strictness ratchet both accept
@@ -472,7 +572,7 @@ function portMembers(escape: ts.Expression, source: ts.SourceFile): readonly str
 function rawShape(site: ts.Expression, entry: string): Shape {
   const call = callOf(site);
   const form = call === null ? 'reference' : 'call';
-  const unjudged = { entry, form, declared: null, createsDirs: false } as const;
+  const unjudged = { entry, form, declared: null, needs: [] } as const;
   if (entryKind(entry) !== 'writes') return { ...unjudged, kind: entryKind(entry) };
   if (call === null) return { ...unjudged, kind: 'writes' };
   const flag = call.arguments.at(1);
@@ -494,26 +594,27 @@ function helperShape(entry: string, call: ts.CallExpression): Shape {
       kind: 'writes',
       form: 'call',
       declared: argument === undefined ? null : namesIn(argument),
-      createsDirs: true
+      needs: ['dirMode']
     };
   }
   const readable =
-    argument !== undefined &&
-    ts.isObjectLiteralExpression(argument) &&
-    !argument.properties.some(ts.isSpreadAssignment);
-  if (!readable) return { entry, kind: 'writes', form: 'call', declared: null, createsDirs: false };
+    argument !== undefined && ts.isObjectLiteralExpression(argument) && readableOptions(argument);
+  if (!readable) return { entry, kind: 'writes', form: 'call', declared: null, needs: ['fileMode', 'dirMode'] };
   const flags = propertyNamed(argument, 'flags');
   const createDirs = propertyNamed(argument, 'createDirs');
+  const needs: Need[] = [];
+  if (flags === null || writesFlag(flags)) needs.push('fileMode');
+  if (createDirs !== null && createDirs.kind !== ts.SyntaxKind.FalseKeyword) needs.push('dirMode');
   return {
     entry,
-    kind: flags !== null && !writesFlag(flags) ? 'other' : 'writes',
+    // A read that creates no directory creates nothing.
+    kind: needs.length === 0 ? 'other' : 'writes',
     form: 'call',
-    declared: argument.properties.flatMap((property) =>
-      property.name !== undefined && (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name))
-        ? [property.name.text]
-        : []
-    ),
-    createsDirs: createDirs !== null && createDirs.kind !== ts.SyntaxKind.FalseKeyword
+    declared: argument.properties.flatMap((property) => {
+      const key = property.name === undefined ? null : spelledKey(property.name);
+      return key === null ? [] : [key];
+    }),
+    needs
   };
 }
 
@@ -522,33 +623,174 @@ function calleeName(callee: ts.Expression): string | null {
   return ts.isPropertyAccessExpression(callee) ? callee.name.text : null;
 }
 
-function isWorkspace(expression: ts.Expression): boolean {
-  return ts.isIdentifier(expression)
-    ? expression.text === 'workspace'
-    : ts.isPropertyAccessExpression(expression) && expression.name.text === 'workspace';
+/**
+ * Whether this expression is VS Code's `workspace`. Spelled, so a port typed as the
+ * workspace (`deps.workspace.fs`) is read too, and resolved, so is the name an import
+ * from `vscode` gives it (`{ workspace as ws }`).
+ */
+function isWorkspace(expression: ts.Expression, imported: ReadonlySet<string>): boolean {
+  if (ts.isIdentifier(expression)) return expression.text === 'workspace' || imported.has(expression.text);
+  return ts.isPropertyAccessExpression(expression) && expression.name.text === 'workspace';
 }
 
-function isWorkspaceFs(expression: ts.Expression): boolean {
+function isWorkspaceFs(expression: ts.Expression, imported: ReadonlySet<string>): boolean {
   return (
     ts.isPropertyAccessExpression(expression) &&
     expression.name.text === 'fs' &&
-    isWorkspace(expression.expression)
+    isWorkspace(expression.expression, imported)
   );
 }
 
-/** A `require('fs')` or `import('node:fs')`: a binding this scan cannot follow. */
-function loadsFsDynamically(call: ts.CallExpression): boolean {
+/**
+ * The text of a string literal, bare or under what leaves its value as it is:
+ * parentheses, `as`, `satisfies`, `!` and `<T>`. Null for a key any other expression
+ * computes.
+ */
+function literalKey(key: ts.Expression): string | null {
+  let inner = key;
+  while (
+    ts.isParenthesizedExpression(inner) ||
+    ts.isAsExpression(inner) ||
+    ts.isSatisfiesExpression(inner) ||
+    ts.isNonNullExpression(inner) ||
+    ts.isTypeAssertionExpression(inner)
+  ) {
+    inner = inner.expression;
+  }
+  return ts.isStringLiteralLike(inner) ? inner.text : null;
+}
+
+/** The key a property name spells: `chmod`, `'chmod'`, `['chmod']`, `[('chmod')]`. */
+function spelledKey(name: ts.PropertyName | ts.BindingName): string | null {
+  if (ts.isComputedPropertyName(name)) return literalKey(name.expression);
+  return ts.isIdentifier(name) || ts.isStringLiteralLike(name) ? name.text : null;
+}
+
+/**
+ * Whether this literal is a destructuring target: what `=`, `for … of` or `for … in`
+ * assigns to, reached through any nesting of array and object patterns.
+ */
+function isAssigned(literal: ts.Node): boolean {
+  let node = literal;
+  for (;;) {
+    const parent = node.parent;
+    if (ts.isArrayLiteralExpression(parent)) {
+      node = parent;
+    } else if (ts.isPropertyAssignment(parent) && parent.initializer === node) {
+      node = parent.parent;
+    } else if (ts.isBinaryExpression(parent)) {
+      return parent.left === node && parent.operatorToken.kind === ts.SyntaxKind.EqualsToken;
+    } else {
+      return (ts.isForOfStatement(parent) || ts.isForInStatement(parent)) && parent.initializer === node;
+    }
+  }
+}
+
+/**
+ * The member a destructuring takes, declared or assigned, when the source spells its
+ * key: `{ chmod }`, `{ 'chmod': c }`, `{ ['chmod']: c }`. A rest element takes the
+ * whole receiver.
+ */
+function destructuredKey(node: ts.Node): string | null {
+  if (ts.isBindingElement(node)) {
+    if (!ts.isObjectBindingPattern(node.parent) || node.dotDotDotToken !== undefined) return null;
+    return spelledKey(node.propertyName ?? node.name);
+  }
+  if (ts.isShorthandPropertyAssignment(node) || ts.isPropertyAssignment(node)) {
+    return isAssigned(node.parent) ? spelledKey(node.name) : null;
+  }
+  return null;
+}
+
+/**
+ * The helper this node reaches other than as the callee of a call that spells its
+ * name, bare or after a dot, or as an import or export specifier under that name: the
+ * helper held, wrapped, applied (`openWithinRoot.call`), named in brackets, taken by a
+ * destructuring, or imported, re-exported or aliased under another name. A call
+ * through any of these is passed what this scan never reads.
+ */
+function helperReference(node: ts.Node): string | null {
+  if (ts.isIdentifier(node)) {
+    if (!isHelperName(node.text)) return null;
+    const parent = node.parent;
+    // A step of an import alias's reference, `import open = safe.openWithinRoot`.
+    if (ts.isQualifiedName(parent)) return aliasesAnImport(parent) ? node.text : null;
+    // A specifier is read whole, below.
+    if (ts.isExportSpecifier(parent)) return null;
+    return isValueReference(node) && callOf(node) === null ? node.text : null;
+  }
+  if (ts.isPropertyAccessExpression(node)) {
+    return isHelperName(node.name.text) && callOf(node) === null ? node.name.text : null;
+  }
+  if (ts.isElementAccessExpression(node)) {
+    const named = literalKey(node.argumentExpression);
+    return named !== null && isHelperName(named) ? named : null;
+  }
+  if (ts.isImportSpecifier(node) || ts.isExportSpecifier(node)) {
+    const imported = (node.propertyName ?? node.name).text;
+    return isHelperName(imported) && node.name.text !== imported ? imported : null;
+  }
+  if (ts.isBindingElement(node) || ts.isPropertyAssignment(node)) {
+    const key = destructuredKey(node);
+    return key !== null && isHelperName(key) ? key : null;
+  }
+  return null;
+}
+
+/**
+ * An `export … from` a module this scan follows, or an `export import x = require(…)`
+ * of one. Either hands the module's entries to whoever imports this file, and that
+ * file's own imports never name the module.
+ */
+function reExportsFollowedModule(statement: ts.ExportDeclaration | ts.ImportEqualsDeclaration): boolean {
+  if (ts.isImportEqualsDeclaration(statement)) {
+    const reference = statement.moduleReference;
+    return (
+      !statement.isTypeOnly &&
+      statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) === true &&
+      ts.isExternalModuleReference(reference) &&
+      ts.isStringLiteral(reference.expression) &&
+      (NODE_FS_MODULES.has(reference.expression.text) || VSCODE_MODULES.has(reference.expression.text))
+    );
+  }
+  const specifier = statement.moduleSpecifier;
+  if (statement.isTypeOnly || specifier === undefined || !ts.isStringLiteral(specifier)) return false;
+  if (!NODE_FS_MODULES.has(specifier.text) && !VSCODE_MODULES.has(specifier.text)) return false;
+  const clause = statement.exportClause;
+  return clause === undefined || !ts.isNamedExports(clause) || clause.elements.some((element) => !element.isTypeOnly);
+}
+
+/**
+ * A `require('fs')`, an `import('node:fs')`, either of `vscode`, or either of a module
+ * named at run time: a binding this scan cannot follow, since only a static import says
+ * which local names carry the module.
+ */
+function loadsFollowedModuleDynamically(call: ts.CallExpression): boolean {
   const loader =
     call.expression.kind === ts.SyntaxKind.ImportKeyword ||
     (ts.isIdentifier(call.expression) && call.expression.text === 'require');
   const target = call.arguments.at(0);
-  return loader && target !== undefined && ts.isStringLiteralLike(target) && NODE_FS_MODULES.has(target.text);
+  if (!loader || target === undefined) return false;
+  if (!ts.isStringLiteralLike(target)) return true;
+  return NODE_FS_MODULES.has(target.text) || VSCODE_MODULES.has(target.text);
 }
 
 /** Every filesystem reach in one file's text. Pure, so a synthetic source can be judged. */
 function scanSource(file: string, text: string): Occurrence[] {
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TS);
-  const bindings = fsBindings(source);
+  const bindings = importBindings(source, NODE_FS_MODULES);
+  const editor = importBindings(source, VSCODE_MODULES);
+  const workspaceNames = new Set(
+    [...editor.entries].flatMap(([local, imported]) => (imported === 'workspace' ? [local] : []))
+  );
+  // VS Code's `workspace` by binding alone, so a local that only shares its name is not it.
+  const isBoundWorkspace = (expression: ts.Expression): boolean =>
+    ts.isIdentifier(expression)
+      ? workspaceNames.has(expression.text)
+      : ts.isPropertyAccessExpression(expression) &&
+        expression.name.text === 'workspace' &&
+        ts.isIdentifier(expression.expression) &&
+        editor.namespaces.has(expression.expression.text);
   const found: Occurrence[] = [];
   const seen = new Set<ts.Node>();
   const lineOf = (node: ts.Node): number =>
@@ -559,7 +801,7 @@ function scanSource(file: string, text: string): Occurrence[] {
     found.push({ file, line: lineOf(site), ...shape });
   };
   const unresolved = (site: ts.Node, entry: string): void => {
-    record(site, { entry, kind: 'unresolved', form: 'reference', declared: null, createsDirs: false });
+    record(site, { entry, kind: 'unresolved', form: 'reference', declared: null, needs: [] });
   };
 
   const reachThrough = (id: ts.Identifier): void => {
@@ -592,7 +834,7 @@ function scanSource(file: string, text: string): Occurrence[] {
           kind: entryKind(portEntry),
           form: 'reference',
           declared: null,
-          createsDirs: false
+          needs: []
         });
       }
       return;
@@ -602,17 +844,35 @@ function scanSource(file: string, text: string): Occurrence[] {
   };
 
   const visit = (node: ts.Node): void => {
+    if ((ts.isExportDeclaration(node) || ts.isImportEqualsDeclaration(node)) && reExportsFollowedModule(node)) {
+      unresolved(node, 'a re-export');
+    }
+    // A member named in brackets is the member it names: `handle['chmod']`.
+    if (ts.isElementAccessExpression(node)) {
+      const named = literalKey(node.argumentExpression);
+      if (named !== null && MODE_ENTRIES.has(named)) record(node, rawShape(node, named));
+    }
+    // So is the key a destructuring takes, `const { chmod } = handle`, called later.
+    const key = destructuredKey(node);
+    if (key !== null && MODE_ENTRIES.has(key)) {
+      record(node, { entry: key, kind: 'changes-mode', form: 'reference', declared: null, needs: [] });
+    }
     if (ts.isCallExpression(node)) {
       const callee = calleeName(node.expression);
       if (callee !== null && (HELPER_OPENS.has(callee) || HELPER_WALKS.has(callee))) {
         record(node.expression, helperShape(callee, node));
       }
-      if (loadsFsDynamically(node)) unresolved(node, 'a dynamic load');
+      if (loadsFollowedModuleDynamically(node)) unresolved(node, 'a dynamic load');
+    }
+    // A helper reached any other way hands on a call whose options this scan never reads.
+    const helper = helperReference(node);
+    if (helper !== null) {
+      record(node, { entry: helper, kind: 'writes', form: 'reference', declared: null, needs: [] });
     }
     if (ts.isPropertyAccessExpression(node)) {
       const member = node.name.text;
       if (MODE_ENTRIES.has(member)) record(node, rawShape(node, member));
-      if (isWorkspaceFs(node.expression)) {
+      if (isWorkspaceFs(node.expression, workspaceNames)) {
         const entry = `workspace.fs.${member}`;
         const call = callOf(node);
         record(node, {
@@ -620,13 +880,27 @@ function scanSource(file: string, text: string): Occurrence[] {
           kind: WORKSPACE_FS_WRITING.has(member) ? 'writes' : 'other',
           form: call === null ? 'reference' : 'call',
           declared: null,
-          createsDirs: false
+          needs: []
         });
-      } else if (member === 'fs' && isWorkspace(node.expression) && memberOf(node) === null) {
+      } else if (member === 'fs' && isWorkspace(node.expression, workspaceNames) && memberOf(node) === null) {
         unresolved(node, 'the workspace.fs object');
+      } else if (isBoundWorkspace(node) && memberOf(node) === null) {
+        unresolved(node, 'the workspace object');
       }
     }
-    if (ts.isIdentifier(node) && isValueReference(node)) reachThrough(node);
+    if (ts.isIdentifier(node) && isValueReference(node)) {
+      // `require` asserted, cast, aliased or applied loads a module through a call this
+      // scan does not read. A direct call is read above; `require.resolve` loads nothing.
+      if (node.text === 'require' && callOf(node) === null && memberOf(node) !== 'resolve') {
+        unresolved(node, 'the require function');
+      }
+      if (isBoundWorkspace(node) && memberOf(node) === null) unresolved(node, 'the workspace object');
+      // The module carries `workspace` with it, so it fails as a `node:fs` namespace does.
+      if (editor.namespaces.has(node.text) && memberOf(node) === null) {
+        unresolved(node, `the ${node.text} namespace`);
+      }
+      reachThrough(node);
+    }
     ts.forEachChild(node, visit);
   };
   visit(source);
@@ -649,22 +923,29 @@ function fails(failure: string): Judgement {
   return { needsDisposition: false, failure };
 }
 
-function judgeHelperCall({ file, entry, declared, createsDirs }: Occurrence): Judgement {
+function judgeHelperCall({ file, entry, form, declared, needs }: Occurrence): Judgement {
   // The helper forwarding its own options, which its signature already types.
   if (file === HELPER_FILE) return PASSES;
+  if (form === 'reference') {
+    return fails(
+      `${entry} is reached other than as the callee of a call that spells its name, so what ` +
+        'it is passed is never read here; import it under its own name and call it by that ' +
+        'name, bare or after a dot'
+    );
+  }
   if (HELPER_WALKS.has(entry)) {
     return declared === null ? fails(`${entry} creates directories and declares no dirMode`) : PASSES;
   }
   if (declared === null) {
     return fails(
-      `${entry} is passed options this census cannot read; write them inline, so the ` +
-        'modes they declare are visible here'
+      `${entry} is passed options this census cannot read; write them inline, every key ` +
+        'spelled out once as a property or a getter, none spread in and none `__proto__`, ' +
+        'so the modes they declare are visible here'
     );
   }
-  if (!declared.includes('fileMode')) return fails(`${entry} opens for writing and declares no fileMode`);
-  if (createsDirs && !declared.includes('dirMode')) {
-    return fails(`${entry} creates directories and declares no dirMode`);
-  }
+  const missing = needs.find((need) => !declared.includes(need));
+  if (missing === 'fileMode') return fails(`${entry} opens for writing and declares no fileMode`);
+  if (missing === 'dirMode') return fails(`${entry} creates directories and declares no dirMode`);
   return PASSES;
 }
 
@@ -704,8 +985,8 @@ function bypass({ entry, kind }: Occurrence): string {
       );
     case 'unresolved':
       return (
-        `${entry} reaches node:fs through a name this census cannot follow. Import the ` +
-        'entries it uses by name'
+        `${entry} reaches the filesystem through a name this census cannot follow. Call ` +
+        'each entry it uses by a name this file imports'
       );
     default:
       return (
@@ -874,18 +1155,219 @@ describe('the census fires on a site that does not conform (T1804a)', () => {
     ).toEqual(['src/synthetic/no-dir-mode.ts:4 — openWithinRoot creates directories and declares no dirMode']);
   });
 
+  it('fails a directory walk through the helper that is passed no dirMode', () => {
+    // A walk takes its dirMode third, so one passed no third argument declares none.
+    // The type requires it, and each failing line compiles behind the directive above
+    // it. Line 8 passes one, so it does not fail.
+    expect(
+      judgedWith(syntheticPath('walk-modes'), [
+        "import { ensureAnchorWithinRoot, ensureDirWithinRoot } from '../lib/safe-open';",
+        '',
+        'export function makeDirs(root: string) {',
+        '  // @ts-expect-error -- no dirMode, which the type requires',
+        "  void ensureDirWithinRoot(root, ['a']);",
+        '  // @ts-expect-error -- no dirMode, which the type requires',
+        "  void ensureAnchorWithinRoot(root, ['b']);",
+        "  void ensureDirWithinRoot(root, ['c'], 0o700);",
+        '}'
+      ])
+    ).toEqual([
+      'src/synthetic/walk-modes.ts:5 — ensureDirWithinRoot creates directories and declares no dirMode',
+      'src/synthetic/walk-modes.ts:7 — ensureAnchorWithinRoot creates directories and declares no dirMode'
+    ]);
+  });
+
+  it('reads the options under any key they spell, and takes an accessor to create directories', () => {
+    // Line 4's computed keys are the keys they spell, so its fileMode counts and its
+    // createDirs needs a dirMode. A getter's value is not read, so line 5's is taken to
+    // create directories.
+    expect(
+      judgedWith(syntheticPath('spelled-options'), [
+        "import { openWithinRoot } from '../lib/safe-open';",
+        '',
+        'export function openLogs(root: string) {',
+        "  void openWithinRoot(root, ['logs', 'a.log'], { ['flags']: 'a', ['fileMode']: 0o600, ['createDirs']: true });",
+        "  void openWithinRoot(root, ['logs', 'b.log'], { flags: 'a', fileMode: 0o600, get createDirs() { return true; } });",
+        '}'
+      ])
+    ).toEqual([
+      'src/synthetic/spelled-options.ts:4 — openWithinRoot creates directories and declares no dirMode',
+      'src/synthetic/spelled-options.ts:5 — openWithinRoot creates directories and declares no dirMode'
+    ]);
+  });
+
   it('fails a helper open whose options are built where the census cannot read them', () => {
+    // Each line hides an option from the census. Line 4's options are built elsewhere
+    // and line 5 spreads them in. Line 6's key has a type wider than one literal, so
+    // the checker never learns which option it sets, and lines 7 and 8 spell a key a
+    // second time behind a cast that widens it. JavaScript keeps the second, so line 7
+    // opens for writing and line 8 declares no fileMode. Line 9 casts its options past
+    // the type and declares no fileMode either. Every line compiles.
     expect(
       judgedWith(syntheticPath('opaque-options'), [
         "import { openWithinRoot, type SafeOpenOptions } from '../lib/safe-open';",
         '',
-        'export function openLog(root: string, options: SafeOpenOptions) {',
-        "  return openWithinRoot(root, ['x.log'], options);",
+        'export function openLogs(root: string, options: SafeOpenOptions, key: string) {',
+        "  void openWithinRoot(root, ['a.log'], options);",
+        "  void openWithinRoot(root, ['b.log'], { ...options, fileMode: 0o600 });",
+        "  void openWithinRoot(root, ['c.log'], { flags: 'r', [key]: 'w' });",
+        "  void openWithinRoot(root, ['d.log'], { flags: 'r', [('flags' as string)]: 'w' });",
+        "  void openWithinRoot(root, ['e.log'], { flags: 'a', fileMode: 0o600, ['fileMode' as string]: undefined });",
+        "  void openWithinRoot(root, ['f.log'], { flags: 'a' } as SafeOpenOptions);",
         '}'
       ])
-    ).toEqual([
-      expect.stringContaining('src/synthetic/opaque-options.ts:4 — openWithinRoot is passed options this census cannot read')
-    ]);
+    ).toEqual(
+      [4, 5, 6, 7, 8, 9].map((line) =>
+        expect.stringContaining(
+          `src/synthetic/opaque-options.ts:${line} — openWithinRoot is passed options this census cannot read`
+        )
+      )
+    );
+  });
+
+  it('fails a read through the helper that may create directories and declares no dirMode', () => {
+    // A read creates no file, but the walk creates directories whenever createDirs is
+    // set, whatever the flags. The type forbids createDirs on a read, and line 4's cast
+    // compiles past it. Line 5 declares the dirMode and no fileMode, which no read needs,
+    // and line 6 creates nothing, so neither fails. Every line compiles.
+    expect(
+      judgedWith(syntheticPath('read-creates-dirs'), [
+        "import { openWithinRoot } from '../lib/safe-open';",
+        '',
+        'export function readLogs(root: string) {',
+        "  void openWithinRoot(root, ['logs', 'a.log'], { flags: 'r', createDirs: true as never });",
+        "  void openWithinRoot(root, ['logs', 'b.log'], { flags: 'r', createDirs: true as never, dirMode: 0o700 as never });",
+        "  void openWithinRoot(root, ['logs', 'c.log'], { flags: 'r', createDirs: false });",
+        '}'
+      ])
+    ).toEqual(['src/synthetic/read-creates-dirs.ts:4 — openWithinRoot creates directories and declares no dirMode']);
+  });
+
+  it('fails helper options that give the literal a prototype', () => {
+    // A `__proto__` key, bare or quoted, sets the literal's prototype, and the helper
+    // reads each option the literal leaves out through it, so lines 5 and 7 create
+    // directories and declare no dirMode. A computed one sets no prototype and fails
+    // all the same (line 9). The checker rejects each key, and each line compiles
+    // behind the directive above it.
+    expect(
+      judgedWith(syntheticPath('prototype-options'), [
+        "import { openWithinRoot } from '../lib/safe-open';",
+        '',
+        'export function openLogs(root: string, base: { createDirs: true }) {',
+        '  // @ts-expect-error -- a prototype key, which the type rejects',
+        "  void openWithinRoot(root, ['logs', 'a.log'], { __proto__: base, flags: 'a', fileMode: 0o600 });",
+        '  // @ts-expect-error -- a prototype key, which the type rejects',
+        "  void openWithinRoot(root, ['logs', 'b.log'], { '__proto__': base, flags: 'a', fileMode: 0o600 });",
+        '  // @ts-expect-error -- a prototype key, which the type rejects',
+        "  void openWithinRoot(root, ['logs', 'c.log'], { ['__proto__']: base, flags: 'a', fileMode: 0o600 });",
+        '}'
+      ])
+    ).toEqual(
+      [5, 7, 9].map((line) =>
+        expect.stringContaining(
+          `src/synthetic/prototype-options.ts:${line} — openWithinRoot is passed options this census cannot read`
+        )
+      )
+    );
+  });
+
+  it('fails helper options that spell a mode and give it no value', () => {
+    // A setter with no getter is typed as what it takes, so it satisfies a mode the
+    // type requires, and reading it gives `undefined`: line 4 opens for writing with no
+    // fileMode and line 5 creates directories with no dirMode, and each compiles as it
+    // stands. A method's value is a function, never a mode. The checker rejects line
+    // 7, and it compiles behind the directive above it.
+    expect(
+      judgedWith(syntheticPath('valueless-options'), [
+        "import { openWithinRoot } from '../lib/safe-open';",
+        '',
+        'export function openLogs(root: string) {',
+        "  void openWithinRoot(root, ['a.log'], { flags: 'a', set fileMode(_: number) {} });",
+        "  void openWithinRoot(root, ['logs', 'b.log'], { flags: 'a', fileMode: 0o600, createDirs: true, set dirMode(_: number) {} });",
+        '  // @ts-expect-error -- a method, which the type rejects',
+        "  void openWithinRoot(root, ['c.log'], { flags: 'a', fileMode() { return 0o600; } });",
+        '}'
+      ])
+    ).toEqual(
+      [4, 5, 7].map((line) =>
+        expect.stringContaining(
+          `src/synthetic/valueless-options.ts:${line} — openWithinRoot is passed options this census cannot read`
+        )
+      )
+    );
+  });
+
+  it('fails a helper reached other than as the callee of a call that spells its name', () => {
+    // The census reads what a helper is passed at a call that spells the helper's name,
+    // bare or after a dot. Any other way to reach the helper hands on a call it never
+    // reads, so each fails where the source spells the name: an import or a re-export
+    // under another name (lines 2 and 4), an import alias (line 5), a value held (lines
+    // 10 and 17), a key a destructuring takes (line 11), a callee applied or wrapped
+    // (lines 12 to 15), and brackets (line 16). Line 3's re-export keeps the name, line
+    // 7 is a type, and lines 18 and 19 are calls the census reads, so none of them fails.
+    const reached = (line: number, entry: string): string =>
+      `src/synthetic/helper-references.ts:${line} — ${entry} is reached other than as the callee of a call that spells its name`;
+    expect(
+      judgedWith(syntheticPath('helper-references'), [
+        "import * as safe from '../lib/safe-open';",
+        "import { openWithinRoot, openWithinRoot as openSafely } from '../lib/safe-open';",
+        "export { ensureDirWithinRoot } from '../lib/safe-open';",
+        "export { ensureDirWithinRoot as ensureHere } from '../lib/safe-open';",
+        'import openAliased = safe.openWithinRoot;',
+        '',
+        'type Open = typeof openWithinRoot;',
+        '',
+        'export function openLogs(root: string, options: Parameters<Open>[2]) {',
+        '  const held = openWithinRoot;',
+        '  const { openWithinRoot: taken } = safe;',
+        "  void openWithinRoot.call(undefined, root, ['a.log'], options);",
+        "  void (0, openWithinRoot)(root, ['b.log'], options);",
+        "  void (openWithinRoot)(root, ['c.log'], options);",
+        "  void openWithinRoot!(root, ['d.log'], options);",
+        "  void safe['openWithinRoot'](root, ['e.log'], options);",
+        '  const dotted = safe.ensureDirWithinRoot;',
+        "  void openWithinRoot(root, ['f.log'], { flags: 'a', fileMode: 0o600 });",
+        "  void safe.openWithinRoot(root, ['g.log'], { flags: 'a', fileMode: 0o600 });",
+        '  return [held, taken, dotted, openSafely, openAliased];',
+        '}'
+      ])
+    ).toEqual(
+      [
+        reached(2, 'openWithinRoot'),
+        reached(4, 'ensureDirWithinRoot'),
+        ...[5, 10, 11, 12, 13, 14, 15, 16].map((line) => reached(line, 'openWithinRoot')),
+        reached(17, 'ensureDirWithinRoot')
+      ]
+        .sort()
+        .map((prefix) => expect.stringContaining(prefix))
+    );
+  });
+
+  it('fails a helper an assignment takes by destructuring, under any key it spells', () => {
+    // Line 11 above takes one in a declaration, through a binding pattern. An assignment
+    // destructures through an object literal instead, and each line here takes a helper
+    // under a key spelled bare, quoted or computed.
+    const reached = (line: number, entry: string): string =>
+      `src/synthetic/assigned-helpers.ts:${line} — ${entry} is reached other than as the callee of a call that spells its name`;
+    expect(
+      judgedWith(syntheticPath('assigned-helpers'), [
+        "import * as safe from '../lib/safe-open';",
+        '',
+        'export function takeHelpers(): unknown[] {',
+        '  let bare: unknown;',
+        '  let quoted: unknown;',
+        '  let computed: unknown;',
+        '  ({ openWithinRoot: bare } = safe);',
+        "  ({ 'openWithinRootByPath': quoted } = safe);",
+        "  ({ ['ensureAnchorWithinRoot']: computed } = safe);",
+        '  return [bare, quoted, computed];',
+        '}'
+      ])
+    ).toEqual(
+      [reached(7, 'openWithinRoot'), reached(8, 'openWithinRootByPath'), reached(9, 'ensureAnchorWithinRoot')].map(
+        (prefix) => expect.stringContaining(prefix)
+      )
+    );
   });
 
   it('fails a raw open that bypasses the helper and declares no mode, on both counts', () => {
@@ -933,7 +1415,7 @@ describe('the census fires on a site that does not conform (T1804a)', () => {
     expect(
       judgedWith(syntheticPath('escape'), ["import * as fsp from 'node:fs/promises';", '', 'export const port = fsp;'])
     ).toEqual([
-      expect.stringContaining('src/synthetic/escape.ts:3 — the fsp namespace reaches node:fs through a name this census cannot follow')
+      expect.stringContaining('src/synthetic/escape.ts:3 — the fsp namespace reaches the filesystem through a name this census cannot follow')
     ]);
   });
 
@@ -1069,6 +1551,90 @@ describe('the scan resolves each way a file reaches the filesystem', () => {
     ).toEqual([{ line: 2, entry: 'chmod', kind: 'changes-mode', form: 'call', declared: null }]);
   });
 
+  it('sees a chmod named in brackets, and reads no other bracketed member as one', () => {
+    // A literal in parentheses or a type assertion is still the literal. The last two
+    // calls are the controls: a bracketed name is read as the member it names, so a
+    // member outside the chmod family is no reach, wrapped or not.
+    expect(
+      reachesIn([
+        'export async function pin(handle: Record<string, (mode?: number) => Promise<void>>) {',
+        "  await handle['chmod'](0o600);",
+        '  await handle[`fchmod`](0o600);',
+        "  await handle[('lchmod')](0o600);",
+        "  await handle['chmodSync' as const](0o600);",
+        "  await handle['fchmodSync' satisfies string](0o600);",
+        "  await handle['lchmodSync'!](0o600);",
+        "  await handle[<const>('chmod')](0o600);",
+        "  await handle['stat']();",
+        "  await handle[('stat' as const)]();",
+        '}'
+      ])
+    ).toEqual([
+      { line: 2, entry: 'chmod', kind: 'changes-mode', form: 'call', declared: null },
+      { line: 3, entry: 'fchmod', kind: 'changes-mode', form: 'call', declared: null },
+      { line: 4, entry: 'lchmod', kind: 'changes-mode', form: 'call', declared: null },
+      { line: 5, entry: 'chmodSync', kind: 'changes-mode', form: 'call', declared: null },
+      { line: 6, entry: 'fchmodSync', kind: 'changes-mode', form: 'call', declared: null },
+      { line: 7, entry: 'lchmodSync', kind: 'changes-mode', form: 'call', declared: null },
+      { line: 8, entry: 'chmod', kind: 'changes-mode', form: 'call', declared: null }
+    ]);
+  });
+
+  it('sees a chmod taken by destructuring, and reads no other destructured member as one', () => {
+    // The key a binding takes is the member it names, however the key is spelled, in a
+    // declaration or a parameter alike. Two controls on line 6: `stat` is no reach, and a
+    // rest element named like an entry takes the whole receiver, not that member.
+    expect(
+      reachesIn([
+        'export function pin(handle: Record<string, (mode?: number) => Promise<void>>) {',
+        '  const { chmod } = handle;',
+        '  const { fchmod: narrow } = handle;',
+        "  const { 'lchmod': other, ['chmodSync']: settled } = handle;",
+        "  const { [('fchmod')]: wrapped, ['lchmodSync' as const]: asserted } = handle;",
+        '  const { stat, ...lchmodSync } = handle;',
+        '}',
+        'export function apply({ fchmodSync }: Record<string, (mode?: number) => void>) {}'
+      ])
+    ).toEqual([
+      { line: 2, entry: 'chmod', kind: 'changes-mode', form: 'reference', declared: null },
+      { line: 3, entry: 'fchmod', kind: 'changes-mode', form: 'reference', declared: null },
+      { line: 4, entry: 'lchmod', kind: 'changes-mode', form: 'reference', declared: null },
+      { line: 4, entry: 'chmodSync', kind: 'changes-mode', form: 'reference', declared: null },
+      { line: 5, entry: 'fchmod', kind: 'changes-mode', form: 'reference', declared: null },
+      { line: 5, entry: 'lchmodSync', kind: 'changes-mode', form: 'reference', declared: null },
+      { line: 8, entry: 'fchmodSync', kind: 'changes-mode', form: 'reference', declared: null }
+    ]);
+  });
+
+  it('sees a chmod taken by a destructuring assignment, and reads no literal that builds a port', () => {
+    // A literal destructures only as what `=`, `for … of` or `for … in` assigns to,
+    // however deeply nested. Lines 8 to 11 are the controls: a literal that builds a
+    // value, on the right of `=`, beside another operator, iterated or returned, takes
+    // no member, so a `chmod` key in it is no reach.
+    expect(
+      reachesIn([
+        'export function later(handle: Record<string, (mode?: number) => Promise<void>>, list: (typeof handle)[]) {',
+        '  let chmod: unknown;',
+        '  let other: unknown;',
+        '  ({ chmod, lchmodSync: other } = handle);',
+        "  [{ 'fchmod': other }] = list;",
+        '  ({ inner: { fchmodSync: other } } = { inner: handle });',
+        '  for ({ chmodSync: other } of list);',
+        '  other = { fchmod: handle.stat };',
+        '  other = { lchmod: handle.stat } || handle;',
+        '  for (const entry of [{ chmod: other }]);',
+        '  return { chmod: other };',
+        '}'
+      ])
+    ).toEqual([
+      { line: 4, entry: 'chmod', kind: 'changes-mode', form: 'reference', declared: null },
+      { line: 4, entry: 'lchmodSync', kind: 'changes-mode', form: 'reference', declared: null },
+      { line: 5, entry: 'fchmod', kind: 'changes-mode', form: 'reference', declared: null },
+      { line: 6, entry: 'fchmodSync', kind: 'changes-mode', form: 'reference', declared: null },
+      { line: 7, entry: 'chmodSync', kind: 'changes-mode', form: 'reference', declared: null }
+    ]);
+  });
+
   it("reads VS Code's file API, and fails closed on the API handed on whole", () => {
     expect(
       reachesIn([
@@ -1086,12 +1652,135 @@ describe('the scan resolves each way a file reaches the filesystem', () => {
     ]);
   });
 
+  it("follows VS Code's workspace under the name its import gives it, and fails closed on it or the module handed on whole", () => {
+    expect(
+      reachesIn([
+        "import * as vscode from 'vscode';",
+        "import { workspace as ws } from 'vscode';",
+        'export async function save(target: vscode.Uri, data: Uint8Array) {',
+        '  await ws.fs.writeFile(target, data);',
+        '  const { fs } = vscode.workspace;',
+        '  return ws;',
+        '}',
+        'export const api = vscode;'
+      ])
+    ).toEqual([
+      { line: 4, entry: 'workspace.fs.writeFile', kind: 'writes', form: 'call', declared: null },
+      { line: 5, entry: 'the workspace object', kind: 'unresolved', form: 'reference', declared: null },
+      { line: 6, entry: 'the workspace object', kind: 'unresolved', form: 'reference', declared: null },
+      { line: 8, entry: 'the vscode namespace', kind: 'unresolved', form: 'reference', declared: null }
+    ]);
+  });
+
+  it('fails closed on a re-export, which hands the API to a module whose own imports never name it', () => {
+    // The type-only lines are the control: a type carries no entry to call.
+    expect(
+      reachesIn([
+        "export { open } from 'node:fs/promises';",
+        "export * from 'fs';",
+        "export * as editor from 'vscode';",
+        "export type { Stats } from 'node:fs';",
+        "export { type Dirent } from 'node:fs';"
+      ])
+    ).toEqual([
+      { line: 1, entry: 'a re-export', kind: 'unresolved', form: 'reference', declared: null },
+      { line: 2, entry: 'a re-export', kind: 'unresolved', form: 'reference', declared: null },
+      { line: 3, entry: 'a re-export', kind: 'unresolved', form: 'reference', declared: null }
+    ]);
+  });
+
   it('fails closed on a require and a dynamic import of node:fs', () => {
     expect(
       reachesIn(["const fs = require('node:fs');", "export const later = import('node:fs/promises');"])
     ).toEqual([
       { line: 1, entry: 'a dynamic load', kind: 'unresolved', form: 'reference', declared: null },
       { line: 2, entry: 'a dynamic load', kind: 'unresolved', form: 'reference', declared: null }
+    ]);
+  });
+
+  it('fails closed on a require and a dynamic import of vscode, whose workspace it cannot follow under a new name', () => {
+    // Each load is the only line that can fail: the writes below it go through
+    // names no import gives, so nothing else in this source is read as a reach.
+    expect(
+      reachesIn([
+        'export async function save(target: unknown, data: Uint8Array) {',
+        "  const editor = await import('vscode');",
+        '  const files = editor.workspace;',
+        '  await files.fs.writeFile(target, data);',
+        '}',
+        "const { workspace: later } = require('vscode');",
+        'export const write = (target: unknown, data: Uint8Array) => later.fs.writeFile(target, data);'
+      ])
+    ).toEqual([
+      { line: 2, entry: 'a dynamic load', kind: 'unresolved', form: 'reference', declared: null },
+      { line: 6, entry: 'a dynamic load', kind: 'unresolved', form: 'reference', declared: null }
+    ]);
+  });
+
+  it('fails closed on a load whose module is named at run time, and passes one that names another module', () => {
+    // The last line is the control: a load of a module the scan does not follow is no
+    // reach, or every dynamic import in the tree would need a reason.
+    expect(
+      reachesIn([
+        "const name = ['node', 'fs'].join(':');",
+        'const loaded = require(name);',
+        'export const later = import(name);',
+        "export const spawner = import('node:child_process');"
+      ])
+    ).toEqual([
+      { line: 2, entry: 'a dynamic load', kind: 'unresolved', form: 'reference', declared: null },
+      { line: 3, entry: 'a dynamic load', kind: 'unresolved', form: 'reference', declared: null }
+    ]);
+  });
+
+  it('fails closed on require used any way but a direct call, and passes require.resolve', () => {
+    // The last two lines are the control: `require.resolve` returns a path and loads
+    // nothing, and a direct call of a module the scan does not follow is no reach.
+    expect(
+      reachesIn([
+        "const asserted = require!('node:fs');",
+        "const cast = (require as NodeRequire)('node:fs');",
+        'const loader = require;',
+        "const sequenced = (0, require)('node:fs');",
+        "const called = require.call(null, 'node:fs');",
+        "const applied = Reflect.apply(require, null, ['node:fs']);",
+        "const main = require.main?.require('node:fs');",
+        "export const where = require.resolve('node:fs');",
+        "export const path = require('node:path');"
+      ])
+    ).toEqual(
+      [1, 2, 3, 4, 5, 6, 7].map((line) => ({
+        line,
+        entry: 'the require function',
+        kind: 'unresolved',
+        form: 'reference',
+        declared: null
+      }))
+    );
+  });
+
+  it('fails closed on an import alias, and reads an exported import-equals as a re-export', () => {
+    // Two controls. The `workspace` on line 6 names a member, not the import on line 3
+    // that shares its name, so the line fails once. And an import-equals kept in this
+    // file is followed like any other import, so only its uses can reach; there are none.
+    expect(
+      reachesIn([
+        "import * as fs from 'node:fs';",
+        "import * as vscode from 'vscode';",
+        "import { workspace } from 'vscode';",
+        'import whole = fs;',
+        'import later = fs.promises;',
+        'import files = vscode.workspace;',
+        "export import exported = require('node:fs');",
+        "export import editor = require('vscode');",
+        "import kept = require('node:fs');"
+      ])
+    ).toEqual([
+      { line: 4, entry: 'the fs namespace', kind: 'unresolved', form: 'reference', declared: null },
+      { line: 5, entry: 'the fs namespace', kind: 'unresolved', form: 'reference', declared: null },
+      { line: 6, entry: 'the vscode namespace', kind: 'unresolved', form: 'reference', declared: null },
+      { line: 7, entry: 'a re-export', kind: 'unresolved', form: 'reference', declared: null },
+      { line: 8, entry: 'a re-export', kind: 'unresolved', form: 'reference', declared: null }
     ]);
   });
 

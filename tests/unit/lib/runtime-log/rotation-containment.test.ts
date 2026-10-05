@@ -333,13 +333,21 @@ describe('feature 217 — the runtime log is owner-only, rotations included', ()
   const OWNER_ONLY_FILE = 0o600;
   const OWNER_ONLY_DIR = 0o700;
   const WIDENED_FILE = 0o644;
+  const WIDENED_DIR = 0o755;
 
   /** POSIX-only: `mode` is not an enforceable concept on Windows. */
   const posixOnly = process.platform === 'win32' ? it.skip : it;
 
   const modeOf = async (p: string): Promise<number> => (await nodeFs.lstat(p)).mode & 0o777;
 
-  /** A file an earlier release left behind, at the mode the umask gave it. */
+  // `logs` as an earlier release left it under the common 022 umask. Set, not
+  // inherited: under 077 it would be born owner-only, and the narrowing these
+  // tests assert would pass without happening.
+  beforeEach(async () => {
+    await nodeFs.chmod(path.join(allowedRoot, 'logs'), WIDENED_DIR);
+  });
+
+  /** A file an earlier release left behind, at the mode the common 022 umask gave it. */
   async function leaveWidened(file: string, contents: string): Promise<void> {
     await nodeFs.writeFile(file, contents);
     await nodeFs.chmod(file, WIDENED_FILE);
@@ -359,8 +367,7 @@ describe('feature 217 — the runtime log is owner-only, rotations included', ()
   }
 
   posixOnly('creates the log owner-only and narrows the directory that holds it', async () => {
-    // `beforeEach` made `logs` under the process umask, which is how a directory
-    // an earlier release created looks: 0755 under the common 022.
+    expect(await modeOf(path.join(allowedRoot, 'logs')), 'widened before the open').toBe(WIDENED_DIR);
     const sink = sinkFor(65_536, 3);
     sink.appendLine(line('first'));
     await sink.flushPendingWrites();
@@ -415,6 +422,34 @@ describe('feature 217 — the runtime log is owner-only, rotations included', ()
       await modeOf(`${targetPath}.keep-me`),
       'a non-numeric suffix belongs to the operator'
     ).toBe(WIDENED_FILE);
+  });
+
+  posixOnly('lists the generations again at the next open when a listing failed (FR-004)', async () => {
+    await leaveWidened(`${targetPath}.1`, 'older\n');
+    const ports = spiedFs();
+    let listingFails = true;
+    ports.readdir.mockImplementation(async (target) => {
+      if (listingFails) throw Object.assign(new Error('busy'), { code: 'EMFILE' });
+      return nodeFs.readdir(target);
+    });
+    const sink = new RuntimeLogSink({
+      accessor: accessorFor({ level: 'INFO', path: targetPath, maxBytes: 64, maxGenerations: 2 }),
+      fallbackLogger: fallbackLogger(),
+      containmentRoots: () => [allowedRoot],
+      ...ports
+    });
+
+    sink.appendLine(line('first'));
+    await sink.flushPendingWrites();
+    expect(await modeOf(`${targetPath}.1`), 'not listed, so not reached').toBe(WIDENED_FILE);
+
+    // The append handle is held, so the next open is the successor a rotation
+    // leaves, and the rotation shifts the widened generation to `.2` first.
+    listingFails = false;
+    sink.appendLine(line('second'));
+    await sink.flushPendingWrites();
+    expect(await read(`${targetPath}.2`)).toBe('older\n');
+    expect(await modeOf(`${targetPath}.2`)).toBe(OWNER_ONLY_FILE);
   });
 
   posixOnly('says what it narrowed, once per kind, without naming the path', async () => {

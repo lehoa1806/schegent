@@ -132,7 +132,10 @@ const REGISTRY: readonly ProcedureSurface[] = [
       'README.md',
       'docs/tutorials/developer-setup.md',
       'docs/how-to/developer-workflows.md',
-      'docs/courses/develop-schegent.md'
+      'docs/courses/develop-schegent.md',
+      // Feature 217 (FR-R3-178): recording the gate starts by installing the committed tree,
+      // because the record names a commit and cannot see `node_modules`.
+      'docs/operations/gate-recording.md'
     ],
     // The second command IS the sequence: the first is unremarkable, and a surface that names
     // only the first is exactly the broken state this closes.
@@ -160,7 +163,7 @@ const REGISTRY: readonly ProcedureSurface[] = [
         /^\s*ignore-scripts\s*=\s*true\s*$/m.test(active),
         '.npmrc no longer sets ignore-scripts=true. The two-command install sequence exists ' +
           'BECAUSE of that setting; if the hardening is gone, re-examine this registry entry ' +
-          'rather than leaving five documents pinned to a command nobody needs.'
+          'rather than leaving the registered documents pinned to a command nobody needs.'
       ).toBe(true);
     }
   }

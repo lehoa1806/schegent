@@ -53,9 +53,13 @@ const HAND_ROLLED_RETRY = /rm\([^)]*recursive:\s*true[^)]*maxRetries/;
 /** A recursive `rm` whose failure is discarded. */
 const SWALLOWED = /rm\([^)]*recursive:\s*true[^)]*\)\s*\.catch\(/;
 
-/** The same, synchronously: a recursive `rmSync` closing a `try` whose `catch` holds only comments. */
+/**
+ * The same, synchronously: a recursive `rmSync` closing a `try` whose `catch` holds only comments.
+ * Its arguments may nest parentheses two deep (`path.join(os.tmpdir(), 'x')`), the deepest an `rm`
+ * argument goes under tests/, and never past the call's own closing one.
+ */
 const SWALLOWED_SYNC =
-  /rmSync\([^)]*recursive:\s*true[^)]*\);?\s*\}\s*catch\s*(?:\([^)]*\))?\s*\{\s*(?:\/\/[^\n]*\s*|\/\*[\s\S]*?\*\/\s*)*\}/;
+  /rmSync\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*?recursive:\s*true(?:[^()]|\((?:[^()]|\([^()]*\))*\))*\);?\s*\}\s*catch\s*(?:\([^)]*\))?\s*\{\s*(?:\/\/[^\n]*\s*|\/\*[\s\S]*?\*\/\s*)*\}/;
 
 /** A retry loop keyed on the error codes this race produces. */
 const RETRY_LOOP = /code\s*!==\s*'ENOTEMPTY'|catch[\s\S]{0,200}ENOTEMPTY[\s\S]{0,200}setTimeout/;
@@ -110,6 +114,17 @@ describe('temp-root cleanup has one implementation', () => {
     expect(SWALLOWED_SYNC.test('try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ }')).toBe(
       true
     );
+    // A path built inside the call closes a parenthesis before the options. 33 `rm`
+    // calls under tests/ build their path that way, two levels deep at most
+    // (measured 2026-10-02), so a swallowing one must not slip past the first `)`.
+    expect(
+      SWALLOWED_SYNC.test(
+        'try {\n  fs.rmSync(path.join(a, b), { recursive: true, force: true });\n} catch {\n  // ignore\n}'
+      )
+    ).toBe(true);
+    expect(
+      SWALLOWED_SYNC.test("try { fs.rmSync(path.join(os.tmpdir(), 'x'), { recursive: true }); } catch { /* best effort */ }")
+    ).toBe(true);
     // And the sanctioned call is not mistaken for any of them.
     const sanctioned = 'await removeTempRoot(tmpRoot);';
     expect(HAND_ROLLED_RETRY.test(sanctioned)).toBe(false);

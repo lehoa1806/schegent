@@ -191,3 +191,115 @@ describe('FR-R3-078 — no adversary present, nothing changes', () => {
     await expect(fs.stat(pending)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });
+
+/**
+ * Feature 217 (FR-003) — every open this writer makes declares a mode, and each
+ * one says, once and path-free, what it narrowed. The notices `openWithinRoot`
+ * returns used to be dropped at all four open sites and at the ignore-file drop,
+ * so the writer narrowed and said nothing. Each fixture widens what exactly one
+ * of those opens reaches, so the message can only have come from that open.
+ */
+describe('Feature 217 (FR-003) — the transcript writer says what its opens narrowed', () => {
+  /** POSIX-only: `mode` is not an enforceable concept on Windows. */
+  const posixOnly = process.platform === 'win32' ? it.skip : it;
+  /** What umask 022 leaves a directory and a file at. */
+  const WIDENED_DIR = 0o755;
+  const WIDENED_FILE = 0o644;
+  const DIRECTORY_NARROWED =
+    'raw transcript: an evidence directory granted access beyond its owner (mode 755); narrowed to owner-only';
+  const FILE_NARROWED =
+    'raw transcript: an evidence file granted access beyond its owner (mode 644); narrowed to owner-only';
+
+  const modeOf = async (p: string): Promise<number> => (await fs.lstat(p)).mode & 0o777;
+  const narrowings = (): string[] =>
+    warnSpy.mock.calls
+      .map((call) => String(call[0]))
+      .filter((message) => message.startsWith('raw transcript: an evidence'));
+  const start = (
+    runId: string,
+    mode: 'always' | 'errors-only'
+  ): Parameters<RawTranscriptWriter['appendStart']>[0] => ({
+    runId,
+    phase: 'speckit-plan',
+    iteration: 1,
+    prompt: 'p',
+    mode
+  });
+
+  posixOnly('the append narrows a widened sessions directory and says so', async () => {
+    const sessions = path.join(workspaceRoot, ...SESSIONS);
+    await fs.mkdir(sessions, { recursive: true, mode: 0o700 });
+    await fs.chmod(sessions, WIDENED_DIR);
+
+    await writer.appendStart(start('narrow-append', 'always'));
+
+    expect(await modeOf(sessions)).toBe(0o700);
+    expect(narrowings()).toEqual([DIRECTORY_NARROWED]);
+  });
+
+  posixOnly('the end-write narrows a widened transcript and says so', async () => {
+    const runId = 'narrow-end';
+    // Started by a writer nobody listens to, so the only open this fixture can
+    // hear is the end-write's.
+    const earlier = new RawTranscriptWriter(
+      workspaceRoot,
+      new SanitizedLogger(),
+      path.join(workspaceRoot, 'raw-spool')
+    );
+    await earlier.appendStart(start(runId, 'always'));
+    const transcript = path.join(workspaceRoot, ...SESSIONS, `raw-${runId}.log`);
+    await fs.chmod(transcript, WIDENED_FILE);
+
+    await writer.appendEnd({
+      runId,
+      stdout: 'out',
+      stderr: '',
+      exitCode: 0,
+      killed: false,
+      timedOut: false,
+      mode: 'always'
+    });
+
+    expect(await modeOf(transcript)).toBe(0o600);
+    expect(narrowings()).toEqual([FILE_NARROWED]);
+  });
+
+  posixOnly('the promotion narrows the directory it creates the retained file in and says so', async () => {
+    const runId = 'narrow-promote';
+    await writer.appendStart(start(runId, 'errors-only'));
+    const sessions = path.join(workspaceRoot, ...SESSIONS);
+    await fs.chmod(sessions, WIDENED_DIR);
+
+    await writer.finalizeRun(runId, 'failed', 'errors-only');
+
+    expect(await modeOf(sessions)).toBe(0o700);
+    expect(narrowings()).toEqual([DIRECTORY_NARROWED]);
+  });
+
+  posixOnly('the promotion narrows a retained transcript it appends to and says so', async () => {
+    const runId = 'narrow-resume';
+    await writer.appendStart(start(runId, 'errors-only'));
+    // An earlier leg's retained transcript, widened. The promotion's `wx` open
+    // refuses with EEXIST and narrows nothing, so the reopen for append is the
+    // open that reaches it.
+    const retained = path.join(workspaceRoot, ...SESSIONS, `raw-${runId}.log`);
+    await fs.writeFile(retained, 'earlier leg\n');
+    await fs.chmod(retained, WIDENED_FILE);
+
+    await writer.finalizeRun(runId, 'failed', 'errors-only');
+
+    expect(await modeOf(retained)).toBe(0o600);
+    expect(narrowings()).toEqual([FILE_NARROWED]);
+  });
+
+  posixOnly('the ignore-file drop narrows a widened `.schegent` and says so through this writer', async () => {
+    const schegent = path.join(workspaceRoot, '.schegent');
+    await fs.mkdir(schegent);
+    await fs.chmod(schegent, WIDENED_DIR);
+
+    await writer.appendStart(start('narrow-ignore', 'always'));
+
+    expect(await modeOf(schegent)).toBe(0o700);
+    expect(narrowings()).toEqual([DIRECTORY_NARROWED]);
+  });
+});

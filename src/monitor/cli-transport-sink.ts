@@ -1037,11 +1037,20 @@ export class CliTransportSink implements CliTransportRecorder {
    * Only after an open through the walk succeeded, so a refused destination is
    * never touched; and only what the stale-generation sweep would also call a
    * generation, so an operator's `<live>.keep-me` keeps its mode.
+   *
+   * Marked before the listing, so opens that overlap list once; unmarked when
+   * the directory could not be listed, so the next open lists again rather than
+   * leaving the generations widened for the life of the sink. The append handle
+   * is held, so for this sink the next open is usually a rotation's successor.
    */
   private async narrowGenerationsOnce(targetPath: string, root: string): Promise<void> {
     if (this.generationsNarrowed.has(targetPath)) return;
     this.generationsNarrowed.add(targetPath);
     const generations = await listGenerations(targetPath, this.readdir);
+    if (generations === null) {
+      this.generationsNarrowed.delete(targetPath);
+      return;
+    }
     this.narrowing.report(
       await narrowRotatedFiles(generations, TRANSPORT_FILE_MODE, [root], this.containmentFs)
     );

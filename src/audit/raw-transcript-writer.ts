@@ -9,6 +9,7 @@ import type { SanitizedLogger } from '../lib/logger';
 import type { InvocationOutputSink } from '../runner/invocation-result';
 import type { ZippedStreamBuffer } from '../runner/zipped-stream-buffer';
 import { ensureSchegentGitignore } from './schegent-gitignore';
+import { NarrowingReporter } from '../lib/evidence-narrowing';
 import {
   resolveContainedTarget,
   type ContainmentRefusal
@@ -234,6 +235,10 @@ export class RawTranscriptWriter {
   private readonly chains = new Map<string, Promise<void>>();
   private readonly failedRuns = new Set<string>();
   private gitignoreEnsure: Promise<void> | null = null;
+  /** Feature 217 (FR-003, data-model.md §2) — says once, path-free, what narrowing found. */
+  private readonly narrowing = new NarrowingReporter('raw transcript:', (message) =>
+    this.logger.warn(message)
+  );
   private spoolScavenge: Promise<void> | null = null;
   private emptyRunIdWarned = false;
 
@@ -478,6 +483,7 @@ export class RawTranscriptWriter {
       this.warnContainmentRefusal('transcript-promote', destination.reason);
       return;
     }
+    this.narrowing.report(destination.narrowing);
     const destinationHandle = destination.handle;
     try {
       await copyBetweenHandles(source.handle, destinationHandle);
@@ -534,6 +540,7 @@ export class RawTranscriptWriter {
         this.warnContainmentRefusal('transcript-append', opened.reason);
         return;
       }
+      this.narrowing.report(opened.narrowing);
       try {
         await opened.handle.write(content, null, 'utf8');
       } finally {
@@ -579,6 +586,7 @@ export class RawTranscriptWriter {
         this.warnContainmentRefusal('transcript-write', opened.reason);
         return;
       }
+      this.narrowing.report(opened.narrowing);
       const handle = opened.handle;
       try {
         await handle.write('[STDOUT]\n');
@@ -677,7 +685,11 @@ export class RawTranscriptWriter {
   }
 
   private ensureRuntimeGitignore(): Promise<void> {
-    this.gitignoreEnsure ??= ensureSchegentGitignore(this.workspaceRoot, this.logger);
+    // Feature 217 (FR-003) — the drop runs before this writer's first open, so on
+    // a fresh but widened `.schegent/` it is the drop that narrows it.
+    this.gitignoreEnsure ??= ensureSchegentGitignore(this.workspaceRoot, this.logger).then((notices) =>
+      this.narrowing.report(notices)
+    );
     return this.gitignoreEnsure;
   }
 

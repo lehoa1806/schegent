@@ -1,7 +1,11 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import {
   reportMountCapability,
   resetMountCapabilityWarnings,
+  startMountCapabilityProbe,
   type MountCapabilityNotifier
 } from '../../../src/activation/mount-capability-wiring';
 import type { MountCapabilityVerdict } from '../../../src/state/mount-capability';
@@ -146,5 +150,38 @@ describe('mount capability reporting (FR-R3-083)', () => {
   it('preserves the deciding errno in the log line', () => {
     const h = report({ capability: 'unsupported', cause: 'exclusive-create-unsupported', errno: 'ENOSYS' });
     expect(h.lines[0].message).toContain('ENOSYS');
+  });
+});
+
+describe('mount capability probe wiring — the narrowing reaches the activation logger (feature 217, FR-003)', () => {
+  /** POSIX-only: `mode` is not an enforceable concept on Windows. */
+  const posixOnly = process.platform === 'win32' ? it.skip : it;
+  /** What umask 022 leaves a directory at. */
+  const WIDENED_DIR = 0o755;
+
+  posixOnly('hands the probe the logger it reports the verdict through', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mount-wiring-'));
+    const schegent = path.join(root, '.schegent');
+    await fs.mkdir(schegent);
+    await fs.chmod(schegent, WIDENED_DIR);
+    const h = harness();
+    const probe = startMountCapabilityProbe(root, h.logger, h.notifier);
+    try {
+      await vi.waitFor(
+        () => expect(h.lines.some((l) => l.message.startsWith('mount capability: exclusive create holds'))).toBe(true),
+        { timeout: 5_000 }
+      );
+      expect(h.lines.filter((l) => l.message.includes('an evidence'))).toEqual([
+        {
+          level: 'warn',
+          message:
+            'mount capability: an evidence directory granted access beyond its owner (mode 755); narrowed to owner-only'
+        }
+      ]);
+      expect((await fs.lstat(schegent)).mode & 0o777).toBe(0o700);
+    } finally {
+      probe.dispose();
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 });

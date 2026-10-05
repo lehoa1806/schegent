@@ -12,10 +12,21 @@ import * as fsp from 'node:fs/promises';
  * It was `tightenIfPermissive` in `src/audit/verbose-diagnostic-writer.ts`, the
  * only correct copy in the tree, and it moved here rather than being written a
  * second time. Its callers are `openWithinRoot` in `safe-open.ts`, which
- * narrows what each writing open walks through and opens; `evidence-narrowing.ts`,
- * which narrows the rotated files no open reaches; and the diagnostic writer's
- * own directory preparation. `tests/lint/evidence-sink-mode-census.test.ts`
- * fails on a `chmod` anywhere else, so a second mechanism cannot appear unnoticed.
+ * narrows the leaf each writing open reaches and, when the open declares a
+ * `dirMode`, the directories it walks through; `evidence-narrowing.ts`, which
+ * narrows the rotated files no open reaches; and the directories that the
+ * diagnostic writer, `ownership-fs.ts` and `catalog-fs-adapter.ts` prepare
+ * themselves. `tests/lint/evidence-sink-mode-census.test.ts` fails on a `chmod`,
+ * `lchmod` or `fchmod` anywhere else, in any member syntax the source spells on
+ * any receiver (after a dot; in brackets as a literal, bare or under parentheses,
+ * `as`, `satisfies`, `!` or `<T>`; or as a destructured key), and on a name it
+ * reads but cannot follow to `node:fs`, unless the place carries a stated reason.
+ * It reads syntax, not types, so review is the control for a `chmod` whose name
+ * the source does not spell (a key any other expression computes, or reflection
+ * over its receiver), a cast past a port, a module loaded any other way
+ * (`module.require`, a function `createRequire` returns,
+ * `process.getBuiltinModule`, code evaluated from a string), and a mode a spawned
+ * process changes. The census header is the full statement.
  */
 
 /**
@@ -46,8 +57,9 @@ const PERMISSION_BITS = 0o777;
 
 /**
  * Narrow a path's mode to `desired` if it currently grants anything outside the
- * owner. Never widens. Records what it did, because silently changing a
- * permission is the same class of surprise as silently leaving one open.
+ * owner. Never widens the mode it read. Records what it did, because silently
+ * changing a permission is the same class of surprise as silently leaving one
+ * open.
  *
  * A platform that cannot report or enforce modes lands in the catch, which
  * records the limitation rather than letting the caller believe the path is
@@ -58,8 +70,10 @@ const PERMISSION_BITS = 0o777;
  * `chmod` because a platform can accept the call without applying it (Windows
  * synthesises modes and only toggles the read-only attribute; some network mounts
  * ignore it), and claiming `narrowed` there would be the false private this
- * routine exists to prevent. `desired` is an owner-only mode at every call site,
- * so the expected result is exactly `current & desired`.
+ * routine exists to prevent. The result is `current & desired` with every
+ * non-owner bit cleared as well: `desired` is owner-only at every call site, but
+ * its type does not say so, and a caller handing in `0o644` must not be told
+ * `narrowed` while group and other can still read.
  */
 export async function narrowMode(pathname: string, desired: number): Promise<NarrowOutcome> {
   try {
@@ -77,7 +91,7 @@ export async function narrowMode(pathname: string, desired: number): Promise<Nar
     }
     const current = stat.mode & PERMISSION_BITS;
     if ((current & NON_OWNER_BITS) === 0) return { outcome: 'already-private' };
-    const target = current & desired;
+    const target = current & desired & ~NON_OWNER_BITS;
     await fsp.chmod(pathname, target);
     const applied = (await fsp.lstat(pathname)).mode & PERMISSION_BITS;
     if (applied !== target) {

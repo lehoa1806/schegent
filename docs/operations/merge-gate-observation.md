@@ -16,7 +16,8 @@
 > bot-proposed dependency change. That rule is recorded, in four fields with how to perform it, in
 > [gate recording](gate-recording.md): a bot-proposed dependency change is merged into `develop` only
 > from a commit that carries a passing `npm run gate:record` record naming that commit; nothing on
-> GitHub checks it, so the rule holds only as far as the operator follows it.
+> GitHub checks it, so the rule holds only as far as the operator follows it. The same page records
+> the recording cadence (`FR-R3-180`), which applies that line to every change into `develop`.
 
 This runbook separates three questions that are easy to collapse into one:
 

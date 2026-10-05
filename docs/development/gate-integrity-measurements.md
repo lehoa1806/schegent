@@ -1421,18 +1421,30 @@ and none left, which matters because the same feature also edited three other ga
 
 | Δ | Gate | Cause |
 |---|---|---|
-| **+1** | `evidence-sink-mode-census.test.ts` (114 → 115) | Joined. Refuses a path `src/` creates without `src/lib/safe-open.ts` and without a stated disposition, and a `chmod` outside `src/lib/narrow-mode.ts`. The subject set is the scan rather than a list of sinks: every `.ts` file under `src/` is parsed by TypeScript and each file's own imports say which of its names reach `node:fs`, so a sink nobody remembered to list is still a subject. It asserts `toEqual([])` over one verdict, which is this census's usual shape with its usual risk, and here the risk is sharper than a moved directory: a binding resolution that quietly stopped resolving would empty the scan and give the cleanest possible result. Controlled by three floors set well under what they measured on 2026-10-01 (more than 400 files against 532, more than 120 filesystem reaches against 155, more than 18 writing helper calls against 24) and two presences — the raw `open` and `mkdir` the helper forwards through, and the one permitted `chmod` — since a scan blind to those is blind to the same call anywhere else. |
+| **+1** | `evidence-sink-mode-census.test.ts` (114 → 115) | Joined. Refuses, without a stated disposition, a path `src/` creates through `node:fs` without `src/lib/safe-open.ts` or through VS Code's `workspace.fs`, which takes no mode; a `chmod`, `lchmod` or `fchmod` outside `src/lib/narrow-mode.ts`, read in every member syntax the source spells (after a dot; in brackets as a literal, bare or under parentheses, `as`, `satisfies`, `!` or `<T>`; or as a destructured key); and any name it reads but cannot follow. A raw call that can declare a mode fails without one, whatever its disposition. An open through the helper fails unless its options are a bare literal the gate can read whole (every key spelled once as a property or a getter, none spread in, none `__proto__`) that declares each mode the open needs: a `fileMode` unless its flags only read, and a `dirMode` whenever its `createDirs` may be true. So does each use of the helper's name but a call that spells it, an import or export under that name, and a type, since the gate never reads what any other use passes the helper. It reads syntax, not types, so what lies past those forms is outside it and review is the control: a cast past a port's interface, a `chmod` or a helper whose name the source does not spell (a key any other expression computes, or reflection over its receiver), a `workspace` the import does not bind reached other than by the dotted chain `workspace.fs`, a module loaded any other way (`module.require`, a function `createRequire` returns, `process.getBuiltinModule`, code evaluated from a string), a file VS Code writes other than through `workspace.fs`, and a path or mode a spawned process creates or changes. The gate's header is the full statement. The subject set is the scan rather than a list of sinks: every `.ts` file under `src/` is parsed by TypeScript and each file's own imports say which of its names reach `node:fs` or `vscode`, so a sink nobody remembered to list is still a subject. It asserts `toEqual([])` over one verdict, which is this census's usual shape with its usual risk, and here the risk is sharper than a moved directory: a binding resolution that quietly stopped resolving would empty the scan and give the cleanest possible result. Controlled by three floors set well under what they measured on 2026-10-01 (more than 400 files against 532, more than 120 filesystem reaches against 155, more than 18 writing helper calls against 24) and two presences — the raw `open` and `mkdir` the helper forwards through, and the one permitted `chmod` — since a scan blind to those is blind to the same call anywhere else. |
 
 The floors answer *did the scan reach anything*; the second control answers *does the verdict fail what
-it claims to fail*, which no floor can. Ten cases each add one deliberately non-conforming synthetic
-source to the real scan and judge the result through the same `verdict` the gate calls, so every failure
-they see is the synthetic file's: an open with no `fileMode`, a directory-creating open with no
-`dirMode`, options the census cannot read, a raw open with no mode, a raw open with a mode and no reason,
-a second narrowing mechanism, a namespace handed on where the scan cannot follow it, a port that hands a
-creating member on, a new site inside a file that already carries a reason, and a disposition whose site
-has gone. A guard beside them asserts that the directory the synthetic sources claim to sit in does not
-exist, so a failure those cases see can only be the synthetic source's and never a real file's at the
-same path.
+it claims to fail*, which no floor can. Seventeen cases each add a deliberate non-conformity to the real
+scan and judge the result through the same `verdict` the gate calls. Fifteen add a synthetic source under
+a directory that does not exist: an open with no `fileMode`; a directory-creating open with no `dirMode`;
+two more of those in one source, one spelling its options as computed keys and one making `createDirs` an
+accessor; a directory walk through the helper passed no `dirMode`, through either entry; options the
+census cannot read, in six lines of one source (passed as a value, spread in, under a key it cannot
+spell, with a key spelled twice to open for writing or to reset a mode, and cast past the type); a read
+that may create directories and declares no `dirMode`, cast past the type that forbids it; options that
+give the literal a prototype, bare, quoted and computed, each behind a directive past the checker;
+options that spell a mode and give it no value, as a setter with no getter, which the checker passes, or
+a method; a helper reached other than as the callee of a call that spells its name, in eleven lines of
+one source (imported and re-exported under another name, aliased, held bare and after a dot,
+destructured, applied, wrapped three ways, and named in brackets); a helper an assignment takes by
+destructuring, under a bare, a quoted and a computed key; a raw open with no mode; a raw open with a mode
+and no reason; a second narrowing mechanism; a namespace handed on where the scan cannot follow it; and a
+port that hands a creating member on. A guard beside them asserts that the directory is absent, so a
+failure those fifteen see can only be the synthetic source's and never a real file's at the same path.
+The sixteenth adds a new site to a real file that already carries a reason,
+`src/services/evidence-export.ts`, and expects the one failure that counts the real site and the new one
+together. The seventeenth adds no source: it adds a ledger row whose site has gone, and expects the
+verdict to say to strike it.
 
 The rate stays **0.0%**: the entrant was mutated with the rest and did not survive
 (`mutated=115 stillCalledControlled=0`).

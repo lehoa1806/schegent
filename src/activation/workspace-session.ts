@@ -128,7 +128,8 @@ const catalogReader: CatalogConfigReader = createCatalogReader(workspaceRoot);
 // documents why each `list()` has to stay inside its thunk.
 const catalogStore = createHostCatalogStore(
   () => liveRunPlans(queue.listAll(), Object.values(store.getRunMap())),
-  () => retainedHistoryPlans(getHistoryStore().list())
+  () => retainedHistoryPlans(getHistoryStore().list()),
+  logger
 );
 // Feature 099 (T493b, T496f, FR-027a, FR-042) — the store is read once, here,
 // before anything is composed, and the session owns that snapshot together with
@@ -164,7 +165,7 @@ const catalogLifecycle = createHostCatalogLifecycle(
 // a `.schegent/ownership` symlinked out of the workspace refuses instead of
 // authorizing its own target.
 const ownershipDir = path.join(workspaceRoot, '.schegent', 'ownership');
-store.useOwnershipStorage(createDiskOwnershipFs({ workspaceRoot, ownershipDir }), ownershipDir);
+store.useOwnershipStorage(createDiskOwnershipFs({ workspaceRoot, ownershipDir }, logger), ownershipDir);
 const lock = new WorkspaceLockManager(store, ownerId);
 // Feature 092 (T049, FR-031) — the execution half of the lock split. Same
 // owner id as the workspace lock so a crash strands both together, but a

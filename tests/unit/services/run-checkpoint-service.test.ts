@@ -135,6 +135,36 @@ describe('RunCheckpointService — sole in-flight Run (T053, FR-022a)', () => {
   });
 });
 
+describe('RunCheckpointService — says what its artifact write narrowed (feature 217, FR-003)', () => {
+  /** POSIX-only: `mode` is not an enforceable concept on Windows. */
+  const posixOnly = process.platform === 'win32' ? it.skip : it;
+  /** What umask 022 and umask 027 leave a directory at. */
+  const WIDENED_DIR = 0o755;
+  const GROUP_READABLE_DIR = 0o750;
+
+  posixOnly('narrows the widened directories it writes through and says so, nearest the root first', async () => {
+    // `ensureRunRoot` creates owner-only and narrows nothing that already exists,
+    // so it is the artifact's open that reaches these two.
+    const checkpoints = path.join(storageRoot, 'checkpoints');
+    const runRoot = path.join(checkpoints, 'run-a');
+    await fs.mkdir(runRoot, { recursive: true });
+    await fs.chmod(checkpoints, WIDENED_DIR);
+    await fs.chmod(runRoot, GROUP_READABLE_DIR);
+    await fs.writeFile(path.join(workspaceRoot, 'a.txt'), 'edit by run-a\n');
+    await run('git', ['add', '-A'], { cwd: workspaceRoot });
+
+    await service(() => 1).checkpoint(RUN, 'speckit-implement');
+
+    const modeOf = async (p: string): Promise<number> => (await fs.lstat(p)).mode & 0o777;
+    expect(await modeOf(checkpoints)).toBe(0o700);
+    expect(await modeOf(runRoot)).toBe(0o700);
+    expect(warnings.filter((message) => message.startsWith('checkpoint:'))).toEqual([
+      'checkpoint: an evidence directory granted access beyond its owner (mode 755); narrowed to owner-only',
+      'checkpoint: an evidence directory granted access beyond its owner (mode 750); narrowed to owner-only'
+    ]);
+  });
+});
+
 describe('RunCheckpointService — concurrency (T053, T054, FR-022a, SC-015)', () => {
   it('declines to record a snapshot while a second Run is in flight', async () => {
     await fs.writeFile(path.join(workspaceRoot, 'a.txt'), 'edit by run-a\n');

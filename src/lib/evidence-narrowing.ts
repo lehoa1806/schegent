@@ -7,14 +7,15 @@ import { resolveContainedLink, type ContainmentFs } from './path-containment';
  * Feature 217 (FR-003, FR-004, FR-005) — the policy the evidence sinks share
  * around the one narrowing mechanism in `narrow-mode.ts`.
  *
- * `openWithinRoot` narrows what a writing open walks through and opens, and
- * hands back what it did as path-free notices. Three things are left over, and
- * each would drift if every sink wrote its own: the words an operator reads,
- * saying each thing once rather than on every append, and the rotated files no
- * open ever reaches. A generation (`<live>.1`) or an audit archive was renamed
- * into place, and a rename keeps the mode a file was born with, so a log an
- * earlier release created under the umask leaves widened generations behind it
- * until something narrows them where they lie.
+ * `openWithinRoot` narrows the file a writing open reaches and, when the open
+ * declares a `dirMode`, the directories it walks through, and hands back what
+ * it did as path-free notices. Three things are left over, and each would
+ * drift if every sink wrote its own: the words an operator reads, saying each
+ * thing once rather than on every append, and the rotated files no open ever
+ * reaches. A generation (`<live>.1`) or an audit archive was renamed into
+ * place, and a rename keeps the mode a file was born with, so a log an earlier
+ * release created under the umask leaves widened generations behind it until
+ * something narrows them where they lie.
  */
 
 const OCTAL_RADIX = 8;
@@ -54,6 +55,13 @@ function octal(mode: number): string {
  * Keyed on the rendered message, so two widened files at the same mode are one
  * line and a file and its directory are two. A sink appends on every log line;
  * one WARN per append would bury the log in the report of its own repair.
+ *
+ * A `warn` that throws stops here, the rule `SanitizedLogger.write` keeps for
+ * its own sinks. A report sits between an open and the close or return of its
+ * handle, and several callers take any `warn`, so a throw that escaped would
+ * leak the handle and fail a write whose narrowing had already happened. A line
+ * counts as said once it is delivered, not attempted, so the next report says
+ * it again.
  */
 export class NarrowingReporter {
   private readonly reported = new Set<string>();
@@ -68,29 +76,36 @@ export class NarrowingReporter {
     for (const notice of notices) {
       const message = `${this.subject} ${describeNarrowing(notice)}`;
       if (this.reported.has(message)) continue;
-      this.reported.add(message);
-      this.warn(message);
+      try {
+        this.warn(message);
+        this.reported.add(message);
+      } catch {
+        // Not delivered, so not recorded.
+      }
     }
   }
 }
 
 /**
  * The rotated generations beside `livePath`: `<live>.<n>` for a purely numeric
- * `n`, the same rule each sink's stale-generation sweep applies. An unreadable
- * directory lists nothing; narrowing is a repair, never a reason to stop
- * writing.
+ * `n`, the same rule each sink's stale-generation sweep applies.
+ *
+ * `null` when the directory cannot be read, which is neither a failed write
+ * (narrowing is a repair, never a reason to stop writing) nor an empty
+ * directory: a caller that narrows once must try again rather than record a
+ * listing that never happened.
  */
 export async function listGenerations(
   livePath: string,
   readdir: (directory: string) => Promise<readonly string[]>
-): Promise<string[]> {
+): Promise<string[] | null> {
   const directory = path.dirname(livePath);
   const prefix = `${path.basename(livePath)}.`;
   let entries: readonly string[];
   try {
     entries = await readdir(directory);
   } catch {
-    return [];
+    return null;
   }
   return entries
     .filter((name) => name.startsWith(prefix) && GENERATION_SUFFIX.test(name.slice(prefix.length)))

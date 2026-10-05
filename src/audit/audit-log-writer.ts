@@ -495,7 +495,11 @@ export class AuditLogWriter {
   }
 
   private ensureRuntimeGitignore(): Promise<void> {
-    this.gitignoreEnsure ??= ensureSchegentGitignore(this.config.workspaceRoot, this.logger);
+    // Feature 217 (FR-003) — the drop runs before the first append's open, so on
+    // a fresh but widened `.schegent/` it is the drop that narrows it.
+    this.gitignoreEnsure ??= ensureSchegentGitignore(this.config.workspaceRoot, this.logger).then(
+      (notices) => this.narrowing.report(notices)
+    );
     return this.gitignoreEnsure;
   }
 

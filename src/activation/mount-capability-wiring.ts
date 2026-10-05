@@ -206,7 +206,7 @@ export function startMountCapabilityProbe(
   // it does nothing about a successful, misattributed notification, and nothing at
   // all about writes.
   let disposed = false;
-  void probeMountCapability({ workspaceRoot, isDisposed: () => disposed })
+  void probeMountCapability({ workspaceRoot, isDisposed: () => disposed, logger })
     .then(
       (verdict) => {
         if (disposed) return;
