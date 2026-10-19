@@ -44,6 +44,12 @@ An unresolvable path disables the sink and emits a bounded warning through the f
 <!-- Source: src/lib/runtime-log/runtime-log-sink.ts -->
 <!-- Source: src/config/general-settings.ts -->
 
+The sink is released once, when the Extension Host deactivates, and not when a workspace folder changes. From that moment every new line is discarded. The release waits up to two seconds for lines already being written, then closes every file descriptor the sink holds. If the two seconds pass with lines still in flight, it emits one warning through the fallback logger and closes the descriptors anyway, so those lines may not be written.
+
+<!-- Source: src/extension.ts -->
+<!-- Source: src/lib/runtime-log/runtime-log-sink.ts -->
+<!-- Source: src/lib/runtime-log/held-append-handles.ts -->
+
 Runtime-log records pass through `SanitizedLogger`, but sanitization is pattern-based. The log may still contain local paths and other operational context; treat it as local diagnostic material.
 
 <!-- Source: src/lib/logger.ts -->
