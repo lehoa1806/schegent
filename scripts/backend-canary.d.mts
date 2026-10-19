@@ -74,8 +74,14 @@ export declare const CANARY_SCENARIOS: readonly CanaryScenario[];
 /** Every scenario on every backend with a live path. */
 export declare const CANARY_CASES: readonly CanaryCase[];
 
-/** A live envelope with its environment rows dropped and its ids redacted. */
-export declare function redactLiveEnvelope(stdout: string): string;
+/**
+ * A live envelope with its environment rows dropped, its ids redacted, and each
+ * spelling in `probeDirs` (the turn's working directory) replaced by `<probe-dir>`.
+ */
+export declare function redactLiveEnvelope(
+  stdout: string,
+  probeDirs?: readonly string[]
+): string;
 
 export interface ProbeResult {
   readonly ok?: boolean;

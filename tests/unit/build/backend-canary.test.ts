@@ -374,6 +374,105 @@ describe('FR-R3-084 — the live phase, written after it was run', () => {
 });
 
 /**
+ * FR-R3-084 §3.4 — a recorded envelope names no probe directory.
+ *
+ * `redactLiveEnvelope` drops the rows that describe the machine and blanks the keys that name a
+ * session, a machine or a path. It did not reach a path the backend names in a TOOL CALL. On
+ * 2026-10-19 the repository-file case's recordings on claude (`Read`) and agy (`view_file`) each
+ * carried the absolute path of the planted `NOTES.md`, in a directory `mkdtempSync` made under the
+ * operator's per-user temp root. So the runner hands the redactor the turn's working directory,
+ * and no string in the envelope keeps it.
+ */
+describe('FR-R3-084 §3.4 — a recorded envelope names no probe directory', () => {
+  const dir = '/var/folders/ab/cdefgh0000gn/T/schegent-canary-Ab3dEf';
+  // How macOS reports it: `/var` links to `/private/var`, and the CLIs name the resolved path.
+  const resolvedDir = `/private${dir}`;
+  const envelopeNaming = (named: string, resolved: string): string =>
+    [
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [{ type: 'tool_use', name: 'Read', input: { file_path: `${resolved}/NOTES.md` } }]
+        }
+      }),
+      JSON.stringify({
+        event: 'step_update',
+        step_update: { tool_info: { parameters: { AbsolutePath: `${resolved}/NOTES.md` } } }
+      }),
+      JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'agent_message', text: `I read ${named}/NOTES.md.` }
+      }),
+      JSON.stringify({ type: 'result', files: { [`${resolved}/NOTES.md`]: 'read' }, cwd: named })
+    ].join('\n');
+
+  it('replaces the directory in every string and key, whichever spelling the backend used', () => {
+    // The shorter spelling first, on purpose: `/private/var/...` contains `/var/...`, so a
+    // redactor that scrubbed in the order it was given would leave `/private<probe-dir>`.
+    const envelope = envelopeNaming(dir, resolvedDir);
+    const redacted = canary.redactLiveEnvelope(envelope, [dir, resolvedDir]);
+    expect(redacted).not.toContain('schegent-canary-');
+    expect(redacted).not.toContain('/var/folders');
+    expect(redacted).not.toContain('/private<probe-dir>');
+    // And nothing else changed: the same envelope, written with the placeholder already in it.
+    expect(redacted).toBe(canary.redactLiveEnvelope(envelopeNaming('<probe-dir>', '<probe-dir>')));
+  });
+
+  it('scrubs nothing when given no directory, or an empty one', () => {
+    // An empty spelling must not split every string into characters.
+    const envelope = envelopeNaming(dir, resolvedDir);
+    expect(canary.redactLiveEnvelope(envelope, [''])).toBe(canary.redactLiveEnvelope(envelope));
+    expect(canary.redactLiveEnvelope(envelope)).toContain(`${resolvedDir}/NOTES.md`);
+  });
+
+  it('is handed the directory its turn ran in, everywhere the runner records', () => {
+    const runner = readFileSync(
+      resolve(__dirname, '../../../scripts/backend-canary-run.mjs'),
+      'utf8'
+    );
+    const calls = [...runner.matchAll(/redactLiveEnvelope\(/g)].map((m) => m.index);
+    expect(calls.length).toBeGreaterThanOrEqual(2);
+    for (const at of calls) {
+      // The directory the recording is scrubbed of...
+      const scrubbed = /^redactLiveEnvelope\(result\.stdout,\s*probeDirSpellings\((\w+)\)\)/.exec(
+        runner.slice(at)
+      );
+      expect(scrubbed, 'a recording written without its directory').not.toBeNull();
+      // ...must be the one the turn ran in: the `cwd` of the spawn that produced `result`.
+      const spawn = runner.slice(runner.lastIndexOf('spawnSync(', at), at);
+      const ran = /\bcwd(?::\s*(\w+))?\s*,/.exec(spawn);
+      expect(ran, 'a turn spawned with no working directory').not.toBeNull();
+      expect(scrubbed?.[1], 'a recording scrubbed of a directory its turn did not run in').toBe(
+        ran?.[1] ?? 'cwd'
+      );
+    }
+  });
+});
+
+/**
+ * FR-R3-084 §3.4 — a recorded envelope keeps no thinking signature.
+ *
+ * claude 2.1.302 attaches a `signature` to each thinking block: a base64 blob, 1,200 to 6,540
+ * characters in the 2026-10-19 recordings, that no parser reads. What it is bound to cannot be
+ * checked from here, so the redactor blanks it as it blanks an id, and the block stays.
+ */
+describe('FR-R3-084 §3.4 — a recorded envelope keeps no thinking signature', () => {
+  it('blanks the signature and keeps the thinking block around it', () => {
+    const blob = 'opaque-signature-blob';
+    const envelope = JSON.stringify({
+      type: 'assistant',
+      message: { content: [{ type: 'thinking', thinking: '', signature: blob }] }
+    });
+    const redacted = canary.redactLiveEnvelope(envelope);
+    expect(redacted).not.toContain(blob);
+    expect(JSON.parse(redacted)).toEqual({
+      type: 'assistant',
+      message: { content: [{ type: 'thinking', thinking: '', signature: '<redacted>' }] }
+    });
+  });
+});
+
+/**
  * FR-R3-182 — the corpus says what each case must show, and reaches all three surfaces.
  *
  * Read line by line before this item, the corpus proved delivery and held one sampled refusal;

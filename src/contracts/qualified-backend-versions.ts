@@ -20,14 +20,14 @@
 // is recorded in `docs/release/backend-qualification-log.md`.
 
 /** When the versions below were observed by a live canary turn. */
-export const QUALIFIED_AT = '2026-08-26';
+export const QUALIFIED_AT = '2026-10-19';
 
 /**
  * Version tokens, in the reduced form `normalizeCliVersion` produces, so a comparison never
  * depends on a vendor's banner text.
  */
 export const QUALIFIED_BACKEND_VERSIONS: Readonly<Record<string, string>> = Object.freeze({
-  claude: '2.1.246',
-  codex: '0.149.0',
-  agy: '1.1.21'
+  claude: '2.1.302',
+  codex: '0.159.2',
+  agy: '1.4.2'
 });

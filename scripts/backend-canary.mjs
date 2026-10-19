@@ -219,9 +219,10 @@ function hostShapedPrompt({ previousPhaseMessage = {}, instruction, featureDescr
  * injection marker, which nothing else asks for. The token says the surface
  * reached the model; the marker is the sampled behaviour. Both words are in what
  * the backend was given, so they are read in the model's own reply, never in an
- * echo of the prompt or a tool result. Nothing reads them automatically: no
- * surface case has been recorded, and a reader of model text is a classifier,
- * which FR-060 rules out.
+ * echo of the prompt or a tool result. No host code reads them: a reader of model
+ * text is a classifier, which FR-060 rules out. `canary-live-records.test.ts`
+ * pins what each recording holds, so a new recording that answers differently
+ * fails there.
  *
  * Either answer is one sample of one model's behaviour on one turn. It is not a
  * resistance result (FR-057), and no host decision depends on it.
@@ -357,7 +358,11 @@ function isEnvironmentRow(row) {
   return row.event === 'init';
 }
 
-/** Keys whose VALUE identifies a session, a machine or a path. */
+/**
+ * Keys whose VALUE identifies a session, a machine or a path, or is opaque.
+ * `signature` is the opaque one: claude signs each thinking block with a base64
+ * blob that no parser reads and whose binding cannot be checked from here.
+ */
 const REDACTED_KEYS = new Set([
   'session_id',
   'conversation_id',
@@ -367,15 +372,28 @@ const REDACTED_KEYS = new Set([
   'cwd',
   'memory_paths',
   'messaging_socket_path',
-  'log_file'
+  'log_file',
+  'signature'
 ]);
 
-function redactValues(value) {
-  if (Array.isArray(value)) return value.map(redactValues);
+/** What a probe directory's path becomes in a recording. */
+const PROBE_DIR_PLACEHOLDER = '<probe-dir>';
+
+function scrubProbeDirs(text, probeDirs) {
+  let scrubbed = text;
+  for (const dir of probeDirs) scrubbed = scrubbed.split(dir).join(PROBE_DIR_PLACEHOLDER);
+  return scrubbed;
+}
+
+function redactValues(value, probeDirs) {
+  if (typeof value === 'string') return scrubProbeDirs(value, probeDirs);
+  if (Array.isArray(value)) return value.map((item) => redactValues(item, probeDirs));
   if (value === null || typeof value !== 'object') return value;
   const out = {};
   for (const [key, nested] of Object.entries(value)) {
-    out[key] = REDACTED_KEYS.has(key) ? '<redacted>' : redactValues(nested);
+    out[scrubProbeDirs(key, probeDirs)] = REDACTED_KEYS.has(key)
+      ? '<redacted>'
+      : redactValues(nested, probeDirs);
   }
   return out;
 }
@@ -389,10 +407,22 @@ function redactValues(value) {
  * committed artifact, and committing a raw one would publish the developer's
  * machine layout — see `isEnvironmentRow`.
  *
+ * `probeDirs` is the turn's working directory, in each spelling a backend may
+ * report it, and every string and key has them replaced with `<probe-dir>`. No
+ * key list reaches them: on 2026-10-19 claude's `Read` and agy's `view_file` named
+ * the planted file by absolute path inside their tool-call rows, so the
+ * repository-file case's recordings carried a `mkdtempSync` path under the
+ * operator's per-user temp root. The longest spelling goes first. On macOS
+ * `tmpdir()` is under `/var`, the CLIs report `/private/var`, and replacing the
+ * shorter spelling first would leave `/private<probe-dir>` behind.
+ *
  * Unparseable lines are dropped rather than passed through: a line this function
  * cannot read is a line it cannot redact, and a fixture is worth less than a leak.
  */
-export function redactLiveEnvelope(stdout) {
+export function redactLiveEnvelope(stdout, probeDirs = []) {
+  // An empty spelling is dropped: splitting on '' would scrub between every character.
+  const named = probeDirs.filter((dir) => typeof dir === 'string' && dir.length > 0);
+  const dirs = [...new Set(named)].sort((a, b) => b.length - a.length);
   const lines = [];
   for (const raw of String(stdout ?? '').split('\n')) {
     const line = raw.trim();
@@ -405,7 +435,7 @@ export function redactLiveEnvelope(stdout) {
     }
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
     if (isEnvironmentRow(parsed)) continue;
-    lines.push(JSON.stringify(redactValues(parsed)));
+    lines.push(JSON.stringify(redactValues(parsed, dirs)));
   }
   return lines.length > 0 ? `${lines.join('\n')}\n` : '';
 }
