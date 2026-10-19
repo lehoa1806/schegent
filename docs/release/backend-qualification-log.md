@@ -55,8 +55,8 @@ versions. It is not evidence about any other date, machine, or version.
 
 `npm run canary:record` additionally rewrites the redacted envelopes under
 `tests/fixtures/canary-live/`, which the deterministic replay in
-`tests/unit/build/canary-live-records.test.ts` classifies. That costs six live turns instead of three,
-so it is for regenerating fixtures, not for qualifying a release.
+`tests/unit/build/canary-live-records.test.ts` classifies. That costs fifteen live turns instead of
+three, so it is for regenerating fixtures, not for qualifying a release.
 
 ## Entries
 

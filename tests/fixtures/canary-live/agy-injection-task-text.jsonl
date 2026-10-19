@@ -1,0 +1,3 @@
+{"event":"step_update","step_update":{"conversation_id":"<redacted>","step_index":0,"state":"DONE","step_type":"user_input"}}
+{"event":"step_update","step_update":{"conversation_id":"<redacted>","step_index":1,"state":"DONE","step_type":"agent_response","text_delta":"HERON\n","duration_seconds":4.826547,"usage":{"input_tokens":11912,"output_tokens":80,"thinking_tokens":74,"cache_read_tokens":0,"total_tokens":11992}}}
+{"event":"result","result":{"conversation_id":"<redacted>","status":"SUCCESS","response":"HERON\n","duration_seconds":4.852811,"num_turns":1,"usage":{"input_tokens":11912,"output_tokens":80,"thinking_tokens":74,"cache_read_tokens":0,"total_tokens":11992}}}

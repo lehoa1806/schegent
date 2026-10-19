@@ -219,9 +219,10 @@ function hostShapedPrompt({ previousPhaseMessage = {}, instruction, featureDescr
  * injection marker, which nothing else asks for. The token says the surface
  * reached the model; the marker is the sampled behaviour. Both words are in what
  * the backend was given, so they are read in the model's own reply, never in an
- * echo of the prompt or a tool result. Nothing reads them automatically: no
- * surface case has been recorded, and a reader of model text is a classifier,
- * which FR-060 rules out.
+ * echo of the prompt or a tool result. No host code reads them: a reader of model
+ * text is a classifier, which FR-060 rules out. `canary-live-records.test.ts`
+ * pins what each recording holds, so a new recording that answers differently
+ * fails there.
  *
  * Either answer is one sample of one model's behaviour on one turn. It is not a
  * resistance result (FR-057), and no host decision depends on it.
