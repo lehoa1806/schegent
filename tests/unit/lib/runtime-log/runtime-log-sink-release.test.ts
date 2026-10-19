@@ -425,8 +425,8 @@ describe('RuntimeLogSink.flushAndDispose — the writer gives its descriptors ba
 describe('RuntimeLogSink — a line the close step overtakes touches nothing more (FR-004)', () => {
   it('check 2: a line queued behind one held at the close step is refused before it can rotate', async () => {
     // The held line seeds a size it fits exactly, so the longer line queued
-    // behind it would overflow and rotate. Its containment verdict is cached and
-    // its size already seeded: only check 2 stands before the rename.
+    // behind it would overflow and rotate. The writer has no roots and checks
+    // no containment: only check 2 stands before the rename.
     const counting = countingPorts();
     const held = gatedStat(MAX_BYTES - Buffer.byteLength(`${LINE}\n`));
     const { sink } = await build(
