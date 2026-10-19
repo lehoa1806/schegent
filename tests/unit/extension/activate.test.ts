@@ -1,6 +1,12 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mocks = vi.hoisted(() => {
+  /**
+   * FR-R3-191 (feature 218) — what the host teardown did, in order
+   * (`output:dispose`, `lock:release`, `release:start`, `release:end`), and the
+   * runtime log writer each activation built, so a case can read its count.
+   */
+  const teardown = { events: [] as string[], sinks: [] as RuntimeLogSink[] };
   const state = {
     workspaceFolders: undefined as readonly { uri: { fsPath: string } }[] | undefined,
     listeners: new Set<(event: { added: readonly unknown[]; removed: readonly unknown[] }) => void | Promise<void>>(),
@@ -10,10 +16,12 @@ const mocks = vi.hoisted(() => {
     showInformationMessage: vi.fn((..._args: unknown[]): Promise<unknown> => Promise.resolve(undefined)),
     showWarningMessage: vi.fn((..._args: unknown[]): Promise<unknown> => Promise.resolve(undefined)),
     executeCommand: vi.fn((..._args: unknown[]): Promise<unknown> => Promise.resolve(undefined)),
-    createOutputChannelDispose: vi.fn(),
+    createOutputChannelDispose: vi.fn(() => {
+      teardown.events.push('output:dispose');
+    }),
     createStatusBarItemDispose: vi.fn()
   };
-  return { state };
+  return { state, teardown };
 });
 
 vi.mock('vscode', () => {
@@ -110,8 +118,36 @@ vi.mock('vscode', () => {
   };
 });
 
+/**
+ * FR-R3-191 (feature 218) — the runtime log writer each activation builds, with
+ * its release wrapped so the teardown's order can be read. The wrapper is a plain
+ * function around the real release, so the descriptors close as they do in the
+ * host.
+ */
+vi.mock('../../../src/activation/backend-wiring', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/activation/backend-wiring')>();
+  return {
+    ...actual,
+    createRuntimeEvidenceWiring: (
+      ...args: Parameters<typeof actual.createRuntimeEvidenceWiring>
+    ): ReturnType<typeof actual.createRuntimeEvidenceWiring> => {
+      const wiring = actual.createRuntimeEvidenceWiring(...args);
+      const sink = wiring.runtimeLogSink;
+      const release = sink.flushAndDispose.bind(sink);
+      sink.flushAndDispose = async (): Promise<void> => {
+        mocks.teardown.events.push('release:start');
+        await release();
+        mocks.teardown.events.push('release:end');
+      };
+      mocks.teardown.sinks.push(sink);
+      return wiring;
+    }
+  };
+});
+
 import * as vscode from 'vscode';
-import { activate } from '../../../src/extension';
+import { activate, deactivate } from '../../../src/extension';
+import type { RuntimeLogSink } from '../../../src/lib/runtime-log/runtime-log-sink';
 // Feature 058 — the canonical-folder picker memoizes its first read for the
 // process lifetime, so tests that run `activate(...)` multiple times need to
 // flush the cache between cases. The picker's dispose is idempotent.
@@ -124,7 +160,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { createDiskOwnershipFs } from '../../../src/state/ownership-fs';
 import { OwnershipRegistry, PRIMACY_RESOURCE } from '../../../src/state/ownership-registry';
-import { STALENESS_THRESHOLD_MS } from '../../../src/state/lock';
+import { STALENESS_THRESHOLD_MS, WorkspaceLockManager } from '../../../src/state/lock';
 
 /**
  * FR-R3-191 — the case's own folder, made by `beforeEach` under the run's temp
@@ -209,6 +245,22 @@ beforeEach(async () => {
   // `onDidChangeWorkspaceFolders` in the product, and this file clears that
   // listener set rather than firing it.
   disposeWorkspaceFolderPicker();
+});
+
+/**
+ * FR-R3-191 (feature 218) — the host-teardown cases' spy on the lock release,
+ * and the error it throws when a case sets one (US2-6).
+ */
+let lockRelease: { mockRestore(): void } | undefined;
+let lockFailure: Error | undefined;
+
+afterEach(() => {
+  // Restored first, so nothing that runs after a case goes through a lock
+  // release that throws.
+  lockRelease?.mockRestore();
+  lockRelease = undefined;
+  mocks.teardown.events = [];
+  mocks.teardown.sinks = [];
 });
 
 describe('activate() — BUG-001 activation invariant', () => {
@@ -404,5 +456,199 @@ describe('activate() — Stage 2 workspace lock reclaim (BUG-005)', () => {
       expect(lines).toContain(declined);
     }
     expect(lines).not.toContain('activation: resuming run');
+  });
+});
+
+/**
+ * FR-R3-191 (feature 218) — the host teardown releases the runtime log writer.
+ *
+ * The writer is built in Stage 1 and outlives every folder change, so the host
+ * teardown is the one place that can release it. Two paths reach that teardown:
+ * `deactivate()`, which awaits it, and the subscription entry, which cannot.
+ * Every case reads the writer's own descriptor count.
+ */
+describe('activate() — the host teardown releases the runtime log writer (FR-R3-191)', () => {
+  const PROBE_LINE = 'FR-R3-191 host teardown probe';
+  const DEACTIVATED = 'deactivated';
+  /** The real release, read before any case replaces it. */
+  const releaseLock = WorkspaceLockManager.prototype.release;
+
+  beforeEach(() => {
+    lockFailure = undefined;
+    lockRelease = vi
+      .spyOn(WorkspaceLockManager.prototype, 'release')
+      .mockImplementation(async function (this: WorkspaceLockManager): Promise<void> {
+        // The real release first, so the heartbeat stops even in a case that throws.
+        await releaseLock.call(this);
+        mocks.teardown.events.push('lock:release');
+        if (lockFailure) throw lockFailure;
+      });
+  });
+
+  /** The runtime log writer the latest activation built. */
+  function latestSink(): RuntimeLogSink {
+    const sink = mocks.teardown.sinks.at(-1);
+    if (sink === undefined) throw new Error('the activation built no runtime log writer');
+    return sink;
+  }
+
+  /**
+   * Activate with the case's folder open and write one line, so the writer holds
+   * a descriptor the teardown has to close.
+   */
+  async function activateWithLine(): Promise<{
+    sink: RuntimeLogSink;
+    subscriptions: { dispose: () => unknown }[];
+  }> {
+    mocks.state.workspaceFolders = [{ uri: { fsPath: workspaceRoot } }];
+    const { context, subscriptions } = buildContext();
+    await activate(context as Parameters<typeof activate>[0]);
+    const sink = latestSink();
+    sink.appendLine(PROBE_LINE);
+    await sink.flushPendingWrites();
+    expect(sink.openDescriptorCount, 'the writer must hold a descriptor first').toBeGreaterThanOrEqual(1);
+    return { sink, subscriptions };
+  }
+
+  /** `deactivate()`, recording the moment it resolves among the teardown's events. */
+  function deactivateMarked(): Promise<void> {
+    return deactivate().then(() => {
+      mocks.teardown.events.push(DEACTIVATED);
+    });
+  }
+
+  /** The writer's release events since `mark`, and the moment `deactivate()` resolved. */
+  function releaseOrder(mark: number): string[] {
+    return mocks.teardown.events
+      .slice(mark)
+      .filter((event) => event.startsWith('release:') || event === DEACTIVATED);
+  }
+
+  it('US2-1 — `deactivate` releases the writer the activation built', async () => {
+    const { sink } = await activateWithLine();
+
+    await deactivate();
+
+    expect({
+      open: sink.openDescriptorCount,
+      releases: mocks.teardown.events.filter((event) => event === 'release:start').length
+    }).toEqual({ open: 0, releases: 1 });
+  });
+
+  it('US2-2 — removing the last folder leaves the writer to the host teardown', async () => {
+    const { sink } = await activateWithLine();
+    const mark = mocks.teardown.events.length;
+
+    mocks.state.workspaceFolders = undefined;
+    const handlers = Array.from(mocks.state.listeners);
+    await Promise.all(handlers.map(async (fn) => fn({ added: [], removed: [] })));
+
+    // Stage 2 is gone (its lock was released); the writer is Stage 1's and stays.
+    expect(mocks.teardown.events.slice(mark)).toContain('lock:release');
+    expect(releaseOrder(mark), 'a folder change must not release the writer').toEqual([]);
+
+    const removed = mocks.teardown.events.length;
+    await deactivateMarked();
+    expect(releaseOrder(removed)).toEqual(['release:start', 'release:end', DEACTIVATED]);
+    expect(sink.openDescriptorCount).toBe(0);
+  });
+
+  it('US2-3 — whichever path fires first, the writer is released once and `deactivate` waits for it', async () => {
+    // The subscription entry first, then `deactivate()`.
+    const first = await activateWithLine();
+    const firstMark = mocks.teardown.events.length;
+    for (const entry of first.subscriptions) entry.dispose();
+    await deactivateMarked();
+    expect(releaseOrder(firstMark)).toEqual(['release:start', 'release:end', DEACTIVATED]);
+    expect(first.sink.openDescriptorCount).toBe(0);
+
+    // `deactivate()` first, then the subscription entry while it is in flight.
+    const second = await activateWithLine();
+    const secondMark = mocks.teardown.events.length;
+    const deactivating = deactivateMarked();
+    for (const entry of second.subscriptions) entry.dispose();
+    await deactivating;
+    expect(releaseOrder(secondMark)).toEqual(['release:start', 'release:end', DEACTIVATED]);
+    expect(second.sink.openDescriptorCount).toBe(0);
+  });
+
+  it('US2-4 — with no folder open, the host teardown still releases the writer', async () => {
+    mocks.state.workspaceFolders = undefined;
+    const { context } = buildContext();
+    await activate(context as Parameters<typeof activate>[0]);
+    const sink = latestSink();
+    const mark = mocks.teardown.events.length;
+
+    await deactivateMarked();
+
+    expect(mocks.teardown.events.slice(mark)).toEqual(['release:start', 'release:end', DEACTIVATED]);
+    expect(sink.openDescriptorCount).toBe(0);
+  });
+
+  it('US2-5 — the writer is released after the Stage 2 teardown and before the host disposes its output', async () => {
+    await activateWithLine();
+    const mark = mocks.teardown.events.length;
+
+    await deactivateMarked();
+
+    expect(mocks.teardown.events.slice(mark)).toEqual([
+      'output:dispose', // Stage 2's own disposables
+      'lock:release',
+      'release:start',
+      'release:end',
+      'output:dispose', // the host's, once the release has settled
+      DEACTIVATED
+    ]);
+  });
+
+  it('US2-6 — a Stage 2 teardown that rejects still releases the writer, and `deactivate` rejects with it', async () => {
+    const { sink } = await activateWithLine();
+    const failure = new Error('the lock release failed');
+    lockFailure = failure;
+    const mark = mocks.teardown.events.length;
+
+    await expect(deactivate()).rejects.toBe(failure);
+
+    // No host `output:dispose`: the rejection leaves the teardown after the release.
+    expect(mocks.teardown.events.slice(mark)).toEqual([
+      'output:dispose',
+      'lock:release',
+      'release:start',
+      'release:end'
+    ]);
+    expect(sink.openDescriptorCount).toBe(0);
+  });
+
+  it('US2-7 — each activation tears down only itself, once', async () => {
+    const first = await activateWithLine();
+    await deactivate();
+    const repeated = mocks.teardown.events.length;
+    await deactivate();
+    expect(mocks.teardown.events.slice(repeated), 'a repeated `deactivate` starts nothing').toEqual([]);
+
+    const second = await activateWithLine();
+    const late = mocks.teardown.events.length;
+    for (const entry of first.subscriptions) entry.dispose();
+    await new Promise<void>((resolve) => {
+      setImmediate(() => {
+        resolve();
+      });
+    });
+    expect(
+      mocks.teardown.events.slice(late),
+      "the first activation's entry must not tear down the second"
+    ).toEqual([]);
+
+    await deactivateMarked();
+    expect(mocks.teardown.events.slice(late)).toEqual([
+      'output:dispose',
+      'lock:release',
+      'release:start',
+      'release:end',
+      'output:dispose',
+      DEACTIVATED
+    ]);
+    expect(second.sink).not.toBe(first.sink);
+    expect(second.sink.openDescriptorCount).toBe(0);
   });
 });

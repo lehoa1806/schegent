@@ -206,16 +206,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // FR-R3-137 (FR-010) — published so `deactivate()` can AWAIT it. This entry
   // opened `void stage2?.dispose()`, and VS Code disposes `context.subscriptions`
   // synchronously: the promise carrying the transport flush, the lease release and
-  // the lock release was discarded at the one moment the three had to finish. It
-  // nulls itself, so whichever of the two paths fires second is a no-op.
-  hostTeardown = async (): Promise<void> => {
-    hostTeardown = null;
+  // the lock release was discarded at the one moment the three had to finish.
+  // Feature 218 (FR-011, FR-013) — it runs once per activation, so whichever of the
+  // two paths fires second awaits the same run, and it releases the runtime log
+  // writer once the Stage 2 teardown has settled, resolved or rejected. The
+  // subscription calls this activation's `teardownOnce`, never the module's.
+  let hostTeardownRun: Promise<void> | null = null;
+  const runHostTeardown = async (): Promise<void> => {
     const output = activeOutput; // read first: `tearDownStage2` clears it
-    await tearDownStage2();
+    try {
+      await tearDownStage2();
+    } finally {
+      await runtimeLogSink.flushAndDispose(); // never rejects
+      if (hostTeardown === teardownOnce) hostTeardown = null;
+    }
     output?.dispose();
     activePlaceholder.dispose();
   };
-  context.subscriptions.push({ dispose: () => void hostTeardown?.() });
+  const teardownOnce = (): Promise<void> => (hostTeardownRun ??= runHostTeardown());
+  hostTeardown = teardownOnce;
+  context.subscriptions.push({ dispose: () => void teardownOnce() });
 
   // Stage 2 — workspace-bound wiring. Only proceeds when a workspace folder is open.
   await ensureStage2();

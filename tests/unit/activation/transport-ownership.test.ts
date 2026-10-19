@@ -210,7 +210,9 @@ describe('FR-R3-137 — one stop path (T1530g, FR-011)', () => {
   });
 
   it('the host teardown is assigned once and awaited by `deactivate`', () => {
-    const assignments = code.match(/^\s*hostTeardown = async/gm) ?? [];
+    // Feature 218 — any statement that starts by assigning it. The guarded clear
+    // starts with `if` and the declaration with `let`, so neither is counted.
+    const assignments = code.match(/^\s*hostTeardown = /gm) ?? [];
     expect(assignments, 'a second assignment is a second teardown').toHaveLength(1);
     expect(code).toContain('await hostTeardown?.();');
     expect(code).toMatch(/export async function deactivate\(\): Promise<void>/);
@@ -223,7 +225,7 @@ describe('FR-R3-137 — one stop path (T1530g, FR-011)', () => {
     expect(code).not.toContain('void stage2?.dispose()');
   });
 
-  it('the one surviving `void` is the fallback, and it is safe because it self-nulls', () => {
+  it('the one surviving `void` is the fallback, and it is safe because the teardown runs once per activation', () => {
     // This test used to be called "no path discards the teardown promise", which
     // was not true of the code that fixed the defect. One `void` remains and has
     // to: `Disposable.dispose()` is synchronous, so the subscription entry cannot
@@ -232,10 +234,20 @@ describe('FR-R3-137 — one stop path (T1530g, FR-011)', () => {
     // remaining `void` does not get "fixed" by deleting the entry — that would
     // leave a partially wired host with nothing to close the sink at all, which is
     // FR-009 exactly.
-    expect(code).toContain('context.subscriptions.push({ dispose: () => void hostTeardown?.() });');
+    expect(code).toContain('context.subscriptions.push({ dispose: () => void teardownOnce() });');
     expect(
       code,
-      'the closure must null itself, or whichever path runs second drains twice'
+      'the published teardown clears itself once it has run, or the module keeps a finished activation'
     ).toContain('hostTeardown = null;');
+  });
+
+  it('each activation memoises its own host teardown, so both paths share one run (FR-R3-191)', () => {
+    const memos = code.match(/hostTeardownRun \?\?= runHostTeardown\(\)/g) ?? [];
+    expect(memos, 'a second memo is a second run, and a second release').toHaveLength(1);
+  });
+
+  it('the host teardown releases the runtime log writer, and nothing else does (FR-R3-191)', () => {
+    const releases = code.match(/runtimeLogSink\.flushAndDispose\(/g) ?? [];
+    expect(releases, 'the writer is released once, by the host teardown').toHaveLength(1);
   });
 });
