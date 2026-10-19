@@ -54,6 +54,7 @@ import {
 import { listGenerations, NarrowingReporter, narrowRotatedFiles } from '../evidence-narrowing';
 import { openWithinRootByPath, type SafeOpenRefusal } from '../safe-open';
 import type { LogSink, SanitizedLogger } from '../logger';
+import { HeldAppendHandles } from './held-append-handles';
 import {
   isRuntimeLogLevel,
   shouldEmit,
@@ -182,6 +183,8 @@ export interface RuntimeLogSinkDeps {
   readonly containmentRoots?: () => readonly string[];
   /** The oracle's own seam, on the same optional terms. */
   readonly realpath?: (target: string) => Promise<string>;
+  /** Feature 218 (FR-003) — the release's drain bound; omitted, the module's default applies. */
+  readonly drainGraceMs?: number;
 }
 
 /**
@@ -269,28 +272,13 @@ export class RuntimeLogSink implements LogSink {
   private readonly containmentCache: Map<string, ContainmentVerdict> = new Map();
 
   /**
-   * FR-R3-080 (T1064) — the append path's DESCRIPTOR, held per target path.
-   *
-   * `SEC-07`. What this replaces is the cached verdict above being used as the
-   * proof of a write performed on a pathname: proven once, re-resolved on every
-   * line. The header for that cache said so itself — "a target replaced mid-run
-   * with no accompanying settings change keeps its cached verdict until the next
-   * clear" — and named the only way to shrink the window as paying `realpath`
-   * per line.
-   *
-   * A held descriptor is the third answer, and it is strictly better than both:
-   * the walk happens ONCE per target, and every subsequent append goes to the
-   * file that walk proved, by descriptor, so there is no window at all rather
-   * than a narrower one. `O_APPEND` keeps concurrent writers from overwriting
-   * each other exactly as `fs.appendFile` did.
-   *
-   * The handle is closed and dropped wherever the identity of the target can
-   * change: a suppression clear (an operator repointed the path), a rotation
-   * (the file is renamed out from under it — a held descriptor would follow the
-   * inode into the rotated generation, which is the one bug this cache can
-   * cause), and a truncate-in-place.
+   * FR-R3-080 (T1064) — the append path's descriptors, held per target path, and
+   * feature 218's release of them. `held-append-handles.ts` says why both.
    */
-  private readonly appendHandles: Map<string, { handle: FileHandle; roots: string }> = new Map();
+  private readonly appendHandles: HeldAppendHandles;
+
+  /** Feature 218 (FR-002) — set by `flushAndDispose`; from then on every new line is refused. */
+  private closed = false;
 
   /** Feature 217 (FR-003, data-model.md §2) — says once, path-free, what narrowing found. */
   private readonly narrowing = new NarrowingReporter('runtime-log-sink:', (message) =>
@@ -324,6 +312,10 @@ export class RuntimeLogSink implements LogSink {
     this.evidenceHealth = deps.evidenceHealth;
     this.containmentRoots = deps.containmentRoots;
     this.containmentFs = { realpath: deps.realpath ?? fs.realpath };
+    this.appendHandles = new HeldAppendHandles(
+      (message) => this.fallback.warn(`runtime-log-sink: ${message}`),
+      deps.drainGraceMs
+    );
   }
 
   /**
@@ -346,7 +338,7 @@ export class RuntimeLogSink implements LogSink {
     // byte seed, and for the same reason: the operator may have just repointed
     // the path at something else.
     this.containmentCache.delete(targetPath);
-    void this.closeAppendHandle(targetPath);
+    void this.appendHandles.close(targetPath);
   }
 
   /**
@@ -361,7 +353,7 @@ export class RuntimeLogSink implements LogSink {
     this.bytesOnDisk.clear();
     this.bytesSeeded.clear();
     this.containmentCache.clear();
-    for (const targetPath of [...this.appendHandles.keys()]) void this.closeAppendHandle(targetPath);
+    this.appendHandles.closeAll();
   }
 
   /** Read-only view used by tests. */
@@ -376,6 +368,8 @@ export class RuntimeLogSink implements LogSink {
    * Schedules an async write but never throws.
    */
   public appendLine(line: string): void {
+    // Feature 218 (FR-002) — check 1: a released writer reads no settings and reports nothing.
+    if (this.closed) return;
     const settings = this.accessor.read();
     if (!settings) {
       this.evidenceHealth?.reportFailure('runtimeLog', 'configuration');
@@ -420,6 +414,21 @@ export class RuntimeLogSink implements LogSink {
   }
 
   /**
+   * Feature 218 (FR-001 to FR-008) — the release: refuse every new line now,
+   * then let `HeldAppendHandles.release` bound the drain and close every
+   * descriptor. Not `async`, so every call receives the same promise.
+   */
+  public flushAndDispose(): Promise<void> {
+    this.closed = true;
+    return this.appendHandles.release(() => this.flushPendingWrites());
+  }
+
+  /** Feature 218 (FR-009) — the descriptors held now, read from the writer's own record. */
+  public get openDescriptorCount(): number {
+    return this.appendHandles.size;
+  }
+
+  /**
    * The containment layer, or `null` when this sink was built without one.
    * Returning `null` rather than a permissive verdict keeps the two states
    * distinguishable at every call site: "proven contained" and "never asked"
@@ -461,16 +470,9 @@ export class RuntimeLogSink implements LogSink {
     // outlives it, and a handle proved against the old set must not keep
     // admitting writes under the new one. The held descriptor removes the
     // check-to-use window; it does not license inheriting an admission.
-    const rootsKey = roots.join('\u0000');
-    const held = this.appendHandles.get(targetPath);
-    if (held) {
-      if (held.roots === rootsKey) return held.handle;
-      await this.closeAppendHandle(targetPath);
-    }
-    const handle = await this.openRooted(targetPath, roots, 'a');
-    if (handle === null) return null;
-    this.appendHandles.set(targetPath, { handle, roots: rootsKey });
-    return handle;
+    return this.appendHandles.acquire(targetPath, roots, () =>
+      this.openRooted(targetPath, roots, 'a')
+    );
   }
 
   /**
@@ -576,13 +578,6 @@ export class RuntimeLogSink implements LogSink {
     }
   }
 
-  private async closeAppendHandle(targetPath: string): Promise<void> {
-    const held = this.appendHandles.get(targetPath);
-    if (!held) return;
-    this.appendHandles.delete(targetPath);
-    await held.handle.close().catch(() => undefined);
-  }
-
   /**
    * Prove a generation file this rotation is about to rename or unlink.
    * Uncached and link-form: `rename` and `unlink` act on the directory entry
@@ -613,6 +608,8 @@ export class RuntimeLogSink implements LogSink {
     maxBytes: number,
     maxGenerations: number
   ): Promise<void> {
+    // Feature 218 (FR-004) — check 2: a queued line whose chain resumed after the close step.
+    if (this.appendHandles.isReleased()) return;
     // Before the stat, so a refused path costs one resolution and not a
     // syscall against a location the host was never allowed to look at.
     if (!(await this.appendTargetIsContained(targetPath))) return;
@@ -664,7 +661,7 @@ export class RuntimeLogSink implements LogSink {
       // rotation renames this file and a truncate replaces its contents; a
       // descriptor held across either would follow the inode into the rotated
       // generation and append there forever.
-      await this.closeAppendHandle(targetPath);
+      await this.appendHandles.close(targetPath);
       if (maxGenerations === 0) {
         // Operator opted out of rotation; truncate in place. The new
         // line is the only content after this call.
@@ -693,6 +690,8 @@ export class RuntimeLogSink implements LogSink {
       // without a containment layer at all there is no root to walk from, and
       // the injected port stands in — the same "proven contained" vs. "never
       // asked" distinction `roots()` keeps everywhere else in this file.
+      // Feature 218 (FR-004) — check 2b: the close step may have run during the awaits above.
+      if (this.appendHandles.isReleased()) return;
       const handle = this.roots() === null ? null : await this.appendHandleFor(targetPath);
       if (this.roots() !== null && handle === null) return;
       if (handle === null) await this.appendFile(targetPath, data);
@@ -703,14 +702,15 @@ export class RuntimeLogSink implements LogSink {
       // The held descriptor is dropped on ANY write failure: the next emit
       // re-walks rather than retrying a handle whose file may have been
       // unlinked, rotated or filled.
-      await this.closeAppendHandle(targetPath);
+      await this.appendHandles.close(targetPath);
       const code = errnoCode(err);
       // Feature 217 — the recovery is the rootless branch's. It re-creates the
       // parent and appends by name, which with a containment layer would be a
       // write the walk never proved, at a mode the walk never declared; and a
       // write to a descriptor the walk opened cannot meet a missing parent, so
       // a rooted failure is recorded like any other.
-      if (code === 'ENOENT' && this.roots() === null) {
+      // Feature 218 (FR-004) — check 6: no recovery opens anything after the close step.
+      if (code === 'ENOENT' && this.roots() === null && !this.appendHandles.isReleased()) {
         if (this.retryInFlight.has(targetPath)) {
           // A concurrent emit arrived while the first ENOENT-recovery
           // is still in flight. The recovery promise will fix the
