@@ -94,6 +94,18 @@ function turn(): Promise<void> {
   });
 }
 
+/**
+ * The one handle the case's writer has opened. The case fails unless there is
+ * exactly one. Read through `at`, so the handle is narrowed, not asserted
+ * (`tests/lint/compiler-strictness-ratchet.test.ts`).
+ */
+function onlyOpened(): nodeFs.FileHandle {
+  expect(capture.opened).toHaveLength(1);
+  const handle = capture.opened.at(0);
+  if (handle === undefined) throw new Error('the writer opened no handle');
+  return handle;
+}
+
 /** The writer's optional ports, without the two it requires. */
 type Ports = Omit<RuntimeLogSinkDeps, 'accessor' | 'fallbackLogger'>;
 
@@ -187,12 +199,12 @@ describe('RuntimeLogSink.flushAndDispose — the writer gives its descriptors ba
     sink.appendLine(LINE);
     await sink.flushPendingWrites();
     expect(sink.openDescriptorCount).toBe(1);
-    expect(capture.opened).toHaveLength(1);
+    const handle = onlyOpened();
 
     await sink.flushAndDispose();
 
     expect(sink.openDescriptorCount).toBe(0);
-    expect(capture.opened[0].fd).toBe(-1);
+    expect(handle.fd).toBe(-1);
     expect(await nodeFs.readFile(target, 'utf8')).toBe(`${LINE}\n`);
   });
 
@@ -212,7 +224,7 @@ describe('RuntimeLogSink.flushAndDispose — the writer gives its descriptors ba
     });
     sink.appendLine(LINE);
     await entered.promise;
-    expect(capture.opened).toHaveLength(1);
+    const handle = onlyOpened();
 
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const release = sink.flushAndDispose();
@@ -228,7 +240,7 @@ describe('RuntimeLogSink.flushAndDispose — the writer gives its descriptors ba
 
     // The count first: with check 5 removed, this is the assertion that fails, at 1.
     expect(sink.openDescriptorCount).toBe(0);
-    expect(capture.opened[0].fd).toBe(-1);
+    expect(handle.fd).toBe(-1);
     expect(await nodeFs.readFile(target, 'utf8')).not.toContain(LINE);
   });
 
@@ -311,8 +323,7 @@ describe('RuntimeLogSink.flushAndDispose — the writer gives its descriptors ba
     const { sink, target } = await build();
     sink.appendLine(LINE);
     await sink.flushPendingWrites();
-    expect(capture.opened).toHaveLength(1);
-    const [handle] = capture.opened;
+    const handle = onlyOpened();
     // Node 24 gives each handle its own `close` (research R5), so replacing it
     // gates this handle's close and no other.
     const gate = deferred<void>();
@@ -356,8 +367,7 @@ describe('RuntimeLogSink.flushAndDispose — the writer gives its descriptors ba
     const { sink } = await build();
     sink.appendLine(LINE);
     await sink.flushPendingWrites();
-    expect(capture.opened).toHaveLength(1);
-    const [handle] = capture.opened;
+    const handle = onlyOpened();
     const close = handle.close.bind(handle);
     handle.close = async (): Promise<void> => {
       await close();
