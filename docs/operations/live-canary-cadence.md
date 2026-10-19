@@ -111,6 +111,15 @@ siblings from the same week each carried one.
 existing record and the answer to *"has the canary ever produced a result, and what did it say?"*
 Nothing new is created for it.
 
+**Amended 2026-10-19: a live run was made.** `npm run canary:record` ran on 2026-10-19 at the
+operator's request and qualified claude 2.1.302, codex 0.159.2 and agy 1.4.2; the result is the
+2026-10-19 entry in [the qualification log](../release/backend-qualification-log.md). Trigger 2 had
+already fired: every installed CLI had moved past the versions qualified on 2026-08-26 (2.1.246,
+0.149.0 and 1.1.21). The heading, the triggers and §6's first bullet are left as written on
+2026-08-27, and where they disagree this paragraph is the newer statement. The review date stays, and
+so does this page's entry in `dated-review-records.test.ts`: whether the run discharges the deferral
+is the operator's call at that review.
+
 ## 6. What this page does not claim
 
 - It does not claim a canary run happened. §5.
