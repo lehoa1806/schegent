@@ -7,8 +7,9 @@
 //      (FR-005).
 //   3. One release: the same promise on every call, and the drain runs once
 //      (FR-006).
-//   4. A rejecting close or drain still resolves, and a descriptor whose close
-//      failed is no longer counted (FR-007).
+//   4. A close or drain that rejects, a close that throws, and a warning that
+//      throws: the release still resolves, closes every descriptor, and no
+//      longer counts one whose close failed (FR-007).
 //   5. One warning, naming no path and no count, when the grace expires, and
 //      none when the drain wins (FR-008).
 //   6. The grace is the transport writer's (FR-003).
@@ -295,6 +296,23 @@ describe('HeldAppendHandles — release', () => {
     expect(failingAtRelease.closeCalls()).toBe(1);
   });
 
+  it('resolves when a close throws instead of rejecting, and still closes the rest (FR-007)', async () => {
+    const held = new HeldAppendHandles(() => undefined);
+    const throwing = fakeHandle(() => {
+      throw new Error('EBADF');
+    });
+    const next = fakeHandle();
+    // Held in this order, so the sweep reaches the throwing close first.
+    await held.acquire(TARGET, ROOTS, () => Promise.resolve(throwing.handle));
+    await held.acquire(OTHER_TARGET, ROOTS, () => Promise.resolve(next.handle));
+
+    await expect(held.release(drained)).resolves.toBeUndefined();
+
+    expect(throwing.closeCalls()).toBe(1);
+    expect(next.closeCalls(), 'the sweep went on past the throw').toBe(1);
+    expect(held.size).toBe(0);
+  });
+
   it('resolves when the drain rejects, and warns nothing (FR-007, FR-008)', async () => {
     const { warn, warnings } = collectingWarn();
     const held = new HeldAppendHandles(warn);
@@ -354,6 +372,33 @@ describe('HeldAppendHandles — the grace (FR-003, FR-008)', () => {
     expect(vi.getTimerCount(), 'the grace was cleared').toBe(0);
     await vi.advanceTimersByTimeAsync(GRACE_MS);
     expect(warnings).toEqual([]);
+  });
+
+  it('resolves, and closes every descriptor, when the warning throws (FR-007, FR-008)', async () => {
+    let attempts = 0;
+    const held = new HeldAppendHandles(() => {
+      attempts += 1;
+      throw new Error('the fallback logger failed');
+    }, GRACE_MS);
+    const fake = fakeHandle();
+    await held.acquire(TARGET, ROOTS, () => Promise.resolve(fake.handle));
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const stalled = deferred<undefined>();
+
+    // Both outcomes handled here, so a rejection is an assertion, not an
+    // unhandled rejection.
+    const outcome = held.release(() => stalled.promise).then(
+      () => 'resolved',
+      () => 'rejected'
+    );
+    await vi.advanceTimersByTimeAsync(GRACE_MS);
+    const result = await outcome;
+
+    expect(attempts, 'the grace expired, so the warning was attempted').toBe(1);
+    expect(result, 'the release never rejects').toBe('resolved');
+    expect(fake.closeCalls()).toBe(1);
+    expect(held.size).toBe(0);
+    expect(held.isReleased()).toBe(true);
   });
 
   it("pins the default grace to the transport writer's", () => {

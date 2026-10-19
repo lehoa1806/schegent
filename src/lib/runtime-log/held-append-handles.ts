@@ -180,7 +180,14 @@ export class HeldAppendHandles {
       clearTimeout(timer);
     }
 
-    if (expired) this.warn(GRACE_EXPIRED_WARNING);
+    if (expired) {
+      try {
+        this.warn(GRACE_EXPIRED_WARNING);
+      } catch {
+        // Nothing left to report it to. The close step below still runs: a
+        // warning that throws must not leave every descriptor open (FR-007).
+      }
+    }
 
     // Closed regardless. The latch goes up BEFORE the sweep, so an open that
     // resumes during it is refused by checks 4 and 5 rather than kept behind the
@@ -202,7 +209,15 @@ export class HeldAppendHandles {
   }
 }
 
-/** A close that cannot reject. A failed close is not retried: its entry is already gone. */
-function closeQuietly(handle: FileHandle): Promise<void> {
-  return handle.close().catch(() => undefined);
+/**
+ * A close that cannot reject, even when `close` throws rather than rejecting:
+ * a throw out of the sweep's loop would end it with descriptors still held.
+ * A failed close is not retried: its entry is already gone.
+ */
+async function closeQuietly(handle: FileHandle): Promise<void> {
+  try {
+    await handle.close();
+  } catch {
+    // Swallowed, so the release cannot reject (FR-007).
+  }
 }
