@@ -358,7 +358,11 @@ function isEnvironmentRow(row) {
   return row.event === 'init';
 }
 
-/** Keys whose VALUE identifies a session, a machine or a path. */
+/**
+ * Keys whose VALUE identifies a session, a machine or a path, or is opaque.
+ * `signature` is the opaque one: claude signs each thinking block with a base64
+ * blob that no parser reads and whose binding cannot be checked from here.
+ */
 const REDACTED_KEYS = new Set([
   'session_id',
   'conversation_id',
@@ -368,7 +372,8 @@ const REDACTED_KEYS = new Set([
   'cwd',
   'memory_paths',
   'messaging_socket_path',
-  'log_file'
+  'log_file',
+  'signature'
 ]);
 
 /** What a probe directory's path becomes in a recording. */

@@ -310,6 +310,11 @@ directory, a temporary directory under the operator's account. The redactor now 
 `<probe-dir>`, the two recordings passed through it once, and `canary-live-records.test.ts` fails if
 a recording names the directory again.
 
+**A second, found in review after the commit.** The four claude injection recordings kept the
+`signature` of each thinking block, five base64 blobs of 1,200 to 6,540 characters that no parser
+reads. The redactor now blanks that key too, and the four passed through it once more, which changed
+those five values and nothing else. The same test fails if a signature comes back.
+
 **What this entry does NOT establish**: anything about Linux, Windows, or the Node floor; whether a
 model resists injected text, since each surface answer is one sample of one model on one turn
 (FR-057); what a persuaded model does with the authority the host grants, since the canary passes none

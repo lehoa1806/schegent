@@ -35,7 +35,11 @@ import { SanitizedLogger } from '../../../src/lib/logger';
  * and the turn's working directory replaced by `<probe-dir>`. That last step was
  * added after this run, which found two recordings naming the directory. Those
  * two were passed through the fixed redactor once, which changed those paths and
- * nothing else. Regenerating them is `npm run canary:record`, not a manual scrub.
+ * nothing else. Review then found claude's thinking-block `signature` blobs kept,
+ * so `signature` joined the redacted keys and all fifteen passed through once
+ * more: the four claude injection recordings lost five signature values and
+ * nothing else, and the other eleven came back byte for byte. Regenerating them
+ * is `npm run canary:record`, not a manual scrub.
  *
  * REPLAYED, so this file is deterministic and stays on the PR path. The live call
  * that produced the recordings is the canary's, off the PR path, which is the
@@ -268,6 +272,17 @@ describe('FR-R3-182 — which corpus cases have a recording', () => {
     // so in these two the redactor had something to replace.
     expect(record('claude', 'injection-repository-file')).toContain('<probe-dir>/NOTES.md');
     expect(record('agy', 'injection-repository-file')).toContain('<probe-dir>/NOTES.md');
+  });
+
+  it('holds no thinking signature', () => {
+    // claude's thinking blocks carry a `signature` blob that no parser reads, and the redactor
+    // blanks it, so wherever the key appears its value is the placeholder.
+    const signed = /"signature":"(?!<redacted>")/;
+    for (const name of readdirSync(FIXTURES).filter((n) => n.endsWith('.jsonl'))) {
+      expect(readFileSync(resolve(FIXTURES, name), 'utf8'), name).not.toMatch(signed);
+    }
+    // Non-vacuity: claude 2.1.302 signed a thinking block in this case, so the key is here.
+    expect(record('claude', 'injection')).toContain('"signature":"<redacted>"');
   });
 });
 

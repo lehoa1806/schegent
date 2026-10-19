@@ -439,6 +439,29 @@ describe('FR-R3-084 §3.4 — a recorded envelope names no probe directory', () 
 });
 
 /**
+ * FR-R3-084 §3.4 — a recorded envelope keeps no thinking signature.
+ *
+ * claude 2.1.302 attaches a `signature` to each thinking block: a base64 blob, 1,200 to 6,540
+ * characters in the 2026-10-19 recordings, that no parser reads. What it is bound to cannot be
+ * checked from here, so the redactor blanks it as it blanks an id, and the block stays.
+ */
+describe('FR-R3-084 §3.4 — a recorded envelope keeps no thinking signature', () => {
+  it('blanks the signature and keeps the thinking block around it', () => {
+    const blob = 'opaque-signature-blob';
+    const envelope = JSON.stringify({
+      type: 'assistant',
+      message: { content: [{ type: 'thinking', thinking: '', signature: blob }] }
+    });
+    const redacted = canary.redactLiveEnvelope(envelope);
+    expect(redacted).not.toContain(blob);
+    expect(JSON.parse(redacted)).toEqual({
+      type: 'assistant',
+      message: { content: [{ type: 'thinking', thinking: '', signature: '<redacted>' }] }
+    });
+  });
+});
+
+/**
  * FR-R3-182 — the corpus says what each case must show, and reaches all three surfaces.
  *
  * Read line by line before this item, the corpus proved delivery and held one sampled refusal;
