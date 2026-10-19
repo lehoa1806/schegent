@@ -669,4 +669,48 @@ describe('activate() — the host teardown releases the runtime log writer (FR-R
     expect(second.sink).not.toBe(first.sink);
     expect(second.sink.openDescriptorCount).toBe(0);
   });
+
+  it("US2-7 — a first teardown that settles after the second activation began leaves the second's in place", async () => {
+    const first = await activateWithLine();
+    // The first writer's release is held, so the first teardown is still running
+    // when the second activation publishes its own. The first clears the published
+    // teardown only once that release settles, and must then leave the second's.
+    let reachRelease: () => void = () => undefined;
+    const releaseReached = new Promise<void>((resolve) => {
+      reachRelease = resolve;
+    });
+    let openRelease: () => void = () => undefined;
+    const releaseOpened = new Promise<void>((resolve) => {
+      openRelease = resolve;
+    });
+    const release = first.sink.flushAndDispose.bind(first.sink);
+    let firstReleased = Promise.resolve();
+    first.sink.flushAndDispose = (): Promise<void> => {
+      reachRelease();
+      firstReleased = releaseOpened.then(release);
+      return firstReleased;
+    };
+    for (const entry of first.subscriptions) entry.dispose();
+    await releaseReached;
+
+    const second = await activateWithLine();
+    openRelease();
+    await firstReleased;
+    // One turn more, for the rest of the first teardown after its release.
+    await new Promise<void>((resolve) => {
+      setImmediate(() => {
+        resolve();
+      });
+    });
+    expect(first.sink.openDescriptorCount).toBe(0);
+
+    const mark = mocks.teardown.events.length;
+    await deactivateMarked();
+    expect(releaseOrder(mark), "the first teardown must not clear the second's").toEqual([
+      'release:start',
+      'release:end',
+      DEACTIVATED
+    ]);
+    expect(second.sink.openDescriptorCount).toBe(0);
+  });
 });
