@@ -120,13 +120,18 @@ import { disposeWorkspaceFolderPicker } from '../../../src/state/workspace-folde
 // so each test case exercises the predicate independently.
 import { resetMultiRootWarningGuardForTest } from '../../../src/state/multi-root-warning';
 import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { createDiskOwnershipFs } from '../../../src/state/ownership-fs';
 import { OwnershipRegistry, PRIMACY_RESOURCE } from '../../../src/state/ownership-registry';
 import { STALENESS_THRESHOLD_MS } from '../../../src/state/lock';
 
-/** The workspace every activation in this file opens. */
-const WORKSPACE_ROOT = '/tmp/ws';
+/**
+ * FR-R3-191 — the case's own folder, made by `beforeEach` under the run's temp
+ * root, and the workspace inside it that every activation in the case opens.
+ */
+let caseRoot = '';
+let workspaceRoot = '';
 
 interface MockMemento {
   get<T>(key: string): T | undefined;
@@ -154,14 +159,17 @@ function buildContext(overrides: { mementoStore?: Map<string, unknown> } = {}): 
       }
     }
   } as MockMemento;
+  // Paths only: nothing here creates either folder.
+  const extRoot = path.join(caseRoot, 'ext-root');
+  const globalStorage = path.join(caseRoot, 'global-storage');
   const context = {
     subscriptions,
     workspaceState: memento,
-    extensionUri: { fsPath: '/tmp/ext-root', scheme: 'file', path: '/tmp/ext-root' },
-    extensionPath: '/tmp/ext-root',
-    asAbsolutePath: (p: string) => `/tmp/ext-root/${p}`,
+    extensionUri: { fsPath: extRoot, scheme: 'file', path: extRoot },
+    extensionPath: extRoot,
+    asAbsolutePath: (p: string) => path.join(extRoot, p),
     globalState: memento,
-    globalStorageUri: { fsPath: '/tmp/global-storage', scheme: 'file', path: '/tmp/global-storage' },
+    globalStorageUri: { fsPath: globalStorage, scheme: 'file', path: globalStorage },
     secrets: { get: vi.fn(), store: vi.fn(), delete: vi.fn(), onDidChange: vi.fn() }
   };
   return { context, subscriptions, store };
@@ -177,30 +185,29 @@ beforeEach(async () => {
   mocks.state.listeners.clear();
   mocks.state.workspaceFolders = undefined;
   resetMultiRootWarningGuardForTest();
-  // Feature FR-R3-003 — ownership records live on disk under the workspace, not
-  // in the `Memento`, so unlike every other line above they outlive the process.
-  // Each `activate()` below is a separate simulated window that never reaches
-  // `dispose()`, so its primacy claim stays validly held: without this, the
-  // second activation in the file is correctly refused, and the file's outcome
-  // would depend on its own history and on whether 15 s of staleness had elapsed.
-  await fs.rm(path.join(WORKSPACE_ROOT, '.schegent', 'ownership'), {
-    recursive: true,
-    force: true
-  });
+  // FR-R3-191 — a new folder per case, under the run's temp root, which the
+  // global setup points `os.tmpdir()` at and removes at teardown. Ownership
+  // records live on disk under the workspace, not in the `Memento`, so they
+  // outlive the case that wrote them: a case that opened an earlier case's
+  // workspace would find that case's primacy claim still validly held. Each
+  // case's workspace is new, so there is no claim in it and nothing to clear.
+  caseRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-activate-'));
+  workspaceRoot = path.join(caseRoot, 'ws');
   // FR-R3-069 — the ownership adapter's judgments anchor at the workspace
   // root, which therefore must EXIST (in production a VS Code workspace folder
   // does by definition). The mocked folder here is only a path, so create it.
-  await fs.mkdir(WORKSPACE_ROOT, { recursive: true });
+  await fs.mkdir(workspaceRoot);
   // Feature 099 (T496f) — flushed AFTER the await, not before it. The prior
-  // case's activation is still alive by design (see the note above), and its
-  // in-flight async work reads the picker; a flush that happens before an
-  // `await` leaves a window in which one of those reads re-populates the cache
-  // with the `undefined` this line just set two statements above. The next case
-  // then sets its folder, calls `activate`, and reads a cache that was already
-  // populated — so stage 2 silently never wires. Flushing last leaves no such
-  // window. Nothing about the picker's own contract changes: its cache is
-  // invalidated by `onDidChangeWorkspaceFolders` in the product, and this file
-  // clears that listener set rather than firing it.
+  // case's activation is still alive by design (each case is a simulated
+  // window that never reaches `dispose()`), and its in-flight async work reads
+  // the picker; a flush that happens before an `await` leaves a window in
+  // which one of those reads re-populates the cache with the `undefined` this
+  // line just set two statements above. The next case then sets its folder,
+  // calls `activate`, and reads a cache that was already populated — so
+  // stage 2 silently never wires. Flushing last leaves no such window. Nothing
+  // about the picker's own contract changes: its cache is invalidated by
+  // `onDidChangeWorkspaceFolders` in the product, and this file clears that
+  // listener set rather than firing it.
   disposeWorkspaceFolderPicker();
 });
 
@@ -218,7 +225,7 @@ describe('activate() — BUG-001 activation invariant', () => {
   });
 
   it('(b) registers SidebarViewProvider exactly once when store.initialize() rejects', async () => {
-    mocks.state.workspaceFolders = [{ uri: { fsPath: '/tmp/ws' } }];
+    mocks.state.workspaceFolders = [{ uri: { fsPath: workspaceRoot } }];
     const incompatibleStore = new Map<string, unknown>([['schegent.schemaVersion', '99.0.0']]);
     const { context } = buildContext({ mementoStore: incompatibleStore });
 
@@ -241,7 +248,7 @@ describe('activate() — BUG-001 activation invariant', () => {
     expect(mocks.state.registerCommand).toHaveBeenCalledTimes(1);
     expect(mocks.state.registerCommand.mock.calls[0][0]).toBe('schegent.reset');
 
-    mocks.state.workspaceFolders = [{ uri: { fsPath: '/tmp/ws' } }];
+    mocks.state.workspaceFolders = [{ uri: { fsPath: workspaceRoot } }];
     const handlers = Array.from(mocks.state.listeners);
     expect(handlers.length).toBeGreaterThan(0);
     await Promise.all(handlers.map(async (fn) => fn({ added: [], removed: [] })));
@@ -260,7 +267,7 @@ describe('activate() — BUG-001 activation invariant', () => {
   });
 
   it('(d) tearing down stage-2 when the last folder is removed disposes stage-2 components but keeps the sidebar registered', async () => {
-    mocks.state.workspaceFolders = [{ uri: { fsPath: '/tmp/ws' } }];
+    mocks.state.workspaceFolders = [{ uri: { fsPath: workspaceRoot } }];
     const { context } = buildContext();
 
     await activate(context as Parameters<typeof activate>[0]);
@@ -287,7 +294,7 @@ describe('activate() — BUG-001 activation invariant', () => {
 
 describe('activate() — Stage 2 workspace lock reclaim (BUG-005)', () => {
   it('reclaims a stale workspace lock left by a prior process when no run is persisted', async () => {
-    mocks.state.workspaceFolders = [{ uri: { fsPath: '/tmp/ws' } }];
+    mocks.state.workspaceFolders = [{ uri: { fsPath: workspaceRoot } }];
     const stale = Date.now() - 60_000; // far past the 15s threshold
     const store = new Map<string, unknown>([
       ['schegent.schemaVersion', '1.0.0'],
@@ -307,7 +314,7 @@ describe('activate() — Stage 2 workspace lock reclaim (BUG-005)', () => {
   });
 
   it('acquires the workspace lock on Stage 2 even when no lock and no run are persisted', async () => {
-    mocks.state.workspaceFolders = [{ uri: { fsPath: '/tmp/ws' } }];
+    mocks.state.workspaceFolders = [{ uri: { fsPath: workspaceRoot } }];
     const store = new Map<string, unknown>([['schegent.schemaVersion', '1.0.0']]);
     const { context } = buildContext({ mementoStore: store });
 
@@ -325,12 +332,12 @@ describe('activate() — Stage 2 workspace lock reclaim (BUG-005)', () => {
     // `Memento` is a per-extension-host cache — the other window's entry would
     // never appear in this one's, which is the finding this feature closes. The
     // mirror is seeded too, so the assertion can show it was left untouched.
-    mocks.state.workspaceFolders = [{ uri: { fsPath: WORKSPACE_ROOT } }];
+    mocks.state.workspaceFolders = [{ uri: { fsPath: workspaceRoot } }];
     const fresh = Date.now() - 1_000; // well within the 15s threshold
     const otherOwner = 'schegent-other-pid-cafebabe';
-    const ownershipDir = path.join(WORKSPACE_ROOT, '.schegent', 'ownership');
+    const ownershipDir = path.join(workspaceRoot, '.schegent', 'ownership');
     const incumbent = new OwnershipRegistry(
-      createDiskOwnershipFs({ workspaceRoot: WORKSPACE_ROOT, ownershipDir }),
+      createDiskOwnershipFs({ workspaceRoot, ownershipDir }),
       ownershipDir
     );
     expect(
@@ -359,12 +366,12 @@ describe('activate() — Stage 2 workspace lock reclaim (BUG-005)', () => {
     // installer declines — no scheduled-start re-arm, no watchdog reattach, no
     // delayed-retry re-arm, no persisted-run resume. The observable is the
     // activation log, which is where each installer records its decline.
-    mocks.state.workspaceFolders = [{ uri: { fsPath: WORKSPACE_ROOT } }];
+    mocks.state.workspaceFolders = [{ uri: { fsPath: workspaceRoot } }];
     const fresh = Date.now() - 1_000;
     const otherOwner = 'schegent-other-pid-cafebabe';
-    const ownershipDir = path.join(WORKSPACE_ROOT, '.schegent', 'ownership');
+    const ownershipDir = path.join(workspaceRoot, '.schegent', 'ownership');
     const incumbent = new OwnershipRegistry(
-      createDiskOwnershipFs({ workspaceRoot: WORKSPACE_ROOT, ownershipDir }),
+      createDiskOwnershipFs({ workspaceRoot, ownershipDir }),
       ownershipDir
     );
     expect(
