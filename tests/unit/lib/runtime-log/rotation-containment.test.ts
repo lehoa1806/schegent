@@ -28,7 +28,7 @@
 // a real temp directory with real symlinks, which is what the append path's
 // component walk actually reads. The properties asserted are unchanged.
 
-import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll, type Mock } from 'vitest';
 import * as nodeFs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -37,6 +37,7 @@ import { SanitizedLogger } from '../../../../src/lib/logger';
 import { RuntimeLogSink } from '../../../../src/lib/runtime-log/runtime-log-sink';
 import type { RuntimeLogAccessor } from '../../../../src/lib/runtime-log/runtime-log-settings';
 import type { RuntimeLogLevel } from '../../../../src/lib/runtime-log/runtime-log-level';
+import { expectNoDescriptorWarnings } from '../../../setup/descriptor-warnings';
 
 let allowedRoot: string;
 let escapedRoot: string;
@@ -119,6 +120,36 @@ beforeEach(async () => {
   targetPath = path.join(allowedRoot, 'logs', 'runtime.log');
 });
 
+/** FR-R3-191 (feature 218, FR-018) — every writer the current case has built. */
+const live: RuntimeLogSink[] = [];
+
+/**
+ * The writer, recorded on `live` as it is built. Every construction site in
+ * this file names it instead of `RuntimeLogSink`, so `afterEach` can release
+ * what a case built without the case doing anything.
+ */
+class LiveSink extends RuntimeLogSink {
+  constructor(deps: ConstructorParameters<typeof RuntimeLogSink>[0]) {
+    super(deps);
+    live.push(this);
+  }
+}
+
+afterEach(async () => {
+  // Taken off the list first, so a failing check cannot carry this case's
+  // writers into the next.
+  const built = live.splice(0);
+  await Promise.all(built.map((sink) => sink.flushAndDispose()));
+  const open = built.map((sink) => sink.openDescriptorCount);
+  expect(open, 'a writer this case built still holds a descriptor').toEqual(open.map(() => 0));
+});
+
+// FR-R3-191 (FR-018) — the file releases every writer it builds, so it opts in
+// to the descriptor detector.
+afterAll(() => {
+  expectNoDescriptorWarnings();
+});
+
 describe('FR-R3-005 — runtime-log mutations are contained at the point of effect', () => {
   it('refuses the append when the configured path resolves outside every allowed root', async () => {
     // The setting is lexically inside the allowed root, so `runtime-log-path.ts`
@@ -127,7 +158,7 @@ describe('FR-R3-005 — runtime-log mutations are contained at the point of effe
     await nodeFs.rm(path.join(allowedRoot, 'logs'), { recursive: true, force: true });
     await nodeFs.symlink(escapedRoot, path.join(allowedRoot, 'logs'), 'dir');
     const fs = spiedFs();
-    const sink = new RuntimeLogSink({
+    const sink = new LiveSink({
       accessor: accessorFor({ level: 'INFO', path: targetPath, maxBytes: 65_536, maxGenerations: 3 }),
       fallbackLogger: fallbackLogger(),
       containmentRoots: () => [allowedRoot],
@@ -149,7 +180,7 @@ describe('FR-R3-005 — runtime-log mutations are contained at the point of effe
     await nodeFs.rm(path.join(allowedRoot, 'logs'), { recursive: true, force: true });
     await nodeFs.writeFile(path.join(allowedRoot, 'logs'), 'not a directory');
     const fs = spiedFs();
-    const sink = new RuntimeLogSink({
+    const sink = new LiveSink({
       accessor: accessorFor({ level: 'INFO', path: targetPath, maxBytes: 65_536, maxGenerations: 3 }),
       fallbackLogger: fallbackLogger(),
       containmentRoots: () => [allowedRoot],
@@ -167,7 +198,7 @@ describe('FR-R3-005 — runtime-log mutations are contained at the point of effe
     await nodeFs.rm(path.join(allowedRoot, 'logs'), { recursive: true, force: true });
     await nodeFs.symlink(escapedRoot, path.join(allowedRoot, 'logs'), 'dir');
     const fallback = fallbackLogger();
-    const sink = new RuntimeLogSink({
+    const sink = new LiveSink({
       accessor: accessorFor({ level: 'INFO', path: targetPath, maxBytes: 65_536, maxGenerations: 3 }),
       fallbackLogger: fallback,
       containmentRoots: () => [allowedRoot],
@@ -191,7 +222,7 @@ describe('FR-R3-005 — runtime-log mutations are contained at the point of effe
     // refused for the life of the window.
     await nodeFs.rm(path.join(allowedRoot, 'logs'), { recursive: true, force: true });
     await nodeFs.symlink(escapedRoot, path.join(allowedRoot, 'logs'), 'dir');
-    const sink = new RuntimeLogSink({
+    const sink = new LiveSink({
       accessor: accessorFor({ level: 'INFO', path: targetPath, maxBytes: 65_536, maxGenerations: 3 }),
       fallbackLogger: fallbackLogger(),
       containmentRoots: () => [allowedRoot],
@@ -219,7 +250,7 @@ describe('FR-R3-005 — runtime-log mutations are contained at the point of effe
     // rotation check for exactly this.
     let roots: readonly string[] = [allowedRoot];
     const fs = spiedFs();
-    const sink = new RuntimeLogSink({
+    const sink = new LiveSink({
       accessor: accessorFor({ level: 'INFO', path: targetPath, maxBytes: 64, maxGenerations: 2 }),
       fallbackLogger: fallbackLogger(),
       containmentRoots: () => roots,
@@ -254,7 +285,7 @@ describe('FR-R3-005 — runtime-log mutations are contained at the point of effe
       await nodeFs.rename(from, to);
       roots = [escapedRoot];
     });
-    const sink = new RuntimeLogSink({
+    const sink = new LiveSink({
       accessor: accessorFor({ level: 'INFO', path: targetPath, maxBytes: 64, maxGenerations: 1 }),
       fallbackLogger: fallbackLogger(),
       containmentRoots: () => roots,
@@ -275,7 +306,7 @@ describe('FR-R3-005 — runtime-log mutations are contained at the point of effe
     // generation shift and the stale sweep all behave as they did before the
     // guard existed.
     const fs = spiedFs();
-    const sink = new RuntimeLogSink({
+    const sink = new LiveSink({
       accessor: accessorFor({ level: 'INFO', path: targetPath, maxBytes: 64, maxGenerations: 1 }),
       fallbackLogger: fallbackLogger(),
       containmentRoots: () => [allowedRoot],
@@ -303,7 +334,7 @@ describe('FR-R3-005 — runtime-log mutations are contained at the point of effe
     // is deliberately different from omitting `containmentRoots`, which means
     // "no containment layer" and is what the sink's older unit tests rely on.
     const fs = spiedFs();
-    const sink = new RuntimeLogSink({
+    const sink = new LiveSink({
       accessor: accessorFor({ level: 'INFO', path: targetPath, maxBytes: 65_536, maxGenerations: 3 }),
       fallbackLogger: fallbackLogger(),
       containmentRoots: () => [],
@@ -358,7 +389,7 @@ describe('feature 217 — the runtime log is owner-only, rotations included', ()
     maxGenerations: number,
     fallback: SanitizedLogger = fallbackLogger()
   ): RuntimeLogSink {
-    return new RuntimeLogSink({
+    return new LiveSink({
       accessor: accessorFor({ level: 'INFO', path: targetPath, maxBytes, maxGenerations }),
       fallbackLogger: fallback,
       containmentRoots: () => [allowedRoot],
@@ -432,7 +463,7 @@ describe('feature 217 — the runtime log is owner-only, rotations included', ()
       if (listingFails) throw Object.assign(new Error('busy'), { code: 'EMFILE' });
       return nodeFs.readdir(target);
     });
-    const sink = new RuntimeLogSink({
+    const sink = new LiveSink({
       accessor: accessorFor({ level: 'INFO', path: targetPath, maxBytes: 64, maxGenerations: 2 }),
       fallbackLogger: fallbackLogger(),
       containmentRoots: () => [allowedRoot],
