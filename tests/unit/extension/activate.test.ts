@@ -690,11 +690,17 @@ describe('activate() — the host teardown releases the runtime log writer (FR-R
       firstReleased = releaseOpened.then(release);
       return firstReleased;
     };
-    for (const entry of first.subscriptions) entry.dispose();
-    await releaseReached;
-
-    const second = await activateWithLine();
-    openRelease();
+    let second: Awaited<ReturnType<typeof activateWithLine>>;
+    try {
+      for (const entry of first.subscriptions) entry.dispose();
+      await releaseReached;
+      second = await activateWithLine();
+    } finally {
+      // Opened even when a step above fails: the first teardown waits on this
+      // gate, and the `afterEach` waits on the first teardown until the second
+      // activation publishes its own.
+      openRelease();
+    }
     await firstReleased;
     // One turn more, for the rest of the first teardown after its release.
     await new Promise<void>((resolve) => {
