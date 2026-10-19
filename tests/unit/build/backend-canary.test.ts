@@ -425,15 +425,26 @@ describe('FR-R3-084 §3.4 — a recorded envelope names no probe directory', () 
     expect(canary.redactLiveEnvelope(envelope)).toContain(`${resolvedDir}/NOTES.md`);
   });
 
-  it("is handed the turn's working directory everywhere the runner records", () => {
+  it('is handed the directory its turn ran in, everywhere the runner records', () => {
     const runner = readFileSync(
       resolve(__dirname, '../../../scripts/backend-canary-run.mjs'),
       'utf8'
     );
-    const calls = [...runner.matchAll(/redactLiveEnvelope\(([^)]*)\)/g)].map((m) => m[1]);
+    const calls = [...runner.matchAll(/redactLiveEnvelope\(/g)].map((m) => m.index);
     expect(calls.length).toBeGreaterThanOrEqual(2);
-    for (const args of calls) {
-      expect(args, 'a recording written without its directory').toMatch(/^result\.stdout,\s*\S/);
+    for (const at of calls) {
+      // The directory the recording is scrubbed of...
+      const scrubbed = /^redactLiveEnvelope\(result\.stdout,\s*probeDirSpellings\((\w+)\)\)/.exec(
+        runner.slice(at)
+      );
+      expect(scrubbed, 'a recording written without its directory').not.toBeNull();
+      // ...must be the one the turn ran in: the `cwd` of the spawn that produced `result`.
+      const spawn = runner.slice(runner.lastIndexOf('spawnSync(', at), at);
+      const ran = /\bcwd(?::\s*(\w+))?\s*,/.exec(spawn);
+      expect(ran, 'a turn spawned with no working directory').not.toBeNull();
+      expect(scrubbed?.[1], 'a recording scrubbed of a directory its turn did not run in').toBe(
+        ran?.[1] ?? 'cwd'
+      );
     }
   });
 });
