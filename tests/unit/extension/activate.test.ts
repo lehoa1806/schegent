@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
 
 const mocks = vi.hoisted(() => {
   /**
@@ -161,6 +161,7 @@ import * as path from 'node:path';
 import { createDiskOwnershipFs } from '../../../src/state/ownership-fs';
 import { OwnershipRegistry, PRIMACY_RESOURCE } from '../../../src/state/ownership-registry';
 import { STALENESS_THRESHOLD_MS, WorkspaceLockManager } from '../../../src/state/lock';
+import { expectNoDescriptorWarnings } from '../../setup/descriptor-warnings';
 
 /**
  * FR-R3-191 — the case's own folder, made by `beforeEach` under the run's temp
@@ -233,15 +234,14 @@ beforeEach(async () => {
   // root, which therefore must EXIST (in production a VS Code workspace folder
   // does by definition). The mocked folder here is only a path, so create it.
   await fs.mkdir(workspaceRoot);
-  // Feature 099 (T496f) — flushed AFTER the await, not before it. The prior
-  // case's activation is still alive by design (each case is a simulated
-  // window that never reaches `dispose()`), and its in-flight async work reads
-  // the picker; a flush that happens before an `await` leaves a window in
-  // which one of those reads re-populates the cache with the `undefined` this
-  // line just set two statements above. The next case then sets its folder,
-  // calls `activate`, and reads a cache that was already populated — so
-  // stage 2 silently never wires. Flushing last leaves no such window. Nothing
-  // about the picker's own contract changes: its cache is invalidated by
+  // Feature 099 (T496f) — flushed last, after the `await`s above. It was put
+  // last because the prior case's activation stayed alive, and its in-flight
+  // work read the picker: a flush before an `await` let that work refill the
+  // cache, and the next case's Stage 2 silently never wired. Since FR-R3-191
+  // the `afterEach` deactivates each case's activation, so that premise no
+  // longer holds. The flush stays, and stays last, because a `deactivate()`
+  // that rejects skips `disposeWorkspaceFolderPicker()`. Nothing about the
+  // picker's own contract changes: its cache is invalidated by
   // `onDidChangeWorkspaceFolders` in the product, and this file clears that
   // listener set rather than firing it.
   disposeWorkspaceFolderPicker();
@@ -254,13 +254,31 @@ beforeEach(async () => {
 let lockRelease: { mockRestore(): void } | undefined;
 let lockFailure: Error | undefined;
 
-afterEach(() => {
+afterEach(async () => {
   // Restored first, so nothing that runs after a case goes through a lock
   // release that throws.
   lockRelease?.mockRestore();
   lockRelease = undefined;
-  mocks.teardown.events = [];
-  mocks.teardown.sinks = [];
+  try {
+    // FR-R3-191 (FR-016) — the case's activation goes through the host's
+    // deactivation, as a window's does. After a case that already deactivated,
+    // there is nothing left to tear down.
+    await deactivate();
+    // No runtime log writer this case's activations built holds a descriptor
+    // once the case is over.
+    const open = mocks.teardown.sinks.map((sink) => sink.openDescriptorCount);
+    expect(open, 'a writer this case built still holds a descriptor').toEqual(open.map(() => 0));
+  } finally {
+    // Cleared even when the check fails, so the next case starts empty.
+    mocks.teardown.events = [];
+    mocks.teardown.sinks = [];
+  }
+});
+
+// FR-R3-191 (FR-017) — the file disposes what it creates, so it opts in to the
+// descriptor detector.
+afterAll(() => {
+  expectNoDescriptorWarnings();
 });
 
 describe('activate() — BUG-001 activation invariant', () => {
