@@ -374,6 +374,71 @@ describe('FR-R3-084 — the live phase, written after it was run', () => {
 });
 
 /**
+ * FR-R3-084 §3.4 — a recorded envelope names no probe directory.
+ *
+ * `redactLiveEnvelope` drops the rows that describe the machine and blanks the keys that name a
+ * session, a machine or a path. It did not reach a path the backend names in a TOOL CALL. On
+ * 2026-10-19 the repository-file case's recordings on claude (`Read`) and agy (`view_file`) each
+ * carried the absolute path of the planted `NOTES.md`, in a directory `mkdtempSync` made under the
+ * operator's per-user temp root. So the runner hands the redactor the turn's working directory,
+ * and no string in the envelope keeps it.
+ */
+describe('FR-R3-084 §3.4 — a recorded envelope names no probe directory', () => {
+  const dir = '/var/folders/ab/cdefgh0000gn/T/schegent-canary-Ab3dEf';
+  // How macOS reports it: `/var` links to `/private/var`, and the CLIs name the resolved path.
+  const resolvedDir = `/private${dir}`;
+  const envelopeNaming = (named: string, resolved: string): string =>
+    [
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [{ type: 'tool_use', name: 'Read', input: { file_path: `${resolved}/NOTES.md` } }]
+        }
+      }),
+      JSON.stringify({
+        event: 'step_update',
+        step_update: { tool_info: { parameters: { AbsolutePath: `${resolved}/NOTES.md` } } }
+      }),
+      JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'agent_message', text: `I read ${named}/NOTES.md.` }
+      }),
+      JSON.stringify({ type: 'result', files: { [`${resolved}/NOTES.md`]: 'read' }, cwd: named })
+    ].join('\n');
+
+  it('replaces the directory in every string and key, whichever spelling the backend used', () => {
+    // The shorter spelling first, on purpose: `/private/var/...` contains `/var/...`, so a
+    // redactor that scrubbed in the order it was given would leave `/private<probe-dir>`.
+    const envelope = envelopeNaming(dir, resolvedDir);
+    const redacted = canary.redactLiveEnvelope(envelope, [dir, resolvedDir]);
+    expect(redacted).not.toContain('schegent-canary-');
+    expect(redacted).not.toContain('/var/folders');
+    expect(redacted).not.toContain('/private<probe-dir>');
+    // And nothing else changed: the same envelope, written with the placeholder already in it.
+    expect(redacted).toBe(canary.redactLiveEnvelope(envelopeNaming('<probe-dir>', '<probe-dir>')));
+  });
+
+  it('scrubs nothing when given no directory, or an empty one', () => {
+    // An empty spelling must not split every string into characters.
+    const envelope = envelopeNaming(dir, resolvedDir);
+    expect(canary.redactLiveEnvelope(envelope, [''])).toBe(canary.redactLiveEnvelope(envelope));
+    expect(canary.redactLiveEnvelope(envelope)).toContain(`${resolvedDir}/NOTES.md`);
+  });
+
+  it("is handed the turn's working directory everywhere the runner records", () => {
+    const runner = readFileSync(
+      resolve(__dirname, '../../../scripts/backend-canary-run.mjs'),
+      'utf8'
+    );
+    const calls = [...runner.matchAll(/redactLiveEnvelope\(([^)]*)\)/g)].map((m) => m[1]);
+    expect(calls.length).toBeGreaterThanOrEqual(2);
+    for (const args of calls) {
+      expect(args, 'a recording written without its directory').toMatch(/^result\.stdout,\s*\S/);
+    }
+  });
+});
+
+/**
  * FR-R3-182 — the corpus says what each case must show, and reaches all three surfaces.
  *
  * Read line by line before this item, the corpus proved delivery and held one sampled refusal;

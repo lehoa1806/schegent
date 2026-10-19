@@ -11,7 +11,7 @@ import {
   readHeadCommit,
   recordFromCanaryResults
 } from './backend-qualification.mjs';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import {
@@ -139,6 +139,16 @@ function plantedProbeDir(files) {
   return dir;
 }
 
+/**
+ * Each spelling of a probe directory a backend may report, for `redactLiveEnvelope`.
+ *
+ * `mkdtempSync` spells the path as `tmpdir()` does. On macOS that is under `/var`,
+ * a link to `/private/var`, and the CLIs report the resolved path.
+ */
+function probeDirSpellings(dir) {
+  return [dir, realpathSync(dir)];
+}
+
 function versionProbe(command) {
   const result = spawnSync(command, ['--version'], {
     encoding: 'utf8',
@@ -182,7 +192,7 @@ function liveProbe(backend, command) {
   if (recordDir && (result.stdout ?? '').length > 0) {
     writeFileSync(
       resolve(recordDir, `${backend}-live.jsonl`),
-      redactLiveEnvelope(result.stdout),
+      redactLiveEnvelope(result.stdout, probeDirSpellings(LIVE_CWD)),
       'utf8'
     );
   }
@@ -233,9 +243,10 @@ function recordCorpus(backend, command) {
   if (!args || !recordDir) return;
   const cases = CANARY_CASES.filter((c) => c.backend === backend && c.cadence === 'record-only');
   for (const scenario of cases) {
+    const cwd = scenario.files ? plantedProbeDir(scenario.files) : LIVE_CWD;
     const result = spawnSync(command, args, {
       input: stdinPayloadFor(backend, scenario.prompt),
-      cwd: scenario.files ? plantedProbeDir(scenario.files) : LIVE_CWD,
+      cwd,
       encoding: 'utf8',
       shell: false,
       timeout: LIVE_TIMEOUT_MS
@@ -246,7 +257,7 @@ function recordCorpus(backend, command) {
     }
     writeFileSync(
       resolve(recordDir, `${backend}-${scenario.stem}.jsonl`),
-      redactLiveEnvelope(result.stdout),
+      redactLiveEnvelope(result.stdout, probeDirSpellings(cwd)),
       'utf8'
     );
   }
