@@ -620,7 +620,7 @@ describe('openWithinRoot narrows what it creates or writes to owner-only (featur
     expect(result.narrowing).toEqual([]);
   });
 
-  posixOnly('changes nothing when the open is refused, even after its walk found what is widened', async () => {
+  posixOnly('narrows nothing when the open is refused, even after its walk found what is widened', async () => {
     // `.schegent/.gitignore` is opened create-exclusive, and on every run after
     // the first that open is refused EEXIST. The walk has already found the
     // widened directory by then; only a successful open narrows it.
