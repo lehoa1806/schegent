@@ -15,6 +15,9 @@
 //          (FR-005).
 //   Edge cases: a writer with no containment roots refuses later lines too, and a
 //   close that rejects still lets the release resolve (FR-002, FR-007).
+//   Checks 2, 2b and 6, each on a writer with no roots so that its ports can be
+//   counted: a line queued behind the close step, a line that resumes after it,
+//   and an append that fails after it touch nothing more (FR-004).
 //
 // Each case writes under its own `mkdtemp` in `os.tmpdir()`, which the global
 // setup points at the run's temp root, and removes nothing: that root goes at
@@ -57,7 +60,7 @@ const LINE = '[2026-10-19T00:00:00.000Z] INFO runtime-log-sink-release';
 /** An injected grace, short enough to read and distinct from the default. */
 const GRACE_MS = 50;
 
-/** Large enough that no case's lines roll the file over. */
+/** Large enough that no case's lines roll the file over. The check 2 case seeds a size near it. */
 const MAX_BYTES = 65_536;
 const MAX_GENERATIONS = 3;
 
@@ -191,6 +194,39 @@ function countingPorts(): { readonly ports: Ports; readonly calls: () => number 
     },
     calls: () => calls
   };
+}
+
+/**
+ * A size check that holds the first line until the case lets it go, then
+ * answers `size`. The hold is before the line can reach the filesystem.
+ */
+function gatedStat(size: number): {
+  readonly stat: (target: string) => Promise<{ size: number }>;
+  readonly entered: Promise<void>;
+  readonly letGo: () => void;
+} {
+  const entered = deferred<void>();
+  const gate = deferred<void>();
+  return {
+    stat: async () => {
+      entered.resolve();
+      await gate.promise;
+      return { size };
+    },
+    entered: entered.promise,
+    letGo: () => {
+      gate.resolve();
+    }
+  };
+}
+
+/** Releases `sink` once its grace has expired, so the close step runs while a line is held. */
+async function releasePastTheGrace(sink: RuntimeLogSink): Promise<void> {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  const release = sink.flushAndDispose();
+  await vi.advanceTimersByTimeAsync(GRACE_MS);
+  await release;
+  vi.useRealTimers();
 }
 
 describe('RuntimeLogSink.flushAndDispose — the writer gives its descriptors back', () => {
@@ -378,5 +414,81 @@ describe('RuntimeLogSink.flushAndDispose — the writer gives its descriptors ba
 
     expect(sink.openDescriptorCount).toBe(0);
     expect(handle.fd).toBe(-1);
+  });
+});
+
+describe('RuntimeLogSink — a line the close step overtakes touches nothing more (FR-004)', () => {
+  it('check 2: a line queued behind one held at the close step is refused before it can rotate', async () => {
+    // The held line seeds a size it fits exactly, so the longer line queued
+    // behind it would overflow and rotate. Its containment verdict is cached and
+    // its size already seeded: only check 2 stands before the rename.
+    const counting = countingPorts();
+    const held = gatedStat(MAX_BYTES - Buffer.byteLength(`${LINE}\n`));
+    const { sink } = await build(
+      { ...counting.ports, stat: held.stat, drainGraceMs: GRACE_MS },
+      false
+    );
+    sink.appendLine(LINE);
+    sink.appendLine(`${LINE} and a longer line queued behind it`);
+    await held.entered;
+    await releasePastTheGrace(sink);
+    const before = counting.calls();
+
+    held.letGo();
+    await sink.flushPendingWrites();
+
+    expect(counting.calls()).toBe(before);
+  });
+
+  it('check 2b: a line that resumes after the close step appends nothing', async () => {
+    const counting = countingPorts();
+    const held = gatedStat(0);
+    const { sink } = await build(
+      { ...counting.ports, stat: held.stat, drainGraceMs: GRACE_MS },
+      false
+    );
+    sink.appendLine(LINE);
+    await held.entered;
+    await releasePastTheGrace(sink);
+    const before = counting.calls();
+
+    held.letGo();
+    await sink.flushPendingWrites();
+
+    expect(counting.calls()).toBe(before);
+  });
+
+  it('check 6: an append that fails after the close step does not create its folder', async () => {
+    // The append is issued before the close step and fails after it: `logs/`
+    // does not exist. The rootless recovery would create it and append again.
+    const entered = deferred<void>();
+    const gate = deferred<void>();
+    let appends = 0;
+    let mkdirs = 0;
+    const { sink, target } = await build(
+      {
+        drainGraceMs: GRACE_MS,
+        appendFile: async (file: string, data: string) => {
+          appends += 1;
+          entered.resolve();
+          await gate.promise;
+          return nodeFs.appendFile(file, data);
+        },
+        mkdir: (dir: string, opts: { recursive: true; mode?: number }) => {
+          mkdirs += 1;
+          return nodeFs.mkdir(dir, opts);
+        }
+      },
+      false
+    );
+    sink.appendLine(LINE);
+    await entered.promise;
+    await releasePastTheGrace(sink);
+
+    gate.resolve();
+    await sink.flushPendingWrites();
+
+    expect({ appends, mkdirs }).toEqual({ appends: 1, mkdirs: 0 });
+    await expect(nodeFs.stat(path.dirname(target))).rejects.toThrow();
   });
 });
