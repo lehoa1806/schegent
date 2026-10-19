@@ -128,6 +128,11 @@ const live: RuntimeLogSink[] = [];
 
 afterEach(async () => {
   try {
+    // A case that failed under fake timers can leave its release waiting on a
+    // faked grace. Fire it first, or the release below waits out the hook's
+    // timeout and the writer is never released.
+    if (vi.isFakeTimers()) await vi.runOnlyPendingTimersAsync();
+    vi.useRealTimers();
     await Promise.all(live.splice(0).map((sink) => sink.flushAndDispose()));
   } finally {
     capture.opened.length = 0;
