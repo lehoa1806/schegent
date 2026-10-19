@@ -273,8 +273,9 @@ Feature 217 (`FR-R3-182`; FR-055, T1836), in the four-field shape.
 all 15 turns, at the operator's request, after every installed CLI had moved past the version
 qualified on 2026-08-26. All 12 injection-shaped turns now have a recording, and the list of
 recordings `tests/unit/build/canary-live-records.test.ts` expects is derived from `CANARY_CASES`. The
-decision, its reason and its revisit condition stand: the answers are reported above as samples, and
-no control on this page rests on them.
+count under **Measurement** below, 3 recorded and 9 never, is the 2026-10-02 figure, and this
+paragraph supersedes it. The decision, its reason and its revisit condition stand: the answers are
+reported above as samples, and no control on this page rests on them.
 
 **Decision.** The injection cases run only under `npm run canary:record`: never per release, never in
 `npm run gate`, never in `npm run release:preflight`. What a release requires stays the protocol
