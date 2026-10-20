@@ -675,7 +675,9 @@ export function checkSectionReferences({ repoRoot = REPO_ROOT, wsRoot = WS_ROOT 
       let identity = null;
       try {
         const info = statSync(path, { bigint: true });
-        if (info.isFile()) identity = info.ino === 0n ? `path:${path}` : `${info.dev}:${info.ino}`;
+        // A file with more than one link, or no inode, has names that may lie on either side of the
+        // trees' edge, so it is kept by the name it was reached by, and its containment judged by it.
+        if (info.isFile()) identity = info.ino === 0n || info.nlink > 1n ? `path:${path}` : `${info.dev}:${info.ino}`;
       } catch {
         identity = null; // no such file
       }

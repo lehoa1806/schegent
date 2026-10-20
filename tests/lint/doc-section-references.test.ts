@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -451,7 +451,7 @@ describe('FR-R3-184 — a section a live document names in another file exists',
       'ws/docs/README.md': '# Docs\n',
       'ws/repo/docs/target.md': TARGET,
       'outside/secret.md': '# Secret\n\n## Hunter2\n',
-      'ws/repo/docs/citing.md': '[up](../../../outside/secret.md#nope), [in](target.md#present-heading) and [linked](linked.md#nope)\n'
+      'ws/repo/docs/citing.md': '[linked](linked.md#nope), [up](../../../outside/secret.md#nope) and [in](target.md#present-heading)\n'
     });
     symlinkSync(join(root, 'outside', 'secret.md'), join(root, 'ws', 'repo', 'docs', 'linked.md'));
     const result = check(join(root, 'ws'));
@@ -717,6 +717,41 @@ describe('FR-R3-184 — a section a live document names in another file exists',
         '## In P',
         '```',
         '',
+        '`'.repeat(10000),
+        '## Between ten thousands',
+        '`'.repeat(10000),
+        '',
+        '## After ten thousands',
+        '',
+        '~~~',
+        '## In a tilde fence',
+        '~'.repeat(10001),
+        '',
+        '## After a long tilde closer',
+        '',
+        '```',
+        '## In a backtick fence',
+        '~'.repeat(10001),
+        '## Still in backtick fence',
+        '```',
+        '',
+        `${'`'.repeat(10001)}${CARRIAGE_RETURN}tail`,
+        '## After a long run and CR',
+        '',
+        '```',
+        '## Inside Q',
+        `${'`'.repeat(10001)} x`,
+        '## Still inside Q',
+        '```',
+        '',
+        '```',
+        '## In T',
+        '``` ',
+        '## After T',
+        '',
+        ` \`\`${dense}`,
+        '===',
+        '',
         '## End',
         '',
         '`'.repeat(20000),
@@ -725,6 +760,8 @@ describe('FR-R3-184 — a section a live document names in another file exists',
         '## After a long run',
         ''
       ].join('\n'),
+      'repo/docs/long-tilde.md': ['# L', '', '~'.repeat(20000), '## Behind a long tilde run', '~'.repeat(30000), '## After a long tilde run', ''].join('\n'),
+      'repo/docs/long-info.md': ['# L', '', `${'`'.repeat(20000)}js`, '## Behind a long run with info', '`'.repeat(10001), '## After a long run with info', ''].join('\n'),
       'repo/docs/citing-fences.md': [
         'after-a',
         'after-b',
@@ -750,11 +787,25 @@ describe('FR-R3-184 — a section a live document names in another file exists',
         'in-n',
         'in-o',
         'in-p',
+        'between-ten-thousands',
+        'after-ten-thousands',
+        'after-a-long-tilde-closer',
+        'still-in-backtick-fence',
+        'after-a-long-run-and-cr',
+        'still-inside-q',
+        'after-t',
+        '-x',
         'end',
         'behind-a-long-run',
         'after-a-long-run'
       ]
         .map((fragment) => `[x](fences.md#${fragment})`)
+        .concat(
+          '[x](long-tilde.md#behind-a-long-tilde-run)',
+          '[x](long-tilde.md#after-a-long-tilde-run)',
+          '[x](long-info.md#behind-a-long-run-with-info)',
+          '[x](long-info.md#after-a-long-run-with-info)'
+        )
         .join('\n\n'),
       'repo/docs/citing-indented.md': `    \`\`\`${dense}\n[w](fences.md#gone-behind-an-indented-marker)\n`,
       'repo/docs/citing-tab.md': `\t\`\`\`${dense}\n\n[w](fences.md#gone-behind-a-tab-marker)\n`,
@@ -772,10 +823,21 @@ describe('FR-R3-184 — a section a live document names in another file exists',
     // fence a run past the length cap opens is never closed, though a longer closer would close it on
     // GitHub: past the cap the check fails closed. In a citing page, a dense marker behind four spaces
     // or a tab still toggles the plain fence, so the link after it is not read; two backticks do not;
-    // and a dense quoted line beside a wrapped link leaves the link to be read.
+    // and a dense quoted line beside a wrapped link leaves the link to be read. Runs of exactly
+    // 10,000 open and close as any run does; a run past the cap closes a shorter fence of its own
+    // character only; a line terminator after it makes it no marker; with an info string it closes
+    // nothing; a closer may end in a space; two backticks open nothing, so a dense line of them
+    // above `===` makes no heading; and a fence a run past the cap opens, of either character, with
+    // an info string or not, is never closed.
     expect(failures.map((f) => f.named).sort()).toEqual([
+      '-x',
       'after-a-long-run',
+      'after-a-long-run-with-info',
+      'after-a-long-tilde-run',
       'behind-a-long-run',
+      'behind-a-long-run-with-info',
+      'behind-a-long-tilde-run',
+      'between-ten-thousands',
       'gone-after-two-backticks',
       'gone-wrapped-beside-a-quote',
       'hidden-in-a-fence',
@@ -787,10 +849,12 @@ describe('FR-R3-184 — a section a live document names in another file exists',
       'in-o',
       'in-p',
       'looks-like-a-heading',
+      'still-in-backtick-fence',
       'still-in-e',
-      'still-in-h'
+      'still-in-h',
+      'still-inside-q'
     ]);
-    expect(checked).toBe(29);
+    expect(checked).toBe(41);
   });
 
   it('reads a dense line beside a setext heading as it reads the page with no caps', () => {
@@ -828,6 +892,37 @@ describe('FR-R3-184 — a section a live document names in another file exists',
     } finally {
       resolveReal.mockRestore();
     }
+  });
+
+  it('judges a hard-linked target by the name it is cited by, whichever name is cited first', () => {
+    for (const order of [['soft', 'hard'], ['hard', 'soft']]) {
+      const root = tree({
+        'ws/ARCHITECTURE.md': '# Envelope\n',
+        'ws/CLAUDE.md': '# Pointer\n',
+        'ws/docs/README.md': '# Docs\n',
+        'outside/secret.md': '# Secret\n\n## Hidden heading\n'
+      });
+      const docs = join(root, 'ws', 'repo', 'docs');
+      mkdirSync(docs, { recursive: true });
+      linkSync(join(root, 'outside', 'secret.md'), join(docs, 'hard.md'));
+      symlinkSync(join(root, 'outside', 'secret.md'), join(docs, 'soft.md'));
+      const links: Record<string, string> = { soft: '[s](soft.md#hidden-heading)', hard: '[h](hard.md#absent)' };
+      writeFileSync(join(docs, 'citing.md'), `${order.map((name) => links[name]).join('\n\n')}\n`);
+      // The symlink leads outside both trees, so it is unverifiable; the hard link's own name lies
+      // inside, so the file is read through it and its missing heading fails.
+      const result = check(join(root, 'ws'));
+      expect(result).toMatchObject({ checked: 1, unverifiable: 1 });
+      expect(result.failures.map((f) => [f.file, f.named])).toEqual([['repo/docs/citing.md', 'absent']]);
+    }
+  });
+
+  it('skips a directory named like a page, and a missing target, which are the path check\'s to report', () => {
+    const root = tree({
+      ...ENVELOPE,
+      'repo/docs/adir.md/inner.txt': 'not a page\n',
+      'repo/docs/citing.md': '[a](adir.md#x) and [m](missing.md#x)\n\n`adir.md` §1\n'
+    });
+    expect(check(root)).toMatchObject({ checked: 0, unverifiable: 0, failures: [] });
   });
 
   it('resolves each target file once, however many spellings cite it', () => {
