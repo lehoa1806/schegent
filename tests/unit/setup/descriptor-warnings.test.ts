@@ -15,7 +15,7 @@ import {
  *
  * A detector that never fires is indistinguishable from a clean tree, and every
  * opt-in file added by T1531c asserts the ABSENCE of something. This file emits
- * the warning on purpose and watches the detector notice, so the twelve files
+ * the warning on purpose and watches the detector notice, so the files
  * asserting zero are asserting against an instrument that is known to move.
  *
  * LEVEL 1, and the level matters. C4 splits the control in two: the handler's
@@ -28,8 +28,13 @@ import {
  * THIS FILE PRINTS DESCRIPTOR WARNINGS TO STDERR. They are Node's own text,
  * emitted deliberately, and they are the exact lines FR-R3-137 exists to remove
  * from the run's output — so a reader scanning stderr will find them here and
- * should not go looking for a leak. Nothing else in the suite emits them; that
- * is what T1531c established.
+ * should not go looking for a leak.
+ *
+ * Measured on 2026-10-19 at `repo/` `c3e6b76e` (FR-R3-191): six files opt in,
+ * and feature 217's descriptor probe, run with `--expose-gc` over the whole
+ * host suite, recorded three `Closing file descriptor` warnings while a suite
+ * file ran, all three this file's own. No file ended with a handle it had
+ * opened through `fs/promises` still reachable.
  */
 
 const REPO_ROOT = resolve(__dirname, '../../..');
