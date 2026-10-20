@@ -263,20 +263,25 @@ describe('RuntimeLogSink.flushAndDispose — the writer gives its descriptors ba
         return nodeFs.readdir(dir);
       }
     });
-    sink.appendLine(LINE);
-    await entered.promise;
-    const handle = onlyOpened();
+    let handle: nodeFs.FileHandle;
+    try {
+      sink.appendLine(LINE);
+      await entered.promise;
+      handle = onlyOpened();
 
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    const release = sink.flushAndDispose();
-    await vi.advanceTimersByTimeAsync(GRACE_MS);
-    await release;
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      const release = sink.flushAndDispose();
+      await vi.advanceTimersByTimeAsync(GRACE_MS);
+      await release;
 
-    expect(sink.openDescriptorCount).toBe(0);
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toMatch(PREFIX);
-
-    gate.resolve();
+      expect(sink.openDescriptorCount).toBe(0);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toMatch(PREFIX);
+    } finally {
+      // Opened even when a step above fails: the open waits on this gate, and
+      // only once it completes can the writer close the descriptor it made.
+      gate.resolve();
+    }
     await sink.flushPendingWrites();
 
     // The count first: with check 5 removed, this is the assertion that fails, at 1.
@@ -374,13 +379,17 @@ describe('RuntimeLogSink.flushAndDispose — the writer gives its descriptors ba
       return close();
     };
 
-    sink.clearSuppression(target);
-    const release = sink.flushAndDispose();
-    const settled = watch(release);
-    await turn();
-    expect(settled()).toBe(false);
-
-    gate.resolve();
+    let release: Promise<void>;
+    try {
+      sink.clearSuppression(target);
+      release = sink.flushAndDispose();
+      const settled = watch(release);
+      await turn();
+      expect(settled()).toBe(false);
+    } finally {
+      // Opened even when a step above fails: the close waits on this gate.
+      gate.resolve();
+    }
     await release;
 
     expect(handle.fd).toBe(-1);
