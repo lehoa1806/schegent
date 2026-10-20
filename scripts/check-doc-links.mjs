@@ -177,24 +177,87 @@ function withinCaps(text) {
   return text.length <= MAX_LINE && openersIn(text) <= MAX_OPENERS;
 }
 
+// Whitespace as `\s` and `trim()` read it, tested a character at a time.
+const WHITESPACE = /\s/;
+
 /**
- * What stands in for a line over a cap. A fence marker keeps its run, and a sign that it had an
- * info string, so a fence still opens and closes where it did; any other line is blank.
+ * A fence marker's parts, or null when the line is none: its quote, the indent before its run, the
+ * run, and what follows the run. The line is read once, a character at a time, so its length costs
+ * nothing more than reading it: a pattern over a quote of millions of `>` overflowed the stack.
  */
-function standIn(line) {
-  const quote = /^(?:\s*>)+\s?/.exec(line)?.[0] ?? '';
-  const marker = /^\s*(?:`{3,}|~{3,})/.exec(line.slice(quote.length));
-  if (!marker) return '';
-  const kept = quote + marker[0];
-  return line.slice(kept.length).trim() ? `${kept} x` : kept;
+function fenceParts(line) {
+  let index = 0;
+  let quoted = false;
+  for (let probe = 0; ; probe = index) {
+    while (probe < line.length && WHITESPACE.test(line[probe])) probe += 1;
+    if (line[probe] !== '>') break;
+    index = probe + 1;
+    quoted = true;
+  }
+  // As `(\s*>)+\s?` has it, one whitespace character after the last `>` belongs to the quote.
+  const spaced = quoted && index < line.length && WHITESPACE.test(line[index]);
+  if (spaced) index += 1;
+  let runStart = index;
+  while (runStart < line.length && WHITESPACE.test(line[runStart])) runStart += 1;
+  const char = line[runStart];
+  if (char !== '`' && char !== '~') return null;
+  let runEnd = runStart;
+  while (runEnd < line.length && line[runEnd] === char) runEnd += 1;
+  if (runEnd - runStart < 3) return null;
+  let terminator = '';
+  let blank = true;
+  for (let at = runEnd; at < line.length && !terminator; at += 1) {
+    if (LINE_BREAK.test(line[at])) terminator = line[at];
+    else if (!WHITESPACE.test(line[at])) blank = false;
+  }
+  return {
+    quote: quoted ? (spaced ? '> ' : '>') : '',
+    indent: runStart - index <= 3 ? line.slice(index, runStart) : null,
+    char,
+    run: runEnd - runStart,
+    terminator,
+    blank
+  };
 }
 
-/** A body's lines, each one over a cap replaced by its stand-in; `notParsed` collects the paragraph lines replaced. */
+/**
+ * What stands in for a target's line over a cap: blank, unless it is a fence marker, which keeps
+ * its role as anchorsOf reads it, and stays short however long the line. A quote becomes one level,
+ * and an indent past three spaces, or holding anything else, four spaces: anchorsOf reads either
+ * alike. A run keeps its length up to MAX_LINE + 1, which no line within the caps reaches. Past
+ * that it is that length with an info string, so it may open a fence but never close one, and
+ * nothing after it can: the parse fails closed. A line terminator after the run is kept, so the line
+ * is still no marker, and any other info string becomes `x`.
+ */
+function targetStandIn(line) {
+  const parts = fenceParts(line);
+  if (!parts) return '';
+  const longest = MAX_LINE + 1;
+  const long = parts.run >= longest;
+  const indent = parts.indent !== null && /^ *$/.test(parts.indent) ? parts.indent : '    ';
+  const info = parts.blank && !long ? '' : ' x';
+  return `${parts.quote}${indent}${parts.char.repeat(long ? longest : parts.run)}${parts.terminator}${info}`;
+}
+
+/**
+ * What stands in for a citing page's line over a cap: its role in the plain fence toggle the passes
+ * over a citing page read, `^\s*(```|~~~)`, and nothing more. A quoted line has none: it is blank.
+ */
+function citingStandIn(line) {
+  const parts = fenceParts(line);
+  return parts && !parts.quote ? parts.char.repeat(3) : '';
+}
+
+/**
+ * A body's lines, each one over a cap replaced by what stands in for it. Given `notParsed`, they are
+ * a target's, and it collects the paragraph lines replaced; otherwise they are a citing page's.
+ */
 function linesOf(body, notParsed = null) {
   return body.split(/\r?\n/).map((line, index) => {
     if (withinCaps(line)) return line;
-    if (isParagraphLine(line)) notParsed?.add(index);
-    return standIn(line);
+    if (!notParsed) return citingStandIn(line);
+    if (isParagraphLine(line)) notParsed.add(index);
+    return targetStandIn(line);
   });
 }
 
@@ -606,6 +669,23 @@ export function checkSectionReferences({ repoRoot = REPO_ROOT, wsRoot = WS_ROOT 
     if (!bodies.has(path)) bodies.set(path, readFileSync(path, 'utf8'));
     return bodies.get(path);
   };
+  const realPaths = new Map();
+  /**
+   * A path's real path, or null when it is gone, resolved once however often it is cited: resolving
+   * costs more the deeper the path and the more links it crosses, so it is not done per reference.
+   */
+  const realPathOf = (path) => {
+    if (!realPaths.has(path)) {
+      let real = null;
+      try {
+        real = realpathSync.native(path);
+      } catch {
+        real = null; // gone since it was listed: unverifiable, as an outside target is
+      }
+      realPaths.set(path, real);
+    }
+    return realPaths.get(path);
+  };
   const indexes = new Map();
   /**
    * A target's heading index, or null when its real path lies outside both trees or it cannot be
@@ -613,12 +693,8 @@ export function checkSectionReferences({ repoRoot = REPO_ROOT, wsRoot = WS_ROOT 
    * parsed once. Only the filesystem calls are guarded: a fault in the parser must still surface.
    */
   const indexOf = (path) => {
-    let real;
-    try {
-      real = realpathSync.native(path);
-    } catch {
-      return null; // gone since it was listed: unverifiable, as an outside target is
-    }
+    const real = realPathOf(path);
+    if (real === null) return null;
     if (indexes.has(real)) return indexes.get(real);
     let body = null;
     try {

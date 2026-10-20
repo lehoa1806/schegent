@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 // @ts-expect-error -- .mjs script, typed by use rather than by declaration
 import { checkSectionReferences } from '../../scripts/check-doc-links.mjs';
 
@@ -56,8 +56,10 @@ function tree(files: Record<string, string>): string {
 const ENVELOPE = { 'ARCHITECTURE.md': '# Envelope\n', 'CLAUDE.md': '# Pointer\n', 'docs/README.md': '# Docs\n' };
 const TARGET = '# Target\n\n## Present heading\n\n## 2. Scope\n\nA paragraph.\n';
 const RECORD_MARKER = '<!-- doc-class: record -->';
-/** U+2028, a line terminator a line split on `\n` can still hold. */
+/** U+2028, U+2029 and a lone carriage return: line terminators a line split on `\n` can still hold. */
 const LINE_SEPARATOR = String.fromCharCode(0x2028);
+const PARAGRAPH_SEPARATOR = String.fromCharCode(0x2029);
+const CARRIAGE_RETURN = String.fromCharCode(13);
 
 interface Failure {
   readonly file: string;
@@ -267,6 +269,12 @@ describe('FR-R3-184 — a section a live document names in another file exists',
         '## ⚠',
         '',
         '## ⚠',
+        '',
+        `## Bad${PARAGRAPH_SEPARATOR}para`,
+        '',
+        `## Bad${CARRIAGE_RETURN}cr`,
+        '',
+        '> > ## Nested quote',
         ''
       ].join('\n'),
       'repo/docs/crlf.md': '# T\r\n\r\n## Crlf heading\r\n',
@@ -289,16 +297,20 @@ describe('FR-R3-184 — a section a live document names in another file exists',
         '#two-lines',
         '#badheading',
         '#after-the-false-fence',
-        '#-1'
+        '#-1',
+        '#badpara',
+        '#badcr',
+        '#nested-quote'
       ]
         .map((fragment) => `[x](target.md${fragment})\n`)
         .join('\n')
         .concat('\n`target.md` §3 and [x](crlf.md#crlf-heading)\n')
     });
     const { checked, failures } = check(root);
-    expect(checked).toBe(21);
-    // A line terminator inside a line makes it neither a heading nor a fence marker.
-    expect(failures.map((f) => f.named)).toEqual(['-real', 'code', 'hashtag-is-not-a-heading', 'indented-code', 'seven-hashes', 'badheading']);
+    expect(checked).toBe(24);
+    // A line terminator inside a line, U+2028, U+2029 or a lone carriage return, makes it neither a
+    // heading nor a fence marker. A heading quoted twice is still a heading.
+    expect(failures.map((f) => f.named)).toEqual(['-real', 'code', 'hashtag-is-not-a-heading', 'indented-code', 'seven-hashes', 'badheading', 'badpara', 'badcr']);
   });
 
   it('resolves as GitHub anchors do: duplicates, HTML ids, percent-encoding, setext, fences, case and the ellipsis rule', () => {
@@ -325,6 +337,7 @@ describe('FR-R3-184 — a section a live document names in another file exists',
         '```',
         ''
       ].join('\n'),
+      'repo/docs/accents.md': '## Zebra\n\n## Éa\n\n## Éb\n\n## Éc\n',
       'repo/docs/citing.md': [
         '[a](rules.md#notes-1)',
         '',
@@ -347,18 +360,25 @@ describe('FR-R3-184 — a section a live document names in another file exists',
         '[a](rules.md#Kept-Here)',
         '',
         '[a](rules.md) §"Notes…"',
+        '',
+        '[a](accents.md) §"zeb…"',
+        '',
+        '[a](rules.md) §"Zzz"',
         ''
       ].join('\n')
     });
     const { checked, failures } = check(root);
-    expect(checked).toBe(11);
-    // An ellipsis name that is a whole heading resolves: it is its own prefix.
+    expect(checked).toBe(13);
+    // An ellipsis name that is a whole heading resolves: it is its own prefix. A prefix is found in
+    // code-unit order, where `zebra` sorts before `éa`, as no locale order has it, and a name past
+    // every heading fails rather than throwing.
     expect(failures.map((f) => [f.line, f.named, f.reason])).toEqual([
       [3, 'notes-2', 'no-such-anchor'],
       [11, 'inside-a-fence', 'no-such-anchor'],
       [13, 'Notes', 'case-only'],
       [17, 'Recording cadence', 'prefix-only'],
-      [19, 'Kept-Here', 'case-only']
+      [19, 'Kept-Here', 'case-only'],
+      [25, 'Zzz', 'no-such-heading']
     ]);
   });
 
@@ -584,6 +604,161 @@ describe('FR-R3-184 — a section a live document names in another file exists',
     expect(checked).toBe(7);
     // Fence markers are not counted: the passes never read them. The quoted marker and `x` + 300 are.
     expect(unread).toBe(2);
+  });
+
+  it('keeps a dense fence marker exact as a target reads it: a bare closer closes, a quote or tildes open, a line terminator unmakes it', () => {
+    const dense = '['.repeat(300);
+    const root = tree({
+      ...ENVELOPE,
+      'repo/docs/fences.md': [
+        '# F',
+        '',
+        '```',
+        '## In A',
+        '`'.repeat(300),
+        '',
+        '## After A',
+        '',
+        '```',
+        '## In B',
+        `\`\`\`${' '.repeat(10001)}`,
+        '',
+        '## After B',
+        '',
+        `> > \`\`\`${dense}`,
+        '> > ## In C',
+        '> > ```',
+        '',
+        '## After C',
+        '',
+        `~~~${dense}`,
+        '## In D',
+        '~~~',
+        '',
+        '## After D',
+        '',
+        '```',
+        '## In E',
+        `\`\`\`${LINE_SEPARATOR}${' '.repeat(10001)}`,
+        '## Still in E',
+        '```',
+        '',
+        `\`\`\`${dense}${PARAGRAPH_SEPARATOR}`,
+        '## Outside F',
+        '',
+        '    ```',
+        '## After indented',
+        '',
+        '```',
+        '## In G',
+        '  ```',
+        '## After G',
+        '',
+        '```',
+        '## In H',
+        '~~~',
+        '## Still in H',
+        '```',
+        '',
+        '`````',
+        '## In I',
+        '`'.repeat(300),
+        '## After I',
+        '',
+        `    \`\`\`${dense}`,
+        '## After dense indent',
+        '',
+        `>     \`\`\`${dense}`,
+        '## After quoted indent',
+        '',
+        '## End',
+        '',
+        '`'.repeat(20000),
+        '## Behind a long run',
+        '`'.repeat(30000),
+        '## After a long run',
+        ''
+      ].join('\n'),
+      'repo/docs/citing-fences.md': [
+        'after-a',
+        'after-b',
+        'in-c',
+        'after-c',
+        'in-d',
+        'after-d',
+        'still-in-e',
+        'outside-f',
+        'after-indented',
+        'after-g',
+        'still-in-h',
+        'after-i',
+        'after-dense-indent',
+        'after-quoted-indent',
+        'end',
+        'behind-a-long-run',
+        'after-a-long-run'
+      ]
+        .map((fragment) => `[x](fences.md#${fragment})`)
+        .join('\n\n'),
+      'repo/docs/citing-indented.md': `    \`\`\`${dense}\n[w](fences.md#gone-behind-an-indented-marker)\n`,
+      'repo/docs/citing-two.md': `\`\`${dense}\n[t](fences.md#gone-after-two-backticks)\n`
+    });
+    const { checked, failures } = check(root);
+    // Up to the long runs, each answer is the one the target gives with no caps at all. A dense bare
+    // closer, or one padded past the length cap with blanks, closes, and a dense closer longer than
+    // its opener closes it; a dense opener behind two quotes, or of tildes, opens; a line terminator
+    // after a run makes the line no marker, dense or not; four spaces make no fence, dense or not,
+    // nor do a quote and five spaces; two spaces make a closer; tildes do not close backticks. A run
+    // past the length cap opens a fence nothing closes, though a longer closer would close it on
+    // GitHub: past the cap the check fails closed. In a citing page, a dense marker behind four
+    // spaces still toggles the plain fence, so the link after it is not read; two backticks do not.
+    expect(failures.map((f) => f.named).sort()).toEqual([
+      'after-a-long-run',
+      'behind-a-long-run',
+      'gone-after-two-backticks',
+      'in-c',
+      'in-d',
+      'still-in-e',
+      'still-in-h'
+    ]);
+    expect(checked).toBe(18);
+  });
+
+  it('reads a dense line beside a setext heading as it reads the page with no caps', () => {
+    const dense = '['.repeat(300);
+    const root = tree({
+      ...ENVELOPE,
+      'repo/docs/setext.md': ['# S', '', `<!-- ${dense} -->`, 'Title one', '=========', '', 'Title two', '=========', `x${dense}`, ''].join('\n'),
+      'repo/docs/citing.md': '[x](setext.md#title-one)\n\n[y](setext.md#title-two)\n'
+    });
+    // A dense line that is no paragraph line above the heading, or any dense line below its
+    // underline, leaves the heading's text whole, so it is indexed.
+    expect(check(root)).toMatchObject({ checked: 2, failures: [] });
+  });
+
+  it('reads a line of any length without overflowing: millions of `>`, and a fence marker behind them', () => {
+    const root = tree({
+      ...ENVELOPE,
+      'repo/docs/target.md': `${TARGET}\n${'>'.repeat(3_400_000)}\n\n${'>'.repeat(2_500_000)}\`\`\`\n`,
+      'repo/docs/citing.md': '[x](target.md#present-heading)\n'
+    });
+    expect(check(root)).toMatchObject({ checked: 1, failures: [], unread: 2 });
+  });
+
+  it('resolves each target path once, however often it is cited', () => {
+    const root = tree({
+      ...ENVELOPE,
+      'repo/docs/target.md': TARGET,
+      'repo/docs/citing.md': '[x](target.md#present-heading)\n'.repeat(200)
+    });
+    const resolveReal = vi.spyOn(realpathSync, 'native');
+    try {
+      expect(check(root)).toMatchObject({ checked: 200, failures: [] });
+      // The two roots, then the one target: resolving costs more the deeper the path.
+      expect(resolveReal).toHaveBeenCalledTimes(3);
+    } finally {
+      resolveReal.mockRestore();
+    }
   });
 
   it('reads a passage exactly at either cap, and not one past it', () => {
