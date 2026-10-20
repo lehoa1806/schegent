@@ -75,7 +75,7 @@ Make `codex` (or an equivalent) the default, since it is the only backend carryi
 bound.
 
 *Cost:* changes which agent every existing install runs. Pipelines authored against Claude's
-behaviour, model selection (`claude-sonnet-5` in the shipped examples), and skill semantics do not
+behaviour, model selection (`claude-opus-5-5` in the shipped examples), and skill semantics do not
 transfer. This is a product repositioning, not a setting change.
 
 *Verdict:* strongest containment, highest disruption. Not recommended as a first move.
@@ -113,7 +113,7 @@ destination and is not started.
 
 Shape 1 was rejected: defaulting to `codex` trades the containment problem for a
 behaviour-compatibility problem across every authored pipeline, and would not even help the shipped
-examples, which pin `runner: claude` and `model: claude-sonnet-5` per phase and would be refused
+examples, which pin `runner: claude` and `model: claude-opus-5-5` per phase and would be refused
 regardless of the global default.
 
 ### Where the refusal lives, and why there

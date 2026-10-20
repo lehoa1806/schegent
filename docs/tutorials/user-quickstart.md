@@ -66,9 +66,9 @@ In the new window, open `/tmp/schegent-tutorial` as the folder.
 
 ### Requirements the tutorial cannot supply
 
-This pipeline invokes the `claude` runner and selects `claude-sonnet-5`. A real run therefore also
-requires a working Claude CLI with access to that model. Schegent does not install or authenticate
-that CLI for you.
+This pipeline names no runner and no model, so it runs on the default `claude` runner with the
+Claude CLI's own default model. A real run therefore also requires a working Claude CLI with access
+to that model. Schegent does not install or authenticate that CLI for you.
 
 Read the [threat model](../security/threat-model.md) before a first run. The default `claude` runner is
 spawned with `--dangerously-skip-permissions`: its approval prompts are off and the agent acts
