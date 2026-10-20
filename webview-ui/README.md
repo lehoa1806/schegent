@@ -827,8 +827,9 @@ a YAML document, and take one back. The Model Catalog (spec 096) joins the same
 **Import…**/**Export** buttons and file dialogs with a structurally separate
 shape rather than a fourth catalog-manager subsection of its own — see the
 ownership table and "A fourth arm, structurally apart" below, and
-[Model Catalog](../docs/operations/process-yaml.md#model-catalog) for the
-operator-facing procedure. The webview owns the operator's decisions;
+[Inspect an import](../docs/operations/process-yaml.md#inspect-an-import) and
+[Confirm the plan](../docs/operations/process-yaml.md#confirm-the-plan) for the
+operator-facing procedure, which covers a Model Catalog document too. The webview owns the operator's decisions;
 the host owns the file. **No filesystem path crosses this boundary in either
 direction** — the webview names no path, receives none, and no plan row, payload,
 or message may carry one. Export reports only whether a document was written, and
@@ -856,7 +857,7 @@ commit on import — a confirmed Model Catalog plan writes once, through
 `saveModelsImport` (`save-models.ts`), never through the
 `buildImportWrites`/`runImportCommit` sequencer the rest of this section
 describes. See
-[Model Catalog](../docs/operations/process-yaml.md#model-catalog) for the
+[Inspect an import](../docs/operations/process-yaml.md#inspect-an-import) for the
 operator-facing outcomes and skip reasons.
 
 **Three export arms, three inclusion vocabularies.** A Phase has no dependencies,

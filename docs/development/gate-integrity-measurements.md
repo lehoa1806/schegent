@@ -1295,7 +1295,7 @@ other five for the next reader.
 
 Two of the four *expected* reds were also missing on the first run, and the cause is worth keeping.
 The unit was a paragraph, and a Markdown table is one paragraph — so the dated first row of
-`RELEASE.md` §"what was withdrawn" discharged every other row in the table, including
+`RELEASE.md` §5 ("What a release no longer does", the table of withdrawn controls) discharged every other row in the table, including
 `RELEASE.md:380` ("nothing generates one"), and the same shape hid `SECURITY.md:170`. A table row is
 now its own unit. A gate whose unit is larger than its claim reports green over the defect it was
 written for.
