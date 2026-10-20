@@ -296,7 +296,7 @@ Availability probes invoke the configured executable with `--help`; Agy model di
 
 Two internal calls also pass through the selected adapter:
 
-- Cross-Phase Claude session compaction sends `Compact the conversation context. Reply with a single word: OK`, uses a 300-second idle timeout with a 1200-second wall-clock bound, forces `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=1`, resumes the prior session, and pins model `claude-haiku-4-5-20251001`. The idle bound must stay above the monitor's 90-second stall threshold (`MONITOR_STALL_THRESHOLD_MS`): below it, a silent compaction child is terminated before the watchdog can declare it stalled, and the window is unreportable.
+- Cross-Phase Claude session compaction sends `Compact the conversation context. Reply with a single word: OK`, uses a 300-second idle timeout with a 1200-second wall-clock bound, forces `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=1`, resumes the prior session, and pins model `claude-haiku-5-5`. The idle bound must stay above the monitor's 90-second stall threshold (`MONITOR_STALL_THRESHOLD_MS`): below it, a silent compaction child is terminated before the watchdog can declare it stalled, and the window is unreportable.
 - The credit watchdog sends `/status` with a fixed 60-second timeout through the globally selected runner. Its request supplies no environment policy fields, so `buildSpawnEnv` inherits the full extension-host environment. This differs from normal Phase/probe calls using `allowlist` or `minimal`. It has no per-call abort signal, although extension teardown still cancels all children in the runner registry.
 
 <!-- Source: src/controller/session-compactor.ts -->

@@ -40,8 +40,12 @@ import type { BackendRunnerKind } from '../../src/contracts/backend-kinds';
 import type { WorkflowRunPipeline } from '../../src/state/workflow-run';
 import { emptyModels } from './process-catalog-fixture';
 
-/** The model `repo/examples/` declares on every Phase in both documents. */
-export const EXAMPLE_MODEL = 'claude-sonnet-5';
+/**
+ * The model `repo/examples/speckit-new-feature.pipeline.yaml` declares on every
+ * Phase. The bugfix document declares none, though the bugfix Phases below
+ * carry this one.
+ */
+export const EXAMPLE_MODEL = 'claude-opus-5-5';
 
 export const SPECKIT_PIPELINE_ID = 'speckit-new-feature';
 export const SPECKIT_BUGFIX_PIPELINE_ID = 'speckit-bugfix';

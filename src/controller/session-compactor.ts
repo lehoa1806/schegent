@@ -34,7 +34,7 @@ const COMPACTION_PROMPT =
  * model. It stamped `phaseDef.effort` too, for a request that passes no `effort` at all;
  * that field is now absent rather than corrected, because there is no value to put there.
  */
-export const COMPACTION_MODEL_ID = 'claude-haiku-4-5-20251001';
+export const COMPACTION_MODEL_ID = 'claude-haiku-5-5';
 
 /**
  * How long the compaction child may be silent before the runner terminates it.
