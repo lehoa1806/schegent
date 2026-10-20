@@ -72,11 +72,15 @@ The check does not read:
   (`[x](t.md) (§9)`, `[x](t.md), §9`) and an identifier with a letter after its digits (`§2a`,
   `§4b.2`);
 - a line, or a paragraph joined from shorter lines, over 10,000 characters, or holding more than
-  256 of the characters the check's patterns start a match from: `[`, `<`, a backtick and `§`. It is
+  256 of `[`, `<`, a backtick and `§`. The first three are where the check's costly patterns start
+  a match; `§` is counted with them, which makes the cap stricter, never looser. Such a passage is
   counted and reported in the check's summary line instead. In a target such a line is not read
-  either, and a setext heading over either cap is not indexed, so a reference to it fails. The caps
-  bound what one hostile page can cost. On 2026-10-20 the most any tracked page in either tree held
-  on one line was 151 of those characters, in a live paragraph 102 and in a heading 8;
+  either, except that a fence marker keeps its role, so a fence still opens and closes where it
+  did. A setext heading over either cap, or whose text runs into a line that was not read, is not
+  indexed, so a reference to it fails. With both caps a page costs at most a fixed amount per
+  character to parse, and a reference is resolved by a lookup, so the check's cost grows with the
+  size of what it reads. On 2026-10-20 the most any tracked page in either tree held on one line
+  was 151 of those characters, in a live paragraph 102 and in a heading 8;
 - a target outside both trees, with symlinks resolved, or one that cannot be read. It is counted as
   unverifiable. With the planning envelope absent, that includes every reference into it, as paths
   already were.
