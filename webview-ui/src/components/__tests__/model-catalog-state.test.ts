@@ -12,12 +12,12 @@ describe('initialModels', () => {
   it('seeds each backend from the configured catalog', () => {
     expect(
       initialModels({
-        claude: ['claude-opus-5', 'claude-sonnet-5'],
+        claude: ['claude-opus-5-5', 'claude-sonnet-5-5'],
         codex: ['gpt-5-codex'],
         agy: []
       })
     ).toEqual({
-      claude: ['claude-opus-5', 'claude-sonnet-5'],
+      claude: ['claude-opus-5-5', 'claude-sonnet-5-5'],
       codex: ['gpt-5-codex'],
       agy: []
     });
@@ -38,12 +38,12 @@ describe('initialModels', () => {
   });
 
   it('copies rather than aliases the configured arrays', () => {
-    const configured = { claude: ['claude-opus-5'], codex: [], agy: [] };
+    const configured = { claude: ['claude-opus-5-5'], codex: [], agy: [] };
     const models = initialModels(configured);
 
     models.claude!.push('typed-by-the-operator');
 
-    expect(configured.claude).toEqual(['claude-opus-5']);
+    expect(configured.claude).toEqual(['claude-opus-5-5']);
   });
 });
 

@@ -259,12 +259,12 @@ function projectEverything(): Readonly<Record<string, unknown>> {
   return {
     phases: composePhaseCatalogProjection(phaseCatalog, {
       sanitize: identity,
-      availableModels: { claude: ['claude-opus-5'] } as never,
+      availableModels: { claude: ['claude-opus-5-5'] } as never,
       defaultRunnerKind: 'claude' as never
     }),
     pipelines: composePipelineCatalogProjection(() => pipelineCatalog, {
       sanitize: identity,
-      availableModels: { claude: ['claude-opus-5'] },
+      availableModels: { claude: ['claude-opus-5-5'] },
       defaultRunnerKind: 'claude'
     }),
     workflows: composeWorkflowCatalogProjection(

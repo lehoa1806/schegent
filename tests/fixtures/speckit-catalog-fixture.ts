@@ -42,8 +42,8 @@ import { emptyModels } from './process-catalog-fixture';
 
 /**
  * The model `repo/examples/speckit-new-feature.pipeline.yaml` declares on every
- * Phase. The bugfix document declares none, though the bugfix Phases below
- * carry this one.
+ * Phase. The bugfix document declares none, and neither do the bugfix Phases
+ * below.
  */
 export const EXAMPLE_MODEL = 'claude-opus-5-5';
 
@@ -143,8 +143,7 @@ function bugfixPhase(id: string): PhaseDef {
     id,
     name: BUGFIX_NAMES[id]!,
     version: 1,
-    instruction: BUGFIX_INSTRUCTIONS[id]!,
-    model: EXAMPLE_MODEL
+    instruction: BUGFIX_INSTRUCTIONS[id]!
   });
 }
 

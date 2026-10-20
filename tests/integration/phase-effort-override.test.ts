@@ -363,7 +363,7 @@ describe('Feature 026 T018 — per-phase Effort/Model override end-to-end', () =
 
   it('(d) SC-002 smoke: model override on head/middle/tail built-in phases surfaces on phase-start', async () => {
     const modelByPhase: Record<string, string> = {
-      'speckit-specify': 'claude-haiku-4-5-20251001',
+      'speckit-specify': 'claude-haiku-5-5',
       'speckit-plan': 'claude-sonnet-4-6',
       'speckit-implement': 'claude-opus-4-7'
     };
@@ -437,9 +437,13 @@ describe('BUG-003 successor — an override on a non-default Pipeline (US3)', ()
     // The successor of 'removing the user catalog entry falls back to workspace
     // effort:high'. There is no lower layer to fall back TO, so dropping the
     // override drops it outright — and the second half of the assertion is what
-    // makes that precise: the Phase is still there, still carrying the `model`
-    // the catalog declares for it. Only the operator's edit went away.
-    const { auditLog } = await runHarness({
+    // makes that precise: the Phase frozen onto the Run is still the row the
+    // catalog declares, field for field. Only the operator's edit went away.
+    //
+    // That half used to read the declared `model` back off phase-start. The
+    // bugfix document declares no model, so neither does the fixture's row, and
+    // a payload compared against an absent model proves nothing either way.
+    const { auditLog, storedRunPipeline } = await runHarness({
       phases: [],
       workspaceRoot: tmpRoot,
       pipelineId: SPECKIT_BUGFIX_PIPELINE_ID
@@ -448,11 +452,13 @@ describe('BUG-003 successor — an override on a non-default Pipeline (US3)', ()
       (e) => e.eventType === 'phase-start' && e.payload.phaseId === 'bugfix-implement'
     );
     expect(implementStarts.length).toBeGreaterThan(0);
-    const declared = SPECKIT_ALL_PHASE_DEFS.find((p) => p.id === 'bugfix-implement');
     for (const evt of implementStarts) {
       expect(evt.payload).not.toHaveProperty('effort');
-      expect(evt.payload.model).toBe(declared?.model);
+      expect(evt.payload).not.toHaveProperty('model');
     }
+    const declared = SPECKIT_ALL_PHASE_DEFS.find((p) => p.id === 'bugfix-implement');
+    const frozen = (storedRunPipeline?.phases ?? []).find((p) => p.id === 'bugfix-implement');
+    expect(frozen).toMatchObject(declared!);
   });
 });
 

@@ -28,7 +28,7 @@ import { resolvePhaseCatalog } from '../../../../src/config/process-catalog';
 import { composePhaseCatalogProjection } from '../../../../src/ui/sidebar/phase-catalog-projection';
 
 const identity = (value: string): string => value;
-const MODELS = { claude: ['claude-opus-5'], codex: [], agy: [] } as const;
+const MODELS = { claude: ['claude-opus-5-5'], codex: [], agy: [] } as const;
 
 /**
  * One row declaring every authored field, each with a distinctive non-default
@@ -44,7 +44,7 @@ const EVERY_FIELD_ROW = {
   description: 'A phase that declares every authored field.',
   version: 3,
   instruction: 'Do the work.',
-  model: 'claude-opus-5',
+  model: 'claude-opus-5-5',
   effort: 'high',
   timeoutSeconds: 45,
   spendBoundUsd: 5.5,

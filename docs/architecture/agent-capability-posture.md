@@ -113,8 +113,11 @@ destination and is not started.
 
 Shape 1 was rejected: defaulting to `codex` trades the containment problem for a
 behaviour-compatibility problem across every authored pipeline, and would not even help the shipped
-examples, which pin `runner: claude` and `model: claude-opus-5-5` per phase and would be refused
-regardless of the global default.
+Spec-kit New Feature example. That example sets `model: claude-opus-5-5` on all nine phases and pins
+`runner: claude` on the two that declare `sideEffects: git` (`speckit-specify` and `finalize`), so a
+run of it would be refused regardless of the global default. The shipped Spec-kit Bugfix example sets
+no runner and no model on any of its five phases, so they run on whichever backend the global default
+names.
 
 ### Where the refusal lives, and why there
 

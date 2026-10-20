@@ -22,7 +22,7 @@ import { projectWorkflowCatalog } from '../../../../src/ui/sidebar/workflow-cata
 import { ENTRIES_PER_DISPLAY_LIST_MAX } from '../../../../src/ui/sidebar/display-projection';
 
 const identity = (value: string): string => value;
-const MODELS = { claude: ['claude-opus-5'], codex: [], agy: [] } as const;
+const MODELS = { claude: ['claude-opus-5-5'], codex: [], agy: [] } as const;
 const REVISION = 'r1';
 const NO_PIPELINES = { effective: [], records: [] } as const;
 

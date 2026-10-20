@@ -45,7 +45,7 @@ function roundTrip(config: ModelsConfig): ModelsConfig {
 describe('Model Catalog document round trip (contracts/model-catalog-exchange.md)', () => {
   it('round-trips a populated catalog losslessly', () => {
     const config: ModelsConfig = {
-      claude: ['claude-opus-5', 'claude-sonnet-5'],
+      claude: ['claude-opus-5-5', 'claude-sonnet-5-5'],
       codex: ['gpt-6-codex'],
       agy: []
     };

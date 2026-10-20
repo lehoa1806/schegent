@@ -168,7 +168,7 @@ describe('ModelCatalogEditor sections survive an empty detected list', () => {
       props: {
         ...baseProps,
         availableModels: { claude: [], codex: [], agy: ['gemini-3.7-flash-high'] },
-        models: { claude: ['claude-opus-5'], codex: [], agy: [] },
+        models: { claude: ['claude-opus-5-5'], codex: [], agy: [] },
         newModelInput: { claude: '', codex: '', agy: '' }
       }
     });
@@ -200,7 +200,7 @@ describe('ModelCatalogEditor detect control', () => {
   const detectProps = {
     ...baseProps,
     availableModels: { claude: [], agy: ['gemini-3.7-flash-high'] },
-    models: { claude: ['claude-opus-5'], agy: [] },
+    models: { claude: ['claude-opus-5-5'], agy: [] },
     newModelInput: { claude: '', agy: '' }
   };
 

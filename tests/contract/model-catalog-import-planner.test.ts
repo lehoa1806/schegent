@@ -49,7 +49,7 @@ function parseModelCatalog(
 describe('planModelCatalogImport — row classification (contracts §2)', () => {
   it('imports a model id not already present under its backend', () => {
     const rows = planModelCatalogImport(
-      documentOf([{ backend: 'claude', models: ['claude-opus-5'] }]),
+      documentOf([{ backend: 'claude', models: ['claude-opus-5-5'] }]),
       EMPTY_CONFIG
     );
 
@@ -57,26 +57,26 @@ describe('planModelCatalogImport — row classification (contracts §2)', () => 
       {
         outcome: 'import',
         resourceKind: 'modelCatalog',
-        resourceId: 'claude-opus-5',
+        resourceId: 'claude-opus-5-5',
         backend: 'claude',
-        modelId: 'claude-opus-5'
+        modelId: 'claude-opus-5-5'
       }
     ]);
   });
 
   it('skips a model id already present under its backend, reason already-exists', () => {
     const rows = planModelCatalogImport(
-      documentOf([{ backend: 'claude', models: ['claude-opus-5'] }]),
-      { claude: ['claude-opus-5'], codex: [], agy: [] }
+      documentOf([{ backend: 'claude', models: ['claude-opus-5-5'] }]),
+      { claude: ['claude-opus-5-5'], codex: [], agy: [] }
     );
 
     expect(rows).toEqual([
       {
         outcome: 'skip',
         resourceKind: 'modelCatalog',
-        resourceId: 'claude-opus-5',
+        resourceId: 'claude-opus-5-5',
         backend: 'claude',
-        modelId: 'claude-opus-5',
+        modelId: 'claude-opus-5-5',
         reason: 'already-exists'
       }
     ]);
@@ -111,7 +111,7 @@ describe('planModelCatalogImport — row classification (contracts §2)', () => 
 
   it('silently drops an empty-string model id — no row, no refusal', () => {
     const rows = planModelCatalogImport(
-      documentOf([{ backend: 'claude', models: ['', 'claude-opus-5'] }]),
+      documentOf([{ backend: 'claude', models: ['', 'claude-opus-5-5'] }]),
       EMPTY_CONFIG
     );
 
@@ -119,9 +119,9 @@ describe('planModelCatalogImport — row classification (contracts §2)', () => 
       {
         outcome: 'import',
         resourceKind: 'modelCatalog',
-        resourceId: 'claude-opus-5',
+        resourceId: 'claude-opus-5-5',
         backend: 'claude',
-        modelId: 'claude-opus-5'
+        modelId: 'claude-opus-5-5'
       }
     ]);
   });
@@ -133,8 +133,8 @@ describe('planModelCatalogImport — row classification (contracts §2)', () => 
     // is a row-level distinction instead.
     const rows = planModelCatalogImport(
       documentOf([
-        { backend: 'claude', models: ['claude-opus-5'] },
-        { backend: 'claude', models: ['claude-opus-5'] }
+        { backend: 'claude', models: ['claude-opus-5-5'] },
+        { backend: 'claude', models: ['claude-opus-5-5'] }
       ]),
       EMPTY_CONFIG
     );
@@ -146,7 +146,7 @@ describe('planModelCatalogImport — row classification (contracts §2)', () => 
   it('byte-for-byte membership: no case-folding or trimming', () => {
     const rows = planModelCatalogImport(
       documentOf([{ backend: 'claude', models: ['Claude-Opus-5'] }]),
-      { claude: ['claude-opus-5'], codex: [], agy: [] }
+      { claude: ['claude-opus-5-5'], codex: [], agy: [] }
     );
 
     expect(rows).toEqual([
