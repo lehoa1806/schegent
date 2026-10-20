@@ -63,7 +63,8 @@ The check does not read:
   line near its top, the rule `tests/lint/current-control-claims.test.ts` reads. It is also a
   record when it lies under the envelope's `docs/features/`, `docs/audits/` or `docs/plans/`, or
   when it is the envelope's `ARCHITECTURE.md`, whose banner declares it one. `repo/docs/features/`
-  holds user guides, which are live;
+  holds user guides, which are live. A page leaves the check by carrying the marker. That shows in
+  its diff, and the same marker already takes a page out of `current-control-claims.test.ts`;
 - line anchors;
 - fragments on files that are not Markdown;
 - same-file anchors, including a link that names its own file by path;
@@ -72,11 +73,13 @@ The check does not read:
   `§4b.2`);
 - a line, or a paragraph joined from shorter lines, over 10,000 characters. It is counted and
   reported in the check's summary line instead;
-- a target outside the tree being checked, with symlinks resolved. It is counted as unverifiable.
-  With the planning envelope absent, that includes every reference into it, as paths already were.
+- a target outside both trees, with symlinks resolved, or one that cannot be read. It is counted as
+  unverifiable. With the planning envelope absent, that includes every reference into it, as paths
+  already were.
 
-The anchor rule is GitHub's, re-implemented, and some rare shapes are read differently. None was in
-the tree on 2026-10-20:
+The anchor rule is GitHub's, re-implemented, and some rare shapes are read differently. None
+affected a reference on 2026-10-20: every live reference resolves the same way against a CommonMark
+parser. Several of the shapes do occur in the tree:
 
 - a fence opened inside a list item hides every later heading in its file;
 - an anchor written `<A NAME=x>`, without quotes, or split across lines is not seen;
@@ -85,6 +88,10 @@ the tree on 2026-10-20:
 - a link inside an HTML comment, after a backslash or in an image is read, as the path check reads
   it;
 - an `id=` inside inline code or a comment counts as an anchor;
+- a heading inside an HTML comment is read as a heading;
+- YAML front matter between `---` lines is read as a setext heading, where GitHub shows a table;
+- a named entity other than `&amp;`, `&lt;`, `&gt;`, `&quot;`, `&apos;` and `&nbsp;` is left as
+  written, so `&mdash;` keeps its letters in the anchor;
 - a fragment that differs from its heading only in case is refused, with its own reason.
 
 ## Measurement
@@ -178,5 +185,8 @@ sweep observes condition 2. To re-measure, run the sweep from the planning envel
 lives: `node specs/219-prose-hops-resolve/measure/section-refs-sweep.mjs --out <new file>`. It reads
 both repositories at their `HEAD` by default, or at the commits passed with `--ws` and `--repo`.
 For condition 2, read `counts.sameFile.unresolved` and the `sameFile` rows it counts: an unresolved
-row in a live document, other than `RELEASE.md`'s, meets it. The same run's
-`counts.liveMechanicalUnresolved` should be zero, as `docs:check` holds it.
+row in a live document, other than `RELEASE.md`'s, meets it. The sweep tiers pages by the
+specification's rule, which differs from the check's on five pages: `repo/docs/features/`'s two
+guides and the three release records that carry the marker. Judge a row on those pages by the
+check's rule under "Decision". With that, the run's `counts.liveMechanicalUnresolved` should be
+zero, as `docs:check` holds it.
