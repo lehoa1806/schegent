@@ -71,8 +71,12 @@ The check does not read:
 - sections named in free prose. That includes a `§` not directly after its link
   (`[x](t.md) (§9)`, `[x](t.md), §9`) and an identifier with a letter after its digits (`§2a`,
   `§4b.2`);
-- a line, or a paragraph joined from shorter lines, over 10,000 characters. It is counted and
-  reported in the check's summary line instead;
+- a line, or a paragraph joined from shorter lines, over 10,000 characters, or holding more than
+  256 of the characters the check's patterns start a match from: `[`, `<`, a backtick and `§`. It is
+  counted and reported in the check's summary line instead. In a target such a line is not read
+  either, and a setext heading over either cap is not indexed, so a reference to it fails. The caps
+  bound what one hostile page can cost. On 2026-10-20 the most any tracked page in either tree held
+  on one line was 151 of those characters, in a live paragraph 102 and in a heading 8;
 - a target outside both trees, with symlinks resolved, or one that cannot be read. It is counted as
   unverifiable. With the planning envelope absent, that includes every reference into it, as paths
   already were.
