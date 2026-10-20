@@ -19,10 +19,10 @@ predicted it: its author sampled the set and found every gate well motivated.
 
 | Figure | Value | Date | Method |
 |---|---|---|---|
-| Gate files | **201** | 2026-10-01 | `*.test.ts` under `tests/lint/` recursively |
-| Marked `unique` | 179 | 2026-10-01 | hand verdict |
-| Marked `partially redundant` | 22 | 2026-10-01 | hand verdict |
-| Marked `redundant` | 0 | 2026-10-01 | hand verdict |
+| Gate files | **202** | 2026-10-20 | `*.test.ts` under `tests/lint/` recursively |
+| Marked `unique` | 180 | 2026-10-20 | hand verdict |
+| Marked `partially redundant` | 22 | 2026-10-20 | hand verdict |
+| Marked `redundant` | 0 | 2026-10-20 | hand verdict |
 
 <!-- census:prose -->
 The three verdict rows sum to the gate-file count, so they are one measurement and carry one
@@ -380,6 +380,7 @@ is decided about this one entry.
 | `doc-duplicate-authority.test.ts` | no two documents share a body (FR-R3-063, widened by FR-R3-066) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `doc-orphan-pages.test.ts` | every documentation page is reachable by reading (FR-R3-063) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `doc-references-outside-markdown.test.ts` | documentation paths cited outside Markdown resolve (FR-R3-063) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
+| `doc-section-references.test.ts` | FR-R3-184 — a section a live document names in another file exists | partly by `docs:check`, which runs the same `checkSectionReferences` over the real tree on every push-tier run; this file's last case asserts the same thing, so that half is held twice, and the fixture cases are held only here | unique | the fixtures are what make the check falsifiable: a missing heading fails and a present one passes, for a link fragment and for a `§` marker by identifier and by quoted name, a marker wrapped across a line break included; dated and banner-declared records, line anchors and same-file anchors are not read; with the envelope absent a target outside `repo/` is unverifiable. Driven red 2026-10-20 before the check existed (5 of 5: `checkSectionReferences` is not a function). The decision and its count are in [section-reference-check.md](section-reference-check.md) |
 | `document-mechanism-consistency.test.ts` | no shipped document denies a mechanism the tree exports (FR-R3-116) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `documented-commands-exist.test.ts` | FR-R3-127 — no document names a command an operator cannot run, and the page that claims to list them all does | `readme-command-parity.test.ts` (manifest -> `commands.md` only) | unique | that gate checks one page for completeness in the manifest -> document direction. It was green while `docs/operations/evidence-retention-disclosure.md` told operators to run two commands that did not exist, because nothing checked the document -> manifest direction anywhere. This gate adds it corpus-wide, and holds `api-and-cli.md` in both directions because that page asserts completeness in its own words |
 | `documented-defaults-are-executable.test.ts` | FR-R3-126 — four security-critical defaults' worked examples are read FROM their owning documents and fed through the owning resolvers | `document-mechanism-consistency.test.ts`, `reference-doc-claims.test.ts` (both check form, not resolved value) | unique | the sibling gates check that a document's links resolve, its version matches, its source markers exist and its setting keys are declared. All four were green while `docs/security/threat-model.md` stated the INVERSE of the shipped phase-verdict default at two lines. This gate is the first that compares a documented default against the function that resolves it, in the direction that matters: the document is the input |
