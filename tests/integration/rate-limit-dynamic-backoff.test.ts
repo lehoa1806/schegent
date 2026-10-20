@@ -64,7 +64,7 @@ class FakeMemento implements Memento {
 // the parsed epoch invariant relative to `Date.now()`.
 function rateLimitedStdout(resetsAtSec: number): string {
   return [
-    '{"type":"system","subtype":"init","session_id":"int-027","model":"claude-sonnet-4-5","cwd":"/tmp/wsp"}',
+    '{"type":"system","subtype":"init","session_id":"int-027","model":"claude-sonnet-5-5","cwd":"/tmp/wsp"}',
     `{"type":"rate_limit_event","rate_limit_info":{"status":"allow","resetsAt":${resetsAtSec}}}`,
     `{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":${resetsAtSec}}}`
   ].join('\n');

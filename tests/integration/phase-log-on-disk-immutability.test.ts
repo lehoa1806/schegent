@@ -80,7 +80,7 @@ describe('Feature 029 T033 — phase-log on-disk immutability (SC-005)', () => {
         subtype: 'init',
         cwd: '/Users/dev/repo',
         session_id: 'sess-1',
-        model: 'claude-opus-4-7',
+        model: 'claude-opus-5-5',
         tools: 'Read,Write,Edit,Bash'
       }),
       JSON.stringify({

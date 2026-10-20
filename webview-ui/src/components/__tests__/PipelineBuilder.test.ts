@@ -663,7 +663,7 @@ describe('PipelineBuilder — restored 3-tab design', () => {
   });
 
   it('Models tab: renders the model list', async () => {
-    const snap = buildSnapshot([], [], ['claude-sonnet-4-6', 'claude-opus-4-6']);
+    const snap = buildSnapshot([], [], ['claude-sonnet-5-5', 'claude-opus-5-5']);
     const { container } = render(PipelineBuilder, { props: { snapshot: snap } });
     await switchTab(container, 'Models');
     const items = container.querySelectorAll('.model-list-item');
@@ -681,7 +681,7 @@ describe('PipelineBuilder — restored 3-tab design', () => {
   // test is actually for survives intact — each tab mounts exactly one entry
   // point and unmounts it with the tab — so that is what it asserts.
   it('Models tab: mounts the Model Catalog import entry point', async () => {
-    const snap = buildSnapshot([], [], ['claude-sonnet-4-6']);
+    const snap = buildSnapshot([], [], ['claude-sonnet-5-5']);
     // Feature 180 (T1555, FR-004) — the assertions before the switch describe
     // the tab this starts on, so the start is pinned rather than inherited.
     const { container } = render(PipelineBuilder, {
@@ -721,7 +721,7 @@ describe('PipelineBuilder — restored 3-tab design', () => {
 
   it('Models tab: saves through the shared save-models helper', async () => {
     vi.mocked(saveModelsHelper).mockClear();
-    const snap = buildSnapshot([], [], ['claude-sonnet-4-6', 'claude-opus-4-6']);
+    const snap = buildSnapshot([], [], ['claude-sonnet-5-5', 'claude-opus-5-5']);
     const { container } = render(PipelineBuilder, { props: { snapshot: snap } });
     await switchTab(container, 'Models');
     const saveBtn = [...container.querySelectorAll('button')].find(
@@ -732,7 +732,7 @@ describe('PipelineBuilder — restored 3-tab design', () => {
     await tick();
     expect(saveModelsHelper).toHaveBeenCalledTimes(1);
     expect(vi.mocked(saveModelsHelper).mock.calls[0][0]).toEqual({
-      claude: ['claude-sonnet-4-6', 'claude-opus-4-6'],
+      claude: ['claude-sonnet-5-5', 'claude-opus-5-5'],
       codex: [],
       agy: []
     });
@@ -811,7 +811,7 @@ describe('PipelineBuilder — Feature 026 per-phase Effort + runner overrides', 
       ...(extra.model ? { model: extra.model } : {}),
       ...(extra.runner ? { runner: extra.runner } : {})
     } as PhaseDefinition;
-    const snap = buildSnapshot([seeded], [], ['claude-sonnet-4-6', 'claude-opus-4-6']);
+    const snap = buildSnapshot([seeded], [], ['claude-sonnet-5-5', 'claude-opus-5-5']);
     const { container } = render(PipelineBuilder, { props: { snapshot: snap } });
     await switchTab(container, 'Phases');
     const item = container.querySelector(`[data-testid="phases-list-item-${p.id}"]`) as HTMLButtonElement;
@@ -1001,7 +1001,7 @@ describe('PipelineBuilder — Feature 026 per-phase Effort + runner overrides', 
 
   it('FR-003 orthogonality: changing Effort does not clear an existing Model override', async () => {
     vi.mocked(saveDraftHelper).mockClear();
-    const { container } = await openPhasesEditor(phase, { model: 'claude-sonnet-4-6' });
+    const { container } = await openPhasesEditor(phase, { model: 'claude-sonnet-5-5' });
     const effort = container.querySelector(
       '[data-testid="phases-effort-speckit-plan"]'
     ) as HTMLSelectElement;
@@ -1013,7 +1013,7 @@ describe('PipelineBuilder — Feature 026 per-phase Effort + runner overrides', 
     expect(savedBody()).toMatchObject({
       id: 'speckit-plan',
       effort: 'high',
-      model: 'claude-sonnet-4-6'
+      model: 'claude-sonnet-5-5'
     });
   });
 
@@ -1021,7 +1021,7 @@ describe('PipelineBuilder — Feature 026 per-phase Effort + runner overrides', 
     vi.mocked(saveDraftHelper).mockClear();
     const { container } = await openPhasesEditor(phase, {
       effort: 'high',
-      model: 'claude-sonnet-4-6'
+      model: 'claude-sonnet-5-5'
     });
     const effort = container.querySelector(
       '[data-testid="phases-effort-speckit-plan"]'
@@ -1031,7 +1031,7 @@ describe('PipelineBuilder — Feature 026 per-phase Effort + runner overrides', 
     const saveBtn = container.querySelector('[data-testid="phases-save-all"]') as HTMLButtonElement;
     await fireEvent.click(saveBtn);
     await tick();
-    expect(savedBody()).toMatchObject({ id: 'speckit-plan', model: 'claude-sonnet-4-6' });
+    expect(savedBody()).toMatchObject({ id: 'speckit-plan', model: 'claude-sonnet-5-5' });
     expect(savedBody().effort).toBeUndefined();
   });
 

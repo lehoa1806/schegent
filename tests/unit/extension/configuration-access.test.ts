@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const RESOURCE_SCOPED_KEYS = [
   'loop.maxIterations',
@@ -118,7 +118,7 @@ vi.mock('vscode', () => {
   };
 });
 
-import { activate } from '../../../src/extension';
+import { activate, deactivate } from '../../../src/extension';
 // Feature 058 — the canonical-folder picker memoizes its first read for the
 // process lifetime, so tests that run `activate(...)` multiple times need to
 // flush the cache between cases. The picker's dispose is idempotent and
@@ -128,6 +128,17 @@ import { disposeWorkspaceFolderPicker } from '../../../src/state/workspace-folde
 // so the second invocation in this test file (different fixture state)
 // still exercises the predicate.
 import { resetMultiRootWarningGuardForTest } from '../../../src/state/multi-root-warning';
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+
+/**
+ * FR-R3-191 follow-up — the case's own folder, made by `beforeEach` under the
+ * run's temp root, which the global setup points `os.tmpdir()` at and removes
+ * at teardown. Every path a case hands the extension sits inside it, in place
+ * of the fixed `/tmp` paths this file used to share with every other run.
+ */
+let caseRoot = '';
 
 interface MockMemento {
   get<T>(key: string): T | undefined;
@@ -154,20 +165,23 @@ function buildContext(): {
       }
     }
   } as MockMemento;
+  // Paths only: nothing here creates either folder.
+  const extRoot = path.join(caseRoot, 'ext-root');
+  const globalStorage = path.join(caseRoot, 'global-storage');
   const context = {
     subscriptions,
     workspaceState: memento,
-    extensionUri: { fsPath: '/tmp/ext-root', scheme: 'file', path: '/tmp/ext-root' },
-    extensionPath: '/tmp/ext-root',
-    asAbsolutePath: (p: string) => `/tmp/ext-root/${p}`,
+    extensionUri: { fsPath: extRoot, scheme: 'file', path: extRoot },
+    extensionPath: extRoot,
+    asAbsolutePath: (p: string) => path.join(extRoot, p),
     globalState: memento,
-    globalStorageUri: { fsPath: '/tmp/global-storage', scheme: 'file', path: '/tmp/global-storage' },
+    globalStorageUri: { fsPath: globalStorage, scheme: 'file', path: globalStorage },
     secrets: { get: vi.fn(), store: vi.fn(), delete: vi.fn(), onDidChange: vi.fn() }
   };
   return { context, subscriptions };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   mocks.state.getConfiguration.mockClear();
   mocks.state.registerWebviewViewProvider.mockClear();
   mocks.state.registerCommand.mockClear();
@@ -177,13 +191,23 @@ beforeEach(() => {
   mocks.state.createStatusBarItemDispose.mockClear();
   mocks.state.listeners.clear();
   mocks.state.workspaceFolders = undefined;
-  disposeWorkspaceFolderPicker();
   resetMultiRootWarningGuardForTest();
+  caseRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-configuration-access-'));
+  // Flushed last, after the `await`, as `activate.test.ts` does: a
+  // `deactivate()` that rejects skips its own flush of the picker.
+  disposeWorkspaceFolderPicker();
+});
+
+afterEach(async () => {
+  // FR-R3-191 follow-up — each case's activation goes through the host's
+  // deactivation, as a window's does, so none outlives its case.
+  await deactivate();
 });
 
 describe('configuration access — BUG-003 FR-039 (resource-scoped reads)', () => {
   it('(a) Stage 2 wiring calls getConfiguration with a resource URI exposing fsPath and scheme', async () => {
-    mocks.state.workspaceFolders = [{ uri: { fsPath: '/tmp/ws-a', scheme: 'file' } }];
+    const workspace = path.join(caseRoot, 'ws-a');
+    mocks.state.workspaceFolders = [{ uri: { fsPath: workspace, scheme: 'file' } }];
     const { context } = buildContext();
 
     await activate(context as Parameters<typeof activate>[0]);
@@ -197,7 +221,7 @@ describe('configuration access — BUG-003 FR-039 (resource-scoped reads)', () =
     expect(resource).toHaveProperty('scheme');
     expect(typeof resource!.fsPath).toBe('string');
     expect(typeof resource!.scheme).toBe('string');
-    expect(resource!.fsPath).toBe('/tmp/ws-a');
+    expect(resource!.fsPath).toBe(workspace);
   });
 
   it('(b) Stage 1 (no workspace folder) does not read resource-scoped configuration', async () => {
@@ -220,13 +244,15 @@ describe('configuration access — BUG-003 FR-039 (resource-scoped reads)', () =
   });
 
   it('(c) onDidChangeWorkspaceFolders rewires Stage 2 with the new folder URI (no cached config reuse)', async () => {
-    mocks.state.workspaceFolders = [{ uri: { fsPath: '/tmp/ws-first', scheme: 'file' } }];
+    const first = path.join(caseRoot, 'ws-first');
+    const second = path.join(caseRoot, 'ws-second');
+    mocks.state.workspaceFolders = [{ uri: { fsPath: first, scheme: 'file' } }];
     const { context } = buildContext();
 
     await activate(context as Parameters<typeof activate>[0]);
     const firstSchegentCall = mocks.state.getConfiguration.mock.calls.find((c) => c[0] === 'schegent');
     expect(firstSchegentCall).toBeDefined();
-    expect((firstSchegentCall![1] as { fsPath: string }).fsPath).toBe('/tmp/ws-first');
+    expect((firstSchegentCall![1] as { fsPath: string }).fsPath).toBe(first);
 
     // Tear down: workspace closes, Stage 2 disposes.
     mocks.state.workspaceFolders = undefined;
@@ -236,7 +262,7 @@ describe('configuration access — BUG-003 FR-039 (resource-scoped reads)', () =
 
     // New workspace opens at a different path — Stage 2 must wire fresh.
     mocks.state.getConfiguration.mockClear();
-    mocks.state.workspaceFolders = [{ uri: { fsPath: '/tmp/ws-second', scheme: 'file' } }];
+    mocks.state.workspaceFolders = [{ uri: { fsPath: second, scheme: 'file' } }];
     handlers = Array.from(mocks.state.listeners);
     expect(handlers.length).toBeGreaterThan(0);
     await Promise.all(handlers.map(async (fn) => fn({ added: [], removed: [] })));
@@ -247,7 +273,7 @@ describe('configuration access — BUG-003 FR-039 (resource-scoped reads)', () =
       'rewired Stage 2 must call getConfiguration("schegent", …) again with the new folder URI'
     ).toBeDefined();
     const secondResource = secondSchegentCall![1] as { fsPath: string };
-    expect(secondResource.fsPath).toBe('/tmp/ws-second');
-    expect(secondResource.fsPath).not.toBe('/tmp/ws-first');
+    expect(secondResource.fsPath).toBe(second);
+    expect(secondResource.fsPath).not.toBe(first);
   });
 });

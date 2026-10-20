@@ -29,6 +29,24 @@
 // multi-paragraph prompts, and no test here asserts on prompt text, so copying
 // eight kilobytes of instruction to keep them byte-identical would buy nothing
 // and rot immediately.
+//
+// Three fields the examples declare are left out, so each resolves to its
+// default here:
+//
+//   - `sideEffects`. The examples declare `git` on `speckit-specify` and
+//     `finalize`; here every Phase resolves to `'workspace'`. So a Run built
+//     from this file asks for no Git approval (`workflow-run-factory.ts`), and
+//     `run-driver.ts` neither checks a mutation plan nor takes a checkpoint
+//     before a Phase. The tests of that gate declare their own `git` Phases.
+//   - `effort`. The examples set one on every Spec Kit Phase. Here the CLI
+//     gets no `--effort`, and `standard-pipeline.test.ts` asserts that no
+//     phase-start payload carries one.
+//   - `hostVerification`. The examples declare `exit-code` on eleven Phases.
+//     Omitted, it resolves to `exit-code` anyway, because `'workspace'` is
+//     load-bearing (`claimIsLoadBearing` in `phase-runner-policy.ts`). Every
+//     Phase is judged on its exit code in both; for those eleven, only
+//     `hostVerificationDeclaredAt` differs: `'default'` here,
+//     `'phase-definition'` there.
 
 import {
   buildCatalog,

@@ -160,7 +160,7 @@ describe('validatePhaseRaw — error rules from contracts/pipeline-config.md', (
 
   it('accepts a fully-specified valid phase', () => {
     const errs = validatePhaseRaw(
-      validPhase({ model: 'claude-opus-4-7', effort: 'high', timeoutSeconds: 600 })
+      validPhase({ model: 'claude-opus-5-5', effort: 'high', timeoutSeconds: 600 })
     );
     expect(errs).toEqual([]);
   });
@@ -431,12 +431,12 @@ describe('Feature 026 T017 — phase Effort + Model validator coverage', () => {
     expect(effortErr?.message).toMatch(/low.*medium.*high.*xhigh.*max/);
   });
 
-  // (d) model: 'claude-sonnet-4-6' accepted; model: '' rejected with
+  // (d) model: 'claude-sonnet-5-5' accepted; model: '' rejected with
   // a per-row code (the model identifier shape check enforces FR-005
   // at the validator layer; the permitted-models set is enforced at
   // catalog-load time and the integration test in T018).
   it('validatePhaseRaw accepts a non-empty model identifier and rejects empty/non-string model', () => {
-    const acceptKnown = validatePhaseRaw(validPhase({ model: 'claude-sonnet-4-6' }));
+    const acceptKnown = validatePhaseRaw(validPhase({ model: 'claude-sonnet-5-5' }));
     expect(acceptKnown).toEqual([]);
     const rejectEmpty = validatePhaseRaw(validPhase({ model: '' }));
     const emptyErr = rejectEmpty.find((e) => e.field === 'model');

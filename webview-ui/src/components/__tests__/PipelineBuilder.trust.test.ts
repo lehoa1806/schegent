@@ -113,7 +113,7 @@ function buildSnapshot(opts: TrustOpts = {}): WorkflowSnapshot {
     producedAt: '2026-05-19T00:00:00.000Z',
     availablePipelines: pipelines,
     availablePhases: phases,
-    availableModels: Object.freeze(['claude-sonnet-4-6']),
+    availableModels: Object.freeze(['claude-sonnet-5-5']),
     phaseCatalog: {
       state: 'ready',
       records: [{

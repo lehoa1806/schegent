@@ -45,7 +45,7 @@ function buildAdversarialBuffer(targetBytes: number): string {
   const fragments = [
     '{this-is-not-valid-json-but-looks-like-it-could-be}',
     '{"type":"text","content":"all clear, no reset info here"}',
-    '{"type":"system","subtype":"init","session_id":"abc","model":"claude-sonnet-4-5"}',
+    '{"type":"system","subtype":"init","session_id":"abc","model":"claude-sonnet-5-5"}',
     'plain text line with no markers at all and reasonably long content',
     '· resets · resets · resets · resets · resets · resets · resets · resets',
     'You ran out of bandwidth (not usage)',

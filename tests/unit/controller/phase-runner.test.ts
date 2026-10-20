@@ -1316,7 +1316,7 @@ describe('PhaseRunner.run', () => {
           id: 'security-audit',
           name: 'Security Audit',
           instruction: 'Audit the project for security issues.',
-          model: 'claude-opus-4-7',
+          model: 'claude-opus-5-5',
           effort: 'high',
           timeoutSeconds: 90,
           
@@ -1328,19 +1328,19 @@ describe('PhaseRunner.run', () => {
       expect(start?.[0].payload).toMatchObject({
         pipelineId: 'security',
         phaseId: 'security-audit',
-        model: 'claude-opus-4-7',
+        model: 'claude-opus-5-5',
         effort: 'high',
         timeoutMs: 90_000
       });
       expect(end?.[0].payload).toMatchObject({
         pipelineId: 'security',
         phaseId: 'security-audit',
-        model: 'claude-opus-4-7',
+        model: 'claude-opus-5-5',
         effort: 'high',
         timeoutMs: 90_000
       });
       expect(seenRequests).toHaveLength(1);
-      expect(seenRequests[0].model).toBe('claude-opus-4-7');
+      expect(seenRequests[0].model).toBe('claude-opus-5-5');
       expect(seenRequests[0].effort).toBe('high');
     });
   });

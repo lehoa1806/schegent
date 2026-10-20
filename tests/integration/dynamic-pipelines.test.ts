@@ -168,7 +168,8 @@ describe('Dynamic pipelines end-to-end (T034, US2)', () => {
       id: 'security-audit',
       name: 'Security Audit',
       instruction: 'Audit the staged diff for security regressions.',
-      model: 'claude-opus-4-7',
+      // Not the control phases' `claude-opus-5-5`, so the override is the only source.
+      model: 'claude-fable-5-1',
       effort: 'high',
       timeoutSeconds: 90,
       retryCondition: 'open_issues > 0'
@@ -230,7 +231,7 @@ describe('Dynamic pipelines end-to-end (T034, US2)', () => {
     ]);
 
     const securityCall = invocations.find((i) => i.phase === 'security-audit')!;
-    expect(securityCall.model).toBe('claude-opus-4-7');
+    expect(securityCall.model).toBe('claude-fable-5-1');
     expect(securityCall.effort).toBe('high');
     expect(securityCall.timeoutMs).toBe(90_000);
 
@@ -246,7 +247,7 @@ describe('Dynamic pipelines end-to-end (T034, US2)', () => {
     expect(securityStarts.length).toBeGreaterThan(0);
     for (const entry of securityStarts) {
       expect(entry.payload.pipelineId).toBe('security');
-      expect(entry.payload.model).toBe('claude-opus-4-7');
+      expect(entry.payload.model).toBe('claude-fable-5-1');
       expect(entry.payload.effort).toBe('high');
       expect(entry.payload.timeoutMs).toBe(90_000);
     }

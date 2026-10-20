@@ -59,10 +59,10 @@ afterEach(() => {
 describe('save catalog helpers', () => {
   it('saveModels posts CMD_SAVE_MODELS and forwards rejection reasons', async () => {
     const posted: unknown[] = [];
-    const promise = saveModels({ claude: ['claude-sonnet-4-6'] }, (msg) => posted.push(msg));
+    const promise = saveModels({ claude: ['claude-sonnet-5-5'] }, (msg) => posted.push(msg));
     const env = posted[0] as { type: string; correlationId: string; payload: unknown };
     expect(env.type).toBe(CMD_SAVE_MODELS);
-    expect(env.payload).toEqual({ models: { claude: ['claude-sonnet-4-6'] } });
+    expect(env.payload).toEqual({ models: { claude: ['claude-sonnet-5-5'] } });
     expect(pendingSet.has(env.correlationId)).toBe(true);
     fireAck(env.correlationId, 'rejected', 'models-validation');
     await expect(promise).resolves.toEqual({
@@ -72,7 +72,7 @@ describe('save catalog helpers', () => {
   });
 
   it('times out saves that never receive an ack', async () => {
-    const promise = saveModels({ claude: ['claude-sonnet-4-6'] }, vi.fn());
+    const promise = saveModels({ claude: ['claude-sonnet-5-5'] }, vi.fn());
     vi.advanceTimersByTime(5000);
     await expect(promise).resolves.toEqual({ status: 'rejected', reason: 'timeout' });
   });

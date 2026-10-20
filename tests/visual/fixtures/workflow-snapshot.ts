@@ -554,7 +554,7 @@ export const workflowSnapshot = {
       "id": "speckit-specify",
       "name": "Specify",
       "instruction": "Define scope and acceptance criteria.",
-      "model": "claude-sonnet-4-6",
+      "model": "claude-sonnet-5-5",
       "effort": "high",
       "timeoutSeconds": 1800,
       "loopable": false,
@@ -564,7 +564,7 @@ export const workflowSnapshot = {
       "id": "speckit-clarify",
       "name": "Clarify",
       "instruction": "Resolve material ambiguity.",
-      "model": "claude-sonnet-4-6",
+      "model": "claude-sonnet-5-5",
       "effort": "medium",
       "timeoutSeconds": 1200,
       "loopable": true,
@@ -617,8 +617,8 @@ export const workflowSnapshot = {
   ],
   "availableModels": {
     "claude": [
-      "claude-sonnet-4-6",
-      "claude-opus-4-6"
+      "claude-sonnet-5-5",
+      "claude-opus-5-5"
     ],
     "codex": [
       "gpt-5.6-codex"
@@ -629,8 +629,8 @@ export const workflowSnapshot = {
   },
   "configuredModels": {
     "claude": [
-      "claude-sonnet-4-6",
-      "claude-opus-4-6"
+      "claude-sonnet-5-5",
+      "claude-opus-5-5"
     ],
     "codex": [
       "gpt-5.6-codex"

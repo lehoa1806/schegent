@@ -249,10 +249,12 @@ beforeEach(async () => {
 
 /**
  * FR-R3-191 (feature 218) — the host-teardown cases' spy on the lock release,
- * and the error it throws when a case sets one (US2-6).
+ * the error it throws when a case sets one (US2-6), and the gate it holds at
+ * when a case sets one (US2-8).
  */
 let lockRelease: { mockRestore(): void } | undefined;
 let lockFailure: Error | undefined;
+let lockGate: { readonly reached: () => void; readonly opened: Promise<void> } | undefined;
 
 afterEach(async () => {
   // Restored first, so nothing that runs after a case goes through a lock
@@ -493,10 +495,16 @@ describe('activate() — the host teardown releases the runtime log writer (FR-R
 
   beforeEach(() => {
     lockFailure = undefined;
+    lockGate = undefined;
     lockRelease = vi
       .spyOn(WorkspaceLockManager.prototype, 'release')
       .mockImplementation(async function (this: WorkspaceLockManager): Promise<void> {
-        // The real release first, so the heartbeat stops even in a case that throws.
+        // Held here when a case sets a gate, so the Stage 2 teardown stays in flight.
+        if (lockGate) {
+          lockGate.reached();
+          await lockGate.opened;
+        }
+        // The real release before the throw, so the heartbeat stops even in a case that throws.
         await releaseLock.call(this);
         mocks.teardown.events.push('lock:release');
         if (lockFailure) throw lockFailure;
@@ -540,6 +548,43 @@ describe('activate() — the host teardown releases the runtime log writer (FR-R
     return mocks.teardown.events
       .slice(mark)
       .filter((event) => event.startsWith('release:') || event === DEACTIVATED);
+  }
+
+  /**
+   * Remove the last folder with the lock release held, so the folder change's
+   * Stage 2 teardown is still in flight when `deactivate()` starts. `deactivating`
+   * starts only once the hold is reached; the gate opens on every path, after
+   * `whileHeld` has run.
+   */
+  async function deactivateDuringRemoval(whileHeld: () => Promise<void>): Promise<{
+    removing: Promise<unknown>;
+    deactivating: Promise<void>;
+  }> {
+    let reachLock: () => void = () => undefined;
+    const lockReached = new Promise<void>((resolve) => {
+      reachLock = resolve;
+    });
+    let openLock: () => void = () => undefined;
+    const lockOpened = new Promise<void>((resolve) => {
+      openLock = resolve;
+    });
+    lockGate = { reached: reachLock, opened: lockOpened };
+    mocks.state.workspaceFolders = undefined;
+    const handlers = Array.from(mocks.state.listeners);
+    const removing = Promise.all(handlers.map(async (fn) => fn({ added: [], removed: [] })));
+    // Observed at once, so a rejection waiting for the caller is not reported unhandled.
+    removing.catch(() => undefined);
+    let deactivating: Promise<void>;
+    try {
+      await lockReached;
+      deactivating = deactivateMarked();
+      await whileHeld();
+    } finally {
+      // Opened even when a step above fails: the folder change's teardown, and
+      // so the host teardown and the `afterEach`, wait on this gate.
+      openLock();
+    }
+    return { removing, deactivating };
   }
 
   it('US2-1 — `deactivate` releases the writer the activation built', async () => {
@@ -718,5 +763,50 @@ describe('activate() — the host teardown releases the runtime log writer (FR-R
       DEACTIVATED
     ]);
     expect(second.sink.openDescriptorCount).toBe(0);
+  });
+
+  it('US2-8 — the host teardown waits for a Stage 2 teardown a folder removal already began', async () => {
+    const { sink } = await activateWithLine();
+    const mark = mocks.teardown.events.length;
+
+    const { removing, deactivating } = await deactivateDuringRemoval(async () => {
+      await new Promise<void>((resolve) => {
+        setImmediate(() => {
+          resolve();
+        });
+      });
+      expect(releaseOrder(mark), 'the release must wait for the teardown in flight').toEqual([]);
+    });
+    await removing;
+    await deactivating;
+
+    expect(mocks.teardown.events.slice(mark)).toEqual([
+      'output:dispose', // Stage 2's own disposables, from the folder removal
+      'lock:release',
+      'release:start',
+      'release:end',
+      DEACTIVATED // no host `output:dispose`: the folder removal already took the output
+    ]);
+    expect(sink.openDescriptorCount).toBe(0);
+  });
+
+  it("US2-8 — that teardown's rejection stays the folder removal's: the release still waits, and `deactivate` resolves", async () => {
+    const { sink } = await activateWithLine();
+    const failure = new Error('the lock release failed');
+    lockFailure = failure;
+    const mark = mocks.teardown.events.length;
+
+    const { removing, deactivating } = await deactivateDuringRemoval(async () => undefined);
+    await expect(removing).rejects.toBe(failure);
+    await deactivating;
+
+    expect(mocks.teardown.events.slice(mark)).toEqual([
+      'output:dispose',
+      'lock:release',
+      'release:start',
+      'release:end',
+      DEACTIVATED
+    ]);
+    expect(sink.openDescriptorCount).toBe(0);
   });
 });

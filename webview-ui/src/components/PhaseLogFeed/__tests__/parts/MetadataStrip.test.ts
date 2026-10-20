@@ -72,7 +72,7 @@ describe('Feature 029 T024 — MetadataStrip', () => {
     const lines: MetadataLine[] = [
       mk('cwd', '/x'),
       mk('session_id', 'sess'),
-      mk('model', 'claude-opus-4-7'),
+      mk('model', 'claude-opus-5-5'),
       mk('tools', 'Read,Write')
     ];
     const { getByTestId } = render(MetadataStrip, { props: { lines } });

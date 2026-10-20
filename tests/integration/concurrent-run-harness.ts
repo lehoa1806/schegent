@@ -151,7 +151,7 @@ export const fatalOutput = (): RawInvocationOutput => ({
 export const rateLimitedOutput = (resetsAtSec: number): RawInvocationOutput => ({
   stdoutBuffer: buffer(
     [
-      '{"type":"system","subtype":"init","session_id":"int-093","model":"claude-sonnet-4-5","cwd":"/tmp/wsp"}',
+      '{"type":"system","subtype":"init","session_id":"int-093","model":"claude-sonnet-5-5","cwd":"/tmp/wsp"}',
       `{"type":"rate_limit_event","rate_limit_info":{"status":"allow","resetsAt":${resetsAtSec}}}`,
       `{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":${resetsAtSec}}}`
     ].join('\n')
