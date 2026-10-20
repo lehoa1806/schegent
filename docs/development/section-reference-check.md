@@ -46,7 +46,7 @@ own threshold.
 
 ## Decision
 
-**Built.** In every live document, `docs:check` resolves two kinds of section reference:
+**Built.** In every live document `docs:check` walks, it resolves two kinds of section reference:
 
 - a link fragment naming a heading in another Markdown file. It resolves against the target's
   GitHub heading anchors and explicit HTML ids;
@@ -59,15 +59,33 @@ the missing section.
 
 The check does not read:
 
-- dated records: the `specs/`, `docs/features/`, `docs/audits/` and `docs/plans/` prefixes of each
-  tree, and three pages whose banners declare them records;
+- **records.** A page is a record when it carries the `<!-- doc-class: record -->` marker on its own
+  line near its top, the rule `tests/lint/current-control-claims.test.ts` reads. It is also a
+  record when it lies under the envelope's `docs/features/`, `docs/audits/` or `docs/plans/`, or
+  when it is the envelope's `ARCHITECTURE.md`, whose banner declares it one. `repo/docs/features/`
+  holds user guides, which are live;
 - line anchors;
 - fragments on files that are not Markdown;
-- same-file anchors;
-- sections named in free prose.
+- same-file anchors, including a link that names its own file by path;
+- sections named in free prose. That includes a `§` not directly after its link
+  (`[x](t.md) (§9)`, `[x](t.md), §9`) and an identifier with a letter after its digits (`§2a`,
+  `§4b.2`);
+- a line, or a paragraph joined from shorter lines, over 10,000 characters. It is counted and
+  reported in the check's summary line instead;
+- a target outside the tree being checked, with symlinks resolved. It is counted as unverifiable.
+  With the planning envelope absent, that includes every reference into it, as paths already were.
 
-With the planning envelope absent, a reference into it is unverifiable rather than broken, as paths
-already were.
+The anchor rule is GitHub's, re-implemented, and some rare shapes are read differently. None was in
+the tree on 2026-10-20:
+
+- a fence opened inside a list item hides every later heading in its file;
+- an anchor written `<A NAME=x>`, without quotes, or split across lines is not seen;
+- a heading inside a list item, or after a byte-order mark, is not seen;
+- any `:word:` is read as an emoji shortcode;
+- a link inside an HTML comment, after a backslash or in an image is read, as the path check reads
+  it;
+- an `id=` inside inline code or a comment counts as an anchor;
+- a fragment that differs from its heading only in case is refused, with its own reason.
 
 ## Measurement
 
@@ -80,8 +98,17 @@ tracked Markdown files that `docs:check` reads. The sweep is committed with feat
 |---|---|---|
 | Mechanical, in live documents: **the number the rule reads** | 39 | **10** |
 | Prose, in live documents | 56 | 2 |
-| In dated records | 405 | 24 |
-| **All** | **500** | **36** |
+| In dated records | 404 | 24 |
+| **All** | **499** | **36** |
+
+A link that names its own file by path counts as same-file, as a bare `#fragment` does. Review moved
+the one such link, which resolves, out of the table.
+
+The sweep's records were the specification's: `specs/`, `docs/features/`, `docs/audits/` and
+`docs/plans/` in both trees, and three pages named. The check reads records by the rule under
+"Decision", which review aligned with the tree's own marker. On the same rows that rule gives the
+same ten live failures. The one reference under `repo/docs/features/` resolves, and the three
+marker-bearing pages the sweep did not name hold no link fragment or `§` marker the check reads.
 
 The ten live mechanical failures named four distinct targets. Each was repointed at a heading its
 target has before the check landed, and no target gained a heading:
@@ -96,8 +123,8 @@ target has before the check landed, and no target gained a heading:
 - `docs/development/gate-integrity-measurements.md` named a `RELEASE.md` section, "what was
   withdrawn", that `RELEASE.md` never had. It now cites §5, "What a release no longer does";
 - the envelope README cited a filing's §7, wrapped onto the line after the link. The filing's
-  headings stop at 6, and "§7" is an item inside its section 2. The citation now links that
-  section.
+  headings stop at 6, and "§7" is a finding inside its section 2. The sentence says what the filing
+  asks for, so it now links section 3, the deliverable.
 
 The two live prose failures were in the envelope. Its `CONTRIBUTING.md` sent readers to a
 "Verification" section of its README that did not exist. A product requirements draft named a
@@ -111,16 +138,16 @@ as written.
 1. **The count meets the bar fixed before it was taken.** Ten live mechanical failures meets ten,
    so the rule says build. It is applied as written, in this direction as it would have been in the
    other.
-2. **These failures come from reorganisation, which a path check cannot see.** A heading anchor
-   goes stale when its heading is renamed, moved to another file or removed. The four targets here
-   were all of those kinds. One was a section that left with the rules it held. One was a section
-   folded into another. One was a section that never existed, and one was a section quoted by a
-   number it does not have. None was a typo. Each sentence still pointed at the file it meant, so
-   the path check passed all four.
+2. **These failures are invisible to a path check, whatever caused them.** Two followed a
+   reorganisation: a section that left with the rules it held, and a section folded into another.
+   Two never matched: a section that never existed, and a section cited by a number it does not
+   have. None was a typo. Each sentence still pointed at the file it meant, so the path check
+   passed all four.
 3. **The old reason for stripping fragments covered line anchors only.** `#L42` moves with every
-   edit, so a check on it would be noise. A heading anchor moves only when the document's structure
-   changes. At that point the sentence naming it is genuinely stale, so a failure is a defect worth
-   repairing, not noise. The ten repairs above are what that looks like.
+   edit, so a check on it would be noise. A heading anchor goes stale when its heading is renamed,
+   moved or removed, which is rarer than a line moving. When it does, the sentence naming it is
+   stale too, so a failure is a defect worth repairing, not noise. The ten repairs above are what
+   that looks like.
 4. **What the check leaves out is left out on purpose, and the cost is stated.**
    - **Prose** would need a heuristic. The README hop that raised this question was prose, so the
      check would not have caught that one. It catches the mechanical ones, and those were the ten.
@@ -138,14 +165,18 @@ Reopen this decision when any of these is observed:
 1. **A false refusal.** The check refuses a reference that a reader can follow, and the only fix
    would be to rewrite correct prose. Then the `§` rule should learn the positional convention
    above, or be narrowed.
-2. **A second broken same-file anchor.** Same-file anchors were outside the measured class. On
-   2026-10-20 one was broken, in `RELEASE.md`. A second one shows the class recurs, and the check
-   should read same-file anchors too.
+2. **A broken same-file anchor in a live document, other than `RELEASE.md`'s.** Same-file anchors
+   were outside the measured class. On 2026-10-20 one was broken, in `RELEASE.md`, and it was handed
+   to the operator. Another shows the class recurs, and the check should read same-file anchors
+   too.
 3. **A convention for prose.** The tree adopts a form a check can read for references now written
    in prose, for example every section reference written as a fragment link. That moves references
    into the checked forms.
 
-To re-measure, run the sweep from the planning envelope's root, where it lives:
-`node specs/219-prose-hops-resolve/measure/section-refs-sweep.mjs --out <new file>`. It reads both
-repositories at their `HEAD` by default, or at the commits passed with `--ws` and `--repo`. The
-field to read is `counts.liveMechanicalUnresolved`, which `docs:check` now holds at zero.
+People observe conditions 1 and 3: a reader meets the refusal, or a change adopts the convention. A
+sweep observes condition 2. To re-measure, run the sweep from the planning envelope's root, where it
+lives: `node specs/219-prose-hops-resolve/measure/section-refs-sweep.mjs --out <new file>`. It reads
+both repositories at their `HEAD` by default, or at the commits passed with `--ws` and `--repo`.
+For condition 2, read `counts.sameFile.unresolved` and the `sameFile` rows it counts: an unresolved
+row in a live document, other than `RELEASE.md`'s, meets it. The same run's
+`counts.liveMechanicalUnresolved` should be zero, as `docs:check` holds it.
