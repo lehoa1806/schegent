@@ -858,7 +858,7 @@ commit on import — a confirmed Model Catalog plan writes once, through
 `buildImportWrites`/`runImportCommit` sequencer the rest of this section
 describes. See
 [Inspect an import](../docs/operations/process-yaml.md#inspect-an-import) for the
-operator-facing outcomes and skip reasons.
+plan-row outcomes.
 
 **Three export arms, three inclusion vocabularies.** A Phase has no dependencies,
 so `exportPhaseYaml` takes an id and nothing else. A Pipeline has one level below

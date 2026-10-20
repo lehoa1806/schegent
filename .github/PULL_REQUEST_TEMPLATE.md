@@ -37,7 +37,7 @@ intentionally touched the surface AND paste a one-line justification on the
 following line. Leave it unticked if you did not. An unchecked box is NOT an
 auto-rejection — it is a signal that the reviewer can move on.
 
-Full hard-rule index: see [CLAUDE.md](../../CLAUDE.md).
+Full hard-rule index: see [docs/hard-rules.md](../../docs/hard-rules.md#index--read-the-rows-your-change-touches).
 -->
 
 - [ ] **Single sanitization SoT** — Touched `SECRET_PATTERNS` or the redaction set in [`src/lib/logger.ts`](../src/lib/logger.ts)? See [docs/hard-rules.md](../../docs/hard-rules.md#hard-rules-when-changing-host-code).
