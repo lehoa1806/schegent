@@ -76,13 +76,14 @@ The check does not read:
   a match; `§` is counted with them, which makes the cap stricter, never looser. Such a passage is
   counted and reported in the check's summary line instead. In a target such a line is not read
   either, except that a fence marker keeps its role, so a fence still opens and closes where it
-  did, a line terminator after its run included. A run longer than 10,000 characters opens a fence
-  that nothing closes, so past that the check fails closed. A setext heading over either cap, or
-  whose text runs into a line that was not read, is not indexed, so a reference to it fails. With
-  both caps a page costs at most a fixed amount per character to parse, each target path is
-  resolved once, and a reference is resolved by a lookup, so the check's cost grows with the size
-  of what it reads. On 2026-10-20 the most any tracked page in either tree held on one line was 151
-  of those characters, in a live paragraph 102 and in a heading 8;
+  did, a line terminator after its run included. A run longer than 10,000 characters still closes
+  a shorter fence, but a fence it opens is never closed, so past that the check fails closed. A
+  setext heading over either cap, or whose text runs into a line that was not read, is not indexed,
+  so a reference to it fails. With both caps a page costs at most a fixed amount per character to
+  parse, and a reference is resolved by a lookup. Each target file is resolved once, however it is
+  spelled, at a cost that grows with how deep it lies. On 2026-10-20 the most any tracked page in
+  either tree held on one line was 151 of those characters, in a live paragraph 102 and in a heading
+  8;
 - a target outside both trees, with symlinks resolved, or one that cannot be read. It is counted as
   unverifiable. With the planning envelope absent, that includes every reference into it, as paths
   already were.
@@ -102,7 +103,9 @@ parser. Several of the shapes do occur in the tree:
 - YAML front matter between `---` lines is read as a setext heading, where GitHub shows a table;
 - a named entity other than `&amp;`, `&lt;`, `&gt;`, `&quot;`, `&apos;` and `&nbsp;` is left as
   written, so `&mdash;` keeps its letters in the anchor;
-- a fragment that differs from its heading only in case is refused, with its own reason.
+- a fragment that differs from its heading only in case is refused, with its own reason;
+- a fence marker whose info string holds U+2028, U+2029 or a lone carriage return is read as no
+  marker, so the headings after it are read until the next fence. GitHub opens a fence there.
 
 ## Measurement
 
