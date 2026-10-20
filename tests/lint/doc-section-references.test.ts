@@ -32,7 +32,8 @@ import { checkSectionReferences } from '../../scripts/check-doc-links.mjs';
  * either. Prose would need a heuristic, and feature 219 declined one. A target outside both trees
  * being checked, symlinks resolved, or one that cannot be read, is unverifiable and is not read. A line, or a wrapped
  * paragraph, over 10,000 characters or holding more than 256 of `[`, `<`, a backtick and `§` is not parsed; it is
- * counted and reported instead. A target's heading over either cap is not indexed.
+ * counted and reported instead. A fence marker over a cap keeps its role. A target's heading over either cap, or
+ * whose text runs into a line that was not read, is not indexed.
  */
 const REPO = resolve(__dirname, '..', '..');
 const SCRIPT = join(REPO, 'scripts', 'check-doc-links.mjs');
@@ -55,6 +56,8 @@ function tree(files: Record<string, string>): string {
 const ENVELOPE = { 'ARCHITECTURE.md': '# Envelope\n', 'CLAUDE.md': '# Pointer\n', 'docs/README.md': '# Docs\n' };
 const TARGET = '# Target\n\n## Present heading\n\n## 2. Scope\n\nA paragraph.\n';
 const RECORD_MARKER = '<!-- doc-class: record -->';
+/** U+2028, a line terminator a line split on `\n` can still hold. */
+const LINE_SEPARATOR = String.fromCharCode(0x2028);
 
 interface Failure {
   readonly file: string;
@@ -188,6 +191,11 @@ describe('FR-R3-184 — a section a live document names in another file exists',
         '| [the |',
         '| name](target.md#gone) |',
         '',
+        'An empty fence ends [the',
+        '```',
+        '```',
+        'name](target.md#gone)',
+        '',
         '```',
         '[fenced](target.md#gone)',
         '```',
@@ -243,8 +251,25 @@ describe('FR-R3-184 — a section a live document names in another file exists',
         '    # indented code',
         '',
         '####### seven hashes',
+        '',
+        '  Two  ',
+        '  Lines',
+        '=====',
+        '',
+        `## Bad${LINE_SEPARATOR}heading`,
+        '',
+        `\`\`\`${LINE_SEPARATOR}x`,
+        '',
+        '## After the false fence',
+        '',
+        '## §3 Scope',
+        '',
+        '## ⚠',
+        '',
+        '## ⚠',
         ''
       ].join('\n'),
+      'repo/docs/crlf.md': '# T\r\n\r\n## Crlf heading\r\n',
       'repo/docs/citing.md': [
         '#quoted-heading',
         '#-careful',
@@ -260,14 +285,20 @@ describe('FR-R3-184 — a section a live document names in another file exists',
         '#code',
         '#hashtag-is-not-a-heading',
         '#indented-code',
-        '#seven-hashes'
+        '#seven-hashes',
+        '#two-lines',
+        '#badheading',
+        '#after-the-false-fence',
+        '#-1'
       ]
         .map((fragment) => `[x](target.md${fragment})\n`)
         .join('\n')
+        .concat('\n`target.md` §3 and [x](crlf.md#crlf-heading)\n')
     });
     const { checked, failures } = check(root);
-    expect(checked).toBe(15);
-    expect(failures.map((f) => f.named)).toEqual(['-real', 'code', 'hashtag-is-not-a-heading', 'indented-code', 'seven-hashes']);
+    expect(checked).toBe(21);
+    // A line terminator inside a line makes it neither a heading nor a fence marker.
+    expect(failures.map((f) => f.named)).toEqual(['-real', 'code', 'hashtag-is-not-a-heading', 'indented-code', 'seven-hashes', 'badheading']);
   });
 
   it('resolves as GitHub anchors do: duplicates, HTML ids, percent-encoding, setext, fences, case and the ellipsis rule', () => {
@@ -312,16 +343,22 @@ describe('FR-R3-184 — a section a live document names in another file exists',
         '[a](rules.md) §"Recording cadence…"',
         '',
         '[a](rules.md) §"Recording cadence"',
+        '',
+        '[a](rules.md#Kept-Here)',
+        '',
+        '[a](rules.md) §"Notes…"',
         ''
       ].join('\n')
     });
     const { checked, failures } = check(root);
-    expect(checked).toBe(9);
+    expect(checked).toBe(11);
+    // An ellipsis name that is a whole heading resolves: it is its own prefix.
     expect(failures.map((f) => [f.line, f.named, f.reason])).toEqual([
       [3, 'notes-2', 'no-such-anchor'],
       [11, 'inside-a-fence', 'no-such-anchor'],
       [13, 'Notes', 'case-only'],
-      [17, 'Recording cadence', 'prefix-only']
+      [17, 'Recording cadence', 'prefix-only'],
+      [19, 'Kept-Here', 'case-only']
     ]);
   });
 
@@ -499,6 +536,139 @@ describe('FR-R3-184 — a section a live document names in another file exists',
     expect(unread).toBe(8);
   });
 
+  it('keeps the structure a dense line marks: a fence opens and closes where it did, and a setext heading that runs into an unread line is not indexed', () => {
+    const dense = '['.repeat(300);
+    const root = tree({
+      ...ENVELOPE,
+      'repo/docs/fenced-target.md': [
+        '# T',
+        '',
+        `\`\`\`js ${dense}`,
+        '## Inside',
+        '```',
+        '',
+        '```',
+        `\`\`\` ${dense}`,
+        '## Still inside',
+        '```',
+        ''
+      ].join('\n'),
+      'repo/docs/setext-target.md': ['# S', '', `x${dense}`, 'Real title', '==========', '', '## Present', ''].join('\n'),
+      'repo/docs/citing.md': [
+        '[a](fenced-target.md#inside), [b](fenced-target.md#still-inside), [c](setext-target.md#real-title) and [d](setext-target.md#present)',
+        '',
+        `\`\`\`${dense}`,
+        'quoted [x](fenced-target.md#gone-inside-a-fence)',
+        '```',
+        '',
+        '[y](fenced-target.md#gone-after-the-fence)',
+        '',
+        `> \`\`\`${dense}`,
+        '[q](fenced-target.md#gone-after-a-quoted-marker)',
+        ''
+      ].join('\n'),
+      'repo/docs/citing-long-fence.md': ['```', 'code', '`'.repeat(300), '', '[z](fenced-target.md#gone-after-the-long-fence)', ''].join('\n')
+    });
+    const { checked, failures, unread } = check(root);
+    // A dense opener still opens, with or without an info string, and a dense line with an info
+    // string still does not close. A dense closer still closes. A quoted marker opens nothing in a
+    // citing page, dense or not. Real title's heading text runs into an unread line, so it fails.
+    expect(failures.map((f) => [f.file, f.line, f.named]).sort()).toEqual([
+      ['repo/docs/citing-long-fence.md', 5, 'gone-after-the-long-fence'],
+      ['repo/docs/citing.md', 1, 'inside'],
+      ['repo/docs/citing.md', 1, 'real-title'],
+      ['repo/docs/citing.md', 1, 'still-inside'],
+      ['repo/docs/citing.md', 10, 'gone-after-a-quoted-marker'],
+      ['repo/docs/citing.md', 7, 'gone-after-the-fence']
+    ]);
+    expect(checked).toBe(7);
+    // Fence markers are not counted: the passes never read them. The quoted marker and `x` + 300 are.
+    expect(unread).toBe(2);
+  });
+
+  it('reads a passage exactly at either cap, and not one past it', () => {
+    const atLength = (prefix: string, length: number) => `${prefix}${'y'.repeat(length - prefix.length)}`;
+    // Three lines joined by two spaces to `total` characters, a link wrapping from the first into the second.
+    const wrapped = (fragment: string, total: number) => {
+      const first = `${'y'.repeat(100)} [the`;
+      const second = `name](target.md#${fragment})`;
+      return [first, second, 'y'.repeat(total - first.length - second.length - 2)];
+    };
+    const root = tree({
+      ...ENVELOPE,
+      'repo/docs/target.md': ['# T', '', '## Present heading', '', `§5 ${'[f] '.repeat(127)}`, '[f] '.repeat(128).trimEnd(), '===', ''].join('\n'),
+      'repo/docs/citing.md': [
+        atLength('[a](target.md#gone-line-at-the-cap) ', 10000),
+        '',
+        ...wrapped('gone-paragraph-at-the-cap', 10000),
+        '',
+        ...wrapped('gone-paragraph-past-the-cap', 10001),
+        '',
+        '`target.md` §5',
+        '',
+        `[b](target.md#gone-ampersands) ${'&'.repeat(300)}`,
+        '',
+        `\`${'['.repeat(150)}\` [the`,
+        `name](target.md#gone-dense-in-code) \`${'['.repeat(150)}\``,
+        '',
+        `\`${'y'.repeat(6000)}\` [the`,
+        `name](target.md#gone-long-in-code) \`${'y'.repeat(6000)}\``,
+        ''
+      ].join('\n')
+    });
+    const { checked, failures, unread } = check(root);
+    // Read: a line of 10,000 characters, a paragraph of 10,000 counting its two joining spaces, a
+    // setext heading of exactly 256 openers, and 300 `&`, which open nothing. Not read: the
+    // paragraph of 10,001, whose text without those spaces is 9,999, and two paragraphs over a cap
+    // only inside their code spans, which are counted before the spans are taken out.
+    expect(failures.map((f) => [f.line, f.named])).toEqual([
+      [1, 'gone-line-at-the-cap'],
+      [3, 'gone-paragraph-at-the-cap'],
+      [13, 'gone-ampersands']
+    ]);
+    expect(checked).toBe(4);
+    expect(unread).toBe(3);
+  });
+
+  it('counts as unread only what a pass would have read: not a record, a fence marker or a fenced line', () => {
+    const long = 'x'.repeat(10001);
+    const root = tree({
+      ...ENVELOPE,
+      'repo/docs/target.md': TARGET,
+      'docs/audits/a-review.md': `# A review\n\n${long}\n`,
+      'repo/docs/fenced.md': ['# Fenced', '', `\`\`\`${'['.repeat(300)}`, long, '```', '', '[in](target.md#present-heading)', ''].join('\n'),
+      'repo/docs/plain.md': `# Plain\n\n${long}\n`
+    });
+    expect(check(root)).toMatchObject({ checked: 1, failures: [], unread: 1 });
+  });
+
+  it('orders failures by line, and reads a backticked path against its own page first and a directory named like `..`', () => {
+    const root = tree({
+      ...ENVELOPE,
+      'repo/target.md': '# Root target\n\n## Elsewhere\n',
+      'repo/docs/sub/target.md': '# Sub target\n\n## Only in sub\n',
+      '..notes/target.md': '# Notes\n\n## Present heading\n',
+      'repo/docs/sub/citing.md': [
+        'A wrapped [link that',
+        'fails](target.md#gone-first) on line 1.',
+        '',
+        '[x](target.md#gone-second)',
+        '',
+        '`target.md` §"Only in sub"',
+        '',
+        '[y](../../../..notes/target.md#gone-in-dots)',
+        ''
+      ].join('\n')
+    });
+    const { checked, failures } = check(root);
+    expect(checked).toBe(4);
+    expect(failures.map((f) => [f.line, f.named, f.reason])).toEqual([
+      [1, 'gone-first', 'no-such-anchor'],
+      [4, 'gone-second', 'no-such-anchor'],
+      [8, 'gone-in-dots', 'no-such-anchor']
+    ]);
+  });
+
   it('counts a target it cannot read as unverifiable, and does not throw', () => {
     // Root reads a file of mode 0o000, so the case has nothing to show there.
     if (process.getuid?.() === 0) return;
@@ -544,15 +714,19 @@ describe('FR-R3-184 — a section a live document names in another file exists',
     expect(run.stderr).not.toContain('\u001b');
   });
 
-  it('says how many references it could not verify when the envelope is absent', () => {
+  it('says how many links and references it could not verify when the envelope is absent, beside what it could not read', () => {
+    const long = 'x'.repeat(10001);
     const root = tree({
       'repo/docs/target.md': TARGET,
-      'repo/docs/citing.md': '[up](../../elsewhere.md#somewhere) and [in](target.md#present-heading)\n'
+      'repo/docs/citing.md': `[up](../../elsewhere.md#somewhere) and [in](target.md#present-heading)\n\n${long}\n\n${long}\n`
     });
     const script = installScript(root);
     const run = spawnSync('node', [script], { encoding: 'utf8' });
     expect(run.status).toBe(0);
-    expect(run.stdout).toContain('Section references checked: 1 in live documents, 1 skipped as outside this tree or unreadable.');
+    expect(run.stdout).toContain('Documentation links checked: 1 across 2 files (repository only, 1 outside this tree skipped).');
+    expect(run.stdout).toContain(
+      'Section references checked: 1 in live documents, 1 skipped as outside this tree or unreadable, 2 passages too long or too dense to read.'
+    );
   });
 
   it('prints what it checked and what it could not read when it passes, and does nothing when imported', () => {

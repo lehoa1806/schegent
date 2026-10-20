@@ -156,14 +156,15 @@ const S_MARKER = new RegExp(
   'g'
 );
 // A line, or a paragraph joined from shorter lines, is not parsed for section references when it is
-// longer than MAX_LINE characters or holds more than MAX_OPENERS of the characters the patterns
-// here start a match from: `[`, `<`, a backtick and `§`. It is counted and reported instead. In a
-// target, such a line is not read either, and a setext heading over either cap is not indexed, so
-// a reference to it fails. Each pattern costs about its openers times the passage's length, so the
-// two caps bound what one passage can cost, and a hostile file's cost grows with its size alone.
-// The longest live line is about 3,300 characters and the longest live paragraph about 5,700. The
-// most openers on one line of any tracked page in either tree is 151, in a live paragraph 102, and
-// in a heading 8, so nothing real goes unread.
+// longer than MAX_LINE characters or holds more than MAX_OPENERS of `[`, `<`, a backtick and `§`.
+// It is counted and reported instead. The first three are where the costly patterns here start a
+// match; `§` is counted with them, which makes the cap stricter, never looser. In a target such a
+// line is not read either, except that a fence marker keeps its role, and a setext heading over
+// either cap, or whose text runs into a line that was not read, is not indexed, so a reference to
+// it fails. With both caps, parsing costs at most a fixed amount per character, and resolving a
+// reference is a lookup. The longest live line is about 3,300 characters and the longest live
+// paragraph about 5,700. The most openers on one line of any tracked page in either tree is 151,
+// in a live paragraph 102, and in a heading 8, so nothing real goes unread.
 const MAX_LINE = 10000;
 const MAX_OPENERS = 256;
 const OPENERS = /[[<`§]/g;
@@ -176,8 +177,25 @@ function withinCaps(text) {
   return text.length <= MAX_LINE && openersIn(text) <= MAX_OPENERS;
 }
 
-function linesOf(body) {
-  return body.split(/\r?\n/).map((line) => (withinCaps(line) ? line : ''));
+/**
+ * What stands in for a line over a cap. A fence marker keeps its run, and a sign that it had an
+ * info string, so a fence still opens and closes where it did; any other line is blank.
+ */
+function standIn(line) {
+  const quote = /^(?:\s*>)+\s?/.exec(line)?.[0] ?? '';
+  const marker = /^\s*(?:`{3,}|~{3,})/.exec(line.slice(quote.length));
+  if (!marker) return '';
+  const kept = quote + marker[0];
+  return line.slice(kept.length).trim() ? `${kept} x` : kept;
+}
+
+/** A body's lines, each one over a cap replaced by its stand-in; `notParsed` collects the paragraph lines replaced. */
+function linesOf(body, notParsed = null) {
+  return body.split(/\r?\n/).map((line, index) => {
+    if (withinCaps(line)) return line;
+    if (isParagraphLine(line)) notParsed?.add(index);
+    return standIn(line);
+  });
 }
 
 const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: '\u00a0' };
@@ -231,6 +249,11 @@ export function slugify(text) {
 }
 
 const ATX_OPENING = /^ {0,3}#{1,6}(?=[ \t]|$)/;
+// A fence marker's run of backticks or tildes; its info string is the rest of the line.
+const FENCE_RUN = /^ {0,3}(`{3,}|~{3,})/;
+// A line terminator a line from `split(/\r?\n/)` can still hold. `.` stops at one, so the ATX and
+// fence patterns these replace never matched across one, and a line holding one is neither.
+const LINE_BREAK = /[\n\r\u2028\u2029]/;
 const SETEXT = /^ {0,3}(=+|-+)[ \t]*$/;
 
 const isBlank = (char) => char === ' ' || char === '\t';
@@ -245,7 +268,7 @@ function atxText(line) {
   const opening = ATX_OPENING.exec(line);
   if (!opening) return null;
   const rest = line.slice(opening[0].length);
-  if (/[\n\r\u2028\u2029]/.test(rest)) return null;
+  if (LINE_BREAK.test(rest)) return null;
   let start = 0;
   while (start < rest.length && isBlank(rest[start])) start += 1;
   let end = rest.length;
@@ -276,7 +299,8 @@ export function anchorsOf(body) {
   // github-slugger's rule: a taken slug gets the next free `-n` counted from its own slug, and every
   // anchor handed out is taken, so `Foo`, `Foo 1`, `Foo` give foo, foo-1, foo-2.
   const occurrences = new Map();
-  const lines = linesOf(body);
+  const notParsed = new Set();
+  const lines = linesOf(body, notParsed);
   // CommonMark: a fence closes only on the same character, at least as long as the one that opened it.
   let fence = null;
   const add = (source) => {
@@ -294,7 +318,11 @@ export function anchorsOf(body) {
   for (let i = 0; i < lines.length; i += 1) {
     const raw = lines[i];
     const unquoted = raw.replace(/^(\s*>)+\s?/, '');
-    const marker = unquoted.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+    // The run and its info string, read in one pass: `(.*)$` backtracked over the whole run when a
+    // line terminator followed it.
+    const run = FENCE_RUN.exec(unquoted);
+    const info = run ? unquoted.slice(run[0].length) : '';
+    const marker = run && !LINE_BREAK.test(info) ? [run[0], run[1], info] : null;
     if (marker) {
       if (!fence) {
         fence = { char: marker[1][0], length: marker[1].length };
@@ -316,9 +344,11 @@ export function anchorsOf(body) {
       let start = i - 1;
       while (start > 0 && isParagraphLine(lines[start - 1])) start -= 1;
       // Joined from lines each within the caps, a setext heading can still exceed them, and
-      // rendering it would cost the square of its length.
+      // rendering it would cost the square of its length. When its text runs into a line over a
+      // cap, which was not read, what the heading says is not known, so it is not indexed either.
       const text = lines.slice(start, i).map((line) => line.trim()).join(' ');
-      if (withinCaps(text)) add(text);
+      const runsIntoUnread = start > 0 && notParsed.has(start - 1);
+      if (!runsIntoUnread && withinCaps(text)) add(text);
     }
   }
   return { headings, ids };
@@ -388,7 +418,17 @@ function paragraphWithinCaps(paragraph) {
 
 /** Lines, and paragraphs joined from shorter lines, too long or too dense to parse: not read, and counted. */
 function unreadIn(body) {
-  const overCaps = body.split(/\r?\n/).filter((line) => !withinCaps(line)).length;
+  // Only what the line pass would have read counts: neither a fence marker nor a line inside a fence.
+  const sources = body.split(/\r?\n/);
+  let overCaps = 0;
+  let inFence = false;
+  linesOf(body).forEach((line, index) => {
+    if (FENCE.test(line)) {
+      inFence = !inFence;
+      return;
+    }
+    if (!inFence && !withinCaps(sources[index])) overCaps += 1;
+  });
   return overCaps + paragraphsOf(body, (line) => line).filter((paragraph) => !paragraphWithinCaps(paragraph)).length;
 }
 
@@ -473,15 +513,38 @@ function leadingIdentifier(headingText) {
   return match ? match[1].toLowerCase() : null;
 }
 
-/** A target's anchors and its headings' names, built once per target however often it is cited. */
+/**
+ * A target's anchors, ids, identifiers and heading names, built once per target however often it
+ * is cited, as sets and a sorted list: resolving a reference is then a lookup, not a scan of every
+ * heading, so many references against many headings cost their sum, not their product.
+ */
 function headingIndex(body) {
   const { headings, ids } = anchorsOf(body);
-  return { headings, ids, names: headings.map((heading) => normalizedName(heading.text)) };
+  const names = headings.map((heading) => normalizedName(heading.text));
+  return {
+    anchors: new Set(headings.map((heading) => heading.anchor)),
+    ids,
+    lowered: new Set([...headings.map((heading) => heading.anchor), ...ids].map((anchor) => anchor.toLowerCase())),
+    identifiers: new Set(headings.map((heading) => leadingIdentifier(heading.text)).filter((identifier) => identifier !== null)),
+    names: new Set(names),
+    sortedNames: [...names].sort()
+  };
+}
+
+/** True when a name in `sorted` starts with `prefix`. Such names sit together, from the first one not below it. */
+function hasPrefix(sorted, prefix) {
+  let low = 0;
+  let high = sorted.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (sorted[middle] < prefix) low = middle + 1;
+    else high = middle;
+  }
+  return low < sorted.length && sorted[low].startsWith(prefix);
 }
 
 /** Null when a reference resolves against its target's heading index, otherwise the reason it does not. */
 export function unresolvedReason(reference, index) {
-  const { headings, ids, names } = index;
   if (reference.form === 'F') {
     let wanted = reference.named;
     try {
@@ -489,19 +552,16 @@ export function unresolvedReason(reference, index) {
     } catch {
       // a malformed escape is compared as written
     }
-    if (headings.some((heading) => heading.anchor === wanted) || ids.has(wanted)) return null;
-    const lower = wanted.toLowerCase();
-    const caseOnly = headings.some((heading) => heading.anchor.toLowerCase() === lower) || [...ids].some((id) => id.toLowerCase() === lower);
-    return caseOnly ? 'case-only' : 'no-such-anchor';
+    if (index.anchors.has(wanted) || index.ids.has(wanted)) return null;
+    return index.lowered.has(wanted.toLowerCase()) ? 'case-only' : 'no-such-anchor';
   }
   if (reference.kind === 'identifier') {
-    const wanted = reference.named.toLowerCase();
-    return headings.some((heading) => leadingIdentifier(heading.text) === wanted) ? null : 'no-such-identifier';
+    return index.identifiers.has(reference.named.toLowerCase()) ? null : 'no-such-identifier';
   }
   const wanted = normalizedName(reference.named);
-  if (reference.ellipsis) return names.some((name) => name.startsWith(wanted)) ? null : 'no-such-heading';
-  if (names.includes(wanted)) return null;
-  return names.some((name) => name.startsWith(wanted)) ? 'prefix-only' : 'no-such-heading';
+  if (reference.ellipsis) return hasPrefix(index.sortedNames, wanted) ? null : 'no-such-heading';
+  if (index.names.has(wanted)) return null;
+  return hasPrefix(index.sortedNames, wanted) ? 'prefix-only' : 'no-such-heading';
 }
 
 function isFile(path) {
@@ -529,8 +589,9 @@ function isRecord(file, body, repoRoot, wsRoot) {
 /**
  * Resolve every section reference in every live document under `repoRoot`, and under `wsRoot`
  * when it holds the planning envelope. Returns the number checked; the number left unverifiable
- * because their target, symlinks resolved, lies outside both trees or cannot be read; the number
- * of lines and paragraphs too long to read; and each failure.
+ * because their target, symlinks resolved, lies outside both trees or cannot be read, or, with the
+ * envelope absent, lies outside `repoRoot`; the number of lines and paragraphs too long or too
+ * dense to read; and each failure.
  */
 export function checkSectionReferences({ repoRoot = REPO_ROOT, wsRoot = WS_ROOT } = {}) {
   const hasEnvelope = envelopePresent(wsRoot);
@@ -538,7 +599,8 @@ export function checkSectionReferences({ repoRoot = REPO_ROOT, wsRoot = WS_ROOT 
   if (hasEnvelope) collectMarkdown(wsRoot, files, WS_SKIP_TOP);
   const reportRoot = hasEnvelope ? wsRoot : repoRoot;
   // The trees being checked, symlinks resolved, each on its own: `repo/` itself may be a symlink.
-  const realRoots = [realpathSync(repoRoot), ...(hasEnvelope ? [realpathSync(wsRoot)] : [])];
+  // The native call also settles a name's case on a case-insensitive volume, as it does a target's.
+  const realRoots = [realpathSync.native(repoRoot), ...(hasEnvelope ? [realpathSync.native(wsRoot)] : [])];
   const bodies = new Map();
   const read = (path) => {
     if (!bodies.has(path)) bodies.set(path, readFileSync(path, 'utf8'));
@@ -547,19 +609,25 @@ export function checkSectionReferences({ repoRoot = REPO_ROOT, wsRoot = WS_ROOT 
   const indexes = new Map();
   /**
    * A target's heading index, or null when its real path lies outside both trees or it cannot be
-   * read. Only the two filesystem calls are guarded: a fault in the parser must still surface.
+   * read. It is kept by the real path, so a target cited through many symlinks or spellings is
+   * parsed once. Only the filesystem calls are guarded: a fault in the parser must still surface.
    */
   const indexOf = (path) => {
-    if (indexes.has(path)) return indexes.get(path);
+    let real;
+    try {
+      real = realpathSync.native(path);
+    } catch {
+      return null; // gone since it was listed: unverifiable, as an outside target is
+    }
+    if (indexes.has(real)) return indexes.get(real);
     let body = null;
     try {
-      const real = realpathSync(path);
       if (realRoots.some((root) => !isOutside(root, real))) body = read(real);
     } catch {
-      body = null; // gone or unreadable since it was listed: unverifiable, as an outside target is
+      body = null; // unreadable since it was listed: unverifiable, as an outside target is
     }
     const index = body === null ? null : headingIndex(body);
-    indexes.set(path, index);
+    indexes.set(real, index);
     return index;
   };
   const failures = [];
