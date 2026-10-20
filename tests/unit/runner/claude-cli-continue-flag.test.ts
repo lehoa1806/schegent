@@ -168,7 +168,7 @@ describe('ClaudeCliRunner -c interaction with tail args (feature 032)', () => {
       timeoutMs: 5_000,
       cliPath: 'claude',
       cwd: '/repo',
-      model: 'claude-sonnet-4-6',
+      model: 'claude-sonnet-5-5',
       effort: 'medium',
       isContinue: true
     });
@@ -177,7 +177,7 @@ describe('ClaudeCliRunner -c interaction with tail args (feature 032)', () => {
       '-c',
       '-p',
       '--model',
-      'claude-sonnet-4-6',
+      'claude-sonnet-5-5',
       '--effort',
       'medium',
       '--output-format',

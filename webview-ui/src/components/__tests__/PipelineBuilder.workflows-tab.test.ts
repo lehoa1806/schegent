@@ -120,7 +120,7 @@ function buildSnapshot(opts: SnapshotOpts = {}): WorkflowSnapshot {
     producedAt: '2026-08-03T00:00:00.000Z',
     availablePipelines: pipelines,
     availablePhases: phases,
-    availableModels: Object.freeze(['claude-sonnet-4-6']),
+    availableModels: Object.freeze(['claude-sonnet-5-5']),
     phaseCatalog: {
       state: 'ready',
       records: [],

@@ -327,10 +327,10 @@ describe('parseAgyModels', () => {
   // operator or a Phase actually names.
   it('takes the id from a tab-separated id/display-name row', () => {
     const models = parseAgyModels(
-      'gemini-3.7-flash-high\tGemini 3.7 Flash (High)\nclaude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)'
+      'gemini-3.7-flash-high\tGemini 3.7 Flash (High)\nclaude-sonnet-5-5\tClaude Sonnet 5.5 (Thinking)'
     );
 
-    expect(models).toEqual(['gemini-3.7-flash-high', 'claude-sonnet-4-6']);
+    expect(models).toEqual(['gemini-3.7-flash-high', 'claude-sonnet-5-5']);
   });
 
   // The same command prints a status line to stdout before the rows. A model
@@ -355,7 +355,7 @@ describe('parseAgyModels', () => {
       'Fetching available models...',
       'gemini-3.7-flash-high\tGemini 3.7 Flash (High)',
       'gemini-3.7-flash-medium\tGemini 3.7 Flash (Medium)',
-      'claude-opus-4-6-thinking\tClaude Opus 4.6 (Thinking)',
+      'claude-opus-5-5-thinking\tClaude Opus 5.5 (Thinking)',
       'gpt-oss-120b-medium\tGPT-OSS 120B (Medium)',
       ''
     ].join('\n');
@@ -363,7 +363,7 @@ describe('parseAgyModels', () => {
     expect(parseAgyModels(transcript)).toEqual([
       'gemini-3.7-flash-high',
       'gemini-3.7-flash-medium',
-      'claude-opus-4-6-thinking',
+      'claude-opus-5-5-thinking',
       'gpt-oss-120b-medium'
     ]);
   });

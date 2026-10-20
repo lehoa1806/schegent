@@ -44,7 +44,7 @@ const AUTHORED: Readonly<Record<string, unknown>> = {
   description: 'A described phase.',
   version: 3,
   instruction: 'Run the thing.',
-  model: 'claude-opus-4-7',
+  model: 'claude-opus-5-5',
   effort: 'high',
   timeoutSeconds: 45,
   spendBoundUsd: 5.5,

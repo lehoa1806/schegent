@@ -310,12 +310,12 @@ describe('ClaudeCliRunner.invoke', () => {
       timeoutMs: 5_000,
       cliPath: 'claude',
       cwd: '/repo',
-      model: 'claude-opus-4-7',
+      model: 'claude-opus-5-5',
       effort: 'high'
     });
     expect(seen.args.slice(0, 2)).toEqual(['--dangerously-skip-permissions', '-p']);
     expect(seen.args).toContain('--model');
-    expect(seen.args).toContain('claude-opus-4-7');
+    expect(seen.args).toContain('claude-opus-5-5');
     expect(seen.args).toContain('--effort');
     expect(seen.args).toContain('high');
     expect(seen.args.indexOf('--model')).toBeGreaterThan(seen.args.indexOf('-p'));

@@ -116,7 +116,7 @@ function buildSyntheticLines(n: number): unknown[] {
         subtype: 'init',
         cwd: '/Users/dev/workspaces/schegent',
         session_id: `sess-${i}`,
-        model: 'claude-opus-4-7',
+        model: 'claude-opus-5-5',
         tools: 'Read,Write,Edit,Bash,Glob,Grep'
       });
     } else {

@@ -364,8 +364,10 @@ describe('Feature 026 T018 — per-phase Effort/Model override end-to-end', () =
   it('(d) SC-002 smoke: model override on head/middle/tail built-in phases surfaces on phase-start', async () => {
     const modelByPhase: Record<string, string> = {
       'speckit-specify': 'claude-haiku-5-5',
-      'speckit-plan': 'claude-sonnet-4-6',
-      'speckit-implement': 'claude-opus-4-7'
+      'speckit-plan': 'claude-sonnet-5-5',
+      // Not `EXAMPLE_MODEL`: an override that failed to apply would surface the
+      // fixture's own `speckit-implement`, which declares it, and still pass.
+      'speckit-implement': 'claude-fable-5-1'
     };
     const authored: PhaseDef[] = Object.entries(modelByPhase).map(([id, model]) => ({
       id,
@@ -477,7 +479,7 @@ describe('Feature 026 T025a — a custom Pipeline mixing effort+model (US3, SC-0
       };
       return args.omitModelOn === id
         ? base
-        : { ...base, model: 'claude-sonnet-4-6' };
+        : { ...base, model: 'claude-sonnet-5-5' };
     });
   }
 
@@ -514,7 +516,7 @@ describe('Feature 026 T025a — a custom Pipeline mixing effort+model (US3, SC-0
       expect(starts.length).toBeGreaterThan(0);
       for (const evt of starts) {
         expect(evt.payload.effort).toBe('xhigh');
-        expect(evt.payload.model).toBe('claude-sonnet-4-6');
+        expect(evt.payload.model).toBe('claude-sonnet-5-5');
       }
     }
 
@@ -562,7 +564,7 @@ describe('Feature 026 T025a — a custom Pipeline mixing effort+model (US3, SC-0
       expect(starts.length).toBeGreaterThan(0);
       for (const evt of starts) {
         expect(evt.payload.effort).toBe('xhigh');
-        expect(evt.payload.model).toBe('claude-sonnet-4-6');
+        expect(evt.payload.model).toBe('claude-sonnet-5-5');
       }
     }
   });
