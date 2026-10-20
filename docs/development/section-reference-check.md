@@ -81,7 +81,9 @@ The check does not read:
   setext heading over either cap, or whose text runs into a line that was not read, is not indexed,
   so a reference to it fails. With both caps a page costs at most a fixed amount per character to
   parse, and a reference is resolved by a lookup. Each target file is resolved once, however it is
-  spelled, at a cost that grows with how deep it lies. On 2026-10-20 the most any tracked page in
+  spelled, at a cost that grows with how deep it lies and how many symlinks its path crosses. A file
+  with more than one hard link, or no inode, is kept by the name it is cited by, since its names may
+  lie on either side of the trees' edge. On 2026-10-20 the most any tracked page in
   either tree held on one line was 151 of those characters, in a live paragraph 102 and in a heading
   8;
 - a target outside both trees, with symlinks resolved, or one that cannot be read. It is counted as
@@ -104,8 +106,18 @@ parser. Several of the shapes do occur in the tree:
 - a named entity other than `&amp;`, `&lt;`, `&gt;`, `&quot;`, `&apos;` and `&nbsp;` is left as
   written, so `&mdash;` keeps its letters in the anchor;
 - a fragment that differs from its heading only in case is refused, with its own reason;
-- a fence marker whose info string holds U+2028, U+2029 or a lone carriage return is read as no
-  marker, so the headings after it are read until the next fence. GitHub opens a fence there.
+- a line holding U+2028, U+2029 or a lone carriage return is read as neither a heading nor a fence
+  marker. GitHub reads the first two as ordinary characters and a lone carriage return as the end
+  of a line, so it may open a fence or a heading there;
+- a backtick fence marker whose info string holds a backtick is read as a fence, where GitHub reads
+  a paragraph;
+- a closer followed by a no-break space, a vertical tab or a form feed closes its fence, where
+  GitHub allows only spaces and tabs after one;
+- quote depth is not tracked: a quoted fence line closes an unquoted fence and an unquoted one a
+  quoted fence, and a quoted fence the end of its quote would close stays open;
+- each of the last four shapes can leave a fence open where GitHub closes one, or the reverse, and
+  every later fence in the file is then read inverted: a heading in a later code block is indexed,
+  and one between blocks is not. None of the four occurred in either tree on 2026-10-20.
 
 ## Measurement
 
