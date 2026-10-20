@@ -1,7 +1,9 @@
 // Validates that every relative markdown link in the curated docs points at a
-// path that exists. Path existence only -- `#anchor` and `#L42` fragments are
-// stripped and never resolved, because line anchors move with every edit and a
-// gate that fails on them would be noise rather than signal.
+// path that exists. Path existence only -- every `#fragment` is stripped and
+// never resolved. A `#L42` line anchor moves with every edit, so a gate that
+// failed on one would be noise rather than signal. A `#heading` anchor moves
+// only when its heading is renamed, and resolving it was measured and declined
+// on 2026-10-20 (FR-R3-184): see docs/development/section-reference-check.md.
 //
 // Why this exists: `docs:check` was a version-and-required-string gate, so a doc
 // link could rot through `verify:all` unobserved. Eleven had, by 2026-08-18.

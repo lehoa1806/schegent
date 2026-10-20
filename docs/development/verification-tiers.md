@@ -50,7 +50,9 @@ would introduce one.
 `typecheck`, `typecheck:webview`, `typecheck:tests`, `test:host`, `test:webview`.
 
 **What this tier does NOT establish**: that the change is lint-clean, that the generated contracts
-still match their sources, that the documentation links resolve, that no secret was committed, or
+still match their sources, that the documentation links name files that exist (the push tier does
+not check the sections they name either, [by decision](section-reference-check.md)), that no secret
+was committed, or
 anything a browser must render. A green edit tier means *"I have not broken behaviour I can see"*. It
 supports no claim outside your own working tree.
 
