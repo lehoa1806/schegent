@@ -142,6 +142,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     activeOutput = wiring.output;
   };
 
+  // Feature 218 review (F6) — every Stage 2 disposal in flight. A folder removal or
+  // a reset clears `stage2` before its disposal ends; the host teardown waits on these.
+  const stage2Disposals = new Set<Promise<void>>();
+
   const tearDownStage2 = async (): Promise<void> => {
     if (!stage2) return;
     const previous = stage2;
@@ -152,7 +156,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     activePlaceholder = replacement;
     sidebarProvider.setProjector(replacement);
     activeOutput = null;
-    await previous.dispose();
+    const disposal = previous.dispose();
+    stage2Disposals.add(disposal);
+    await disposal.finally(() => stage2Disposals.delete(disposal));
   };
 
   // Feature FR-R3-006 — the reset transaction's host seam. Registered here
@@ -217,6 +223,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     try {
       await tearDownStage2();
     } finally {
+      // F6 — settled, never rethrown: a failure belongs to the path that began it.
+      await Promise.allSettled(stage2Disposals);
       await runtimeLogSink.flushAndDispose(); // never rejects
       if (hostTeardown === teardownOnce) hostTeardown = null;
     }
