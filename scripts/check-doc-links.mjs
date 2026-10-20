@@ -224,10 +224,10 @@ function fenceParts(line) {
  * What stands in for a target's line over a cap: blank, unless it is a fence marker, which keeps
  * its role as anchorsOf reads it, and stays short however long the line. A quote becomes one level,
  * and an indent past three spaces, or holding anything else, four spaces: anchorsOf reads either
- * alike. A run keeps its length up to MAX_LINE + 1, which no line within the caps reaches. Past
- * that it is that length with an info string, so it may open a fence but never close one, and
- * nothing after it can: the parse fails closed. A line terminator after the run is kept, so the line
- * is still no marker, and any other info string becomes `x`.
+ * alike. A run keeps its length up to MAX_LINE + 1, which no line within the caps reaches; a
+ * longer one is cut to that length. Cut or not, it closes a shorter fence, as GitHub reads it, and a
+ * fence it opens anchorsOf never closes: past the cap the check fails closed. A line terminator
+ * after the run is kept, so the line is still no marker, and any other info string becomes `x`.
  */
 function targetStandIn(line) {
   const parts = fenceParts(line);
@@ -235,7 +235,7 @@ function targetStandIn(line) {
   const longest = MAX_LINE + 1;
   const long = parts.run >= longest;
   const indent = parts.indent !== null && /^ *$/.test(parts.indent) ? parts.indent : '    ';
-  const info = parts.blank && !long ? '' : ' x';
+  const info = parts.blank ? '' : ' x';
   return `${parts.quote}${indent}${parts.char.repeat(long ? longest : parts.run)}${parts.terminator}${info}`;
 }
 
@@ -388,7 +388,9 @@ export function anchorsOf(body) {
     const marker = run && !LINE_BREAK.test(info) ? [run[0], run[1], info] : null;
     if (marker) {
       if (!fence) {
-        fence = { char: marker[1][0], length: marker[1].length };
+        // A run past the length cap can only be a stand-in's, cut short, so its real length is not
+        // known: the fence it opens is never closed, and the parse fails closed.
+        fence = { char: marker[1][0], length: marker[1].length > MAX_LINE ? Infinity : marker[1].length };
         continue;
       }
       if (marker[1][0] === fence.char && marker[1].length >= fence.length && !marker[2].trim()) {
@@ -627,14 +629,6 @@ export function unresolvedReason(reference, index) {
   return hasPrefix(index.sortedNames, wanted) ? 'prefix-only' : 'no-such-heading';
 }
 
-function isFile(path) {
-  try {
-    return statSync(path).isFile();
-  } catch {
-    return false;
-  }
-}
-
 /** True when `path` lies outside `root`: above it, or, across Windows drives, on another root. */
 function isOutside(root, path) {
   const rel = relative(root, path);
@@ -669,41 +663,45 @@ export function checkSectionReferences({ repoRoot = REPO_ROOT, wsRoot = WS_ROOT 
     if (!bodies.has(path)) bodies.set(path, readFileSync(path, 'utf8'));
     return bodies.get(path);
   };
-  const realPaths = new Map();
+  const identities = new Map();
   /**
-   * A path's real path, or null when it is gone, resolved once however often it is cited: resolving
-   * costs more the deeper the path and the more links it crosses, so it is not done per reference.
+   * A path's file identity, its device and inode, or null when it names no file: one stat per
+   * spelled path, however often it is cited. Resolving a real path costs more the deeper the path
+   * and the more links it crosses, so a target is resolved and parsed once per file, not once per
+   * spelling: a symlink, a case variant and a repeated citation all reach the same index.
    */
-  const realPathOf = (path) => {
-    if (!realPaths.has(path)) {
-      let real = null;
+  const identityOf = (path) => {
+    if (!identities.has(path)) {
+      let identity = null;
       try {
-        real = realpathSync.native(path);
+        const info = statSync(path, { bigint: true });
+        if (info.isFile()) identity = info.ino === 0n ? `path:${path}` : `${info.dev}:${info.ino}`;
       } catch {
-        real = null; // gone since it was listed: unverifiable, as an outside target is
+        identity = null; // no such file
       }
-      realPaths.set(path, real);
+      identities.set(path, identity);
     }
-    return realPaths.get(path);
+    return identities.get(path);
   };
   const indexes = new Map();
   /**
    * A target's heading index, or null when its real path lies outside both trees or it cannot be
-   * read. It is kept by the real path, so a target cited through many symlinks or spellings is
-   * parsed once. Only the filesystem calls are guarded: a fault in the parser must still surface.
+   * read, kept by the target's file identity. Only the filesystem calls are guarded: a fault in the
+   * parser must still surface.
    */
   const indexOf = (path) => {
-    const real = realPathOf(path);
-    if (real === null) return null;
-    if (indexes.has(real)) return indexes.get(real);
+    const identity = identityOf(path);
+    if (identity === null) return null;
+    if (indexes.has(identity)) return indexes.get(identity);
     let body = null;
     try {
+      const real = realpathSync.native(path);
       if (realRoots.some((root) => !isOutside(root, real))) body = read(real);
     } catch {
-      body = null; // unreadable since it was listed: unverifiable, as an outside target is
+      body = null; // gone or unreadable since it was listed: unverifiable, as an outside target is
     }
     const index = body === null ? null : headingIndex(body);
-    indexes.set(real, index);
+    indexes.set(identity, index);
     return index;
   };
   const failures = [];
@@ -719,7 +717,7 @@ export function checkSectionReferences({ repoRoot = REPO_ROOT, wsRoot = WS_ROOT 
       let target;
       if (reference.via === 'code') {
         const roots = [dirname(file), ownRoot, ...(hasEnvelope ? [ownRoot === repoRoot ? wsRoot : repoRoot] : [])];
-        target = roots.map((root) => resolve(root, reference.target)).find(isFile);
+        target = roots.map((root) => resolve(root, reference.target)).find((candidate) => identityOf(candidate) !== null);
         if (!target) continue; // a span that names no file is not a section reference
       } else {
         target = resolve(dirname(file), reference.target);
@@ -729,7 +727,7 @@ export function checkSectionReferences({ repoRoot = REPO_ROOT, wsRoot = WS_ROOT 
         continue;
       }
       // A missing path is the path check's to report; a target that is not Markdown has no headings.
-      if (target === file || !target.endsWith('.md') || !isFile(target)) continue;
+      if (target === file || !target.endsWith('.md') || identityOf(target) === null) continue;
       // Read nothing outside the trees being checked, whether a path or a symlink leads there.
       const index = indexOf(target);
       if (!index) {

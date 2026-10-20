@@ -60,6 +60,8 @@ const RECORD_MARKER = '<!-- doc-class: record -->';
 const LINE_SEPARATOR = String.fromCharCode(0x2028);
 const PARAGRAPH_SEPARATOR = String.fromCharCode(0x2029);
 const CARRIAGE_RETURN = String.fromCharCode(13);
+/** U+00A0, whitespace to `\s` though no space. */
+const NO_BREAK_SPACE = String.fromCharCode(0xa0);
 
 interface Failure {
   readonly file: string;
@@ -671,6 +673,50 @@ describe('FR-R3-184 — a section a live document names in another file exists',
         `>     \`\`\`${dense}`,
         '## After quoted indent',
         '',
+        '```',
+        'code',
+        '`'.repeat(10001),
+        '',
+        '```',
+        '## Hidden in a fence',
+        '```',
+        '',
+        '## Visible after a long closer',
+        '',
+        '```',
+        'code',
+        '`'.repeat(10001),
+        '',
+        '~~~',
+        '## Hidden in the tilde fence',
+        '```',
+        '## Looks like a heading',
+        '~~~',
+        '',
+        '```',
+        '## In L',
+        `\`\`\`${'\t'.repeat(10001)}`,
+        '## After L',
+        '',
+        `   \`\`\`${dense}`,
+        '## In M',
+        '```',
+        '',
+        `>\t    \`\`\`${dense}`,
+        '## After a quoted tab',
+        '',
+        `>    \`\`\`${dense}`,
+        '## In N',
+        '```',
+        '',
+        `>${NO_BREAK_SPACE}\`\`\`${dense}`,
+        '## In O',
+        '```',
+        '',
+        `>\t> \`\`\`${dense}`,
+        '## In P',
+        '```',
+        '',
         '## End',
         '',
         '`'.repeat(20000),
@@ -694,6 +740,16 @@ describe('FR-R3-184 — a section a live document names in another file exists',
         'after-i',
         'after-dense-indent',
         'after-quoted-indent',
+        'hidden-in-a-fence',
+        'visible-after-a-long-closer',
+        'hidden-in-the-tilde-fence',
+        'looks-like-a-heading',
+        'after-l',
+        'in-m',
+        'after-a-quoted-tab',
+        'in-n',
+        'in-o',
+        'in-p',
         'end',
         'behind-a-long-run',
         'after-a-long-run'
@@ -701,27 +757,40 @@ describe('FR-R3-184 — a section a live document names in another file exists',
         .map((fragment) => `[x](fences.md#${fragment})`)
         .join('\n\n'),
       'repo/docs/citing-indented.md': `    \`\`\`${dense}\n[w](fences.md#gone-behind-an-indented-marker)\n`,
-      'repo/docs/citing-two.md': `\`\`${dense}\n[t](fences.md#gone-after-two-backticks)\n`
+      'repo/docs/citing-tab.md': `\t\`\`\`${dense}\n\n[w](fences.md#gone-behind-a-tab-marker)\n`,
+      'repo/docs/citing-two.md': `\`\`${dense}\n[t](fences.md#gone-after-two-backticks)\n`,
+      'repo/docs/citing-wrapped.md': ['[x', 'more](fences.md#gone-wrapped-beside-a-quote)', `> ${'`'.repeat(300)}`, ''].join('\n')
     });
     const { checked, failures } = check(root);
-    // Up to the long runs, each answer is the one the target gives with no caps at all. A dense bare
-    // closer, or one padded past the length cap with blanks, closes, and a dense closer longer than
-    // its opener closes it; a dense opener behind two quotes, or of tildes, opens; a line terminator
-    // after a run makes the line no marker, dense or not; four spaces make no fence, dense or not,
-    // nor do a quote and five spaces; two spaces make a closer; tildes do not close backticks. A run
-    // past the length cap opens a fence nothing closes, though a longer closer would close it on
-    // GitHub: past the cap the check fails closed. In a citing page, a dense marker behind four
-    // spaces still toggles the plain fence, so the link after it is not read; two backticks do not.
+    // Up to the last long run, each answer is the one the target gives with no caps at all. A dense
+    // bare closer, or one padded past the length cap with spaces or tabs, closes, and a dense closer
+    // longer than its opener closes it, a run past the cap included; a dense opener behind two
+    // quotes, of tildes, or behind three spaces opens; a line terminator after a run makes the line
+    // no marker, dense or not; four spaces make no fence, dense or not, nor do a quote and five
+    // spaces, or a quote, a tab and four; a quote with four spaces, with a no-break space, or two
+    // quotes split by a tab, open one; two spaces make a closer; tildes do not close backticks. A
+    // fence a run past the length cap opens is never closed, though a longer closer would close it on
+    // GitHub: past the cap the check fails closed. In a citing page, a dense marker behind four spaces
+    // or a tab still toggles the plain fence, so the link after it is not read; two backticks do not;
+    // and a dense quoted line beside a wrapped link leaves the link to be read.
     expect(failures.map((f) => f.named).sort()).toEqual([
       'after-a-long-run',
       'behind-a-long-run',
       'gone-after-two-backticks',
+      'gone-wrapped-beside-a-quote',
+      'hidden-in-a-fence',
+      'hidden-in-the-tilde-fence',
       'in-c',
       'in-d',
+      'in-m',
+      'in-n',
+      'in-o',
+      'in-p',
+      'looks-like-a-heading',
       'still-in-e',
       'still-in-h'
     ]);
-    expect(checked).toBe(18);
+    expect(checked).toBe(29);
   });
 
   it('reads a dense line beside a setext heading as it reads the page with no caps', () => {
@@ -756,6 +825,38 @@ describe('FR-R3-184 — a section a live document names in another file exists',
       expect(check(root)).toMatchObject({ checked: 200, failures: [] });
       // The two roots, then the one target: resolving costs more the deeper the path.
       expect(resolveReal).toHaveBeenCalledTimes(3);
+    } finally {
+      resolveReal.mockRestore();
+    }
+  });
+
+  it('resolves each target file once, however many spellings cite it', () => {
+    const root = tree({
+      ...ENVELOPE,
+      'repo/docs/sub/target.md': TARGET,
+      'repo/docs/citing.md': ['[x](sub/target.md#present-heading)', '', '[y](a/target.md#present-heading)', '', '[z](b/target.md#present-heading)', ''].join('\n')
+    });
+    symlinkSync(join(root, 'repo', 'docs', 'sub'), join(root, 'repo', 'docs', 'a'), 'dir');
+    symlinkSync(join(root, 'repo', 'docs', 'sub'), join(root, 'repo', 'docs', 'b'), 'dir');
+    const resolveReal = vi.spyOn(realpathSync, 'native');
+    try {
+      expect(check(root)).toMatchObject({ checked: 3, failures: [] });
+      // The two roots, then the one file, however it is spelled.
+      expect(resolveReal).toHaveBeenCalledTimes(3);
+    } finally {
+      resolveReal.mockRestore();
+    }
+  });
+
+  it('counts a target whose real path cannot be resolved as unverifiable, and does not throw', () => {
+    const root = tree({ ...ENVELOPE, 'repo/docs/target.md': TARGET, 'repo/docs/citing.md': '[x](target.md#present-heading)\n' });
+    const native = realpathSync.native;
+    const resolveReal = vi.spyOn(realpathSync, 'native').mockImplementation(((path: string) => {
+      if (String(path).endsWith('target.md')) throw new Error('EACCES');
+      return native(path);
+    }) as typeof realpathSync.native);
+    try {
+      expect(check(root)).toMatchObject({ checked: 0, unverifiable: 1, failures: [] });
     } finally {
       resolveReal.mockRestore();
     }
