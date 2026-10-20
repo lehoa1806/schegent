@@ -226,11 +226,12 @@ drifts unnoticed, because the readers who would catch an error never get there.
   construction notes that decide whether a generated case is real or inert, and what the property
   deliberately does not cover (FR-R3-168)
 - [Lint and type-aware rules](development/lint-and-type-aware-rules.md)
-- [Section references are not checked by `docs:check`](development/section-reference-check.md) —
-  **decided 2026-10-20**: link paths are resolved, and the sections links name are not. The rule was
-  fixed before the count, and the count it rests on was nine live failures against a threshold of
-  ten. The page also gives the reason the old line-anchor argument did not cover, and what would
-  reopen the decision (FR-R3-184)
+- [Section references are checked by `docs:check`](development/section-reference-check.md) —
+  **decided 2026-10-20**: in live documents, a link fragment or `§` marker naming a section of
+  another file must name a heading that file has. The rule was fixed before the count, and the count
+  it rests on was ten live failures against a threshold of ten, corrected the same day from a first
+  count of nine. The page also gives what the check leaves out and what would reopen the decision
+  (FR-R3-184)
 - [Size-gate entry condition](development/size-gate-entry-condition.md) — **decided 2026-10-01**:
   every `src/` file of 1,000 lines or more carries a ceiling or a waiver in the size gate's table. The
   measured distribution, each rejected threshold with the count it would have captured, and what

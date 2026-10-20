@@ -117,8 +117,9 @@ npm run security:actions
 npm run license:check
 ```
 
-They check required documentation and that every local Markdown link names a file that exists. They
-do not check that the section a link names exists, and why not is
+They check required documentation, that every local Markdown link names a file that exists, and, in
+live documents, that a section a link or `§` marker names in another file exists. What that section
+check reads, and the count it was built on, is
 [recorded as a decision](../development/section-reference-check.md). They also scan tracked content
 for configured secret patterns, require immutable commit pins for executable GitHub Actions, and
 validate production
