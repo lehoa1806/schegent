@@ -65,7 +65,7 @@ describe('session compaction model pin', () => {
   // boundary therefore failed compaction, dropped the session, and restarted the next
   // phase cold — the dominant cost driver in an 8-hour, $77.21 run.
   it('pins a model id the catalog actually carries', () => {
-    expect(COMPACTION_MODEL_ID).toBe('claude-haiku-4-5-20251001');
+    expect(COMPACTION_MODEL_ID).toBe('claude-haiku-5-5');
   });
 
   it('sends the pinned model on the compaction invocation', async () => {
@@ -138,7 +138,7 @@ describe('session compaction failure reporting', () => {
       exitCode: null,
       stdout:
         '{"type":"system","subtype":"init","cwd":"/w","tools":["Bash","Read","Edit"],' +
-        '"model":"claude-haiku-4-5-20251001","session_id":"abc"}\n'
+        '"model":"claude-haiku-5-5","session_id":"abc"}\n'
     });
     const message = await compactClaudeSession(inputs(runner)).then(
       () => 'did not throw',
