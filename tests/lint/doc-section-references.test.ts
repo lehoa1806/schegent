@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -31,7 +31,8 @@ import { checkSectionReferences } from '../../scripts/check-doc-links.mjs';
  * same-file anchors, a link naming its own file, and sections named in free prose are not checked
  * either. Prose would need a heuristic, and feature 219 declined one. A target outside both trees
  * being checked, symlinks resolved, or one that cannot be read, is unverifiable and is not read. A line, or a wrapped
- * paragraph, over 10,000 characters is not parsed; it is counted and reported instead.
+ * paragraph, over 10,000 characters or holding more than 256 of `[`, `<`, a backtick and `§` is not parsed; it is
+ * counted and reported instead. A target's heading over either cap is not indexed.
  */
 const REPO = resolve(__dirname, '..', '..');
 const SCRIPT = join(REPO, 'scripts', 'check-doc-links.mjs');
@@ -134,14 +135,20 @@ describe('FR-R3-184 — a section a live document names in another file exists',
         'See [the long',
         'name](target.md#gone) and [the other',
         'long name](target.md#present-heading).',
+        '',
+        'Intro text',
+        '[the third',
+        'name](target.md#also-gone)',
         ''
       ].join('\n')
     });
     const { checked, failures } = check(root);
-    expect(checked).toBe(4);
+    expect(checked).toBe(5);
+    // A wrapped link that opens a line is reported on that line, not on the line before it.
     expect(failures.map((f) => [f.line, f.form, f.named, f.reason])).toEqual([
       [1, 'S', '2', 'no-such-identifier'],
-      [3, 'F', 'gone', 'no-such-anchor']
+      [3, 'F', 'gone', 'no-such-anchor'],
+      [8, 'F', 'also-gone', 'no-such-anchor']
     ]);
   });
 
@@ -172,6 +179,15 @@ describe('FR-R3-184 — a section a live document names in another file exists',
         '',
         '`[quoted](target.md) §9` is documentation of a marker.',
         '',
+        '- see [the long',
+        '- name](target.md#gone)',
+        '',
+        'Intro [the',
+        '## name](target.md#gone)',
+        '',
+        '| [the |',
+        '| name](target.md#gone) |',
+        '',
         '```',
         '[fenced](target.md#gone)',
         '```',
@@ -199,6 +215,34 @@ describe('FR-R3-184 — a section a live document names in another file exists',
         '=====',
         'Subtitle',
         '--------',
+        '',
+        '## Foo',
+        '',
+        '## Foo 1',
+        '',
+        '## Foo',
+        '',
+        '## Bar',
+        '',
+        '## Bar',
+        '',
+        '## Bar 1',
+        '',
+        '## Closed ##',
+        '',
+        '## Real',
+        '---',
+        '',
+        '```',
+        'code',
+        '```',
+        '---',
+        '',
+        '#hashtag is not a heading',
+        '',
+        '    # indented code',
+        '',
+        '####### seven hashes',
         ''
       ].join('\n'),
       'repo/docs/citing.md': [
@@ -207,12 +251,23 @@ describe('FR-R3-184 — a section a live document names in another file exists',
         '#run-213401',
         '#the-snake_case-name-and-emphasis',
         '#title',
-        '#subtitle'
+        '#subtitle',
+        '#foo-2',
+        '#bar-1-1',
+        '#closed',
+        '#real',
+        '#-real',
+        '#code',
+        '#hashtag-is-not-a-heading',
+        '#indented-code',
+        '#seven-hashes'
       ]
         .map((fragment) => `[x](target.md${fragment})\n`)
         .join('\n')
     });
-    expect(check(root)).toMatchObject({ checked: 6, failures: [] });
+    const { checked, failures } = check(root);
+    expect(checked).toBe(15);
+    expect(failures.map((f) => f.named)).toEqual(['-real', 'code', 'hashtag-is-not-a-heading', 'indented-code', 'seven-hashes']);
   });
 
   it('resolves as GitHub anchors do: duplicates, HTML ids, percent-encoding, setext, fences, case and the ellipsis rule', () => {
@@ -291,13 +346,15 @@ describe('FR-R3-184 — a section a live document names in another file exists',
       'repo/docs/padded-marker.md': `# Padded\n\n   ${RECORD_MARKER}   \n\n[x](target.md#gone)\n`,
       'docs/plans/a-plan.md': '[x](../../repo/docs/target.md#gone)\n',
       'docs/features-extra/a-page.md': '[x](../../repo/docs/target.md#gone)\n',
-      'docs/ARCHITECTURE.md': '[x](../repo/docs/target.md#gone)\n'
+      'docs/ARCHITECTURE.md': '[x](../repo/docs/target.md#gone)\n',
+      'notes/docs/features/a-page.md': '[x](../../../repo/docs/target.md#gone)\n'
     });
     const { checked, failures } = check(root);
-    expect(checked).toBe(3);
+    expect(checked).toBe(4);
     expect(failures.map((f) => [f.file, f.line]).sort()).toEqual([
       ['docs/ARCHITECTURE.md', 1],
       ['docs/features-extra/a-page.md', 1],
+      ['notes/docs/features/a-page.md', 1],
       ['repo/docs/late-marker.md', 13]
     ]);
   });
@@ -390,22 +447,101 @@ describe('FR-R3-184 — a section a live document names in another file exists',
     expect(check(root)).toMatchObject({ checked: 1, failures: [], unread: 2 });
   });
 
+  it('does not read a passage too dense to parse, in a citing page or a target, and counts it', () => {
+    const root = tree({
+      ...ENVELOPE,
+      'repo/docs/target.md': [
+        '# T',
+        '',
+        `## 9. ${'[e] '.repeat(257)}`,
+        '',
+        `§8 ${'[f] '.repeat(200)}`,
+        '[f] '.repeat(100),
+        '===',
+        '',
+        `§7 ${'y'.repeat(6000)}`,
+        'y'.repeat(6000),
+        '===',
+        '',
+        '## 6. Present',
+        ''
+      ].join('\n'),
+      'repo/docs/citing.md': [
+        '`target.md` §9, `target.md` §8, `target.md` §7 and `target.md` §6.',
+        '',
+        `[x](target.md#gone-dense) ${'[b] '.repeat(256)}`,
+        '',
+        `${'[c] '.repeat(200)}[the`,
+        `name](target.md#gone-wrapped) ${'[d] '.repeat(100)}`,
+        '',
+        `[y](target.md#gone-at-the-cap) ${'[b] '.repeat(255)}`,
+        '',
+        `[x](target.md#gone-angles) ${'<'.repeat(256)}`,
+        '',
+        `[x](target.md#gone-ticks) ${'`'.repeat(256)}`,
+        '',
+        `[x](target.md#gone-marks) ${'§'.repeat(256)}`,
+        ''
+      ].join('\n')
+    });
+    const { checked, failures, unread } = check(root);
+    // Not indexed: an ATX heading over 256 openers, and setext headings over 256 openers or 10,000
+    // characters, each joined from lines within both. Not read: a citing line over 256 openers, of
+    // each of the four kinds, and a wrapped paragraph over 256. Read: a line holding exactly 256.
+    expect(failures.map((f) => [f.file, f.line, f.named, f.reason])).toEqual([
+      ['repo/docs/citing.md', 1, '9', 'no-such-identifier'],
+      ['repo/docs/citing.md', 1, '8', 'no-such-identifier'],
+      ['repo/docs/citing.md', 1, '7', 'no-such-identifier'],
+      ['repo/docs/citing.md', 8, 'gone-at-the-cap', 'no-such-anchor']
+    ]);
+    expect(checked).toBe(5);
+    // Three passages in the target, which is a live page too, and five in the citing page.
+    expect(unread).toBe(8);
+  });
+
+  it('counts a target it cannot read as unverifiable, and does not throw', () => {
+    // Root reads a file of mode 0o000, so the case has nothing to show there.
+    if (process.getuid?.() === 0) return;
+    const root = tree({
+      ...ENVELOPE,
+      'repo/docs/target.md': TARGET,
+      'specs/locked.md': TARGET,
+      'repo/docs/citing.md': '[x](../../specs/locked.md#present-heading) and [y](target.md#present-heading)\n'
+    });
+    chmodSync(join(root, 'specs', 'locked.md'), 0o000);
+    expect(check(root)).toMatchObject({ checked: 1, unverifiable: 1, failures: [] });
+  });
+
   it('runs as a command by any path, a symlinked one included: exit 1, the failure printed, control characters neutralised', () => {
     const root = tree({
       ...ENVELOPE,
       'repo/docs/target.md': TARGET,
-      'repo/docs/citing.md': 'See [absent](target.md#useful\u001b[2J-targets\u202e).\n[broken](missing\u001b[31m.md)\n'
+      'repo/docs/citing.md': 'See [absent](target.md#useful\u001b[2J-targets\u202e).\n\n`target.md` §"No\u2028such\u2029name".\n'
     });
     const script = installScript(root);
     const linked = join(root, 'linked-scripts');
     symlinkSync(dirname(script), linked, 'dir');
     const run = spawnSync('node', [join(linked, 'check-doc-links.mjs')], { encoding: 'utf8' });
     expect(run.status).toBe(1);
-    expect(run.stderr).toContain('Unresolved section references (1):');
+    expect(run.stderr).toContain('Unresolved section references (2):');
     expect(run.stderr).toContain('repo/docs/citing.md:1 -> repo/docs/target.md#useful?[2J-targets? (no-such-anchor)');
-    expect(run.stderr).toContain('repo/docs/citing.md:2 -> missing?[31m.md');
+    expect(run.stderr).toContain('repo/docs/citing.md:3 -> repo/docs/target.md §No?such?name (no-such-heading)');
+    expect(run.stderr).not.toContain('Broken documentation links');
+    for (const hidden of ['\u001b', '\u202e', '\u2028', '\u2029']) expect(run.stderr).not.toContain(hidden);
+  });
+
+  it('exits 1 on a broken path alone, and prints its line with control characters neutralised', () => {
+    const root = tree({
+      ...ENVELOPE,
+      'repo/docs/target.md': TARGET,
+      'repo/docs/citing.md': '[broken](missing\u001b[31m.md) and [fine](target.md#present-heading)\n'
+    });
+    const run = spawnSync('node', [installScript(root)], { encoding: 'utf8' });
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain('Broken documentation links (1):');
+    expect(run.stderr).toContain('repo/docs/citing.md:1 -> missing?[31m.md');
+    expect(run.stderr).not.toContain('Unresolved section references');
     expect(run.stderr).not.toContain('\u001b');
-    expect(run.stderr).not.toContain('\u202e');
   });
 
   it('says how many references it could not verify when the envelope is absent', () => {
@@ -416,7 +552,7 @@ describe('FR-R3-184 — a section a live document names in another file exists',
     const script = installScript(root);
     const run = spawnSync('node', [script], { encoding: 'utf8' });
     expect(run.status).toBe(0);
-    expect(run.stdout).toContain('Section references checked: 1 in live documents, 1 outside this tree skipped.');
+    expect(run.stdout).toContain('Section references checked: 1 in live documents, 1 skipped as outside this tree or unreadable.');
   });
 
   it('prints what it checked and what it could not read when it passes, and does nothing when imported', () => {
@@ -433,7 +569,7 @@ describe('FR-R3-184 — a section a live document names in another file exists',
     rmSync(join(root, 'repo', 'docs', 'broken.md'));
     const run = spawnSync('node', [join(root, 'repo', 'scripts', 'check-doc-links.mjs')], { encoding: 'utf8' });
     expect(run.status).toBe(0);
-    expect(run.stdout).toContain('Section references checked: 1 in live documents, 1 passage over 10000 characters not read.');
+    expect(run.stdout).toContain('Section references checked: 1 in live documents, 1 passage too long or too dense to read.');
   });
 
   it('finds section references in the real tree, and none of them is unresolved', () => {

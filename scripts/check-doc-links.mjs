@@ -155,15 +155,29 @@ const S_MARKER = new RegExp(
     String.raw`[ \t]*§[ \t]*(?:"([^"]+)"|“([^”]+)”|\*{1,2}([^*]+?)\*{1,2}|_{1,2}([^_]+?)_{1,2}|([A-Za-z]?\d+(?:\.\d+)*)(?![A-Za-z0-9]))`,
   'g'
 );
-// A line, or a paragraph joined from shorter lines, longer than this is not parsed for section
-// references: it is counted and reported instead. Some patterns are quadratic in its length, so
-// this bounds what one hostile passage can cost, to under a second where 20,000 characters cost
-// three. The longest live line is about 3,300 characters and the longest live paragraph about
-// 5,700, so nothing real goes unread.
+// A line, or a paragraph joined from shorter lines, is not parsed for section references when it is
+// longer than MAX_LINE characters or holds more than MAX_OPENERS of the characters the patterns
+// here start a match from: `[`, `<`, a backtick and `§`. It is counted and reported instead. In a
+// target, such a line is not read either, and a setext heading over either cap is not indexed, so
+// a reference to it fails. Each pattern costs about its openers times the passage's length, so the
+// two caps bound what one passage can cost, and a hostile file's cost grows with its size alone.
+// The longest live line is about 3,300 characters and the longest live paragraph about 5,700. The
+// most openers on one line of any tracked page in either tree is 151, in a live paragraph 102, and
+// in a heading 8, so nothing real goes unread.
 const MAX_LINE = 10000;
+const MAX_OPENERS = 256;
+const OPENERS = /[[<`§]/g;
+
+function openersIn(text) {
+  return text.match(OPENERS)?.length ?? 0;
+}
+
+function withinCaps(text) {
+  return text.length <= MAX_LINE && openersIn(text) <= MAX_OPENERS;
+}
 
 function linesOf(body) {
-  return body.split(/\r?\n/).map((line) => (line.length <= MAX_LINE ? line : ''));
+  return body.split(/\r?\n/).map((line) => (withinCaps(line) ? line : ''));
 }
 
 const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: '\u00a0' };
@@ -259,7 +273,9 @@ function isParagraphLine(line) {
 export function anchorsOf(body) {
   const headings = [];
   const ids = new Set();
-  const seen = new Map();
+  // github-slugger's rule: a taken slug gets the next free `-n` counted from its own slug, and every
+  // anchor handed out is taken, so `Foo`, `Foo 1`, `Foo` give foo, foo-1, foo-2.
+  const occurrences = new Map();
   const lines = linesOf(body);
   // CommonMark: a fence closes only on the same character, at least as long as the one that opened it.
   let fence = null;
@@ -267,9 +283,13 @@ export function anchorsOf(body) {
     const text = renderedText(source);
     const base = slugify(text);
     if (!base && !text) return;
-    const count = seen.get(base) ?? 0;
-    seen.set(base, count + 1);
-    headings.push({ text, anchor: count === 0 ? base : `${base}-${count}` });
+    let anchor = base;
+    while (occurrences.has(anchor)) {
+      occurrences.set(base, occurrences.get(base) + 1);
+      anchor = `${base}-${occurrences.get(base)}`;
+    }
+    occurrences.set(anchor, 0);
+    headings.push({ text, anchor });
   };
   for (let i = 0; i < lines.length; i += 1) {
     const raw = lines[i];
@@ -295,7 +315,10 @@ export function anchorsOf(body) {
     if (SETEXT.test(raw) && isParagraphLine(lines[i - 1])) {
       let start = i - 1;
       while (start > 0 && isParagraphLine(lines[start - 1])) start -= 1;
-      add(lines.slice(start, i).map((line) => line.trim()).join(' '));
+      // Joined from lines each within the caps, a setext heading can still exceed them, and
+      // rendering it would cost the square of its length.
+      const text = lines.slice(start, i).map((line) => line.trim()).join(' ');
+      if (withinCaps(text)) add(text);
     }
   }
   return { headings, ids };
@@ -320,8 +343,8 @@ function maskNonPathCode(line) {
 
 /**
  * Paragraphs outside fences, joined, with each source line's offset kept to map a match back.
- * `length` is the joined length before `transformLine`, which never lengthens a line, so a
- * paragraph is judged too long to parse the same way whichever transform reads it.
+ * `length` and `openers` are counted before `transformLine`, which never lengthens a line, so a
+ * paragraph is judged too long or too dense to parse the same way whichever transform reads it.
  */
 function paragraphsOf(body, transformLine) {
   const paragraphs = [];
@@ -344,7 +367,7 @@ function paragraphsOf(body, transformLine) {
     const unquoted = rawLine.replace(/^(\s*>)+\s?/, '');
     const heading = atxText(unquoted) !== null;
     if (heading || /^\s*([-*+]|\d+[.)])\s/.test(rawLine) || /^\s*\|/.test(rawLine)) flush();
-    if (!current) current = { text: '', offsets: [], length: 0 };
+    if (!current) current = { text: '', offsets: [], length: 0, openers: 0 };
     if (current.text) {
       current.text += ' ';
       current.length += 1;
@@ -352,16 +375,21 @@ function paragraphsOf(body, transformLine) {
     current.offsets.push({ offset: current.text.length, line: index + 1 });
     current.text += transformLine(unquoted.trim());
     current.length += unquoted.trim().length;
+    current.openers += openersIn(unquoted);
     if (heading) flush();
   });
   flush();
   return paragraphs;
 }
 
-/** Lines, and paragraphs joined from shorter lines, too long to parse: not read, and counted. */
+function paragraphWithinCaps(paragraph) {
+  return paragraph.length <= MAX_LINE && paragraph.openers <= MAX_OPENERS;
+}
+
+/** Lines, and paragraphs joined from shorter lines, too long or too dense to parse: not read, and counted. */
 function unreadIn(body) {
-  const longLines = body.split(/\r?\n/).filter((line) => line.length > MAX_LINE).length;
-  return longLines + paragraphsOf(body, (line) => line).filter((paragraph) => paragraph.length > MAX_LINE).length;
+  const overCaps = body.split(/\r?\n/).filter((line) => !withinCaps(line)).length;
+  return overCaps + paragraphsOf(body, (line) => line).filter((paragraph) => !paragraphWithinCaps(paragraph)).length;
 }
 
 /** The source line a joined paragraph's offset falls on, by binary search over its line offsets. */
@@ -399,7 +427,7 @@ function sMarkerOf(match, line) {
  * - F, a link fragment, read with linksIn's grammar plus the links that wrap across a line;
  * - S, a § marker directly after a link or backticked path, with only whitespace between.
  * Same-file anchors, line anchors and URLs are not returned. A line or paragraph over MAX_LINE
- * characters is not read; unreadIn counts those.
+ * characters or MAX_OPENERS openers is not read; unreadIn counts those.
  */
 export function sectionReferencesIn(body) {
   const found = [];
@@ -422,7 +450,7 @@ export function sectionReferencesIn(body) {
     for (const match of maskNonPathCode(rawLine).matchAll(S_MARKER)) found.push(sMarkerOf(match, index + 1));
   });
   // Only a paragraph of two or more lines can hold a reference that wraps; the line pass read the rest.
-  const readable = (paragraph) => paragraph.offsets.length > 1 && paragraph.length <= MAX_LINE;
+  const readable = (paragraph) => paragraph.offsets.length > 1 && paragraphWithinCaps(paragraph);
   for (const paragraph of paragraphsOf(body, (line) => line.replace(/`[^`]*`/g, '')).filter(readable)) {
     for (const match of paragraph.text.matchAll(LINK)) {
       if (spansLines(paragraph, match.index, match.index + match[0].length)) pushLink(match[1], lineAt(paragraph, match.index));
@@ -501,8 +529,8 @@ function isRecord(file, body, repoRoot, wsRoot) {
 /**
  * Resolve every section reference in every live document under `repoRoot`, and under `wsRoot`
  * when it holds the planning envelope. Returns the number checked; the number left unverifiable
- * because their target, symlinks resolved, lies outside the tree being checked; the number of
- * lines and paragraphs too long to read; and each failure.
+ * because their target, symlinks resolved, lies outside both trees or cannot be read; the number
+ * of lines and paragraphs too long to read; and each failure.
  */
 export function checkSectionReferences({ repoRoot = REPO_ROOT, wsRoot = WS_ROOT } = {}) {
   const hasEnvelope = envelopePresent(wsRoot);
@@ -645,8 +673,8 @@ function main() {
       `(${scope}${note}).`
   );
   const sectionNotes = [
-    sections.unverifiable > 0 ? `, ${sections.unverifiable} outside this tree skipped` : '',
-    sections.unread > 0 ? `, ${sections.unread} ${sections.unread === 1 ? 'passage' : 'passages'} over ${MAX_LINE} characters not read` : ''
+    sections.unverifiable > 0 ? `, ${sections.unverifiable} skipped as outside this tree or unreadable` : '',
+    sections.unread > 0 ? `, ${sections.unread} ${sections.unread === 1 ? 'passage' : 'passages'} too long or too dense to read` : ''
   ].join('');
   console.log(`Section references checked: ${sections.checked} in live documents${sectionNotes}.`);
 }
