@@ -1,16 +1,16 @@
 // Validates that every relative markdown link in the curated docs points at a
-// path that exists, and that every section a live document names in another
-// file exists too.
+// path that exists, and that the sections live documents name in other files
+// exist too.
 //
 // Paths. A `#L42` line anchor is stripped and never resolved: it moves with every
 // edit, so a gate that failed on one would be noise rather than signal.
 //
-// Sections (FR-R3-184, built 2026-10-20 on a measured count): a `#heading`
-// fragment naming another Markdown file, or a `§` marker directly after a link
-// or backticked path, must name a heading the target has. Dated records are not
-// read. Same-file anchors and sections named in free prose are not checked. The
-// decision, the count it rests on and what would retire it are in
-// docs/development/section-reference-check.md.
+// Sections (FR-R3-184, built 2026-10-20 on a measured count): in every live
+// document this script walks, a `#heading` fragment naming another Markdown
+// file, or a `§` marker directly after a link or backticked path, must name a
+// heading the target has. Records are not read. Same-file anchors and sections
+// named in free prose are not checked. The decision, the count it rests on and
+// what would reopen it are in docs/development/section-reference-check.md.
 //
 // Why this exists: `docs:check` was a version-and-required-string gate, so a doc
 // link could rot through `verify:all` unobserved. Eleven had, by 2026-08-18.
@@ -20,9 +20,9 @@
 // clone still passes -- and in that case a link escaping the repo root is
 // reported as unverifiable rather than broken, since the file it names is
 // genuinely outside the tree being checked.
-import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
-import { dirname, resolve, join, relative, sep } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { readFileSync, readdirSync, existsSync, statSync, realpathSync } from 'node:fs';
+import { dirname, resolve, join, relative, sep, isAbsolute } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const WS_ROOT = resolve(REPO_ROOT, '..');
@@ -129,19 +129,20 @@ function linksIn(body) {
 //
 // Ported from the measurement that decided this check, which feature 219 committed with its
 // self-test as specs/219-prose-hops-resolve/measure/section-refs-sweep.mjs. The anchor rule is
-// GitHub's. That page holds the decision, the count it rests on, and what would retire it:
+// GitHub's. That page holds the decision, the count it rests on, and what would reopen it:
 // docs/development/section-reference-check.md.
 // ---------------------------------------------------------------------------------------------
 
-// Dated records, by kind, relative to each tree's root: the prefixes
-// tests/lint/basename-line-references.test.ts uses. To them are added the three pages whose
-// banners declare them records. A record says what was true on its date, so the sections it
-// names are not resolved against today's tree. Its *paths* are still checked above.
-const RECORD_PREFIXES = ['specs/', 'docs/features/', 'docs/audits/', 'docs/plans/'];
-const DECLARED_RECORDS = {
-  envelope: new Set(['ARCHITECTURE.md']),
-  repo: new Set(['docs/operations/merge-gate-observation.md', 'docs/operations/release-provenance-observation.md'])
-};
+// A record says what was true on its date, so the sections it names are not resolved against
+// today's tree. Its *paths* are still checked above. A page is a record when it carries the
+// marker on its own line near its top, the rule tests/lint/current-control-claims.test.ts reads;
+// when it lies under one of the envelope's dated-record directories; or when it is the
+// envelope's ARCHITECTURE.md, whose banner declares it one. The directories are the envelope's
+// alone: repo/docs/features/ holds user guides, which are live.
+const RECORD_MARKER = '<!-- doc-class: record -->';
+const MARKER_WINDOW = 10;
+const ENVELOPE_RECORD_DIRS = ['docs/features/', 'docs/audits/', 'docs/plans/'];
+const ENVELOPE_DECLARED_RECORDS = new Set(['ARCHITECTURE.md']);
 
 // linksIn's own fence test, so the citing documents are read exactly as the path check reads them.
 const FENCE = /^\s*(```|~~~)/;
@@ -154,21 +155,27 @@ const S_MARKER = new RegExp(
     String.raw`[ \t]*§[ \t]*(?:"([^"]+)"|“([^”]+)”|\*{1,2}([^*]+?)\*{1,2}|_{1,2}([^_]+?)_{1,2}|([A-Za-z]?\d+(?:\.\d+)*)(?![A-Za-z0-9]))`,
   'g'
 );
-// A line longer than this is not parsed for section references; some patterns are quadratic in
-// line length, and the longest real line in either tree is about 3,400 characters.
-const MAX_LINE = 20000;
+// A line, or a paragraph joined from shorter lines, longer than this is not parsed for section
+// references: it is counted and reported instead. Some patterns are quadratic in its length, so
+// this bounds what one hostile passage can cost, to under a second where 20,000 characters cost
+// three. The longest live line is about 3,300 characters and the longest live paragraph about
+// 5,700, so nothing real goes unread.
+const MAX_LINE = 10000;
 
 function linesOf(body) {
   return body.split(/\r?\n/).map((line) => (line.length <= MAX_LINE ? line : ''));
 }
 
-const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
+const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: '\u00a0' };
 
 function decodeEntities(text) {
-  return text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (whole, entity) => {
+  // CommonMark: a numeric reference has 1-7 decimal or 1-6 hex digits, and one naming zero, a
+  // surrogate or a code point past U+10FFFF renders as U+FFFD.
+  return text.replace(/&(#x[0-9a-f]{1,6}|#\d{1,7}|[a-z]+);/gi, (whole, entity) => {
     if (entity[0] !== '#') return Object.hasOwn(ENTITIES, entity.toLowerCase()) ? ENTITIES[entity.toLowerCase()] : whole;
     const codePoint = entity[1].toLowerCase() === 'x' ? parseInt(entity.slice(2), 16) : parseInt(entity.slice(1), 10);
-    return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : whole;
+    const scalar = codePoint > 0 && codePoint <= 0x10ffff && (codePoint < 0xd800 || codePoint > 0xdfff);
+    return String.fromCodePoint(scalar ? codePoint : 0xfffd);
   });
 }
 
@@ -191,10 +198,14 @@ export function renderedText(source) {
     .replace(/:[a-z][a-z0-9_+-]*:/g, '□')
     .replace(/\\([!-/:-@[-`{-~])/g, (_whole, char) => `\ue001${char.codePointAt(0)}\ue001`)
     .replace(/\*+/g, '')
-    .replace(/(^|[^\p{L}\p{N}])_+|_+(?=[^\p{L}\p{N}]|$)/gu, '$1')
-    .replace(/\ue001(\d+)\ue001/g, (_whole, codePoint) => String.fromCodePoint(Number(codePoint)))
-    .replace(/\ue000(\d+)\ue000/g, (_whole, index) => codes[Number(index)]);
-  return decodeEntities(text).trim();
+    .replace(/(^|[^\p{L}\p{N}])_+|_+(?=[^\p{L}\p{N}]|$)/gu, '$1');
+  // Entities are decoded while code spans and escapes are still parked: GitHub decodes neither, so
+  // `&amp;` in backticks, or after a backslash, stays as written. A placeholder the source itself
+  // happened to contain is restored as written.
+  return decodeEntities(text)
+    .replace(/\ue001(\d+)\ue001/g, (whole, codePoint) => (Number(codePoint) <= 0x10ffff ? String.fromCodePoint(Number(codePoint)) : whole))
+    .replace(/\ue000(\d+)\ue000/g, (whole, index) => codes[Number(index)] ?? whole)
+    .trim();
 }
 
 /** GitHub's heading anchor: lower-cased, then everything but letters, marks, digits, `_`, `-` and spaces removed, spaces made hyphens. */
@@ -279,7 +290,11 @@ function maskNonPathCode(line) {
   return line.replace(/`([^`]*)`/g, (whole, body) => (PATH_LIKE_CODE.test(body) ? whole : ' '.repeat(whole.length)));
 }
 
-/** Paragraphs outside fences, joined, with each source line's offset kept to map a match back. */
+/**
+ * Paragraphs outside fences, joined, with each source line's offset kept to map a match back.
+ * `length` is the joined length before `transformLine`, which never lengthens a line, so a
+ * paragraph is judged too long to parse the same way whichever transform reads it.
+ */
 function paragraphsOf(body, transformLine) {
   const paragraphs = [];
   let current = null;
@@ -300,23 +315,37 @@ function paragraphsOf(body, transformLine) {
     }
     const unquoted = rawLine.replace(/^(\s*>)+\s?/, '');
     if (ATX.test(unquoted) || /^\s*([-*+]|\d+[.)])\s/.test(rawLine) || /^\s*\|/.test(rawLine)) flush();
-    if (!current) current = { text: '', offsets: [] };
-    if (current.text) current.text += ' ';
+    if (!current) current = { text: '', offsets: [], length: 0 };
+    if (current.text) {
+      current.text += ' ';
+      current.length += 1;
+    }
     current.offsets.push({ offset: current.text.length, line: index + 1 });
     current.text += transformLine(unquoted.trim());
+    current.length += unquoted.trim().length;
     if (ATX.test(unquoted)) flush();
   });
   flush();
   return paragraphs;
 }
 
+/** Lines, and paragraphs joined from shorter lines, too long to parse: not read, and counted. */
+function unreadIn(body) {
+  const longLines = body.split(/\r?\n/).filter((line) => line.length > MAX_LINE).length;
+  return longLines + paragraphsOf(body, (line) => line).filter((paragraph) => paragraph.length > MAX_LINE).length;
+}
+
+/** The source line a joined paragraph's offset falls on, by binary search over its line offsets. */
 function lineAt(paragraph, offset) {
-  let line = paragraph.offsets[0].line;
-  for (const entry of paragraph.offsets) {
-    if (entry.offset <= offset) line = entry.line;
-    else break;
+  const { offsets } = paragraph;
+  let low = 0;
+  let high = offsets.length - 1;
+  while (low < high) {
+    const middle = (low + high + 1) >> 1;
+    if (offsets[middle].offset <= offset) low = middle;
+    else high = middle - 1;
   }
-  return line;
+  return offsets[low].line;
 }
 
 function spansLines(paragraph, start, end) {
@@ -340,7 +369,8 @@ function sMarkerOf(match, line) {
  * Every section reference in one Markdown body, wrapped ones included:
  * - F, a link fragment, read with linksIn's grammar plus the links that wrap across a line;
  * - S, a § marker directly after a link or backticked path, with only whitespace between.
- * Same-file anchors, line anchors and URLs are not returned.
+ * Same-file anchors, line anchors and URLs are not returned. A line or paragraph over MAX_LINE
+ * characters is not read; unreadIn counts those.
  */
 export function sectionReferencesIn(body) {
   const found = [];
@@ -362,12 +392,13 @@ export function sectionReferencesIn(body) {
     if (definition) pushLink(definition[1], index + 1);
     for (const match of maskNonPathCode(rawLine).matchAll(S_MARKER)) found.push(sMarkerOf(match, index + 1));
   });
-  for (const paragraph of paragraphsOf(body, (line) => line.replace(/`[^`]*`/g, ''))) {
+  const readable = (paragraph) => paragraph.length <= MAX_LINE;
+  for (const paragraph of paragraphsOf(body, (line) => line.replace(/`[^`]*`/g, '')).filter(readable)) {
     for (const match of paragraph.text.matchAll(LINK)) {
       if (spansLines(paragraph, match.index, match.index + match[0].length)) pushLink(match[1], lineAt(paragraph, match.index));
     }
   }
-  for (const paragraph of paragraphsOf(body, maskNonPathCode)) {
+  for (const paragraph of paragraphsOf(body, maskNonPathCode).filter(readable)) {
     for (const match of paragraph.text.matchAll(S_MARKER)) {
       if (spansLines(paragraph, match.index, match.index + match[0].length)) found.push(sMarkerOf(match, lineAt(paragraph, match.index)));
     }
@@ -384,9 +415,15 @@ function leadingIdentifier(headingText) {
   return match ? match[1].toLowerCase() : null;
 }
 
-/** Null when a reference resolves against its target's body, otherwise the reason it does not. */
-export function unresolvedReason(reference, targetBody) {
-  const { headings, ids } = anchorsOf(targetBody);
+/** A target's anchors and its headings' names, built once per target however often it is cited. */
+function headingIndex(body) {
+  const { headings, ids } = anchorsOf(body);
+  return { headings, ids, names: headings.map((heading) => normalizedName(heading.text)) };
+}
+
+/** Null when a reference resolves against its target's heading index, otherwise the reason it does not. */
+export function unresolvedReason(reference, index) {
+  const { headings, ids, names } = index;
   if (reference.form === 'F') {
     let wanted = reference.named;
     try {
@@ -404,10 +441,9 @@ export function unresolvedReason(reference, targetBody) {
     return headings.some((heading) => leadingIdentifier(heading.text) === wanted) ? null : 'no-such-identifier';
   }
   const wanted = normalizedName(reference.named);
-  const texts = headings.map((heading) => normalizedName(heading.text));
-  if (reference.ellipsis) return texts.some((text) => text.startsWith(wanted)) ? null : 'no-such-heading';
-  if (texts.includes(wanted)) return null;
-  return texts.some((text) => text.startsWith(wanted)) ? 'prefix-only' : 'no-such-heading';
+  if (reference.ellipsis) return names.some((name) => name.startsWith(wanted)) ? null : 'no-such-heading';
+  if (names.includes(wanted)) return null;
+  return names.some((name) => name.startsWith(wanted)) ? 'prefix-only' : 'no-such-heading';
 }
 
 function isFile(path) {
@@ -418,36 +454,52 @@ function isFile(path) {
   }
 }
 
-/** True for a dated record or a banner-declared record, whose sections are not resolved. */
-function isRecord(file, repoRoot, wsRoot) {
-  const inRepo = !relative(repoRoot, file).startsWith('..');
-  const treeRelative = relative(inRepo ? repoRoot : wsRoot, file).split(sep).join('/');
-  if (RECORD_PREFIXES.some((prefix) => treeRelative.startsWith(prefix))) return true;
-  return (inRepo ? DECLARED_RECORDS.repo : DECLARED_RECORDS.envelope).has(treeRelative);
+/** True when `path` lies outside `root`: above it, or, across Windows drives, on another root. */
+function isOutside(root, path) {
+  const rel = relative(root, path);
+  return rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+}
+
+/** True for a record, whose sections are not resolved: by its marker, its directory or its banner. */
+function isRecord(file, body, repoRoot, wsRoot) {
+  if (body.split('\n', MARKER_WINDOW).some((line) => line.trim() === RECORD_MARKER)) return true;
+  if (!isOutside(repoRoot, file)) return false;
+  const envelopeRelative = relative(wsRoot, file).split(sep).join('/');
+  return ENVELOPE_RECORD_DIRS.some((dir) => envelopeRelative.startsWith(dir)) || ENVELOPE_DECLARED_RECORDS.has(envelopeRelative);
 }
 
 /**
  * Resolve every section reference in every live document under `repoRoot`, and under `wsRoot`
- * when it holds the planning envelope. Returns the number checked, the number left unverifiable
- * because their target is outside a standalone `repo/` clone, and each failure.
+ * when it holds the planning envelope. Returns the number checked; the number left unverifiable
+ * because their target, symlinks resolved, lies outside the tree being checked; the number of
+ * lines and paragraphs too long to read; and each failure.
  */
 export function checkSectionReferences({ repoRoot = REPO_ROOT, wsRoot = WS_ROOT } = {}) {
   const hasEnvelope = envelopePresent(wsRoot);
   const files = collectMarkdown(repoRoot, []);
   if (hasEnvelope) collectMarkdown(wsRoot, files, WS_SKIP_TOP);
   const reportRoot = hasEnvelope ? wsRoot : repoRoot;
+  const realReportRoot = realpathSync(reportRoot);
   const bodies = new Map();
   const read = (path) => {
     if (!bodies.has(path)) bodies.set(path, readFileSync(path, 'utf8'));
     return bodies.get(path);
   };
+  const indexes = new Map();
+  const indexOf = (path) => {
+    if (!indexes.has(path)) indexes.set(path, headingIndex(read(path)));
+    return indexes.get(path);
+  };
   const failures = [];
   let checked = 0;
   let unverifiable = 0;
+  let unread = 0;
   for (const file of files) {
-    if (isRecord(file, repoRoot, wsRoot)) continue;
-    const ownRoot = relative(repoRoot, file).startsWith('..') ? wsRoot : repoRoot;
-    for (const reference of sectionReferencesIn(read(file))) {
+    const body = read(file);
+    if (isRecord(file, body, repoRoot, wsRoot)) continue;
+    unread += unreadIn(body);
+    const ownRoot = isOutside(repoRoot, file) ? wsRoot : repoRoot;
+    for (const reference of sectionReferencesIn(body)) {
       let target;
       if (reference.via === 'code') {
         const roots = [dirname(file), ownRoot, ...(hasEnvelope ? [ownRoot === repoRoot ? wsRoot : repoRoot] : [])];
@@ -456,14 +508,19 @@ export function checkSectionReferences({ repoRoot = REPO_ROOT, wsRoot = WS_ROOT 
       } else {
         target = resolve(dirname(file), reference.target);
       }
-      if (!hasEnvelope && relative(repoRoot, target).startsWith('..')) {
+      if (!hasEnvelope && isOutside(repoRoot, target)) {
         unverifiable += 1;
         continue;
       }
       // A missing path is the path check's to report; a target that is not Markdown has no headings.
       if (target === file || !target.endsWith('.md') || !isFile(target)) continue;
+      // Read nothing outside the tree being checked, whether a path or a symlink leads there.
+      if (isOutside(realReportRoot, realpathSync(target))) {
+        unverifiable += 1;
+        continue;
+      }
       checked += 1;
-      const reason = unresolvedReason(reference, read(target));
+      const reason = unresolvedReason(reference, indexOf(target));
       if (reason) {
         failures.push({
           file: relative(reportRoot, file).split(sep).join('/'),
@@ -476,7 +533,12 @@ export function checkSectionReferences({ repoRoot = REPO_ROOT, wsRoot = WS_ROOT 
       }
     }
   }
-  return { hasEnvelope, checked, unverifiable, failures };
+  return { hasEnvelope, checked, unverifiable, unread, failures };
+}
+
+/** Text from a document with its control characters shown as `?`, never sent to the terminal. */
+function printable(text) {
+  return text.replace(/\p{Cc}/gu, '?');
 }
 
 function main() {
@@ -500,7 +562,8 @@ function main() {
       }
       checked += 1;
       if (existsSync(target)) continue;
-      broken.push(`${relative(reportRoot, file)}:${link.line} -> ${link.path}`);
+      // Shown printable too: an escape sequence left open here would hide the lines printed after it.
+      broken.push(printable(`${relative(reportRoot, file)}:${link.line} -> ${link.path}`));
     }
   }
 
@@ -519,11 +582,11 @@ function main() {
     console.error(`Unresolved section references (${sections.failures.length}):`);
     for (const failure of sections.failures) {
       const named = failure.form === 'F' ? `#${failure.named}` : ` §${failure.named}`;
-      console.error(`  ${failure.file}:${failure.line} -> ${failure.target}${named} (${failure.reason})`);
+      console.error(printable(`  ${failure.file}:${failure.line} -> ${failure.target}${named} (${failure.reason})`));
     }
     console.error(
       `\nRepoint the reference at a heading its target has -- never add a heading to\n` +
-        `make a stale sentence true. Dated records are not checked; what is, and why,\n` +
+        `make a stale sentence true. Records are not checked; what is, and why,\n` +
         `is in docs/development/section-reference-check.md.`
     );
   }
@@ -533,9 +596,27 @@ function main() {
     `Documentation links checked: ${checked} across ${files.length} files ` +
       `(${scope}${note}).`
   );
-  const sectionNote = sections.unverifiable > 0 ? `, ${sections.unverifiable} outside this tree skipped` : '';
-  console.log(`Section references checked: ${sections.checked} in live documents${sectionNote}.`);
+  const sectionNotes = [
+    sections.unverifiable > 0 ? `, ${sections.unverifiable} outside this tree skipped` : '',
+    sections.unread > 0 ? `, ${sections.unread} ${sections.unread === 1 ? 'passage' : 'passages'} over ${MAX_LINE} characters not read` : ''
+  ].join('');
+  console.log(`Section references checked: ${sections.checked} in live documents${sectionNotes}.`);
+}
+
+/**
+ * True when Node was started on this file, by any path to it. Both sides are resolved, because
+ * `import.meta.url` names the file with its symlinks resolved and `process.argv[1]` does not: a
+ * direct comparison was false through any symlinked directory, macOS's `/tmp` included, and the
+ * gate then exited 0 having checked nothing.
+ */
+function invokedAsScript() {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
 }
 
 // Run as a script; imported (by its gate's test), only the functions above are used.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();
+if (invokedAsScript()) main();
