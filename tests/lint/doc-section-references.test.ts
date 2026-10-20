@@ -29,8 +29,8 @@ import { checkSectionReferences } from '../../scripts/check-doc-links.mjs';
  * marker on its own line near its top, the rule `current-control-claims.test.ts` reads. A record
  * says what was true on its date. Line anchors (`#L42`), fragments on files that are not Markdown,
  * same-file anchors, a link naming its own file, and sections named in free prose are not checked
- * either. Prose would need a heuristic, and feature 219 declined one. A target outside the tree
- * being checked, symlinks resolved, is unverifiable and is not read. A line, or a wrapped
+ * either. Prose would need a heuristic, and feature 219 declined one. A target outside both trees
+ * being checked, symlinks resolved, or one that cannot be read, is unverifiable and is not read. A line, or a wrapped
  * paragraph, over 10,000 characters is not parsed; it is counted and reported instead.
  */
 const REPO = resolve(__dirname, '..', '..');
@@ -124,6 +124,97 @@ describe('FR-R3-184 — a section a live document names in another file exists',
     ]);
   });
 
+  it('reads an identifier only at a token boundary, and a link that wraps across a line', () => {
+    const root = tree({
+      ...ENVELOPE,
+      'repo/docs/target.md': '# T\n\n## 21. Scope\n\n## Present heading\n',
+      'repo/docs/citing.md': [
+        '`target.md` §2 and `target.md` §21.',
+        '',
+        'See [the long',
+        'name](target.md#gone) and [the other',
+        'long name](target.md#present-heading).',
+        ''
+      ].join('\n')
+    });
+    const { checked, failures } = check(root);
+    expect(checked).toBe(4);
+    expect(failures.map((f) => [f.line, f.form, f.named, f.reason])).toEqual([
+      [1, 'S', '2', 'no-such-identifier'],
+      [3, 'F', 'gone', 'no-such-anchor']
+    ]);
+  });
+
+  it('reads a reference definition, and a backticked path against the other tree', () => {
+    const root = tree({
+      ...ENVELOPE,
+      'notes/only-here.md': '# Only here\n\n## Kept\n',
+      'repo/docs/target.md': TARGET,
+      'repo/docs/citing.md': '[ref]: target.md#gone\n\n`notes/only-here.md` §"Kept" and `notes/only-here.md` §"Gone".\n'
+    });
+    const { checked, failures } = check(root);
+    expect(checked).toBe(3);
+    expect(failures.map((f) => [f.line, f.form, f.named, f.reason])).toEqual([
+      [1, 'F', 'gone', 'no-such-anchor'],
+      [3, 'S', 'Gone', 'no-such-heading']
+    ]);
+  });
+
+  it('skips what is not a section reference: a fragment on a file that is not Markdown, and link syntax quoted in code', () => {
+    const root = tree({
+      ...ENVELOPE,
+      'repo/docs/script.ts': '// not Markdown\n',
+      'repo/docs/target.md': TARGET,
+      'repo/docs/citing.md': [
+        '[code](script.ts#anything)',
+        '',
+        '`[quoted](target.md#gone)` is documentation of a link.',
+        '',
+        '`[quoted](target.md) §9` is documentation of a marker.',
+        '',
+        '```',
+        '[fenced](target.md#gone)',
+        '```',
+        ''
+      ].join('\n')
+    });
+    expect(check(root)).toMatchObject({ checked: 0, failures: [] });
+  });
+
+  it('renders headings as GitHub does: in a blockquote, after a shortcode or a time, snake_case, and stacked setext', () => {
+    const root = tree({
+      ...ENVELOPE,
+      'repo/docs/target.md': [
+        '# T',
+        '',
+        '> ## Quoted heading',
+        '',
+        '## :warning: Careful',
+        '',
+        '## run 21:34:01',
+        '',
+        '## the snake_case name and _emphasis_',
+        '',
+        'Title',
+        '=====',
+        'Subtitle',
+        '--------',
+        ''
+      ].join('\n'),
+      'repo/docs/citing.md': [
+        '#quoted-heading',
+        '#-careful',
+        '#run-213401',
+        '#the-snake_case-name-and-emphasis',
+        '#title',
+        '#subtitle'
+      ]
+        .map((fragment) => `[x](target.md${fragment})\n`)
+        .join('\n')
+    });
+    expect(check(root)).toMatchObject({ checked: 6, failures: [] });
+  });
+
   it('resolves as GitHub anchors do: duplicates, HTML ids, percent-encoding, setext, fences, case and the ellipsis rule', () => {
     const root = tree({
       ...ENVELOPE,
@@ -192,6 +283,25 @@ describe('FR-R3-184 — a section a live document names in another file exists',
     expect(check(root)).toMatchObject({ checked: 0, failures: [] });
   });
 
+  it('judges records by the exact rule: the marker within ten lines, the envelope directories by prefix, the root ARCHITECTURE.md alone', () => {
+    const root = tree({
+      ...ENVELOPE,
+      'repo/docs/target.md': TARGET,
+      'repo/docs/late-marker.md': `${'line\n'.repeat(10)}${RECORD_MARKER}\n\n[x](target.md#gone)\n`,
+      'repo/docs/padded-marker.md': `# Padded\n\n   ${RECORD_MARKER}   \n\n[x](target.md#gone)\n`,
+      'docs/plans/a-plan.md': '[x](../../repo/docs/target.md#gone)\n',
+      'docs/features-extra/a-page.md': '[x](../../repo/docs/target.md#gone)\n',
+      'docs/ARCHITECTURE.md': '[x](../repo/docs/target.md#gone)\n'
+    });
+    const { checked, failures } = check(root);
+    expect(checked).toBe(3);
+    expect(failures.map((f) => [f.file, f.line]).sort()).toEqual([
+      ['docs/ARCHITECTURE.md', 1],
+      ['docs/features-extra/a-page.md', 1],
+      ['repo/docs/late-marker.md', 13]
+    ]);
+  });
+
   it("reads a repo/ user guide under docs/features/, and a page that only mentions the record marker", () => {
     const root = tree({
       ...ENVELOPE,
@@ -234,6 +344,21 @@ describe('FR-R3-184 — a section a live document names in another file exists',
     expect(result.checked).toBe(1);
   });
 
+  it('reads a target inside either tree, when a root is spelled through a symlink', () => {
+    const root = tree({
+      'ws/ARCHITECTURE.md': '# Envelope\n',
+      'ws/CLAUDE.md': '# Pointer\n',
+      'ws/docs/README.md': '# Docs\n',
+      'real-repo/docs/target.md': TARGET,
+      'real-repo/docs/citing.md': '[x](target.md#gone) and [y](target.md#present-heading)\n'
+    });
+    symlinkSync(join(root, 'real-repo'), join(root, 'ws', 'repo'), 'dir');
+    const result = check(join(root, 'ws'));
+    expect(result.unverifiable).toBe(0);
+    expect(result.checked).toBe(2);
+    expect(result.failures.map((f) => [f.file, f.named])).toEqual([['repo/docs/citing.md', 'gone']]);
+  });
+
   it('renders a numeric reference past U+10FFFF as U+FFFD, and does not throw on it', () => {
     const root = tree({
       ...ENVELOPE,
@@ -269,7 +394,7 @@ describe('FR-R3-184 — a section a live document names in another file exists',
     const root = tree({
       ...ENVELOPE,
       'repo/docs/target.md': TARGET,
-      'repo/docs/citing.md': 'See [absent](target.md#useful\u001b[2J-targets).\n'
+      'repo/docs/citing.md': 'See [absent](target.md#useful\u001b[2J-targets\u202e).\n[broken](missing\u001b[31m.md)\n'
     });
     const script = installScript(root);
     const linked = join(root, 'linked-scripts');
@@ -277,8 +402,21 @@ describe('FR-R3-184 — a section a live document names in another file exists',
     const run = spawnSync('node', [join(linked, 'check-doc-links.mjs')], { encoding: 'utf8' });
     expect(run.status).toBe(1);
     expect(run.stderr).toContain('Unresolved section references (1):');
-    expect(run.stderr).toContain('repo/docs/citing.md:1 -> repo/docs/target.md#useful?[2J-targets (no-such-anchor)');
+    expect(run.stderr).toContain('repo/docs/citing.md:1 -> repo/docs/target.md#useful?[2J-targets? (no-such-anchor)');
+    expect(run.stderr).toContain('repo/docs/citing.md:2 -> missing?[31m.md');
     expect(run.stderr).not.toContain('\u001b');
+    expect(run.stderr).not.toContain('\u202e');
+  });
+
+  it('says how many references it could not verify when the envelope is absent', () => {
+    const root = tree({
+      'repo/docs/target.md': TARGET,
+      'repo/docs/citing.md': '[up](../../elsewhere.md#somewhere) and [in](target.md#present-heading)\n'
+    });
+    const script = installScript(root);
+    const run = spawnSync('node', [script], { encoding: 'utf8' });
+    expect(run.status).toBe(0);
+    expect(run.stdout).toContain('Section references checked: 1 in live documents, 1 outside this tree skipped.');
   });
 
   it('prints what it checked and what it could not read when it passes, and does nothing when imported', () => {

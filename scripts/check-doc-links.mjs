@@ -216,12 +216,40 @@ export function slugify(text) {
     .replace(/ /g, '-');
 }
 
-const ATX = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$/;
+const ATX_OPENING = /^ {0,3}#{1,6}(?=[ \t]|$)/;
 const SETEXT = /^ {0,3}(=+|-+)[ \t]*$/;
+
+const isBlank = (char) => char === ' ' || char === '\t';
+
+/**
+ * An ATX heading's text, or null when the line is not one. It gives the answer the sweep's pattern,
+ * /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$/, gives, in one pass: that pattern
+ * backtracks quadratically over a long run of spaces. Its `.` stops at a line terminator, so a line
+ * holding one is not a heading here either.
+ */
+function atxText(line) {
+  const opening = ATX_OPENING.exec(line);
+  if (!opening) return null;
+  const rest = line.slice(opening[0].length);
+  if (/[\n\r\u2028\u2029]/.test(rest)) return null;
+  let start = 0;
+  while (start < rest.length && isBlank(rest[start])) start += 1;
+  let end = rest.length;
+  while (end > start && isBlank(rest[end - 1])) end -= 1;
+  const text = rest.slice(start, end);
+  // A closing run of `#` counts only when blanks separate it from the text before it.
+  let hashes = text.length;
+  while (hashes > 0 && text[hashes - 1] === '#') hashes -= 1;
+  if (hashes === text.length || hashes === 0 || !isBlank(text[hashes - 1])) return text;
+  let cut = hashes;
+  while (cut > 0 && isBlank(text[cut - 1])) cut -= 1;
+  return text.slice(0, cut);
+}
 
 function isParagraphLine(line) {
   if (!line || !line.trim()) return false;
-  if (ATX.test(line) || FENCE.test(line)) return false;
+  // A setext underline ends a paragraph: read as text, each one rescanned every line above it.
+  if (atxText(line) !== null || FENCE.test(line) || SETEXT.test(line)) return false;
   if (/^\s*([-*+]|\d+[.)])\s/.test(line)) return false;
   if (/^\s*\|/.test(line) || /^\s*>/.test(line) || /^\s*</.test(line)) return false;
   return true;
@@ -259,9 +287,9 @@ export function anchorsOf(body) {
     }
     if (fence) continue;
     for (const match of raw.matchAll(/<[A-Za-z][^>]*?\s(?:id|name)\s*=\s*["']([^"']+)["']/g)) ids.add(match[1]);
-    const atx = unquoted.match(ATX);
-    if (atx) {
-      add(atx[2] ?? '');
+    const atx = atxText(unquoted);
+    if (atx !== null) {
+      add(atx);
       continue;
     }
     if (SETEXT.test(raw) && isParagraphLine(lines[i - 1])) {
@@ -314,7 +342,8 @@ function paragraphsOf(body, transformLine) {
       return;
     }
     const unquoted = rawLine.replace(/^(\s*>)+\s?/, '');
-    if (ATX.test(unquoted) || /^\s*([-*+]|\d+[.)])\s/.test(rawLine) || /^\s*\|/.test(rawLine)) flush();
+    const heading = atxText(unquoted) !== null;
+    if (heading || /^\s*([-*+]|\d+[.)])\s/.test(rawLine) || /^\s*\|/.test(rawLine)) flush();
     if (!current) current = { text: '', offsets: [], length: 0 };
     if (current.text) {
       current.text += ' ';
@@ -323,7 +352,7 @@ function paragraphsOf(body, transformLine) {
     current.offsets.push({ offset: current.text.length, line: index + 1 });
     current.text += transformLine(unquoted.trim());
     current.length += unquoted.trim().length;
-    if (ATX.test(unquoted)) flush();
+    if (heading) flush();
   });
   flush();
   return paragraphs;
@@ -392,7 +421,8 @@ export function sectionReferencesIn(body) {
     if (definition) pushLink(definition[1], index + 1);
     for (const match of maskNonPathCode(rawLine).matchAll(S_MARKER)) found.push(sMarkerOf(match, index + 1));
   });
-  const readable = (paragraph) => paragraph.length <= MAX_LINE;
+  // Only a paragraph of two or more lines can hold a reference that wraps; the line pass read the rest.
+  const readable = (paragraph) => paragraph.offsets.length > 1 && paragraph.length <= MAX_LINE;
   for (const paragraph of paragraphsOf(body, (line) => line.replace(/`[^`]*`/g, '')).filter(readable)) {
     for (const match of paragraph.text.matchAll(LINK)) {
       if (spansLines(paragraph, match.index, match.index + match[0].length)) pushLink(match[1], lineAt(paragraph, match.index));
@@ -479,16 +509,30 @@ export function checkSectionReferences({ repoRoot = REPO_ROOT, wsRoot = WS_ROOT 
   const files = collectMarkdown(repoRoot, []);
   if (hasEnvelope) collectMarkdown(wsRoot, files, WS_SKIP_TOP);
   const reportRoot = hasEnvelope ? wsRoot : repoRoot;
-  const realReportRoot = realpathSync(reportRoot);
+  // The trees being checked, symlinks resolved, each on its own: `repo/` itself may be a symlink.
+  const realRoots = [realpathSync(repoRoot), ...(hasEnvelope ? [realpathSync(wsRoot)] : [])];
   const bodies = new Map();
   const read = (path) => {
     if (!bodies.has(path)) bodies.set(path, readFileSync(path, 'utf8'));
     return bodies.get(path);
   };
   const indexes = new Map();
+  /**
+   * A target's heading index, or null when its real path lies outside both trees or it cannot be
+   * read. Only the two filesystem calls are guarded: a fault in the parser must still surface.
+   */
   const indexOf = (path) => {
-    if (!indexes.has(path)) indexes.set(path, headingIndex(read(path)));
-    return indexes.get(path);
+    if (indexes.has(path)) return indexes.get(path);
+    let body = null;
+    try {
+      const real = realpathSync(path);
+      if (realRoots.some((root) => !isOutside(root, real))) body = read(real);
+    } catch {
+      body = null; // gone or unreadable since it was listed: unverifiable, as an outside target is
+    }
+    const index = body === null ? null : headingIndex(body);
+    indexes.set(path, index);
+    return index;
   };
   const failures = [];
   let checked = 0;
@@ -514,13 +558,14 @@ export function checkSectionReferences({ repoRoot = REPO_ROOT, wsRoot = WS_ROOT 
       }
       // A missing path is the path check's to report; a target that is not Markdown has no headings.
       if (target === file || !target.endsWith('.md') || !isFile(target)) continue;
-      // Read nothing outside the tree being checked, whether a path or a symlink leads there.
-      if (isOutside(realReportRoot, realpathSync(target))) {
+      // Read nothing outside the trees being checked, whether a path or a symlink leads there.
+      const index = indexOf(target);
+      if (!index) {
         unverifiable += 1;
         continue;
       }
       checked += 1;
-      const reason = unresolvedReason(reference, indexOf(target));
+      const reason = unresolvedReason(reference, index);
       if (reason) {
         failures.push({
           file: relative(reportRoot, file).split(sep).join('/'),
@@ -536,9 +581,12 @@ export function checkSectionReferences({ repoRoot = REPO_ROOT, wsRoot = WS_ROOT 
   return { hasEnvelope, checked, unverifiable, unread, failures };
 }
 
-/** Text from a document with its control characters shown as `?`, never sent to the terminal. */
+/**
+ * Text from a document with its control, format and separator characters shown as `?`: escape
+ * sequences, bidirectional overrides and zero-width characters never reach the terminal.
+ */
 function printable(text) {
-  return text.replace(/\p{Cc}/gu, '?');
+  return text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, '?');
 }
 
 function main() {
