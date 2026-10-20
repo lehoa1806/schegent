@@ -39,7 +39,7 @@ const MAX_LENGTH_ID = `p${'x'.repeat(63)}`;
 
 const REVISION = 'rev-key-bound';
 const identity = (value: string): string => value;
-const MODELS = { claude: ['claude-opus-5'], codex: [], agy: [] } as const;
+const MODELS = { claude: ['claude-opus-5-5'], codex: [], agy: [] } as const;
 
 /** Two rows sharing one id: the case where the `::index` half is what distinguishes them. */
 const PHASE_ROWS: readonly unknown[] = [

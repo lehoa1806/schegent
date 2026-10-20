@@ -47,8 +47,8 @@ const MODEL_CATALOG_DOCUMENT = [
   'groups:',
   '  - backend: claude',
   '    models:',
-  '      - claude-opus-5',
-  '      - claude-sonnet-5',
+  '      - claude-opus-5-5',
+  '      - claude-sonnet-5-5',
   ''
 ].join('\n');
 
@@ -180,29 +180,29 @@ async function commit(
 
 describe('Feature 096 — the manual add/remove call site keeps its unconditional write (contracts §4)', () => {
   it('writes without checking a revision when expectedRevision and mutation are both omitted', async () => {
-    const inst = installation({ claude: ['claude-opus-5'] });
+    const inst = installation({ claude: ['claude-opus-5-5'] });
     const command: SaveModelsCommand = {
       type: CMD_SAVE_MODELS,
       correlationId: 'manual-1',
-      payload: { models: { claude: ['claude-opus-5', 'claude-sonnet-5'], codex: [], agy: [] } }
+      payload: { models: { claude: ['claude-opus-5-5', 'claude-sonnet-5-5'], codex: [], agy: [] } }
     };
 
     const { ack, writes } = await commit(inst, command);
 
     expect(ack).toMatchObject({ status: 'accepted' });
     expect(writes).toBe(1);
-    expect(inst.workspace).toEqual({ claude: ['claude-opus-5', 'claude-sonnet-5'], codex: [], agy: [] });
+    expect(inst.workspace).toEqual({ claude: ['claude-opus-5-5', 'claude-sonnet-5-5'], codex: [], agy: [] });
   });
 });
 
 describe('Feature 096 — import-confirm: a stale revision commits nothing (contracts §4 step 3)', () => {
   it('rejects with stale-catalog, reports the current revision, and leaves the catalog untouched', async () => {
-    const inst = installation({ claude: ['claude-opus-5'] });
+    const inst = installation({ claude: ['claude-opus-5-5'] });
     const plan = await planFor(inst, MODEL_CATALOG_DOCUMENT);
 
     // Someone else writes the layer between the preflight and the confirm, so
     // the revision the plan was computed against no longer describes it.
-    inst.workspace = { claude: ['claude-opus-5', 'landed-first'], codex: [], agy: [] };
+    inst.workspace = { claude: ['claude-opus-5-5', 'landed-first'], codex: [], agy: [] };
     const before = inst.workspace;
     const revisionBefore = modelsLayerRevision(inst.workspace);
 
@@ -221,7 +221,7 @@ describe('Feature 096 — import-confirm: a stale revision commits nothing (cont
 
 describe('Feature 096 — import-confirm: a matching revision merges only the import-outcome rows (contracts §4 steps 4-5)', () => {
   it('merges the delta into the current catalog and reports the merged revision', async () => {
-    const inst = installation({ claude: ['claude-opus-5'] });
+    const inst = installation({ claude: ['claude-opus-5-5'] });
     const plan = await planFor(inst, MODEL_CATALOG_DOCUMENT);
 
     const { ack, writes } = await commit(
@@ -231,7 +231,7 @@ describe('Feature 096 — import-confirm: a matching revision merges only the im
 
     expect(ack).toMatchObject({ status: 'accepted' });
     expect(writes).toBe(1);
-    expect(inst.workspace).toEqual({ claude: ['claude-opus-5', 'claude-sonnet-5'], codex: [], agy: [] });
+    expect(inst.workspace).toEqual({ claude: ['claude-opus-5-5', 'claude-sonnet-5-5'], codex: [], agy: [] });
     expect(ack.result).toEqual({
       revision: modelsLayerRevision(inst.workspace),
       mutation: 'import-package'
@@ -274,23 +274,23 @@ describe('Feature 096 — import-confirm: a matching revision merges only the im
     // hand-built to simulate one that did not. The revision gate cannot catch
     // it — nothing about the layer changed — so the server's own re-plan
     // (step 4) is the only thing standing between this and a duplicated id.
-    const inst = installation({ claude: ['claude-opus-5'] });
+    const inst = installation({ claude: ['claude-opus-5-5'] });
     const revision = modelsLayerRevision(inst.workspace);
 
     const { ack, writes } = await commit(
       inst,
-      commitCommand({ claude: ['claude-opus-5', 'claude-sonnet-5'] }, revision)
+      commitCommand({ claude: ['claude-opus-5-5', 'claude-sonnet-5-5'] }, revision)
     );
 
     expect(ack).toMatchObject({ status: 'accepted' });
     expect(writes).toBe(1);
-    expect(inst.workspace).toEqual({ claude: ['claude-opus-5', 'claude-sonnet-5'], codex: [], agy: [] });
+    expect(inst.workspace).toEqual({ claude: ['claude-opus-5-5', 'claude-sonnet-5-5'], codex: [], agy: [] });
   });
 });
 
 describe('Feature 096 — import-confirm: a write failure commits nothing (contracts §4 step 6)', () => {
   it('rejects with persistence-failed and leaves the catalog untouched', async () => {
-    const inst = installation({ claude: ['claude-opus-5'] });
+    const inst = installation({ claude: ['claude-opus-5-5'] });
     const plan = await planFor(inst, MODEL_CATALOG_DOCUMENT);
     const before = inst.workspace;
 

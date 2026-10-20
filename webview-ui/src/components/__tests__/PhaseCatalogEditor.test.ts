@@ -131,14 +131,14 @@ describe('Phase catalog source editor states', () => {
     const snapshot = {
       ...SNAPSHOT,
       availableModels: { claude: [], codex: [], agy: [] },
-      configuredModels: { claude: ['claude-opus-5', 'claude-sonnet-5'], codex: [], agy: [] }
+      configuredModels: { claude: ['claude-opus-5-5', 'claude-sonnet-5-5'], codex: [], agy: [] }
     } as unknown as WorkflowSnapshot;
     const { container } = mount({ phases: [STORED_PHASE], selectedIndex: 0, snapshot });
 
     const options = Array.from(
       container.querySelectorAll('[data-testid="phases-model-custom"] option')
     ).map((option) => (option as HTMLOptionElement).value);
-    expect(options).toEqual(['', 'claude-opus-5', 'claude-sonnet-5']);
+    expect(options).toEqual(['', 'claude-opus-5-5', 'claude-sonnet-5-5']);
   });
 
   it('offers configured and detected models together, configured first and deduped', () => {
@@ -160,7 +160,7 @@ describe('Phase catalog source editor states', () => {
     const snapshot = {
       ...SNAPSHOT,
       availableModels: { claude: [], codex: [], agy: [] },
-      configuredModels: { claude: ['claude-opus-5'], codex: [], agy: [] }
+      configuredModels: { claude: ['claude-opus-5-5'], codex: [], agy: [] }
     } as unknown as WorkflowSnapshot;
     const phase = { ...STORED_PHASE, model: 'retired-model' };
     const { container } = mount({ phases: [phase], selectedIndex: 0, snapshot });

@@ -131,16 +131,18 @@ afterEach(async () => {
 //
 // They keep their ids and their fields, because this file is about a *custom*
 // Pipeline: the custom Phase is the subject, and the two around it are the
-// control — the assertion that `speckit-specify` runs on `claude-opus-5` with no
-// effort and no timeout is what makes the `security-audit` overrides mean
+// control — the assertion that `speckit-specify` runs on `claude-opus-5-5` with
+// no effort and no timeout is what makes the `security-audit` overrides mean
 // something rather than being the only values in the run. Substituting fixture
 // ids would keep that structure, and the ids are kept only so the diff shows the
-// definitions moving rather than the test changing.
+// definitions moving rather than the test changing. The one field changed since
+// is the model: the built-ins declared `claude-opus-5`, and `repo/examples/`
+// declares `claude-opus-5-5`.
 const SPECIFY_PHASE: PhaseDef = {
   id: 'speckit-specify',
   name: 'Spec-kit Specify',
   instruction: 'Run /speckit-specify',
-  model: 'claude-opus-5',
+  model: 'claude-opus-5-5',
   runner: 'claude'
 };
 
@@ -148,7 +150,7 @@ const FINALIZE_PHASE: PhaseDef = {
   id: 'finalize',
   name: 'Finalize',
   instruction: 'Finalize the feature.',
-  model: 'claude-opus-5',
+  model: 'claude-opus-5-5',
   runner: 'claude'
 };
 
@@ -233,7 +235,7 @@ describe('Dynamic pipelines end-to-end (T034, US2)', () => {
     expect(securityCall.timeoutMs).toBe(90_000);
 
     const specifyCall = invocations.find((i) => i.phase === 'speckit-specify')!;
-    expect(specifyCall.model).toBe('claude-opus-5');
+    expect(specifyCall.model).toBe('claude-opus-5-5');
     expect(specifyCall.effort).toBeUndefined();
 
     const log = await fs.readFile(path.join(tmpRoot, '.schegent', 'audit.log'), 'utf8');
@@ -253,7 +255,7 @@ describe('Dynamic pipelines end-to-end (T034, US2)', () => {
       (l) => l.eventType === 'phase-start' && l.payload.phaseId === 'speckit-specify'
     )!;
     expect(specifyStart.payload.pipelineId).toBe('security');
-    expect(specifyStart.payload).toHaveProperty('model', 'claude-opus-5');
+    expect(specifyStart.payload).toHaveProperty('model', 'claude-opus-5-5');
     expect(specifyStart.payload).not.toHaveProperty('effort');
     expect(specifyStart.payload).not.toHaveProperty('timeoutMs');
   });

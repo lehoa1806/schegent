@@ -100,7 +100,7 @@ const SPECIFY_PHASE: PhaseDef = {
   id: 'speckit-specify',
   name: 'Spec-kit Specify',
   instruction: 'Run /speckit-specify',
-  model: 'claude-opus-5',
+  model: 'claude-opus-5-5',
   runner: 'claude'
 };
 

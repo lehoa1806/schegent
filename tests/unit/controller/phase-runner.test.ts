@@ -1939,7 +1939,7 @@ describe('Feature 074 — Multi-Backend Runner Resolution & Session Reset', () =
         name: 'Review',
         instruction: '',
         steps: [],
-        model: 'claude-opus-5',
+        model: 'claude-opus-5-5',
         effort: 'xhigh'
       }
     } as unknown as Parameters<typeof runner.run>[0]);
@@ -1952,7 +1952,7 @@ describe('Feature 074 — Multi-Backend Runner Resolution & Session Reset', () =
     expect(compaction?.modelId).toBe(COMPACTION_MODEL_ID);
     expect(compaction).not.toHaveProperty('effortId');
     // The phase's own record is unaffected: it really did run on that model at that effort.
-    expect(phase?.modelId).toBe('claude-opus-5');
+    expect(phase?.modelId).toBe('claude-opus-5-5');
     expect(phase?.effortId).toBe('xhigh');
   });
 

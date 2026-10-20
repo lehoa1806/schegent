@@ -285,7 +285,7 @@ describe('validatePipelineDefinition — execution defaults (FR-018)', () => {
       valid({
         executionDefaults: {
           runner: 'claude',
-          model: 'claude-opus-5',
+          model: 'claude-opus-5-5',
           effort: 'high',
           timeoutSeconds: 600
         }
@@ -294,7 +294,7 @@ describe('validatePipelineDefinition — execution defaults (FR-018)', () => {
     expect(result.ok).toBe(true);
     expect(result.definition?.executionDefaults).toEqual({
       runner: 'claude',
-      model: 'claude-opus-5',
+      model: 'claude-opus-5-5',
       effort: 'high',
       timeoutSeconds: 600
     });

@@ -119,8 +119,8 @@ const MODEL_CATALOG_DOCUMENT = [
   'groups:',
   '  - backend: claude',
   '    models:',
-  '      - claude-opus-5',
-  '      - claude-sonnet-5',
+  '      - claude-opus-5-5',
+  '      - claude-sonnet-5-5',
   '  - backend: codex',
   '    models:',
   '      - gpt-6-codex',
@@ -152,7 +152,7 @@ describe('Feature 096 — Model Catalog import row classification (contracts §2
   it('imports a new id, skips one already present, and skips one under an unrecognized backend', async () => {
     const { result } = await preflight({
       text: MODEL_CATALOG_DOCUMENT,
-      models: { claude: ['claude-opus-5'], codex: [], agy: [] }
+      models: { claude: ['claude-opus-5-5'], codex: [], agy: [] }
     });
 
     expect(result.outcome).toBe('planned');
@@ -162,17 +162,17 @@ describe('Feature 096 — Model Catalog import row classification (contracts §2
       {
         outcome: 'skip',
         resourceKind: 'modelCatalog',
-        resourceId: 'claude-opus-5',
+        resourceId: 'claude-opus-5-5',
         backend: 'claude',
-        modelId: 'claude-opus-5',
+        modelId: 'claude-opus-5-5',
         reason: 'already-exists'
       },
       {
         outcome: 'import',
         resourceKind: 'modelCatalog',
-        resourceId: 'claude-sonnet-5',
+        resourceId: 'claude-sonnet-5-5',
         backend: 'claude',
-        modelId: 'claude-sonnet-5'
+        modelId: 'claude-sonnet-5-5'
       },
       {
         outcome: 'import',
@@ -195,7 +195,7 @@ describe('Feature 096 — Model Catalog import row classification (contracts §2
   it('counts one bucket per outcome, summing to the row count (FR-028)', async () => {
     const { result } = await preflight({
       text: MODEL_CATALOG_DOCUMENT,
-      models: { claude: ['claude-opus-5'], codex: [], agy: [] }
+      models: { claude: ['claude-opus-5-5'], codex: [], agy: [] }
     });
 
     expect(result.outcome).toBe('planned');
@@ -219,7 +219,7 @@ describe('Feature 096 — Model Catalog import row classification (contracts §2
 
 describe("Feature 096 — a ModelCatalog plan carries the models layer's own revision", () => {
   it('reports computedAgainstRevision and computedAgainstModelsRevision, and omits the Pipeline/Workflow fields', async () => {
-    const models = { claude: ['claude-opus-5'], codex: [], agy: [] };
+    const models = { claude: ['claude-opus-5-5'], codex: [], agy: [] };
     const { result } = await preflight({ text: MODEL_CATALOG_DOCUMENT, models });
 
     expect(result.outcome).toBe('planned');
@@ -242,7 +242,7 @@ describe("Feature 096 — a ModelCatalog plan carries the models layer's own rev
     const a = await preflight({ text: MODEL_CATALOG_DOCUMENT, models: { claude: [], codex: [], agy: [] } });
     const b = await preflight({
       text: MODEL_CATALOG_DOCUMENT,
-      models: { claude: ['claude-opus-5'], codex: [], agy: [] }
+      models: { claude: ['claude-opus-5-5'], codex: [], agy: [] }
     });
 
     if (a.result.outcome !== 'planned' || b.result.outcome !== 'planned') {

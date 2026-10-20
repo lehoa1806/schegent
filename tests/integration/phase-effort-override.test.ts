@@ -363,7 +363,7 @@ describe('Feature 026 T018 — per-phase Effort/Model override end-to-end', () =
 
   it('(d) SC-002 smoke: model override on head/middle/tail built-in phases surfaces on phase-start', async () => {
     const modelByPhase: Record<string, string> = {
-      'speckit-specify': 'claude-haiku-4-5-20251001',
+      'speckit-specify': 'claude-haiku-5-5',
       'speckit-plan': 'claude-sonnet-4-6',
       'speckit-implement': 'claude-opus-4-7'
     };
