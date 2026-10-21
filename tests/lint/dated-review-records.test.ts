@@ -126,6 +126,25 @@ const RECORDS: readonly DatedRecord[] = [
       'T036 is not owed',
       'cannot see'
     ]
+  },
+  {
+    // FR-R3-185 — a DECISION, registered for the reason FR-R3-169's CSP record is.
+    // English-only was decided on 2026-08-22 (FR-R3-030) with one reversal
+    // condition and no date. Its reopen events — a non-English-speaking operator, a
+    // marketplace listing aimed at one, an offered translation — are facts about
+    // the world that no gate can observe, so the date is the only thing that makes
+    // anyone re-read them. The posture gate beside it watches the TREE for a
+    // localization mechanism; this entry watches the CALENDAR for the audience.
+    document: 'docs/concepts/english-only-not-localizable.md',
+    marker: 'localization-review-date',
+    defers: "localizing the extension's user-visible strings (FR-R3-030, re-taken by FR-R3-185)",
+    mustMention: [
+      'The condition that would reopen this',
+      'non-English-speaking operator',
+      'distribution posture',
+      'offers a translation',
+      'cannot see'
+    ]
   }
 ];
 
@@ -140,10 +159,10 @@ describe('FR-R3-134 — every dated deferral is watched, and the registry is com
   it('registers at least the deferrals this round produced', () => {
     // The control. Every assertion below is a per-record loop; an emptied
     // registry would make all of them vacuous and report green.
-    // Raised 4 -> 5 by FR-R3-169 (FR-014), then 5 -> 6 by FR-R3-170 (FR-009). A
-    // floor that does not move when the set does is a floor the new member is
-    // not standing on.
-    expect(RECORDS.length).toBeGreaterThanOrEqual(6);
+    // Raised 4 -> 5 by FR-R3-169 (FR-014), then 5 -> 6 by FR-R3-170 (FR-009),
+    // then 6 -> 7 by FR-R3-185. A floor that does not move when the set does is a
+    // floor the new member is not standing on.
+    expect(RECORDS.length).toBeGreaterThanOrEqual(7);
     expect(new Set(RECORDS.map((entry) => entry.marker)).size, 'markers must be distinct').toBe(
       RECORDS.length
     );
