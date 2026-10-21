@@ -1,7 +1,16 @@
 // Validates that every relative markdown link in the curated docs points at a
-// path that exists. Path existence only -- `#anchor` and `#L42` fragments are
-// stripped and never resolved, because line anchors move with every edit and a
-// gate that fails on them would be noise rather than signal.
+// path that exists, and that the sections live documents name in other files
+// exist too.
+//
+// Paths. A `#L42` line anchor is stripped and never resolved: it moves with every
+// edit, so a gate that failed on one would be noise rather than signal.
+//
+// Sections (FR-R3-184, built 2026-10-20 on a measured count): in every live
+// document this script walks, a `#heading` fragment naming another Markdown
+// file, or a `§` marker directly after a link or backticked path, must name a
+// heading the target has. Records are not read. Same-file anchors and sections
+// named in free prose are not checked. The decision, the count it rests on and
+// what would reopen it are in docs/development/section-reference-check.md.
 //
 // Why this exists: `docs:check` was a version-and-required-string gate, so a doc
 // link could rot through `verify:all` unobserved. Eleven had, by 2026-08-18.
@@ -11,17 +20,20 @@
 // clone still passes -- and in that case a link escaping the repo root is
 // reported as unverifiable rather than broken, since the file it names is
 // genuinely outside the tree being checked.
-import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
-import { dirname, resolve, join, relative } from 'node:path';
+import { readFileSync, readdirSync, existsSync, statSync, realpathSync } from 'node:fs';
+import { dirname, resolve, join, relative, sep, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const WS_ROOT = resolve(REPO_ROOT, '..');
 
-// Directory names never walked, wherever they appear.
+// Directory names never walked, wherever they appear. `.tmp` is where the test runner keeps each
+// run's temporary files, `tests/global-temp-root.ts`: other tests write and remove Markdown there
+// while this one reads the tree, and a run killed early leaves its broken fixtures behind.
 const SKIP_DIRS = new Set([
   'node_modules',
   '.git',
+  '.tmp',
   'dist',
   'out',
   'build',
@@ -52,12 +64,12 @@ const SKIP_DIRS = new Set([
 // claim about the files that was not true.
 const WS_SKIP_TOP = new Set(['repo', 'specs', '.specify', '.claude']);
 
-/** True when `..` holds the planning envelope rather than an unrelated parent. */
-function envelopePresent() {
+/** True when `wsRoot` (`..` unless a caller says otherwise) holds the planning envelope rather than an unrelated parent. */
+function envelopePresent(wsRoot = WS_ROOT) {
   return (
-    existsSync(join(WS_ROOT, 'ARCHITECTURE.md')) &&
-    existsSync(join(WS_ROOT, 'CLAUDE.md')) &&
-    isDir(join(WS_ROOT, 'docs'))
+    existsSync(join(wsRoot, 'ARCHITECTURE.md')) &&
+    existsSync(join(wsRoot, 'CLAUDE.md')) &&
+    isDir(join(wsRoot, 'docs'))
   );
 }
 
@@ -75,7 +87,12 @@ function collectMarkdown(dir, files, skipTop = null) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
       if (SKIP_DIRS.has(entry.name)) continue;
-      collectMarkdown(full, files);
+      try {
+        collectMarkdown(full, files);
+      } catch (error) {
+        // Removed since it was listed, it holds nothing to check; any other failure is the walk's.
+        if (error.code !== 'ENOENT') throw error;
+      }
       continue;
     }
     if (entry.isFile() && entry.name.endsWith('.md')) files.push(full);
@@ -114,43 +131,740 @@ function linksIn(body) {
   return found;
 }
 
-const hasEnvelope = envelopePresent();
-const files = collectMarkdown(REPO_ROOT, []);
-if (hasEnvelope) collectMarkdown(WS_ROOT, files, WS_SKIP_TOP);
-// Report paths against whichever root is actually being checked, so a standalone
-// clone does not name an unrelated parent directory.
-const reportRoot = hasEnvelope ? WS_ROOT : REPO_ROOT;
 
-const broken = [];
-let unverifiable = 0;
-let checked = 0;
+// ---------------------------------------------------------------------------------------------
+// Section references (FR-R3-184, feature 219)
+//
+// Ported from the measurement that decided this check, which feature 219 committed with its
+// self-test as specs/219-prose-hops-resolve/measure/section-refs-sweep.mjs. The anchor rule is
+// GitHub's. That page holds the decision, the count it rests on, and what would reopen it:
+// docs/development/section-reference-check.md.
+// ---------------------------------------------------------------------------------------------
 
-for (const file of files) {
-  for (const link of linksIn(readFileSync(file, 'utf8'))) {
-    const target = resolve(dirname(file), link.path);
-    if (!hasEnvelope && relative(REPO_ROOT, target).startsWith('..')) {
-      unverifiable += 1;
+// A record says what was true on its date, so the sections it names are not resolved against
+// today's tree. Its *paths* are still checked above. A page is a record when it carries the
+// marker on its own line near its top, the rule tests/lint/current-control-claims.test.ts reads;
+// when it lies under one of the envelope's dated-record directories; or when it is the
+// envelope's ARCHITECTURE.md, whose banner declares it one. The directories are the envelope's
+// alone: repo/docs/features/ holds user guides, which are live.
+const RECORD_MARKER = '<!-- doc-class: record -->';
+const MARKER_WINDOW = 10;
+const ENVELOPE_RECORD_DIRS = ['docs/features/', 'docs/audits/', 'docs/plans/'];
+const ENVELOPE_DECLARED_RECORDS = new Set(['ARCHITECTURE.md']);
+
+// linksIn's own fence test, so the citing documents are read exactly as the path check reads them.
+const FENCE = /^\s*(```|~~~)/;
+const LINK = /!?\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
+const REFERENCE_DEFINITION = /^\s{0,3}\[[^\]]+\]:\s*(\S+)/;
+const PATH_LIKE_CODE = /^[\w./-]+$/;
+const ANCHOR_SOURCE = String.raw`(?:\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)|\x60([\w./-]+)\x60)`;
+const S_MARKER = new RegExp(
+  ANCHOR_SOURCE +
+    String.raw`[ \t]*§[ \t]*(?:"([^"]+)"|“([^”]+)”|\*{1,2}([^*]+?)\*{1,2}|_{1,2}([^_]+?)_{1,2}|([A-Za-z]?\d+(?:\.\d+)*)(?![A-Za-z0-9]))`,
+  'g'
+);
+// A line, or a paragraph joined from shorter lines, is not parsed for section references when it is
+// longer than MAX_LINE characters or holds more than MAX_OPENERS of `[`, `<`, a backtick and `§`.
+// It is counted and reported instead. The first three are where the costly patterns here start a
+// match; `§` is counted with them, which makes the cap stricter, never looser. In a target such a
+// line is not read either, except that a fence marker keeps its role, and a setext heading over
+// either cap, or whose text runs into a line that was not read, is not indexed, so a reference to
+// it fails. With both caps, parsing costs at most a fixed amount per character, and resolving a
+// reference is a lookup. Every live line and paragraph lay well inside both caps when last
+// measured, so nothing real goes unread; section-reference-check.md gives the figures and their
+// date.
+const MAX_LINE = 10000;
+const MAX_OPENERS = 256;
+const OPENERS = /[[<`§]/g;
+
+function openersIn(text) {
+  return text.match(OPENERS)?.length ?? 0;
+}
+
+function withinCaps(text) {
+  return text.length <= MAX_LINE && openersIn(text) <= MAX_OPENERS;
+}
+
+// Whitespace as `\s` and `trim()` read it, tested a character at a time.
+const WHITESPACE = /\s/;
+
+/**
+ * A fence marker's parts, or null when the line is none: its quote, the indent before its run, the
+ * run, and what follows the run. The line is read once, a character at a time, so its length costs
+ * nothing more than reading it: a pattern over a quote of millions of `>` overflowed the stack.
+ */
+function fenceParts(line) {
+  let index = 0;
+  let quoted = false;
+  for (let probe = 0; ; probe = index) {
+    while (probe < line.length && WHITESPACE.test(line[probe])) probe += 1;
+    if (line[probe] !== '>') break;
+    index = probe + 1;
+    quoted = true;
+  }
+  // As `(\s*>)+\s?` has it, one whitespace character after the last `>` belongs to the quote.
+  const spaced = quoted && index < line.length && WHITESPACE.test(line[index]);
+  if (spaced) index += 1;
+  let runStart = index;
+  while (runStart < line.length && WHITESPACE.test(line[runStart])) runStart += 1;
+  const char = line[runStart];
+  if (char !== '`' && char !== '~') return null;
+  let runEnd = runStart;
+  while (runEnd < line.length && line[runEnd] === char) runEnd += 1;
+  if (runEnd - runStart < 3) return null;
+  let terminator = '';
+  let blank = true;
+  for (let at = runEnd; at < line.length && !terminator; at += 1) {
+    if (LINE_BREAK.test(line[at])) terminator = line[at];
+    else if (!WHITESPACE.test(line[at])) blank = false;
+  }
+  return {
+    quote: quoted ? (spaced ? '> ' : '>') : '',
+    indent: runStart - index <= 3 ? line.slice(index, runStart) : null,
+    char,
+    run: runEnd - runStart,
+    terminator,
+    blank
+  };
+}
+
+/**
+ * What stands in for a target's line over a cap: blank, unless it is a fence marker, which keeps
+ * its role as anchorsOf reads it, and stays short however long the line. A quote becomes one level,
+ * and an indent past three spaces, or holding anything else, four spaces: anchorsOf reads either
+ * alike. A run keeps its length up to MAX_LINE + 1, which no line within the caps reaches; a
+ * longer one is cut to that length. Cut or not, it closes a shorter fence, as GitHub reads it, and a
+ * fence it opens anchorsOf never closes: past the cap the check fails closed. A line terminator
+ * after the run is kept, so the line is still no marker, and any other info string becomes `x`.
+ */
+function targetStandIn(line) {
+  const parts = fenceParts(line);
+  if (!parts) return '';
+  const longest = MAX_LINE + 1;
+  const long = parts.run >= longest;
+  const indent = parts.indent !== null && /^ *$/.test(parts.indent) ? parts.indent : '    ';
+  const info = parts.blank ? '' : ' x';
+  return `${parts.quote}${indent}${parts.char.repeat(long ? longest : parts.run)}${parts.terminator}${info}`;
+}
+
+/**
+ * What stands in for a citing page's line over a cap: its role in the plain fence toggle the passes
+ * over a citing page read, `^\s*(```|~~~)`, and nothing more. A quoted line has none: it is blank.
+ */
+function citingStandIn(line) {
+  const parts = fenceParts(line);
+  return parts && !parts.quote ? parts.char.repeat(3) : '';
+}
+
+/**
+ * A body's lines, each one over a cap replaced by what stands in for it. Given `notParsed`, they are
+ * a target's, and it collects the paragraph lines replaced; otherwise they are a citing page's.
+ */
+function linesOf(body, notParsed = null) {
+  return body.split(/\r?\n/).map((line, index) => {
+    if (withinCaps(line)) return line;
+    if (!notParsed) return citingStandIn(line);
+    if (isParagraphLine(line)) notParsed.add(index);
+    return targetStandIn(line);
+  });
+}
+
+const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: '\u00a0' };
+
+function decodeEntities(text) {
+  // CommonMark: a numeric reference has 1-7 decimal or 1-6 hex digits, and one naming zero, a
+  // surrogate or a code point past U+10FFFF renders as U+FFFD.
+  return text.replace(/&(#x[0-9a-f]{1,6}|#\d{1,7}|[a-z]+);/gi, (whole, entity) => {
+    if (entity[0] !== '#') return Object.hasOwn(ENTITIES, entity.toLowerCase()) ? ENTITIES[entity.toLowerCase()] : whole;
+    const codePoint = entity[1].toLowerCase() === 'x' ? parseInt(entity.slice(2), 16) : parseInt(entity.slice(1), 10);
+    const scalar = codePoint > 0 && codePoint <= 0x10ffff && (codePoint < 0xd800 || codePoint > 0xdfff);
+    return String.fromCodePoint(scalar ? codePoint : 0xfffd);
+  });
+}
+
+/** The text GitHub renders for a heading's inline Markdown, before it is slugged. */
+export function renderedText(source) {
+  // Code spans and escapes are parked behind Private Use Area placeholders while the markup around
+  // them is stripped; no real heading carries those code points.
+  const codes = [];
+  let text = source.replace(/(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)/g, (_whole, _ticks, body) => {
+    codes.push(body);
+    return `\ue000${codes.length - 1}\ue000`;
+  });
+  text = text
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]*)\]\[[^\]]*\]/g, '$1')
+    .replace(/<(https?:[^>]+)>/g, '$1')
+    .replace(/<\/?[A-Za-z][^>]*>/g, '')
+    // An emoji shortcode becomes a symbol the slug deletes, as it deletes the emoji GitHub renders.
+    .replace(/:[a-z][a-z0-9_+-]*:/g, '□')
+    .replace(/\\([!-/:-@[-`{-~])/g, (_whole, char) => `\ue001${char.codePointAt(0)}\ue001`)
+    .replace(/\*+/g, '')
+    .replace(/(^|[^\p{L}\p{N}])_+|_+(?=[^\p{L}\p{N}]|$)/gu, '$1');
+  // Entities are decoded while code spans and escapes are still parked: GitHub decodes neither, so
+  // `&amp;` in backticks, or after a backslash, stays as written. A placeholder the source itself
+  // happened to contain is restored as written.
+  return decodeEntities(text)
+    .replace(/\ue001(\d+)\ue001/g, (whole, codePoint) => (Number(codePoint) <= 0x10ffff ? String.fromCodePoint(Number(codePoint)) : whole))
+    .replace(/\ue000(\d+)\ue000/g, (whole, index) => codes[Number(index)] ?? whole)
+    .trim();
+}
+
+/** GitHub's heading anchor: lower-cased, then everything but letters, marks, digits, `_`, `-` and spaces removed, spaces made hyphens. */
+export function slugify(text) {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{M}\p{Nd}\p{Pc}\- ]/gu, '')
+    .replace(/ /g, '-');
+}
+
+const ATX_OPENING = /^ {0,3}#{1,6}(?=[ \t]|$)/;
+// A fence marker's run of backticks or tildes; its info string is the rest of the line.
+const FENCE_RUN = /^ {0,3}(`{3,}|~{3,})/;
+// A line terminator a line from `split(/\r?\n/)` can still hold. `.` stops at one, so the ATX and
+// fence patterns these replace never matched across one, and a line holding one is neither.
+const LINE_BREAK = /[\n\r\u2028\u2029]/;
+const SETEXT = /^ {0,3}(=+|-+)[ \t]*$/;
+
+const isBlank = (char) => char === ' ' || char === '\t';
+
+/**
+ * An ATX heading's text, or null when the line is not one. It gives the answer the sweep's pattern,
+ * /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$/, gives, in one pass: that pattern
+ * backtracks quadratically over a long run of spaces. Its `.` stops at a line terminator, so a line
+ * holding one is not a heading here either.
+ */
+function atxText(line) {
+  const opening = ATX_OPENING.exec(line);
+  if (!opening) return null;
+  const rest = line.slice(opening[0].length);
+  if (LINE_BREAK.test(rest)) return null;
+  let start = 0;
+  while (start < rest.length && isBlank(rest[start])) start += 1;
+  let end = rest.length;
+  while (end > start && isBlank(rest[end - 1])) end -= 1;
+  const text = rest.slice(start, end);
+  // A closing run of `#` counts only when blanks separate it from the text before it.
+  let hashes = text.length;
+  while (hashes > 0 && text[hashes - 1] === '#') hashes -= 1;
+  if (hashes === text.length || hashes === 0 || !isBlank(text[hashes - 1])) return text;
+  let cut = hashes;
+  while (cut > 0 && isBlank(text[cut - 1])) cut -= 1;
+  return text.slice(0, cut);
+}
+
+function isParagraphLine(line) {
+  if (!line || !line.trim()) return false;
+  // A setext underline ends a paragraph: read as text, each one rescanned every line above it.
+  if (atxText(line) !== null || FENCE.test(line) || SETEXT.test(line)) return false;
+  if (/^\s*([-*+]|\d+[.)])\s/.test(line)) return false;
+  if (/^\s*\|/.test(line) || /^\s*>/.test(line) || /^\s*</.test(line)) return false;
+  return true;
+}
+
+/** Every heading in a Markdown body with its anchor, and every explicit HTML id or name. */
+export function anchorsOf(body) {
+  const headings = [];
+  const ids = new Set();
+  // github-slugger's rule: a taken slug gets the next free `-n` counted from its own slug, and every
+  // anchor handed out is taken, so `Foo`, `Foo 1`, `Foo` give foo, foo-1, foo-2.
+  const occurrences = new Map();
+  const notParsed = new Set();
+  const lines = linesOf(body, notParsed);
+  // CommonMark: a fence closes only on the same character, at least as long as the one that opened it.
+  let fence = null;
+  const add = (source) => {
+    const text = renderedText(source);
+    const base = slugify(text);
+    if (!base && !text) return;
+    let anchor = base;
+    while (occurrences.has(anchor)) {
+      occurrences.set(base, occurrences.get(base) + 1);
+      anchor = `${base}-${occurrences.get(base)}`;
+    }
+    occurrences.set(anchor, 0);
+    headings.push({ text, anchor });
+  };
+  for (let i = 0; i < lines.length; i += 1) {
+    const raw = lines[i];
+    const unquoted = raw.replace(/^(\s*>)+\s?/, '');
+    // The run and its info string, read in one pass: `(.*)$` backtracked over the whole run when a
+    // line terminator followed it.
+    const run = FENCE_RUN.exec(unquoted);
+    const info = run ? unquoted.slice(run[0].length) : '';
+    const marker = run && !LINE_BREAK.test(info) ? [run[0], run[1], info] : null;
+    if (marker) {
+      if (!fence) {
+        // A run past the length cap can only be a stand-in's, cut short, so its real length is not
+        // known: the fence it opens is never closed, and the parse fails closed.
+        fence = { char: marker[1][0], length: marker[1].length > MAX_LINE ? Infinity : marker[1].length };
+        continue;
+      }
+      if (marker[1][0] === fence.char && marker[1].length >= fence.length && !marker[2].trim()) {
+        fence = null;
+        continue;
+      }
+    }
+    if (fence) continue;
+    for (const match of raw.matchAll(/<[A-Za-z][^>]*?\s(?:id|name)\s*=\s*["']([^"']+)["']/g)) ids.add(match[1]);
+    const atx = atxText(unquoted);
+    if (atx !== null) {
+      add(atx);
       continue;
     }
-    checked += 1;
-    if (existsSync(target)) continue;
-    broken.push(`${relative(reportRoot, file)}:${link.line} -> ${link.path}`);
+    if (SETEXT.test(raw) && isParagraphLine(lines[i - 1])) {
+      let start = i - 1;
+      while (start > 0 && isParagraphLine(lines[start - 1])) start -= 1;
+      // Joined from lines each within the caps, a setext heading can still exceed them, and
+      // rendering it would cost the square of its length. When its text runs into a line over a
+      // cap, which was not read, what the heading says is not known, so it is not indexed either.
+      const text = lines.slice(start, i).map((line) => line.trim()).join(' ');
+      const runsIntoUnread = start > 0 && notParsed.has(start - 1);
+      if (!runsIntoUnread && withinCaps(text)) add(text);
+    }
+  }
+  return { headings, ids };
+}
+
+function splitTarget(target) {
+  const clean = target.replace(/^<|>$/g, '');
+  const hashAt = clean.indexOf('#');
+  const before = hashAt === -1 ? clean : clean.slice(0, hashAt);
+  const fragment = hashAt === -1 ? '' : clean.slice(hashAt + 1);
+  if (/^(https?:|mailto:|\/\/)/.test(clean)) return { path: before, fragment, url: true };
+  return { path: before.split('?')[0], fragment };
+}
+
+function isLineAnchor(fragment) {
+  return /^L\d+(C\d+)?(-L\d+(C\d+)?)?$/.test(fragment);
+}
+
+function maskNonPathCode(line) {
+  return line.replace(/`([^`]*)`/g, (whole, body) => (PATH_LIKE_CODE.test(body) ? whole : ' '.repeat(whole.length)));
+}
+
+/**
+ * Paragraphs outside fences, joined, with each source line's offset kept to map a match back.
+ * `length` and `openers` are counted before `transformLine`, which never lengthens a line, so a
+ * paragraph is judged too long or too dense to parse the same way whichever transform reads it.
+ */
+function paragraphsOf(body, transformLine) {
+  const paragraphs = [];
+  let current = null;
+  let inFence = false;
+  const flush = () => {
+    if (current) paragraphs.push(current);
+    current = null;
+  };
+  linesOf(body).forEach((rawLine, index) => {
+    if (FENCE.test(rawLine)) {
+      inFence = !inFence;
+      flush();
+      return;
+    }
+    if (inFence || !rawLine.trim()) {
+      flush();
+      return;
+    }
+    const unquoted = rawLine.replace(/^(\s*>)+\s?/, '');
+    const heading = atxText(unquoted) !== null;
+    if (heading || /^\s*([-*+]|\d+[.)])\s/.test(rawLine) || /^\s*\|/.test(rawLine)) flush();
+    if (!current) current = { text: '', offsets: [], length: 0, openers: 0 };
+    if (current.text) {
+      current.text += ' ';
+      current.length += 1;
+    }
+    current.offsets.push({ offset: current.text.length, line: index + 1 });
+    current.text += transformLine(unquoted.trim());
+    current.length += unquoted.trim().length;
+    current.openers += openersIn(unquoted);
+    if (heading) flush();
+  });
+  flush();
+  return paragraphs;
+}
+
+function paragraphWithinCaps(paragraph) {
+  return paragraph.length <= MAX_LINE && paragraph.openers <= MAX_OPENERS;
+}
+
+/** Lines, and paragraphs joined from shorter lines, too long or too dense to parse: not read, and counted. */
+function unreadIn(body) {
+  // Only what the line pass would have read counts: neither a fence marker nor a line inside a fence.
+  const sources = body.split(/\r?\n/);
+  let overCaps = 0;
+  let inFence = false;
+  linesOf(body).forEach((line, index) => {
+    if (FENCE.test(line)) {
+      inFence = !inFence;
+      return;
+    }
+    if (!inFence && !withinCaps(sources[index])) overCaps += 1;
+  });
+  return overCaps + paragraphsOf(body, (line) => line).filter((paragraph) => !paragraphWithinCaps(paragraph)).length;
+}
+
+/** The source line a joined paragraph's offset falls on, by binary search over its line offsets. */
+function lineAt(paragraph, offset) {
+  const { offsets } = paragraph;
+  let low = 0;
+  let high = offsets.length - 1;
+  while (low < high) {
+    const middle = (low + high + 1) >> 1;
+    if (offsets[middle].offset <= offset) low = middle;
+    else high = middle - 1;
+  }
+  return offsets[low].line;
+}
+
+function spansLines(paragraph, start, end) {
+  return lineAt(paragraph, start) !== lineAt(paragraph, end - 1);
+}
+
+function sMarkerOf(match, line) {
+  const via = match[1] !== undefined ? 'link' : 'code';
+  const target = via === 'link' ? splitTarget(match[1]).path : match[2];
+  const identifier = match[7];
+  let named = identifier ?? match[3] ?? match[4] ?? match[5] ?? match[6];
+  let ellipsis = false;
+  if (!identifier && /(…|\.\.\.)\s*$/.test(named)) {
+    ellipsis = true;
+    named = named.replace(/(…|\.\.\.)\s*$/, '').trim();
+  }
+  return { line, form: 'S', via, target, kind: identifier ? 'identifier' : 'name', named: named.trim(), ellipsis };
+}
+
+/**
+ * Every section reference in one Markdown body, wrapped ones included:
+ * - F, a link fragment, read with linksIn's grammar plus the links that wrap across a line;
+ * - S, a § marker directly after a link or backticked path, with only whitespace between.
+ * Same-file anchors, line anchors and URLs are not returned. A line or paragraph over MAX_LINE
+ * characters or MAX_OPENERS openers is not read; unreadIn counts those.
+ */
+export function sectionReferencesIn(body) {
+  const found = [];
+  const pushLink = (target, line) => {
+    const { path, fragment, url } = splitTarget(target);
+    if (url || !path || !fragment || isLineAnchor(fragment)) return;
+    found.push({ line, form: 'F', via: 'link', target: path, named: fragment });
+  };
+  let inFence = false;
+  linesOf(body).forEach((rawLine, index) => {
+    if (FENCE.test(rawLine)) {
+      inFence = !inFence;
+      return;
+    }
+    if (inFence) return;
+    const line = rawLine.replace(/`[^`]*`/g, '');
+    for (const match of line.matchAll(LINK)) pushLink(match[1], index + 1);
+    const definition = line.match(REFERENCE_DEFINITION);
+    if (definition) pushLink(definition[1], index + 1);
+    for (const match of maskNonPathCode(rawLine).matchAll(S_MARKER)) found.push(sMarkerOf(match, index + 1));
+  });
+  // Only a paragraph of two or more lines can hold a reference that wraps; the line pass read the rest.
+  const readable = (paragraph) => paragraph.offsets.length > 1 && paragraphWithinCaps(paragraph);
+  for (const paragraph of paragraphsOf(body, (line) => line.replace(/`[^`]*`/g, '')).filter(readable)) {
+    for (const match of paragraph.text.matchAll(LINK)) {
+      if (spansLines(paragraph, match.index, match.index + match[0].length)) pushLink(match[1], lineAt(paragraph, match.index));
+    }
+  }
+  for (const paragraph of paragraphsOf(body, maskNonPathCode).filter(readable)) {
+    for (const match of paragraph.text.matchAll(S_MARKER)) {
+      if (spansLines(paragraph, match.index, match.index + match[0].length)) found.push(sMarkerOf(match, lineAt(paragraph, match.index)));
+    }
+  }
+  return found.sort((a, b) => a.line - b.line);
+}
+
+function normalizedName(text) {
+  return renderedText(text).toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function leadingIdentifier(headingText) {
+  const match = headingText.replace(/^§\s*/, '').match(/^([A-Za-z]?\d+(?:\.\d+)*)(?=$|[^A-Za-z0-9.]|\.(?!\d))/);
+  return match ? match[1].toLowerCase() : null;
+}
+
+/**
+ * A target's anchors, ids, identifiers and heading names, built once per target however often it
+ * is cited, as sets and a sorted list: resolving a reference is then a lookup, not a scan of every
+ * heading, so many references against many headings cost their sum, not their product.
+ */
+function headingIndex(body) {
+  const { headings, ids } = anchorsOf(body);
+  const names = headings.map((heading) => normalizedName(heading.text));
+  return {
+    anchors: new Set(headings.map((heading) => heading.anchor)),
+    ids,
+    lowered: new Set([...headings.map((heading) => heading.anchor), ...ids].map((anchor) => anchor.toLowerCase())),
+    identifiers: new Set(headings.map((heading) => leadingIdentifier(heading.text)).filter((identifier) => identifier !== null)),
+    names: new Set(names),
+    sortedNames: [...names].sort()
+  };
+}
+
+/** True when a name in `sorted` starts with `prefix`. Such names sit together, from the first one not below it. */
+function hasPrefix(sorted, prefix) {
+  let low = 0;
+  let high = sorted.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (sorted[middle] < prefix) low = middle + 1;
+    else high = middle;
+  }
+  return low < sorted.length && sorted[low].startsWith(prefix);
+}
+
+/** Null when a reference resolves against its target's heading index, otherwise the reason it does not. */
+export function unresolvedReason(reference, index) {
+  if (reference.form === 'F') {
+    let wanted = reference.named;
+    try {
+      wanted = decodeURIComponent(wanted);
+    } catch {
+      // a malformed escape is compared as written
+    }
+    if (index.anchors.has(wanted) || index.ids.has(wanted)) return null;
+    return index.lowered.has(wanted.toLowerCase()) ? 'case-only' : 'no-such-anchor';
+  }
+  if (reference.kind === 'identifier') {
+    return index.identifiers.has(reference.named.toLowerCase()) ? null : 'no-such-identifier';
+  }
+  const wanted = normalizedName(reference.named);
+  if (reference.ellipsis) return hasPrefix(index.sortedNames, wanted) ? null : 'no-such-heading';
+  if (index.names.has(wanted)) return null;
+  return hasPrefix(index.sortedNames, wanted) ? 'prefix-only' : 'no-such-heading';
+}
+
+/** True when `path` lies outside `root`: above it, or, across Windows drives, on another root. */
+function isOutside(root, path) {
+  const rel = relative(root, path);
+  return rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+}
+
+/** True for a record, whose sections are not resolved: by its marker, its directory or its banner. */
+function isRecord(file, body, repoRoot, wsRoot) {
+  if (body.split('\n', MARKER_WINDOW).some((line) => line.trim() === RECORD_MARKER)) return true;
+  if (!isOutside(repoRoot, file)) return false;
+  const envelopeRelative = relative(wsRoot, file).split(sep).join('/');
+  return ENVELOPE_RECORD_DIRS.some((dir) => envelopeRelative.startsWith(dir)) || ENVELOPE_DECLARED_RECORDS.has(envelopeRelative);
+}
+
+/**
+ * A file's identity from its `statSync(path, { bigint: true })`, or null when it is not a file: its
+ * device and inode. A file with more than one hard link is kept by `path`, the name it was reached
+ * by, because its names may lie on either side of the trees' edge, and each name's containment is
+ * judged on its own; a file that reports no inode has no identity to tell it from another.
+ */
+export function identityKey(info, path) {
+  if (!info.isFile()) return null;
+  return info.ino === 0n || info.nlink > 1n ? `path:${path}` : `${info.dev}:${info.ino}`;
+}
+
+/**
+ * Resolve every section reference in every live document under `repoRoot`, and under `wsRoot`
+ * when it holds the planning envelope. Returns the number checked; the number left unverifiable
+ * because their target, symlinks resolved, lies outside both trees or cannot be read, or, with the
+ * envelope absent, lies outside `repoRoot`; the number of lines and paragraphs too long or too
+ * dense to read; and each failure.
+ */
+export function checkSectionReferences({ repoRoot = REPO_ROOT, wsRoot = WS_ROOT } = {}) {
+  const hasEnvelope = envelopePresent(wsRoot);
+  const files = collectMarkdown(repoRoot, []);
+  if (hasEnvelope) collectMarkdown(wsRoot, files, WS_SKIP_TOP);
+  const reportRoot = hasEnvelope ? wsRoot : repoRoot;
+  // The trees being checked, symlinks resolved, each on its own: `repo/` itself may be a symlink.
+  // The native call also settles a name's case on a case-insensitive volume, as it does a target's.
+  const realRoots = [realpathSync.native(repoRoot), ...(hasEnvelope ? [realpathSync.native(wsRoot)] : [])];
+  const bodies = new Map();
+  const read = (path) => {
+    if (!bodies.has(path)) bodies.set(path, readFileSync(path, 'utf8'));
+    return bodies.get(path);
+  };
+  const identities = new Map();
+  /**
+   * A path's file identity, as `identityKey` gives it, or null when it names no file: one stat per
+   * spelled path, however often it is cited, whether or not a file is there. Each lookup walks the
+   * path, and again the target of every symlink on it, so a target is resolved and parsed once per
+   * file, not once per spelling: a symlink, a case variant and a repeated citation all reach the
+   * same index. A file kept by its name is resolved and parsed once per name instead.
+   */
+  const identityOf = (path) => {
+    if (!identities.has(path)) {
+      let identity = null;
+      try {
+        identity = identityKey(statSync(path, { bigint: true }), path);
+      } catch {
+        identity = null; // no such file
+      }
+      identities.set(path, identity);
+    }
+    return identities.get(path);
+  };
+  const indexes = new Map();
+  /**
+   * A target's heading index, or null when its real path lies outside both trees or it cannot be
+   * read, kept by the target's file identity. Only the filesystem calls are guarded: a fault in the
+   * parser must still surface.
+   */
+  const indexOf = (path) => {
+    const identity = identityOf(path);
+    if (identity === null) return null;
+    if (indexes.has(identity)) return indexes.get(identity);
+    let body = null;
+    try {
+      const real = realpathSync.native(path);
+      if (realRoots.some((root) => !isOutside(root, real))) body = read(real);
+    } catch {
+      body = null; // gone or unreadable since it was listed: unverifiable, as an outside target is
+    }
+    const index = body === null ? null : headingIndex(body);
+    indexes.set(identity, index);
+    return index;
+  };
+  const failures = [];
+  let checked = 0;
+  let unverifiable = 0;
+  let unread = 0;
+  for (const file of files) {
+    let body;
+    try {
+      body = read(file);
+    } catch (error) {
+      // Removed since it was listed, as a test's temporary page can be; any other failure is the check's.
+      if (error.code !== 'ENOENT') throw error;
+      continue;
+    }
+    if (isRecord(file, body, repoRoot, wsRoot)) continue;
+    unread += unreadIn(body);
+    const ownRoot = isOutside(repoRoot, file) ? wsRoot : repoRoot;
+    for (const reference of sectionReferencesIn(body)) {
+      let target;
+      if (reference.via === 'code') {
+        const roots = [dirname(file), ownRoot, ...(hasEnvelope ? [ownRoot === repoRoot ? wsRoot : repoRoot] : [])];
+        target = roots.map((root) => resolve(root, reference.target)).find((candidate) => identityOf(candidate) !== null);
+        if (!target) continue; // a span that names no file is not a section reference
+      } else {
+        target = resolve(dirname(file), reference.target);
+      }
+      if (!hasEnvelope && isOutside(repoRoot, target)) {
+        unverifiable += 1;
+        continue;
+      }
+      // A missing path is the path check's to report; a target that is not Markdown has no headings.
+      if (target === file || !target.endsWith('.md') || identityOf(target) === null) continue;
+      // Read nothing outside the trees being checked, whether a path or a symlink leads there.
+      const index = indexOf(target);
+      if (!index) {
+        unverifiable += 1;
+        continue;
+      }
+      checked += 1;
+      const reason = unresolvedReason(reference, index);
+      if (reason) {
+        failures.push({
+          file: relative(reportRoot, file).split(sep).join('/'),
+          line: reference.line,
+          form: reference.form,
+          target: relative(reportRoot, target).split(sep).join('/'),
+          named: reference.named,
+          reason
+        });
+      }
+    }
+  }
+  return { hasEnvelope, checked, unverifiable, unread, failures };
+}
+
+/**
+ * Text from a document with its control, format and separator characters shown as `?`: escape
+ * sequences, bidirectional overrides and zero-width characters never reach the terminal.
+ */
+function printable(text) {
+  return text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, '?');
+}
+
+function main() {
+  const hasEnvelope = envelopePresent();
+  const files = collectMarkdown(REPO_ROOT, []);
+  if (hasEnvelope) collectMarkdown(WS_ROOT, files, WS_SKIP_TOP);
+  // Report paths against whichever root is actually being checked, so a standalone
+  // clone does not name an unrelated parent directory.
+  const reportRoot = hasEnvelope ? WS_ROOT : REPO_ROOT;
+
+  const broken = [];
+  let unverifiable = 0;
+  let checked = 0;
+
+  for (const file of files) {
+    for (const link of linksIn(readFileSync(file, 'utf8'))) {
+      const target = resolve(dirname(file), link.path);
+      if (!hasEnvelope && relative(REPO_ROOT, target).startsWith('..')) {
+        unverifiable += 1;
+        continue;
+      }
+      checked += 1;
+      if (existsSync(target)) continue;
+      // Shown printable too: an escape sequence left open here would hide the lines printed after it.
+      broken.push(printable(`${relative(reportRoot, file)}:${link.line} -> ${link.path}`));
+    }
+  }
+
+  const sections = checkSectionReferences();
+  const scope = hasEnvelope ? 'repository + planning envelope' : 'repository only';
+  if (broken.length) {
+    console.error(`Broken documentation links (${broken.length}):`);
+    for (const entry of broken) console.error(`  ${entry}`);
+    console.error(
+      `\nEither repoint the link or, when the target is gone for good, replace it\n` +
+        `with inline code and record why -- a historical report is not repaired by\n` +
+        `rewriting it to match today's tree.`
+    );
+  }
+  if (sections.failures.length) {
+    console.error(`Unresolved section references (${sections.failures.length}):`);
+    for (const failure of sections.failures) {
+      const named = failure.form === 'F' ? `#${failure.named}` : ` §${failure.named}`;
+      console.error(printable(`  ${failure.file}:${failure.line} -> ${failure.target}${named} (${failure.reason})`));
+    }
+    console.error(
+      `\nRepoint the reference at a heading its target has -- never add a heading to\n` +
+        `make a stale sentence true. Records are not checked; what is, and why,\n` +
+        `is in docs/development/section-reference-check.md.`
+    );
+  }
+  // Set, not called: `process.exit` does not wait for a pipe to drain, and cut what it had not taken.
+  if (broken.length || sections.failures.length) {
+    process.exitCode = 1;
+    return;
+  }
+  const note = unverifiable > 0 ? `, ${unverifiable} outside this tree skipped` : '';
+  console.log(
+    `Documentation links checked: ${checked} across ${files.length} files ` +
+      `(${scope}${note}).`
+  );
+  const sectionNotes = [
+    sections.unverifiable > 0 ? `, ${sections.unverifiable} skipped as outside this tree or unreadable` : '',
+    sections.unread > 0 ? `, ${sections.unread} ${sections.unread === 1 ? 'passage' : 'passages'} too long or too dense to read` : ''
+  ].join('');
+  console.log(`Section references checked: ${sections.checked} in live documents${sectionNotes}.`);
+}
+
+/**
+ * True when Node was started on this file, by any path to it. Both sides are resolved, because
+ * `import.meta.url` names the file with its symlinks resolved and `process.argv[1]` does not: a
+ * direct comparison was false through any symlinked directory, macOS's `/tmp` included, and the
+ * gate then exited 0 having checked nothing.
+ */
+function invokedAsScript() {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
   }
 }
 
-const scope = hasEnvelope ? 'repository + planning envelope' : 'repository only';
-if (broken.length) {
-  console.error(`Broken documentation links (${broken.length}):`);
-  for (const entry of broken) console.error(`  ${entry}`);
-  console.error(
-    `\nEither repoint the link or, when the target is gone for good, replace it\n` +
-      `with inline code and record why -- a historical report is not repaired by\n` +
-      `rewriting it to match today's tree.`
-  );
-  process.exit(1);
-}
-const note = unverifiable > 0 ? `, ${unverifiable} outside this tree skipped` : '';
-console.log(
-  `Documentation links checked: ${checked} across ${files.length} files ` +
-    `(${scope}${note}).`
-);
+// Run as a script; imported (by its gate's test), only the functions above are used.
+if (invokedAsScript()) main();
