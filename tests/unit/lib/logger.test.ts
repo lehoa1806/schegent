@@ -205,6 +205,17 @@ describe('SanitizedLogger.info/warn/error', () => {
     expect(sink.lines).toHaveLength(1);
   });
 
+  it('stops writing to a removed sink, and to no other', () => {
+    const a = makeSink();
+    const b = makeSink();
+    const logger = new SanitizedLogger([a, b]);
+    logger.removeSink(a);
+    logger.removeSink(a);
+    logger.info('after removal');
+    expect(a.lines).toHaveLength(0);
+    expect(b.lines).toHaveLength(1);
+  });
+
   it('records WARN level', () => {
     const sink = makeSink();
     const logger = new SanitizedLogger([sink]);
