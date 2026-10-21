@@ -3,7 +3,7 @@ kind: Pipeline
 metadata:
   id: speckit-new-feature
   name: Spec-kit New Feature
-  version: 1
+  version: 2
 spec:
   phaseIds:
     - speckit-specify
@@ -13,7 +13,8 @@ spec:
     - speckit-checklist
     - speckit-analyze
     - speckit-implement
-    - speckit-review
+    - speckit-code-review
+    - speckit-security-review
     - finalize
 included:
   phases:
@@ -35,7 +36,7 @@ included:
     - metadata:
         phaseId: speckit-clarify
         name: Spec-kit Clarify
-        version: 1
+        version: 2
       spec:
         instruction: |-
           Run /speckit-clarify on the active feature spec.
@@ -56,7 +57,7 @@ included:
 
           Inside the SCHEGENT AUDIT LOG block, emit `open_questions: <N>` and `resolved_questions: <N>` as top-level integer metric lines so the controller can observe progress. `open_questions` is the count of questions still unanswered AFTER this iteration's auto-accept pass — zero whenever every question asked this iteration was answered, never the count of questions asked. `resolved_questions` is the count of questions answered during this iteration.
         model: claude-opus-5-5
-        effort: xhigh
+        effort: high
         retryCondition: open_questions > 0
     - metadata:
         phaseId: speckit-plan
@@ -70,16 +71,16 @@ included:
     - metadata:
         phaseId: speckit-tasks
         name: Spec-kit Tasks
-        version: 1
+        version: 2
       spec:
         instruction: /speckit-tasks
         model: claude-opus-5-5
         hostVerification: exit-code
-        effort: xhigh
+        effort: high
     - metadata:
         phaseId: speckit-checklist
         name: Spec-kit Checklist
-        version: 1
+        version: 2
       spec:
         instruction: |-
           Run /speckit-checklist on the active feature.
@@ -91,8 +92,8 @@ included:
           Always emit [SCHEGENT_STATUS: CLEAR] when complete — checklist is non-blocking.
 
           Inside the SCHEGENT AUDIT LOG block, emit `checklist_items: <N>` as a top-level integer metric line.
-        model: claude-opus-5-5
-        effort: high
+        model: claude-sonnet-5-5
+        effort: medium
     - metadata:
         phaseId: speckit-analyze
         name: Spec-kit Analyze
@@ -124,67 +125,96 @@ included:
     - metadata:
         phaseId: speckit-implement
         name: Spec-kit Implement
-        version: 1
+        version: 2
       spec:
         instruction: |-
           Run /speckit-implement on the active feature.
 
-          After implementation completes, load <feature_dir>/tasks.md and count every task NOT marked complete.
+          Then close what it left open:
+          1. Load <feature_dir>/tasks.md and list every task not marked complete.
+          2. Read <feature_dir>/spec.md and <feature_dir>/plan.md and cross-check the implementation against them. A spec gap is a requirement in spec.md, or a design decision in plan.md, that no code implements; name each by its requirement id or a short quote.
+          3. Implement every incomplete task and every spec gap, and mark each finished task complete in tasks.md.
+
+          Do not run a code review or a security review here, and do not spawn reviewer sub-agents: the next two Phases review this work.
 
           Result determination:
-          - If 0 pending tasks remain → emit [SCHEGENT_STATUS: CLEAR]
-          - If any tasks are still pending → emit "Remaining issues:" listing the incomplete tasks
+          - If 0 tasks are pending and 0 spec gaps remain → emit [SCHEGENT_STATUS: CLEAR]
+          - Otherwise → emit "Remaining issues:" listing each incomplete task and each open spec gap
 
-          REQUIRED METRIC OUTPUT: Inside the SCHEGENT AUDIT LOG block, you MUST emit `pending_tasks: <N>` as a top-level integer metric line (NOT nested under Notes: or any other heading). This line MUST appear even when the count is 0. The controller uses this metric to decide whether to re-loop.
-        model: claude-opus-5-5
+          REQUIRED METRIC OUTPUT: Inside the SCHEGENT AUDIT LOG block, you MUST emit `pending_tasks: <N>` and `spec_gaps: <N>` as top-level integer metric lines (NOT nested under Notes: or any other heading). Both count what is still open AFTER this iteration's work. These lines MUST appear even when the count is 0. The controller uses `pending_tasks` to decide whether to re-loop; `spec_gaps` is recorded and does not re-loop this Phase.
+        model: claude-sonnet-5-5
         hostVerification: exit-code
         effort: high
         retryCondition: pending_tasks > 0
     - metadata:
-        phaseId: speckit-review
-        name: Spec-kit Review
+        phaseId: speckit-code-review
+        name: Spec-kit Code Review
         version: 1
       spec:
         instruction: |-
-          Detect nested-repo workspace layout:
-          - Check if the workspace root contains both a repo/ subdirectory (with its own .git/) AND a specs/ directory.
-          - If BOTH exist: set is_nested_repo=true, code_root=repo/, specs_root=specs/.
-          - If NOT: set is_nested_repo=false, code_root=. (workspace root). All subsequent steps behave as before.
-          - Log the detection result.
+          Review this feature's code changes for correctness defects, and fix them.
 
-          Review the implementation and finish all pending tasks:
-          1. Load <feature_dir>/tasks.md and list every task not marked complete.
-          2. If is_nested_repo, resolve the corresponding spec directory under specs/ by matching the feature name from feature_dir. Read spec.md and plan.md from the matched spec directory to understand the full requirement scope.
-          3. Cross-check the implementation in code_root against spec.md and plan.md for gaps.
-          4. Implement every remaining or incomplete task to completion within code_root.
+          Scope:
+          - If the workspace root contains both a repo/ subdirectory (with its own .git/) AND a specs/ directory, the code repository is repo/. Otherwise it is the workspace root. Log which.
+          - In the code repository, review `git diff $(git merge-base HEAD develop)` — every committed and uncommitted change since the branch left develop, the branch finalize merges into — plus each untracked file listed by `git ls-files --others --exclude-standard`. Both commands are read-only: never stage a file to make it visible.
+          - Spec Kit artifacts (specs/, .specify/) are out of scope.
 
-          Then trigger code review — fix EVERY finding, loop until clean:
-          - If is_nested_repo, run /code-review targeting the repo/ subrepository's diff only. Since repo/ has its own .git/, the diff naturally excludes specs/ and other workspace-root files. All remediation MUST be applied within code_root.
-          - Run /code-review against the current diff with --fix.
-          - Fix every finding regardless of severity or confidence level.
-          - After applying fixes, re-run /code-review until zero findings, up to 10 iterations.
+          Reviewing:
+          - Do the review yourself, in this session. Do not invoke /code-review, which only a user can launch, and do not delegate to a sub-agent, which would run on a model this Phase did not choose.
+          - When SCHEGENT_ITERATION is 1, review the whole scope. On a later iteration, re-check each item under "Unresolved from previous iteration:" and the code the previous fixes touched, instead of repeating the full review.
+          - Count a finding only when you can state a concrete failure: the inputs or state, and the wrong result, crash, data loss or broken contract they produce.
+          - Style, naming, speculative and refactoring remarks go under Notes: and are not counted. A demonstrated false positive also goes under Notes:, with a one-line justification, and is not counted.
 
-          Then trigger security review — fix EVERY finding, loop until clean:
-          - If is_nested_repo, run /security-review targeting the repo/ subrepository's diff only. Spec files are documentation artifacts and MUST NOT be included in security review findings. All remediation MUST be applied within code_root.
-          - Run /security-review against the current diff.
-          - Apply a fix for every finding.
-          - After applying fixes, re-run /security-review until zero findings, up to 10 iterations.
-
-          False-positive carve-out: The only finding you may leave unedited is a demonstrated false positive with a recorded one-line justification.
+          Fixing:
+          - Apply a minimal fix for every counted finding, inside the code repository. Do not refactor unrelated code.
+          - Re-check each fix once.
 
           Result determination:
-          - If all tasks complete AND both reviews report zero findings → emit [SCHEGENT_STATUS: CLEAR]
-          - If any findings remain → emit "Remaining issues:" listing residuals
+          - If no counted finding remains unresolved → emit [SCHEGENT_STATUS: CLEAR]
+          - Otherwise → emit "Remaining issues:" with one bullet per unresolved finding: file, line and the failure
 
-          Inside the SCHEGENT AUDIT LOG block, emit `code_review_findings: <N>`, `security_review_findings: <N>`, and `pending_tasks: <N>` as top-level integer metric lines.
+          REQUIRED METRIC OUTPUT: Inside the SCHEGENT AUDIT LOG block, you MUST emit `code_review_findings: <N>` as a top-level integer metric line (NOT nested under Notes: or any other heading). It counts findings still unresolved AFTER this iteration's fixes. This line MUST appear even when the count is 0. The controller uses this metric to decide whether to re-loop.
+        model: claude-sonnet-5-5
+        hostVerification: exit-code
+        effort: high
+        retryCondition: code_review_findings > 0
+    - metadata:
+        phaseId: speckit-security-review
+        name: Spec-kit Security Review
+        version: 1
+      spec:
+        instruction: |-
+          Review this feature's code changes for security defects, and fix them.
+
+          Scope:
+          - If the workspace root contains both a repo/ subdirectory (with its own .git/) AND a specs/ directory, the code repository is repo/. Otherwise it is the workspace root. Log which.
+          - In the code repository, review `git diff $(git merge-base HEAD develop)` — every committed and uncommitted change since the branch left develop, the branch finalize merges into — plus each untracked file listed by `git ls-files --others --exclude-standard`. Both commands are read-only: never stage a file to make it visible.
+          - Spec Kit artifacts (specs/, .specify/) are out of scope.
+
+          Reviewing:
+          - Do the review yourself, in this session. Do not delegate to a sub-agent, which would run on a model this Phase did not choose, and do not treat a /security-review skill's checklist as the review.
+          - When SCHEGENT_ITERATION is 1, review the whole scope. On a later iteration, re-check each item under "Unresolved from previous iteration:" and the code the previous fixes touched, instead of repeating the full review.
+          - Trace untrusted input (user input, files, network, environment, IPC) to where it is used. Check injection, path traversal, authentication and authorization, secrets in code or logs, unsafe deserialization, and unbounded resource use.
+          - Count a finding only when you can state a concrete exploit or failure path: who controls the input, what it reaches, and what goes wrong.
+          - A demonstrated false positive goes under Notes:, with a one-line justification of why the path is unreachable, and is not counted.
+
+          Fixing:
+          - Apply a minimal, targeted fix for every counted finding, inside the code repository. Do not refactor unrelated code, and do not undo the code review's fixes.
+          - Re-check each fix once.
+
+          Result determination:
+          - If no counted finding remains unresolved → emit [SCHEGENT_STATUS: CLEAR]
+          - Otherwise → emit "Remaining issues:" with one bullet per unresolved finding: file, line and the exploit or failure path
+
+          REQUIRED METRIC OUTPUT: Inside the SCHEGENT AUDIT LOG block, you MUST emit `security_review_findings: <N>` as a top-level integer metric line (NOT nested under Notes: or any other heading). It counts findings still unresolved AFTER this iteration's fixes. This line MUST appear even when the count is 0. The controller uses this metric to decide whether to re-loop.
         model: claude-opus-5-5
         hostVerification: exit-code
-        effort: xhigh
-        retryCondition: pending_tasks > 0 || code_review_findings > 0 || security_review_findings > 0
+        effort: high
+        retryCondition: security_review_findings > 0
     - metadata:
         phaseId: finalize
         name: Finalize
-        version: 1
+        version: 2
       spec:
         instruction: |-
           Verify the implementation and drive it to green:
@@ -212,5 +242,5 @@ included:
         # should say what judges it, not inherit it silently.
         hostVerification: exit-code
         sideEffects: git
-        model: claude-opus-5-5
+        model: claude-sonnet-5-5
         effort: medium

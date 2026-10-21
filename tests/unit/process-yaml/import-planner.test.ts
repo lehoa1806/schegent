@@ -1948,15 +1948,15 @@ describe('the shipped example imports into a workspace that has never imported (
     };
   }
 
-  it('plans ten rows — one Pipeline and nine Phases — and skips none', () => {
+  it('plans eleven rows — one Pipeline and ten Phases — and skips none', () => {
     const rows = plannedRows(EXAMPLE, shippedContext());
 
-    expect(rows).toHaveLength(10);
+    expect(rows).toHaveLength(11);
     expect(rows.filter((row) => row.outcome === 'skip')).toEqual([]);
-    expect(rows.map((row) => row.outcome)).toEqual(Array.from({ length: 10 }, () => 'import'));
+    expect(rows.map((row) => row.outcome)).toEqual(Array.from({ length: 11 }, () => 'import'));
   });
 
-  it('names the Pipeline first and then its nine Phases in declaration order', () => {
+  it('names the Pipeline first and then its ten Phases in declaration order', () => {
     const rows = plannedRows(EXAMPLE, shippedContext());
 
     expect(rows.map((row) => [row.resourceKind, row.resourceId])).toEqual([
@@ -1968,13 +1968,14 @@ describe('the shipped example imports into a workspace that has never imported (
       ['phase', 'speckit-checklist'],
       ['phase', 'speckit-analyze'],
       ['phase', 'speckit-implement'],
-      ['phase', 'speckit-review'],
+      ['phase', 'speckit-code-review'],
+      ['phase', 'speckit-security-review'],
       ['phase', 'finalize']
     ]);
   });
 
-  it('carries a definition on every row, so confirming the plan has ten things to write', () => {
-    // A plan whose rows resolve `import` but carry nothing would report ten writes
+  it('carries a definition on every row, so confirming the plan has eleven things to write', () => {
+    // A plan whose rows resolve `import` but carry nothing would report eleven writes
     // and perform none. Each row is asserted to hold the definition the write needs,
     // and the root Pipeline's phase list is asserted to be the one the document
     // declared — the plan is what a confirmed write becomes effective from.
