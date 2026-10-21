@@ -27,10 +27,13 @@ import { fileURLToPath } from 'node:url';
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const WS_ROOT = resolve(REPO_ROOT, '..');
 
-// Directory names never walked, wherever they appear.
+// Directory names never walked, wherever they appear. `.tmp` is where the test runner keeps each
+// run's temporary files, `tests/global-temp-root.ts`: other tests write and remove Markdown there
+// while this one reads the tree, and a run killed early leaves its broken fixtures behind.
 const SKIP_DIRS = new Set([
   'node_modules',
   '.git',
+  '.tmp',
   'dist',
   'out',
   'build',
@@ -84,7 +87,12 @@ function collectMarkdown(dir, files, skipTop = null) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
       if (SKIP_DIRS.has(entry.name)) continue;
-      collectMarkdown(full, files);
+      try {
+        collectMarkdown(full, files);
+      } catch (error) {
+        // Removed since it was listed, it holds nothing to check; any other failure is the walk's.
+        if (error.code !== 'ENOENT') throw error;
+      }
       continue;
     }
     if (entry.isFile() && entry.name.endsWith('.md')) files.push(full);
@@ -162,9 +170,10 @@ const S_MARKER = new RegExp(
 // line is not read either, except that a fence marker keeps its role, and a setext heading over
 // either cap, or whose text runs into a line that was not read, is not indexed, so a reference to
 // it fails. With both caps, parsing costs at most a fixed amount per character, and resolving a
-// reference is a lookup. The longest live line is about 3,300 characters and the longest live
-// paragraph about 5,700. The most openers on one line of any tracked page in either tree is 151,
-// in a live paragraph 102, and in a heading 8, so nothing real goes unread.
+// reference is a lookup. Measured on 2026-10-21, the longest live line, this check's own row in
+// the lint-gate census, was 4,564 characters and the longest live paragraph 5,719; the most openers
+// on one line of any tracked page in either tree was 151, in a live paragraph 102, and in a heading
+// 8. Nothing real goes unread.
 const MAX_LINE = 10000;
 const MAX_OPENERS = 256;
 const OPENERS = /[[<`§]/g;
@@ -644,6 +653,17 @@ function isRecord(file, body, repoRoot, wsRoot) {
 }
 
 /**
+ * A file's identity from its `statSync(path, { bigint: true })`, or null when it is not a file: its
+ * device and inode. A file with more than one hard link is kept by `path`, the name it was reached
+ * by, because its names may lie on either side of the trees' edge, and each name's containment is
+ * judged on its own; a file that reports no inode has no identity to tell it from another.
+ */
+export function identityKey(info, path) {
+  if (!info.isFile()) return null;
+  return info.ino === 0n || info.nlink > 1n ? `path:${path}` : `${info.dev}:${info.ino}`;
+}
+
+/**
  * Resolve every section reference in every live document under `repoRoot`, and under `wsRoot`
  * when it holds the planning envelope. Returns the number checked; the number left unverifiable
  * because their target, symlinks resolved, lies outside both trees or cannot be read, or, with the
@@ -665,19 +685,17 @@ export function checkSectionReferences({ repoRoot = REPO_ROOT, wsRoot = WS_ROOT 
   };
   const identities = new Map();
   /**
-   * A path's file identity, its device and inode, or null when it names no file: one stat per
-   * spelled path, however often it is cited. Resolving a real path costs more the deeper the path
-   * and the more links it crosses, so a target is resolved and parsed once per file, not once per
-   * spelling: a symlink, a case variant and a repeated citation all reach the same index.
+   * A path's file identity, as `identityKey` gives it, or null when it names no file: one stat per
+   * spelled path, however often it is cited, whether or not a file is there. Each lookup walks the
+   * path, and again the target of every symlink on it, so a target is resolved and parsed once per
+   * file, not once per spelling: a symlink, a case variant and a repeated citation all reach the
+   * same index. A file kept by its name is resolved and parsed once per name instead.
    */
   const identityOf = (path) => {
     if (!identities.has(path)) {
       let identity = null;
       try {
-        const info = statSync(path, { bigint: true });
-        // A file with more than one link, or no inode, has names that may lie on either side of the
-        // trees' edge, so it is kept by the name it was reached by, and its containment judged by it.
-        if (info.isFile()) identity = info.ino === 0n || info.nlink > 1n ? `path:${path}` : `${info.dev}:${info.ino}`;
+        identity = identityKey(statSync(path, { bigint: true }), path);
       } catch {
         identity = null; // no such file
       }
@@ -711,7 +729,14 @@ export function checkSectionReferences({ repoRoot = REPO_ROOT, wsRoot = WS_ROOT 
   let unverifiable = 0;
   let unread = 0;
   for (const file of files) {
-    const body = read(file);
+    let body;
+    try {
+      body = read(file);
+    } catch (error) {
+      // Removed since it was listed, as a test's temporary page can be; any other failure is the check's.
+      if (error.code !== 'ENOENT') throw error;
+      continue;
+    }
     if (isRecord(file, body, repoRoot, wsRoot)) continue;
     unread += unreadIn(body);
     const ownRoot = isOutside(repoRoot, file) ? wsRoot : repoRoot;
@@ -810,7 +835,11 @@ function main() {
         `is in docs/development/section-reference-check.md.`
     );
   }
-  if (broken.length || sections.failures.length) process.exit(1);
+  // Set, not called: `process.exit` does not wait for a pipe to drain, and cut what it had not taken.
+  if (broken.length || sections.failures.length) {
+    process.exitCode = 1;
+    return;
+  }
   const note = unverifiable > 0 ? `, ${unverifiable} outside this tree skipped` : '';
   console.log(
     `Documentation links checked: ${checked} across ${files.length} files ` +

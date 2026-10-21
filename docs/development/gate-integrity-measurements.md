@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 115
+    vacuity-census-denominator: 116
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **115** |
+| Gates the detector calls **controlled** (the denominator) | **116** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -1448,3 +1448,14 @@ verdict to say to strike it.
 
 The rate stays **0.0%**: the entrant was mutated with the rest and did not survive
 (`mutated=115 stillCalledControlled=0`).
+
+**Denominator movement 115 → 116 (2026-10-21, feature 219 / `FR-R3-184`).** One gate joined, and the
+gate itself did not change what it does. Attribution is by census membership: the controlled set was
+computed at `HEAD` and in the working tree, and this file is the only one that joined and none left.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | `doc-section-references.test.ts` (115 → 116) | Joined. It always scanned: its last case resolves every section reference in both trees through `checkSectionReferences`, asserts that more than none were checked, and only then that none failed, so an empty walk cannot pass. The detector missed it until review iteration 9 added a case that makes a directory listing fail through a spy on `readdirSync`, a name its `SCANS` pattern reads. The membership is right for a reason the detector does not see. That is recorded here rather than avoided by spelling the spy another way, which would move the census by renaming a call. |
+
+The rate stays **0.0%**: the entrant was mutated with the rest and did not survive
+(`mutated=116 stillCalledControlled=0`).

@@ -1,10 +1,14 @@
 import { spawnSync } from 'node:child_process';
 import { chmodSync, copyFileSync, linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 // @ts-expect-error -- .mjs script, typed by use rather than by declaration
-import { checkSectionReferences } from '../../scripts/check-doc-links.mjs';
+import { checkSectionReferences, identityKey, sectionReferencesIn } from '../../scripts/check-doc-links.mjs';
+
+/** The CommonJS face of `node:fs`, whose functions a spy can replace; the script's named imports follow it once re-synchronised. */
+const fs = createRequire(__filename)('node:fs') as typeof import('node:fs');
 
 /**
  * FR-R3-184 (feature 219, T1821a) — `docs:check` resolves the section a live document names in
@@ -30,7 +34,8 @@ import { checkSectionReferences } from '../../scripts/check-doc-links.mjs';
  * says what was true on its date. Line anchors (`#L42`), fragments on files that are not Markdown,
  * same-file anchors, a link naming its own file, and sections named in free prose are not checked
  * either. Prose would need a heuristic, and feature 219 declined one. A target outside both trees
- * being checked, symlinks resolved, or one that cannot be read, is unverifiable and is not read. A line, or a wrapped
+ * being checked, symlinks resolved, or one that cannot be read, is unverifiable and is not read. A `.tmp` directory, where
+ * the test runner keeps its temporary files, is not walked, and a page or directory removed since it was listed is skipped. A line, or a wrapped
  * paragraph, over 10,000 characters or holding more than 256 of `[`, `<`, a backtick and `§` is not parsed; it is
  * counted and reported instead. A fence marker over a cap keeps its role. A target's heading over either cap, or
  * whose text runs into a line that was not read, is not indexed.
@@ -159,15 +164,18 @@ describe('FR-R3-184 — a section a live document names in another file exists',
     ]);
   });
 
-  it('reads a reference definition, and a backticked path against the other tree', () => {
+  it('reads a reference definition, and a backticked path against its own tree first, then the other', () => {
     const root = tree({
       ...ENVELOPE,
       'notes/only-here.md': '# Only here\n\n## Kept\n',
       'repo/docs/target.md': TARGET,
-      'repo/docs/citing.md': '[ref]: target.md#gone\n\n`notes/only-here.md` §"Kept" and `notes/only-here.md` §"Gone".\n'
+      'repo/docs/same.md': '# Same\n\n## Only in repo\n',
+      'docs/same.md': '# Same\n\n## Only in the envelope\n',
+      'docs/citing.md': '`docs/same.md` §"Only in the envelope"\n',
+      'repo/docs/citing.md': '[ref]: target.md#gone\n\n`notes/only-here.md` §"Kept" and `notes/only-here.md` §"Gone".\n\n`docs/same.md` §"Only in repo"\n'
     });
     const { checked, failures } = check(root);
-    expect(checked).toBe(3);
+    expect(checked).toBe(5);
     expect(failures.map((f) => [f.line, f.form, f.named, f.reason])).toEqual([
       [1, 'F', 'gone', 'no-such-anchor'],
       [3, 'S', 'Gone', 'no-such-heading']
@@ -402,6 +410,7 @@ describe('FR-R3-184 — a section a live document names in another file exists',
       ...ENVELOPE,
       'repo/docs/target.md': TARGET,
       'repo/docs/late-marker.md': `${'line\n'.repeat(10)}${RECORD_MARKER}\n\n[x](target.md#gone)\n`,
+      'repo/docs/tenth-line-marker.md': `${'line\n'.repeat(9)}${RECORD_MARKER}\n\n[x](target.md#gone)\n`,
       'repo/docs/padded-marker.md': `# Padded\n\n   ${RECORD_MARKER}   \n\n[x](target.md#gone)\n`,
       'docs/plans/a-plan.md': '[x](../../repo/docs/target.md#gone)\n',
       'docs/features-extra/a-page.md': '[x](../../repo/docs/target.md#gone)\n',
@@ -435,6 +444,7 @@ describe('FR-R3-184 — a section a live document names in another file exists',
 
   it('treats a target outside repo/ as unverifiable when the envelope is absent', () => {
     const root = tree({
+      'elsewhere.md': '# Elsewhere\n',
       'repo/docs/target.md': TARGET,
       'repo/docs/citing.md': '[up](../../elsewhere.md#somewhere) and [in](target.md#present-heading)\n'
     });
@@ -1115,6 +1125,344 @@ describe('FR-R3-184 — a section a live document names in another file exists',
     const run = spawnSync('node', [join(root, 'repo', 'scripts', 'check-doc-links.mjs')], { encoding: 'utf8' });
     expect(run.status).toBe(0);
     expect(run.stdout).toContain('Section references checked: 1 in live documents, 1 passage too long or too dense to read.');
+  });
+
+  it('resolves every name form, an identifier only where a heading starts, and each anchor, id and identifier however often it is cited', () => {
+    const references = [
+      '`names.md` §"No such heading…"',
+      '`names.md` §"Beta…"',
+      '`names.md` §"Bet"',
+      '`names.md` §"Gam…"',
+      '`names.md` §"Alp…"',
+      '`names.md` §“Present heading”',
+      '`names.md` §**Present heading**',
+      '`names.md` §_Present heading_',
+      '`names.md` §“Absent one”',
+      '`names.md` §**Absent two**',
+      '`names.md` §_Absent three_',
+      '`names.md` §" Absent four "',
+      '`names.md` §7',
+      '`names.md` §x7',
+      '`names.md` §a1',
+      '`names.md` §A1',
+      '`names.md` §2',
+      '`names.md` §2',
+      '`names.md` §"Alp…x"',
+      '`names.md` §"Alp…ha"',
+      '`ellipsis.md` §"Alph… "',
+      '`ellipsis.md` §"Al…p…"',
+      '[a](names.md#present-heading)',
+      '[a](names.md#present-heading)',
+      '[a](names.md#kept-here)',
+      '[a](names.md#kept-here)',
+      '[a](names.md#Present-Heading)',
+      '[a](names.md#Present-Heading)',
+      '[a](names.md#mixed-case)'
+    ];
+    const root = tree({
+      ...ENVELOPE,
+      'repo/docs/names.md': [
+        '# Names',
+        '',
+        '## Alpha',
+        '',
+        '## Beta',
+        '',
+        '## Gamma',
+        '',
+        '## Present heading',
+        '',
+        '## Chapter 7 notes',
+        '',
+        '## A1 Scope',
+        '',
+        '## 2. Scope',
+        '',
+        '## Alp…ha beta',
+        '',
+        '## x§7 notes',
+        '',
+        '<a id="kept-here"></a>',
+        '',
+        '<a id="Mixed-Case"></a>',
+        ''
+      ].join('\n'),
+      'repo/docs/ellipsis.md': '## Alpha\n\n## Al…pha\n',
+      'repo/docs/citing.md': `${references.join('\n\n')}\n`
+    });
+    const { checked, failures } = check(root);
+    expect(checked).toBe(references.length);
+    // Each reference is on line 2n + 1. A name is trimmed, an identifier is read only where its
+    // heading starts and in either case, and a resolved reference leaves the index as it was.
+    expect(failures.map((f) => [(f.line - 1) / 2, f.named, f.reason])).toEqual([
+      [0, 'No such heading', 'no-such-heading'],
+      [2, 'Bet', 'prefix-only'],
+      [8, 'Absent one', 'no-such-heading'],
+      [9, 'Absent two', 'no-such-heading'],
+      [10, 'Absent three', 'no-such-heading'],
+      [11, 'Absent four', 'no-such-heading'],
+      [12, '7', 'no-such-identifier'],
+      [13, 'x7', 'no-such-identifier'],
+      [18, 'Alp…x', 'no-such-heading'],
+      [19, 'Alp…ha', 'prefix-only'],
+      [26, 'Present-Heading', 'case-only'],
+      [27, 'Present-Heading', 'case-only'],
+      [28, 'mixed-case', 'case-only']
+    ]);
+  });
+
+  it('reads an ATX heading as GitHub does: three spaces of indent, a tab after the hashes, trailing blanks, a closing run, and a slug left empty', () => {
+    const root = tree({
+      ...ENVELOPE,
+      'repo/docs/atx.md': [
+        '# ATX',
+        '',
+        '   ### Three spaces',
+        '',
+        '##\tTab separated',
+        '',
+        '## Closed with tab ##\t',
+        '',
+        '## Closed ##  ',
+        '',
+        '## Hash#',
+        '',
+        '## Spaced ##',
+        '',
+        '## Odd ###',
+        '',
+        '## Trailing ',
+        '',
+        '## Input > Output',
+        ''
+      ].join('\n'),
+      'repo/docs/indented.md': '# T\n\n\t##\tAlpha\nNotes\n---\n',
+      'repo/docs/empty.md': '# T\n\n## ?\n\n## ?\n\n## Next\n',
+      'repo/docs/bare.md': '##\n\n## ?\n',
+      'repo/docs/citing.md': [
+        '[x](atx.md#three-spaces)',
+        '[x](atx.md#tab-separated)',
+        '[x](atx.md#closed-with-tab)',
+        '[x](atx.md#closed)',
+        '`atx.md` §"Hash#"',
+        '[x](atx.md#spaced)',
+        '[x](atx.md#odd)',
+        '[x](atx.md#trailing)',
+        '[x](atx.md#input--output)',
+        '[x](indented.md#notes)',
+        '[x](empty.md#-1)',
+        '[x](empty.md#next)',
+        '[x](bare.md#-1)'
+      ].join('\n\n')
+    });
+    const { checked, failures } = check(root);
+    expect(checked).toBe(13);
+    // A tab before the hashes makes the line paragraph text, not a heading; a bare `##` is a
+    // heading with nothing to slug, which takes no anchor, so the `?` after it is the first.
+    expect(failures.map((f) => [f.line, f.named, f.reason])).toEqual([
+      [19, 'notes', 'no-such-anchor'],
+      [25, '-1', 'no-such-anchor']
+    ]);
+  });
+
+  it('reads a setext heading as GitHub does: its underline exactly, and only paragraph text above it', () => {
+    const shapes: Array<[string, string, string]> = [
+      ['dash-item', 'Delta\n- item\n', 'delta'],
+      ['four-spaces', 'Title\n    ---\n', 'title'],
+      ['three-spaces', 'Title\n   ===\n', 'title'],
+      ['tab-after', 'Title\n===\t\n', 'title'],
+      ['blank-between', 'Title\n   \n===\n', 'title'],
+      ['front-matter', '---\ntitle: front matter\n---\n\n## Present heading\n', 'present-heading'],
+      ['text-before', 'Title\nnot an underline ===\n', 'title'],
+      ['first-lines', 'Alpha\nBeta\n===\n', 'alpha-beta'],
+      ['paren-item', '2) item\nDelta\n===\n', 'delta'],
+      ['plus-item', '+ item\nDelta\n===\n', 'delta'],
+      ['indented-item', '  - item\nDelta\n===\n', 'delta'],
+      ['dash-item-above', '- item\nDelta\n===\n', 'delta'],
+      ['table-row', '| a | b |\nDelta\n===\n', 'delta'],
+      ['indented-row', '  | a |\nDelta\n===\n', 'delta'],
+      ['quote', '> quoted\nDelta\n===\n', 'delta'],
+      ['indented-quote', '  > quoted\nDelta\n===\n', 'delta'],
+      ['tight-quote', '>quoted\nDelta\n===\n', 'delta'],
+      ['html', '<b>html</b>\nDelta\n===\n', 'delta'],
+      ['indented-html', '  <b>html</b>\nDelta\n===\n', 'delta'],
+      ['pipe-inside', 'Foo | Bar\n===\n', 'foo--bar'],
+      ['dash-inside', 'Delta - item\n===\n', 'delta---item'],
+      ['greater-inside', 'Input > Output\n===\n', 'input--output'],
+      ['less-inside', 'Less < More\n===\n', 'less--more'],
+      ['after-unread', `${'['.repeat(300)}\nTitle\n===\n`, 'title']
+    ];
+    const root = tree({
+      ...ENVELOPE,
+      ...Object.fromEntries(shapes.map(([name, body]) => [`repo/docs/${name}.md`, body])),
+      'repo/docs/citing.md': shapes.map(([name, , anchor]) => `[x](${name}.md#${anchor})`).join('\n\n')
+    });
+    const { checked, failures, unread } = check(root);
+    expect(checked).toBe(shapes.length);
+    expect(unread).toBe(1);
+    // The underline must be the whole line, indented at most three spaces; a whitespace-only line
+    // ends the paragraph above it; and a heading whose text runs into an unread line is not indexed.
+    expect(failures.map((f) => shapes[(f.line - 1) / 2]?.[0])).toEqual(['dash-item', 'four-spaces', 'blank-between', 'text-before', 'after-unread']);
+  });
+
+  it('reads fences in a target as GitHub does: an indented closer by its run, never two backticks, and a long opener by its run, not its indent', () => {
+    const root = tree({
+      ...ENVELOPE,
+      'repo/docs/indented-closer.md': '# T\n\n~~~~\n   ~~~\n## Inside the fence\n~~~~\n',
+      'repo/docs/two-backticks.md': '# T\n\n``code`` is inline\n\n## After\n',
+      'repo/docs/id-after.md': '# T\n\n<a href="#top" id="kept-here"></a>\n',
+      'repo/docs/dense-closer.md': `# T\n\n\`\`\`\n## Inside\n>\`\`\`${' '.repeat(10001)}\n## After\n`,
+      'repo/docs/long-opener.md': `   ${'`'.repeat(9998)}\n## Inside\n${'`'.repeat(9998)}\n## After\n`,
+      'repo/docs/citing.md': [
+        '[x](indented-closer.md#inside-the-fence)',
+        '[x](two-backticks.md#after)',
+        '[x](id-after.md#kept-here)',
+        '[x](dense-closer.md#after)',
+        '[x](long-opener.md#after)',
+        '[x](long-opener.md#inside)'
+      ].join('\n\n')
+    });
+    const { checked, failures, unread } = check(root);
+    expect(checked).toBe(6);
+    expect(unread).toBe(0);
+    expect(failures.map((f) => [f.line, f.named])).toEqual([
+      [1, 'inside-the-fence'],
+      [11, 'inside']
+    ]);
+  });
+
+  it('reads a wrapped link as the line pass reads one: not in a fence or code span, not across a blank line, heading, list item or table row, and on the line it starts', () => {
+    const root = tree({
+      ...ENVELOPE,
+      'repo/docs/w.md': '# T\n\n## Delta\n',
+      'repo/docs/citing.md': [
+        '```\nsee [the\nname](w.md#in-a-fence)\n```',
+        '[t](w.md#first-line)\n[the\nname](w.md#second-line)\nmore text',
+        '[the\n   \nname](w.md#across-a-blank)',
+        '[the\n  > ## Quoted\nname](w.md#across-an-indented-quoted-heading)',
+        '[the\n> ## Quoted\nname](w.md#across-a-quoted-heading)',
+        '[the\nx - y](w.md#a-dash-inside)',
+        '[the\n  - item\nname](w.md#across-an-indented-item)',
+        '[the\n+ item\nname](w.md#across-a-plus-item)',
+        '[the\n  | a |\nname](w.md#across-an-indented-row)',
+        '[the\nx | y](w.md#a-pipe-inside)',
+        '[the\n    ## Not a heading\nname](w.md#an-indented-hash)',
+        '`[the` x\nname](w.md#from-a-code-span)',
+        '``a`[the`\nname](w.md#from-a-later-code-span)',
+        '``a`[x](w.md#in-a-later-code-span)`',
+        '[a long link text that\nwraps](w.md#a-long-text)',
+        `[the${'x'.repeat(5000)}\n${' '.repeat(5000)}name](w.md#a-long-indent)`
+      ].join('\n\n')
+    });
+    const { checked, failures } = check(root);
+    expect(checked).toBe(7);
+    expect(failures.map((f) => [f.line, f.named])).toEqual([
+      [6, 'first-line'],
+      [7, 'second-line'],
+      [23, 'a-dash-inside'],
+      [38, 'a-pipe-inside'],
+      [41, 'an-indented-hash'],
+      [53, 'a-long-text'],
+      [56, 'a-long-indent']
+    ]);
+  });
+
+  it('reads only what a link or definition names: no URL, same-file or line anchor, indented definition or mid-line fence, and a path as written', () => {
+    expect(sectionReferencesIn('[u](https://example.com/a.md#frag)\n\n[s](#same-file)\n\n[m](mailto:x@example.com#y)\n\n[v](//example.com/a.md#z)\n\n[p](t.md?x=1#q)\n')).toEqual([
+      { line: 9, form: 'F', via: 'link', target: 't.md', named: 'q' }
+    ]);
+    const root = tree({
+      ...ENVELOPE,
+      'repo/docs/la.md': '# T\n',
+      'repo/docs/a<b.md': '## Here\n',
+      'repo/docs/a>b.md': '## Here\n',
+      'repo/docs/a/b.md': '## Here\n',
+      'repo/docs/citing.md': [
+        '    [ref]: la.md#indented-definition',
+        'text ``` more',
+        '[x](la.md#after-a-mid-line-fence)',
+        '[x](la.md#xL12)',
+        '[x](la.md#L)',
+        '[x](la.md#L12abc)',
+        '[x](la.md#L12)',
+        '[x](a<b.md#less-than)',
+        '[x](a>b.md#greater-than)',
+        '[x](a//b.md#doubled-slash)',
+        '``la.md` §99'
+      ].join('\n\n')
+    });
+    const { checked, failures } = check(root);
+    expect(checked).toBe(7);
+    expect(failures.map((f) => f.named)).toEqual(['after-a-mid-line-fence', 'xL12', 'L', 'L12abc', 'less-than', 'greater-than', 'doubled-slash']);
+  });
+
+  it('keys a file by its device and inode, and by the name it is cited by when it has more than one link or no inode', () => {
+    const stat = (ino: bigint, nlink: bigint, file = true) => ({ dev: 7n, ino, nlink, isFile: () => file });
+    expect(identityKey(stat(42n, 1n), '/docs/a.md')).toBe('7:42');
+    expect(identityKey(stat(42n, 2n), '/docs/a.md')).toBe('path:/docs/a.md');
+    expect(identityKey(stat(0n, 1n), '/docs/a.md')).toBe('path:/docs/a.md');
+    expect(identityKey(stat(42n, 1n, false), '/docs')).toBeNull();
+  });
+
+  it('does not walk a `.tmp` directory, where the test runner keeps its temporary files, in either tree', () => {
+    const root = tree({
+      ...ENVELOPE,
+      'repo/docs/target.md': TARGET,
+      'repo/.tmp/vitest-1/docs/left-behind.md': '[x](../../../docs/target.md#gone)\n',
+      'notes/.tmp/left-behind.md': '[x](../../repo/docs/target.md#gone)\n',
+      'repo/docs/citing.md': '[x](target.md#present-heading)\n'
+    });
+    expect(check(root)).toMatchObject({ checked: 1, failures: [] });
+  });
+
+  it('skips a page or directory removed since it was listed, and fails on any other error reading one', () => {
+    const root = tree({
+      ...ENVELOPE,
+      'repo/docs/target.md': TARGET,
+      'repo/docs/removed.md': '[x](target.md#gone)\n',
+      'repo/docs/removed-dir/page.md': '[x](../target.md#gone)\n',
+      'repo/docs/citing.md': '[x](target.md#present-heading)\n'
+    });
+    const readFile = fs.readFileSync;
+    const readDir = fs.readdirSync;
+    const failing = (code: string) => Object.assign(new Error(code), { code });
+    let readError = 'ENOENT';
+    let listError = 'ENOENT';
+    const reads = vi.spyOn(fs, 'readFileSync').mockImplementation(((path: string, ...rest: unknown[]) => {
+      if (String(path).endsWith('removed.md')) throw failing(readError);
+      return (readFile as (...args: unknown[]) => unknown)(path, ...rest);
+    }) as typeof fs.readFileSync);
+    const listings = vi.spyOn(fs, 'readdirSync').mockImplementation(((path: string, ...rest: unknown[]) => {
+      if (String(path).endsWith('removed-dir')) throw failing(listError);
+      return (readDir as (...args: unknown[]) => unknown)(path, ...rest);
+    }) as typeof fs.readdirSync);
+    // The script imports these by name: the builtin's exports are re-synchronised with the spies.
+    syncBuiltinESMExports();
+    try {
+      expect(check(root)).toMatchObject({ checked: 1, failures: [] });
+      listError = 'EACCES';
+      expect(() => check(root)).toThrow('EACCES');
+      listError = 'ENOENT';
+      readError = 'EPERM';
+      expect(() => check(root)).toThrow('EPERM');
+    } finally {
+      reads.mockRestore();
+      listings.mockRestore();
+      syncBuiltinESMExports();
+    }
+  });
+
+  it('prints every failure through a pipe before it exits 1, after a broken link 70,000 characters long', () => {
+    const root = tree({
+      ...ENVELOPE,
+      'repo/docs/target.md': TARGET,
+      'repo/docs/citing.md': `[long](${'a'.repeat(70000)}.md)\n\n[x](target.md#gone)\n`
+    });
+    const run = spawnSync('node', [installScript(root)], { encoding: 'utf8' });
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain('Broken documentation links (1):');
+    expect(run.stderr).toContain('Unresolved section references (1):');
+    expect(run.stderr).toContain('is in docs/development/section-reference-check.md.');
   });
 
   it('finds section references in the real tree, and none of them is unresolved', () => {
