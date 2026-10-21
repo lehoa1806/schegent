@@ -362,6 +362,33 @@ describe('activate() — BUG-001 activation invariant', () => {
       outputDisposeCallsBefore
     );
   });
+
+  it('(e) a Stage 2 rebuilt when the folder returns writes each logger line to the channel once', async () => {
+    mocks.state.workspaceFolders = [{ uri: { fsPath: workspaceRoot } }];
+    const { context } = buildContext();
+    // The mock returns one shared channel object, so this handle sees what every
+    // channel sink the logger holds writes, the torn-down wiring's included.
+    const channel = vscode.window.createOutputChannel('probe') as unknown as {
+      appendLine: ReturnType<typeof vi.fn>;
+    };
+    await activate(context as Parameters<typeof activate>[0]);
+    const folderChange = (): Promise<unknown> =>
+      Promise.all(Array.from(mocks.state.listeners).map(async (fn) => fn({ added: [], removed: [] })));
+
+    mocks.state.workspaceFolders = undefined;
+    await folderChange();
+    const before = channel.appendLine.mock.calls.length;
+    mocks.state.workspaceFolders = [{ uri: { fsPath: workspaceRoot } }];
+    await folderChange();
+
+    const loggerLines = channel.appendLine.mock.calls
+      .slice(before)
+      .map((call) => String(call[0]))
+      .filter((line) => /^\[\d{4}-\d{2}-\d{2}T[\d:.]+Z\] [A-Z]+ /.test(line));
+    expect(loggerLines.length, 'the rebuild must write through the logger').toBeGreaterThan(0);
+    // Each sink receives the same line in turn, so a leaked sink shows as a repeat.
+    expect(loggerLines.filter((line, i) => line === loggerLines[i - 1])).toEqual([]);
+  });
 });
 
 describe('activate() — Stage 2 workspace lock reclaim (BUG-005)', () => {

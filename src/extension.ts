@@ -279,8 +279,8 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   const disposables: vscode.Disposable[] = [];
 
   const channel = vscode.window.createOutputChannel('Schegent');
-  disposables.push(channel);
   const output = new SchegentOutputChannel(channel, logger);
+  disposables.push(output);
 
   // Feature FR-R3-006 (T346) — finish a reset the previous host did not survive,
   // *before* `initialize()`, so the migration chain sees the state the operator

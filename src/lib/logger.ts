@@ -277,6 +277,11 @@ export class SanitizedLogger {
     this.sinks.push(sink);
   }
 
+  public removeSink(sink: LogSink): void {
+    const index = this.sinks.indexOf(sink);
+    if (index !== -1) this.sinks.splice(index, 1);
+  }
+
   public info(message: string, context?: Record<string, unknown>): void {
     this.write('INFO', this.formatWithContext(message, context));
   }
