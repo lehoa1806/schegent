@@ -20,6 +20,7 @@ Schegent is a local-first VS Code extension that queues development Tasks, execu
   whatever is current — the version is derived from `engines.vscode`, so the claim and the evidence
   cannot drift apart. Gates fail if the types resolve above the floor, if the pin gains a range
   operator, or if the harness stops deriving its version from the manifest.
+- English only, by decision: command titles, settings, dialogs and webview text are not localized. The decision, what it measured and what would reopen it are in [English-only is a product decision](docs/concepts/english-only-not-localizable.md).
 - Vitest for host and webview tests, Playwright for visual tests, and the VS Code Electron harness for integration tests.
 - VS Code `workspaceState` plus workspace-local `.schegent/` files; no database, ORM, Schegent HTTP server, or Schegent-owned CLI executable.
 
