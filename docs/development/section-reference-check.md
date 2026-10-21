@@ -71,6 +71,11 @@ The check does not read:
 - sections named in free prose. That includes a `§` not directly after its link
   (`[x](t.md) (§9)`, `[x](t.md), §9`) and an identifier with a letter after its digits (`§2a`,
   `§4b.2`);
+- a backticked path, with its `§`, between an unmatched `[` earlier on its line and a link after
+  it. The link's text is read from that `[`, as the path check reads it, so the path is taken for
+  part of the text;
+- a `.tmp` directory, where the test runner keeps its temporary files, and a page or directory
+  removed after the walk listed it;
 - a line, or a paragraph joined from shorter lines, over 10,000 characters, or holding more than
   256 of `[`, `<`, a backtick and `§`. The first three are where the check's costly patterns start
   a match; `§` is counted with them, which makes the cap stricter, never looser. Such a passage is
@@ -80,12 +85,20 @@ The check does not read:
   a shorter fence, but a fence it opens is never closed, so past that the check fails closed. A
   setext heading over either cap, or whose text runs into a line that was not read, is not indexed,
   so a reference to it fails. With both caps a page costs at most a fixed amount per character to
-  parse, and a reference is resolved by a lookup. Each target file is resolved once, however it is
-  spelled, at a cost that grows with how deep it lies and how many symlinks its path crosses. A file
-  with more than one hard link, or no inode, is kept by the name it is cited by, since its names may
-  lie on either side of the trees' edge. On 2026-10-20 the most any tracked page in
-  either tree held on one line was 151 of those characters, in a live paragraph 102 and in a heading
-  8;
+  parse, and a reference is resolved by a lookup. Reading costs memory too: about 100 to 150 bytes
+  of heap for each byte of a page of one-line paragraphs. Past the heap's limit the check stops
+  with an out-of-memory error, so it fails rather than passes. Every distinct path a page spells
+  costs one lookup, whether or not a file is there, and a backticked path up to three. A lookup
+  walks the path, and again the target of every symlink on it, so its cost grows with the path's
+  depth and with the length of what its links point to. Each target file is resolved and read
+  once, however it is spelled, with two exceptions. A file with more than one hard link is kept by
+  each name it is cited by, since its names may lie on either side of the trees' edge. So is a file
+  that reports no inode, which has nothing else to tell it from another. A file with one link but two real paths,
+  through a macOS firmlink or a bind mount, is judged by the path cited first. Cited first through
+  a path outside both trees, it is unverifiable by every spelling. On 2026-10-21 the longest live
+  line was 4,564 characters, this check's own row in the lint-gate census, and the longest live
+  paragraph 5,719. The most any tracked page in either tree held on one line was 151 of those
+  characters, in a live paragraph 102 and in a heading 8;
 - a target outside both trees, with symlinks resolved, or one that cannot be read. It is counted as
   unverifiable. With the planning envelope absent, that includes every reference into it, as paths
   already were.
@@ -106,18 +119,23 @@ parser. Several of the shapes do occur in the tree:
 - a named entity other than `&amp;`, `&lt;`, `&gt;`, `&quot;`, `&apos;` and `&nbsp;` is left as
   written, so `&mdash;` keeps its letters in the anchor;
 - a fragment that differs from its heading only in case is refused, with its own reason;
-- a line holding U+2028, U+2029 or a lone carriage return is read as neither a heading nor a fence
-  marker. GitHub reads the first two as ordinary characters and a lone carriage return as the end
-  of a line, so it may open a fence or a heading there;
+- an ATX heading or a fence marker holding U+2028, U+2029 or a lone carriage return is read as
+  neither, unless the character sits right after a quote's `>`, where it is read as the quote's
+  space. A setext heading's text holding one is read as one line. GitHub reads the first two as
+  ordinary characters and a lone carriage return as the end of a line, so it may open a fence or a
+  heading there, or split a heading's text;
 - a backtick fence marker whose info string holds a backtick is read as a fence, where GitHub reads
   a paragraph;
-- a closer followed by a no-break space, a vertical tab or a form feed closes its fence, where
-  GitHub allows only spaces and tabs after one;
+- a closer followed by any character JavaScript's `trim` removes closes its fence. A no-break
+  space, a vertical tab, a form feed, U+3000 and a byte-order mark are among them. GitHub allows
+  only spaces and tabs after one;
 - quote depth is not tracked: a quoted fence line closes an unquoted fence and an unquoted one a
-  quoted fence, and a quoted fence the end of its quote would close stays open;
+  quoted fence, and a quoted fence the end of its quote would close stays open. A quote's `>` may
+  have any whitespace JavaScript's `\s` matches before or after it, four spaces before it
+  included. GitHub allows a space or a tab after it and at most three spaces before it;
 - each of the last four shapes can leave a fence open where GitHub closes one, or the reverse, and
   every later fence in the file is then read inverted: a heading in a later code block is indexed,
-  and one between blocks is not. None of the four occurred in either tree on 2026-10-20.
+  and one between blocks is not. None of the four occurred in either tree on 2026-10-21.
 
 ## Measurement
 
