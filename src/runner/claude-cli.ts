@@ -670,9 +670,9 @@ export class ClaudeCliRunner implements BackendRunner {
         );
       }
       const exitCode = completion.exitCode;
-      // Feature 030 BUG-002 — a grace-terminate after the completion marker
-      // is NOT an operator cancellation, so do not flag it `killed` even
-      // though it exits via our SIGTERM with a null code.
+      // Feature 030 BUG-002 — a grace-terminate after the completion marker is
+      // NOT an operator cancellation, so its signal death is not `killed`. The
+      // CLI exits 143 on SIGTERM; in practice that death is the ladder's SIGKILL.
       if (completion.signal && exitCode === null && !completedAwaitingExit) {
         killed = true;
       }
