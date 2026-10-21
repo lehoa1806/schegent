@@ -170,10 +170,9 @@ const S_MARKER = new RegExp(
 // line is not read either, except that a fence marker keeps its role, and a setext heading over
 // either cap, or whose text runs into a line that was not read, is not indexed, so a reference to
 // it fails. With both caps, parsing costs at most a fixed amount per character, and resolving a
-// reference is a lookup. Measured on 2026-10-21, the longest live line, this check's own row in
-// the lint-gate census, was 4,564 characters and the longest live paragraph 5,719; the most openers
-// on one line of any tracked page in either tree was 151, in a live paragraph 102, and in a heading
-// 8. Nothing real goes unread.
+// reference is a lookup. Every live line and paragraph lay well inside both caps when last
+// measured, so nothing real goes unread; section-reference-check.md gives the figures and their
+// date.
 const MAX_LINE = 10000;
 const MAX_OPENERS = 256;
 const OPENERS = /[[<`§]/g;

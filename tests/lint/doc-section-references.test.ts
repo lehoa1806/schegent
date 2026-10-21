@@ -3,9 +3,10 @@ import { chmodSync, copyFileSync, linkSync, mkdirSync, mkdtempSync, realpathSync
 import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 // @ts-expect-error -- .mjs script, typed by use rather than by declaration
-import { checkSectionReferences, identityKey, sectionReferencesIn } from '../../scripts/check-doc-links.mjs';
+import { checkSectionReferences, identityKey, renderedText, sectionReferencesIn } from '../../scripts/check-doc-links.mjs';
 
 /** The CommonJS face of `node:fs`, whose functions a spy can replace; the script's named imports follow it once re-synchronised. */
 const fs = createRequire(__filename)('node:fs') as typeof import('node:fs');
@@ -1114,17 +1115,31 @@ describe('FR-R3-184 — a section a live document names in another file exists',
     const root = tree({
       ...ENVELOPE,
       'repo/docs/target.md': TARGET,
-      'repo/docs/citing.md': `[in](target.md#present-heading)\n\n${'x'.repeat(10001)}\n`,
+      'repo/docs/citing.md': `[in](target.md#present-heading) and [envelope](../../docs/README.md)\n\n${'x'.repeat(10001)}\n`,
       'repo/docs/broken.md': '[out](target.md#gone)\n',
-      'importer.mjs': "import './repo/scripts/check-doc-links.mjs';\n"
+      'importer.mjs': "import './repo/scripts/check-doc-links.mjs';\n",
+      // Removed before the script is imported, so the guard cannot resolve the path it was started by.
+      'vanishing.mjs': "import { unlinkSync } from 'node:fs';\nunlinkSync(process.argv[1]);\nawait import('./repo/scripts/check-doc-links.mjs');\n"
     });
-    installScript(root);
+    const script = installScript(root);
     const imported = spawnSync('node', [join(root, 'importer.mjs')], { encoding: 'utf8' });
     expect([imported.status, imported.stdout, imported.stderr]).toEqual([0, '', '']);
+    // Evaluated code has no script path at all.
+    const evaluated = spawnSync('node', ['--input-type=module', '-e', `await import(${JSON.stringify(pathToFileURL(script).href)});`], { encoding: 'utf8' });
+    expect([evaluated.status, evaluated.stdout, evaluated.stderr]).toEqual([0, '', '']);
+    const vanished = spawnSync('node', [join(root, 'vanishing.mjs')], { encoding: 'utf8' });
+    expect([vanished.status, vanished.stdout, vanished.stderr]).toEqual([0, '', '']);
     rmSync(join(root, 'repo', 'docs', 'broken.md'));
     const run = spawnSync('node', [join(root, 'repo', 'scripts', 'check-doc-links.mjs')], { encoding: 'utf8' });
     expect(run.status).toBe(0);
+    expect(run.stdout).toContain('Documentation links checked: 2 across 5 files (repository + planning envelope).\n');
     expect(run.stdout).toContain('Section references checked: 1 in live documents, 1 passage too long or too dense to read.');
+    writeFileSync(join(root, 'repo', 'docs', 'citing.md'), '[in](target.md#present-heading)\n');
+    const clean = spawnSync('node', [script], { encoding: 'utf8' });
+    expect([clean.status, clean.stdout]).toEqual([
+      0,
+      'Documentation links checked: 1 across 5 files (repository + planning envelope).\nSection references checked: 1 in live documents.\n'
+    ]);
   });
 
   it('resolves every name form, an identifier only where a heading starts, and each anchor, id and identifier however often it is cited', () => {
@@ -1157,7 +1172,8 @@ describe('FR-R3-184 — a section a live document names in another file exists',
       '[a](names.md#kept-here)',
       '[a](names.md#Present-Heading)',
       '[a](names.md#Present-Heading)',
-      '[a](names.md#mixed-case)'
+      '[a](names.md#mixed-case)',
+      '`names.md` §"Abcd"'
     ];
     const root = tree({
       ...ENVELOPE,
@@ -1185,6 +1201,8 @@ describe('FR-R3-184 — a section a live document names in another file exists',
         '<a id="kept-here"></a>',
         '',
         '<a id="Mixed-Case"></a>',
+        '',
+        '## Ab cd',
         ''
       ].join('\n'),
       'repo/docs/ellipsis.md': '## Alpha\n\n## Al…pha\n',
@@ -1207,7 +1225,8 @@ describe('FR-R3-184 — a section a live document names in another file exists',
       [19, 'Alp…ha', 'prefix-only'],
       [26, 'Present-Heading', 'case-only'],
       [27, 'Present-Heading', 'case-only'],
-      [28, 'mixed-case', 'case-only']
+      [28, 'mixed-case', 'case-only'],
+      [29, 'Abcd', 'no-such-heading']
     ]);
   });
 
@@ -1351,11 +1370,13 @@ describe('FR-R3-184 — a section a live document names in another file exists',
         '``a`[the`\nname](w.md#from-a-later-code-span)',
         '``a`[x](w.md#in-a-later-code-span)`',
         '[a long link text that\nwraps](w.md#a-long-text)',
-        `[the${'x'.repeat(5000)}\n${' '.repeat(5000)}name](w.md#a-long-indent)`
+        `[the${'x'.repeat(5000)}\n${' '.repeat(5000)}name](w.md#a-long-indent)`,
+        '[x](w.md) >\n§9',
+        `[x](w.md)${NO_BREAK_SPACE}\n§8`
       ].join('\n\n')
     });
     const { checked, failures } = check(root);
-    expect(checked).toBe(7);
+    expect(checked).toBe(8);
     expect(failures.map((f) => [f.line, f.named])).toEqual([
       [6, 'first-line'],
       [7, 'second-line'],
@@ -1363,7 +1384,8 @@ describe('FR-R3-184 — a section a live document names in another file exists',
       [38, 'a-pipe-inside'],
       [41, 'an-indented-hash'],
       [53, 'a-long-text'],
-      [56, 'a-long-indent']
+      [56, 'a-long-indent'],
+      [62, '8']
     ]);
   });
 
@@ -1388,12 +1410,30 @@ describe('FR-R3-184 — a section a live document names in another file exists',
         '[x](a<b.md#less-than)',
         '[x](a>b.md#greater-than)',
         '[x](a//b.md#doubled-slash)',
-        '``la.md` §99'
+        '``la.md` §99',
+        '  ```\n[x](la.md#in-an-indented-fence)\n  ```',
+        '[](la.md#empty-text)',
+        'ab[ref]: la.md#prefixed-definition',
+        '   [ref]: la.md#three-space-definition',
+        '[]: la.md#empty-label',
+        '[ref]:la.md#tight-definition',
+        '`a.md [x](la.md) §99`'
       ].join('\n\n')
     });
     const { checked, failures } = check(root);
-    expect(checked).toBe(7);
-    expect(failures.map((f) => f.named)).toEqual(['after-a-mid-line-fence', 'xL12', 'L', 'L12abc', 'less-than', 'greater-than', 'doubled-slash']);
+    expect(checked).toBe(10);
+    expect(failures.map((f) => f.named)).toEqual([
+      'after-a-mid-line-fence',
+      'xL12',
+      'L',
+      'L12abc',
+      'less-than',
+      'greater-than',
+      'doubled-slash',
+      'empty-text',
+      'three-space-definition',
+      'tight-definition'
+    ]);
   });
 
   it('keys a file by its device and inode, and by the name it is cited by when it has more than one link or no inode', () => {
@@ -1456,13 +1496,79 @@ describe('FR-R3-184 — a section a live document names in another file exists',
     const root = tree({
       ...ENVELOPE,
       'repo/docs/target.md': TARGET,
-      'repo/docs/citing.md': `[long](${'a'.repeat(70000)}.md)\n\n[x](target.md#gone)\n`
+      'repo/docs/citing.md': `[long](${'a'.repeat(70000)}.md)\n\n[x](target.md#gone)\n`,
+      'docs/notes.md': '[gone](missing.md)\n'
     });
     const run = spawnSync('node', [installScript(root)], { encoding: 'utf8' });
     expect(run.status).toBe(1);
-    expect(run.stderr).toContain('Broken documentation links (1):');
+    expect(run.stderr).toContain('Broken documentation links (2):');
+    expect(run.stderr).toContain('docs/notes.md:1 -> missing.md');
+    expect(run.stderr).toContain('Either repoint the link or, when the target is gone for good, replace it\nwith inline code');
     expect(run.stderr).toContain('Unresolved section references (1):');
+    expect(run.stderr).toContain('Repoint the reference at a heading its target has -- never add a heading to\nmake a stale');
     expect(run.stderr).toContain('is in docs/development/section-reference-check.md.');
+  });
+
+  it("renders a heading's text as GitHub does, from entities and markup to the placeholders it parks them behind", () => {
+    const point = (code: number) => String.fromCodePoint(code);
+    const CODE = point(0xe000);
+    const ESCAPE = point(0xe001);
+    const REPLACEMENT = point(0xfffd);
+    const rendered = [
+      'A &#65; &#x41; &#X41; &AMP; &Lt; &nbsp;|',
+      '&#0; &#1; &#xD7FF; &#xD800; &#xDFFF; &#xE000; &#x10FFFF; &#1114111; &#x110000;',
+      `x${ESCAPE}${ESCAPE}y x${ESCAPE}1114111${ESCAPE}y x${ESCAPE}1114112${ESCAPE}y`,
+      `\`c\` ${CODE}${CODE} ${CODE}9${CODE}`,
+      '  padded  ',
+      'A `_` B',
+      'The `_a b_` thing',
+      'Logo ![alt](x.png) here, ![alt]() there, ![](x.png) too',
+      'See [the docs](x.md) here, [b]() there, [](x.md) too',
+      'See [the docs][ref] here, [docs][] there, [][ref] too',
+      'Visit <https://example.com> now, <https:> then',
+      'A <b class="x">bold</b> and <b>bold</b> C',
+      'X :a+b: and :a: Y',
+      'A *b* C'
+    ].map((source) => renderedText(source));
+    expect(rendered).toEqual([
+      `A A A A & < ${NO_BREAK_SPACE}|`,
+      `${REPLACEMENT} ${point(1)} ${point(0xd7ff)} ${REPLACEMENT} ${REPLACEMENT} ${point(0xe000)} ${point(0x10ffff)} ${point(0x10ffff)} ${REPLACEMENT}`,
+      `x${ESCAPE}${ESCAPE}y x${point(0x10ffff)}y x${ESCAPE}1114112${ESCAPE}y`,
+      `c ${CODE}${CODE} ${CODE}9${CODE}`,
+      'padded',
+      'A _ B',
+      'The _a b_ thing',
+      'Logo  here,  there,  too',
+      'See the docs here, b there,  too',
+      'See the docs here, docs there,  too',
+      'Visit https://example.com now,  then',
+      'A bold and bold C',
+      'X □ and □ Y',
+      'A b C'
+    ]);
+  });
+
+  it('reads a parent as the envelope only with all three markers, and walks neither its named trees nor a page that is a symlink', () => {
+    const citing = { 'elsewhere.md': '# Elsewhere\n', 'repo/docs/citing.md': '[up](../../elsewhere.md#gone)\n' };
+    const partial: Array<Record<string, string>> = [
+      { 'ARCHITECTURE.md': '# E\n', 'CLAUDE.md': '# P\n' },
+      { 'ARCHITECTURE.md': '# E\n', 'docs/README.md': '# D\n' },
+      { 'CLAUDE.md': '# P\n', 'docs/README.md': '# D\n' },
+      { 'ARCHITECTURE.md': '# E\n', 'CLAUDE.md': '# P\n', docs: '# a file, not a directory\n' }
+    ];
+    for (const markers of partial) {
+      expect(check(tree({ ...markers, ...citing }))).toMatchObject({ checked: 0, unverifiable: 1, failures: [] });
+    }
+    const root = tree({
+      ...ENVELOPE,
+      'repo/docs/target.md': TARGET,
+      'repo/docs/citing.md': '[x](target.md#present-heading)\n',
+      'specs/a-spec.md': '[x](../repo/docs/target.md#gone)\n',
+      '.specify/a-template.md': '[x](../repo/docs/target.md#gone)\n',
+      '.claude/a-skill.md': '[x](../repo/docs/target.md#gone)\n'
+    });
+    symlinkSync('citing.md', join(root, 'repo', 'docs', 'alias.md'));
+    expect(check(root)).toMatchObject({ checked: 1, failures: [] });
   });
 
   it('finds section references in the real tree, and none of them is unresolved', () => {

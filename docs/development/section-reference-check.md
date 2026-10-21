@@ -96,8 +96,8 @@ The check does not read:
   that reports no inode, which has nothing else to tell it from another. A file with one link but two real paths,
   through a macOS firmlink or a bind mount, is judged by the path cited first. Cited first through
   a path outside both trees, it is unverifiable by every spelling. On 2026-10-21 the longest live
-  line was 4,564 characters, this check's own row in the lint-gate census, and the longest live
-  paragraph 5,719. The most any tracked page in either tree held on one line was 151 of those
+  line was 4,882 characters, this check's own row in the lint-gate census, which grows as the row
+  is amended, and the longest live paragraph 5,719. The most any tracked page in either tree held on one line was 151 of those
   characters, in a live paragraph 102 and in a heading 8;
 - a target outside both trees, with symlinks resolved, or one that cannot be read. It is counted as
   unverifiable. With the planning envelope absent, that includes every reference into it, as paths
