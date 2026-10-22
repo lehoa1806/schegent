@@ -413,8 +413,10 @@ applies bounded delayed retry policy, pauses on operator or breakpoint control,
 and hands terminal Runs to history and cleanup services. A terminal transition
 journal makes a partially completed terminal write recoverable at activation;
 it journals the sanitized run description (FR-R3-071) so crash-replay records
-the operator's text, and it clears only when the history recorder reports a
-durable append. History replay resolves descriptions through the sidecar
+the operator's text, and it clears once the queue projection has landed and
+history is durable, and is dropped without writing anything when its Run has
+moved on since it was journalled (resumed, re-run or in another status).
+History replay resolves descriptions through the sidecar
 description store's typed read — the host commands and the sidebar rerun
 surface share one resolver, and force retains its meaning of "replay the
 truncated preview knowingly".
