@@ -8,9 +8,9 @@
  * The stub classifies the active phase by matching the leading
  * `Run /<phase-id>` string the prompt-builder produces (see
  * `src/runner/prompt-builder.ts`). It deterministically emits:
- *   - [SCHEGENT_STATUS: CLEAR] (or [SCHEGENT_STATUS: ISSUES_REMAIN]
- *     once per loopable phase to exercise the clarify/analyze loop)
  *   - the SCHEGENT AUDIT LOG fenced block with the seven required fields
+ *   - [SCHEGENT_STATUS: CLEAR] after the block (or a `Remaining issues:`
+ *     report once per loopable phase to exercise the clarify/analyze loop)
  *
  * Environment knobs (used by the E2E test runner only):
  *   - SCHEGENT_E2E_MODE = 'happy' | 'loop-once' | 'fatal' | 'rate-limit'
@@ -94,16 +94,20 @@ function bumpCallCount(phase) {
 }
 
 // Emit the contract-compliant transcript shape. The parser recognises:
-//   - `[SCHEGENT_STATUS: CLEAR]` for clean termination (via TERMINATION_REGEX
-//     which accepts CLEAR/DONE/RESOLVED only).
+//   - `[SCHEGENT_STATUS: CLEAR]` after the audit block for clean termination
+//     (via TERMINATION_REGEX which accepts CLEAR/DONE/RESOLVED only).
 //   - A `Remaining issues:` heading followed by bullets for loop-back.
 // The stub emits CLEAR for happy / fatal / rate-limit paths and emits a
 // `Remaining issues:` heading + bullet for the first loopable call in
 // `loop-once` mode.
 function emitClean(phase, filesCreated) {
   process.stdout.write(`Mock Claude (fake-claude/index.js): ${phase}\n`);
-  process.stdout.write('[SCHEGENT_STATUS: CLEAR]\n');
   emitAuditBlock(phase, filesCreated);
+  // FR-R3-199 — the token trails the audit block: since feature 107 the parser
+  // reads it nowhere else. Printed before the block, it left every phase this
+  // stub ran `issues_remain`, which went unseen while a last phase in that
+  // state still completed the Run.
+  process.stdout.write('[SCHEGENT_STATUS: CLEAR]\n');
 }
 
 function emitLoopBack(phase, filesCreated) {

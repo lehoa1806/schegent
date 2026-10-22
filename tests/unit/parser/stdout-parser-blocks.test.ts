@@ -4,8 +4,11 @@ import {
   extractRemainingIssues,
   parseInvocation
 } from '../../../src/parser/stdout-parser';
+import { NO_REGION } from '../../../src/parser/audit-log-parser';
 import type { AuditEntryFields } from '../../../src/audit/audit-entry';
 
+// No stdout below carries an audit block, so each parse passes NO_REGION, as
+// phase-runner.ts would for such a stdout. `validAudit` stands in for the block.
 const validAudit: AuditEntryFields = {
   phase: 'speckit-specify',
   filesCreated: ['specs/001-mock/spec.md'],
@@ -89,7 +92,8 @@ describe('parseInvocation — block mutual exclusion and edge cases', () => {
       exitCode: 0,
       rateLimit: { matched: false, cause: '' },
       auditEntry: validAudit,
-      auditWarnings: []
+      auditWarnings: [],
+      region: NO_REGION
     });
     expect(result.kind).toBe('clean');
   });
@@ -101,7 +105,8 @@ describe('parseInvocation — block mutual exclusion and edge cases', () => {
       exitCode: 0,
       rateLimit: { matched: false, cause: '' },
       auditEntry: null,
-      auditWarnings: []
+      auditWarnings: [],
+      region: NO_REGION
     });
     expect(result.kind).toBe('clean');
     if (result.kind === 'clean') {
@@ -117,7 +122,8 @@ describe('parseInvocation — block mutual exclusion and edge cases', () => {
       exitCode: 0,
       rateLimit: { matched: false, cause: '' },
       auditEntry: validAudit,
-      auditWarnings: []
+      auditWarnings: [],
+      region: NO_REGION
     });
     expect(result.kind).toBe('open_questions');
     if (result.kind === 'open_questions') {
@@ -133,7 +139,8 @@ describe('parseInvocation — block mutual exclusion and edge cases', () => {
       exitCode: 0,
       rateLimit: { matched: false, cause: '' },
       auditEntry: validAudit,
-      auditWarnings: []
+      auditWarnings: [],
+      region: NO_REGION
     });
     expect(result.kind).toBe('remaining_issues');
     if (result.kind === 'remaining_issues') {
@@ -148,7 +155,8 @@ describe('parseInvocation — block mutual exclusion and edge cases', () => {
       exitCode: 1,
       rateLimit: { matched: true, cause: 'rate_limit' },
       auditEntry: validAudit,
-      auditWarnings: []
+      auditWarnings: [],
+      region: NO_REGION
     });
     expect(result.kind).toBe('rate_limited');
   });
@@ -160,7 +168,8 @@ describe('parseInvocation — block mutual exclusion and edge cases', () => {
       exitCode: 0,
       rateLimit: { matched: false, cause: '' },
       auditEntry: validAudit,
-      auditWarnings: []
+      auditWarnings: [],
+      region: NO_REGION
     });
     expect(result.kind).toBe('remaining_issues');
     if (result.kind === 'remaining_issues') {
@@ -176,7 +185,8 @@ describe('parseInvocation — block mutual exclusion and edge cases', () => {
       exitCode: 0,
       rateLimit: { matched: false, cause: '' },
       auditEntry: validAudit,
-      auditWarnings: []
+      auditWarnings: [],
+      region: NO_REGION
     });
     expect(result.kind).toBe('clean');
   });
@@ -193,7 +203,8 @@ describe('parseInvocation — fatal-signature precedence (010, T011/T014)', () =
       exitCode: 0,
       rateLimit: { matched: false, cause: '' },
       auditEntry: validAudit,
-      auditWarnings: []
+      auditWarnings: [],
+      region: NO_REGION
     });
     expect(result.kind).toBe('malformed');
     if (result.kind === 'malformed') {
@@ -210,7 +221,8 @@ describe('parseInvocation — fatal-signature precedence (010, T011/T014)', () =
       exitCode: 1,
       rateLimit: { matched: false, cause: '' },
       auditEntry: validAudit,
-      auditWarnings: []
+      auditWarnings: [],
+      region: NO_REGION
     });
     expect(result.kind).toBe('malformed');
     if (result.kind === 'malformed') {
@@ -226,7 +238,8 @@ describe('parseInvocation — fatal-signature precedence (010, T011/T014)', () =
       exitCode: 0,
       rateLimit: { matched: false, cause: '' },
       auditEntry: validAudit,
-      auditWarnings: []
+      auditWarnings: [],
+      region: NO_REGION
     });
     expect(result.kind).toBe('clean');
   });
@@ -239,7 +252,8 @@ describe('parseInvocation — fatal-signature precedence (010, T011/T014)', () =
       exitCode: 0,
       rateLimit: { matched: false, cause: '' },
       auditEntry: validAudit,
-      auditWarnings: []
+      auditWarnings: [],
+      region: NO_REGION
     });
     expect(result.kind).toBe('open_questions');
   });
@@ -252,7 +266,8 @@ describe('parseInvocation — fatal-signature precedence (010, T011/T014)', () =
       exitCode: 0,
       rateLimit: { matched: false, cause: '' },
       auditEntry: validAudit,
-      auditWarnings: []
+      auditWarnings: [],
+      region: NO_REGION
     });
     expect(result.kind).toBe('remaining_issues');
   });
@@ -265,7 +280,8 @@ describe('parseInvocation — fatal-signature precedence (010, T011/T014)', () =
       exitCode: 1,
       rateLimit: { matched: true, cause: 'rate-limit' },
       auditEntry: validAudit,
-      auditWarnings: []
+      auditWarnings: [],
+      region: NO_REGION
     });
     expect(result.kind).toBe('malformed');
     if (result.kind === 'malformed') {

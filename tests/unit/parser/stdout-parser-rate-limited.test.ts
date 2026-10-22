@@ -3,6 +3,7 @@
 // reset epoch in the captured stdout.
 
 import { describe, it, expect } from 'vitest';
+import { NO_REGION } from '../../../src/parser/audit-log-parser';
 import { parseInvocation } from '../../../src/parser/stdout-parser';
 
 describe('parseInvocation — rate_limited.resetsAtMs (Feature 027)', () => {
@@ -15,7 +16,8 @@ describe('parseInvocation — rate_limited.resetsAtMs (Feature 027)', () => {
       exitCode: 1,
       rateLimit: { matched: true, cause: 'rate-limit' },
       auditEntry: null,
-      auditWarnings: []
+      auditWarnings: [],
+      region: NO_REGION
     });
     expect(result.kind).toBe('rate_limited');
     if (result.kind !== 'rate_limited') return;
@@ -29,7 +31,8 @@ describe('parseInvocation — rate_limited.resetsAtMs (Feature 027)', () => {
       exitCode: 1,
       rateLimit: { matched: true, cause: 'rate-limit' },
       auditEntry: null,
-      auditWarnings: []
+      auditWarnings: [],
+      region: NO_REGION
     });
     expect(result.kind).toBe('rate_limited');
     if (result.kind !== 'rate_limited') return;
@@ -43,7 +46,8 @@ describe('parseInvocation — rate_limited.resetsAtMs (Feature 027)', () => {
       exitCode: 1,
       rateLimit: { matched: true, cause: 'out-of-usage' },
       auditEntry: null,
-      auditWarnings: []
+      auditWarnings: [],
+      region: NO_REGION
     });
     expect(result.kind).toBe('rate_limited');
     if (result.kind !== 'rate_limited') return;
@@ -57,7 +61,8 @@ describe('parseInvocation — rate_limited.resetsAtMs (Feature 027)', () => {
       exitCode: 1,
       rateLimit: { matched: false, cause: '' },
       auditEntry: null,
-      auditWarnings: []
+      auditWarnings: [],
+      region: NO_REGION
     });
     expect(result.kind).toBe('transient_error');
   });
@@ -77,7 +82,8 @@ describe('parseInvocation — rate_limited.resetsAtMs (Feature 027)', () => {
         exitCode: 0,
         rateLimit: { matched: true, cause: 'rate-limit' },
         auditEntry: { entryRaw: '{}', entryParsed: {} } as never,
-        auditWarnings: []
+        auditWarnings: [],
+        region: NO_REGION
       });
       expect(result.kind).not.toBe('rate_limited');
       expect(result.kind).toBe('clean');
@@ -90,7 +96,8 @@ describe('parseInvocation — rate_limited.resetsAtMs (Feature 027)', () => {
         exitCode: 0,
         rateLimit: { matched: true, cause: 'rate-limit' },
         auditEntry: null,
-        auditWarnings: []
+        auditWarnings: [],
+        region: NO_REGION
       });
       expect(result.kind).not.toBe('rate_limited');
       // No contract block + exit-zero falls through to the default
@@ -107,7 +114,8 @@ describe('parseInvocation — rate_limited.resetsAtMs (Feature 027)', () => {
         exitCode: 1,
         rateLimit: { matched: true, cause: 'rate-limit' },
         auditEntry: null,
-        auditWarnings: []
+        auditWarnings: [],
+        region: NO_REGION
       });
       expect(result.kind).toBe('rate_limited');
       if (result.kind !== 'rate_limited') return;

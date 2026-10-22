@@ -41,6 +41,7 @@ import {
 } from '../../../src/controller/phase-sequencer';
 import type { PhaseOverride, WorkflowRun } from '../../../src/state/workflow-run';
 import type { PhaseRunOutput } from '../../../src/controller/phase-runner';
+import { LAST_PHASE_ISSUES_REMAIN_CAUSE } from '../../../src/controller/phase';
 import type { PhaseDef } from '../../../src/config/pipeline-config';
 
 function makeRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
@@ -613,6 +614,53 @@ describe('PhaseSequencer.decideAfterPhase', () => {
       now: NOW
     });
     expect(decision.kind).toBe('pause-verify');
+  });
+
+  // FR-R3-199 — `transition()` fails a required last phase that ends with issues
+  // outstanding. The shipped bugfix pipeline ends on `bugfix-verify-post`, and its
+  // verify pause keeps the Run resumable on that phase (026 FR-016), so the pause
+  // must still win there.
+  describe('a last phase that ends with issues outstanding (FR-R3-199)', () => {
+    const decideAtLast = (lastPhase: string) => {
+      const lastDef = { id: lastPhase, name: 'Last', instruction: 'Finish.' };
+      const run = makeRun({
+        currentPhase: lastPhase,
+        pipeline: {
+          id: 'pipe',
+          name: 'Pipe',
+          phases: [{ id: 'bugfix-implement', name: 'Implement', instruction: 'Fix.' }, lastDef]
+        }
+      });
+      return sequencer.decideAfterPhase({
+        run,
+        output: makeOutput({
+          result: {
+            kind: 'remaining_issues',
+            issues: [{ summary: 'not merged' }],
+            auditEntry: null
+          },
+          outcome: 'issues_remain'
+        }),
+        iteration: 1,
+        iterationCap: 5,
+        activePhaseDef: lastDef,
+        latestManualPauseAt: run.manualPauseAt,
+        now: NOW
+      });
+    };
+
+    it('fails the Run with a message an operator can read', () => {
+      const decision = decideAtLast('finalize');
+      expect(decision.kind).toBe('fail');
+      if (decision.kind !== 'fail') return;
+      expect(decision.decisionCause).toBe(LAST_PHASE_ISSUES_REMAIN_CAUSE);
+      expect(decision.capExhausted).toBe(false);
+      expect(decision.baseMessage).toBe('the last phase reported remaining issues');
+    });
+
+    it('keeps the verify pause when bugfix-verify-post is the last phase', () => {
+      expect(decideAtLast('bugfix-verify-post').kind).toBe('pause-verify');
+    });
   });
 
   it('routes verify phase with clean outcome to advance-or-loop (no premature pause)', () => {

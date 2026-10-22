@@ -14,6 +14,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { parseInvocation } from '../../../src/parser/stdout-parser';
+import { parseAuditLogBlock } from '../../../src/parser/audit-log-parser';
 import {
   FATAL_SIGNATURES,
   getEffectiveSignatures
@@ -43,8 +44,9 @@ function inputs(overrides: {
   rateLimitCause?: string;
   auditEntry?: AuditEntryFields | null;
 }) {
+  const stdout = overrides.stdout ?? '';
   return {
-    stdout: overrides.stdout ?? '',
+    stdout,
     stderr: overrides.stderr ?? '',
     exitCode: overrides.exitCode ?? 0,
     rateLimit: {
@@ -53,7 +55,10 @@ function inputs(overrides: {
     },
     auditEntry: overrides.auditEntry === undefined ? validAudit : overrides.auditEntry,
     auditWarnings: [],
-    effectiveFatalSignatures: getEffectiveSignatures([])
+    effectiveFatalSignatures: getEffectiveSignatures([]),
+    // From the same stdout, as phase-runner.ts derives it. None of these
+    // stdouts carries a block, so it is NO_REGION; `auditEntry` stands in.
+    region: parseAuditLogBlock(stdout).region
   };
 }
 

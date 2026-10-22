@@ -117,8 +117,19 @@ describe('Feature 029 T033 — phase-log on-disk immutability (SC-005)', () => {
           content: [
             {
               type: 'text',
-              text:
-                '=== SCHEGENT AUDIT LOG ===\n[SCHEGENT_STATUS: CLEAR]\n=== END SCHEGENT AUDIT LOG ==='
+              text: [
+                '=== SCHEGENT AUDIT LOG ===',
+                'phase: phase-1',
+                'files_created: []',
+                'files_modified: []',
+                'files_deleted: []',
+                'commands_executed: []',
+                'network_calls: []',
+                'ruleset_switches: []',
+                'notes: ok',
+                '=== END AUDIT LOG ===',
+                '[SCHEGENT_STATUS: CLEAR]'
+              ].join('\n')
             }
           ]
         }

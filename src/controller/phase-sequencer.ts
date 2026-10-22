@@ -41,7 +41,7 @@ import type {
   WorkflowRun
 } from '../state/workflow-run';
 import type { PhaseDef } from '../config/pipeline-config';
-import { transition, type TransitionResult } from './phase';
+import { transition, LAST_PHASE_ISSUES_REMAIN_CAUSE, type TransitionResult } from './phase';
 import { resolveRetryCapOutcome } from '../contracts/retry-cap-outcome';
 import type { PhaseRunOutput } from './phase-runner';
 import { toDelayedRetryCause } from './rate-limit-backoff';
@@ -199,6 +199,12 @@ const VERIFY_PHASE_IDS: ReadonlySet<string> = new Set([
   'bugfix-verify-pre',
   'bugfix-verify-post'
 ]);
+
+/**
+ * FR-R3-199 — the failure message for `LAST_PHASE_ISSUES_REMAIN_CAUSE`. The
+ * operator reads it in the notice after "Schegent: <phase> failed — ".
+ */
+const LAST_PHASE_ISSUES_REMAIN_MESSAGE = 'the last phase reported remaining issues';
 
 export class PhaseSequencer {
   public isVerificationPhase(phaseId: string): boolean {
@@ -380,13 +386,26 @@ export class PhaseSequencer {
       };
     }
 
+    // FR-R3-199 — `transition()` fails a required last phase that ends with issues
+    // outstanding, and the bugfix pipeline ends on a verify phase. The verify pause
+    // keeps the Run resumable on that phase (026 FR-016), so it keeps precedence.
+    if (
+      decision.kind === 'halt' &&
+      decision.cause === LAST_PHASE_ISSUES_REMAIN_CAUSE &&
+      VERIFY_PHASE_IDS.has(run.currentPhase)
+    ) {
+      return { kind: 'pause-verify', phaseResult, warnings, evictStagnationTracker: true };
+    }
+
     if (decision.kind === 'halt' && decision.status === 'failed') {
       const fatalCause =
         output.result.kind === 'malformed' ? output.result.fatalCause : undefined;
       const baseMessage =
         decision.cause === CAP_EXHAUSTED_CAUSE
           ? CAP_EXHAUSTED_CAUSE
-          : fatalCause ?? (output.warnings.join('; ').slice(0, 240) || 'phase failed');
+          : decision.cause === LAST_PHASE_ISSUES_REMAIN_CAUSE
+            ? LAST_PHASE_ISSUES_REMAIN_MESSAGE
+            : fatalCause ?? (output.warnings.join('; ').slice(0, 240) || 'phase failed');
       return {
         kind: 'fail',
         phaseResult,

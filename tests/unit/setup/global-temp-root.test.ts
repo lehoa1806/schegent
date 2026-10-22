@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
@@ -360,23 +360,25 @@ describe('the report — one line, every run (T1820, FR-025, SC-008)', () => {
   });
 });
 
+/** Restored wholesale: setup writes git config keys whose names depend on the count it found. */
+function restoreEnv(saved: NodeJS.ProcessEnv): void {
+  for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+  Object.assign(process.env, saved);
+}
+
 describe('setup sweeps before it creates its own root (FR-023, FR-025)', () => {
-  const ENV_KEYS = ['TMPDIR', 'TMP', 'TEMP', 'GIT_CEILING_DIRECTORIES'] as const;
-  let savedEnv: ReadonlyMap<string, string | undefined>;
+  let savedEnv: NodeJS.ProcessEnv;
   let log: MockInstance<typeof console.log>;
 
   beforeEach(() => {
-    savedEnv = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
+    savedEnv = { ...process.env };
     log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
   });
 
   afterEach(async () => {
     await teardown();
     log.mockRestore();
-    for (const [key, value] of savedEnv) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
+    restoreEnv(savedEnv);
   });
 
   it('prints exactly one line, all zeros on a clean tree — so the sweep ran before this root existed', async () => {
@@ -400,6 +402,63 @@ describe('setup sweeps before it creates its own root (FR-023, FR-025)', () => {
     // Left at STALE, a concurrent run's sweep would read this process's start against it and
     // take a live root for a reused one.
     expect((await fs.stat(own)).mtimeMs).toBeGreaterThanOrEqual(before - TIMESTAMP_ROUNDING_MS);
+  });
+});
+
+/**
+ * What a git child started in `cwd` reads for `key`, or null for nothing. No system or global file
+ * is read, and `cwd` is a run root, which is no repository, so the answer comes from the environment
+ * alone.
+ */
+function gitConfigValue(key: string, cwd: string): string | null {
+  const result = spawnSync('git', ['config', '--get', key], {
+    cwd,
+    encoding: 'utf8',
+    env: { ...process.env, GIT_CONFIG_GLOBAL: os.devNull, GIT_CONFIG_NOSYSTEM: '1' }
+  });
+  return result.status === 0 ? result.stdout.trim() : null;
+}
+
+describe('setup turns off git auto-maintenance for every git child of the run', () => {
+  it("reached this worker: the real setup's entry is read by a git child of this test", () => {
+    // A worker that did not inherit the setup's environment would run every fixture's commit with
+    // maintenance on, and every case below would still pass.
+    expect(gitConfigValue('maintenance.auto', os.tmpdir())).toBe('false');
+  });
+
+  describe('from an environment without it', () => {
+    let savedEnv: NodeJS.ProcessEnv;
+    let log: MockInstance<typeof console.log>;
+
+    beforeEach(() => {
+      savedEnv = { ...process.env };
+      for (const key of Object.keys(process.env)) if (key.startsWith('GIT_CONFIG_')) delete process.env[key];
+      log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    });
+
+    afterEach(async () => {
+      await teardown();
+      log.mockRestore();
+      restoreEnv(savedEnv);
+    });
+
+    it('reads maintenance.auto as false', async () => {
+      await setup({ config: { root: scratch } });
+
+      expect(gitConfigValue('maintenance.auto', path.join(parent, `vitest-${process.pid}`))).toBe('false');
+    });
+
+    it('keeps an entry the environment already held', async () => {
+      process.env.GIT_CONFIG_COUNT = '1';
+      process.env.GIT_CONFIG_KEY_0 = 'core.abbrev';
+      process.env.GIT_CONFIG_VALUE_0 = '12';
+
+      await setup({ config: { root: scratch } });
+
+      const own = path.join(parent, `vitest-${process.pid}`);
+      expect(gitConfigValue('core.abbrev', own)).toBe('12');
+      expect(gitConfigValue('maintenance.auto', own)).toBe('false');
+    });
   });
 });
 

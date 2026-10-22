@@ -14,7 +14,7 @@
  * That is unobservable from behaviour, so it is measured (T622, SC-004).
  */
 import { describe, it, expect } from 'vitest';
-import { parseAuditLogBlock } from '../../../src/parser/audit-log-parser';
+import { NO_REGION, parseAuditLogBlock } from '../../../src/parser/audit-log-parser';
 import { parseInvocation, type InvocationResult, type ParseInputs } from '../../../src/parser/stdout-parser';
 
 const OPEN = '=== SCHEGENT AUDIT LOG ===';
@@ -151,6 +151,36 @@ describe('region edges (T621)', () => {
     const audit = parseAuditLogBlock('');
     expect(audit.region).toEqual({ text: '', present: false });
     expect(parse('').kind).not.toBe('clean');
+  });
+});
+
+describe('the region is required (FR-R3-199)', () => {
+  it('cannot be omitted, because the whole-stdout scan reads tokens the host ignores', () => {
+    // A token printed before the block. phase-runner.ts forwards the region, so
+    // the host ignores it; omitting the field used to mean the whole-stdout
+    // scan, which accepts it. While the field was optional, the evals corpus
+    // omitted it and every clean case passed that way.
+    const stdout = [TOKEN, ...block()].join('\n');
+    const audit = parseAuditLogBlock(stdout);
+    // @ts-expect-error — `region` is required. tsc enforces it, not the
+    // assertions below: made optional again, this directive goes unused and
+    // `typecheck:tests` fails.
+    const withoutRegion: ParseInputs = {
+      stdout,
+      stderr: '',
+      exitCode: 0,
+      rateLimit: { matched: false, cause: '' },
+      auditEntry: audit.entry,
+      auditWarnings: audit.warnings
+    };
+    expect(parseInvocation({ ...withoutRegion, region: NO_REGION }).kind).toBe('clean');
+    expect(parseInvocation({ ...withoutRegion, region: audit.region }).kind).not.toBe('clean');
+  });
+
+  it('is NO_REGION for a stream with no complete block', () => {
+    // What a caller with no block passes is what the audit parser returns for one.
+    expect(parseAuditLogBlock('').region).toBe(NO_REGION);
+    expect(parseAuditLogBlock([OPEN, 'notes: cut off'].join('\n')).region).toBe(NO_REGION);
   });
 });
 
