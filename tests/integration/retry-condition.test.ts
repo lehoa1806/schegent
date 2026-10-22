@@ -101,8 +101,12 @@ function block(phase: string, body: readonly string[]): string {
   ].join('\n');
 }
 
+// FR-R3-199 — the token trails the audit block: since feature 107 the parser
+// reads it nowhere else. Printed before the block, it left every phase this
+// fixture ran `issues_remain`, unseen because the retryCondition transitions on
+// its metric before the outcome is consulted.
 function clearWithMetrics(phase: string, metricLines: string[]): string {
-  return `[SCHEGENT_STATUS: CLEAR]\n${block(phase, metricLines)}`;
+  return `${block(phase, metricLines)}\n[SCHEGENT_STATUS: CLEAR]`;
 }
 
 const SECURITY_AUDIT_PHASE: PhaseDef = {
@@ -216,6 +220,12 @@ describe('Retry-condition end-to-end (010, T025, US2)', () => {
       expect(evt.payload.pipelineId).toBe('security');
       expect(evt.payload.phaseId).toBe('security-audit');
     }
+
+    // FR-R3-199 — each iteration ends on the fake's token, not on remaining
+    // issues. A retryCondition decides the transition whatever the outcome, so
+    // nothing above would notice the token going unread.
+    const phaseEnds = lines.filter((l) => l.eventType === 'phase-end');
+    expect(phaseEnds.map((l) => l.payload.terminationReason)).toEqual(['token', 'token', 'token']);
   });
 
   it('advances with missingKeys recorded when the metric is absent (FR-012)', async () => {

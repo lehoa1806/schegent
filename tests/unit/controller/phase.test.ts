@@ -5,6 +5,8 @@ import {
   nextSuccessor,
   DEGRADED_CONTINUE_NOTIFY_TAG,
   FORCE_CONTINUE_NOTIFY_TAG,
+  LAST_PHASE_ISSUES_REMAIN_CAUSE,
+  type PhaseDefLike,
   type TransitionInput
 } from '../../../src/controller/phase';
 import { resolveRetryCapOutcome } from '../../../src/contracts/retry-cap-outcome';
@@ -310,6 +312,56 @@ describe('Phase enum and transitions', () => {
           expect(result.nextIteration, `${name} enters at 1`).toBe(1);
         }
       });
+    });
+  });
+
+  // FR-R3-199 — a last phase that reported issues outstanding advanced to `done`
+  // like a clean one, and the driver marked the Run `completed`: the queue started
+  // its next task and `errors-only` retention deleted the transcript. A required
+  // last phase now halts the Run `failed`, on that phase, so a resume re-runs it.
+  describe('a last phase that ends with issues outstanding (FR-R3-199)', () => {
+    // No phase declares a retryCondition: the rule is about position alone.
+    const middle: PhaseDefLike = { id: 'middle' };
+    const final: PhaseDefLike = { id: 'final' };
+    const pipeline = { phases: [{ id: 'lead' }, middle, final] };
+    const atFinal = (outcome: TransitionInput['outcome'], phaseDef: PhaseDefLike = final) =>
+      transition({ phase: final.id, outcome, iteration: 1, iterationCap: 5, pipeline, phaseDef });
+
+    it('halts failed when the phase is required', () => {
+      const result = atFinal('issues_remain');
+      expect(result).toMatchObject({
+        kind: 'halt',
+        status: 'failed',
+        cause: LAST_PHASE_ISSUES_REMAIN_CAUSE
+      });
+      expect(result.warnings.some((w) => w.includes(final.id))).toBe(true);
+    });
+
+    it('advances to done when the phase is optional', () => {
+      const result = atFinal('issues_remain', { ...final, isRequired: false });
+      expect(result).toMatchObject({ kind: 'advance', nextPhase: 'done' });
+    });
+
+    it('advances from a middle phase', () => {
+      const result = transition({
+        phase: middle.id, outcome: 'issues_remain', iteration: 1, iterationCap: 5,
+        pipeline, phaseDef: middle
+      });
+      expect(result).toMatchObject({ kind: 'advance', nextPhase: final.id });
+    });
+
+    it('advances to done when the last phase is clean', () => {
+      expect(atFinal('clean')).toMatchObject({ kind: 'advance', nextPhase: 'done' });
+    });
+
+    it("leaves a falsy retryCondition's answer alone", () => {
+      // The condition is the operator's own answer to whether the phase is done,
+      // so the rule stays out of that arm.
+      const result = transition({
+        phase: final.id, outcome: 'issues_remain', iteration: 1, iterationCap: 5, pipeline,
+        phaseDef: { ...final, retryCondition: 'pending_tasks > 0' }, metrics: { pending_tasks: 0 }
+      });
+      expect(result).toMatchObject({ kind: 'advance', nextPhase: 'done' });
     });
   });
 

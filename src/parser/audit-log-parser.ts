@@ -155,7 +155,8 @@ export interface TrailingRegion {
   present: boolean;
 }
 
-const NO_REGION: TrailingRegion = { text: '', present: false };
+/** The region of a stdout with no complete marker pair, as `parseAuditLogBlock` returns it. */
+export const NO_REGION: TrailingRegion = { text: '', present: false };
 
 export interface AuditLogParseResult {
   entry: AuditEntryFields | null;

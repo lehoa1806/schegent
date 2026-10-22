@@ -9,6 +9,7 @@
 // these classes.
 
 import { describe, it, expect } from 'vitest';
+import { parseAuditLogBlock } from '../../../src/parser/audit-log-parser';
 import { parseInvocation } from '../../../src/parser/stdout-parser';
 import type { ParseInputs } from '../../../src/parser/stdout-parser';
 import type { AuditEntryFields } from '../../../src/audit/audit-entry';
@@ -26,13 +27,16 @@ function baseInputs(overrides: Partial<ParseInputs> = {}): ParseInputs {
     metrics: {},
     warnings: []
   };
+  const stdout = overrides.stdout ?? '';
   return {
-    stdout: '',
+    stdout,
     stderr: '',
     exitCode: 1,
     rateLimit: { matched: false, cause: '' },
     auditEntry: audit,
     auditWarnings: [],
+    // From the same stdout, as phase-runner.ts derives it.
+    region: parseAuditLogBlock(stdout).region,
     ...overrides
   };
 }

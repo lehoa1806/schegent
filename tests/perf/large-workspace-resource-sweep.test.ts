@@ -88,10 +88,6 @@ beforeEach(async () => {
   await git('git', ['init', '-q'], { cwd: workspaceRoot });
   await git('git', ['config', 'user.email', 'perf@example.com'], { cwd: workspaceRoot });
   await git('git', ['config', 'user.name', 'Perf'], { cwd: workspaceRoot });
-  // `git commit` would start a detached `git maintenance run --auto`, which packs
-  // these 2,000 loose objects and deletes their `.git/objects/xx` directories while
-  // T1497 walks the tree and while `afterEach` removes it (measured on git 2.54).
-  await git('git', ['config', 'maintenance.auto', 'false'], { cwd: workspaceRoot });
   const body = 'x'.repeat(FILE_BYTES);
   for (let d = 0; d < FIXTURE_DIRS; d += 1) {
     const dir = path.join(workspaceRoot, `pkg-${d}`);

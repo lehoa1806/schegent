@@ -5,6 +5,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { detectCreditError } from '../../../src/parser/credit-error-detector';
+import { NO_REGION } from '../../../src/parser/audit-log-parser';
 import { parseInvocation } from '../../../src/parser/stdout-parser';
 
 describe('parseInvocation — stdout-only out-of-credits routing (Feature 066)', () => {
@@ -24,7 +25,8 @@ describe('parseInvocation — stdout-only out-of-credits routing (Feature 066)',
       exitCode,
       rateLimit,
       auditEntry: null,
-      auditWarnings: []
+      auditWarnings: [],
+      region: NO_REGION
     });
 
     expect(result.kind).toBe('rate_limited');
@@ -47,7 +49,8 @@ describe('parseInvocation — stdout-only out-of-credits routing (Feature 066)',
       exitCode,
       rateLimit,
       auditEntry: null,
-      auditWarnings: []
+      auditWarnings: [],
+      region: NO_REGION
     });
 
     expect(result.kind).toBe('rate_limited');
@@ -69,7 +72,8 @@ describe('parseInvocation — stdout-only out-of-credits routing (Feature 066)',
       exitCode,
       rateLimit,
       auditEntry: null,
-      auditWarnings: []
+      auditWarnings: [],
+      region: NO_REGION
     });
 
     expect(result.kind).toBe('transient_error');

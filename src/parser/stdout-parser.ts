@@ -172,10 +172,10 @@ function scanOutsideRegion(stdout: string, regionText: string): { count: number;
  */
 function detectTermination(
   stdout: string,
-  region: TrailingRegion | undefined,
+  region: TrailingRegion,
   warnings: string[]
 ): boolean {
-  if (!region?.present) {
+  if (!region.present) {
     const matched = detectTerminationToken(stdout);
     if (matched) warnings.push('[constitution] token accepted without audit block');
     return matched;
@@ -397,12 +397,15 @@ export interface ParseInputs {
    * consume one string, so the boundary is computed once and the two layers
    * cannot disagree.
    *
-   * When omitted the parser behaves exactly as it did before this feature —
-   * the whole-stdout scan — which keeps every caller that has not been updated
-   * working. That path is labeled at the point of acceptance (FR-009) so a
-   * degraded read is never mistaken for a bounded one.
+   * With no complete marker pair it is `NO_REGION`, and the parser falls back
+   * to the whole-stdout scan. That path is labeled at the point of acceptance
+   * (FR-009) so a degraded read is never mistaken for a bounded one.
+   *
+   * FR-R3-199 — required. While it was optional, the evals corpus omitted it,
+   * and every clean case passed on a token printed where the host never reads
+   * one.
    */
-  region?: TrailingRegion;
+  region: TrailingRegion;
 }
 
 export function parseInvocation(inputs: ParseInputs): InvocationResult {
