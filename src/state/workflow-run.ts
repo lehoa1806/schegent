@@ -136,14 +136,19 @@ export interface MutationPlanSnapshot {
 export interface TerminalTransitionIntent {
   readonly schemaVersion: 1;
   readonly run: WorkflowRun;
+  /**
+   * FR-R3-196 — when this transition was first journalled. Kept when a description is added
+   * later, and compared against the task row's `updatedAt` on replay.
+   */
   readonly createdAt: number;
   /**
    * FR-R3-071 — the sanitized description the terminal transition was
    * completing with, journalled so crash-replay records the operator's text
    * rather than substituting the feature id. Optional: intents written before
    * this field (and the controller's early `begin`) carry none, and replay
-   * falls back with a warn. Transient — the intent clears at completion — so
-   * this does not re-grow the memento the sidecar move shrank.
+   * falls back with a warn. Transient — the intent clears at completion, or is
+   * dropped when its Run has moved on — so this does not re-grow the memento the
+   * sidecar move shrank.
    */
   readonly description?: string;
 }
