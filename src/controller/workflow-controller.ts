@@ -49,6 +49,7 @@ import type { MutationPlanSnapshot } from '../state/workflow-run';
 import type { RunCheckpointService } from '../services/run-checkpoint-service';
 import type { RunMutationLedger } from '../services/run-mutation-ledger';
 import { WorkflowRunFactory } from '../services/workflow-run-factory';
+import { resumeUnattended } from '../services/unattended-resume';
 
 export interface WorkflowControllerOptions {
   cliPath: string;
@@ -920,9 +921,10 @@ export class SchegentWorkflowController {
     // resuming "the" Run, it is re-arming every Run the workspace persisted, and
     // after a crash mid-concurrency there can be several. Each is then addressed
     // by its own queue. With one entry this is the previous behavior exactly.
+    const { store, notifier, logger } = this;
     for (const [queueId, run] of Object.entries(this.store.getRunMap())) {
       await this.retryCoordinator.resumeExistingFromActivation(queueId, run, async () => {
-        await this.resumeExisting(queueId);
+        await resumeUnattended(queueId, { admit: (q) => this.admitResume(q), store, notifier, logger });
       });
     }
   }

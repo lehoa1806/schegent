@@ -38,6 +38,13 @@ Two things hold a run's identity, and they are not the same:
 On activation the extension reattaches: it claims the workspace lock, reattaches the credit
 watchdog, and resumes a persisted run. Nothing needs doing by hand for the ordinary case.
 
+Each Run that activation resumes this way, and each Run the credit watchdog later resumes when a
+rate-limit backoff ends or credits return, raises one warning as soon as the resume is admitted. It
+names the queue, the first 8 characters of the Run id and the phase, and names the two commands
+*Schegent: Show Active Run* and *Schegent: Cancel In-Flight Workflow*. The warning has no buttons and
+changes nothing: the Run is already working in the workspace, so start no other agent beside it until
+you have looked. A Run the queue drain resumes is **not** announced this way.
+
 If the run does **not** resume, the likely cause is that its lease is still held by the previous
 session's owner id and has not yet gone stale. That resolves itself within the staleness threshold.
 

@@ -140,7 +140,7 @@ const ROUTES: ReadonlyArray<{
     route: 'resume-on-activation',
     file: CONTROLLER,
     entry: 'resumeExistingFromActivation',
-    mustReach: ['resumeExisting']
+    mustReach: ['admitResume']
   },
   { route: 'continuation', file: DRIVER, entry: 'drive', mustReach: ['run'] }
 ];

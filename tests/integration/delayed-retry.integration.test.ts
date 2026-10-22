@@ -108,6 +108,8 @@ interface Harness {
   audit: AuditLogWriter;
   workspaceRoot: string;
   watchdog: ReturnType<typeof makeStubWatchdog>;
+  runner: ClaudeCliRunner;
+  notifier: Notifier;
 }
 
 async function makeHarness(memento: FakeMemento, workspaceRoot: string): Promise<Harness> {
@@ -142,7 +144,7 @@ async function makeHarness(memento: FakeMemento, workspaceRoot: string): Promise
     deps
   );
 
-  return { controller, store, queue, audit, workspaceRoot, watchdog };
+  return { controller, store, queue, audit, workspaceRoot, watchdog, runner, notifier };
 }
 
 let tmpRoot: string;
@@ -287,5 +289,78 @@ describe('Feature 011 — delayed retry end-to-end', () => {
     const override = (args[1] as { durationOverrideMs: number }).durationOverrideMs;
     expect(override).toBeGreaterThan(0);
     expect(override).toBeLessThanOrEqual(TRANSIENT_BACKOFF_MS);
+  });
+
+  // FR-R3-192 (T1863) — path 2. A Run whose persisted retry deadline has already passed is resumed at
+  // activation, with nobody at the keyboard, and the operator is told. The restart is the SC-012
+  // harness: a first controller leaves the deadline persisted, a second one activates over the same
+  // memento, and only the CLI runner is faked.
+  describe('FR-R3-192 — path 2, a deadline already due at activation', () => {
+    async function restartWithDeadline(deadlineOffsetMs: number | null) {
+      const memento = new FakeMemento();
+      const harness1 = await makeHarness(memento, tmpRoot);
+      const feature = await harness1.queue.enqueue('feature R3-192');
+      await harness1.controller.startNew(feature, null);
+      const persisted = harness1.store.getRun(DEFAULT_QUEUE_ID)!;
+      expect(persisted.pendingRetryAt).not.toBeNull();
+
+      const harness2 = await makeHarness(memento, tmpRoot);
+      if (deadlineOffsetMs !== null) {
+        const stored = harness2.store.getRun(DEFAULT_QUEUE_ID)!;
+        await harness2.store.setRun(
+          DEFAULT_QUEUE_ID,
+          { ...stored, pendingRetryAt: Date.now() + deadlineOffsetMs },
+          harness2.store.runCommitClaim(DEFAULT_QUEUE_ID)
+        );
+      }
+      return { harness2, runId: persisted.id };
+    }
+
+    const noOtherWork = (): Promise<void> => new Promise((done) => setImmediate(done));
+
+    it('P2 (1): a deadline already passed raises exactly one warning naming the Run', async () => {
+      const { harness2, runId } = await restartWithDeadline(-1_000);
+      const warn = harness2.notifier.warn as unknown as ReturnType<typeof vi.fn>;
+
+      await harness2.controller.resumeExistingFromActivation();
+      // The resume really happened: the fake CLI was started for the resumed Run.
+      await vi.waitFor(() => expect(harness2.runner.invoke).toHaveBeenCalled());
+      await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(harness2.watchdog.pauseAndPoll).toHaveBeenCalled());
+
+      const message = warn.mock.lastCall?.[0] as string;
+      expect(message).toContain(`queue "${DEFAULT_QUEUE_ID}"`);
+      expect(message).toContain(`run ${runId.slice(0, 8)} `);
+      expect(message).toContain('Schegent: Show Active Run');
+      expect(message).toContain('Schegent: Cancel In-Flight Workflow');
+      expect(warn).toHaveBeenCalledTimes(1);
+    });
+
+    it('P2 (2): a deadline not yet passed raises nothing and re-arms the watchdog instead', async () => {
+      const { harness2 } = await restartWithDeadline(null);
+      const warn = harness2.notifier.warn as unknown as ReturnType<typeof vi.fn>;
+
+      await harness2.controller.resumeExistingFromActivation();
+      await noOtherWork();
+
+      expect(harness2.watchdog.pauseAndPoll).toHaveBeenCalledTimes(1);
+      expect(harness2.runner.invoke).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('I1: the warning comes before the resumed Run starts its CLI (SC-004)', async () => {
+      const { harness2 } = await restartWithDeadline(-1_000);
+      const warn = harness2.notifier.warn as unknown as ReturnType<typeof vi.fn>;
+      const invoke = harness2.runner.invoke as unknown as ReturnType<typeof vi.fn>;
+
+      await harness2.controller.resumeExistingFromActivation();
+      await vi.waitFor(() => expect(invoke).toHaveBeenCalled());
+      await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(harness2.watchdog.pauseAndPoll).toHaveBeenCalled());
+
+      expect(Math.min(...warn.mock.invocationCallOrder)).toBeLessThan(
+        Math.min(...invoke.mock.invocationCallOrder)
+      );
+    });
   });
 });

@@ -7,6 +7,7 @@ import type { SchegentWorkflowController } from '../controller/workflow-controll
 import type { SanitizedLogger } from '../lib/logger';
 import { checkLiveness, createLivenessProbe } from '../services/process-liveness';
 import { resumePersistedRuns } from '../services/resume-decision';
+import { resumeUnattended } from '../services/unattended-resume';
 import type { CreditWatchdog } from '../watchdog/credit-watchdog';
 import type { ScheduledStartCoordinator } from '../services/scheduled-start-coordinator';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
@@ -67,7 +68,7 @@ export interface Stage2ProducerDeps {
   readonly lock: WorkspaceLockManager;
   readonly controller: Pick<
     SchegentWorkflowController,
-    'resumeExistingFromActivation' | 'resumeExisting' | 'scheduleAutoDrain'
+    'resumeExistingFromActivation' | 'admitResume' | 'scheduleAutoDrain'
   >;
   readonly watchdog: Pick<CreditWatchdog, 'reattachOnActivation'>;
   readonly scheduledStartCoordinator: Pick<ScheduledStartCoordinator, 'reArm'>;
@@ -308,6 +309,12 @@ export function createStage2Producers(deps: Stage2ProducerDeps): Stage2Producers
     // on that answer.
     if (lockResult.acquired) {
       const probe = createLivenessProbe();
+      const unattended = {
+        admit: (queueId: string) => controller.admitResume(queueId),
+        store,
+        notifier: { warn: (message: string) => vscode.window.showWarningMessage(message) },
+        logger
+      };
       void resumePersistedRuns({
         // Filtered HERE: `resume-decision.ts` is not on the status-literal
         // allowlist and this file is, which is the right way round — the policy
@@ -318,7 +325,7 @@ export function createStage2Producers(deps: Stage2ProducerDeps): Stage2Producers
         appendAudit: async (entry) => {
           await auditWriter.append({ ...entry, payload: { ...entry.payload } });
         },
-        resume: (queueId) => void controller.resumeExisting(queueId),
+        resume: (queueId) => void resumeUnattended(queueId, unattended),
         notify: (message) => void vscode.window.showWarningMessage(message),
         log: (message) => logger.info(message)
       });
