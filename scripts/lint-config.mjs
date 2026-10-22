@@ -227,11 +227,10 @@ export const hostConfig = [
   },
   {
     // The root package.json declares no `type`, so `.js` in this tree is
-    // CommonJS — two CLI stubs node launches directly, tests/e2e/fixtures/
-    // fake-claude/index.js and tests/fixtures/mock-claude/index.js. Declaring
-    // `globals.node` here is what replaced the `/* eslint-env node */` comment
-    // the first of them carried: flat config no longer honours that comment, and
-    // ESLint 10 will reject it outright (FR-022).
+    // CommonJS — the one CLI stub node launches directly, tests/e2e/fixtures/
+    // fake-claude/index.js. Declaring `globals.node` here is what replaced the
+    // `/* eslint-env node */` comment it carried: flat config no longer honours
+    // that comment, and ESLint 10 will reject it outright (FR-022).
     files: ['**/*.js', '**/*.cjs'],
     languageOptions: {
       ecmaVersion: 2022,
