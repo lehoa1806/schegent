@@ -22,7 +22,10 @@ import { startTimesMatch } from '../contracts/spawn-identity';
 
 /** The seams: injected so tests never signal a real process. */
 export interface LivenessProbe {
-  /** `process.kill(pid, 0)` — true when a process with that id exists. */
+  /**
+   * `process.kill(pid, 0)`. Returns `true` when a process holds that id, `false` when none does
+   * (`ESRCH`), and throws when the OS will not say (`EPERM` or any other error).
+   */
   readonly exists: (pid: number) => boolean;
   /** Epoch ms at which `pid` started, or `null` when it cannot be determined. */
   readonly startedAtMs: (pid: number) => Promise<number | null>;
@@ -46,8 +49,9 @@ export async function checkLiveness(
   try {
     exists = probe.exists(identity.pid);
   } catch {
-    // EPERM means a process with that id exists and belongs to someone else — which is
-    // itself evidence that the pid has been recycled, since our own child would be ours.
+    // The probe throws only when it cannot answer; "no such process" is answered as `false`.
+    // The main case is EPERM: a process with that id exists and belongs to someone else — which
+    // is itself evidence that the pid has been recycled, since our own child would be ours.
     // Treated as unanswerable rather than alive: refusing a resume on someone else's
     // process is the false positive this whole design exists to avoid.
     return 'unanswerable';
@@ -74,8 +78,15 @@ export function createLivenessProbe(): LivenessProbe {
   return {
     platform: process.platform,
     exists: (pid: number): boolean => {
-      process.kill(pid, 0);
-      return true;
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch (error) {
+        // Only ESRCH means gone. Every other error, EPERM first, means the OS will not say,
+        // which `checkLiveness` records as `unanswerable`.
+        if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
+        throw error;
+      }
     },
     startedAtMs: async (pid: number): Promise<number | null> =>
       new Promise((resolve) => {
