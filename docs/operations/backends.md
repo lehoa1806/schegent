@@ -199,7 +199,7 @@ enforcement flags, and the backend's permission engine refuses at the attempt:
 
 | Backend | Capabilities it can withhold | How |
 |---|---|---|
-| `claude` | all four | `--disallowedTools`, `--permission-mode` |
+| `claude` | all four (`network` only partly; see the third limit) | `--disallowedTools`, `--permission-mode` |
 | `codex` | `workspace-write`, `outside-workspace-write`, `process-spawn` | narrower `--sandbox` modes |
 | `agy` | `process-spawn` only | `--sandbox` |
 
@@ -208,11 +208,15 @@ enforcement flags, and the backend's permission engine refuses at the attempt:
 set ignored — an unbounded phase where a narrower set was approved is the failure the mechanism exists
 to prevent.
 
-**Two stated limits**, repeated here because an operator reading this table will otherwise infer more:
+**Three stated limits**, repeated here because an operator reading this table will otherwise infer more:
 
 - the host trusts the backend to apply the flags it was given; nothing here verifies that;
 - `agy` bounds one of the four, so a narrowed phase on that backend is usually a refusal rather than a
-  bounded run.
+  bounded run;
+- on `claude`, withholding `network` adds `--disallowedTools WebFetch,WebSearch` and nothing else: it
+  removes the two fetch tools, not network reach. A phase that keeps `process-spawn` keeps `Bash`, and
+  `Bash` reaches the network (`curl`, `git`, `npm`). See [the threat model](../security/threat-model.md)
+  for what that leaves open.
 
 <!-- Source: src/contracts/phase-capabilities.ts -->
 <!-- Source: src/services/capability-enforcement-plan.ts -->

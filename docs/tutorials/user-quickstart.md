@@ -154,13 +154,13 @@ Success at this step means the form reports `Queued as <request-id>.`, where `<r
 3. Select that task to open its run detail.
 4. Watch **Phase log** as execution advances. The same view also exposes **Run outputs** and **Context**.
 
-The repository's deterministic E2E test drives the same `speckit-new-feature` pipeline to `completed` with `currentPhase` equal to `done` and asserts the nine-phase order above. That test uses a fake Claude executable; a real completion additionally depends on the installed CLI, credentials, model availability, workspace contents, and the commands performed by each phase.
+The repository's deterministic integration test, `tests/integration/bugfix-pipeline-end-to-end.test.ts`, drives the five bugfix phases, in the order listed above, to `completed` with `currentPhase` equal to `done`. That test uses a scripted CLI runner in place of the Claude CLI; a real completion additionally depends on the installed CLI, credentials, model availability, workspace contents, and the commands performed by each phase.
 <!-- Source: webview-ui/src/dashboard/routes.ts -->
 <!-- Source: webview-ui/src/components/drilldown/QueuesTier.svelte -->
 <!-- Source: webview-ui/src/components/drilldown/QueueDetailTier.svelte -->
 <!-- Source: webview-ui/src/components/drilldown/RunDetailTier.svelte -->
-<!-- Source: tests/e2e/pipeline.test.ts -->
-<!-- Source: tests/e2e/fixtures/fake-claude/index.js -->
+<!-- Source: tests/integration/bugfix-pipeline-end-to-end.test.ts -->
+<!-- Source: tests/fixtures/speckit-catalog-fixture.ts -->
 
 ## If the run is refused
 

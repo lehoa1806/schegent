@@ -127,13 +127,23 @@ What it bounds and what it does not, in the same paragraph on purpose:
   trust anchor above says the backend honours its own flags. It does — and it also honours its own
   configuration file, which the host neither pins nor controls. A narrowed argv defers to whatever
   `~/.claude/settings.json` (or the codex equivalent) says, so an operator-local file can loosen a bound
-  the plan applied, with every flag respected. As of `FR-R3-105` this is **observed rather than
-  pinned**: `capability-applied` carries a digest of the relevant keys and the names of the keys read,
-  so evidence can answer *was the ambient configuration the same on these two Runs* — never the path
-  (workspace paths may not enter the structured log, and a home path additionally carries the
-  operator's username) and never the values (a settings file can hold an API key). Pinning with
-  `--settings` is the stronger answer and is the recorded destination; taking it needs the flag's
-  stability established against a live CLI, which costs operator quota and has not been spent.
+  the plan applied, with every flag respected. `FR-R3-105` added an observer
+  (`src/services/ambient-config-observer.ts`) and a field on `capability-applied` to carry its result,
+  but the phase runner does not pass the observer (`src/controller/phase-runner.ts:558`), so every
+  `capability-applied` event records that field as `null`: **nothing is observed today**. Once the
+  observer is called it reads one user-level file per backend. For `claude` that is
+  `~/.claude/settings.json`, digested over whichever of `permissions`, `allowedTools`, `disallowedTools`
+  and `env` are present, or over the whole text when the file does not parse as JSON. For `codex` it is
+  the whole of `~/.codex/config.toml`. For `agy` it is nothing, and an absent or unreadable file yields no
+  observation either. No other settings file is read: the workspace's own `.claude/settings.json` and
+  `.claude/settings.local.json` are never observed, and a phase allowed to write the workspace can change
+  them. So evidence cannot answer *was the ambient configuration the same on these two Runs*. Once the
+  observer is wired it could answer only whether the observed user-level file, or its widening keys,
+  changed, and two Runs that both lack that file would have nothing to compare, which is not the same as
+  the same. The observation never records the path (workspace paths may not enter the structured log,
+  and a home path additionally carries the operator's username) or the values (a settings file can hold
+  an API key). Pinning with `--settings` is the stronger answer and is the recorded destination; taking it needs
+  the flag's stability established against a live CLI, which costs operator quota and has not been spent.
 - **An authored field can no longer inject a flag.** `phaseDef.model` reaches the child as its own argv
   token at all three backends and was validated as a non-empty string only, so an imported pipeline
   document supplying `model: "--dangerously-skip-permissions"` put that flag into argv — granting
@@ -159,8 +169,9 @@ A refusal is a Run-level outcome with a named cause and a declared `capability-r
 distinguishable from a phase failure. A set the backend *can* enforce is recorded too, as
 `capability-applied`: the bound itself lives in argv and argv is never written to the structured log, so
 without that event a completed Run could not tell an operator whether its phase ran bounded. Both
-payloads carry closed-union members, a phase index, and — since `FR-R3-105` — the ambient-configuration
-observation described above, which is a digest and a list of key names rather than any content. Nothing
+payloads carry closed-union members and a phase index. `capability-applied` also has a field for the
+ambient-configuration observation described above, which production records as `null` because the
+observer is not wired; `capability-refused` has none. Nothing
 else. <!-- Source: src/services/capability-enforcement-plan.ts --><!-- Source: src/contracts/phase-capabilities.ts -->
 
 ## Prompt-injection surfaces
