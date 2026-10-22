@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest';
-import { checkLiveness, type LivenessProbe } from '../../../src/services/process-liveness';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  checkLiveness,
+  createLivenessProbe,
+  type LivenessProbe
+} from '../../../src/services/process-liveness';
 import {
   RESUME_ON,
   START_TIME_TOLERANCE_MS,
@@ -137,5 +141,71 @@ describe('FR-R3-103 — liveness is decided by the identity, not by the pid', ()
   it('NON-VACUITY: the tolerance helper is what decides, and it can say no', () => {
     expect(startTimesMatch(1_000_000, 1_000_000)).toBe(true);
     expect(startTimesMatch(1_000_000, 1_000_000 + START_TIME_TOLERANCE_MS + 1)).toBe(false);
+  });
+});
+
+// The cases above fake the probe; these drive the real one, with only `process.kill` replaced.
+describe('FR-R3-193 — an exited CLI reads as dead through the real probe', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // Replaces the signal call so no real process is signalled and no `ps` runs.
+  const stubKill = (behave: () => boolean) =>
+    vi.spyOn(process, 'kill').mockImplementation((() => behave()) as unknown as typeof process.kill);
+
+  const realProbe: LivenessProbe = { ...createLivenessProbe(), platform: 'darwin' };
+
+  it('exists: "no such process" is false, which the defect made a throw', () => {
+    // The probe's documented contract is false for a pid nobody holds; the real one threw.
+    const kill = stubKill(() => {
+      throw Object.assign(new Error('no such process'), { code: 'ESRCH' });
+    });
+    expect(createLivenessProbe().exists(4242)).toBe(false);
+    expect(kill).toHaveBeenCalledWith(4242, 0);
+  });
+
+  it('dead: a CLI that exited is recorded dead, not unanswerable', async () => {
+    // The commonest resume on macOS and Linux, and the one the fake probe above never reached.
+    stubKill(() => {
+      throw Object.assign(new Error('no such process'), { code: 'ESRCH' });
+    });
+    expect(await checkLiveness(identity(), realProbe)).toBe('dead');
+  });
+
+  it('unanswerable: "not permitted" is rethrown as the same error, never read as gone', async () => {
+    // A fix that read every error as gone would trade one false record for another.
+    const refused = Object.assign(new Error('EPERM'), { code: 'EPERM' });
+    stubKill(() => {
+      throw refused;
+    });
+    let thrown: unknown;
+    try {
+      realProbe.exists(4242);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBe(refused);
+    expect(await checkLiveness(identity(), realProbe)).toBe('unanswerable');
+  });
+
+  it('unanswerable: only ESRCH means gone, so a code-less error and EINVAL are not', async () => {
+    // EINVAL means a misused probe, not a gone process, so it is not read the way the raw writer does.
+    for (const failure of [
+      new Error('boom'),
+      Object.assign(new Error('EINVAL'), { code: 'EINVAL' })
+    ]) {
+      stubKill(() => {
+        throw failure;
+      });
+      expect(await checkLiveness(identity(), realProbe), String(failure)).toBe('unanswerable');
+    }
+  });
+
+  it('exists: a process that holds the pid is true, probed with signal 0 only', () => {
+    // The guard that the fix did not turn a live pid into a false answer.
+    const kill = stubKill(() => true);
+    expect(createLivenessProbe().exists(4242)).toBe(true);
+    expect(kill).toHaveBeenCalledWith(4242, 0);
   });
 });
