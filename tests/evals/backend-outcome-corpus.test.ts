@@ -132,23 +132,14 @@ interface CaseParseInputs {
    * Operator-registered fatal patterns, as the operator writes them.
    *
    * Expanded through the real `getEffectiveSignatures` rather than declared as
-   * a literal `EffectiveSignature[]`, for the same reason `useTrailingRegion`
-   * is a flag: a hand-built effective list can disagree with the real merge —
-   * drop the built-in floor, mis-set `source`, invent a stream scope — and a
-   * case that covers `fatal-detector:source:operator-defined` against a
-   * hand-built list would be covering the harness's idea of the registry
-   * instead of the registry.
+   * a literal `EffectiveSignature[]`: a hand-built effective list can disagree
+   * with the real merge — drop the built-in floor, mis-set `source`, invent a
+   * stream scope — and a case that covers `fatal-detector:source:operator-defined`
+   * against a hand-built list would be covering the harness's idea of the
+   * registry instead of the registry.
    */
   readonly operatorFatalSignatures?: readonly string[];
   readonly streamFatalMatch?: FatalClassification;
-  /**
-   * Whether to forward the bounded trailing region `parseAuditLogBlock`
-   * publishes over this same stdout. Declared as a flag rather than as a
-   * literal `TrailingRegion`, because the region is DERIVED from the case's own
-   * stdout; a hand-written one could disagree with the text it describes, which
-   * is the class of defect this corpus exists to catch rather than commit.
-   */
-  readonly useTrailingRegion?: boolean;
 }
 
 interface EvalCase {
@@ -358,7 +349,11 @@ function evaluate(testCase: EvalCase): {
   }
 
   const modelLines = unwrapped === null ? testCase.output.stdoutLines : [unwrapped.text];
-  const stdout = [...modelLines, auditBlock(testCase.output.auditBlock)]
+  // FR-R3-199 — the block leads. Since feature 107 the parser reads the
+  // termination token only after the audit block, which is where the prompt
+  // tells the model to print it. Appended after the model's lines, the block
+  // left every case's token outside the region the host reads.
+  const stdout = [auditBlock(testCase.output.auditBlock), ...modelLines]
     .filter((line) => line.length > 0)
     .join('\n');
   const stderr = testCase.output.stderrLines.join('\n');
@@ -368,7 +363,6 @@ function evaluate(testCase: EvalCase): {
   const effectiveFatalSignatures = effectiveSignaturesFor(testCase);
   const apiError = unwrapped?.apiError ?? undefined;
   const streamFatalMatch = extra?.streamFatalMatch;
-  const region = extra?.useTrailingRegion === true ? audit.region : undefined;
   const parsed = parseInvocation({
     stdout,
     stderr,
@@ -376,31 +370,33 @@ function evaluate(testCase: EvalCase): {
     rateLimit: credit,
     auditEntry: audit.entry,
     auditWarnings: audit.warnings,
+    // FR-R3-199 — always forwarded, as phase-runner.ts forwards it. Omitted, the
+    // parser scanned the whole stdout for the token, so a case could classify
+    // clean on a token the host ignores.
+    region: audit.region,
     // Everything below was dropped before this feature. Each is absent unless
     // the case declares it, and absent is what `ParseInputs` already treats as
     // "behave as the caller that was never updated" — which is why the eleven
     // version-1 cases classify identically.
     evidencePolicy: extra?.evidencePolicy,
     evidencePolicyDeclaredAt: extra?.evidencePolicyDeclaredAt,
-    // Omitted rather than set to `undefined`. These four are the fields
+    // Omitted rather than set to `undefined`. These three are the fields
     // `ParseInputs` declares WITHOUT `| undefined` in the type — `apiError?:
     // ApiErrorMetadata | null` (stdout-parser.ts:375), `effectiveFatalSignatures?:
-    // ReadonlyArray<EffectiveSignature>` (:381), `streamFatalMatch?:
-    // FatalClassification` (:393) and `region?: TrailingRegion` (:405) — where
-    // the two `evidencePolicy` fields above are declared `?: T | undefined` and
-    // take it directly. Under `exactOptionalPropertyTypes`, pinned by
+    // ReadonlyArray<EffectiveSignature>` (:381) and `streamFatalMatch?:
+    // FatalClassification` (:393) — where the two `evidencePolicy` fields above
+    // are declared `?: T | undefined` and take it directly. Under
+    // `exactOptionalPropertyTypes`, pinned by
     // tests/lint/compiler-strictness-ratchet.test.ts, an explicitly-undefined
     // key is a different thing from an absent one. The distinction is
-    // type-level only here — each is read as a VALUE, never as a key: `if
-    // (!region?.present)` (stdout-parser.ts:178) and `effective ??
-    // getEffectiveSignatures([])` (fatal-signature-registry.ts:205) behave
+    // type-level only here — each is read as a VALUE, never as a key: `effective
+    // ?? getEffectiveSignatures([])` (fatal-signature-registry.ts:205) behaves
     // identically either way — so nothing about how these cases classify
     // changes with these lines. They are written so the harness can be read
     // under the flag the ratchet is adopting.
     ...(apiError === undefined ? {} : { apiError }),
     ...(effectiveFatalSignatures === undefined ? {} : { effectiveFatalSignatures }),
-    ...(streamFatalMatch === undefined ? {} : { streamFatalMatch }),
-    ...(region === undefined ? {} : { region })
+    ...(streamFatalMatch === undefined ? {} : { streamFatalMatch })
   });
   const result = failClosedOnTruncatedOutput(parsed, testCase.output.truncated);
   return {
