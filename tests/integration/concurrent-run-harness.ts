@@ -99,10 +99,13 @@ export const buffer = (text: string): ZippedStreamBuffer => {
   return b;
 };
 
+// FR-R3-199 — the token trails the audit block: since feature 107 the parser
+// reads it nowhere else. Printed before the block, it left every phase this
+// fixture ran `issues_remain`, which went unseen while a last phase in that
+// state still completed the Run.
 /** A phase result the sequencer reads as a clean advance. */
 export const cleanStdout = (phase: string): string =>
   [
-    '[SCHEGENT_STATUS: CLEAR]',
     '=== SCHEGENT AUDIT LOG ===',
     `phase: ${phase}`,
     'files_created: []',
@@ -114,7 +117,8 @@ export const cleanStdout = (phase: string): string =>
     'open_questions: 0',
     'critical_issues: 0',
     'notes: ok',
-    '=== END AUDIT LOG ==='
+    '=== END AUDIT LOG ===',
+    '[SCHEGENT_STATUS: CLEAR]'
   ].join('\n');
 
 export const cleanOutput = (phase: string): RawInvocationOutput => ({
