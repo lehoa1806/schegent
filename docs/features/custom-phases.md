@@ -68,7 +68,8 @@ phaseIds:
   - speckit-checklist
   - speckit-analyze
   - speckit-implement
-  - speckit-review
+  - speckit-code-review
+  - speckit-security-review
   - finalize
 ```
 
