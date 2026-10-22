@@ -14,6 +14,7 @@ import { CreditWatchdog } from '../watchdog/credit-watchdog';
 import type { GuardedRunService } from '../services/guarded-run-service';
 import { QueueScheduleWatchdog } from '../controller/schedule-watchdog';
 import { ScheduledStartCoordinator } from '../services/scheduled-start-coordinator';
+import { resumeUnattended } from '../services/unattended-resume';
 import type { WorkspaceLockManager } from '../state/lock';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import type { Notifier } from '../ui/notifications';
@@ -211,7 +212,12 @@ const watchdog = new CreditWatchdog(
     controller.claimElapsedDelayedRetries();
     for (const queueId of Object.keys(store.getRunMap())) {
       if (controller.hasPendingDelayedRetry(queueId)) continue;
-      await controller.resumeExisting(queueId);
+      await resumeUnattended(queueId, {
+        admit: (q) => controller.admitResume(q),
+        store,
+        notifier,
+        logger
+      });
     }
   }
 );
