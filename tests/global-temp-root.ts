@@ -183,6 +183,14 @@ export async function setup(ctx: GlobalSetupContextLike): Promise<void> {
   // scratch directories read as "not a git repository" exactly as they do under
   // the system temp dir.
   process.env.GIT_CEILING_DIRECTORIES = parent;
+
+  // `git commit` starts a detached `git maintenance run --auto`. Measured on git
+  // 2.54, its default geometric repack runs once two loose objects sit in
+  // `.git/objects/17/`, the one directory git samples to estimate the count, and it
+  // deletes the loose `.git/objects/xx` directories while a test walks or removes
+  // the fixture: ENOENT or ENOTEMPTY. Whether a commit does that turns on its
+  // hashes, so the failure looks random. Set here, no fixture has to remember it.
+  appendGitConfig('maintenance.auto', 'false');
 }
 
 export async function teardown(): Promise<void> {
@@ -355,6 +363,18 @@ async function removalFailure(dir: string, remove: (dir: string) => Promise<void
   } catch (error) {
     return errnoCode(error);
   }
+}
+
+/**
+ * Adds one entry to git's environment config, after any the environment already
+ * holds. Git reads `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>` for every n
+ * below `GIT_CONFIG_COUNT`, and they override every config file.
+ */
+function appendGitConfig(key: string, value: string): void {
+  const index = Number(process.env.GIT_CONFIG_COUNT ?? '0');
+  process.env[`GIT_CONFIG_KEY_${index}`] = key;
+  process.env[`GIT_CONFIG_VALUE_${index}`] = value;
+  process.env.GIT_CONFIG_COUNT = String(index + 1);
 }
 
 function errnoCode(error: unknown): string {
