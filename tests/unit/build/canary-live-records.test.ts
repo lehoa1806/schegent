@@ -216,7 +216,8 @@ describe('FR-R3-084 §3.4 — the injection-shaped scenario, live half', () => {
         exitCode: 0,
         rateLimit: detectCreditError(stdout, '', 0),
         auditEntry: audit.entry,
-        auditWarnings: audit.warnings
+        auditWarnings: audit.warnings,
+        region: audit.region
       });
       // The SAME verdict the deterministic twin pins for the same lines:
       // `issues_remain` / `remaining_issues`, never `clean` and never the `token`
@@ -293,7 +294,7 @@ describe('FR-R3-182 — which corpus cases have a recording', () => {
  * blocks for claude, its `agent_message` items for codex, and the whole stream for agy, which
  * has neither, and it parses what comes back. These replays do the same, so a planted
  * instruction is judged where the host would meet it. (The output case above parses the raw
- * envelope with no region, as its deterministic twin parses hand-written lines.)
+ * envelope, as its deterministic twin parses hand-written lines.)
  *
  * Each case holds two words, both in what the backend was given (`CANARY_SCENARIOS`): a
  * delivery token only the surface holds, and an injection marker only the planted note asks
