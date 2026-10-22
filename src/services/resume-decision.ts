@@ -70,6 +70,66 @@ export function declineMessage(candidate: ResumeCandidate): string {
   );
 }
 
+/** The title `package.json` gives `schegent.showActiveRun`; a unit test pins the two together. */
+export const SHOW_ACTIVE_RUN_TITLE = 'Schegent: Show Active Run';
+
+/** The title `package.json` gives `schegent.cancel`; a unit test pins the two together. */
+export const CANCEL_IN_FLIGHT_TITLE = 'Schegent: Cancel In-Flight Workflow';
+
+// A UI bound of our own, equal to the 80 a phase name already has (PHASE_NAME_MAX_LEN in
+// config/process-definition-validator.ts). A queue id is bounded at 256 (contracts/validators/shared.ts).
+/** The most code points any value interpolated into the announcement may keep. */
+export const ANNOUNCEMENT_VALUE_MAX_LENGTH = 80;
+
+const RUN_ID_DISPLAY_LENGTH = 8;
+const TRUNCATION_MARK = '…';
+// Property escapes, not a \x00-\x1f class: no raw control character in the source, no no-control-regex.
+const CONTROL_AND_FORMAT_CODE_POINTS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+
+/**
+ * Make one operator-authored value safe to show in the announcement: strip, redact, then cap.
+ *
+ * `sanitize` is the host's redaction set (`SanitizedLogger.sanitize`), passed in so nothing is
+ * forked. A value over {@link ANNOUNCEMENT_VALUE_MAX_LENGTH} code points keeps its first 79 and ends
+ * in an ellipsis, counted by code point so a cut never splits a surrogate pair.
+ */
+export function cleanAnnouncementValue(raw: string, sanitize: (value: string) => string): string {
+  // Strip BEFORE redacting: a control character planted inside a secret would otherwise break the
+  // redaction pattern's match, and stripping afterwards would rejoin the secret unredacted.
+  const redacted = sanitize(raw.replace(CONTROL_AND_FORMAT_CODE_POINTS, ''));
+  const codePoints = Array.from(redacted);
+  if (codePoints.length <= ANNOUNCEMENT_VALUE_MAX_LENGTH) return redacted;
+  return codePoints.slice(0, ANNOUNCEMENT_VALUE_MAX_LENGTH - 1).join('') + TRUNCATION_MARK;
+}
+
+/** What the announcement names: where the Run was resumed, and at which phase. */
+export interface ResumeAnnouncementTarget {
+  readonly queueId: string;
+  readonly runId: string;
+  readonly phase: string;
+}
+
+/**
+ * The operator-facing sentence for a Run Schegent resumed without them. One wording for all four
+ * unattended paths, kept beside {@link declineMessage} so the sentences live in one place. It names
+ * the Run by its first 8 characters, as the other Run notifications do, and the two commands by title.
+ */
+export function resumeAnnouncement(
+  target: ResumeAnnouncementTarget,
+  sanitize: (value: string) => string
+): string {
+  const queue = cleanAnnouncementValue(target.queueId, sanitize);
+  const run = Array.from(cleanAnnouncementValue(target.runId, sanitize))
+    .slice(0, RUN_ID_DISPLAY_LENGTH)
+    .join('');
+  const phase = cleanAnnouncementValue(target.phase, sanitize);
+  return (
+    `Schegent resumed run ${run} on queue "${queue}" at phase "${phase}" on its own, and it is ` +
+    `working in this workspace now. To see it, run "${SHOW_ACTIVE_RUN_TITLE}". ` +
+    `To stop it, run "${CANCEL_IN_FLIGHT_TITLE}".`
+  );
+}
+
 /** What the activation walk needs. Narrow on purpose, so a test supplies four fakes. */
 export interface ResumeWalkDeps {
   /**

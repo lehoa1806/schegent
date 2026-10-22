@@ -1,10 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ANNOUNCEMENT_VALUE_MAX_LENGTH,
+  CANCEL_IN_FLIGHT_TITLE,
+  SHOW_ACTIVE_RUN_TITLE,
+  cleanAnnouncementValue,
   decideResume,
   declineMessage,
+  resumeAnnouncement,
   resumePersistedRuns,
   type ResumeWalkDeps
 } from '../../../src/services/resume-decision';
+import { SanitizedLogger } from '../../../src/lib/logger';
 import type { LivenessVerdict, SpawnIdentity } from '../../../src/contracts/spawn-identity';
 
 /**
@@ -213,5 +219,148 @@ describe('FR-R3-103 — the supersession abort', () => {
     const source = readFileSync(resolve(__dirname, '../../../src/state/lock.ts'), 'utf8');
     // One bad callback must not leave the window permanently non-primary.
     expect(source).toMatch(/try \{\s*listener\(\);\s*\} catch \{/);
+  });
+});
+
+/**
+ * FR-R3-192 (T1862, FR-004, FR-005, FR-011) — the sentence an unattended resume raises, and the
+ * cleaning every value in it goes through.
+ *
+ * The wording is exact on purpose. It is the operator's only notice that a Run took the working
+ * tree, so a reworded sentence that drops a command title would pass a looser assertion and fail
+ * the operator. Control characters are built with `String.fromCodePoint`, never typed as escapes:
+ * an editing tool has written such escapes as raw characters before.
+ */
+describe('FR-R3-192 — the resume announcement', () => {
+  const sanitizer = new SanitizedLogger();
+  const sanitize = (value: string): string => sanitizer.sanitize(value);
+  const char = (codePoint: number): string => String.fromCodePoint(codePoint);
+  const codePoints = (value: string): number => Array.from(value).length;
+  const occurrences = (haystack: string, needle: string): number => haystack.split(needle).length - 1;
+
+  const plain = {
+    queueId: 'default',
+    runId: '1afda4d8-1111-4222-8333-444455556666',
+    phase: 'speckit-implement'
+  };
+
+  it('says exactly what contract C1 says, for plain values', () => {
+    expect(resumeAnnouncement(plain, sanitize)).toBe(
+      'Schegent resumed run 1afda4d8 on queue "default" at phase "speckit-implement" on its own, ' +
+        'and it is working in this workspace now. To see it, run "Schegent: Show Active Run". ' +
+        'To stop it, run "Schegent: Cancel In-Flight Workflow".'
+    );
+  });
+
+  it('names the queue, the first 8 characters of the Run, the phase and both titles, once each', () => {
+    const message = resumeAnnouncement(plain, sanitize);
+    expect(occurrences(message, '1afda4d8')).toBe(1);
+    expect(message).not.toContain('1afda4d8-');
+    expect(occurrences(message, 'queue "default"')).toBe(1);
+    expect(occurrences(message, 'phase "speckit-implement"')).toBe(1);
+    expect(occurrences(message, 'Schegent: Show Active Run')).toBe(1);
+    expect(occurrences(message, 'Schegent: Cancel In-Flight Workflow')).toBe(1);
+  });
+
+  it('avoids the status literal that hard rule 6 reserves', () => {
+    expect(resumeAnnouncement(plain, sanitize)).not.toMatch(/running/i);
+  });
+
+  it('cuts a 100-character phase and a 300-character queue id to exactly 80 code points ending in an ellipsis', () => {
+    expect(ANNOUNCEMENT_VALUE_MAX_LENGTH).toBe(80);
+    const phase = cleanAnnouncementValue('p'.repeat(100), sanitize);
+    const queue = cleanAnnouncementValue('q'.repeat(300), sanitize);
+    for (const cut of [phase, queue]) {
+      expect(codePoints(cut)).toBe(80);
+      expect(cut.endsWith('…')).toBe(true);
+    }
+    expect(phase).toBe('p'.repeat(79) + '…');
+
+    const message = resumeAnnouncement(
+      { queueId: 'q'.repeat(300), runId: plain.runId, phase: 'p'.repeat(100) },
+      sanitize
+    );
+    expect(message).toContain(`queue "${queue}"`);
+    expect(message).toContain(`phase "${phase}"`);
+  });
+
+  it('does not cut a value of exactly 80 code points, and does cut one of 81', () => {
+    expect(cleanAnnouncementValue('a'.repeat(80), sanitize)).toBe('a'.repeat(80));
+    expect(cleanAnnouncementValue('a'.repeat(81), sanitize)).toBe('a'.repeat(79) + '…');
+  });
+
+  it('never splits a surrogate pair when it cuts', () => {
+    const astral = char(0x1f600);
+    // 78 plain, then astral characters at code points 79 and 80, then one more: 81 in all.
+    const raw = 'a'.repeat(78) + astral + astral + 'z';
+    const cut = cleanAnnouncementValue(raw, sanitize);
+    expect(codePoints(cut)).toBe(80);
+    expect(cut).toBe('a'.repeat(78) + astral + '…');
+    expect(() => encodeURIComponent(cut)).not.toThrow();
+  });
+
+  it.each([
+    ['NUL', 0x0000],
+    ['ESC', 0x001b],
+    ['DEL', 0x007f],
+    ['NEL (a C1 control)', 0x0085],
+    ['zero-width space (Cf)', 0x200b],
+    ['right-to-left override (Cf)', 0x202e],
+    ['left-to-right isolate (Cf)', 0x2066],
+    ['line separator (Zl)', 0x2028],
+    ['paragraph separator (Zp)', 0x2029]
+  ])('removes %s from every value', (_label, codePoint) => {
+    const planted = `a${char(codePoint)}b`;
+    expect(cleanAnnouncementValue(planted, sanitize)).toBe('ab');
+    const message = resumeAnnouncement(
+      { queueId: planted, runId: planted + plain.runId, phase: planted },
+      sanitize
+    );
+    expect(message).not.toContain(char(codePoint));
+    expect(message).toContain('queue "ab"');
+    expect(message).toContain('phase "ab"');
+  });
+
+  it('redacts a secret-shaped value through the host redaction set', () => {
+    const secret = 'sk-ant-' + 'A'.repeat(30);
+    const cleaned = cleanAnnouncementValue(`before ${secret} after`, sanitize);
+    expect(cleaned).not.toContain('AAAAAAAAAA');
+    expect(cleaned).toContain('[REDACTED]');
+    const message = resumeAnnouncement(
+      { queueId: secret, runId: plain.runId, phase: secret },
+      sanitize
+    );
+    expect(message).not.toContain('AAAAAAAAAA');
+  });
+
+  it('strips before it redacts: a control character planted inside a secret does not shield it', () => {
+    const planted = 'sk-ant-' + 'A'.repeat(15) + char(0x200b) + 'A'.repeat(15);
+    const cleaned = cleanAnnouncementValue(planted, sanitize);
+    expect(cleaned).not.toContain('AAAAAAAAAA');
+    expect(cleaned).toContain('[REDACTED]');
+    // Non-vacuity: the redaction set alone, run first, is shielded by that one character.
+    expect(sanitize(planted)).toContain('AAAAAAAAAA');
+  });
+
+  it('cleans the Run id before it takes the first 8 code points', () => {
+    const message = resumeAnnouncement(
+      { queueId: 'default', runId: `${char(0x200b)}1afda4d8-1111`, phase: 'x' },
+      sanitize
+    );
+    expect(message).toContain('run 1afda4d8 on queue');
+  });
+});
+
+describe('FR-R3-192 — the two command titles', () => {
+  it('equal the manifest titles for schegent.showActiveRun and schegent.cancel', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const manifest = JSON.parse(
+      readFileSync(resolve(__dirname, '../../../package.json'), 'utf8')
+    ) as { contributes: { commands: Array<{ command: string; title: string }> } };
+    const titleOf = (command: string): string | undefined =>
+      manifest.contributes.commands.find((entry) => entry.command === command)?.title;
+    expect(SHOW_ACTIVE_RUN_TITLE).toBe(titleOf('schegent.showActiveRun'));
+    expect(CANCEL_IN_FLIGHT_TITLE).toBe(titleOf('schegent.cancel'));
   });
 });
