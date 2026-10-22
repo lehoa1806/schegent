@@ -41,20 +41,21 @@ parenthetical says *by injection* is **Asserted by unit table only** — that ph
 | That report reaches the audit record | `FR-R3-054` §5 | `tests/unit/controller/process-tree-degradation.test.ts`, `tests/lint/tree-degradation-emission-funnel.test.ts` | **Observed here** — the recorder runs against a real append, and the wiring between the runner's hook and the audit writer is gated. |
 | The same, on Windows | `FR-R3-054` §5 | — | **Not implemented, deliberately.** There is no group to probe, so the only available check answers for the direct child — and a recycled pid inside the confirmation window would file an entry against a Run whose tree had died. The runtime-log warning is what Windows has. See [Backend operations](backends.md) step 6. |
 
-## Route taken — 2026-08-27
+## Route taken — 2026-10-22
 
 **Decision: rows 1-3 are declined, dated, and the declared support surface narrows
 to match. No measurement was obtained, and none is expected under current
 constraints.**
 
-`FR-R3-115` offered four routes and required one to be chosen on the record. Three
-of them are **unavailable**, which is a different statement from unattractive, and
-each reason is observed rather than assumed:
+`FR-R3-115` offered four routes and required one to be chosen on the record. Only
+Route A is **unavailable**, which is a different statement from unattractive, and
+its reason is observed rather than assumed. Route B is available, Route C is not a
+verification decision, and Route D is taken in part:
 
 | Route | Status | Why |
 |---|---|---|
 | **A** — a Windows and a Linux contributor each run `npm run test:host` | Unavailable | This is a single-operator project. `.github/CODEOWNERS` names one person, and `FR-R3-115` row 5 makes that fact the premise of a different finding in the same item. There is no contributor to ask. |
-| **B** — a local container or VM on the operator's machine | Unavailable | **Observed 2026-08-27**: `docker`, `podman`, `colima`, `lima` and `orbstack` are all absent from this machine, and no container daemon is running. Route B was the cheapest route to closing row 3 and it is not open. |
+| **B** — a local container or VM on the operator's machine | **Available, not taken this cycle** | **Observed 2026-10-22**: OrbStack 2.2.3 is installed on this machine (Homebrew cask, 2026-09-20), and `orb`, `orbctl` and `docker` all resolve on `PATH` to OrbStack's own bundle. Route B is the cheapest route to closing row 3. It is not taken here because taking it means provisioning a Linux machine, installing a Node toolchain and the project's dependencies there over the network, and running the host suite, which the unattended cycle that wrote this record is not authorised to do. That is a fact about this cycle's authority, not a judgement that the route is not worth taking, and the route stays open to the operator. **Superseded:** on 2026-08-27 `docker`, `podman`, `colima`, `lima` and `orbstack` were all absent from this machine, and no container daemon was running. |
 | **C** — a public-repository free tier | Not a verification decision | It is a repository-visibility decision, as the item says itself. Recorded, not taken here. |
 | **D** — decline explicitly and permanently | **Taken, in part** | See below. |
 
@@ -97,7 +98,8 @@ re-reads it.* Without a date and a check, the three conditions below expire quie
 decline becomes a permanent posture by nobody deciding.
 
 **What the check can and cannot see.** It reads the date above. It cannot notice that a Windows
-machine appeared, that a container runtime was installed, or that a contributor ran the suite — those
+machine appeared, that the operator ran the suite in the installed container runtime, or that a
+contributor ran it — those
 are facts about the world, and no gate in a repository sees them. Those stay the operator's to watch,
 and they are the reason the date is a *ceiling* rather than a schedule: any one of them arriving
 reopens this before 2026-11-27.
@@ -113,7 +115,8 @@ prevent.
 Any one of these, and this heading is rewritten rather than amended:
 
 - A Windows machine or VM becomes available to the operator (closes rows 1 and 2).
-- A container runtime is installed (closes row 3; **not** row 1 — process-group
+- The operator runs `npm run test:host` unedited in the installed container runtime, in a Linux
+  machine, and reports what they saw, pass or fail (closes row 3; **not** row 1 — process-group
   semantics are the thing under test and a Linux container cannot answer for them).
 - A contributor on either platform runs `npm run test:host` unedited and reports what
   they saw, pass or fail. Both fixtures are written to need no edit, so this costs
@@ -130,11 +133,11 @@ rather than an open intention:
 |---|---|---|
 | Windows process-tree termination via `taskkill /T` | **Unrun here** | Declined 2026-08-27. Branch kept. |
 | Windows reparse-point refusal at a safe-open leaf | **Unrun here** | Declined 2026-08-27. Branch kept. |
-| Linux path case-sensitivity in `output-target-identity.ts:40` | **Unrun here** | Declined 2026-08-27. Route B was the way in and is unavailable. |
+| Linux path case-sensitivity in `output-target-identity.ts:40` | **Unrun here** | Declined 2026-08-27. Route B is the way in; it is available and not taken this cycle (see *Route taken*). |
 
 **Observed / relied on / inferred**, kept apart as `FR-R3-099` had to learn to do:
-*observed* — the five container runtimes are absent, and the fixtures skip with their
-platform named; *relied on* — that `taskkill /T` is Windows' process-tree mechanism
+*observed* — on 2026-10-22, OrbStack 2.2.3 is installed, and the fixtures skip with their
+platform named (recorded 2026-08-27, not re-run here); *relied on* — that `taskkill /T` is Windows' process-tree mechanism
 and that a container does not reproduce Windows process-group semantics; *inferred* —
 that rows 1-3 will stay unmeasured until one of the conditions above changes. Nothing
 here is an observation of Windows or Linux behaviour, because none was made.
@@ -148,8 +151,8 @@ to it, and `tests/lint/platform-branch-has-record-row.test.ts` refuses a
 | Platform | Tier | Evidence |
 |---|---|---|
 | **macOS** (darwin, arm64) | **Verified** | The full host suite runs here every cycle. This record's header names the date and the platform. |
-| **Linux** | **Unverified** | Ships, and is branched for (`src/lib/output-target-identity.ts:40`). Has never executed here. Route B unavailable — see *Route taken*. |
-| **Windows** (win32) | **Unverified** | Ships, and is branched for in four production files, two of them safety paths. Has never executed here. Both fixtures are *Unrun here*. |
+| **Linux** | **Unverified** | Ships, and is branched for (`src/lib/output-target-identity.ts:40`). Has never executed here. Route B is available and not taken this cycle — see *Route taken*. |
+| **Windows** (win32) | **Unverified** | Ships, and is branched for in four production files, two of them safety paths. Has never executed here. Both fixtures are *Unrun here*. The one Windows result there is, [the red Windows CI leg](../release/actions-terminal-record.md#the-red-windows-ciyml-leg-versus-every-windows-path-claim) at `2a885187`, ran on CI, not on this machine, so "has never executed here" stays true of this machine; its cause is unrecovered. |
 
 **"Unverified" is a claim about evidence, not about quality.** It does not say the
 platform is broken, and it does not say it works. It says nobody has run it and this
