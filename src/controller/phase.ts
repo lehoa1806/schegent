@@ -29,6 +29,13 @@ export const FORCE_CONTINUE_NOTIFY_TAG = '[notify] forced-continue';
  */
 export const DEGRADED_CONTINUE_NOTIFY_TAG = '[notify] continued-degraded';
 
+/**
+ * FR-R3-199 — the halt cause when a required last phase ends `issues_remain`.
+ * Exported because the sequencer reads it: the bugfix pipeline ends on a verify
+ * phase, whose pause keeps precedence over this halt.
+ */
+export const LAST_PHASE_ISSUES_REMAIN_CAUSE = 'last_phase_issues_remain';
+
 // Feature 098 (T038, FR-019, FR-021) — this module's second copy of the
 // built-in Phase ids is gone, along with the `BuiltInPhaseId` type derived from
 // it and the `INVOCABLE_PHASES` list derived from that. It was a ten-id
@@ -393,6 +400,14 @@ export function transition(input: TransitionInput): TransitionResult {
   }
 
   const next = nextSuccessor(phase, pipeline);
+  // FR-R3-199 — advancing to `done` here completed the Run, so a last phase that
+  // reported it was not finished started the queue's next task and lost its
+  // transcript to `errors-only` retention. Halting leaves `currentPhase` on the
+  // phase, where a resume re-runs it. Mid-pipeline the next phase still runs.
+  if (outcome === 'issues_remain' && next === 'done' && phaseDef?.isRequired !== false) {
+    warnings.push(`last phase ${phase} ended with remaining issues; the run halts instead of completing`);
+    return { kind: 'halt', status: 'failed', warnings, cause: LAST_PHASE_ISSUES_REMAIN_CAUSE };
+  }
   return {
     kind: 'advance',
     nextPhase: next,

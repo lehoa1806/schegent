@@ -498,6 +498,15 @@ matching entry lands in `phasesCompleted`. A Phase that instead executed and
 was skipped while active still reads `skipped` from that ledger, so the two
 paths to a bypassed Phase remain visually distinct.
 
+**A Run completes only when its last Phase finishes (FR-R3-199).** A required
+last Phase with no `retryCondition` that ends `issues_remain` — remaining
+issues, open questions, or an exit 0 with no contract block — halts the Run
+`failed` with `currentPhase` still on it, so a resume re-runs it. It used to
+advance to `done` like a clean Phase: the Run read `completed`, the queue
+started its next Task, and `errors-only` retention deleted the transcript. A
+verify Phase that ends the bugfix pipeline still pauses instead.
+
+<!-- Source: src/controller/phase.ts -->
 <!-- Source: src/controller/workflow-controller.ts -->
 <!-- Source: src/controller/phase-runner.ts -->
 <!-- Source: src/controller/phase-control-service.ts -->
