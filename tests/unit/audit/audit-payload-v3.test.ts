@@ -287,6 +287,10 @@ describe('phase-end warning vocabulary', () => {
       'evidence-path-refused:runtimeLog',
       // FR-R3-058 (M-07). A code-resident literal, like every member here.
       'host-verification-failed',
+      // FR-R3-198 (T1877). Two code-resident literals, one per cause of an
+      // unfinished turn, composed from a closed cause union, never from output.
+      'incomplete-turn:background-work-open',
+      'incomplete-turn:no-contract-block',
       'output-truncated-unclassifiable',
       // FR-R3-047 (H-04). A code-resident literal, like every member here.
       'stdin-delivery-failed'
@@ -440,6 +444,7 @@ describe('phase-end outcome vocabulary', () => {
       'clean',
       'deadline',
       'failed',
+      'incomplete_turn',
       'issues_remain',
       'malformed',
       'paused-at-breakpoint',
@@ -450,6 +455,28 @@ describe('phase-end outcome vocabulary', () => {
       'transient_error'
     ]);
   });
+});
+
+// FR-R3-198 (T1877, M2) — an unfinished turn's `phase-end` names its outcome,
+// its reason and its cause. The cause travels as a warning code, so the
+// allowlist is what lets it reach the record.
+describe('phase-end incomplete_turn FR-R3-198 (T1877)', () => {
+  for (const cause of ['background-work-open', 'no-contract-block'] as const) {
+    it(`keeps the outcome, the reason and incomplete-turn:${cause}`, () => {
+      const projected = projectAuditPayload('phase-end', {
+        outcome: 'incomplete_turn',
+        exitCode: 143,
+        terminationReason: 'incomplete_turn',
+        warnings: [`incomplete-turn:${cause}`]
+      });
+      expect(projected).toMatchObject({
+        outcome: 'incomplete_turn',
+        terminationReason: 'incomplete_turn',
+        warnings: [`incomplete-turn:${cause}`]
+      });
+      expect(projected).not.toHaveProperty('omittedWarningCount');
+    });
+  }
 });
 
 /**

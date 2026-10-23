@@ -106,12 +106,13 @@ const UNWRAP = 'repo/src/parser/stream-json-unwrapper.ts';
  * stale without someone noticing.
  */
 const INVOCATION_KINDS: Record<InvocationResult['kind'], number> = {
-  clean: 25,
-  open_questions: 27,
-  remaining_issues: 33,
-  rate_limited: 39,
-  transient_error: 59,
-  malformed: 66
+  clean: 26,
+  open_questions: 28,
+  remaining_issues: 34,
+  rate_limited: 40,
+  transient_error: 62,
+  incomplete_turn: 71,
+  malformed: 77
 };
 
 /**
@@ -125,13 +126,14 @@ const PHASE_OUTCOME_REACHABLE: Record<PhaseOutcome, boolean> = {
   failed: true,
   rate_limited: true,
   transient_error: true,
+  incomplete_turn: true,
   timeout: false,
   skipped: false,
   'paused-at-breakpoint': false
 };
 
 /**
- * Five of the ten are parser-reachable. The corpus suite's own comment named
+ * Six of the eleven are parser-reachable. The corpus suite's own comment named
  * only three of the five unreachable ones — `iteration_cap`, `timeout`,
  * `cancel` — and silently omitted `deadline` and `pre_spawn_refusal`. Measuring
  * the union rather than restating the comment is what surfaced that.
@@ -142,6 +144,7 @@ const TERMINATION_REACHABLE: Record<TerminationReason, boolean> = {
   remaining_issues: true,
   rate_limit: true,
   error: true,
+  incomplete_turn: true,
   deadline: false,
   iteration_cap: false,
   timeout: false,
@@ -166,7 +169,7 @@ function unionEntries(): EnumerationEntry[] {
       entryKind: 'class',
       set: 'PhaseOutcome',
       key,
-      anchor: { file: PHASE, symbol: 'PhaseOutcome', line: 46 },
+      anchor: { file: PHASE, symbol: 'PhaseOutcome', line: 60 },
       derivation: 'type-exhaustive',
       reachableFromParser: reachable
     });
@@ -176,7 +179,7 @@ function unionEntries(): EnumerationEntry[] {
       entryKind: 'class',
       set: 'TerminationReason',
       key,
-      anchor: { file: RUN, symbol: 'TerminationReason', line: 176 },
+      anchor: { file: RUN, symbol: 'TerminationReason', line: 181 },
       derivation: 'type-exhaustive',
       reachableFromParser: reachable
     });

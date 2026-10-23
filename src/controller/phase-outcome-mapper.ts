@@ -69,6 +69,8 @@ export function mapOutcome(result: InvocationResult, exitCode: number | null): P
     // controller's delayed-retry path via PhaseOutcome.transient_error.
     case 'transient_error':
       return 'transient_error';
+    case 'incomplete_turn':
+      return 'incomplete_turn';
     case 'malformed':
       // Feature 010 FR-004: a fatal-classification result terminates the
       // phase on the current invocation regardless of exit code.
@@ -99,6 +101,8 @@ export function mapTerminationReason(
       // (the queue/history pipeline treats this the same as a generic error;
       // the controller's pendingRetryCause is the load-bearing distinguisher).
       return 'error';
+    case 'incomplete_turn':
+      return 'incomplete_turn';
     case 'malformed':
       // Still one arm: 'transient_error' reports 'error' too, so only the
       // outcome diverged.

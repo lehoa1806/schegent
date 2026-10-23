@@ -141,13 +141,14 @@ export class PhaseRetryEvaluator {
   public async maybeEmit(inputs: PhaseRetryEvaluatorInputs): Promise<number | undefined> {
     const expression = inputs.phaseDef?.retryCondition;
     if (typeof expression !== 'string' || expression.trim().length === 0) return undefined;
-    // FR-017 / Feature 011 — emit nothing for these: malformed is recorded by phase-end
-    // and the delayed-retry kinds by `retry-scheduled`, so a record here double-counts.
+    // FR-017 / Feature 011 — emit nothing for these: phase-end records malformed and
+    // incomplete_turn, `retry-scheduled` the delayed-retry kinds, so a record here double-counts.
     // Evict, though (FR-009): malformed with exit 0 maps to `issues_remain`, whose
     // retryCondition can `loop`, so nothing else drops a baseline a later count would span.
     if (
       inputs.result.kind === 'malformed' ||
       inputs.result.kind === 'transient_error' ||
+      inputs.result.kind === 'incomplete_turn' ||
       inputs.result.kind === 'rate_limited'
     ) {
       this.evictStagnationTracker(inputs.runId, inputs.phaseDef?.id ?? inputs.phase);

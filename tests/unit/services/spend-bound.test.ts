@@ -24,6 +24,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { phaseDefinitionToPhaseDef } from '../../../src/config/process-catalog';
 import { validatePhaseDefinition } from '../../../src/config/process-definition-validator';
 import { SanitizedLogger } from '../../../src/lib/logger';
+import { extractInvocationUsageMetrics } from '../../../src/parser/invocation-usage';
 import {
   accumulateSpend,
   denominationFor,
@@ -372,5 +373,32 @@ describe('the pause reaches the operator surface it was written for', () => {
     expect(pauseBadgeLabel('spend-bound-reached')).toBe('Spend bound reached');
     // And an unrecognized cause still reads as something rather than blanking the badge.
     expect(pauseBadgeLabel(undefined)).toBe('Phase paused');
+  });
+});
+
+describe('FR-R3-198 (T1882) — a resumed session\'s cost is counted once', () => {
+  it('A2: folds run 777491f8\'s 13 cumulative costs to 24.0459, not 184.5690', async () => {
+    // Loaded here rather than at the top, so that until the module exists only
+    // this case fails.
+    const { SessionCostLedger } = await import('../../../src/runner/session-cost-ledger.js');
+    // Run `777491f8`: one CLI session resumed across eleven phases. Each figure is
+    // the running `total_cost_usd` on one invocation's last `result` row (research R9).
+    const cumulativeUsd = [
+      1.1731, 1.9194, 5.8407, 7.8224, 8.5354, 10.7153, 13.7383, 20.773, 21.4272, 22.4448,
+      23.0404, 23.0931, 24.0459
+    ];
+    const session = 'session-a';
+    const ledger = new SessionCostLedger();
+    let recorded = NO_SPEND_OBSERVED;
+    let summed = NO_SPEND_OBSERVED;
+    for (const costUsd of cumulativeUsd) {
+      const row = `{"type":"result","num_turns":1,"total_cost_usd":${costUsd}}`;
+      const usage = extractInvocationUsageMetrics(row, 'claude', ledger.get(session));
+      ledger.record(session, costUsd);
+      recorded = accumulateSpend(recorded, { ...usage });
+      summed = accumulateSpend(summed, { totalCostUsd: costUsd });
+    }
+    expect(recorded.costUsd).toBeCloseTo(24.0459, 6);
+    expect(summed.costUsd, 'every cumulative summed, as today').toBeCloseTo(184.569, 6);
   });
 });

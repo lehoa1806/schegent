@@ -6,6 +6,7 @@ import {
   type FatalClassification,
   type FatalSource
 } from '../lib/fatal-signature-registry';
+import type { RawInvocationOutput } from '../runner/invocation-result';
 import type { TrailingRegion } from './audit-log-parser';
 import { extractRateLimitMessage, extractResetTimestamp } from './rate-limit-reset-extractor';
 
@@ -63,6 +64,15 @@ export type InvocationResult =
       auditEntry: AuditEntryFields | null;
       warnings?: string[];
     }
+  // FR-R3-198 — the turn ended unfinished, decided from the runner's turn-end
+  // facts (`ParseInputs.turnEnd`) and never from the exit status. `warnings`
+  // always carries `incomplete-turn:<cause>`.
+  | {
+      kind: 'incomplete_turn';
+      cause: IncompleteTurnCause;
+      auditEntry: AuditEntryFields | null;
+      warnings: string[];
+    }
   | {
       kind: 'malformed';
       warnings: string[];
@@ -73,6 +83,13 @@ export type InvocationResult =
       // when `fatalCause` is unset (non-fatal malformed paths).
       fatalSource?: FatalSource;
     };
+
+/**
+ * FR-R3-198 — why a turn counts as unfinished. `background-work-open` names it
+ * whenever that fact holds, even on a turn that also settled: the open work is
+ * what the resume has to finish.
+ */
+export type IncompleteTurnCause = 'background-work-open' | 'no-contract-block';
 
 const TERMINATION_REGEX = /\[SCHEGENT_STATUS:\s*(CLEAR|DONE|RESOLVED)\]/i;
 const OPEN_HEADING_REGEX = /^\s*(Open|Remaining)\s+(questions|clarifications):\s*$/i;
@@ -406,6 +423,39 @@ export interface ParseInputs {
    * one.
    */
   region: TrailingRegion;
+  /**
+   * FR-R3-198 — the runner's turn-end facts. The phase runner passes `raw`, and
+   * the eval harness a case's literal.
+   *
+   * Optional: absent, the invocation is classified exactly as before.
+   */
+  turnEnd?: Pick<
+    RawInvocationOutput,
+    'completedAwaitingExit' | 'backgroundWorkOpenAtResult' | 'killed'
+  >;
+}
+
+/**
+ * FR-R3-198 — the cause an unfinished turn would carry, or null when the facts
+ * allow none: they are absent, neither is set, or the invocation was killed. An
+ * operator cancel can end with `killed` set and a non-null exit code, and must
+ * not be resumed.
+ */
+function incompleteTurnCause(turnEnd: ParseInputs['turnEnd']): IncompleteTurnCause | null {
+  if (turnEnd === undefined || turnEnd.killed === true) return null;
+  if (turnEnd.backgroundWorkOpenAtResult === true) return 'background-work-open';
+  if (turnEnd.completedAwaitingExit === true) return 'no-contract-block';
+  return null;
+}
+
+/**
+ * FR-R3-198 — whether the turn settled: the CLI's result was the last thing
+ * seen, and the host ended a process that had not exited (D6). A killed
+ * invocation never settled.
+ */
+function turnSettled(turnEnd: ParseInputs['turnEnd']): boolean {
+  if (turnEnd === undefined || turnEnd.killed === true) return false;
+  return turnEnd.completedAwaitingExit === true;
 }
 
 export function parseInvocation(inputs: ParseInputs): InvocationResult {
@@ -485,7 +535,8 @@ export function parseInvocation(inputs: ParseInputs): InvocationResult {
   // token is present, we fall through to the contract-block parsing below
   // so the successful result is preserved.
   //
-  // Precedence: fatal > rate_limited > api_error > exit-code floor (without clean token)
+  // Precedence: fatal > rate_limited > api_error > incomplete_turn
+  //             > exit-code floor (without clean token)
   //             > contract blocks > remaining-issues default.
   //
   // Feature 107 — the token this floor consults is now region-scoped, so an
@@ -493,7 +544,31 @@ export function parseInvocation(inputs: ParseInputs): InvocationResult {
   // Detection happens once, before the floor, because it accumulates warnings
   // and a second call would double them.
   const tokenMatched = detectTermination(inputs.stdout, inputs.region, warnings);
-  if (inputs.exitCode !== null && inputs.exitCode !== 0) {
+  // FR-R3-198 — the two extractors are pure, so they run here, ahead of the
+  // incomplete-turn arm, which needs to know whether any block is present.
+  const remainingIssues = extractRemainingIssues(inputs.stdout);
+  const openQuestions = extractOpenQuestions(inputs.stdout);
+  const blocksPresent =
+    Number(tokenMatched) + Number(remainingIssues.length > 0) + Number(openQuestions.length > 0);
+
+  // FR-R3-198 — a turn that left work open in the background, or settled, and
+  // printed no contract block is unfinished (data-model §5). The facts decide,
+  // never the exit status: a settled turn's exit is the host's own SIGTERM.
+  const unfinishedCause = incompleteTurnCause(inputs.turnEnd);
+  if (unfinishedCause !== null && blocksPresent === 0) {
+    warnings.push(`incomplete-turn:${unfinishedCause}`);
+    return {
+      kind: 'incomplete_turn',
+      cause: unfinishedCause,
+      auditEntry: inputs.auditEntry,
+      warnings
+    };
+  }
+
+  // FR-R3-198 (D6) — on a settled turn the block decides, as it would at exit
+  // 0, so the floor is skipped. Open work alone does not skip it.
+  const blockDecides = turnSettled(inputs.turnEnd) && blocksPresent > 0;
+  if (inputs.exitCode !== null && inputs.exitCode !== 0 && !blockDecides) {
     if (!tokenMatched) {
       return {
         kind: 'transient_error',
@@ -505,11 +580,6 @@ export function parseInvocation(inputs: ParseInputs): InvocationResult {
     // Clean termination token found — fall through to contract-block
     // parsing. The model completed successfully despite the non-zero exit.
   }
-
-  const remainingIssues = extractRemainingIssues(inputs.stdout);
-  const openQuestions = extractOpenQuestions(inputs.stdout);
-  const blocksPresent =
-    Number(tokenMatched) + Number(remainingIssues.length > 0) + Number(openQuestions.length > 0);
 
   // Feature 107 (FR-030) — every return below carries `warnings`. Each of the
   // three `warnings.push` calls in this tail predates the feature and, until
