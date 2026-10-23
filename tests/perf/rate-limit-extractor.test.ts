@@ -50,7 +50,7 @@ function buildAdversarialBuffer(targetBytes: number): string {
     '· resets · resets · resets · resets · resets · resets · resets · resets',
     'You ran out of bandwidth (not usage)',
     '   1:10am (Asia/Saigon)   — incomplete pattern, no leading dot',
-    '{"type":"rate_limit_event","rate_limit_info":{"status":"allow","resetsAt":1000}}'
+    '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1000}}'
   ];
   const lines: string[] = [];
   let bytes = 0;
@@ -71,7 +71,7 @@ describe('extractResetTimestamp — perf invariant (Feature 027 SC-007)', () => 
     const result = extractResetTimestamp(stdout, '', now);
     const elapsed = bestElapsedMs(() => extractResetTimestamp(stdout, '', now));
     expect(elapsed).toBeLessThan(ONE_MB_BUDGET_MS);
-    // The fixtures DO contain a single `allow`-status rate_limit_event;
+    // The fixtures DO contain a single `allowed`-status rate_limit_event;
     // per the algorithm this MUST be skipped, and no other parseable
     // reset exists, so the result is null.
     expect(result.resetsAtMs).toBeNull();
