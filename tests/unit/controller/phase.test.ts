@@ -5,6 +5,7 @@ import {
   nextSuccessor,
   DEGRADED_CONTINUE_NOTIFY_TAG,
   FORCE_CONTINUE_NOTIFY_TAG,
+  INCOMPLETE_TURN_UNRESOLVED_CAUSE,
   LAST_PHASE_ISSUES_REMAIN_CAUSE,
   type PhaseDefLike,
   type TransitionInput
@@ -363,6 +364,35 @@ describe('Phase enum and transitions', () => {
       });
       expect(result).toMatchObject({ kind: 'advance', nextPhase: 'done' });
     });
+  });
+
+  // FR-R3-198 — a phase still unfinished after the dispatch's immediate resumes
+  // never reported anything, so it halts the Run `failed` on that phase. An
+  // optional phase that `failed` advances; this one does not, wherever it sits.
+  describe('a phase that ended its turn unfinished (FR-R3-198, T1877)', () => {
+    const middle: PhaseDefLike = { id: 'middle' };
+    const final: PhaseDefLike = { id: 'final' };
+    const pipeline = { phases: [{ id: 'lead' }, middle, final] };
+
+    it('names its cause incomplete_turn_unresolved', () => {
+      expect(INCOMPLETE_TURN_UNRESOLVED_CAUSE).toBe('incomplete_turn_unresolved');
+    });
+
+    for (const phaseDef of [middle, final]) {
+      for (const isRequired of [true, false]) {
+        it(`halts failed from the ${phaseDef.id} phase with isRequired ${isRequired}`, () => {
+          const result = transition({
+            phase: phaseDef.id, outcome: 'incomplete_turn', iteration: 1, iterationCap: 5,
+            pipeline, phaseDef: { ...phaseDef, isRequired }
+          });
+          expect(result).toMatchObject({
+            kind: 'halt',
+            status: 'failed',
+            cause: 'incomplete_turn_unresolved'
+          });
+        });
+      }
+    }
   });
 
   describe('retryCondition truth table (010, T023, US2)', () => {

@@ -36,6 +36,13 @@ export const DEGRADED_CONTINUE_NOTIFY_TAG = '[notify] continued-degraded';
  */
 export const LAST_PHASE_ISSUES_REMAIN_CAUSE = 'last_phase_issues_remain';
 
+/**
+ * FR-R3-198 — the halt cause when a phase's turn is still unfinished after the
+ * dispatch's immediate resumes. Exported because the sequencer gives it its
+ * message.
+ */
+export const INCOMPLETE_TURN_UNRESOLVED_CAUSE = 'incomplete_turn_unresolved';
+
 // Feature 098 (T038, FR-019, FR-021) — this module's second copy of the
 // built-in Phase ids is gone, along with the `BuiltInPhaseId` type derived from
 // it and the `INVOCABLE_PHASES` list derived from that. It was a ten-id
@@ -63,7 +70,10 @@ export type PhaseOutcome =
   // recorded `PhaseResult` carries `exitCode: null` and synthesized
   // stdout/stderr summaries. Transition logic treats this as a halt to
   // paused with cause `'breakpoint'`.
-  | 'paused-at-breakpoint';
+  | 'paused-at-breakpoint'
+  // FR-R3-198 — the turn ended unfinished, and the dispatch's immediate
+  // resumes did not finish it. Transition logic halts the Run as failed.
+  | 'incomplete_turn';
 
 export interface PipelineLike {
   /**
@@ -243,6 +253,11 @@ export function transition(input: TransitionInput): TransitionResult {
   // and `resumeTargetPhaseId: <phase>` for resume.
   if (outcome === 'paused-at-breakpoint') {
     return { kind: 'halt', status: 'paused', warnings, cause: 'breakpoint' };
+  }
+  // FR-R3-198 — ahead of the `isRequired` branches below: an unfinished phase
+  // never reported anything, so even an optional one does not advance.
+  if (outcome === 'incomplete_turn') {
+    return { kind: 'halt', status: 'failed', warnings, cause: INCOMPLETE_TURN_UNRESOLVED_CAUSE };
   }
   if (outcome === 'failed' || outcome === 'timeout') {
     if (phaseDef?.isRequired === false) {

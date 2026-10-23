@@ -1319,6 +1319,93 @@
           "matched": false
         }
       }
+    },
+    {
+      "id": "incomplete-turn-observed-777491f8",
+      "description": "A turn that ended with work still running in the background and no contract block, and was then ended by SIGTERM at the settle, is an unfinished turn and not a transient error.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored from an observation, not captured. This is finalize attempt 1 of run 777491f8 (CLI 2.1.305): the turn started the checks in the background and ended with no contract block, the settle expired, the runner sent SIGTERM and the CLI exited 143. That attempt was recorded transient_error. Its model text was not kept, so the line below paraphrases it, with no ids. The turn-end facts are the ones the Claude runner reports for that shape from FR-R3-198 on. Only the Claude runner reports them today, and the class is decided by parseInvocation, which all three backends share, so the case stands for all three, as the credit-detector cases do."
+      },
+      "backends": [
+        "claude",
+        "codex",
+        "agy"
+      ],
+      "envelope": null,
+      "envelopeNullReason": "Carried as raw stdout rather than as an envelope on purpose. What decides this class is not in any stream line: it is the runner's turn-end facts, which reach the parser as parseInputs.turnEnd, the way the phase runner passes them. The model text only has to carry no contract block, and an envelope would add an unwrap step the arm under test does not read.",
+      "covers": [
+        "InvocationResult:incomplete_turn",
+        "PhaseOutcome:incomplete_turn",
+        "TerminationReason:incomplete_turn"
+      ],
+      "output": {
+        "stdoutLines": [
+          "The checks are running in the background. I will report the results when they finish."
+        ],
+        "stderrLines": [],
+        "exitCode": 143,
+        "auditBlock": "none",
+        "truncated": false
+      },
+      "parseInputs": {
+        "turnEnd": {
+          "killed": false,
+          "completedAwaitingExit": true,
+          "backgroundWorkOpenAtResult": true
+        }
+      },
+      "expected": {
+        "parserKind": "incomplete_turn",
+        "phaseOutcome": "incomplete_turn",
+        "terminationReason": "incomplete_turn",
+        "auditEntryPresent": false,
+        "mayAdvance": false,
+        "incompleteTurnCause": "background-work-open"
+      }
+    },
+    {
+      "id": "incomplete-turn-exit-0-background-open",
+      "description": "A turn that left background work open and printed no contract block is unfinished at exit 0 too, so the class rests on the turn-end facts and never on exit 143.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured. The CLI exits 0 by itself while work it started in the background is still open at the last result. The case holds the arm to the turn-end facts rather than to the exit code: the same open work and missing block classify the same way at the CLI's own exit 0 as at the observed case's 143. Its backends follow the observed case."
+      },
+      "backends": [
+        "claude",
+        "codex",
+        "agy"
+      ],
+      "envelope": null,
+      "envelopeNullReason": "Carried as raw stdout for the observed case's reason: the class is decided by parseInputs.turnEnd, not by any stream line.",
+      "covers": [
+        "InvocationResult:incomplete_turn",
+        "PhaseOutcome:incomplete_turn",
+        "TerminationReason:incomplete_turn"
+      ],
+      "output": {
+        "stdoutLines": [
+          "Started the checks in the background."
+        ],
+        "stderrLines": [],
+        "exitCode": 0,
+        "auditBlock": "none",
+        "truncated": false
+      },
+      "parseInputs": {
+        "turnEnd": {
+          "killed": false,
+          "backgroundWorkOpenAtResult": true
+        }
+      },
+      "expected": {
+        "parserKind": "incomplete_turn",
+        "phaseOutcome": "incomplete_turn",
+        "terminationReason": "incomplete_turn",
+        "auditEntryPresent": false,
+        "mayAdvance": false,
+        "incompleteTurnCause": "background-work-open"
+      }
     }
   ]
 }

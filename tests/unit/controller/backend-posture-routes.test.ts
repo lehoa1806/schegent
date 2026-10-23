@@ -19,10 +19,12 @@
 //   resume       SchegentWorkflowController.resumeExisting → admitResume → driveSession
 //   auto-drain   AutoDrainCoordinator                  → controller.admitNew /
 //                                                        controller.admitResume → driveSession
-//   continuation RunDriver.drive's own phase loop       → deps.runner.run (no new drive)
+//   continuation RunDriver.drive's own phase loop       → dispatchResumingIncompleteTurns
+//                                                        → deps.runner.run (no new drive)
 //
 // `driveSession` → `sessions.acquire(queueId).driver.drive(...)` → `RunDriver.drive`
-// → `deps.runner.run(inputs)` → `PhaseRunner.run`.
+// → `dispatchResumingIncompleteTurns(deps.runner, inputs, ...)` → `deps.runner.run`
+// → `PhaseRunner.run`. FR-R3-198's immediate resumes call the same runner's `run`.
 //
 // WHAT THIS DOES NOT GUARANTEE
 //
@@ -121,6 +123,7 @@ const DRIVER = 'src/services/run-driver.ts';
 const AUTO_DRAIN = 'src/services/auto-drain-coordinator.ts';
 const PHASE_RUNNER = 'src/controller/phase-runner.ts';
 const RECORDER = 'src/controller/backend-posture-recorder.ts';
+const RESUME_LOOP = 'src/controller/incomplete-turn-resume.ts';
 
 /**
  * The four routes, named. Each entry states the member that begins the route and
@@ -142,7 +145,7 @@ const ROUTES: ReadonlyArray<{
     entry: 'resumeExistingFromActivation',
     mustReach: ['admitResume']
   },
-  { route: 'continuation', file: DRIVER, entry: 'drive', mustReach: ['run'] }
+  { route: 'continuation', file: DRIVER, entry: 'drive', mustReach: ['dispatchResumingIncompleteTurns'] }
 ];
 
 describe('backend posture — every route reaches the funnel (FR-R3-064)', () => {
@@ -177,8 +180,11 @@ describe('backend posture — every route reaches the funnel (FR-R3-064)', () =>
 
   it('driveSession dispatches to RunDriver.drive, and drive dispatches phases to the funnel', () => {
     expect(calleesOf(CONTROLLER, 'driveSession').has('drive')).toBe(true);
-    // `deps.runner` is the injected PhaseRunner; `.run` is the funnel.
-    expect(read(DRIVER)).toContain('await this.deps.runner.run(inputs)');
+    // `deps.runner` is the injected PhaseRunner; `.run` is the funnel. FR-R3-198 —
+    // `drive` hands it to the resume loop, which calls its `run` for the first
+    // turn and for each immediate resume.
+    expect(read(DRIVER)).toContain('await dispatchResumingIncompleteTurns(this.deps.runner, inputs,');
+    expect(calleesOf(RESUME_LOOP, 'dispatchResumingIncompleteTurns').has('run')).toBe(true);
     expect(read(DRIVER)).toContain('readonly runner: PhaseRunner;');
   });
 

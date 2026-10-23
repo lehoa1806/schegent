@@ -120,9 +120,33 @@ Feature 212 added two more `phase-end` fields, both narrowed the same way:
   that never happened. Counting terminations that produced no verdict means
   counting `resultEnvelope: "absent"`, not counting the field's absence.
 
+FR-R3-198 added one `phase-end` outcome, and changed what one metric counts:
+
+- **`incomplete_turn`** — the `outcome` and the `terminationReason` of a turn
+  that printed no contract block (no termination token, no open questions, no
+  remaining issues) when a command it started in the background was still open
+  at its last result, or when the runner ended the process after its completion
+  settle. A killed invocation — an operator's cancel, for one — never is. Its
+  `warnings` name the fact that decided, as one of two codes the warning
+  allowlist lists whole: `incomplete-turn:background-work-open` or
+  `incomplete-turn:no-contract-block`. The envelope `outcome` is `info`, by the
+  standing mapping, as for `timeout` and `rate_limit`. The dispatch then resumes
+  the CLI session at once, at most twice, and each resumed attempt writes its own
+  `phase-start`, carrying `isContinue: true`, and its own `phase-end`.
+- **`metrics.totalCostUsd`** — for claude, from this release, this invocation's
+  share of the CLI session's cumulative cost: the total at its last result, less
+  the total the runner last recorded for the same session. The CLI carries that
+  total across `--resume`, so a sum over a Run's `phase-end` rows used to count a
+  resumed session's earlier cost again. Records written before this release keep
+  the cumulative figure; nothing rewrites them.
+
 <!-- Source: src/audit/audit-payload.ts -->
 <!-- Source: src/controller/phase-attempt-recorder.ts -->
 <!-- Source: tests/unit/audit/audit-payload-v3.test.ts -->
+<!-- Source: src/parser/stdout-parser.ts -->
+<!-- Source: src/controller/incomplete-turn-resume.ts -->
+<!-- Source: src/parser/invocation-usage.ts -->
+<!-- Source: src/runner/session-cost-ledger.ts -->
 
 Generic projected values have a maximum nesting depth of four, strings are
 bounded to 640 characters, and arrays are bounded to 100 elements. Keys that

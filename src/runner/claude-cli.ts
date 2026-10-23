@@ -28,6 +28,12 @@ import { OutputSinkBackpressure } from './output-sink-backpressure';
 import { waitForChildCompletion } from './child-completion';
 import { awaitStdinDelivery, writePromptToStdin } from './child-stdin';
 import { LineFramer, DEFAULT_MAX_LINE_UNITS } from '../lib/line-framer';
+import {
+  BACKGROUND_HOLD_CEILING_MS,
+  BackgroundTaskTracker,
+  isBackgroundBookkeepingEvent
+} from './background-task-tracker';
+import { SessionCostLedger } from './session-cost-ledger';
 import { processTreeSpawnOptions, escalateAndReportTree } from './process-tree';
 import { nextInvocationId } from './invocation-identity';
 
@@ -126,6 +132,11 @@ function isSessionInitLine(line: string): boolean {
 // suppresses every result it produces for the whole replay window.
 const MAX_SUPPRESSED_RESULTS = 1;
 
+// FR-R3-198 — the lines the CLI writes about its background tasks are not the
+// turn resuming, so they leave the marker set. Were they activity, the
+// `task_updated` and `background_tasks_changed` lines behind a task's last
+// notification would clear it again, and the settle could never arm once a
+// hold ends. A woken turn opens with `init`, which still clears it.
 function isStreamJsonEventLine(line: string): boolean {
   try {
     const parsed = JSON.parse(line) as unknown;
@@ -133,10 +144,27 @@ function isStreamJsonEventLine(line: string): boolean {
     const record = parsed as Record<string, unknown>;
     return 'type' in record &&
       record.kind !== 'task-notification' &&
-      record.subtype !== 'task-notification';
+      record.subtype !== 'task-notification' &&
+      !isBackgroundBookkeepingEvent(record);
   } catch {
     return false;
   }
+}
+
+// FR-R3-198 (FR-011, K2) — the session's cumulative cost on an accepted result
+// line, read off the parsed field. A missing, negative or non-finite value is
+// none, as `extractInvocationUsageMetrics` reads it.
+function resultCostUsd(line: string): number | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== 'object' || parsed === null) return undefined;
+  if (!('total_cost_usd' in parsed)) return undefined;
+  const cost = parsed.total_cost_usd;
+  return typeof cost === 'number' && Number.isFinite(cost) && cost >= 0 ? cost : undefined;
 }
 
 export type SpawnFn = (
@@ -284,6 +312,13 @@ export class ClaudeCliRunner implements BackendRunner {
    * A WeakSet so a reaped child is collectable.
    */
   private readonly reportedTrees = new WeakSet<ChildProcess>();
+
+  /**
+   * FR-R3-198 (FR-011, K1) — the cumulative cost each CLI session last reported
+   * here. The registry caches this runner for the workspace lifetime, so the
+   * ledger spans every Run on this backend kind in this host process.
+   */
+  private readonly sessionCosts = new SessionCostLedger();
 
   constructor(
     spawnFn: SpawnFn = spawn as unknown as SpawnFn,
@@ -462,6 +497,20 @@ export class ClaudeCliRunner implements BackendRunner {
       // fallback may discard when that envelope never arrives.
       let sawCurrentTurnBoundary = false;
       let suppressedResults = 0;
+      // FR-R3-198 — a result is not the end of the turn while a command it
+      // started in the background still runs: the CLI waits for the command and
+      // then wakes the model with a new turn in this process. A hold keeps the
+      // settle from arming until the last backgrounded task closes, or until
+      // `BACKGROUND_HOLD_CEILING_MS` after the result that began it. It only
+      // lengthens the window: the idle window and the deadline still apply.
+      const backgroundTasks = new BackgroundTaskTracker();
+      // When the active hold began, or `null` with no hold.
+      let holdStartedAt: number | null = null;
+      let holdCeiling: NodeJS.Timeout | undefined;
+      let backgroundWorkOpenAtResult = false;
+      // FR-R3-198 (K2) — the cumulative cost the last accepted result reported.
+      let lastResultCostUsd: number | undefined;
+      const settleArmed = (): boolean => sawCompletionMarker && holdStartedAt === null;
 
       // Idle timeout: the timer fires only when no stdout/stderr chunk has
       // arrived for the active window. Each data event resets it. Before the
@@ -479,15 +528,17 @@ export class ClaudeCliRunner implements BackendRunner {
         // only — no prompt, transcript, session id, or workspace path — and
         // routed through SanitizedLogger so SECRET_PATTERNS stays the single
         // redaction source.
+        // FR-R3-198 (H7) — `settleArmed()`, not the bare marker: an expiry
+        // during a hold is the idle window's, and is labelled so.
         this._logger.info(
           '[ClaudeCliRunner] invocation window expired ' +
-            `window=${sawCompletionMarker ? 'settle' : 'idle'} ` +
-            `windowMs=${sawCompletionMarker ? COMPLETION_SETTLE_MS : request.timeoutMs} ` +
+            `window=${settleArmed() ? 'settle' : 'idle'} ` +
+            `windowMs=${settleArmed() ? COMPLETION_SETTLE_MS : request.timeoutMs} ` +
             `resumed=${shouldResume} ` +
             `elapsedMs=${Date.now() - invocationStartedAt} ` +
             `phase=${request.phase} iteration=${request.iteration}`
         );
-        if (sawCompletionMarker) completedAwaitingExit = true;
+        if (settleArmed()) completedAwaitingExit = true;
         else timedOut = true;
         this.terminate(child, attribution);
       };
@@ -525,7 +576,7 @@ export class ClaudeCliRunner implements BackendRunner {
         if (!idleTimerActive) return;
         timer = setTimeout(
           onIdleExpiry,
-          sawCompletionMarker ? COMPLETION_SETTLE_MS : request.timeoutMs
+          settleArmed() ? COMPLETION_SETTLE_MS : request.timeoutMs
         );
       };
       const outputBackpressure = new OutputSinkBackpressure(
@@ -533,6 +584,36 @@ export class ClaudeCliRunner implements BackendRunner {
         () => clearTimeout(timer),
         resetIdleTimer
       );
+      // FR-R3-198 (H5, H10) — the end of a hold re-arms the window, which is
+      // now the settle. A blocked sink keeps the idle clock suspended, as for
+      // a chunk.
+      const endHold = (reason: 'closed' | 'ceiling'): void => {
+        if (holdStartedAt === null) return;
+        clearTimeout(holdCeiling);
+        this._logger.info(
+          '[ClaudeCliRunner] background hold ended ' +
+            `reason=${reason} heldMs=${Date.now() - holdStartedAt} ` +
+            `phase=${request.phase} iteration=${request.iteration}`
+        );
+        holdStartedAt = null;
+        if (!outputBackpressure.isBlocked) resetIdleTimer();
+      };
+      // FR-R3-198 (H4, H6, H10) — a result accepted with a task open begins a
+      // hold. One accepted during a hold begins a new one, whose ceiling counts
+      // from it; the hold it replaces ended by neither reason, so it logs no
+      // `ended` line.
+      const beginHold = (): void => {
+        clearTimeout(holdCeiling);
+        holdStartedAt = Date.now();
+        holdCeiling = setTimeout(() => endHold('ceiling'), BACKGROUND_HOLD_CEILING_MS);
+        this._logger.info(
+          '[ClaudeCliRunner] background hold began ' +
+            `openTasks=${backgroundTasks.openCount} ` +
+            `ceilingMs=${BACKGROUND_HOLD_CEILING_MS} ` +
+            `resumed=${shouldResume} ` +
+            `phase=${request.phase} iteration=${request.iteration}`
+        );
+      };
 
       const diagnosticWrites: Promise<void>[] = [];
       child.stdout?.on('data', (chunk: string) => {
@@ -561,6 +642,10 @@ export class ClaudeCliRunner implements BackendRunner {
           );
         }
         for (const line of framed.lines) {
+            // FR-R3-198 — the tracker reads the line first, so a hold whose
+            // last task closes on it ends before the line is judged.
+            backgroundTasks.observe(line);
+            if (holdStartedAt !== null && backgroundTasks.openCount === 0) endHold('closed');
             if (isSessionInitLine(line)) sawCurrentTurnBoundary = true;
             if (isTerminalResultLine(line)) {
               const replayingHistory =
@@ -588,6 +673,14 @@ export class ClaudeCliRunner implements BackendRunner {
               } else {
                 sawCompletionMarker = true;
                 sawTerminalResult = true;
+                // FR-R3-198 (H6, H9) — every accepted result decides again,
+                // except one the CLI writes after the settle's SIGTERM, which
+                // is its shutdown, not a turn (research R2: `num_turns=0`).
+                if (!completedAwaitingExit) {
+                  backgroundWorkOpenAtResult = backgroundTasks.openCount > 0;
+                  if (backgroundWorkOpenAtResult) beginHold();
+                }
+                lastResultCostUsd = resultCostUsd(line) ?? lastResultCostUsd;
               }
             } else if (isStreamJsonEventLine(line)) {
               sawCompletionMarker = false;
@@ -636,6 +729,8 @@ export class ClaudeCliRunner implements BackendRunner {
       idleTimerActive = false;
       clearTimeout(timer);
       if (deadlineTimer !== null) clearTimeout(deadlineTimer);
+      // FR-R3-198 (H11) — so a ceiling cannot fire, and log, after completion.
+      clearTimeout(holdCeiling);
       // FR-R3-075 — exactly one termination reason: the deadline wins over the
       // idle stall when both elapsed in the same tick. `completedAwaitingExit`
       // is left alone — it is a classification hint, not a termination reason,
@@ -724,6 +819,19 @@ export class ClaudeCliRunner implements BackendRunner {
       stdoutScanner?.finalize();
       stderrScanner?.finalize();
       const cliSessionId = extractCliSessionId(stdoutBuffer.decompressStream()) ?? undefined;
+      // FR-R3-198 (K2) — report what the session had cost before this
+      // invocation, then keep its cumulative total for the next. A helper
+      // invocation (compaction) keeps nothing, so its cost lands in the next
+      // phase's figure (K5). The id is a key only, and is never logged.
+      const sessionCostBaselineUsd =
+        cliSessionId === undefined ? undefined : this.sessionCosts.get(cliSessionId);
+      if (
+        cliSessionId !== undefined &&
+        lastResultCostUsd !== undefined &&
+        request.helperInvocation !== true
+      ) {
+        this.sessionCosts.record(cliSessionId, lastResultCostUsd);
+      }
 
       return {
         stdoutBuffer,
@@ -737,10 +845,13 @@ export class ClaudeCliRunner implements BackendRunner {
         // measurement rather than a silence. Other runners omit it and read as
         // unknown; see the field's docblock.
         sawTerminalResult,
+        // FR-R3-198 (H9) — always reported by this backend, `false` included.
+        backgroundWorkOpenAtResult,
         durationMs: Date.now() - start,
         diagnosticWarnings,
         command,
         cliSessionId,
+        ...(sessionCostBaselineUsd !== undefined ? { sessionCostBaselineUsd } : {}),
         ...(stdinDeliveryFailed
           ? { stdinDeliveryFailed: true, stdinErrorCode: delivery.errorCode }
           : {}),

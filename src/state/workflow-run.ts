@@ -188,7 +188,10 @@ export type TerminationReason =
   | 'rate_limit'
   | 'timeout'
   | 'cancel'
-  | 'pre_spawn_refusal';
+  | 'pre_spawn_refusal'
+  // FR-R3-198 — the turn ended unfinished: work still open in the background,
+  // or no contract block. Decided from the runner's turn-end facts.
+  | 'incomplete_turn';
 
 export interface SanitizedError {
   code: string;

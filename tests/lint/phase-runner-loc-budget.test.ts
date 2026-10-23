@@ -580,7 +580,17 @@ const BUDGETS = [
   // count, which is this 1,403 by `wc -l`: its entry condition requires every file
   // of 1,000 lines or more to be in its own table. Growing the file means raising
   // both; docs/development/size-gate-entry-condition.md says why there are two.
-  { path: 'src/controller/phase-runner.ts', max: 1_403 },
+  //
+  // Feature 228 (FR-R3-198, 2026-10-23) — 1,403 → 1,404, +1. A turn that ends
+  // unfinished is now resumed inside its dispatch, and this file passes along what
+  // that needs: two forwarded fields, `turnEnd: raw` into `parseInvocation` and
+  // `continuationNote` into the prompt build, and one input field,
+  // `PhaseRunInputs.continuationNote`. Joining the `prompt` ternary's first three
+  // lines into one paid for the two forwards. The plan counted net 0 and missed
+  // the input field, so the +1 is that field. Nothing here is extractable: each
+  // line hands a fact to the one call that reads it. The sibling waiver's mark
+  // moved by the same line in the same diff.
+  { path: 'src/controller/phase-runner.ts', max: 1_404 },
   // FR-R3-052 / H-03 (2026-08-24) — 400 → 415 for the size check that was
   // missing. `stat()` was already called here and only `isFile()` was read, so
   // `readFile()` took a multi-GiB sidecar wholly into memory. The bound, the
@@ -714,14 +724,25 @@ const BUDGETS = [
   // (FR-R3-119, tests/lint/source-loc-budget.test.ts) requires headroom instead;
   // it governs that table's ceilings, not these, and granting slack here to
   // satisfy a rule that does not apply would retire the ratchet for nothing.
-  { path: 'src/controller/phase-retry-evaluator.ts', max: 363 },
+  //
+  // Feature 228 (FR-R3-198, 2026-10-23) — 363 → 364, +1. `incomplete_turn` joins
+  // the kinds `maybeEmit()` records nothing for and evicts: phase-end records it,
+  // as it records malformed, so a record here would double-count. The cost is one
+  // `||` arm; the two comment lines above the condition were reworded at the same
+  // count. A constant set lookup was measured as the alternative and came to 366,
+  // so the chain stayed. No responsibility was added.
+  { path: 'src/controller/phase-retry-evaluator.ts', max: 364 },
   // Raised from 100 on 2026-08-16. The truncation arm of `mapOutcome` stopped
   // returning 'failed' and now returns 'transient_error'; the budget is spent
   // on recording why, because a reader who assumed the old mapping was
   // deliberate is exactly how a required phase came to be failed on output
   // volume. No responsibility was added to the file — it is still pure
   // classification — so the fix is headroom, not a split.
-  { path: 'src/controller/phase-outcome-mapper.ts', max: 110 }
+  // Raised from 110 on 2026-10-23 (FR-R3-198). `mapOutcome` and
+  // `mapTerminationReason` each gained a `case 'incomplete_turn'` arm, two lines
+  // apiece, for the new invocation kind. No responsibility was added to the file —
+  // it is still pure classification — so the raise is headroom, not a split.
+  { path: 'src/controller/phase-outcome-mapper.ts', max: 114 }
 ] as const;
 
 function countLines(absPath: string): number {

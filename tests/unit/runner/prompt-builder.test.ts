@@ -158,6 +158,36 @@ describe('PromptBuilder.build', () => {
     expect(prompt).not.toContain('Unresolved from previous iteration');
   });
 
+  // FR-R3-198 (T1877, N1) — an immediate resume after an unfinished turn says why
+  // it was sent, between the carried issues and the task.
+  describe('continuation note FR-R3-198 (T1877)', () => {
+    const inputs = {
+      phase: 'speckit-implement',
+      iteration: 2,
+      iterationCap: 10,
+      featureDescription: 'desc',
+      featureDir: null,
+      carriedIssues: ['one case still fails']
+    };
+
+    it('renders the note as its own section after the carried issues and before TASK:', () => {
+      const prompt = builder.build({ ...inputs, continuationNote: 'X' });
+      expect(prompt).toContain('\nCONTINUATION NOTE:\nX\n');
+      const unresolved = prompt.indexOf('Unresolved from previous iteration:');
+      const note = prompt.indexOf('CONTINUATION NOTE:');
+      const task = prompt.indexOf('TASK:');
+      expect(unresolved).toBeGreaterThan(-1);
+      expect(note).toBeGreaterThan(unresolved);
+      expect(task).toBeGreaterThan(note);
+    });
+
+    it('adds nothing when no note is given', () => {
+      const prompt = builder.build(inputs);
+      expect(prompt).not.toContain('CONTINUATION NOTE');
+      expect(builder.build({ ...inputs, continuationNote: undefined })).toBe(prompt);
+    });
+  });
+
   it('always appends the feature description at the end', () => {
     const prompt = builder.build({
       phase: 'speckit-specify',

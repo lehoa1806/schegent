@@ -1,5 +1,6 @@
 import type { PhaseRunInputs, PhaseRunOutput, PhaseRunner } from '../controller/phase-runner';
 import { composePhaseMessagePath } from '../controller/phase-runner';
+import { dispatchResumingIncompleteTurns } from '../controller/incomplete-turn-resume';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import type { MutationResult, QueueManager } from '../queue/queue-manager';
 import type { SchegentStatusBar } from '../ui/status-bar';
@@ -64,13 +65,18 @@ import { createBoundedOutputProbe } from './run-output/run-output-probe';
  * The paths themselves are untrusted: they come from CLI stdout, which is
  * operator-influenced. Nothing here opens them; the ledger canonicalises them
  * lexically and matches them against sections git itself printed.
+ *
+ * FR-R3-198 — a resumed dispatch joins its invocations' accounts in call order;
+ * one invocation with no account makes the whole account `null`.
  */
-function declaredMutations(output: PhaseRunOutput | null): PhaseMutationReport | null {
-  const audit = output?.result.auditEntry;
-  if (audit === null || audit === undefined) return null;
-  return {
-    declaredPaths: [...audit.filesCreated, ...audit.filesModified, ...audit.filesDeleted]
-  };
+function declaredMutations(outputs: readonly PhaseRunOutput[]): PhaseMutationReport | null {
+  let paths: readonly string[] = [];
+  for (const output of outputs) {
+    const audit = output.result.auditEntry;
+    if (!audit) return null;
+    paths = paths.concat(audit.filesCreated, audit.filesModified, audit.filesDeleted);
+  }
+  return { declaredPaths: paths };
 }
 
 interface RunDriverOptions {
@@ -376,11 +382,15 @@ export class RunDriver {
     }
     await this.deps.mutationLedger?.observeBeforePhase(run);
     let output: PhaseRunOutput | null = null;
+    const outputs: PhaseRunOutput[] = [];
     try {
-      output = await this.deps.runner.run(inputs);
+      output = await dispatchResumingIncompleteTurns(this.deps.runner, inputs, (each) => {
+        outputs.push(each);
+      });
       return output;
     } finally {
-      await this.deps.mutationLedger?.observeAfterPhase(run, declaredMutations(output));
+      const declared = output === null ? null : declaredMutations(outputs);
+      await this.deps.mutationLedger?.observeAfterPhase(run, declared);
     }
   }
 

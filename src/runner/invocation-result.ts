@@ -324,6 +324,32 @@ export interface RawInvocationOutput {
    */
   sawTerminalResult?: boolean;
   /**
+   * FR-R3-198 (T1876) — did this invocation's last accepted terminal result
+   * arrive while a backgrounded task was still open?
+   *
+   * `true` iff it did, which is iff that result began a hold of the settle
+   * window. The claude runner always sets it, as it does `sawTerminalResult`.
+   * Each accepted result decides it again, so a woken turn that ends with
+   * nothing open leaves it `false`, although the first turn's result began a
+   * hold. A result the CLI writes after the settle's SIGTERM is its shutdown,
+   * not a turn, and leaves it as it was.
+   *
+   * Absent from a runner that does not track backgrounded tasks (codex, agy)
+   * and from a fixture, and absent reads as `false`. That is the difference
+   * from `sawTerminalResult`, whose absence means unknown.
+   */
+  backgroundWorkOpenAtResult?: boolean;
+  /**
+   * FR-R3-198 (FR-011) — the cumulative `total_cost_usd` this runner last
+   * recorded for this invocation's CLI session, before this invocation.
+   *
+   * The CLI's cost is a cumulative total that carries across `--resume`, so the
+   * usage extractor subtracts this to record the invocation's own share. Absent
+   * for a session new to this host process, and from a runner that reports no
+   * cost (codex, agy); absent means the whole cumulative counts, as before.
+   */
+  sessionCostBaselineUsd?: number;
+  /**
    * FR-R3-047 (H-04) — `true` iff writing the prompt to the child's stdin
    * FAILED. Absent is equivalent to `false`, so a non-runner fixture that omits
    * it reads as a healthy delivery.
