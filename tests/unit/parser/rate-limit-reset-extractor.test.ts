@@ -9,6 +9,8 @@
 // be identical across the pair. Rows 26-31 cover the new stderr surface,
 // scan order, and double-empty edge.
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { extractResetTimestamp } from '../../../src/parser/rate-limit-reset-extractor';
 
@@ -81,8 +83,8 @@ describe('extractResetTimestamp — stream-json path on stdout (rows 1-8)', () =
     expect(extractResetTimestamp(stdout, '', 1700000000_000).resetsAtMs).toBe(1715000000_000);
   });
 
-  it('row 2: status "allow" → line skipped, no plain-text fallback either', () => {
-    const stdout = '{"type":"rate_limit_event","rate_limit_info":{"status":"allow","resetsAt":1715000000}}';
+  it('row 2: status "allowed" → line skipped, no plain-text fallback either', () => {
+    const stdout = '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1715000000}}';
     expect(extractResetTimestamp(stdout, '', 1700000000_000).resetsAtMs).toBeNull();
   });
 
@@ -101,9 +103,9 @@ describe('extractResetTimestamp — stream-json path on stdout (rows 1-8)', () =
     expect(extractResetTimestamp(stdout, '', 1700000000_000).resetsAtMs).toBeNull();
   });
 
-  it('row 6: allow then rejected → last rejected wins', () => {
+  it('row 6: allowed then rejected → last rejected wins', () => {
     const stdout = [
-      '{"type":"rate_limit_event","rate_limit_info":{"status":"allow","resetsAt":1715000000}}',
+      '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1715000000}}',
       '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1716000000}}'
     ].join('\n');
     expect(extractResetTimestamp(stdout, '', 1700000000_000).resetsAtMs).toBe(1716000000_000);
@@ -159,6 +161,12 @@ describe('extractResetTimestamp — stream-json path on stdout (rows 1-8)', () =
       expect(extractResetTimestamp(stdout, '', 1700000000_000).resetsAtMs).toBeNull();
     });
 
+    it('E6 (FR-R3-197): the CLI\'s own "allowed" status is skipped in the default reading', () => {
+      const stdout =
+        '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1779520200}}';
+      expect(extractResetTimestamp(stdout, '', 1700000000_000).resetsAtMs).toBeNull();
+    });
+
     it('row 8g (BUG-008): mixed stream — earlier "allowed_warning" lines skipped, trailing "rejected" wins', () => {
       const stdout = [
         '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1715000000}}',
@@ -198,6 +206,14 @@ describe('extractResetTimestamp — stream-json path on stdout (rows 1-8)', () =
       ).toBeNull();
     });
 
+    it('E7 (FR-R3-197): "allowed" is skipped even with includeWarningStatus: true', () => {
+      const stdout =
+        '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1779520200}}';
+      expect(
+        extractResetTimestamp(stdout, '', 1700000000_000, { includeWarningStatus: true }).resetsAtMs
+      ).toBeNull();
+    });
+
     it('default (no opts) still skips "allowed_warning" (BUG-008 preserved)', () => {
       const stdout =
         '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1779520200}}';
@@ -212,6 +228,48 @@ describe('extractResetTimestamp — stream-json path on stdout (rows 1-8)', () =
       expect(
         extractResetTimestamp(stdout, '', 1700000000_000, { includeWarningStatus: true }).resetsAtMs
       ).toBe(1779520200_000);
+    });
+  });
+
+  // FR-R3-197 (T1874) — an `allowed` event's `resetsAt` is the next usage
+  // window reset, never the end of a block. The fixture is the event observed
+  // in run 777491f8, ids elided.
+  describe('allowed rate_limit_event status (FR-R3-197, T1874)', () => {
+    const observed = readFileSync(
+      resolve(__dirname, '../../fixtures/rate-limit/rate-limit-allowed-observed.txt'),
+      'utf8'
+    ).trim();
+    const rejectedEarlier =
+      '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1716000000}}';
+    const spaceBeforeColon =
+      '{"type":"rate_limit_event","rate_limit_info":{"status" : "allowed","resetsAt":1779520200}}';
+
+    it('E1 — the observed allowed event supplies no reset time in the default reading', () => {
+      expect(extractResetTimestamp(observed, '', 1700000000_000).resetsAtMs).toBeNull();
+    });
+
+    it('E2 — the observed allowed event supplies no reset time in the narrow reading', () => {
+      expect(
+        extractResetTimestamp(observed, '', 1700000000_000, { includeWarningStatus: true }).resetsAtMs
+      ).toBeNull();
+    });
+
+    it('E3 — an earlier rejected time survives a later allowed event in the narrow reading', () => {
+      const stdout = rejectedEarlier + '\n' + observed;
+      expect(
+        extractResetTimestamp(stdout, '', 1700000000_000, { includeWarningStatus: true }).resetsAtMs
+      ).toBe(1716000000_000);
+    });
+
+    it('E4 — an allowed event with a space before the colon is skipped after its parse (default)', () => {
+      expect(extractResetTimestamp(spaceBeforeColon, '', 1700000000_000).resetsAtMs).toBeNull();
+    });
+
+    it('E5 — an allowed event with a space before the colon is skipped after its parse (narrow)', () => {
+      expect(
+        extractResetTimestamp(spaceBeforeColon, '', 1700000000_000, { includeWarningStatus: true })
+          .resetsAtMs
+      ).toBeNull();
     });
   });
 });

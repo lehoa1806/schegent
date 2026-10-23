@@ -1048,6 +1048,44 @@
       }
     },
     {
+      "id": "credit-soft-warn-allowed",
+      "description": "The CLI's own allowed status is suppressed. The line is the event observed in run 777491f8, which also carries overageStatus rejected, so the status that decides must be rate_limit_info.status and not the first rejected anywhere in the line.",
+      "provenance": {
+        "kind": "synthesized",
+        "reason": "Hand-authored, not captured, for the same FR-009 reason as the matcher cases. The line is the rate_limit_event observed in run 777491f8 (finalize attempt 2, exit 143) with its ids elided. This is the suppression half of the detector and the half with no return value to read: the branch returns null, so only an assertion that the run was NOT rate-limited can witness it."
+      },
+      "backends": [
+        "claude",
+        "codex",
+        "agy"
+      ],
+      "envelope": null,
+      "envelopeNullReason": "Carried as raw stdout rather than as an envelope on purpose. In production detectCreditError reads raw.stdoutBuffer (phase-runner.ts:760) — the untransformed bytes, before any unwrap — so the sigil this case is about is seen pre-unwrap. Declaring an envelope would hand the detector the unwrapped model text instead, which is not the input the branch under test ever sees.",
+      "covers": [
+        "credit-detector:branch:soft-warn-allowed"
+      ],
+      "output": {
+        "stdoutLines": [
+          "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"allowed\",\"resetsAt\":1792567200,\"rateLimitType\":\"five_hour\",\"overageStatus\":\"rejected\",\"overageDisabledReason\":\"org_level_disabled\",\"isUsingOverage\":false,\"unifiedWindows\":{\"five_hour\":{\"utilization\":0.45,\"resetsAt\":1792567200},\"seven_day\":{\"utilization\":0.58,\"resetsAt\":1792818000}}},\"uuid\":\"<uuid>\",\"session_id\":\"<uuid>\"}"
+        ],
+        "stderrLines": [],
+        "exitCode": 1,
+        "auditBlock": "none",
+        "truncated": false
+      },
+      "expected": {
+        "parserKind": "transient_error",
+        "phaseOutcome": "transient_error",
+        "terminationReason": "error",
+        "auditEntryPresent": false,
+        "mayAdvance": false,
+        "creditDetection": {
+          "matched": false,
+          "cause": ""
+        }
+      }
+    },
+    {
       "id": "credit-soft-warn-allow",
       "description": "A plain allow status is suppressed too, and is not swept up by the allowed_warning test that precedes it.",
       "provenance": {

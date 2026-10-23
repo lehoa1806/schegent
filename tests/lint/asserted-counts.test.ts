@@ -330,7 +330,7 @@ const REGISTRY: readonly CountEntry[] = [
    *
    * Both entries share a producer deliberately. They are separate claims in
    * separate documents, and the pair is also what makes the per-entry scoping
-   * assertion below non-vacuous: the two claim strings both contain `**34 cases**`,
+   * assertion below non-vacuous: the two claim strings both contain `**35 cases**`,
    * so a gate that searched the tree for the number rather than reading the
    * document that makes each claim would score the wrong line.
    */
@@ -338,10 +338,11 @@ const REGISTRY: readonly CountEntry[] = [
     document: 'repo/tests/evals/README.md',
     // FR-R3-084 §3.4 added `prompt-injection-in-output`, taking the corpus to 11;
     // FR-R3-177 added 23 more to reach the verdict branches no case had ever
-    // entered, so it is 34. The DOCUMENT was corrected first and this entry
+    // entered, so it became 34; FR-R3-197 added `credit-soft-warn-allowed`,
+    // taking it to 35. The DOCUMENT was corrected first and this entry
     // follows it — the other order is the habit this gate exists to break.
-    claim: 'deterministic set of **34 cases**',
-    stated: 34,
+    claim: 'deterministic set of **35 cases**',
+    stated: 35,
     producer: 'the `cases` array in repo/tests/evals/fixtures/backend-outcomes.json',
     derive: corpusCases,
     why:
@@ -353,13 +354,13 @@ const REGISTRY: readonly CountEntry[] = [
   },
   {
     document: 'docs/features/round_3/DONE_61_FR-R3-061_behavioral_canaries.md',
-    // Corrected to 34 with the corpus, as it was corrected to 11 before that and
+    // Corrected to 35 with the corpus, as it was corrected to 34 and to 11 before that and
     // not preserved at 10. The sentence is PRESENT TENSE — "the eval suite IS a
     // versioned deterministic corpus of N cases" — so it is a live structural
     // claim, not a dated observation. The dated-measurement convention protects
     // recorded runs, not descriptions of what the tree currently contains.
-    claim: 'deterministic corpus of **34 cases**',
-    stated: 34,
+    claim: 'deterministic corpus of **35 cases**',
+    stated: 35,
     producer: 'the `cases` array in repo/tests/evals/fixtures/backend-outcomes.json',
     derive: corpusCases,
     why:
@@ -518,7 +519,7 @@ describe('counts a document asserts are counts something checks (FR-R3-067)', ()
    * unregistered during this same item, so the assertion demonstrated nothing about
    * this registry while still going red whenever unrelated prose in a planning
    * document was reworded. The demonstration now comes from the registry itself:
-   * two entries whose claims share `**34 cases**` in documents that make different
+   * two entries whose claims share `**35 cases**` in documents that make different
    * claims, which the negative direction above checks for real.
    */
 

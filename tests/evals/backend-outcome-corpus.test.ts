@@ -436,8 +436,8 @@ function evaluate(testCase: EvalCase): {
  *   - the unwrapper branch is read from the returned text against the input
  *     lines, which is the same comparison the branch itself makes.
  *
- * Two attributions have no return value to read, because the branch they name
- * returns `null`: the two soft-warn suppressions. Their witness is the case's
+ * Three attributions have no return value to read, because the branch they name
+ * returns `null`: the three soft-warn suppressions. Their witness is the case's
  * own stdout carrying the sigil and the status literal while `matched` is
  * false. The sigil constants are module-private in the detector, so those two
  * literals are duplicated here — the same maintenance class the entries
@@ -491,6 +491,8 @@ function observedCoverage(
     // one is read from the status literal the suppression tests for.
     if (/"status":\s?"allowed_warning"/.test(stdoutText)) {
       covers.push('credit-detector:branch:soft-warn-allowed_warning');
+    } else if (/"status":\s?"allowed"/.test(stdoutText)) {
+      covers.push('credit-detector:branch:soft-warn-allowed');
     } else if (/"status":\s?"allow"/.test(stdoutText)) {
       covers.push('credit-detector:branch:soft-warn-allow');
     }
@@ -610,7 +612,7 @@ describe('backend-neutral outcome evaluation corpus', () => {
       'envelope-api-error-nonzero-exit',
 
       // T022 — the credit detector at branch grain. Four matchers that no case
-      // reached, the exit-429 floor, both stdout sigils, and the two soft-warn
+      // reached, the exit-429 floor, both stdout sigils, and the three soft-warn
       // suppressions, which are the branches that decide whether an operator
       // waits out a courtesy warning as if it were a multi-hour backoff.
       'credit-matcher-out-of-usage',
@@ -621,6 +623,7 @@ describe('backend-neutral outcome evaluation corpus', () => {
       'credit-stdout-sigil-out-of-credits',
       'credit-stdout-sigil-rate-limit',
       'credit-soft-warn-allowed-warning',
+      'credit-soft-warn-allowed',
       'credit-soft-warn-allow',
 
       // T024 — the fatal detector. Two matches and three suppressions; the
