@@ -2,9 +2,13 @@
 // the `rate_limited` variant when extractResetTimestamp finds a parseable
 // reset epoch in the captured stdout.
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { NO_REGION } from '../../../src/parser/audit-log-parser';
+import { detectCreditError } from '../../../src/parser/credit-error-detector';
 import { parseInvocation } from '../../../src/parser/stdout-parser';
+import { unwrapStreamJson } from '../../../src/parser/stream-json-unwrapper';
 
 describe('parseInvocation — rate_limited.resetsAtMs (Feature 027)', () => {
   it('populates a finite resetsAtMs when stream-json rate_limit_event with rejected status is in stdout', () => {
@@ -121,5 +125,27 @@ describe('parseInvocation — rate_limited.resetsAtMs (Feature 027)', () => {
       if (result.kind !== 'rate_limited') return;
       expect(result.resetsAtMs).toBe(future * 1000);
     });
+  });
+
+  // FR-R3-197 (T1874) — composed as `phase-runner.ts` composes it: the
+  // detector reads the raw stdout, the parser reads the unwrapped text.
+  it('P1 — run 777491f8 attempt: exit 143 beside an allowed event is a transient_error, not rate_limited', () => {
+    const raw = readFileSync(
+      resolve(__dirname, '../../fixtures/rate-limit/rate-limit-allowed-observed.txt'),
+      'utf8'
+    ).trim();
+    const rateLimit = detectCreditError(raw, '', 143);
+    const unwrapped = unwrapStreamJson(raw);
+    const result = parseInvocation({
+      stdout: unwrapped.text,
+      stderr: '',
+      exitCode: 143,
+      rateLimit,
+      auditEntry: null,
+      auditWarnings: [],
+      region: NO_REGION,
+      apiError: unwrapped.apiError
+    });
+    expect(result.kind).toBe('transient_error');
   });
 });

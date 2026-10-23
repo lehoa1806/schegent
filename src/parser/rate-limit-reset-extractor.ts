@@ -13,8 +13,8 @@
  *
  * Algorithm (Bugfix 2026-05-15 — BUG-002):
  *   1. Stream-json path on stdout (preferred). Scan lines in reverse for a
- *      `rate_limit_event` with `status !== "allow"` and a finite-positive
- *      `resetsAt` (seconds). Return `resetsAt * 1000` on first match.
+ *      `rate_limit_event` whose status is not `allowed` (or its `allow` alias)
+ *      and a finite-positive `resetsAt` (seconds). Return `resetsAt * 1000` on first match.
  *      Stream-json on stderr is NOT scanned — not part of the CLI contract.
  *   2. Plain-text path on stdout (fallback). Scan for the strict middle-dot
  *      form `· resets <H[:M] [am|pm]> (<tz>)`. Resolve `tz` via IANA probe →
@@ -77,19 +77,25 @@ export function extractRateLimitMessage(
 const RATE_LIMIT_MESSAGE_MAX_LEN = 240;
 
 // Bugfix 2026-05-23 — BUG-008: the upstream `rate_limit_info.status` enum
-// has three known values — `allow`, `allowed_warning`, `rejected`. Only
-// `rejected` is a hard quota block. `allowed_warning` is the ~90% quota
-// soft-warn the CLI emits on a successful run; it MUST NOT contribute its
-// future `resetsAt` epoch to the dynamic-backoff calculation.
+// has three known values — `allowed`, `allowed_warning`, `rejected`. Only
+// `rejected` is a hard quota block. `allowed` lets the request through and
+// `allowed_warning` is the ~90% quota soft-warn the CLI emits on a successful
+// run; neither MUST contribute its future `resetsAt` epoch to the
+// dynamic-backoff calculation. `allow` is not a CLI value and is kept as an
+// alias (FR-R3-197).
 const SAFE_RATE_LIMIT_STATUSES: ReadonlySet<string> = new Set([
+  'allowed',
   'allow',
   'allowed_warning'
 ]);
 
 // BUG-009 — when the caller knows the invocation failed (non-zero exit),
 // `allowed_warning` records carry a valid `resetsAt` that should be
-// extracted. This strict set only skips `allow`.
+// extracted. This strict set only skips `allowed` (and its `allow` alias):
+// an `allowed` event's `resetsAt` is the next usage-window reset, never the
+// end of a block (FR-R3-197).
 const STRICT_SAFE_STATUSES: ReadonlySet<string> = new Set([
+  'allowed',
   'allow'
 ]);
 
@@ -138,20 +144,22 @@ export function extractResetTimestamp(
       if (trimmed.length < 2 || trimmed.charCodeAt(0) !== 0x7b /* { */) continue;
       if (trimmed.charCodeAt(trimmed.length - 1) !== 0x7d /* } */) continue;
       if (trimmed.indexOf('rate_limit_event') === -1) continue;
-      // The common non-actionable events are `status: "allow"` and
-      // `status: "allowed_warning"` (the ~90% quota soft-warn — BUG-008).
+      // The common non-actionable events are `status: "allowed"` (and its
+      // `"allow"` alias) and `status: "allowed_warning"` (the ~90% quota
+      // soft-warn — BUG-008).
       // Skip the canonical compact/pretty JSON shapes before JSON.parse;
       // this keeps large stdout buffers with frequent safe events under
       // the perf budget.
       //
       // BUG-009 — when `includeWarningStatus` is true the safeSet only
-      // contains `"allow"`, so `allowed_warning` records fall through to
-      // JSON.parse and yield their `resetsAt`. The `allowed_warning`
+      // contains `"allowed"` and `"allow"`, so `allowed_warning` records fall
+      // through to JSON.parse and yield their `resetsAt`. The `allowed_warning`
       // substring check is conditional on the safeSet.
 
-      // Always skip `"status":"allow"` (exact) — need to NOT skip
-      // `"allowed_warning"`. Check for `allowed_warning` first (longer
-      // match); if present, only skip when the safeSet includes it.
+      // Always skip `"status":"allowed"` and `"status":"allow"` (exact) —
+      // need to NOT skip `"allowed_warning"`. Check for `allowed_warning`
+      // first (longer match); if present, only skip when the safeSet
+      // includes it.
       const hasAllowedWarning =
         trimmed.indexOf('"status":"allowed_warning"') !== -1 ||
         trimmed.indexOf('"status": "allowed_warning"') !== -1;
@@ -160,11 +168,15 @@ export function extractResetTimestamp(
         if (safeSet.has('allowed_warning')) continue;
         // Fall through — parse the record to extract resetsAt.
       } else {
-        // No `allowed_warning` substring. Check for bare `"allow"`.
+        // No `allowed_warning` substring. Check for bare `"allowed"` and for
+        // the `"allow"` alias.
+        const hasAllowed =
+          trimmed.indexOf('"status":"allowed"') !== -1 ||
+          trimmed.indexOf('"status": "allowed"') !== -1;
         const hasAllow =
           trimmed.indexOf('"status":"allow"') !== -1 ||
           trimmed.indexOf('"status": "allow"') !== -1;
-        if (hasAllow) continue;
+        if (hasAllowed || hasAllow) continue;
       }
       let obj: unknown;
       try {
@@ -179,8 +191,8 @@ export function extractResetTimestamp(
       if (!info || typeof info !== 'object') continue;
       const infoRec = info as Record<string, unknown>;
       // Bugfix 2026-05-23 — BUG-008 / BUG-009: use the caller-selected
-      // safe-set. Default skips both `allow` and `allowed_warning`;
-      // `includeWarningStatus` narrows to `allow` only.
+      // safe-set. Default skips `allowed`, `allow` and `allowed_warning`;
+      // `includeWarningStatus` narrows to `allowed` and `allow`.
       if (typeof infoRec.status === 'string' && safeSet.has(infoRec.status)) {
         continue;
       }
