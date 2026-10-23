@@ -38,9 +38,9 @@ const STDOUT_TRAILING_WINDOW_LINES = 20;
 // upstream CLI). Within a single line `out_of_credits` wins over the
 // generic `rate_limit_event` envelope (FR-006) — the more-specific
 // hard-cap signal must route through the past-timestamp safety guard
-// in `backoffForCause`. Across multiple lines the detector settles on
-// the MOST RECENT signal-bearing line (spec edge case: "Multiple
-// rate-limit lines").
+// in `backoffForCause` — unless the status lets the request through
+// (FR-R3-197 D2). Across multiple lines the detector settles on the
+// MOST RECENT signal-bearing line (spec edge case: "Multiple rate-limit lines").
 const STDOUT_OUT_OF_CREDITS_SIGIL = 'out_of_credits';
 const STDOUT_RATE_LIMIT_EVENT_SIGIL = 'rate_limit_event';
 
@@ -59,10 +59,10 @@ function trailingWindow(buffer: string, lineBudget: number): string {
 }
 
 function scanWindowForRateLimit(window: string): string | null {
-  // Walk lines from the end backwards. The FIRST line we encounter
-  // (i.e., the MOST RECENT line) that carries a rate-limit signal
-  // determines the cause. Within that line, `out_of_credits` wins over
-  // the generic `rate_limit_event` envelope (FR-006).
+  // Walk lines from the end backwards. The FIRST (MOST RECENT) line that
+  // carries a rate-limit signal determines the cause. Within that line,
+  // `out_of_credits` wins over the generic `rate_limit_event` envelope
+  // (FR-006), unless the line's status lets the request through (FR-R3-197 D2).
   let lineEnd = window.length;
   for (let i = window.length - 1; i >= 0; i--) {
     if (window.charCodeAt(i) === 0x0a) {
@@ -83,20 +83,26 @@ function scanWindowForRateLimit(window: string): string | null {
 function matchLine(line: string): string | null {
   if (line.length === 0) return null;
   const hasRateLimitEvent = line.includes(STDOUT_RATE_LIMIT_EVENT_SIGIL);
-  const hasOutOfCredits = line.includes(STDOUT_OUT_OF_CREDITS_SIGIL);
-  if (hasOutOfCredits) return 'out-of-credits';
   if (hasRateLimitEvent) {
-    // Feature 027 BUG-008 — soft-warn `rate_limit_event` payloads must not
-    // be classified as hard rate limits during a trailing-window scan on an
-    // aborted/interrupted run.
+    // Feature 027 BUG-008 — a `rate_limit_event` whose status lets the request
+    // through is not a block, so it must not be classified as a hard rate limit
+    // during a trailing-window scan on an aborted/interrupted run. The CLI's
+    // `rate_limit_info.status` is `allowed`, `allowed_warning` or `rejected`;
+    // `allow` is not a CLI value and stays as an alias (FR-R3-197 D1). These
+    // skips run before the `out_of_credits` test, because an allowed event can
+    // name `out_of_credits` as its overage reason (FR-R3-197 D2).
     if (line.includes('"status":"allowed_warning"') || line.includes('"status": "allowed_warning"')) {
+      return null;
+    }
+    if (line.includes('"status":"allowed"') || line.includes('"status": "allowed"')) {
       return null;
     }
     if (line.includes('"status":"allow"') || line.includes('"status": "allow"')) {
       return null;
     }
-    return 'rate-limit';
   }
+  if (line.includes(STDOUT_OUT_OF_CREDITS_SIGIL)) return 'out-of-credits';
+  if (hasRateLimitEvent) return 'rate-limit';
   return null;
 }
 

@@ -195,14 +195,15 @@ function unionEntries(): EnumerationEntry[] {
  * report two unexercised branches as covered the moment any one of them ran.
  */
 const CREDIT_BRANCHES: ReadonlyArray<{ key: string; line: number }> = [
-  { key: 'branch:exit-0-gate', line: 117 },
-  { key: 'branch:stderr-match', line: 125 },
-  { key: 'branch:exit-429', line: 129 },
-  { key: 'branch:sigil-out-of-credits', line: 87 },
-  { key: 'branch:sigil-rate-limit', line: 98 },
-  { key: 'branch:soft-warn-allowed_warning', line: 93 },
-  { key: 'branch:soft-warn-allow', line: 96 },
-  { key: 'branch:no-match', line: 145 }
+  { key: 'branch:exit-0-gate', line: 123 },
+  { key: 'branch:stderr-match', line: 131 },
+  { key: 'branch:exit-429', line: 135 },
+  { key: 'branch:sigil-out-of-credits', line: 104 },
+  { key: 'branch:sigil-rate-limit', line: 105 },
+  { key: 'branch:soft-warn-allowed_warning', line: 95 },
+  { key: 'branch:soft-warn-allowed', line: 98 },
+  { key: 'branch:soft-warn-allow', line: 101 },
+  { key: 'branch:no-match', line: 151 }
 ];
 
 function creditEntries(): EnumerationEntry[] {
