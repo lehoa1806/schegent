@@ -61,6 +61,15 @@ export interface PromptInputs {
    * byte-identical to the pre-feature one.
    */
   envelope?: ExecutionEnvelope;
+  /**
+   * FR-R3-198 — why an immediate resume was sent: the previous turn ended
+   * unfinished. Set by `dispatchResumingIncompleteTurns` alone, from its
+   * code-resident texts.
+   *
+   * Absent on every other invocation, and the prompt is then byte-identical to
+   * the pre-feature one.
+   */
+  continuationNote?: string;
 }
 
 export class PromptBuilder {
@@ -106,6 +115,12 @@ export class PromptBuilder {
           lines.push(`- ${tag}${issue.summary}`);
         }
       }
+    }
+
+    if (inputs.continuationNote) {
+      lines.push('');
+      lines.push('CONTINUATION NOTE:');
+      lines.push(inputs.continuationNote);
     }
 
     lines.push('');

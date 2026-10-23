@@ -94,7 +94,7 @@ type TerminalOutcomeRule = AuditOutcome | 'standing';
  * every new reason without putting a second decision there.
  *
  * THE CAVEAT, stated rather than hidden, because FR-012's bar has to be cleared
- * honestly: 8 of the 10 entries below are `'standing'`, so the map is mostly one
+ * honestly: 9 of the 11 entries below are `'standing'`, so the map is mostly one
  * value repeated. That is what makes it a total map and not a decision table.
  * The bar is cleared anyway, for a reason that survives the count — the entry a
  * new member is forced to add IS the decision its author would otherwise never
@@ -124,7 +124,8 @@ const TERMINAL_OUTCOME_RULES: Readonly<Record<TerminationReason, TerminalOutcome
   iteration_cap: 'standing',
   error: 'standing',
   rate_limit: 'standing',
-  timeout: 'standing'
+  timeout: 'standing',
+  incomplete_turn: 'standing'
 };
 
 /**

@@ -663,6 +663,49 @@ describe('PhaseSequencer.decideAfterPhase', () => {
     });
   });
 
+  // FR-R3-198 — the dispatch resumes an unfinished turn up to twice, so an
+  // `incomplete_turn` that reaches the sequencer is one those resumes did not
+  // finish. The phase sits mid-pipeline, so FR-R3-199's last-phase rule is not
+  // what fails it.
+  describe('a phase that ended its turn unfinished (FR-R3-198, T1877)', () => {
+    it('fails the Run with a message an operator can read', () => {
+      const phaseDef = { id: 'finalize', name: 'Finalize', instruction: 'Finish.' };
+      const run = makeRun({
+        currentPhase: phaseDef.id,
+        pipeline: {
+          id: 'pipe',
+          name: 'Pipe',
+          phases: [phaseDef, { id: 'review', name: 'Review', instruction: 'Review.' }]
+        }
+      });
+      const decision = sequencer.decideAfterPhase({
+        run,
+        output: makeOutput({
+          result: {
+            kind: 'incomplete_turn',
+            cause: 'background-work-open',
+            auditEntry: null,
+            warnings: ['incomplete-turn:background-work-open']
+          },
+          outcome: 'incomplete_turn',
+          terminationReason: 'incomplete_turn'
+        }),
+        iteration: 1,
+        iterationCap: 5,
+        activePhaseDef: phaseDef,
+        latestManualPauseAt: run.manualPauseAt,
+        now: NOW
+      });
+      expect(decision.kind).toBe('fail');
+      if (decision.kind !== 'fail') return;
+      expect(decision.decisionCause).toBe('incomplete_turn_unresolved');
+      expect(decision.capExhausted).toBe(false);
+      expect(decision.baseMessage).toBe(
+        'the phase ended its turn unfinished, and immediate resumes did not finish it'
+      );
+    });
+  });
+
   it('routes verify phase with clean outcome to advance-or-loop (no premature pause)', () => {
     const run = makeRun({ currentPhase: 'bugfix-verify-pre' });
     const output = makeOutput({

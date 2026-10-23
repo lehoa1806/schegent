@@ -104,6 +104,7 @@ export const PHASE_END_OUTCOMES = [
   'transient_error',
   'skipped',
   'paused-at-breakpoint',
+  'incomplete_turn',
   'deadline',
   // Legacy, unreachable from any producer; see the docblock above.
   'rate-limited',
@@ -507,6 +508,12 @@ export const RECORDABLE_PHASE_END_WARNINGS: ReadonlySet<string> = new Set([
   // `outcome: 'failed'` / `terminationReason: 'error'` with the cause dropped --
   // the exact shape that made the 2026-08-16 failure undiagnosable.
   'host-verification-failed',
+  // src/parser/stdout-parser.ts — FR-R3-198. Which fact made the turn unfinished,
+  // so an `outcome: 'incomplete_turn'` record names its cause. The parser splices
+  // in a member of the closed `IncompleteTurnCause`, never output text, and both
+  // codes are listed whole, not accepted by their prefix.
+  'incomplete-turn:background-work-open',
+  'incomplete-turn:no-contract-block',
   // src/services/evidence-health/evidence-health-monitor.ts — FR-R3-080 (T1076).
   // One code per evidence sink, enumerated rather than pattern-matched, because
   // an allowlist that accepts a PREFIX accepts whatever a caller appends to it —

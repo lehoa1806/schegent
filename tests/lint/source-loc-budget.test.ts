@@ -1471,7 +1471,13 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
         'its highWaterMark is raised in a diff that says why',
       decidedOn: '2026-10-01',
       reference: 'repo/docs/development/size-gate-entry-condition.md',
-      highWaterMark: 1404
+      // Feature 228 (FR-R3-198, 2026-10-23) — 1404 → 1405, +1, by this gate's
+      // count. The line is the input field `PhaseRunInputs.continuationNote`: the
+      // two fields the file now forwards were paid for by joining three lines into
+      // one, and the input field was not. The why is the FR-R3-198 note on this
+      // file's entry in tests/lint/phase-runner-loc-budget.test.ts, whose ceiling
+      // moved 1,403 → 1,404 in the same diff.
+      highWaterMark: 1405
     }
   }
 ];

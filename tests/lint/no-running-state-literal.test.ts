@@ -69,6 +69,13 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'src/contracts/backend-runner.ts',
   'src/contracts/generated/boundary-contracts.ts',
   'src/contracts/generated/schemas/state.schema.json',
+  // FR-R3-198 — the continuation note a resume's prompt carries says the work
+  // the previous turn started in the background "was still running", plus its
+  // docblock's paraphrase of it. The words are the contract's (N2), pinned by
+  // the module's unit test: a sentence the model reads, never the pinned
+  // per-task status discriminator, which this module neither reads nor writes.
+  // Same class as `src/commands/reset.ts` above.
+  'src/controller/incomplete-turn-resume.ts',
   // Operator-command extraction — reads `driver.running`, the boolean accessor
   // that reports whether this queue's session is mid-drive, to refuse a manual
   // retry that is already under way. Same reason `src/controller/run-session.ts`

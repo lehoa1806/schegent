@@ -301,6 +301,12 @@ describe('terminalAuditOutcome — the envelope-level verdict (FR-001)', () => {
     expect(terminalAuditOutcome('failed', 'error')).toBe('failure');
     expect(terminalAuditOutcome('timeout', 'timeout')).toBe('info');
   });
+
+  // FR-R3-198 (T1877, M4) — the invocation is resumed, and a halt is recorded by
+  // the fail arm, so its own `phase-end` takes the standing mapping, as a timeout's does.
+  it('records an unfinished turn as info, by the standing mapping', () => {
+    expect(terminalAuditOutcome('incomplete_turn', 'incomplete_turn')).toBe('info');
+  });
 });
 
 // Feature 212 / T026 (FR-007, SC-004, SC-007) — counting the envelope-less

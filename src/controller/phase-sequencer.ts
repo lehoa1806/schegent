@@ -41,7 +41,12 @@ import type {
   WorkflowRun
 } from '../state/workflow-run';
 import type { PhaseDef } from '../config/pipeline-config';
-import { transition, LAST_PHASE_ISSUES_REMAIN_CAUSE, type TransitionResult } from './phase';
+import {
+  transition,
+  INCOMPLETE_TURN_UNRESOLVED_CAUSE,
+  LAST_PHASE_ISSUES_REMAIN_CAUSE,
+  type TransitionResult
+} from './phase';
 import { resolveRetryCapOutcome } from '../contracts/retry-cap-outcome';
 import type { PhaseRunOutput } from './phase-runner';
 import { toDelayedRetryCause } from './rate-limit-backoff';
@@ -205,6 +210,13 @@ const VERIFY_PHASE_IDS: ReadonlySet<string> = new Set([
  * operator reads it in the notice after "Schegent: <phase> failed — ".
  */
 const LAST_PHASE_ISSUES_REMAIN_MESSAGE = 'the last phase reported remaining issues';
+
+/**
+ * FR-R3-198 — the failure message for `INCOMPLETE_TURN_UNRESOLVED_CAUSE`, read in
+ * the same notice.
+ */
+const INCOMPLETE_TURN_UNRESOLVED_MESSAGE =
+  'the phase ended its turn unfinished, and immediate resumes did not finish it';
 
 export class PhaseSequencer {
   public isVerificationPhase(phaseId: string): boolean {
@@ -405,7 +417,9 @@ export class PhaseSequencer {
           ? CAP_EXHAUSTED_CAUSE
           : decision.cause === LAST_PHASE_ISSUES_REMAIN_CAUSE
             ? LAST_PHASE_ISSUES_REMAIN_MESSAGE
-            : fatalCause ?? (output.warnings.join('; ').slice(0, 240) || 'phase failed');
+            : decision.cause === INCOMPLETE_TURN_UNRESOLVED_CAUSE
+              ? INCOMPLETE_TURN_UNRESOLVED_MESSAGE
+              : fatalCause ?? (output.warnings.join('; ').slice(0, 240) || 'phase failed');
       return {
         kind: 'fail',
         phaseResult,
