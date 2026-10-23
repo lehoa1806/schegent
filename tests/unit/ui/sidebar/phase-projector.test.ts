@@ -432,3 +432,34 @@ describe('a disabled future Phase projects disabled immediately (FR-R3-151)', ()
     expect(refineTiles.every((tile) => tile.state === 'disabled')).toBe(true);
   });
 });
+
+// FR-R3-198 (T1877) — a phase whose turn ended unfinished, past the dispatch's
+// immediate resumes, halts the Run `failed` on that phase, and the fail arm
+// appends its result (research R6). The tile's badge shows it as a failed
+// result, not as nothing.
+describe('an unfinished turn projects as a failed result (FR-R3-198)', () => {
+  it('maps a phase result with outcome incomplete_turn to the failed badge', () => {
+    const run: WorkflowRun = {
+      ...makeImportedRun(),
+      status: 'failed',
+      phasesCompleted: [
+        {
+          phase: 'draft',
+          iteration: 1,
+          startedAt: 1,
+          endedAt: 2,
+          result: 'incomplete_turn',
+          terminationReason: 'incomplete_turn',
+          exitCode: 143,
+          stdoutSummary: '',
+          stderrSummary: '',
+          auditEntryId: null
+        }
+      ]
+    };
+
+    const tiles = buildPhasesFromRun(run);
+
+    expect(tiles.find((tile) => tile.name === 'draft')).toMatchObject({ lastResult: 'failed' });
+  });
+});

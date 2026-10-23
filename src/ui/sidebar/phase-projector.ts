@@ -227,6 +227,9 @@ export function mapPhaseOutcome(outcome: PhaseOutcome): PhaseResultState | null 
     case 'issues_remain':
       return 'issues-remain';
     case 'failed':
+    case 'incomplete_turn':
+      // FR-R3-198 — `incomplete_turn` reaches a tile only once the immediate
+      // resumes are spent, and `transition()` then halts the Run as failed.
       return 'failed';
     case 'timeout':
       return 'timed-out';

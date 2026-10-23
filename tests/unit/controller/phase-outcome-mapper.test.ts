@@ -6,7 +6,7 @@ import {
   STDOUT_SUMMARY_LIMIT,
   OUTPUT_TRUNCATED_WARNING
 } from '../../../src/controller/phase-outcome-mapper';
-import type { InvocationResult } from '../../../src/parser/stdout-parser';
+import type { IncompleteTurnCause, InvocationResult } from '../../../src/parser/stdout-parser';
 import type { AuditEntryFields } from '../../../src/audit/audit-entry';
 
 const cleanAudit = (): AuditEntryFields => ({
@@ -139,6 +139,30 @@ describe('mapTerminationReason', () => {
   it('malformed without fatalCause + null exitCode → remaining_issues', () => {
     expect(mapTerminationReason(r.malformed(), null)).toBe('remaining_issues');
   });
+});
+
+describe('incomplete_turn FR-R3-198 (T1877)', () => {
+  // M1. The exit code does not decide it: a turn the runner settled exits 143,
+  // and one that ended with work open can exit 0.
+  const incompleteTurn = (cause: IncompleteTurnCause): InvocationResult => ({
+    kind: 'incomplete_turn',
+    cause,
+    auditEntry: null,
+    warnings: [`incomplete-turn:${cause}`]
+  });
+
+  for (const cause of ['background-work-open', 'no-contract-block'] as const) {
+    it(`${cause} → mapOutcome incomplete_turn`, () => {
+      for (const exitCode of [0, 143]) {
+        expect(mapOutcome(incompleteTurn(cause), exitCode)).toBe('incomplete_turn');
+      }
+    });
+    it(`${cause} → mapTerminationReason incomplete_turn`, () => {
+      for (const exitCode of [0, 143]) {
+        expect(mapTerminationReason(incompleteTurn(cause), exitCode)).toBe('incomplete_turn');
+      }
+    });
+  }
 });
 
 describe('summarize / STDOUT_SUMMARY_LIMIT', () => {

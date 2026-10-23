@@ -181,6 +181,7 @@ export interface PhaseRunInputs {
    * When set, bypasses standard prompt generation.
    */
   resumePrompt?: string;
+  continuationNote?: string; // FR-R3-198 — see `PromptInputs.continuationNote`
   /**
    * FR-R3-001 (T260) — the accepted request, forwarded whole to the prompt seam.
    *
@@ -525,20 +526,19 @@ export class PhaseRunner {
         phaseMessage: null
       };
     }
-    const prompt = inputs.resumePrompt 
-      ? inputs.resumePrompt 
-      : this.promptBuilder.build({
-          phase: inputs.phase,
-          phaseDef: inputs.phaseDef,
-          iteration: inputs.iteration,
-          iterationCap: inputs.iterationCap,
-          featureDescription: inputs.featureDescription,
-          featureDir: inputs.featureDir,
-          carriedIssues: inputs.carriedIssues,
-          phaseMessagePath: inputs.phaseMessagePath ?? null,
-          previousPhaseMessage: inputs.previousPhaseMessage ?? null,
-          envelope: inputs.envelope
-        });
+    const prompt = inputs.resumePrompt ? inputs.resumePrompt : this.promptBuilder.build({
+      phase: inputs.phase,
+      phaseDef: inputs.phaseDef,
+      iteration: inputs.iteration,
+      iterationCap: inputs.iterationCap,
+      featureDescription: inputs.featureDescription,
+      featureDir: inputs.featureDir,
+      carriedIssues: inputs.carriedIssues,
+      phaseMessagePath: inputs.phaseMessagePath ?? null,
+      previousPhaseMessage: inputs.previousPhaseMessage ?? null,
+      envelope: inputs.envelope,
+      continuationNote: inputs.continuationNote
+    });
     // Feature 074 — resolve the effective runner kind for audit attribution.
     const effectiveRunnerKind = inputs.phaseDef?.runner
       ?? this.runnerRegistry?.getGlobalDefault()
@@ -777,6 +777,7 @@ export class PhaseRunner {
       region: audit.region, // FR-003 — bounds where a token may be read; see T25
       effectiveFatalSignatures,
       apiError: unwrappedStream.apiError,
+      turnEnd: raw, // FR-R3-198 — the two turn-end facts, and `killed`
       ...(raw.streamFatalMatch ? { streamFatalMatch: raw.streamFatalMatch } : {})
     });
     const result = failClosedOnTruncatedOutput(
@@ -1195,7 +1196,7 @@ export class PhaseRunner {
   }
 
   private invocationMetricPayload(
-    raw: Pick<RawInvocationOutput, 'stdoutBuffer' | 'stderrBuffer' | 'durationMs' | 'exitCode'>,
+    raw: Pick<RawInvocationOutput, 'stdoutBuffer' | 'stderrBuffer' | 'durationMs' | 'exitCode' | 'sessionCostBaselineUsd'>,
     backend: BackendRunnerKind
   ): Record<string, unknown> {
     return {
@@ -1208,7 +1209,7 @@ export class PhaseRunner {
       exitCode: raw.exitCode,
       ...(raw.stdoutBuffer.truncated ? { stdoutTruncated: true } : {}),
       ...(raw.stderrBuffer.truncated ? { stderrTruncated: true } : {}),
-      ...(extractInvocationUsageMetrics(raw.stdoutBuffer, backend) ?? {}),
+      ...(extractInvocationUsageMetrics(raw.stdoutBuffer, backend, raw.sessionCostBaselineUsd) ?? {}),
       // FR-R3-104 — the version observed at this phase's START, not re-probed here.
       ...(this.observedCliVersion === null ? {} : { cliVersion: this.observedCliVersion })
     };

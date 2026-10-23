@@ -209,6 +209,16 @@
           "type": "boolean"
         },
         {
+          "name": "backgroundWorkOpenAtResult",
+          "optional": true,
+          "type": "boolean"
+        },
+        {
+          "name": "sessionCostBaselineUsd",
+          "optional": true,
+          "type": "number"
+        },
+        {
           "name": "stdinDeliveryFailed",
           "optional": true,
           "type": "boolean"

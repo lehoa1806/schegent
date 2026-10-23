@@ -4,8 +4,8 @@
 cited as such.**
 
 FR-R3-061 added this file because the distinction was being lost. The corpus is a versioned,
-deterministic set of **35 cases** (`fixtures/backend-outcomes.json`), and the suite around it reports
-**48 passing tests** — the extra thirteen are structural meta-assertions about the corpus itself, not
+deterministic set of **37 cases** (`fixtures/backend-outcomes.json`), and the suite around it reports
+**50 passing tests** — the extra thirteen are structural meta-assertions about the corpus itself, not
 additional cases. That tally is asserted by the suite against its own test declarations (FR-R3-067), so
 adding a test moves both sides at once; it read 13 for a while because `FR-R3-061` added two
 meta-assertions in the same change that wrote this sentence. Which counts in this corpus are checked, by

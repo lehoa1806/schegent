@@ -34,6 +34,12 @@ interface BackendUsageVocabulary {
   readonly isUsageRow: (rec: Record<string, unknown>) => boolean;
   /** Where the per-turn fields live: the row itself, or a nested envelope. */
   readonly body: (rec: Record<string, unknown>) => Record<string, unknown> | null;
+  /**
+   * FR-R3-198 (FR-010) — each usage row counts its own turn alone, so the
+   * invocation's tokens, turns and duration are the sums over its rows, and the
+   * cost is the last row's. Unset, the last usage row wins.
+   */
+  readonly sumsRows?: boolean;
   /** Turn-level field names inside `body`. */
   readonly durationMs?: string;
   readonly durationSeconds?: string;
@@ -50,11 +56,15 @@ interface BackendUsageVocabulary {
 
 const USAGE_VOCABULARIES: Readonly<Record<BackendRunnerKind, BackendUsageVocabulary>> =
   Object.freeze({
-    // `{"type":"result", …}` with `usage` and the cost on the row itself.
+    // `{"type":"result", …}` with `usage` and the cost on the row itself. A turn
+    // the CLI wakes after a background task ends writes its own row, and so
+    // does the CLI after SIGTERM; `total_cost_usd` is the session's cumulative
+    // total, carried across `--resume`.
     claude: {
       lineMarkers: ['"type"', '"result"'],
       isUsageRow: (rec) => rec.type === 'result',
       body: (rec) => rec,
+      sumsRows: true,
       durationMs: 'duration_ms',
       numTurns: 'num_turns',
       totalCostUsd: 'total_cost_usd',
@@ -206,6 +216,42 @@ function metricsFromLine(
   return record ? metricsFromUsageRow(record, vocab) : null;
 }
 
+/** The counters a summing backend's row reports for its own turn alone. */
+const PER_TURN_COUNTERS: ReadonlyArray<keyof InvocationUsageMetrics> = [
+  'cliDurationMs',
+  'numTurns',
+  'inputTokens',
+  'outputTokens',
+  'cacheCreationInputTokens',
+  'cacheReadInputTokens'
+];
+
+function foldUsageRow(
+  total: InvocationUsageMetrics | null,
+  row: InvocationUsageMetrics,
+  vocab: BackendUsageVocabulary
+): InvocationUsageMetrics {
+  if (total === null || vocab.sumsRows !== true) return row;
+  const out: MutableInvocationUsageMetrics = { ...total };
+  // A counter no row reports stays absent rather than summing to zero.
+  for (const key of PER_TURN_COUNTERS) {
+    const value = row[key];
+    if (value !== undefined) out[key] = (out[key] ?? 0) + value;
+  }
+  if (row.totalCostUsd !== undefined) out.totalCostUsd = row.totalCostUsd;
+  return out;
+}
+
+/**
+ * FR-R3-198 (FR-011) — this invocation's share of the session's cumulative cost.
+ * A cumulative total below the baseline means the CLI restarted the session's
+ * counter, so the whole figure counts.
+ */
+function invocationCostUsd(cumulativeUsd: number, baselineUsd: number | undefined): number {
+  if (baselineUsd === undefined || cumulativeUsd < baselineUsd) return cumulativeUsd;
+  return cumulativeUsd - baselineUsd;
+}
+
 /**
  * Extract numeric usage/cost fields from a backend's terminal envelope row.
  *
@@ -217,15 +263,22 @@ function metricsFromLine(
  *
  * The raw stdout buffer is already capped by the runner; this parser still avoids
  * parsing arbitrary prose and only attempts JSON.parse on short lines carrying
- * that backend's markers. Last usage row wins, matching the phase-log metadata
- * strip's "latest value wins" behavior.
+ * that backend's markers. For codex and agy the last usage row wins, matching the
+ * phase-log metadata strip's "latest value wins" behavior.
+ *
+ * FR-R3-198 — claude writes one `result` row per turn, so its counters are summed
+ * over every row and its cost is the last row's (FR-010). That cost is the CLI
+ * session's cumulative total, so `sessionCostBaselineUsd`, the total the runner last
+ * recorded for the session, is subtracted from it (FR-011). Omitted, the whole
+ * cumulative total counts.
  */
 export function extractInvocationUsageMetrics(
   stdout: ZippedStreamBuffer | string,
-  backend: BackendRunnerKind
+  backend: BackendRunnerKind,
+  sessionCostBaselineUsd?: number
 ): InvocationUsageMetrics | null {
   const vocab = USAGE_VOCABULARIES[backend];
-  let latest: InvocationUsageMetrics | null = null;
+  let total: InvocationUsageMetrics | null = null;
   const chunks = typeof stdout === 'string' ? [stdout] : stdout.decompressStream();
 
   let activeLine = '';
@@ -244,15 +297,19 @@ export function extractInvocationUsageMetrics(
       chunkIdx = newlineIdx + 1;
 
       const metrics = metricsFromLine(rawLine, vocab);
-      if (metrics) latest = metrics;
+      if (metrics) total = foldUsageRow(total, metrics, vocab);
     }
   }
 
   // Check the final line, which a stream that ended without a newline leaves here.
   if (activeLine.length > 0) {
     const metrics = metricsFromLine(activeLine, vocab);
-    if (metrics) latest = metrics;
+    if (metrics) total = foldUsageRow(total, metrics, vocab);
   }
 
-  return latest;
+  if (total === null || total.totalCostUsd === undefined) return total;
+  return {
+    ...total,
+    totalCostUsd: invocationCostUsd(total.totalCostUsd, sessionCostBaselineUsd)
+  };
 }

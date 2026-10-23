@@ -134,6 +134,25 @@ describe('PhaseRetryEvaluator.maybeEmit', () => {
     expect(appends).toHaveLength(0);
   });
 
+  // FR-R3-198 (T1877, M3) — an unfinished turn is resumed straight away or halts
+  // the Run, so it records no verdict, as transient_error records none.
+  it('skips emission when result.kind is incomplete_turn', async () => {
+    const { writer, appends } = makeAuditWriter();
+    const evaluator = new PhaseRetryEvaluator(writer, logger);
+    await evaluator.maybeEmit(
+      baseInputs({
+        phaseDef: phaseDefWithCondition('issues > 0'),
+        result: {
+          kind: 'incomplete_turn',
+          cause: 'no-contract-block',
+          auditEntry: null,
+          warnings: ['incomplete-turn:no-contract-block']
+        }
+      })
+    );
+    expect(appends).toHaveLength(0);
+  });
+
   it('emits with evaluationError=true on parse error and logs warn with phase-runner string', async () => {
     const { writer, appends } = makeAuditWriter();
     const fakeValidate = vi.fn(() => ({ ok: false as const, error: 'parse failure xyz' }));

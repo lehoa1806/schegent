@@ -502,7 +502,8 @@ paths to a bypassed Phase remain visually distinct.
 
 **A Run completes only when its last Phase finishes (FR-R3-199).** A required
 last Phase with no `retryCondition` that ends `issues_remain` — remaining
-issues, open questions, or an exit 0 with no contract block — halts the Run
+issues, open questions, or an exit 0 with no contract block and no
+backgrounded task open at its last result (FR-R3-198) — halts the Run
 `failed` with `currentPhase` still on it, so a resume re-runs it. It used to
 advance to `done` like a clean Phase: the Run read `completed`, the queue
 started its next Task, and `errors-only` retention deleted the transcript. A

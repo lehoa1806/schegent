@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 import corpusJson from './fixtures/backend-outcomes.json';
 import { parseAuditLogBlock } from '../../src/parser/audit-log-parser';
 import { RATE_LIMIT_MATCHERS, detectCreditError } from '../../src/parser/credit-error-detector';
-import { parseInvocation, type InvocationResult } from '../../src/parser/stdout-parser';
+import {
+  parseInvocation,
+  type IncompleteTurnCause,
+  type InvocationResult,
+  type ParseInputs
+} from '../../src/parser/stdout-parser';
 import {
   failClosedOnTruncatedOutput,
   mapOutcome,
@@ -140,6 +145,11 @@ interface CaseParseInputs {
    */
   readonly operatorFatalSignatures?: readonly string[];
   readonly streamFatalMatch?: FatalClassification;
+  /**
+   * FR-R3-198 — the runner's turn-end facts, as the phase runner passes them.
+   * Only the incomplete-turn cases declare it.
+   */
+  readonly turnEnd?: NonNullable<ParseInputs['turnEnd']>;
 }
 
 interface EvalCase {
@@ -181,6 +191,8 @@ interface EvalCase {
      */
     readonly creditDetection?: { readonly matched: boolean; readonly cause: string };
     readonly fatalClassification?: { readonly matched: boolean; readonly signature?: string };
+    /** FR-R3-198 — the cause an `incomplete_turn` result names. */
+    readonly incompleteTurnCause?: IncompleteTurnCause;
   };
 }
 
@@ -363,6 +375,7 @@ function evaluate(testCase: EvalCase): {
   const effectiveFatalSignatures = effectiveSignaturesFor(testCase);
   const apiError = unwrapped?.apiError ?? undefined;
   const streamFatalMatch = extra?.streamFatalMatch;
+  const turnEnd = extra?.turnEnd;
   const parsed = parseInvocation({
     stdout,
     stderr,
@@ -396,7 +409,10 @@ function evaluate(testCase: EvalCase): {
     // under the flag the ratchet is adopting.
     ...(apiError === undefined ? {} : { apiError }),
     ...(effectiveFatalSignatures === undefined ? {} : { effectiveFatalSignatures }),
-    ...(streamFatalMatch === undefined ? {} : { streamFatalMatch })
+    ...(streamFatalMatch === undefined ? {} : { streamFatalMatch }),
+    // FR-R3-198 — omitted the same way, because `ParseInputs` declares `turnEnd`
+    // without `| undefined` too. Absent, the parser classifies as before.
+    ...(turnEnd === undefined ? {} : { turnEnd })
   });
   const result = failClosedOnTruncatedOutput(parsed, testCase.output.truncated);
   return {
@@ -633,7 +649,13 @@ describe('backend-neutral outcome evaluation corpus', () => {
       'fatal-operator-defined-signature',
       'fatal-suppressed-by-stream-scope',
       'fatal-suppressed-by-structured-envelope',
-      'fatal-suppressed-by-line-length'
+      'fatal-suppressed-by-line-length',
+
+      // FR-R3-198 — a turn that ended unfinished. The first is finalize attempt 1
+      // of run 777491f8. The second is the same turn at exit 0, which keeps the
+      // class on the turn-end facts and off the exit code.
+      'incomplete-turn-observed-777491f8',
+      'incomplete-turn-exit-0-background-open'
     ]);
   });
 
@@ -975,6 +997,7 @@ describe('backend-neutral outcome evaluation corpus', () => {
     const covered = new Set(corpus.cases.map((c) => c.expected.parserKind));
     expect([...covered].sort()).toEqual([
       'clean',
+      'incomplete_turn',
       'malformed',
       'open_questions',
       'rate_limited',
@@ -995,6 +1018,7 @@ describe('backend-neutral outcome evaluation corpus', () => {
     const covered = new Set(corpus.cases.map((c) => c.expected.terminationReason));
     expect([...covered].sort()).toEqual([
       'error',
+      'incomplete_turn',
       'open_questions',
       'rate_limit',
       'remaining_issues',
@@ -1026,6 +1050,12 @@ describe('backend-neutral outcome evaluation corpus', () => {
         expect(actual.result.kind).toBe('malformed');
         if (actual.result.kind === 'malformed') {
           expect(actual.result.warnings).toContain(testCase.expected.resultWarningIncludes);
+        }
+      }
+      if (testCase.expected.incompleteTurnCause) {
+        expect(actual.result.kind).toBe('incomplete_turn');
+        if (actual.result.kind === 'incomplete_turn') {
+          expect(actual.result.cause).toBe(testCase.expected.incompleteTurnCause);
         }
       }
       if (testCase.session && testCase.expected.session) {
