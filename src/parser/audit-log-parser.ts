@@ -8,6 +8,10 @@ import {
   type AuditOutcome
 } from '../audit/audit-entry';
 import type { Phase } from '../controller/phase';
+import {
+  AUDIT_LOG_CLOSE_MARKER,
+  AUDIT_LOG_OPEN_MARKER
+} from '../contracts/phase-output-contract';
 
 const OUTCOMES: ReadonlySet<string> = new Set(['success', 'failure', 'info']);
 
@@ -98,9 +102,6 @@ export function parseAuditLogLineDetailed(line: string): ParseAuditLineResult {
   return { entry, warning };
 }
 
-const OPEN_MARKER = '=== SCHEGENT AUDIT LOG ===';
-const CLOSE_MARKER = '=== END AUDIT LOG ===';
-
 /**
  * The SCHEGENT AUDIT LOG closing sentinel.
  *
@@ -116,7 +117,7 @@ const CLOSE_MARKER = '=== END AUDIT LOG ===';
  * The export remains because the marker bounds the trailing region (FR-003) and
  * because test fixtures build realistic phase output from it.
  */
-export const AUDIT_LOG_CLOSE_MARKER = CLOSE_MARKER;
+export { AUDIT_LOG_CLOSE_MARKER };
 
 const REQUIRED_FIELDS = [
   'phase',
@@ -184,10 +185,10 @@ function collectMarkerPairs(lines: string[]): { pairs: MarkerPair[]; unterminate
   let openAt: number | null = null;
   for (let i = 0; i < lines.length; i++) {
     if (openAt === null) {
-      if (lines[i].includes(OPEN_MARKER)) openAt = i;
+      if (lines[i].includes(AUDIT_LOG_OPEN_MARKER)) openAt = i;
       continue;
     }
-    if (lines[i].includes(CLOSE_MARKER)) {
+    if (lines[i].includes(AUDIT_LOG_CLOSE_MARKER)) {
       pairs.push({ openIndex: openAt, closeIndex: i });
       openAt = null;
     }
