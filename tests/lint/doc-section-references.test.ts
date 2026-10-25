@@ -93,6 +93,7 @@ function installScript(root: string): string {
   const script = join(root, 'repo', 'scripts', 'check-doc-links.mjs');
   mkdirSync(dirname(script), { recursive: true });
   copyFileSync(SCRIPT, script);
+  copyFileSync(join(REPO, 'scripts', 'invoked-as-script.mjs'), join(dirname(script), 'invoked-as-script.mjs'));
   return script;
 }
 

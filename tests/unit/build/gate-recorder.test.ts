@@ -49,7 +49,7 @@ type SpawnCall = { executable: string; args: readonly string[]; options: Record<
  *
  * Not a JavaScript parser and not trying to be: it tracks block-comment nesting across lines and
  * cuts a line comment at the first `//` that is not preceded by `:` — the guard exists because
- * `check-gate-coverage-parity.mjs` compares against a `file://` URL and cutting there would
+ * `generate-contract-schemas.mjs` writes `https://` URLs in its strings and cutting there would
  * silently discard live code. The pair of controls in the non-vacuity case below is what keeps
  * this honest; a stripper nobody probes is a scan over an empty string.
  */

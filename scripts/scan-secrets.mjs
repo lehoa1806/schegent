@@ -27,6 +27,7 @@ import { createEngine } from '@secretlint/node';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { invokedAsScript } from './invoked-as-script.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CONFIG = resolve(ROOT, '.secretlintrc.json');
@@ -70,7 +71,7 @@ export function isIgnored(file, patterns) {
   return false;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (invokedAsScript(import.meta.url)) {
   if (!existsSync(CONFIG)) {
     console.error(`Secret scan cannot run: ${CONFIG} is missing. An unanswerable check is a refusal.`);
     process.exit(1);
