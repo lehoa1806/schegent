@@ -1,6 +1,6 @@
 <script lang="ts">
   // Feature 029 T029 — visual highlight for a detected SCHEGENT AUDIT
-  // LOG footer block. Pairs the parsed status (CLEAR / FAILED / UNKNOWN)
+  // LOG footer block. Pairs the parsed status (CLEAR / UNKNOWN)
   // with a colored badge and renders the block body inside the shared
   // MultiLineCodeBlock so newlines render correctly. Pure renderer —
   // the host has already sanitized the block bytes at the IPC boundary
@@ -17,7 +17,6 @@
 
   const STATUS_LABEL: Record<AuditFooterMatch['status'], string> = {
     CLEAR: 'CLEAR',
-    FAILED: 'FAILED',
     UNKNOWN: 'UNKNOWN'
   };
 </script>
@@ -50,9 +49,6 @@
   .audit-completion-card[data-status='CLEAR'] {
     border-color: color-mix(in srgb, var(--vscode-testing-iconPassed) 55%, var(--schegent-border));
   }
-  .audit-completion-card[data-status='FAILED'] {
-    border-color: color-mix(in srgb, var(--vscode-testing-iconFailed) 55%, var(--schegent-border));
-  }
   .audit-completion-card[data-status='UNKNOWN'] {
     border-color: color-mix(in srgb, var(--vscode-testing-iconQueued) 55%, var(--schegent-border));
   }
@@ -79,10 +75,6 @@
   }
   .badge[data-badge='CLEAR'] {
     background: var(--vscode-testing-iconPassed, transparent);
-    color: var(--vscode-editor-background, transparent);
-  }
-  .badge[data-badge='FAILED'] {
-    background: var(--vscode-testing-iconFailed, transparent);
     color: var(--vscode-editor-background, transparent);
   }
   .badge[data-badge='UNKNOWN'] {

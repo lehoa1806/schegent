@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 117
+    vacuity-census-denominator: 118
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **117** |
+| Gates the detector calls **controlled** (the denominator) | **118** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -1470,3 +1470,14 @@ controlled on its first run. Attribution is by census membership: the controlled
 
 The rate stays **0.0%**: the entrant was mutated with the rest and did not survive
 (`mutated=117 stillCalledControlled=0`).
+
+**Denominator movement 117 → 118 (2026-10-25, feature 231 / `FR-R3-203`).** One gate joined,
+controlled on its first run. Attribution is by census membership: the controlled set was computed at
+`HEAD` and in the working tree, and this file is the only one that joined and none left.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | `phase-output-contract-has-one-home.test.ts` (117 → 118) | Joined. Walks `src` and `webview-ui/src` with `filesUnder` and holds an empty set of non-test sources outside the contract module that spell the audit block's markers or the termination token. That is this census's usual shape with its usual risk: a moved root, or a walk that quietly finds nothing, gives an empty set, and an empty set satisfies "no copy outside the home" for free. Controlled by `toBeGreaterThan` (the scan read more than one file) and by `toContain(` (the scanned set holds the contract module and each of the four readers, and the module holds the strings), so the walk is shown reaching real code on every run, and `neuter()` rewrites both. A third case plants text and proves the matcher flags each needle in code and in a comment and leaves prose alone. |
+
+The rate stays **0.0%**: the entrant was mutated with the rest and did not survive
+(`mutated=118 stillCalledControlled=0`).

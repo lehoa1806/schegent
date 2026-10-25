@@ -1329,12 +1329,17 @@ asserts the SHA-256 is unchanged.
   `MetadataLine` records. Recognised keys: `cwd`, `session_id`,
   `duration_ms`, `cost` / `total_cost_usd`, `tools`, `model`, `num_turns`.
 - [`webview-ui/src/lib/activity-feed/detect-audit-footer.ts`](src/lib/activity-feed/detect-audit-footer.ts)
-  — locates the `=== SCHEGENT AUDIT LOG ===` … `=== END SCHEGENT AUDIT
-  LOG ===` block (start-of-line, not a partial of a wider equals fence)
-  and extracts the `[SCHEGENT_STATUS: …]` status. Returns the matched
-  block plus prefix/suffix so the renderer can render
-  `prefix → AuditCompletionCard → suffix` and gracefully handles the
-  streaming case where the close marker has not yet arrived.
+  — locates the audit block the way the host's parser does, with the open
+  marker, the close marker and the token rule all taken from
+  [`src/contracts/phase-output-contract.ts`](../src/contracts/phase-output-contract.ts)
+  (a marker counts at the start of a line, not as a partial of a wider
+  equals fence). The last complete open/close pair is the block, and the
+  status is `CLEAR` exactly when a line of the region from that close
+  marker to the end passes the host's token rule, `UNKNOWN` otherwise.
+  Returns the matched block plus prefix/suffix so the renderer can render
+  `prefix → AuditCompletionCard → suffix`, with whatever follows the close
+  marker shown after the card, and gracefully handles the streaming case
+  where the close marker has not yet arrived.
 
 **Component family** under [`webview-ui/src/components/PhaseLogFeed/parts/`](src/components/PhaseLogFeed/parts/):
 
@@ -1355,7 +1360,7 @@ asserts the SHA-256 is unchanged.
   `system` / `result` entries; **latest-value-wins** dedup; expand
   toggle reveals the full ordered detection list.
 - [`AuditCompletionCard.svelte`](src/components/PhaseLogFeed/parts/AuditCompletionCard.svelte)
-  — renders a colored status badge (CLEAR / FAILED / UNKNOWN) wrapping
+  — renders a colored status badge (CLEAR / UNKNOWN) wrapping
   the audit-log block body inside `MultiLineCodeBlock`. Rendered inline
   from [`PhaseLogEntry.svelte`](src/components/PhaseLogFeed/PhaseLogEntry.svelte)
   when the `assistant-text` body matches the audit footer.

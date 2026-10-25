@@ -106,13 +106,13 @@ const UNWRAP = 'repo/src/parser/stream-json-unwrapper.ts';
  * stale without someone noticing.
  */
 const INVOCATION_KINDS: Record<InvocationResult['kind'], number> = {
-  clean: 26,
-  open_questions: 28,
-  remaining_issues: 34,
-  rate_limited: 40,
-  transient_error: 62,
-  incomplete_turn: 71,
-  malformed: 77
+  clean: 27,
+  open_questions: 29,
+  remaining_issues: 35,
+  rate_limited: 41,
+  transient_error: 63,
+  incomplete_turn: 72,
+  malformed: 78
 };
 
 /**
@@ -328,7 +328,7 @@ function fatalEntries(): EnumerationEntry[] {
  * A renamed envelope field does not throw: `unwrapStreamJson` returns
  * `hasModelText ? unwrapped : rawText`, so the classifier is handed the RAW
  * stream-json. The termination token survives inside that JSON as literal
- * bytes, `TERMINATION_REGEX` still matches, and a drifted run can still reach
+ * bytes, `containsTerminationToken` still accepts, and a drifted run can still reach
  * `clean` — by luck rather than by reading. A corpus asserting only the class
  * passes the exact fault it was added to detect, which is why the envelope
  * cases assert `unwrappedText` BEFORE classification.

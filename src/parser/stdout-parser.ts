@@ -1,4 +1,5 @@
 import type { AuditEntryFields } from '../audit/audit-entry';
+import { containsTerminationToken } from '../contracts/phase-output-contract';
 import type { EvidencePolicyOrigin, PhaseEvidencePolicy } from '../contracts/process-definitions';
 import {
   classifyFatal,
@@ -91,7 +92,6 @@ export type InvocationResult =
  */
 export type IncompleteTurnCause = 'background-work-open' | 'no-contract-block';
 
-const TERMINATION_REGEX = /\[SCHEGENT_STATUS:\s*(CLEAR|DONE|RESOLVED)\]/i;
 const OPEN_HEADING_REGEX = /^\s*(Open|Remaining)\s+(questions|clarifications):\s*$/i;
 const ISSUES_HEADING_REGEX =
   /^\s*(Remaining issues|Failed with \d+ errors?|Failing with \d+ issues?):?\s*$/i;
@@ -102,7 +102,7 @@ const TAGGED_BULLET_REGEX =
 export function detectTerminationToken(stdout: string): boolean {
   const lines = stdout.split(/\r?\n/);
   for (const line of lines) {
-    if (TERMINATION_REGEX.test(line)) {
+    if (containsTerminationToken(line)) {
       return true;
     }
   }
@@ -145,7 +145,7 @@ function scanRegion(region: string): RegionScan {
       inFence = !inFence;
       continue;
     }
-    if (TERMINATION_REGEX.test(line)) {
+    if (containsTerminationToken(line)) {
       count += 1;
       if (inFence) fencedCount += 1;
     }
@@ -169,7 +169,7 @@ function scanOutsideRegion(stdout: string, regionText: string): { count: number;
   let count = 0;
   let firstLine = 0;
   for (let i = 0; i < headLineCount; i++) {
-    if (TERMINATION_REGEX.test(lines[i])) {
+    if (containsTerminationToken(lines[i])) {
       count += 1;
       if (firstLine === 0) firstLine = i + 1;
     }
