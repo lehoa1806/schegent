@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { inflateRawSync } from 'node:zlib';
 import { readdirSync, readFileSync } from 'node:fs';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { basename, join, relative, resolve, sep } from 'node:path';
+import { invokedAsScript } from './invoked-as-script.mjs';
 
 export const MAX_VSIX_COMPRESSED_BYTES = 2 * 1024 * 1024;
 export const MAX_VSIX_UNCOMPRESSED_BYTES = 5 * 1024 * 1024;
@@ -512,7 +513,6 @@ export function inspectVsix(vsixPath) {
   );
 }
 
-const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : '';
-if (import.meta.url === invokedPath) {
+if (invokedAsScript(import.meta.url)) {
   inspectVsix(process.argv[2] ?? 'schegent-smoke.vsix');
 }

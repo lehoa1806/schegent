@@ -23,9 +23,8 @@
 // binds the seams to the real world, and importing this module runs nothing.
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { ATTESTATION_PATH, ATTESTATION_VERSION, REPO_ROOT, readTreeState } from './gate-attestation.mjs';
+import { invokedAsScript } from './invoked-as-script.mjs';
 
 /** The remedy every failure below names, as the release path's refusals name it. */
 const RECORD_REMEDY = 'npm run gate:record';
@@ -228,7 +227,7 @@ function countCommits(range) {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
+if (invokedAsScript(import.meta.url)) {
   const outcome = reportGateDistance({ readRecordText, readTreeState, countCommits });
   for (const text of outcome.lines) console.log(text);
   process.exitCode = outcome.exitCode;

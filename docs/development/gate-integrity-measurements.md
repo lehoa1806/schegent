@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 116
+    vacuity-census-denominator: 117
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **116** |
+| Gates the detector calls **controlled** (the denominator) | **117** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -1459,3 +1459,14 @@ computed at `HEAD` and in the working tree, and this file is the only one that j
 
 The rate stays **0.0%**: the entrant was mutated with the rest and did not survive
 (`mutated=116 stillCalledControlled=0`).
+
+**Denominator movement 116 → 117 (2026-10-24, feature 229 / `FR-R3-200`).** One gate joined,
+controlled on its first run. Attribution is by census membership: the controlled set was computed at
+`HEAD` and in the working tree, and this file is the only one that joined and none left.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | `entry-checks-use-the-shared-function.test.ts` (116 → 117) | Joined. Walks `scripts/` with `filesUnder` and holds an empty set of reads of `process.argv[1]` outside `invoked-as-script.mjs`, the one function the nine scripts that run as commands now call to decide whether they were started. That is this census's usual shape with its usual risk: a moved `scripts/`, or a matcher that quietly stops matching, gives an empty set, and an empty set satisfies "no read outside the shared function" for free. Controlled by four floors: it reads at least one script, it reads each of the nine scripts, it reads the shared module, and it finds reads in that module, so the matcher is shown matching real code on every run. Two more cases hold what a floor cannot: each of the nine scripts must import the function and have a call with its own URL decide a top-level `if` that does something when the script is started, and twenty-three planted sources, seventeen the matcher must flag and six it must not, fix what counts as a read. Eight more fix what counts as deciding: three shapes the control must accept, the canary's among them, and five it must refuse. |
+
+The rate stays **0.0%**: the entrant was mutated with the rest and did not survive
+(`mutated=117 stillCalledControlled=0`).

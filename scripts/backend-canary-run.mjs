@@ -4,7 +4,6 @@
 // Separated so the decisions are unit-testable without a CLI, a network, or
 // credentials. This half does the I/O and nothing else.
 
-import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import {
   QUALIFICATION_PATH,
@@ -26,6 +25,7 @@ import {
   LIVE_PROMPT,
   CANARY_CASES
 } from './backend-canary.mjs';
+import { invokedAsScript } from './invoked-as-script.mjs';
 
 /** The hard wall-clock deadline on the live turn. */
 const LIVE_TIMEOUT_MS = 120_000;
@@ -275,8 +275,7 @@ function recordCorpus(backend, command) {
  * The whole point of `FR-R3-104` is that a live turn is expensive enough to gate a RELEASE on
  * rather than a gate run. A module that spends three of them on import contradicts its own item.
  */
-const isEntryPoint = process.argv[1] !== undefined
-  && import.meta.url === pathToFileURL(process.argv[1]).href;
+const isEntryPoint = invokedAsScript(import.meta.url);
 
 if (!isEntryPoint) {
   // Importable for its exports, silent about it. Nothing below runs.
