@@ -36,6 +36,7 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { GATE_COMMAND_SPEC } from './gate-attestation.mjs';
+import { invokedAsScript } from './invoked-as-script.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const GATE_SCRIPT = GATE_COMMAND_SPEC.script;
@@ -130,7 +131,7 @@ export function decideParity(documentText, all) {
   return { ok: true, checks: derivedChecks(all).length };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (invokedAsScript(import.meta.url)) {
   const all = scripts();
   const relPath = resolve(ROOT, 'RELEASE.md');
   const text = readFileSync(relPath, 'utf8');

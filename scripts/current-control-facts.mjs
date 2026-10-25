@@ -36,6 +36,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { resolve, dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { reachableScripts, GATE_SCRIPT } from './check-gate-coverage-parity.mjs';
+import { invokedAsScript } from './invoked-as-script.mjs';
 
 const HERE = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -307,7 +308,7 @@ export function decideControlParity(documentText, facts) {
   return { ok: true, facts };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (invokedAsScript(import.meta.url)) {
   const facts = controlFacts(HERE);
   const docPath = resolve(HERE, CONTROLS_DOC);
   const text = read(docPath);

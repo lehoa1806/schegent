@@ -23,6 +23,7 @@
 import { readFileSync, readdirSync, existsSync, statSync, realpathSync } from 'node:fs';
 import { dirname, resolve, join, relative, sep, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { invokedAsScript } from './invoked-as-script.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const WS_ROOT = resolve(REPO_ROOT, '..');
@@ -851,20 +852,5 @@ function main() {
   console.log(`Section references checked: ${sections.checked} in live documents${sectionNotes}.`);
 }
 
-/**
- * True when Node was started on this file, by any path to it. Both sides are resolved, because
- * `import.meta.url` names the file with its symlinks resolved and `process.argv[1]` does not: a
- * direct comparison was false through any symlinked directory, macOS's `/tmp` included, and the
- * gate then exited 0 having checked nothing.
- */
-function invokedAsScript() {
-  if (!process.argv[1]) return false;
-  try {
-    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
-  } catch {
-    return false;
-  }
-}
-
 // Run as a script; imported (by its gate's test), only the functions above are used.
-if (invokedAsScript()) main();
+if (invokedAsScript(import.meta.url)) main();
