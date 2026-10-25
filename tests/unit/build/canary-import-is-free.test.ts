@@ -50,6 +50,6 @@ describe('the canary is free to import and expensive only to run', () => {
     // The behavioural cases above are the load-bearing half. This one names WHERE the behaviour
     // comes from, because a future reader deleting the guard should find this test by grepping it.
     const source = readFileSync(resolve(REPO_ROOT, SCRIPT), 'utf8');
-    expect(source).toContain('import.meta.url === pathToFileURL(process.argv[1]).href');
+    expect(source).toContain('invokedAsScript(import.meta.url)');
   });
 });

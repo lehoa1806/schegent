@@ -23,6 +23,7 @@
 import { readFileSync, readdirSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { invokedAsScript } from './invoked-as-script.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const LINT_ROOT = resolve(REPO_ROOT, 'tests', 'lint');
@@ -200,6 +201,6 @@ function main() {
   );
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
+if (invokedAsScript(import.meta.url)) {
   main();
 }
