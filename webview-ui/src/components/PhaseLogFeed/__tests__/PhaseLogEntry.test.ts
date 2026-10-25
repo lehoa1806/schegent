@@ -5,6 +5,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render } from '@testing-library/svelte';
 import PhaseLogEntry from '../PhaseLogEntry.svelte';
 import type { PhaseLogDisplayEntry } from '../../../../../src/services/phase-log/types';
+import {
+  AUDIT_LOG_CLOSE_MARKER,
+  AUDIT_LOG_OPEN_MARKER
+} from '../../../../../src/contracts/phase-output-contract';
 
 afterEach(() => cleanup());
 
@@ -90,6 +94,31 @@ describe('Feature 020 T020 — PhaseLogEntry rendering', () => {
       }
     });
     expect(queryByTestId('phase-log-entry-truncation')).toBeNull();
+  });
+
+  it('renders what follows the audit block after the card, not inside it (FR-R3-203)', () => {
+    const block = [
+      AUDIT_LOG_OPEN_MARKER,
+      'phase: speckit-plan',
+      'notes: ok',
+      AUDIT_LOG_CLOSE_MARKER
+    ].join('\n');
+    const { getByTestId, container } = render(PhaseLogEntry, {
+      props: {
+        entry: entry({
+          kind: 'assistant-text',
+          body: { text: `${block}\nRemaining issues:\n- one` }
+        })
+      }
+    });
+    const card = getByTestId('audit-completion-card');
+    const codeText = card.querySelector('pre > code')?.textContent ?? '';
+    expect(codeText.endsWith(AUDIT_LOG_CLOSE_MARKER)).toBe(true);
+    expect(codeText).not.toContain('Remaining issues:');
+    const after = Array.from(container.querySelectorAll('span.text')).filter(
+      (span) => (card.compareDocumentPosition(span) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+    );
+    expect(after.map((span) => span.textContent).join('')).toContain('Remaining issues:');
   });
 
   it('renders truncated-head synthetic kind with droppedEntryCount', () => {

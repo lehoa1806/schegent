@@ -1,6 +1,11 @@
 import type { Phase } from '../controller/phase';
 import type { PhaseDef } from '../config/pipeline-config';
 import type { ExecutionEnvelope } from '../contracts/run-request';
+import {
+  AUDIT_LOG_CLOSE_MARKER,
+  AUDIT_LOG_OPEN_MARKER,
+  TERMINATION_TOKEN
+} from '../contracts/phase-output-contract';
 
 // Feature 107 (FR-R3-023) — the position sentence is new here, not new as a
 // rule. `.specify/memory/constitution.md` § Output Formatting & Loop
@@ -9,7 +14,7 @@ import type { ExecutionEnvelope } from '../contracts/run-request';
 // as a verdict only from the region at and after the audit block's close marker
 // (threat model T25). Enforcing a requirement the prompt did not state is the
 // same drift this feature exists to close, so the prompt states it.
-const TOKEN_INSTRUCTION = `When (and only when) the phase is complete, emit on its OWN line: [SCHEGENT_STATUS: CLEAR]. Emit it AFTER the audit log block, as the last non-empty line of your output — a token printed before the block, or anywhere else in the stream, is not read as a completion signal. If issues remain, emit a heading "Open questions:" or "Remaining issues:" followed by a Markdown bullet list. Do not decorate the token; do not place it inside a code fence.`;
+const TOKEN_INSTRUCTION = `When (and only when) the phase is complete, emit on its OWN line: ${TERMINATION_TOKEN}. Emit it AFTER the audit log block, as the last non-empty line of your output — a token printed before the block, or anywhere else in the stream, is not read as a completion signal. If issues remain, emit a heading "Open questions:" or "Remaining issues:" followed by a Markdown bullet list. Do not decorate the token; do not place it inside a code fence.`;
 
 // Feature 098 (FR-008, FR-019) — `BUILT_IN_INSTRUCTIONS` stood here: ten Spec
 // Kit instruction strings keyed by Phase id, consulted by `taskInstructionFor`
@@ -24,7 +29,7 @@ const TOKEN_INSTRUCTION = `When (and only when) the phase is complete, emit on i
 // had defined, and for that phase `(no-op)` is the honest answer.
 
 const AUDIT_INSTRUCTION = `Always emit a fenced audit log block in this exact form:
-=== SCHEGENT AUDIT LOG ===
+${AUDIT_LOG_OPEN_MARKER}
 phase: <phase-name>
 files_created: [<path>, ...]
 files_modified: [<path>, ...]
@@ -33,7 +38,7 @@ commands_executed: [<one-line summary>, ...]
 network_calls: [<endpoint or "none">]
 ruleset_switches: [<path or "none">]
 notes: <freeform; <= 240 chars>
-=== END AUDIT LOG ===
+${AUDIT_LOG_CLOSE_MARKER}
 Empty arrays MUST be written as []. All required fields MUST be present.`;
 
 export interface PromptInputs {
