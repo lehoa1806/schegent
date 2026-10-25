@@ -41,7 +41,7 @@ const AUDIT = 'repo/src/parser/audit-log-parser.ts';
 /**
  * T008 — the audit-block tier, enumerated from source at run time.
  *
- * `REQUIRED_FIELDS` is module-private (`audit-log-parser.ts:121`), so it cannot
+ * `REQUIRED_FIELDS` is module-private (`audit-log-parser.ts:122`), so it cannot
  * be imported. Reading the declaration out of the source file is still a
  * derivation rather than a transcription, and it is the derivation that matters:
  * rename a field in the parser and this list follows it, leaving the fixture's

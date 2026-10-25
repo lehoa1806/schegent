@@ -28,7 +28,7 @@ export type ParseToolArgumentsResult =
   | { ok: true; args: ParsedToolArgument[] }
   | { ok: false; rawText: string };
 
-export type AuditFooterStatus = 'CLEAR' | 'FAILED' | 'UNKNOWN';
+export type AuditFooterStatus = 'CLEAR' | 'UNKNOWN';
 
 export interface AuditFooterMatch {
   matched: true;

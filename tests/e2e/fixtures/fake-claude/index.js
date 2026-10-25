@@ -95,7 +95,7 @@ function bumpCallCount(phase) {
 
 // Emit the contract-compliant transcript shape. The parser recognises:
 //   - `[SCHEGENT_STATUS: CLEAR]` after the audit block for clean termination
-//     (via TERMINATION_REGEX which accepts CLEAR/DONE/RESOLVED only).
+//     (via containsTerminationToken which accepts CLEAR/DONE/RESOLVED only).
 //   - A `Remaining issues:` heading followed by bullets for loop-back.
 // The stub emits CLEAR for happy / fatal / rate-limit paths and emits a
 // `Remaining issues:` heading + bullet for the first loopable call in

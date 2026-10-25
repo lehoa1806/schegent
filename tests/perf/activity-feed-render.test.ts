@@ -33,6 +33,11 @@ import { parseStreamJsonlBytes } from '../../src/services/phase-log/phase-log-js
 import { projectStreamJsonlLine } from '../../src/services/phase-log/phase-log-display-projector';
 import { truncateDisplayEntryBody } from '../../src/services/phase-log/phase-log-truncator';
 import type { PhaseLogDisplayEntry } from '../../src/services/phase-log/types';
+import {
+  AUDIT_LOG_CLOSE_MARKER,
+  AUDIT_LOG_OPEN_MARKER,
+  TERMINATION_TOKEN
+} from '../../src/contracts/phase-output-contract';
 
 const ENTRY_COUNT = 500;
 const BUDGET_MS = 150;
@@ -137,11 +142,12 @@ function buildSyntheticLines(n: number): unknown[] {
       content: [
         {
           type: 'text',
+          // The host's block: the prompt's markers, then the token after the
+          // close marker, where the host reads it.
           text:
-            'pipeline complete\n\n=== SCHEGENT AUDIT LOG ===\n' +
-            '[SCHEGENT_STATUS: CLEAR]\n' +
+            `pipeline complete\n\n${AUDIT_LOG_OPEN_MARKER}\n` +
             'phase: speckit-implement\nstatus: ok\n' +
-            '=== END SCHEGENT AUDIT LOG ===\n'
+            `${AUDIT_LOG_CLOSE_MARKER}\n${TERMINATION_TOKEN}\n`
         }
       ]
     }
