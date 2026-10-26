@@ -44,6 +44,16 @@ const SESSION_ID_SIGILS = ['session_id', 'conversation_id', 'conversationId'] as
 const MAX_SESSION_ID_LEN = 256;
 
 /**
+ * The characters an id may hold: a letter or digit first, then letters,
+ * digits, `.`, `_`, `:` and `-`. The id is spawned as the argument of
+ * `--resume` or `--conversation`, so one beginning with `-` would reach the CLI
+ * as an option (feature-228 security review, I2). This narrows the note above:
+ * a UUID passes, and so does another format made only of these characters.
+ * Linear: no nested quantifier.
+ */
+const SESSION_ID_SHAPE = /^[A-Za-z0-9][\w.:-]*$/;
+
+/**
  * Extract the CLI session ID from stream-json stdout.
  *
  * Scans lines from the START (session_id is emitted early in the
@@ -131,7 +141,8 @@ function readId(record: Record<string, unknown>): string | null {
     if (
       typeof value === 'string' &&
       value.length > 0 &&
-      value.length <= MAX_SESSION_ID_LEN
+      value.length <= MAX_SESSION_ID_LEN &&
+      SESSION_ID_SHAPE.test(value)
     ) {
       return value;
     }
