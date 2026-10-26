@@ -2085,4 +2085,84 @@ describe('Feature 074 — Multi-Backend Runner Resolution & Session Reset', () =
     expect(invoke.mock.calls[0][0].runId).toBe('run-compaction');
     expect(invoke.mock.calls[1][0].runId).toBe('run-compaction');
   });
+
+  // FR-R3-209 — PR1: the request carries the Run's figure beside the resume id, and the output the runner's.
+  it('forwards the resume cost figure beside the resume id and reports the runner figure', async () => {
+    cliRunner = makeFakeRunner(async () => ({ ...makeRawOutput(), cliSessionCostUsd: 1.6 }));
+    runner = new PhaseRunner(
+      cliRunner,
+      new PromptBuilder(),
+      auditWriter,
+      new SanitizedLogger()
+    );
+
+    const result = await runner.run({
+      ...baseInputs,
+      resumeSessionId: 'owned-session',
+      resumeSessionCostUsd: 1.0
+    });
+
+    const invokeMock = cliRunner.invoke as ReturnType<typeof vi.fn>;
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock.mock.calls.at(0)?.[0]).toMatchObject({
+      resumeSessionId: 'owned-session',
+      resumeSessionCostUsd: 1.0
+    });
+    expect(result.cliSessionCostUsd).toBe(1.6);
+  });
+
+  it('drops the resume cost figure with the resume id when pre-compaction fails', async () => {
+    let invocation = 0;
+    cliRunner = makeFakeRunner(async () => {
+      invocation += 1;
+      return invocation === 1
+        ? makeRawOutput({ exitCode: 1, command: 'claude --resume owned-session compact' })
+        : makeRawOutput({ command: 'claude --resume owned-session phase' });
+    });
+    runner = new PhaseRunner(
+      cliRunner,
+      new PromptBuilder(),
+      auditWriter,
+      new SanitizedLogger()
+    );
+
+    const result = await runner.run({
+      ...baseInputs,
+      sessionReuse: true,
+      resumeSessionId: 'owned-session',
+      resumeSessionCostUsd: 1.0
+    });
+
+    expect(result.outcome).toBe('clean');
+    const invokeMock = cliRunner.invoke as ReturnType<typeof vi.fn>;
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+    const phaseRequest = invokeMock.mock.calls.at(1)?.[0];
+    expect(phaseRequest).not.toHaveProperty('resumeSessionId');
+    expect(phaseRequest).not.toHaveProperty('resumeSessionCostUsd');
+  });
+
+  it('keeps the resume cost figure off the compaction request and on the phase request', async () => {
+    cliRunner = makeFakeRunner(async () => makeRawOutput());
+    runner = new PhaseRunner(
+      cliRunner,
+      new PromptBuilder(),
+      auditWriter,
+      new SanitizedLogger()
+    );
+
+    await runner.run({
+      ...baseInputs,
+      sessionReuse: true,
+      resumeSessionId: 'owned-session',
+      resumeSessionCostUsd: 1.0
+    });
+
+    const invokeMock = cliRunner.invoke as ReturnType<typeof vi.fn>;
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+    expect(invokeMock.mock.calls.at(0)?.[0]).not.toHaveProperty('resumeSessionCostUsd');
+    expect(invokeMock.mock.calls.at(1)?.[0]).toMatchObject({
+      resumeSessionId: 'owned-session',
+      resumeSessionCostUsd: 1.0
+    });
+  });
 });

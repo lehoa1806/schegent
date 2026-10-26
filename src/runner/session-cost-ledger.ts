@@ -9,9 +9,9 @@
  * invocation's baseline, which `extractInvocationUsageMetrics` subtracts.
  *
  * In memory only, one ledger per runner. A session it has not seen, after a
- * host restart or an eviction, has no baseline, and its next invocation counts
- * the whole cumulative total once. The keys are CLI session ids, so nothing here
- * is logged or persisted.
+ * host restart or an eviction, takes the Run's persisted figure when the request
+ * resuming it carries one (FR-R3-209), and otherwise counts the whole cumulative
+ * total once. The keys are CLI session ids, so nothing here is logged or persisted.
  */
 
 /** How many sessions a ledger remembers before it evicts the oldest. */
@@ -38,5 +38,10 @@ export class SessionCostLedger {
     if (this.costs.size <= MAX_TRACKED_SESSIONS) return;
     const oldest = this.costs.keys().next();
     if (!oldest.done) this.costs.delete(oldest.value);
+  }
+
+  /** Records the figure only when the ledger holds none for the session; eviction is `record`'s. */
+  public recordIfAbsent(sessionId: string, cumulativeUsd: number): void {
+    if (!this.costs.has(sessionId)) this.record(sessionId, cumulativeUsd);
   }
 }

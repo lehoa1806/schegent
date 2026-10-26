@@ -188,6 +188,12 @@ export interface InvocationRequest {
    */
   resumeSessionId?: string;
   /**
+   * FR-R3-209 — the Run's persisted `total_cost_usd` for the session `resumeSessionId` names.
+   * Present only beside `resumeSessionId`, and used only to fill an empty ledger slot for that
+   * session, so the first invocation after a host restart records only its own cost.
+   */
+  resumeSessionCostUsd?: number;
+  /**
    * FR-R3-086 — the capability set this phase declared, frozen with the plan.
    *
    * OPTIONAL on the interface, for the same backwards-compatibility reason
@@ -349,6 +355,13 @@ export interface RawInvocationOutput {
    * cost (codex, agy); absent means the whole cumulative counts, as before.
    */
   sessionCostBaselineUsd?: number;
+  /**
+   * FR-R3-209 — the ledger's cumulative figure for the reported session once this invocation is
+   * recorded, which is the baseline the session's next invocation takes. Absent when the ledger
+   * holds none, and from a runner with no ledger (codex, agy). The controller persists it beside
+   * the session id.
+   */
+  cliSessionCostUsd?: number;
   /**
    * FR-R3-047 (H-04) — `true` iff writing the prompt to the child's stdin
    * FAILED. Absent is equivalent to `false`, so a non-runner fixture that omits

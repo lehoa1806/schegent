@@ -2,7 +2,7 @@
  * FR-008 / FR-008a / FR-008c — the protocol fields the verdict readers actually
  * read, in both tiers, with a symbol-grained anchor for each.
  *
- * Two tiers, because the pipeline has two. `phase-runner.ts:756` unwraps the
+ * Two tiers, because the pipeline has two. `phase-runner.ts:759` unwraps the
  * backend's stream-json envelope BEFORE `parseInvocation` sees anything, so the
  * envelope fields are read by one module and the audit-block fields by another,
  * and a corpus entering downstream of the unwrapper — as all eleven original

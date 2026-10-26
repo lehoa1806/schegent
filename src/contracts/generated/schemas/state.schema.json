@@ -235,6 +235,11 @@
           "type": "import('../contracts/backend-kinds').BackendRunnerKind"
         },
         {
+          "name": "lastCliSessionCostUsd",
+          "optional": true,
+          "type": "number | undefined"
+        },
+        {
           "name": "lastRetryDecision",
           "optional": true,
           "type": "LastRetryDecision"

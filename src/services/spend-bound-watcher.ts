@@ -32,7 +32,7 @@
 // mid-turn, because no backend reports it until the turn ends.
 import type { AuditEntry } from '../audit/audit-entry';
 import type { SanitizedLogger } from '../lib/logger';
-import type { WorkflowRun } from '../state/workflow-run';
+import { isTerminalRunStatus, type WorkflowRun } from '../state/workflow-run';
 import {
   accumulateSpend,
   effectiveSpendBound,
@@ -61,6 +61,8 @@ export interface SpendBoundWatcherDeps {
 export interface SpendBoundWatcher {
   /** Subscribe this to `AuditLogWriter.subscribe`. */
   readonly onAuditEntry: (entry: AuditEntry) => void;
+  /** Rebuild the tally from the log's last window; called once, by the wiring. Never rejects. */
+  readonly seedFrom: (rows: Promise<readonly AuditEntry[]>) => Promise<void>;
   /** Observed spend for a run, for the disclosure and for tests. */
   readonly observedFor: (runId: string) => SpendObserved;
   /** Drop a finished run's tally. */
@@ -73,7 +75,8 @@ export interface SpendBoundWatcher {
  * Bounded, because a host outlives many runs and an unbounded map keyed by run id
  * is a leak that grows with use. Eviction is oldest-first and only matters for a run
  * that is no longer being driven: a run that loses its tally is measured from that
- * point on, which understates spend rather than fabricating it.
+ * point on, which understates spend rather than fabricating it. A restart no longer empties a
+ * live run's tally: the seed rebuilds it from the audit log's last window (FR-R3-209).
  */
 const MAX_TRACKED_RUNS = 64;
 
@@ -81,6 +84,18 @@ export function createSpendBoundWatcher(deps: SpendBoundWatcherDeps): SpendBound
   const observed = new Map<string, SpendObserved>();
   /** Runs already paused for spend, so one crossing produces one pause. */
   const paused = new Set<string>();
+  /**
+   * While a seed is pending, the ids of the `phase-end` rows the live handler folds, so the seed
+   * does not fold them again. Null when no seed is pending.
+   */
+  let liveDuringSeed: Set<string> | null = null;
+  /**
+   * The ids the seed folded, each consumed by its live notice. The audit writer notifies after
+   * the write and the file's close settle, so a row the seed read can be notified after the seed
+   * finished. Bounded by the window, and no timer empties it, because a timer at wiring time is a
+   * producer act (FR-R3-136).
+   */
+  const seeded = new Set<string>();
 
   const forget = (runId: string): void => {
     observed.delete(runId);
@@ -102,6 +117,8 @@ export function createSpendBoundWatcher(deps: SpendBoundWatcherDeps): SpendBound
     // empty one — a run-less entry, which no bound applies to.
     const runId = entry.runId;
     if (runId === '') return;
+    if (seeded.delete(entry.id)) return;
+    liveDuringSeed?.add(entry.id);
 
     const spend = accumulateSpend(observed.get(runId) ?? NO_SPEND_OBSERVED, entry.payload);
     remember(runId, spend);
@@ -148,8 +165,37 @@ export function createSpendBoundWatcher(deps: SpendBoundWatcherDeps): SpendBound
       });
   };
 
+  const seedFrom = async (rows: Promise<readonly AuditEntry[]>): Promise<void> => {
+    liveDuringSeed = new Set();
+    let read: readonly AuditEntry[];
+    try {
+      read = await rows;
+    } catch {
+      // The reader never rejects; this is for a caller's promise. No rows is the unseeded state.
+      read = [];
+    }
+    const foldedLive = liveDuringSeed;
+    liveDuringSeed = null;
+
+    for (const entry of read) {
+      if (entry.eventType !== 'phase-end' || entry.runId === '' || foldedLive.has(entry.id)) {
+        continue;
+      }
+      const found = deps.findRunById(entry.runId);
+      if (found === null || isTerminalRunStatus(found.run.status)) continue;
+
+      remember(
+        entry.runId,
+        accumulateSpend(observed.get(entry.runId) ?? NO_SPEND_OBSERVED, entry.payload)
+      );
+      seeded.add(entry.id);
+      if (found.run.manualPauseCause === 'spend-bound-reached') paused.add(entry.runId);
+    }
+  };
+
   return {
     onAuditEntry,
+    seedFrom,
     observedFor: (runId) => observed.get(runId) ?? NO_SPEND_OBSERVED,
     forget
   };

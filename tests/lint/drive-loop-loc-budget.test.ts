@@ -106,13 +106,22 @@ const SIGNATURE = 'public async drive(';
  *        26, so the whole-file gate that bound the 681 and 668 entries does not
  *        bind here.
  *
+ *   660  FR-R3-209 (feature 237, 2026-10-26) — the Run now keeps the session's cost
+ *        figure beside its id, so the three session fields are cleared and carried
+ *        together. The skip-phase clear (six lines) and the manual-pause carry (two)
+ *        became one line each, through `NO_CLI_SESSION` and `cliSessionOf` in
+ *        `state/workflow-run.ts`. That paid for the figure's write and its dispatch
+ *        line, 664 → 660, a net decrement even though the method now carries one more
+ *        field. `run-driver.ts` itself moved 1,301 → 1,294 by `wc -l`, which keeps 35
+ *        lines under its 1,330 ceiling against a `tightMargin` of 26.
+ *
  * Next candidates, named so the next decrement does not start with a
  * re-measurement: the four pause arms — breakpoint, delayed-retry, rate-limit,
  * verify — are roughly 230 lines between them. The probe-failure arm is NOT a
  * candidate for merging into the shared sequence: its audit emission order differs,
  * and unifying it is an observable change.
  */
-const DRIVE_MAX_LINES = 664;
+const DRIVE_MAX_LINES = 660;
 
 /** Lines from the signature to the closing brace, inclusive. */
 export function methodLineCount(source: string, signature: string): number {
