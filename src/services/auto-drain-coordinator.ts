@@ -299,6 +299,14 @@ export class AutoDrainCoordinator {
    */
   private reservedStarts = 0;
 
+  /**
+   * FR-R3-205 — whether `close()` has run. Set once and never cleared, and
+   * this coordinator's own: the stage 2 a reset or a folder change builds
+   * afterwards builds a new coordinator, which starts open. Not a lifecycle
+   * value and never stored.
+   */
+  private closed = false;
+
   constructor(deps: AutoDrainCoordinatorDeps) {
     this.store = deps.store;
     this.queue = deps.queue;
@@ -335,6 +343,26 @@ export class AutoDrainCoordinator {
     }
     this.sweepInFlight = this.sweepUntilNoneRequested();
     await this.sweepInFlight;
+  }
+
+  /**
+   * FR-R3-205 — stop starting work. Stage 2's teardown calls this before it
+   * stops any child, so the drain that the stopped Run's terminal funnel then
+   * schedules admits nothing and the task waiting for the freed slot stays
+   * pending for the next session, instead of being admitted, refused by a
+   * closed runner and left failed.
+   *
+   * Synchronous, idempotent and never throws, so teardown can call it first
+   * and unconditionally.
+   *
+   * The close is this coordinator's own state and not a lifecycle value, so
+   * step 1 stays the one site that decides `idle-pending` and step 2a the one
+   * that decides a halt. A refusal after it is a wait, like steps 1 to 6:
+   * nothing is written and nothing is logged. A start already inside step 7
+   * when this runs is left to the closed runner (threat model T26).
+   */
+  public close(): void {
+    this.closed = true;
   }
 
   /** Sweep, then sweep again for whatever was asked for while we swept. */
@@ -385,6 +413,10 @@ export class AutoDrainCoordinator {
    * on every path.
    */
   private async drainQueue(queueId: string): Promise<boolean> {
+    // FR-R3-205 — a closed drain starts nothing. Before step 0, so it takes no
+    // slot in the per-queue guard and reaches no later step; `drainIfIdle` and
+    // every queue of a sweep come through here.
+    if (this.closed) return false;
     // Step 0 — Feature 093 (T049): this queue already has a drain deciding for
     // it. A wait of the same shape as every step below: nothing is written,
     // nothing is signalled, and the Task stays pending for the next sweep.
@@ -633,6 +665,14 @@ export class AutoDrainCoordinator {
       this.logger?.warn(
         `auto-drain: execution lease for queue ${queueId} could not be verified at start; not admitting`
       );
+      return false;
+    }
+    // FR-R3-205 — a close can land during either await above, the claim or the
+    // re-check, after the first check passed. Give the lease back and start
+    // nothing; this is a wait, so nothing is logged or reported. It sits outside
+    // the re-check's `if` so it runs whether or not the port offers one.
+    if (this.closed) {
+      await Promise.resolve(this.executionLease.release(queueId)).catch(() => undefined);
       return false;
     }
     // Step 7 — start. `attempted` is what the failure message names; see the
