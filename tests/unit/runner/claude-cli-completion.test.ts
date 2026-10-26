@@ -28,6 +28,7 @@ import { ClaudeCliRunner, type SpawnFn } from '../../../src/runner/claude-cli';
 import type { RawInvocationOutput } from '../../../src/runner/invocation-result';
 import { AUDIT_LOG_CLOSE_MARKER } from '../../../src/parser/audit-log-parser';
 import { SanitizedLogger } from '../../../src/lib/logger';
+import { MAX_OPEN_TASKS, MAX_TASK_ID_LENGTH } from '../../../src/runner/background-task-tracker';
 
 interface FakeChild extends EventEmitter {
   stdout: Readable;
@@ -969,7 +970,7 @@ describe('ClaudeCliRunner — FR-R3-198 background hold (T1876)', () => {
     await closedRun;
 
     expect(messages(closed.lines, 'background hold began')).toEqual([
-      '[ClaudeCliRunner] background hold began openTasks=1 ceilingMs=600000 resumed=false ' +
+      '[ClaudeCliRunner] background hold began openTasks=1 untracked=false ceilingMs=600000 resumed=false ' +
         'phase=speckit-implement iteration=1'
     ]);
     expect(messages(closed.lines, 'background hold ended')).toEqual([
@@ -1055,9 +1056,9 @@ describe('ClaudeCliRunner — FR-R3-198 background hold (T1876)', () => {
     expect(raw.backgroundWorkOpenAtResult).toBe(true);
 
     expect(messages(lines, 'background hold began')).toEqual([
-      '[ClaudeCliRunner] background hold began openTasks=2 ceilingMs=600000 resumed=false ' +
+      '[ClaudeCliRunner] background hold began openTasks=2 untracked=false ceilingMs=600000 resumed=false ' +
         'phase=speckit-implement iteration=1',
-      '[ClaudeCliRunner] background hold began openTasks=1 ceilingMs=600000 resumed=false ' +
+      '[ClaudeCliRunner] background hold began openTasks=1 untracked=false ceilingMs=600000 resumed=false ' +
         'phase=speckit-implement iteration=1'
     ]);
     expect(messages(lines, 'background hold ended')).toEqual([
@@ -1091,5 +1092,109 @@ describe('ClaudeCliRunner — FR-R3-198 background hold (T1876)', () => {
     expect(raw.completedAwaitingExit).toBe(true);
     expect(raw.exitCode).toBe(143);
     expect(raw.backgroundWorkOpenAtResult).toBe(true);
+  });
+
+  function startedLine(taskId: string): string {
+    return `{"type":"system","subtype":"task_started","is_backgrounded":true,"task_id":"${taskId}"}\n`;
+  }
+
+  function notifiedLine(taskId: string): string {
+    return `{"type":"system","subtype":"task_notification","task_id":"${taskId}","status":"completed"}\n`;
+  }
+
+  // FR-R3-206 (T1890): a start dropped at a tracker bound keeps the hold to its ceiling.
+  it('holds to the ceiling for a start dropped for an over-long id (B18)', async () => {
+    const overLongId = 'q'.repeat(MAX_TASK_ID_LENGTH + 1);
+    const { logger, lines } = capturingLogger();
+    const child = makeFakeChild(true);
+    const runner = new ClaudeCliRunner(
+      spawnOpening(child, startedLine(overLongId) + RESULT),
+      null,
+      {},
+      logger
+    );
+    const p = runner.invoke({ ...baseReq, timeoutMs: DEFAULT_TIMEOUT_MS });
+
+    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTimeAsync(16_000);
+    expect(child.kill).not.toHaveBeenCalled();
+
+    // The ceiling falls at 600 010 ms and the settle follows it by 15 000 ms, as in B5.
+    await vi.advanceTimersByTimeAsync(599_000);
+    expect(child.kill).toHaveBeenCalled();
+    const raw = await p;
+    expect(raw.backgroundWorkOpenAtResult).toBe(true);
+
+    expect(messages(lines, 'background hold ended')).toEqual([
+      '[ClaudeCliRunner] background hold ended reason=ceiling heldMs=600000 ' +
+        'phase=speckit-implement iteration=1'
+    ]);
+    expect(messages(lines, 'background hold began')).toEqual([
+      '[ClaudeCliRunner] background hold began openTasks=0 untracked=true ceilingMs=600000 ' +
+        'resumed=false phase=speckit-implement iteration=1'
+    ]);
+    // Four characters of the id are enough to find it in a line.
+    expect(lines.filter((line) => line.includes('qqqq'))).toEqual([]);
+  });
+
+  it('holds to the ceiling when every tracked task closes but one start was dropped (B19)', async () => {
+    const ids = Array.from({ length: MAX_OPEN_TASKS + 1 }, (_, index) => `t${index}`);
+    const { logger, lines } = capturingLogger();
+    const child = makeFakeChild(true);
+    const runner = new ClaudeCliRunner(
+      spawnOpening(child, ids.map(startedLine).join('') + RESULT),
+      null,
+      {},
+      logger
+    );
+    const p = runner.invoke({ ...baseReq, timeoutMs: DEFAULT_TIMEOUT_MS });
+
+    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTimeAsync(16_000);
+    expect(child.kill).not.toHaveBeenCalled();
+
+    // Closing the 256 tracked tasks leaves only the dropped start.
+    child.stdout.emit('data', ids.slice(0, MAX_OPEN_TASKS).map(notifiedLine).join(''));
+    await vi.advanceTimersByTimeAsync(16_000);
+    expect(child.kill).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(583_000);
+    expect(child.kill).toHaveBeenCalled();
+    const raw = await p;
+    expect(raw.backgroundWorkOpenAtResult).toBe(true);
+
+    expect(messages(lines, 'background hold ended')).toEqual([
+      '[ClaudeCliRunner] background hold ended reason=ceiling heldMs=600000 ' +
+        'phase=speckit-implement iteration=1'
+    ]);
+    expect(lines.filter((line) => line.includes('reason=closed'))).toEqual([]);
+    expect(messages(lines, 'background hold began')).toEqual([
+      '[ClaudeCliRunner] background hold began openTasks=256 untracked=true ceilingMs=600000 ' +
+        'resumed=false phase=speckit-implement iteration=1'
+    ]);
+  });
+
+  it('clears the ceiling when the CLI exits on its own during a hold on a dropped start (B20)', async () => {
+    const { logger, lines } = capturingLogger();
+    const child = makeFakeChild(true);
+    const runner = new ClaudeCliRunner(
+      spawnOpening(child, startedLine('q'.repeat(MAX_TASK_ID_LENGTH + 1)) + RESULT),
+      null,
+      {},
+      logger
+    );
+    const p = runner.invoke({ ...baseReq, timeoutMs: DEFAULT_TIMEOUT_MS });
+
+    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTimeAsync(1_000);
+    exitCleanly(child);
+    const raw = await p;
+    expect(child.kill).not.toHaveBeenCalled();
+    expect(raw.backgroundWorkOpenAtResult).toBe(true);
+
+    // A ceiling left armed would fire in here and log the hold's end, as in B15.
+    const loggedAtExit = lines.length;
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(lines).toHaveLength(loggedAtExit);
   });
 });

@@ -124,4 +124,96 @@ describe('BackgroundTaskTracker FR-R3-198 (T1876)', () => {
     tracker.observe(started('late'));
     expect(tracker.openCount).toBe(MAX_OPEN_TASKS);
   });
+
+  function idsOf(count: number): string[] {
+    return Array.from({ length: count }, (_, index) => `t${index}`);
+  }
+
+  function snapshot(tracker: BackgroundTaskTracker): Record<string, boolean | number> {
+    return {
+      openCount: tracker.openCount,
+      hasOpenWork: tracker.hasOpenWork,
+      untracked: tracker.untracked
+    };
+  }
+
+  // FR-R3-206 (T1890): a start dropped at a bound is remembered, holding no id.
+  it('reports no open work and no dropped start for a new tracker (TT11)', () => {
+    const tracker = new BackgroundTaskTracker();
+    expect(tracker.hasOpenWork).toBe(false);
+    expect(tracker.untracked).toBe(false);
+  });
+
+  it('remembers a start dropped for an over-long id, with nothing open (TT12)', () => {
+    const tracker = trackerAfter([started('t'.repeat(MAX_TASK_ID_LENGTH + 1))]);
+    expect(tracker.openCount).toBe(0);
+    expect(tracker.hasOpenWork).toBe(true);
+    expect(tracker.untracked).toBe(true);
+    const atBound = trackerAfter([started('t'.repeat(MAX_TASK_ID_LENGTH))]);
+    expect(atBound.hasOpenWork).toBe(true);
+    expect(atBound.untracked).toBe(false);
+  });
+
+  it('keeps the memory of a start dropped at the open bound after every task closes (TT13)', () => {
+    const ids = idsOf(MAX_OPEN_TASKS + 1);
+    const dropped = trackerAfter([
+      ...ids.map(started),
+      ...ids.slice(0, MAX_OPEN_TASKS).map((id) => notified(id))
+    ]);
+    expect(dropped.openCount).toBe(0);
+    expect(dropped.hasOpenWork).toBe(true);
+    expect(dropped.untracked).toBe(true);
+    const within = idsOf(MAX_OPEN_TASKS);
+    const closed = trackerAfter([
+      ...within.map(started),
+      ...within.map((id) => notified(id))
+    ]);
+    expect(closed.openCount).toBe(0);
+    expect(closed.hasOpenWork).toBe(false);
+    expect(closed.untracked).toBe(false);
+  });
+
+  it('lets a notification for a dropped start change nothing (TT14)', () => {
+    const overLongId = 't'.repeat(MAX_TASK_ID_LENGTH + 1);
+    const overLong = trackerAfter([started(overLongId)]);
+    const overLongBefore = snapshot(overLong);
+    expect(overLongBefore.hasOpenWork).toBe(true);
+    expect(overLongBefore.untracked).toBe(true);
+    overLong.observe(notified(overLongId));
+    expect(snapshot(overLong)).toEqual(overLongBefore);
+
+    const pastBound = trackerAfter(idsOf(MAX_OPEN_TASKS + 1).map(started));
+    const pastBoundBefore = snapshot(pastBound);
+    expect(pastBoundBefore.hasOpenWork).toBe(true);
+    expect(pastBoundBefore.untracked).toBe(true);
+    pastBound.observe(notified(`t${MAX_OPEN_TASKS}`));
+    expect(snapshot(pastBound)).toEqual(pastBoundBefore);
+  });
+
+  it('does not read a repeated start for a held id as a drop (TT15)', () => {
+    const ids = idsOf(MAX_OPEN_TASKS);
+    const tracker = trackerAfter(ids.map(started));
+    tracker.observe(started('t0'));
+    expect(tracker.untracked).toBe(false);
+    expect(tracker.openCount).toBe(MAX_OPEN_TASKS);
+    for (const id of ids) tracker.observe(notified(id));
+    expect(tracker.hasOpenWork).toBe(false);
+  });
+
+  it('remembers nothing for a start that would open no task (TT16)', () => {
+    const notBackgrounded = (taskId: string): string =>
+      `{"type":"system","subtype":"task_started","is_backgrounded":false,"task_id":"${taskId}"}`;
+    const numberId =
+      '{"type":"system","subtype":"task_started","is_backgrounded":true,"task_id":7}';
+    for (const line of [notBackgrounded('t'.repeat(MAX_TASK_ID_LENGTH + 1)), numberId]) {
+      const tracker = trackerAfter([line]);
+      expect(tracker.untracked).toBe(false);
+      expect(tracker.hasOpenWork).toBe(false);
+    }
+    const ids = idsOf(MAX_OPEN_TASKS);
+    const full = trackerAfter([...ids.map(started), notBackgrounded('late')]);
+    expect(full.untracked).toBe(false);
+    for (const id of ids) full.observe(notified(id));
+    expect(full.hasOpenWork).toBe(false);
+  });
 });
