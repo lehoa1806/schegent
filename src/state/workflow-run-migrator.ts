@@ -46,6 +46,7 @@
  */
 
 import { DELAYED_RETRY_CAP } from '../contracts/retry-bounds';
+import { isSessionIdShape } from '../parser/session-id-extractor';
 import { buildMutationPlan } from '../services/mutation-plan';
 import type {
   DelayedRetryCause,
@@ -99,7 +100,7 @@ const VALID_BREAKPOINT_ACTORS: ReadonlySet<'operator' | 'system'> = new Set<'ope
   'system'
 ]);
 
-export interface WorkflowRunRepairedAuditEvent {
+export interface WorkflowRunPhaseRepairAuditEvent {
   readonly type: 'workflow-run-repaired';
   readonly runId: string;
   readonly pipelineId: 'speckit-new-feature';
@@ -108,6 +109,17 @@ export interface WorkflowRunRepairedAuditEvent {
   readonly removedBreakpointCount: number;
   readonly remainingPhaseCount: number;
 }
+
+/** Names the Run and the repair, and carries no part of the id it dropped. */
+export interface WorkflowRunSessionIdRepairAuditEvent {
+  readonly type: 'workflow-run-repaired';
+  readonly runId: string;
+  readonly repair: 'remove-malformed-cli-session-id';
+}
+
+export type WorkflowRunRepairedAuditEvent =
+  | WorkflowRunPhaseRepairAuditEvent
+  | WorkflowRunSessionIdRepairAuditEvent;
 
 export interface WorkflowRunRepairResult {
   readonly run: WorkflowRun;
@@ -299,6 +311,36 @@ export function repairLegacyRunSnapshot(run: WorkflowRun): WorkflowRunRepairResu
       remainingPhaseCount: fixedPhases.length
     }
   };
+}
+
+/** Drops a persisted id that fails the shape check, with its owner; the event names neither. */
+export function repairPersistedSessionId(run: WorkflowRun): WorkflowRunRepairResult {
+  const id: unknown = run.lastCliSessionId;
+  if (typeof id !== 'string' || isSessionIdShape(id)) return { run, auditEvent: null };
+  const { lastCliSessionId: _droppedId, lastCliSessionRunnerKind: _droppedOwner, ...kept } = run;
+  return {
+    run: kept,
+    auditEvent: {
+      type: 'workflow-run-repaired',
+      runId: run.id,
+      repair: 'remove-malformed-cli-session-id'
+    }
+  };
+}
+
+export interface WorkflowRunLoadRepairResult {
+  readonly run: WorkflowRun;
+  readonly auditEvents: readonly WorkflowRunRepairedAuditEvent[];
+}
+
+/** Applies the phase repair, then the session-id repair, and lists their events in that order. */
+export function repairRunOnLoad(run: WorkflowRun): WorkflowRunLoadRepairResult {
+  const phaseRepair = repairLegacyRunSnapshot(run);
+  const sessionRepair = repairPersistedSessionId(phaseRepair.run);
+  const auditEvents = [phaseRepair.auditEvent, sessionRepair.auditEvent].filter(
+    (event): event is WorkflowRunRepairedAuditEvent => event !== null
+  );
+  return { run: sessionRepair.run, auditEvents };
 }
 
 const VALID_WORKFLOW_STATUSES: ReadonlySet<WorkflowRunStatus> = new Set<WorkflowRunStatus>([

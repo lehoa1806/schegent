@@ -34,7 +34,7 @@ import type {
 import { STATE_SCHEMA_VERSION, STATE_SCHEMA_VERSION_V8 } from '../contracts/state-schema';
 import {
   migrateLegacyRun,
-  repairLegacyRunSnapshot,
+  repairRunOnLoad,
   type WorkflowRunRepairedAuditEvent
 } from './workflow-run-migrator';
 import {
@@ -1375,10 +1375,10 @@ export class WorkspaceStateStore {
           quarantined.push({ queueId, raw: persisted });
           continue;
         }
-        const repair = repairLegacyRunSnapshot(migrated);
+        const repair = repairRunOnLoad(migrated);
         next[queueId] = repair.run;
-        if (repair.auditEvent !== null) {
-          events.push(repair.auditEvent);
+        if (repair.auditEvents.length > 0) {
+          events.push(...repair.auditEvents);
           changed = true;
         }
       }
@@ -1396,11 +1396,11 @@ export class WorkspaceStateStore {
       await this.runQuarantine.capture([{ queueId: DEFAULT_QUEUE_ID, raw }]);
       return [];
     }
-    const repair = repairLegacyRunSnapshot(migrated);
-    if (applyLegacyMigration || repair.auditEvent !== null) {
+    const repair = repairRunOnLoad(migrated);
+    if (applyLegacyMigration || repair.auditEvents.length > 0) {
       await this.memento.update(KEYS.run, repair.run);
     }
-    return repair.auditEvent === null ? [] : [repair.auditEvent];
+    return repair.auditEvents;
   }
 
   /**
