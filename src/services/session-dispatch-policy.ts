@@ -22,6 +22,9 @@ export interface SessionDispatchInputs {
  * recorded an id, `session-id-not-owned` says it recorded one that belongs to
  * another backend kind, and `continuation-not-requested` says a usable owned id
  * was sitting there and nothing asked for it.
+ *
+ * `no-persisted-session-id` also covers a run whose persisted id the load dropped
+ * because it failed the shape check: the record then holds no id.
  */
 export type FreshSessionCause =
   | 'continuation-not-requested'
