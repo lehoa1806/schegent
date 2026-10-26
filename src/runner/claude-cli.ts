@@ -636,6 +636,7 @@ export class ClaudeCliRunner implements BackendRunner {
         this._logger.info(
           '[ClaudeCliRunner] background hold began ' +
             `openTasks=${backgroundTasks.openCount} ` +
+            `untracked=${backgroundTasks.untracked} ` +
             `ceilingMs=${BACKGROUND_HOLD_CEILING_MS} ` +
             `resumed=${shouldResume} ` +
             `phase=${request.phase} iteration=${request.iteration}`
@@ -672,7 +673,7 @@ export class ClaudeCliRunner implements BackendRunner {
             // FR-R3-198 — the tracker reads the line first, so a hold whose
             // last task closes on it ends before the line is judged.
             backgroundTasks.observe(line);
-            if (holdStartedAt !== null && backgroundTasks.openCount === 0) endHold('closed');
+            if (holdStartedAt !== null && !backgroundTasks.hasOpenWork) endHold('closed');
             if (isSessionInitLine(line)) sawCurrentTurnBoundary = true;
             if (isTerminalResultLine(line)) {
               const replayingHistory =
@@ -704,7 +705,7 @@ export class ClaudeCliRunner implements BackendRunner {
                 // except one the CLI writes after the settle's SIGTERM, which
                 // is its shutdown, not a turn (research R2: `num_turns=0`).
                 if (!completedAwaitingExit) {
-                  backgroundWorkOpenAtResult = backgroundTasks.openCount > 0;
+                  backgroundWorkOpenAtResult = backgroundTasks.hasOpenWork;
                   if (backgroundWorkOpenAtResult) beginHold();
                 }
                 lastResultCostUsd = resultCostUsd(line) ?? lastResultCostUsd;
