@@ -186,7 +186,7 @@ export type AuditCategory =
   | 'warning'
   | 'system';
 
-export type FreshnessState = 'live' | 'slowing' | 'stalled' | 'paused' | 'idle';
+export type FreshnessState = 'live' | 'slowing' | 'stalled' | 'paused' | 'idle' | 'holding';
 
 export type MonitorStatus =
   | 'starting'
@@ -296,6 +296,8 @@ export interface CliMonitorState {
   readonly maxDurationMs: number | null;
   /** Feature 211 — whether the invocation has crossed the approach threshold. */
   readonly deadlineApproaching: boolean;
+  /** FR-R3-208 — true while the Run's CLI holds its settle for background work; never persisted. */
+  readonly held: boolean;
 }
 
 export interface ActivePipelineSummary {

@@ -382,6 +382,9 @@ export const workflowSnapshot = {
     "detectedIssues": [],
     "msSinceLastStdout": 2000,
     "msSinceLastStderr": null,
+    // FR-R3-208 — `false` deliberately: a Run that is not holding renders as it
+    // always did, so no golden changes.
+    "held": false,
     // Feature 211 — `null` deliberately: this fixture backs the visual goldens,
     // and an unbounded invocation renders the monitor row exactly as it did
     // before the bound existed. A value here would change every golden that

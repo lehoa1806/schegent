@@ -74,3 +74,24 @@ describe('computeFreshness — failed status (carryover)', () => {
     expect(computeFreshness('failed', 90_000)).toBe('stalled');
   });
 });
+
+describe('computeFreshness — held (FR-R3-208, T1894)', () => {
+  it('a held Run reads holding whatever its silence, and an unheld one reads as before (F1)', () => {
+    for (const ms of [0, 45_000, 120_000]) {
+      expect(computeFreshness('running', ms, true), `held at ${ms} ms`).toBe('holding');
+    }
+    // The control: the same silences without the hold.
+    expect(computeFreshness('running', 0, false)).toBe('live');
+    expect(computeFreshness('running', 45_000, false)).toBe('slowing');
+    expect(computeFreshness('running', 120_000, false)).toBe('stalled');
+  });
+
+  it.each(['paused', 'idle', 'completed', 'canceled', 'failed'] as const)(
+    'a hold does not change what %s reads (F2)',
+    (status) => {
+      expect(computeFreshness(status, 120_000, true), `${status} held`).toBe(
+        computeFreshness(status, 120_000, false)
+      );
+    }
+  );
+});

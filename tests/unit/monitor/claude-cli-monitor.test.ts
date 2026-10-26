@@ -864,3 +864,180 @@ describe('ClaudeCliMonitor deadline-approach record (Feature 211)', () => {
     });
   });
 });
+
+// FR-R3-208 (T1893) — a hold the runner reports is not a stall.
+describe('ClaudeCliMonitor background hold (FR-R3-208, T1893)', () => {
+  let mc: ReturnType<typeof makeMonitor>;
+  beforeEach(() => {
+    mc = makeMonitor();
+  });
+
+  const STALL_MS = 90_000;
+  const ID = 'run-1';
+  /** The Run's own invocation, the one a hold is reported against. */
+  const OWN = { id: 'claude-cli#1', helperInvocation: false, maxDurationMs: null };
+  const HELPER = { id: 'claude-cli#1', helperInvocation: true, maxDurationMs: null };
+  const PHASE = { id: 'claude-cli#2', helperInvocation: false, maxDurationMs: null };
+  const OK = { exitCode: 0, signal: null, killed: false, timedOut: false };
+
+  function startRun(runId: string, invocation = OWN): void {
+    mc.monitor.onStart(runId, 'speckit-implement', null);
+    mc.monitor.onSpawnPid(runId, 501, invocation);
+  }
+
+  function rowsOf(eventType: string, runId: string): Array<Partial<AuditEntry>> {
+    return mc.audit.entries.filter((e) => e.eventType === eventType && e.runId === runId);
+  }
+
+  const stallRows = (runId = ID): number => rowsOf('monitor-stall', runId).length;
+
+  it('declares no stall and writes no stall row while held, and a sibling Run still does (H1)', () => {
+    startRun('run-a');
+    startRun('run-b');
+    mc.monitor.onStdoutChunk('run-a', 'line\n', OWN.id);
+    mc.monitor.onStdoutChunk('run-b', 'line\n', OWN.id);
+
+    mc.monitor.onBackgroundHold('run-a', true);
+    mc.advance(120_000);
+
+    expect(stallRows('run-a')).toBe(0);
+    expect(rowsOf('pause', 'run-a')).toHaveLength(0);
+    const held = mc.monitor.getCurrentState('run-a')!;
+    expect(held.status).toBe('running');
+    expect(held.held).toBe(true);
+    expect(held.detectedIssues).not.toContain('stall');
+
+    mc.monitor.onExit('run-a', OK, OWN.id);
+    const completed = rowsOf('monitor-invocation-completed', 'run-a');
+    expect(completed).toHaveLength(1);
+    expect(completed[0]?.payload).toMatchObject({ durationMs: 120_000 });
+    const summary = rowsOf('monitor-invocation-summary', 'run-a');
+    expect(summary).toHaveLength(1);
+    expect(
+      (summary[0]?.payload as { detectedIssues: ReadonlyArray<string> }).detectedIssues
+    ).not.toContain('stall');
+
+    // The control: the sibling that was not held stalled once, as before.
+    expect(stallRows('run-b')).toBe(1);
+  });
+
+  it('counts the full threshold again from the hold ending (H2)', () => {
+    startRun(ID);
+    mc.monitor.onStdoutChunk(ID, 'line\n', OWN.id);
+    mc.monitor.onBackgroundHold(ID, true);
+    mc.advance(120_000);
+    expect(stallRows()).toBe(0);
+
+    mc.monitor.onBackgroundHold(ID, false);
+    expect(mc.monitor.getCurrentState(ID)!.held).toBe(false);
+    mc.advance(STALL_MS - 1);
+    expect(stallRows()).toBe(0);
+    mc.advance(1);
+    expect(stallRows()).toBe(1);
+  });
+
+  it('keeps a hold quiet across a workflow pause, then counts from its ending (H3)', () => {
+    startRun(ID);
+    mc.monitor.onStdoutChunk(ID, 'line\n', OWN.id);
+    mc.monitor.onBackgroundHold(ID, true);
+    mc.monitor.onWorkflowPaused(ID);
+    mc.advance(60_000);
+    mc.monitor.onWorkflowResumed(ID);
+    mc.advance(120_000);
+    expect(stallRows()).toBe(0);
+
+    mc.monitor.onBackgroundHold(ID, false);
+    mc.advance(STALL_MS);
+    expect(stallRows()).toBe(1);
+  });
+
+  it('counts the full threshold from the resume when a hold ends during a pause (H4)', () => {
+    startRun(ID);
+    mc.monitor.onStdoutChunk(ID, 'line\n', OWN.id);
+    mc.monitor.onBackgroundHold(ID, true);
+    mc.monitor.onWorkflowPaused(ID);
+    mc.monitor.onBackgroundHold(ID, false);
+    mc.advance(200_000);
+    expect(stallRows()).toBe(0);
+
+    mc.monitor.onWorkflowResumed(ID);
+    mc.advance(STALL_MS - 1);
+    expect(stallRows()).toBe(0);
+    mc.advance(1);
+    expect(stallRows()).toBe(1);
+  });
+
+  it('does not carry a hold into the next invocation of the same Run id (H5)', () => {
+    startRun(ID);
+    mc.monitor.onStdoutChunk(ID, 'line\n', OWN.id);
+    mc.monitor.onBackgroundHold(ID, true);
+
+    mc.monitor.onExit(ID, OK, OWN.id);
+    expect(mc.monitor.getCurrentState(ID)?.held ?? false).toBe(false);
+    expect(stallRows()).toBe(0);
+
+    mc.monitor.onStart(ID, 'speckit-implement', null);
+    mc.monitor.onSpawnPid(ID, 501, { id: 'claude-cli#2', helperInvocation: false, maxDurationMs: null });
+    mc.advance(STALL_MS);
+    expect(stallRows()).toBe(1);
+  });
+
+  it('releases a hold when the helper that was holding exits (H6)', () => {
+    mc.monitor.onStart(ID, 'speckit-implement', null);
+    mc.monitor.onSpawnPid(ID, 501, HELPER);
+    mc.monitor.onStdoutChunk(ID, 'compacting\n', HELPER.id);
+    mc.monitor.onBackgroundHold(ID, true);
+    mc.advance(100_000);
+    expect(stallRows()).toBe(0);
+
+    mc.monitor.onExit(ID, OK, HELPER.id);
+    mc.advance(STALL_MS - 1);
+    expect(stallRows()).toBe(0);
+    mc.advance(1);
+    expect(stallRows()).toBe(1);
+  });
+
+  it('releases a hold when the Run spawns the phase invocation (H7)', () => {
+    mc.monitor.onStart(ID, 'speckit-implement', null);
+    mc.monitor.onSpawnPid(ID, 501, HELPER);
+    mc.monitor.onStdoutChunk(ID, 'compacting\n', HELPER.id);
+    mc.monitor.onBackgroundHold(ID, true);
+
+    mc.monitor.onSpawnPid(ID, 502, PHASE);
+    expect(mc.monitor.getCurrentState(ID)!.held).toBe(false);
+    mc.advance(STALL_MS);
+    expect(stallRows()).toBe(1);
+  });
+
+  it('ignores a release with no hold, repeated holds and unknown Runs, and notifies once per change (H8)', () => {
+    startRun(ID);
+    mc.monitor.onStdoutChunk(ID, 'line\n', OWN.id);
+
+    // An unmatched release re-arms nothing: the original count still falls at 90 s.
+    mc.advance(50_000);
+    mc.monitor.onBackgroundHold(ID, false);
+    mc.advance(40_000);
+    expect(stallRows()).toBe(1);
+
+    let notified = 0;
+    const subscription = mc.monitor.subscribe(() => {
+      notified += 1;
+    });
+    mc.monitor.onBackgroundHold(ID, true);
+    mc.monitor.onBackgroundHold(ID, true);
+    expect(mc.monitor.getCurrentState(ID)!.held).toBe(true);
+    expect(notified).toBe(1);
+    mc.monitor.onBackgroundHold(ID, false);
+    expect(mc.monitor.getCurrentState(ID)!.held).toBe(false);
+    expect(notified).toBe(2);
+    subscription.dispose();
+
+    expect(() => mc.monitor.onBackgroundHold('nope', true)).not.toThrow();
+    expect(() => mc.monitor.onBackgroundHold(null, true)).not.toThrow();
+    expect(mc.monitor.getCurrentState('nope')).toBeNull();
+
+    mc.monitor.onBackgroundHold(ID, true);
+    mc.monitor.onExit(ID, OK, OWN.id);
+    expect(mc.monitor.getCurrentState(ID)?.held ?? false).toBe(false);
+  });
+});

@@ -58,6 +58,8 @@ function buildMonitor(overrides: Partial<CliMonitorState> = {}): CliMonitorState
     // deadline was armed, and nothing has approached one.
     maxDurationMs: null,
     deadlineApproaching: false,
+    // FR-R3-208 — a Run that is not holding, which is what every earlier case meant.
+    held: false,
     ...overrides
   });
 }
@@ -101,7 +103,8 @@ const ALL_FRESHNESS_STATES: ReadonlyArray<FreshnessState> = [
   'slowing',
   'stalled',
   'paused',
-  'idle'
+  'idle',
+  'holding'
 ];
 
 describe('CurrentTask', () => {
@@ -140,6 +143,22 @@ describe('CurrentTask', () => {
     const fresh = container.querySelector('[data-testid="sidebar-freshness"]');
     expect(fresh!.textContent).toContain('stalled');
     expect(fresh!.textContent).toContain('45s');
+  });
+
+  // FR-R3-208 (T1894): a held Run reads holding, with its seconds when it has them.
+  it('label reads holding with the staleSeconds suffix, and bare without it (CT1)', () => {
+    applySnap(
+      buildSnapshot({ liveActivity: buildLiveActivity({ freshness: 'holding', staleSeconds: 45 }) })
+    );
+    const withSeconds = render(CurrentTask).container.querySelector('[data-testid="sidebar-freshness"]');
+    expect(withSeconds!.textContent.trim()).toBe('holding, 45s');
+    cleanup();
+
+    applySnap(
+      buildSnapshot({ liveActivity: buildLiveActivity({ freshness: 'holding', staleSeconds: null }) })
+    );
+    const bare = render(CurrentTask).container.querySelector('[data-testid="sidebar-freshness"]');
+    expect(bare!.textContent.trim()).toBe('holding');
   });
 
   it('label has no suffix for live', () => {

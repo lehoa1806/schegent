@@ -58,6 +58,7 @@ export function computeLiveActivity(input: {
   readonly pausedSinceMonotonic: number | null;
   readonly cache: ActivityCache | null;
   readonly monotonicNow: () => number;
+  readonly held: boolean;
 }): LiveActivity {
   if (
     input.status === 'idle' ||
@@ -70,7 +71,7 @@ export function computeLiveActivity(input: {
   const msSince = input.lastActivityAtMonotonic === null
     ? null
     : Math.max(0, end - input.lastActivityAtMonotonic);
-  const freshness = computeFreshness(input.status, msSince);
+  const freshness = computeFreshness(input.status, msSince, input.held);
   const staleSeconds = freshness === 'idle' || msSince === null
     ? null
     : Math.max(0, Math.floor(msSince / 1_000));
