@@ -395,6 +395,9 @@ export class SchegentWorkflowController {
     await this.autoDrainCoordinator.settled();
   }
 
+  /** FR-R3-205 — stop the auto-drain starting work; `AutoDrainCoordinator.close()` says why. */
+  public closeAutoDrain(): void { this.autoDrainCoordinator.close(); }
+
   public setRateLimitHandler(handler: RateLimitHandler): void {
     this.retryCoordinator.setRateLimitHandler(handler);
   }

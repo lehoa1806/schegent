@@ -636,7 +636,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   await producers.run();
 
   const dispose = async (): Promise<void> => {
-    // FR-R3-137 (T1530c) — the resources, transport descriptor included; why in the module.
+    controller.closeAutoDrain(); // FR-R3-205 first, then FR-R3-137 (T1530c); why in each callee.
     await closeStage2Resources({
       sync: [uiWiring, projector, watchdog, queueScheduleWatchdog, statusBar],
       disposables,
