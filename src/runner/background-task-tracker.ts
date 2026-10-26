@@ -21,6 +21,15 @@
  */
 export const BACKGROUND_HOLD_CEILING_MS = 600_000;
 
+/**
+ * Bounds on what one invocation's tracker keeps. A real task closes on its
+ * notification and the CLI's ids are short, so only a stream that is not the
+ * CLI's own could reach either. A start past them is not tracked, and the
+ * ceiling above still ends the hold.
+ */
+export const MAX_OPEN_TASKS = 256;
+export const MAX_TASK_ID_LENGTH = 256;
+
 /** The `system` subtypes the CLI writes about its tasks. None starts a turn. */
 const BOOKKEEPING_SUBTYPES: ReadonlySet<string> = new Set([
   'task_notification',
@@ -66,6 +75,8 @@ export class BackgroundTaskTracker {
       return;
     }
     const backgrounded = 'is_backgrounded' in parsed && parsed.is_backgrounded === true;
-    if (parsed.subtype === 'task_started' && backgrounded) this.open.add(taskId);
+    if (parsed.subtype !== 'task_started' || !backgrounded) return;
+    if (taskId.length > MAX_TASK_ID_LENGTH || this.open.size >= MAX_OPEN_TASKS) return;
+    this.open.add(taskId);
   }
 }
