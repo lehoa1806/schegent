@@ -51,7 +51,8 @@ effective backend for the next invocation. `isContinue` means continuing an
 interrupted conversation; `sessionReuse` means starting later work in the same
 provider session for cache reuse. If ownership cannot be proven, continuation
 and reuse both fail closed to a fresh backend session, while an operator's
-resume prompt can still be sent safely.
+resume prompt can still be sent safely. Beside a Claude session's id the run keeps the session's
+cumulative cost, so the first invocation that resumes it after a restart subtracts that cost.
 
 <!-- Source: src/services/session-dispatch-policy.ts -->
 <!-- Source: tests/unit/services/run-driver-backend-session.test.ts -->

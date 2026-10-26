@@ -245,4 +245,80 @@ describe('RunDriver backend-scoped sessions', () => {
       })
     });
   });
+
+  // FR-R3-209 — D1: the session's cost figure is persisted beside the id the output reports.
+  it('persists the reported cost figure beside the session id, and leaves none when an output reports none', async () => {
+    deps.runner.run.mockReset();
+    deps.runner.run
+      .mockResolvedValueOnce({ ...cleanOutput('s1'), cliSessionCostUsd: 1.6 })
+      .mockResolvedValueOnce(cleanOutput('s2'));
+
+    await new RunDriver(deps).drive(makeRun('agy'), 'figure beside the id');
+
+    const transitions: WorkflowRun[] = deps.persistTransition.mock.calls.map(
+      (call: unknown[]) => call[1] as WorkflowRun
+    );
+    const transitionToSecond = transitions.find((next) => next.currentPhase === 'phase-two');
+    expect(transitionToSecond).toMatchObject({
+      lastCliSessionId: 's1',
+      lastCliSessionCostUsd: 1.6
+    });
+    const lastTransition = transitions.at(-1);
+    expect(lastTransition?.lastCliSessionId).toBe('s2');
+    expect(lastTransition?.lastCliSessionCostUsd).toBeUndefined();
+  });
+
+  it('clears the persisted cost figure with the session id when the next phase runs on another backend', async () => {
+    const run = {
+      ...makeRun('claude'),
+      lastCliSessionId: 'persisted',
+      lastCliSessionRunnerKind: 'agy' as const,
+      lastCliSessionCostUsd: 0.9
+    } as unknown as WorkflowRun;
+    deps.runner.run.mockReset();
+    deps.runner.run.mockResolvedValueOnce(cleanOutput()).mockResolvedValueOnce(cleanOutput());
+
+    await new RunDriver(deps).drive(run, 'figure cleared with the id');
+
+    const transitions: WorkflowRun[] = deps.persistTransition.mock.calls.map(
+      (call: unknown[]) => call[1] as WorkflowRun
+    );
+    const transitionToSecond = transitions.find((next) => next.currentPhase === 'phase-two');
+    expect(transitionToSecond?.lastCliSessionId).toBeUndefined();
+    expect(transitionToSecond?.lastCliSessionCostUsd).toBeUndefined();
+  });
+
+  it('hands the persisted cost figure on beside the resume id, and only when it is a finite number of 0 or more', async () => {
+    deps.isContinueGate.consume.mockReturnValue(true);
+    const ownedRun = (figure: unknown) =>
+      ({
+        ...makeRun('agy'),
+        lastCliSessionId: 'persisted',
+        lastCliSessionRunnerKind: 'agy' as const,
+        lastCliSessionCostUsd: figure
+      }) as unknown as WorkflowRun;
+    const firstRequestFor = async (figure: unknown) => {
+      deps.runner.run.mockReset();
+      deps.runner.run.mockImplementation(async () => cleanOutput());
+      await new RunDriver(deps).drive(ownedRun(figure), 'persisted figure');
+      return deps.runner.run.mock.calls[0][0];
+    };
+
+    // The owner is `agy`, phase one's runner, so a requested continue resumes the owned id.
+    expect(await firstRequestFor(0.9), 'a finite figure of 0 or more').toMatchObject({
+      resumeSessionId: 'persisted',
+      resumeSessionCostUsd: 0.9
+    });
+
+    for (const figure of [-1, Number.NaN, '0.9']) {
+      const request = await firstRequestFor(figure);
+      expect(request, `figure ${String(figure)} still resumes the owned session`).toMatchObject({
+        resumeSessionId: 'persisted'
+      });
+      expect(
+        request.resumeSessionCostUsd,
+        `figure ${String(figure)} is not carried`
+      ).toBeUndefined();
+    }
+  });
 });
