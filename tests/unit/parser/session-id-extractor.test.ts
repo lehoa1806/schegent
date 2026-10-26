@@ -149,4 +149,26 @@ describe('extractCliSessionId', () => {
     const stdout = 'session_id is mentioned in plain text but not JSON';
     expect(extractCliSessionId(stdout)).toBeNull();
   });
+
+  // ── characters (feature-228 security review, I2) ─────────────
+  // The id is spawned as the argument of `--resume` (claude) or
+  // `--conversation` (agy). One that began with `-` would reach the CLI as an
+  // option of its own, so only the characters an id is made of are accepted.
+
+  it('accepts letters, digits, and . _ : - after a leading letter or digit', () => {
+    const id = 'A1.b_2:c-3';
+    expect(extractCliSessionId(JSON.stringify({ type: 'system', session_id: id }))).toBe(id);
+  });
+
+  it.each([
+    ['begins with --', '--dangerously-skip-permissions'],
+    ['begins with -', '-p'],
+    ['begins with .', '.hidden'],
+    ['holds a space', 'abc def'],
+    ['holds a path separator', 'abc/../def'],
+    ['holds a newline', `abc${String.fromCharCode(0x0a)}def`],
+    ['holds a control character', `abc${String.fromCharCode(0x1b)}def`]
+  ])('returns null for an id that %s', (_shape, id) => {
+    expect(extractCliSessionId(JSON.stringify({ type: 'system', session_id: id }))).toBeNull();
+  });
 });
