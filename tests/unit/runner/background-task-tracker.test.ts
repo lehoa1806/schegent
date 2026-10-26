@@ -12,6 +12,8 @@ import { describe, it, expect } from 'vitest';
 import {
   BACKGROUND_HOLD_CEILING_MS,
   BackgroundTaskTracker,
+  MAX_OPEN_TASKS,
+  MAX_TASK_ID_LENGTH,
   isBackgroundBookkeepingEvent
 } from '../../../src/runner/background-task-tracker';
 
@@ -19,6 +21,10 @@ const STARTED_T1 =
   '{"type":"system","subtype":"task_started","is_backgrounded":true,"task_id":"t1"}';
 const STARTED_T2 =
   '{"type":"system","subtype":"task_started","is_backgrounded":true,"task_id":"t2"}';
+
+function started(taskId: string): string {
+  return `{"type":"system","subtype":"task_started","is_backgrounded":true,"task_id":"${taskId}"}`;
+}
 
 function notified(taskId: string, status = 'completed'): string {
   return `{"type":"system","subtype":"task_notification","task_id":"${taskId}","status":"${status}"}`;
@@ -100,5 +106,22 @@ describe('BackgroundTaskTracker FR-R3-198 (T1876)', () => {
 
   it('holds for the CLI default background wait ceiling (TT8)', () => {
     expect(BACKGROUND_HOLD_CEILING_MS).toBe(600_000);
+  });
+
+  // The feature-228 security review, S2: a stream that is not the CLI's own
+  // could open tasks without end, each id up to a line's 1 MiB.
+  it('opens no task whose id is longer than the bound (TT9)', () => {
+    expect(trackerAfter([started('t'.repeat(MAX_TASK_ID_LENGTH))]).openCount).toBe(1);
+    expect(trackerAfter([started('t'.repeat(MAX_TASK_ID_LENGTH + 1))]).openCount).toBe(0);
+  });
+
+  it('keeps at most the bound open, and a close frees a place (TT10)', () => {
+    const ids = Array.from({ length: MAX_OPEN_TASKS + 1 }, (_, index) => `t${index}`);
+    const tracker = trackerAfter(ids.map(started));
+    expect(tracker.openCount).toBe(MAX_OPEN_TASKS);
+    tracker.observe(notified('t0'));
+    expect(tracker.openCount).toBe(MAX_OPEN_TASKS - 1);
+    tracker.observe(started('late'));
+    expect(tracker.openCount).toBe(MAX_OPEN_TASKS);
   });
 });
