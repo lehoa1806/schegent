@@ -212,4 +212,10 @@ export interface BackendRunner {
   ): Promise<RawInvocationOutput>;
   /** Cancel any in-flight invocation. Returns true if a process was killed. */
   cancelActive(): boolean;
+  /**
+   * Refuse every later invocation with `SpawnRefusedAfterCloseError`, before
+   * anything is spawned. A child already spawned is left to `cancelActive()`.
+   * Idempotent and never throws. Called at host teardown.
+   */
+  close(): void;
 }

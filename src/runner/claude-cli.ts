@@ -36,6 +36,7 @@ import {
 import { SessionCostLedger } from './session-cost-ledger';
 import { processTreeSpawnOptions, escalateAndReportTree } from './process-tree';
 import { nextInvocationId } from './invocation-identity';
+import { SpawnRefusedAfterCloseError } from './spawn-refused-after-close';
 
 // Feature 030 BUG-002 — after the invocation's terminal stream-json result line
 // (`{"type":"result"}`) appears in stdout, the runner waits at most this long
@@ -337,6 +338,9 @@ export class ClaudeCliRunner implements BackendRunner {
    */
   private readonly sessionCosts = new SessionCostLedger();
 
+  /** Set by `close()` at host teardown; no spawn follows it. */
+  private closed = false;
+
   constructor(
     spawnFn: SpawnFn = spawn as unknown as SpawnFn,
     monitorHook: MonitorSidecarHook | null = null,
@@ -418,6 +422,10 @@ export class ClaudeCliRunner implements BackendRunner {
       diagnosticWriter = new VerboseDiagnosticWriter(new SanitizedLogger());
       await diagnosticWriter.prepare(verboseTarget);
     }
+
+    // After the last await, so a `close()` that lands while `prepare()` runs
+    // still refuses this spawn (feature-228 security review, S1).
+    if (this.closed) throw new SpawnRefusedAfterCloseError('claude-cli');
 
     // Feature 068 — capture the assembled command (cliPath + argv). Audit
     // schema v3 (2026-08-02) made `cli-invocation` payloads metadata-only,
@@ -912,6 +920,16 @@ export class ClaudeCliRunner implements BackendRunner {
       });
     }
     return true;
+  }
+
+  /**
+   * Refuse every later spawn. The feature-228 security review, S1: a child
+   * `cancelActive()` stopped can read as an unfinished turn, and the resume of
+   * that turn must not start a CLI after the teardown that stopped it. A child
+   * already spawned is `cancelActive()`'s to stop, not this.
+   */
+  public close(): void {
+    this.closed = true;
   }
 
   private terminate(child: ChildProcess, attribution: TreeAttribution): void {
