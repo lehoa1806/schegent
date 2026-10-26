@@ -1352,3 +1352,280 @@ describe('AutoDrainCoordinator — the Run that holds a queue and cannot be reac
     expect(s.admitNew).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// FR-R3-205 — a closed drain starts nothing, so teardown leaves a pending task
+// pending.
+//
+// Stage 2's teardown stops the in-flight Run, and that Run's terminal funnel
+// schedules a drain. `close()` is what makes that drain a wait. Every
+// "admits nothing" case below runs the same fixture open first, in the same
+// `it`, and shows it admitting: a fixture that could never admit would pass
+// the closed half for no reason of its own.
+// ---------------------------------------------------------------------------
+
+describe('AutoDrainCoordinator — FR-R3-205: a closed drain starts nothing', () => {
+  const QUEUE = DEFAULT_QUEUE_ID;
+  const OWNER = { acquired: true, ownerId: 'w-1' };
+
+  function openLease() {
+    return {
+      tryAcquire: vi.fn(async () => OWNER),
+      release: vi.fn(async () => undefined)
+    };
+  }
+
+  /** `tryAcquire` stays pending until the gate opens; the re-check then answers true. */
+  function claimGatedLease(gate: Deferred) {
+    return {
+      tryAcquire: vi.fn(async () => {
+        await gate.promise;
+        return OWNER;
+      }),
+      release: vi.fn(async () => undefined),
+      hasLease: vi.fn(async () => true)
+    };
+  }
+
+  /** The same claim, on a lease port that offers no re-check at all. */
+  function claimGatedLeaseWithoutRecheck(gate: Deferred) {
+    return {
+      tryAcquire: vi.fn(async () => {
+        await gate.promise;
+        return OWNER;
+      }),
+      release: vi.fn(async () => undefined)
+    };
+  }
+
+  /** The claim resolves at once; the FR-R3-003 re-check stays pending until the gate opens. */
+  function recheckGatedLease(gate: Deferred) {
+    return {
+      tryAcquire: vi.fn(async () => OWNER),
+      release: vi.fn(async () => undefined),
+      hasLease: vi.fn(async () => {
+        await gate.promise;
+        return true;
+      })
+    };
+  }
+
+  function build<L extends object = ReturnType<typeof openLease>>(
+    options: {
+      readonly queueIds?: readonly string[];
+      readonly requests?: readonly unknown[];
+      readonly policy?: 'halt-on-failure' | 'continue';
+      readonly peek?: (queueId: string) => { id: string; description: string } | null;
+      readonly lease?: L;
+      readonly admitNew?: () => Promise<{ completed: Promise<void> }>;
+    } = {}
+  ) {
+    const queueIds = options.queueIds ?? [QUEUE];
+    const lease = (options.lease ?? openLease()) as L;
+    const startFailures = { recordFailure: vi.fn(), clear: vi.fn() };
+    const auditWriter = { append: vi.fn(async () => undefined) };
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+    const admitNew = vi.fn(options.admitNew ?? (async () => ({ completed: Promise.resolve() })));
+    const admitResume = vi.fn(async () => ({ resumed: false, completed: Promise.resolve() }));
+    const deps = {
+      store: {
+        getQueue: vi.fn(() => ({
+          queueLifecycle: 'active-empty' as QueueLifecycle,
+          pauseSource: null,
+          inFlightId: null,
+          requests: options.requests ?? []
+        })),
+        getRun: vi.fn(() => null),
+        getQueueRegistry: () => ({
+          entries: queueIds.map((id, position) => ({ id, position })),
+          updatedAt: 0
+        })
+      } as never,
+      queue: {
+        peekNextPending: vi.fn(
+          options.peek ?? ((queueId: string) => ({ id: `task-${queueId}`, description: 'next' }))
+        ),
+        hasQueueCapacity: vi.fn(() => true),
+        hasExecutionCapacity: vi.fn(() => true),
+        hasWorkspaceCapacity: vi.fn(() => true),
+        inFlightCount: vi.fn(() => 0)
+      } as never,
+      executionLease: lease as never,
+      controller: { admitNew, admitResume, liveRunCount: 0 } as never,
+      startFailures,
+      auditWriter,
+      logger: logger as never,
+      failurePolicyDefault: { resolve: () => options.policy ?? ('halt-on-failure' as const) }
+    };
+    return {
+      coord: new AutoDrainCoordinator(deps),
+      deps,
+      lease,
+      admitNew,
+      admitResume,
+      startFailures,
+      auditWriter,
+      logger
+    };
+  }
+
+  type Built = ReturnType<typeof build>;
+
+  function expectNothingWritten(f: Built) {
+    expect(f.admitNew).not.toHaveBeenCalled();
+    expect(f.admitResume).not.toHaveBeenCalled();
+    expect(f.startFailures.recordFailure).not.toHaveBeenCalled();
+    expect(f.startFailures.clear).not.toHaveBeenCalled();
+    expect(f.auditWriter.append).not.toHaveBeenCalled();
+    expect(f.logger.warn).not.toHaveBeenCalled();
+    expect(f.logger.error).not.toHaveBeenCalled();
+  }
+
+  /** Start a drain, let it reach the await the case is about, optionally close, then release it. */
+  async function drainClosingWhileWaiting<L extends object>(
+    makeLease: (gate: Deferred) => L,
+    waitingOn: (lease: L) => unknown,
+    closeWhileWaiting: boolean
+  ) {
+    const gate = deferred();
+    const f = build({ lease: makeLease(gate) });
+    const drain = f.coord.drainIfIdle(QUEUE);
+    await settle();
+    expect(waitingOn(f.lease)).toHaveBeenCalledTimes(1);
+    if (closeWhileWaiting) f.coord.close();
+    gate.resolve();
+    await drain;
+    return f;
+  }
+
+  it('US1.1 — a closed drainIfIdle claims no lease and admits nothing', async () => {
+    const open = build();
+    await open.coord.drainIfIdle(QUEUE);
+    expect(open.admitNew).toHaveBeenCalledTimes(1);
+
+    const closed = build();
+    closed.coord.close();
+    await closed.coord.drainIfIdle(QUEUE);
+    expect(closed.lease.tryAcquire).not.toHaveBeenCalled();
+    expect(closed.admitNew).not.toHaveBeenCalled();
+  });
+
+  it('US1.2 — a closed drainAll over three queues claims no lease and admits none', async () => {
+    const queueIds = ['q-1', 'q-2', 'q-3'];
+    const open = build({ queueIds });
+    await open.coord.drainAll();
+    expect(open.admitNew).toHaveBeenCalledTimes(3);
+
+    const closed = build({ queueIds });
+    closed.coord.close();
+    await closed.coord.drainAll();
+    expect(closed.lease.tryAcquire).not.toHaveBeenCalled();
+    expect(closed.admitNew).not.toHaveBeenCalled();
+  });
+
+  it('US1.3 — under `continue`, a closed drainAll admits neither pending task behind a failed row', async () => {
+    const firstPending = { id: 't-1', description: 'first pending' };
+    const requests = [
+      { id: 't-0', description: 'failed', status: 'failed', position: 0 },
+      { ...firstPending, status: 'pending', position: 1 },
+      { id: 't-2', description: 'second pending', status: 'pending', position: 2 }
+    ];
+    const options = { requests, policy: 'continue' as const, peek: () => firstPending };
+
+    const open = build(options);
+    await open.coord.drainAll();
+    expect(open.admitNew).toHaveBeenCalledTimes(1);
+    expect(open.admitNew).toHaveBeenCalledWith(firstPending, null);
+
+    const closed = build(options);
+    closed.coord.close();
+    await closed.coord.drainAll();
+    expect(closed.lease.tryAcquire).not.toHaveBeenCalled();
+    expect(closed.admitNew).not.toHaveBeenCalled();
+  });
+
+  it('US1.4 — close() is idempotent, on a coordinator that never drained and on one that did', async () => {
+    const fresh = build();
+    expect(() => fresh.coord.close()).not.toThrow();
+    expect(() => fresh.coord.close()).not.toThrow();
+
+    const used = build();
+    await used.coord.drainIfIdle(QUEUE);
+    expect(used.admitNew).toHaveBeenCalledTimes(1);
+    expect(() => used.coord.close()).not.toThrow();
+    expect(() => used.coord.close()).not.toThrow();
+  });
+
+  it('US1.5 — a closed refusal records no failure, writes no audit event and logs nothing', async () => {
+    // The open half makes the spies live: a start that throws reaches all of them.
+    const open = build({
+      admitNew: async () => {
+        throw new Error('refused');
+      }
+    });
+    await open.coord.drainIfIdle(QUEUE);
+    expect(open.startFailures.recordFailure).toHaveBeenCalledTimes(1);
+    expect(open.logger.warn).toHaveBeenCalledTimes(1);
+
+    const closed = build({
+      admitNew: async () => {
+        throw new Error('refused');
+      }
+    });
+    closed.coord.close();
+    await closed.coord.drainIfIdle(QUEUE);
+    expectNothingWritten(closed);
+  });
+
+  it('US2.1 — a close while the claim is pending releases the lease once and admits nothing', async () => {
+    const open = await drainClosingWhileWaiting(claimGatedLease, (l) => l.tryAcquire, false);
+    expect(open.admitNew).toHaveBeenCalledTimes(1);
+    expect(open.lease.release).not.toHaveBeenCalled();
+
+    const closed = await drainClosingWhileWaiting(claimGatedLease, (l) => l.tryAcquire, true);
+    expect(closed.lease.release).toHaveBeenCalledTimes(1);
+    expect(closed.lease.release).toHaveBeenCalledWith(QUEUE);
+    expectNothingWritten(closed);
+  });
+
+  it('US2.1b — a close while the FR-R3-003 re-check is pending releases the lease once and admits nothing', async () => {
+    const open = await drainClosingWhileWaiting(recheckGatedLease, (l) => l.hasLease, false);
+    expect(open.admitNew).toHaveBeenCalledTimes(1);
+    expect(open.lease.release).not.toHaveBeenCalled();
+
+    const closed = await drainClosingWhileWaiting(recheckGatedLease, (l) => l.hasLease, true);
+    expect(closed.lease.release).toHaveBeenCalledTimes(1);
+    expect(closed.lease.release).toHaveBeenCalledWith(QUEUE);
+    expectNothingWritten(closed);
+  });
+
+  it('US2.2 — with no re-check on the lease port, a close during the claim still releases once and admits nothing', async () => {
+    const open = await drainClosingWhileWaiting(
+      claimGatedLeaseWithoutRecheck,
+      (l) => l.tryAcquire,
+      false
+    );
+    expect(open.admitNew).toHaveBeenCalledTimes(1);
+    expect(open.lease.release).not.toHaveBeenCalled();
+
+    const closed = await drainClosingWhileWaiting(
+      claimGatedLeaseWithoutRecheck,
+      (l) => l.tryAcquire,
+      true
+    );
+    expect(closed.lease.release).toHaveBeenCalledTimes(1);
+    expect(closed.lease.release).toHaveBeenCalledWith(QUEUE);
+    expectNothingWritten(closed);
+  });
+
+  it('US4.1 — a coordinator built after another is closed admits as before', async () => {
+    const first = build();
+    first.coord.close();
+    await first.coord.drainIfIdle(QUEUE);
+    expect(first.admitNew).not.toHaveBeenCalled();
+
+    const second = new AutoDrainCoordinator(first.deps);
+    await second.drainIfIdle(QUEUE);
+    expect(first.admitNew).toHaveBeenCalledTimes(1);
+  });
+});

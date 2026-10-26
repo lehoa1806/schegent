@@ -209,6 +209,20 @@ describe('FR-R3-137 — one stop path (T1530g, FR-011)', () => {
     expect(code.match(/closeStage2Resources\(/g) ?? []).toHaveLength(1);
   });
 
+  // FR-R3-205 — the drain is closed before `cancelAll()` stops the child whose Run's
+  // terminal funnel schedules the next drain. The lower bound pins the call inside
+  // `dispose()`: a call in `tearDownStage2`, which precedes it in the file, would
+  // satisfy the order alone.
+  it('`dispose` closes the auto-drain once, before it closes the resources (FR-R3-205)', () => {
+    expect(code.match(/closeAutoDrain\(/g) ?? []).toHaveLength(1);
+    const disposeAt = code.indexOf('const dispose = async');
+    const closeDrainAt = code.indexOf('closeAutoDrain(');
+    const closeResourcesAt = code.indexOf('closeStage2Resources(');
+    expect(disposeAt).toBeGreaterThan(-1);
+    expect(closeDrainAt).toBeGreaterThan(disposeAt);
+    expect(closeResourcesAt).toBeGreaterThan(closeDrainAt);
+  });
+
   it('the host teardown is assigned once and awaited by `deactivate`', () => {
     // Feature 218 — any statement that starts by assigning it. The guarded clear
     // starts with `if` and the declaration with `let`, so neither is counted.
