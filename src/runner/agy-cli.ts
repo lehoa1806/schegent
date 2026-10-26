@@ -138,4 +138,6 @@ export class AgyCliRunner implements BackendRunner {
   }
 
   public cancelActive(): boolean { return this.lifecycle.cancelActive(); }
+
+  public close(): void { this.lifecycle.close(); }
 }

@@ -652,6 +652,16 @@ same abort → SIGTERM → SIGKILL group ladder an operator cancel uses. It acts
 **invocation** and never on the window-primacy lease, which `AGENTS.md` states as a hard rule
 with FR-028's history behind it.
 
+**Teardown's own stop could start one.** Stage-2 teardown runs `cancelAll()`, whose SIGTERM
+ends a child with 143. A turn that still had background work open then reads as unfinished,
+and the controller resumes an unfinished turn with a new `--resume` spawn, detached like every
+other, after the teardown that was meant to stop every CLI (the feature-228 security review,
+S1). `cancelAll()` now closes each runner too, and a closed runner refuses every later
+invocation with `SpawnRefusedAfterCloseError` before anything is spawned; a runner built after
+teardown is handed out closed. The refused invocation fails the Run rather than resuming it.
+The refusal sits in the runner, not the resume loop, so a phase retry or an auto-drain
+admission after teardown is refused the same way.
+
 **What remains, stated rather than implied:**
 
 - **A window between SIGKILL and filesystem quiescence.** Signalling a group is not the same as
@@ -671,8 +681,15 @@ with FR-028's history behind it.
   A bare `kill(pid, 0)` would have produced a false refusal that never clears.
 - **Retried phases still have no side-effect idempotency**, and there is still no in-product
   checkpoint restore. Both are recorded in the reliability register and neither is touched here.
+- **An auto-drain after teardown can still admit a task.** The Run teardown stops still ends,
+  and the drain that follows it has no teardown gate, so a task waiting for the slot it frees
+  can be admitted. Its invocation is refused, so that Run fails with the refusal named instead
+  of starting a CLI. Whether the drain should stop at teardown and leave the task pending is
+  not decided here.
 
 <!-- Source: src/contracts/spawn-identity.ts -->
+<!-- Source: src/runner/backend-runner-registry.ts -->
+<!-- Source: src/runner/spawn-refused-after-close.ts -->
 <!-- Source: src/services/process-liveness.ts -->
 <!-- Source: src/services/resume-decision.ts -->
 <!-- Source: src/state/spawn-identity-recorder.ts -->
