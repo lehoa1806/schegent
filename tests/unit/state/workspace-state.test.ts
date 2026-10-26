@@ -1,12 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { resolve } from 'node:path';
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   HISTORY_CAP_PER_QUEUE,
   KEYS,
   QueueMutationRejected,
   RESET_CLEARED_KEYS,
+  SCHEMA_VERSION,
   WorkspaceStateStore,
   type Memento,
   type StoreChangeKey
@@ -15,11 +16,17 @@ import { HistoryStore } from '../../../src/state/history-store';
 import { QueueManager } from '../../../src/queue/queue-manager';
 import { MAX_PENDING_TASKS_PER_QUEUE, type FeatureRequest, type QueueState } from '../../../src/queue/feature-request';
 import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
+import { STATE_SCHEMA_VERSION } from '../../../src/contracts/state-schema';
 import { createQueue } from '../../../src/queue/queue-registry';
 import type { WorkflowRun, WorkflowRunPipeline, WorkspaceLock } from '../../../src/state/workflow-run';
 import type { SanitizedLogger } from '../../../src/lib/logger';
 import { buildMutationPlan } from '../../../src/services/mutation-plan';
 import { createPersistentGitApproval } from '../../../src/activation/git-approval';
+import {
+  buildQueueRegistry,
+  buildV9QueueState,
+  fixtureQueueId
+} from '../../fixtures/state/queue-fixtures';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -797,6 +804,179 @@ describe('Persistence migration (T065 / SC-013)', () => {
       'finalize',
       'done'
     ]);
+  });
+
+  // FR-R3-207 (T1891): a persisted session id that fails the shape check is dropped at load.
+  describe('the load drops a malformed persisted session id (FR-R3-207, T1891)', () => {
+    const MALFORMED_ID = '-x-session';
+    const UUID_ID = '3f2c8a4e-9b1d-4c6e-8f0a-2d7b5e1c9a34';
+    const OTHER_QUEUE_ID = fixtureQueueId(2);
+    const SESSION_ID_REPAIR = 'remove-malformed-cli-session-id';
+    const PHASE_REPAIR = 'remove-bugfix-phases-from-default-pipeline';
+    const CONTAMINATED_PIPELINE = {
+      id: 'speckit-new-feature',
+      name: 'Spec-kit New Feature',
+      phases: [
+        { id: 'speckit-specify', name: 'Specify', instruction: 'x', loopable: false },
+        { id: 'speckit-clarify', name: 'Clarify', instruction: 'x', loopable: true },
+        { id: 'speckit-plan', name: 'Plan', instruction: 'x', loopable: false },
+        { id: 'speckit-tasks', name: 'Tasks', instruction: 'x', loopable: false },
+        { id: 'speckit-analyze', name: 'Analyze', instruction: 'x', loopable: true },
+        { id: 'speckit-implement', name: 'Implement', instruction: 'x', loopable: false },
+        { id: 'finalize', name: 'Finalize', instruction: 'x', loopable: false },
+        { id: 'done', name: 'Done', instruction: 'x', loopable: false },
+        { id: 'bugfix-report', name: 'Bugfix Report', instruction: 'x', loopable: false }
+      ]
+    };
+
+    function taskIdFor(queueId: string): string {
+      return `${queueId}-task`;
+    }
+
+    function runHolding(queueId: string, id: string, sessionId: string): WorkflowRun {
+      return {
+        ...sampleRun(),
+        id,
+        featureId: taskIdFor(queueId),
+        lastCliSessionId: sessionId,
+        lastCliSessionRunnerKind: 'claude'
+      };
+    }
+
+    /**
+     * Both version keys current, so the only thing that can change the seeded Runs is the
+     * load-time repair. Each Run's Task sits in a queue, so the orphaned-run reconciler has no
+     * reason to end either Run.
+     */
+    async function seedCurrentRunMap(
+      target: FakeMemento,
+      runs: Record<string, WorkflowRun>
+    ): Promise<void> {
+      const registry = buildQueueRegistry({ count: 2, defaultAtPosition: 0 });
+      const queueMap: Record<string, QueueState> = {};
+      for (const entry of registry.entries) {
+        const state = buildV9QueueState({ pendingCount: 1 });
+        queueMap[entry.id] = {
+          ...state,
+          queueLifecycle: 'idle-pending',
+          pauseSource: null,
+          requests: state.requests.map((request) => ({
+            ...request,
+            id: taskIdFor(entry.id),
+            queueId: entry.id
+          }))
+        };
+      }
+      await target.update(KEYS.queueRegistry, registry);
+      await target.update(KEYS.queueDefaultId, DEFAULT_QUEUE_ID);
+      await target.update(KEYS.queue, queueMap);
+      await target.update(KEYS.run, runs);
+      await target.update(KEYS.schemaVersion, SCHEMA_VERSION);
+      await target.update(KEYS.schemaVersionNumeric, STATE_SCHEMA_VERSION);
+    }
+
+    async function seedSingularRun(target: FakeMemento, run: Record<string, unknown>): Promise<void> {
+      await target.update(KEYS.schemaVersion, '1.0.0');
+      await target.update(KEYS.schemaVersionNumeric, 6);
+      await target.update(KEYS.run, run);
+    }
+
+    function storedRun(target: FakeMemento, queueId: string): WorkflowRun {
+      const run = target.get<Record<string, WorkflowRun | undefined>>(KEYS.run)?.[queueId];
+      if (run === undefined) throw new Error(`no Run stored for queue ${queueId}`);
+      return run;
+    }
+
+    it('S1: the map branch drops the id from the Run that holds a malformed one and leaves the other alone', async () => {
+      const memento = new FakeMemento();
+      const malformed = runHolding(DEFAULT_QUEUE_ID, 'run-malformed', MALFORMED_ID);
+      const wellFormed = runHolding(OTHER_QUEUE_ID, 'run-well-formed', UUID_ID);
+      const wellFormedSeed = structuredClone(wellFormed);
+      await seedCurrentRunMap(memento, {
+        [DEFAULT_QUEUE_ID]: malformed,
+        [OTHER_QUEUE_ID]: wellFormed
+      });
+
+      const initResult = await new WorkspaceStateStore(memento).initialize();
+
+      expect(initResult.orphanedRunEvents).toEqual([]);
+      const repairedRun = storedRun(memento, DEFAULT_QUEUE_ID);
+      expect(repairedRun.id).toBe('run-malformed');
+      expect(repairedRun.lastCliSessionId).toBeUndefined();
+      expect(repairedRun.lastCliSessionRunnerKind).toBeUndefined();
+      expect(storedRun(memento, OTHER_QUEUE_ID)).toEqual(wellFormedSeed);
+      expect(initResult.runRepairEvents).toEqual([
+        { type: 'workflow-run-repaired', runId: 'run-malformed', repair: SESSION_ID_REPAIR }
+      ]);
+    });
+
+    it('S2: the singular branch drops the id from the stored Run and reports one event', async () => {
+      const memento = new FakeMemento();
+      await seedSingularRun(memento, {
+        ...sampleRun(),
+        lastCliSessionId: MALFORMED_ID,
+        lastCliSessionRunnerKind: 'claude'
+      });
+
+      const initResult = await new WorkspaceStateStore(memento).initialize();
+
+      const repairedRun = storedRun(memento, DEFAULT_QUEUE_ID);
+      expect(repairedRun.id).toBe('run-1');
+      expect(repairedRun.lastCliSessionId).toBeUndefined();
+      expect(repairedRun.lastCliSessionRunnerKind).toBeUndefined();
+      expect(initResult.runRepairEvents.map((event) => event.repair)).toEqual([SESSION_ID_REPAIR]);
+    });
+
+    it('S3: a second load of the repaired record writes it 0 times and reports nothing', async () => {
+      const memento = new FakeMemento();
+      await seedCurrentRunMap(memento, {
+        [DEFAULT_QUEUE_ID]: runHolding(DEFAULT_QUEUE_ID, 'run-malformed', MALFORMED_ID),
+        [OTHER_QUEUE_ID]: runHolding(OTHER_QUEUE_ID, 'run-well-formed', UUID_ID)
+      });
+
+      const firstLoad = await new WorkspaceStateStore(memento).initialize();
+      expect(firstLoad.runRepairEvents.map((event) => event.repair)).toEqual([SESSION_ID_REPAIR]);
+
+      const spy = vi.spyOn(memento, 'update');
+      try {
+        const secondLoad = await new WorkspaceStateStore(memento).initialize();
+
+        expect(spy.mock.calls.filter(([key]) => key === KEYS.run)).toHaveLength(0);
+        expect(secondLoad.runRepairEvents).toEqual([]);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('S4: a Run that needs both repairs gets the phase repair first, then the session-id repair', async () => {
+      const memento = new FakeMemento();
+      await seedSingularRun(memento, {
+        ...sampleRun(),
+        pipeline: CONTAMINATED_PIPELINE,
+        lastCliSessionId: MALFORMED_ID,
+        lastCliSessionRunnerKind: 'claude'
+      });
+
+      const initResult = await new WorkspaceStateStore(memento).initialize();
+
+      const repairedRun = storedRun(memento, DEFAULT_QUEUE_ID);
+      expect(repairedRun.lastCliSessionId).toBeUndefined();
+      expect(repairedRun.lastCliSessionRunnerKind).toBeUndefined();
+      expect(repairedRun.pipeline?.phases.map((phase) => phase.id)).toEqual([
+        'speckit-specify',
+        'speckit-clarify',
+        'speckit-plan',
+        'speckit-tasks',
+        'speckit-analyze',
+        'speckit-implement',
+        'finalize',
+        'done'
+      ]);
+      expect(initResult.runRepairEvents.map((event) => event.repair)).toEqual([
+        PHASE_REPAIR,
+        SESSION_ID_REPAIR
+      ]);
+    });
   });
 
   it('history-store: pre-004 history (no descriptionPreview/durationMs/auditLogPointer) is normalized', async () => {
