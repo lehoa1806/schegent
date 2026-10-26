@@ -285,10 +285,20 @@ describe('FR-R3-007 — the monitor projection is unchanged', () => {
     // runner's own closure. Both are `null`/`false` for an invocation the runner
     // armed no deadline for, so nothing renders differently for one.
     const ADDED_BY_211 = ['maxDurationMs', 'deadlineApproaching'];
+    // FR-R3-208, added deliberately per the note above.
+    //
+    // Whether the Run's CLI is holding its settle for background work. `false`
+    // for every Run that is not holding, so nothing renders differently for one.
+    // The webview does not render the field: it reads it through the composer's
+    // freshness, which says `holding` where it would have said `stalled`.
+    const ADDED_BY_208 = ['held'];
 
     const keys = Object.keys(h.compose().monitor!);
     expect(keys.slice().sort()).toEqual(
-      [...PRE_FEATURE_FIELDS, ...ADDED_BY_THIS_FEATURE, ...ADDED_BY_BUG_001, ...ADDED_BY_211].sort()
+      [
+        ...PRE_FEATURE_FIELDS, ...ADDED_BY_THIS_FEATURE, ...ADDED_BY_BUG_001, ...ADDED_BY_211,
+        ...ADDED_BY_208
+      ].sort()
     );
     for (const field of PRE_FEATURE_FIELDS) {
       expect(keys, `${field} is a reading the webview already rendered`).toContain(field);

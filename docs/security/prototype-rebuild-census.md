@@ -256,7 +256,7 @@ census cleared them.
 The rest take their key from a module constant, a numeric index, a `Map` the host populated, or a
 field name the caller passed as a literal: `catalog-revision.ts:65`, `phase-log-truncator.ts:71`,
 `:74`, `phase-log-sanitizer.ts:110`, `webview-log-sink.ts:70`, `:85`, `general-settings.ts:379`,
-`:380`, `claude-cli-monitor.ts:464`, `authored-display.ts:56`, `:67`,
+`:380`, `claude-cli-monitor.ts:465`, `authored-display.ts:56`, `:67`,
 `backend-capability-service.ts:187`, `condition-context.ts:89`, `connected-run-factory.ts:137`,
 `metrics-rollup.ts:292`, `audit-payload.ts:508`, `invocation-usage.ts:137`, `:148`,
 `workspace-state.ts:2382`, `:2423`, `:2455`.

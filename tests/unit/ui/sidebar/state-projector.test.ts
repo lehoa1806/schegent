@@ -791,6 +791,7 @@ describe('StateProjector monitor projection (T023)', () => {
     detectedIssues: ReadonlyArray<'rate_limited' | 'stall'>;
     msSinceLastStdout: number | null; msSinceLastStderr: number | null;
     maxDurationMs: number | null; deadlineApproaching: boolean;
+    held: boolean;
   }> = {}) {
     return {
       runId: overrides.runId ?? 'r1',
@@ -816,6 +817,8 @@ describe('StateProjector monitor projection (T023)', () => {
       // Feature 211 — an invocation the runner armed no deadline for is the
       // default here, because that is what every pre-211 call site meant.
       maxDurationMs: overrides.maxDurationMs ?? null,
+      // FR-R3-208 — a Run that is not holding, which is what every earlier call site meant.
+      held: overrides.held ?? false,
       deadlineApproaching: overrides.deadlineApproaching ?? false
     };
   }
