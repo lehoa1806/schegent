@@ -129,7 +129,7 @@ What it bounds and what it does not, in the same paragraph on purpose:
   `~/.claude/settings.json` (or the codex equivalent) says, so an operator-local file can loosen a bound
   the plan applied, with every flag respected. `FR-R3-105` added an observer
   (`src/services/ambient-config-observer.ts`) and a field on `capability-applied` to carry its result,
-  but the phase runner does not pass the observer (`src/controller/phase-runner.ts:558`), so every
+  but the phase runner does not pass the observer (`src/controller/phase-runner.ts:560`), so every
   `capability-applied` event records that field as `null`: **nothing is observed today**. Once the
   observer is called it reads one user-level file per backend. For `claude` that is
   `~/.claude/settings.json`, digested over whichever of `permissions`, `allowedTools`, `disallowedTools`

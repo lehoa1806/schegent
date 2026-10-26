@@ -375,4 +375,29 @@ describe('repairPersistedSessionId (FR-R3-207, T1891)', () => {
     expect(afterRepair.freshSessionCause).toBe('no-persisted-session-id');
     expect(beforeRepair.ownsResumeSession).toBe(true);
   });
+
+  // FR-R3-209: the session's cost figure goes with a malformed id and its owner, and stays with a valid id.
+  it('M1: drops the persisted cost figure with a malformed id, and keeps it beside a valid one', () => {
+    const malformed = runWith({
+      lastCliSessionId: MALFORMED_ID,
+      lastCliSessionRunnerKind: 'claude',
+      lastCliSessionCostUsd: 1.6
+    });
+
+    const repairedMalformed = repairPersistedSessionId(malformed);
+
+    expect(repairedMalformed.run.lastCliSessionId).toBeUndefined();
+    expect(repairedMalformed.run).not.toHaveProperty('lastCliSessionCostUsd');
+
+    const valid = runWith({
+      lastCliSessionId: UUID_ID,
+      lastCliSessionRunnerKind: 'claude',
+      lastCliSessionCostUsd: 1.6
+    });
+
+    const repairedValid = repairPersistedSessionId(valid);
+
+    expect(repairedValid.run.lastCliSessionId).toBe(UUID_ID);
+    expect(repairedValid.run.lastCliSessionCostUsd).toBe(1.6);
+  });
 });

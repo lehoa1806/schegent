@@ -27,6 +27,7 @@ import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { EvidenceHealthReporter } from '../services/evidence-health/evidence-health-monitor';
 import type { Notifier } from '../ui/notifications';
 import { createSpendBoundWatcher } from '../services/spend-bound-watcher';
+import { readSpendSeed } from '../services/spend-bound-seed';
 import { RunCheckpointService } from '../services/run-checkpoint-service';
 import { RunCheckpointRetentionService } from '../services/run-checkpoint-retention';
 import { RunMutationLedger } from '../services/run-mutation-ledger';
@@ -174,6 +175,9 @@ export async function createRunSafetyWiring(input: {
     now: () => Date.now()
   });
   input.context.subscriptions.push(input.auditWriter.subscribe(spendWatcher.onAuditEntry));
+  // FR-R3-209 — the tally a restart emptied is rebuilt from the log's window. A read is the
+  // only act: it writes nothing, and the watcher counts a row once whichever way it arrives.
+  void spendWatcher.seedFrom(readSpendSeed(input.workspaceRoot, input.logger));
 
   const checkpointRetention = new RunCheckpointRetentionService({
     globalStorageRoot: input.context.globalStorageUri.fsPath,

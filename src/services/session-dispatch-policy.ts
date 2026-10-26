@@ -6,6 +6,7 @@ export interface SessionDispatchInputs {
   readonly resumePrompt?: string;
   readonly persistedSessionId?: string | null;
   readonly persistedSessionRunnerKind?: BackendRunnerKind;
+  readonly persistedSessionCostUsd?: number;
   readonly effectiveRunnerKind: BackendRunnerKind;
 }
 
@@ -36,6 +37,12 @@ export interface SessionDispatchDecision {
   readonly isContinue: boolean;
   readonly sessionReuse: boolean;
   readonly resumeSessionId?: string;
+  /**
+   * FR-R3-209 — the Run's persisted cumulative cost for the session `resumeSessionId` names.
+   * Present exactly when `resumeSessionId` is and the persisted figure is a finite number of 0 or
+   * more. Optional and conditionally spread like the fields around it, and never logged.
+   */
+  readonly resumeSessionCostUsd?: number;
   readonly resumePrompt?: string;
   /**
    * FR-R3-175 (FR-034, FR-034b) — present exactly when no session is attached,
@@ -124,6 +131,14 @@ export function resolveSessionDispatch(
   const shouldResumeSession = isContinue || inputs.pendingSessionReuse;
   const resumeSessionId =
     shouldResumeSession && ownsResumeSession ? ownedResumeSessionId : undefined;
+  const persistedCostUsd = inputs.persistedSessionCostUsd;
+  const resumeSessionCostUsd =
+    resumeSessionId !== undefined &&
+    typeof persistedCostUsd === 'number' &&
+    Number.isFinite(persistedCostUsd) &&
+    persistedCostUsd >= 0
+      ? persistedCostUsd
+      : undefined;
   const sessionReuse = inputs.pendingSessionReuse && !isContinue;
   const resumePrompt = inputs.requestedContinue ? inputs.resumePrompt : undefined;
 
@@ -156,6 +171,7 @@ export function resolveSessionDispatch(
     isContinue,
     sessionReuse,
     ...(resumeSessionId === undefined ? {} : { resumeSessionId }),
+    ...(resumeSessionCostUsd === undefined ? {} : { resumeSessionCostUsd }),
     ...(resumePrompt === undefined ? {} : { resumePrompt }),
     ...(freshSessionCause === undefined ? {} : { freshSessionCause })
   };

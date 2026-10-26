@@ -849,6 +849,15 @@ export class ClaudeCliRunner implements BackendRunner {
       stdoutScanner?.finalize();
       stderrScanner?.finalize();
       const cliSessionId = extractCliSessionId(stdoutBuffer.decompressStream()) ?? undefined;
+      // FR-R3-209 — after a restart the ledger is empty, and the Run's persisted figure fills it,
+      // only for the session this request resumed. A figure the ledger already holds wins.
+      if (
+        cliSessionId !== undefined &&
+        cliSessionId === request.resumeSessionId &&
+        request.resumeSessionCostUsd !== undefined
+      ) {
+        this.sessionCosts.recordIfAbsent(cliSessionId, request.resumeSessionCostUsd);
+      }
       // FR-R3-198 (K2) — report what the session had cost before this
       // invocation, then keep its cumulative total for the next. A helper
       // invocation (compaction) keeps nothing, so its cost lands in the next
@@ -862,6 +871,8 @@ export class ClaudeCliRunner implements BackendRunner {
       ) {
         this.sessionCosts.record(cliSessionId, lastResultCostUsd);
       }
+      const cliSessionCostUsd =
+        cliSessionId === undefined ? undefined : this.sessionCosts.get(cliSessionId);
 
       return {
         stdoutBuffer,
@@ -882,6 +893,7 @@ export class ClaudeCliRunner implements BackendRunner {
         command,
         cliSessionId,
         ...(sessionCostBaselineUsd !== undefined ? { sessionCostBaselineUsd } : {}),
+        ...(cliSessionCostUsd !== undefined ? { cliSessionCostUsd } : {}),
         ...(stdinDeliveryFailed
           ? { stdinDeliveryFailed: true, stdinErrorCode: delivery.errorCode }
           : {}),

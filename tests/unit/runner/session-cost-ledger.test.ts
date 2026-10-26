@@ -130,6 +130,14 @@ describe('SessionCostLedger (K1)', () => {
     expect(ledger.get('session-0')).toBe(0);
     expect(ledger.get('session-1')).toBeUndefined();
   });
+
+  it('records a figure only into an empty slot (recordIfAbsent)', () => {
+    const ledger = new SessionCostLedger();
+    ledger.recordIfAbsent(SESSION, 1.0);
+    expect(ledger.get(SESSION)).toBe(1.0);
+    ledger.recordIfAbsent(SESSION, 2.0);
+    expect(ledger.get(SESSION)).toBe(1.0);
+  });
 });
 
 describe('ClaudeCliRunner session cost baseline (K2)', () => {
@@ -164,5 +172,50 @@ describe('ClaudeCliRunner session cost baseline (K2)', () => {
     expect(noSession.sessionCostBaselineUsd).toBeUndefined();
     expect(noCost.sessionCostBaselineUsd).toBe(1.0);
     expect(next.sessionCostBaselineUsd).toBe(1.0);
+  });
+
+  // FR-R3-209 — after a restart the ledger is empty, and the Run's persisted figure fills it.
+  it('R4: a resume after a restart takes the request figure as its baseline', async () => {
+    const runner = new ClaudeCliRunner(spawnEach([turn(SESSION, 1.6)]));
+    const resumed = await invokeOnce(runner, { ...RESUMED, resumeSessionCostUsd: 1.0 });
+    expect(resumed.sessionCostBaselineUsd).toBe(1.0);
+  });
+
+  it('R5: a figure for another session than the one reported is not used', async () => {
+    const runner = new ClaudeCliRunner(spawnEach([turn(SESSION, 1.6)]));
+    const resumed = await invokeOnce(runner, {
+      ...RESUMED,
+      resumeSessionId: 'session-b',
+      resumeSessionCostUsd: 1.0
+    });
+    expect(resumed.sessionCostBaselineUsd).toBeUndefined();
+  });
+
+  it('R6: the ledger figure wins over the request figure', async () => {
+    const runner = new ClaudeCliRunner(spawnEach([turn(SESSION, 1.3), turn(SESSION, 1.6)]));
+    await invokeOnce(runner, {});
+    const resumed = await invokeOnce(runner, { ...RESUMED, resumeSessionCostUsd: 1.0 });
+    expect(resumed.sessionCostBaselineUsd).toBe(1.3);
+  });
+
+  it('R7: the result reports the ledger figure once the invocation is recorded', async () => {
+    const runner = new ClaudeCliRunner(
+      spawnEach([turn(SESSION, 1.0), turn(SESSION, 1.3), turn(SESSION, null), turn('session-new', null)])
+    );
+    const recorded = await invokeOnce(runner, {});
+    const helper = await invokeOnce(runner, { ...RESUMED, helperInvocation: true });
+    const noCost = await invokeOnce(runner, RESUMED);
+    const fresh = await invokeOnce(runner, {});
+    expect(recorded.cliSessionCostUsd).toBe(1.0);
+    expect(helper.cliSessionCostUsd).toBe(1.0);
+    expect(noCost.cliSessionCostUsd).toBe(1.0);
+    expect(fresh.cliSessionCostUsd).toBeUndefined();
+  });
+
+  it('R8: a helper that carried no figure leaves the phase to take the figure and its cost', async () => {
+    const runner = new ClaudeCliRunner(spawnEach([turn(SESSION, 1.3), turn(SESSION, 1.6)]));
+    await invokeOnce(runner, { ...RESUMED, helperInvocation: true });
+    const phase = await invokeOnce(runner, { ...RESUMED, resumeSessionCostUsd: 1.0 });
+    expect(phase.sessionCostBaselineUsd).toBe(1.0);
   });
 });

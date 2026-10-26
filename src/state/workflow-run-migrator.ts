@@ -313,11 +313,19 @@ export function repairLegacyRunSnapshot(run: WorkflowRun): WorkflowRunRepairResu
   };
 }
 
-/** Drops a persisted id that fails the shape check, with its owner; the event names neither. */
+/**
+ * Drops a persisted id that fails the shape check, with its owner and its cost figure (FR-R3-209);
+ * the event names none of them.
+ */
 export function repairPersistedSessionId(run: WorkflowRun): WorkflowRunRepairResult {
   const id: unknown = run.lastCliSessionId;
   if (typeof id !== 'string' || isSessionIdShape(id)) return { run, auditEvent: null };
-  const { lastCliSessionId: _droppedId, lastCliSessionRunnerKind: _droppedOwner, ...kept } = run;
+  const {
+    lastCliSessionId: _droppedId,
+    lastCliSessionRunnerKind: _droppedOwner,
+    lastCliSessionCostUsd: _droppedCost,
+    ...kept
+  } = run;
   return {
     run: kept,
     auditEvent: {

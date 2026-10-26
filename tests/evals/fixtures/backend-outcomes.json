@@ -946,7 +946,7 @@
         "agy"
       ],
       "envelope": null,
-      "envelopeNullReason": "Carried as raw stdout rather than as an envelope on purpose. In production detectCreditError reads raw.stdoutBuffer (phase-runner.ts:760) — the untransformed bytes, before any unwrap — so the sigil this case is about is seen pre-unwrap. Declaring an envelope would hand the detector the unwrapped model text instead, which is not the input the branch under test ever sees.",
+      "envelopeNullReason": "Carried as raw stdout rather than as an envelope on purpose. In production detectCreditError reads raw.stdoutBuffer (phase-runner.ts:763) — the untransformed bytes, before any unwrap — so the sigil this case is about is seen pre-unwrap. Declaring an envelope would hand the detector the unwrapped model text instead, which is not the input the branch under test ever sees.",
       "covers": [
         "credit-detector:branch:sigil-out-of-credits"
       ],
@@ -984,7 +984,7 @@
         "agy"
       ],
       "envelope": null,
-      "envelopeNullReason": "Carried as raw stdout rather than as an envelope on purpose. In production detectCreditError reads raw.stdoutBuffer (phase-runner.ts:760) — the untransformed bytes, before any unwrap — so the sigil this case is about is seen pre-unwrap. Declaring an envelope would hand the detector the unwrapped model text instead, which is not the input the branch under test ever sees.",
+      "envelopeNullReason": "Carried as raw stdout rather than as an envelope on purpose. In production detectCreditError reads raw.stdoutBuffer (phase-runner.ts:763) — the untransformed bytes, before any unwrap — so the sigil this case is about is seen pre-unwrap. Declaring an envelope would hand the detector the unwrapped model text instead, which is not the input the branch under test ever sees.",
       "covers": [
         "credit-detector:branch:sigil-rate-limit"
       ],
@@ -1022,7 +1022,7 @@
         "agy"
       ],
       "envelope": null,
-      "envelopeNullReason": "Carried as raw stdout rather than as an envelope on purpose. In production detectCreditError reads raw.stdoutBuffer (phase-runner.ts:760) — the untransformed bytes, before any unwrap — so the sigil this case is about is seen pre-unwrap. Declaring an envelope would hand the detector the unwrapped model text instead, which is not the input the branch under test ever sees.",
+      "envelopeNullReason": "Carried as raw stdout rather than as an envelope on purpose. In production detectCreditError reads raw.stdoutBuffer (phase-runner.ts:763) — the untransformed bytes, before any unwrap — so the sigil this case is about is seen pre-unwrap. Declaring an envelope would hand the detector the unwrapped model text instead, which is not the input the branch under test ever sees.",
       "covers": [
         "credit-detector:branch:soft-warn-allowed_warning"
       ],
@@ -1060,7 +1060,7 @@
         "agy"
       ],
       "envelope": null,
-      "envelopeNullReason": "Carried as raw stdout rather than as an envelope on purpose. In production detectCreditError reads raw.stdoutBuffer (phase-runner.ts:760) — the untransformed bytes, before any unwrap — so the sigil this case is about is seen pre-unwrap. Declaring an envelope would hand the detector the unwrapped model text instead, which is not the input the branch under test ever sees.",
+      "envelopeNullReason": "Carried as raw stdout rather than as an envelope on purpose. In production detectCreditError reads raw.stdoutBuffer (phase-runner.ts:763) — the untransformed bytes, before any unwrap — so the sigil this case is about is seen pre-unwrap. Declaring an envelope would hand the detector the unwrapped model text instead, which is not the input the branch under test ever sees.",
       "covers": [
         "credit-detector:branch:soft-warn-allowed"
       ],
@@ -1098,7 +1098,7 @@
         "agy"
       ],
       "envelope": null,
-      "envelopeNullReason": "Carried as raw stdout rather than as an envelope on purpose. In production detectCreditError reads raw.stdoutBuffer (phase-runner.ts:760) — the untransformed bytes, before any unwrap — so the sigil this case is about is seen pre-unwrap. Declaring an envelope would hand the detector the unwrapped model text instead, which is not the input the branch under test ever sees.",
+      "envelopeNullReason": "Carried as raw stdout rather than as an envelope on purpose. In production detectCreditError reads raw.stdoutBuffer (phase-runner.ts:763) — the untransformed bytes, before any unwrap — so the sigil this case is about is seen pre-unwrap. Declaring an envelope would hand the detector the unwrapped model text instead, which is not the input the branch under test ever sees.",
       "covers": [
         "credit-detector:branch:soft-warn-allow"
       ],
