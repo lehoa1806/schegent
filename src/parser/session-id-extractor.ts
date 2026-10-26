@@ -135,15 +135,20 @@ function parseSessionIdLine(line: string): string | null {
   return null;
 }
 
+/** The one shape check for a session id, shared by the extractor and the load-time repair. */
+export function isSessionIdShape(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= MAX_SESSION_ID_LEN &&
+    SESSION_ID_SHAPE.test(value)
+  );
+}
+
 function readId(record: Record<string, unknown>): string | null {
   for (const key of SESSION_ID_SIGILS) {
     const value = record[key];
-    if (
-      typeof value === 'string' &&
-      value.length > 0 &&
-      value.length <= MAX_SESSION_ID_LEN &&
-      SESSION_ID_SHAPE.test(value)
-    ) {
+    if (isSessionIdShape(value)) {
       return value;
     }
   }
