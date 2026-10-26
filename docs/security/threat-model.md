@@ -660,7 +660,9 @@ S1). `cancelAll()` now closes each runner too, and a closed runner refuses every
 invocation with `SpawnRefusedAfterCloseError` before anything is spawned; a runner built after
 teardown is handed out closed. The refused invocation fails the Run rather than resuming it.
 The refusal sits in the runner, not the resume loop, so a phase retry or an auto-drain
-admission after teardown is refused the same way.
+admission after teardown is refused the same way. Teardown also closes the auto-drain before it
+stops any child, so a closed drain starts nothing, and a task waiting for the slot a stopped Run
+frees stays pending for the next session instead of being admitted and failed.
 
 **What remains, stated rather than implied:**
 
@@ -681,15 +683,15 @@ admission after teardown is refused the same way.
   A bare `kill(pid, 0)` would have produced a false refusal that never clears.
 - **Retried phases still have no side-effect idempotency**, and there is still no in-product
   checkpoint restore. Both are recorded in the reliability register and neither is touched here.
-- **An auto-drain after teardown can still admit a task.** The Run teardown stops still ends,
-  and the drain that follows it has no teardown gate, so a task waiting for the slot it frees
-  can be admitted. Its invocation is refused, so that Run fails with the refusal named instead
-  of starting a CLI. Whether the drain should stop at teardown and leave the task pending is
-  not decided here.
+- **An admission already starting when teardown begins goes on.** Teardown closes the auto-drain
+  first, but a start that is already past the drain's last check, in the interval before the
+  runner's first invocation, is not stopped by the close. The closed runner refuses that
+  invocation, so that Run fails with the refusal named instead of starting a CLI.
 
 <!-- Source: src/contracts/spawn-identity.ts -->
 <!-- Source: src/runner/backend-runner-registry.ts -->
 <!-- Source: src/runner/spawn-refused-after-close.ts -->
+<!-- Source: src/services/auto-drain-coordinator.ts -->
 <!-- Source: src/services/process-liveness.ts -->
 <!-- Source: src/services/resume-decision.ts -->
 <!-- Source: src/state/spawn-identity-recorder.ts -->
