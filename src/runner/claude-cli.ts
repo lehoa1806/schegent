@@ -623,6 +623,7 @@ export class ClaudeCliRunner implements BackendRunner {
             `phase=${request.phase} iteration=${request.iteration}`
         );
         holdStartedAt = null;
+        this.emitHook({ kind: 'background-hold', runId: request.runId ?? null, invocationId, held: false });
         if (!outputBackpressure.isBlocked) resetIdleTimer();
       };
       // FR-R3-198 (H4, H6, H10) — a result accepted with a task open begins a
@@ -641,6 +642,7 @@ export class ClaudeCliRunner implements BackendRunner {
             `resumed=${shouldResume} ` +
             `phase=${request.phase} iteration=${request.iteration}`
         );
+        this.emitHook({ kind: 'background-hold', runId: request.runId ?? null, invocationId, held: true });
       };
 
       const diagnosticWrites: Promise<void>[] = [];

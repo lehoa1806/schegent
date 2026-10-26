@@ -346,14 +346,17 @@ const monitorHook: MonitorSidecarHook = (event) => {
       signal: event.signal as NodeJS.Signals | null,
       ...(exitedPid === undefined ? {} : { pid: exitedPid })
     });
+  } else if (event.kind === 'background-hold') {
+    // FR-R3-208 — the runner's hold reaches the stall detector, so its silence is no stall.
+    monitor.onBackgroundHold(event.runId, event.held);
   } else {
     // FR-R3-083 — best-effort by design; arrives after the phase has ended.
     //
-    // `else`, not `else if (event.kind === 'tree-unconfirmed')`: the four
+    // `else`, not `else if (event.kind === 'tree-unconfirmed')`: the five
     // branches above exhaust the event union, so that re-test is a comparison
     // the compiler has already made — `no-unnecessary-condition` reports it as
     // always true. The `satisfies` keeps what the removed comparison implied: a
-    // sixth event kind stops compiling on this line instead of silently
+    // seventh event kind stops compiling on this line instead of silently
     // arriving in the tree-unconfirmed branch and being recorded as one.
     void treeDegradationRecorder.record(event satisfies { kind: 'tree-unconfirmed' });
   }

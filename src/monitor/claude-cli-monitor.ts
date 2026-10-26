@@ -385,6 +385,7 @@ export class ClaudeCliMonitor {
     const state = this.resolve(runId);
     if (!state) return;
     state.pid = pid;
+    this.detectors.get(state.runId)?.setHeld(false);
     if (invocation !== null) {
       if (invocation.helperInvocation) {
         // Feature 093 BUG-001 (T102a) — remembered here because this is the only
@@ -747,6 +748,15 @@ export class ClaudeCliMonitor {
     this.notify();
   }
 
+  /** FR-R3-208 — the runner's hold begins or ends; a held Run's silence is no stall. */
+  public onBackgroundHold(runId: string | null, held: boolean): void {
+    const state = this.resolve(runId);
+    const detector = state !== null && !state.terminal ? this.detectors.get(state.runId) : undefined;
+    if (!detector || detector.isHeld === held) return;
+    detector.setHeld(held);
+    this.notify();
+  }
+
   /**
    * Feature 093 (T046) — omitting `runId` reads the most recently started Run.
    *
@@ -801,6 +811,7 @@ export class ClaudeCliMonitor {
       // bound per invocation and is the only thing that knows which one it armed.
       maxDurationMs: state.maxDurationMs,
       deadlineApproaching: state.deadlineApproaching,
+      held: this.detectors.get(state.runId)?.isHeld === true,
       detectedIssues: Object.freeze(state.detectedIssues.slice()) as ReadonlyArray<'rate_limited' | 'stall'>,
       msSinceLastStdout: paused
         ? null
@@ -890,9 +901,9 @@ export class ClaudeCliMonitor {
    * subprocesses it declines to act on. Survived, because the Run's phase child
    * has not been spawned yet when this arrives.
    *
-   * Nothing here touches `terminal`, the detector, the framers or the status:
-   * the Run is still starting, and the next thing it will see is the phase's own
-   * `started`.
+   * Nothing here touches `terminal`, the framers or the status, and the detector
+   * only to release a hold: the Run is still starting, and the next thing it will
+   * see is the phase's own `started`.
    */
   private noteHelperExit(
     state: InternalState,
@@ -921,6 +932,7 @@ export class ClaudeCliMonitor {
       },
       clean ? 'info' : 'failure'
     );
+    this.detectors.get(state.runId)?.setHeld(false);
     this.notify();
   }
 

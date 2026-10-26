@@ -138,7 +138,7 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
       activePipeline: run.pipeline
         ? Object.freeze({ id: run.pipeline.id, name: run.pipeline.name })
         : null,
-      liveActivity: bookkeeping.liveActivity(status),
+      liveActivity: bookkeeping.liveActivity(status, ctx.monitor?.getCurrentState(run.id)?.held === true),
       // FR-R3-008 (T379) — the reload-durable half of the same question
       // `liveActivity` answers from memory, plus progress against the total the
       // Run froze. Both are `null` when the record predates the feature.

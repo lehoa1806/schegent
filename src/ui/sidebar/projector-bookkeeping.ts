@@ -180,13 +180,14 @@ export class ProjectorBookkeeping {
     }
   }
 
-  public liveActivity(status: WorkflowStatus): LiveActivity {
+  public liveActivity(status: WorkflowStatus, held = false): LiveActivity {
     return computeLiveActivity({
       status,
       lastActivityAtMonotonic: this.lastActivityAtMonotonic,
       pausedSinceMonotonic: this.pausedSinceMonotonic,
       cache: this.lastActivityCache,
-      monotonicNow: this.monotonicNow
+      monotonicNow: this.monotonicNow,
+      held
     });
   }
 
