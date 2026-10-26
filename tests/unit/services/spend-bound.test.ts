@@ -402,3 +402,207 @@ describe('FR-R3-198 (T1882) — a resumed session\'s cost is counted once', () =
     expect(summed.costUsd, 'every cumulative summed, as today').toBeCloseTo(184.569, 6);
   });
 });
+
+// FR-R3-209 (T1895) — the seed folds the log's `phase-end` rows into the tally a restart emptied.
+describe('FR-R3-209 (T1895) — the seed rebuilds the tally after a restart', () => {
+  interface Deferred<T> {
+    readonly promise: Promise<T>;
+    readonly resolve: (value: T) => void;
+    readonly reject: (reason: unknown) => void;
+  }
+
+  function deferred<T>(): Deferred<T> {
+    let resolve: (value: T) => void = () => undefined;
+    let reject: (reason: unknown) => void = () => undefined;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  /** A `phase-end` row with its own id, so one row can arrive twice, by the seed and live. */
+  function row(id: string, runId: string, payload: Record<string, unknown>): AuditEntry {
+    return { ...phaseEnd(payload, runId), id };
+  }
+
+  /** A watcher over a mutable Run map, read at call time so a case can replace a Run mid-way. */
+  function seedHarness(
+    config: { limitUsd: number | null; limitTokens: number | null } = {
+      limitUsd: null,
+      limitTokens: null
+    }
+  ): {
+    runs: Map<string, WorkflowRun>;
+    writes: Written[];
+    notices: string[];
+    watcher: ReturnType<typeof createSpendBoundWatcher>;
+  } {
+    const runs = new Map<string, WorkflowRun>();
+    const writes: Written[] = [];
+    const notices: string[] = [];
+    const watcher = createSpendBoundWatcher({
+      config: () => config,
+      findRunById: (runId) => {
+        const run = runs.get(runId);
+        return run === undefined ? null : { queueId: 'default', run };
+      },
+      pause: async (queueId, written) => {
+        writes.push({ queueId, run: written });
+      },
+      notify: (message) => notices.push(message),
+      logger,
+      now: () => 1_700_000_000_000
+    });
+    return { runs, writes, notices, watcher };
+  }
+
+  it('S1: folds the rows of a resolved, non-terminal Run into its tally, in dollars and tokens', async () => {
+    const { runs, watcher } = seedHarness();
+    runs.set('run-1', runFixture());
+    await watcher.seedFrom(
+      Promise.resolve([
+        row('e-1', 'run-1', { totalCostUsd: 0.25, inputTokens: 100, outputTokens: 20 }),
+        row('e-2', 'run-1', { totalCostUsd: 0.5, inputTokens: 300, cacheReadInputTokens: 50 }),
+        row('e-3', 'run-1', { totalCostUsd: 0.125, outputTokens: 40 })
+      ])
+    );
+    expect(watcher.observedFor('run-1')).toEqual({ costUsd: 0.875, totalTokens: 510 });
+  });
+
+  it('S2: counts no row of an unresolved or terminal Run, and gives such a row no slot', async () => {
+    const first = seedHarness();
+    first.runs.set('done', runFixture({ id: 'done', status: 'completed' }));
+    await first.watcher.seedFrom(
+      Promise.resolve([
+        row('g-1', 'ghost', { totalCostUsd: 1 }),
+        row('d-1', 'done', { totalCostUsd: 1 })
+      ])
+    );
+    expect(first.watcher.observedFor('ghost')).toEqual(NO_SPEND_OBSERVED);
+    expect(first.watcher.observedFor('done')).toEqual(NO_SPEND_OBSERVED);
+
+    // Eviction is oldest-first, so a terminal Run's row that took a slot would push the first
+    // live Run out. The terminal row comes last on purpose.
+    const second = seedHarness();
+    const liveIds = Array.from({ length: 64 }, (_, i) => `live-${i}`);
+    for (const id of liveIds) second.runs.set(id, runFixture({ id }));
+    second.runs.set('done', runFixture({ id: 'done', status: 'completed' }));
+    await second.watcher.seedFrom(
+      Promise.resolve([
+        ...liveIds.map((id, i) => row(`seed-${i}`, id, { totalCostUsd: 1 })),
+        row('seed-done', 'done', { totalCostUsd: 1 })
+      ])
+    );
+    for (const id of liveIds) {
+      expect(second.watcher.observedFor(id).costUsd, `${id} keeps its tally`).toBe(1);
+    }
+    expect(second.watcher.observedFor('done')).toEqual(NO_SPEND_OBSERVED);
+  });
+
+  it('S3: counts once a row the live handler folded while the seed was pending', async () => {
+    const { runs, watcher } = seedHarness();
+    runs.set('run-1', runFixture());
+    const pending = deferred<readonly AuditEntry[]>();
+    const seeding = watcher.seedFrom(pending.promise);
+
+    watcher.onAuditEntry(row('e-1', 'run-1', { totalCostUsd: 0.25 }));
+    expect(watcher.observedFor('run-1').costUsd).toBe(0.25);
+
+    pending.resolve([
+      row('e-1', 'run-1', { totalCostUsd: 0.25 }),
+      row('e-2', 'run-1', { totalCostUsd: 0.5 })
+    ]);
+    await seeding;
+    expect(watcher.observedFor('run-1').costUsd).toBe(0.75);
+  });
+
+  it('S4: counts once a seeded row whose live notice arrives after the seed', async () => {
+    const { runs, watcher } = seedHarness();
+    runs.set('run-1', runFixture());
+    await watcher.seedFrom(
+      Promise.resolve([
+        row('e-1', 'run-1', { totalCostUsd: 0.25 }),
+        row('e-2', 'run-1', { totalCostUsd: 0.5 })
+      ])
+    );
+    expect(watcher.observedFor('run-1').costUsd).toBe(0.75);
+
+    watcher.onAuditEntry(row('e-1', 'run-1', { totalCostUsd: 0.25 }));
+    expect(watcher.observedFor('run-1').costUsd, 'the seeded row is not folded again').toBe(0.75);
+
+    watcher.onAuditEntry(row('e-3', 'run-1', { totalCostUsd: 0.125 }));
+    expect(watcher.observedFor('run-1').costUsd, 'a new row folds').toBe(0.875);
+  });
+
+  it('S5: remembers a Run seeded as paused for spend, so its next row writes no second pause', async () => {
+    const { runs, writes, watcher } = seedHarness({ limitUsd: 1, limitTokens: null });
+    runs.set(
+      'run-1',
+      runFixture({
+        status: 'paused',
+        manualPauseAt: 1_700_000_000_000,
+        manualPauseCause: 'spend-bound-reached'
+      })
+    );
+    await watcher.seedFrom(Promise.resolve([row('e-1', 'run-1', { totalCostUsd: 1.5 })]));
+
+    // The operator's resume clears the pair, as `PhaseControlService` does.
+    runs.set('run-1', runFixture({ manualPauseAt: null, manualPauseCause: null }));
+    watcher.onAuditEntry(row('e-2', 'run-1', { totalCostUsd: 0.5 }));
+    await settle();
+    expect(writes).toEqual([]);
+  });
+
+  it('S6: evaluates nothing at the seed, and pauses at the next live row', async () => {
+    const { runs, writes, notices, watcher } = seedHarness({ limitUsd: 1, limitTokens: null });
+    runs.set('run-1', runFixture());
+    await watcher.seedFrom(Promise.resolve([row('e-1', 'run-1', { totalCostUsd: 1.5 })]));
+    await settle();
+    expect(writes).toEqual([]);
+    expect(notices).toEqual([]);
+
+    watcher.onAuditEntry(row('e-2', 'run-1', { totalCostUsd: 0.1 }));
+    await settle();
+    expect(writes).toHaveLength(1);
+    expect(writes.at(0)?.run.manualPauseCause).toBe('spend-bound-reached');
+  });
+
+  it('S7: evaluates a row folded live during the seed against what the tally holds then', async () => {
+    const { runs, writes, watcher } = seedHarness({ limitUsd: 1, limitTokens: null });
+    runs.set('run-1', runFixture());
+    const pending = deferred<readonly AuditEntry[]>();
+    const seeding = watcher.seedFrom(pending.promise);
+
+    // 0.5 alone is under the bound, though 0.8 of earlier spend is still being read.
+    watcher.onAuditEntry(row('live-1', 'run-1', { totalCostUsd: 0.5 }));
+    await settle();
+    expect(writes).toEqual([]);
+
+    pending.resolve([row('seed-1', 'run-1', { totalCostUsd: 0.8 })]);
+    await seeding;
+    await settle();
+    expect(writes, 'the seed itself writes nothing').toEqual([]);
+
+    watcher.onAuditEntry(row('live-2', 'run-1', { totalCostUsd: 0.1 }));
+    await settle();
+    expect(writes).toHaveLength(1);
+  });
+
+  it('S8: a rejected seed leaves the watcher empty, and live rows fold as before', async () => {
+    const seeded = seedHarness();
+    seeded.runs.set('run-1', runFixture());
+    await expect(
+      seeded.watcher.seedFrom(Promise.reject(new Error('read failed')))
+    ).resolves.toBeUndefined();
+    expect(seeded.watcher.observedFor('run-1')).toEqual(NO_SPEND_OBSERVED);
+
+    const unseeded = seedHarness();
+    unseeded.runs.set('run-1', runFixture());
+    const live = row('e-1', 'run-1', { totalCostUsd: 0.25, inputTokens: 10 });
+    seeded.watcher.onAuditEntry(live);
+    unseeded.watcher.onAuditEntry(live);
+    expect(seeded.watcher.observedFor('run-1')).toEqual({ costUsd: 0.25, totalTokens: 10 });
+    expect(seeded.watcher.observedFor('run-1')).toEqual(unseeded.watcher.observedFor('run-1'));
+  });
+});

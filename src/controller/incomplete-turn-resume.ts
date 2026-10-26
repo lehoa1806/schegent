@@ -59,13 +59,19 @@ export async function dispatchResumingIncompleteTurns(
     resumes += 1;
     // An operator's custom prompt is one-shot, and `sessionReuse: false` skips
     // the pre-phase compaction a reused session would get.
-    const { resumePrompt: _dropped, ...resumed } = inputs;
+    const { resumePrompt: _dropped, resumeSessionCostUsd, ...resumed } = inputs;
     const resumeSessionId = output.cliSessionId ?? inputs.resumeSessionId;
     output = await runner.run({
       ...resumed,
       isContinue: true,
       sessionReuse: false,
       ...(resumeSessionId !== undefined ? { resumeSessionId } : {}),
+      // FR-R3-209 — the persisted figure belongs to the dispatch's own session only.
+      ...(resumeSessionCostUsd !== undefined &&
+      resumeSessionId !== undefined &&
+      resumeSessionId === inputs.resumeSessionId
+        ? { resumeSessionCostUsd }
+        : {}),
       continuationNote: CONTINUATION_NOTES[output.result.cause]
     });
     onOutput(output);
