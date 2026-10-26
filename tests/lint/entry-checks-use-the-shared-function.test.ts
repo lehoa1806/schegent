@@ -28,13 +28,28 @@
 // script that defines a local `invokedAsScript`, or makes the call and ignores the answer,
 // fails it. What the branch it decides then does is not checked.
 //
+// A third check covers what the walk cannot read. `filesUnder` skips symbolic links, so a link
+// under scripts/ to a file that reads the start path was never parsed, and passed (feature-229
+// security review, S2). A link anywhere under scripts/ now fails the gate, by name, rather than
+// being followed: none is there, and following one could leave the tree.
+//
 // WHAT IT DOES NOT SEE. A read written some other way, for example through `globalThis.process`,
 // a named import of `argv` from `node:process`, an alias such as `const args = process.argv`
 // read as `args[1]`, destructuring, `process.argv.at(1)`, a non-literal index such as
 // `process.argv[START_INDEX]`, or `process.argv` defaulted with `??` or `||`. None exists under
 // scripts/ today. A call that reaches the start path is not followed.
-import { readFileSync } from 'node:fs';
-import { relative, resolve } from 'node:path';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, relative, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import ts from 'typescript';
 import { filesUnder } from './source-scan';
@@ -81,6 +96,20 @@ const SCANNED = filesUnder(resolve(REPO_ROOT, 'scripts'), { extensions: EXTENSIO
     source: parse(file, readFileSync(file, 'utf8'))
   })
 );
+
+/** Every symbolic link under `root`, to a file or a directory, none of them followed. */
+function linksUnder(root: string): string[] {
+  const links: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const child = resolve(dir, entry.name);
+      if (entry.isSymbolicLink()) links.push(child);
+      else if (entry.isDirectory()) walk(child);
+    }
+  };
+  walk(root);
+  return links.sort();
+}
 
 /** The expression with every wrapper that changes its type and not its value taken off. */
 function unwrap(node: ts.Expression): ts.Expression {
@@ -327,6 +356,32 @@ describe('no script under scripts/ reads process.argv[1] except through invokedA
       );
     });
     expect(lacking).toEqual([]);
+  });
+
+  it('has no symbolic link under scripts/, which the walk does not read', () => {
+    const links = linksUnder(resolve(REPO_ROOT, 'scripts')).map(link =>
+      relative(REPO_ROOT, link).replace(/\\/g, '/')
+    );
+    expect(links).toEqual([]);
+  });
+
+  describe('the link check, on a directory it is given', () => {
+    it('names a link to a script and a link to a directory, which the walk skips', () => {
+      const root = mkdtempSync(join(realpathSync(tmpdir()), 'entry-check-links-'));
+      try {
+        writeFileSync(join(root, 'real.mjs'), 'if (process.argv[1]) main();\n');
+        mkdirSync(join(root, 'nested'));
+        symlinkSync(join(root, 'real.mjs'), join(root, 'nested', 'linked.mjs'));
+        symlinkSync(join(root, 'nested'), join(root, 'linked-dir'), 'dir');
+        expect(filesUnder(root, { extensions: EXTENSIONS })).toEqual([join(root, 'real.mjs')]);
+        expect(linksUnder(root)).toEqual([
+          join(root, 'linked-dir'),
+          join(root, 'nested', 'linked.mjs')
+        ]);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
   });
 
   describe('the matcher, on source text it is given', () => {
