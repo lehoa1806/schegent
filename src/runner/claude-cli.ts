@@ -260,6 +260,23 @@ function capabilityArgs(
   return plan.args;
 }
 
+/** The flag whose argument is the session a resumed invocation continues. */
+const RESUME_FLAG = '--resume';
+/** What the spawn log prints in place of that session id. */
+const LOGGED_SESSION_ID = '<id>';
+
+/**
+ * The command line as the spawn log prints it, with the argument after
+ * `--resume` written as `<id>` (feature-228 security review, S3). The CLI is
+ * still spawned with the id; only the log line changes.
+ */
+function loggedCommand(cliPath: string, args: readonly string[]): string {
+  const shown = args.map((arg, index) =>
+    index > 0 && args[index - 1] === RESUME_FLAG ? LOGGED_SESSION_ID : arg
+  );
+  return [cliPath, ...shown].join(' ');
+}
+
 export class ClaudeCliRunner implements BackendRunner {
   private readonly spawnFn: SpawnFn;
   private readonly monitorHook: MonitorSidecarHook | null;
@@ -356,7 +373,7 @@ export class ClaudeCliRunner implements BackendRunner {
     let continuePrefix: string[];
     const shouldResume = request.isContinue === true || request.sessionReuse === true;
     if (shouldResume && typeof request.resumeSessionId === 'string') {
-      continuePrefix = ['--resume', request.resumeSessionId];
+      continuePrefix = [RESUME_FLAG, request.resumeSessionId];
     } else if (request.isContinue === true) {
       continuePrefix = ['-c'];
     } else {
@@ -428,7 +445,9 @@ export class ClaudeCliRunner implements BackendRunner {
         cwd: request.cwd,
         env: buildSpawnEnv(request)
       });
-      this._logger.info(`[ClaudeCliRunner] Spawned CLI: ${command}, PID=${child.pid}`);
+      this._logger.info(
+        `[ClaudeCliRunner] Spawned CLI: ${loggedCommand(request.cliPath, args)}, PID=${child.pid}`
+      );
       this.active.set(invocationId, { child, ...attribution });
       this.emitHook({
         kind: 'started',
