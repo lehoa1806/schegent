@@ -35,6 +35,9 @@
     if (state === 'stalled') {
       return secs !== null && Number.isFinite(secs) ? `stalled, ${secs}s` : 'stalled';
     }
+    if (state === 'holding') {
+      return secs !== null && Number.isFinite(secs) ? `holding, ${secs}s` : 'holding';
+    }
     return state;
   }
 
@@ -173,6 +176,7 @@
   .freshness-stalled .dot { background: var(--schegent-color-error); }
   .freshness-paused .dot { background: var(--schegent-color-warning); }
   .freshness-idle .dot { background: var(--schegent-color-system); }
+  .freshness-holding .dot { background: var(--schegent-color-active); }
   .freshness-label {
     font-weight: 600;
     font-size: var(--schegent-text-caption);

@@ -8,6 +8,7 @@ import { WorkspaceStateStore, type Memento } from '../../../../src/state/workspa
 import { QueueManager } from '../../../../src/queue/queue-manager';
 import { AuditLogWriter } from '../../../../src/audit/audit-log-writer';
 import { SanitizedLogger } from '../../../../src/lib/logger';
+import { ClaudeCliMonitor } from '../../../../src/monitor/claude-cli-monitor';
 import type { WorkflowRun } from '../../../../src/state/workflow-run';
 import type { LiveActivity, PhaseTile, WorkflowSnapshot } from '../../../../src/ui/sidebar/snapshot';
 import { runOf, runtimeOf } from './queue-runtime-read.helpers';
@@ -299,6 +300,68 @@ describe('StateProjector v2 — live activity', () => {
     p.start();
     expect(liveOf(p.getCurrentSnapshot()).freshness).toBe('paused');
     p.dispose();
+  });
+
+  // FR-R3-208 (T1894): the composer asks the monitor whether the Run is held.
+  it('reads holding for a Run its monitor reports held, and stalled once it is released (SP1)', async () => {
+    vi.useFakeTimers();
+    const auditStub: Pick<AuditLogWriter, 'append'> = {
+      append: async (entry) => ({
+        ...entry,
+        id: 'stub-entry',
+        timestamp: '2026-05-10T12:00:00.000Z',
+        schemaVersion: 3
+      })
+    };
+    const monitor = new ClaudeCliMonitor({
+      stallThresholdMs: 90_000,
+      rateLimitMatchers: [],
+      monotonicNow: () => monoClock.value,
+      now: () => new Date('2026-05-10T12:00:00.000Z'),
+      audit: auditStub,
+      transport: { record: () => {} },
+      activity: { record: () => {} },
+      logger: new SanitizedLogger(),
+      setTimeout: () => 0,
+      clearTimeout: () => {}
+    });
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun(), unfencedCommit('test-fixture'));
+    const p = new StateProjector({
+      store,
+      audit,
+      ownerId: 'this-window',
+      debounceMs: 100,
+      tickIntervalMs: 1000,
+      monotonicNow: () => monoClock.value,
+      monitor
+    });
+    p.start();
+    p.subscribe(() => {});
+
+    monitor.onStart('run-1', 'speckit-plan', null);
+    monitor.onBackgroundHold('run-1', true);
+
+    await audit.append({
+      runId: 'run-1',
+      phase: 'speckit-plan',
+      iteration: 0,
+      eventType: 'cli-invocation',
+      payload: { summary: 'kickoff' },
+      outcome: 'success'
+    });
+    await vi.advanceTimersByTimeAsync(120);
+
+    tickMonotonic(120_000);
+    await vi.advanceTimersByTimeAsync(1_100);
+    expect(liveOf(p.getCurrentSnapshot()).freshness).toBe('holding');
+    expect(liveOf(p.getCurrentSnapshot()).staleSeconds).toBe(120);
+
+    monitor.onBackgroundHold('run-1', false);
+    await vi.advanceTimersByTimeAsync(1_100);
+    expect(liveOf(p.getCurrentSnapshot()).freshness).toBe('stalled');
+
+    p.dispose();
+    monitor.dispose();
   });
 });
 

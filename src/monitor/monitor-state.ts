@@ -81,6 +81,8 @@ export interface CliMonitorState extends CliTransportAggregate {
    * the reading can fall back below.
    */
   readonly deadlineApproaching: boolean;
+  /** FR-R3-208 — true while the Run's CLI holds its settle for background work; never persisted. */
+  readonly held: boolean;
 }
 
 /**
@@ -138,6 +140,7 @@ export function buildIdleMonitorState(runId: string, phase: PhaseName, startedAt
     // the setting's default here is the specific defect FR-009 forbids: it would
     // put a six-hour limit on a surface for something that is not running.
     maxDurationMs: null,
-    deadlineApproaching: false
+    deadlineApproaching: false,
+    held: false
   });
 }

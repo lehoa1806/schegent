@@ -88,6 +88,28 @@ describe('deriveOperatorHealth', () => {
     ).toMatchObject({ level: 'blocked', label: 'activity stalled' });
   });
 
+  // FR-R3-208 (T1894): a holding Run is not a stalled one, so it does not block the health.
+  it('does not read holding activity as blocked or stalled (OH1)', () => {
+    const health = deriveOperatorHealth(snapshot({
+      liveActivity: {
+        summary: 'old',
+        category: 'warning',
+        lastEventAt: '2026-05-10T00:00:00.000Z',
+        freshness: 'holding',
+        staleSeconds: 120
+      },
+      queue: {
+        orderedItems: [],
+        inFlight: null,
+        pending: [],
+        recent: [],
+        paused: false
+      }
+    }));
+    expect(health.level).not.toBe('blocked');
+    expect(health.label).not.toBe('activity stalled');
+  });
+
   it('surfaces scheduled delayed retries', () => {
     expect(
       deriveOperatorHealth(snapshot({
