@@ -571,6 +571,17 @@ export interface WorkflowRun {
    */
   lastCliSessionRunnerKind?: import('../contracts/backend-kinds').BackendRunnerKind;
   /**
+   * FR-R3-209 — the cumulative `total_cost_usd` the claude runner last recorded for the session
+   * `lastCliSessionId` names. A host restart empties the runner's own ledger, and this is what
+   * lets the first resume afterwards record only its own cost.
+   *
+   * Written, cleared and carried with the id (`NO_CLI_SESSION`, `cliSessionOf`), optional and
+   * additive like the id so it needs no migration, and never logged. `| undefined` is
+   * deliberate: the driver writes an invocation's figure, absent included, beside the id it
+   * reports.
+   */
+  lastCliSessionCostUsd?: number | undefined;
+  /**
    * Feature 010 — BUG-001 (FR-028). Most recent `phase.retry_evaluated`
    * decision projected onto the operator-visible run. Absent until the
    * first decision is consulted; absent on legacy persisted records (no
@@ -624,6 +635,28 @@ export interface WorkflowRun {
    * Absent until the Run completes, and on every Run that declared no outputs.
    */
   runOutputs?: readonly RunOutputRecord[];
+}
+
+/** FR-R3-209 — the three session fields cleared together, for a Run that stops owning a session. */
+export const NO_CLI_SESSION = Object.freeze({
+  lastCliSessionId: undefined,
+  lastCliSessionRunnerKind: undefined,
+  lastCliSessionCostUsd: undefined
+});
+
+/** FR-R3-209 — the three session fields of a Run, carried together onto another record. */
+export function cliSessionOf(run: WorkflowRun): {
+  readonly lastCliSessionId: string | null | undefined;
+  readonly lastCliSessionRunnerKind:
+    | import('../contracts/backend-kinds').BackendRunnerKind
+    | undefined;
+  readonly lastCliSessionCostUsd: number | undefined;
+} {
+  return {
+    lastCliSessionId: run.lastCliSessionId,
+    lastCliSessionRunnerKind: run.lastCliSessionRunnerKind,
+    lastCliSessionCostUsd: run.lastCliSessionCostUsd
+  };
 }
 
 export interface RunPhaseStats {

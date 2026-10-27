@@ -134,6 +134,11 @@
           "type": "string"
         },
         {
+          "name": "resumeSessionCostUsd",
+          "optional": true,
+          "type": "number"
+        },
+        {
           "name": "capabilities",
           "optional": true,
           "type": "DeclaredCapabilitySet"
@@ -215,6 +220,11 @@
         },
         {
           "name": "sessionCostBaselineUsd",
+          "optional": true,
+          "type": "number"
+        },
+        {
+          "name": "cliSessionCostUsd",
           "optional": true,
           "type": "number"
         },

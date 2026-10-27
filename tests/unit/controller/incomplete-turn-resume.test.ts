@@ -190,6 +190,26 @@ describe('dispatchResumingIncompleteTurns FR-R3-198 (T1877)', () => {
     expect(seenBeforeThrow.at(0)).toBe(first);
   });
 
+  // FR-R3-209 — the persisted figure belongs to the dispatch's own session only.
+  it('L-i (FR-R3-209): a resume carries the session figure only for the dispatch session', async () => {
+    const withFigure = { ...INPUTS, resumeSessionCostUsd: 1.0 };
+
+    const noReport = scriptedRunner(incomplete('no-contract-block'), clean());
+    await dispatchResumingIncompleteTurns(noReport, withFigure, () => {});
+    expect(inputsOfCall(noReport, 1)?.resumeSessionId).toBe('s0');
+    expect(inputsOfCall(noReport, 1)?.resumeSessionCostUsd).toBe(1.0);
+
+    const sameSession = scriptedRunner(incomplete('background-work-open', 's0'), clean());
+    await dispatchResumingIncompleteTurns(sameSession, withFigure, () => {});
+    expect(inputsOfCall(sameSession, 1)?.resumeSessionId).toBe('s0');
+    expect(inputsOfCall(sameSession, 1)?.resumeSessionCostUsd).toBe(1.0);
+
+    const otherSession = scriptedRunner(incomplete('background-work-open', 's1'), clean());
+    await dispatchResumingIncompleteTurns(otherSession, withFigure, () => {});
+    expect(inputsOfCall(otherSession, 1)?.resumeSessionId).toBe('s1');
+    expect(inputsOfCall(otherSession, 1)).not.toHaveProperty('resumeSessionCostUsd');
+  });
+
   it('N2: each note names its cause and asks for the work in the foreground and the block at the end', () => {
     expect(CONTINUATION_NOTES['background-work-open']).toMatch(/still running/);
     expect(CONTINUATION_NOTES['background-work-open']).toMatch(/in the background/);

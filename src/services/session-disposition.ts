@@ -92,6 +92,7 @@ export class SessionDispositionReporter {
       resumePrompt: run.resumePrompt,
       persistedSessionId: run.lastCliSessionId,
       persistedSessionRunnerKind: run.lastCliSessionRunnerKind,
+      persistedSessionCostUsd: run.lastCliSessionCostUsd,
       effectiveRunnerKind
     });
     if (this.reported) return decision;

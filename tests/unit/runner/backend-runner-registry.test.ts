@@ -15,7 +15,8 @@ function makeStub(): BackendRunner {
       durationMs: 100,
       command: 'stub'
     }),
-    cancelActive: vi.fn().mockReturnValue(false)
+    cancelActive: vi.fn().mockReturnValue(false),
+    close: vi.fn()
   };
 }
 
@@ -85,6 +86,27 @@ describe('BackendRunnerRegistry', () => {
     registry.cancelAll();
     expect(r1.cancelActive).toHaveBeenCalled();
     expect(r2.cancelActive).toHaveBeenCalled();
+  });
+
+  /**
+   * The feature-228 security review, S1: a child the teardown stopped can read as
+   * an unfinished turn, and its resume would spawn a new CLI after the teardown.
+   * Closing every runner makes that spawn a refusal.
+   */
+  it('cancelAll() closes every cached runner', () => {
+    const registry = new BackendRunnerRegistry({ uncontainedGranted: GRANT_CLAUDE_AGY }, 'claude');
+    const r1 = registry.getOrCreate('claude');
+    const r2 = registry.getOrCreate('agy');
+    registry.cancelAll();
+    expect(r1.close).toHaveBeenCalledTimes(1);
+    expect(r2.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('hands out a runner built after cancelAll() already closed', () => {
+    const registry = new BackendRunnerRegistry({ uncontainedGranted: GRANT_CLAUDE_AGY }, 'claude');
+    registry.cancelAll();
+    const late = registry.getOrCreate('codex');
+    expect(late.close).toHaveBeenCalledTimes(1);
   });
 
   /**

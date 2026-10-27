@@ -11,7 +11,8 @@ import { createCliVersionProbe, type CliVersionProbe } from './cli-version-probe
 //   - Created once at activation.
 //   - Runner instances are constructed lazily on first `getOrCreate(kind)`.
 //   - Cached for the workspace lifetime.
-//   - `cancelAll()` cancels every active runner on deactivation.
+//   - `cancelAll()` closes every runner and cancels its active invocations
+//     on deactivation; a runner built after it is handed out closed.
 //
 // Thread safety: VS Code extension host is single-threaded; the Map
 // provides natural exclusion. No mutex needed.
@@ -27,6 +28,8 @@ import { createCliVersionProbe, type CliVersionProbe } from './cli-version-probe
 export class BackendRunnerRegistry {
   private readonly runners = new Map<BackendRunnerKind, BackendRunner>();
   private readonly versionProbe: CliVersionProbe = createCliVersionProbe();
+  /** Set by `cancelAll()`; every runner handed out after it is closed. */
+  private closed = false;
 
   // FR-R3-056 — no default for `factoryOptions` any more. It carried `{}`, which
   // would now mean "uncontained refused" by accident rather than by decision; a
@@ -53,6 +56,7 @@ export class BackendRunnerRegistry {
     let runner = this.runners.get(effectiveKind);
     if (!runner) {
       runner = createBackendRunner(effectiveKind, this.factoryOptions);
+      if (this.closed) runner.close();
       this.runners.set(effectiveKind, runner);
     }
     return runner;
@@ -77,10 +81,16 @@ export class BackendRunnerRegistry {
   /**
    * Cancel all active invocations across every cached runner.
    * Called at deactivation to ensure no orphaned CLI processes.
+   *
+   * Every runner is closed first, so nothing spawns after this. The feature-228
+   * security review, S1: a child stopped here can read as an unfinished turn,
+   * and the controller resumes an unfinished turn with a new spawn.
    */
   public cancelAll(): void {
+    this.closed = true;
     for (const runner of this.runners.values()) {
       try {
+        runner.close();
         runner.cancelActive();
       } catch {
         // Deactivation cleanup is best-effort; continue canceling the other

@@ -13,6 +13,7 @@ export class StallDetector {
   private timer: unknown = null;
   private armedAt: number | null = null;
   private remainingMs: number;
+  private held = false;
   private readonly opts: StallDetectorOptions;
 
   constructor(opts: StallDetectorOptions) {
@@ -22,6 +23,18 @@ export class StallDetector {
 
   public start(): void {
     this.armTimer(this.opts.thresholdMs);
+  }
+
+  /** FR-R3-208 — true while the Run's CLI holds its settle for background work. */
+  public get isHeld(): boolean {
+    return this.held;
+  }
+
+  /** FR-R3-208 — a release re-arms at the full threshold, since the timer fires once and a hold consumes it. */
+  public setHeld(held: boolean): void {
+    if (this.held === held) return;
+    this.held = held;
+    if (!held) this.noteActivity();
   }
 
   /**
@@ -83,6 +96,8 @@ export class StallDetector {
     this.timer = this.opts.setTimeout(() => {
       this.timer = null;
       this.armedAt = null;
+      // FR-R3-208 — a hold's silence is no stall; the firing is consumed.
+      if (this.held) return;
       try {
         this.opts.onStall();
       } catch {

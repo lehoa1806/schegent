@@ -1,8 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import {
   migrateLegacyRun,
-  repairLegacyRunSnapshot
+  repairLegacyRunSnapshot,
+  repairPersistedSessionId
 } from '../../../src/state/workflow-run-migrator';
+import { resolveSessionDispatch } from '../../../src/services/session-dispatch-policy';
+import type { WorkflowRun } from '../../../src/state/workflow-run';
 
 describe('migrateLegacyRun v1 → v2 → v3 (017, T007)', () => {
   it('returns null for null/undefined input', () => {
@@ -200,5 +203,201 @@ describe('repairLegacyRunSnapshot', () => {
 
     expect(result.run).toBe(run);
     expect(result.auditEvent).toBeNull();
+  });
+});
+
+// FR-R3-207 (T1891): a persisted session id that fails the shape check is dropped with its owner.
+describe('repairPersistedSessionId (FR-R3-207, T1891)', () => {
+  const MALFORMED_ID = '-x-session';
+  const UUID_ID = '3f2c8a4e-9b1d-4c6e-8f0a-2d7b5e1c9a34';
+  const MAX_LENGTH_ID = 'a'.repeat(256);
+
+  function runWith(fields: Record<string, unknown>) {
+    return migrateLegacyRun({
+      id: 'run-session',
+      featureId: 'feat-session',
+      status: 'running',
+      ...fields
+    })!;
+  }
+
+  function dispatchFor(run: WorkflowRun) {
+    return resolveSessionDispatch({
+      requestedContinue: true,
+      pendingSessionReuse: false,
+      ...(run.lastCliSessionId === undefined ? {} : { persistedSessionId: run.lastCliSessionId }),
+      ...(run.lastCliSessionRunnerKind === undefined
+        ? {}
+        : { persistedSessionRunnerKind: run.lastCliSessionRunnerKind }),
+      effectiveRunnerKind: 'claude'
+    });
+  }
+
+  function sessionRepairEvent(runId: string) {
+    return {
+      type: 'workflow-run-repaired',
+      runId,
+      repair: 'remove-malformed-cli-session-id'
+    };
+  }
+
+  it('P1: drops an id that starts with a dash, with its owner, and names only the Run', () => {
+    const run = runWith({ lastCliSessionId: MALFORMED_ID, lastCliSessionRunnerKind: 'claude' });
+
+    const result = repairPersistedSessionId(run);
+
+    expect(result.run.lastCliSessionId).toBeUndefined();
+    expect(result.run.lastCliSessionRunnerKind).toBeUndefined();
+    expect(result.auditEvent).toEqual(sessionRepairEvent(run.id));
+  });
+
+  it('P2: drops an id one character over the length bound, though every character is allowed', () => {
+    const run = runWith({
+      lastCliSessionId: 'a'.repeat(257),
+      lastCliSessionRunnerKind: 'claude'
+    });
+
+    const result = repairPersistedSessionId(run);
+
+    expect(result.run.lastCliSessionId).toBeUndefined();
+    expect(result.run.lastCliSessionRunnerKind).toBeUndefined();
+    expect(result.auditEvent).toEqual(sessionRepairEvent(run.id));
+  });
+
+  it('P3: drops an id with a character outside the allowed set, though its length is fine', () => {
+    const run = runWith({ lastCliSessionId: 'abc def', lastCliSessionRunnerKind: 'claude' });
+
+    const result = repairPersistedSessionId(run);
+
+    expect(result.run.lastCliSessionId).toBeUndefined();
+    expect(result.run.lastCliSessionRunnerKind).toBeUndefined();
+    expect(result.auditEvent).toEqual(sessionRepairEvent(run.id));
+  });
+
+  it('P4: drops an empty id', () => {
+    const run = runWith({ lastCliSessionId: '', lastCliSessionRunnerKind: 'claude' });
+
+    const result = repairPersistedSessionId(run);
+
+    expect(result.run.lastCliSessionId).toBeUndefined();
+    expect(result.run.lastCliSessionRunnerKind).toBeUndefined();
+    expect(result.auditEvent).toEqual(sessionRepairEvent(run.id));
+  });
+
+  it('P5: keeps a well-formed id and returns the same Run with no event', () => {
+    const run = runWith({ lastCliSessionId: UUID_ID, lastCliSessionRunnerKind: 'claude' });
+
+    const result = repairPersistedSessionId(run);
+
+    expect(result.run).toBe(run);
+    expect(result.auditEvent).toBeNull();
+  });
+
+  it('P6: keeps an id of exactly the length bound', () => {
+    const run = runWith({ lastCliSessionId: MAX_LENGTH_ID, lastCliSessionRunnerKind: 'claude' });
+
+    const result = repairPersistedSessionId(run);
+
+    expect(result.run).toBe(run);
+    expect(result.auditEvent).toBeNull();
+  });
+
+  it('P7: leaves a null id and its owner alone', () => {
+    const run = runWith({ lastCliSessionId: null, lastCliSessionRunnerKind: 'claude' });
+
+    const result = repairPersistedSessionId(run);
+
+    expect(result.run).toBe(run);
+    expect(result.run.lastCliSessionRunnerKind).toBe('claude');
+    expect(result.auditEvent).toBeNull();
+  });
+
+  it('P8: leaves a Run with no id and no owner alone', () => {
+    const run = runWith({});
+
+    const result = repairPersistedSessionId(run);
+
+    expect(result.run).toBe(run);
+    expect(result.auditEvent).toBeNull();
+  });
+
+  it('P9: leaves a non-string id alone, since the dispatch already treats it as no id', () => {
+    const run = runWith({
+      lastCliSessionId: 42 as unknown as string,
+      lastCliSessionRunnerKind: 'claude'
+    });
+
+    const result = repairPersistedSessionId(run);
+
+    expect(result.run).toBe(run);
+    expect(result.auditEvent).toBeNull();
+  });
+
+  it('P10: drops the id on any pipeline and whatever backend owns it', () => {
+    const pipeline = {
+      id: 'speckit-bugfix',
+      name: 'Bugfix',
+      phases: [{ id: 'bugfix-report', name: 'Bugfix Report', instruction: 'x', loopable: false }]
+    };
+    const run = runWith({
+      pipeline,
+      lastCliSessionId: MALFORMED_ID,
+      lastCliSessionRunnerKind: 'codex'
+    });
+
+    const result = repairPersistedSessionId(run);
+
+    expect(result.run.lastCliSessionId).toBeUndefined();
+    expect(result.run.lastCliSessionRunnerKind).toBeUndefined();
+    expect(result.run.pipeline).toBe(run.pipeline);
+    expect(result.auditEvent).toEqual(sessionRepairEvent(run.id));
+  });
+
+  it('P11: drops the id when no owner was recorded, leaving the owner absent', () => {
+    const run = runWith({ lastCliSessionId: MALFORMED_ID });
+
+    const result = repairPersistedSessionId(run);
+
+    expect(result.run.lastCliSessionId).toBeUndefined();
+    expect(result.run.lastCliSessionRunnerKind).toBeUndefined();
+    expect(result.auditEvent).toEqual(sessionRepairEvent(run.id));
+  });
+
+  it('P12: a repaired Run reports no persisted id to the dispatch, and the unrepaired one owned it', () => {
+    const run = runWith({ lastCliSessionId: MALFORMED_ID, lastCliSessionRunnerKind: 'claude' });
+
+    const repaired = repairPersistedSessionId(run);
+    const afterRepair = dispatchFor(repaired.run);
+    const beforeRepair = dispatchFor(run);
+
+    expect(afterRepair.resumeSessionId).toBeUndefined();
+    expect(afterRepair.ownsResumeSession).toBe(false);
+    expect(afterRepair.freshSessionCause).toBe('no-persisted-session-id');
+    expect(beforeRepair.ownsResumeSession).toBe(true);
+  });
+
+  // FR-R3-209: the session's cost figure goes with a malformed id and its owner, and stays with a valid id.
+  it('M1: drops the persisted cost figure with a malformed id, and keeps it beside a valid one', () => {
+    const malformed = runWith({
+      lastCliSessionId: MALFORMED_ID,
+      lastCliSessionRunnerKind: 'claude',
+      lastCliSessionCostUsd: 1.6
+    });
+
+    const repairedMalformed = repairPersistedSessionId(malformed);
+
+    expect(repairedMalformed.run.lastCliSessionId).toBeUndefined();
+    expect(repairedMalformed.run).not.toHaveProperty('lastCliSessionCostUsd');
+
+    const valid = runWith({
+      lastCliSessionId: UUID_ID,
+      lastCliSessionRunnerKind: 'claude',
+      lastCliSessionCostUsd: 1.6
+    });
+
+    const repairedValid = repairPersistedSessionId(valid);
+
+    expect(repairedValid.run.lastCliSessionId).toBe(UUID_ID);
+    expect(repairedValid.run.lastCliSessionCostUsd).toBe(1.6);
   });
 });

@@ -316,7 +316,7 @@ function effectiveSignaturesFor(
  * parseInvocation -> mapOutcome` — for one case.
  *
  * The unwrap step is the one this harness used to skip. In production it
- * happens at `phase-runner.ts:756`, before the parser sees a byte; a corpus
+ * happens at `phase-runner.ts:759`, before the parser sees a byte; a corpus
  * entering downstream of it cannot observe a renamed envelope field at all,
  * which is what made "eleven cases guard the boundary" an overclaim.
  *

@@ -117,7 +117,7 @@ export type MonitorSidecarEvent =
        *
        * On this arm alone, because it is only ever asked once: the monitor uses
        * it to decide which invocation to adopt, and every later event about that
-       * invocation is matched by `invocationId`. A copy on the other three arms
+       * invocation is matched by `invocationId`. A copy on the other four arms
        * would be a second place for the same fact to be wrong.
        */
       readonly helperInvocation: boolean;
@@ -161,6 +161,19 @@ export type MonitorSidecarEvent =
       readonly timedOut: boolean;
       /** FR-R3-075 — the absolute deadline fired; distinct from the idle stall. */
       readonly deadlineExceeded?: boolean;
+    }
+  /**
+   * FR-R3-208 — the runner's settle hold, reported so the silence it causes is
+   * not read as a stall. Sent with `held: true` when a hold begins, and with
+   * `held: false` when one ends by `closed` or `ceiling`. A hold that ends with
+   * the CLI's own exit sends no `false`: the `exited` event is what clears it.
+   * Carries no task id and no session id.
+   */
+  | {
+      readonly kind: 'background-hold';
+      readonly runId: string | null;
+      readonly invocationId: string;
+      readonly held: boolean;
     }
   /**
    * FR-R3-083 / FR-R3-054 §5 — the process group could not be proven gone within
@@ -212,4 +225,10 @@ export interface BackendRunner {
   ): Promise<RawInvocationOutput>;
   /** Cancel any in-flight invocation. Returns true if a process was killed. */
   cancelActive(): boolean;
+  /**
+   * Refuse every later invocation with `SpawnRefusedAfterCloseError`, before
+   * anything is spawned. A child already spawned is left to `cancelActive()`.
+   * Idempotent and never throws. Called at host teardown.
+   */
+  close(): void;
 }

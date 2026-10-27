@@ -12,7 +12,7 @@
 // what is the next persisted Run?* — and it answers it as a pure function of its
 // inputs, which is what makes the one-write guarantee below testable at all.
 import type { TransitionResult } from '../controller/phase';
-import type { PhaseResult, WorkflowRun } from '../state/workflow-run';
+import { NO_CLI_SESSION, type PhaseResult, type WorkflowRun } from '../state/workflow-run';
 
 export interface AdvanceInputs {
   /** The Run as last persisted, before this phase's result is folded in. */
@@ -73,11 +73,6 @@ export function advancedRun(inputs: AdvanceInputs): WorkflowRun {
           pendingRetryCause: null
         }
       : {}),
-    ...(crossesRunnerBoundary
-      ? {
-          lastCliSessionId: undefined,
-          lastCliSessionRunnerKind: undefined
-        }
-      : {})
+    ...(crossesRunnerBoundary ? NO_CLI_SESSION : {})
   };
 }

@@ -17,6 +17,8 @@ import { advancedRun } from './run-advance';
 import { terminalSettler } from './run-terminal-effects';
 import { emitTerminalOutcomeAudit } from './terminal-outcome-audit';
 import {
+  cliSessionOf,
+  NO_CLI_SESSION,
   type PhaseResult,
   type SanitizedError,
   type WorkflowRun
@@ -539,12 +541,7 @@ export class RunDriver {
               decision.kind === 'advance' ? decision.nextIteration : run.currentIteration,
             lastTransitionAt: Date.now(),
             phasesCompleted: [...run.phasesCompleted, skippedResult],
-            ...(sessionOwnerMatchesTarget
-              ? {}
-              : {
-                  lastCliSessionId: undefined,
-                  lastCliSessionRunnerKind: undefined
-                })
+            ...(sessionOwnerMatchesTarget ? {} : NO_CLI_SESSION)
           };
           run = await this.deps.persistTransition(run, advanced);
           previousPhaseMessage = null;
@@ -671,6 +668,7 @@ export class RunDriver {
           isContinue: sessionDispatch.isContinue,
           sessionReuse: sessionDispatch.sessionReuse,
           resumeSessionId: sessionDispatch.resumeSessionId,
+          resumeSessionCostUsd: sessionDispatch.resumeSessionCostUsd,
           resumePrompt: sessionDispatch.resumePrompt,
           // FR-R3-001 (T260) — forwarded whole, on every phase of the Run, so
           // the request the operator approved is the request each phase is asked
@@ -699,7 +697,8 @@ export class RunDriver {
           run = {
             ...run,
             lastCliSessionId: output.cliSessionId,
-            lastCliSessionRunnerKind: effectiveRunnerKind
+            lastCliSessionRunnerKind: effectiveRunnerKind,
+            lastCliSessionCostUsd: output.cliSessionCostUsd
           };
           pendingSessionReuse = true;
         }
@@ -932,8 +931,7 @@ export class RunDriver {
             // The invocation just completed after the operator's pause
             // write. Keep the session ownership captured from its output;
             // the latest persisted snapshot predates that output.
-            lastCliSessionId: run.lastCliSessionId,
-            lastCliSessionRunnerKind: run.lastCliSessionRunnerKind,
+            ...cliSessionOf(run),
             status: 'paused',
             currentPhase:
               decision.kind === 'advance' ? decision.nextPhase : latestRun.currentPhase,
@@ -1151,12 +1149,7 @@ export class RunDriver {
       pendingRetryAt: null,
       pendingRetryCause: null,
       delayedRetryCount: 0,
-      ...(crossesRunnerBoundary
-        ? {
-            lastCliSessionId: undefined,
-            lastCliSessionRunnerKind: undefined
-          }
-        : {})
+      ...(crossesRunnerBoundary ? NO_CLI_SESSION : {})
     };
     const persisted = await this.deps.persistTransition(run, advanced);
     await this.deps.emitOptionalPhaseFailureContinued(persisted, {

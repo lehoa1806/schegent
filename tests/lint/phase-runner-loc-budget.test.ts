@@ -590,7 +590,16 @@ const BUDGETS = [
   // the input field, so the +1 is that field. Nothing here is extractable: each
   // line hands a fact to the one call that reads it. The sibling waiver's mark
   // moved by the same line in the same diff.
-  { path: 'src/controller/phase-runner.ts', max: 1_404 },
+  //
+  // Feature 237 (FR-R3-209, 2026-10-26) — 1,404 → 1,408, +4. A host restart emptied the
+  // session cost ledger, so the Run now persists the session's figure and this file carries it
+  // both ways: an input field, an output field, the request's figure beside the resume id it
+  // belongs to, and the output's figure. Each line hands one fact to the one call that reads
+  // it, and nothing here is extractable without moving the request or the output out of
+  // `run()`. Paying for them would mean rewrapping unrelated prose to free lines, a reformat
+  // this change does not make. The sibling waiver's mark moved by the same lines in the same
+  // diff.
+  { path: 'src/controller/phase-runner.ts', max: 1_408 },
   // FR-R3-052 / H-03 (2026-08-24) — 400 → 415 for the size check that was
   // missing. `stat()` was already called here and only `isFile()` was read, so
   // `readFile()` took a multi-GiB sidecar wholly into memory. The bound, the

@@ -33,10 +33,14 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CONFIG = resolve(ROOT, '.secretlintrc.json');
 const IGNORE = resolve(ROOT, '.secretlintignore');
 
-/** Tracked files only — the same scope the four-regex scan used. */
+/**
+ * Tracked files only — the same scope the four-regex scan used. NUL-separated, because without
+ * `-z` git quotes a name holding a byte outside printable ASCII, a double quote or a backslash,
+ * and the quoted form names no file: the scan counted such a file absent and never read it.
+ */
 function trackedFiles() {
-  return execFileSync('git', ['ls-files'], { cwd: ROOT, encoding: 'utf8' })
-    .split('\n')
+  return execFileSync('git', ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8' })
+    .split('\0')
     .filter(Boolean);
 }
 
@@ -87,11 +91,29 @@ if (invokedAsScript(import.meta.url)) {
   const files = notIgnored.filter((file) => existsSync(resolve(ROOT, file)));
   const skipped = tracked.length - notIgnored.length;
   const absent = notIgnored.length - files.length;
+  const unread =
+    (skipped > 0 ? `, ${skipped} skipped by .secretlintignore` : '') +
+    (absent > 0 ? `, ${absent} tracked but absent from disk` : '');
+
+  // A scan over no file finds nothing and would print a summary that reads like a pass. Outside
+  // a repository of its own, such as an archive unpacked inside a repository that does not track
+  // it, `git ls-files` exits 0 and prints nothing, so this is refused like a missing config.
+  if (files.length === 0) {
+    console.error(
+      `Secret scan cannot run: no tracked file to scan under ${ROOT}${unread}. ` +
+        'An unanswerable check is a refusal.'
+    );
+    process.exit(1);
+  }
 
   const engine = await createEngine({
     configFileJSON: JSON.parse(readFileSync(CONFIG, 'utf8')),
     formatter: 'stylish',
     color: false,
+    // The type declarations say masking is the default, but the core reads
+    // `maskSecrets ?? false` (13.0.4), so a report line carried the matched value into the
+    // terminal and into any log that keeps it. The rule and the location are enough to act on.
+    maskSecrets: true,
     cwd: ROOT
   });
 
@@ -103,9 +125,7 @@ if (invokedAsScript(import.meta.url)) {
   // cannot be told apart from a scan that looked at nothing -- the vacuity defect this
   // repository measures rather than assumes.
   const summary =
-    `Secret scan: secretlint over ${files.length} tracked file(s)` +
-    (skipped > 0 ? `, ${skipped} skipped by .secretlintignore` : '') +
-    (absent > 0 ? `, ${absent} tracked but absent from disk` : '') +
+    `Secret scan: secretlint over ${files.length} tracked file(s)${unread}` +
     ` (rules: preset-recommend, no-dotenv; tests/ INCLUDED).`;
 
   if (result.ok === false) {

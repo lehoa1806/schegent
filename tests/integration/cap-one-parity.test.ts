@@ -805,4 +805,21 @@ describe('Feature 093 BUG-001 (T103a, SC-010) — at cap 1, a compaction before 
       vi.useRealTimers();
     }
   });
+
+  // FR-R3-208 (T1893): the production hook routes a background hold to the monitor.
+  it('routes a background-hold event through the production hook to the monitor (W1)', async () => {
+    const { runId, phase } = await admitSoleRunHeldAtItsPhase();
+    wiring.monitor.onStart(runId, phase, null);
+    started(runId, PHASE_INVOCATION, false);
+
+    wiring.monitorHook({
+      kind: 'background-hold', runId, invocationId: PHASE_INVOCATION, held: true
+    });
+    expect(wiring.monitor.getCurrentState(runId)?.held).toBe(true);
+
+    wiring.monitorHook({
+      kind: 'background-hold', runId, invocationId: PHASE_INVOCATION, held: false
+    });
+    expect(wiring.monitor.getCurrentState(runId)?.held).toBe(false);
+  });
 });

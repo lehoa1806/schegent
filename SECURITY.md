@@ -142,6 +142,10 @@ missed.
 `git ls-files`, **including `tests/**`**. Roughly **39 seconds** for 1,947 files. Scoped
 to tracked files so an untracked scratch file is not read and `node_modules` is never
 walked; the previous scan used the same scope and the measurement is why it was kept.
+A finding is reported by rule and location with its value masked, so the report is safe to
+leave in a terminal or a log: open the file at that location to see what matched. A run
+that finds no file to scan, such as one outside a repository of its own, is refused rather
+than passed.
 
 **What it does not do**, because an honest small control beats an implied large one:
 

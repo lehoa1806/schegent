@@ -26,8 +26,10 @@ import { Readable } from 'stream';
 import type { ChildProcess } from 'child_process';
 import { ClaudeCliRunner, type SpawnFn } from '../../../src/runner/claude-cli';
 import type { RawInvocationOutput } from '../../../src/runner/invocation-result';
+import type { MonitorSidecarEvent } from '../../../src/contracts/backend-runner';
 import { AUDIT_LOG_CLOSE_MARKER } from '../../../src/parser/audit-log-parser';
 import { SanitizedLogger } from '../../../src/lib/logger';
+import { MAX_OPEN_TASKS, MAX_TASK_ID_LENGTH } from '../../../src/runner/background-task-tracker';
 
 interface FakeChild extends EventEmitter {
   stdout: Readable;
@@ -969,7 +971,7 @@ describe('ClaudeCliRunner — FR-R3-198 background hold (T1876)', () => {
     await closedRun;
 
     expect(messages(closed.lines, 'background hold began')).toEqual([
-      '[ClaudeCliRunner] background hold began openTasks=1 ceilingMs=600000 resumed=false ' +
+      '[ClaudeCliRunner] background hold began openTasks=1 untracked=false ceilingMs=600000 resumed=false ' +
         'phase=speckit-implement iteration=1'
     ]);
     expect(messages(closed.lines, 'background hold ended')).toEqual([
@@ -1055,9 +1057,9 @@ describe('ClaudeCliRunner — FR-R3-198 background hold (T1876)', () => {
     expect(raw.backgroundWorkOpenAtResult).toBe(true);
 
     expect(messages(lines, 'background hold began')).toEqual([
-      '[ClaudeCliRunner] background hold began openTasks=2 ceilingMs=600000 resumed=false ' +
+      '[ClaudeCliRunner] background hold began openTasks=2 untracked=false ceilingMs=600000 resumed=false ' +
         'phase=speckit-implement iteration=1',
-      '[ClaudeCliRunner] background hold began openTasks=1 ceilingMs=600000 resumed=false ' +
+      '[ClaudeCliRunner] background hold began openTasks=1 untracked=false ceilingMs=600000 resumed=false ' +
         'phase=speckit-implement iteration=1'
     ]);
     expect(messages(lines, 'background hold ended')).toEqual([
@@ -1091,5 +1093,208 @@ describe('ClaudeCliRunner — FR-R3-198 background hold (T1876)', () => {
     expect(raw.completedAwaitingExit).toBe(true);
     expect(raw.exitCode).toBe(143);
     expect(raw.backgroundWorkOpenAtResult).toBe(true);
+  });
+
+  function startedLine(taskId: string): string {
+    return `{"type":"system","subtype":"task_started","is_backgrounded":true,"task_id":"${taskId}"}\n`;
+  }
+
+  function notifiedLine(taskId: string): string {
+    return `{"type":"system","subtype":"task_notification","task_id":"${taskId}","status":"completed"}\n`;
+  }
+
+  // FR-R3-206 (T1890): a start dropped at a tracker bound keeps the hold to its ceiling.
+  it('holds to the ceiling for a start dropped for an over-long id (B18)', async () => {
+    const overLongId = 'q'.repeat(MAX_TASK_ID_LENGTH + 1);
+    const { logger, lines } = capturingLogger();
+    const child = makeFakeChild(true);
+    const runner = new ClaudeCliRunner(
+      spawnOpening(child, startedLine(overLongId) + RESULT),
+      null,
+      {},
+      logger
+    );
+    const p = runner.invoke({ ...baseReq, timeoutMs: DEFAULT_TIMEOUT_MS });
+
+    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTimeAsync(16_000);
+    expect(child.kill).not.toHaveBeenCalled();
+
+    // The ceiling falls at 600 010 ms and the settle follows it by 15 000 ms, as in B5.
+    await vi.advanceTimersByTimeAsync(599_000);
+    expect(child.kill).toHaveBeenCalled();
+    const raw = await p;
+    expect(raw.backgroundWorkOpenAtResult).toBe(true);
+
+    expect(messages(lines, 'background hold ended')).toEqual([
+      '[ClaudeCliRunner] background hold ended reason=ceiling heldMs=600000 ' +
+        'phase=speckit-implement iteration=1'
+    ]);
+    expect(messages(lines, 'background hold began')).toEqual([
+      '[ClaudeCliRunner] background hold began openTasks=0 untracked=true ceilingMs=600000 ' +
+        'resumed=false phase=speckit-implement iteration=1'
+    ]);
+    // Four characters of the id are enough to find it in a line.
+    expect(lines.filter((line) => line.includes('qqqq'))).toEqual([]);
+  });
+
+  it('holds to the ceiling when every tracked task closes but one start was dropped (B19)', async () => {
+    const ids = Array.from({ length: MAX_OPEN_TASKS + 1 }, (_, index) => `t${index}`);
+    const { logger, lines } = capturingLogger();
+    const child = makeFakeChild(true);
+    const runner = new ClaudeCliRunner(
+      spawnOpening(child, ids.map(startedLine).join('') + RESULT),
+      null,
+      {},
+      logger
+    );
+    const p = runner.invoke({ ...baseReq, timeoutMs: DEFAULT_TIMEOUT_MS });
+
+    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTimeAsync(16_000);
+    expect(child.kill).not.toHaveBeenCalled();
+
+    // Closing the 256 tracked tasks leaves only the dropped start.
+    child.stdout.emit('data', ids.slice(0, MAX_OPEN_TASKS).map(notifiedLine).join(''));
+    await vi.advanceTimersByTimeAsync(16_000);
+    expect(child.kill).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(583_000);
+    expect(child.kill).toHaveBeenCalled();
+    const raw = await p;
+    expect(raw.backgroundWorkOpenAtResult).toBe(true);
+
+    expect(messages(lines, 'background hold ended')).toEqual([
+      '[ClaudeCliRunner] background hold ended reason=ceiling heldMs=600000 ' +
+        'phase=speckit-implement iteration=1'
+    ]);
+    expect(lines.filter((line) => line.includes('reason=closed'))).toEqual([]);
+    expect(messages(lines, 'background hold began')).toEqual([
+      '[ClaudeCliRunner] background hold began openTasks=256 untracked=true ceilingMs=600000 ' +
+        'resumed=false phase=speckit-implement iteration=1'
+    ]);
+  });
+
+  it('clears the ceiling when the CLI exits on its own during a hold on a dropped start (B20)', async () => {
+    const { logger, lines } = capturingLogger();
+    const child = makeFakeChild(true);
+    const runner = new ClaudeCliRunner(
+      spawnOpening(child, startedLine('q'.repeat(MAX_TASK_ID_LENGTH + 1)) + RESULT),
+      null,
+      {},
+      logger
+    );
+    const p = runner.invoke({ ...baseReq, timeoutMs: DEFAULT_TIMEOUT_MS });
+
+    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTimeAsync(1_000);
+    exitCleanly(child);
+    const raw = await p;
+    expect(child.kill).not.toHaveBeenCalled();
+    expect(raw.backgroundWorkOpenAtResult).toBe(true);
+
+    // A ceiling left armed would fire in here and log the hold's end, as in B15.
+    const loggedAtExit = lines.length;
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(lines).toHaveLength(loggedAtExit);
+  });
+
+  /** The `invocationId` the runner stamped on its `started` event. */
+  function startedInvocationId(events: ReadonlyArray<MonitorSidecarEvent>): string {
+    const started = events.find((event) => event.kind === 'started');
+    if (started === undefined) throw new Error('the runner reported no started event');
+    return started.invocationId;
+  }
+
+  // FR-R3-208 (T1893): the runner reports a hold's begin and end to the monitor's hook.
+  it('reports a hold when it begins and when its last task closes (B21)', async () => {
+    const events: MonitorSidecarEvent[] = [];
+    const holds = () => events.filter((event) => event.kind === 'background-hold');
+    const child = makeFakeChild(true);
+    const runner = new ClaudeCliRunner(
+      spawnOpening(child, STARTED_T1 + RESULT),
+      (event) => events.push(event)
+    );
+    const p = runner.invoke({ ...baseReq, runId: 'run-1', timeoutMs: DEFAULT_TIMEOUT_MS });
+
+    await vi.advanceTimersByTimeAsync(10);
+    const invocationId = startedInvocationId(events);
+    expect(holds()).toEqual([
+      { kind: 'background-hold', runId: 'run-1', invocationId, held: true }
+    ]);
+
+    child.stdout.emit('data', NOTIFIED_T1);
+    expect(holds()).toHaveLength(2);
+    expect(holds()[1]).toEqual({
+      kind: 'background-hold',
+      runId: 'run-1',
+      invocationId,
+      held: false
+    });
+
+    // The hold event names the invocation its chunk events name.
+    expect(events.some((event) => event.kind === 'stdout-chunk')).toBe(true);
+    for (const event of events) {
+      if (event.kind === 'stdout-chunk') expect(event.invocationId).toBe(invocationId);
+    }
+
+    exitCleanly(child);
+    await p;
+  });
+
+  it('reports the hold ending when the ceiling falls (B22)', async () => {
+    const events: MonitorSidecarEvent[] = [];
+    const holds = () => events.filter((event) => event.kind === 'background-hold');
+    const child = makeFakeChild(true);
+    const runner = new ClaudeCliRunner(
+      spawnOpening(child, STARTED_T1 + RESULT),
+      (event) => events.push(event)
+    );
+    const p = runner.invoke({ ...baseReq, runId: 'run-1', timeoutMs: DEFAULT_TIMEOUT_MS });
+
+    await vi.advanceTimersByTimeAsync(10);
+    const invocationId = startedInvocationId(events);
+    expect(holds()).toEqual([
+      { kind: 'background-hold', runId: 'run-1', invocationId, held: true }
+    ]);
+
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(holds()).toHaveLength(2);
+    expect(holds()[1]).toEqual({
+      kind: 'background-hold',
+      runId: 'run-1',
+      invocationId,
+      held: false
+    });
+
+    exitCleanly(child);
+    await p;
+  });
+
+  it('reports a replacing hold as another begin, and the CLI exit as no end (B23)', async () => {
+    // B16's timeline: a result accepted during a hold begins a new one (D2), and
+    // the CLI's own exit clears the ceiling without ending the hold (D1), so the
+    // monitor's exit handling is what clears the flag.
+    const events: MonitorSidecarEvent[] = [];
+    const holds = () => events.filter((event) => event.kind === 'background-hold');
+    const child = makeFakeChild(true);
+    const runner = new ClaudeCliRunner(
+      spawnOpening(child, STARTED_T1 + STARTED_T2 + RESULT),
+      (event) => events.push(event)
+    );
+    const p = runner.invoke({ ...baseReq, runId: 'run-1', timeoutMs: DEFAULT_TIMEOUT_MS });
+
+    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTimeAsync(16_000);
+    child.stdout.emit('data', NOTIFIED_T1);
+    child.stdout.emit('data', INIT + WOKEN_TURN_TEXT + RESULT);
+    const invocationId = startedInvocationId(events);
+    const began = { kind: 'background-hold', runId: 'run-1', invocationId, held: true };
+    expect(holds()).toEqual([began, began]);
+
+    // Still two, both begins: the exit sent no `held: false`.
+    exitCleanly(child);
+    await p;
+    expect(holds()).toEqual([began, began]);
   });
 });
