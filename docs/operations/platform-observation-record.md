@@ -196,6 +196,39 @@ none of the seven has been observed on this host.
   so a Windows contributor produces the missing evidence by running `npm run
   test:host` and reporting what they see, whether it passes or fails.
 
+## Ownership timing (`FR-R4-F01`, 2026-10-27)
+
+<!-- Source: src/state/ownership-claim.ts -->
+<!-- Source: src/state/lock.ts -->
+<!-- Source: src/state/execution-lease.ts -->
+
+Window primacy and the per-queue execution lease arbitrate through exclusive file creation and a
+fencing generation (see [Workspace ownership fencing](../architecture/workspace-ownership-fencing.md)).
+Whether that arbitration holds across two real windows, across a suspend and wake, and on a network
+mount is a property of the platform, not of the code, and **nothing in this section was observed
+on one**. Every row below is `Asserted by unit table only` or `Unrun here`; none is `Observed here`.
+
+The first six rows are deterministic tests over a simulated filesystem (an in-memory `OwnershipFs`
+whose interleavings the test chooses) and an injected scheduler. They establish what the code does
+at one chosen interleaving. They are not cross-process evidence, and this page does not let them
+stand in for it.
+
+| Procedure | Platform | Mount | VS Code version | Timing | Outcome class |
+|---|---|---|---|---|---|
+| **P1** two primacy ticks overlap, the first parked in `acquire` (one primacy-gain notice) | macOS (darwin, arm64), no host | in-memory `OwnershipFs` double | none (no host) | injected scheduler, no real time | **Asserted by unit table only** (`tests/unit/state/ownership-timing-probes.test.ts`) |
+| **P2** two execution-lease beats overlap, a release between (a released queue stays released) | as P1 | as P1 | none | as P1 | **Asserted by unit table only** (same file) |
+| **P3** suspend and wake, the holder wakes first | as P1 | as P1 | none | as P1 | **Asserted by unit table only** (same file) |
+| **P4** suspend and wake, the rival wakes first (one gain, one loss) | as P1 | as P1 | none | as P1 | **Asserted by unit table only** (same file) |
+| **P5** a new generation created, its body not yet written | as P1 | as P1 | none | as P1 | **Asserted by unit table only** (same file) |
+| **P6** an ownership verify that never settles gives up within `OWNERSHIP_VERIFY_DEADLINE_MS` and refuses | as P1 | a filesystem whose listing is held open | none | injected scheduler | **Asserted by unit table only** (`tests/unit/state/verify-deadline.test.ts`) |
+| **Q1** two windows on one workspace: open, let the first go stale, reclaim, observe exactly one loss notice | macOS, the supported VS Code build | the workspace's local disk | the supported build | the reclaim takes `STALENESS_THRESHOLD_MS` (15 s) after the first window's last beat | **Unrun here**. Prerequisite: the maintainer's hardware, with two VS Code windows on the supported build |
+| **Q2** suspend and wake with a Run in flight, in both wake orders (holder first, rival first) | macOS, the supported VS Code build | the workspace's local disk | the supported build | a sleep longer than `STALENESS_THRESHOLD_MS` | **Unrun here**. Prerequisite: a machine that can sleep with VS Code open and a Run mid-Phase |
+| **Q3** an SMB or NFS workspace: run the existing mount probe, then Q1, on the mount | the maintainer's platform | an SMB or NFS share | the supported build | as Q1 | **Unrun here**. Prerequisite: a share the maintainer can mount. Limitation recorded: the declared support surface above lists NFS and SMB as inside the boundary, **classification-tested only**, so how exclusive creation and the fencing generation behave there is unobserved, and a mount that the probe classifies `unsupported` is reported as such rather than relied on |
+
+When a Q row is run, its class changes to `Observed here` with the date and the platform, and the
+timing column records the measured interval. A row that is exercised only by a simulated adapter
+stays `Asserted by unit table only`.
+
 ## When to update this page
 
 Whenever a row's class changes: a fixture runs on the platform it targets, a real

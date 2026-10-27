@@ -965,7 +965,22 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // understand and conclude that every Task row is missing. The first draft
       // was +62; the compression moved the repair's own rationale to the module
       // header, where its reader already is.
-      highWaterMark: 2952
+      //
+      // Feature 239 (FR-R4-F01, 2026-10-27) — 2952 → 3293: 341 lines, all of them the
+      // seam the memento forces into this file and none a new responsibility. They are
+      // `updateRun` and its patch application on the `KEYS.run` chain, the refusal and
+      // commit helpers (`refuseIfClaimLost`, `refuseCommit`, `isRunRaceRefusal`) that
+      // every commit point shares, `removeTerminalIntentIfOwn` (the journal's
+      // compare-and-delete), `deleteQueueIfNoLiveRun` with the three chains it
+      // serializes across, the bounded verify at the commit points, the `setRun`
+      // in-link queue re-check, and the verdict-basis ladder step with its event
+      // surface. The vocabulary they share was extracted rather than added:
+      // `RUN_UPDATE_LABELS` and `RunUpdate` live in `run-update.ts`, the status sets and
+      // `RunPatch` in `workflow-run.ts`, the verify deadline in `ownership-claim.ts`, and
+      // the classification and rewrite of the verdict basis in
+      // `host-verification-migrator.ts`. What is left here is what has to run inside the
+      // store's own serialized links, which is the reason these are methods of it.
+      highWaterMark: 3293
     }
   },
   // Feature 077 — public facade and every state-projection collaborator have
@@ -1211,7 +1226,16 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // Nothing to extract: the field's declaration and its doc comment live in
       // `src/queue/feature-request.ts`, and what is here is one property in an
       // existing object literal. Exact count again, no slack.
-      highWaterMark: 2338
+      //
+      // Feature 239 (FR-R4-F01, 2026-10-27) — 2338 → 2385: forty-seven lines, no new
+      // responsibility. The queue-deletion predicate learned that a queue holding a
+      // running, retry-pending or paused Run is not empty (three reasons in
+      // `queueDeletionImpact`), the deletion cascades route through
+      // `deleteQueueIfNoLiveRun` so the predicate and the delete are one serialized
+      // step, and `clearRunSnapshots` stays the one whole-Run removal the census
+      // keeps. The decision of what counts as a live Run is `LIVE_RUN_STATUSES` in
+      // `workflow-run.ts`, not here.
+      highWaterMark: 2385
     }
   },
   // Speckit-auto alignment (2026-07-30) — bumped 700 → 800 to absorb two new

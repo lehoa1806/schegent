@@ -21,6 +21,8 @@
 import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
 import type { FeatureRequest } from '../queue/feature-request';
 import type { QueueManager } from '../queue/queue-manager';
+import { releaseLeaseLogged, type ClaimLostReason, type ClaimTenure } from '../state/execution-lease';
+import type { ReleaseOutcome } from '../state/ownership-registry';
 import type { OwnershipClaim, WorkspaceStateStore } from '../state/workspace-state';
 import { isTerminalRunStatus, type WorkflowRun } from '../state/workflow-run';
 import type { SchegentWorkflowController } from '../controller/workflow-controller';
@@ -35,7 +37,11 @@ import { evaluateQueueHalt } from '../queue/queue-halt-policy';
  */
 export interface ExecutionLeasePort {
   tryAcquire(queueId: string): Promise<{ acquired: boolean; ownerId: string }>;
-  release(queueId: string): Promise<void> | void;
+  /**
+   * FR-R4-F01 (FR-033, C7) — the manager answers with what the release came to; doubles that
+   * return nothing stay valid. The drain's sites go through `releaseLeaseLogged`.
+   */
+  release(queueId: string): Promise<ReleaseOutcome | void> | ReleaseOutcome | void;
   /**
    * Feature FR-R3-003 (T301) — the point-of-effect check on the fencing token
    * step 6 was granted, read from the arbitrated record rather than the mirror.
@@ -61,6 +67,21 @@ export interface ExecutionLeasePort {
    * the default.
    */
   claimFor(queueId: string): OwnershipClaim | null;
+  /**
+   * FR-R4-F01 (decision TA1) — whether `claimFor`'s claim is held or lost. Optional
+   * on the `hasLease` precedent above: a double without it is read as before, and
+   * the controller can bind and subscribe without a cast.
+   */
+  tenureOf?(queueId: string): ClaimTenure;
+  /** FR-R4-F01 (contract C2 G8) — the store reports a `fence-superseded` refusal here. */
+  markLost?(queueId: string, reason: 'superseded'): void;
+  /**
+   * FR-R4-F01 (contract C1 G2) — told once per transition of a queue into lost.
+   * The controller subscribes to stop that queue's driver and no other.
+   */
+  onClaimLost?(listener: (queueId: string, reason: ClaimLostReason) => void): {
+    dispose(): void;
+  };
 }
 
 /**
@@ -661,7 +682,7 @@ export class AutoDrainCoordinator {
     // start. Step 6 and step 7 are two awaits apart, and the interval is exactly
     // where a stalled window used to be reclaimed and then start anyway.
     if (this.executionLease.hasLease && !(await this.executionLease.hasLease(queueId))) {
-      await Promise.resolve(this.executionLease.release(queueId)).catch(() => undefined);
+      await releaseLeaseLogged(this.executionLease, queueId, this.logger);
       this.logger?.warn(
         `auto-drain: execution lease for queue ${queueId} could not be verified at start; not admitting`
       );
@@ -672,7 +693,7 @@ export class AutoDrainCoordinator {
     // nothing; this is a wait, so nothing is logged or reported. It sits outside
     // the re-check's `if` so it runs whether or not the port offers one.
     if (this.closed) {
-      await Promise.resolve(this.executionLease.release(queueId)).catch(() => undefined);
+      await releaseLeaseLogged(this.executionLease, queueId, this.logger);
       return false;
     }
     // Step 7 — start. `attempted` is what the failure message names; see the
@@ -716,7 +737,7 @@ export class AutoDrainCoordinator {
       // Release the lease we acquired — if the admission throws before
       // `RunDriver.drive()` enters its own scope, this queue would stay
       // claimed until STALENESS_THRESHOLD_MS (15s).
-      await Promise.resolve(this.executionLease.release(queueId)).catch(() => undefined);
+      await releaseLeaseLogged(this.executionLease, queueId, this.logger);
       // FR-R3-089 — name the queue, and the admission that actually failed.
       //
       // This read `controller.startNew failed`, a call the drain has not made

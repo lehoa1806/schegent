@@ -2,8 +2,13 @@ import type { SanitizedLogger } from '../lib/logger';
 import type { ContainmentRefusal } from '../lib/path-containment';
 import type { QueueManager } from '../queue/queue-manager';
 import type { SessionCleanupOutcome } from '../services/session-cleanup/session-cleanup-service';
-import type { WorkspaceStateStore } from '../state/workspace-state';
-import { isTerminalRunStatus, type WorkflowRun } from '../state/workflow-run';
+import { isRunRaceRefusal, type WorkspaceStateStore } from '../state/workspace-state';
+import {
+  canceledRunPatch,
+  isTerminalRunStatus,
+  LIVE_RUN_STATUSES,
+  type WorkflowRun
+} from '../state/workflow-run';
 
 /**
  * Pluggable cleanup seam invoked after task deletion resolves a run ID.
@@ -41,7 +46,7 @@ export interface TaskDeletionOutcome {
 export interface TaskDeletionDeps {
   readonly logger: SanitizedLogger;
   readonly queue: Pick<QueueManager, 'findById' | 'queueIdForTask' | 'removeTask'>;
-  readonly store: Pick<WorkspaceStateStore, 'getRun' | 'setRun' | 'runCommitClaim'>;
+  readonly store: Pick<WorkspaceStateStore, 'getRun' | 'updateRun' | 'runCommitClaim'>;
   readonly cancelActive: (queueId: string) => void;
   readonly releaseExecutionLeaseForRun: (run: WorkflowRun) => Promise<void>;
   readonly sessionCleanup: SessionCleanupRunner;
@@ -109,11 +114,6 @@ export async function deleteTaskWithSessionCleanup(
       // Feature 093 (T042) — addressed. Cancelling ambiently here would have
       // aborted every Run in the window because one Task was deleted.
       deps.cancelActive(queueId);
-      const canceled: WorkflowRun = {
-        ...run,
-        status: 'canceled',
-        lastTransitionAt: Date.now()
-      };
       // FR-R3-077 made this commit point fenced, so it can refuse when this
       // window's lease has moved on or the ownership record cannot be read.
       //
@@ -134,11 +134,35 @@ export async function deleteTaskWithSessionCleanup(
       // The lease is deliberately not released on the way out. The Run the
       // store still holds is non-terminal, and releasing on its behalf would
       // hand the queue away while it still owns it (hard rule 4).
+      //
+      // FR-R4-F01 (FR-008) — the cancel is a PATCH of the Run as it is inside the
+      // chain, the same one the cancel command writes: the driver cancelled just
+      // above is already winding down and writing its own transitions, and a whole
+      // Run built from the read at the top of this block could carry a stale status
+      // back over one of them.
+      let canceled: WorkflowRun | null;
       try {
-        await store.setRun(queueId, canceled, store.runCommitClaim(queueId));
+        canceled = await store.updateRun(
+          queueId,
+          {
+            runId: run.id,
+            allowedStatuses: LIVE_RUN_STATUSES,
+            label: 'cancel',
+            patch: () => canceledRunPatch(Date.now())
+          },
+          store.runCommitClaim(queueId)
+        );
       } catch (error) {
-        logger.warn(`task-deletion: canceled run not persisted: ${(error as Error).message}`);
-        return { ok: false, reason: 'run-cancel-not-committed' };
+        // The driver cancelled just above reached the chain first and ended the Run
+        // itself, or the Run was replaced: either way it is no longer this Task's live
+        // Run, which is all the deletion needed. Its own terminal funnel answers for
+        // the lease, so nothing is released here on its behalf.
+        if (isRunRaceRefusal(error)) {
+          canceled = null;
+        } else {
+          logger.warn(`task-deletion: canceled run not persisted: ${(error as Error).message}`);
+          return { ok: false, reason: 'run-cancel-not-committed' };
+        }
       }
       // Feature 093 (T068b, FR-028) — no window-primacy release here either.
       // Deleting one Task cancelled one queue's Run; primacy is the window's
@@ -150,7 +174,7 @@ export async function deleteTaskWithSessionCleanup(
       // here. MUST precede `removeTask` below — once the row is gone the
       // queue is no longer resolvable, and the helper correctly declines to
       // guess.
-      await deps.releaseExecutionLeaseForRun(canceled);
+      if (canceled !== null) await deps.releaseExecutionLeaseForRun(canceled);
     }
   }
   const removed = await queue.removeTask(taskId);

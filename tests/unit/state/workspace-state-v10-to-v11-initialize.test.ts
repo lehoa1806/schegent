@@ -119,9 +119,30 @@ function seedV10Workspace(memento: FakeMemento, run: WorkflowRun): void {
 let memento: FakeMemento;
 let run: WorkflowRun;
 
+/**
+ * FR-R4-F01 (spec 239, US4) — the seeded Run is frozen by a v14 build: every Phase records both
+ * verdict-basis fields. The verdict-basis step therefore has nothing to do here, and this file keeps
+ * pinning the v10 -> v11 reshape and its single write, which is what it is about. (The step has its
+ * own tests: `verdict-basis-migration.test.ts` and `verdict-basis-ladder.test.ts`.)
+ */
+function frozenByV14(source: WorkflowRun): WorkflowRun {
+  const snapshot = source.pipeline!;
+  return {
+    ...source,
+    pipeline: {
+      ...snapshot,
+      phases: snapshot.phases.map((phase) => ({
+        ...phase,
+        hostVerification: 'exit-code' as const,
+        hostVerificationDeclaredAt: 'default' as const
+      }))
+    }
+  };
+}
+
 beforeEach(() => {
   memento = new FakeMemento();
-  run = buildWorkflowRun({ featureId: taskIdFor(OTHER_QUEUE) });
+  run = frozenByV14(buildWorkflowRun({ featureId: taskIdFor(OTHER_QUEUE) }));
 });
 
 describe('initialize() reshapes KEYS.run in every branch (T010, FR-002)', () => {

@@ -11,6 +11,7 @@ import type { Memento } from '../../../src/state/workspace-state';
 import type { PhaseResult, WorkflowRun } from '../../../src/state/workflow-run';
 import type { DegradedPhaseEntry } from '../../../src/contracts/snapshot-projections';
 import { unfencedCommit } from '../../../src/state/ownership-claim';
+import { buildWorkflowRun } from '../../fixtures/state/queue-fixtures';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -1325,3 +1326,153 @@ describe('FR-R3-157 — QueueManager.finish captures the degraded phases', () =>
   });
 });
 
+/**
+ * FR-R4-F01 (spec 239, US3, T034, FR-012, data-model §3) — deleting a queue refuses a
+ * nonterminal Run.
+ *
+ * At `ebf589fa` a queue whose Run was paused deleted without complaint, and the Run stayed
+ * readable in `KEYS.run`: nothing owned it, nothing could cancel it, and it held a slot under
+ * the concurrency cap for ever. The refusal order is the contract and the first match wins.
+ * The three existing reasons keep their positions; the three new ones come after
+ * `queue-has-in-flight-task`.
+ */
+describe('QueueManager.queueDeletionImpact — a nonterminal Run (spec 239, US3)', () => {
+  const OTHER_QUEUE_ID = '5ec04d00-2222-4333-8444-555555555555';
+  const claim = unfencedCommit('test-fixture');
+
+  async function addQueue(): Promise<void> {
+    await store.setQueueRegistry(
+      createQueue(store.getQueueRegistry(), {
+        id: OTHER_QUEUE_ID,
+        name: 'Other',
+        now: 1_700_000_000_000
+      })
+    );
+  }
+
+  const run = (overrides: Partial<WorkflowRun>): WorkflowRun => ({
+    ...buildWorkflowRun({ id: 'run-1', featureId: 'task-0' }),
+    ...overrides
+  });
+
+  /** Seed a Run on the other queue, with the Task row it advances (when one is asked for). */
+  async function seed(
+    overrides: Partial<WorkflowRun>,
+    row?: 'pending' | 'in-flight' | 'paused'
+  ): Promise<void> {
+    await addQueue();
+    if (row !== undefined) {
+      const task = await queue.enqueue('the Task', { queueId: OTHER_QUEUE_ID });
+      if (row !== 'pending') await queue.markInFlight(task.id, 'run-1');
+      if (row === 'paused') await queue.pause(task.id, 'manually-paused-task');
+    }
+    await store.setRun(OTHER_QUEUE_ID, run(overrides), claim);
+  }
+
+  const refusalOf = (queueId: string): string => {
+    const impact = queue.queueDeletionImpact(queueId);
+    return impact.outcome === 'refused' ? impact.reason : `deletable:${impact.outcome}`;
+  };
+
+  it('keeps the two existing reasons first: the default queue, then an unknown id (rows 1 and 2)', async () => {
+    expect(refusalOf(DEFAULT_QUEUE_ID)).toBe('default-queue-undeletable');
+    expect(refusalOf('queue-that-was-never-registered')).toBe('unknown-queue-id');
+  });
+
+  it('refuses an in-flight Task row before it looks at the Run (row 3 beats rows 4 to 6)', async () => {
+    await seed({ status: 'running' }, 'in-flight');
+
+    expect(refusalOf(OTHER_QUEUE_ID)).toBe('queue-has-in-flight-task');
+  });
+
+  it('refuses a running Run whose Task row is not in flight (row 4)', async () => {
+    await seed({ status: 'running' }, 'pending');
+
+    expect(refusalOf(OTHER_QUEUE_ID)).toBe('queue-has-running-run');
+  });
+
+  it('refuses a Run waiting to retry, before the general paused reason (row 5 beats row 6)', async () => {
+    // A retry countdown pauses the Run, and a paused Task row is there too: row 5 names it.
+    await seed(
+      { status: 'paused', pendingRetryAt: 5_000, pendingRetryCause: 'rate_limit' },
+      'paused'
+    );
+
+    expect(refusalOf(OTHER_QUEUE_ID)).toBe('queue-has-retry-pending-run');
+  });
+
+  it.each([
+    ['an operator pause', { manualPauseAt: 1_000, manualPauseCause: 'operator-paused' }],
+    ['the spend bound', { manualPauseAt: 1_000, manualPauseCause: 'spend-bound-reached' }],
+    [
+      'a breakpoint',
+      { manualPauseAt: 1_000, manualPauseCause: 'breakpoint-paused', resumeTargetPhaseId: 'finalize' }
+    ]
+  ] as const)('refuses any other paused Run: %s (row 6)', async (_name, pause) => {
+    await seed({ status: 'paused', ...pause }, 'pending');
+
+    expect(refusalOf(OTHER_QUEUE_ID)).toBe('queue-has-paused-run');
+  });
+
+  it('refuses a paused Task row with no Run at all (row 6)', async () => {
+    await addQueue();
+    const task = await queue.enqueue('paused alone', { queueId: OTHER_QUEUE_ID });
+    await queue.markInFlight(task.id, 'run-gone');
+    await queue.pause(task.id, 'manually-paused-task');
+
+    expect(refusalOf(OTHER_QUEUE_ID)).toBe('queue-has-paused-run');
+  });
+
+  it('does not refuse a queue that holds pending Tasks only, or a finished Run', async () => {
+    await addQueue();
+    await queue.enqueue('pending only', { queueId: OTHER_QUEUE_ID });
+    expect(queue.queueDeletionImpact(OTHER_QUEUE_ID)).toMatchObject({
+      outcome: 'deletable',
+      pendingTaskCount: 1
+    });
+
+    await store.setRun(OTHER_QUEUE_ID, run({ status: 'completed' }), claim);
+    expect(queue.queueDeletionImpact(OTHER_QUEUE_ID).outcome).toBe('deletable');
+  });
+
+  it('runs the same predicate over a view it is handed, which is how the commit link re-checks', async () => {
+    await addQueue();
+    expect(queue.queueDeletionImpact(OTHER_QUEUE_ID).outcome).toBe('deletable');
+
+    const impact = queue.queueDeletionImpact(OTHER_QUEUE_ID, {
+      registry: store.getQueueRegistry(),
+      run: run({ status: 'paused', manualPauseAt: 1, manualPauseCause: 'operator-paused' }),
+      requests: []
+    });
+
+    expect(impact).toEqual({ outcome: 'refused', reason: 'queue-has-paused-run' });
+  });
+
+  it('deleteQueue refuses with the reason and changes nothing', async () => {
+    await seed({ status: 'paused', manualPauseAt: 1, manualPauseCause: 'operator-paused' }, 'pending');
+    const registryBefore = JSON.stringify(store.getQueueRegistry());
+    const runBefore = JSON.stringify(store.getRun(OTHER_QUEUE_ID));
+
+    const result = await queue.deleteQueue(OTHER_QUEUE_ID);
+
+    expect(result).toEqual({ ok: false, reason: 'queue-has-paused-run', queueId: OTHER_QUEUE_ID });
+    expect(JSON.stringify(store.getQueueRegistry())).toBe(registryBefore);
+    expect(JSON.stringify(store.getRun(OTHER_QUEUE_ID))).toBe(runBefore);
+    expect(store.getRequestsForQueue(OTHER_QUEUE_ID)).toHaveLength(1);
+  });
+
+  it('deleteQueue removes a deletable queue and leaves a sibling Run alone', async () => {
+    await addQueue();
+    await store.setRun(
+      DEFAULT_QUEUE_ID,
+      run({ id: 'run-default', status: 'running', featureId: 'task-default' }),
+      claim
+    );
+
+    const result = await queue.deleteQueue(OTHER_QUEUE_ID);
+
+    expect(result).toMatchObject({ ok: true, queueId: OTHER_QUEUE_ID });
+    expect(store.getQueueRegistry().entries.some((entry) => entry.id === OTHER_QUEUE_ID)).toBe(false);
+    expect(store.getRun(DEFAULT_QUEUE_ID)?.id).toBe('run-default');
+  });
+});

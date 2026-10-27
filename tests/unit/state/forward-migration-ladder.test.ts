@@ -18,7 +18,7 @@
 // test is what keeps it single: it drives all four branches and asserts each one
 // reports the ladder's full result shape. A branch that stopped calling the
 // ladder — or called a subset of it — would return a result missing those keys.
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   WorkspaceStateStore,
   KEYS,
@@ -51,7 +51,9 @@ const LADDER_KEYS = [
   'v10MigrationEvents',
   'v11MigrationEvents',
   'v12MigrationEvents',
-  'v13MigrationEvents'
+  'v13MigrationEvents',
+  // FR-R4-F01 (spec 239, US4, contract V2 G6) — the verdict-basis step.
+  'v14MigrationEvents'
 ] as const;
 
 /**
@@ -125,3 +127,43 @@ describe('FR-R3-039 — the forward migration ladder is defined once', () => {
     expect(typeof result.migrated).toBe('boolean');
   });
 });
+
+describe('FR-R4-F01 (contract V2 G6) — the verdict-basis step sits between two others', () => {
+  it('runs after the v12-to-v13 step and before the orphaned-Run reconcile, on every branch', async () => {
+    // The step reads `KEYS.run` as a map, which the v10-to-v11 reshape guarantees, and the
+    // reconcile must see the Phases it has already made explicit. The order is load-bearing, so it
+    // is observed rather than described: each private step is wrapped to record when it ran.
+    const proto = WorkspaceStateStore.prototype as unknown as Record<string, () => Promise<unknown>>;
+    const observed: string[] = [];
+    const restore: Array<() => void> = [];
+    for (const name of [
+      'migrateV12ToV13IfNeeded',
+      'migrateVerdictBasisIfNeeded',
+      'reconcileOrphanedRunsIfNeeded'
+    ]) {
+      const original = proto[name];
+      expect(original, `${name} is missing from the store`).toBeTypeOf('function');
+      const spy = vi.spyOn(proto, name).mockImplementation(async function (this: unknown) {
+        observed.push(name);
+        return original!.call(this);
+      });
+      restore.push(() => spy.mockRestore());
+    }
+    try {
+      for (const branch of BRANCHES) {
+        observed.length = 0;
+        const memento = new FakeMemento();
+        await branch.seed(memento);
+        await new WorkspaceStateStore(memento).initialize();
+        expect(observed, branch.name).toEqual([
+          'migrateV12ToV13IfNeeded',
+          'migrateVerdictBasisIfNeeded',
+          'reconcileOrphanedRunsIfNeeded'
+        ]);
+      }
+    } finally {
+      for (const undo of restore) undo();
+    }
+  });
+});
+

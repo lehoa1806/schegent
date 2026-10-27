@@ -28,6 +28,16 @@ const runExecFile = promisify(execFile);
 const PER_RUN_LIMIT = 20;
 /** Markers name the paths an operator has to deal with; they do not list a tree. */
 const MAX_REPORTED_PATHS = 50;
+/** `git diff` is bounded here; a tree whose diff is larger blocks the Phase with a typed reason. */
+const DIFF_MAX_BUFFER_BYTES = 20 * 1024 * 1024;
+/** `git status --porcelain` is bounded here, for the same reason on its own stream. */
+const STATUS_MAX_BUFFER_BYTES = 1024 * 1024;
+/** Node's `execFile` code when a stream outgrows `maxBuffer`. */
+const MAX_BUFFER_EXCEEDED = 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
+/** How many same-millisecond captures one Run and Phase can have before the write gives up. */
+const MAX_PREFIX_COLLISIONS = 1_000;
+/** Porcelain v1 prefix of an untracked, non-ignored entry. */
+const UNTRACKED_PREFIX = '?? ';
 
 /**
  * Feature 093 (T053, FR-022a) — the reason every checkpoint above one in-flight
@@ -63,16 +73,147 @@ export type CheckpointAttributionMode =
   /** Several in flight: only the sections this Run declared. */
   | 'scoped';
 
+/**
+ * FR-R4-F01 (FR-028, contract K2) — why a snapshot could not be taken. Closed, so an operator
+ * reading `lastError` can tell a tree that is too large from a git that would not run.
+ */
+export type CheckpointUnavailableReason =
+  /** `git diff` output outgrew its 20 MiB buffer. */
+  | 'diff-size-limit'
+  /** `git status` output outgrew its 1 MiB buffer. */
+  | 'status-size-limit'
+  /** Any other fault reading the tree. */
+  | 'capture-failed'
+  /** The run directory, the patch or the manifest could not be written. */
+  | 'artifact-write-failed';
+
+/**
+ * A checkpoint that cannot be taken. The Git-capable Phase stays blocked: this is a failed
+ * snapshot, not a decline. The message keeps the `checkpoint-unavailable` prefix that callers
+ * and the runbook already match on, and adds the reason; it carries no path.
+ */
+export class CheckpointUnavailableError extends Error {
+  constructor(public readonly reason: CheckpointUnavailableReason) {
+    super(`checkpoint-unavailable: ${reason}`);
+    this.name = 'CheckpointUnavailableError';
+  }
+}
+
+/** What a checkpoint's patch can restore, as the manifest says it (data-model §5). */
+export type CheckpointCompleteness = 'complete' | 'incomplete' | 'unknown';
+
+/**
+ * FR-R4-F01 (FR-032) — read a manifest's completeness. A record written before the field existed
+ * has none, and reads `unknown`: never `complete`, because nothing recorded that it was.
+ */
+export function readCheckpointCompleteness(manifest: unknown): CheckpointCompleteness {
+  if (typeof manifest !== 'object' || manifest === null) return 'unknown';
+  const value = (manifest as { completeness?: unknown }).completeness;
+  return value === 'complete' || value === 'incomplete' ? value : 'unknown';
+}
+
 interface CheckpointCapture {
   readonly diff: string;
   readonly sections: readonly DiffSection[];
   readonly status: string;
   readonly baseCommit: string;
+  /** Untracked, non-ignored entries from the porcelain status, directories with a trailing `/`. */
+  readonly untracked: readonly string[];
 }
 
 type CheckpointDecision =
-  | { readonly kind: 'write'; readonly mode: CheckpointAttributionMode; readonly body: string; readonly paths: readonly string[] }
+  | {
+      readonly kind: 'write';
+      readonly mode: CheckpointAttributionMode;
+      readonly body: string;
+      readonly paths: readonly string[];
+      /** Paths this Run declared writing, or `null` when the whole tree is this Run's (sole-run). */
+      readonly declared: ReadonlySet<string> | null;
+    }
   | { readonly kind: 'decline'; readonly reason: CheckpointDeclineReason; readonly detail: Record<string, unknown> };
+
+const SIMPLE_ESCAPES: Readonly<Record<string, string>> = {
+  a: '\x07',
+  b: '\b',
+  f: '\f',
+  n: '\n',
+  r: '\r',
+  t: '\t',
+  v: '\v',
+  '"': '"',
+  '\\': '\\'
+};
+const QUOTED_PATH_TOKEN = /\\([0-7]{3}|[abfnrtv"\\])|([^\\]+)/g;
+
+/** A capture group of a match; an alternation leaves the group it did not take `undefined`. */
+const captured = (match: RegExpMatchArray, group: number): string | undefined => match[group];
+
+/**
+ * Porcelain v1 quotes a path holding a space, a control character, a quote, a backslash or a
+ * non-ASCII byte as a C string. Octal escapes are UTF-8 bytes, so they are decoded together.
+ */
+function unquoteGitPath(raw: string): string {
+  if (raw.length < 2 || !raw.startsWith('"') || !raw.endsWith('"')) return raw;
+  const chunks: Buffer[] = [];
+  for (const token of raw.slice(1, -1).matchAll(QUOTED_PATH_TOKEN)) {
+    const escape = captured(token, 1);
+    const literal = captured(token, 2);
+    if (literal !== undefined) chunks.push(Buffer.from(literal, 'utf8'));
+    else if (escape !== undefined && /^[0-7]{3}$/.test(escape)) chunks.push(Buffer.from([parseInt(escape, 8)]));
+    else if (escape !== undefined) chunks.push(Buffer.from(SIMPLE_ESCAPES[escape] ?? '', 'utf8'));
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+function untrackedEntries(status: string): readonly string[] {
+  return status
+    .split('\n')
+    .filter((line) => line.startsWith(UNTRACKED_PREFIX))
+    .map((line) => unquoteGitPath(line.slice(UNTRACKED_PREFIX.length)));
+}
+
+/**
+ * Whether an untracked entry is one this Run declared, by the declared paths alone (hard rule
+ * 53: nothing here touches the filesystem). A collapsed directory (`dir/`) is this Run's when a
+ * declared path sits under it, and a file is this Run's when it is, or sits under, a declared path.
+ */
+function isDeclaredEntry(entry: string, declared: ReadonlySet<string>): boolean {
+  for (const path of declared) {
+    if (entry.endsWith('/') ? path.startsWith(entry) : path === entry || entry.startsWith(`${path}/`)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export interface CheckpointCompletenessFields {
+  readonly completeness: 'complete' | 'incomplete';
+  readonly excludedUntracked: readonly string[];
+  readonly excludedUntrackedCount: number;
+  readonly unattributedUntrackedCount?: number;
+}
+
+/**
+ * FR-R4-F01 (FR-027, FR-032, data-model §5) — the part of the tree the patch cannot hold.
+ *
+ * `complete` only when no untracked, non-ignored entry exists. In the scoped modes the listing
+ * names this Run's declared entries only and counts the rest, so a sibling's path is never
+ * written into this Run's record.
+ */
+export function describeCheckpointCompleteness(
+  untracked: readonly string[],
+  declared: ReadonlySet<string> | null
+): CheckpointCompletenessFields {
+  const own = declared === null ? untracked : untracked.filter((entry) => isDeclaredEntry(entry, declared));
+  const base = {
+    completeness: untracked.length === 0 ? ('complete' as const) : ('incomplete' as const),
+    excludedUntracked: own.slice(0, MAX_REPORTED_PATHS),
+    excludedUntrackedCount: own.length
+  };
+  return declared === null ? base : { ...base, unattributedUntrackedCount: untracked.length - own.length };
+}
+
+type ArtifactWrite = 'written' | 'exists' | 'refused';
 
 /** Private recovery checkpoints captured immediately before Git-capable phases. */
 export class RunCheckpointService {
@@ -108,12 +249,15 @@ export class RunCheckpointService {
     let capture: CheckpointCapture;
     try {
       await this.ensureRunRoot(safeRun);
+    } catch {
+      throw this.blocked('artifact-write-failed');
+    }
+    try {
       capture = await this.capture();
     } catch (error) {
       // A tree that cannot be read is a snapshot failure, not a decline, and the
       // two must stay different outcomes: this blocks the Git-capable phase.
-      this.logger.warn(`checkpoint failed; Git-capable phase blocked: ${(error as Error).message}`);
-      throw new Error('checkpoint-unavailable');
+      throw this.blocked(error instanceof CheckpointUnavailableError ? error.reason : 'capture-failed');
     }
 
     const decision = this.decide(run, inFlight, capture);
@@ -123,10 +267,12 @@ export class RunCheckpointService {
     }
 
     try {
-      const prefix = `${Date.now()}-${safePhase}`;
-      // FR-R3-053 — both artifacts through the walk. The patch first: if it is
-      // refused there is no point writing a manifest that points at nothing.
-      if (!(await this.writeCheckpointArtifact(safeRun, `${prefix}.patch`, decision.body))) return;
+      // FR-R4-F01 (FR-030, K3) — the patch claims its prefix by exclusive create, so two captures
+      // in one millisecond take `-1`, `-2` rather than overwriting each other. The manifest uses
+      // the prefix the patch won. FR-R3-053 — both artifacts through the walk, the patch first:
+      // if it is refused there is no point writing a manifest that points at nothing.
+      const prefix = await this.claimPatch(safeRun, `${Date.now()}-${safePhase}`, decision.body);
+      if (prefix === null) return;
       await this.writeCheckpointArtifact(
         safeRun,
         `${prefix}.json`,
@@ -145,17 +291,39 @@ export class RunCheckpointService {
               mode: decision.mode,
               inFlightRuns: inFlight,
               paths: decision.paths.slice(0, MAX_REPORTED_PATHS)
-            }
+            },
+            // FR-R4-F01 (FR-027) — what the patch above cannot hold.
+            ...describeCheckpointCompleteness(capture.untracked, decision.declared)
           },
           null,
           2
-        )
+        ),
+        'overwrite'
       );
       await this.prune(runRoot);
-    } catch (error) {
-      this.logger.warn(`checkpoint failed; Git-capable phase blocked: ${(error as Error).message}`);
-      throw new Error('checkpoint-unavailable');
+    } catch {
+      throw this.blocked('artifact-write-failed');
     }
+  }
+
+  /** Log the reason alone (no path, no raw error) and return the typed error to throw. */
+  private blocked(reason: CheckpointUnavailableReason): CheckpointUnavailableError {
+    this.logger.warn(`checkpoint failed; Git-capable phase blocked: ${reason}`);
+    return new CheckpointUnavailableError(reason);
+  }
+
+  /**
+   * Write the patch under the lowest free prefix: `base`, then `base-1`, `base-2`. Returns the
+   * prefix it won, or `null` when the write was refused (already logged by the writer).
+   */
+  private async claimPatch(safeRun: string, base: string, body: string): Promise<string | null> {
+    for (let attempt = 0; attempt <= MAX_PREFIX_COLLISIONS; attempt += 1) {
+      const prefix = attempt === 0 ? base : `${base}-${attempt}`;
+      const written = await this.writeCheckpointArtifact(safeRun, `${prefix}.patch`, body, 'exclusive');
+      if (written === 'written') return prefix;
+      if (written === 'refused') return null;
+    }
+    throw new CheckpointUnavailableError('artifact-write-failed');
   }
 
   /**
@@ -175,7 +343,7 @@ export class RunCheckpointService {
     // One Run in flight: the tree's uncommitted content is that Run's, and the
     // whole-tree diff is written exactly as it is today.
     if (inFlight <= 1) {
-      return { kind: 'write', mode: 'sole-run', body: capture.diff, paths: [] };
+      return { kind: 'write', mode: 'sole-run', body: capture.diff, paths: [], declared: null };
     }
 
     this.ledger.syncLiveness();
@@ -235,7 +403,8 @@ export class RunCheckpointService {
         kind: 'write',
         mode: 'no-sibling-work-present',
         body: capture.diff,
-        paths: present.map((section) => section.path)
+        paths: present.map((section) => section.path),
+        declared: evidence.paths
       };
     }
 
@@ -256,7 +425,8 @@ export class RunCheckpointService {
       kind: 'write',
       mode: 'scoped',
       body: joinDiffSections(mine),
-      paths: mine.map((section) => section.path)
+      paths: mine.map((section) => section.path),
+      declared: evidence.paths
     };
   }
 
@@ -273,17 +443,43 @@ export class RunCheckpointService {
    */
   private async capture(): Promise<CheckpointCapture> {
     const base = await resolveDiffBase(this.workspaceRoot);
-    const [{ stdout: diff }, { stdout: status }] = await Promise.all([
-      runExecFile('git', ['diff', '--binary', '--no-ext-diff', base.ref], {
-        cwd: this.workspaceRoot,
-        maxBuffer: 20 * 1024 * 1024
-      }),
-      runExecFile('git', ['status', '--porcelain=v1'], {
-        cwd: this.workspaceRoot,
-        maxBuffer: 1024 * 1024
-      })
+    const [diff, status] = await Promise.all([
+      this.runGit(['diff', '--binary', '--no-ext-diff', base.ref], DIFF_MAX_BUFFER_BYTES, 'diff-size-limit'),
+      // `--untracked-files=normal` is explicit so a user's `status.showUntrackedFiles=no` cannot
+      // turn "an untracked file exists" into a `complete` record.
+      this.runGit(
+        ['status', '--porcelain=v1', '--untracked-files=normal'],
+        STATUS_MAX_BUFFER_BYTES,
+        'status-size-limit'
+      )
     ]);
-    return { diff, sections: splitDiffSections(diff), status, baseCommit: base.ref };
+    return {
+      diff,
+      sections: splitDiffSections(diff),
+      status,
+      baseCommit: base.ref,
+      untracked: untrackedEntries(status)
+    };
+  }
+
+  /**
+   * One bounded git call. A stream that outgrows its buffer is a typed reason of its own: the
+   * operator's fix (shrink the tree) is unlike the fix for a git that would not run.
+   */
+  private async runGit(
+    args: readonly string[],
+    maxBuffer: number,
+    overflow: CheckpointUnavailableReason
+  ): Promise<string> {
+    try {
+      const { stdout } = await runExecFile('git', [...args], { cwd: this.workspaceRoot, maxBuffer });
+      return stdout;
+    } catch (error) {
+      if ((error as { code?: unknown }).code === MAX_BUFFER_EXCEEDED) {
+        throw new CheckpointUnavailableError(overflow);
+      }
+      throw error;
+    }
   }
 
   /**
@@ -342,25 +538,29 @@ export class RunCheckpointService {
   private async writeCheckpointArtifact(
     safeRun: string,
     leaf: string,
-    body: string
-  ): Promise<boolean> {
+    body: string,
+    mode: 'overwrite' | 'exclusive'
+  ): Promise<ArtifactWrite> {
     const opened = await openWithinRoot(this.root, ['checkpoints', safeRun, leaf], {
-      flags: 'w',
+      flags: mode === 'exclusive' ? 'wx' : 'w',
       createDirs: true,
       dirMode: 0o700,
       fileMode: 0o600
     });
     if (opened.outcome === 'refused') {
+      // EEXIST from an exclusive create is the expected outcome of a same-millisecond capture,
+      // not a refusal: the caller takes the next suffix.
+      if (mode === 'exclusive' && opened.errno === 'EEXIST') return 'exists';
       this.logger.warn(
         `checkpoint artifact refused: ${opened.reason} (${opened.errno}); ` +
           'checkpoint not written'
       );
-      return false;
+      return 'refused';
     }
     this.narrowing.report(opened.narrowing);
     try {
       await opened.handle.write(body, null, 'utf8');
-      return true;
+      return 'written';
     } finally {
       await opened.handle.close().catch(() => undefined);
     }
@@ -421,7 +621,8 @@ export class RunCheckpointService {
           },
           null,
           2
-        )
+        ),
+        'overwrite'
       );
       // Markers are pruned on the same per-Run budget as snapshots — a Run that
       // spends its whole life beside a sibling writes one per Git-capable phase

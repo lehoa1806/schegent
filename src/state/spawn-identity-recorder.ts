@@ -6,10 +6,12 @@
 // payloads and in temp-file names. So a NEW host had no way to ask whether the OLD host's tree
 // was still live, and activation resumed into whatever was left behind.
 //
-// FENCED, because it is a Run-record write like any other. It goes through `setRun`, which is
-// a whole-map read-modify-write on the store's existing serialize chain — the hard rule against
-// a second write path for Runs applies here as much as anywhere, and a targeted key-level write
-// would reintroduce the last-writer-wins loss that rule exists to prevent.
+// FENCED, because it is a Run-record write like any other. It goes through `updateRun`, a PATCH
+// of `spawnIdentity` applied to the Run as it is inside the store's `KEYS.run` chain — the hard
+// rule against a second write path for Runs applies here as much as anywhere, and a targeted
+// key-level write would reintroduce the last-writer-wins loss that rule exists to prevent. A
+// patch rather than a whole Run (FR-R4-F01), because this write races the driver's own: a whole
+// Run built from an earlier read could carry a stale status back over a newer one.
 //
 // CLEARED AT REAPED EXIT, so the field's presence means "a tree was live when this record was
 // last written". A stale identity would make an ordinary completed Run look like an orphan on
@@ -17,14 +19,19 @@
 // hours ago — a false refusal is worse than no check, because it cannot be cleared by waiting.
 import { errorMessage } from '../lib/errors';
 import type { SpawnIdentity } from '../contracts/spawn-identity';
-import type { WorkflowRun } from './workflow-run';
+import { ALL_RUN_STATUSES, LIVE_RUN_STATUSES, type WorkflowRun } from './workflow-run';
 import type { WorkspaceStateStore } from './workspace-state';
 
 /** The store surface this needs. Narrow, so a test supplies two methods. */
 export type SpawnIdentityStore = Pick<
   WorkspaceStateStore,
-  'getRunMap' | 'setRun' | 'runCommitClaim'
+  'getRunMap' | 'updateRun' | 'runCommitClaim'
 >;
+
+// A spawn is recorded only for a Run that is still live. Clearing is allowed on ANY status:
+// it only REMOVES a field, and a stale identity on a Run that has already ended is the false
+// orphan this file's header warns about, so a clear that lost the race to the Run's terminal
+// write must still land.
 
 export interface SpawnIdentityRecorderDeps {
   readonly store: SpawnIdentityStore;
@@ -65,23 +72,26 @@ export function createSpawnIdentityRecorder(deps: SpawnIdentityRecorderDeps): {
     if (runId === null) return;
     const found = queueForRun(deps.store, runId);
     if (found === null) return;
-    // The claim comes from the store, which is the single site that decides whether this
-    // window holds a lease on that queue and names the reason when it does not. Asking the
-    // lock manager for a bare fence number here would be a second answer to the same
-    // question — and the commit point's own signature refuses a bare number for exactly that
-    // reason.
-    const claim = deps.store.runCommitClaim(found.queueId);
     try {
-      const next: WorkflowRun =
-        identity === undefined
-          ? (() => {
-              // Delete rather than set to undefined: an explicit `undefined` serializes into
-              // the Memento as a present key, and `unrecorded` must mean absent.
-              const { spawnIdentity: _dropped, ...rest } = found.run;
-              return rest as WorkflowRun;
-            })()
-          : { ...found.run, spawnIdentity: identity };
-      await deps.store.setRun(found.queueId, next, claim);
+      // The claim comes from the store, which is the single site that decides whether this
+      // window holds a lease on that queue and names the reason when it does not. Asking the
+      // lock manager for a bare fence number here would be a second answer to the same
+      // question — and the commit point's own signature refuses a bare number for exactly that
+      // reason. Inside the `try`: a window that LOST the queue is refused `ownership-lost` here,
+      // and a bookkeeping write must not throw for that either.
+      const claim = deps.store.runCommitClaim(found.queueId);
+      await deps.store.updateRun(
+        found.queueId,
+        {
+          runId: found.run.id,
+          allowedStatuses: identity === undefined ? ALL_RUN_STATUSES : LIVE_RUN_STATUSES,
+          label: 'spawn-identity',
+          // `undefined` removes the key: a Memento would keep an explicit `undefined` as a
+          // present key, and `unrecorded` must mean absent.
+          patch: () => ({ spawnIdentity: identity })
+        },
+        claim
+      );
     } catch (error) {
       deps.log(
         `spawn-identity: could not record for run ${runId}: ${errorMessage(error)}`

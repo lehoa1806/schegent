@@ -278,6 +278,15 @@ const REFUSAL_TEXT: Readonly<Record<string, string>> = Object.freeze({
     'The default queue cannot be deleted. Make another queue the default first.',
   'queue-has-in-flight-task':
     'This queue has a Task in flight. Wait for it to finish, or cancel it first.',
+  // FR-R4-F01 (spec 239, US3, FR-013) — a queue whose Run is still live. Each names the state
+  // the Run is in and the one control that clears it, because deleting the queue would leave
+  // that Run with nothing to own it. `QueueManager.queueDeletionImpact` emits all three.
+  'queue-has-running-run':
+    "This queue's Run is still running. Cancel the Run first, then delete the queue.",
+  'queue-has-retry-pending-run':
+    "This queue's Run is waiting to retry. Cancel the Run first, then delete the queue.",
+  'queue-has-paused-run':
+    "This queue's Run is paused (at a breakpoint, at its spend limit, or by you). Cancel the Run first, then delete the queue.",
   'unknown-queue-id': 'That queue no longer exists.',
   // Move
   'task-bound-to-connected-run': 'This Task belongs to a connected run and moves with it.',
