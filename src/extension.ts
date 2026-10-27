@@ -368,7 +368,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     v11MigrationEvents: migrationEvents.v11MigrationEvents,
     v12MigrationEvents: migrationEvents.v12MigrationEvents,
     orphanedRunEvents: migrationEvents.orphanedRunEvents,
-    runRepairEvents: migrationEvents.runRepairEvents
+    runRepairEvents: migrationEvents.runRepairEvents, v14MigrationEvents: migrationEvents.v14MigrationEvents
   });
   // FR-R3-119 — extracted to `src/activation/backend-execution-wiring.ts`. 148
   // lines constructing the monitor, sampler, runner registry and their

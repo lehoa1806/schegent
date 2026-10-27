@@ -19,9 +19,13 @@ import type { Clock, Scheduler, SchedulerHandle } from './lock';
 import {
   fallbackOwnershipRegistry,
   queueResource,
-  type OwnershipRegistry
+  releaseOutcomeOf,
+  type OwnershipRegistry,
+  type ReleaseOutcome
 } from './ownership-registry';
+import { OWNERSHIP_VERIFY_DEADLINE_MS, verifyWithin } from './ownership-claim';
 import type { OwnershipClaim } from './workspace-state';
+import type { SanitizedLogger } from '../lib/logger';
 
 /** One queue's execution claim. Persisted under `KEYS.executionLeases`. */
 export interface ExecutionLease {
@@ -30,6 +34,29 @@ export interface ExecutionLease {
   readonly acquiredAt: number;
   readonly heartbeatAt: number;
 }
+
+/** Why a claim was lost: the beat was rejected, or a commit was refused as superseded. */
+export type ClaimLostReason = 'superseded' | 'rejected';
+
+/**
+ * FR-R4-F01 (data-model §1) — what this window knows about its claim on one queue.
+ *
+ * `lost` is the state a rejected heartbeat or a superseded commit leaves behind.
+ * It keeps the generation the claim was issued at, so the commit point is handed
+ * the OLD fence and refuses it; deleting the fence instead made the claim read as
+ * "never held", which the store admitted as an unfenced write. In memory only: a
+ * restart starts every queue at `never-held` (spec D6).
+ */
+export type ClaimTenure =
+  | { readonly state: 'held'; readonly claim: OwnershipClaim }
+  | {
+      readonly state: 'lost';
+      readonly claim: OwnershipClaim;
+      readonly reason: ClaimLostReason;
+      readonly lostAt: number;
+    }
+  | { readonly state: 'released' }
+  | { readonly state: 'never-held' };
 
 /**
  * The store surface the manager needs. Narrow on purpose: the lease manager
@@ -68,6 +95,16 @@ export class ExecutionLeaseManager {
   private inFlightBeat: Promise<void> | null = null;
   /** Queue id → the generation this window's claim on it was issued at. */
   private readonly fences = new Map<string, number>();
+  /** Queue id → the claim this window lost, at the generation it was issued at. */
+  private readonly lost = new Map<
+    string,
+    { readonly claim: OwnershipClaim; readonly reason: ClaimLostReason; readonly lostAt: number }
+  >();
+  /** Queues this window gave back. Only a `tryAcquire` that returns `acquired` leaves this set. */
+  private readonly released = new Set<string>();
+  private readonly claimLostListeners = new Set<
+    (queueId: string, reason: ClaimLostReason) => void
+  >();
 
   constructor(
     store: ExecutionLeaseStore,
@@ -118,6 +155,8 @@ export class ExecutionLeaseManager {
       return { acquired: false, ownerId: recorded ?? this.ownerId };
     }
     this.fences.set(queueId, outcome.fence);
+    this.lost.delete(queueId);
+    this.released.delete(queueId);
     await this.store.setExecutionLease(queueId, {
       queueId,
       ownerId: this.ownerId,
@@ -150,11 +189,75 @@ export class ExecutionLeaseManager {
    * point is precisely how the commit gets refused. A claim rebuilt from the
    * current record would launder the staleness away and the fence would verify
    * every time.
+   *
+   * FR-R4-F01 — that holds after the loss is known too. A claim this window LOST
+   * is still answered, at its old generation: returning `null` there made the
+   * commit point treat a loser exactly like a window that never held the queue,
+   * and admit its write unfenced.
    */
   public claimFor(queueId: string): OwnershipClaim | null {
     const fence = this.fences.get(queueId);
-    if (fence === undefined) return null;
+    if (fence !== undefined) return this.claimAt(queueId, fence);
+    return this.lost.get(queueId)?.claim ?? null;
+  }
+
+  /** FR-R4-F01 (contract C1) — what this window knows about its claim on `queueId`. */
+  public tenureOf(queueId: string): ClaimTenure {
+    const fence = this.fences.get(queueId);
+    if (fence !== undefined) return { state: 'held', claim: this.claimAt(queueId, fence) };
+    const lost = this.lost.get(queueId);
+    if (lost !== undefined) {
+      return { state: 'lost', claim: lost.claim, reason: lost.reason, lostAt: lost.lostAt };
+    }
+    return this.released.has(queueId) ? { state: 'released' } : { state: 'never-held' };
+  }
+
+  /**
+   * FR-R4-F01 (contract C2 G8) — the store saw a commit refused `fence-superseded`
+   * before the heartbeat did. Moves a HELD queue to lost; any other state is left
+   * as it is, so a repeat is a no-op and a queue never held stays never held.
+   *
+   * Nothing here is awaited, and neither another queue nor window primacy is
+   * touched (hard rule 4).
+   */
+  public markLost(queueId: string, reason: 'superseded'): void {
+    const fence = this.fences.get(queueId);
+    if (fence === undefined) return;
+    this.moveToLost(queueId, fence, reason);
+    this.stopHeartbeatIfIdle();
+  }
+
+  /**
+   * FR-R4-F01 (contract C1 G2) — told once per transition into lost, for one
+   * queue. A throwing listener is swallowed. The shape is
+   * `WorkspaceLockManager.onFenceLost`'s: the disposer is what stops delivery.
+   */
+  public onClaimLost(listener: (queueId: string, reason: ClaimLostReason) => void): {
+    dispose(): void;
+  } {
+    this.claimLostListeners.add(listener);
+    return { dispose: () => void this.claimLostListeners.delete(listener) };
+  }
+
+  private claimAt(queueId: string, fence: number): OwnershipClaim {
     return { resource: queueResource(queueId), ownerId: this.ownerId, fence };
+  }
+
+  private moveToLost(queueId: string, fence: number, reason: ClaimLostReason): void {
+    this.fences.delete(queueId);
+    this.lost.set(queueId, {
+      claim: this.claimAt(queueId, fence),
+      reason,
+      lostAt: this.clock.now()
+    });
+    for (const listener of [...this.claimLostListeners]) {
+      try {
+        listener(queueId, reason);
+      } catch {
+        // A listener failing must not decide whether the loss is recorded, or
+        // whether the next listener hears of it.
+      }
+    }
   }
 
   /**
@@ -167,7 +270,16 @@ export class ExecutionLeaseManager {
   public async hasLease(queueId: string): Promise<boolean> {
     const fence = this.fences.get(queueId);
     if (fence === undefined) return false;
-    const verdict = await this.ownership.verify(queueResource(queueId), this.ownerId, fence);
+    // FR-R4-F01 (FR-021) — bounded, so the drain's admission check refuses on an ownership record
+    // that never answers instead of waiting on it. The heartbeat is a write and stays unbounded.
+    const verdict = await verifyWithin(
+      this.ownership,
+      queueResource(queueId),
+      this.ownerId,
+      fence,
+      OWNERSHIP_VERIFY_DEADLINE_MS,
+      this.scheduler
+    );
     return verdict.outcome === 'valid';
   }
 
@@ -227,7 +339,11 @@ export class ExecutionLeaseManager {
       );
       if (verdict.outcome === 'unavailable') continue;
       if (verdict.outcome === 'rejected') {
-        this.fences.delete(queueId);
+        // FR-R4-F01 (FR-001) — the claim is LOST, not forgotten. The same epoch
+        // check as below applies: a release that finished while this beat was
+        // parked has already recorded the queue as released, and a loss reported
+        // for a queue this window gave back would be a false one.
+        if (this.fences.get(queueId) === fence) this.moveToLost(queueId, fence, 'rejected');
         const stale = this.store.getExecutionLeases()[queueId];
         if (stale?.ownerId === this.ownerId) {
           await this.store.setExecutionLease(queueId, null);
@@ -254,10 +370,38 @@ export class ExecutionLeaseManager {
     this.stopHeartbeatIfIdle();
   }
 
-  public async release(queueId: string): Promise<void> {
-    await this.releaseOne(queueId);
+  /**
+   * Give one queue back, and say what that came to (contract C7). A caller that can act on the
+   * answer logs it through `releaseLeaseLogged`; none throws on it.
+   */
+  public async release(queueId: string): Promise<ReleaseOutcome> {
+    const heldFence = this.fences.get(queueId);
+    const outcome = await this.releaseOne(queueId);
     this.stopHeartbeatIfIdle();
     await this.drainHeartbeat();
+    if (heldFence === undefined) return outcome;
+    const reasserted = await this.reassertReleased(queueId, heldFence);
+    return reasserted === null || reasserted === 'not-holder' ? outcome : reasserted;
+  }
+
+  /**
+   * FR-R4-F01 (FR-024, probe P2) — after the in-flight beat has settled, make sure it did not
+   * put this window back as the holder.
+   *
+   * The beat's own epoch check protects the MIRROR (a released queue's fence is gone, so it skips
+   * the mirror write). It cannot protect the registry: a beat parked inside the registry's
+   * read-then-replace lands AFTER this release's own write and restores the holder, which the
+   * next window then has to wait out as a stale lease. The drain above is what makes that
+   * observable, so this is where it is undone. Skipped when this window has since taken the queue
+   * again (`tryAcquire` returned `acquired`), which is a claim, not a resurrection.
+   */
+  private async reassertReleased(queueId: string, heldFence: number): Promise<ReleaseOutcome | null> {
+    if (this.fences.has(queueId)) return null;
+    const resource = queueResource(queueId);
+    const verdict = await this.ownership.verify(resource, this.ownerId, heldFence);
+    if (verdict.outcome === 'unavailable') return 'unavailable';
+    if (verdict.outcome !== 'valid') return null;
+    return releaseOutcomeOf(await this.ownership.release(resource, this.ownerId, heldFence));
   }
 
   public async releaseAll(): Promise<void> {
@@ -270,13 +414,18 @@ export class ExecutionLeaseManager {
     //
     // The fence map is unioned in, because a claim this window was granted must
     // be given back even when its mirror entry has already gone.
+    //
+    // FR-R4-F01 — a lost claim is given back too: disposal records every tenure
+    // this window had as released, whatever state it was in.
     const candidates = new Set([
       ...this.fences.keys(),
+      ...this.lost.keys(),
       ...Object.keys(this.store.getExecutionLeases())
     ]);
     for (const queueId of candidates) {
       const lease = this.store.getExecutionLeases()[queueId];
-      if (!this.fences.has(queueId) && lease?.ownerId !== this.ownerId) continue;
+      const tracked = this.fences.has(queueId) || this.lost.has(queueId);
+      if (!tracked && lease?.ownerId !== this.ownerId) continue;
       await this.releaseOne(queueId);
     }
     this.stopHeartbeatIfIdle();
@@ -294,17 +443,22 @@ export class ExecutionLeaseManager {
    * drain's instance acquired — they share an owner id and a store, and without it
    * a terminal Run would strand its queue until the 15 s staleness reclaim.
    */
-  private async releaseOne(queueId: string): Promise<void> {
+  private async releaseOne(queueId: string): Promise<ReleaseOutcome> {
     const resource = queueResource(queueId);
     const fence = this.fences.get(queueId) ?? (await this.currentFenceIfMine(resource));
     this.fences.delete(queueId);
+    this.lost.delete(queueId);
+    this.released.add(queueId);
+    // No fence means the registry does not name this owner as holder: nothing to give back there.
+    let outcome: ReleaseOutcome = 'not-holder';
     if (fence !== null) {
-      await this.ownership.release(resource, this.ownerId, fence);
+      outcome = releaseOutcomeOf(await this.ownership.release(resource, this.ownerId, fence));
     }
     const lease = this.store.getExecutionLeases()[queueId];
     if (lease && lease.ownerId === this.ownerId) {
       await this.store.setExecutionLease(queueId, null);
     }
+    return outcome;
   }
 
   private async currentFenceIfMine(resource: string): Promise<number | null> {
@@ -334,6 +488,10 @@ export class ExecutionLeaseManager {
     try {
       return await fn();
     } finally {
+      // FR-R4-F01 (C7) — kept silent, and the reason is recorded rather than implied. The lease
+      // ends inside the call that took it, so this is its `finally`: a release failure surfacing
+      // from here would replace `fn`'s own result or throw. A lease not given back ends in the
+      // staleness reclaim (`STALENESS_THRESHOLD_MS`), the same bound every failed release has.
       await this.release(queueId).catch(() => undefined);
     }
   }
@@ -365,6 +523,10 @@ export class ExecutionLeaseManager {
   private startHeartbeat(): void {
     if (this.heartbeatHandle) return;
     this.heartbeatHandle = this.scheduler.setInterval(() => {
+      // FR-R4-F01 (FR-024, contract C1 G5, probe P2) — skip while the previous beat is pending,
+      // so at most one beat is ever in flight for `release` to settle. Two overlapping beats
+      // left `inFlightBeat` pointing at the later one, and the earlier could land after a release.
+      if (this.inFlightBeat !== null) return;
       void this.heartbeat();
     }, HEARTBEAT_INTERVAL_MS);
   }
@@ -374,4 +536,32 @@ export class ExecutionLeaseManager {
     this.heartbeatHandle?.clear();
     this.heartbeatHandle = null;
   }
+}
+
+/** What `releaseLeaseLogged` needs of a lease: the drain's doubles return nothing, the manager an outcome. */
+export interface LeaseReleasePort {
+  release(queueId: string): Promise<ReleaseOutcome | void> | ReleaseOutcome | void;
+}
+
+/**
+ * FR-R4-F01 (FR-033, contract C7) — give a queue's lease back and say so when it did not go.
+ *
+ * Replaces `release(queueId).catch(() => undefined)` at the sites that can log. A throw reads as
+ * `unavailable`; `released` and a double that returns nothing are silent. The line carries the
+ * queue id and the outcome and nothing else, and the call never throws, so the surrounding
+ * cleanup it sits in still runs.
+ */
+export async function releaseLeaseLogged(
+  lease: LeaseReleasePort,
+  queueId: string,
+  logger: Pick<SanitizedLogger, 'warn'> | null | undefined
+): Promise<void> {
+  let outcome: ReleaseOutcome | void;
+  try {
+    outcome = await lease.release(queueId);
+  } catch {
+    outcome = 'unavailable';
+  }
+  if (outcome === undefined || outcome === 'released') return;
+  logger?.warn('execution lease release failed', { queueId, outcome });
 }

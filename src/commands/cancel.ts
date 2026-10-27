@@ -1,6 +1,7 @@
 import type { SchegentWorkflowController } from '../controller/workflow-controller';
 import { resolveSoleRun } from '../controller/sole-run-resolver';
-import type { WorkspaceStateStore } from '../state/workspace-state';
+import { isRunRaceRefusal, type WorkspaceStateStore } from '../state/workspace-state';
+import { canceledRunPatch, LIVE_RUN_STATUSES } from '../state/workflow-run';
 import type { QueueManager } from '../queue/queue-manager';
 import { decideTaskTransition } from '../queue/task-transition-decision';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
@@ -129,13 +130,7 @@ async function cancelByTaskId(
       payload: { taskId: feature.id, runId: activeRun.id, reason: 'user-cancel' },
       outcome: 'info'
     });
-    await ctx.store.setRun(queueId, {
-      ...activeRun,
-      status: 'canceled',
-      lastTransitionAt: Date.now()
-    },
-      ctx.store.runCommitClaim(queueId)
-    );
+    await markCanceled(ctx.store, queueId, activeRun.id);
     const finished = await ctx.queue.finish(feature.id, 'canceled');
     // FR-R3-153 — `finish` refuses a transition outside the closed table by
     // returning `{ ok: false, reason }` rather than throwing, so the queue
@@ -207,7 +202,7 @@ async function cancelActiveRun(ctx: Parameters<typeof runCancel>[0]): Promise<Ca
     payload: { taskId: run.featureId, runId: run.id, reason: 'user-cancel' },
     outcome: 'info'
   });
-  await ctx.store.setRun(queueId, { ...run, status: 'canceled', lastTransitionAt: Date.now() }, ctx.store.runCommitClaim(queueId));
+  await markCanceled(ctx.store, queueId, run.id);
   const finished = await ctx.queue.finish(run.featureId, 'canceled');
   // FR-R3-153 — see `cancelByTaskId` above: a refusal is a returned value
   // now, not a throw, and must not be reported as a success.
@@ -221,4 +216,35 @@ async function cancelActiveRun(ctx: Parameters<typeof runCancel>[0]): Promise<Ca
   // because a paused sibling is still this window's work.
   ctx.notifier.info('Schegent: workflow canceled.');
   return { ok: true };
+}
+
+/**
+ * FR-R4-F01 (FR-008) — cancel is a patch of the Run as it is inside the
+ * `KEYS.run` chain: the status and the stamp, and both pause/retry pairs cleared,
+ * so a pause or a retry countdown that landed after the caller's read cannot
+ * survive on a canceled Run as the one-sided state `validateRunInvariants` forbids.
+ * A Run that has already ended, or been replaced, refuses the update instead of
+ * being overwritten as canceled. That refusal is not a failed cancel: the driver
+ * `cancelActive` just aborted writes its own `canceled` transition, and it can
+ * reach the chain first.
+ */
+async function markCanceled(
+  store: WorkspaceStateStore,
+  queueId: string,
+  runId: string
+): Promise<void> {
+  try {
+    await store.updateRun(
+      queueId,
+      {
+        runId,
+        allowedStatuses: LIVE_RUN_STATUSES,
+        label: 'cancel',
+        patch: () => canceledRunPatch(Date.now())
+      },
+      store.runCommitClaim(queueId)
+    );
+  } catch (error) {
+    if (!isRunRaceRefusal(error)) throw error;
+  }
 }

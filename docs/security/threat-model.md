@@ -366,8 +366,12 @@ The ownership registry persists a fenced record under `.schegent/ownership`; the
 
 The fence reaches the point of effect (FR-R3-077). Both commit points — the Run record and the queue record — take a **required** claim and verify it inside the same serialized link that performs the write, so a host whose lease was reclaimed while it was stalled is refused when it resumes and commits, by the fence rather than by a storage error. A call site that provably holds no lease says so by name, from a closed set, and the set is pinned by a test. Because the memento offers no conditional write, a reclaim landing between the verify and the update can still leave a record written by a superseded holder; the read side is the answer to that, declining a record stamped at a superseded generation and recording the decline as evidence rather than dropping it.
 
+A reclaimed host's claim stays **lost** (FR-R4-F01). The lease manager records the loss as that queue's tenure and answers every later request for the queue's claim with the lost one, so both commit points refuse it as `ownership-lost` before any read; the host does not write again until it wins the queue back through `tryAcquire`. The loss stops only that queue's driver and never releases window primacy. A terminal outcome a refused host had journalled is never replayed over the winner: the host removes only an entry it wrote, with a compare-and-delete that leaves another host's entry alone, and a replay by a host that does not hold the queue defers while a live holder does. Verification is bounded as well: a read that has not answered within `OWNERSHIP_VERIFY_DEADLINE_MS`, one heartbeat interval, refuses exactly as an unavailable registry does, rather than holding a commit open.
+
 <!-- Source: src/state/ownership-registry.ts -->
 <!-- Source: src/state/ownership-claim.ts -->
+<!-- Source: src/state/execution-lease.ts -->
+<!-- Source: src/services/terminal-transition-coordinator.ts -->
 <!-- Source: src/state/workspace-state.ts -->
 <!-- Source: src/ui/sidebar/commands/primacy-gate.ts -->
 <!-- Source: src/extension.ts -->

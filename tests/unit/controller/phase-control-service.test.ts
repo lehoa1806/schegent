@@ -45,13 +45,20 @@ function makeRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
 }
 
 function makeService(run: WorkflowRun) {
-  const setRun = vi.fn(async () => {});
+  // The real `updateRun` applies the patch to the Run as it is inside the chain; the double
+  // does the same to the fixture, so a patch that throws (a refusal) behaves as it does live.
+  const updateRun = vi.fn(
+    async (
+      _queueId: string,
+      update: { patch: (current: WorkflowRun) => Partial<WorkflowRun> }
+    ): Promise<WorkflowRun> => ({ ...run, ...update.patch(run) })
+  );
   const appendBreakpoint = vi.fn(async () => {});
   const appendPhaseControl = vi.fn(async () => {});
   const service = new PhaseControlService({
     store: {
       getRun: vi.fn(() => run),
-      setRun,
+      updateRun,
       getQueue: vi.fn(() => null),
       setWatchdog: vi.fn(async () => {}),
       runCommitClaim: vi.fn(() => unfencedCommit('test-fixture'))
@@ -75,7 +82,7 @@ function makeService(run: WorkflowRun) {
       appendBreakpoint
     }
   } as unknown as ConstructorParameters<typeof PhaseControlService>[0]);
-  return { service, setRun, appendBreakpoint, appendPhaseControl };
+  return { service, updateRun, appendBreakpoint, appendPhaseControl };
 }
 
 describe('phase membership without a pipeline snapshot (T022)', () => {
@@ -84,12 +91,12 @@ describe('phase membership without a pipeline snapshot (T022)', () => {
     // to claim, so it is the id that demonstrates the substitution rather than
     // merely a miss: pre-feature this resolved through `BUILT_IN_PHASES` and the
     // breakpoint was accepted onto a Run whose Pipeline never named it.
-    const { service, setRun, appendBreakpoint } = makeService(makeRun({ pipeline: undefined }));
+    const { service, updateRun, appendBreakpoint } = makeService(makeRun({ pipeline: undefined }));
 
     const result = await service.setPhaseBreakpoint(QUEUE_ID, 'run-1', 'speckit-specify');
 
     expect(result).toEqual({ ok: false, reason: 'phase-unknown' });
-    expect(setRun).not.toHaveBeenCalled();
+    expect(updateRun).not.toHaveBeenCalled();
     expect(appendBreakpoint).not.toHaveBeenCalled();
   });
 
@@ -116,10 +123,10 @@ describe('phase membership without a pipeline snapshot (T022)', () => {
         ]
       } as unknown as WorkflowRun['pipeline']
     });
-    const { service, setRun } = makeService(run);
+    const { service, updateRun } = makeService(run);
 
     expect(await service.setPhaseBreakpoint(QUEUE_ID, 'run-1', 'beta')).toEqual({ ok: true });
-    expect(setRun).toHaveBeenCalledTimes(1);
+    expect(updateRun).toHaveBeenCalledTimes(1);
   });
 
   it('refuses a built-in Phase id against a snapshot that does not name it', async () => {
@@ -142,7 +149,7 @@ describe('phase membership without a pipeline snapshot (T022)', () => {
 // FR-R3-151 — table-driven eligibility matrix over the operation/source-state
 // space in spec.md §User Story 1 (T1624). Every row asserts both the
 // accept/refuse outcome and, for refused rows, that nothing was written:
-// `store.setRun`, `appendPhaseControl`, and `appendBreakpoint` are all
+// `store.updateRun`, `appendPhaseControl`, and `appendBreakpoint` are all
 // asserted un-called. This is deliberately over `PhaseControlService`'s own
 // public methods, not `decidePhaseControl` directly (see
 // phase-control-decision.test.ts for the classifier's own unit tests) — the
@@ -187,7 +194,7 @@ async function expectZeroWrites(
   act: () => Promise<unknown>
 ): Promise<void> {
   await act();
-  expect(mocks.setRun).not.toHaveBeenCalled();
+  expect(mocks.updateRun).not.toHaveBeenCalled();
   expect(mocks.appendPhaseControl).not.toHaveBeenCalled();
   expect(mocks.appendBreakpoint).not.toHaveBeenCalled();
 }
@@ -223,16 +230,16 @@ describe('Phase control eligibility matrix (FR-R3-151, T1624)', () => {
 
     it('allows Restart on an operable Run (failed, no pending retry) — failed is not terminal (workflow-run.ts isOperableRunStatus)', async () => {
       const run = makeThreePhaseRun({ status: 'failed', pendingRetryAt: null });
-      const { service, setRun } = makeService(run);
+      const { service, updateRun } = makeService(run);
       expect(await service.restartActivePhase(QUEUE_ID)).toEqual({ ok: true });
-      expect(setRun).toHaveBeenCalledTimes(1);
+      expect(updateRun).toHaveBeenCalledTimes(1);
     });
 
     it('allows Restart on a manually paused, operable Run', async () => {
       const run = makeThreePhaseRun({ status: 'running', manualPauseAt: Date.now() });
-      const { service, setRun } = makeService(run);
+      const { service, updateRun } = makeService(run);
       expect(await service.restartActivePhase(QUEUE_ID)).toEqual({ ok: true });
-      expect(setRun).toHaveBeenCalledTimes(1);
+      expect(updateRun).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -286,16 +293,16 @@ describe('Phase control eligibility matrix (FR-R3-151, T1624)', () => {
 
     it('allows Skip on a failed Run with the target Phase still current — a legitimate skip-to-recover path', async () => {
       const run = makeThreePhaseRun({ status: 'failed', pendingRetryAt: null });
-      const { service, setRun } = makeService(run);
+      const { service, updateRun } = makeService(run);
       expect(await service.skipPhase(QUEUE_ID, 'beta')).toEqual({ ok: true });
-      expect(setRun).toHaveBeenCalled();
+      expect(updateRun).toHaveBeenCalled();
     });
 
     it('allows Skip on the current active Phase', async () => {
       const run = makeThreePhaseRun({ status: 'running' });
-      const { service, setRun } = makeService(run);
+      const { service, updateRun } = makeService(run);
       expect(await service.skipPhase(QUEUE_ID, 'beta')).toEqual({ ok: true });
-      expect(setRun).toHaveBeenCalled();
+      expect(updateRun).toHaveBeenCalled();
     });
   });
 
@@ -324,9 +331,9 @@ describe('Phase control eligibility matrix (FR-R3-151, T1624)', () => {
 
     it('allows Disable on a future Phase', async () => {
       const run = makeThreePhaseRun();
-      const { service, setRun } = makeService(run);
+      const { service, updateRun } = makeService(run);
       expect(await service.disablePhase(QUEUE_ID, 'gamma')).toEqual({ ok: true });
-      expect(setRun).toHaveBeenCalledTimes(1);
+      expect(updateRun).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -372,9 +379,9 @@ describe('Phase control eligibility matrix (FR-R3-151, T1624)', () => {
       const run = makeThreePhaseRun({
         phaseOverrides: [{ phaseId: 'gamma', action: 'disabled', setAt: 0, actor: 'operator' }]
       });
-      const { service, setRun } = makeService(run);
+      const { service, updateRun } = makeService(run);
       expect(await service.enablePhase(QUEUE_ID, 'gamma')).toEqual({ ok: true });
-      expect(setRun).toHaveBeenCalledTimes(1);
+      expect(updateRun).toHaveBeenCalledTimes(1);
     });
 
     it('refuses an unknown Phase id (FR-018)', async () => {
@@ -392,23 +399,23 @@ describe('Phase control eligibility matrix (FR-R3-151, T1624)', () => {
   describe('Delete stays permissive (Feature 022 non-regression)', () => {
     it('still allows deleting the active Phase (targeting-only change, not eligibility)', async () => {
       const run = makeThreePhaseRun();
-      const { service, setRun } = makeService(run);
+      const { service, updateRun } = makeService(run);
       expect(await service.removeTaskPhase(QUEUE_ID, 'task-1', 'beta')).toMatchObject({ ok: true });
-      expect(setRun).toHaveBeenCalledTimes(1);
+      expect(updateRun).toHaveBeenCalledTimes(1);
     });
 
     it('still allows deleting a completed Phase', async () => {
       const run = makeThreePhaseRun();
-      const { service, setRun } = makeService(run);
+      const { service, updateRun } = makeService(run);
       expect(await service.removeTaskPhase(QUEUE_ID, 'task-1', 'alpha')).toMatchObject({ ok: true });
-      expect(setRun).toHaveBeenCalledTimes(1);
+      expect(updateRun).toHaveBeenCalledTimes(1);
     });
 
     it('still allows deleting a future Phase', async () => {
       const run = makeThreePhaseRun();
-      const { service, setRun } = makeService(run);
+      const { service, updateRun } = makeService(run);
       expect(await service.removeTaskPhase(QUEUE_ID, 'task-1', 'gamma')).toMatchObject({ ok: true });
-      expect(setRun).toHaveBeenCalledTimes(1);
+      expect(updateRun).toHaveBeenCalledTimes(1);
     });
   });
 

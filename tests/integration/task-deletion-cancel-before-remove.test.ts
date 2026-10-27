@@ -104,9 +104,9 @@ function makeRecordingDeps(
     },
     store: {
       getRun: (queueId) => store.getRun(queueId),
-      setRun: async (queueId, run, claim) => {
-        if (run?.status === 'canceled') order.push('setRun:canceled');
-        return store.setRun(queueId, run, claim);
+      updateRun: async (queueId, update, claim) => {
+        if (update.label === 'cancel') order.push('updateRun:canceled');
+        return store.updateRun(queueId, update, claim);
       },
       runCommitClaim: (queueId) => store.runCommitClaim(queueId)
     },
@@ -218,7 +218,7 @@ describe('Feature 200 FR-008a — cancel and persist before the row is removed',
       // array while leaving every call count identical.
       expect(order).toEqual([
         'cancelActive',
-        'setRun:canceled',
+        'updateRun:canceled',
         'releaseLease',
         'removeTask',
         'sessionCleanup'
@@ -228,8 +228,8 @@ describe('Feature 200 FR-008a — cancel and persist before the row is removed',
       // only that the transcript differs.
       expect(order.indexOf('cancelActive')).toBeGreaterThanOrEqual(0);
       expect(order.indexOf('cancelActive')).toBeLessThan(order.indexOf('removeTask'));
-      expect(order.indexOf('setRun:canceled')).toBeGreaterThanOrEqual(0);
-      expect(order.indexOf('setRun:canceled')).toBeLessThan(order.indexOf('removeTask'));
+      expect(order.indexOf('updateRun:canceled')).toBeGreaterThanOrEqual(0);
+      expect(order.indexOf('updateRun:canceled')).toBeLessThan(order.indexOf('removeTask'));
       expect(order.indexOf('releaseLease')).toBeGreaterThanOrEqual(0);
       expect(order.indexOf('releaseLease')).toBeLessThan(order.indexOf('removeTask'));
 
@@ -263,7 +263,7 @@ describe('Feature 200 FR-008a — cancel and persist before the row is removed',
     expect(result.ok).toBe(true);
     expect(order).toEqual([
       'cancelActive',
-      'setRun:canceled',
+      'updateRun:canceled',
       'releaseLease',
       'removeTask',
       'sessionCleanup'
@@ -317,8 +317,8 @@ describe('Feature 200 FR-008a — cancel and persist before the row is removed',
       ...deps,
       store: {
         ...deps.store,
-        setRun: async (_queueId, run) => {
-          if (run?.status === 'canceled') order.push('setRun:canceled');
+        updateRun: async (_queueId, update) => {
+          if (update.label === 'cancel') order.push('updateRun:canceled');
           throw new Error('fenced commit refused');
         }
       }
@@ -331,7 +331,7 @@ describe('Feature 200 FR-008a — cancel and persist before the row is removed',
     // Attempted, then stopped. The lease is not released either: the Run the
     // store still holds is non-terminal, and releasing on its behalf would hand
     // the queue away while it still owns it.
-    expect(order).toEqual(['cancelActive', 'setRun:canceled']);
+    expect(order).toEqual(['cancelActive', 'updateRun:canceled']);
     expect(order).not.toContain('removeTask');
     expect(order).not.toContain('sessionCleanup');
 

@@ -8,6 +8,8 @@ import * as vscode from 'vscode';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { RawTranscriptWriter } from '../audit/raw-transcript-writer';
 import { PhaseRunner } from '../controller/phase-runner';
+import type { LastRetryDecisionSink } from '../controller/phase-retry-evaluator';
+import { LIVE_RUN_STATUSES } from '../state/workflow-run';
 import type { SanitizedLogger } from '../lib/logger';
 import type { QueueManager } from '../queue/queue-manager';
 import type { PromptBuilder } from '../runner/prompt-builder';
@@ -15,7 +17,7 @@ import type { BackendRunnerRegistry } from '../runner/backend-runner-registry';
 import type { EvidenceHealthMonitor } from '../services/evidence-health/evidence-health-monitor';
 import type { SessionArtifactRetentionService } from '../services/session-retention/session-artifact-retention-service';
 import type { HistoryStore } from '../state/history-store';
-import type { WorkspaceStateStore } from '../state/workspace-state';
+import { isRunRaceRefusal, type WorkspaceStateStore } from '../state/workspace-state';
 import type { Notifier } from '../ui/notifications';
 import type { BackendExecutionWiring } from './backend-execution-wiring';
 import type { EvidenceWiring } from './evidence-wiring';
@@ -55,6 +57,47 @@ export interface PhaseExecutionWiringDeps {
   readonly protectedSessionRunIds: EvidenceWiring['protectedSessionRunIds'];
   readonly readUncontainedAllowed: BackendExecutionWiring['readUncontainedAllowed'];
   readonly verboseAccessor: BackendExecutionWiring['verboseAccessor'];
+}
+
+/**
+ * Feature 093 (T047) — the decision names its Run, so the write names that Run's
+ * queue. T037's interim binding had no identity to work from and so declined
+ * whenever more than one Run existed, which is the same defect read defensively: a
+ * decision that belonged to a real Run went nowhere. Run ids are unique across
+ * queues, so this resolves to exactly one entry — the C-4 aggregate read SC-012
+ * exempts, not a Run reached without a queue.
+ *
+ * FR-R4-F01 (FR-008) — the write is `updateRun`, a PATCH of `lastRetryDecision`
+ * applied to the Run as it is inside the `KEYS.run` chain, not a whole Run built
+ * from the read above. A cancel that lands in between keeps its status and its
+ * cleared pairs; a decision that arrives after the Run ended is refused and
+ * dropped, because the audit event is the canonical record and the projection is
+ * best-effort (`PhaseRetryEvaluator`).
+ *
+ * Exported so the interleaving it exists for can be driven against the real store.
+ */
+export function createLastRetryDecisionSink(
+  store: Pick<WorkspaceStateStore, 'getRunMap' | 'updateRun' | 'runCommitClaim'>
+): LastRetryDecisionSink {
+  return async (runId, decision) => {
+    const entry = Object.entries(store.getRunMap()).find(([, run]) => run.id === runId);
+    if (entry === undefined) return;
+    const [queueId, current] = entry;
+    try {
+      await store.updateRun(
+        queueId,
+        {
+          runId: current.id,
+          allowedStatuses: LIVE_RUN_STATUSES,
+          label: 'retry-decision',
+          patch: () => ({ lastRetryDecision: decision })
+        },
+        store.runCommitClaim(queueId)
+      );
+    } catch (error) {
+      if (!isRunRaceRefusal(error)) throw error;
+    }
+  };
 }
 
 export interface PhaseExecutionWiring {
@@ -102,21 +145,7 @@ const autoCompactOverrideAccessor = createAutoCompactOverrideAccessor(
 const phaseBreakpointAccessor = createPhaseBreakpointAccessor(
   (runId) => Object.values(store.getRunMap()).find((run) => run.id === runId) ?? null
 );
-const lastRetryDecisionSink = async (
-  runId: string,
-  decision: import('../state/workflow-run').LastRetryDecision
-) => {
-  // Feature 093 (T047) — the decision names its Run, so the write names that
-  // Run's queue. T037's interim binding had no identity to work from and so
-  // declined whenever more than one Run existed, which is the same defect
-  // read defensively: a decision that belonged to a real Run went nowhere.
-  // Run ids are unique across queues, so this resolves to exactly one entry —
-  // the C-4 aggregate read SC-012 exempts, not a Run reached without a queue.
-  const entry = Object.entries(store.getRunMap()).find(([, run]) => run.id === runId);
-  if (entry === undefined) return;
-  const [queueId, current] = entry;
-  await store.setRun(queueId, { ...current, lastRetryDecision: decision }, store.runCommitClaim(queueId));
-};
+const lastRetryDecisionSink = createLastRetryDecisionSink(store);
 // FR-R3-064 — the posture accessor: the same reader, called per emission
 // instead of once at activation. The difference between the two uses is WHEN,
 // not WHAT; passing the registry's captured boolean here would record an

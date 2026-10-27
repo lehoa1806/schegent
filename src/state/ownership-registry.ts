@@ -116,7 +116,28 @@ export type FenceCheck =
       readonly currentFence: number;
       readonly ownerOfRecord: string | null;
     }
-  | { readonly outcome: 'unavailable' };
+  | {
+      readonly outcome: 'unavailable';
+      /**
+       * FR-R4-F01 (FR-021, data-model §6) — present when the read did not FAIL but did not
+       * ANSWER inside `OWNERSHIP_VERIFY_DEADLINE_MS`, so a timed-out verify and a failed one
+       * stay distinguishable in a test and a log line. Both refuse.
+       */
+      readonly cause?: 'deadline';
+    };
+
+/**
+ * FR-R4-F01 (FR-033, contract C7) — what giving a claim back came to. `released` is the only
+ * outcome after which the resource is certainly free; `not-holder` means the registry no longer
+ * had this owner as the holder, and `unavailable` means it could not be read or written.
+ */
+export type ReleaseOutcome = 'released' | 'not-holder' | 'unavailable';
+
+/** The release outcome a registry verdict on a release amounts to. */
+export function releaseOutcomeOf(check: FenceCheck): ReleaseOutcome {
+  if (check.outcome === 'valid') return 'released';
+  return check.outcome === 'rejected' ? 'not-holder' : 'unavailable';
+}
 
 interface ReadState {
   /** The highest generation with a parseable body, or `null` when there is none. */
@@ -340,8 +361,20 @@ export class OwnershipRegistry {
     }
     for (const name of names) {
       const generation = generationOf(name, prefix);
-      if (generation === null || generation >= keep) continue;
-      await this.fs.remove(this.fileFor(resource, generation)).catch(() => undefined);
+      if (generation !== null) {
+        if (generation >= keep) continue;
+        await this.fs.remove(this.fileFor(resource, generation)).catch(() => undefined);
+        continue;
+      }
+      // FR-R4-F01 (FR-025, contract C6 G17) — a temp file `replace` left behind between its
+      // write and its rename, aimed at a generation that is already superseded. Nothing live can
+      // still be aiming at it, so it is an orphan. A temp file for the live generation, or one
+      // aimed above it, is never touched, and no pid or age is consulted: a pid says nothing
+      // across hosts on a shared mount, and a slow mount makes an old temp file live.
+      const aimedAt = tempTargetOf(name);
+      const target = aimedAt === null ? null : generationOf(aimedAt, prefix);
+      if (target === null || target >= keep) continue;
+      await this.fs.remove(`${this.dir}/${name}`).catch(() => undefined);
     }
   }
 
@@ -399,6 +432,16 @@ function generationOf(name: string, prefix: string): number | null {
   const digits = name.slice(prefix.length, name.length - '.json'.length);
   if (digits.length !== GENERATION_DIGITS || !/^\d+$/.test(digits)) return null;
   return Number.parseInt(digits, 10);
+}
+
+/**
+ * The generation file a `replace` temp file was aiming at, or `null` when `name` is not one.
+ * `replace` writes `.<generation-file>.<pid>.<n>.tmp` beside the file it will rename onto
+ * (`createDiskOwnershipFs`); the name carries its target, which is all the cleanup reads.
+ */
+function tempTargetOf(name: string): string | null {
+  const match = /^\.(.+\.json)\.\d+\.\d+\.tmp$/.exec(name);
+  return match?.[1] ?? null;
 }
 
 function serialize(record: OwnershipRecord): string {

@@ -16,8 +16,61 @@
  * cannot arrive without a reviewed edit in three places.
  */
 
-import { queueResource, type OwnershipRegistry } from './ownership-registry';
+import { HEARTBEAT_INTERVAL_MS, systemScheduler, type Scheduler } from './lock';
+import { queueResource, type FenceCheck, type OwnershipRegistry } from './ownership-registry';
 import type { OwnershipClaim } from './workspace-state';
+
+/**
+ * FR-R4-F01 (FR-021, contract C3, research R6) — how long a commit waits for the ownership
+ * record to answer before it gives up and refuses.
+ *
+ * A named constant, not a setting. One heartbeat period: a verify that has not answered within
+ * it knows nothing newer than the next beat will, and it is a third of
+ * `STALENESS_THRESHOLD_MS`, so a commit gives up well before a rival could reclaim on staleness.
+ * Imported, not restated, so the two cannot drift.
+ */
+export const OWNERSHIP_VERIFY_DEADLINE_MS = HEARTBEAT_INTERVAL_MS;
+
+/**
+ * `registry.verify`, bounded: the answer, or `{ outcome: 'unavailable', cause: 'deadline' }`
+ * once `deadlineMs` has passed on `scheduler`.
+ *
+ * `checkCommitFence` runs inside the `KEYS.run` and `KEYS.queue` links, and `serialize` chains
+ * every later write on that key behind the link, so a verify that never settles used to wedge
+ * every later write in the window. On expiry the commit now refuses `fence-unverifiable` and the
+ * link completes.
+ *
+ * Only the READ is raced (FR-023, G11). The abandoned promise is attached to nothing but the
+ * guard below: a result that arrives after the deadline has no continuation that writes, commits
+ * or notifies, so it cannot authorize the commit it belonged to (FR-022, G12). The timer is the
+ * scheduler's `setInterval`, cleared as soon as either side wins, because that is the seam this
+ * module already has (`Scheduler` has no one-shot form) and an interval cleared on its first
+ * fire is one.
+ */
+export function verifyWithin(
+  registry: Pick<OwnershipRegistry, 'verify'>,
+  resource: string,
+  ownerId: string,
+  fence: number,
+  deadlineMs: number,
+  scheduler: Scheduler
+): Promise<FenceCheck> {
+  return new Promise<FenceCheck>((resolve) => {
+    let settled = false;
+    const settle = (check: FenceCheck): void => {
+      if (settled) return;
+      settled = true;
+      timer.clear();
+      resolve(check);
+    };
+    const timer = scheduler.setInterval(() => {
+      settle({ outcome: 'unavailable', cause: 'deadline' });
+    }, deadlineMs);
+    registry.verify(resource, ownerId, fence).then(settle, () => {
+      settle({ outcome: 'unavailable' });
+    });
+  });
+}
 
 /**
  * Why a commit carries no fence. Closed on purpose.
@@ -132,7 +185,8 @@ export async function checkCommitFence(
   registry: Pick<OwnershipRegistry, 'verify'>,
   claim: OwnershipClaim,
   queueId: string,
-  subject: 'Run' | 'Queue'
+  subject: 'Run' | 'Queue',
+  scheduler: Scheduler = systemScheduler
 ): Promise<CommitFenceFailure | null> {
   const expected = queueResource(queueId);
   if (claim.resource !== expected) {
@@ -141,13 +195,27 @@ export async function checkCommitFence(
       message: `${subject} mutation refused: claim names ${claim.resource}, not ${expected}`
     };
   }
-  const { outcome } = await registry.verify(expected, claim.ownerId, claim.fence);
-  if (outcome === 'valid') return null;
-  const unverifiable = outcome === 'unavailable';
+  // FR-R4-F01 (FR-021) — bounded, so an ownership record that never answers refuses the commit
+  // instead of holding the link, and every later write on this key, for ever.
+  const check = await verifyWithin(
+    registry,
+    expected,
+    claim.ownerId,
+    claim.fence,
+    OWNERSHIP_VERIFY_DEADLINE_MS,
+    scheduler
+  );
+  if (check.outcome === 'valid') return null;
+  const unverifiable = check.outcome === 'unavailable';
+  const timedOut = check.outcome === 'unavailable' && check.cause === 'deadline';
   return {
     reason: unverifiable ? 'fence-unverifiable' : 'fence-superseded',
     message:
       `${subject} mutation refused: fence ${claim.fence} for ${expected} is ` +
-      (unverifiable ? 'unverifiable; the ownership record could not be read' : 'superseded')
+      (unverifiable
+        ? timedOut
+          ? 'unverifiable; the ownership record did not answer in time'
+          : 'unverifiable; the ownership record could not be read'
+        : 'superseded')
   };
 }

@@ -1,6 +1,7 @@
 import type { OwnershipClaim, WorkspaceStateStore } from './workspace-state';
 import type { WorkspaceLock } from './workflow-run';
-import { PRIMACY_RESOURCE } from './ownership-registry';
+import { PRIMACY_RESOURCE, releaseOutcomeOf } from './ownership-registry';
+import type { SanitizedLogger } from '../lib/logger';
 
 export const HEARTBEAT_INTERVAL_MS = 5_000;
 export const STALENESS_THRESHOLD_MS = 15_000;
@@ -122,7 +123,9 @@ export class WorkspaceLockManager {
     store: WorkspaceStateStore,
     ownerId: string,
     clock: Clock = systemClock,
-    scheduler: Scheduler = systemScheduler
+    scheduler: Scheduler = systemScheduler,
+    /** FR-R4-F01 (FR-033) — where a release that did not go is said; absent in the doubles. */
+    private readonly logger?: Pick<SanitizedLogger, 'warn'>
   ) {
     this.store = store;
     this.ownerId = ownerId;
@@ -389,7 +392,13 @@ export class WorkspaceLockManager {
     const fence = this.fence;
     this.fence = null;
     if (fence !== null) {
-      await this.store.ownership.release(PRIMACY_RESOURCE, this.ownerId, fence);
+      const outcome = releaseOutcomeOf(
+        await this.store.ownership.release(PRIMACY_RESOURCE, this.ownerId, fence)
+      );
+      // FR-R4-F01 (FR-033) — the verdict used to be discarded. Primacy's tenure is unchanged
+      // (hard rule 4): the lock mirror below is cleared either way, and the line names the
+      // outcome only, never the owner id.
+      if (outcome !== 'released') this.logger?.warn('workspace lock release failed', { outcome });
     }
     const lock = this.store.getLock();
     if (lock && lock.ownerId === this.ownerId) {
@@ -397,10 +406,23 @@ export class WorkspaceLockManager {
     }
   }
 
+  /** FR-R4-F01 (probe P1) — whether the interval's previous tick has yet to settle. */
+  private tickInFlight = false;
+
   private startHeartbeat(): void {
     if (this.heartbeatHandle) return;
     this.heartbeatHandle = this.scheduler.setInterval(() => {
-      void this.tick();
+      // FR-R4-F01 (FR-024, probe P1) — skip while the previous tick is pending. Two overlapping
+      // ticks from a non-primary window each reached `tryAcquire()`; the second came back
+      // `acquired` through the registry's same-owner arm, and `primacyGainedListeners` fired
+      // twice for one transition. A skipped beat costs one interval out of three before
+      // staleness, which the interval already tolerates; queueing it instead would run it late
+      // against a clock that has moved on (research R7, alternatives).
+      if (this.tickInFlight) return;
+      this.tickInFlight = true;
+      void this.tick().finally(() => {
+        this.tickInFlight = false;
+      });
     }, HEARTBEAT_INTERVAL_MS);
   }
 

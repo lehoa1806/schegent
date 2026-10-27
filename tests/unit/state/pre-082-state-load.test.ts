@@ -70,6 +70,19 @@ async function seededStore(): Promise<{
   return { store, memento, fixture };
 }
 
+/**
+ * FR-R4-F01 (spec 239, US4) — the one deliberate exception to "loads unchanged". A frozen Phase that
+ * recorded neither verdict-basis field is made explicit with the basis it was frozen under, so the
+ * upgrade keeps the Run on the meaning its operator approved. Every other byte is the fixture's.
+ */
+const withLegacyVerdictBasis = (pipeline: unknown): unknown => {
+  const snapshot = pipeline as { phases: readonly Record<string, unknown>[] };
+  return {
+    ...snapshot,
+    phases: snapshot.phases.map((phase) => ({ ...phase, hostVerification: 'model-token', hostVerificationDeclaredAt: 'default' }))
+  };
+};
+
 describe('pre-082 persisted state loads unchanged (T066)', () => {
   // Captured at v8; the runtime is at v9 since feature 088. That gap is the
   // point — the byte-for-byte assertions below only test anything while the
@@ -91,7 +104,7 @@ describe('pre-082 persisted state loads unchanged (T066)', () => {
     const { store, fixture } = await seededStore();
     const run = store.getRun(DEFAULT_QUEUE_ID);
     const persisted = (fixture[KEYS.run] as { pipeline: unknown }).pipeline;
-    expect(run?.pipeline).toEqual(persisted);
+    expect(run?.pipeline).toEqual(withLegacyVerdictBasis(persisted));
   });
 
   it('injects none of the fields feature 082 added', async () => {
@@ -135,6 +148,7 @@ describe('pre-082 persisted state loads unchanged (T066)', () => {
     expect(Object.keys(persisted ?? {})).toEqual([DEFAULT_QUEUE_ID]);
     expect(persisted?.[DEFAULT_QUEUE_ID]).toEqual({
       ...(fixture[KEYS.run] as WorkflowRun),
+      pipeline: withLegacyVerdictBasis((fixture[KEYS.run] as WorkflowRun).pipeline),
       status: 'canceled',
       lastTransitionAt: persisted?.[DEFAULT_QUEUE_ID]?.lastTransitionAt
     });

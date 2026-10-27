@@ -1,5 +1,5 @@
 import type { PhaseRunner } from './phase-runner';
-import type { WorkspaceStateStore } from '../state/workspace-state';
+import { isRunRaceRefusal, type WorkspaceStateStore } from '../state/workspace-state';
 import type { QueueManager } from '../queue/queue-manager';
 import type { SchegentStatusBar } from '../ui/status-bar';
 import type { Notifier } from '../ui/notifications';
@@ -7,7 +7,7 @@ import type { SanitizedLogger } from '../lib/logger';
 import type { WorkspaceLockManager } from '../state/lock';
 import { RunSessionRegistry } from './run-session';
 import { resolveControlTarget } from './sole-run-resolver';
-import { shouldContinueConversation, clearedPauseFieldsOnResume } from './resume-pause-fields';
+import { patchRunForResume, resumeAdmissionPatch, shouldContinueConversation } from './resume-pause-fields';
 import type { WorkflowRun } from '../state/workflow-run';
 import type { RunActivityObservation } from '../monitor/activity-coalescer';
 import { recordRunLiveness } from './run-liveness-recorder';
@@ -20,7 +20,7 @@ import { AutoDrainCoordinator } from '../services/auto-drain-coordinator';
 import type { ExecutionLeasePort, QueueStartFailurePort } from '../services/auto-drain-coordinator';
 import type { QueueFailurePolicy } from '../contracts/queue-failure-policy';
 import { releaseExecutionLeaseForTerminalRun } from '../services/execution-lease-release';
-import { ExecutionLeaseManager } from '../state/execution-lease';
+import { ExecutionLeaseManager, releaseLeaseLogged } from '../state/execution-lease';
 import { EMPTY_CATALOG, type PipelineCatalog } from '../config/pipeline-config';
 import { reportUnexpectedStartFailure } from './unexpected-start-failure';
 import { UncontainedConsentGate, driveUnderConsent } from './uncontained-consent-gate';
@@ -42,8 +42,9 @@ import { resolvePinnedRunnerKind } from '../config/pipeline-snapshot';
 import { PhaseControlService, type MutationResult } from './phase-control-service';
 import { WorkflowLifecycleAuditor } from './workflow-lifecycle-auditor';
 import type { BackendAvailabilityProbe } from '../services/backend-capability-service';
-import type { RawTranscriptMode } from '../state/workflow-run';
-import type { TerminalTransitionCoordinator } from '../services/terminal-transition-coordinator';
+import { changedRunFields, LIVE_RUN_STATUSES, type RawTranscriptMode } from '../state/workflow-run';
+import { isOwnershipRefusal, type TerminalTransitionCoordinator } from '../services/terminal-transition-coordinator';
+import { handleClaimLost } from './lost-ownership-handler';
 import { buildMutationPlan, mutationPlanIsApproved } from '../services/mutation-plan';
 import type { MutationPlanSnapshot } from '../state/workflow-run';
 import type { RunCheckpointService } from '../services/run-checkpoint-service';
@@ -91,7 +92,7 @@ export interface WorkflowControllerDeps {
   onRunTerminal?: (run: WorkflowRun) => Promise<void>;
   /** Host-owned bounded executable probe reused by the guarded run start. */
   backendCapabilities?: BackendAvailabilityProbe;
-  terminalTransitions?: Pick<TerminalTransitionCoordinator, 'begin' | 'complete'>;
+  terminalTransitions?: Pick<TerminalTransitionCoordinator, 'begin' | 'complete' | 'abandonRefused'>;
   requestGitApproval?: (plan: MutationPlanSnapshot) => Promise<boolean>;
   /** FR-R3-146 (FR-002) — asked once when a backend is refused for want of a grant. */
   requestUncontainedConsent?: UncontainedConsentPort;
@@ -146,6 +147,8 @@ export class SchegentWorkflowController {
   /** Feature 092 (T132, FR-033a) — ends a terminal Run's execution lease. */
   private readonly releaseExecutionLeaseForRun: (run: WorkflowRun) => Promise<void>;
   private readonly executionLease: ExecutionLeasePort;
+  /** FR-R4-F01 (C5 G15) — queues whose claim this window lost; `drainQueuedWork` reads it. */
+  private readonly lostQueueIds = new Set<string>();
   private readonly autoDrainCoordinator: AutoDrainCoordinator;
   private readonly retryCoordinator: RetryCoordinator;
   /**
@@ -221,6 +224,16 @@ export class SchegentWorkflowController {
     // unconditionally so a window that composes a controller cannot end up with
     // fenced commit points and no source to fence them against.
     store.bindRunClaimSource(executionLease);
+    // FR-R4-F01 (FR-003, C5 G15) — a lost claim stops THAT queue's driver and no
+    // other. Not disposed: the lease manager holds the listener and shares this
+    // controller's window lifetime, and the controller has no teardown path.
+    executionLease.onClaimLost?.((queueId, reason) =>
+      handleClaimLost(
+        { cancelActive: (id) => this.cancelActive(id), logger, lostQueueIds: this.lostQueueIds },
+        queueId,
+        reason
+      )
+    );
     // FR-R3-070 (feature 152) — the resume seam claims through the same
     // manager the drain and the terminal release share, so a resumed Run's
     // lease is returned by the one existing release path.
@@ -379,6 +392,12 @@ export class SchegentWorkflowController {
    * queue, which is the only queue those callers ever had.
    */
   public async drainQueuedWork(queueId: string = DEFAULT_QUEUE_ID): Promise<void> {
+    // FR-R4-F01 (C5 G15) — no start on a queue whose claim is lost while its old
+    // driver is still being stopped. Only `tryAcquire` leaves that state.
+    if (this.lostQueueIds.has(queueId)) {
+      if (this.executionLease.tenureOf?.(queueId).state === 'lost') return;
+      this.lostQueueIds.delete(queueId);
+    }
     await this.autoDrainCoordinator.drainIfIdle(queueId);
   }
 
@@ -656,14 +675,11 @@ export class SchegentWorkflowController {
     if (!run) return NOT_RESUMED;
     if (run.status === 'completed' || run.status === 'canceled') return NOT_RESUMED;
 
-    if (customPrompt) {
-      await this.store.setRun(queueId, {
-        ...run,
-        resumePrompt: customPrompt
-      },
-        this.store.runCommitClaim(queueId)
-      );
-    }
+    // FR-R4-F01 (FR-008) — both resume writes are PATCHES of the Run as it is inside the chain.
+    const prompted = customPrompt
+      ? await patchRunForResume(this.store, queueId, run, 'resume-prompt', () => ({ resumePrompt: customPrompt }))
+      : run;
+    if (prompted === null) return NOT_RESUMED;
 
     const feature = this.queue.findById(run.featureId);
     if (!feature) {
@@ -738,40 +754,16 @@ export class SchegentWorkflowController {
       return NOT_RESUMED;
     }
     if (this.executionLease.hasLease && !(await this.executionLease.hasLease(queueId))) {
-      await Promise.resolve(this.executionLease.release(queueId)).catch(() => undefined);
+      await releaseLeaseLogged(this.executionLease, queueId, this.logger);
       this.logger.warn(
         `resume: execution lease for queue ${queueId} could not be verified; declining`
       );
       return NOT_RESUMED;
     }
-    const next: WorkflowRun = {
-      ...run,
-      status: 'running',
-      lastError: null,
-      pipeline,
-      defaultRunnerKind,
-      mutationPlan,
-      // Absent stays absent: a Run with no plan on either side adds no key and
-      // serializes exactly as it did before this feature (T267).
-      ...(envelope ? { envelope } : {}),
-      ...(gitApprovalReceipt ? { gitApprovalReceipt } : {}),
-      pendingRetryAt: null,
-      pendingRetryCause: null,
-      // When resuming a run that was terminally failed (operator retry),
-      // reset the retry cap so the phase gets a fresh set of attempts.
-      // Also clear stale manual-pause fields that may linger from the
-      // failed state.
-      ...(run.status === 'failed'
-        ? {
-            delayedRetryCount: 0,
-            manualPauseAt: null,
-            manualPauseCause: null,
-            resumeTargetPhaseId: null
-          }
-        : {}),
-      ...clearedPauseFieldsOnResume(run)
-    };
-    await this.store.setRun(queueId, next, this.store.runCommitClaim(queueId));
+    const next = await patchRunForResume(this.store, queueId, run, 'resume-admission', (current) =>
+      resumeAdmissionPatch(current, { pipeline, defaultRunnerKind, mutationPlan, envelope, gitApprovalReceipt })
+    );
+    if (next === null) return NOT_RESUMED;
     await this.queue.markInFlight(feature.id, next.id, true);
     // Admitted. `driveSession` carries its own `finally` disposal, so the drive
     // is handed back rather than awaited (T049a). FR-R3-146 (FR-002, FR-005): a
@@ -947,66 +939,49 @@ export class SchegentWorkflowController {
   // CLAUDE.md hard-rule semantics (pause-cause pair invariant, pre-buffer
   // resetsAtMs in audit, DELAYED_RETRY_CAP bounds attempts) preserved.
 
-  private async persistTransition(_prev: WorkflowRun, next: WorkflowRun): Promise<WorkflowRun> {
+  private async persistTransition(prev: WorkflowRun, next: WorkflowRun): Promise<WorkflowRun> {
     // Feature 093 (T036) — pattern C-2: the driver's write funnel resolves its
     // queue from the Run it is persisting, so a transition can no longer land on
-    // a sibling's record.
-    //
-    // The `latest?.id === next.id` comparison **survives** the conversion, and is
-    // recorded here as a justified survivor for T040's sweep. Map addressing
-    // removes the case it could not previously distinguish — `latest` being some
-    // *other queue's* Run — but not the one it was written for: this queue's Run
-    // can still have been replaced (`deleteTask` cancels and the drain starts the
-    // next Task) while the aborting driver is mid-flight. Dropping the check
-    // would merge that successor's `phaseOverrides` into this Run's write.
-    //
-    // Code-review finding — resolved from the RUN first, and never from
-    // `queueIdForTask`, whose own docstring says why: it "falls back to the
-    // reserved queue when the Task row is gone", which "is safe for a mutation
-    // that then finds nothing" but not for a write. This is a write, and its
-    // sibling commit point in `terminal-transition-coordinator.ts` already says
-    // the same thing in the same words.
-    //
-    // The Task row IS gone here on a live path. `QueueManager.clearQueue` empties
-    // `requests` and deletes the Run record BEFORE it runs the runner-ack probe
-    // that cancels the driver, so the `canceled` transition the driver then
-    // persists resolved to `DEFAULT_QUEUE_ID` and stamped a foreign, terminal Run
-    // over whatever the default queue held in flight — while the compensating
-    // re-clear afterwards clears only the queue being cleaned, so the corruption
-    // stayed. Cleaning a non-default queue could therefore kill the default
-    // queue's unrelated Run.
-    //
-    // Order: the Run's own record (exact — run ids are `randomUUID()`, so
-    // `findRunById` matches at most one queue), then the Task row if it still
-    // exists (the successor case above, where no record carries this id and the
-    // merge is correctly skipped), then nothing. Writing nothing is the honest
-    // outcome when neither exists: there is no record to advance, and the
-    // terminal intent is still journalled below for activation to replay.
+    // a sibling's record. Code-review finding — resolved from the RUN first, and
+    // never from `queueIdForTask`, whose own docstring says why: it "falls back to
+    // the reserved queue when the Task row is gone", which is safe for a mutation
+    // that then finds nothing but not for a write. The Task row IS gone here on a
+    // live path (`QueueManager.clearQueue` empties `requests` BEFORE it cancels the
+    // driver), and a fallback to the default queue stamped a foreign, terminal Run
+    // over whatever it held in flight. Order: the Run's own record (run ids are
+    // `randomUUID()`, so `findRunById` matches at most one queue), then the Task row
+    // if it still exists, then nothing.
     const located = this.store.findRunById(next.id);
     const queueId = located?.queueId ?? this.queue.queueIdForExistingTask(next.featureId);
-    const latest = located?.run ?? (queueId !== null ? this.store.getRun(queueId) : null);
-    const merged =
-      latest?.id === next.id
-        ? {
-            ...next,
-            phaseOverrides: latest.phaseOverrides,
-            // Feature 028 — phaseBreakpoints may be mutated by external
-            // operator commands (setPhaseBreakpoint / clearPhaseBreakpoint)
-            // between RunDriver iterations. Preserve the latest store state so
-            // external writes are not overwritten by stale `next` values.
-            // The breakpoint branch in RunDriver explicitly filters the
-            // consumed entry before calling persistTransition with the new
-            // `next.phaseBreakpoints`; that explicit write wins via the
-            // `next.phaseBreakpoints !== _prev.phaseBreakpoints` check.
-            phaseBreakpoints:
-              next.phaseBreakpoints !== _prev.phaseBreakpoints
-                ? next.phaseBreakpoints
-                : latest.phaseBreakpoints
-          }
-        : next;
-    await this.terminalTransitions?.begin(merged);
-    if (queueId === null) return merged;
-    await this.store.setRun(queueId, merged, this.store.runCommitClaim(queueId));
-    return merged;
+    const createdAt = await this.terminalTransitions?.begin(next);
+    if (queueId === null) return next;
+    try {
+      // FR-R4-F01 (research R3 #3) — the driver still builds the whole `next` Run, and the
+      // store applies to the CURRENT Run only the keys it changed, inside the `KEYS.run`
+      // chain. This replaces a merge of `phaseOverrides` and `phaseBreakpoints` from a read
+      // taken OUTSIDE the chain (hard rule 58), and a Run that was replaced while the
+      // driver was mid-flight (`deleteTask` cancels and the drain starts the next Task) is
+      // refused `stale-run-id` instead of being written over.
+      return await this.store.updateRun(
+        queueId,
+        {
+          runId: next.id,
+          allowedStatuses: LIVE_RUN_STATUSES,
+          label: 'driver-transition',
+          patch: () => changedRunFields(prev, next)
+        },
+        this.store.runCommitClaim(queueId)
+      );
+    } catch (error) {
+      // FR-R4-F01 (FR-006) — a terminal outcome this window may no longer commit is
+      // held in memory, and the intent it journalled is withdrawn.
+      if (typeof createdAt === 'number' && isOwnershipRefusal(error)) {
+        await this.terminalTransitions?.abandonRefused(next, createdAt, error.reason, queueId);
+        return next;
+      }
+      // The Run is gone, replaced, or already over: writing nothing is the honest outcome.
+      if (isRunRaceRefusal(error)) return next;
+      throw error;
+    }
   }
 }

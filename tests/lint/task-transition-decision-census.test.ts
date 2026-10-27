@@ -94,26 +94,15 @@ const EXEMPTIONS: readonly Exemption[] = [
   // that no longer exists is a line no reader can evaluate, and the derivation
   // would never produce the candidate it excuses. The population drops from 10
   // candidates to 9 — 5 enrolled, 4 exempt.
-  {
-    file: 'queue/queue-manager.ts',
-    declaration: 'resumeMatchingRunForQueue',
-    kind: 'not-a-writer',
-    sites: 1,
-    reason:
-      'Not a Task status writer. It writes a WORKFLOW RUN — `{ ...matching, status: ... }` over a ' +
-      'WorkflowRun, whose status vocabulary shares spellings with the Task\'s. The derivation ' +
-      'selects it because a mechanical rule cannot tell the two entities apart (contract C4.4); ' +
-      'FR-009\'s third exclusion rules it out semantically.'
-  },
-  {
-    file: 'controller/workflow-controller.ts',
-    declaration: 'resumeExistingOnQueue',
-    kind: 'not-a-writer',
-    sites: 1,
-    reason:
-      'Not a Task status writer. It writes a WORKFLOW RUN back to `running` when resuming. Same ' +
-      'entity confusion as `resumeMatchingRunForQueue`, same reason for the selection.'
-  },
+  // FR-R4-F01 (spec 239, US2) — 2026-10-27. Two `not-a-writer` exemptions left with the
+  // sites they excused. `queue-manager.ts#resumeMatchingRunForQueue` and
+  // `workflow-controller.ts#resumeExistingOnQueue` each wrote a WORKFLOW RUN with a
+  // `{ ...run, status: ... }` spread, which the derivation selected because a mechanical rule
+  // cannot tell a Run's status from a Task's. Both writes are now `updateRun` patches
+  // (the first a function returning a patch, the second built in `resume-pause-fields.ts`),
+  // so neither declaration contains the spread and the derivation no longer selects them. The
+  // population drops from 10 candidates to 8: 6 enrolled, 2 exempt. No Task status writer was
+  // added, removed or changed.
   {
     file: 'state/queue-state-migrator.ts',
     declaration: 'liftLegacyRequests',
@@ -192,7 +181,7 @@ describe('every Task status writer routes through decideTaskTransition (FR-R3-15
   // other five. This count was the whole of the required edit, which is the
   // gate working as feature 200's FR-009 intended: a new status writer is a
   // failing assertion naming the new site, not an invisible addition.
-  it('reports the population as six enrolled and four exempt (contract C5)', () => {
+  it('reports the population as six enrolled and two exempt (contract C5)', () => {
     const enrolled = CANDIDATES.filter(isEnrolled);
     const exempt = CANDIDATES.filter((site) => !isEnrolled(site));
 
@@ -200,7 +189,7 @@ describe('every Task status writer routes through decideTaskTransition (FR-R3-15
       { enrolled: enrolled.length, exempt: exempt.length, total: CANDIDATES.length },
       `derived population changed.\nenrolled:\n  ${enrolled.map(describeSite).join('\n  ')}\n` +
         `exempt:\n  ${exempt.map(describeSite).join('\n  ')}`
-    ).toEqual({ enrolled: 6, exempt: 4, total: 10 });
+    ).toEqual({ enrolled: 6, exempt: 2, total: 8 });
   });
 
   it('imports decideTaskTransition in every file that has an enrolled candidate', () => {

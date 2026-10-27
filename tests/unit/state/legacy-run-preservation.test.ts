@@ -283,7 +283,14 @@ describe('a run persisted before this platform survives migration (T020, FR-021,
     const run = store.getRun(DEFAULT_QUEUE_ID);
     expect(run).not.toBeNull();
     expect(run!.id).toBe('run-legacy-paused');
-    expect(run!.pipeline).toEqual(SNAPSHOT);
+    // FR-R4-F01 (US4) — the ONE deliberate difference. A frozen Phase that recorded neither
+    // verdict-basis field is made explicit with the basis it was frozen under (`model-token`,
+    // provenance `default`), so the upgrade does not retarget the Run to the stricter default.
+    // Everything else in the snapshot is the legacy one, untouched.
+    expect(run!.pipeline).toEqual({
+      ...SNAPSHOT,
+      phases: SNAPSHOT.phases.map((phase) => ({ ...phase, hostVerification: 'model-token', hostVerificationDeclaredAt: 'default' }))
+    });
     expect(run!.phasesCompleted.map((entry) => entry.auditEntryId)).toEqual([
       'audit-legacy-draft-1'
     ]);

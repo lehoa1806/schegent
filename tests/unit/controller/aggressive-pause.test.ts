@@ -8,7 +8,7 @@
 // gracefully.
 //
 // Coverage (FR-001 / FR-002 / FR-005):
-//   (a) Strict ordering — store.setRun fires, THEN cancelActive() observable
+//   (a) Strict ordering — store.updateRun fires, THEN cancelActive() observable
 //       via the AbortController signal, THEN appendPhaseControlAudit runs.
 //   (b) Idempotency — second pause call returns `run-already-paused` and does
 //       NOT trigger a second abort.
@@ -178,7 +178,7 @@ describe('Feature 033 US1 — Aggressive pause via cancelActive()', () => {
 
     // Spy on cancelActive itself for ordering.
     const cancelSpy = vi.spyOn(controller, 'cancelActive');
-    const setRunSpy = vi.spyOn(store, 'setRun');
+    const updateRunSpy = vi.spyOn(store, 'updateRun');
 
     const result = await controller.pauseActivePhase();
     expect(result).toEqual({ ok: true });
@@ -186,19 +186,19 @@ describe('Feature 033 US1 — Aggressive pause via cancelActive()', () => {
     // cancelActive was invoked exactly once during the pause path.
     expect(cancelSpy).toHaveBeenCalledTimes(1);
 
-    // Ordering: store.setRun (with pause fields) → cancelActive.
-    // setRunSpy's first persist with manualPauseCause === 'operator-paused'
+    // Ordering: store.updateRun (with pause fields) → cancelActive.
+    // updateRunSpy's first persist with manualPauseCause === 'operator-paused'
     // must precede the cancelActive call.
-    const persistCalls = setRunSpy.mock.invocationCallOrder;
+    const persistCalls = updateRunSpy.mock.invocationCallOrder;
     const cancelCalls = cancelSpy.mock.invocationCallOrder;
     expect(persistCalls.length).toBeGreaterThan(0);
     expect(cancelCalls.length).toBe(1);
-    // The pause persist is the LAST setRun call before cancelActive.
+    // The pause persist is the LAST updateRun call before cancelActive.
     const lastPersistBefore = persistCalls[persistCalls.length - 1];
     expect(lastPersistBefore).toBeLessThan(cancelCalls[0]);
 
     // Audit event was emitted (cascade-pause path also persists, so
-    // setRun may fire again after; what matters is cancel fired before
+    // updateRun may fire again after; what matters is cancel fired before
     // the AUDIT for `phase-pause-requested`). The audit log is the
     // canonical record so we verify the run state has been persisted
     // with the pause cause.

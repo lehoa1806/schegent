@@ -282,6 +282,20 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'webview-ui/src/components/settings/general/BackendSection.svelte',
   'src/metrics/metrics-service.ts',
   'src/services/workflow-run-factory.ts',
+  // FR-R4-F01 (spec 239, US2) — `resumeAdmissionPatch` writes a WORKFLOW RUN's status back to
+  // `running` when a resume is admitted. That write is the one `workflow-controller.ts` made
+  // inline (a listed file already) before it became a field update; it moved here so the
+  // controller stays under its line budget, beside the resume-pause logic it reads. It is the
+  // Run's own status vocabulary, written where a Run's state is written, not the pinned
+  // per-task projection this guard protects.
+  'src/controller/resume-pause-fields.ts',
+  // FR-R4-F01 (spec 239, US3, FR-013, contract D2) — the operator text for
+  // `queue-has-running-run` reads "This queue's Run is still running. Cancel the Run first, then
+  // delete the queue." That is a sentence an operator reads, fixed verbatim by the contract, and
+  // the same prose case as `webview-ui/src/lib/action-copy.ts` below. This module reads and
+  // writes no status field; the word is in a string the operator sees, never the pinned per-task
+  // status discriminator this guard protects.
+  'webview-ui/src/lib/queue-control-ipc.ts',
   // Feature 092 — the webview's label map for `QueueLifecycle`, whose own
   // discriminator legitimately has a `running` member. That is the deliberately
   // narrow queue-lifecycle surface governed by

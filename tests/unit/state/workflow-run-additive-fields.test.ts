@@ -104,9 +104,18 @@ describe('a Run persisted before feature 087 reads back unchanged (T036)', () =>
   // injects none of its three fields on a read or a write — is unaffected, and
   // `expectedRun()` keeps that honest by spelling out the only permitted drift
   // rather than loosening the comparison.
+  //
+  // FR-R4-F01 (spec 239, US4) adds the third: each frozen Phase that recorded neither verdict-basis
+  // field is made explicit with the basis it was frozen under (`model-token`, provenance `default`).
   function expectedRun(fixture: Record<string, unknown>, actual: WorkflowRun | null): WorkflowRun {
+    const persisted = fixture[KEYS.run] as WorkflowRun;
+    const snapshot = persisted.pipeline as unknown as { phases: readonly Record<string, unknown>[] };
     return {
-      ...(fixture[KEYS.run] as WorkflowRun),
+      ...persisted,
+      pipeline: {
+        ...snapshot,
+        phases: snapshot.phases.map((phase) => ({ ...phase, hostVerification: 'model-token', hostVerificationDeclaredAt: 'default' }))
+      } as unknown as WorkflowRun['pipeline'],
       status: 'canceled',
       lastTransitionAt: actual?.lastTransitionAt as number
     };
