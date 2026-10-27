@@ -228,7 +228,11 @@ const KNOWN_ABSENT: ReadonlyMap<string, string> = new Map([
   ],
   ['cmd-save-workflows.ts', 'superseded by publish-on-edit in e77a82bb feat(catalog)'],
   ['cmd-save-pipelines.ts', 'superseded by publish-on-edit in e77a82bb feat(catalog)'],
-  ['require-full-gate.mjs', 'removed by d0b7f2cc feat(156); scripts/require-local-gate.mjs is the survivor']
+  ['require-full-gate.mjs', 'removed by d0b7f2cc feat(156); scripts/require-local-gate.mjs is the survivor'],
+  [
+    'dashboard.js',
+    'an untracked webview build chunk under dist/webview/chunks, renamed by the 097 task-first redesign (ea391673); no source file ever carried the name'
+  ]
 ]);
 
 /**

@@ -88,7 +88,7 @@ function makeDeps(observed: Observed, cleaned = true): TaskDeletionDeps {
     },
     store: {
       getRun: (queueId) => store.getRun(queueId),
-      setRun: (queueId, run, claim) => store.setRun(queueId, run, claim),
+      updateRun: (queueId, update, claim) => store.updateRun(queueId, update, claim),
       runCommitClaim: (queueId) => store.runCommitClaim(queueId)
     },
     cancelActive: () => undefined,

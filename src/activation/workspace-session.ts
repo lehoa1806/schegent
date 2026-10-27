@@ -23,7 +23,7 @@ import { QueueManager } from '../queue/queue-manager';
 import type { ProcessEnvironmentPolicy } from '../runner/spawn-env';
 import { QueueStartFailureRegistry } from '../services/queue-start-failure-registry';
 import { ExecutionLeaseManager } from '../state/execution-lease';
-import { WorkspaceLockManager } from '../state/lock';
+import { WorkspaceLockManager, systemClock, systemScheduler } from '../state/lock';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import { Notifier } from '../ui/notifications';
 import { SchegentStatusBar } from '../ui/status-bar';
@@ -166,7 +166,9 @@ const catalogLifecycle = createHostCatalogLifecycle(
 // authorizing its own target.
 const ownershipDir = path.join(workspaceRoot, '.schegent', 'ownership');
 store.useOwnershipStorage(createDiskOwnershipFs({ workspaceRoot, ownershipDir }, logger), ownershipDir);
-const lock = new WorkspaceLockManager(store, ownerId);
+// FR-R4-F01 (FR-033) — the logger is how a release that did not go is said; the clock and the
+// scheduler are the manager's own defaults, passed positionally to reach it.
+const lock = new WorkspaceLockManager(store, ownerId, systemClock, systemScheduler, logger);
 // Feature 092 (T049, FR-031) — the execution half of the lock split. Same
 // owner id as the workspace lock so a crash strands both together, but a
 // separate manager over a separate key: holding a queue's execution lease

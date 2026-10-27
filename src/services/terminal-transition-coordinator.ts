@@ -7,8 +7,24 @@ import {
 } from '../state/workflow-run';
 import type { FeatureRequestStatus, TerminalRequestStatus } from '../queue/feature-request';
 import { decideTaskTransition } from '../queue/task-transition-decision';
-import type { WorkspaceStateStore } from '../state/workspace-state';
+import { STALENESS_THRESHOLD_MS } from '../state/lock';
+import { queueResource } from '../state/ownership-registry';
+import { QueueMutationRejected, type WorkspaceStateStore } from '../state/workspace-state';
 import type { HistoryRecorder } from './history-recorder';
+
+/**
+ * The two refusals that mean this window no longer owns the queue it is committing
+ * to. Shared with the controller's commit point (`persistTransition`), so the two
+ * sites cannot disagree about which refusals end a terminal outcome.
+ */
+export function isOwnershipRefusal(
+  error: unknown
+): error is QueueMutationRejected & { readonly reason: 'ownership-lost' | 'fence-superseded' } {
+  return (
+    error instanceof QueueMutationRejected &&
+    (error.reason === 'ownership-lost' || error.reason === 'fence-superseded')
+  );
+}
 
 /** Why an intent was dropped without writing anything: its Run has moved on, or the table refuses the finish. */
 type DropReason = 'resumed' | 'other-run' | 'other-status' | 'refused';
@@ -64,6 +80,11 @@ export class TerminalTransitionCoordinator {
     private readonly rollup?: TerminalRollupHook
   ) {}
 
+  /** Run id → the `createdAt` of the intent THIS instance wrote; see `abandonRefused`. */
+  private readonly writtenHere = new Map<string, number>();
+  /** Run ids whose lost-ownership notice has been logged (FR-006: once per Run). */
+  private readonly lostNoticed = new Set<string>();
+
   /**
    * The journalled intent for a Run, or undefined. Read through a `Partial` so the absence is part
    * of the type: the guards that follow are then meaningful both to `npm run lint`, where a bare
@@ -75,30 +96,81 @@ export class TerminalTransitionCoordinator {
     return intents[runId];
   }
 
-  public async begin(run: WorkflowRun, description?: string): Promise<void> {
-    if (!isTerminalRunStatus(run.status)) return;
+  /**
+   * Journal the intent, and return the `createdAt` it carries: the one it wrote, or
+   * the one it kept. `null` for a nonterminal Run, which journals nothing.
+   *
+   * FR-R4-F01 (decision TA2) — the value is what a refused commit hands back to
+   * `abandonRefused`, so that only the intent THIS window wrote can be removed.
+   */
+  public async begin(run: WorkflowRun, description?: string): Promise<number | null> {
+    if (!isTerminalRunStatus(run.status)) return null;
     const existing = this.journalledIntent(run.id);
     if (existing && existing.run.status === run.status) {
-      if (existing.description !== undefined || description === undefined) return;
+      if (existing.description !== undefined || description === undefined) return existing.createdAt;
       // FR-R3-071 — an intent journalled early (the controller's begin carries no
       // description) is upgraded when `complete()` re-begins with one, so a crash
       // after this point replays the operator's text rather than the feature id.
       // FR-R3-196 — the upgrade keeps the first `createdAt`: replay compares the task
       // row's `updatedAt` against it, and a re-stamp would move the clock past a resume.
       await this.store.setTerminalTransitionIntent(run.id, { ...existing, description });
-      return;
+      return existing.createdAt;
     }
+    const createdAt = Date.now();
     await this.store.setTerminalTransitionIntent(run.id, {
       schemaVersion: 1,
       run,
-      createdAt: Date.now(),
+      createdAt,
       ...(description !== undefined ? { description } : {})
+    });
+    this.writtenHere.set(run.id, createdAt);
+    return createdAt;
+  }
+
+  /**
+   * FR-R4-F01 (FR-006, contract C4 G13) — this window's terminal commit was refused
+   * because it no longer owns the queue. The outcome stays in memory: nothing is
+   * written to Run or Queue state, and the intent this window journalled for it is
+   * removed so that no later `replay()` writes it over the winner.
+   *
+   * Only an intent THIS instance wrote is removed, and only while the journalled
+   * `createdAt` is still the one it wrote. The journal is keyed by Run id, which a
+   * rival that took the queue over shares, so an intent with another `createdAt` is
+   * the winner's, and one this instance merely kept (a crashed predecessor's, say)
+   * is not its to clear. The notice is logged once per Run id.
+   */
+  public async abandonRefused(
+    run: WorkflowRun,
+    createdAt: number,
+    reason: 'ownership-lost' | 'fence-superseded',
+    queueId?: string
+  ): Promise<void> {
+    const mine = this.writtenHere.get(run.id) === createdAt;
+    this.writtenHere.delete(run.id);
+    if (mine) {
+      try {
+        await this.store.removeTerminalIntentIfOwn(run.id, createdAt);
+      } catch {
+        // The intent stays journalled. `replay()` defers while a live rival holds
+        // the queue, so a failed removal is reported and not escalated.
+        this.logger.warn(
+          `terminal-transition: intent for run ${run.id.slice(0, 8)} could not be removed after a lost claim`
+        );
+      }
+    }
+    if (this.lostNoticed.has(run.id)) return;
+    this.lostNoticed.add(run.id);
+    this.logger.warn('terminal-transition: terminal outcome held in memory after a lost claim', {
+      queueId: queueId ?? null,
+      runId: run.id.slice(0, 8),
+      reason,
+      outcome: 'held-in-memory'
     });
   }
 
   public async complete(run: WorkflowRun, description: string): Promise<void> {
     if (!isTerminalRunStatus(run.status)) return;
-    await this.begin(run, description);
+    const createdAt = await this.begin(run, description);
     // FR-R3-196 — the task row is read once, before anything is written, and says whether this
     // transition still has anything to project. `settle` finishes the row before `complete` runs,
     // so a row already in the intent's status has landed: finishing it again is refused by the
@@ -117,7 +189,7 @@ export class TerminalTransitionCoordinator {
         // re-stamps `updatedAt`, and a host that crashed mid-transition wrote nothing after
         // journalling. Only the row can tell a resume that has not yet advanced a phase.
         await this.drop(run, row.status === 'in-flight' ? 'resumed' : 'other-status');
-      } else if (!(await this.projectInterrupted(run, description, row.status))) {
+      } else if (!(await this.projectInterrupted(run, description, row.status, createdAt))) {
         return;
       }
     } catch (error) {
@@ -173,7 +245,8 @@ export class TerminalTransitionCoordinator {
   private async projectInterrupted(
     run: WorkflowRun,
     description: string,
-    rowStatus: FeatureRequestStatus
+    rowStatus: FeatureRequestStatus,
+    createdAt: number | null
   ): Promise<boolean> {
     // FR-R3-196 — ask the queue's own table before writing anything. A finish it would refuse
     // (`paused → failed`, say) can never land, so the Run is not written for it either.
@@ -205,9 +278,17 @@ export class TerminalTransitionCoordinator {
       // method. `RunDriver` calls `complete()` from a `finally`, so a throw here
       // skipped the execution-lease release and the auto-drain behind it and
       // left the queue holding a lease forever — a wedge, from a transient read.
+      //
+      // FR-R4-F01 (FR-006) — the two refusals that mean "this window no longer owns
+      // the queue" are the exception to "the intent stays journalled": replaying
+      // them is how the loser's outcome reached the winner's Run. They end here.
       try {
         await this.store.setRun(active.queueId, run, this.store.runCommitClaim(active.queueId));
       } catch (error) {
+        if (createdAt !== null && isOwnershipRefusal(error)) {
+          await this.abandonRefused(run, createdAt, error.reason, active.queueId);
+          return false;
+        }
         this.logger.warn(
           `terminal-transition: replay remains pending: ${(error as Error).message}`
         );
@@ -266,6 +347,32 @@ export class TerminalTransitionCoordinator {
   }
 
   /**
+   * FR-R4-F01 — why `intent`'s replay must wait, or `null` when it may run.
+   *
+   * The queue is the Run's own (`findRunById`, then the Task's Run), never a
+   * fallback: a Run whose record is gone names no queue, and with no queue there
+   * is no execution record to write over, so nothing waits. Two reads, because
+   * `OwnershipRegistry.read` answers `null` for a record it could not read as well
+   * as for one that does not exist; `verify` is what reports the unreadable case.
+   * A record that cannot be read is treated as a rival: the cost of waiting is one
+   * more activation, the cost of guessing wrong is the winner's Run.
+   */
+  private async deferralReason(
+    run: WorkflowRun,
+    selfOwnerId: string
+  ): Promise<'live-rival' | 'unreadable' | null> {
+    const queueId =
+      this.store.findRunById(run.id)?.queueId ?? this.store.findRunByTask(run.featureId)?.queueId;
+    if (queueId === undefined) return null;
+    const resource = queueResource(queueId);
+    const readable = await this.store.ownership.verify(resource, selfOwnerId, 0);
+    if (readable.outcome === 'unavailable') return 'unreadable';
+    const holder = (await this.store.ownership.read(resource))?.holder ?? null;
+    if (holder === null || holder.ownerId === selfOwnerId) return null;
+    return Date.now() - holder.heartbeatAt <= STALENESS_THRESHOLD_MS ? 'live-rival' : null;
+  }
+
+  /**
    * Feature 093 (T048) — replay every pending transition, not just one.
    *
    * Sequential, and each entry is isolated by its own `try`: an entry whose
@@ -274,9 +381,22 @@ export class TerminalTransitionCoordinator {
    * failure aborting the loop would strand transitions for reasons that have
    * nothing to do with them.
    */
-  public async replay(): Promise<void> {
+  public async replay(selfOwnerId?: string): Promise<void> {
     for (const intent of Object.values(this.store.getTerminalTransitionIntents())) {
       try {
+        // FR-R4-F01 (contract C4 G14) — an intent whose queue a live rival holds is
+        // left journalled for the next activation. Replaying it is how a loser's
+        // outcome reached the winner's Run. Only a caller that says who it is can
+        // be told apart from the rival, so a bare `replay()` is unchanged.
+        if (selfOwnerId !== undefined) {
+          const deferral = await this.deferralReason(intent.run, selfOwnerId);
+          if (deferral !== null) {
+            this.logger.info(
+              `terminal-transition: replay of run ${intent.run.id.slice(0, 8)} deferred: ${deferral}`
+            );
+            continue;
+          }
+        }
         // FR-R3-071 — the journalled description is what the interrupted
         // transition was completing with; only a legacy intent (or one written
         // by the controller's early begin) forces the featureId substitution,

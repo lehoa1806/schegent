@@ -11,6 +11,7 @@ import type { SanitizedLogger } from '../lib/logger';
 import type { QueueManager } from '../queue/queue-manager';
 import { SessionArtifactRetentionService } from '../services/session-retention/session-artifact-retention-service';
 import type { EvidenceHealthMonitor } from '../services/evidence-health/evidence-health-monitor';
+import type { VerdictBasisMigrationEvent } from '../state/host-verification-migrator';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import type { Notifier } from '../ui/notifications';
 import { createWorkflowPipelineRefReader } from '../ui/sidebar/workflow-pipeline-ref-source';
@@ -66,6 +67,52 @@ export interface EvidenceWiringDeps {
   // on fails `exactOptionalPropertyTypes` at the forwarding call below.
   readonly orphanedRunEvents: NonNullable<MigrationEvents['orphanedRunEvents']>;
   readonly runRepairEvents: MigrationEvents['runRepairEvents'];
+  /**
+   * FR-R4-F01 (US4, contract V3) — what the verdict-basis step reported. Not an audit event
+   * (`forwardMigrationAuditEvents` is not given it): it is disclosed through the notifier and the
+   * runtime log, once, and the Run is not blocked.
+   */
+  readonly v14MigrationEvents: readonly VerdictBasisMigrationEvent[];
+}
+
+/**
+ * FR-R4-F01 (FR-019, contract V3 G9 and G10, constitution principle I) — tell the operator what the
+ * verdict-basis migration did, and never wait for an answer.
+ *
+ * A Run frozen with a verdict basis this version cannot date keeps the policy the runtime already
+ * applies, and the operator hears of it once: one warning per such Run, with no button, and a
+ * metadata-only log line (the queue, 8 characters of the Run id, a count: no path, no Phase body).
+ * `Notifier.warn` resolves when the notice is dismissed, so it is not awaited. A Run found only in
+ * the terminal-transition journal has no queue and is finishing, so it is logged and not announced.
+ * A migrated Run is one information line. Synchronous on purpose: nothing here can block activation.
+ */
+export function discloseVerdictBasisMigration(
+  events: readonly VerdictBasisMigrationEvent[],
+  deps: { readonly notifier: Pick<Notifier, 'warn'>; readonly logger: Pick<SanitizedLogger, 'warn' | 'info'> }
+): void {
+  for (const event of events) {
+    const runId = event.runId.slice(0, 8);
+    if (event.type === 'verdict-basis-migrated') {
+      deps.logger.info('verdict basis migrated', {
+        queueId: event.queueId,
+        runId,
+        legacyAuthored: event.legacyAuthored,
+        legacyDefault: event.legacyDefault
+      });
+      continue;
+    }
+    deps.logger.warn('verdict basis provenance unknown', {
+      queueId: event.queueId,
+      runId,
+      phaseCount: event.phaseCount
+    });
+    if (event.queueId === null) continue;
+    void deps.notifier.warn(
+      `Schegent: the Run on queue ${event.queueId} (${runId}) was frozen with a verdict basis ` +
+        'this version cannot date. It keeps the current policy: Phases with side effects are ' +
+        'judged on their exit status. To run it under a plan frozen now, cancel it and start it again.'
+    );
+  }
 }
 
 export interface EvidenceWiring {
@@ -110,7 +157,8 @@ export async function wireEvidence(deps: EvidenceWiringDeps): Promise<EvidenceWi
     v11MigrationEvents,
     v12MigrationEvents,
     orphanedRunEvents,
-    runRepairEvents
+    runRepairEvents,
+    v14MigrationEvents
   } = deps;
 
 // Feature 083 (US6, FR-041) — the single source of "which Workflows consume a
@@ -181,6 +229,11 @@ const replayEvidenceBacklog = async (): Promise<void> => {
     auditWriter,
     logger
   );
+
+  // FR-R4-F01 (US4) — disclose the verdict-basis migration. After the audit forward, and inside
+  // the trust gate like every other write here, though it writes nothing: the notice is about a
+  // workspace the operator has trusted.
+  discloseVerdictBasisMigration(v14MigrationEvents, { notifier, logger });
 
   // Feature FR-R3-006 (T346, T348) — record the interrupted reset this
   // activation finished, now that there is a writer to record it with.

@@ -234,7 +234,7 @@ describe('Feature 034 T005 — WorkflowController.deleteTask cleanup wiring', ()
     // the ordering anchor the cleanup was asserted to follow. It is gone from
     // `deleteTask`: deleting one Task cancels one queue's Run, and primacy
     // belongs to the window whose other Runs are still executing under it. The
-    // ordering claim survives on `setRun:canceled`, which is the step that
+    // ordering claim survives on `updateRun:canceled`, which is the step that
     // actually has to precede the cleanup — the cleanup deletes the session
     // tree for a Run the store must already show as terminal.
     const order: string[] = [];
@@ -249,23 +249,71 @@ describe('Feature 034 T005 — WorkflowController.deleteTask cleanup wiring', ()
       .mockImplementation(() => {
         order.push('cancel');
       });
-    const origSetRun = store.setRun.bind(store);
-    const setRunSpy = vi.spyOn(store, 'setRun').mockImplementation(async (queueId, r, claim) => {
-      if (r && r.status === 'canceled') order.push('setRun:canceled');
-      return origSetRun(queueId, r, claim);
-    });
+    const origUpdateRun = store.updateRun.bind(store);
+    const updateRunSpy = vi
+      .spyOn(store, 'updateRun')
+      .mockImplementation(async (queueId, update, claim) => {
+        if (update.label === 'cancel') order.push('updateRun:canceled');
+        return origUpdateRun(queueId, update, claim);
+      });
     const result = await controller.deleteTask(feature.id);
 
     expect(result.ok).toBe(true);
     expect(cancelSpy).toHaveBeenCalledTimes(1);
-    // Cancel-then-setRun MUST precede the cleanup invocation.
+    // Cancel-then-updateRun MUST precede the cleanup invocation.
     expect(order[0]).toBe('cancel');
-    expect(order.indexOf('setRun:canceled')).toBeGreaterThanOrEqual(0);
-    expect(order.indexOf('cleanup')).toBeGreaterThan(order.indexOf('setRun:canceled'));
+    expect(order.indexOf('updateRun:canceled')).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf('cleanup')).toBeGreaterThan(order.indexOf('updateRun:canceled'));
     // And primacy is not a `deleteTask` concern at all.
     expect(lockManager.release).not.toHaveBeenCalled();
 
-    setRunSpy.mockRestore();
+    updateRunSpy.mockRestore();
+  });
+
+  // FR-R4-F01 (FR-008) — the driver `cancelActive` aborts writes its own `canceled`
+  // transition, and it can reach the chain before the deletion's cancel update. The
+  // Run is then terminal, which is what the deletion needed; refusing the deletion as
+  // `run-cancel-not-committed` would report a cancel that did happen as one that did not.
+  it('in-flight task — still deletes when the aborted driver commits its own cancel first', async () => {
+    const runId = 'R3-race';
+    const feature = await queue.enqueue('in-flight feature');
+    await queue.markInFlight(feature.id, runId);
+    const now = Date.now();
+    const run: WorkflowRun = {
+      id: runId,
+      featureId: feature.id,
+      featureDir: 'specs/000',
+      status: 'running',
+      currentPhase: 'speckit-plan',
+      currentIteration: 1,
+      startedAt: now,
+      lastTransitionAt: now,
+      phasesCompleted: [],
+      lastError: null,
+      delayedRetryCount: 0,
+      pendingRetryAt: null,
+      pendingRetryCause: null,
+      phaseOverrides: [],
+      manualPauseAt: null,
+      manualPauseCause: null,
+      phaseBreakpoints: [],
+      resumeTargetPhaseId: null
+    };
+    await store.setRun(DEFAULT_QUEUE_ID, run, unfencedCommit('test-fixture'));
+    const controller = makeController(vi.fn(async () => ({ cleaned: true })));
+    vi.spyOn(controller, 'cancelActive').mockImplementation(() => {
+      void store.setRun(
+        DEFAULT_QUEUE_ID,
+        { ...run, status: 'canceled', lastTransitionAt: now + 1 },
+        unfencedCommit('test-fixture')
+      );
+    });
+
+    const result = await controller.deleteTask(feature.id);
+
+    expect(result.ok).toBe(true);
+    expect(queue.findById(feature.id)).toBeNull();
+    expect(store.getRun(DEFAULT_QUEUE_ID)?.status).toBe('canceled');
   });
 
   // FR-R3-153 (T1640, spec FR-013/FR-018, research.md R6) — the confirmed
@@ -318,21 +366,23 @@ describe('Feature 034 T005 — WorkflowController.deleteTask cleanup wiring', ()
     const cancelSpy = vi.spyOn(controller, 'cancelActive').mockImplementation(() => {
       order.push('cancel');
     });
-    const origSetRun = store.setRun.bind(store);
-    const setRunSpy = vi.spyOn(store, 'setRun').mockImplementation(async (queueId, r, claim) => {
-      if (r && r.status === 'canceled') order.push('setRun:canceled');
-      return origSetRun(queueId, r, claim);
-    });
+    const origUpdateRun = store.updateRun.bind(store);
+    const updateRunSpy = vi
+      .spyOn(store, 'updateRun')
+      .mockImplementation(async (queueId, update, claim) => {
+        if (update.label === 'cancel') order.push('updateRun:canceled');
+        return origUpdateRun(queueId, update, claim);
+      });
 
     const result = await controller.deleteTask(feature.id);
 
     expect(result.ok).toBe(true);
     expect(cancelSpy).toHaveBeenCalledTimes(1);
     expect(order[0]).toBe('cancel');
-    expect(order.indexOf('setRun:canceled')).toBeGreaterThanOrEqual(0);
-    expect(order.indexOf('cleanup')).toBeGreaterThan(order.indexOf('setRun:canceled'));
+    expect(order.indexOf('updateRun:canceled')).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf('cleanup')).toBeGreaterThan(order.indexOf('updateRun:canceled'));
 
-    setRunSpy.mockRestore();
+    updateRunSpy.mockRestore();
   });
 
   // The deleted-paused-task defect, through the product's real route.

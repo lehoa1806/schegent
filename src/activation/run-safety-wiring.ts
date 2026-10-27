@@ -16,7 +16,7 @@ import type { SanitizedLogger } from '../lib/logger';
 import { resolveDiffBase } from '../lib/git-diff-base';
 import type { HistoryStore } from '../state/history-store';
 import type { WorkspaceStateStore } from '../state/workspace-state';
-import { isTerminalRunStatus } from '../state/workflow-run';
+import { isTerminalRunStatus, LIVE_RUN_STATUSES } from '../state/workflow-run';
 import { createGitApprovalRequester, createPersistentGitApproval } from './git-approval';
 import { UNRECORDED_PIPELINE_ID } from '../state/git-plan-grants';
 import { createUncontainedConsentRequester } from './uncontained-consent';
@@ -92,7 +92,13 @@ export async function createRunSafetyWiring(input: {
   // append site, and `stage2-producers.ts` runs it in the same relative position
   // it held before — ahead of the recovery installers, which read the run map
   // this reconciles.
-  const replayTerminalTransitions = (): Promise<void> => terminalTransitions.replay();
+  //
+  // FR-R4-F01 (decision TA4) — the owner id is optional so a harness that calls
+  // this bare keeps today's behaviour. Passed, it lets `replay()` tell a rival
+  // that holds an intent's queue from this window, and defer instead of writing
+  // a loser's outcome over the winner's Run.
+  const replayTerminalTransitions = (selfOwnerId?: string): Promise<void> =>
+    terminalTransitions.replay(selfOwnerId);
   // Feature 093 (T053, FR-022a) — Runs that could hold uncommitted work in the
   // shared worktree. Counted as **non-terminal**, which is wider than
   // "currently executing" on purpose: a paused Run's edits are still sitting in
@@ -162,8 +168,25 @@ export async function createRunSafetyWiring(input: {
     // The same fenced write the operator's own pause makes. An unfenced claim is
     // refused by the store, which is the correct outcome: a window that has lost
     // primacy must not stamp another window's Run.
+    //
+    // FR-R4-F01 (FR-008) — only the pause pair the watcher stamped is written, as a PATCH of
+    // the Run as it is inside the chain. The watcher hands over a whole Run built from its own
+    // earlier read; writing that back would carry a stale snapshot over whatever landed since.
+    // A pause already in place (an operator's, a breakpoint's) is not stamped over.
     pause: async (queueId, run) => {
-      await input.store.setRun(queueId, run, input.store.runCommitClaim(queueId));
+      await input.store.updateRun(
+        queueId,
+        {
+          runId: run.id,
+          allowedStatuses: LIVE_RUN_STATUSES,
+          label: 'spend-pause',
+          patch: (current) =>
+            current.manualPauseAt !== null
+              ? {}
+              : { manualPauseAt: run.manualPauseAt, manualPauseCause: run.manualPauseCause }
+        },
+        input.store.runCommitClaim(queueId)
+      );
     },
     // `void`, not returned: `Notifier.warn` resolves when the operator dismisses the notice, and
     // the watcher's contract is fire-and-forget — awaiting an operator's attention inside a bound

@@ -87,7 +87,7 @@ function deletionDeps(harness: HaltHarness): TaskDeletionDeps {
     },
     store: {
       getRun: (queueId) => harness.store.getRun(queueId),
-      setRun: (queueId, run, claim) => harness.store.setRun(queueId, run, claim),
+      updateRun: (queueId, update, claim) => harness.store.updateRun(queueId, update, claim),
       runCommitClaim: (queueId) => harness.store.runCommitClaim(queueId)
     },
     cancelActive: vi.fn(),

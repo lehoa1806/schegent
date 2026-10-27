@@ -93,7 +93,7 @@ export interface Stage2ProducerDeps {
    * its old call site and stays that way; activation has never blocked on it.
    */
   readonly runSafety: {
-    readonly replayTerminalTransitions: () => Promise<void>;
+    readonly replayTerminalTransitions: (selfOwnerId?: string) => Promise<void>;
     readonly sweepCheckpointRetention: () => Promise<unknown>;
   };
   /**
@@ -202,7 +202,7 @@ export function createStage2Producers(deps: Stage2ProducerDeps): Stage2Producers
     // dep note gives: everything downstream reads the run map it reconciles, and
     // a Run whose completion was journalled but not projected must finish before
     // anything decides whether to resume it.
-    await runSafety.replayTerminalTransitions();
+    await runSafety.replayTerminalTransitions(lock.id);
 
     // The evidence backlog goes second: it appends the migration events
     // `store.initialize()` reported and sweeps `.schegent/sessions`, and both are

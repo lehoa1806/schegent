@@ -65,6 +65,7 @@ const {
   clearQueue,
   confirmAndDeleteQueue,
   moveTask,
+  refusalText,
   saveQueueSettings
 } = await import('../queue-control-ipc');
 
@@ -217,7 +218,15 @@ describe('confirmAndDeleteQueue', () => {
   });
 
   it('refuses without prompting when the probe is refused ahead of the gate', async () => {
-    for (const reason of ['default-queue-undeletable', 'queue-has-in-flight-task', 'unsupported']) {
+    for (const reason of [
+      'default-queue-undeletable',
+      'queue-has-in-flight-task',
+      // FR-R4-F01 (spec 239, US3, FR-013, contract D2) — a queue whose Run is live is refused too.
+      'queue-has-running-run',
+      'queue-has-retry-pending-run',
+      'queue-has-paused-run',
+      'unsupported'
+    ]) {
       posted.length = 0;
       confirmCalls.length = 0;
       const promise = confirmAndDeleteQueue('default', 'Default');
@@ -226,6 +235,26 @@ describe('confirmAndDeleteQueue', () => {
       expect(confirmCalls).toHaveLength(0);
       expect(posted).toHaveLength(1);
     }
+  });
+
+  // FR-R4-F01 (spec 239, US3, FR-013, contract D2) — the three refusals name the state the Run
+  // is in and the one control that clears it. The text is the contract's, character for
+  // character: an operator reads this, and a raw `queue-has-paused-run` is a code nobody can act on.
+  it.each([
+    [
+      'queue-has-running-run',
+      "This queue's Run is still running. Cancel the Run first, then delete the queue."
+    ],
+    [
+      'queue-has-retry-pending-run',
+      "This queue's Run is waiting to retry. Cancel the Run first, then delete the queue."
+    ],
+    [
+      'queue-has-paused-run',
+      "This queue's Run is paused (at a breakpoint, at its spend limit, or by you). Cancel the Run first, then delete the queue."
+    ]
+  ])('renders %s as the operator text of contract D2', (reason, text) => {
+    expect(refusalText(reason)).toBe(text);
   });
 
   it('treats an impact payload of the wrong shape as a plain refusal', async () => {

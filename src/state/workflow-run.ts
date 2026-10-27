@@ -106,6 +106,98 @@ export function isOperableRunStatus(status: WorkflowRunStatus | string): boolean
   return !(UNCONTROLLABLE_RUN_STATUSES as readonly string[]).includes(status);
 }
 
+/**
+ * FR-R4-F01 (data-model §2) — the statuses `updateRun` writers name in `allowedStatuses`.
+ * One definition each, so that "which Runs can this writer still act on" is read from one
+ * place and a stale update to a finished Run is refused the same way everywhere.
+ *
+ * - `LIVE_RUN_STATUSES`: a driver is running or a retry is counting down. Liveness, a retry
+ *   decision, a spawn identity, a cancel and a pause act on these and nothing else.
+ * - `OPERABLE_RUN_STATUSES`: everything an operator control can still act on. A `failed`
+ *   Run is operable (skip and retry exist largely for it) but not live.
+ * - `ALL_RUN_STATUSES`: for a write that only REMOVES a field, where a finished Run must
+ *   still be reachable.
+ */
+export const LIVE_RUN_STATUSES: readonly WorkflowRunStatus[] = ['running', 'paused'];
+export const OPERABLE_RUN_STATUSES: readonly WorkflowRunStatus[] = ['running', 'paused', 'failed'];
+export const ALL_RUN_STATUSES: readonly WorkflowRunStatus[] = [
+  'running',
+  'paused',
+  'failed',
+  'completed',
+  'canceled'
+];
+
+/**
+ * FR-R4-F01 (contract C2) — what a field update patch may hold: any field of the Run, and
+ * `undefined` for a field to REMOVE. `Partial<WorkflowRun>` cannot say the second under
+ * `exactOptionalPropertyTypes`, and the removal is the point of an absent field such as
+ * `spawnIdentity`, so the patch has its own type rather than a cast at each writer.
+ */
+export type RunPatch = { [K in keyof WorkflowRun]?: WorkflowRun[K] | undefined };
+
+/**
+ * FR-R4-F01 (research R3 #3) — the top-level fields whose value differs between
+ * `prev` and `next`, compared by reference, as a PATCH for `updateRun`.
+ *
+ * This is the driver's patch. It still builds the whole `next` Run in its own code
+ * shape, and the store applies to the CURRENT Run only what the driver changed. A
+ * field the driver did not touch keeps whatever a concurrent operator, monitor or
+ * retry write left there. A field `next` dropped appears with the value
+ * `undefined`, which `updateRun` reads as "remove the key".
+ *
+ * One exception, and the reason it exists: {@link DRIVER_OWNED_RUN_FIELDS} are taken
+ * from `next` whether or not they changed. The driver records the backend's session
+ * on its in-memory Run when an invocation returns (`RunDriver`, after `dispatchObserved`)
+ * and lets the NEXT transition carry it to the store, so by the time `persist` is
+ * called `prev` already holds them and a diff against it would never write them. No
+ * concurrent writer touches these fields, so writing them from `next` cannot clobber
+ * anything; every other field keeps the changed-since-`prev` rule.
+ */
+export function changedRunFields(prev: WorkflowRun, next: WorkflowRun): RunPatch {
+  const before = prev as unknown as Record<string, unknown>;
+  const after = next as unknown as Record<string, unknown>;
+  const patch: Record<string, unknown> = {};
+  for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (before[key] !== after[key]) patch[key] = after[key];
+  }
+  for (const key of DRIVER_OWNED_RUN_FIELDS) patch[key] = after[key];
+  return patch as RunPatch;
+}
+
+/**
+ * FR-R4-F01 — the fields only the driver writes, and writes on its in-memory Run
+ * before the transition that persists them: the three CLI-session fields
+ * (`NO_CLI_SESSION` is the same trio, cleared together).
+ */
+export const DRIVER_OWNED_RUN_FIELDS = [
+  'lastCliSessionId',
+  'lastCliSessionRunnerKind',
+  'lastCliSessionCostUsd'
+] as const;
+
+/**
+ * FR-R4-F01 (FR-008) — what a cancel writes, as a PATCH for `updateRun`: the status
+ * and the stamp, and every pause and retry field cleared.
+ *
+ * The fields are cleared because a Run can be canceled while a pause was requested
+ * or a retry was counting down, and `validateRunInvariants` forbids the one-sided
+ * pair a half-cleared cancel would leave. `resumeTargetPhaseId` goes with the pause
+ * cause it is tied to. One definition, because the command and Task deletion both
+ * cancel a Run, and two copies of "what cancel writes" are how they come to differ.
+ */
+export function canceledRunPatch(now: number): RunPatch {
+  return {
+    status: 'canceled',
+    lastTransitionAt: now,
+    manualPauseAt: null,
+    manualPauseCause: null,
+    resumeTargetPhaseId: null,
+    pendingRetryAt: null,
+    pendingRetryCause: null
+  };
+}
+
 export interface GitApprovalReceipt {
   readonly approvedAt: number;
   readonly planFingerprint: string;
