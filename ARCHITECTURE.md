@@ -638,7 +638,9 @@ in-workspace link relocated, that walk passes through the operator's own
 directories, which are not the store's to change. The
 separate execution lease is per queue and lasts from admission to terminal
 transition. This split prevents a Run from releasing window primacy while still
-letting separate queues carry independent execution ownership.
+letting separate queues carry independent execution ownership. A window's claim
+on a queue is held, lost, released or never held; a loss stops only that queue's
+driver, and it never releases window primacy.
 
 Multi-root workspaces select one canonical folder; other folders remain normal
 VS Code roots but do not receive another Schegent state authority. Trust is a

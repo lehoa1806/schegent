@@ -29,17 +29,18 @@ import type { QueueFailurePolicy } from '../contracts/queue-failure-policy';
 import { errorMessage } from '../lib/errors';
 import { randomUUID } from 'crypto';
 import {
+  isRunRaceRefusal,
   MAX_GLOBAL_CONCURRENCY_CAP,
   QueueMutationRejected,
+  type QueueDeletionView,
   type WorkspaceStateStore
 } from '../state/workspace-state';
-import type { WorkflowRun } from '../state/workflow-run';
+import { OPERABLE_RUN_STATUSES, type RunPatch, type WorkflowRun } from '../state/workflow-run';
 import { resolveBoundQueueId } from '../state/connected-workflow-run';
 import type { FrozenRunPlan } from '../contracts/run-request';
 import type { SanitizedLogger } from '../lib/logger';
 import {
   createQueue,
-  deleteQueue,
   findQueue,
   renameQueue,
   setQueueSchedule,
@@ -1135,17 +1136,38 @@ export class QueueManager {
    * (FR-014). A bound connected run that is mid-node holds an in-flight Task,
    * so it is refused at step 2 and never reaches the terminate branch — step 3
    * is only ever reached by an aggregate sitting between nodes.
+   *
+   * FR-R4-F01 (FR-012, decision D1, data-model §3) — three more refusals follow the
+   * in-flight Task, for a queue whose Run is still live: running, waiting to retry, and
+   * any other pause (a breakpoint, the spend bound, the operator, or a paused Task row).
+   * A Run that is `completed`, `failed` or `canceled` blocks nothing, and a queue holding
+   * pending Tasks only has no Run and deletes as before.
+   *
+   * With no `view` this reads the store, which is the operator's preview. `deleteQueue` hands
+   * the SAME function a view read inside the commit link, so the check that decides is the one
+   * the operator was shown, evaluated over values no other writer can change in between.
    */
-  public queueDeletionImpact(queueId: string): QueueDeletionImpact {
+  public queueDeletionImpact(queueId: string, view?: QueueDeletionView): QueueDeletionImpact {
     if (queueId === DEFAULT_QUEUE_ID) {
       return { outcome: 'refused', reason: 'default-queue-undeletable' };
     }
-    if (!findQueue(this.store.getQueueRegistry(), queueId)) {
+    if (!findQueue(view?.registry ?? this.store.getQueueRegistry(), queueId)) {
       return { outcome: 'refused', reason: 'unknown-queue-id' };
     }
-    const requests = this.store.getRequestsForQueue(queueId);
+    const requests = view?.requests ?? this.store.getRequestsForQueue(queueId);
     if (requests.some((request) => request.status === 'in-flight')) {
       return { outcome: 'refused', reason: 'queue-has-in-flight-task' };
+    }
+    // Hard rule 57: the queue's own Run, named by the queue.
+    const run = view === undefined ? this.store.getRun(queueId) : view.run;
+    if (run?.status === 'running') {
+      return { outcome: 'refused', reason: 'queue-has-running-run' };
+    }
+    if (run?.status === 'paused' && run.pendingRetryAt !== null) {
+      return { outcome: 'refused', reason: 'queue-has-retry-pending-run' };
+    }
+    if (run?.status === 'paused' || requests.some((request) => request.status === 'paused')) {
+      return { outcome: 'refused', reason: 'queue-has-paused-run' };
     }
     // Feature 092 (T083, FR-041/FR-016a) — the aggregates are scanned by their
     // own `queueId`, not derived from the Tasks this queue happens to hold.
@@ -1159,8 +1181,8 @@ export class QueueManager {
     // nodes has no live child, so a Task-scan reports it as unaffected and the
     // operator would delete its queue without being told.
     const boundConnectedRunIds = Object.values(this.store.getConnectedRuns())
-      .filter((run) => resolveBoundQueueId(run) === queueId)
-      .map((run) => run.connectedRunId)
+      .filter((connected) => resolveBoundQueueId(connected) === queueId)
+      .map((connected) => connected.connectedRunId)
       .sort();
     return {
       outcome: 'deletable',
@@ -1179,56 +1201,61 @@ export class QueueManager {
    */
   public async deleteQueue(queueId: string): Promise<QueueMutationDetail> {
     return this.logMutation('queue-manager.delete-queue', { queueId }, async () => {
-      const impact = this.queueDeletionImpact(queueId);
-      if (impact.outcome === 'refused') return { ok: false, reason: impact.reason, queueId };
+      let impact: QueueDeletionImpact;
       try {
-        // Registry first: it owns the position compaction (FR-016) and is the
-        // authority on the queue's existence. The execution state is dropped
-        // second so a failure between the two leaves an orphan record rather
-        // than a registry entry pointing at nothing.
-        await this.store.setQueueRegistry(
-          deleteQueue(this.store.getQueueRegistry(), { id: queueId, now: Date.now() })
-        );
-        await this.store.deleteQueueState(queueId);
-        // Feature 092 (T083, FR-016a) — terminate every aggregate bound here,
-        // and terminate rather than rebind. Rebinding would move a run the
-        // operator confirmed the deletion of onto a queue they did not choose,
-        // and picking that queue is a decision nothing in this method is
-        // entitled to make; the alternative, leaving the record, is the one
-        // outcome FR-016a names outright — no aggregate pointing at a queue
-        // that no longer exists.
-        //
-        // The ids come from the impact that was just re-checked, so exactly the
-        // set the operator was shown is the set that is removed.
-        const terminated = await this.store.deleteConnectedRuns(impact.boundConnectedRunIds);
-        // Feature 092 (T059, FR-030) — disarm this queue's scheduled start,
-        // and only this queue's. The disarm lives here rather than in
-        // `cmd-delete-queue.ts` because this method is the single site every
-        // deletion entrance passes through; a webview-only disarm would leave
-        // an orphan timer behind any other caller. It runs after the deletion
-        // succeeds: disarming first would strand a live queue's start if the
-        // registry write then failed.
-        if (this.scheduledStartCancelHook) {
-          try {
-            await this.scheduledStartCancelHook.cancel(queueId, 'operator-cancel');
-          } catch (err) {
-            // The queue is already gone; a failed disarm must not turn a
-            // completed deletion into a refusal. A stray fire finds no
-            // `idle-pending` state and supersedes itself.
-            this.logger?.warn(
-              `queue-manager.delete-queue: scheduled-start disarm failed: ${(err as Error).message}`
-            );
-          }
-        }
-        return {
-          ok: true,
+        // FR-R4-F01 (FR-013, contract D3 G1) — the ordered refusals are re-checked INSIDE the
+        // commit, not trusted from the caller's earlier read: the confirmation is a round
+        // trip, and a Task may have gone in flight or a Run been committed in between. The
+        // registry entry and the queue state go in that same link, in the order they always
+        // went: the registry first, which owns the position compaction (FR-016) and is the
+        // authority on the queue's existence, the execution state second.
+        impact = await this.store.deleteQueueIfNoLiveRun(
           queueId,
-          taskCount: impact.pendingTaskCount,
-          connectedRunCount: terminated
-        };
+          (view) => this.queueDeletionImpact(queueId, view),
+          Date.now()
+        );
       } catch (err) {
         return { ok: false, reason: this.registryErrorReason(err), queueId };
       }
+      if (impact.outcome === 'refused') return { ok: false, reason: impact.reason, queueId };
+      // The queue is gone. What follows is best effort and can no longer turn the deletion
+      // into a refusal (hard rule 10, FR-015): a failure is logged and the result is `ok`.
+      //
+      // Feature 092 (T083, FR-016a) — terminate every aggregate bound here, and terminate
+      // rather than rebind. Rebinding would move a run the operator confirmed the deletion of
+      // onto a queue they did not choose, and picking that queue is a decision nothing in this
+      // method is entitled to make; the alternative, leaving the record, is the one outcome
+      // FR-016a names outright — no aggregate pointing at a queue that no longer exists. The
+      // ids come from the impact evaluated inside the link, so exactly the set the operator
+      // was shown is the set that is removed.
+      let terminated = 0;
+      try {
+        terminated = await this.store.deleteConnectedRuns(impact.boundConnectedRunIds);
+      } catch (err) {
+        this.logger?.warn(
+          `queue-manager.delete-queue: connected-run removal failed: ${errorMessage(err)}`
+        );
+      }
+      // Feature 092 (T059, FR-030) — disarm this queue's scheduled start, and only this
+      // queue's. The disarm lives here rather than in `cmd-delete-queue.ts` because this method
+      // is the single site every deletion entrance passes through; a webview-only disarm would
+      // leave an orphan timer behind any other caller. A stray fire finds no `idle-pending`
+      // state and supersedes itself.
+      if (this.scheduledStartCancelHook) {
+        try {
+          await this.scheduledStartCancelHook.cancel(queueId, 'operator-cancel');
+        } catch (err) {
+          this.logger?.warn(
+            `queue-manager.delete-queue: scheduled-start disarm failed: ${(err as Error).message}`
+          );
+        }
+      }
+      return {
+        ok: true,
+        queueId,
+        taskCount: impact.pendingTaskCount,
+        connectedRunCount: terminated
+      };
     });
   }
 
@@ -2250,12 +2277,13 @@ export class QueueManager {
     const matching = this.matchingRunForQueue(run, queueId);
     if (!matching) return;
     if (matching.manualPauseAt !== null) return;
-    await this.store.setRun(queueId, {
-      ...matching,
-      manualPauseAt: now,
-      manualPauseCause: 'queue-paused-mid-run'
-    },
-      this.store.runCommitClaim(queueId)
+    // FR-R4-F01 (FR-008) — a PATCH of the pause pair on the Run as it is inside the
+    // chain, not a whole Run built from the read above. A Run that ended or was
+    // replaced since is a race, not a failure: there is nothing left to pause.
+    await this.patchMatchingRun(queueId, matching.id, 'queue-pause', (current) =>
+      current.manualPauseAt !== null
+        ? {}
+        : { manualPauseAt: now, manualPauseCause: 'queue-paused-mid-run' }
     );
   }
 
@@ -2263,16 +2291,35 @@ export class QueueManager {
     const run = this.store.getRun(queueId);
     const matching = this.matchingRunForQueue(run, queueId);
     if (!matching || matching.manualPauseCause !== 'queue-paused-mid-run') return;
-    await this.store.setRun(queueId, {
-      ...matching,
-      status: matching.status === 'paused' ? 'running' : matching.status,
-      manualPauseAt: null,
-      manualPauseCause: null,
-      lastTransitionAt: now,
-      resumePrompt
-    },
-      this.store.runCommitClaim(queueId)
+    await this.patchMatchingRun(queueId, matching.id, 'queue-resume', (current) =>
+      current.manualPauseCause !== 'queue-paused-mid-run'
+        ? {}
+        : {
+            status: current.status === 'paused' ? 'running' : current.status,
+            manualPauseAt: null,
+            manualPauseCause: null,
+            lastTransitionAt: now,
+            resumePrompt
+          }
     );
+  }
+
+  /** The cascade's one write: a patch of the queue's Run, and a lost race is not an error. */
+  private async patchMatchingRun(
+    queueId: string,
+    runId: string,
+    label: 'queue-pause' | 'queue-resume',
+    patch: (current: WorkflowRun) => RunPatch
+  ): Promise<void> {
+    try {
+      await this.store.updateRun(
+        queueId,
+        { runId, allowedStatuses: OPERABLE_RUN_STATUSES, label, patch },
+        this.store.runCommitClaim(queueId)
+      );
+    } catch (error) {
+      if (!isRunRaceRefusal(error)) throw error;
+    }
   }
 
   private matchingRunForQueue(run: WorkflowRun | null, queueId: string): WorkflowRun | null {

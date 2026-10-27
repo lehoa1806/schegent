@@ -14,6 +14,7 @@ import {
 } from '../queue/feature-request';
 import { withRefreshedLifecycle } from '../queue/queue-lifecycle-refresh';
 import {
+  deleteQueue as removeQueueEntry,
   findQueue,
   makeDefaultRegistry,
   projectQueueRegistry,
@@ -372,14 +373,23 @@ import { migrateConnectedRuns } from './connected-run-migrator';
 import { assertConnectedRunInvariants, type ConnectedWorkflowRun } from './connected-workflow-run';
 // Type-only: `execution-lease.ts` imports the staleness constants from `lock.ts`,
 // so a value import here would close a cycle the type import cannot.
-import type { ExecutionLease } from './execution-lease';
+import type { ClaimTenure, ExecutionLease } from './execution-lease';
 import {
   checkCommitFence,
   isFencedClaim,
+  OWNERSHIP_VERIFY_DEADLINE_MS,
   unfencedCommit,
+  verifyWithin,
+  type CommitFenceFailure,
   type QueueCommitClaim,
   type RunCommitClaim
 } from './ownership-claim';
+import {
+  migrateRunVerdictBasis,
+  verdictBasisEvents,
+  type VerdictBasisMigrationEvent
+} from './host-verification-migrator';
+import { systemScheduler, type Scheduler } from './lock';
 import { createMementoOwnershipFs, type OwnershipFs } from './ownership-fs';
 import {
   isResetInterrupted,
@@ -394,6 +404,8 @@ import {
   type FenceCheck
 } from './ownership-registry';
 import { isSupersededRun } from './workflow-run';
+import type { RunUpdate } from './run-update';
+export { RUN_UPDATE_LABELS, type RunUpdate, type RunUpdateLabel } from './run-update';
 
 /**
  * FR-R3-010 (T403) — retained terminal runs **per queue**.
@@ -433,6 +445,15 @@ export interface OwnershipClaim {
  */
 export interface RunClaimSource {
   claimFor(queueId: string): OwnershipClaim | null;
+  /**
+   * FR-R4-F01 (decision TA1) — whether the claim `claimFor` returns is held or
+   * lost. Optional, on the precedent of `ExecutionLeasePort.hasLease`: a source
+   * without it is read as before, `claimFor` alone deciding, so the doubles that
+   * predate the feature keep working and none of them exercises a loss.
+   */
+  tenureOf?(queueId: string): ClaimTenure;
+  /** FR-R4-F01 (contract C2 G8) — told when a commit is refused `fence-superseded`. */
+  markLost?(queueId: string, reason: 'superseded'): void;
 }
 
 /**
@@ -451,6 +472,16 @@ export type RunReadVerdict =
       readonly writtenAtFence: number;
       readonly liveFence: number;
     };
+
+/**
+ * FR-R4-F01 (contract D3) — what the deletion predicate is shown: the registry, the queue's own
+ * Run and its Task rows, as read inside the commit link.
+ */
+export interface QueueDeletionView {
+  readonly registry: QueueRegistry;
+  readonly run: WorkflowRun | null;
+  readonly requests: readonly FeatureRequest[];
+}
 
 /**
  * The outcome of a guarded write (T302).
@@ -549,7 +580,16 @@ export type QueueMutationRejectReason =
   // The two refusals `fence-superseded` used to absorb; see `checkCommitFence`
   // in `ownership-claim.ts` for why each is its own answer.
   | 'fence-unverifiable'
-  | 'fence-wrong-resource';
+  | 'fence-wrong-resource'
+  // FR-R4-F01 (FR-001) — this window LOST its claim on the queue and knows it.
+  // Refused before any read of the ownership record, which is what separates it
+  // from `fence-superseded` (a loss the commit point discovers by reading).
+  | 'ownership-lost'
+  // FR-R4-F01 (FR-009) — `updateRun` refusals. The queue's current Run is not the
+  // one the update names (or there is none, and an update never recreates one),
+  // or its status is outside what the writer allows.
+  | 'stale-run-id'
+  | 'run-status-precondition';
 
 export class QueueMutationRejected extends Error {
   public readonly reason: QueueMutationRejectReason;
@@ -559,6 +599,20 @@ export class QueueMutationRejected extends Error {
     this.name = 'QueueMutationRejected';
     this.reason = reason;
   }
+}
+
+/**
+ * FR-R4-F01 — an `updateRun` refusal that is only a race with another writer: the
+ * queue's Run was replaced or removed (`stale-run-id`), or is no longer in a status
+ * the writer acts on (`run-status-precondition`). Nothing was written, and for a
+ * background writer there is nothing left to do. A lost claim or a fence refusal is
+ * not one of these.
+ */
+export function isRunRaceRefusal(error: unknown): error is QueueMutationRejected {
+  return (
+    error instanceof QueueMutationRejected &&
+    (error.reason === 'stale-run-id' || error.reason === 'run-status-precondition')
+  );
 }
 
 /**
@@ -760,6 +814,11 @@ export interface InitializeResult {
   // correlatable, and an operator asking why a queue came back paused after an
   // upgrade needs to see which representation said so.
   v13MigrationEvents: readonly QueuePauseCollapseAuditEvent[];
+  // FR-R4-F01 (spec 239, US4, contract V2) — the verdict-basis step: one `verdict-basis-migrated`
+  // per Run whose legacy Phases were made explicit, and one `verdict-basis-provenance-unknown` per
+  // Run holding a Phase no production freeze could have written. In memory only, never persisted,
+  // and NOT audit events: the closed audit contract is unchanged. Activation discloses them.
+  v14MigrationEvents: readonly VerdictBasisMigrationEvent[];
   // One per Run ended at load because its Task row was gone from every queue.
   // Same forwarding contract as the migration events above, and it rides in the
   // same result for the same reason — the store has no audit writer during
@@ -802,9 +861,17 @@ export class WorkspaceStateStore {
   // known, and the authoritative storage is rooted inside that folder.
   private ownershipRegistry: OwnershipRegistry;
 
-  constructor(memento: Memento, logger?: SanitizedLogger) {
+  /**
+   * FR-R4-F01 (FR-021, contract C3) — the timer a bounded ownership verify races against.
+   * Injectable so a test gives up on a never-answering verify without real time; the real timers
+   * otherwise, as `lock.ts` does for its own scheduler.
+   */
+  private readonly scheduler: Scheduler;
+
+  constructor(memento: Memento, logger?: SanitizedLogger, scheduler: Scheduler = systemScheduler) {
     this.memento = memento;
     this.logger = logger ?? null;
+    this.scheduler = scheduler;
     this.ownershipRegistry = new OwnershipRegistry(
       createMementoOwnershipFs(memento),
       MEMENTO_OWNERSHIP_DIR
@@ -876,8 +943,15 @@ export class WorkspaceStateStore {
    * to carry. Refusing it would strand the record; passing it silently is what
    * this item exists to stop. So it is passed, warned once per queue, and the
    * inventory test pins this file as the ONLY place the reason may appear.
+   *
+   * FR-R4-F01 (FR-001) — `lease-not-held` is for a window that gave the queue back
+   * or never held it. A window that LOST it is a different case, and the one this
+   * method used to launder: the lost claim read as "none", the write went through
+   * unfenced, and the loser overwrote the winner. It now throws `ownership-lost`
+   * before any I/O.
    */
   public runCommitClaim(queueId: string): RunCommitClaim {
+    this.refuseIfClaimLost(queueId);
     const claim = this.runClaimSource?.claimFor(queueId) ?? null;
     if (claim !== null) return claim;
     if (!this.unfencedQueuesWarned.has(queueId)) {
@@ -887,6 +961,43 @@ export class WorkspaceStateStore {
       });
     }
     return unfencedCommit('lease-not-held');
+  }
+
+  /**
+   * FR-R4-F01 (FR-001) — throw `ownership-lost` when this window knows it lost
+   * `queueId`. Synchronous and read-free: it consults the claim source's memory,
+   * not the ownership record, so it also runs before any I/O of a commit.
+   */
+  private refuseIfClaimLost(queueId: string): void {
+    if (this.runClaimSource?.tenureOf?.(queueId).state !== 'lost') return;
+    throw new QueueMutationRejected(
+      'ownership-lost',
+      `Run mutation refused: this window lost its claim on queue ${queueId}`
+    );
+  }
+
+  /**
+   * FR-R4-F01 (contract C2 G8) — refuse a fenced commit, and tell the claim source
+   * when the refusal is the first it has heard of the loss.
+   *
+   * `fence-superseded` is a loss the commit point found by reading the record
+   * before the heartbeat did. Marking the tenure lost here is what turns every
+   * LATER commit into `ownership-lost` without another read. Only the tenure the
+   * refused claim belongs to is marked: a straggler carrying an earlier
+   * generation must not condemn a newer claim the window has since acquired.
+   */
+  private refuseCommit(
+    failure: CommitFenceFailure,
+    claim: OwnershipClaim,
+    queueId: string
+  ): never {
+    if (failure.reason === 'fence-superseded') {
+      const current = this.runClaimSource?.claimFor(queueId) ?? null;
+      if (current?.ownerId === claim.ownerId && current.fence === claim.fence) {
+        this.runClaimSource?.markLost?.(queueId, 'superseded');
+      }
+    }
+    throw new QueueMutationRejected(failure.reason, failure.message);
   }
 
   /**
@@ -921,7 +1032,16 @@ export class WorkspaceStateStore {
     await this.serialize(KEYS.lock, async () => {
       const verdict =
         options.refreshHeartbeatAt === undefined
-          ? await this.ownershipRegistry.verify(claim.resource, claim.ownerId, claim.fence)
+          ? // FR-R4-F01 (FR-021): bounded, like every other verify on a commit path. The
+            // heartbeat arm below is a WRITE and is not raced (FR-023).
+            await verifyWithin(
+              this.ownershipRegistry,
+              claim.resource,
+              claim.ownerId,
+              claim.fence,
+              OWNERSHIP_VERIFY_DEADLINE_MS,
+              this.scheduler
+            )
           : await this.ownershipRegistry.heartbeat(
               claim.resource,
               claim.ownerId,
@@ -1156,8 +1276,56 @@ export class WorkspaceStateStore {
       v11MigrationEvents: await this.migrateV10ToV11IfNeeded(),
       v12MigrationEvents: await this.migrateV11ToV12IfNeeded(),
       v13MigrationEvents: await this.migrateV12ToV13IfNeeded(),
+      v14MigrationEvents: await this.migrateVerdictBasisIfNeeded(),
       orphanedRunEvents: await this.reconcileOrphanedRunsIfNeeded()
     };
+  }
+
+  /**
+   * FR-R4-F01 (FR-016 to FR-019, decision D2, contract V2) — give every frozen Phase its verdict
+   * basis, by the shape of what it records, before the version is stamped.
+   *
+   * The step that was meant to do this (`migrateV13ToV14`) expects a `record.plans` array and no
+   * persisted key has that shape, so a workspace stamped 14 kept Phases whose ABSENT
+   * `hostVerification` the runtime now reads as the stricter default. This reads the snapshots
+   * execution actually uses, in `KEYS.run` and in the terminal-transition journal, and is keyed on
+   * the Phase's own fields rather than on the persisted number, like the steps above it: it also
+   * repairs a workspace an earlier v14 build stamped without migrating, and a second pass finds
+   * nothing to do.
+   *
+   * ORDER: after `migrateV12ToV13IfNeeded()` and the v10-to-v11 reshape, which make `KEYS.run` a
+   * map, and before the orphaned-Run reconcile, which must see the Phases already explicit. One
+   * `update()` of each key, only when something changed; a throw escapes before `stampVersion`, so
+   * an interrupted pre-v14 workspace keeps its old number and the next open re-attempts (FR-018).
+   */
+  private async migrateVerdictBasisIfNeeded(): Promise<readonly VerdictBasisMigrationEvent[]> {
+    const events: VerdictBasisMigrationEvent[] = [];
+    const raw = this.memento.get<unknown>(KEYS.run);
+    if (isRunStateMap(raw)) {
+      const next: RunStateMap = {};
+      let changed = false;
+      for (const [queueId, run] of Object.entries(raw)) {
+        const result = migrateRunVerdictBasis(run);
+        next[queueId] = result.run;
+        if (!result.changed) continue;
+        changed = true;
+        events.push(...verdictBasisEvents(run.id, queueId, result.counts));
+      }
+      if (changed) await this.memento.update(KEYS.run, next);
+    }
+    const journal: Record<string, TerminalTransitionIntent> = {
+      ...this.getTerminalTransitionIntents()
+    };
+    let journalChanged = false;
+    for (const [runId, intent] of Object.entries(journal)) {
+      const result = migrateRunVerdictBasis(intent.run);
+      if (!result.changed) continue;
+      journalChanged = true;
+      journal[runId] = { ...intent, run: result.run };
+      events.push(...verdictBasisEvents(intent.run.id, null, result.counts));
+    }
+    if (journalChanged) await this.memento.update(KEYS.terminalTransitionIntent, journal);
+    return events;
   }
 
   /**
@@ -1687,8 +1855,14 @@ export class WorkspaceStateStore {
     let result!: T;
     return this.serialize(KEYS.queue, async () => {
       if (isFencedClaim(claim)) {
-        const f = await checkCommitFence(this.ownershipRegistry, claim, queueId, 'Queue');
-        if (f !== null) throw new QueueMutationRejected(f.reason, f.message);
+        const f = await checkCommitFence(
+          this.ownershipRegistry,
+          claim,
+          queueId,
+          'Queue',
+          this.scheduler
+        );
+        if (f !== null) this.refuseCommit(f, claim, queueId);
       }
       const current = this.getQueue(queueId);
       const mutation = mutate(current);
@@ -1813,8 +1987,18 @@ export class WorkspaceStateStore {
    * other half.
    */
   public setQueueRegistry(registry: QueueRegistry): Promise<void> {
+    const normalized = this.normalizedRegistry(registry);
+    return this.serialize(KEYS.queueRegistry, () =>
+      this.memento.update(KEYS.queueRegistry, normalized)
+    ).then(() => {
+      this.notify(KEYS.queueRegistry);
+    });
+  }
+
+  /** The validated registry with every derived field stripped; see `setQueueRegistry`. */
+  private normalizedRegistry(registry: QueueRegistry): QueueRegistry {
     validateQueueRegistry(registry);
-    const normalized: QueueRegistry = {
+    return {
       entries: registry.entries.map((entry) => {
         const { state: _state, pauseSource: _pauseSource, ...rest } = entry as QueueRegistryEntry & {
           state?: unknown;
@@ -1824,11 +2008,56 @@ export class WorkspaceStateStore {
       }),
       updatedAt: registry.updatedAt
     };
-    return this.serialize(KEYS.queueRegistry, () =>
-      this.memento.update(KEYS.queueRegistry, normalized)
-    ).then(() => {
-      this.notify(KEYS.queueRegistry);
+  }
+
+  /**
+   * FR-R4-F01 (FR-012, FR-013, contract D3) — delete a queue unless it holds a live Run, with
+   * the decision made INSIDE the commit.
+   *
+   * A deletion used to be two separate writes behind a check made before either: the registry
+   * entry, then the queue's state. A Run committed between the operator's preview and their
+   * confirmation, or between the check and the first write, was stranded: the queue gone, the
+   * Run still in `KEYS.run`, holding a concurrency slot nothing could release. This is one
+   * `serializeAcrossKeys` link over the three chains involved. `recheck` is evaluated over
+   * values read inside it (hard rule 57: the Run is the queue's own), and the method writes
+   * NOTHING unless it answers `deletable`. On `deletable` it removes the registry entry and
+   * then the queue state, in the order the two separate writes had: a failure between them
+   * leaves an orphan record rather than a registry entry pointing at nothing.
+   *
+   * It writes no Run (hard rule 58). A Run write queued behind this link finds no registry
+   * entry and is refused `unknown-queue-id` (`setRun` re-checks inside its own link), and
+   * removing a Run for an unknown id stays allowed. It returns the impact it evaluated.
+   */
+  public async deleteQueueIfNoLiveRun<I extends { readonly outcome: 'refused' | 'deletable' }>(
+    queueId: string,
+    recheck: (view: QueueDeletionView) => I,
+    now: number
+  ): Promise<I> {
+    let impact!: I;
+    let deleted = false as boolean;
+    await this.serializeAcrossKeys([KEYS.queueRegistry, KEYS.run, KEYS.queue], async () => {
+      const registry = this.getQueueRegistry();
+      const requests = findQueue(registry, queueId)
+        ? this.getQueue(queueId)
+            .requests.slice()
+            .sort((a, b) => a.position - b.position)
+        : [];
+      impact = recheck({ registry, run: this.getRun(queueId), requests });
+      if (impact.outcome !== 'deletable') return;
+      await this.memento.update(
+        KEYS.queueRegistry,
+        this.normalizedRegistry(removeQueueEntry(registry, { id: queueId, now }))
+      );
+      const remaining = { ...this.readQueueMap() };
+      delete remaining[queueId];
+      await this.memento.update(KEYS.queue, remaining);
+      deleted = true;
     });
+    if (deleted) {
+      this.notify(KEYS.queueRegistry);
+      this.notify(KEYS.queue);
+    }
+    return impact;
   }
 
   public getDefaultQueueId(): string {
@@ -2413,6 +2642,11 @@ export class WorkspaceStateStore {
       }
     }
     return this.serialize(KEYS.run, async () => {
+      // FR-R4-F01 (contract D3 G3) — a queue deleted while this write waited its turn is not
+      // there to hold a Run. The check above ran at call time; this one runs at commit time.
+      if (run !== null && !findQueue(this.getQueueRegistry(), queueId)) {
+        throw new QueueMutationRejected('unknown-queue-id', `Unknown queue id: ${queueId}`);
+      }
       // FR-R3-055 — the verify happens INSIDE this serialized link, not before
       // it. That is the whole difference from `writeGuarded`, which verifies and
       // then separately awaits a callback: two operations, with a reclaim able to
@@ -2420,8 +2654,14 @@ export class WorkspaceStateStore {
       // the chain that already serialises this key is as close to a transaction
       // as this storage allows -- and it is strictly closer than two.
       if (isFencedClaim(claim)) {
-        const f = await checkCommitFence(this.ownershipRegistry, claim, queueId, 'Run');
-        if (f !== null) throw new QueueMutationRejected(f.reason, f.message);
+        const f = await checkCommitFence(
+          this.ownershipRegistry,
+          claim,
+          queueId,
+          'Run',
+          this.scheduler
+        );
+        if (f !== null) this.refuseCommit(f, claim, queueId);
       }
       const next = { ...this.readRunMap() };
       if (run === null) delete next[queueId];
@@ -2433,6 +2673,80 @@ export class WorkspaceStateStore {
       await this.memento.update(KEYS.run, next);
     }).then(() => {
       this.notify(KEYS.run);
+    });
+  }
+
+  /**
+   * FR-R4-F01 (contract C2 G6, G7, G9; research R3) — apply a field update to the
+   * Run a queue holds NOW.
+   *
+   * `setRun` writes a whole Run built from a read the caller took earlier, outside
+   * this chain, so two writers that read the same snapshot each write back a Run
+   * missing the other's change. This is the second kind of write, for a writer that
+   * owns a few fields: the whole check-and-patch is ONE link of the existing
+   * `serialize(KEYS.run, …)` chain, in this order, and nothing is written unless all
+   * of it passes:
+   *
+   *   1. re-read the queue's Run; refuse `stale-run-id` when it is absent or is
+   *      another Run, so an update never brings back a removed entry (G9);
+   *   2. refuse `run-status-precondition` when its status is outside
+   *      `allowedStatuses`, so a stale observation cannot reopen a terminal Run;
+   *   3. refuse `ownership-lost`, then check the fence exactly as `setRun` does;
+   *   4. apply `patch(current)` to the current Run;
+   *   5. `validateRunInvariants` on the merged Run, so an update that leaves one
+   *      half of a pause/retry pair throws here (hard rule 28);
+   *   6. one whole-map write, stamping `writtenAtFence`.
+   *
+   * It adds no write path (hard rule 58): it is a link on the chain `setRun` uses,
+   * and it writes the whole map. Resolves to the Run it wrote, so a caller can keep
+   * its in-memory copy current. No revision field is added (FR-011): every writer
+   * this found runs inside one host and can be routed through the chain.
+   */
+  public updateRun(
+    queueId: string,
+    update: RunUpdate,
+    claim: RunCommitClaim
+  ): Promise<WorkflowRun> {
+    let written!: WorkflowRun;
+    return this.serialize(KEYS.run, async () => {
+      const current = this.getRun(queueId);
+      if (current === null || current.id !== update.runId) {
+        throw new QueueMutationRejected(
+          'stale-run-id',
+          `Run update '${update.label}' refused: queue ${queueId} no longer holds run ${update.runId.slice(0, 8)}`
+        );
+      }
+      if (!update.allowedStatuses.includes(current.status)) {
+        throw new QueueMutationRejected(
+          'run-status-precondition',
+          `Run update '${update.label}' refused: the run is ${current.status}`
+        );
+      }
+      this.refuseIfClaimLost(queueId);
+      if (isFencedClaim(claim)) {
+        const f = await checkCommitFence(
+          this.ownershipRegistry,
+          claim,
+          queueId,
+          'Run',
+          this.scheduler
+        );
+        if (f !== null) this.refuseCommit(f, claim, queueId);
+      }
+      const patch = update.patch(current);
+      const merged = { ...current, ...patch } as WorkflowRun;
+      // A patch value of `undefined` REMOVES the key. A Memento keeps an explicit
+      // `undefined` as a present key, and a field such as `spawnIdentity` must read
+      // as absent, not as present-and-empty.
+      for (const key of Object.keys(patch) as Array<keyof WorkflowRun>) {
+        if (patch[key] === undefined) delete merged[key];
+      }
+      validateRunInvariants(merged);
+      written = isFencedClaim(claim) ? { ...merged, writtenAtFence: claim.fence } : merged;
+      await this.memento.update(KEYS.run, { ...this.readRunMap(), [queueId]: written });
+    }).then(() => {
+      this.notify(KEYS.run);
+      return written;
     });
   }
 
@@ -2473,6 +2787,33 @@ export class WorkspaceStateStore {
       else next[runId] = intent;
       return this.memento.update(KEYS.terminalTransitionIntent, next);
     }).then(() => this.notify(KEYS.terminalTransitionIntent));
+  }
+
+  /**
+   * FR-R4-F01 (contract C2, research R2 #1) — remove the journalled intent for
+   * `runId` only if it is the one this caller wrote, and say whether it did.
+   *
+   * A window whose terminal commit was refused for lost ownership must not leave
+   * its outcome journalled: a later `replay()` would write it over the winner. But
+   * it must not clear the winner's intent either, and the intent is keyed by Run
+   * id, which both windows share. `createdAt` is what tells them apart, so the
+   * comparison and the delete are one link of the intent's own chain: a bare
+   * `setTerminalTransitionIntent(runId, null)` would be a read-then-delete with a
+   * rival's write able to land between the two.
+   */
+  public async removeTerminalIntentIfOwn(runId: string, createdAt: number): Promise<boolean> {
+    let removed = false as boolean;
+    await this.serialize(KEYS.terminalTransitionIntent, () => {
+      const intents: Readonly<Partial<Record<string, TerminalTransitionIntent>>> =
+        this.getTerminalTransitionIntents();
+      if (intents[runId]?.createdAt !== createdAt) return Promise.resolve();
+      const next = { ...intents };
+      delete next[runId];
+      removed = true;
+      return this.memento.update(KEYS.terminalTransitionIntent, next);
+    });
+    if (removed) this.notify(KEYS.terminalTransitionIntent);
+    return removed;
   }
 
   public getLock(): WorkspaceLock | null {

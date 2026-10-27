@@ -46,9 +46,18 @@ probe, a diff check that reports difference by exit code — and worth not takin
 otherwise.
 
 **Persisted plans are not retargeted.** `STATE_SCHEMA_VERSION` moves 13 → 14 and
-`migrateV13ToV14()` stamps each existing plan snapshot with the verdict basis it was
-frozen under, which is the OLD one. A Run created before the upgrade keeps the meaning
-its operator approved; the new default applies to plans frozen after it.
+`migrateRunVerdictBasis()` stamps each frozen Phase of an existing Run with the verdict
+basis it was frozen under, which is the OLD one. A Run created before the upgrade keeps
+the meaning its operator approved; the new default applies to plans frozen after it.
+
+The step runs on **every** initialize, before the version is stamped, and it is keyed on
+what each frozen Phase records rather than on the version number. That is why it also
+repairs a workspace that an earlier 0.2 build stamped 14 without migrating: its Phases
+still lack `hostVerification`, and the step finds and fixes them. A second run finds
+nothing to change. A Phase that carries a provenance but no value is one no build ever
+froze; it keeps the policy this version already applies to it, written explicitly, and the
+Run is named once in a warning. Cancel it and start it again to run under a plan frozen
+now.
 
 **Where to look.** The decision, the two shapes not taken, and why shape 3
 (unconditional) is the recorded destination:

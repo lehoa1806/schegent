@@ -29,7 +29,7 @@
 // record gates building it — so every property below is unchanged and remains the
 // operative behaviour of a shared tree.
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import * as fs from 'node:fs/promises';
@@ -296,3 +296,97 @@ describe('RunCheckpointService — a workspace whose branch has no commits', () 
     expect(recorded.baseCommit).toBe(EMPTY_TREE_SHA1);
   });
 });
+
+// FR-R4-F01 (spec 239, US6, T067, FR-030, contract K3, decision D4) — names never collide, and the
+// retention budget is shared.
+//
+// Artifacts are named `<ms>-<phase>`. Two captures of one Phase in the same millisecond wrote the
+// same names with `flags: 'w'`, so the second silently overwrote the first. The patch now opens
+// with exclusive create, and a collision takes `-1`, `-2` and so on. Decline markers and snapshots
+// share one budget of the newest 20 prefixes (D4), which this pins rather than leaves implicit.
+describe('RunCheckpointService — naming and retention (K3, FR-030, D4)', () => {
+  const FIXED_MS = 1_800_000_000_000;
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function capture(content: string): Promise<void> {
+    await fs.writeFile(path.join(workspaceRoot, 'a.txt'), content);
+    await run('git', ['add', '-A'], { cwd: workspaceRoot });
+    await service(() => 1).checkpoint(RUN, 'speckit-implement');
+  }
+
+  const manifestOf = async (name: string): Promise<Record<string, unknown>> =>
+    JSON.parse(await fs.readFile(path.join(storageRoot, 'checkpoints', 'run-a', name), 'utf8'));
+
+  it('writes two prefixes, with matching manifests, for two captures in one millisecond', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(FIXED_MS);
+
+    await capture('first capture\n');
+    await capture('second capture\n');
+
+    const files = await artifacts();
+    expect(files).toEqual([
+      `${FIXED_MS}-speckit-implement-1.json`,
+      `${FIXED_MS}-speckit-implement-1.patch`,
+      `${FIXED_MS}-speckit-implement.json`,
+      `${FIXED_MS}-speckit-implement.patch`
+    ]);
+    // Neither capture overwrote the other: each patch holds its own bytes.
+    const first = await fs.readFile(
+      path.join(storageRoot, 'checkpoints', 'run-a', `${FIXED_MS}-speckit-implement.patch`),
+      'utf8'
+    );
+    const second = await fs.readFile(
+      path.join(storageRoot, 'checkpoints', 'run-a', `${FIXED_MS}-speckit-implement-1.patch`),
+      'utf8'
+    );
+    expect(first).toContain('first capture');
+    expect(second).toContain('second capture');
+    // The manifest of each capture sits under the SAME prefix as its patch.
+    expect(await manifestOf(`${FIXED_MS}-speckit-implement.json`)).toMatchObject({ runId: 'run-a' });
+    expect(await manifestOf(`${FIXED_MS}-speckit-implement-1.json`)).toMatchObject({ runId: 'run-a' });
+  });
+
+  it('takes the lowest free suffix for a third capture', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(FIXED_MS);
+
+    await capture('one\n');
+    await capture('two\n');
+    await capture('three\n');
+
+    expect((await artifacts()).filter((name) => name.endsWith('.patch'))).toEqual([
+      `${FIXED_MS}-speckit-implement-1.patch`,
+      `${FIXED_MS}-speckit-implement-2.patch`,
+      `${FIXED_MS}-speckit-implement.patch`
+    ]);
+  });
+
+  it('keeps the newest 20 prefixes with decline markers and snapshots counted together', async () => {
+    const dir = path.join(storageRoot, 'checkpoints', 'run-a');
+    await fs.mkdir(dir, { recursive: true });
+    const base = 1_700_000_000_000;
+    // 12 snapshots (oldest), then 10 decline markers (newer): 22 prefixes already.
+    for (let index = 0; index < 12; index += 1) {
+      await fs.writeFile(path.join(dir, `${base + index}-speckit-implement.patch`), '');
+      await fs.writeFile(path.join(dir, `${base + index}-speckit-implement.json`), '{}');
+    }
+    for (let index = 12; index < 22; index += 1) {
+      await fs.writeFile(path.join(dir, `${base + index}-speckit-implement.declined.json`), '{}');
+    }
+
+    await capture('newest\n');
+
+    const prefixes = new Set(
+      (await artifacts()).map((name) => name.replace(/\.(patch|json)$/, ''))
+    );
+    expect(prefixes.size).toBe(20);
+    // The newest 20 survive: the three oldest SNAPSHOTS were pushed out by the markers' budget.
+    expect([...prefixes].filter((prefix) => prefix.endsWith('.declined'))).toHaveLength(10);
+    expect(prefixes.has(`${base}-speckit-implement`)).toBe(false);
+    expect(prefixes.has(`${base + 2}-speckit-implement`)).toBe(false);
+    expect(prefixes.has(`${base + 3}-speckit-implement`)).toBe(true);
+  });
+});
+

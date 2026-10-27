@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 118
+    vacuity-census-denominator: 119
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **118** |
+| Gates the detector calls **controlled** (the denominator) | **119** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -1481,3 +1481,13 @@ controlled on its first run. Attribution is by census membership: the controlled
 
 The rate stays **0.0%**: the entrant was mutated with the rest and did not survive
 (`mutated=118 stillCalledControlled=0`).
+
+**Denominator movement 118 → 119 (2026-10-27, feature 239 / `FR-R4-F01`).** One gate joined,
+controlled on its first run. Attribution is by census membership: the controlled set was computed at
+`HEAD` and in the working tree, and this file is the only one that joined and none left.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | `run-write-census.test.ts` (118 → 119) | Joined. Walks `src` with the TypeScript compiler and holds every `setRun(` site to a classified row, so a new whole-Run write is a reviewed edit. Its control is the one this census looks for: a first test asserting the scan found the very sites the table names, which fails if the walk goes empty, so an empty scan cannot read as "every site classified". |
+
+The rate stays **0.0%**: the entrant was mutated with the rest and did not survive.

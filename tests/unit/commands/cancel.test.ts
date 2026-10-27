@@ -114,6 +114,29 @@ describe('runCancel — palette path (no taskId)', () => {
     expect(store.getRun(DEFAULT_QUEUE_ID)!.status).toBe('canceled');
   });
 
+  // FR-R4-F01 (FR-008) — the driver `cancelActive` aborts writes its own `canceled`
+  // transition, and it can land before this command's update reaches the chain. The
+  // update is then refused as a race; that is the cancel having happened, not a failure.
+  it('still succeeds when the aborted driver commits its own cancel first', async () => {
+    const feature = await queue.enqueue('feature description');
+    await queue.markInFlight(feature.id, 'run-1');
+    const run = makeRun({ featureId: feature.id });
+    await store.setRun(DEFAULT_QUEUE_ID, run, unfencedCommit('test-fixture'));
+    vi.mocked(controller.cancelActive).mockImplementation(() => {
+      void store.setRun(
+        DEFAULT_QUEUE_ID,
+        { ...run, status: 'canceled', lastTransitionAt: run.lastTransitionAt + 1 },
+        unfencedCommit('test-fixture')
+      );
+    });
+
+    const result = await runCancel({ controller, store, queue, audit, notifier, logger });
+
+    expect(result.ok).toBe(true);
+    expect(notifier.error).not.toHaveBeenCalled();
+    expect(store.getRun(DEFAULT_QUEUE_ID)!.status).toBe('canceled');
+  });
+
   it('refuses when there is no run', async () => {
     const result = await runCancel({ controller, store, queue, audit, notifier, logger });
 

@@ -10,7 +10,7 @@
 //
 // Two properties, and the second is the reason the first has to be one write:
 //
-//   - **Same write.** `phaseOverrides` and `plannedTotal` land in one `setRun`.
+//   - **Same write.** `phaseOverrides` and `plannedTotal` land in one `updateRun`.
 //     A follow-up write would leave a window in which the persisted record says
 //     a phase is skipped and the denominator still counts it, and a window is all
 //     a reload needs to be observed.
@@ -164,13 +164,14 @@ function percentOf(run: WorkflowRun | null): number {
 }
 
 describe('FR-R3-008 — an override adjusts the recorded total in the same write', () => {
-  it('writes the narrowed total and the new override together, in one setRun', async () => {
+  it('writes the narrowed total and the new override together, in one updateRun', async () => {
     await seedRun();
     const writes: WorkflowRun[] = [];
-    const passThrough = store.setRun.bind(store);
-    vi.spyOn(store, 'setRun').mockImplementation(async (queueId, run, claim) => {
-      if (run) writes.push(run);
-      return passThrough(queueId, run, claim);
+    const passThrough = store.updateRun.bind(store);
+    vi.spyOn(store, 'updateRun').mockImplementation(async (queueId, update, claim) => {
+      const written = await passThrough(queueId, update, claim);
+      writes.push(written);
+      return written;
     });
 
     expect(await controller.disablePhase('speckit-tasks')).toEqual({ ok: true });

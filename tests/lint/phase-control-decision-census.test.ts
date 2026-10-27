@@ -157,14 +157,16 @@ describe('every PhaseControlService mutation routes through decidePhaseControl (
     }
   });
 
-  // The write calls a mutation method's own body can reach — `store.setRun`/
+  // The write calls a mutation method's own body can reach — `store.updateRun`
+  // (FR-R4-F01: every Run write in this service is a field update, reached through
+  // the private `patchRun` helper, which is the name a method body shows) and
   // `setWatchdog`, every auditor method, every `queue.*` cascade, and the
   // shared `setPhaseOverride` writer `skipPhase`/`disablePhase` route
   // through — named explicitly rather than matched by a broad `\w+`, so this
   // stays a census of known write shapes instead of quietly widening to
   // match anything call-shaped.
   const WRITE_CALL_PATTERN =
-    /\b(?:store\.setRun|store\.setWatchdog|auditor\.appendPhaseControl|auditor\.appendBreakpoint|auditor\.emitTaskPaused|auditor\.emitPhaseJumped|queue\.cascadedPause|queue\.cascadedResume|queue\.setQueuePausedState|this\.setPhaseOverride)\s*\(/g;
+    /\b(?:store\.updateRun|this\.patchRun|store\.setWatchdog|auditor\.appendPhaseControl|auditor\.appendBreakpoint|auditor\.emitTaskPaused|auditor\.emitPhaseJumped|queue\.cascadedPause|queue\.cascadedResume|queue\.setQueuePausedState|this\.setPhaseOverride)\s*\(/g;
 
   for (const method of MUTATION_METHODS) {
     it(`${method} calls decidePhaseControl, reads its eligible result, and does so before any write`, () => {
