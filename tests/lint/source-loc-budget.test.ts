@@ -1477,7 +1477,13 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // one, and the input field was not. The why is the FR-R3-198 note on this
       // file's entry in tests/lint/phase-runner-loc-budget.test.ts, whose ceiling
       // moved 1,403 → 1,404 in the same diff.
-      highWaterMark: 1405
+      //
+      // Feature 237 (FR-R3-209, 2026-10-26) — 1405 → 1409, +4, by this gate's count. The four
+      // lines are carriers for the session cost figure: an input field, an output field, the
+      // request's figure and the output's figure. The why is the FR-R3-209 note on this file's
+      // entry in tests/lint/phase-runner-loc-budget.test.ts, whose ceiling moved 1,404 → 1,408
+      // in the same diff.
+      highWaterMark: 1409
     }
   }
 ];

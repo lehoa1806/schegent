@@ -9,6 +9,7 @@ import { AuditPathRefusedError } from '../../src/audit/audit-log-writer';
 import { CapabilityNotEnforceableError } from '../../src/services/capability-refusal';
 import { OutputTargetRefusedAtDispatch } from '../../src/services/dispatch-output-guard';
 import { UncontainedBackendRefusedError } from '../../src/services/backend-containment-policy';
+import { SpawnRefusedAfterCloseError } from '../../src/runner/spawn-refused-after-close';
 import { ALL_PHASE_CAPABILITIES } from '../../src/contracts/phase-capabilities';
 
 /**
@@ -72,6 +73,11 @@ const REFUSALS: ReadonlyArray<{ readonly name: string; readonly make: () => Erro
   {
     name: 'AuditPathRefusedError',
     make: () => new AuditPathRefusedError('symlink-component', 'ELOOP')
+  },
+  {
+    name: 'SpawnRefusedAfterCloseError',
+    // 67 characters at its longest label, so it is left to the catch-all.
+    make: () => new SpawnRefusedAfterCloseError('claude-cli')
   }
 ];
 

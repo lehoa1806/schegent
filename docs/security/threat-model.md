@@ -129,7 +129,7 @@ What it bounds and what it does not, in the same paragraph on purpose:
   `~/.claude/settings.json` (or the codex equivalent) says, so an operator-local file can loosen a bound
   the plan applied, with every flag respected. `FR-R3-105` added an observer
   (`src/services/ambient-config-observer.ts`) and a field on `capability-applied` to carry its result,
-  but the phase runner does not pass the observer (`src/controller/phase-runner.ts:558`), so every
+  but the phase runner does not pass the observer (`src/controller/phase-runner.ts:560`), so every
   `capability-applied` event records that field as `null`: **nothing is observed today**. Once the
   observer is called it reads one user-level file per backend. For `claude` that is
   `~/.claude/settings.json`, digested over whichever of `permissions`, `allowedTools`, `disallowedTools`
@@ -613,7 +613,7 @@ Outcome classification accepts a termination token only in the trailing region a
 
 Process control is stronger: Claude grace termination arms on the parsed stream-json `{"type":"result"}` harness record, not on model-content substrings. The mechanism is pinned by `tests/lint/no-content-driven-process-control.test.ts`.
 
-A command the turn left running in the background holds that settle (FR-R3-198), and the hold is keyed the same way: on the harness's `system/task_*` records — a `task_started` whose `is_backgrounded` is `true` opens a task, its `task_notification` closes it — whose structural fields model text cannot produce. A hold can only delay the settle; it arms no termination of its own. It is bounded three ways: it ends `BACKGROUND_HOLD_CEILING_MS` (600 000 ms) after the result that began it, the idle window still applies while it lasts, and the absolute deadline is never reset.
+A command the turn left running in the background holds that settle (FR-R3-198), and the hold is keyed the same way: on the harness's `system/task_*` records — a `task_started` whose `is_backgrounded` is `true` opens a task, its `task_notification` closes it — whose structural fields model text cannot produce. A hold can only delay the settle; it arms no termination of its own. It is bounded three ways: it ends `BACKGROUND_HOLD_CEILING_MS` (600 000 ms) after the result that began it, the idle window still applies while it lasts, and the absolute deadline is never reset. While a hold lasts, the monitor declares no stall (FR-R3-208), so a forged background start can also quiet the stall report, for no longer than that same ceiling, and the stall count starts again when the hold ends.
 
 This does not make the model's evidence truthful. It separates a bounded control sentinel from the Phase's self-reported outcome — and for a **load-bearing** Phase that outcome can be **vetoed**: a non-zero exit the backend itself reported, a timeout or the absolute deadline fails the Phase by default, and the model's token cannot override it (FR-R3-058 shipped the mechanism opt-in; FR-R3-117 made it the default; `hostVerification: 'model-token'` is the opt-out). It is a veto and nothing more. On a turn that exits 0 the token decides under either basis, so a model that content persuades to print the real token where the protocol expects it is classified as a model that finished — the residue [Prompt-injection surfaces](#prompt-injection-surfaces) names. Until `FR-R3-182` (2026-10-02) this paragraph said that for a load-bearing Phase the self-reported outcome *does not decide at all* and *the host's own exit status does*; the status is the backend's, and it decides only when it reports a failure. The limit documented above applies in full to the advisory case — a Phase resolving to `sideEffects: 'none'` with no declared output, or one that has opted out — which has not even the veto. FR-R3-023 verified evidence *shape* and FR-R3-038 *disclosed* the self-certification; the resolved default is where the veto is now *enforced*.
 
@@ -652,6 +652,18 @@ same abort → SIGTERM → SIGKILL group ladder an operator cancel uses. It acts
 **invocation** and never on the window-primacy lease, which `AGENTS.md` states as a hard rule
 with FR-028's history behind it.
 
+**Teardown's own stop could start one.** Stage-2 teardown runs `cancelAll()`, whose SIGTERM
+ends a child with 143. A turn that still had background work open then reads as unfinished,
+and the controller resumes an unfinished turn with a new `--resume` spawn, detached like every
+other, after the teardown that was meant to stop every CLI (the feature-228 security review,
+S1). `cancelAll()` now closes each runner too, and a closed runner refuses every later
+invocation with `SpawnRefusedAfterCloseError` before anything is spawned; a runner built after
+teardown is handed out closed. The refused invocation fails the Run rather than resuming it.
+The refusal sits in the runner, not the resume loop, so a phase retry or an auto-drain
+admission after teardown is refused the same way. Teardown also closes the auto-drain before it
+stops any child, so a closed drain starts nothing, and a task waiting for the slot a stopped Run
+frees stays pending for the next session instead of being admitted and failed.
+
 **What remains, stated rather than implied:**
 
 - **A window between SIGKILL and filesystem quiescence.** Signalling a group is not the same as
@@ -671,8 +683,15 @@ with FR-028's history behind it.
   A bare `kill(pid, 0)` would have produced a false refusal that never clears.
 - **Retried phases still have no side-effect idempotency**, and there is still no in-product
   checkpoint restore. Both are recorded in the reliability register and neither is touched here.
+- **An admission already starting when teardown begins goes on.** Teardown closes the auto-drain
+  first, but a start that is already past the drain's last check, in the interval before the
+  runner's first invocation, is not stopped by the close. The closed runner refuses that
+  invocation, so that Run fails with the refusal named instead of starting a CLI.
 
 <!-- Source: src/contracts/spawn-identity.ts -->
+<!-- Source: src/runner/backend-runner-registry.ts -->
+<!-- Source: src/runner/spawn-refused-after-close.ts -->
+<!-- Source: src/services/auto-drain-coordinator.ts -->
 <!-- Source: src/services/process-liveness.ts -->
 <!-- Source: src/services/resume-decision.ts -->
 <!-- Source: src/state/spawn-identity-recorder.ts -->

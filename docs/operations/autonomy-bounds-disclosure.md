@@ -71,6 +71,17 @@ carries the usage — the same record an operator reads and `npm run audit:verif
 Spend cannot be observed mid-turn, because no backend reports it until the turn ends, so
 the overshoot is at most the phase that crossed the bound.
 
+A host restart does not hand a run its whole bound again. At activation the tally of every live
+run is rebuilt from the `phase-end` rows in the last 2 MiB of `.schegent/audit.log`. Nothing is
+evaluated or paused while it is rebuilt, so a tally the rebuild leaves over the bound pauses its
+run at the run's next phase boundary. Rows before that window, or in an archived log, are not
+counted, which understates. A run the operator resumed past its bound before a restart pauses
+once more at its next phase boundary. A resumed Claude session's first row after a restart
+records only its own cost, because the run keeps the session's cumulative cost beside its id.
+Rows written before this release, by a resume after a restart, count a session's earlier cost
+again, and so does the first resume of a run persisted before it. Such a run can pause early,
+once per host session.
+
 ## Per-phase overrides
 
 A Phase may declare `spendBoundUsd` or `spendBoundTokens`, which override the workspace

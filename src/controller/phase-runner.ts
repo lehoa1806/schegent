@@ -182,6 +182,7 @@ export interface PhaseRunInputs {
    */
   resumePrompt?: string;
   continuationNote?: string; // FR-R3-198 — see `PromptInputs.continuationNote`
+  resumeSessionCostUsd?: number; // FR-R3-209 — the Run's figure for resumeSessionId
   /**
    * FR-R3-001 (T260) — the accepted request, forwarded whole to the prompt seam.
    *
@@ -210,6 +211,7 @@ export interface PhaseRunOutput {
    * persist on `WorkflowRun.lastCliSessionId`.
    */
   cliSessionId?: string;
+  cliSessionCostUsd?: number; // FR-R3-209 — the runner's figure for cliSessionId
   /**
    * Feature 194 (FR-010, contract C3.3) — the consecutive-unchanged count
    * `PhaseRetryEvaluator.maybeEmit()` computed for this iteration, one
@@ -709,6 +711,7 @@ export class PhaseRunner {
         ...(typeof effectiveResumeSessionId === 'string'
           ? { resumeSessionId: effectiveResumeSessionId }
           : {}),
+        ...(typeof effectiveResumeSessionId === 'string' && inputs.resumeSessionCostUsd !== undefined ? { resumeSessionCostUsd: inputs.resumeSessionCostUsd } : {}),
         // FR-R3-086 — without this the adapter never sees the declared set.
         ...capabilityRequestFields(inputs)
       }, rawTranscriptCapture ?? undefined);
@@ -1105,6 +1108,7 @@ export class PhaseRunner {
       warnings: ('warnings' in result ? result.warnings : []) ?? [],
       phaseMessage,
       cliSessionId: raw.cliSessionId,
+      cliSessionCostUsd: raw.cliSessionCostUsd,
       ...(stalledCount !== undefined ? { stalledCount } : {})
     };
   }

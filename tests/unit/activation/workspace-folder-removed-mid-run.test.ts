@@ -46,7 +46,11 @@ describe('FR-R3-114 row 7 — the last workspace folder is removed mid-run', () 
     const runners = new Map(
       (['claude', 'codex'] as const).map((kind) => [
         kind,
-        { cancelActive: vi.fn(() => { cancelled.push(kind); return true; }), hasActiveProcess: true }
+        {
+          cancelActive: vi.fn(() => { cancelled.push(kind); return true; }),
+          close: vi.fn(),
+          hasActiveProcess: true
+        }
       ])
     );
     // Seed the private cache the way `getOrCreate` would, without spawning anything.

@@ -7,7 +7,7 @@
 //   - v11 → v12 per-queue history partition (FR-R3-010)
 //   - Runs ended at load because their Task row was gone (the deleted-paused-
 //     task deadlock; not a version step, see the reconciler's own note)
-//   - workflow-run repair events (legacy)
+//   - workflow-run repair events (legacy phases, malformed session ids)
 //
 // Each forwarding loop swallows append errors and logs a sanitized
 // warn — best-effort, never blocks activation.
@@ -106,6 +106,22 @@ function runMigrationPayload(event: RunStateMigrationAuditEvent): Record<string,
       };
     case 'run-record-repaired':
       return { occurredAt: event.occurredAt, reason: event.reason };
+  }
+}
+
+/** Each repair's payload is built on its own; the session-id one names the repair, not the id. */
+function runRepairPayload(event: WorkflowRunRepairedAuditEvent): Record<string, unknown> {
+  switch (event.repair) {
+    case 'remove-bugfix-phases-from-default-pipeline':
+      return {
+        pipelineId: event.pipelineId,
+        repair: event.repair,
+        removedPhaseCount: event.removedPhaseCount,
+        removedBreakpointCount: event.removedBreakpointCount,
+        remainingPhaseCount: event.remainingPhaseCount
+      };
+    case 'remove-malformed-cli-session-id':
+      return { repair: event.repair };
   }
 }
 
@@ -253,13 +269,7 @@ export async function forwardMigrationAuditEvents(
         phase: 'state-migration',
         iteration: 0,
         eventType: event.type,
-        payload: {
-          pipelineId: event.pipelineId,
-          repair: event.repair,
-          removedPhaseCount: event.removedPhaseCount,
-          removedBreakpointCount: event.removedBreakpointCount,
-          remainingPhaseCount: event.remainingPhaseCount
-        },
+        payload: runRepairPayload(event),
         outcome: 'success'
       });
     } catch (err) {

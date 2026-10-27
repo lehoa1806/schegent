@@ -36,6 +36,7 @@ import {
 import { SessionCostLedger } from './session-cost-ledger';
 import { processTreeSpawnOptions, escalateAndReportTree } from './process-tree';
 import { nextInvocationId } from './invocation-identity';
+import { SpawnRefusedAfterCloseError } from './spawn-refused-after-close';
 
 // Feature 030 BUG-002 — after the invocation's terminal stream-json result line
 // (`{"type":"result"}`) appears in stdout, the runner waits at most this long
@@ -260,6 +261,23 @@ function capabilityArgs(
   return plan.args;
 }
 
+/** The flag whose argument is the session a resumed invocation continues. */
+const RESUME_FLAG = '--resume';
+/** What the spawn log prints in place of that session id. */
+const LOGGED_SESSION_ID = '<id>';
+
+/**
+ * The command line as the spawn log prints it, with the argument after
+ * `--resume` written as `<id>` (feature-228 security review, S3). The CLI is
+ * still spawned with the id; only the log line changes.
+ */
+function loggedCommand(cliPath: string, args: readonly string[]): string {
+  const shown = args.map((arg, index) =>
+    index > 0 && args[index - 1] === RESUME_FLAG ? LOGGED_SESSION_ID : arg
+  );
+  return [cliPath, ...shown].join(' ');
+}
+
 export class ClaudeCliRunner implements BackendRunner {
   private readonly spawnFn: SpawnFn;
   private readonly monitorHook: MonitorSidecarHook | null;
@@ -320,6 +338,9 @@ export class ClaudeCliRunner implements BackendRunner {
    */
   private readonly sessionCosts = new SessionCostLedger();
 
+  /** Set by `close()` at host teardown; no spawn follows it. */
+  private closed = false;
+
   constructor(
     spawnFn: SpawnFn = spawn as unknown as SpawnFn,
     monitorHook: MonitorSidecarHook | null = null,
@@ -356,7 +377,7 @@ export class ClaudeCliRunner implements BackendRunner {
     let continuePrefix: string[];
     const shouldResume = request.isContinue === true || request.sessionReuse === true;
     if (shouldResume && typeof request.resumeSessionId === 'string') {
-      continuePrefix = ['--resume', request.resumeSessionId];
+      continuePrefix = [RESUME_FLAG, request.resumeSessionId];
     } else if (request.isContinue === true) {
       continuePrefix = ['-c'];
     } else {
@@ -402,6 +423,10 @@ export class ClaudeCliRunner implements BackendRunner {
       await diagnosticWriter.prepare(verboseTarget);
     }
 
+    // After the last await, so a `close()` that lands while `prepare()` runs
+    // still refuses this spawn (feature-228 security review, S1).
+    if (this.closed) throw new SpawnRefusedAfterCloseError('claude-cli');
+
     // Feature 068 — capture the assembled command (cliPath + argv). Audit
     // schema v3 (2026-08-02) made `cli-invocation` payloads metadata-only,
     // so this string is never persisted; it survives as a presence signal
@@ -428,7 +453,9 @@ export class ClaudeCliRunner implements BackendRunner {
         cwd: request.cwd,
         env: buildSpawnEnv(request)
       });
-      this._logger.info(`[ClaudeCliRunner] Spawned CLI: ${command}, PID=${child.pid}`);
+      this._logger.info(
+        `[ClaudeCliRunner] Spawned CLI: ${loggedCommand(request.cliPath, args)}, PID=${child.pid}`
+      );
       this.active.set(invocationId, { child, ...attribution });
       this.emitHook({
         kind: 'started',
@@ -596,6 +623,7 @@ export class ClaudeCliRunner implements BackendRunner {
             `phase=${request.phase} iteration=${request.iteration}`
         );
         holdStartedAt = null;
+        this.emitHook({ kind: 'background-hold', runId: request.runId ?? null, invocationId, held: false });
         if (!outputBackpressure.isBlocked) resetIdleTimer();
       };
       // FR-R3-198 (H4, H6, H10) — a result accepted with a task open begins a
@@ -609,10 +637,12 @@ export class ClaudeCliRunner implements BackendRunner {
         this._logger.info(
           '[ClaudeCliRunner] background hold began ' +
             `openTasks=${backgroundTasks.openCount} ` +
+            `untracked=${backgroundTasks.untracked} ` +
             `ceilingMs=${BACKGROUND_HOLD_CEILING_MS} ` +
             `resumed=${shouldResume} ` +
             `phase=${request.phase} iteration=${request.iteration}`
         );
+        this.emitHook({ kind: 'background-hold', runId: request.runId ?? null, invocationId, held: true });
       };
 
       const diagnosticWrites: Promise<void>[] = [];
@@ -645,7 +675,7 @@ export class ClaudeCliRunner implements BackendRunner {
             // FR-R3-198 — the tracker reads the line first, so a hold whose
             // last task closes on it ends before the line is judged.
             backgroundTasks.observe(line);
-            if (holdStartedAt !== null && backgroundTasks.openCount === 0) endHold('closed');
+            if (holdStartedAt !== null && !backgroundTasks.hasOpenWork) endHold('closed');
             if (isSessionInitLine(line)) sawCurrentTurnBoundary = true;
             if (isTerminalResultLine(line)) {
               const replayingHistory =
@@ -677,7 +707,7 @@ export class ClaudeCliRunner implements BackendRunner {
                 // except one the CLI writes after the settle's SIGTERM, which
                 // is its shutdown, not a turn (research R2: `num_turns=0`).
                 if (!completedAwaitingExit) {
-                  backgroundWorkOpenAtResult = backgroundTasks.openCount > 0;
+                  backgroundWorkOpenAtResult = backgroundTasks.hasOpenWork;
                   if (backgroundWorkOpenAtResult) beginHold();
                 }
                 lastResultCostUsd = resultCostUsd(line) ?? lastResultCostUsd;
@@ -819,6 +849,15 @@ export class ClaudeCliRunner implements BackendRunner {
       stdoutScanner?.finalize();
       stderrScanner?.finalize();
       const cliSessionId = extractCliSessionId(stdoutBuffer.decompressStream()) ?? undefined;
+      // FR-R3-209 — after a restart the ledger is empty, and the Run's persisted figure fills it,
+      // only for the session this request resumed. A figure the ledger already holds wins.
+      if (
+        cliSessionId !== undefined &&
+        cliSessionId === request.resumeSessionId &&
+        request.resumeSessionCostUsd !== undefined
+      ) {
+        this.sessionCosts.recordIfAbsent(cliSessionId, request.resumeSessionCostUsd);
+      }
       // FR-R3-198 (K2) — report what the session had cost before this
       // invocation, then keep its cumulative total for the next. A helper
       // invocation (compaction) keeps nothing, so its cost lands in the next
@@ -832,6 +871,8 @@ export class ClaudeCliRunner implements BackendRunner {
       ) {
         this.sessionCosts.record(cliSessionId, lastResultCostUsd);
       }
+      const cliSessionCostUsd =
+        cliSessionId === undefined ? undefined : this.sessionCosts.get(cliSessionId);
 
       return {
         stdoutBuffer,
@@ -852,6 +893,7 @@ export class ClaudeCliRunner implements BackendRunner {
         command,
         cliSessionId,
         ...(sessionCostBaselineUsd !== undefined ? { sessionCostBaselineUsd } : {}),
+        ...(cliSessionCostUsd !== undefined ? { cliSessionCostUsd } : {}),
         ...(stdinDeliveryFailed
           ? { stdinDeliveryFailed: true, stdinErrorCode: delivery.errorCode }
           : {}),
@@ -893,6 +935,16 @@ export class ClaudeCliRunner implements BackendRunner {
       });
     }
     return true;
+  }
+
+  /**
+   * Refuse every later spawn. The feature-228 security review, S1: a child
+   * `cancelActive()` stopped can read as an unfinished turn, and the resume of
+   * that turn must not start a CLI after the teardown that stopped it. A child
+   * already spawned is `cancelActive()`'s to stop, not this.
+   */
+  public close(): void {
+    this.closed = true;
   }
 
   private terminate(child: ChildProcess, attribution: TreeAttribution): void {

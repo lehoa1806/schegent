@@ -281,3 +281,109 @@ describe('the forwarded payloads carry no operator-authored text (T013, FR-023a 
     ]);
   });
 });
+
+// FR-R3-207 (T1892): a dropped session id reaches the audit log as a repair, never as the id.
+describe('a dropped session id reaches the audit log without the id (FR-R3-207, T1892)', () => {
+  const PLANTED = '-planted-7f3c-session';
+  const PLANTED_FRAGMENT = '7f3c';
+  const SESSION_ID_REPAIR = 'remove-malformed-cli-session-id';
+  const PHASE_REPAIR = 'remove-bugfix-phases-from-default-pipeline';
+  const CONTAMINATED_PIPELINE = {
+    id: 'speckit-new-feature',
+    name: 'Spec-kit New Feature',
+    phases: [
+      { id: 'speckit-specify', name: 'Specify', instruction: 'x', loopable: false },
+      { id: 'speckit-clarify', name: 'Clarify', instruction: 'x', loopable: true },
+      { id: 'speckit-plan', name: 'Plan', instruction: 'x', loopable: false },
+      { id: 'speckit-tasks', name: 'Tasks', instruction: 'x', loopable: false },
+      { id: 'speckit-analyze', name: 'Analyze', instruction: 'x', loopable: true },
+      { id: 'speckit-implement', name: 'Implement', instruction: 'x', loopable: false },
+      { id: 'finalize', name: 'Finalize', instruction: 'x', loopable: false },
+      { id: 'done', name: 'Done', instruction: 'x', loopable: false },
+      { id: 'bugfix-report', name: 'Bugfix Report', instruction: 'x', loopable: false }
+    ]
+  };
+
+  function plantedRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
+    return {
+      ...buildWorkflowRun({ id: 'run-planted', featureId: taskIdFor(OTHER_QUEUE) }),
+      lastCliSessionId: PLANTED,
+      lastCliSessionRunnerKind: 'claude',
+      ...overrides
+    };
+  }
+
+  function repairEntries(target: RecordingAuditWriter): Omit<AuditEntry, 'id' | 'timestamp'>[] {
+    return target.appended.filter((entry) => entry.eventType === 'workflow-run-repaired');
+  }
+
+  function sessionIdEntries(target: RecordingAuditWriter): Omit<AuditEntry, 'id' | 'timestamp'>[] {
+    return repairEntries(target).filter((entry) => entry.payload.repair === SESSION_ID_REPAIR);
+  }
+
+  function payloadKeys(entry: Omit<AuditEntry, 'id' | 'timestamp'> | undefined): string[] {
+    return Object.keys(entry?.payload ?? {}).sort();
+  }
+
+  it('F1: appends one entry that names the Run and the repair, and nothing else', async () => {
+    seedV10Workspace(memento, plantedRun());
+
+    await migrateAndForward(memento, writer, logger);
+
+    const entries = sessionIdEntries(writer);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      runId: 'run-planted',
+      phase: 'state-migration',
+      iteration: 0,
+      eventType: 'workflow-run-repaired',
+      outcome: 'success'
+    });
+    expect(payloadKeys(entries[0])).toEqual(['repair']);
+  });
+
+  it('F2: neither the entry nor a warning holds the id or a fragment of it, even when the append fails', async () => {
+    seedV10Workspace(memento, plantedRun());
+
+    await migrateAndForward(memento, writer, logger);
+
+    expect(sessionIdEntries(writer)).toHaveLength(1);
+    const appended = JSON.stringify(writer.appended);
+    expect(appended).not.toContain(PLANTED);
+    expect(appended).not.toContain(PLANTED_FRAGMENT);
+
+    const failingMemento = new FakeMemento();
+    const failingWriter = new RecordingAuditWriter();
+    const failingLogger = new RecordingLogger();
+    seedV10Workspace(failingMemento, plantedRun());
+    failingWriter.rejectWith = new Error('append refused');
+
+    await migrateAndForward(failingMemento, failingWriter, failingLogger);
+
+    const repairWarnings = failingLogger.warnings.filter((warning) =>
+      warning.startsWith('workflow-run-repaired audit append failed')
+    );
+    expect(repairWarnings).toHaveLength(1);
+    for (const warning of failingLogger.warnings) {
+      expect(warning).not.toContain(PLANTED);
+      expect(warning).not.toContain(PLANTED_FRAGMENT);
+    }
+  });
+
+  it('F3: a Run needing both repairs appends two entries, the phase repair first and unchanged', async () => {
+    seedV10Workspace(memento, plantedRun({ pipeline: CONTAMINATED_PIPELINE }));
+
+    await migrateAndForward(memento, writer, logger);
+
+    const entries = repairEntries(writer);
+    expect(entries.map((entry) => entry.payload.repair)).toEqual([PHASE_REPAIR, SESSION_ID_REPAIR]);
+    expect(payloadKeys(entries[0])).toEqual([
+      'pipelineId',
+      'remainingPhaseCount',
+      'removedBreakpointCount',
+      'removedPhaseCount',
+      'repair'
+    ]);
+    expect(payloadKeys(entries[1])).toEqual(['repair']);
+  });
+});

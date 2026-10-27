@@ -21,6 +21,17 @@
  */
 export const BACKGROUND_HOLD_CEILING_MS = 600_000;
 
+/**
+ * Bounds on what one invocation's tracker keeps. A real task closes on its
+ * notification and the CLI's ids are short, so only a stream that is not the
+ * CLI's own could reach either. A start past them is not tracked but is
+ * remembered, holding no id, so the tracker reports open work for the rest of
+ * the invocation. The hold then runs to the ceiling above or the CLI's exit,
+ * and the turn reads as unfinished.
+ */
+export const MAX_OPEN_TASKS = 256;
+export const MAX_TASK_ID_LENGTH = 256;
+
 /** The `system` subtypes the CLI writes about its tasks. None starts a turn. */
 const BOOKKEEPING_SUBTYPES: ReadonlySet<string> = new Set([
   'task_notification',
@@ -42,9 +53,20 @@ export function isBackgroundBookkeepingEvent(parsed: unknown): boolean {
 
 export class BackgroundTaskTracker {
   private readonly open = new Set<string>();
+  private dropped = false;
 
   public get openCount(): number {
     return this.open.size;
+  }
+
+  /** Whether a backgrounded start was dropped at a bound: kept for the invocation, holding no id. */
+  public get untracked(): boolean {
+    return this.dropped;
+  }
+
+  /** Open work: a tracked task is open, or a start was dropped and may still run. */
+  public get hasOpenWork(): boolean {
+    return this.open.size > 0 || this.dropped;
   }
 
   /** Reads one framed stdout line. Anything but a task's start or close changes nothing. */
@@ -66,6 +88,12 @@ export class BackgroundTaskTracker {
       return;
     }
     const backgrounded = 'is_backgrounded' in parsed && parsed.is_backgrounded === true;
-    if (parsed.subtype === 'task_started' && backgrounded) this.open.add(taskId);
+    if (parsed.subtype !== 'task_started' || !backgrounded) return;
+    if (this.open.has(taskId)) return;
+    if (taskId.length > MAX_TASK_ID_LENGTH || this.open.size >= MAX_OPEN_TASKS) {
+      this.dropped = true;
+      return;
+    }
+    this.open.add(taskId);
   }
 }

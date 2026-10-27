@@ -164,8 +164,8 @@ describe('Spec-kit New Feature Pipeline end-to-end (T026, US1)', () => {
       // Phase's declared model, so it reads the value off the same fixture the
       // catalog was built from rather than repeating a literal. The literal was
       // `claude-opus-5`, which is what the deleted built-ins declared;
-      // `repo/examples/` declares `claude-opus-5-5`, and the examples are now
-      // where the process content lives.
+      // `repo/examples/` declares `claude-opus-5-5` on seven of the new-feature
+      // example's ten Phases, and the fixture gives it to every Spec Kit Phase.
       expect(entry.payload).toHaveProperty('model', EXAMPLE_MODEL);
       expect(entry.payload).not.toHaveProperty('effort');
       expect(entry.payload).not.toHaveProperty('timeoutMs');

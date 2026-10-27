@@ -12,6 +12,7 @@ import { OutputSinkBackpressure } from './output-sink-backpressure';
 import { ZippedStreamBuffer } from './zipped-stream-buffer';
 import { processTreeSpawnOptions, escalateAndReportTree } from './process-tree';
 import { nextInvocationId } from './invocation-identity';
+import { SpawnRefusedAfterCloseError } from './spawn-refused-after-close';
 
 export type ProcessSpawnFn = (
   command: string,
@@ -72,6 +73,9 @@ export class ProcessLifecycleRunner {
    */
   private readonly reportedTrees = new WeakSet<ChildProcess>();
 
+  /** Set by `close()` at host teardown; no spawn follows it. */
+  private closed = false;
+
   constructor(
     private readonly spawnFn: ProcessSpawnFn = spawn as unknown as ProcessSpawnFn,
     private readonly monitorHook: MonitorSidecarHook | null,
@@ -105,6 +109,7 @@ export class ProcessLifecycleRunner {
   }): Promise<RawInvocationOutput> {
     const start = Date.now();
     const { request, outputSink } = input;
+    if (this.closed) throw new SpawnRefusedAfterCloseError(this.label);
     const child = this.spawnFn(request.cliPath, input.args, {
       stdio: ['pipe', 'pipe', 'pipe'], shell: false, cwd: request.cwd, env: input.env,
       // FR-R3-054 (H-05) — its own process group, so the ladder below can reach
@@ -280,6 +285,16 @@ export class ProcessLifecycleRunner {
       });
     }
     return true;
+  }
+
+  /**
+   * Refuse every later spawn. The feature-228 security review, S1: a child
+   * `cancelActive()` stopped can read as an unfinished turn, and the resume of
+   * that turn must not start a CLI after the teardown that stopped it. A child
+   * already spawned is `cancelActive()`'s to stop, not this.
+   */
+  public close(): void {
+    this.closed = true;
   }
 
   private emit(event: MonitorSidecarEvent): void {
