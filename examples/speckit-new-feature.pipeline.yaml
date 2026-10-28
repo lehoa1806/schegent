@@ -3,7 +3,7 @@ kind: Pipeline
 metadata:
   id: speckit-new-feature
   name: Spec-kit New Feature
-  version: 2
+  version: 3
 spec:
   phaseIds:
     - speckit-specify
@@ -71,9 +71,17 @@ included:
     - metadata:
         phaseId: speckit-tasks
         name: Spec-kit Tasks
-        version: 2
+        version: 3
       spec:
-        instruction: /speckit-tasks
+        instruction: |-
+          Run /speckit-tasks on the active feature.
+
+          Then mark hand-off tasks in <feature_dir>/tasks.md. Implement sets a marked task aside instead of attempting it, so a mark takes the task out of implement's loop:
+          - Add the label [USER-RUN], beside the task's other labels, to a task only when it needs a person: pushing, opening or merging a pull request, watching CI, deploying to a system outside this repository, an explicit approval, or work that cannot start until one of those has happened.
+          - Never mark work the authorized headless run can complete. Difficulty, size and a failing test are not reasons to mark a task.
+          - When one task line combines headless work with a person-only step, split it in two: the headless work stays an unmarked task, and the person-only step becomes its own marked task.
+          - Mark only the tasks /speckit-tasks wrote and the person-only half of a line you split. Never add a person-only task the generated list does not have.
+          - A task that only mentions the label, for example to describe it, writes it in inline code, as `USER-RUN`, and is not marked.
         model: claude-opus-5-5
         hostVerification: exit-code
         effort: high
@@ -125,23 +133,44 @@ included:
     - metadata:
         phaseId: speckit-implement
         name: Spec-kit Implement
-        version: 2
+        version: 3
       spec:
         instruction: |-
           Run /speckit-implement on the active feature.
 
+          Nobody can answer a question during this Phase. Never ask the user anything and never stop to wait for an answer: settle it under "Decision authority" below, or set the task aside as blocked.
+
           Then close what it left open:
           1. Load <feature_dir>/tasks.md and list every task not marked complete.
-          2. Read <feature_dir>/spec.md and <feature_dir>/plan.md and cross-check the implementation against them. A spec gap is a requirement in spec.md, or a design decision in plan.md, that no code implements; name each by its requirement id or a short quote.
-          3. Implement every incomplete task and every spec gap, and mark each finished task complete in tasks.md.
+          2. Set aside what you must not attempt: each hand-off task, defined under "Hand-off tasks" below, and each blocked task, defined under "Blocked tasks" below. Every other incomplete task is a pending task.
+          3. Read <feature_dir>/spec.md and <feature_dir>/plan.md and cross-check the implementation against them. A spec gap is a requirement in spec.md, or a design decision in plan.md, that no code implements; name each by its requirement id or a short quote.
+          4. Implement every pending task and every spec gap, and mark each finished task complete in tasks.md.
 
           Do not run a code review or a security review here, and do not spawn reviewer sub-agents: the next two Phases review this work.
 
-          Result determination:
-          - If 0 tasks are pending and 0 spec gaps remain → emit [SCHEGENT_STATUS: CLEAR]
-          - Otherwise → emit "Remaining issues:" listing each incomplete task and each open spec gap
+          Hand-off tasks. A hand-off task is an incomplete task only a person can finish. A task is one only in these three cases, and the case is its basis:
+          - marker: its own line in tasks.md carries the token USER-RUN outside inline code. A line that only quotes the token in inline code is not marked.
+          - approval: its own line names a person's approval as the condition for the task, such as "once the user approves" or "after maintainer approval". Review, test results and other conditions do not count.
+          - person-only last step: every other step of the task is done, and its only remaining step is pushing, opening or merging a pull request, watching CI, or deploying to a system outside this repository. A task with any implementation step still undone is pending, even when its line also names such a step.
+          Difficulty, size and a failing test you can fix never make a task a hand-off. Do not attempt a hand-off task, do not mark it complete, and do not add, remove or edit any marker or approval wording on any task line.
 
-          REQUIRED METRIC OUTPUT: Inside the SCHEGENT AUDIT LOG block, you MUST emit `pending_tasks: <N>` and `spec_gaps: <N>` as top-level integer metric lines (NOT nested under Notes: or any other heading). Both count what is still open AFTER this iteration's work. These lines MUST appear even when the count is 0. The controller uses `pending_tasks` to decide whether to re-loop; `spec_gaps` is recorded and does not re-loop this Phase.
+          Decision authority. When a task is unclear, contradictory, or needs a choice no artifact states, settle it yourself instead of escalating it:
+          - Precedence: the constitution (.specify/memory/constitution.md), then spec.md, then plan.md, then research.md, data-model.md and contracts/, then tasks.md. Follow the higher source and correct the lower one, or the code, to agree with it. Where every source is silent, take the conventional, lowest-risk option.
+          - Project rules outrank this authority: the constitution, AGENTS.md, CLAUDE.md and the standing rules in tasks.md. Where one forbids an action, you do not have it.
+          - Decide alone only a choice that is reversible inside this repository and touches no secret or credential, no system outside this repository and no production data. Never weaken a security or privacy property, edit the constitution, delete or reinterpret a requirement in spec.md, or change the expected outcome of a test that already exists on develop.
+          - Record every decision in <feature_dir>/decisions.md as an entry headed "## D-<n>: <title>" with the lines "Status: decided", "Question:" (quote both sides), "Chosen:" (the option and the rule that settled it), "Reversal:" (what to change if a maintainer disagrees) and "Tasks:" (the task ids).
+
+          Blocked tasks. A task is blocked when, after the above, the answer still needs a maintainer: two sources of equal rank conflict, the choice is outside your authority, or the information is not in the repository. Difficulty, size and a failing test you can fix are not blockers. For each blocked task:
+          - Add an entry to <feature_dir>/decisions.md with "Status: needs-maintainer", the question, the options, the option you recommend and the task ids it blocks. A task that depends on a blocked task is blocked too.
+          - Leave the task unchecked in tasks.md and do not work around it. Do not attempt it again in a later iteration unless a decision now answers it; a task under "Unresolved from previous iteration:" that failed for the same cause is blocked as well.
+
+          Result determination:
+          - If 0 tasks are pending, 0 spec gaps remain and 0 tasks are blocked → emit [SCHEGENT_STATUS: CLEAR], even when hand-off tasks remain
+          - Otherwise → emit "Remaining issues:" listing each pending task, each open spec gap, and each blocked task with its decision id and the question a maintainer must answer. Never list a hand-off task there.
+          - In both cases, when at least one hand-off task is open, list each one under "Hand-off tasks (for the user):" as `- <task id> (<basis>): <task text>`, before the SCHEGENT AUDIT LOG block and outside it. With none open, omit that heading.
+          - Emit the completion token only where the output contract says, on its own line after the audit log block. Never echo it in prose, in a list or in a quote.
+
+          REQUIRED METRIC OUTPUT: Inside the SCHEGENT AUDIT LOG block, you MUST emit `pending_tasks: <N>`, `spec_gaps: <N>`, `blocked_tasks: <N>` and `user_run_tasks: <N>` as top-level integer metric lines (NOT nested under Notes: or any other heading). All four count what is still open AFTER this iteration's work, and `pending_tasks` excludes blocked and hand-off tasks. `user_run_tasks` equals the number of tasks listed under "Hand-off tasks (for the user):". These lines MUST appear even when the count is 0. The controller uses `pending_tasks` to decide whether to re-loop; the other three are recorded and do not re-loop this Phase.
         model: claude-sonnet-5-5
         hostVerification: exit-code
         effort: xhigh
@@ -214,25 +243,37 @@ included:
     - metadata:
         phaseId: finalize
         name: Finalize
-        version: 2
+        version: 3
       spec:
         instruction: |-
-          Verify the implementation and drive it to green:
+          Verify the implementation and drive it to green.
+
+          Nobody can answer a question during this Phase, so never ask for approval and never stop to wait for an answer: act inside the authority below, or report what stopped you under "Remaining issues:".
 
           1. Format FIRST: Run the project formatter in write mode (e.g. cargo fmt, npm run format) exactly once before the check set.
           2. Run the full check set — build, tests, lint, typecheck. Capture pass/fail for each.
-          3. If any check fails: diagnose root cause, apply a real fix, re-run affected checks, repeat until all green (max 10 iterations). Do NOT mask failures (no skipped tests, no eslint-disable, no loosened types).
+          3. If any check fails, classify each failure. A failure is caused by the feature unless you can show it is not, for example because it names only a dependency or a file that `git diff $(git merge-base HEAD develop)` does not touch.
+             - Caused by the feature: diagnose root cause, apply a real fix, re-run affected checks, repeat until all green (max 10 iterations). Do NOT mask failures (no skipped tests, no eslint-disable, no loosened types, no weaker audit threshold or ignore list).
+             - A dependency advisory the feature did not cause: fix it under step 6.
+             - Any other failure the feature did not cause: re-run it once, then report it under "Remaining issues:" with the evidence that the feature did not cause it. Do not edit unrelated code to silence it.
           4. Standard fallbacks when plan.md lists no explicit commands:
              - Rust: cargo build, cargo test, cargo clippy -- -D warnings, cargo fmt --check
              - Node/TS: npm run build, npm test, npm run lint, npx tsc --noEmit
              - Python: test runner, ruff/flake8, mypy/pyright
 
           5. Commit all changes with conventional commit format: feat(<feature_name>): <summary>
-          6. Merge to local develop branch: git switch develop && git merge --no-ff <feature_branch>
+          6. Dependency fixes. You are authorized to fix, without asking for approval, a failing dependency-audit check (npm audit, cargo audit, pip-audit or the project's equivalent) whose advisory is in a dependency the feature did not add or change. Clearing a failing check is part of this Phase's task, so a rule that keeps lockfile changes inside the requested task does not stop you; a rule that forbids dependency changes outright does, and then you report the advisory instead. Stay inside these limits:
+             - Move the package to the lowest version the advisory names as fixed, or the nearest your tool resolves above it, by patch or minor versions only, with a targeted command that does not force (for example `npm update <package>`, `cargo update -p <package>`, `uv lock --upgrade-package <package>`).
+             - Change at most three packages in all, and commit the change on its own, after the feature commit: fix(deps): clear <advisory ids> in <packages>
+             - Then re-run the FULL check set. If a check that was green before the change now fails, undo the commit with git revert and report the advisory under "Remaining issues:".
+             - Outside your authority, so report it under "Remaining issues:" with the advisory id, the package, its installed and fixed versions, and the limit that stopped you: a major version bump; adding, removing or replacing a dependency; an overrides, resolutions or constraints entry; a forced or blanket update, such as `npm audit fix`, which applies every fixable advisory in the tree at once; any change to the audit command, its threshold, its ignore list or a waiver, or to CI configuration; an advisory with no fixed version.
+          7. Merge to local develop branch: git switch develop && git merge --no-ff <feature_branch>, but only if every check is green and <feature_dir>/decisions.md has no entry with "Status: needs-maintainer". Otherwise stop after the commits and say why under "Remaining issues:".
 
           Result determination:
-          - If all checks green → emit [SCHEGENT_STATUS: CLEAR]
-          - If checks still failing after 10 iterations → emit "Remaining issues:" listing failures
+          - If all checks are green and the merge is done → emit [SCHEGENT_STATUS: CLEAR]
+          - Otherwise (checks still failing after 10 iterations, a failure or advisory outside your authority, or the merge withheld) → emit "Remaining issues:" listing each
+
+          After a dependency fix, list each package under "Dependency fixes applied:" as `<package> <from> -> <to> (<advisory id>)`.
 
           Inside the SCHEGENT AUDIT LOG block, emit `checks_passing: <N>` and `checks_failing: <N>` as top-level integer metric lines.
         runner: claude
