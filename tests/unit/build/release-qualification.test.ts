@@ -77,10 +77,11 @@ describe('release qualification', () => {
     // with each forward-only migration — v10 was feature 092's per-queue
     // `KEYS.queue` step, v11 is feature 093's per-queue `KEYS.run` step, v12 is
     // FR-R3-010's per-queue history reshape and v13 FR-R3-011's queue-pause
-    // collapse. The pin is the point: a version that changed without anyone
+    // collapse, v14 FR-R3-117's resolved verdict basis and v15 FR-R4-F02's credit-pause default.
+    // The pin is the point: a version that changed without anyone
     // editing this line is a migration nobody wrote.
     expect(readFileSync('src/contracts/state-schema.ts', 'utf8'))
-      .toContain('STATE_SCHEMA_VERSION = 14');
+      .toContain('STATE_SCHEMA_VERSION = 15');
     expect(existsSync('src/services/terminal-transition-coordinator.ts')).toBe(true);
     expect(existsSync('Cargo.toml')).toBe(false);
     expect(existsSync('src/engine/index.ts')).toBe(false);

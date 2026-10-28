@@ -36,6 +36,7 @@ import { STATE_SCHEMA_VERSION, STATE_SCHEMA_VERSION_V8 } from '../contracts/stat
 import {
   migrateLegacyRun,
   repairRunOnLoad,
+  type LoadRepairWarning,
   type WorkflowRunRepairedAuditEvent
 } from './workflow-run-migrator';
 import {
@@ -62,6 +63,7 @@ import {
   reconcileOrphanedRuns,
   type OrphanedRunCanceledAuditEvent
 } from './orphaned-run-reconciler';
+import { assertCreditPauseShape, assertWatchdogShape, migrateV14ToV15 } from './credit-pause-state';
 import { DELAYED_RETRY_CAP } from '../contracts/retry-bounds';
 import { HISTORY_UNATTRIBUTED_QUEUE_ID } from '../contracts/queue-identity';
 import {
@@ -523,7 +525,9 @@ export type StoreChangeKey =
   | typeof KEYS.terminalTransitionIntent
   | typeof KEYS.connectedRuns
   | typeof KEYS.executionLeases
-  | typeof KEYS.concurrencyNotice;
+  | typeof KEYS.concurrencyNotice
+  // FR-R4-F02: the credit poll's last outcome reaches the surface, so a write schedules a projection.
+  | typeof KEYS.watchdog;
 
 export type StoreChangeListener = (key: StoreChangeKey) => void;
 
@@ -716,6 +720,8 @@ function validateRunInvariants(run: WorkflowRun): void {
       `WorkflowRun invariant violation: manualPauseAt (${run.manualPauseAt}) and manualPauseCause (${run.manualPauseCause}) must be both null or both non-null`
     );
   }
+  // FR-R4-F02 (data-model §3, hard rule 28) — a credit pause exists only on a Run paused for credits.
+  assertCreditPauseShape(run);
   // Feature 028 — phaseBreakpoints + resumeTargetPhaseId invariants.
   if (!Array.isArray(run.phaseBreakpoints)) {
     throw new Error(
@@ -1269,16 +1275,45 @@ export class WorkspaceStateStore {
     // shape would be a second thing to update when a step is added, which is the
     // duplication this method exists to remove.
     await this.migrateQueueRegistryIfNeeded();
-    return {
+    const throughVerdictBasis = {
       v6MigrationEvents: await this.migrateV5ToV6IfNeeded(persistedNumeric),
       v7MigrationEvents: await this.migrateV6ToV7IfNeeded(persistedNumeric),
       v10MigrationEvents: await this.migrateV9ToV10IfNeeded(),
       v11MigrationEvents: await this.migrateV10ToV11IfNeeded(),
       v12MigrationEvents: await this.migrateV11ToV12IfNeeded(),
       v13MigrationEvents: await this.migrateV12ToV13IfNeeded(),
-      v14MigrationEvents: await this.migrateVerdictBasisIfNeeded(),
+      v14MigrationEvents: await this.migrateVerdictBasisIfNeeded()
+    };
+    // FR-R4-F02 — the v15 step reports no events (it writes a default, it decides nothing), so it
+    // sits between the two steps that do rather than inside the literal.
+    await this.migrateCreditPauseIfNeeded();
+    return {
+      ...throughVerdictBasis,
       orphanedRunEvents: await this.reconcileOrphanedRunsIfNeeded()
     };
+  }
+
+  /**
+   * FR-R4-F02 (contract W4 G12, G13; hard rule 7) — the v14 → v15 step: give every Run its
+   * `creditPause` default and an existing watchdog record its `lastPollOutcome`.
+   *
+   * Keyed on the shape of each record, like the steps above it, never on the persisted number: a
+   * workspace whose Run write landed and whose stamp did not is repaired by the next open, and a
+   * second pass finds nothing to do. Forward-only, and ordered after `migrateVerdictBasisIfNeeded()`
+   * (which makes the Phases explicit) and before the orphaned-Run reconcile (which must see the key
+   * the record now carries). One `update()` of each key, only when something changed; a throw
+   * escapes before `stampVersion`, so an interrupted pre-v15 workspace keeps its old number.
+   *
+   * The terminal-transition journal is left alone: an intent replays through `setRun`, which reads
+   * an absent `creditPause` as `null`.
+   */
+  private async migrateCreditPauseIfNeeded(): Promise<void> {
+    const { runs, watchdog } = migrateV14ToV15(
+      this.memento.get<unknown>(KEYS.run),
+      this.memento.get<unknown>(KEYS.watchdog)
+    );
+    if (runs !== null) await this.memento.update(KEYS.run, runs);
+    if (watchdog !== null) await this.memento.update(KEYS.watchdog, watchdog);
   }
 
   /**
@@ -1549,6 +1584,10 @@ export class WorkspaceStateStore {
           events.push(...repair.auditEvents);
           changed = true;
         }
+        if (repair.warnings.length > 0) {
+          this.warnLoadRepairs(repair.warnings);
+          changed = true;
+        }
       }
       if (changed) await this.memento.update(KEYS.run, next);
       // After the map write, so a quarantine failure cannot cost the records that DID parse.
@@ -1565,10 +1604,22 @@ export class WorkspaceStateStore {
       return [];
     }
     const repair = repairRunOnLoad(migrated);
-    if (applyLegacyMigration || repair.auditEvents.length > 0) {
+    this.warnLoadRepairs(repair.warnings);
+    if (applyLegacyMigration || repair.auditEvents.length > 0 || repair.warnings.length > 0) {
       await this.memento.update(KEYS.run, repair.run);
     }
     return repair.auditEvents;
+  }
+
+  /**
+   * FR-R4-F02 — one metadata-only warning per repair that has no audit event of its own. The entry
+   * is a reason code and nothing from the Run, so the line names neither a Run, a queue nor a
+   * path (hard rules 22 and 23).
+   */
+  private warnLoadRepairs(warnings: readonly LoadRepairWarning[]): void {
+    for (const warning of warnings) {
+      this.logger?.warn('run record repaired on load', { reasonCode: warning.reasonCode });
+    }
   }
 
   /**
@@ -2503,7 +2554,9 @@ export class WorkspaceStateStore {
   }
 
   /**
-   * The Run executing on `queueId`, or `null` when that queue has none.
+   * The Run `queueId` holds, in any nonterminal state, or `null` when that queue has none. A paused
+   * Run is held as much as a running one: a key of the Run map means the queue holds a Run, not
+   * that a driver is executing it (FR-R4-F02, contract U7).
    *
    * An unknown id reads as `null` rather than throwing, matching `getQueue()`
    * above: a read has nothing to corrupt, and making it throw would put a
@@ -2515,7 +2568,8 @@ export class WorkspaceStateStore {
   }
 
   /**
-   * Every queue with a Run executing on it (G-4).
+   * Every queue that holds a Run in any nonterminal state (G-4): a key means the queue holds a Run,
+   * paused or running, which is not the same as one being executed (FR-R4-F02, contract U7).
    *
    * A copy, not the stored object: the map is handed to snapshot and status-bar
    * projections, and a caller that mutated the live record would change what is
@@ -2600,8 +2654,9 @@ export class WorkspaceStateStore {
    * Write or clear one queue's active Run.
    *
    * `null` **removes** the key rather than storing a null under it (G-5), so
-   * `Object.keys(getRunMap())` is exactly the set of queues with something
-   * executing — the count concurrency accounting reads. Clearing an id the
+   * `Object.keys(getRunMap())` is exactly the set of queues holding a Run in any
+   * nonterminal state — a paused Run included, which is why it is not a count of what is
+   * executing (FR-R4-F02, contract U7). Clearing an id the
    * registry no longer knows is allowed and removes nothing: a deleted queue
    * has its registry entry dropped first, and refusing the cleanup afterwards
    * would strand its Run record forever. Writing a Run for an unknown id is
@@ -2858,13 +2913,19 @@ export class WorkspaceStateStore {
         nextPollAt: null,
         pollIntervalMs: 30 * 60 * 1000,
         lastStatusOk: null,
+        lastPollOutcome: null,
         cause: null
       }
     );
   }
 
   public setWatchdog(state: WatchdogState): Promise<void> {
-    return this.serialize(KEYS.watchdog, () => this.memento.update(KEYS.watchdog, state));
+    return this.serialize(KEYS.watchdog, () => {
+      assertWatchdogShape(state);
+      return this.memento.update(KEYS.watchdog, state);
+    }).then(() => {
+      this.notify(KEYS.watchdog);
+    });
   }
 
   /**

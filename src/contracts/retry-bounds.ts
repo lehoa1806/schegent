@@ -52,3 +52,11 @@ export const DELAYED_RETRY_CAP = 5;
  */
 export const RETRY_BUFFER_MS = 60 * 1000;
 export const RETRY_FLOOR_MS = 60 * 1000;
+
+/**
+ * FR-R4-F02 (contract W3 G4) — how long the credit watchdog polls `/status` for one credit-paused
+ * Run before it stops and leaves the Run paused for the operator's Resume: 24 hours from the
+ * Run's first poll. A constant, not a setting: the bound exists so an unattended window cannot
+ * poll an exhausted account forever, and a knob that raises it removes the bound.
+ */
+export const CREDIT_POLL_WINDOW_MS = 24 * 60 * 60 * 1000;

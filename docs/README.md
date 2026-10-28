@@ -195,6 +195,7 @@ drifts unnoticed, because the readers who would catch an error never get there.
 - [Recovery from an interrupted run](operations/recovery-checkpoints.md)
 - [Release notes](operations/release-notes.md)
 - [Release provenance observation](operations/release-provenance-observation.md)
+- [Retry contract](operations/retry-contract.md) — **written 2026-10-28**: which failures retry, pause or fail, where each delay comes from, where automatic attempts stop, and how the watchdog handles them
 - [Runtime log](operations/runtime-log.md)
 - [Single-task queue migration](operations/single-task-queue-migration.md)
 - [Trust scopes](operations/trust-scopes.md)

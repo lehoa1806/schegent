@@ -50,7 +50,11 @@
 // Wiring a `GuardedRunService` to do it does not disturb what this file proves
 // about BUG-001: the service is constructed for the final step only, and every
 // pause/resume assertion above still runs against `QueueManager` directly.
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import * as fs from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
+import { QUEUE_A, fatalOutput, initGitRepo, makeHarness, removeWorkspace } from './concurrent-run-harness';
 import { QueueManager } from '../../src/queue/queue-manager';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
 import { AutoDrainCoordinator } from '../../src/services/auto-drain-coordinator';
@@ -115,7 +119,10 @@ describe('Feature 030 BUG-001 T057 (SC-009) — retry-cap-exhausted → operator
       // promotion is still live and the count is the promotion count.
       get liveRunCount(): number {
         return promotedTasks.length;
-      }
+      },
+      // FR-R4-F02 (TA4) — drain step 4 asks whether the queue already holds a session. None of
+      // these promotions has one before it starts.
+      holdsSession: () => false
     };
     // Feature 092 (T051) — the drain's exclusion step is the per-queue
     // execution lease, not the workspace lock. Always granted here; this test
@@ -310,3 +317,48 @@ describe('Feature 030 BUG-001 T057 (SC-009) — retry-cap-exhausted → operator
     );
   });
 });
+
+// FR-R4-F02 (spec 240, US1; contract U3 G11; FR-005, US1-6) — an operator's explicit retry of a
+// failed Run still resets its retry count. The unattended resume must not, and a pin on this half is
+// what keeps the other half honest: `resumeAdmissionPatch` writes no `delayedRetryCount` for an
+// unattended wakeup, and writes `0` for a failed Run resumed without one. Driven through the real
+// controller: the retry re-pends the Task preserving its run id, and the drain's step 7 resumes it.
+describe('FR-R4-F02 (FR-005; pins) — an operator retry of a failed Run resets its retry count', () => {
+  let tmpRoot: string;
+  let h: Awaited<ReturnType<typeof makeHarness>>;
+
+  beforeEach(async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-retry-reset-'));
+    await initGitRepo(tmpRoot);
+    h = await makeHarness(tmpRoot, { concurrencyCap: 5 });
+  });
+
+  afterEach(async () => {
+    await h.quiesce();
+    await h.controller.drainedRunsSettled();
+    await removeWorkspace(tmpRoot);
+  });
+
+  it('retry then drain step 7 resumes the Task\'s run id with the count back at zero', async () => {
+    const admitted = await h.admit(QUEUE_A, 'a task that fails');
+    h.script(() => fatalOutput());
+    await h.runToTerminal(QUEUE_A, admitted.runId);
+    await h.store.updateRun(
+      QUEUE_A,
+      { runId: admitted.runId, allowedStatuses: ['failed'], label: 'resume', patch: () => ({ delayedRetryCount: 5 }) },
+      h.store.runCommitClaim(QUEUE_A)
+    );
+    expect(h.store.getRun(QUEUE_A)?.status).toBe('failed');
+    expect(h.store.getRun(QUEUE_A)?.delayedRetryCount).toBe(5);
+
+    const retried = await h.queue.retry(admitted.feature.id);
+    expect(retried.ok).toBe(true);
+    await h.controller.drainQueuedWork(QUEUE_A);
+
+    const run = h.store.getRun(QUEUE_A)!;
+    expect(run.id, 'the same Run was resumed, not a fresh one').toBe(admitted.runId);
+    expect(run.status).toBe('running');
+    expect(run.delayedRetryCount).toBe(0);
+  });
+});
+

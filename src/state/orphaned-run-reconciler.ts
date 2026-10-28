@@ -135,6 +135,7 @@ function endedRun(run: WorkflowRun, now: number): WorkflowRun {
     lastTransitionAt: now,
     pendingRetryAt: null,
     pendingRetryCause: null,
+    creditPause: null,
     delayedRetryCount: 0
   };
 }

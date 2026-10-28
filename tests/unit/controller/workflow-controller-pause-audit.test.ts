@@ -35,7 +35,6 @@ describe('WorkflowController Audit Emissions (Feature 072)', () => {
       historyStore: undefined,
       catalog: undefined,
       auditWriter: { append: auditAppendSpy } as any,
-      watchdog: undefined,
       sessionCleanup: undefined,
       getRetryCap: undefined
     };

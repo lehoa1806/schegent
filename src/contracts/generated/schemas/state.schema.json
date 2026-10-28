@@ -20,7 +20,7 @@
   "properties": {
     "stateSchemaVersion": {
       "type": "integer",
-      "const": 14
+      "const": 15
     },
     "workflowRunStatuses": {
       "type": "array",
@@ -198,6 +198,11 @@
           "name": "pendingRetryCause",
           "optional": false,
           "type": "DelayedRetryCause | null"
+        },
+        {
+          "name": "creditPause",
+          "optional": true,
+          "type": "CreditPause | null"
         },
         {
           "name": "phaseOverrides",

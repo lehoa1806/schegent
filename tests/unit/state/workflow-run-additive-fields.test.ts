@@ -117,7 +117,9 @@ describe('a Run persisted before feature 087 reads back unchanged (T036)', () =>
         phases: snapshot.phases.map((phase) => ({ ...phase, hostVerification: 'model-token', hostVerificationDeclaredAt: 'default' }))
       } as unknown as WorkflowRun['pipeline'],
       status: 'canceled',
-      lastTransitionAt: actual?.lastTransitionAt as number
+      lastTransitionAt: actual?.lastTransitionAt as number,
+      // FR-R4-F02 — the v15 step's default; the captured record predates the key.
+      creditPause: null
     };
   }
 
@@ -148,9 +150,11 @@ describe('a Run persisted before feature 087 reads back unchanged (T036)', () =>
     expect(persisted?.[DEFAULT_QUEUE_ID]).toEqual(expectedRun(fixture, run));
     // The byte-level half of the claim, which deep equality alone would not
     // make: no key is added, removed, or reordered by the round trip.
-    expect(Object.keys(persisted?.[DEFAULT_QUEUE_ID] as object)).toEqual(
-      Object.keys(fixture[KEYS.run] as object)
-    );
+    expect(Object.keys(persisted?.[DEFAULT_QUEUE_ID] as object)).toEqual([
+      ...Object.keys(fixture[KEYS.run] as object),
+      // FR-R4-F02 — the only key the round trip adds: the v15 step's `creditPause` default.
+      'creditPause'
+    ]);
   });
 
   it('re-persists every queue item with the same fields it was read with', async () => {

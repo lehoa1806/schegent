@@ -39,14 +39,6 @@ import { SCHEDULED_START_MAX_HORIZON_MS } from '../services/guarded-run-service'
 import { extractResetTimestamp } from '../parser/rate-limit-reset-extractor';
 import { RETRY_BUFFER_MS } from '../contracts/retry-bounds';
 
-export interface DelayedRetryWatchdog {
-  pauseAndPoll(
-    cause: string,
-    options?: { durationOverrideMs?: number; skipStatusCheck?: boolean }
-  ): Promise<void>;
-  cancelPendingTimer(): void;
-}
-
 export interface RetryHandlerDeps {
   store: WorkspaceStateStore;
   queue: QueueManager;
@@ -62,10 +54,10 @@ export interface RetryHandlerDeps {
    * was correct while a window had one Run: there was one deadline, so one timer
    * held it. With N Runs the deadline is per queue, and the handler must say
    * whose it is arming — `RetryCoordinator` owns the registry that keeps N
-   * deadlines from collapsing onto one handle, and it is still the coordinator
-   * that talks to the watchdog. Late wiring is preserved: the coordinator reads
-   * its watchdog reference at the moment of the call, exactly as this callback
-   * used to.
+   * deadlines from collapsing onto one handle.
+   *
+   * FR-R4-F02 (TA5) — and the coordinator now arms a timer of its own. The credit watchdog is no
+   * longer handed to the retry path at all: it polls credits and nothing else.
    */
   armDelayedRetry: (queueId: string, cause: string, delayMs: number) => Promise<void>;
   auditWriter: Pick<AuditLogWriter, 'append'> | null;
@@ -215,6 +207,7 @@ export class RetryHandler {
       phasesCompleted: [...run.phasesCompleted, phaseResult],
       pendingRetryAt: null,
       pendingRetryCause: null,
+      creditPause: null,
       delayedRetryCount: retryCap
     };
     const persisted = await this.deps.persistTransition(run, updated);
@@ -369,7 +362,8 @@ export class RetryHandler {
       ...run,
       delayedRetryCount: 0,
       pendingRetryAt: null,
-      pendingRetryCause: null
+      pendingRetryCause: null,
+      creditPause: null
     };
     const persisted = await this.deps.persistTransition(run, reset);
     await this.appendAudit('retry-recovered', {

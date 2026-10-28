@@ -9,7 +9,7 @@ import { ZippedStreamBuffer } from '../../src/runner/zipped-stream-buffer';
 //   SC-003 (Retry Phase Now starts within 1s — verified by setImmediate
 //           dispatch + waiting <1s).
 //   SC-012 (timer survives restart — pendingRetryAt persisted; a fresh
-//           controller re-arms the watchdog with the correct override).
+//           controller re-arms the retry deadline with the correct delay).
 //
 // Drives the real WorkflowController + AuditLogWriter + QueueManager
 // stack; only the Claude CLI runner is faked. Timer-based assertions
@@ -35,10 +35,8 @@ import type { RawInvocationOutput, InvocationRequest } from '../../src/runner/in
 import type { SchegentStatusBar } from '../../src/ui/status-bar';
 import type { Notifier } from '../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../src/state/lock';
-import type {
-  DelayedRetryWatchdog,
-  WorkflowControllerDeps
-} from '../../src/controller/workflow-controller';
+import type { WorkflowControllerDeps } from '../../src/controller/workflow-controller';
+import { RecordingDeadlineTimer } from '../recording-deadline-timer';
 import {
   DELAYED_RETRY_CAP,
   TRANSIENT_BACKOFF_MS
@@ -88,26 +86,14 @@ function makeLock(): WorkspaceLockManager {
   } as unknown as WorkspaceLockManager;
 }
 
-function makeStubWatchdog(): DelayedRetryWatchdog & {
-  pauseAndPoll: ReturnType<typeof vi.fn>;
-  cancelPendingTimer: ReturnType<typeof vi.fn>;
-} {
-  return {
-    pauseAndPoll: vi.fn(async () => {}),
-    cancelPendingTimer: vi.fn()
-  } as unknown as DelayedRetryWatchdog & {
-    pauseAndPoll: ReturnType<typeof vi.fn>;
-    cancelPendingTimer: ReturnType<typeof vi.fn>;
-  };
-}
-
 interface Harness {
   controller: SchegentWorkflowController;
   store: WorkspaceStateStore;
   queue: QueueManager;
   audit: AuditLogWriter;
   workspaceRoot: string;
-  watchdog: ReturnType<typeof makeStubWatchdog>;
+  /** The retry coordinator's own timer (FR-R4-F02): a delayed retry arms it, a cancel clears it. */
+  deadlineTimer: RecordingDeadlineTimer;
   runner: ClaudeCliRunner;
   notifier: Notifier;
 }
@@ -120,7 +106,7 @@ async function makeHarness(memento: FakeMemento, workspaceRoot: string): Promise
   const store = new WorkspaceStateStore(memento);
   await store.initialize();
   const queue = new QueueManager(store);
-  const watchdog = makeStubWatchdog();
+  const deadlineTimer = new RecordingDeadlineTimer();
 
   const statusBar = { update: vi.fn(), dispose: vi.fn() } as unknown as SchegentStatusBar;
   const notifier = { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as unknown as Notifier;
@@ -129,7 +115,7 @@ async function makeHarness(memento: FakeMemento, workspaceRoot: string): Promise
   const deps: WorkflowControllerDeps = {
     catalog: buildSpeckitCatalog(),
     auditWriter: audit,
-    watchdog
+    deadlineTimer
   };
 
   const controller = new SchegentWorkflowController(
@@ -143,8 +129,12 @@ async function makeHarness(memento: FakeMemento, workspaceRoot: string): Promise
     { cliPath: 'noop', cwd: workspaceRoot, iterationCap: 5, timeoutMs: 1000 },
     deps
   );
+  // The admission service is wired by the activation module in production; here the one thing it
+  // does that these cases observe is the hand-off, so an elapsed deadline goes to the controller's
+  // capacity-aware unattended admission, which rechecks and announces inside the lease.
+  controller.setBackoffElapsedHandler((wakeup) => controller.admitUnattended(wakeup.queueId, wakeup));
 
-  return { controller, store, queue, audit, workspaceRoot, watchdog, runner, notifier };
+  return { controller, store, queue, audit, workspaceRoot, deadlineTimer, runner, notifier };
 }
 
 let tmpRoot: string;
@@ -233,7 +223,8 @@ describe('Feature 011 — delayed retry end-to-end', () => {
 
     const pendingRun = harness.store.getRun(DEFAULT_QUEUE_ID)!;
     expect(pendingRun.pendingRetryAt).not.toBeNull();
-    expect(harness.watchdog.pauseAndPoll).toHaveBeenCalledTimes(1);
+    expect(harness.deadlineTimer.sets).toHaveLength(1);
+    expect(harness.deadlineTimer.armed()).toHaveLength(1);
 
     const before = Date.now();
     const result = await harness.controller.retryPhaseNow();
@@ -246,7 +237,8 @@ describe('Feature 011 — delayed retry end-to-end', () => {
     const elapsed = Date.now() - before;
     expect(elapsed).toBeLessThan(1000);
 
-    expect(harness.watchdog.cancelPendingTimer).toHaveBeenCalledTimes(1);
+    // The deadline the failure armed was cleared by the manual retry (the resumed Run may arm a new one).
+    expect(harness.deadlineTimer.sets[0].settled).toBe(true);
     // The retry-manual audit event must have been emitted.
     const log = await fs.readFile(path.join(tmpRoot, '.schegent', 'audit.log'), 'utf8');
     const events = log
@@ -256,7 +248,7 @@ describe('Feature 011 — delayed retry end-to-end', () => {
     expect(events.some((e) => e.eventType === 'retry-manual')).toBe(true);
   });
 
-  it('SC-012: timer survives restart — pendingRetryAt persisted; second controller re-arms watchdog', async () => {
+  it('SC-012: timer survives restart — pendingRetryAt persisted; second controller re-arms the retry deadline', async () => {
     const memento = new FakeMemento();
     const harness1 = await makeHarness(memento, tmpRoot);
     const feature = await harness1.queue.enqueue('feature D');
@@ -270,23 +262,16 @@ describe('Feature 011 — delayed retry end-to-end', () => {
     expect(offset).toBeGreaterThanOrEqual(TRANSIENT_BACKOFF_MS - 1_000);
     expect(offset).toBeLessThanOrEqual(TRANSIENT_BACKOFF_MS + 1_000);
 
-    // Simulate a VS Code restart — fresh controller, fresh watchdog,
+    // Simulate a VS Code restart — fresh controller, fresh timer,
     // same persisted memento.
     const harness2 = await makeHarness(memento, tmpRoot);
     await harness2.controller.resumeExistingFromActivation();
 
-    expect(harness2.watchdog.pauseAndPoll).toHaveBeenCalledTimes(1);
-    const args = harness2.watchdog.pauseAndPoll.mock.calls[0];
-    expect(args[0]).toBe('transient_error');
-    expect(args[1]).toEqual(
-      expect.objectContaining({
-        skipStatusCheck: true,
-        durationOverrideMs: expect.any(Number)
-      })
-    );
-    // The override is the remaining delay; should be close to the
+    expect(harness2.deadlineTimer.sets).toHaveLength(1);
+    expect(harness2.controller.hasPendingDelayedRetry(DEFAULT_QUEUE_ID)).toBe(true);
+    // The armed delay is the remaining time; should be close to the
     // original 15-minute window.
-    const override = (args[1] as { durationOverrideMs: number }).durationOverrideMs;
+    const override = harness2.deadlineTimer.sets[0].delayMs;
     expect(override).toBeGreaterThan(0);
     expect(override).toBeLessThanOrEqual(TRANSIENT_BACKOFF_MS);
   });
@@ -326,7 +311,8 @@ describe('Feature 011 — delayed retry end-to-end', () => {
       // The resume really happened: the fake CLI was started for the resumed Run.
       await vi.waitFor(() => expect(harness2.runner.invoke).toHaveBeenCalled());
       await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
-      await vi.waitFor(() => expect(harness2.watchdog.pauseAndPoll).toHaveBeenCalled());
+      // The resumed Run fails transiently again and arms a fresh deadline.
+      await vi.waitFor(() => expect(harness2.deadlineTimer.sets.length).toBeGreaterThan(0));
 
       const message = warn.mock.lastCall?.[0] as string;
       expect(message).toContain(`queue "${DEFAULT_QUEUE_ID}"`);
@@ -336,16 +322,35 @@ describe('Feature 011 — delayed retry end-to-end', () => {
       expect(warn).toHaveBeenCalledTimes(1);
     });
 
-    it('P2 (2): a deadline not yet passed raises nothing and re-arms the watchdog instead', async () => {
+    it('P2 (2): a deadline not yet passed raises nothing and re-arms the retry deadline instead', async () => {
       const { harness2 } = await restartWithDeadline(null);
       const warn = harness2.notifier.warn as unknown as ReturnType<typeof vi.fn>;
 
       await harness2.controller.resumeExistingFromActivation();
       await noOtherWork();
 
-      expect(harness2.watchdog.pauseAndPoll).toHaveBeenCalledTimes(1);
+      expect(harness2.deadlineTimer.sets).toHaveLength(1);
       expect(harness2.runner.invoke).not.toHaveBeenCalled();
       expect(warn).not.toHaveBeenCalled();
+    });
+
+    // FR-R4-F02 (US6-7, FR-021; pins) — the delayed retry used to ride the credit watchdog's timer with
+    // a one-shot `skipStatusCheck` flag, so "resumes without a status check" depended on a flag
+    // crossing a boundary intact. The watchdog is no longer in this path at all: the elapsed
+    // deadline resumes the Run once, and nothing here can invoke `/status`.
+    it('P2 (3): an elapsed deadline resumes the Run exactly once and never invokes the status command', async () => {
+      const { harness2 } = await restartWithDeadline(-1_000);
+      const invoke = harness2.runner.invoke as unknown as ReturnType<typeof vi.fn>;
+
+      await harness2.controller.resumeExistingFromActivation();
+      await vi.waitFor(() => expect(invoke).toHaveBeenCalled());
+      await vi.waitFor(() => expect(harness2.deadlineTimer.sets.length).toBeGreaterThan(0));
+      await noOtherWork();
+
+      expect(invoke).toHaveBeenCalledTimes(1);
+      const requests = invoke.mock.calls.map(([request]) => request as { prompt?: string; phase?: string });
+      expect(requests.some((request) => request.prompt === '/status')).toBe(false);
+      expect(requests.some((request) => request.phase === '(credit-watchdog)')).toBe(false);
     });
 
     it('I1: the warning comes before the resumed Run starts its CLI (SC-004)', async () => {
@@ -356,7 +361,7 @@ describe('Feature 011 — delayed retry end-to-end', () => {
       await harness2.controller.resumeExistingFromActivation();
       await vi.waitFor(() => expect(invoke).toHaveBeenCalled());
       await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
-      await vi.waitFor(() => expect(harness2.watchdog.pauseAndPoll).toHaveBeenCalled());
+      await vi.waitFor(() => expect(harness2.deadlineTimer.sets.length).toBeGreaterThan(0));
 
       expect(Math.min(...warn.mock.invocationCallOrder)).toBeLessThan(
         Math.min(...invoke.mock.invocationCallOrder)

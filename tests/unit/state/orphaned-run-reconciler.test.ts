@@ -78,10 +78,11 @@ describe('reconcileOrphanedRuns — a Run may not outlive its Task row', () => {
     const result = reconcileOrphanedRuns({ default: orphan }, NO_ROW_ANYWHERE, 4_242);
 
     expect(result.changed).toBe(true);
-    // The whole record, not one field: everything but `status` and the stamp
-    // survives, which is the claim that ending a Run here is not destructive.
+    // The whole record, not one field: everything but `status`, the stamp and the credit pause
+    // (FR-R4-F02: a canceled Run is no longer paused for credits) survives, which is the claim that
+    // ending a Run here is not destructive.
     expect(result.runs).toEqual({
-      default: { ...orphan, status: 'canceled', lastTransitionAt: 4_242 }
+      default: { ...orphan, status: 'canceled', lastTransitionAt: 4_242, creditPause: null }
     });
     expect(result.events).toEqual([
       {
@@ -99,7 +100,7 @@ describe('reconcileOrphanedRuns — a Run may not outlive its Task row', () => {
 
     const result = reconcileOrphanedRuns({ alpha: orphan }, NO_ROW_ANYWHERE, 7);
 
-    expect(result.runs).toEqual({ alpha: { ...orphan, status: 'canceled', lastTransitionAt: 7 } });
+    expect(result.runs).toEqual({ alpha: { ...orphan, status: 'canceled', lastTransitionAt: 7, creditPause: null } });
     expect(result.events[0]?.priorStatus).toBe('running');
   });
 
@@ -153,7 +154,7 @@ describe('reconcileOrphanedRuns — a Run may not outlive its Task row', () => {
     expect(result.events[0]?.queueId).toBe('beta');
     expect(result.runs).toEqual({
       alpha: live,
-      beta: { ...orphan, status: 'canceled', lastTransitionAt: 13 }
+      beta: { ...orphan, status: 'canceled', lastTransitionAt: 13, creditPause: null }
     });
   });
 
@@ -181,7 +182,8 @@ describe('reconcileOrphanedRuns — a Run may not outlive its Task row', () => {
         lastTransitionAt: 17,
         delayedRetryCount: 0,
         pendingRetryAt: null,
-        pendingRetryCause: null
+        pendingRetryCause: null,
+        creditPause: null
       }
     });
   });
@@ -215,7 +217,7 @@ describe('reconcileOrphanedRuns — a Run may not outlive its Task row', () => {
     const result = reconcileOrphanedRuns({ default: manuallyPaused }, NO_ROW_ANYWHERE, 19);
 
     expect(result.runs).toEqual({
-      default: { ...manuallyPaused, status: 'canceled', lastTransitionAt: 19 }
+      default: { ...manuallyPaused, status: 'canceled', lastTransitionAt: 19, creditPause: null }
     });
   });
 });

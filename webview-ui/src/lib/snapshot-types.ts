@@ -4,8 +4,10 @@ import type {
   ActiveFeatureSummary,
   ActivePipelineSummary,
   CliMonitorState,
+  CreditPollingProjection,
   DegradedPhaseEntry,
   DelayedRetryState,
+  EffectiveLimitsProjection,
   LaunchProjection,
   LiveActivity,
   PhaseTile,
@@ -227,9 +229,13 @@ export type {
   ActivePipelineSummary,
   AuditCategory,
   CliMonitorState,
+  CreditPollingProjection,
   DegradedPhaseEntry,
   DelayedRetryCauseProjection,
   DelayedRetryState,
+  EffectiveLimit,
+  EffectiveLimitsProjection,
+  LimitOrigin,
   FreshnessState,
   LaunchProjection,
   LaunchSection,
@@ -925,6 +931,10 @@ export interface InFlightRunProjection {
    */
   readonly catalogVersion?: CatalogVersionRef;
   readonly origin?: RunOriginRef;
+  /** FR-R4-F02 (W6 G17) — non-null only while the Run carries a credit pause; absent or `null` means none. */
+  readonly creditPolling?: CreditPollingProjection | null;
+  /** FR-R4-F02 (E3 G8) — the limits this Run runs under; an older host omits the key, and absent and `null` both render nothing. */
+  readonly effectiveLimits?: EffectiveLimitsProjection | null;
 }
 
 /**

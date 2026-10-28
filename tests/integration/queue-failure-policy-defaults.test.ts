@@ -125,7 +125,9 @@ async function seedCurrentWorkspace(memento: FakeMemento): Promise<void> {
 
 describe('Feature 195 (T033) — a legacy record adopts the workspace default (FR-017, SC-007)', () => {
   it('loads without error under the current schema, with STATE_SCHEMA_VERSION unchanged and no migrator run', async () => {
-    expect(STATE_SCHEMA_VERSION).toBe(14);
+    // 15: FR-R4-F02's credit-pause default moved the head, as each earlier bump moved this literal.
+    // The claim this case pins is unchanged: feature 195 itself moved no version and ran no migrator.
+    expect(STATE_SCHEMA_VERSION).toBe(15);
 
     const memento = new FakeMemento();
     await seedCurrentWorkspace(memento);
@@ -136,7 +138,7 @@ describe('Feature 195 (T033) — a legacy record adopts the workspace default (F
     // No migration ran: the record already satisfies the current schema
     // shape, because the new field is optional (research D2).
     expect(initResult.migrated).toBe(false);
-    expect(STATE_SCHEMA_VERSION).toBe(14);
+    expect(STATE_SCHEMA_VERSION).toBe(15);
 
     const queueState = store.getQueue(DEFAULT_QUEUE_ID);
     expect(queueState.failurePolicy).toBeUndefined();

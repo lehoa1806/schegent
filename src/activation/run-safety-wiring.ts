@@ -27,7 +27,8 @@ import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { EvidenceHealthReporter } from '../services/evidence-health/evidence-health-monitor';
 import type { Notifier } from '../ui/notifications';
 import { createSpendBoundWatcher } from '../services/spend-bound-watcher';
-import { readSpendSeed } from '../services/spend-bound-seed';
+import { readSpendReplay } from '../services/spend-bound-replay';
+import { readSpendLimits } from './uncached-settings-accessors';
 import { RunCheckpointService } from '../services/run-checkpoint-service';
 import { RunCheckpointRetentionService } from '../services/run-checkpoint-retention';
 import { RunMutationLedger } from '../services/run-mutation-ledger';
@@ -157,12 +158,10 @@ export async function createRunSafetyWiring(input: {
   // limit while a run is in flight means it for that run, and a value closed over at
   // activation would apply the previous window's setting for the rest of the session.
   const spendWatcher = createSpendBoundWatcher({
+    // FR-R4-F02 (E2 G6) — the values of the same read the disclosure shows the origins of.
     config: () => {
-      const settings = vscode.workspace.getConfiguration('schegent');
-      return {
-        limitUsd: settings.get<number | null>('spend.maxUsdPerRun', null),
-        limitTokens: settings.get<number | null>('spend.maxTokensPerRun', null)
-      };
+      const { limitUsd, limitTokens } = readSpendLimits();
+      return { limitUsd: limitUsd.value, limitTokens: limitTokens.value };
     },
     findRunById: (runId) => input.store.findRunById(runId),
     // The same fenced write the operator's own pause makes. An unfenced claim is
@@ -198,9 +197,19 @@ export async function createRunSafetyWiring(input: {
     now: () => Date.now()
   });
   input.context.subscriptions.push(input.auditWriter.subscribe(spendWatcher.onAuditEntry));
-  // FR-R3-209 — the tally a restart emptied is rebuilt from the log's window. A read is the
-  // only act: it writes nothing, and the watcher counts a row once whichever way it arrives.
-  void spendWatcher.seedFrom(readSpendSeed(input.workspaceRoot, input.logger));
+  // FR-R3-209, FR-R4-F02 (contract S4 G16, G17) — the tally a restart emptied is rebuilt by a
+  // bounded replay of the audit chain for the Runs that are still live, and each comes back complete
+  // or with the reason it is only a lower bound. A read is the only act: it writes nothing, and the
+  // watcher counts a row once whichever way it arrives.
+  void spendWatcher.seedFrom(
+    readSpendReplay(
+      input.workspaceRoot,
+      input.logger,
+      Object.values(input.store.getRunMap())
+        .filter((run) => !isTerminalRunStatus(run.status))
+        .map((run) => ({ runId: run.id, startedAt: run.startedAt }))
+    )
+  );
 
   const checkpointRetention = new RunCheckpointRetentionService({
     globalStorageRoot: input.context.globalStorageUri.fsPath,

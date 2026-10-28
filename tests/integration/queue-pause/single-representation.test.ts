@@ -79,7 +79,9 @@ async function makeHarness(memento: FakeMemento = new FakeMemento()): Promise<Ha
     admitResume: async () => ({ resumed: false, completed: Promise.resolve() }),
     get liveRunCount(): number {
       return liveRuns;
-    }
+    },
+    // FR-R4-F02 (TA4) — drain step 4 asks whether the queue already holds a session; a double holds none.
+    holdsSession: () => false
   };
 
   const autoDrain = new AutoDrainCoordinator({
