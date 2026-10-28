@@ -17,62 +17,13 @@
 // loop condition that must NOT absorb the new counts, and the report headings,
 // run through the real stdout parser so they cannot be read as issues.
 
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { extractOpenQuestions, extractRemainingIssues } from '../../../src/parser/stdout-parser';
-import { parsePipelinePackage } from '../../../src/services/process-yaml/pipeline-document';
-import type { PhaseYamlDocument } from '../../../src/services/process-yaml/types';
-import { parseDocumentText } from '../../../src/services/process-yaml/yaml-parser';
-
-const EXAMPLE = resolve(
-  __dirname,
-  '..',
-  '..',
-  '..',
-  'examples',
-  'speckit-new-feature.pipeline.yaml'
-);
+import { instructionOf, loadExample, phaseOf } from '../../fixtures/speckit-new-feature-example';
 
 /** The version the text changes shipped at; a later edit may go higher. */
 const FIRST_DELEGATING_VERSION = 3;
-
-interface LoadedExample {
-  readonly phases: ReadonlyMap<string, PhaseYamlDocument>;
-  readonly pipelineVersion: number;
-}
-
-function loadExample(): LoadedExample {
-  const parsed = parseDocumentText(readFileSync(EXAMPLE, 'utf8'));
-  if (!parsed.ok) throw new Error(`${parsed.refusal.code}: ${parsed.refusal.message}`);
-  const pkg = parsePipelinePackage(parsed.node);
-  if (!pkg.ok) throw new Error(`${pkg.refusal.code}: ${pkg.refusal.message}`);
-
-  const phases = new Map<string, PhaseYamlDocument>();
-  let pipelineVersion = Number.NaN;
-  for (const resource of pkg.resources) {
-    if (!resource.ok) throw new Error(`refused ${resource.resourceKind} ${resource.resourceId}`);
-    if (resource.resourceKind === 'phase') {
-      phases.set(resource.document.metadata.phaseId, resource.document);
-    } else {
-      pipelineVersion = resource.definition.version;
-    }
-  }
-  return { phases, pipelineVersion };
-}
-
-function phaseOf(example: LoadedExample, phaseId: string): PhaseYamlDocument {
-  const phase = example.phases.get(phaseId);
-  if (phase === undefined) throw new Error(`the example no longer ships ${phaseId}`);
-  return phase;
-}
-
-function instructionOf(phase: PhaseYamlDocument): string {
-  const text = phase.spec.instruction;
-  if (text === undefined) throw new Error(`${phase.metadata.phaseId} carries no instruction`);
-  return text;
-}
 
 type Pin = readonly [label: string, pattern: RegExp];
 
@@ -82,23 +33,166 @@ function expectPins(text: string, pins: readonly Pin[]): void {
   }
 }
 
+// The hand-off clauses of implement's instruction. Each pin is declared once, as
+// a named constant: the real-text test and the mutation control below read the
+// same constant, so a control proves something about the test that actually runs.
+// A pin names a clause by one phrase that carries it, not the whole sentence.
+const HANDOFF_ONLY_THREE: Pin = ['a hand-off is one of three cases', /only in these three cases/i];
+const HANDOFF_APPROVAL_NAMED: Pin = [
+  'approval case names a person',
+  /names a person's approval as the condition/i
+];
+const HANDOFF_PERSON_ONLY_STEP: Pin = [
+  'person-only last step case',
+  /only remaining step is pushing, opening or merging a pull request, watching CI, or deploying/i
+];
+const HANDOFF_APPROVAL_NOT_REVIEW: Pin = [
+  'review and test wording is not approval',
+  /Review, test results and other conditions do not count/i
+];
+const HANDOFF_BOUND: Pin = [
+  'an undone implementation step keeps a task pending',
+  /any implementation step still undone is pending/i
+];
+const HANDOFF_NOT_DIFFICULTY: Pin = [
+  'difficulty never makes a hand-off',
+  /never make a task a hand-off/i
+];
+const HANDOFF_MARKER_OUTSIDE_CODE: Pin = [
+  'a marker counts outside inline code',
+  /carries the token USER-RUN outside inline code/
+];
+const HANDOFF_QUOTED_NOT_MARKED: Pin = [
+  'a quoted mention is not a mark',
+  /only quotes the token in inline code is not marked/i
+];
+// Takes over the label `not attempted`.
+const HANDOFF_NO_TICK: Pin = [
+  'not attempted',
+  /Do not attempt a hand-off task, do not mark it complete/i
+];
+// A marker takes a task out of the loop, so an agent allowed to write one could
+// label its way past the gate. Widens the label `agent does not write markers`.
+const HANDOFF_MARKER_PROTECTED: Pin = [
+  'agent does not write markers',
+  /do not add, remove or edit any marker or approval wording/i
+];
+const HANDOFF_HEADING: Pin = ['listed for the user', /"Hand-off tasks \(for the user\):"/];
+const HANDOFF_BASIS_FORMAT: Pin = [
+  'each hand-off is listed with its basis',
+  /`- <task id> \(<basis>\): <task text>`/
+];
+const HANDOFF_HEADING_OMITTED: Pin = [
+  'no heading with no hand-off',
+  /With none open, omit that heading/i
+];
+const HANDOFF_NOT_AN_ISSUE: Pin = ['a hand-off is never an issue', /Never list a hand-off task there/i];
+const CLEAR_RULE: Pin = [
+  'CLEAR needs no pending task, spec gap or blocked task',
+  /0 tasks are pending, 0 spec gaps remain and 0 tasks are blocked → emit \[SCHEGENT_STATUS: CLEAR\]/
+];
+const CLEAR_DESPITE_HANDOFFS: Pin = ['CLEAR despite hand-offs', /even when hand-off tasks remain/i];
+const PENDING_EXCLUDES_HANDOFFS: Pin = [
+  'pending excludes the rest',
+  /`pending_tasks` excludes blocked and hand-off tasks/i
+];
+const HANDOFF_COUNT_EQUALS_LIST: Pin = [
+  'the hand-off count equals the list',
+  /`user_run_tasks` equals the number of tasks listed under "Hand-off tasks \(for the user\):"/
+];
+const LIST_OUTSIDE_AUDIT_BLOCK: Pin = [
+  'the list sits outside the audit block',
+  /before the SCHEGENT AUDIT LOG block and outside it/i
+];
+const TOKEN_WHERE_CONTRACT_SAYS: Pin = [
+  'the token only where the contract reads it',
+  /only where the output contract says, on its own line after the audit log block/i
+];
+const TOKEN_NEVER_ECHOED: Pin = [
+  'the token is never echoed',
+  /Never echo it in prose, in a list or in a quote/i
+];
+
+// The tasks Phase's clauses. It is the only writer of the marker, so these are the
+// other half of the protection `HANDOFF_MARKER_PROTECTED` gives on the implement side.
+const TASKS_RUNS_SKILL: Pin = [
+  'runs the skill first',
+  /Run \/speckit-tasks on the active feature/
+];
+const TASKS_MARK_ONLY_FOR_PERSON: Pin = [
+  'a mark only when a person is needed',
+  /\[USER-RUN\][^\n]*only when it needs a person/i
+];
+const TASKS_PERSON_STEPS: Pin = [
+  'the person-only steps',
+  /pushing, opening or merging a pull request, watching CI, deploying to a system outside this repository, an explicit approval/i
+];
+const TASKS_WAITING_WORK: Pin = [
+  'work waiting on one of them',
+  /work that cannot start until one of those has happened/i
+];
+const TASKS_NEVER_MARK_HEADLESS: Pin = [
+  'headless work is never marked',
+  /Never mark work the authorized headless run can complete/i
+];
+const TASKS_SPLIT: Pin = ['a mixed line is split', /split it in two/i];
+const TASKS_NO_ADDED_TASK: Pin = ['no person-only task is added', /Never add a person-only task/i];
+const TASKS_QUOTED_MENTION: Pin = [
+  'a mention of the label is written in inline code',
+  /inline code, as `USER-RUN`/
+];
+
+/**
+ * A mutation control: one clause removed from the real text, in memory only
+ * (nothing is written to disk). A control that proves nothing must fail here,
+ * never pass as a false kill, so it asserts three things in order:
+ *
+ * 1. applied: every removal occurs in the real text, and the mutated text differs;
+ * 2. live: every pin that should catch it matches the real text;
+ * 3. killed: at least one of those pins does not match the mutated text.
+ */
+interface Mutant {
+  readonly id: string;
+  readonly removals: readonly string[];
+  readonly killedBy: readonly Pin[];
+}
+
+function mutate(text: string, removals: readonly string[]): string {
+  return removals.reduce((mutated, removal) => mutated.split(removal).join(''), text);
+}
+
+function expectMutantKilled(real: string, mutant: Mutant): void {
+  const mutated = mutate(real, mutant.removals);
+  for (const removal of mutant.removals) {
+    expect(real, `${mutant.id}: the removal occurs in the real text`).toContain(removal);
+  }
+  expect(mutated, `${mutant.id}: the removal changed the text`).not.toBe(real);
+
+  expectPins(real, mutant.killedBy);
+
+  const missed = mutant.killedBy.filter(([, pattern]) => !pattern.test(mutated));
+  expect(missed.length, `${mutant.id}: a pin fails on the mutated text`).toBeGreaterThan(0);
+}
+
 describe('the shipped new-feature pipeline: delegated authority', () => {
   const example = loadExample();
   const implement = instructionOf(phaseOf(example, 'speckit-implement'));
   const finalize = instructionOf(phaseOf(example, 'finalize'));
+  const tasks = instructionOf(phaseOf(example, 'speckit-tasks'));
 
-  it('control: the example still ships the two Phases and a readable pipeline version', () => {
+  it('control: the example still ships the three Phases and a readable pipeline version', () => {
     // Without this, every pin below could pass on an empty read.
     expect(implement.length).toBeGreaterThan(0);
     expect(finalize.length).toBeGreaterThan(0);
+    expect(tasks.length).toBeGreaterThan(0);
     expect(Number.isFinite(example.pipelineVersion)).toBe(true);
   });
 
-  it('bumps the pipeline and both Phases whose text changed', () => {
+  it('bumps the pipeline and the three Phases whose text changed', () => {
     // The version is how an operator who imported the old text learns there is a
     // newer one; a text change without a bump reaches only fresh installs.
     expect(example.pipelineVersion).toBeGreaterThanOrEqual(FIRST_DELEGATING_VERSION);
-    for (const phaseId of ['speckit-implement', 'finalize']) {
+    for (const phaseId of ['speckit-tasks', 'speckit-implement', 'finalize']) {
       expect(
         phaseOf(example, phaseId).metadata.version,
         `${phaseId} version`
@@ -163,11 +257,36 @@ describe('the shipped new-feature pipeline: delegated authority', () => {
     it('does not let a person-only step stall the loop or pass for done', () => {
       expectPins(implement, [
         ['hand-off marker', /USER-RUN/],
-        ['not attempted', /Do not attempt a hand-off task, do not mark it complete/i],
-        // A marker takes a task out of the loop, so an agent allowed to write one
-        // could label its way past the gate.
-        ['agent does not write markers', /do not add, remove or edit any marker/i],
-        ['listed for the user', /"Hand-off tasks \(for the user\):"/]
+        HANDOFF_MARKER_OUTSIDE_CODE,
+        HANDOFF_QUOTED_NOT_MARKED,
+        HANDOFF_NO_TICK,
+        HANDOFF_MARKER_PROTECTED,
+        HANDOFF_HEADING
+      ]);
+    });
+
+    it('names the three cases that make a task a hand-off, and no other', () => {
+      expectPins(implement, [
+        HANDOFF_ONLY_THREE,
+        HANDOFF_APPROVAL_NAMED,
+        HANDOFF_PERSON_ONLY_STEP
+      ]);
+    });
+
+    it('keeps unfinished work pending: review wording, an undone step and difficulty are no hand-off', () => {
+      expectPins(implement, [
+        HANDOFF_APPROVAL_NOT_REVIEW,
+        HANDOFF_BOUND,
+        HANDOFF_NOT_DIFFICULTY
+      ]);
+    });
+
+    it('lists each open hand-off with its basis, outside the issues and the audit block', () => {
+      expectPins(implement, [
+        HANDOFF_BASIS_FORMAT,
+        HANDOFF_HEADING_OMITTED,
+        HANDOFF_NOT_AN_ISSUE,
+        LIST_OUTSIDE_AUDIT_BLOCK
       ]);
     });
 
@@ -177,15 +296,45 @@ describe('the shipped new-feature pipeline: delegated authority', () => {
         ['spec gaps', /`spec_gaps: <N>`/],
         ['blocked', /`blocked_tasks: <N>`/],
         ['hand-offs', /`user_run_tasks: <N>`/],
-        ['pending excludes the rest', /`pending_tasks` excludes blocked and hand-off tasks/i],
+        PENDING_EXCLUDES_HANDOFFS,
+        HANDOFF_COUNT_EQUALS_LIST,
         ['others do not loop', /the other three are recorded and do not re-loop this Phase/i]
       ]);
     });
 
-    it('does not report CLEAR while a task is blocked', () => {
-      expect(implement).toMatch(
-        /0 tasks are pending, 0 spec gaps remain and 0 tasks are blocked → emit \[SCHEGENT_STATUS: CLEAR\]/
-      );
+    it('does not report CLEAR while a task is blocked, and reports it despite hand-offs', () => {
+      expectPins(implement, [CLEAR_RULE, CLEAR_DESPITE_HANDOFFS]);
+    });
+
+    it('emits the completion token only where the output contract reads it', () => {
+      expectPins(implement, [TOKEN_WHERE_CONTRACT_SAYS, TOKEN_NEVER_ECHOED]);
+    });
+  });
+
+  describe('speckit-tasks', () => {
+    // The tasks Phase grants the marker; implement never does. Without a limit on
+    // the grant, the phase that writes it could label implementable work and take
+    // it out of the loop, so its text is pinned as the implement side is.
+    it('does not loop, and stays a workspace Phase', () => {
+      const phase = phaseOf(example, 'speckit-tasks');
+      expect(phase.spec.retryCondition).toBeUndefined();
+      expect(phase.spec.sideEffects).toBeUndefined();
+    });
+
+    it('runs the skill first, on the active feature', () => {
+      expectPins(tasks, [TASKS_RUNS_SKILL]);
+    });
+
+    it('marks a task only when it needs a person', () => {
+      expectPins(tasks, [TASKS_MARK_ONLY_FOR_PERSON, TASKS_PERSON_STEPS, TASKS_WAITING_WORK]);
+    });
+
+    it('never marks work the headless run can complete, and splits a mixed line', () => {
+      expectPins(tasks, [TASKS_NEVER_MARK_HEADLESS, TASKS_SPLIT]);
+    });
+
+    it('adds no task of its own, and writes a mention of the label in inline code', () => {
+      expectPins(tasks, [TASKS_NO_ADDED_TASK, TASKS_QUOTED_MENTION]);
     });
   });
 
@@ -249,6 +398,14 @@ describe('the shipped new-feature pipeline: delegated authority', () => {
       ]);
     });
 
+    it('names a per-package command for npm, never the tree-wide audit fix', () => {
+      // `npm audit fix` applies every fixable remediation in the tree in one install,
+      // so offered as the "targeted" example it walks past the three-package bound.
+      expect(finalize).toMatch(/`npm update <package>`/);
+      expect(finalize).toMatch(/blanket update, such as `npm audit fix`/i);
+      expect(finalize).not.toMatch(/for example `npm audit fix`/i);
+    });
+
     it('re-runs everything after a bump and undoes a bump that breaks a green check', () => {
       expectPins(finalize, [
         ['full re-run', /[Rr]e-run the FULL check set/],
@@ -287,6 +444,80 @@ describe('the shipped new-feature pipeline: delegated authority', () => {
         ['passing', /`checks_passing: <N>`/],
         ['failing', /`checks_failing: <N>`/]
       ]);
+    });
+  });
+
+  describe('mutation controls: a clause dropped from the shipped text is caught', () => {
+    // Feature 241 FR-017: each clause that keeps a hand-off from being retried, or
+    // an unfinished task from passing as one, has a control that removes it and
+    // expects a named pin to fail. The pins are the constants declared above.
+    it('M1 hand-off exclusion is caught when removed', () => {
+      expectMutantKilled(implement, {
+        id: 'M1',
+        removals: [' and hand-off'],
+        killedBy: [PENDING_EXCLUDES_HANDOFFS]
+      });
+    });
+
+    it('M2 no-tick clause is caught when removed', () => {
+      expectMutantKilled(implement, {
+        id: 'M2',
+        removals: [', do not mark it complete'],
+        killedBy: [HANDOFF_NO_TICK]
+      });
+    });
+
+    it('M3 marker protection is caught when removed', () => {
+      expectMutantKilled(implement, {
+        id: 'M3',
+        removals: [', and do not add, remove or edit any marker or approval wording on any task line'],
+        killedBy: [HANDOFF_MARKER_PROTECTED]
+      });
+    });
+
+    it("M4 B2's never-mark sentence is caught when removed", () => {
+      expectMutantKilled(tasks, {
+        id: 'M4',
+        removals: ['Never mark work the authorized headless run can complete.'],
+        killedBy: [TASKS_NEVER_MARK_HEADLESS]
+      });
+    });
+
+    it('M5 CLEAR rule is caught when removed', () => {
+      expectMutantKilled(implement, {
+        id: 'M5',
+        removals: [', 0 spec gaps remain and 0 tasks are blocked'],
+        killedBy: [CLEAR_RULE]
+      });
+    });
+
+    it('M6 hand-off heading is caught when removed', () => {
+      expectMutantKilled(implement, {
+        id: 'M6',
+        removals: ['"Hand-off tasks (for the user):"'],
+        killedBy: [HANDOFF_HEADING]
+      });
+    });
+
+    it("M7 D2's bound is caught when removed", () => {
+      expectMutantKilled(implement, {
+        id: 'M7',
+        removals: [
+          ' A task with any implementation step still undone is pending, even when its line also names such a step.'
+        ],
+        killedBy: [HANDOFF_BOUND]
+      });
+    });
+
+    it("M8 D6's quoted-mention rule is caught when removed", () => {
+      expectMutantKilled(implement, {
+        id: 'M8',
+        removals: [
+          ' outside inline code',
+          ' A line that only quotes the token in inline code is not marked.'
+        ],
+        killedBy: [HANDOFF_MARKER_OUTSIDE_CODE, HANDOFF_QUOTED_NOT_MARKED]
+      });
     });
   });
 

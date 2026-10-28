@@ -20,9 +20,22 @@ Phases say what they may settle alone, what they must set aside and what they mu
 
 - `speckit-implement` ranks the sources it settles a conflict by and records each decision
   in `<feature_dir>/decisions.md`. A task only a maintainer can answer is set aside as
-  *blocked* (`Status: needs-maintainer`); a task only a person can do is a *hand-off*.
+  *blocked* (`Status: needs-maintainer`); a task only a person can finish is a *hand-off*.
   Neither counts toward `pending_tasks`. The Phase gains the metrics `blocked_tasks` and
   `user_run_tasks`, and its loop condition is still `pending_tasks > 0`.
+- A task is a hand-off in three cases and no other: its own line carries the `USER-RUN`
+  marker (outside inline code); its own line names a person's approval as the condition; or
+  every other step is done and the only one left is pushing, opening or merging a pull
+  request, watching CI or deploying outside the repository. A task with any implementation
+  still undone stays pending, so difficulty, size and a failing test never make a hand-off.
+  `speckit-implement` lists each open hand-off with its basis under
+  `Hand-off tasks (for the user):`, outside `Remaining issues:`, and reports CLEAR when only
+  hand-offs remain.
+- `speckit-tasks` now writes the label `[USER-RUN]`, and only on work that needs a person:
+  pushing, opening or merging a pull request, watching CI, deploying outside the repository,
+  an explicit approval, or work that cannot start until one of those has happened. It splits
+  a line that mixes headless work with a person's step, marks only the tasks the skill wrote
+  and adds none of its own. `speckit-implement` never adds, removes or edits a marker.
 - `finalize` may fix a failing dependency-audit check without asking: a patch or minor bump
   of at most three packages, whose advisory is in a dependency the feature did not change,
   in a `fix(deps)` commit of its own that is reverted if it turns a green check red. A major
@@ -30,14 +43,17 @@ Phases say what they may settle alone, what they must set aside and what they mu
   ignore list stay outside that authority. It merges to `develop` only when every check is
   green and no decision waits on a maintainer.
 
+<!-- Source: examples/speckit-new-feature.pipeline.yaml -->
+
 **Who is affected**: anyone who runs the shipped pipeline, and whoever maintains a catalog
 that holds an earlier copy of it.
 
 **What you may need to do**: nothing for a fresh install. A catalog that already holds
-`speckit-implement` or `finalize` keeps its copy, because an import never overwrites an
-existing id (`FR-024`): save a draft of each Phase with the new text and publish it. A
-queued item composed before the publish keeps the Phase text it was composed with, so
-re-enqueue it.
+`speckit-tasks`, `speckit-implement`, `finalize` or the pipeline `speckit-new-feature` keeps
+its copy, because an import never overwrites an existing id (`FR-024`): save a draft of each
+changed definition with the new text and publish it. "Bring an existing catalog to a revised
+example" in `docs/operations/process-yaml.md` gives the steps, and says what happens to items
+already queued and to Runs already started.
 
 **What happens to Runs you already have**: nothing. A Run keeps the pipeline snapshot it
 was created with.
