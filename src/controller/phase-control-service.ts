@@ -216,6 +216,8 @@ export class PhaseControlService {
         // FR-R4-F02 (contract W6 G19) — Resume leaves `paused`, and a Run whose credit polling
         // stopped is resumed by exactly this patch: no status check, no new window.
         creditPause: null,
+        // FR-R4-F14 (contract W4) — a failed Run resumed here leaves `failed`, and its cause goes.
+        failureCause: undefined,
         delayedRetryCount: current.pendingRetryAt !== null ? 0 : current.delayedRetryCount,
         ...(customPrompt ? { resumePrompt: customPrompt } : {})
       };
@@ -260,6 +262,8 @@ export class PhaseControlService {
         pendingRetryAt: null,
         pendingRetryCause: null,
         creditPause: null,
+        // FR-R4-F14 (contract W4) — restarting a failed Run leaves `failed`, and its cause goes.
+        failureCause: undefined,
         delayedRetryCount: 0,
         phaseOverrides: nextOverrides,
         // FR-R3-008 (T378) — restarting the active phase clears its override, so
@@ -342,6 +346,8 @@ export class PhaseControlService {
         pendingRetryAt: null,
         pendingRetryCause: null,
         creditPause: null,
+        // FR-R4-F14 (contract W4) — the skip-to-recover revive leaves `failed`, and its cause goes.
+        failureCause: undefined,
         manualPauseAt: null,
         manualPauseCause: null,
         resumeTargetPhaseId: null,

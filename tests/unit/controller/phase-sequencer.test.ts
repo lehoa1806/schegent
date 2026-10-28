@@ -1100,3 +1100,192 @@ describe('PhaseSequencer.decideBeforePhase return-type narrowing', () => {
     }
   });
 });
+
+// FR-R4-F14 (spec 242, contract V3.2) — the `fail` decision carries the Run's failure cause and the
+// stalled-comparison count. One case per sequencer-decided code (census rows C1 to C7), each asserting
+// only the new fields: `baseMessage`, `decisionCause`, `fatalCause` and `capExhausted` are pinned by
+// the cases above and are not repeated here.
+describe('PhaseSequencer.decideAfterPhase — the fail decision names its cause (242, V3)', () => {
+  const sequencer = new PhaseSequencer();
+  const NOW = 1_700_000_004_000;
+  const CAP_DEF = { id: 'speckit-implement', retryCondition: 'remaining > 0' } as PhaseDef;
+  const MID_PHASE = { id: 'finalize', name: 'Finalize', instruction: 'Finish.' };
+  const PIPELINE_WITH_TAIL = {
+    id: 'pipe',
+    name: 'Pipe',
+    phases: [MID_PHASE, { id: 'review', name: 'Review', instruction: 'Review.' }]
+  };
+
+  function failDecisionFor(output: PhaseRunOutput, overrides: Partial<WorkflowRun> = {}, def?: PhaseDef) {
+    const run = makeRun(overrides);
+    const decision = sequencer.decideAfterPhase({
+      run,
+      output,
+      iteration: 5,
+      iterationCap: 5,
+      activePhaseDef: def,
+      latestManualPauseAt: run.manualPauseAt,
+      now: NOW
+    });
+    if (decision.kind !== 'fail') throw new Error(`expected a fail decision, got ${decision.kind}`);
+    return decision;
+  }
+
+  it('C1: an unfinished turn after the dispatch resumes is incomplete_turn_unresolved', () => {
+    const decision = failDecisionFor(
+      makeOutput({
+        result: { kind: 'incomplete_turn', cause: 'background-work-open', auditEntry: null, warnings: [] },
+        outcome: 'incomplete_turn',
+        terminationReason: 'incomplete_turn'
+      }),
+      { currentPhase: MID_PHASE.id, pipeline: PIPELINE_WITH_TAIL },
+      MID_PHASE as unknown as PhaseDef
+    );
+    expect(decision.failureCause).toBe('incomplete_turn_unresolved');
+  });
+
+  it('C2: a matched fatal signature is fatal_signature, and the decision carries no signature text in the code', () => {
+    const decision = failDecisionFor(
+      makeOutput({
+        result: {
+          kind: 'malformed',
+          warnings: [],
+          auditEntry: null,
+          fatalCause: 'fatal-signature:token=sk-ant-SENTINEL'
+        },
+        outcome: 'failed',
+        terminationReason: 'error'
+      })
+    );
+    expect(decision.failureCause).toBe('fatal_signature');
+    expect(String(decision.failureCause)).not.toContain('SENTINEL');
+  });
+
+  it('C2: a fatal match on a timed-out phase is still fatal_signature', () => {
+    const decision = failDecisionFor(
+      makeOutput({
+        result: { kind: 'malformed', warnings: [], auditEntry: null, fatalCause: 'fatal-signature:x' },
+        outcome: 'timeout',
+        terminationReason: 'timeout'
+      })
+    );
+    expect(decision.failureCause).toBe('fatal_signature');
+  });
+
+  it('C3: the absolute invocation deadline is phase_timeout', () => {
+    const decision = failDecisionFor(
+      makeOutput({
+        result: { kind: 'malformed', warnings: [], auditEntry: null },
+        outcome: 'failed',
+        terminationReason: 'deadline'
+      })
+    );
+    expect(decision.failureCause).toBe('phase_timeout');
+  });
+
+  it('C4: an idle timeout is phase_timeout', () => {
+    const decision = failDecisionFor(
+      makeOutput({
+        result: { kind: 'malformed', warnings: [], auditEntry: null },
+        outcome: 'timeout',
+        terminationReason: 'timeout'
+      })
+    );
+    expect(decision.failureCause).toBe('phase_timeout');
+  });
+
+  it('C5: a non-zero exit with no signature is phase_failed', () => {
+    const decision = failDecisionFor(
+      makeOutput({
+        result: { kind: 'malformed', warnings: [], auditEntry: null },
+        outcome: 'failed',
+        terminationReason: 'error',
+        exitCode: 1
+      })
+    );
+    expect(decision.failureCause).toBe('phase_failed');
+  });
+
+  it('C6: a phase that reaches its cap with the condition still truthy is cap_exhausted', () => {
+    const decision = failDecisionFor(
+      makeOutput({
+        result: { kind: 'clean', auditEntry: { metrics: { remaining: 1 } } as never },
+        outcome: 'clean'
+      }),
+      { currentPhase: 'speckit-implement' },
+      CAP_DEF
+    );
+    expect(decision.failureCause).toBe('cap_exhausted');
+  });
+
+  it('C7: a required last phase ending with issues is last_phase_issues_remain', () => {
+    const decision = failDecisionFor(
+      makeOutput({
+        result: { kind: 'remaining_issues', issues: [{ summary: 'not merged' }], auditEntry: null },
+        outcome: 'issues_remain'
+      }),
+      {
+        currentPhase: 'finalize',
+        pipeline: {
+          id: 'pipe',
+          name: 'Pipe',
+          phases: [{ id: 'bugfix-implement', name: 'Implement', instruction: 'Fix.' }, MID_PHASE]
+        }
+      },
+      MID_PHASE as unknown as PhaseDef
+    );
+    expect(decision.failureCause).toBe('last_phase_issues_remain');
+  });
+
+  it('passes the stalled-comparison count through when the output carries it', () => {
+    const decision = failDecisionFor(
+      makeOutput({
+        result: { kind: 'clean', auditEntry: { metrics: { remaining: 1 } } as never },
+        outcome: 'clean',
+        stalledCount: 9
+      }),
+      { currentPhase: 'speckit-implement' },
+      CAP_DEF
+    );
+    expect(decision.failureCause).toBe('cap_exhausted');
+    expect(decision.stalledCount).toBe(9);
+  });
+
+  it('carries no stalledCount key when the output has none', () => {
+    const decision = failDecisionFor(
+      makeOutput({
+        result: { kind: 'clean', auditEntry: { metrics: { remaining: 1 } } as never },
+        outcome: 'clean'
+      }),
+      { currentPhase: 'speckit-implement' },
+      CAP_DEF
+    );
+    expect('stalledCount' in decision).toBe(false);
+  });
+
+  it('keeps the verify pause ahead of the fail arm, with no failure cause (V3.1)', () => {
+    const lastDef = { id: 'bugfix-verify-post', name: 'Verify', instruction: 'Verify.' };
+    const run = makeRun({
+      currentPhase: lastDef.id,
+      pipeline: {
+        id: 'pipe',
+        name: 'Pipe',
+        phases: [{ id: 'bugfix-implement', name: 'Implement', instruction: 'Fix.' }, lastDef]
+      }
+    });
+    const decision = sequencer.decideAfterPhase({
+      run,
+      output: makeOutput({
+        result: { kind: 'remaining_issues', issues: [{ summary: 'lint failure' }], auditEntry: null },
+        outcome: 'issues_remain'
+      }),
+      iteration: 1,
+      iterationCap: 5,
+      activePhaseDef: lastDef as unknown as PhaseDef,
+      latestManualPauseAt: run.manualPauseAt,
+      now: NOW
+    });
+    expect(decision.kind).toBe('pause-verify');
+    expect('failureCause' in decision).toBe(false);
+  });
+});

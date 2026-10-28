@@ -296,6 +296,13 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // writes no status field; the word is in a string the operator sees, never the pinned per-task
   // status discriminator this guard protects.
   'webview-ui/src/lib/queue-control-ipc.ts',
+  // FR-R4-F14 (spec 242, contract N3) — the operator text of the `phase_timeout` failure notice reads
+  // "if it keeps running out of time, check what it was waiting on before resuming." That is a sentence
+  // an operator reads, fixed verbatim by the contract, and the same prose case as
+  // `webview-ui/src/lib/queue-control-ipc.ts` above. This module reads and writes no status field; the
+  // word is in a string the operator sees, never the pinned per-task status discriminator this guard
+  // protects.
+  'src/services/failure-notice.ts',
   // Feature 092 — the webview's label map for `QueueLifecycle`, whose own
   // discriminator legitimately has a `running` member. That is the deliberately
   // narrow queue-lifecycle surface governed by

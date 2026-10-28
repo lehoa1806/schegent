@@ -101,6 +101,19 @@ than passed through (feature 194):
   a `0`. The full presence rule is published in
   `specs/010-pipeline-resilience/contracts/audit-events.md`.
 
+Feature 242 (FR-R4-F14) added one field to a different event.
+**`task-execution-ended.failureCause`** is the closed code of why a run failed:
+one of nine members (`cap_exhausted`, `last_phase_issues_remain`,
+`incomplete_turn_unresolved`, `fatal_signature`, `phase_failed`, `phase_timeout`,
+`runner_probe_failed`, `audit_evidence_unavailable`, `start_failed`), copied from
+the failed run by the one terminal emitter. The projection admits it by identity
+against that list and drops any other value as a field, so no message, warning or
+fatal-signature text can ride it onto disk. It is **absent** on a completed run,
+and on every record written before the feature, which reads as "cause not
+recorded". A run that fails, is resumed and fails again writes one event per
+failure, each with its own code. `phase-end` is unchanged, and its two causes
+stay the two above. `AUDIT_SCHEMA_VERSION` stays 3.
+
 Feature 212 added two more `phase-end` fields, both narrowed the same way:
 
 - **`phase-end.attemptId`** — which attempt this terminal record closes. It is
@@ -216,8 +229,9 @@ envelope's identity, timestamp, event type, phase, iteration, outcome, and
 schema version. Payload export is restricted to counts, structural result
 fields, and a small set of closed-vocabulary classification strings — `metrics`,
 `fileChangeCounts`, `toolCategoryCounts`, `exitCode`, `terminationReason`,
-omitted-evidence counts, `outcome`, `cause` and `stalled` (both feature 194), and
-`attemptId` and `resultEnvelope` (both feature 212). Without the last two the
+omitted-evidence counts, `outcome`, `cause` and `stalled` (both feature 194),
+`attemptId` and `resultEnvelope` (both feature 212), and `failureCause` (feature 242).
+Without the two feature-212 fields the
 counts-only export could answer neither question feature 212 exists to answer:
 which attempt a terminal row closes, and how many terminations produced no
 verdict.
@@ -238,8 +252,10 @@ carry their own `cause` vocabularies (`phase-breakpoint-cleared`, `task-reordere
 admitted by shape — a short lowercase token — rather than re-enumerated in the export.
 `stalled` must be a positive whole number. `attemptId` must match the UUID shape the
 writer mints, checked against the same exported pattern the projection uses rather than a
-second copy of it, and `resultEnvelope` must be `received` or `absent`. **A rejected value
-exports as `null`, not as an absent field**: absence is load-bearing for all four fields (a
+second copy of it, `resultEnvelope` must be `received` or `absent`, and `failureCause`
+must be one of the nine closed codes, and only on `task-execution-ended` (on any other
+event it exports as `null`). **A rejected value
+exports as `null`, not as an absent field**: absence is load-bearing for these fields (a
 `phase-end` with no `cause` is a generic failure; an absent `stalled` means the stagnation
 rule did not apply; an absent `resultEnvelope` means UNKNOWN, permanently), so silently
 dropping a value the guard disbelieves would rewrite a tamper signal into a meaningful

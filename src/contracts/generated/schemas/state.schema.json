@@ -155,6 +155,11 @@
           "type": "SanitizedError | null"
         },
         {
+          "name": "failureCause",
+          "optional": true,
+          "type": "FailureCause"
+        },
+        {
           "name": "rawTranscriptMode",
           "optional": true,
           "type": "RawTranscriptMode"

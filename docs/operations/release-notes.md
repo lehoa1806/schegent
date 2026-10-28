@@ -9,6 +9,28 @@ This file is the release workflow's stable pointer for changes that affect opera
 Recorded as they land, so the first release note is assembled from evidence rather than
 from memory.
 
+### A failed run records its cause and says what to do next (FR-R4-F14, 2026-10-28)
+
+A run that failed at its iteration cap told the operator to run "Schegent: Resume" to retry,
+and a resume gave the phase one more attempt that failed the same way. Every failed run now carries
+one cause from a closed list of nine, and each failure shows a notice built for that cause.
+
+- The cause is on the failed run, on its `task-execution-ended` audit event and on its metrics rollup
+  record. The rollup record is now version 2; version 1 records are still read, and cumulative totals are
+  unchanged. A run that failed before this change reads as "Cause not recorded".
+- The notices say what stopped and which action is worth taking, by its exact title. A cap failure says
+  that "Schegent: Resume Paused or Failed Workflow" gives the phase one more attempt and that it fails the
+  same way unless the blocker is resolved first, and names "Mark '…' as completed" for work finished by
+  hand. A last-phase failure says to fix the open issues first. No notice offers a button that does not
+  exist, and none carries agent output.
+- History's run detail shows a failed run's cause as `{label} ({code})`.
+- The `schegent.loop.maxIterations` description and the settings reference now say it bounds every phase
+  that has a retry condition, and that the run fails at the cap unless the phase or
+  `schegent.retry.forceContinueOnCap` says to continue. No behavior changed.
+- The metadata-only audit export carries `failureCause`, value-checked against the nine codes.
+- The new cause table, and how Resume, Retry and Restart differ, are in
+  [When a run fails: its cause and what to do next](retry-contract.md#when-a-run-fails-its-cause-and-what-to-do-next).
+
 ### The shipped new-feature pipeline decides, sets aside or reports instead of asking (version 3, 2026-10-28)
 
 An unattended run has nobody to answer a question, and runs of this pipeline have stopped

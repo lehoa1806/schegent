@@ -88,6 +88,54 @@ An operator interrupts a countdown at any point:
 <!-- Source: src/controller/phase-control-service.ts -->
 <!-- Source: src/commands/cancel.ts -->
 
+## When a run fails: its cause and what to do next
+
+FR-R4-F14 gives every failed run one cause from a closed list of nine and a notice that says what
+stopped and which action, if any, is worth taking. It was written from source at `9cc9e16b`, the
+`develop` head the feature branch was cut from, plus the feature's own change set. It names the cause;
+it changes no halt, counter, cap or resume behavior.
+
+| Cause | Label | What happened | What the notice advises |
+|---|---|---|---|
+| `cap_exhausted` | Iteration cap reached | The phase's retry condition was still true at its iteration cap, and the cap outcome is to fail (the default). | A Resume gives the phase one more attempt, and it fails the same way unless the blocker is resolved first. Work finished by hand is recorded with "Mark '…' as completed". |
+| `last_phase_issues_remain` | Last phase ended with issues open | The last required phase ended with issues still open, so the run failed instead of completing. (A bugfix verify phase pauses instead.) | Fix the issues first, then Resume to run the phase again, or record work finished by hand. |
+| `incomplete_turn_unresolved` | Phase turn left unfinished | The phase's turn ended unfinished, with work still open in the background or no contract block, and the automatic resumes of that turn did not finish it. | A Resume runs the phase again. |
+| `fatal_signature` | Fatal error pattern matched | The backend's output matched a fatal error pattern. | Find the error in the run's transcript or the runtime log and fix its cause before a Resume. |
+| `phase_failed` | Phase failed | A required phase failed for a reason that is not a timeout or a fatal pattern: a non-zero exit, an API error, a prompt-delivery failure or a pre-spawn refusal. | Check the run's transcript for what went wrong before a Resume. |
+| `phase_timeout` | Phase ran out of time | A required phase reached the idle bound, or the absolute invocation deadline. | A Resume runs the phase again. If it keeps running out of time, check what it was waiting on first. |
+| `runner_probe_failed` | Backend CLI unavailable | The backend's CLI was missing or did not start, before the first phase. | Install or repair the CLI, then Resume: the resume checks the CLI again. |
+| `audit_evidence_unavailable` | Audit evidence unavailable | Required structured audit evidence was unavailable, so the run failed closed. | Resolve the evidence sink and reload the workspace before resuming. This failure writes no terminal event; the rollup records it. |
+| `start_failed` | Host refusal or error | A throw out of the start or the drive: a held workspace lock, a backend containment or capability refusal, a failed consent write or an unexpected error. | None of its own: the notice is the start failure's announcement, and it names no action. |
+
+<!-- Source: src/contracts/failure-cause.ts -->
+<!-- Source: src/services/failure-notice.ts -->
+<!-- Source: src/controller/fail-decision-cause.ts -->
+
+**Where the cause is recorded.** On the failed run, on its `task-execution-ended` audit event, and on
+its metrics rollup record (version 2). A failed run's detail in History shows the cause as
+`{label} ({code})`, or "Cause not recorded" for a run that failed before causes were recorded. The
+rollup keeps the first failure's cause for a run id, and the audit log has each failure's. A
+failure that reaches the Run before any Run exists has no cause: there is nothing to record it on.
+
+**Resume, Retry and Restart.** They are different actions.
+
+- "Schegent: Resume Paused or Failed Workflow" resumes the workspace's one paused or failed run at the
+  iteration it failed on. It does not reset the phase's iteration count, so a phase that failed at its
+  cap runs once more at the same iteration number.
+- "Retry feature '…'" returns the Task to its queue behind the in-flight one. The drain resumes the same
+  run when the queue still holds it as failed or paused, and starts a fresh run from the first phase
+  otherwise. Either way it happens only when the drain runs.
+- "Schegent: Resume Queue" resumes a paused queue, not a run.
+- Restart, in a run's detail, runs the current phase again from iteration 1, so unlike a Resume it
+  gives the phase a fresh set of attempts.
+
+<!-- Source: src/queue/queue-manager.ts -->
+<!-- Source: src/controller/resume-pause-fields.ts -->
+
+**Recording work finished by hand.** "Mark '…' as completed" on a queue row records a Task as
+completed without running anything. The cap and last-phase notices name it, with the Task's title
+cut to the first 24 characters as the row's button cuts it.
+
 ## How the watchdog handles them
 
 A delayed retry and a credit pause are two machineries with two timers (feature 240, US2 and US6).

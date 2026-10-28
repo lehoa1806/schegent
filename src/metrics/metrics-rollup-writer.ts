@@ -17,6 +17,7 @@ import { ensureSchegentGitignore } from '../audit/schegent-gitignore';
 import { NarrowingReporter } from '../lib/evidence-narrowing';
 import { boundForCaller, holdOrdering } from '../lib/io-barrier';
 import { streamRollup } from './metrics-rollup-stream';
+import type { FailureCause } from '../contracts/failure-cause';
 import type { SanitizedLogger } from '../lib/logger';
 import { resolveContainedLink } from '../lib/path-containment';
 import { openWithinRoot } from '../lib/safe-open';
@@ -74,6 +75,11 @@ export interface MetricsRollupAppend {
   readonly phasesSkipped: number;
   readonly backendInvocations: number;
   readonly costUsd?: number;
+  /**
+   * FR-R4-F14 (M3) — a failed run's cause, read from the Run by the recorder. Written only for a
+   * `failed` append that carries one; ignored on any other status.
+   */
+  readonly failureCause?: FailureCause;
 }
 
 export type MetricsRollupAppendOutcome =
@@ -109,6 +115,8 @@ export class MetricsRollupWriter {
    */
   private knownRunIds: Set<string> | null = null;
   private knownRunIdsLoad: Promise<Set<string>> | null = null;
+  /** FR-R4-F14 (M3.1) — the newer-record trim refusal is said once per writer instance. */
+  private warnedAboutNewerRecords = false;
 
   constructor(private readonly deps: MetricsRollupWriterDeps) {
     this.rollupPath = path.join(deps.workspaceRoot, '.schegent', METRICS_ROLLUP_FILENAME);
@@ -168,7 +176,10 @@ export class MetricsRollupWriter {
       phasesCompleted: record.phasesCompleted,
       phasesSkipped: record.phasesSkipped,
       backendInvocations: record.backendInvocations,
-      ...(record.costUsd === undefined ? {} : { costUsd: record.costUsd })
+      ...(record.costUsd === undefined ? {} : { costUsd: record.costUsd }),
+      ...(record.terminalStatus === 'failed' && record.failureCause !== undefined
+        ? { failureCause: record.failureCause }
+        : {})
     });
 
     try {
@@ -335,6 +346,23 @@ export class MetricsRollupWriter {
       const retained = streamed.records.slice(-this.retainedRecordsAfterTrim());
       const discarded = streamed.records.slice(0, streamed.records.length - retained.length);
 
+      // FR-R4-F14 (M3.1) — a retained record newer than this build is not rewritten. The rewrite below
+      // goes through THIS build's field set, so it would strip what a newer build added to the record
+      // and leave its `v` claiming the field is still there. The file keeps every record as it is; the
+      // trim runs again on a build that can read them all. Nothing failed, so this is not an
+      // evidence-health failure, and it is said once per writer instance, with a count and no path.
+      const newer = retained.filter((entry) => entry.v > METRICS_ROLLUP_SCHEMA_VERSION).length;
+      if (newer > 0) {
+        if (!this.warnedAboutNewerRecords) {
+          this.warnedAboutNewerRecords = true;
+          this.deps.logger.warn(
+            'metrics rollup: a retained record was written by a newer build, so the oversized rollup is left untrimmed',
+            { newerRecords: newer }
+          );
+        }
+        return;
+      }
+
       // The rewrite happens whenever the file is oversized, even when nothing is
       // discarded: a rollup can exceed the threshold on unparseable content
       // rather than on records, and compacting it back to what it actually holds
@@ -358,11 +386,12 @@ export class MetricsRollupWriter {
       // field a NEWER build added is already gone by the time the trim sees the
       // line, and re-serializing writes this build's field set back while
       // preserving the record's own `v`. A v1 host trimming a v2-written file
-      // therefore strips the v2 fields and leaves `v: 2` claiming they are
-      // there. Nothing today has a v2, so nothing is lost today; the moment the
-      // schema moves, either the trim carries unknown fields through the parse
-      // or it refuses to rewrite a record whose `v` exceeds its own. Recorded
-      // here because this is the line that would do the damage.
+      // would therefore strip the v2 fields and leave `v: 2` claiming they are
+      // there. Feature 242 chose the second of the two remedies this comment
+      // used to name: the guard above refuses to rewrite when a retained
+      // record's `v` exceeds this build's, so a record is only ever rewritten
+      // by a build that knows every field it holds. Recorded here because this
+      // is the line that would do the damage.
       const body = retained.map((entry) => serializeMetricsRollupRecord(entry)).join('');
 
       // FR-R3-082 (T1098) — the temp file through the checked walk too. The
@@ -471,8 +500,10 @@ export type MetricsRollupAppender = Pick<MetricsRollupWriter, 'append'>;
 
 /** Shape a `MetricsRollupRecord` for tests and fixtures without the writer. */
 export function rollupRecordFor(append: MetricsRollupAppend): MetricsRollupRecord {
+  const { failureCause, ...facts } = append;
   return {
     v: METRICS_ROLLUP_SCHEMA_VERSION,
-    ...append
+    ...facts,
+    ...(append.terminalStatus === 'failed' && failureCause !== undefined ? { failureCause } : {})
   };
 }

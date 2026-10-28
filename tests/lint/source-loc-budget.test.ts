@@ -991,7 +991,12 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // `workflow-run-migrator.ts`; this file keeps the `update()` of each key. US6 adds four:
       // `setWatchdog` validates `lastPollOutcome` and tells subscribers (the surface reads it), and
       // the change-key union names the watchdog key.
-      highWaterMark: 3354
+      //
+      // Feature 242 (FR-R4-F14, 2026-10-28) — 3354 → 3355, +1: the standing invariant that a
+      // failure cause exists only on a failed Run, written as one line in `validateRunInvariants`
+      // because the check is this store's to run on both write paths. Its reasoning is on
+      // `WorkflowRun.failureCause` and in `tests/unit/state/failure-cause-invariant.test.ts`.
+      highWaterMark: 3355
     }
   },
   // Feature 077 — public facade and every state-projection collaborator have
@@ -1497,7 +1502,12 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
         'its highWaterMark is raised in a diff that says why',
       decidedOn: '2026-10-01',
       reference: 'repo/docs/development/size-gate-entry-condition.md',
-      highWaterMark: 1551
+      // Feature 242 (FR-R4-F14, 2026-10-28) — 1551 → 1559, +8. The lines are the additive
+      // `failureCause?` on `TaskExecutionEndedPayload` (the field, its type import and a one-line
+      // note) and the feature entry in the file's own header, which contract E1 requires and every
+      // earlier additive field carries. The vocabulary lives in `src/contracts/failure-cause.ts`,
+      // not here, and the projection arm lives in `src/audit/audit-payload.ts`.
+      highWaterMark: 1559
     }
   },
   // The second file of the same 2026-10-01 decision; see the waiver above.

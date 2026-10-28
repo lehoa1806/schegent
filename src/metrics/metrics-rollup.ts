@@ -12,7 +12,9 @@
 //
 // What the record may hold: ids, counters, timestamps, and costs. No
 // description, no path, no CLI output — the same standard the structured audit
-// log is held to, so there is deliberately no free text here to sanitize.
+// log is held to, so there is deliberately no free text here to sanitize. The
+// one code a version-2 record adds, a failed run's `failureCause`, is a member
+// of a closed vocabulary admitted by identity, so it carries no text either.
 //
 // This module is pure: no filesystem, no `vscode`. The writer
 // (`metrics-rollup-writer.ts`) and reader (`metrics-rollup-reader.ts`) own the
@@ -24,15 +26,31 @@ import type {
   MetricsRunSummary,
   TaskRecord
 } from '../contracts/sidebar-ipc';
+import { isFailureCause } from '../contracts/failure-cause';
 
 /**
- * Rollup record schema version.
+ * Rollup record schema version: the version this build WRITES.
  *
  * Append-only and forward-only: records are never rewritten in place. A schema
  * change bumps this constant and adds a reader branch — it does not migrate the
  * file, because rewriting the file is the one operation that could lose a total.
+ *
+ * History: 1 is the FR-R3-009 record. 2 (feature 242, FR-R4-F14) adds
+ * `failureCause` on a failed run's record. Both are read: see
+ * {@link METRICS_ROLLUP_MIN_READ_VERSION}.
  */
-export const METRICS_ROLLUP_SCHEMA_VERSION = 1;
+export const METRICS_ROLLUP_SCHEMA_VERSION = 2;
+
+/**
+ * The lowest record version this build READS (feature 242, research R6).
+ *
+ * The reader used to refuse any `v` below the version it wrote, which was right while there was one
+ * version and would refuse EVERY existing line the moment the writer's version moved. A total must
+ * never drop because the record format grew, so the floor is its own constant: it stays 1, the
+ * version every rollup written before feature 242 holds, and it moves only if a version is ever
+ * deliberately retired.
+ */
+export const METRICS_ROLLUP_MIN_READ_VERSION = 1;
 
 /** Filename under `.schegent/`. Newline-delimited JSON, one record per line. */
 export const METRICS_ROLLUP_FILENAME = 'metrics-rollup.jsonl';
@@ -160,6 +178,11 @@ export function serializeMetricsRollupRecord(record: MetricsRollupRecord): strin
     backendInvocations: record.backendInvocations
   };
   if (record.costUsd !== undefined) body.costUsd = record.costUsd;
+  // FR-R4-F14 (M3) — a failed run's cause, when it recorded one; never on a completed or canceled
+  // record, and never as a null, so an absent key keeps meaning "cause not recorded".
+  if (record.terminalStatus === 'failed' && record.failureCause !== undefined) {
+    body.failureCause = record.failureCause;
+  }
   return `${JSON.stringify(body)}\n`;
 }
 
@@ -201,7 +224,7 @@ export function parseMetricsRollupLine(line: string): RollupParseResult {
   }
 
   const v = raw.v;
-  if (typeof v !== 'number' || !Number.isFinite(v) || v < METRICS_ROLLUP_SCHEMA_VERSION) {
+  if (typeof v !== 'number' || !Number.isFinite(v) || v < METRICS_ROLLUP_MIN_READ_VERSION) {
     return { record: null, warning: 'unsupported-version' };
   }
 
@@ -241,6 +264,16 @@ export function parseMetricsRollupLine(line: string): RollupParseResult {
     return { record: null, warning: 'invalid-costUsd' };
   }
 
+  // FR-R4-F14 (M2) — the cause is read only from a version-2 (or newer) FAILED record, and only when it
+  // is a member of the closed vocabulary. Anything else is simply absent: not a warning, and not a
+  // refusal, because the counters and totals are what the rollup exists for and a member a later
+  // build appends must not cost an older build a run. A version-1 line reads as before, whatever it
+  // holds, so a record written before this feature comes back byte-identical.
+  const failureCause =
+    v >= 2 && terminalStatus === 'failed' && isFailureCause(raw.failureCause)
+      ? raw.failureCause
+      : undefined;
+
   return {
     record: {
       v,
@@ -253,7 +286,8 @@ export function parseMetricsRollupLine(line: string): RollupParseResult {
       phasesCompleted,
       phasesSkipped,
       backendInvocations,
-      ...(costUsd === undefined ? {} : { costUsd })
+      ...(costUsd === undefined ? {} : { costUsd }),
+      ...(failureCause === undefined ? {} : { failureCause })
     }
   };
 }
