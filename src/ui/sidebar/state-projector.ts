@@ -9,6 +9,8 @@ import type { EvidenceHealthSnapshot } from '../../services/evidence-health/evid
 import type { BackendPingState } from '../../services/backend-ping-service';
 import type { QueueStartFailure } from '../../services/queue-start-failure-registry';
 import type { Disposable, WorkspaceStateStore } from '../../state/workspace-state';
+import type { WorkflowRun } from '../../state/workflow-run';
+import type { EffectiveLimitsProjection } from '../../contracts/snapshot-projections';
 import type { HistoryStore } from '../../state/history-store';
 import type { TelemetrySnapshot } from '../../telemetry/telemetry-snapshot';
 import type { WorkflowCatalogResolution } from '../../contracts/workflow-definitions';
@@ -145,6 +147,8 @@ export interface StateProjectorDeps {
    */
   readonly getRunOrigin?: (taskId: string) => RunOriginRef;
   readonly getConfirmationsEnabled?: () => boolean;
+  /** FR-R4-F02 (E3 G9) — the limits one Run runs under, from the inputs execution uses; absent publishes none. */
+  readonly getEffectiveLimits?: (run: WorkflowRun) => EffectiveLimitsProjection | null;
   readonly getDebugLogTail?: () => readonly DebugLogEntry[];
   readonly getAvailableModels?: () => Record<BackendRunnerKind, readonly string[]>;
   readonly getAvailableBackends?: () => readonly BackendRunnerKind[];

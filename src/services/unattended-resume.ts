@@ -13,6 +13,10 @@ import { resumeAnnouncement } from './resume-decision';
 
 // Fixed on purpose: no queue, Run or error text, so a failed announcement leaks nothing into the log.
 const ANNOUNCEMENT_FAILED_LINE = 'unattended resume: the announcement could not be shown';
+// FR-R4-F02 (contract U6 G22) — the same discipline for a Run that ended with an error after it was
+// admitted: a fixed line and a reason code, never the error's text.
+const COMPLETION_FAILED_LINE = 'unattended resume: the run ended with an error';
+const COMPLETION_FAILED_REASON = 'unattended-completion-failed';
 
 /** What the helper needs. Narrow on purpose, so a test supplies four fakes. */
 export interface UnattendedResumeDeps {
@@ -29,23 +33,42 @@ export interface UnattendedResumeDeps {
 /**
  * Resume the Run on `queueId` without the operator, and tell the operator once it is admitted.
  *
- * Equivalent to `resumeExisting(queueId)` with one added step: when the resume was admitted, one
- * warning naming the queue, the Run and the phase is raised before the Run's completion is awaited.
- * The step is synchronous and cannot throw out of here, so it changes neither which Runs resume, nor
- * when, nor the error path. Like `resumeExisting`, the returned promise resolves at the Run's
- * terminal transition, with whether anything was resumed.
+ * When the resume was admitted, one warning naming the queue, the Run and the phase is raised, and
+ * the promise resolves right then, with whether anything was resumed. FR-R4-F02 (contract U6 G21)
+ * removed the wait for the Run's end: this used to await `admission.completed`, so a Run that ran for
+ * hours held the watchdog callback or the liveness walk that called it. The Run's completion is
+ * observed on the side instead (G22), so an error it ends with is logged once and never becomes an
+ * unhandled rejection (G23). The announcement step is synchronous and cannot throw out of here.
  */
 export async function resumeUnattended(
   queueId: string,
   deps: UnattendedResumeDeps
 ): Promise<boolean> {
   const admission = await deps.admit(queueId);
-  if (admission.resumed) announce(queueId, deps);
-  await admission.completed;
+  if (admission.resumed) {
+    announceUnattendedResume(queueId, deps);
+    observeCompletion(admission.completed, deps.logger);
+  }
   return admission.resumed;
 }
 
-function announce(queueId: string, deps: UnattendedResumeDeps): void {
+/** Attach the observer that keeps a detached Run's failure from going unobserved. */
+function observeCompletion(completed: Promise<void>, logger: Pick<SanitizedLogger, 'warn'>): void {
+  void completed.catch(() => {
+    logger.warn(COMPLETION_FAILED_LINE, { reasonCode: COMPLETION_FAILED_REASON });
+  });
+}
+
+/**
+ * The one operator notice for a Run that resumed without them. FR-R4-F02 moved the unattended
+ * wakeups behind `SchegentWorkflowController.admitResume({ unattended })`, which calls this when it
+ * admits one, so the notice is made once whichever path admitted it; `resumeUnattended` above
+ * keeps calling it for the paths that still resume by `admit`.
+ */
+export function announceUnattendedResume(
+  queueId: string,
+  deps: Pick<UnattendedResumeDeps, 'store' | 'notifier' | 'logger'>
+): void {
   try {
     const run = deps.store.getRun(queueId);
     if (run === null) {

@@ -29,7 +29,6 @@ import { SchegentWorkflowController } from '../../../src/controller/workflow-con
 // so a test that drives Phases supplies one. See the fixture header for why the
 // ids here are the real Spec Kit ones.
 import { buildSpeckitCatalog } from '../../fixtures/speckit-catalog-fixture';
-import type { DelayedRetryWatchdog } from '../../../src/controller/workflow-controller';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
 import { QueueManager } from '../../../src/queue/queue-manager';
 import { SanitizedLogger } from '../../../src/lib/logger';
@@ -138,10 +137,6 @@ let statusBar: SchegentStatusBar;
 let notifier: Notifier;
 let lock: WorkspaceLockManager & { release: ReturnType<typeof vi.fn> };
 let auditWriter: { append: ReturnType<typeof vi.fn> };
-let watchdog: {
-  pauseAndPoll: ReturnType<typeof vi.fn>;
-  cancelPendingTimer: ReturnType<typeof vi.fn>;
-};
 
 beforeEach(async () => {
   memento = new FakeMemento();
@@ -160,12 +155,6 @@ beforeEach(async () => {
     ...entry
   }));
   auditWriter = { append: auditAppend };
-  const pauseAndPoll = vi.fn();
-  pauseAndPoll.mockImplementation(async () => {});
-  watchdog = {
-    pauseAndPoll,
-    cancelPendingTimer: vi.fn()
-  };
   controller = new SchegentWorkflowController(
     phaseRunner,
     store,
@@ -177,8 +166,7 @@ beforeEach(async () => {
     opts,
     {
       catalog: buildSpeckitCatalog(),
-      auditWriter: auditWriter as unknown as import('../../../src/audit/audit-log-writer').AuditLogWriter,
-      watchdog: watchdog as unknown as DelayedRetryWatchdog
+      auditWriter: auditWriter as unknown as import('../../../src/audit/audit-log-writer').AuditLogWriter
     }
   );
 });

@@ -91,7 +91,9 @@ export function makeCoordinator(
       admitResume: vi.fn(async () => ({ resumed: false, completed: Promise.resolve() })),
       // A controller with no sessions genuinely drives nothing; every gate this
       // file pins is chosen by its own spy, not by the live-Run count.
-      liveRunCount: 0
+      liveRunCount: 0,
+      // FR-R4-F02 (TA4) — drain step 4 asks whether the queue already holds a session; a double holds none.
+      holdsSession: () => false
     } as never,
     failurePolicyDefault: { resolve: () => 'halt-on-failure' }
   });

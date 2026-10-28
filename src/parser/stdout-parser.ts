@@ -493,7 +493,22 @@ export function parseInvocation(inputs: ParseInputs): InvocationResult {
   // path, or a code change in a different layer) from routing through
   // the `rate_limited` branch. A successful CLI completion is by
   // definition not a rate-limit failure regardless of payload content.
-  if (inputs.rateLimit.matched && inputs.exitCode !== 0) {
+  //
+  // FR-R4-F02 (contract L3 G8, G9) — and not on a settled turn whose CLI result was not an error. A
+  // settled turn is one whose result was the last thing seen and which the host ended with its own
+  // SIGTERM, so its exit status says nothing about the turn; with no `apiError` the CLI's own result
+  // came last and was not a failure, and rate-limit evidence somewhere in the capture does not
+  // override it. That turn is decided by the later branches, as at exit 0. A genuine failure keeps
+  // this branch: an unsettled or killed turn, or a result with `is_error`. `apiError` is read as
+  // `=== null`, the unwrapper's "no error" answer, so a caller that passes no `apiError` at all
+  // (absent, like an absent `turnEnd`) is classified exactly as before. Lifecycle facts decide;
+  // the clean token and the contract blocks are not inputs here. The fatal-signature branch above
+  // keeps first place, and `turnSettled` is read, not edited (FR-R4-F12 owns it).
+  if (
+    inputs.rateLimit.matched &&
+    inputs.exitCode !== 0 &&
+    !(turnSettled(inputs.turnEnd) && inputs.apiError === null)
+  ) {
     // Feature 027 — parse the CLI's reported reset epoch (when present)
     // so the controller can schedule a dynamic delayed retry instead of
     // the fixed 60-minute fallback. Bugfix 2026-05-15 — BUG-002: pass

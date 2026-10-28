@@ -228,23 +228,41 @@ describe('FR-R3-070 — activation elects before it recovers', () => {
     ).toBeLessThan(election);
   });
 
-  it('re-checks primacy at fire time inside the watchdog resume sweep', () => {
+  it('re-checks primacy at fire time inside the watchdog resume sweep and before every admission', () => {
     // FR-R3-119 — the resume sweep moved with the watchdog into
     // `src/activation/scheduled-work-wiring.ts`. The ORDER this asserts is the
     // whole rule and is unchanged: the sweep fires long after activation, so it
-    // must re-read `hasPrimacy()` before claiming anything, rather than trusting
-    // the activation-era `lockResult`. Only the file holding the sweep differs.
+    // must re-read `hasPrimacy()` before admitting anything, rather than trusting
+    // the activation-era `lockResult`.
+    //
+    // FR-R4-F02 changed what the sweep admits WITH, not the order. It no longer
+    // claims elapsed delayed retries (the retry coordinator's own timer does, and
+    // hands each to the admission service), so the thing primacy must precede is
+    // the credits admission; and the admission service asks again for every
+    // wakeup, before it selects or admits, which is the check the backoff arm
+    // now relies on.
     const SWEEP = 'src/activation/scheduled-work-wiring.ts';
     const sweepSource = read(SWEEP);
     const primacy = sweepSource.indexOf('await lock.hasPrimacy()');
-    const claim = sweepSource.indexOf('controller.claimElapsedDelayedRetries()');
+    const admit = sweepSource.indexOf('admission.creditsRestored(');
     expect(primacy, `${SWEEP} must re-check hasPrimacy() in the resume sweep`).toBeGreaterThanOrEqual(0);
-    expect(claim, `${SWEEP} must still claim elapsed retries in the sweep`).toBeGreaterThanOrEqual(0);
+    expect(admit, `${SWEEP} must still admit through the unattended admission service`).toBeGreaterThanOrEqual(0);
     expect(
       primacy,
-      'the sweep must check primacy before claiming elapsed retries — the sweep fires ' +
+      'the sweep must check primacy before admitting — the sweep fires ' +
         'long after activation, so the activation-era lockResult cannot answer for it'
-    ).toBeLessThan(claim);
+    ).toBeLessThan(admit);
+
+    const ADMISSION = 'src/services/unattended-admission.ts';
+    const admissionSource = read(ADMISSION);
+    const asks = admissionSource.indexOf('await this.deps.lock.hasPrimacy()');
+    const selects = admissionSource.indexOf('decideUnattendedEligibility(');
+    const hands = admissionSource.indexOf('this.deps.admit(');
+    expect(asks, `${ADMISSION} must read hasPrimacy() at call time`).toBeGreaterThanOrEqual(0);
+    expect(selects, `${ADMISSION} must still select with the eligibility decision`).toBeGreaterThanOrEqual(0);
+    expect(hands, `${ADMISSION} must still hand a wakeup on to the coordinator`).toBeGreaterThanOrEqual(0);
+    expect(asks, 'primacy is read before the Run is selected').toBeLessThan(selects);
+    expect(selects, 'a Run is selected before it is handed to the coordinator').toBeLessThan(hands);
   });
 
   it('claims the per-queue execution lease on the resume path, before markInFlight', () => {

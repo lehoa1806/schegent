@@ -22,6 +22,8 @@
   import WorkflowRun from '../WorkflowRun/WorkflowRun.svelte';
   import PhaseLogFeed from '../PhaseLogFeed/PhaseLogFeed.svelte';
   import RunOutputs from '../RunOutputs.svelte';
+  import CreditPollingNotice from './CreditPollingNotice.svelte';
+  import RunLimitsPanel from './RunLimitsPanel.svelte';
   import { findQueueRuntime } from '../../lib/queue-runtime-view';
   import { formatDuration } from '../../lib/format-duration';
   import type { QueueItemStatus } from '../../lib/snapshot-types';
@@ -74,6 +76,15 @@
     (task?.status === 'in-flight')
   );
   const liveActivity = $derived(isExecuting ? inFlightRun?.liveActivity ?? null : null);
+  // FR-R4-F02 (TA3) — a credit-paused Run is not executing, so this is NOT gated on `isExecuting`;
+  // it is still this Run's own reading, so it is gated on the Run being the one this tier shows.
+  const creditPolling = $derived(
+    inFlightRun !== null && inFlightRun.feature?.id === runId ? inFlightRun.creditPolling ?? null : null
+  );
+  // FR-R4-F02 (US8, TA3) — under the same rule: the limits belong to the Run this tier shows.
+  const effectiveLimits = $derived(
+    inFlightRun !== null && inFlightRun.feature?.id === runId ? inFlightRun.effectiveLimits ?? null : null
+  );
   const feedText = $derived(
     liveActivity === null
       ? 'idle'
@@ -269,6 +280,13 @@
         {/if}
       </p>
     </div>
+
+    {#if creditPolling !== null}
+      <CreditPollingNotice {queueId} {creditPolling} />
+    {/if}
+    {#if effectiveLimits !== null}
+      <RunLimitsPanel {queueId} {effectiveLimits} />
+    {/if}
 
     <!-- Two-column body: phases left, content right -->
     <div class="run-columns">

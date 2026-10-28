@@ -49,6 +49,7 @@ import { DELAYED_RETRY_CAP } from '../contracts/retry-bounds';
 import { isSessionIdShape } from '../parser/session-id-extractor';
 import { buildMutationPlan } from '../services/mutation-plan';
 import type {
+  CreditPause,
   DelayedRetryCause,
   ManualPauseCause,
   PhaseBreakpoint,
@@ -336,19 +337,86 @@ export function repairPersistedSessionId(run: WorkflowRun): WorkflowRunRepairRes
   };
 }
 
+/**
+ * FR-R4-F02 (data-model §3 "Load") — a repair the closed audit contract has no event for.
+ *
+ * A malformed `creditPause` is repaired to `null`, which makes the Run ineligible for an unattended
+ * resume rather than wrongly eligible. No audit event type is added for it: the caller logs one
+ * warning per entry, and an entry carries a reason code and nothing from the Run (hard rules 22
+ * and 23).
+ */
+export interface LoadRepairWarning {
+  readonly reasonCode: 'credit-pause-repaired';
+}
+
+export interface CreditPauseRepairResult {
+  readonly run: WorkflowRun;
+  readonly warning: LoadRepairWarning | null;
+}
+
+function isFiniteNonNegative(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function isNullOrFiniteNonNegative(value: unknown): value is number | null {
+  return value === null || isFiniteNonNegative(value);
+}
+
+/** The persisted object, field by field: numeric-or-null, finite, non-negative, window after pause. */
+function isValidCreditPauseShape(value: unknown): value is CreditPause {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (!isFiniteNonNegative(record.pausedAt)) return false;
+  if (!isNullOrFiniteNonNegative(record.windowStartedAt)) return false;
+  if (!isNullOrFiniteNonNegative(record.stoppedAt)) return false;
+  return record.windowStartedAt === null || record.windowStartedAt >= record.pausedAt;
+}
+
+/**
+ * Accepts a persisted `creditPause` only when its shape is valid AND it sits on a Run the store's
+ * invariant would accept it on; anything else becomes `null` with one warning.
+ *
+ * The second half is not in the data model's list, and it is the cheap half of the same promise: a
+ * well-formed record beside a running status or a retry pair is corruption, and left in place it
+ * would make `validateRunInvariants` refuse every later patch of that Run, which is a Run nothing
+ * can change. An absent key and an explicit `null` are the two healthy states and are left alone;
+ * the v15 step, not this repair, writes the default.
+ */
+export function repairCreditPauseOnLoad(run: WorkflowRun): CreditPauseRepairResult {
+  const value: unknown = run.creditPause;
+  if (value === undefined || value === null) return { run, warning: null };
+  const contradictsRun =
+    run.status !== 'paused' ||
+    run.pendingRetryAt !== null ||
+    run.pendingRetryCause !== null ||
+    run.manualPauseCause !== null;
+  if (isValidCreditPauseShape(value) && !contradictsRun) return { run, warning: null };
+  return { run: { ...run, creditPause: null }, warning: { reasonCode: 'credit-pause-repaired' } };
+}
+
 export interface WorkflowRunLoadRepairResult {
   readonly run: WorkflowRun;
   readonly auditEvents: readonly WorkflowRunRepairedAuditEvent[];
+  /** Repairs with no audit event of their own; the store logs one warning per entry. */
+  readonly warnings: readonly LoadRepairWarning[];
 }
 
-/** Applies the phase repair, then the session-id repair, and lists their events in that order. */
+/**
+ * Applies the phase repair, then the session-id repair, and lists their events in that order, then
+ * the credit-pause repair, whose warning is reported beside the events rather than as one.
+ */
 export function repairRunOnLoad(run: WorkflowRun): WorkflowRunLoadRepairResult {
   const phaseRepair = repairLegacyRunSnapshot(run);
   const sessionRepair = repairPersistedSessionId(phaseRepair.run);
+  const creditRepair = repairCreditPauseOnLoad(sessionRepair.run);
   const auditEvents = [phaseRepair.auditEvent, sessionRepair.auditEvent].filter(
     (event): event is WorkflowRunRepairedAuditEvent => event !== null
   );
-  return { run: sessionRepair.run, auditEvents };
+  return {
+    run: creditRepair.run,
+    auditEvents,
+    warnings: creditRepair.warning === null ? [] : [creditRepair.warning]
+  };
 }
 
 const VALID_WORKFLOW_STATUSES: ReadonlySet<WorkflowRunStatus> = new Set<WorkflowRunStatus>([

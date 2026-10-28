@@ -37,7 +37,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { SchegentWorkflowController } from '../../../src/controller/workflow-controller';
-import type { DelayedRetryWatchdog } from '../../../src/controller/workflow-controller';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
 import type { Memento } from '../../../src/state/workspace-state';
 import { QueueManager } from '../../../src/queue/queue-manager';
@@ -237,11 +236,7 @@ describe('FR-R3-175 — an activation resume states its session disposition', ()
       { cliPath: 'claude', cwd: '/repo', iterationCap: 5, timeoutMs: 5_000 },
       {
         catalog: buildSpeckitCatalog(),
-        auditWriter: auditAppend as unknown as import('../../../src/audit/audit-log-writer').AuditLogWriter,
-        watchdog: {
-          pauseAndPoll: vi.fn(async () => {}),
-          cancelPendingTimer: vi.fn()
-        } as unknown as DelayedRetryWatchdog
+        auditWriter: auditAppend as unknown as import('../../../src/audit/audit-log-writer').AuditLogWriter
       }
     );
 

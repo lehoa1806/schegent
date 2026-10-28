@@ -12,18 +12,18 @@
 //       via the AbortController signal, THEN appendPhaseControlAudit runs.
 //   (b) Idempotency — second pause call returns `run-already-paused` and does
 //       NOT trigger a second abort.
-//   (c) Delayed-retry-countdown branch — `watchdog.cancelPendingTimer()` is
-//       still called; cancelActive() is invoked even when no live phase is
+//   (c) Delayed-retry-countdown branch — the armed retry deadline is
+//       still cleared; cancelActive() is invoked even when no live phase is
 //       executing (defensive; the AbortController may legitimately be null).
 //   (d) No-run guard — empty controller returns `no-run-in-flight` and never
 //       calls cancelActive().
 //   (e) Cascade-pause preservation — queue cascade STILL fires (no regression
 //       on the 028 invariant).
 
-import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { SchegentWorkflowController } from '../../../src/controller/workflow-controller';
-import type { DelayedRetryWatchdog } from '../../../src/controller/workflow-controller';
+import { RecordingDeadlineTimer } from '../../recording-deadline-timer';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
 import { QueueManager } from '../../../src/queue/queue-manager';
 import { SanitizedLogger } from '../../../src/lib/logger';
@@ -86,10 +86,7 @@ let store: WorkspaceStateStore;
 let queue: QueueManager;
 let phaseRunner: PhaseRunner;
 let controller: SchegentWorkflowController;
-let watchdog: {
-  pauseAndPoll: Mock<() => Promise<void>>;
-  cancelPendingTimer: ReturnType<typeof vi.fn>;
-};
+let deadlineTimer: RecordingDeadlineTimer;
 
 beforeEach(async () => {
   memento = new FakeMemento();
@@ -97,11 +94,7 @@ beforeEach(async () => {
   await store.initialize();
   queue = new QueueManager(store);
   phaseRunner = { run: vi.fn(), evictStagnationTracker: vi.fn() } as unknown as PhaseRunner;
-  const pauseAndPoll = vi.fn(async () => {});
-  watchdog = {
-    pauseAndPoll,
-    cancelPendingTimer: vi.fn()
-  };
+  deadlineTimer = new RecordingDeadlineTimer();
   controller = new SchegentWorkflowController(
     phaseRunner,
     store,
@@ -111,9 +104,7 @@ beforeEach(async () => {
     new SanitizedLogger(),
     makeLock(),
     opts,
-    {
-      watchdog: watchdog as unknown as DelayedRetryWatchdog
-    }
+    { deadlineTimer }
   );
 });
 
@@ -224,16 +215,24 @@ describe('Feature 033 US1 — Aggressive pause via cancelActive()', () => {
     expect(cancelSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('delayed-retry-countdown: pause cancels watchdog AND calls cancelActive', async () => {
+  it('delayed-retry-countdown: pause clears the retry deadline AND calls cancelActive', async () => {
     await seedDelayedRetryRun();
+    // The deadline the persisted Run's countdown is on, armed the way the retry handler arms it.
+    const coordinator = (
+      controller as unknown as {
+        retryCoordinator: { armDelayedRetry(queueId: string, cause: string, delayMs: number): Promise<void> };
+      }
+    ).retryCoordinator;
+    await coordinator.armDelayedRetry(DEFAULT_QUEUE_ID, 'transient_error', 60_000);
+    expect(deadlineTimer.armed()).toHaveLength(1);
 
     const cancelSpy = vi.spyOn(controller, 'cancelActive');
 
     const result = await controller.pauseActivePhase();
     expect(result).toEqual({ ok: true });
 
-    // Watchdog timer is cancelled (existing FR-002 behavior, preserved).
-    expect(watchdog.cancelPendingTimer).toHaveBeenCalledTimes(1);
+    // The countdown is cancelled (existing FR-002 behavior, preserved).
+    expect(deadlineTimer.armed()).toHaveLength(0);
     // cancelActive is still invoked — defensive, even though no live
     // subprocess is running during the countdown.
     expect(cancelSpy).toHaveBeenCalledTimes(1);

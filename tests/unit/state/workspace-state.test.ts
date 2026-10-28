@@ -139,7 +139,7 @@ describe('WorkspaceStateStore.subscribe', () => {
     expect(events).toEqual([KEYS.lock]);
   });
 
-  it('does not fire listener for getters or unrelated setters', async () => {
+  it('does not fire listener for getters', async () => {
     const events: StoreChangeKey[] = [];
     store.subscribe((key) => events.push(key));
 
@@ -148,6 +148,16 @@ describe('WorkspaceStateStore.subscribe', () => {
     store.getLock();
     store.getWatchdog();
     store.getHistory();
+
+    expect(events).toEqual([]);
+  });
+
+  // FR-R4-F02 (US6): this case used to name `setWatchdog` among the writes that stay silent. The
+  // watchdog record now carries the last poll outcome that the surface shows ("Status
+  // unreachable"), so a write to it schedules a projection like the other keys the surface reads.
+  it('fires listener after setWatchdog with the watchdog key', async () => {
+    const events: StoreChangeKey[] = [];
+    store.subscribe((key) => events.push(key));
     await store.setWatchdog({
       paused: false,
       pausedSince: null,
@@ -157,7 +167,7 @@ describe('WorkspaceStateStore.subscribe', () => {
       cause: null
     });
 
-    expect(events).toEqual([]);
+    expect(events).toEqual([KEYS.watchdog]);
   });
 
   it('disposing prevents subsequent fires for that listener only', async () => {
@@ -904,7 +914,8 @@ describe('Persistence migration (T065 / SC-013)', () => {
       expect(repairedRun.id).toBe('run-malformed');
       expect(repairedRun.lastCliSessionId).toBeUndefined();
       expect(repairedRun.lastCliSessionRunnerKind).toBeUndefined();
-      expect(storedRun(memento, OTHER_QUEUE_ID)).toEqual(wellFormedSeed);
+      // FR-R4-F02 — the v15 step's `creditPause` default is the one field the well-formed seed gains.
+      expect(storedRun(memento, OTHER_QUEUE_ID)).toEqual({ ...wellFormedSeed, creditPause: null });
       expect(initResult.runRepairEvents).toEqual([
         { type: 'workflow-run-repaired', runId: 'run-malformed', repair: SESSION_ID_REPAIR }
       ]);

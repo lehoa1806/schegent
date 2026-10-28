@@ -5,11 +5,13 @@ import {
   needsHostVerificationMigration,
   type PersistedPlanSnapshot
 } from '../../../src/state/host-verification-migrator';
-import { STATE_SCHEMA_VERSION } from '../../../src/contracts/state-schema';
+import { STATE_SCHEMA_VERSION_V14 } from '../../../src/contracts/state-schema';
 
 describe('FR-R3-117 — host-verification migrator (v13 -> v14)', () => {
-  it('targets the current schema version', () => {
-    expect(HOST_VERIFICATION_MIGRATION_TARGET).toBe(STATE_SCHEMA_VERSION);
+  it('targets the schema version this step stamps', () => {
+    // It read `STATE_SCHEMA_VERSION` while this step was the head. The head has since moved (v15,
+    // FR-R4-F02) and this step's target has not: it stamps 14 whatever the head is.
+    expect(HOST_VERIFICATION_MIGRATION_TARGET).toBe(STATE_SCHEMA_VERSION_V14);
   });
 
   it('recognises records that predate the resolution rule, and only those', () => {

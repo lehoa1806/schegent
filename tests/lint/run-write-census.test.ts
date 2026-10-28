@@ -178,6 +178,7 @@ describe('the field-update label set (contract C2)', () => {
       [
         'cancel',
         'clear-breakpoint',
+        'credit-window',
         'disable',
         'driver-transition',
         'enable',

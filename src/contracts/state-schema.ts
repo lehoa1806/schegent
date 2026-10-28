@@ -176,8 +176,14 @@
  *       basis rather than retroactively tightening a plan the operator already
  *       approved. A frozen plan is never retargeted in flight; the new default
  *       applies to plans frozen after the upgrade.
+ *
+ *  15 — FR-R4-F02: `WorkflowRun.creditPause` and `WatchdogState.lastPollOutcome`. The step
+ *       writes `creditPause: null` on every Run lacking the key and `lastPollOutcome: null` on an
+ *       existing watchdog record, once and idempotently, before the stamp.
+ *       Migrator: `migrateV14ToV15()` in `src/state/credit-pause-state.ts`, run by the store's
+ *       ladder step. Forward-only.
  */
-export const STATE_SCHEMA_VERSION = 14 as const;
+export const STATE_SCHEMA_VERSION = 15 as const;
 
 export const STATE_SCHEMA_VERSION_V2 = 2 as const;
 export const STATE_SCHEMA_VERSION_V3 = 3 as const;
@@ -192,6 +198,7 @@ export const STATE_SCHEMA_VERSION_V11 = 11 as const;
 export const STATE_SCHEMA_VERSION_V12 = 12 as const;
 export const STATE_SCHEMA_VERSION_V13 = 13 as const;
 export const STATE_SCHEMA_VERSION_V14 = 14 as const;
+export const STATE_SCHEMA_VERSION_V15 = 15 as const;
 
 export interface VersionedRecord {
   readonly schemaVersion: number;

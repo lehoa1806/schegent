@@ -70,7 +70,8 @@ export function advancedRun(inputs: AdvanceInputs): WorkflowRun {
       ? {
           delayedRetryCount: 0,
           pendingRetryAt: null,
-          pendingRetryCause: null
+          pendingRetryCause: null,
+          creditPause: null
         }
       : {}),
     ...(crossesRunnerBoundary ? NO_CLI_SESSION : {})

@@ -6,6 +6,29 @@ import * as vscode from 'vscode';
 import type { SanitizedLogger } from '../lib/logger';
 import { resolveProcessEnvironmentPolicy, type ProcessEnvironmentPolicy } from '../runner/spawn-env';
 import { validateWorkspaceSettings } from '../config/settings-schema-validator';
+import type { EffectiveLimit, LimitOrigin } from '../contracts/snapshot-projections';
+
+/** The layers `WorkspaceConfiguration.inspect` reports, as far as an origin is concerned. */
+interface InspectedLayers {
+  readonly workspaceFolderValue?: unknown;
+  readonly workspaceValue?: unknown;
+  readonly globalValue?: unknown;
+}
+
+/**
+ * FR-R4-F02 (contract E2 G5, G7) — which settings layer an `inspect` result says supplied the value,
+ * in the order `get` resolves them: folder, then workspace, then user, then the manifest default.
+ *
+ * It lives beside the resolver and not in `general-settings.ts`: `inspectScope` there answers a
+ * three-valued question for the settings tab and is unchanged. Only these four members are ever
+ * returned; `phase` is a value a Run's frozen plan carries and is not a settings layer.
+ */
+export function originOf(inspected: InspectedLayers | undefined): LimitOrigin {
+  if (inspected?.workspaceFolderValue !== undefined) return 'workspace-folder';
+  if (inspected?.workspaceValue !== undefined) return 'workspace';
+  if (inspected?.globalValue !== undefined) return 'user';
+  return 'default';
+}
 
 /**
  * FR-R3-119 — the workspace settings `wireStage2` resolves before it builds
@@ -31,6 +54,17 @@ export interface WorkspaceSettings {
   readonly maxDurationSeconds: number;
   readonly rotationSizeMB: number;
   readonly rotationMaxAgeDays: number;
+  /**
+   * FR-R4-F02 (contract E1, E2 G5) — the three limits the runner receives, each beside the layer that
+   * supplied it. The scalar fields above are unchanged and equal `limits.*.value` by construction:
+   * both come from the one reading below, so the value shown to the operator and the value the runner
+   * is built with cannot be two readings of the settings.
+   */
+  readonly limits: {
+    readonly iterationCap: EffectiveLimit<number>;
+    readonly idleTimeoutSeconds: EffectiveLimit<number>;
+    readonly maxDurationSeconds: EffectiveLimit<number>;
+  };
 }
 
 export function resolveWorkspaceSettings(input: {
@@ -70,6 +104,14 @@ const legacyExplicit =
   legacyInspect?.workspaceValue ??
   legacyInspect?.globalValue;
 const timeoutSeconds = idleExplicit ?? legacyExplicit ?? 5400;
+// FR-R4-F02 (E2 G5) — the origin names the layer that won, not the key: the explicit new key if it
+// was set, else the legacy key's layer, else the default, in the order `timeoutSeconds` resolves.
+const idleOrigin =
+  idleExplicit !== undefined
+    ? originOf(idleInspect)
+    : legacyExplicit !== undefined
+      ? originOf(legacyInspect)
+      : 'default';
 // FR-R3-075 — the absolute per-invocation bound; reasoning beside the
 // default's declaration in general-settings.ts.
 const maxDurationSeconds = config.get<number>('invocation.maxDurationSeconds', 21600);
@@ -84,6 +126,14 @@ const rotationMaxAgeDays = config.get<number>('audit.rotation.maxAgeDays', 30);
     timeoutSeconds,
     maxDurationSeconds,
     rotationSizeMB,
-    rotationMaxAgeDays
+    rotationMaxAgeDays,
+    limits: {
+      iterationCap: { value: iterationCap, origin: originOf(config.inspect<number>('loop.maxIterations')) },
+      idleTimeoutSeconds: { value: timeoutSeconds, origin: idleOrigin },
+      maxDurationSeconds: {
+        value: maxDurationSeconds,
+        origin: originOf(config.inspect<number>('invocation.maxDurationSeconds'))
+      }
+    }
   };
 }

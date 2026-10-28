@@ -30,6 +30,8 @@ import type { CatalogVersionId } from './catalog-store';
 import type { ChangedFieldSummary } from './snapshot-vocabulary';
 import type { DefinitionState, ExpectedDraftVersion } from './catalog-lifecycle';
 import type { QueueFailurePolicy } from './queue-failure-policy';
+import type { SpendDenomination } from './backend-spend-denomination';
+import type { RetryCapOutcome } from './process-definitions';
 
 /**
  * Feature 083 — Workflow catalog projection. Contract:
@@ -322,6 +324,52 @@ export interface DelayedRetryState {
   readonly pendingRetryAt: string | null;
   readonly pendingRetryCause: DelayedRetryCauseProjection;
   readonly delayedRetryCount: number;
+}
+
+/**
+ * FR-R4-F02 (data-model §10) — a credit-paused Run's polling, in a fixed vocabulary. `stopped` is
+ * where the Resume control is offered; `unreachable` is an open window whose last poll could not
+ * reach `/status`; `windowEndsAt` is null until the first poll starts the window.
+ */
+export interface CreditPollingProjection {
+  readonly state: 'polling' | 'stopped' | 'unreachable';
+  readonly windowEndsAt: number | null;
+}
+
+/**
+ * FR-R4-F02 (data-model §10; contract E1, E3) — which layer a limit in force came from. A closed set:
+ * the surface maps each member to fixed text, so no settings string ever crosses to a label (FR-040).
+ * `phase` is a value the Run's frozen plan carries; the rest name the settings layer that won.
+ */
+export type LimitOrigin = 'default' | 'user' | 'workspace' | 'workspace-folder' | 'phase';
+
+/** A limit in force and where it came from. */
+export interface EffectiveLimit<T> {
+  readonly value: T;
+  readonly origin: LimitOrigin;
+}
+
+/**
+ * FR-R4-F02 (data-model §10) — the limits one in-flight Run runs under, computed per snapshot from
+ * the inputs execution uses and never persisted. Numbers and closed enums only. `onRetryCap` is the
+ * contract's `RetryCapOutcome`, three values and not two, because `resolveRetryCapOutcome` can
+ * return all three and the surface must not report a degraded advance as a plain one.
+ */
+export interface EffectiveLimitsProjection {
+  readonly iterationCap: EffectiveLimit<number>;
+  readonly idleTimeoutSeconds: EffectiveLimit<number>;
+  readonly maxDurationSeconds: EffectiveLimit<number>;
+  readonly retryCap: EffectiveLimit<number>;
+  readonly onRetryCap: EffectiveLimit<RetryCapOutcome>;
+  readonly spend:
+    | { readonly kind: 'none' }
+    | {
+        readonly kind: 'bounded';
+        readonly denomination: SpendDenomination;
+        readonly limit: EffectiveLimit<number>;
+        /** `not-trustworthy` while the figure is unmeasurable or the total only a lower bound. */
+        readonly trust: 'enforced' | 'not-trustworthy';
+      };
 }
 
 /**

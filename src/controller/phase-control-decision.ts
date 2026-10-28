@@ -1,4 +1,4 @@
-import { isOperableRunStatus } from '../state/workflow-run';
+import { creditPauseOf, isOperableRunStatus } from '../state/workflow-run';
 import type { WorkflowRun } from '../state/workflow-run';
 
 /**
@@ -164,7 +164,11 @@ export function decidePhaseControl(input: PhaseControlDecisionInput): PhaseContr
 
     case 'resume': {
       if (!run) return reject('no-run-in-flight');
-      if (run.manualPauseAt === null && run.pendingRetryAt === null) return reject('run-not-paused');
+      // FR-R4-F02 (contract W6 G19) — a Run paused for credits has neither a manual pause nor a
+      // retry countdown, and it is the Run the operator's Resume exists for once polling stops.
+      if (run.manualPauseAt === null && run.pendingRetryAt === null && creditPauseOf(run) === null) {
+        return reject('run-not-paused');
+      }
       return ELIGIBLE;
     }
 

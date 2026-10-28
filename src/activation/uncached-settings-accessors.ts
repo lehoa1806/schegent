@@ -17,7 +17,9 @@
 import * as vscode from 'vscode';
 
 import type { QueueFailurePolicy } from '../contracts/queue-failure-policy';
+import type { EffectiveLimit } from '../contracts/snapshot-projections';
 import type { RawTranscriptMode } from '../state/workflow-run';
+import { originOf } from './workspace-settings';
 
 /** Every accessor re-reads the folder-scoped section; none of them holds it. */
 function section(workspaceRoot: string): vscode.WorkspaceConfiguration {
@@ -29,7 +31,42 @@ function section(workspaceRoot: string): vscode.WorkspaceConfiguration {
  * setting mid-run takes effect on the next phase.
  */
 export function readForceContinueOnRetryCap(workspaceRoot: string): boolean {
-  return section(workspaceRoot).get<boolean>('retry.forceContinueOnCap', false) === true;
+  return readForceContinueOnRetryCapLimit(workspaceRoot).value;
+}
+
+/**
+ * FR-R4-F02 (contract E2 G6) — the same read with the layer that supplied it. Execution calls the
+ * function above, which is this one's `value`, and the per-Run disclosure calls this, so the value
+ * the runner acts on and the value the operator is shown come from one read of the setting.
+ */
+export function readForceContinueOnRetryCapLimit(workspaceRoot: string): EffectiveLimit<boolean> {
+  const config = section(workspaceRoot);
+  return {
+    value: config.get<boolean>('retry.forceContinueOnCap', false) === true,
+    origin: originOf(config.inspect<boolean>('retry.forceContinueOnCap'))
+  };
+}
+
+/**
+ * FR-R4-F02 (contract E2 G6) — the spend bounds, each with its origin, read per evaluation and never
+ * cached. The watcher acts on the values and the disclosure shows the pairs, from this one read.
+ * Unscoped to a folder, exactly as the watcher has always read them: a bound is the workspace's.
+ */
+export function readSpendLimits(): {
+  readonly limitUsd: EffectiveLimit<number | null>;
+  readonly limitTokens: EffectiveLimit<number | null>;
+} {
+  const config = vscode.workspace.getConfiguration('schegent');
+  return {
+    limitUsd: {
+      value: config.get<number | null>('spend.maxUsdPerRun', null),
+      origin: originOf(config.inspect<number | null>('spend.maxUsdPerRun'))
+    },
+    limitTokens: {
+      value: config.get<number | null>('spend.maxTokensPerRun', null),
+      origin: originOf(config.inspect<number | null>('spend.maxTokensPerRun'))
+    }
+  };
 }
 
 /**

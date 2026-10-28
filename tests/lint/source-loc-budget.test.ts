@@ -980,7 +980,18 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // the classification and rewrite of the verdict basis in
       // `host-verification-migrator.ts`. What is left here is what has to run inside the
       // store's own serialized links, which is the reason these are methods of it.
-      highWaterMark: 3293
+      //
+      // Feature 240 (FR-R4-F02, 2026-10-28) — 3293 → 3354: 61 lines, again the seam the memento
+      // forces and nothing that decides. They are the v14 → v15 ladder step (`migrateCreditPauseIfNeeded`,
+      // two reads and two writes of keys only this store may write, plus the ladder's restructure to
+      // run it between the two steps that report events), the one-line standing invariant call,
+      // and the load-repair warning (`warnLoadRepairs`) that reports a repair with no audit event of
+      // its own. The decisions were extracted rather than added: the invariant's check and both
+      // defaults are pure functions in `credit-pause-state.ts`, and the repair itself is in
+      // `workflow-run-migrator.ts`; this file keeps the `update()` of each key. US6 adds four:
+      // `setWatchdog` validates `lastPollOutcome` and tells subscribers (the surface reads it), and
+      // the change-key union names the watchdog key.
+      highWaterMark: 3354
     }
   },
   // Feature 077 — public facade and every state-projection collaborator have
@@ -1235,7 +1246,11 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // step, and `clearRunSnapshots` stays the one whole-Run removal the census
       // keeps. The decision of what counts as a live Run is `LIVE_RUN_STATUSES` in
       // `workflow-run.ts`, not here.
-      highWaterMark: 2385
+      //
+      // Feature 240 (FR-R4-F02, 2026-10-28) — 2385 → 2386: one line. Clean All's watchdog
+      // reset also writes `lastPollOutcome: null`, which is the one field it would otherwise leave
+      // behind (contract W6b G23); the reset stays window-wide, as Clean All means.
+      highWaterMark: 2386
     }
   },
   // Speckit-auto alignment (2026-07-30) — bumped 700 → 800 to absorb two new

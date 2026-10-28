@@ -72,10 +72,8 @@ import type { RawInvocationOutput, InvocationRequest } from '../../src/runner/in
 import type { SchegentStatusBar } from '../../src/ui/status-bar';
 import type { Notifier } from '../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../src/state/lock';
-import type {
-  DelayedRetryWatchdog,
-  WorkflowControllerDeps
-} from '../../src/controller/workflow-controller';
+import type { WorkflowControllerDeps } from '../../src/controller/workflow-controller';
+import { RecordingDeadlineTimer } from '../recording-deadline-timer';
 import { removeTempRoot } from '../temp-root-cleanup';
 
 class FakeMemento implements Memento {
@@ -188,19 +186,6 @@ function makeLock(): WorkspaceLockManager {
   } as unknown as WorkspaceLockManager;
 }
 
-function makeStubWatchdog(): DelayedRetryWatchdog & {
-  pauseAndPoll: ReturnType<typeof vi.fn>;
-  cancelPendingTimer: ReturnType<typeof vi.fn>;
-} {
-  return {
-    pauseAndPoll: vi.fn(async () => {}),
-    cancelPendingTimer: vi.fn()
-  } as unknown as DelayedRetryWatchdog & {
-    pauseAndPoll: ReturnType<typeof vi.fn>;
-    cancelPendingTimer: ReturnType<typeof vi.fn>;
-  };
-}
-
 interface Harness {
   controller: SchegentWorkflowController;
   store: WorkspaceStateStore;
@@ -209,7 +194,7 @@ interface Harness {
   workspaceRoot: string;
   invocations: CapturedInvocation[];
   setOutcome: (outcomes: Array<() => RawInvocationOutput>) => void;
-  watchdog: ReturnType<typeof makeStubWatchdog>;
+  deadlineTimer: RecordingDeadlineTimer;
 }
 
 async function makeHarness(memento: FakeMemento, workspaceRoot: string): Promise<Harness> {
@@ -236,7 +221,7 @@ async function makeHarness(memento: FakeMemento, workspaceRoot: string): Promise
     phaseBreakpointAccessor
   );
   const queue = new QueueManager(store);
-  const watchdog = makeStubWatchdog();
+  const deadlineTimer = new RecordingDeadlineTimer();
 
   const statusBar = { update: vi.fn(), dispose: vi.fn() } as unknown as SchegentStatusBar;
   const notifier = {
@@ -249,7 +234,7 @@ async function makeHarness(memento: FakeMemento, workspaceRoot: string): Promise
   const deps: WorkflowControllerDeps = {
     catalog: buildSpeckitCatalog(),
     auditWriter: audit,
-    watchdog
+    deadlineTimer
   };
 
   const controller = new SchegentWorkflowController(
@@ -269,7 +254,7 @@ async function makeHarness(memento: FakeMemento, workspaceRoot: string): Promise
     deps
   );
 
-  return { controller, store, queue, audit, workspaceRoot, invocations, setOutcome, watchdog };
+  return { controller, store, queue, audit, workspaceRoot, invocations, setOutcome, deadlineTimer };
 }
 
 let tmpRoot: string;

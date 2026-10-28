@@ -36,10 +36,8 @@ import type { RawInvocationOutput, InvocationRequest } from '../../src/runner/in
 import type { SchegentStatusBar } from '../../src/ui/status-bar';
 import type { Notifier } from '../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../src/state/lock';
-import type {
-  DelayedRetryWatchdog,
-  WorkflowControllerDeps
-} from '../../src/controller/workflow-controller';
+import type { WorkflowControllerDeps } from '../../src/controller/workflow-controller';
+import { RecordingDeadlineTimer } from '../recording-deadline-timer';
 import {
   RATE_LIMIT_BACKOFF_MS,
   RETRY_BUFFER_MS
@@ -98,26 +96,13 @@ function makeLock(): WorkspaceLockManager {
   } as unknown as WorkspaceLockManager;
 }
 
-function makeStubWatchdog(): DelayedRetryWatchdog & {
-  pauseAndPoll: ReturnType<typeof vi.fn>;
-  cancelPendingTimer: ReturnType<typeof vi.fn>;
-} {
-  return {
-    pauseAndPoll: vi.fn(async () => {}),
-    cancelPendingTimer: vi.fn()
-  } as unknown as DelayedRetryWatchdog & {
-    pauseAndPoll: ReturnType<typeof vi.fn>;
-    cancelPendingTimer: ReturnType<typeof vi.fn>;
-  };
-}
-
 interface Harness {
   controller: SchegentWorkflowController;
   store: WorkspaceStateStore;
   queue: QueueManager;
   audit: AuditLogWriter;
   workspaceRoot: string;
-  watchdog: ReturnType<typeof makeStubWatchdog>;
+  deadlineTimer: RecordingDeadlineTimer;
   logger: SanitizedLogger;
 }
 
@@ -133,7 +118,7 @@ async function makeHarness(
   const store = new WorkspaceStateStore(memento);
   await store.initialize();
   const queue = new QueueManager(store);
-  const watchdog = makeStubWatchdog();
+  const deadlineTimer = new RecordingDeadlineTimer();
 
   const statusBar = { update: vi.fn(), dispose: vi.fn() } as unknown as SchegentStatusBar;
   const notifier = { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as unknown as Notifier;
@@ -142,7 +127,7 @@ async function makeHarness(
   const deps: WorkflowControllerDeps = {
     catalog: buildSpeckitCatalog(),
     auditWriter: audit,
-    watchdog
+    deadlineTimer
   };
 
   const controller = new SchegentWorkflowController(
@@ -157,7 +142,7 @@ async function makeHarness(
     deps
   );
 
-  return { controller, store, queue, audit, workspaceRoot, watchdog, logger };
+  return { controller, store, queue, audit, workspaceRoot, deadlineTimer, logger };
 }
 
 async function readRetryScheduledPayload(workspaceRoot: string): Promise<{

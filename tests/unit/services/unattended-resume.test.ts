@@ -14,6 +14,12 @@ import type { WorkflowRun } from '../../../src/state/workflow-run';
  * It is `resumeExisting`'s three statements with one synchronous step between admission and
  * completion. The cases below hold the step to its two promises: it speaks once the resume is
  * admitted and before the Run ends, and nothing it does can change what the resume does.
+ *
+ * FR-R4-F02 (spec 240, US2; contract U6 G21 to G23) CHANGES ONE THING: it no longer waits for the
+ * Run. It resolves after admission and the announcement, with `admission.resumed`, and observes
+ * `completed` on the side, so a Run that runs for hours cannot hold the watchdog callback or the
+ * liveness walk that called it. The two cases that asserted it resolved only at the Run's end are
+ * rewritten to assert the opposite, and the detached completion has its own cases at the end.
  */
 
 const FIXED_FAILURE_LINE = 'unattended resume: the announcement could not be shown';
@@ -93,14 +99,15 @@ describe('FR-R3-192 — resumeUnattended', () => {
     expect(message).toContain('queue "default"');
     expect(message).toContain('run abcdef12 ');
     expect(message).toContain('phase "speckit-plan"');
-    expect(settled).toBe(false);
+    // The helper has resolved although the Run has not ended (contract U6 G21).
+    expect(settled).toBe(true);
 
-    f.completed.resolve();
     await expect(result).resolves.toBe(true);
+    f.completed.resolve();
     expect(f.warn).toHaveBeenCalledTimes(1);
   });
 
-  it('resolves only after the Run completes, as resumeExisting does', async () => {
+  it('resolves after admission and the announcement while `completed` is still pending (U6 G21)', async () => {
     const f = fixture();
     let settled = false;
     const result = resumeUnattended('default', f.deps).then((value) => {
@@ -108,10 +115,14 @@ describe('FR-R3-192 — resumeUnattended', () => {
       return value;
     });
     await flush();
-    expect(settled).toBe(false);
-    f.completed.resolve();
-    expect(await result).toBe(true);
+
     expect(settled).toBe(true);
+    expect(f.warn).toHaveBeenCalledTimes(1);
+    expect(await result).toBe(true);
+    // The Run is still open; resolving it later changes nothing about what was returned.
+    f.completed.resolve();
+    await flush();
+    expect(f.warn).toHaveBeenCalledTimes(1);
   });
 
   it('reads the admitted Run back by its queue', async () => {
@@ -120,8 +131,8 @@ describe('FR-R3-192 — resumeUnattended', () => {
     await flush();
     expect(f.admit).toHaveBeenCalledWith('side-queue');
     expect(f.getRun).toHaveBeenCalledWith('side-queue');
-    f.completed.resolve();
     await result;
+    f.completed.resolve();
   });
 
   it('announces nothing for a refused admission, and resolves false', async () => {
@@ -191,3 +202,68 @@ describe('FR-R3-192 — resumeUnattended', () => {
     expect(typeof f.warn.mock.lastCall?.[0]).toBe('string');
   });
 });
+
+describe('FR-R4-F02 (contract U6 G22, G23) — the detached completion is observed', () => {
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown): void => {
+    unhandled.push(reason);
+  };
+
+  afterEach(() => {
+    process.off('unhandledRejection', onUnhandled);
+    unhandled.length = 0;
+  });
+
+  it('a rejecting `completed` logs one line with a reason code and no error text, and nothing is unhandled', async () => {
+    process.on('unhandledRejection', onUnhandled);
+    const f = fixture({
+      admit: async () => ({
+        resumed: true,
+        completed: Promise.reject(new Error('the run failed with sk-ant-' + 'B'.repeat(30)))
+      })
+    });
+
+    await expect(resumeUnattended('default', f.deps)).resolves.toBe(true);
+    await flush();
+    await flush();
+
+    expect(unhandled).toEqual([]);
+    expect(f.loggerWarn).toHaveBeenCalledTimes(1);
+    expect(f.loggerWarn).toHaveBeenCalledWith('unattended resume: the run ended with an error', {
+      reasonCode: 'unattended-completion-failed'
+    });
+    expect(JSON.stringify(f.loggerWarn.mock.calls)).not.toContain('sk-ant');
+  });
+
+  it('a `completed` that resolves later logs nothing', async () => {
+    const f = fixture();
+    await resumeUnattended('default', f.deps);
+    f.completed.resolve();
+    await flush();
+    expect(f.loggerWarn).not.toHaveBeenCalled();
+  });
+
+  it('resumeUnattended never rejects because the Run it admitted failed', async () => {
+    process.on('unhandledRejection', onUnhandled);
+    const f = fixture({
+      admit: async () => ({ resumed: true, completed: Promise.reject(new Error('late failure')) })
+    });
+
+    const outcome = await resumeUnattended('default', f.deps).then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error })
+    );
+    await flush();
+
+    expect(outcome).toEqual({ value: true });
+    expect(unhandled).toEqual([]);
+  });
+
+  it('a refused admission has no completion to observe and logs nothing', async () => {
+    const f = fixture({ resumed: false });
+    await expect(resumeUnattended('default', f.deps)).resolves.toBe(false);
+    await flush();
+    expect(f.loggerWarn).not.toHaveBeenCalled();
+  });
+});
+

@@ -259,7 +259,9 @@ describe('drainAll() keeps the idle-pending gate a single enforcement site (T037
       controller: {
         admitNew,
         admitResume: vi.fn(async () => ({ resumed: false, completed: Promise.resolve() })),
-        liveRunCount: 0
+        liveRunCount: 0,
+        // FR-R4-F02 (TA4) — drain step 4 asks whether the queue already holds a session; a double holds none.
+        holdsSession: () => false
       } as never,
       failurePolicyDefault: { resolve: () => 'halt-on-failure' }
     });

@@ -1,9 +1,13 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   migrateLegacyRun,
   repairLegacyRunSnapshot,
-  repairPersistedSessionId
+  repairPersistedSessionId,
+  repairRunOnLoad
 } from '../../../src/state/workflow-run-migrator';
+import { KEYS, SCHEMA_VERSION, STATE_SCHEMA_VERSION, WorkspaceStateStore, type Memento } from '../../../src/state/workspace-state';
+import type { SanitizedLogger } from '../../../src/lib/logger';
+import { buildQueueRegistry, buildQueueStateMap, buildWorkflowRun } from '../../fixtures/state/queue-fixtures';
 import { resolveSessionDispatch } from '../../../src/services/session-dispatch-policy';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
 
@@ -399,5 +403,99 @@ describe('repairPersistedSessionId (FR-R3-207, T1891)', () => {
 
     expect(repairedValid.run.lastCliSessionId).toBe(UUID_ID);
     expect(repairedValid.run.lastCliSessionCostUsd).toBe(1.6);
+  });
+});
+
+// FR-R4-F02 (spec 240, data-model §3 "Load") — a persisted `creditPause` is accepted only with
+// numeric-or-null fields, finite and non-negative, and `windowStartedAt >= pausedAt` when both are
+// set. Anything else is repaired to `null`, which makes the Run ineligible rather than wrongly
+// eligible, with one warning that names a reason code and nothing from the Run.
+describe('FR-R4-F02 — creditPause is repaired on load', () => {
+  function pausedRunWith(creditPause: unknown): WorkflowRun {
+    return { ...buildWorkflowRun({ id: 'run-credit', status: 'paused' }), creditPause } as unknown as WorkflowRun;
+  }
+  function creditPauseOf(run: WorkflowRun): unknown {
+    return (run as unknown as { creditPause?: unknown }).creditPause;
+  }
+  const REPAIR_REASON = { reasonCode: 'credit-pause-repaired' };
+
+  it.each([
+    ['no window yet', { pausedAt: 100, windowStartedAt: null, stoppedAt: null }],
+    ['an open window', { pausedAt: 100, windowStartedAt: 200, stoppedAt: null }],
+    ['a window that started at the pause', { pausedAt: 100, windowStartedAt: 100, stoppedAt: null }],
+    ['a stopped window', { pausedAt: 100, windowStartedAt: 200, stoppedAt: 300 }]
+  ])('keeps a valid object (%s) and warns of nothing', (_name, valid) => {
+    const out = repairRunOnLoad(pausedRunWith(valid));
+    expect(creditPauseOf(out.run)).toEqual(valid);
+    expect(out.warnings).toEqual([]);
+  });
+
+  it.each([
+    ['a string', 'paused'],
+    ['a number', 3],
+    ['an array', []],
+    ['a string field', { pausedAt: '100', windowStartedAt: null, stoppedAt: null }],
+    ['a null pausedAt', { pausedAt: null, windowStartedAt: null, stoppedAt: null }],
+    ['a missing field', { pausedAt: 100, windowStartedAt: null }],
+    ['windowStartedAt before pausedAt', { pausedAt: 200, windowStartedAt: 100, stoppedAt: null }],
+    ['a negative number', { pausedAt: -1, windowStartedAt: null, stoppedAt: null }],
+    ['a negative stoppedAt', { pausedAt: 100, windowStartedAt: 200, stoppedAt: -5 }],
+    ['NaN', { pausedAt: Number.NaN, windowStartedAt: null, stoppedAt: null }],
+    ['an infinite number', { pausedAt: 100, windowStartedAt: Number.POSITIVE_INFINITY, stoppedAt: null }]
+  ])('repairs %s to null with one metadata-only warning', (_name, malformed) => {
+    const out = repairRunOnLoad(pausedRunWith(malformed));
+    expect(creditPauseOf(out.run)).toBeNull();
+    expect(out.warnings).toEqual([REPAIR_REASON]);
+    expect(JSON.stringify(out.warnings)).not.toContain('run-credit');
+  });
+
+  it('leaves a null record and an absent key alone, without a warning', () => {
+    const withNull = repairRunOnLoad(pausedRunWith(null));
+    expect(creditPauseOf(withNull.run)).toBeNull();
+    expect(withNull.warnings).toEqual([]);
+
+    const { creditPause: _absent, ...bare } = pausedRunWith(null) as WorkflowRun & { creditPause?: unknown };
+    const absent = repairRunOnLoad(bare as WorkflowRun);
+    expect(absent.run).not.toHaveProperty('creditPause');
+    expect(absent.warnings).toEqual([]);
+  });
+
+  describe('through the store', () => {
+    class FakeMemento implements Memento {
+      private readonly map = new Map<string, unknown>();
+      get<T>(key: string): T | undefined {
+        return this.map.get(key) as T | undefined;
+      }
+      update(key: string, value: unknown): Thenable<void> {
+        this.map.set(key, value);
+        return Promise.resolve();
+      }
+    }
+
+    it('persists the repaired Run, logs one warning with a reason code and no Run body', async () => {
+      const registry = buildQueueRegistry({ count: 1, defaultAtPosition: 0 });
+      const queues = buildQueueStateMap(registry);
+      const memento = new FakeMemento();
+      await memento.update(KEYS.schemaVersion, SCHEMA_VERSION);
+      await memento.update(KEYS.schemaVersionNumeric, STATE_SCHEMA_VERSION);
+      await memento.update(KEYS.queueRegistry, registry);
+      await memento.update(KEYS.queue, queues);
+      const malformed = { pausedAt: 200, windowStartedAt: 100, stoppedAt: null };
+      await memento.update(KEYS.run, {
+        default: { ...pausedRunWith(malformed), featureId: 'task-0' }
+      });
+      const warn = vi.fn();
+      const logger = { warn, info: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as SanitizedLogger;
+
+      const store = new WorkspaceStateStore(memento, logger);
+      await store.initialize();
+
+      expect(creditPauseOf(store.getRun('default') as WorkflowRun)).toBeNull();
+      const repairWarnings = warn.mock.calls.filter(
+        (call) => (call[1] as { reasonCode?: string } | undefined)?.reasonCode === 'credit-pause-repaired'
+      );
+      expect(repairWarnings).toHaveLength(1);
+      expect(JSON.stringify(repairWarnings[0])).not.toContain('run-credit');
+    });
   });
 });

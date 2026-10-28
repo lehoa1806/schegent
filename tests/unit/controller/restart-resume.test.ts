@@ -1,12 +1,12 @@
 // Feature 011 — FR-013: restart handshake.
 //
-// pendingRetryAt persists across "restart" (re-initialize store); past
-// deadline resumes on next tick; future deadline re-arms watchdog with
-// `durationOverrideMs`.
+// pendingRetryAt persists across "restart" (re-initialize store); a past
+// deadline is handed on as a `backoff-elapsed` wakeup (FR-R4-F02, U2 G6); a
+// future deadline re-arms the retry coordinator's own timer for the time left.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { SchegentWorkflowController } from '../../../src/controller/workflow-controller';
-import type { DelayedRetryWatchdog } from '../../../src/controller/workflow-controller';
+import { RecordingDeadlineTimer } from '../../recording-deadline-timer';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
 import { QueueManager } from '../../../src/queue/queue-manager';
 import { SanitizedLogger } from '../../../src/lib/logger';
@@ -66,10 +66,7 @@ const opts = {
 
 function makeController(
   memento: FakeMemento,
-  watchdog: {
-    pauseAndPoll: ReturnType<typeof vi.fn>;
-    cancelPendingTimer: ReturnType<typeof vi.fn>;
-  }
+  deadlineTimer: RecordingDeadlineTimer
 ): { controller: SchegentWorkflowController; store: WorkspaceStateStore } {
   const store = new WorkspaceStateStore(memento);
   const queue = new QueueManager(store);
@@ -83,25 +80,17 @@ function makeController(
     new SanitizedLogger(),
     makeLock(),
     opts,
-    { watchdog: watchdog as unknown as DelayedRetryWatchdog }
+    { deadlineTimer }
   );
   return { controller, store };
 }
 
 let memento: FakeMemento;
-let watchdog: {
-  pauseAndPoll: ReturnType<typeof vi.fn>;
-  cancelPendingTimer: ReturnType<typeof vi.fn>;
-};
+let deadlineTimer: RecordingDeadlineTimer;
 
 beforeEach(() => {
   memento = new FakeMemento();
-  const pauseAndPoll = vi.fn();
-  pauseAndPoll.mockImplementation(async () => {});
-  watchdog = {
-    pauseAndPoll,
-    cancelPendingTimer: vi.fn()
-  };
+  deadlineTimer = new RecordingDeadlineTimer();
 });
 
 function persistRunWithPendingRetry(
@@ -167,7 +156,7 @@ describe('FR-013 — restart handshake for pendingRetryAt', () => {
     persistRunWithPendingRetry(memento, futureMs);
 
     // Re-initialize the store (simulates VS Code restart).
-    const { store } = makeController(memento, watchdog);
+    const { store } = makeController(memento, deadlineTimer);
     await store.initialize();
     const reloaded = store.getRun(DEFAULT_QUEUE_ID);
     expect(reloaded).not.toBeNull();
@@ -176,50 +165,51 @@ describe('FR-013 — restart handshake for pendingRetryAt', () => {
     expect(reloaded!.delayedRetryCount).toBe(1);
   });
 
-  it('future deadline re-arms watchdog with delay = pendingRetryAt - now', async () => {
+  it('future deadline re-arms the retry timer with delay = pendingRetryAt - now', async () => {
     const delayMs = 90_000; // 90 seconds out
     const futureMs = Date.now() + delayMs;
     persistRunWithPendingRetry(memento, futureMs);
 
-    const { controller, store } = makeController(memento, watchdog);
+    const { controller, store } = makeController(memento, deadlineTimer);
     await store.initialize();
 
     await controller.resumeExistingFromActivation();
 
-    expect(watchdog.pauseAndPoll).toHaveBeenCalledTimes(1);
-    const call = watchdog.pauseAndPoll.mock.calls[0];
-    expect(call[0]).toBe('transient_error');
-    expect(call[1]).toEqual(
-      expect.objectContaining({
-        skipStatusCheck: true
-      })
-    );
-    const override = (call[1] as { durationOverrideMs: number }).durationOverrideMs;
+    expect(deadlineTimer.sets).toHaveLength(1);
+    expect(controller.hasPendingDelayedRetry(DEFAULT_QUEUE_ID)).toBe(true);
+    const override = deadlineTimer.sets[0].delayMs;
     // Allow ~50ms slack for clock drift.
     expect(override).toBeGreaterThanOrEqual(delayMs - 100);
     expect(override).toBeLessThanOrEqual(delayMs + 100);
   });
 
-  it('past deadline resumes on next tick (no watchdog re-arm)', async () => {
+  it('past deadline is handed on as a backoff-elapsed wakeup (no timer armed)', async () => {
     const pastMs = Date.now() - 60_000;
     persistRunWithPendingRetry(memento, pastMs);
 
-    const { controller, store } = makeController(memento, watchdog);
+    const { controller, store } = makeController(memento, deadlineTimer);
     await store.initialize();
+    const handler = vi.fn(async () => undefined);
+    controller.setBackoffElapsedHandler(handler);
 
     await controller.resumeExistingFromActivation();
 
-    // Past-deadline path uses setImmediate(resumeExisting), NOT
-    // watchdog.pauseAndPoll.
-    expect(watchdog.pauseAndPoll).not.toHaveBeenCalled();
+    // The elapsed deadline goes to the admission handler, not to a timer.
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler).toHaveBeenCalledWith({
+      cause: 'backoff-elapsed',
+      queueId: DEFAULT_QUEUE_ID,
+      deadline: pastMs
+    });
+    expect(deadlineTimer.sets).toHaveLength(0);
   });
 
   it('no-op when run has no pendingRetryAt', async () => {
-    const { controller, store } = makeController(memento, watchdog);
+    const { controller, store } = makeController(memento, deadlineTimer);
     await store.initialize();
 
     await controller.resumeExistingFromActivation();
 
-    expect(watchdog.pauseAndPoll).not.toHaveBeenCalled();
+    expect(deadlineTimer.sets).toHaveLength(0);
   });
 });
