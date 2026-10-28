@@ -100,11 +100,11 @@ describe('a pre-feature history entry survives this feature untouched (Feature 1
     // shape, so there is no migrator to run and no version to bump BY THIS
     // FEATURE. That is what this asserts, and it is still true.
     //
-    // The literal was `13` and is now `14`: FR-R3-117 moved the head with a real
-    // migrator of its own. Re-pinning rather than deleting keeps the "this feature
-    // bumped nothing" claim asserted somewhere, which is the whole point of the
-    // check. Changing this literal is a decision, not a typo — and the decision
-    // here is that feature 102's own footprint is unchanged.
-    expect(STATE_SCHEMA_VERSION).toBe(14);
+    // The literal was `13`, then `14` (FR-R3-117 moved the head with a real migrator of its own),
+    // and is now `15` (FR-R4-F02's credit-pause default). Re-pinning rather than deleting keeps the
+    // "this feature bumped nothing" claim asserted somewhere, which is the whole point of the
+    // check. Changing this literal is a decision, not a typo — and the decision here is that
+    // feature 102's own footprint is unchanged.
+    expect(STATE_SCHEMA_VERSION).toBe(15);
   });
 });

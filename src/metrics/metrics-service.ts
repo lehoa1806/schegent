@@ -16,6 +16,7 @@ import { open, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { AuditEntry } from '../audit/audit-entry';
 import { parseAuditLogLineDetailed } from '../parser/audit-log-parser';
+import { readPhaseEndUsage } from '../services/usage-reader';
 import type {
   CostTimelinePoint,
   MetricsRunSummary,
@@ -437,12 +438,19 @@ function buildPhaseRecordsByRunId(state: ScanState): Map<string, PhaseRecord[]> 
 // the same (runId, phase, iteration) join key. Reading only `latest(ends)`
 // silently drops that earlier real cost, so sum every defined cost across
 // the whole group instead.
+//
+// FR-R4-F02 (contract S5 G18) — each row's cost comes through `readPhaseEndUsage`, the one validated
+// reader: nested `metrics.totalCostUsd` first, the flat legacy key second, a negative or non-finite
+// figure rejected. The sum runs over PRESENT values only and is `undefined` when none is present,
+// which renders "not measured" and is never `0`. The reader, not this file, knows where usage lives,
+// so the rollup and the spend bound can no longer disagree about a row (G19).
 function costFromEnds(ends: readonly AuditEntry[]): number | undefined {
-  const defined = ends
-    .map((e) => e.payload.totalCostUsd)
-    .filter((c): c is number => typeof c === 'number');
-  if (defined.length === 0) return undefined;
-  return defined.reduce((sum, c) => sum + c, 0);
+  let total: number | undefined;
+  for (const end of ends) {
+    const cost = readPhaseEndUsage(end.payload).costUsd;
+    if (cost.kind === 'present') total = (total ?? 0) + cost.value;
+  }
+  return total;
 }
 
 function buildPhaseRecord(group: PhaseGroup): PhaseRecord | null {

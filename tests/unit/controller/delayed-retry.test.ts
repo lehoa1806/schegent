@@ -11,7 +11,7 @@ import { SchegentWorkflowController } from '../../../src/controller/workflow-con
 // so a test that drives Phases supplies one. See the fixture header for why the
 // ids here are the real Spec Kit ones.
 import { buildSpeckitCatalog } from '../../fixtures/speckit-catalog-fixture';
-import type { DelayedRetryWatchdog } from '../../../src/controller/workflow-controller';
+import { RecordingDeadlineTimer } from '../../recording-deadline-timer';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
 import { QueueManager } from '../../../src/queue/queue-manager';
 import { SanitizedLogger } from '../../../src/lib/logger';
@@ -135,10 +135,7 @@ let statusBar: SchegentStatusBar;
 let notifier: Notifier;
 let lock: WorkspaceLockManager & { release: ReturnType<typeof vi.fn> };
 let auditWriter: { append: ReturnType<typeof vi.fn> };
-let watchdog: {
-  pauseAndPoll: ReturnType<typeof vi.fn>;
-  cancelPendingTimer: ReturnType<typeof vi.fn>;
-};
+let deadlineTimer: RecordingDeadlineTimer;
 
 beforeEach(async () => {
   memento = new FakeMemento();
@@ -157,12 +154,7 @@ beforeEach(async () => {
     ...entry
   }));
   auditWriter = { append: auditAppend };
-  const pauseAndPoll = vi.fn();
-  pauseAndPoll.mockImplementation(async () => {});
-  watchdog = {
-    pauseAndPoll,
-    cancelPendingTimer: vi.fn()
-  };
+  deadlineTimer = new RecordingDeadlineTimer();
   controller = new SchegentWorkflowController(
     phaseRunner,
     store,
@@ -175,7 +167,7 @@ beforeEach(async () => {
     {
       catalog: buildSpeckitCatalog(),
       auditWriter: auditWriter as unknown as import('../../../src/audit/audit-log-writer').AuditLogWriter,
-      watchdog: watchdog as unknown as DelayedRetryWatchdog
+      deadlineTimer
     }
   );
 });
@@ -204,21 +196,13 @@ describe('FR-002 — 15-min backoff on transient_error', () => {
     expect(offset).toBeGreaterThanOrEqual(TRANSIENT_BACKOFF_MS - 50);
     expect(offset).toBeLessThanOrEqual(TRANSIENT_BACKOFF_MS + (afterMs - beforeMs));
 
-    expect(watchdog.pauseAndPoll).toHaveBeenCalledWith(
-      'transient_error',
-      expect.objectContaining({
-        durationOverrideMs: expect.any(Number),
-        skipStatusCheck: true
-      })
-    );
-    // `retry-coordinator.ts` arms the watchdog with `firesAt - now()`, i.e.
-    // the backoff minus however long the intervening work took. Asserting
-    // exact equality made this depend on that elapsed time rounding to 0ms,
-    // which only holds on an idle host. Bound it the way the offset check
-    // above is bounded instead.
-    const transientArgs = watchdog.pauseAndPoll.mock.calls.at(-1)!;
-    const transientOverride =
-      (transientArgs[1] as { durationOverrideMs: number }).durationOverrideMs;
+    // The coordinator arms its own timer for `firesAt - now()`, i.e. the
+    // backoff minus however long the intervening work took. Asserting exact
+    // equality made this depend on that elapsed time rounding to 0ms, which
+    // only holds on an idle host. Bound it the way the offset check above is
+    // bounded instead.
+    expect(deadlineTimer.armed()).toHaveLength(1);
+    const transientOverride = deadlineTimer.sets.at(-1)!.delayMs;
     expect(transientOverride).toBeLessThanOrEqual(TRANSIENT_BACKOFF_MS);
     expect(transientOverride).toBeGreaterThanOrEqual(
       TRANSIENT_BACKOFF_MS - (afterMs - beforeMs) - 50
@@ -258,18 +242,10 @@ describe('FR-003 — 60-min backoff on rate_limited', () => {
     const offset = run.pendingRetryAt! - beforeMs;
     expect(offset).toBeGreaterThanOrEqual(RATE_LIMIT_BACKOFF_MS - 50);
 
-    expect(watchdog.pauseAndPoll).toHaveBeenCalledWith(
-      'rate_limit',
-      expect.objectContaining({
-        durationOverrideMs: expect.any(Number),
-        skipStatusCheck: true
-      })
-    );
     // Same wall-clock dependency as the transient case above: the armed
     // duration is `firesAt - now()`, not the constant itself.
-    const rateLimitArgs = watchdog.pauseAndPoll.mock.calls.at(-1)!;
-    const rateLimitOverride =
-      (rateLimitArgs[1] as { durationOverrideMs: number }).durationOverrideMs;
+    expect(deadlineTimer.armed()).toHaveLength(1);
+    const rateLimitOverride = deadlineTimer.sets.at(-1)!.delayMs;
     expect(rateLimitOverride).toBeLessThanOrEqual(RATE_LIMIT_BACKOFF_MS);
     expect(rateLimitOverride).toBeGreaterThanOrEqual(
       RATE_LIMIT_BACKOFF_MS - (afterMs - beforeMs) - 50
@@ -294,7 +270,7 @@ describe('FR-004 — fatal-signature bypass', () => {
     expect(run.delayedRetryCount).toBe(0);
     expect(run.pendingRetryAt).toBeNull();
     expect(run.pendingRetryCause).toBeNull();
-    expect(watchdog.pauseAndPoll).not.toHaveBeenCalled();
+    expect(deadlineTimer.sets).toHaveLength(0);
     // No retry-scheduled audit should have been emitted; only phase-end/failure.
     for (const call of auditWriter.append.mock.calls) {
       expect((call[0] as { eventType: string }).eventType).not.toBe('retry-scheduled');
@@ -312,7 +288,7 @@ describe('FR-006 — cap exhaustion pauses the queue', () => {
 
     // We can't easily pre-state in this setup; instead chain 5 attempts via
     // resumeExisting (since startNew handles only the first invocation
-    // before halting). Per delayed-retry contract the watchdog would have
+    // before halting). Per delayed-retry contract the retry deadline would have
     // re-armed and called controller.resumeExisting(DEFAULT_QUEUE_ID) to drive each retry.
     await controller.startNew(feature, null);
     expect(store.getRun(DEFAULT_QUEUE_ID)!.delayedRetryCount).toBe(1);

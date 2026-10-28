@@ -320,8 +320,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     pollIntervalMinutes,
     timeoutSeconds,
     maxDurationSeconds,
-    rotationSizeMB,
-    rotationMaxAgeDays
+    rotationSizeMB, rotationMaxAgeDays, limits
   } = resolveWorkspaceSettings({ workspaceRoot, logger });
   // FR-R3-119 — extracted to `src/activation/workspace-session.ts`: what this
   // window owns (catalog, both leases, the primacy claim) and the UI shell that
@@ -551,6 +550,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     protectedSessionRunIds,
     queueStartFailures,
     collectAllWorkflowPipelineRefs,
+    effectiveLimitSources: { limits, spendTrust: runSafety.spendWatcher.trustFor },
     bindCapabilityProjector: backend.bindCapabilityProjector,
     bindTelemetryProjector: backend.bindTelemetryProjector
   });

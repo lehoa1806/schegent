@@ -119,6 +119,7 @@ export async function reportUnexpectedStartFailure(
       lastError,
       pendingRetryAt: null,
       pendingRetryCause: null,
+      creditPause: null,
       manualPauseAt: null,
       manualPauseCause: null,
       resumeTargetPhaseId: null

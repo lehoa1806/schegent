@@ -9,8 +9,8 @@
  * Coverage matrix:
  *   - handleDelayedRetry (under cap)  — persists `paused`, increments count,
  *     keeps the `pendingRetryAt`/`Cause` invariant, emits `retry-scheduled`
- *     with pre-buffer `resetsAtMs`, arms the watchdog with the computed
- *     backoff.
+ *     with pre-buffer `resetsAtMs`, arms the retry deadline with the
+ *     computed backoff.
  *   - handleDelayedRetry (at cap)     — delegates to `scheduleQueuePauseAndFail`.
  *   - scheduleQueuePauseAndFail       — pauses the queue with
  *     `retry-cap-exhausted:<runId>`, emits `queue-paused`, notifies operator,
@@ -19,8 +19,8 @@
  *     audits; non-clean / count-0 paths are no-ops.
  *   - appendManualRetryAudit          — emits `retry-manual` with operator
  *     payload.
- *   - watchdog === null               — logs WARN, persists state, but does
- *     not call `pauseAndPoll` (preserves the original late-bind semantics).
+ *   - nothing armable                 — the handler still persists the state;
+ *     whether a deadline can physically be armed is the coordinator's.
  *
  * Note: `RateLimitBackoff` is covered by `rate-limit-backoff.test.ts`. The
  * handler's `handleDelayedRetry` consumes `backoffForCause` and we assert the
@@ -28,7 +28,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { RetryHandler, type DelayedRetryWatchdog, type RetryHandlerDeps } from '../../../src/controller/retry-handler';
+import { RetryHandler, type RetryHandlerDeps } from '../../../src/controller/retry-handler';
 import type { WorkflowRun, PhaseResult } from '../../../src/state/workflow-run';
 import {
   DELAYED_RETRY_CAP,
@@ -81,20 +81,12 @@ interface TestDeps {
   retryCap: number;
   /** Feature 093 (T045) — the queue the fake `queueIdForTask` reports. */
   queueId: string;
-  watchdog: DelayedRetryWatchdog | null;
   /**
-   * Feature 093 (T045) — what the handler armed, and for which queue. The
-   * handler no longer touches the watchdog itself; it calls `armDelayedRetry`,
-   * and `RetryCoordinator` is what turns that into a `pauseAndPoll`. The
-   * stand-in below forwards to `tracker.watchdog` so the existing assertions on
-   * cause and duration keep testing the same values at the same seam.
+   * Feature 093 (T045) — what the handler armed, and for which queue. The handler calls
+   * `armDelayedRetry`; `RetryCoordinator` turns that into a deadline on its own timer
+   * (FR-R4-F02, U5 G16), which tests/unit/services/retry-coordinator.test.ts owns.
    */
-  watchdogCalls: Array<{
-    queueId: string;
-    cause: string;
-    durationOverrideMs?: number;
-    skipStatusCheck?: boolean;
-  }>;
+  armCalls: Array<{ queueId: string; cause: string; delayMs: number }>;
   storeCalls: Array<{ prev: WorkflowRun; next: WorkflowRun }>;
   setQueuePausedStateCalls: Array<[boolean, string | undefined, string | null | undefined, string | undefined]>;
   pauseTaskCalls: Array<[string, string]>;
@@ -109,11 +101,7 @@ function makeHandler(opts: Partial<TestDeps> = {}): { handler: RetryHandler; tra
   const tracker: TestDeps = {
     retryCap: opts.retryCap ?? DELAYED_RETRY_CAP,
     queueId: opts.queueId ?? 'queue-a',
-    watchdog: opts.watchdog === undefined ? {
-      pauseAndPoll: vi.fn(async () => {}),
-      cancelPendingTimer: vi.fn()
-    } : opts.watchdog,
-    watchdogCalls: [],
+    armCalls: [],
     storeCalls: [],
     setQueuePausedStateCalls: [],
     pauseTaskCalls: [],
@@ -167,21 +155,9 @@ function makeHandler(opts: Partial<TestDeps> = {}): { handler: RetryHandler; tra
       info: vi.fn(),
       error: vi.fn()
     } as unknown as RetryHandlerDeps['logger'],
-    // Feature 093 (T045) — stands in for `RetryCoordinator.armDelayedRetry`,
-    // reproducing the one behavior the handler depends on: forward to the
-    // watchdog when there is one. The not-wired warning moved with the
-    // forwarding and is covered in tests/unit/services/retry-coordinator.test.ts.
+    // Feature 093 (T045) — stands in for `RetryCoordinator.armDelayedRetry`: it records the arm.
     armDelayedRetry: async (queueId: string, cause: string, delayMs: number) => {
-      tracker.watchdogCalls.push({
-        queueId,
-        cause,
-        durationOverrideMs: delayMs,
-        skipStatusCheck: true
-      });
-      await tracker.watchdog?.pauseAndPoll(cause, {
-        durationOverrideMs: delayMs,
-        skipStatusCheck: true
-      });
+      tracker.armCalls.push({ queueId, cause, delayMs });
     },
     auditWriter: {
       append: vi.fn(async (entry: Record<string, unknown>) => {
@@ -205,7 +181,7 @@ describe('Feature 034 Item 047 — RetryHandler (extracted from workflow-control
       beforeMs = Date.now();
     });
 
-    it('persists paused state, appends phase result, increments delayedRetryCount, arms watchdog (transient_error)', async () => {
+    it('persists paused state, appends phase result, increments delayedRetryCount, arms the retry deadline (transient_error)', async () => {
       const { handler, tracker } = makeHandler();
       const run = makeRun({ delayedRetryCount: 0 });
       const phaseResult = makePhaseResult();
@@ -223,12 +199,11 @@ describe('Feature 034 Item 047 — RetryHandler (extracted from workflow-control
       const offset = result.pendingRetryAt! - beforeMs;
       expect(offset).toBeGreaterThanOrEqual(TRANSIENT_BACKOFF_MS - 50);
 
-      // Watchdog armed with the computed backoff.
-      expect(tracker.watchdogCalls).toHaveLength(1);
-      expect(tracker.watchdogCalls[0]).toMatchObject({
+      // The deadline is armed with the computed backoff.
+      expect(tracker.armCalls).toHaveLength(1);
+      expect(tracker.armCalls[0]).toMatchObject({
         cause: 'transient_error',
-        durationOverrideMs: TRANSIENT_BACKOFF_MS,
-        skipStatusCheck: true
+        delayMs: TRANSIENT_BACKOFF_MS
       });
     });
 
@@ -240,7 +215,7 @@ describe('Feature 034 Item 047 — RetryHandler (extracted from workflow-control
       const result = await handler.handleDelayedRetry(run, 1, phaseResult, 'rate_limit', null, 'over rate limit');
 
       expect(result.pendingRetryCause).toBe('rate_limit');
-      expect(tracker.watchdogCalls[0].durationOverrideMs).toBe(RATE_LIMIT_BACKOFF_MS);
+      expect(tracker.armCalls[0].delayMs).toBe(RATE_LIMIT_BACKOFF_MS);
     });
 
     it('uses the dynamic delta + buffer when resetsAtMs is parseable', async () => {
@@ -252,7 +227,7 @@ describe('Feature 034 Item 047 — RetryHandler (extracted from workflow-control
 
       await handler.handleDelayedRetry(run, 1, phaseResult, 'rate_limit', resetsAtMs, 'over rate limit');
 
-      const armedFor = tracker.watchdogCalls[0].durationOverrideMs as number;
+      const armedFor = tracker.armCalls[0].delayMs;
       // dynamicWait = (resetsAtMs - now) + RETRY_BUFFER_MS ≈ 10min + 60s.
       expect(armedFor).toBeGreaterThan(10 * 60 * 1000);
       expect(armedFor).toBeLessThan(12 * 60 * 1000);
@@ -308,15 +283,14 @@ describe('Feature 034 Item 047 — RetryHandler (extracted from workflow-control
 
       // The arm names a queue. Unaddressed, N Runs collapse onto one deadline
       // and the last one to schedule silently owns the window's only timer.
-      expect(tracker.watchdogCalls).toHaveLength(1);
-      expect(tracker.watchdogCalls[0].queueId).toBe('queue-b');
+      expect(tracker.armCalls).toHaveLength(1);
+      expect(tracker.armCalls[0].queueId).toBe('queue-b');
     });
 
-    it('persists the retry state even when the arm cannot schedule anything', async () => {
-      // The watchdog-not-wired case: the handler's job is the state mutation,
-      // and whether a deadline can physically be armed is the coordinator's
-      // (see tests/unit/services/retry-coordinator.test.ts, which owns the WARN).
-      const { handler, tracker } = makeHandler({ watchdog: null });
+    it('persists the retry state; whether a deadline can be armed is the coordinator\'s', async () => {
+      // The handler's job is the state mutation; arming is the coordinator's
+      // (see tests/unit/services/retry-coordinator.test.ts).
+      const { handler, tracker } = makeHandler();
       const run = makeRun({ delayedRetryCount: 0 });
       const phaseResult = makePhaseResult();
 
@@ -325,7 +299,7 @@ describe('Feature 034 Item 047 — RetryHandler (extracted from workflow-control
       expect(result.status).toBe('paused');
       expect(result.delayedRetryCount).toBe(1);
       expect(result.pendingRetryAt).not.toBeNull();
-      expect(tracker.warnCalls.some((m) => m.includes('watchdog not wired'))).toBe(false);
+      expect(tracker.warnCalls).toEqual([]);
     });
   });
 

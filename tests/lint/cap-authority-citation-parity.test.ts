@@ -304,7 +304,12 @@ describe('re-evaluation trigger premises still hold', () => {
       // plan snapshot, reshaping nothing and changing no cardinality this decision
       // rests on. The shape of the argument is unchanged. The record's premise
       // table carries the 2026-08-27 re-evaluation.
-      expected: '14',
+      //
+      // v15 (FR-R4-F02, 2026-10-28) is narrower than v14: one defaulted field on each
+      // Run and one on the watchdog record, each written in place. The record's
+      // premise table carries that re-evaluation too, including what the same
+      // feature changes about the slot a paused Run holds.
+      expected: '15',
     },
   ];
 
@@ -327,6 +332,6 @@ describe('re-evaluation trigger premises still hold', () => {
     expect(text).toContain('| 5 | `MAX_QUEUES` | 20 |');
     expect(text).toContain('`src/queue/queue-registry.ts` (declared)');
     expect(text).toContain("| 6 | The cap's maximum | 20 |");
-    expect(text).toContain('| 10 | State schema version | 14');
+    expect(text).toContain('| 10 | State schema version | 15');
   });
 });

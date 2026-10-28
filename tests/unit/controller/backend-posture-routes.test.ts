@@ -19,6 +19,10 @@
 //   resume       SchegentWorkflowController.resumeExisting → admitResume → driveSession
 //   auto-drain   AutoDrainCoordinator                  → controller.admitNew /
 //                                                        controller.admitResume → driveSession
+//   activation   controller.resumeExistingFromActivation → RetryCoordinator → onBackoffElapsed
+//                → UnattendedAdmission.admit → AutoDrainCoordinator.admitUnattended
+//                → controller.admitResume → driveSession (FR-R4-F02: an elapsed deadline is a
+//                wakeup, admitted by the one capacity-aware path; see the chain test below)
 //   continuation RunDriver.drive's own phase loop       → dispatchResumingIncompleteTurns
 //                                                        → deps.runner.run (no new drive)
 //
@@ -121,6 +125,9 @@ function reaches(relPath: string, entry: string, target: string): boolean {
 const CONTROLLER = 'src/controller/workflow-controller.ts';
 const DRIVER = 'src/services/run-driver.ts';
 const AUTO_DRAIN = 'src/services/auto-drain-coordinator.ts';
+const RETRY_COORDINATOR = 'src/services/retry-coordinator.ts';
+const UNATTENDED_ADMISSION = 'src/services/unattended-admission.ts';
+const SCHEDULED_WORK_WIRING = 'src/activation/scheduled-work-wiring.ts';
 const PHASE_RUNNER = 'src/controller/phase-runner.ts';
 const RECORDER = 'src/controller/backend-posture-recorder.ts';
 const RESUME_LOOP = 'src/controller/incomplete-turn-resume.ts';
@@ -139,12 +146,6 @@ const ROUTES: ReadonlyArray<{
 }> = [
   { route: 'start', file: CONTROLLER, entry: 'startNew', mustReach: ['admitNew'] },
   { route: 'resume', file: CONTROLLER, entry: 'resumeExisting', mustReach: ['admitResume'] },
-  {
-    route: 'resume-on-activation',
-    file: CONTROLLER,
-    entry: 'resumeExistingFromActivation',
-    mustReach: ['admitResume']
-  },
   { route: 'continuation', file: DRIVER, entry: 'drive', mustReach: ['dispatchResumingIncompleteTurns'] }
 ];
 
@@ -158,6 +159,35 @@ describe('backend posture — every route reaches the funnel (FR-R3-064)', () =>
           'PhaseRunner.run — a route nobody resolved is a run whose posture nobody records.'
       ).toBe(true);
     }
+  });
+
+  it('route "resume-on-activation" reaches admitResume through the unattended admission chain', () => {
+    // FR-R4-F02 (U2 G6) — a deadline that elapsed while the host was down used to resume through a
+    // closure inside the controller. It is now a `backoff-elapsed` wakeup handed to the admission
+    // service, so the route crosses files and each hop is pinned where it lives. A hop that stops
+    // calling the next one leaves a route that reaches a backend by a path nobody resolved.
+    const hops: ReadonlyArray<{ file: string; entry: string; target: string }> = [
+      { file: CONTROLLER, entry: 'resumeExistingFromActivation', target: 'resumeExistingFromActivation' },
+      { file: RETRY_COORDINATOR, entry: 'resumeExistingFromActivation', target: 'onBackoffElapsed' },
+      { file: CONTROLLER, entry: 'setBackoffElapsedHandler', target: 'bind' },
+      { file: RETRY_COORDINATOR, entry: 'handOff', target: 'handler' },
+      { file: UNATTENDED_ADMISSION, entry: 'admit', target: 'admit' },
+      { file: CONTROLLER, entry: 'admitUnattended', target: 'admitUnattended' },
+      { file: AUTO_DRAIN, entry: 'admitUnattended', target: 'admitResume' }
+    ];
+    for (const { file, entry, target } of hops) {
+      expect(
+        reaches(file, entry, target),
+        `${entry} in ${file} no longer calls ${target}. The activation route's chain to admitResume ` +
+          'is broken at this hop; a path that reaches a backend another way needs its own line.'
+      ).toBe(true);
+    }
+    // The binding that joins the controller's hand-off to the admission service.
+    expect(read(SCHEDULED_WORK_WIRING)).toContain(
+      'controller.setBackoffElapsedHandler((wakeup) => admission.admit(wakeup))'
+    );
+    // And the route still ends in the one drive seam.
+    expect(reaches(CONTROLLER, 'admitResume', 'driveSession')).toBe(true);
   });
 
   it('route "auto-drain" reaches the controller admission points', () => {

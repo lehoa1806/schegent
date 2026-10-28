@@ -17,7 +17,7 @@
 // FR-053 requires: never a sibling queue's Run, and never a fabricated stand-in.
 
 import type { FeatureRequest } from '../../queue/feature-request';
-import type { WorkflowRun } from '../../state/workflow-run';
+import type { WatchdogState, WorkflowRun } from '../../state/workflow-run';
 import type { RunOutputRecord } from '../../contracts/run-results';
 // Feature 103 — by path, not through the contracts barrel; see the note on the
 // same import in `snapshot.ts`.
@@ -25,10 +25,12 @@ import type { CatalogVersionRef } from '../../contracts/catalog-version';
 import type { RunOriginRef } from '../../contracts/run-origin';
 import type { QueueStartFailure } from '../../services/queue-start-failure-registry';
 import { sanitizeAndCap } from './queue-projector';
+import { projectCreditPolling } from './credit-polling-projection';
 import type {
   ActiveFeatureSummary,
   ActivePipelineSummary,
   DelayedRetryState,
+  EffectiveLimitsProjection,
   InFlightRunProjection,
   LiveActivity,
   PhaseTile,
@@ -120,6 +122,14 @@ export interface QueueRuntimeComposerContext {
     readonly at: QueueRuntime['scheduledStartAt'];
     readonly source: QueueRuntime['scheduledStartSource'];
   };
+  /**
+   * FR-R4-F02 (W6 G17) — the watchdog record's last poll outcome, which is window-wide: it says
+   * whether the most recent `/status` could be reached, for every Run polled with it. Optional;
+   * absent reads as no poll yet.
+   */
+  readonly lastCreditPollOutcome?: () => WatchdogState['lastPollOutcome'];
+  /** FR-R4-F02 (E3 G9) — the limits this Run runs under; absent publishes none (`null`). */
+  readonly effectiveLimitsOf?: ((run: WorkflowRun) => EffectiveLimitsProjection | null) | undefined;
 }
 
 /**
@@ -231,7 +241,11 @@ function emptyRuntime(
   });
 }
 
-function projectInFlightRun(projection: QueueRunProjection): InFlightRunProjection {
+function projectInFlightRun(
+  projection: QueueRunProjection,
+  lastCreditPollOutcome: WatchdogState['lastPollOutcome'],
+  effectiveLimits: EffectiveLimitsProjection | null
+): InFlightRunProjection {
   return Object.freeze({
     runId: projection.run.id,
     status: projection.status,
@@ -250,7 +264,9 @@ function projectInFlightRun(projection: QueueRunProjection): InFlightRunProjecti
     ...(projection.catalogVersion !== undefined
       ? { catalogVersion: projection.catalogVersion }
       : {}),
-    ...(projection.origin !== undefined ? { origin: projection.origin } : {})
+    ...(projection.origin !== undefined ? { origin: projection.origin } : {}),
+    creditPolling: projectCreditPolling(projection.run, lastCreditPollOutcome),
+    effectiveLimits
   });
 }
 
@@ -298,7 +314,11 @@ export function composeQueueRuntimes(ctx: QueueRuntimeComposerContext): readonly
         name: summary.name,
         position: summary.position,
         lifecycle,
-        inFlightRun: projectInFlightRun(projection),
+        inFlightRun: projectInFlightRun(
+          projection,
+          ctx.lastCreditPollOutcome?.() ?? null,
+          ctx.effectiveLimitsOf?.(run) ?? null
+        ),
         phases: Object.freeze(projection.phases.map((phase) => Object.freeze(phase))),
         phaseOverrides: Object.freeze(
           (run.phaseOverrides ?? []).map((override) =>

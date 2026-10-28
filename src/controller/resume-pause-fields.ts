@@ -1,5 +1,18 @@
 import { OPERABLE_RUN_STATUSES, type RunPatch, type WorkflowRun } from '../state/workflow-run';
 import { isRunRaceRefusal, type WorkspaceStateStore } from '../state/workspace-state';
+import { decideUnattendedEligibility, type UnattendedWakeup } from '../services/unattended-eligibility';
+
+/**
+ * FR-R4-F02 (contract U3 G9) — thrown by the resume's patch, inside the `KEYS.run` link, when an
+ * unattended wakeup finds the Run it was selected for is no longer eligible. `patchRunForResume`
+ * maps it to a refusal, so nothing is written for it.
+ */
+export class UnattendedAdmissionRefused extends Error {
+  constructor() {
+    super('the Run is no longer eligible for this unattended wakeup');
+    this.name = 'UnattendedAdmissionRefused';
+  }
+}
 
 /**
  * BUG-003 — resume-entry interpretation of a Run's pause cause.
@@ -80,7 +93,8 @@ export interface ResumeAdmissionFields {
  */
 export function resumeAdmissionPatch(
   current: WorkflowRun,
-  fields: ResumeAdmissionFields
+  fields: ResumeAdmissionFields,
+  unattended?: UnattendedWakeup
 ): RunPatch {
   return {
     status: 'running',
@@ -92,11 +106,16 @@ export function resumeAdmissionPatch(
     ...(fields.gitApprovalReceipt ? { gitApprovalReceipt: fields.gitApprovalReceipt } : {}),
     pendingRetryAt: null,
     pendingRetryCause: null,
+    // FR-R4-F02 (contract U3 G12) — a resume leaves `paused`, so the credit pause goes with the
+    // other pause fields; `validateRunInvariants` refuses the Run if this is forgotten.
+    creditPause: null,
     // Resuming a terminally failed run (operator retry) resets the retry cap so the phase gets
     // a fresh set of attempts, and clears manual-pause fields that may linger from the failure.
+    // An unattended wakeup is not an operator's retry (FR-005): it writes no count, so a count of
+    // five stays five even if a failed Run were ever to reach here.
     ...(current.status === 'failed'
       ? {
-          delayedRetryCount: 0,
+          ...(unattended === undefined ? { delayedRetryCount: 0 } : {}),
           manualPauseAt: null,
           manualPauseCause: null,
           resumeTargetPhaseId: null
@@ -104,6 +123,35 @@ export function resumeAdmissionPatch(
       : {}),
     ...clearedPauseFieldsOnResume(current)
   };
+}
+
+/**
+ * The resume admission's write, with the unattended recheck inside the lease (contract U3 G9).
+ *
+ * An unattended wakeup is rechecked on the Run as it is NOW, inside the `KEYS.run` link and after
+ * the caller holds the lease: selection read the Run several awaits ago, and a pause, a replacement
+ * or an ending in the gap refuses here with nothing written. `'ineligible'` is that refusal, kept
+ * apart from `null` (a lost race) so the admission can report which it was.
+ */
+export async function patchRunForResumeAdmission(
+  store: Pick<WorkspaceStateStore, 'updateRun' | 'runCommitClaim'>,
+  queueId: string,
+  run: WorkflowRun,
+  fields: ResumeAdmissionFields,
+  unattended?: UnattendedWakeup
+): Promise<WorkflowRun | 'ineligible' | null> {
+  // A holder, not a `let`: the flag is set inside the patch callback, which control-flow analysis
+  // does not follow, so a `let` would read as always false at the check below.
+  const recheck = { refused: false };
+  const next = await patchRunForResume(store, queueId, run, 'resume-admission', (current) => {
+    if (unattended !== undefined && !decideUnattendedEligibility(current, unattended, Date.now()).eligible) {
+      recheck.refused = true;
+      throw new UnattendedAdmissionRefused();
+    }
+    return resumeAdmissionPatch(current, fields, unattended);
+  });
+  if (next !== null) return next;
+  return recheck.refused ? 'ineligible' : null;
 }
 
 /**
@@ -124,7 +172,7 @@ export async function patchRunForResume(
       store.runCommitClaim(queueId)
     );
   } catch (error) {
-    if (isRunRaceRefusal(error)) return null;
+    if (isRunRaceRefusal(error) || error instanceof UnattendedAdmissionRefused) return null;
     throw error;
   }
 }

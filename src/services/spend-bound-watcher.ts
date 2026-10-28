@@ -31,8 +31,11 @@
 // phase. That is the same bound the design gives anyway: spend cannot be observed
 // mid-turn, because no backend reports it until the turn ends.
 import type { AuditEntry } from '../audit/audit-entry';
+import { effectiveRunnerKindForPhase } from '../config/pipeline-snapshot';
+import { spendDenominationOf } from '../contracts/backend-spend-denomination';
 import type { SanitizedLogger } from '../lib/logger';
 import { isTerminalRunStatus, type WorkflowRun } from '../state/workflow-run';
+import type { SpendReplay } from './spend-bound-replay';
 import {
   accumulateSpend,
   effectiveSpendBound,
@@ -40,7 +43,8 @@ import {
   NO_SPEND_OBSERVED,
   spendPauseMessage,
   type SpendBoundConfig,
-  type SpendObserved
+  type SpendDenomination,
+  type RunSpendTotal
 } from './spend-bound';
 
 export interface SpendBoundWatcherDeps {
@@ -61,27 +65,49 @@ export interface SpendBoundWatcherDeps {
 export interface SpendBoundWatcher {
   /** Subscribe this to `AuditLogWriter.subscribe`. */
   readonly onAuditEntry: (entry: AuditEntry) => void;
-  /** Rebuild the tally from the log's last window; called once, by the wiring. Never rejects. */
-  readonly seedFrom: (rows: Promise<readonly AuditEntry[]>) => Promise<void>;
+  /**
+   * Rebuild the tally from the restart replay and mark each Run complete or incomplete by the
+   * replay's verdict; called once, by the wiring. Never rejects.
+   */
+  readonly seedFrom: (replay: Promise<SpendReplay>) => Promise<void>;
   /** Observed spend for a run, for the disclosure and for tests. */
-  readonly observedFor: (runId: string) => SpendObserved;
-  /** Drop a finished run's tally. */
+  readonly observedFor: (runId: string) => RunSpendTotal;
+  /** Drop a finished run's tally, its paused flag and its notice keys. */
   readonly forget: (runId: string) => void;
+  /**
+   * Whether the bound in `denomination` can be trusted for this run right now (contract E1 G3):
+   * `not-trustworthy` while the figure in that denomination has never been observed or the total is
+   * only a lower bound.
+   */
+  readonly trustFor: (runId: string, denomination: SpendDenomination) => 'enforced' | 'not-trustworthy';
 }
 
 /**
  * Runs whose tallies are retained.
  *
  * Bounded, because a host outlives many runs and an unbounded map keyed by run id
- * is a leak that grows with use. Eviction is oldest-first and only matters for a run
- * that is no longer being driven: a run that loses its tally is measured from that
+ * is a leak that grows with use. Eviction takes a run that is terminal or no longer in the store
+ * first, oldest-first among those, and only when every tracked run is still live does it take the
+ * oldest of them (FR-R4-F02, contract S2 G9): a run that loses its tally is measured from that
  * point on, which understates spend rather than fabricating it. A restart no longer empties a
  * live run's tally: the seed rebuilds it from the audit log's last window (FR-R3-209).
  */
 const MAX_TRACKED_RUNS = 64;
 
+/**
+ * The separator of a notice key. A run id never contains it, so `${runId}${SEP}${denomination}`
+ * cannot collide with another run's key, and `forget(runId)` can drop a run's keys by prefix.
+ * Written as an escape; the file is scanned for a raw control character.
+ */
+const NOTICE_KEY_SEPARATOR = '\u0000';
+
+const UNIT_LABEL: Readonly<Record<SpendDenomination, string>> = {
+  usd: 'USD',
+  tokens: 'tokens'
+};
+
 export function createSpendBoundWatcher(deps: SpendBoundWatcherDeps): SpendBoundWatcher {
-  const observed = new Map<string, SpendObserved>();
+  const observed = new Map<string, RunSpendTotal>();
   /** Runs already paused for spend, so one crossing produces one pause. */
   const paused = new Set<string>();
   /**
@@ -96,19 +122,88 @@ export function createSpendBoundWatcher(deps: SpendBoundWatcherDeps): SpendBound
    * producer act (FR-R3-136).
    */
   const seeded = new Set<string>();
+  /**
+   * `(runId, denomination)` keys already reported. In memory only, so a reload may report a run
+   * once more (SC-011), and it lives as long as the watcher: once per run per denomination per
+   * host session (FR-030).
+   */
+  const notified = new Set<string>();
+  /**
+   * Live runs whose tally was dropped to stay under `MAX_TRACKED_RUNS`. Their next row re-creates
+   * the tally as `incomplete('evicted')` (contract S2 G9), because what was dropped is not coming
+   * back. Cleared with the run's other state at its terminal transition.
+   */
+  const evicted = new Set<string>();
 
   const forget = (runId: string): void => {
     observed.delete(runId);
     paused.delete(runId);
+    evicted.delete(runId);
+    const prefix = `${runId}${NOTICE_KEY_SEPARATOR}`;
+    for (const key of [...notified]) {
+      if (key.startsWith(prefix)) notified.delete(key);
+    }
   };
 
-  const remember = (runId: string, spend: SpendObserved): void => {
+  /** A run that no longer needs its tally: gone from the store, or already terminal. */
+  const isFinished = (runId: string): boolean => {
+    const found = deps.findRunById(runId);
+    return found === null || isTerminalRunStatus(found.run.status);
+  };
+
+  /** The tracked run to drop: the oldest finished one, else the oldest of all. */
+  const evictionVictim = (): string | null => {
+    let oldest: string | null = null;
+    for (const runId of observed.keys()) {
+      if (oldest === null) oldest = runId;
+      if (isFinished(runId)) return runId;
+    }
+    return oldest;
+  };
+
+  const remember = (runId: string, spend: RunSpendTotal): void => {
     observed.set(runId, spend);
     while (observed.size > MAX_TRACKED_RUNS) {
-      const oldest = observed.keys().next();
-      if (oldest.done === true) break;
-      forget(oldest.value);
+      const victim = evictionVictim();
+      if (victim === null) break;
+      const live = !isFinished(victim);
+      forget(victim);
+      if (live) evicted.add(victim);
     }
+  };
+
+  /**
+   * FR-R4-F02 (contract S3 G10) — tell the operator, once per `(run, denomination)`, that this
+   * run's spend cannot be measured or confirmed. One notice naming the unit and the reason class
+   * and no amount, and one log line with a reason code, a denomination and a reason: never a line
+   * per row, which is what this replaces.
+   */
+  const reportOnce = (
+    runId: string,
+    verdict: Extract<ReturnType<typeof evaluateSpend>, { kind: 'unmeasurable' | 'incomplete' }>
+  ): void => {
+    const key = `${runId}${NOTICE_KEY_SEPARATOR}${verdict.denomination}`;
+    if (notified.has(key)) return;
+    notified.add(key);
+    const unit = UNIT_LABEL[verdict.denomination];
+    deps.notify(
+      verdict.kind === 'unmeasurable'
+        ? `Schegent cannot measure this run's spend in ${unit}: the usage is not reported by this backend, so its spend bound is not being enforced.`
+        : `Schegent cannot confirm this run's spend in ${unit}: the history is incomplete, so the total shown is a lower bound.`
+    );
+    deps.logger.warn('spend bound: cannot measure', {
+      reasonCode: verdict.kind === 'unmeasurable' ? 'spend-unmeasurable' : 'spend-incomplete',
+      denomination: verdict.denomination,
+      reason: verdict.reason
+    });
+  };
+
+  /** Where a row's fold starts: the run's tally, or nothing, or what an eviction left of it. */
+  const baseTotal = (runId: string): RunSpendTotal => {
+    const known = observed.get(runId);
+    if (known !== undefined) return known;
+    if (!evicted.delete(runId)) return NO_SPEND_OBSERVED;
+    return { ...NO_SPEND_OBSERVED, completeness: { kind: 'incomplete', reason: 'evicted' } };
   };
 
   const onAuditEntry = (entry: AuditEntry): void => {
@@ -120,7 +215,7 @@ export function createSpendBoundWatcher(deps: SpendBoundWatcherDeps): SpendBound
     if (seeded.delete(entry.id)) return;
     liveDuringSeed?.add(entry.id);
 
-    const spend = accumulateSpend(observed.get(runId) ?? NO_SPEND_OBSERVED, entry.payload);
+    const spend = accumulateSpend(baseTotal(runId), entry.payload, entry.id);
     remember(runId, spend);
     if (paused.has(runId)) return;
 
@@ -131,13 +226,15 @@ export function createSpendBoundWatcher(deps: SpendBoundWatcherDeps): SpendBound
     // with this one, and the run would resume by the wrong door.
     if (found.run.manualPauseAt !== null) return;
 
-    const bound = effectiveSpendBound(
-      deps.config(),
-      found.run.pipeline?.phases.find((phase) => phase.id === found.run.currentPhase)
+    // The phase whose `phase-end` this is, not the one the Run reads now: the Run may already have
+    // advanced to a phase on another backend, and the figures belong to the one that just ended.
+    const endedPhase = found.run.pipeline?.phases.find((phase) => phase.id === entry.phase);
+    const denomination = spendDenominationOf(
+      effectiveRunnerKindForPhase(endedPhase, found.run.defaultRunnerKind)
     );
-    const verdict = evaluateSpend(spend, bound);
-    if (verdict.kind === 'unmeasurable') {
-      deps.logger.warn(`spend bound: ${verdict.reason}`, { reasonCode: 'spend-unmeasurable' });
+    const verdict = evaluateSpend(spend, effectiveSpendBound(deps.config(), endedPhase), denomination);
+    if (verdict.kind === 'unmeasurable' || verdict.kind === 'incomplete') {
+      reportOnce(runId, verdict);
       return;
     }
     if (verdict.kind !== 'exceeded') return;
@@ -165,31 +262,39 @@ export function createSpendBoundWatcher(deps: SpendBoundWatcherDeps): SpendBound
       });
   };
 
-  const seedFrom = async (rows: Promise<readonly AuditEntry[]>): Promise<void> => {
+  const seedFrom = async (replay: Promise<SpendReplay>): Promise<void> => {
     liveDuringSeed = new Set();
-    let read: readonly AuditEntry[];
+    let read: SpendReplay;
     try {
-      read = await rows;
+      read = await replay;
     } catch {
-      // The reader never rejects; this is for a caller's promise. No rows is the unseeded state.
-      read = [];
+      // The reader never rejects; this is for a caller's promise. No replay is the unseeded state.
+      read = { rows: [], completeness: new Map() };
     }
     const foldedLive = liveDuringSeed;
     liveDuringSeed = null;
 
-    for (const entry of read) {
+    for (const entry of read.rows) {
       if (entry.eventType !== 'phase-end' || entry.runId === '' || foldedLive.has(entry.id)) {
         continue;
       }
       const found = deps.findRunById(entry.runId);
       if (found === null || isTerminalRunStatus(found.run.status)) continue;
 
-      remember(
-        entry.runId,
-        accumulateSpend(observed.get(entry.runId) ?? NO_SPEND_OBSERVED, entry.payload)
-      );
+      remember(entry.runId, accumulateSpend(baseTotal(entry.runId), entry.payload, entry.id));
       seeded.add(entry.id);
       if (found.run.manualPauseCause === 'spend-bound-reached') paused.add(entry.runId);
+    }
+
+    // A Run's completeness is the replay's verdict (contract S4 G16). A complete verdict is the
+    // default and needs no entry; an incomplete one is recorded even for a Run with no rows, so
+    // the live rows that follow are added to a total that already says it is a lower bound. A Run
+    // the replay never covered is not in the map and is not created.
+    for (const [runId, completeness] of read.completeness) {
+      if (completeness.kind === 'complete') continue;
+      const found = deps.findRunById(runId);
+      if (found === null || isTerminalRunStatus(found.run.status)) continue;
+      remember(runId, { ...baseTotal(runId), completeness });
     }
   };
 
@@ -197,6 +302,13 @@ export function createSpendBoundWatcher(deps: SpendBoundWatcherDeps): SpendBound
     onAuditEntry,
     seedFrom,
     observedFor: (runId) => observed.get(runId) ?? NO_SPEND_OBSERVED,
-    forget
+    forget,
+    trustFor: (runId, denomination) => {
+      const total = observed.get(runId) ?? NO_SPEND_OBSERVED;
+      const figure = denomination === 'usd' ? total.costUsd : total.totalTokens;
+      return figure === undefined || total.completeness.kind === 'incomplete'
+        ? 'not-trustworthy'
+        : 'enforced';
+    }
   };
 }

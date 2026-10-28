@@ -18,6 +18,7 @@ import { terminalSettler } from './run-terminal-effects';
 import { emitTerminalOutcomeAudit } from './terminal-outcome-audit';
 import {
   cliSessionOf,
+  creditPausedRun,
   NO_CLI_SESSION,
   type PhaseResult,
   type SanitizedError,
@@ -470,7 +471,8 @@ export class RunDriver {
               ...run,
               status: 'failed',
               lastError: sanitized,
-              lastTransitionAt: Date.now()
+              lastTransitionAt: Date.now(),
+              creditPause: null
             });
 
             if (this.deps.appendRunnerProbeFailedAudit) {
@@ -804,14 +806,8 @@ export class RunDriver {
         }
 
         if (postDecision.kind === 'pause-rate-limit') {
-          const paused: WorkflowRun = {
-            ...run,
-            status: 'paused',
-            currentIteration: iteration,
-            lastTransitionAt: Date.now(),
-            phasesCompleted: [...run.phasesCompleted, phaseResult]
-          };
-          run = await this.deps.persistTransition(run, paused);
+          // FR-R4-F02 (W5 G15) — paused and naming its credit pause in the same write.
+          run = await this.deps.persistTransition(run, creditPausedRun(run, iteration, phaseResult, Date.now()));
           this.deps.statusBar.update(run.id, { kind: 'paused', phase: run.currentPhase });
           await this.deps.retryCoordinator.handleRateLimitPause(postDecision.cause, run);
           // Pause-style exit (T136): paused on a rate limit, resumed when the
@@ -842,7 +838,8 @@ export class RunDriver {
             currentIteration: iteration,
             lastTransitionAt: Date.now(),
             phasesCompleted: [...run.phasesCompleted, phaseResult],
-            lastError: sanitized
+            lastError: sanitized,
+            creditPause: null
           };
           run = await this.deps.persistTransition(run, failed);
           // FR-R3-128 (T1484) — the terminal effect sequence, in one place. The
@@ -1008,6 +1005,7 @@ export class RunDriver {
           ...run,
           status: 'completed',
           lastTransitionAt: Date.now(),
+          creditPause: null,
           // Folded in *before* persistTransition, not written after it. The
           // `finally` below re-persists the outer `run` through
           // `terminalTransitions.complete`, so a later write is overwritten
@@ -1108,7 +1106,11 @@ export class RunDriver {
 
   // No eviction here: inside `drive()`'s try, so `endOfDriveReset()` covers it.
   private async handleCancellation(run: WorkflowRun, description: string, commit: (canceled: WorkflowRun) => void): Promise<void> {
-    const canceled = await this.deps.persistTransition(run, { ...run, status: 'canceled' });
+    const canceled = await this.deps.persistTransition(run, {
+      ...run,
+      status: 'canceled',
+      creditPause: null
+    });
     // `commit` before the two writes below, as the inline block this replaced did: either can
     // throw, and `drive()` left holding a `running` Run skips its terminal funnel (FR-033a).
     commit(canceled);
@@ -1148,6 +1150,7 @@ export class RunDriver {
       phasesCompleted: [...run.phasesCompleted, phaseResult],
       pendingRetryAt: null,
       pendingRetryCause: null,
+      creditPause: null,
       delayedRetryCount: 0,
       ...(crossesRunnerBoundary ? NO_CLI_SESSION : {})
     };
@@ -1184,7 +1187,8 @@ export class RunDriver {
       ...run,
       status: 'failed',
       lastError,
-      lastTransitionAt: Date.now()
+      lastTransitionAt: Date.now(),
+      creditPause: null
     });
 
     this.deps.logger.error(

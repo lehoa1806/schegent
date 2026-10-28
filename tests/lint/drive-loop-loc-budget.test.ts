@@ -115,13 +115,20 @@ const SIGNATURE = 'public async drive(';
  *        field. `run-driver.ts` itself moved 1,301 → 1,294 by `wc -l`, which keeps 35
  *        lines under its 1,330 ceiling against a `tightMargin` of 26.
  *
+ *   657  FR-R4-F02 (feature 240, 2026-10-28) — the credit arm now names its pause in the
+ *        same write that pauses the Run (`creditPause`), and four terminal writes clear
+ *        it, +7 lines. The rate-limit arm's twelve-line paused-Run literal became one
+ *        call to `creditPausedRun` in `state/workflow-run.ts`, which paid for all seven
+ *        and three more, 660 → 657. `run-driver.ts` itself moved 1,294 → 1,298 by `wc -l`,
+ *        which keeps 32 lines under its 1,330 ceiling against a `tightMargin` of 26.
+ *
  * Next candidates, named so the next decrement does not start with a
  * re-measurement: the four pause arms — breakpoint, delayed-retry, rate-limit,
  * verify — are roughly 230 lines between them. The probe-failure arm is NOT a
  * candidate for merging into the shared sequence: its audit emission order differs,
  * and unifying it is an observable change.
  */
-const DRIVE_MAX_LINES = 660;
+const DRIVE_MAX_LINES = 657;
 
 /** Lines from the signature to the closing brace, inclusive. */
 export function methodLineCount(source: string, signature: string): number {

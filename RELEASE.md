@@ -67,6 +67,38 @@ now.
 so a completed Run's evidence answers which basis judged each Phase. Additive —
 `AUDIT_SCHEMA_VERSION` is unchanged at 3.
 
+### FR-R4-F02 — bounded unattended recovery and spending (2026-10-28)
+
+**What changed.** Unattended recovery and the spend bound are now bounded by what they can
+verify, and the operator is told where each limit came from.
+
+- **The window status indicator reflects credit polling only.** A delayed retry no longer
+  drives it: delayed retries run on the retry coordinator's own timer, and the credit
+  watchdog polls credits and nothing else.
+- **State schema v15** adds the credit-pause record: each Run carries `creditPause` (an
+  explicit `null` when it is not paused for credits) and the watchdog record carries the last
+  poll outcome. The step runs once on open, is idempotent, and is forward-only: a workspace
+  written by this version is refused by an older one.
+- **Credit polling stops after 24 hours** for a Run paused for credits, with one notice and a
+  **Resume** control on the Run. The poll resumes a Run only on a status that states recovery;
+  negated, quoted or unclear text no longer counts as healthy.
+- **An unattended resume never restarts a failed or manually paused Run,** and never takes more
+  of the concurrency cap than the cap allows. A queue's elapsed delayed retry no longer waits
+  behind a sibling Run's resume.
+- **Spend bounds now read recorded usage.** The audit writer has recorded usage nested under
+  `metrics` since 2026-08-02, and the spend bound read only the flat keys until now, so in that
+  period a configured bound never paused a Run. Spend that cannot be measured, or whose history
+  is incomplete after a restart, is reported once per Run and unit and is never read as within
+  budget.
+- **Each in-flight Run shows its effective limits** and which layer each came from.
+
+**Where to look.** [`docs/operations/retry-contract.md`](docs/operations/retry-contract.md) for
+the retry and watchdog behaviour, and
+[`docs/operations/autonomy-bounds-disclosure.md`](docs/operations/autonomy-bounds-disclosure.md)
+for the spend bound, the restart replay and where each limit comes from.
+
+**New evidence.** None: `AUDIT_SCHEMA_VERSION` is unchanged at 3 and no event type is added.
+
 ## Release boundary
 
 The boundary is `npm run release`, which is `release:preflight && package`. It refuses to package

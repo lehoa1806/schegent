@@ -424,8 +424,10 @@ import type {
   ActiveFeatureSummary,
   ActivePipelineSummary,
   CliMonitorState,
+  CreditPollingProjection,
   DegradedPhaseEntry,
   DelayedRetryState,
+  EffectiveLimitsProjection,
   LaunchProjection,
   LiveActivity,
   PhaseTile,
@@ -453,9 +455,11 @@ export type {
   ActivePipelineSummary,
   AuditCategory,
   CliMonitorState,
+  CreditPollingProjection,
   DegradedPhaseEntry,
   DelayedRetryCauseProjection,
   DelayedRetryState,
+  EffectiveLimitsProjection,
   FreshnessState,
   LaunchProjection,
   LaunchSection,
@@ -576,6 +580,10 @@ export interface InFlightRunProjection {
   readonly catalogVersion?: CatalogVersionRef;
   /** Feature 103 (FR-003) — see `catalogVersion` above; the same reading, live. */
   readonly origin?: RunOriginRef;
+  /** FR-R4-F02 (W6 G17) — non-null only while the Run carries a credit pause; absent or null means none. */
+  readonly creditPolling?: CreditPollingProjection | null;
+  /** FR-R4-F02 (E3 G8) — the limits this Run runs under, per snapshot, never persisted; absent or null means none. */
+  readonly effectiveLimits?: EffectiveLimitsProjection | null;
 }
 
 /**

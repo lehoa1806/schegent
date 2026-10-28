@@ -98,7 +98,9 @@ export async function makeHaltHarness(
       return { completed: Promise.resolve() };
     },
     admitResume: async () => ({ resumed: false, completed: Promise.resolve() }),
-    liveRunCount: 0
+    liveRunCount: 0,
+    // FR-R4-F02 (TA4) — drain step 4 asks whether the queue already holds a session; a double holds none.
+    holdsSession: () => false
   };
 
   const state = { policy };

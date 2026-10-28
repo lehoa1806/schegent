@@ -176,7 +176,7 @@ export class WorkflowRunFactory {
       // direction.
       ...(plan ? { envelope: plan, runInputs: plan.inputs } : {}),
       defaultRunnerKind: this.deps.defaultRunnerKind ?? DEFAULT_BACKEND,
-      delayedRetryCount: 0, pendingRetryAt: null, pendingRetryCause: null,
+      delayedRetryCount: 0, pendingRetryAt: null, pendingRetryCause: null, creditPause: null,
       phaseOverrides: [], manualPauseAt: null, manualPauseCause: null,
       phaseBreakpoints: [], resumeTargetPhaseId: null
     };

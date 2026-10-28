@@ -314,7 +314,7 @@ an invitation to update the number in prose.
 | 7 | Window-primacy lease cardinality | one holder per workspace | `WorkspaceLockManager` |
 | 8 | Execution lease tenure | per queue, admission through terminal transition | `ExecutionLeaseManager` and terminal release service |
 | 9 | Working trees shared by concurrent Runs | one, operator-owned | the canonical workspace passed to every runner |
-| 10 | State schema version | 14, forward-only, downgrade refused | `src/contracts/state-schema.ts` |
+| 10 | State schema version | 15, forward-only, downgrade refused | `src/contracts/state-schema.ts` |
 | 11 | Content provenance across queues | one operator and one workspace trust level | the local host boundary |
 
 **Row ten moved 13 → 14 on 2026-08-27 (FR-R3-117), and the ratification survives.**
@@ -328,6 +328,21 @@ working trees are all unchanged. The downgrade refusal still compares against th
 runtime `STATE_SCHEMA_VERSION` rather than a literal, so it tightened with the
 bump automatically. The shape of the argument is unchanged, for the same reason
 v12 and v13 left it unchanged.
+
+**Row ten moved 14 → 15 on 2026-10-28 (FR-R4-F02), and the ratification survives.**
+The trigger fired and the re-evaluation was done rather than the number edited.
+v15 gives each persisted Run an explicit `creditPause: null` and an existing
+watchdog record an explicit `lastPollOutcome: null`: a forward-only rewrite
+**within** records that already existed, each adding one field with a default, keyed
+on the shape of the record rather than on the persisted number. It reshapes no
+record map and changes no cardinality this decision rests on. The same feature
+makes an unattended resume count the slot a paused Run already holds, so the cap
+bounds it; that resume reaches `admitResume`, which claims the same per-queue
+execution lease before it marks anything in flight, so row eight's tenure is
+unchanged. The downgrade refusal still compares against the runtime
+`STATE_SCHEMA_VERSION`, so it tightened with the bump automatically. This
+re-evaluation was written by the implementing session and has not had a second
+reader; a maintainer who reads row ten differently should say so here.
 
 Rows five, six, and ten are mechanically compared with their source constants.
 The other rows describe the deployment shape and must be checked during design

@@ -1,7 +1,20 @@
+import { isDiagnosticLine } from '../lib/fatal-signature-registry';
 import type { ZippedStreamBuffer } from '../runner/zipped-stream-buffer';
 
+/**
+ * FR-R4-F02 (contract L2 G6) — the first matcher's bare `429` alternative is replaced by qualified
+ * forms, so `took 429 ms` and `request id 4290` no longer count. The 429 is accepted on an HTTP
+ * status line (`HTTP/1.1 429`), after `status` or `code` (`status: 429`, `code=429`), and beside
+ * `too many requests` or `rate limit`, where the retained `rate.?limit` and `too\s+many\s+requests`
+ * alternatives already match the line. The named forms (`rate_limit_error`, `rate limit exceeded`,
+ * `rate limited`, `rate limit reached`, `too many requests`) are subsumed by those two retained
+ * alternatives, which is what keeps every pinned stderr outcome (FR-013).
+ */
 export const RATE_LIMIT_MATCHERS: ReadonlyArray<{ regex: RegExp; cause: string }> = Object.freeze([
-  { regex: /(?:rate.?limit|too\s+many\s+requests|429)/i, cause: 'rate-limit' },
+  {
+    regex: /(?:rate.?limit|too\s+many\s+requests|HTTP\/\d(?:\.\d)?\s+429\b|\b(?:status|code)[:= ]+429\b)/i,
+    cause: 'rate-limit'
+  },
   // Feature 027 FR-014 — operator-visible "You're out of extra usage"
   // (and the "extra"-omitted variant) routes through the rate-limit
   // path so it picks up the dynamic backoff instead of the 15-minute
@@ -34,15 +47,65 @@ export interface CreditDetectionResult {
 // bounded for long sessions (SC-005).
 const STDOUT_TRAILING_WINDOW_LINES = 20;
 
-// Feature 066 — stdout substrings (case-sensitive, as emitted by the
-// upstream CLI). Within a single line `out_of_credits` wins over the
-// generic `rate_limit_event` envelope (FR-006) — the more-specific
-// hard-cap signal must route through the past-timestamp safety guard
-// in `backoffForCause` — unless the status lets the request through
-// (FR-R3-197 D2). Across multiple lines the detector settles on the
-// MOST RECENT signal-bearing line (spec edge case: "Multiple rate-limit lines").
-const STDOUT_OUT_OF_CREDITS_SIGIL = 'out_of_credits';
-const STDOUT_RATE_LIMIT_EVENT_SIGIL = 'rate_limit_event';
+/**
+ * FR-R4-F02 (contract L1 G1) — the longest line the stdout scan will parse as a record. A genuine
+ * `rate_limit_event` is a few hundred bytes; a line past this is a transcript payload, not the CLI
+ * reporting anything, and is not read.
+ */
+export const RATE_LIMIT_RECORD_MAX_CHARS = 65_536;
+
+const RATE_LIMIT_EVENT_TYPE = 'rate_limit_event';
+const REJECTED_STATUS = 'rejected';
+const OUT_OF_CREDITS_VALUE = 'out_of_credits';
+
+export interface RateLimitRecord {
+  readonly blocking: true;
+  readonly cause: 'out-of-credits' | 'rate-limit';
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasOwn(record: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+/**
+ * FR-R4-F02 (contract L1 G1 to G3) — read one stdout line as a genuine blocking record, or as
+ * nothing. A line counts only when it is at most `RATE_LIMIT_RECORD_MAX_CHARS`, opens `{` after
+ * trimming, parses as a JSON object whose OWN `type` is `rate_limit_event`, and carries
+ * `rate_limit_info.status === 'rejected'`. Anything else is not a record: a name quoted inside a
+ * tool payload, an event nested under another key, an `allowed` or `allowed_warning` or `allow` or
+ * absent or unknown status, in any JSON spacing.
+ *
+ * The cause is `out-of-credits` when an own string-valued property of `rate_limit_info` equals
+ * `out_of_credits`, as a field and never as a substring; nested payloads are not inspected.
+ *
+ * The `includes` test only skips the parse of lines that cannot be a record, which is most of the
+ * trailing window; it decides nothing, because a record must contain the type literal.
+ */
+export function readRateLimitRecord(line: string): RateLimitRecord | null {
+  if (line.length === 0 || line.length > RATE_LIMIT_RECORD_MAX_CHARS) return null;
+  if (!line.includes(RATE_LIMIT_EVENT_TYPE)) return null;
+  const text = line.trim();
+  if (text.charCodeAt(0) !== 0x7b) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!isPlainObject(parsed) || !hasOwn(parsed, 'type') || parsed.type !== RATE_LIMIT_EVENT_TYPE) {
+    return null;
+  }
+  const info = hasOwn(parsed, 'rate_limit_info') ? parsed.rate_limit_info : undefined;
+  if (!isPlainObject(info) || !hasOwn(info, 'status') || info.status !== REJECTED_STATUS) return null;
+  const namesOutOfCredits = Object.keys(info).some(
+    (key) => hasOwn(info, key) && info[key] === OUT_OF_CREDITS_VALUE
+  );
+  return { blocking: true, cause: namesOutOfCredits ? 'out-of-credits' : 'rate-limit' };
+}
 
 function trailingWindow(buffer: string, lineBudget: number): string {
   if (buffer.length === 0) return buffer;
@@ -81,28 +144,26 @@ function scanWindowForRateLimit(window: string): string | null {
 }
 
 function matchLine(line: string): string | null {
-  if (line.length === 0) return null;
-  const hasRateLimitEvent = line.includes(STDOUT_RATE_LIMIT_EVENT_SIGIL);
-  if (hasRateLimitEvent) {
-    // Feature 027 BUG-008 — a `rate_limit_event` whose status lets the request
-    // through is not a block, so it must not be classified as a hard rate limit
-    // during a trailing-window scan on an aborted/interrupted run. The CLI's
-    // `rate_limit_info.status` is `allowed`, `allowed_warning` or `rejected`;
-    // `allow` is not a CLI value and stays as an alias (FR-R3-197 D1). These
-    // skips run before the `out_of_credits` test, because an allowed event can
-    // name `out_of_credits` as its overage reason (FR-R3-197 D2).
-    if (line.includes('"status":"allowed_warning"') || line.includes('"status": "allowed_warning"')) {
-      return null;
-    }
-    if (line.includes('"status":"allowed"') || line.includes('"status": "allowed"')) {
-      return null;
-    }
-    if (line.includes('"status":"allow"') || line.includes('"status": "allow"')) {
-      return null;
-    }
+  // Feature 027 BUG-008 and FR-R3-197 are now structural rather than spelled out: only a `rejected`
+  // status is a block, so `allowed`, `allowed_warning`, `allow` and anything else never reach here,
+  // and an allowed event that names `out_of_credits` as its overage reason is not out-of-credits
+  // (D2) because the cause is read only from a blocking record.
+  return readRateLimitRecord(line)?.cause ?? null;
+}
+
+/**
+ * FR-R4-F02 (contract L2 G5) — the first matcher, in order, that matches ANY diagnostic line of
+ * `text`. Each matcher is tested per line and only on lines `isDiagnosticLine()` accepts, the
+ * oracle hard rule 17 names: a line opening `{` or `[` is a structured envelope and a line past the
+ * diagnostic length is not one, so text the CLI is merely transporting cannot match. Matcher order
+ * still decides which cause wins, as it did when the whole text was tested once per matcher.
+ */
+function matchStderr(text: string): string | null {
+  const diagnosticLines = text.split('\n').filter(isDiagnosticLine);
+  if (diagnosticLines.length === 0) return null;
+  for (const { regex, cause } of RATE_LIMIT_MATCHERS) {
+    if (diagnosticLines.some((line) => regex.test(line))) return cause;
   }
-  if (line.includes(STDOUT_OUT_OF_CREDITS_SIGIL)) return 'out-of-credits';
-  if (hasRateLimitEvent) return 'rate-limit';
   return null;
 }
 
@@ -126,10 +187,9 @@ export function detectCreditError(
   // byte-for-byte. Any stderr match short-circuits before stdout is
   // consulted, so the existing fixture matrix routes identically.
   const stderrStr = typeof stderr === 'string' ? stderr : stderr.getTrailingLines(50);
-  for (const { regex, cause } of RATE_LIMIT_MATCHERS) {
-    if (regex.test(stderrStr)) {
-      return { matched: true, cause };
-    }
+  const stderrCause = matchStderr(stderrStr);
+  if (stderrCause !== null) {
+    return { matched: true, cause: stderrCause };
   }
   if (exitCode === 429) {
     return { matched: true, cause: 'rate-limit' };
@@ -149,14 +209,4 @@ export function detectCreditError(
     }
   }
   return { matched: false, cause: '' };
-}
-
-export function detectStatusOk(stdout: ZippedStreamBuffer | string): boolean {
-  const chunks = typeof stdout === 'string' ? [stdout] : stdout.decompressStream();
-  for (const chunk of chunks) {
-    if (/credit.{0,30}(available|ok|restored)/i.test(chunk)) return true;
-    if (/status.{0,30}(ok|healthy|ready)/i.test(chunk)) return true;
-    if (/\bquota.{0,20}(available|reset)/i.test(chunk)) return true;
-  }
-  return false;
 }

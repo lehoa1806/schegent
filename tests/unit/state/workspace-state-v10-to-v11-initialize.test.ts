@@ -129,6 +129,11 @@ function frozenByV14(source: WorkflowRun): WorkflowRun {
   const snapshot = source.pipeline!;
   return {
     ...source,
+    // FR-R4-F02 (spec 240) — the same device for the v15 step: the seeded Run already carries the
+    // `creditPause` default, so that step writes nothing and this file keeps asserting that the
+    // v10 -> v11 reshape reaches `KEYS.run` once. (The v15 step has its own tests:
+    // `forward-migration-ladder.test.ts`.)
+    creditPause: null,
     pipeline: {
       ...snapshot,
       phases: snapshot.phases.map((phase) => ({

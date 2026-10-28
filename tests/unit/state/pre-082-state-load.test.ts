@@ -150,7 +150,10 @@ describe('pre-082 persisted state loads unchanged (T066)', () => {
       ...(fixture[KEYS.run] as WorkflowRun),
       pipeline: withLegacyVerdictBasis((fixture[KEYS.run] as WorkflowRun).pipeline),
       status: 'canceled',
-      lastTransitionAt: persisted?.[DEFAULT_QUEUE_ID]?.lastTransitionAt
+      lastTransitionAt: persisted?.[DEFAULT_QUEUE_ID]?.lastTransitionAt,
+      // FR-R4-F02 — the v15 step gives every Run its `creditPause` default; the captured record
+      // predates the key, so it is the one field this fixture gains.
+      creditPause: null
     });
   });
 

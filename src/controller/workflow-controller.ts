@@ -7,7 +7,11 @@ import type { SanitizedLogger } from '../lib/logger';
 import type { WorkspaceLockManager } from '../state/lock';
 import { RunSessionRegistry } from './run-session';
 import { resolveControlTarget } from './sole-run-resolver';
-import { patchRunForResume, resumeAdmissionPatch, shouldContinueConversation } from './resume-pause-fields';
+import {
+  patchRunForResume,
+  patchRunForResumeAdmission,
+  shouldContinueConversation
+} from './resume-pause-fields';
 import type { WorkflowRun } from '../state/workflow-run';
 import type { RunActivityObservation } from '../monitor/activity-coalescer';
 import { recordRunLiveness } from './run-liveness-recorder';
@@ -26,9 +30,14 @@ import { reportUnexpectedStartFailure } from './unexpected-start-failure';
 import { UncontainedConsentGate, driveUnderConsent } from './uncontained-consent-gate';
 import type { UncontainedConsentPort } from './uncontained-consent-gate';
 import { DELAYED_RETRY_CAP } from '../contracts/retry-bounds';
-import type { DelayedRetryWatchdog } from './retry-handler';
 import { RunDriver } from '../services/run-driver';
-import { RetryCoordinator, type RateLimitHandler } from '../services/retry-coordinator';
+import {
+  BackoffHandOff,
+  RetryCoordinator,
+  type BackoffWakeup,
+  type DeadlineTimer,
+  type RateLimitHandler
+} from '../services/retry-coordinator';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import { cleanupSessionArtifacts } from '../services/session-cleanup/session-cleanup-service';
 import {
@@ -50,7 +59,8 @@ import type { MutationPlanSnapshot } from '../state/workflow-run';
 import type { RunCheckpointService } from '../services/run-checkpoint-service';
 import type { RunMutationLedger } from '../services/run-mutation-ledger';
 import { WorkflowRunFactory } from '../services/workflow-run-factory';
-import { resumeUnattended } from '../services/unattended-resume';
+import { announceUnattendedResume } from '../services/unattended-resume';
+import type { UnattendedWakeup } from '../services/unattended-eligibility';
 
 export interface WorkflowControllerOptions {
   cliPath: string;
@@ -69,7 +79,6 @@ export interface WorkflowControllerOptions {
   getForceContinueOnRetryCap?: () => boolean;
 }
 
-export type { DelayedRetryWatchdog } from './retry-handler';
 /** Re-exported so the seam keeps the import path its consumers already use. */
 export type { SessionCleanupRunner } from './task-deletion';
 
@@ -78,7 +87,8 @@ export interface WorkflowControllerDeps {
   historyStore?: Pick<HistoryStore, 'append'> | null;
   catalog?: PipelineCatalog;
   auditWriter?: Pick<AuditLogWriter, 'append'> | null;
-  watchdog?: DelayedRetryWatchdog | null;
+  /** FR-R4-F02 (U5) — the retry coordinator's timer; absent, a real one. Tests inject their own. */
+  deadlineTimer?: DeadlineTimer;
   /** Dynamic reader for `schegent.retry.maxAttempts`. Falls back to DELAYED_RETRY_CAP. */
   getRetryCap?: () => number;
   /** Read only when a run is created; the result is frozen on WorkflowRun. */
@@ -128,8 +138,11 @@ export interface StartNewOptions {
 import {
   NOTHING_TO_DRIVE,
   NOT_RESUMED,
+  NOT_RESUMED_INELIGIBLE,
+  NOT_RESUMED_LEASE_DECLINED,
   type RunAdmission,
-  type ResumeAdmission
+  type ResumeAdmission,
+  type ResumeOptions
 } from './run-admission';
 
 export type { RunAdmission, ResumeAdmission } from './run-admission';
@@ -149,6 +162,8 @@ export class SchegentWorkflowController {
   private readonly executionLease: ExecutionLeasePort;
   /** FR-R4-F01 (C5 G15) — queues whose claim this window lost; `drainQueuedWork` reads it. */
   private readonly lostQueueIds = new Set<string>();
+  /** FR-R4-F02 — the elapsed-deadline hand-off, bound late by `setBackoffElapsedHandler`. */
+  private readonly backoffHandOff: BackoffHandOff;
   private readonly autoDrainCoordinator: AutoDrainCoordinator;
   private readonly retryCoordinator: RetryCoordinator;
   /**
@@ -255,13 +270,15 @@ export class SchegentWorkflowController {
       },
       logger
     });
+    this.backoffHandOff = new BackoffHandOff(logger, () => this.retryCoordinator.noteAdmissionOutcome());
     this.retryCoordinator = new RetryCoordinator({
       store,
       queue,
       statusBar,
       notifier,
       logger,
-      watchdog: deps.watchdog ?? null,
+      ...(deps.deadlineTimer ? { timer: deps.deadlineTimer } : {}),
+      onBackoffElapsed: (wakeup) => this.backoffHandOff.handOff(wakeup),
       auditWriter,
       getRetryCap: () => this.retryCap,
       persistTransition: (prev, next) => this.persistTransition(prev, next)
@@ -341,24 +358,9 @@ export class SchegentWorkflowController {
     });
   }
 
-  /**
-   * Feature 011 — late injection point. The watchdog is constructed AFTER
-   * the controller in `extension.activate()` because the watchdog's resume
-   * callback closes over the controller. The activate path calls
-   * `setWatchdog()` once both are constructed.
-   */
-  public setWatchdog(watchdog: DelayedRetryWatchdog | null): void {
-    this.retryCoordinator.setWatchdog(watchdog);
-  }
-
-  /**
-   * Feature 093 (T045) — the watchdog's resume callback is window-level, so it
-   * asks the coordinator which queues its fire was actually for. Claiming is
-   * destructive by design: the elapsed deadlines are removed and the next
-   * outstanding one is re-armed, so a second read does not resume them twice.
-   */
-  public claimElapsedDelayedRetries(): readonly string[] {
-    return this.retryCoordinator.claimElapsedDelayedRetries();
+  /** FR-R4-F02 (TA5, U5 G17) — where an elapsed delayed-retry deadline goes; bound late. */
+  public setBackoffElapsedHandler(handler: (wakeup: BackoffWakeup) => unknown): void {
+    this.backoffHandOff.bind(handler);
   }
 
   /** True while `queueId`'s delayed-retry backoff has not yet elapsed. */
@@ -620,7 +622,7 @@ export class SchegentWorkflowController {
    * (paused, pending-retry, or failed/bugfix-terminal).
    */
   public async resumeExisting(queueId: string, customPrompt?: string): Promise<boolean> {
-    const admission = await this.admitResume(queueId, customPrompt);
+    const admission = await this.admitResume(queueId, { customPrompt });
     await admission.completed;
     return admission.resumed;
   }
@@ -632,10 +634,14 @@ export class SchegentWorkflowController {
    * drain still learns whether to fall through to a fresh start without waiting
    * for the resumed Run to finish.
    */
-  public async admitResume(queueId: string, customPrompt?: string): Promise<ResumeAdmission> {
+  public async admitResume(queueId: string, options: ResumeOptions = {}): Promise<ResumeAdmission> {
     let admission: ResumeAdmission = NOT_RESUMED;
     try {
-      admission = await this.resumeExistingOnQueue(queueId, customPrompt);
+      admission = await this.resumeExistingOnQueue(queueId, options);
+      // An unattended resume is announced once it is admitted, here, whichever path asked for it.
+      if (admission.resumed && options.unattended !== undefined) {
+        announceUnattendedResume(queueId, { store: this.store, notifier: this.notifier, logger: this.logger });
+      }
       return admission;
     } finally {
       // Feature 093 (T044) — every early return below leaves without driving,
@@ -668,7 +674,7 @@ export class SchegentWorkflowController {
 
   private async resumeExistingOnQueue(
     queueId: string,
-    customPrompt?: string
+    { customPrompt, unattended }: ResumeOptions
   ): Promise<ResumeAdmission> {
     this.logger.info(`Workflow operation triggered: resumeExisting`);
     const run = this.store.getRun(queueId);
@@ -751,18 +757,25 @@ export class SchegentWorkflowController {
       this.logger.warn(
         `resume: queue ${queueId} execution lease held by another window; declining`
       );
-      return NOT_RESUMED;
+      return NOT_RESUMED_LEASE_DECLINED;
     }
     if (this.executionLease.hasLease && !(await this.executionLease.hasLease(queueId))) {
       await releaseLeaseLogged(this.executionLease, queueId, this.logger);
       this.logger.warn(
         `resume: execution lease for queue ${queueId} could not be verified; declining`
       );
-      return NOT_RESUMED;
+      return NOT_RESUMED_LEASE_DECLINED;
     }
-    const next = await patchRunForResume(this.store, queueId, run, 'resume-admission', (current) =>
-      resumeAdmissionPatch(current, { pipeline, defaultRunnerKind, mutationPlan, envelope, gitApprovalReceipt })
+    // FR-R4-F02 (contract U3 G9) — an unattended wakeup is rechecked inside the lease, on the Run as
+    // it is NOW; the recheck is in `patchRunForResumeAdmission`.
+    const next = await patchRunForResumeAdmission(
+      this.store,
+      queueId,
+      run,
+      { pipeline, defaultRunnerKind, mutationPlan, envelope, gitApprovalReceipt },
+      unattended
     );
+    if (next === 'ineligible') return NOT_RESUMED_INELIGIBLE;
     if (next === null) return NOT_RESUMED;
     await this.queue.markInFlight(feature.id, next.id, true);
     // Admitted. `driveSession` carries its own `finally` disposal, so the drive
@@ -770,6 +783,17 @@ export class SchegentWorkflowController {
     // resumed run is a run, so it takes the same `guardedDrive` as `admitNew`.
     return { resumed: true, completed: this.guardedDrive(queueId, next, feature) };
   }
+
+  /** FR-R4-F02 (TA4) — whether this window holds a session, and so a slot, for `queueId`. */
+  public holdsSession(queueId: string): boolean { return this.sessions.peek(queueId) !== null; }
+
+  /** FR-R4-F02 (contract U4) — an unattended resume, through the coordinator's one capacity method. */
+  public admitUnattended(queueId: string, wakeup: UnattendedWakeup): ReturnType<AutoDrainCoordinator['admitUnattended']> {
+    return this.autoDrainCoordinator.admitUnattended(queueId, wakeup);
+  }
+
+  /** FR-R4-F02 — `listener` runs when each drain sweep ends; refused wakeups are retried there. */
+  public onDrainSweepEnd(listener: () => Promise<void>): void { this.autoDrainCoordinator.onSweepEnd(listener); }
 
   /** Both admissions drive through here; the reasoning is at `driveUnderConsent`. */
   private guardedDrive(queueId: string, run: WorkflowRun, feature: FeatureRequest): Promise<void> {
@@ -916,11 +940,8 @@ export class SchegentWorkflowController {
     // resuming "the" Run, it is re-arming every Run the workspace persisted, and
     // after a crash mid-concurrency there can be several. Each is then addressed
     // by its own queue. With one entry this is the previous behavior exactly.
-    const { store, notifier, logger } = this;
     for (const [queueId, run] of Object.entries(this.store.getRunMap())) {
-      await this.retryCoordinator.resumeExistingFromActivation(queueId, run, async () => {
-        await resumeUnattended(queueId, { admit: (q) => this.admitResume(q), store, notifier, logger });
-      });
+      await this.retryCoordinator.resumeExistingFromActivation(queueId, run);
     }
   }
 

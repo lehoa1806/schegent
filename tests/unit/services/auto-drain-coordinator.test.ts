@@ -79,7 +79,9 @@ function makeController() {
     admitNew: vi.fn(async () => ({ completed: Promise.resolve() })),
     admitResume: vi.fn(async () => ({ resumed: false, completed: Promise.resolve() })),
     // A double holds no sessions, so it drives no Runs (T072).
-    liveRunCount: 0
+    liveRunCount: 0,
+    // FR-R4-F02 (TA4) — nor does any queue hold one.
+    holdsSession: () => false
   };
 }
 
@@ -457,7 +459,8 @@ function roundRobinHarness(options: { capacity: number }) {
       admitResume: vi.fn(async () => ({ resumed: false, completed: Promise.resolve() })),
       get liveRunCount() {
         return inFlight;
-      }
+      },
+      holdsSession: () => false
     } as never,
     failurePolicyDefault: { resolve: () => 'halt-on-failure' }
   });
@@ -625,7 +628,8 @@ function interleavingHarness(
       admitResume: async () => ({ resumed: false, completed: Promise.resolve() }),
       get liveRunCount() {
         return inFlight.size;
-      }
+      },
+      holdsSession: () => false
     } as never,
     auditWriter: options.audit
       ? {
@@ -690,6 +694,34 @@ describe('AutoDrainCoordinator sweep guard (Feature 093 T049)', () => {
     const second = h.coord.drainAll();
     h.addPending('q-b');
     h.openAllAdmissions();
+    await Promise.all([first, second]);
+
+    expect(h.offered).toEqual(['q-a', 'q-b']);
+  });
+
+  it('a request arriving while a sweep-end listener runs is coalesced, not dropped (FR-R4-F02)', async () => {
+    // The listener is the unattended admission's retry of capacity-refused wakeups: it awaits
+    // store and lease work, so a terminating Run's trigger can arrive while it is suspended. That
+    // trigger must still buy a further sweep, because the slot it freed is the one a pending head
+    // is waiting for.
+    const h = interleavingHarness({ pendingFor: ['q-a'] });
+    h.openAllAdmissions();
+    const listenerGate = deferred();
+    let listenerRuns = 0;
+    h.coord.onSweepEnd(async () => {
+      listenerRuns += 1;
+      if (listenerRuns === 1) await listenerGate.promise;
+    });
+
+    const first = h.coord.drainAll();
+    await settle();
+    // The sweep has walked every queue and is suspended inside its end listener.
+    expect(h.offered).toEqual(['q-a']);
+    expect(listenerRuns).toBe(1);
+
+    const second = h.coord.drainAll();
+    h.addPending('q-b');
+    listenerGate.resolve();
     await Promise.all([first, second]);
 
     expect(h.offered).toEqual(['q-a', 'q-b']);
@@ -1137,7 +1169,8 @@ describe('AutoDrainCoordinator — the report a failed start leaves on its queue
           return { completed: Promise.resolve() };
         }),
         admitResume: vi.fn(async () => ({ resumed: false, completed: Promise.resolve() })),
-        liveRunCount: 0
+        liveRunCount: 0,
+        holdsSession: () => false
       } as never,
       startFailures,
       failurePolicyDefault: { resolve: () => 'halt-on-failure' }
@@ -1226,7 +1259,8 @@ describe('AutoDrainCoordinator — the Run that holds a queue and cannot be reac
       controller: {
         admitNew,
         admitResume: vi.fn(async () => ({ resumed: false, completed: Promise.resolve() })),
-        liveRunCount: 0
+        liveRunCount: 0,
+        holdsSession: () => false
       } as never,
       startFailures: options.withPort === false ? null : startFailures,
       failurePolicyDefault: { resolve: () => 'halt-on-failure' as const }
@@ -1451,7 +1485,7 @@ describe('AutoDrainCoordinator — FR-R3-205: a closed drain starts nothing', ()
         inFlightCount: vi.fn(() => 0)
       } as never,
       executionLease: lease as never,
-      controller: { admitNew, admitResume, liveRunCount: 0 } as never,
+      controller: { admitNew, admitResume, liveRunCount: 0, holdsSession: () => false } as never,
       startFailures,
       auditWriter,
       logger: logger as never,
