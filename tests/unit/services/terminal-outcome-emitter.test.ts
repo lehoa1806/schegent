@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
+import {
+  emitTerminalOutcomeAudit,
+  type TaskLifecycleAuditSink
+} from '../../../src/services/terminal-outcome-audit';
+import type { WorkflowRun } from '../../../src/state/workflow-run';
 
 /**
  * FR-R3-107 (FR-077, FR-078) — one terminal-outcome emitter, and the CLI-probe path
@@ -237,5 +242,82 @@ describe('FR-R3-107 — the terminal outcome has one emitter', () => {
     expect(queueAt).toBeGreaterThanOrEqual(0);
     expect(historyAt).toBeGreaterThan(queueAt);
     expect(auditAt, 'the terminal record is written last').toBeGreaterThan(historyAt);
+  });
+});
+
+// FR-R4-F14 (spec 242, contract E2.3) — the emitter copies the Run's failure cause onto the event, and
+// only for a failed terminal status. No caller passes a code: it is read from the Run, so a crash
+// replay of a journalled Run emits what the persisted Run says (D5).
+describe('FR-R4-F14 — the terminal event carries the failed Run\'s cause', () => {
+  const baseRun = {
+    id: 'run-cause',
+    featureId: 'task-cause',
+    featureDir: '',
+    status: 'failed',
+    currentPhase: 'speckit-implement',
+    currentIteration: 1,
+    startedAt: Date.now() - 5_000,
+    lastTransitionAt: Date.now(),
+    phasesCompleted: [],
+    lastError: null,
+    delayedRetryCount: 0,
+    pendingRetryAt: null,
+    pendingRetryCause: null,
+    phaseOverrides: [],
+    manualPauseAt: null,
+    manualPauseCause: null,
+    phaseBreakpoints: [],
+    resumeTargetPhaseId: null
+  } as unknown as WorkflowRun;
+
+  function capture(): { sink: TaskLifecycleAuditSink; payloads: Array<Record<string, unknown>> } {
+    const payloads: Array<Record<string, unknown>> = [];
+    return {
+      payloads,
+      sink: {
+        emitTaskLifecycle: async (_eventType, _run, payload) => {
+          payloads.push(payload);
+        }
+      }
+    };
+  }
+  const logger = { warn: () => undefined };
+
+  it('a failed Run with a cause gives a payload with it', async () => {
+    const { sink, payloads } = capture();
+    await emitTerminalOutcomeAudit(sink, logger, { ...baseRun, failureCause: 'cap_exhausted' }, 'failed');
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0]?.terminalStatus).toBe('failed');
+    expect(payloads[0]?.failureCause).toBe('cap_exhausted');
+  });
+
+  it('a failed Run without a cause gives no key at all', async () => {
+    const { sink, payloads } = capture();
+    await emitTerminalOutcomeAudit(sink, logger, baseRun, 'failed');
+    expect(payloads).toHaveLength(1);
+    expect('failureCause' in (payloads[0] ?? {})).toBe(false);
+  });
+
+  it('a completed terminal status gives no key, even for a hand-built Run carrying a cause', async () => {
+    const { sink, payloads } = capture();
+    await emitTerminalOutcomeAudit(
+      sink,
+      logger,
+      { ...baseRun, status: 'completed', failureCause: 'cap_exhausted' },
+      'completed'
+    );
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0]?.terminalStatus).toBe('completed');
+    expect('failureCause' in (payloads[0] ?? {})).toBe(false);
+  });
+
+  it('adds the cause without moving any other field of the payload', async () => {
+    const withCause = capture();
+    const without = capture();
+    await emitTerminalOutcomeAudit(withCause.sink, logger, { ...baseRun, failureCause: 'phase_timeout' }, 'failed');
+    await emitTerminalOutcomeAudit(without.sink, logger, baseRun, 'failed');
+    const { failureCause: _cause, durationMs: _a, ...restWith } = withCause.payloads[0] ?? {};
+    const { durationMs: _b, ...restWithout } = without.payloads[0] ?? {};
+    expect(restWith).toEqual(restWithout);
   });
 });

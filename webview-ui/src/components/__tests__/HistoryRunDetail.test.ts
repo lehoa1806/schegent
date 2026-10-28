@@ -250,3 +250,80 @@ describe('phase counts are three totals and nothing more (T048, FR-027)', () => 
     );
   });
 });
+
+// FR-R4-F14 (spec 242, contract M7.2, FR-018, clarification Q4) — a failed run's detail names its cause.
+//
+// Four states, published as `data-state` like the cost and phase fields, because "the run recorded no
+// cause" and "the read never landed" are different facts: a run that failed before causes were recorded
+// reads "Cause not recorded", and a read that failed reads "Could not be read". A recorded cause shows its
+// fixed label and its code, `{label} ({code})`; both come from host constants, never from run text. Only a
+// failed run has a cause, so a completed or canceled run renders no field at all.
+describe('a failed run\'s cause (FR-R4-F14, M7)', () => {
+  const failedRow = () => row({ status: 'failed' });
+
+  it('shows "{label} ({code})" for a recorded cause', async () => {
+    readRunSummary.mockResolvedValue({
+      outcome: 'read',
+      summary: summary({ terminalStatus: 'failed', failureCause: 'cap_exhausted' })
+    });
+    const { findByTestId } = mount({ row: failedRow() });
+
+    const cause = await findByTestId('history-detail-cause');
+    expect(cause.getAttribute('data-state')).toBe('recorded');
+    expect(cause.textContent).toContain('Iteration cap reached (cap_exhausted)');
+  });
+
+  it('reads "Cause not recorded" when the summary carries no cause', async () => {
+    readRunSummary.mockResolvedValue({ outcome: 'read', summary: summary({ terminalStatus: 'failed' }) });
+    const { findByTestId } = mount({ row: failedRow() });
+
+    const cause = await findByTestId('history-detail-cause');
+    expect(cause.getAttribute('data-state')).toBe('not-recorded');
+    expect(cause.textContent).toContain('Cause not recorded');
+    expect(cause.textContent).not.toContain('(');
+  });
+
+  it('reads "Cause not recorded" when the run has no rollup record at all', async () => {
+    readRunSummary.mockResolvedValue({ outcome: 'read', summary: null });
+    const { findByTestId } = mount({ row: failedRow() });
+
+    const cause = await findByTestId('history-detail-cause');
+    expect(cause.getAttribute('data-state')).toBe('not-recorded');
+    expect(cause.textContent).toContain('Cause not recorded');
+  });
+
+  it('reads "Could not be read" when the read failed, which is not "not recorded"', async () => {
+    readRunSummary.mockResolvedValue({ outcome: 'unavailable' });
+    const { findByTestId } = mount({ row: failedRow() });
+
+    const cause = await findByTestId('history-detail-cause');
+    expect(cause.getAttribute('data-state')).toBe('unreadable');
+    expect(cause.textContent).toContain('Could not be read');
+    expect(cause.textContent).not.toContain('Cause not recorded');
+  });
+
+  it('renders a cause this build does not know as "Cause not recorded", never as raw text', async () => {
+    // The validator refuses such a summary before it reaches here; this pins the component's own guard.
+    readRunSummary.mockResolvedValue({
+      outcome: 'read',
+      summary: summary({ terminalStatus: 'failed', failureCause: 'a_future_member' as never })
+    });
+    const { findByTestId } = mount({ row: failedRow() });
+
+    const cause = await findByTestId('history-detail-cause');
+    expect(cause.getAttribute('data-state')).toBe('not-recorded');
+    expect(cause.textContent).not.toContain('a_future_member');
+  });
+
+  it.each(['completed', 'canceled'] as const)('renders no cause field for a %s run', async (status) => {
+    readRunSummary.mockResolvedValue({
+      outcome: 'read',
+      summary: summary({ terminalStatus: status, failureCause: 'cap_exhausted' })
+    });
+    const { findByTestId, queryByTestId } = mount({ row: row({ status }) });
+
+    // Awaited on a field of the same section, so the absence is read after the join settled.
+    await findByTestId('history-detail-cost');
+    expect(queryByTestId('history-detail-cause')).toBeNull();
+  });
+});

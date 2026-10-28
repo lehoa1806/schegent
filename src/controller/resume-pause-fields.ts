@@ -109,8 +109,14 @@ export function resumeAdmissionPatch(
     // FR-R4-F02 (contract U3 G12) — a resume leaves `paused`, so the credit pause goes with the
     // other pause fields; `validateRunInvariants` refuses the Run if this is forgotten.
     creditPause: null,
-    // Resuming a terminally failed run (operator retry) resets the retry cap so the phase gets
-    // a fresh set of attempts, and clears manual-pause fields that may linger from the failure.
+    // FR-R4-F14 (contract W4) — a resume of a failed Run leaves `failed`, so its failure cause goes
+    // too; `validateRunInvariants` refuses a cause beside `running`.
+    failureCause: undefined,
+    // Resuming a failed run (operator retry) resets the delayed-retry counter (`delayedRetryCount`),
+    // which bounds automatic retries after rate limits and transient errors. It does NOT reset the
+    // phase's iteration count: the phase runs again at the iteration it failed on, so a phase that
+    // failed at its cap gets one more attempt, not a fresh set (FR-R4-F14). It also clears the
+    // manual-pause fields that may linger from the failure.
     // An unattended wakeup is not an operator's retry (FR-005): it writes no count, so a count of
     // five stays five even if a failed Run were ever to reach here.
     ...(current.status === 'failed'

@@ -225,3 +225,39 @@ describe('validateInboundMessage(CMD_READ_METRICS) — includeArchives threading
     expect(result.ok).toBe(false);
   });
 });
+
+// FR-R4-F14 (spec 242, contract M6) — the wire summary may carry a failed run's `failureCause`, and the
+// validator holds it to the closed vocabulary the way it holds `costUsd` to a finite number: a value that is
+// present and not a member is refused, so a webview never renders a code it cannot label.
+describe('isValidReadMetricsResponse — a run summary\'s failureCause (FR-R4-F14, M6)', () => {
+  const summary = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+    runId: 'run-1',
+    terminalStatus: 'failed',
+    startedAt: '2026-08-01T00:00:00.000Z',
+    endedAt: '2026-08-01T00:05:00.000Z',
+    durationMs: 300_000,
+    phasesTotal: 4,
+    phasesCompleted: 2,
+    phasesSkipped: 0,
+    backendInvocations: 3,
+    ...overrides
+  });
+  const accepts = (overrides: Record<string, unknown>): boolean =>
+    isValidReadMetricsResponse(validResponse({ runSummaries: [summary(overrides)] }));
+
+  it('accepts a summary carrying a member of the vocabulary', () => {
+    expect(accepts({ failureCause: 'cap_exhausted' })).toBe(true);
+    expect(accepts({ failureCause: 'start_failed' })).toBe(true);
+  });
+
+  it('accepts a summary with no cause (a run that failed before causes were recorded)', () => {
+    expect(accepts({})).toBe(true);
+  });
+
+  it.each(['nope', 3, null, 'cap_exhausted ', 'CAP_EXHAUSTED', 'pre_spawn_refusal', {}])(
+    'refuses a present cause of %j',
+    (value) => {
+      expect(accepts({ failureCause: value })).toBe(false);
+    }
+  );
+});

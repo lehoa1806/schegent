@@ -722,6 +722,7 @@ function validateRunInvariants(run: WorkflowRun): void {
   }
   // FR-R4-F02 (data-model §3, hard rule 28) — a credit pause exists only on a Run paused for credits.
   assertCreditPauseShape(run);
+  if (run.failureCause !== undefined && run.status !== 'failed') throw new Error(`WorkflowRun invariant violation: failureCause requires status 'failed' (got '${run.status}')`);
   // Feature 028 — phaseBreakpoints + resumeTargetPhaseId invariants.
   if (!Array.isArray(run.phaseBreakpoints)) {
     throw new Error(

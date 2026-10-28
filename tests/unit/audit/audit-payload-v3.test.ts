@@ -10,6 +10,7 @@ import {
   projectAuditPayload
 } from '../../../src/audit/audit-payload';
 import { AUDIT_SCHEMA_VERSION } from '../../../src/contracts/audit-events';
+import { FAILURE_CAUSES } from '../../../src/contracts/failure-cause';
 import type { PhaseOutcome } from '../../../src/controller/phase';
 
 describe('audit payload schema v3', () => {
@@ -696,5 +697,78 @@ describe('phase-end attempt pairing and envelope presence (feature 212)', () => 
     // existing event break no reader, and FR-009's omission is a narrowing of
     // what gets written rather than a shape a v3 reader cannot parse.
     expect(AUDIT_SCHEMA_VERSION).toBe(3);
+  });
+});
+
+// FR-R4-F14 (spec 242, contract E3.2, FR-023) — `task-execution-ended` carries a `failureCause`, and the
+// projection admits it by identity against the closed vocabulary. A value that is not a member is
+// dropped as a field, never rewritten, and nothing a fatal signature or an agent wrote can reach disk
+// through it. `phase-end` keeps its own two causes and is projected exactly as before (clarification Q1).
+describe('task-execution-ended failureCause projection (FR-R4-F14)', () => {
+  const ended = {
+    taskId: 'task-1',
+    runId: 'run-1',
+    terminalStatus: 'failed',
+    durationMs: 1234,
+    phasesTotal: 3,
+    phasesCompleted: 1,
+    phasesSkipped: 0
+  };
+
+  it.each(FAILURE_CAUSES)('keeps the member %s', (cause) => {
+    const projected = projectAuditPayload('task-execution-ended', { ...ended, failureCause: cause });
+    expect(projected.failureCause).toBe(cause);
+    const { failureCause: _kept, ...rest } = projected;
+    expect(rest).toEqual(projectAuditPayload('task-execution-ended', ended));
+  });
+
+  it.each([
+    ['a trailing space', 'cap_exhausted '],
+    ['the wrong case', 'CAP_EXHAUSTED'],
+    ['a phase-end cause', PRE_SPAWN_REFUSAL_CAUSE],
+    ['a number', 42],
+    ['null', null],
+    ['an object', { cause: 'cap_exhausted' }]
+  ])('drops %s and projects the rest as the generic projection does', (_name, value) => {
+    const projected = projectAuditPayload('task-execution-ended', { ...ended, failureCause: value });
+    expect('failureCause' in projected).toBe(false);
+    expect(projected).toEqual(projectAuditPayload('task-execution-ended', ended));
+  });
+
+  it('drops a secret-bearing fatal signature and leaves the sentinel nowhere in the record (FR-023)', () => {
+    const projected = projectAuditPayload('task-execution-ended', {
+      ...ended,
+      failureCause: 'fatal: token=sk-ant-SENTINEL'
+    });
+    expect('failureCause' in projected).toBe(false);
+    expect(JSON.stringify(projected)).not.toContain('SENTINEL');
+  });
+
+  it('projects a payload written before the feature, with no key, as the generic projection does', () => {
+    const projected = projectAuditPayload('task-execution-ended', ended);
+    expect('failureCause' in projected).toBe(false);
+    expect(projected).toEqual(ended);
+  });
+
+  it('keeps every other key byte-identical, and still drops lastErrorSummary', () => {
+    const projected = projectAuditPayload('task-execution-ended', {
+      ...ended,
+      failureCause: 'phase_failed',
+      lastErrorSummary: 'a message that must not reach disk'
+    });
+    expect(projected).toEqual({ ...ended, failureCause: 'phase_failed' });
+  });
+
+  it('does not let a failureCause key reach disk on a phase-end payload', () => {
+    const phaseEnd = {
+      outcome: 'failed',
+      exitCode: 1,
+      terminationReason: 'error',
+      metrics: {},
+      durationMs: 12
+    };
+    const projected = projectAuditPayload('phase-end', { ...phaseEnd, failureCause: 'cap_exhausted' });
+    expect('failureCause' in projected).toBe(false);
+    expect(projected).toEqual(projectAuditPayload('phase-end', phaseEnd));
   });
 });

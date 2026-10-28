@@ -23,6 +23,11 @@
   } from '../lib/history-rows';
   import type { MetricsRunSummary } from '../lib/messages';
   import { readRunSummary } from '../lib/metrics-ipc';
+  import {
+    FAILURE_CAUSE_LABELS,
+    FAILURE_CAUSE_NOT_RECORDED,
+    isFailureCause
+  } from '../../../src/contracts/failure-cause';
   import { copyText } from '../lib/copy-text';
   import { formatAbsoluteTime, formatStatus } from '../lib/format';
   import { formatDuration } from '../lib/format-duration';
@@ -118,6 +123,19 @@
   const phaseState = $derived.by((): 'reported' | 'not-reported' | 'unreadable' => {
     if (join.state === 'unreadable') return 'unreadable';
     return summary === null ? 'not-reported' : 'reported';
+  });
+
+  // FR-R4-F14 (M7, data-model §8) — a failed run's cause, in the same states the fields above have, with
+  // the one a cost cannot have: a run that recorded no cause is "not recorded", which is a fact about the
+  // run, and a read that never landed is "unreadable", which is a fact about the window. The code is shown
+  // only if it is a member of the closed vocabulary, so a value this build cannot label never reaches the
+  // page as text; both words around it are host constants.
+  const recordedCause = $derived(
+    summary !== null && isFailureCause(summary.failureCause) ? summary.failureCause : null
+  );
+  const causeState = $derived.by((): 'recorded' | 'not-recorded' | 'unreadable' => {
+    if (join.state === 'unreadable') return 'unreadable';
+    return recordedCause === null ? 'not-recorded' : 'recorded';
   });
 
   // The same `$${n.toFixed(2)}` the metrics surfaces already use, so one run's
@@ -288,6 +306,20 @@
             {/if}
           </dd>
         </div>
+        <!-- FR-R4-F14 (FR-018, clarification Q4) — only a failed run has a cause. The label and the code
+             come from host constants and Svelte escapes both; no count, chart, filter or column (Q3). -->
+        {#if row.status === 'failed'}
+          <div class="field" data-testid="history-detail-cause" data-state={causeState}>
+            <dt>Cause</dt>
+            <dd>
+              {causeState === 'recorded' && recordedCause !== null
+                ? `${FAILURE_CAUSE_LABELS[recordedCause]} (${recordedCause})`
+                : causeState === 'not-recorded'
+                  ? FAILURE_CAUSE_NOT_RECORDED
+                  : 'Could not be read'}
+            </dd>
+          </div>
+        {/if}
       </dl>
     {/if}
   </section>
@@ -373,6 +405,7 @@
      of the figures beside it. */
   .field dd.absent,
   .field[data-state='not-reported'] dd,
+  .field[data-state='not-recorded'] dd,
   .field[data-state='unreadable'] dd {
     color: var(--schegent-muted-fg);
     font-style: italic;

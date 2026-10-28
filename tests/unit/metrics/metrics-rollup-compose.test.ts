@@ -289,3 +289,126 @@ describe('parseMetricsRollupLine — what a reader accepts (FR-R3-009, T389)', (
     expect(composeCumulativeTotals(records, []).totals).toEqual(EMPTY_CUMULATIVE_TOTALS);
   });
 });
+
+// FR-R4-F14 (spec 242, contract M2, M5, D6) — the version-2 record carries the failed run's cause.
+//
+// The reader's floor is a separate constant from the writer's version, so a version-1 line is still
+// read. Within a version-2 line the cause is read only for a `failed` run and only when it is a member
+// of the closed vocabulary; any other value is simply absent, and costs the line none of its counters
+// (a member a later build appends must not make an older build drop a run from its totals).
+describe('parseMetricsRollupLine — the failure cause of a v2 record (FR-R4-F14, M2)', () => {
+  const v2 = (overrides: Partial<MetricsRollupRecord> = {}): MetricsRollupRecord =>
+    record({ v: 2, terminalStatus: 'failed', runId: 'run-v2', ...overrides });
+
+  it('reads a member on a failed v2 record, without a warning', () => {
+    const line = JSON.stringify({ ...v2(), failureCause: 'cap_exhausted' });
+    const { record: parsed, warning } = parseMetricsRollupLine(line);
+
+    expect(warning).toBeUndefined();
+    expect(parsed?.failureCause).toBe('cap_exhausted');
+    expect(parsed?.runId).toBe('run-v2');
+  });
+
+  it.each(['not_a_cause', 'cap_exhausted ', 'CAP_EXHAUSTED', 42, null])(
+    'accepts a failed v2 record whose cause is %j, reading it with no cause and no warning',
+    (value) => {
+      const line = JSON.stringify({ ...v2(), failureCause: value });
+      const { record: parsed, warning } = parseMetricsRollupLine(line);
+
+      expect(warning).toBeUndefined();
+      expect(parsed).not.toBeNull();
+      expect(parsed !== null && 'failureCause' in parsed).toBe(false);
+      expect(composeCumulativeTotals(parsed === null ? [] : [parsed], []).totals.failedRuns).toBe(1);
+    }
+  );
+
+  it('accepts a failed v2 record with no cause key at all', () => {
+    const { record: parsed, warning } = parseMetricsRollupLine(JSON.stringify(v2()));
+    expect(warning).toBeUndefined();
+    expect(parsed !== null && 'failureCause' in parsed).toBe(false);
+  });
+
+  it.each(['completed', 'canceled'] as const)(
+    'reads a %s v2 record that holds a member with no cause',
+    (terminalStatus) => {
+      const line = JSON.stringify({ ...v2({ terminalStatus }), failureCause: 'cap_exhausted' });
+      const { record: parsed, warning } = parseMetricsRollupLine(line);
+
+      expect(warning).toBeUndefined();
+      expect(parsed?.terminalStatus).toBe(terminalStatus);
+      expect(parsed !== null && 'failureCause' in parsed).toBe(false);
+    }
+  );
+
+  it('reads the cause of a record written by a newer version too', () => {
+    const line = JSON.stringify({ ...v2(), v: METRICS_ROLLUP_SCHEMA_VERSION + 5, failureCause: 'phase_timeout' });
+    expect(parseMetricsRollupLine(line).record?.failureCause).toBe('phase_timeout');
+  });
+
+  it('round-trips a failed v2 record with its cause through the serializer', () => {
+    const original = v2({ failureCause: 'last_phase_issues_remain' });
+    const { record: parsed, warning } = parseMetricsRollupLine(serializeMetricsRollupRecord(original));
+
+    expect(warning).toBeUndefined();
+    expect(parsed).toEqual(original);
+  });
+
+  it('serializes no failureCause key for a record without one', () => {
+    const body = JSON.parse(serializeMetricsRollupRecord(v2())) as Record<string, unknown>;
+    expect('failureCause' in body).toBe(false);
+    const completed = JSON.parse(serializeMetricsRollupRecord(record())) as Record<string, unknown>;
+    expect('failureCause' in completed).toBe(false);
+  });
+});
+
+// FR-R4-F14 (spec 242, contract M5, data-model §9, SC-004) — a version-1 record, written before the cause
+// existed, is read as it always was. The reader's floor is its own constant, so the bump of the writer's
+// version refuses nothing; a line that holds a cause key anyway (a hand edit, a downgrade-and-upgrade
+// round trip) is read for its counters and its cause is not believed. These are pins: they pass before
+// the change and after it.
+describe('parseMetricsRollupLine — a version-1 record is read as before (FR-R4-F14, US4)', () => {
+  const v1 = (overrides: Partial<MetricsRollupRecord> = {}): MetricsRollupRecord =>
+    record({ v: 1, terminalStatus: 'failed', runId: 'run-v1', ...overrides });
+
+  it('accepts a v1 failed line with no cause, counts it, and reads it with no cause', () => {
+    const { record: parsed, warning } = parseMetricsRollupLine(JSON.stringify(v1()));
+
+    expect(warning).toBeUndefined();
+    expect(parsed).toEqual(v1());
+    expect(parsed !== null && 'failureCause' in parsed).toBe(false);
+    expect(composeCumulativeTotals(parsed === null ? [] : [parsed], []).totals.failedRuns).toBe(1);
+  });
+
+  it('accepts a v1 failed line holding a stray cause, counts it, and does not believe the cause', () => {
+    const { record: parsed, warning } = parseMetricsRollupLine(
+      JSON.stringify({ ...v1(), failureCause: 'cap_exhausted' })
+    );
+
+    expect(warning).toBeUndefined();
+    expect(parsed).toEqual(v1());
+    expect(parsed !== null && 'failureCause' in parsed).toBe(false);
+    expect(composeCumulativeTotals(parsed === null ? [] : [parsed], []).totals.failedRuns).toBe(1);
+  });
+
+  it('reads a v1 record byte-identical to what the same line read as before the change', () => {
+    const line = serializeMetricsRollupRecord(v1({ costUsd: 0.5 }));
+    const body = JSON.parse(line) as Record<string, unknown>;
+    expect(parseMetricsRollupLine(line).record).toEqual(body);
+  });
+
+  it('round-trips a v2 record with every existing field preserved', () => {
+    const original = record({ v: 2, terminalStatus: 'failed', runId: 'run-v2-full', costUsd: 2.5, failureCause: 'phase_failed' });
+    const { record: parsed } = parseMetricsRollupLine(serializeMetricsRollupRecord(original));
+
+    expect(parsed).toEqual(original);
+    expect(parsed).toMatchObject({
+      runId: 'run-v2-full',
+      durationMs: original.durationMs,
+      phasesTotal: original.phasesTotal,
+      phasesCompleted: original.phasesCompleted,
+      phasesSkipped: original.phasesSkipped,
+      backendInvocations: original.backendInvocations,
+      costUsd: 2.5
+    });
+  });
+});

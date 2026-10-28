@@ -82,6 +82,13 @@ export async function emitTerminalOutcomeAudit(
       // both report the same three numbers. They are unioned by run id downstream; two
       // implementations would let a total depend on which range a run fell in.
       ...computeRunPhaseStats(run),
+      // FR-R4-F14 (contract E2) — read from the Run, never passed by a caller, so both routes to a
+      // terminal state and a crash replay of the journalled Run emit what the persisted Run says. Only
+      // a failed Run carries one: `terminalStatus` is checked as well as the Run, so a completed Run
+      // never gains a cause whatever its record holds.
+      ...(terminalStatus === 'failed' && run.failureCause !== undefined
+        ? { failureCause: run.failureCause }
+        : {}),
       ...extra
     });
   } catch (err) {

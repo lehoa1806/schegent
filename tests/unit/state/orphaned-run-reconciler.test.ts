@@ -136,6 +136,22 @@ describe('reconcileOrphanedRuns — a Run may not outlive its Task row', () => {
     }
   );
 
+  // FR-R4-F14 (spec 242, TA1) — the reconciler ends only non-terminal Runs, and `failed` is terminal,
+  // so a failed Run keeps its failure cause here. It does not leave `failed`, which is why the file
+  // is classified rather than edited in the failure-cause census gate.
+  it('returns a failed Run that carries a failure cause byte-identical, with no event (FR-R4-F14)', () => {
+    const failed = makeRun({ id: 'R9', featureId: 'gone', status: 'failed', failureCause: 'cap_exhausted' });
+    const runs: RunStateMap = { default: failed };
+    const before = JSON.stringify(runs);
+
+    const result = reconcileOrphanedRuns(runs, NO_ROW_ANYWHERE, 29);
+
+    expect(result.changed).toBe(false);
+    expect(result.events).toEqual([]);
+    expect(JSON.stringify(result.runs)).toBe(before);
+    expect(before).toContain('"failureCause":"cap_exhausted"');
+  });
+
   it('reports no change on an empty map, so the caller writes nothing', () => {
     expect(reconcileOrphanedRuns({}, NO_ROW_ANYWHERE, 1).changed).toBe(false);
   });
