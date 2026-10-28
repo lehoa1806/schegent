@@ -39,7 +39,7 @@
 // its own tests. This file exists to prove the single-queue operator's world is
 // untouched, which is the half of the feature that can only regress.
 
-import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { drainUntil as sharedDrainUntil } from './concurrent-run-harness';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -64,11 +64,9 @@ import type { RawInvocationOutput, InvocationRequest } from '../../src/runner/in
 import type { SchegentStatusBar } from '../../src/ui/status-bar';
 import type { Notifier } from '../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../src/state/lock';
-import type {
-  DelayedRetryWatchdog,
-  WorkflowControllerDeps
-} from '../../src/controller/workflow-controller';
+import type { WorkflowControllerDeps } from '../../src/controller/workflow-controller';
 import { removeTempRoot } from '../temp-root-cleanup';
+import { RecordingDeadlineTimer } from '../recording-deadline-timer';
 // Feature 093 BUG-001 (T103a) — the real backend wiring, for the block at the
 // foot of this file. See that block's header for why the production dispatch is
 // called rather than reconstructed.
@@ -200,16 +198,6 @@ function makeLock(): WorkspaceLockManager {
   } as unknown as WorkspaceLockManager;
 }
 
-function makeStubWatchdog(): DelayedRetryWatchdog & {
-  pauseAndPoll: Mock;
-  cancelPendingTimer: Mock;
-} {
-  return {
-    pauseAndPoll: vi.fn(async () => {}),
-    cancelPendingTimer: vi.fn()
-  } as unknown as DelayedRetryWatchdog & { pauseAndPoll: Mock; cancelPendingTimer: Mock };
-}
-
 interface Harness {
   readonly controller: SchegentWorkflowController;
   readonly store: WorkspaceStateStore;
@@ -227,7 +215,8 @@ interface Harness {
   readonly script: (
     fn: (req: InvocationRequest, callIndex: number) => RawInvocationOutput | Promise<RawInvocationOutput>
   ) => void;
-  readonly watchdog: ReturnType<typeof makeStubWatchdog>;
+  /** The retry coordinator's own timer (FR-R4-F02): a delayed retry arms it, a cancel clears it. */
+  readonly deadlineTimer: RecordingDeadlineTimer;
   /** Keys of the run record — the one-entry invariant every stage asserts. */
   readonly runKeys: () => string[];
 }
@@ -277,7 +266,7 @@ async function makeHarness(workspaceRoot: string): Promise<Harness> {
   );
 
   const queue = new QueueManager(store);
-  const watchdog = makeStubWatchdog();
+  const deadlineTimer = new RecordingDeadlineTimer();
 
   // The real coordinator, not a stub: it is one of the converted sites (pattern
   // C-2, `findRunByTask`), and it is the only thing that advances the Task for a
@@ -288,7 +277,7 @@ async function makeHarness(workspaceRoot: string): Promise<Harness> {
   const deps: WorkflowControllerDeps = {
     catalog: buildSpeckitCatalog(),
     auditWriter: audit,
-    watchdog,
+    deadlineTimer,
     terminalTransitions: new TerminalTransitionCoordinator(
       store,
       queue,
@@ -317,7 +306,7 @@ async function makeHarness(workspaceRoot: string): Promise<Harness> {
     script: (fn) => {
       handler = fn;
     },
-    watchdog,
+    deadlineTimer,
     runKeys: () => Object.keys(store.getRunMap())
   };
 }
@@ -437,9 +426,10 @@ describe('Feature 093 (T034, US2 scenario 2) — every control resolves the sole
     expect(harness.runKeys()).toEqual([SOLE_QUEUE]);
 
     const dispatchesBeforeRetry = harness.invocations.length;
+    expect(harness.deadlineTimer.armed()).toHaveLength(1);
     const retry = await harness.controller.retryPhaseNow();
     expect(retry.ok).toBe(true);
-    expect(harness.watchdog.cancelPendingTimer).toHaveBeenCalledTimes(1);
+    expect(harness.deadlineTimer.armed()).toHaveLength(0);
 
     // The override is a continuation, and it re-dispatches on the next tick.
     await drainUntil(

@@ -24,13 +24,31 @@
  * exactly as it was when `startNew` owned the whole span, so awaiting it is
  * byte-for-byte the old contract.
  */
+import type { UnattendedWakeup } from '../services/unattended-eligibility';
+
 export interface RunAdmission {
   readonly completed: Promise<void>;
 }
 
 /** A resume also reports whether there was anything to resume. */
+/**
+ * FR-R4-F02 (contract U3) — what a resume may be asked with. `customPrompt` is the operator's prompt
+ * for an explicit resume; `unattended` names the wakeup behind a resume nobody asked for, and is what
+ * turns on the in-lease eligibility recheck and drops the retry-count reset.
+ */
+export interface ResumeOptions {
+  readonly customPrompt?: string | undefined;
+  readonly unattended?: UnattendedWakeup | undefined;
+}
+
 export interface ResumeAdmission extends RunAdmission {
   readonly resumed: boolean;
+  /**
+   * FR-R4-F02 (contract U4) — why a resume was refused, for the two refusals an unattended
+   * admission has to tell apart: the in-lease eligibility recheck, and another window holding the
+   * queue's lease. Absent on every other refusal and on an admitted resume.
+   */
+  readonly refusal?: 'ineligible' | 'lease-declined';
 }
 
 /** Admission failed before a Run existed; there is no drive to await. */
@@ -38,3 +56,17 @@ export const NOTHING_TO_DRIVE: RunAdmission = { completed: Promise.resolve() };
 
 /** The queue had no resumable Run; the caller falls through to a fresh start. */
 export const NOT_RESUMED: ResumeAdmission = { resumed: false, completed: Promise.resolve() };
+
+/** The resume was refused because the Run is not eligible for the wakeup that asked (FR-003). */
+export const NOT_RESUMED_INELIGIBLE: ResumeAdmission = {
+  resumed: false,
+  completed: Promise.resolve(),
+  refusal: 'ineligible'
+};
+
+/** The resume was refused because another window holds the queue's execution lease. */
+export const NOT_RESUMED_LEASE_DECLINED: ResumeAdmission = {
+  resumed: false,
+  completed: Promise.resolve(),
+  refusal: 'lease-declined'
+};

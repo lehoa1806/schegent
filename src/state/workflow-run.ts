@@ -194,7 +194,8 @@ export function canceledRunPatch(now: number): RunPatch {
     manualPauseCause: null,
     resumeTargetPhaseId: null,
     pendingRetryAt: null,
-    pendingRetryCause: null
+    pendingRetryCause: null,
+    creditPause: null
   };
 }
 
@@ -334,6 +335,49 @@ export interface PhaseResult {
 }
 
 export type DelayedRetryCause = 'transient_error' | 'rate_limit';
+
+/**
+ * FR-R4-F02 (data-model §3) — the persisted record of a credit pause.
+ *
+ * At `5d700407` a credit pause left the same persisted shape as a cap-exhausted pause (`paused`, no
+ * retry pair, no manual pair), so nothing could tell the two apart and an unattended sweep resumed
+ * whichever it found. This is one nullable object, written by the credit arm in the same
+ * transition as `status: 'paused'` and cleared by every write that leaves `paused`, so there is no
+ * half to leave behind (hard rule 28; `validateRunInvariants`).
+ *
+ * `windowStartedAt` is null until the first credit poll after the pause; `stoppedAt` is set when
+ * the 24-hour polling window ends, and the Run then waits for the operator's Resume.
+ */
+export interface CreditPause {
+  readonly pausedAt: number;
+  readonly windowStartedAt: number | null;
+  readonly stoppedAt: number | null;
+}
+
+/** The Run's credit pause, with an absent key read as `null` (the field is optional on the type). */
+export function creditPauseOf(run: Pick<WorkflowRun, 'creditPause'>): CreditPause | null {
+  return run.creditPause ?? null;
+}
+
+/**
+ * FR-R4-F02 (contract W5 G15) — the credit arm's pause, built as one Run: paused and naming its
+ * pause in the SAME value, so no write can leave a Run paused for credits that does not say so.
+ */
+export function creditPausedRun(
+  run: WorkflowRun,
+  iteration: number,
+  phaseResult: PhaseResult,
+  at: number
+): WorkflowRun {
+  return {
+    ...run,
+    status: 'paused',
+    currentIteration: iteration,
+    lastTransitionAt: at,
+    phasesCompleted: [...run.phasesCompleted, phaseResult],
+    creditPause: { pausedAt: at, windowStartedAt: null, stoppedAt: null }
+  };
+}
 
 /**
  * Feature 017 — per-run phase override action. `'skipped'` means the
@@ -608,6 +652,20 @@ export interface WorkflowRun {
    */
   pendingRetryCause: DelayedRetryCause | null;
   /**
+   * FR-R4-F02 (spec 240, data-model §3) — non-null iff the Run is paused for credits. The
+   * invariant `validateRunInvariants` enforces: `creditPause` set requires `status === 'paused'`,
+   * no pending retry pair and no manual-pause pair. Written `null` on every new Run and by the v15
+   * ladder step on every Run that lacked the key.
+   *
+   * OPTIONAL ON THE TYPE, NULL IN THE DATA. Absent reads as `null` everywhere (`creditPauseOf()`),
+   * and every writer stores an explicit `null`, so the persisted shape is the one the data model
+   * names. The type is optional only because a required key would have broken some fifty test
+   * fixtures that build a whole `WorkflowRun` for reasons unrelated to credits, and the additive
+   * convention (`lastCliSessionId?`, `runInputs?`) is how this file already carries a field a
+   * record written before it cannot have.
+   */
+  readonly creditPause?: CreditPause | null;
+  /**
    * Feature 017/022 — per-run phase overrides (skip / disable / remove).
    * Per-run scope; a new run starts with `[]`. The pipeline snapshot is
    * NEVER mutated; overrides are consulted by `RunDriver.drive()` before invoking
@@ -797,6 +855,14 @@ export interface WatchdogState {
   nextPollAt: number | null;
   pollIntervalMs: number;
   lastStatusOk: boolean | null;
+  /**
+   * FR-R4-F02 (data-model §4) — what the last credit poll could say: `not-recovered` for an
+   * exit-zero poll whose text was negative or ambiguous, `unreachable` for a poll that threw, timed
+   * out, was killed or exited nonzero. `null` before any poll. Written by `CreditWatchdog` only.
+   * Optional on the type for the reason `WorkflowRun.creditPause` is: the v15 step writes `null`
+   * on an existing record and `getWatchdog()`'s fallback carries it, absent reads as `null`.
+   */
+  lastPollOutcome?: 'not-recovered' | 'unreachable' | null;
   cause: string | null;
 }
 

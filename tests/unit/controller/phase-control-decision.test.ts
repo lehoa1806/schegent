@@ -109,6 +109,25 @@ describe('decidePhaseControl — resume', () => {
     const run = makeRun({ manualPauseAt: Date.now() });
     expect(decidePhaseControl({ operation: 'resume', run, targetPhaseId: 'beta' })).toEqual({ eligible: true });
   });
+
+  // FR-R4-F02 (contract W6 G19, US6-6) — a Run paused for credits has no manual pause and no retry
+  // countdown, so before this case the operator's Resume refused it as `run-not-paused`, and a Run
+  // whose credit polling stopped had no way back. Open or stopped, it is resumable.
+  it.each([
+    ['an open credit window', { pausedAt: 1, windowStartedAt: 2, stoppedAt: null }],
+    ['a stopped credit window', { pausedAt: 1, windowStartedAt: 2, stoppedAt: 3 }]
+  ])('allows resuming a Run paused for credits (%s)', (_name, creditPause) => {
+    const run = makeRun({ status: 'paused', creditPause });
+    expect(decidePhaseControl({ operation: 'resume', run, targetPhaseId: 'beta' })).toEqual({ eligible: true });
+  });
+
+  it('control: a paused Run with creditPause null and nothing else is still refused', () => {
+    const run = makeRun({ status: 'paused', creditPause: null });
+    expect(decidePhaseControl({ operation: 'resume', run, targetPhaseId: 'beta' })).toEqual({
+      eligible: false,
+      reason: 'run-not-paused'
+    });
+  });
 });
 
 describe('decidePhaseControl — restart', () => {

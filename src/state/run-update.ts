@@ -37,7 +37,9 @@ export const RUN_UPDATE_LABELS = [
   'queue-resume',
   'resume-prompt',
   'resume-admission',
-  'spend-pause'
+  'spend-pause',
+  // FR-R4-F02 (US6): the credit watchdog starts or stops a credit-paused Run's polling window.
+  'credit-window'
 ] as const;
 
 export type RunUpdateLabel = (typeof RUN_UPDATE_LABELS)[number];

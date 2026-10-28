@@ -10,6 +10,7 @@ import { CapabilityNotEnforceableError } from '../../src/services/capability-ref
 import { OutputTargetRefusedAtDispatch } from '../../src/services/dispatch-output-guard';
 import { UncontainedBackendRefusedError } from '../../src/services/backend-containment-policy';
 import { SpawnRefusedAfterCloseError } from '../../src/runner/spawn-refused-after-close';
+import { UnattendedAdmissionRefused } from '../../src/controller/resume-pause-fields';
 import { ALL_PHASE_CAPABILITIES } from '../../src/contracts/phase-capabilities';
 
 /**
@@ -78,6 +79,12 @@ const REFUSALS: ReadonlyArray<{ readonly name: string; readonly make: () => Erro
     name: 'SpawnRefusedAfterCloseError',
     // 67 characters at its longest label, so it is left to the catch-all.
     make: () => new SpawnRefusedAfterCloseError('claude-cli')
+  },
+  {
+    name: 'UnattendedAdmissionRefused',
+    // 59 characters, so it is left to the catch-all. It is thrown inside the resume's patch and
+    // `patchRunForResume` turns it into a refusal; it never reaches an operator-facing start path.
+    make: () => new UnattendedAdmissionRefused()
   }
 ];
 

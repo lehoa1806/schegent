@@ -26,6 +26,8 @@ import type { ReleaseOutcome } from '../state/ownership-registry';
 import type { OwnershipClaim, WorkspaceStateStore } from '../state/workspace-state';
 import { isTerminalRunStatus, type WorkflowRun } from '../state/workflow-run';
 import type { SchegentWorkflowController } from '../controller/workflow-controller';
+import type { UnattendedWakeup } from './unattended-eligibility';
+import type { UnattendedAdmitOutcome } from './unattended-admission';
 import type { SanitizedLogger } from '../lib/logger';
 import { effectiveQueueFailurePolicy, type QueueFailurePolicy } from '../contracts/queue-failure-policy';
 import { evaluateQueueHalt } from '../queue/queue-halt-policy';
@@ -164,7 +166,7 @@ export interface AutoDrainCoordinatorDeps {
    */
   readonly controller: Pick<
     SchegentWorkflowController,
-    'admitNew' | 'admitResume' | 'liveRunCount'
+    'admitNew' | 'admitResume' | 'liveRunCount' | 'holdsSession'
   >;
   /**
    * Feature 092 (T066) — optional because the overlap record is the only thing
@@ -291,6 +293,9 @@ export class AutoDrainCoordinator {
    */
   private readonly detachedDrives = new Set<Promise<unknown>>();
 
+  /** FR-R4-F02 — see `onSweepEnd`. */
+  private readonly sweepEndListeners: Array<() => Promise<void>> = [];
+
   /**
    * Feature 093 (bulk review) — starts this coordinator has committed to but
    * that no capacity reading can see yet.
@@ -392,6 +397,10 @@ export class AutoDrainCoordinator {
       do {
         this.sweepRequested = false;
         await this.sweep();
+        // FR-R4-F02 — the end listeners await store and lease work, so a request can arrive
+        // while they run. They run inside the loop so that the read below, which ends the sweep,
+        // comes after them and stays in the same continuation as the clearing in `finally`.
+        await this.notifySweepEnd();
       } while (this.sweepRequested);
     } finally {
       // Cleared in the same synchronous continuation that read
@@ -568,11 +577,7 @@ export class AutoDrainCoordinator {
     // starts already committed to but not yet observable. See the field's own
     // note: without it a concurrent addressed drain spends a slot a suspended
     // sweep has already claimed.
-    if (
-      !this.queue.hasExecutionCapacity(this.controller.liveRunCount + this.reservedStarts)
-    ) {
-      return false;
-    }
+    if (!this.executionSlotFor(queueId)) return false;
     if (!this.queue.hasWorkspaceCapacity()) return false;
     // Feature 093 (T081, FR-011) — step 4b stood here and is gone. It refused a
     // second concurrent start because `KEYS.run` held one `WorkflowRun` and the
@@ -595,6 +600,71 @@ export class AutoDrainCoordinator {
       return await this.startPendingHead(queueId, next);
     } finally {
       this.reservedStarts -= 1;
+    }
+  }
+
+  /**
+   * FR-R4-F02 (contract U4 G13; hard rule 60) — whether `queueId` may take an execution slot now: it
+   * already holds one, or the ceiling has room for one more.
+   *
+   * THE ONE READER of `hasExecutionCapacity(`. Drain step 4 and an unattended admission both ask
+   * here, so the ceiling is decided in one place and stays one conjunctive predicate. A queue whose
+   * Run is paused keeps its session and so its slot (FR-014a); counting it again for a resume would
+   * refuse the one Run that needs nothing new, and counting a Run with no session as free would take
+   * a slot the cap does not have. `reservedStarts` adds the starts committed to and not yet visible.
+   */
+  private executionSlotFor(queueId: string): boolean {
+    return (
+      this.controller.holdsSession(queueId) ||
+      this.queue.hasExecutionCapacity(this.controller.liveRunCount + this.reservedStarts)
+    );
+  }
+
+  /**
+   * FR-R4-F02 (contract U4 G14) — admit an unattended resume through the one capacity method, and
+   * never wait for the Run to finish.
+   *
+   * `capacity-refused` is a wait and writes nothing, so the caller keeps the wakeup due. A Run that
+   * already holds a session needs no new slot, so it reserves none (counting it twice is the defect
+   * this feature removes); a Run with none reserves the slot it is about to take, synchronously, in
+   * the continuation that read the count, as step 5 does. `hasWorkspaceCapacity()` is not consulted:
+   * it counts persisted in-flight Task rows, and a paused Run is not one (research R2).
+   */
+  public async admitUnattended(
+    queueId: string,
+    wakeup: UnattendedWakeup
+  ): Promise<UnattendedAdmitOutcome> {
+    if (!this.executionSlotFor(queueId)) return 'capacity-refused';
+    const needsSlot = !this.controller.holdsSession(queueId);
+    if (needsSlot) this.reservedStarts += 1;
+    try {
+      const resume = await this.controller.admitResume(queueId, { unattended: wakeup });
+      if (!resume.resumed) return resume.refusal === 'lease-declined' ? 'lease-declined' : 'ineligible';
+      this.startFailures?.clear(queueId);
+      this.detach(queueId, resume.completed);
+      await this.openOverlapEpisodeIfStarted(queueId);
+      return 'admitted';
+    } finally {
+      if (needsSlot) this.reservedStarts -= 1;
+    }
+  }
+
+  /**
+   * FR-R4-F02 (contract U2 G7) — run `listener` when a drain sweep ends. The admission service
+   * retries the wakeups capacity refused here, because a sweep ending is the moment a slot may have
+   * freed. A listener's failure is logged and never reaches the sweep's caller.
+   */
+  public onSweepEnd(listener: () => Promise<void>): void {
+    this.sweepEndListeners.push(listener);
+  }
+
+  private async notifySweepEnd(): Promise<void> {
+    for (const listener of this.sweepEndListeners) {
+      try {
+        await listener();
+      } catch (err) {
+        this.logger?.warn(`auto-drain: a sweep-end listener failed: ${(err as Error).message}`);
+      }
     }
   }
 

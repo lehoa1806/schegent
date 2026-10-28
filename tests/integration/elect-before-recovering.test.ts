@@ -136,6 +136,12 @@ async function makeHost(
     { cliPath: 'noop', cwd: workspaceRoot, iterationCap: 5, timeoutMs: 1000 },
     deps
   );
+  // FR-R4-F02 — an elapsed deadline found at activation is a `backoff-elapsed` wakeup, handed to the
+  // admission handler the activation module binds in production. It is bound here to the
+  // controller's own capacity-aware admission, not to `UnattendedAdmission`, so the election gate
+  // stays the only thing between the persisted Run and a spawn (the stub lock above reports
+  // primacy unconditionally on purpose).
+  controller.setBackoffElapsedHandler((wakeup) => controller.admitUnattended(wakeup.queueId, wakeup));
   return { controller, store, queue, invoke };
 }
 
@@ -254,8 +260,8 @@ describe('FR-032 (BUG-001, SC-011) — the window that lost the election recover
 
     // B has the state a primary window recovers at activation: one real
     // (transiently failing) start, then a delayed-retry deadline moved into the
-    // past. `resumeExistingFromActivation` resumes an elapsed deadline
-    // immediately, so a spawn is what recovery looks like from outside.
+    // past. `resumeExistingFromActivation` hands an elapsed deadline on as a
+    // wakeup that is admitted immediately, so a spawn is what recovery looks like from outside.
     const feature = await hostB.queue.enqueue('late-primacy fixture task');
     await hostB.controller.startNew(feature, null);
     expect(hostB.invoke).toHaveBeenCalledTimes(1);
@@ -359,7 +365,7 @@ describe('FR-032 (BUG-001, SC-011) — the window that lost the election recover
 
       // The spawn is WAITED FOR rather than flushed to, and the two are not
       // interchangeable. `installRecovery` hands the elapsed deadline to
-      // `resumeExistingFromActivation`, which dispatches through `setImmediate`
+      // `resumeExistingFromActivation`, which dispatches it as a wakeup
       // and hands the drive's promise to nobody — so no amount of queue draining
       // in the test is guaranteed to reach a spawn that is several real awaits
       // (an audit append among them) past the gain. Draining and then asserting

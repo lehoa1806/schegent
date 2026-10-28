@@ -22,14 +22,47 @@
 // as a surprise mid-run is worse than no bound. The mechanism exists, is documented, and is derived
 // into the operator disclosure; its default is "no bound", and the disclosure says so.
 
-/** What a backend reports, so the bound knows which denomination applies. */
-export type SpendDenomination = 'usd' | 'tokens';
+import type { SpendDenomination } from '../contracts/backend-spend-denomination';
+import { readPhaseEndUsage, totalTokens } from './usage-reader';
 
-export interface SpendObserved {
-  /** Accumulated cost, when the backend reports one. */
+/**
+ * What a backend reports, so the bound knows which denomination applies. Re-exported from the
+ * contract that owns the answer (`SPEND_DENOMINATION_BY_BACKEND`), so there is one union and one
+ * table, not a second one here.
+ */
+export type { SpendDenomination };
+
+/**
+ * FR-R4-F02 (data-model §7) — why a Run's total is a lower bound and not the whole of its spend.
+ * `evicted` is the watcher's own (a Run whose tally was dropped to stay under `MAX_TRACKED_RUNS` and
+ * was seen again); the other five are the restart replay's.
+ */
+export type IncompleteReason =
+  | 'budget'
+  | 'archive-missing'
+  | 'read-failed'
+  | 'damaged-row'
+  | 'unknown-row-schema'
+  | 'evicted';
+
+export type SpendCompleteness =
+  | { readonly kind: 'complete' }
+  | { readonly kind: 'incomplete'; readonly reason: IncompleteReason };
+
+/**
+ * FR-R4-F02 (data-model §7; contract S2 G5) — one Run's spend so far. Renamed from `SpendObserved`
+ * because it now says two more things the bound has to act on: whether the total is the whole of
+ * the Run's spend, and which rows it has already counted, so a row seen twice (by the seed and by
+ * the live notice) changes nothing.
+ */
+export interface RunSpendTotal {
+  /** Accumulated cost, when the backend reports one. `undefined`: never observed. */
   readonly costUsd: number | undefined;
-  /** Accumulated tokens. Every backend reports these. */
+  /** Accumulated tokens, when any token field was observed. `undefined`: never observed. */
   readonly totalTokens: number | undefined;
+  readonly completeness: SpendCompleteness;
+  /** Provenance and de-duplication: the ids of the `phase-end` rows folded into this total. */
+  readonly countedRowIds: ReadonlySet<string>;
 }
 
 export interface SpendBoundConfig {
@@ -39,71 +72,65 @@ export interface SpendBoundConfig {
   readonly limitTokens: number | null;
 }
 
+/**
+ * FR-R4-F02 (data-model §8) — the verdict of one evaluation. `unmeasurable` and `incomplete` are
+ * their own verdicts and are never folded into `within`: an operator who set a limit has to be able
+ * to tell "under budget" from "we cannot tell", and the second is a reason to look at why the
+ * backend reports nothing or the history is partial, which compliance would hide.
+ */
 export type SpendVerdict =
+  | { readonly kind: 'no-applicable-bound' }
   | { readonly kind: 'within' }
-  | { readonly kind: 'unmeasurable'; readonly reason: string }
   | {
       readonly kind: 'exceeded';
       readonly denomination: SpendDenomination;
       readonly observed: number;
       readonly limit: number;
+    }
+  | {
+      readonly kind: 'unmeasurable';
+      readonly denomination: SpendDenomination;
+      readonly reason: 'value-absent';
+    }
+  | {
+      readonly kind: 'incomplete';
+      readonly denomination: SpendDenomination;
+      readonly reason: IncompleteReason;
     };
 
 /**
- * Which denomination a backend's figures support.
+ * Whether this run has crossed its bound, in the denomination of the phase that just ended.
  *
- * Cost when the backend reports it, tokens otherwise. Deliberately derived from the OBSERVATION
- * rather than from the backend name: a backend that starts reporting cost should get the cost bound
- * without a second edit here, and a `claude` invocation whose envelope happened to omit cost should
- * fall back rather than read as zero spend.
- */
-export function denominationFor(observed: SpendObserved): SpendDenomination | null {
-  if (typeof observed.costUsd === 'number') return 'usd';
-  if (typeof observed.totalTokens === 'number') return 'tokens';
-  return null;
-}
-
-/**
- * Whether this run has crossed its bound.
+ * THE DENOMINATION IS GIVEN, NOT DERIVED. It used to be read off the figures (cost if the backend
+ * reported one, tokens otherwise), which made a `claude` Run that happened to report tokens only
+ * look token-bounded and a `codex` Run that reported a cost look dollar-bounded. The caller now
+ * names it from the ended phase's backend (`spendDenominationOf(effectiveRunnerKindForPhase(...))`),
+ * and a figure in the other denomination is never read.
  *
- * `unmeasurable` is its own verdict rather than folded into `within`. A run whose spend cannot be
- * observed is not a run known to be inside its bound, and an operator who set a limit should be able
- * to tell "under budget" from "we cannot tell" — the second is a reason to look at why the backend
- * reports nothing, and reporting it as compliance would hide that.
+ * The rows of data-model §8, in order:
+ *   - no limit in that denomination: `no-applicable-bound`;
+ *   - a limit and no value in that denomination: `unmeasurable`;
+ *   - at or above the limit, complete or not: `exceeded` (a lower bound at or over the limit is a
+ *     measured crossing);
+ *   - below the limit and incomplete: `incomplete`, never `within`;
+ *   - below the limit and complete: `within`.
  */
 export function evaluateSpend(
-  observed: SpendObserved,
-  config: SpendBoundConfig
+  total: RunSpendTotal,
+  bound: SpendBoundConfig,
+  denomination: SpendDenomination
 ): SpendVerdict {
-  const denomination = denominationFor(observed);
-  if (denomination === null) {
-    // No bound configured means nothing to be unmeasurable ABOUT — the common case, and it must not
-    // produce a diagnostic on every phase.
-    if (config.limitUsd === null && config.limitTokens === null) return { kind: 'within' };
-    return {
-      kind: 'unmeasurable',
-      reason: 'the backend reported neither cost nor tokens for this run'
-    };
+  const limit = denomination === 'usd' ? bound.limitUsd : bound.limitTokens;
+  if (limit === null) return { kind: 'no-applicable-bound' };
+  const observed = denomination === 'usd' ? total.costUsd : total.totalTokens;
+  if (observed === undefined) {
+    return { kind: 'unmeasurable', denomination, reason: 'value-absent' };
   }
-
-  if (denomination === 'usd') {
-    if (config.limitUsd === null) return { kind: 'within' };
-    const observedUsd = observed.costUsd as number;
-    return observedUsd >= config.limitUsd
-      ? { kind: 'exceeded', denomination: 'usd', observed: observedUsd, limit: config.limitUsd }
-      : { kind: 'within' };
+  if (observed >= limit) return { kind: 'exceeded', denomination, observed, limit };
+  if (total.completeness.kind === 'incomplete') {
+    return { kind: 'incomplete', denomination, reason: total.completeness.reason };
   }
-
-  if (config.limitTokens === null) return { kind: 'within' };
-  const observedTokens = observed.totalTokens as number;
-  return observedTokens >= config.limitTokens
-    ? {
-        kind: 'exceeded',
-        denomination: 'tokens',
-        observed: observedTokens,
-        limit: config.limitTokens
-      }
-    : { kind: 'within' };
+  return { kind: 'within' };
 }
 
 /**
@@ -128,53 +155,43 @@ export function spendPauseMessage(verdict: Extract<SpendVerdict, { kind: 'exceed
 }
 
 /**
- * The token fields a backend may report, summed into one figure.
+ * Fold one recorded invocation's usage into a run's cumulative total, once per row.
  *
- * All four count against the bound. Cache reads are cheaper than fresh input and
- * are not free, and a bound that ignored them would be defeated by exactly the
- * workload that grows fastest — a long conversation re-reading a large cached
- * context. Absent fields contribute nothing rather than zero, so "the backend
- * reported no tokens" stays distinguishable from "the backend reported none".
- */
-export const SPEND_TOKEN_FIELDS = [
-  'inputTokens',
-  'outputTokens',
-  'cacheCreationInputTokens',
-  'cacheReadInputTokens'
-] as const;
-
-/**
- * Fold one recorded invocation's usage into a run's cumulative total.
+ * Reads the AUDIT PAYLOAD rather than a parallel accumulator, because the payload is the record an
+ * operator and `npm run audit:verify` will later read: a bound enforced against a private tally
+ * could pause a run for spend the evidence does not show, or fail to pause one the evidence does.
+ * `phase-end` is the entry that carries usage; the cap-exhaustion addendum carries none and folds
+ * to a no-op.
  *
- * Reads the AUDIT PAYLOAD rather than a parallel accumulator, because the payload
- * is the record an operator and `npm run audit:verify` will later read: a bound
- * enforced against a private tally could pause a run for spend the evidence does
- * not show, or fail to pause one the evidence does. `phase-end` is the entry that
- * carries usage; the cap-exhaustion addendum carries none and folds to a no-op.
+ * The usage comes through `readPhaseEndUsage`, the one validated reader (contract S1): nested
+ * first, flat second, absent never zero. A row id already counted changes nothing (contract S2
+ * G5), which is what makes a row the seed and the live notice both deliver count once.
  */
 export function accumulateSpend(
-  prev: SpendObserved,
-  payload: Readonly<Record<string, unknown>>
-): SpendObserved {
-  const cost = payload.totalCostUsd;
+  prev: RunSpendTotal,
+  payload: Readonly<Record<string, unknown>>,
+  rowId: string
+): RunSpendTotal {
+  if (prev.countedRowIds.has(rowId)) return prev;
+  const usage = readPhaseEndUsage(payload);
+  const rowTokens = totalTokens(usage);
   const costUsd =
-    typeof cost === 'number' && Number.isFinite(cost) && cost >= 0
-      ? (prev.costUsd ?? 0) + cost
-      : prev.costUsd;
-  let totalTokens = prev.totalTokens;
-  for (const field of SPEND_TOKEN_FIELDS) {
-    const value = payload[field];
-    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
-      totalTokens = (totalTokens ?? 0) + value;
-    }
-  }
-  return { costUsd, totalTokens };
+    usage.costUsd.kind === 'present' ? (prev.costUsd ?? 0) + usage.costUsd.value : prev.costUsd;
+  const tokens = rowTokens === undefined ? prev.totalTokens : (prev.totalTokens ?? 0) + rowTokens;
+  return {
+    costUsd,
+    totalTokens: tokens,
+    completeness: prev.completeness,
+    countedRowIds: new Set([...prev.countedRowIds, rowId])
+  };
 }
 
 /** The zero a run starts from: nothing observed, which is not the same as zero spent. */
-export const NO_SPEND_OBSERVED: SpendObserved = Object.freeze({
+export const NO_SPEND_OBSERVED: RunSpendTotal = Object.freeze({
   costUsd: undefined,
-  totalTokens: undefined
+  totalTokens: undefined,
+  completeness: Object.freeze({ kind: 'complete' as const }),
+  countedRowIds: new Set<string>()
 });
 
 /** What a Phase may declare, structurally, so callers need no catalog import. */

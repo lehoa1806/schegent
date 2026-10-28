@@ -90,7 +90,12 @@ export async function applyManualRetryOverride(
         patch: (current) => {
           if (current.pendingRetryAt === null) throw new CountdownAlreadyFired();
           priorCount = current.delayedRetryCount;
-          return { delayedRetryCount: 0, pendingRetryAt: null, pendingRetryCause: null };
+          return {
+            delayedRetryCount: 0,
+            pendingRetryAt: null,
+            pendingRetryCause: null,
+            creditPause: null
+          };
         }
       },
       store.runCommitClaim(target.queueId)

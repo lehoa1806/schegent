@@ -213,6 +213,9 @@ export class PhaseControlService {
         resumeTargetPhaseId: null,
         pendingRetryAt: null,
         pendingRetryCause: null,
+        // FR-R4-F02 (contract W6 G19) — Resume leaves `paused`, and a Run whose credit polling
+        // stopped is resumed by exactly this patch: no status check, no new window.
+        creditPause: null,
         delayedRetryCount: current.pendingRetryAt !== null ? 0 : current.delayedRetryCount,
         ...(customPrompt ? { resumePrompt: customPrompt } : {})
       };
@@ -256,6 +259,7 @@ export class PhaseControlService {
         resumeTargetPhaseId: null,
         pendingRetryAt: null,
         pendingRetryCause: null,
+        creditPause: null,
         delayedRetryCount: 0,
         phaseOverrides: nextOverrides,
         // FR-R3-008 (T378) — restarting the active phase clears its override, so
@@ -322,17 +326,12 @@ export class PhaseControlService {
     } else if (runAfterOverride.status === 'failed' && runAfterOverride.pendingRetryAt !== null) {
       const cleared = await this.patchRun(queueId, runAfterOverride.id, 'skip', ['failed'], () => ({
         pendingRetryAt: null,
-        pendingRetryCause: null
+        pendingRetryCause: null,
+        creditPause: null
       }));
       if (!cleared.ok) return result;
-      await this.deps.store.setWatchdog({
-        paused: false,
-        pausedSince: null,
-        nextPollAt: null,
-        pollIntervalMs: 0,
-        cause: null,
-        lastStatusOk: null
-      });
+      // FR-R4-F02 (W6b G22) — only this queue's own deadline is dropped. The watchdog record is
+      // credit-only now, and resetting it here would end a sibling queue's credit polling.
       this.deps.retryCoordinator.cancelPendingTimer(queueId);
       this.scheduleResume(queueId, 'skipPhase resume failed');
     } else if (runAfterOverride.status === 'failed') {
@@ -342,6 +341,7 @@ export class PhaseControlService {
         delayedRetryCount: 0,
         pendingRetryAt: null,
         pendingRetryCause: null,
+        creditPause: null,
         manualPauseAt: null,
         manualPauseCause: null,
         resumeTargetPhaseId: null,

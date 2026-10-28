@@ -1963,6 +1963,7 @@ export class QueueManager {
         nextPollAt: null,
         pollIntervalMs: watchdogBefore.pollIntervalMs,
         lastStatusOk: watchdogBefore.lastStatusOk,
+        lastPollOutcome: null,
         cause: null
       });
     }

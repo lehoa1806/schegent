@@ -12,7 +12,7 @@ import { SchegentWorkflowController } from '../../../src/controller/workflow-con
 // so a test that drives Phases supplies one. See the fixture header for why the
 // ids here are the real Spec Kit ones.
 import { buildSpeckitCatalog } from '../../fixtures/speckit-catalog-fixture';
-import type { DelayedRetryWatchdog } from '../../../src/controller/workflow-controller';
+import { RecordingDeadlineTimer } from '../../recording-deadline-timer';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
 import { QueueManager } from '../../../src/queue/queue-manager';
 import { SanitizedLogger } from '../../../src/lib/logger';
@@ -105,10 +105,7 @@ let statusBar: SchegentStatusBar;
 let notifier: Notifier;
 let lock: WorkspaceLockManager & { release: ReturnType<typeof vi.fn> };
 let auditWriter: { append: ReturnType<typeof vi.fn> };
-let watchdog: {
-  pauseAndPoll: ReturnType<typeof vi.fn>;
-  cancelPendingTimer: ReturnType<typeof vi.fn>;
-};
+let deadlineTimer: RecordingDeadlineTimer;
 
 beforeEach(async () => {
   memento = new FakeMemento();
@@ -127,12 +124,7 @@ beforeEach(async () => {
     ...entry
   }));
   auditWriter = { append: auditAppend };
-  const pauseAndPoll = vi.fn();
-  pauseAndPoll.mockImplementation(async () => {});
-  watchdog = {
-    pauseAndPoll,
-    cancelPendingTimer: vi.fn()
-  };
+  deadlineTimer = new RecordingDeadlineTimer();
   controller = new SchegentWorkflowController(
     phaseRunner,
     store,
@@ -145,7 +137,7 @@ beforeEach(async () => {
     {
       catalog: buildSpeckitCatalog(),
       auditWriter: auditWriter as unknown as import('../../../src/audit/audit-log-writer').AuditLogWriter,
-      watchdog: watchdog as unknown as DelayedRetryWatchdog
+      deadlineTimer
     }
   );
 });
@@ -199,7 +191,7 @@ describe('retryPhaseNow — rejection guards', () => {
 });
 
 describe('retryPhaseNow — happy path', () => {
-  it('cancels the watchdog timer, resets counter, emits retry-manual audit', async () => {
+  it('clears the armed retry deadline, resets counter, emits retry-manual audit', async () => {
     let calls = 0;
     runSpy.mockImplementation(async () => {
       calls++;
@@ -215,7 +207,9 @@ describe('retryPhaseNow — happy path', () => {
     const result = await controller.retryPhaseNow();
     expect(result.ok).toBe(true);
 
-    expect(watchdog.cancelPendingTimer).toHaveBeenCalledOnce();
+    // The failure armed one deadline on the coordinator's own timer; the manual retry cleared it.
+    expect(deadlineTimer.sets).toHaveLength(1);
+    expect(deadlineTimer.armed()).toHaveLength(0);
 
     // Settled state (after setImmediate-driven resumeExisting) — count
     // resets to 0 and pendingRetry* clear.

@@ -19,6 +19,7 @@ import { buildQueueRuntime } from '../../../lib/__tests__/queue-runtime-fixture'
 import { IDLE_DELAYED_RETRY, IDLE_GENERAL_SETTINGS } from '../../../lib/snapshot-types';
 import type {
   ConnectedRunProjection,
+  CreditPollingProjection,
   DelayedRetryState,
   PhaseTile,
   QueueItem,
@@ -95,6 +96,7 @@ function buildSnapshot(overrides: {
   readonly inFlightTaskId?: string;
   readonly outputs?: readonly RunOutputRecord[];
   readonly delayedRetry?: DelayedRetryState;
+  readonly creditPolling?: CreditPollingProjection | null;
 }): WorkflowSnapshot {
   const tasks = overrides.tasks ?? [];
   return Object.freeze({
@@ -136,7 +138,8 @@ function buildSnapshot(overrides: {
                 },
                 delayedRetry: overrides.delayedRetry ?? IDLE_DELAYED_RETRY,
                 resumeTargetPhaseId: null,
-                outputs: overrides.outputs ?? []
+                outputs: overrides.outputs ?? [],
+                ...(overrides.creditPolling !== undefined ? { creditPolling: overrides.creditPolling } : {})
               }
             }
           : {})
@@ -480,6 +483,50 @@ describe('RunDetailTier — Activity Feed and outputs (T006, FR-007)', () => {
     await fireEvent.click(getByTestId('run-tab-outputs'));
 
     expect(getByTestId('run-outputs').textContent).toContain('summary');
+  });
+
+  // FR-R4-F02 (US6, TA3) — the credit-polling notice belongs to the Run this tier shows and is not
+  // gated on the Run executing: a Run paused for credits is the one that needs it.
+  it('mounts the credit-polling notice for this Run, with Resume once polling stopped', () => {
+    const { getByTestId } = mount(
+      buildSnapshot({
+        tasks: [task('r-1', { status: 'in-flight' })],
+        inFlightTaskId: 'r-1',
+        creditPolling: { state: 'stopped', windowEndsAt: 1_700_000_000_000 }
+      })
+    );
+
+    expect(getByTestId('credit-polling-stopped-q-beta').textContent).toContain('Credit polling stopped');
+    expect(getByTestId('credit-polling-resume-q-beta')).toBeTruthy();
+  });
+
+  it.each([
+    ['null creditPolling', null],
+    ['an absent creditPolling', undefined],
+    ['a polling one', { state: 'polling' as const, windowEndsAt: 1 }]
+  ])('shows no credit-polling notice for %s', (_name, creditPolling) => {
+    const { queryByTestId } = mount(
+      buildSnapshot({
+        tasks: [task('r-1', { status: 'in-flight' })],
+        inFlightTaskId: 'r-1',
+        ...(creditPolling === undefined ? {} : { creditPolling })
+      })
+    );
+
+    expect(queryByTestId('credit-polling-stopped-q-beta')).toBeNull();
+    expect(queryByTestId('credit-polling-unreachable-q-beta')).toBeNull();
+  });
+
+  it('does not show a sibling Run’s credit-polling notice on this Run’s detail', () => {
+    const { queryByTestId } = mount(
+      buildSnapshot({
+        tasks: [task('r-1'), task('sibling', { status: 'in-flight' })],
+        inFlightTaskId: 'sibling',
+        creditPolling: { state: 'stopped', windowEndsAt: 1 }
+      })
+    );
+
+    expect(queryByTestId('credit-polling-stopped-q-beta')).toBeNull();
   });
 
   it('shows no outputs section when the Run has recorded none', async () => {

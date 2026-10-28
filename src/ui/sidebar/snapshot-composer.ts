@@ -68,7 +68,7 @@ type ProjectorStore = Pick<
 > & Partial<Pick<
   WorkspaceStateStore,
   | 'getProjectedQueueRegistry' | 'getConfirmSuppression' | 'getRequestsForQueue'
-  | 'getGlobalConcurrencyCap' | 'getDefaultQueueId'
+  | 'getGlobalConcurrencyCap' | 'getDefaultQueueId' | 'getWatchdog'
 >>;
 
 export interface SnapshotComposerContext {
@@ -250,7 +250,9 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     requestsOf,
     rowsOf: (queueId) =>
       projectQueueRows(requestsOf(queueId), rowContextFor(queueId, store.getQueue(queueId))),
-    startFailureOf: (queueId) => projectStartFailure(deps.getQueueStartFailure?.(queueId), sanitize)
+    startFailureOf: (queueId) => projectStartFailure(deps.getQueueStartFailure?.(queueId), sanitize),
+    lastCreditPollOutcome: () => store.getWatchdog?.().lastPollOutcome ?? null,
+    effectiveLimitsOf: deps.getEffectiveLimits
   });
 
   const trust = composeTrustProjection((message) => ctx.logger?.warn(message));

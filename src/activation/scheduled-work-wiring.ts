@@ -14,7 +14,7 @@ import { CreditWatchdog } from '../watchdog/credit-watchdog';
 import type { GuardedRunService } from '../services/guarded-run-service';
 import { QueueScheduleWatchdog } from '../controller/schedule-watchdog';
 import { ScheduledStartCoordinator } from '../services/scheduled-start-coordinator';
-import { resumeUnattended } from '../services/unattended-resume';
+import { UnattendedAdmission } from '../services/unattended-admission';
 import type { WorkspaceLockManager } from '../state/lock';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import type { Notifier } from '../ui/notifications';
@@ -176,6 +176,26 @@ queue.setLifecycleAuditHook({
     } as never)
 });
 
+// FR-R4-F02 (contract U2) — every unattended resume goes through this one service: primacy, the pure
+// eligibility decision, then the auto-drain coordinator's capacity-aware admission. `watchdog` is read
+// lazily (it is constructed just below and these closures run long after).
+const admission = new UnattendedAdmission({
+  lock,
+  store,
+  admit: (queueId, wakeup) => controller.admitUnattended(queueId, wakeup),
+  clock: () => Date.now(),
+  pollIntervalMs: () => watchdog.getPollIntervalMs(),
+  // A stale credits wakeup (older than one poll interval) is dropped and asks for a fresh poll,
+  // which joins the poll in flight if there is one (contract W3 G10, U2 G7).
+  pollNow: () => void watchdog.pollNow(),
+  logger
+});
+// A drain sweep ending is the moment a slot may have freed: retry the wakeups capacity refused.
+controller.onDrainSweepEnd(() => admission.retryDue());
+// FR-R4-F02 (TA5) — an elapsed delayed-retry deadline is a `backoff-elapsed` wakeup from the retry
+// coordinator's own timer, admitted like every other: the credit watchdog is no longer in this path.
+controller.setBackoffElapsedHandler((wakeup) => admission.admit(wakeup));
+
 const watchdog = new CreditWatchdog(
   // FR-R3-056 — deferred: constructing here refused at ACTIVATION, killing the
   // extension before it could say why.
@@ -190,43 +210,23 @@ const watchdog = new CreditWatchdog(
     timeoutMs: 60 * 1000,
     environmentPolicy: processEnvironmentPolicy
   },
-  async () => {
-    // Feature 093 (T037/T039) — C-4 aggregate. Credits returning un-blocks
-    // every Run that was waiting on them; the watchdog is per window because
-    // the credit balance is, but the resume it triggers is per queue.
+  async (evidenceAt) => {
+    // FR-R4-F02 (contract U2 G5) — credits are back: admit each queue whose Run is eligible for a
+    // credits wakeup and leave every other Run exactly as it was. Delayed retries no longer wake this
+    // callback (they run on the retry coordinator's own timer), so it serves one arm.
     //
-    // Feature 093 (T045) — the window has one timer and N queues can be in
-    // backoff, so the fire is claimed first: elapsed deadlines are consumed
-    // and the next-earliest is re-armed. A queue whose own backoff is still
-    // running is then skipped, because `resumeExisting` does not consult
-    // `pendingRetryAt` and would otherwise resume it early on a sibling's
-    // shorter deadline. A queue with no deadline at all is not in a delayed
-    // retry — that is the credit-poll arm, and it resumes as it always did.
-    // FR-R3-070 — the sweep runs long after activation, so primacy is
-    // re-checked at fire time with the authoritative predicate rather than
-    // trusted from the activation-era election result.
+    // FR-R3-070 — the sweep runs long after activation, so primacy is re-checked at fire time with
+    // the authoritative predicate rather than trusted from the activation-era election result; one
+    // check here keeps a non-primary window to one log line, and `admit` asks again per queue.
     if (!(await lock.hasPrimacy())) {
       logger.warn('watchdog resume sweep skipped: window is not primary');
       return;
     }
-    controller.claimElapsedDelayedRetries();
-    for (const queueId of Object.keys(store.getRunMap())) {
-      if (controller.hasPendingDelayedRetry(queueId)) continue;
-      await resumeUnattended(queueId, {
-        admit: (q) => controller.admitResume(q),
-        store,
-        notifier,
-        logger
-      });
-    }
-  }
+    await admission.creditsRestored(evidenceAt);
+  },
+  // FR-R4-F02 (W6 G20) — one notice per Run whose 24-hour credit window stops.
+  notifier
 );
-
-// Feature 011 — late-inject the watchdog now that both are constructed.
-// The watchdog's resume callback closes over `controller`, so it has to
-// be built after the controller; the controller's delayed-retry path
-// calls `watchdog.pauseAndPoll(...)` so we wire it back here.
-controller.setWatchdog(watchdog);
 
 // BUG-006 — late-inject the guarded-run service so the retry handler can
 // convert a retry-cap-exhausted rate-limit pause into a system-armed

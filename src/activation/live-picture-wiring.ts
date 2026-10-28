@@ -41,6 +41,10 @@ import { isConfirmationsEnabled } from '../state/confirmations-config';
 import { resolveRunOrigin } from '../services/run-origin-resolver';
 import { initCapabilityTrustResolver } from '../state/capability-trust-resolver';
 import { ALLOW_UNCONTAINED_SETTING } from '../services/backend-containment-policy';
+import { resolveEffectiveLimits } from '../services/effective-limits';
+import type { SpendBoundWatcher } from '../services/spend-bound-watcher';
+import { readForceContinueOnRetryCapLimit, readSpendLimits } from './uncached-settings-accessors';
+import type { WorkspaceSettings } from './workspace-settings';
 
 /**
  * FR-R3-119 — the live picture: the state projector, the connected-run service it
@@ -91,6 +95,16 @@ export interface LivePictureWiringDeps {
    */
   readonly queueStartFailures: QueueStartFailureRegistry;
   readonly collectAllWorkflowPipelineRefs: EvidenceWiring['collectAllWorkflowPipelineRefs'];
+  /**
+   * FR-R4-F02 (contract E1, E3 G9) — what the per-Run limits disclosure reads that this module does
+   * not own: the limits the runner was built with (resolved once at activation, each with its layer)
+   * and the spend watcher's trust. The settings read per evaluation (the spend bounds and the
+   * retry-cap default) are read here, through the accessors execution reads them through.
+   */
+  readonly effectiveLimitSources: {
+    readonly limits: WorkspaceSettings['limits'];
+    readonly spendTrust: SpendBoundWatcher['trustFor'];
+  };
   /**
    * FR-R3-136 (FR-005, FR-011) — read on every configuration change, never
    * captured. The retention arm below deletes under `.schegent/sessions`, and a
@@ -143,6 +157,7 @@ export function wireLivePicture(deps: LivePictureWiringDeps): LivePictureWiring 
     protectedSessionRunIds,
     queueStartFailures,
     collectAllWorkflowPipelineRefs,
+    effectiveLimitSources,
     bindCapabilityProjector,
     bindTelemetryProjector
   } = deps;
@@ -191,6 +206,14 @@ const projector = new StateProjector({
   // `onDidChangeConfiguration` listener below already kicks the
   // projector for any `schegent.*` change.
   getConfirmationsEnabled: () => isConfirmationsEnabled(),
+  // FR-R4-F02 (E3 G9) — read per projection, so a setting changed mid-Run is what the next snapshot shows.
+  getEffectiveLimits: (run) =>
+    resolveEffectiveLimits({
+      settings: effectiveLimitSources.limits,
+      live: { forceContinueOnCap: readForceContinueOnRetryCapLimit(workspaceRoot), ...readSpendLimits() },
+      run,
+      spendTrust: (denomination) => effectiveLimitSources.spendTrust(run.id, denomination)
+    }),
   getDebugLogTail: () => webviewLogSink.getEntries(),
   getAvailableModels: () => backendCapabilities.getAvailableModels(),
   getAvailableBackends: () => backendCapabilities.getAvailableBackends(),

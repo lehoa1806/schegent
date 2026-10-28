@@ -18,7 +18,7 @@
 // advances the loop until a stated condition holds and fails by *naming what it
 // waited for* rather than hanging.
 
-import { vi, type Mock } from 'vitest';
+import { vi } from 'vitest';
 import * as path from 'path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -49,10 +49,8 @@ import type { RawInvocationOutput, InvocationRequest } from '../../src/runner/in
 import type { SchegentStatusBar } from '../../src/ui/status-bar';
 import type { Notifier } from '../../src/ui/notifications';
 import type { FeatureRequest } from '../../src/queue/feature-request';
-import type {
-  DelayedRetryWatchdog,
-  WorkflowControllerDeps
-} from '../../src/controller/workflow-controller';
+import type { WorkflowControllerDeps } from '../../src/controller/workflow-controller';
+import type { DeadlineTimer } from '../../src/services/retry-coordinator';
 import { removeTempRoot } from '../temp-root-cleanup';
 
 /** Registry ids need a real v4 shape — `isValidQueueId` enforces it. */
@@ -238,16 +236,6 @@ export async function drainUntil(
   }
 }
 
-function makeStubWatchdog(): DelayedRetryWatchdog & {
-  pauseAndPoll: Mock;
-  cancelPendingTimer: Mock;
-} {
-  return {
-    pauseAndPoll: vi.fn(async () => {}),
-    cancelPendingTimer: vi.fn()
-  } as unknown as DelayedRetryWatchdog & { pauseAndPoll: Mock; cancelPendingTimer: Mock };
-}
-
 /** One parked CLI invocation, waiting for the test to let it proceed. */
 interface Parked {
   readonly runId: string;
@@ -272,6 +260,11 @@ export interface HarnessOptions {
   readonly concurrencyCap?: number;
   /** Registry entries to create beyond the default queue. */
   readonly queues?: readonly string[];
+  /**
+   * FR-R4-F02 — the retry coordinator's deadline timer. A test that fires backoff deadlines by hand
+   * passes a fake; the default is the coordinator's own real-timer implementation.
+   */
+  readonly deadlineTimer?: DeadlineTimer;
 }
 
 export interface Harness {
@@ -429,7 +422,7 @@ export async function makeHarness(
   const deps: WorkflowControllerDeps = {
     catalog: buildSpeckitCatalog(),
     auditWriter: audit,
-    watchdog: makeStubWatchdog(),
+    ...(options.deadlineTimer ? { deadlineTimer: options.deadlineTimer } : {}),
     terminalTransitions: new TerminalTransitionCoordinator(
       store,
       queue,

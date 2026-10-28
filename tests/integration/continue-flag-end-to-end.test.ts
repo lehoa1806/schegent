@@ -12,7 +12,7 @@ import { ZippedStreamBuffer } from '../../src/runner/zipped-stream-buffer';
 // retry-now):
 //
 //   1. First attempt — `transient_error` → controller arms the
-//      delayed-retry watchdog.
+//      delayed-retry timer.
 //        Expected invoke():    isContinue absent (or false)
 //        Expected audit:       isContinue=false
 //   2. Retry (operator clicks Retry Now, which calls retryPhaseNow →
@@ -44,10 +44,8 @@ import type { RawInvocationOutput, InvocationRequest } from '../../src/runner/in
 import type { SchegentStatusBar } from '../../src/ui/status-bar';
 import type { Notifier } from '../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../src/state/lock';
-import type {
-  DelayedRetryWatchdog,
-  WorkflowControllerDeps
-} from '../../src/controller/workflow-controller';
+import type { WorkflowControllerDeps } from '../../src/controller/workflow-controller';
+import { RecordingDeadlineTimer } from '../recording-deadline-timer';
 import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 import { removeTempRoot } from '../temp-root-cleanup';
 
@@ -134,19 +132,6 @@ function makeLock(): WorkspaceLockManager {
   } as unknown as WorkspaceLockManager;
 }
 
-function makeStubWatchdog(): DelayedRetryWatchdog & {
-  pauseAndPoll: ReturnType<typeof vi.fn>;
-  cancelPendingTimer: ReturnType<typeof vi.fn>;
-} {
-  return {
-    pauseAndPoll: vi.fn(async () => {}),
-    cancelPendingTimer: vi.fn()
-  } as unknown as DelayedRetryWatchdog & {
-    pauseAndPoll: ReturnType<typeof vi.fn>;
-    cancelPendingTimer: ReturnType<typeof vi.fn>;
-  };
-}
-
 interface Harness {
   controller: SchegentWorkflowController;
   store: WorkspaceStateStore;
@@ -155,7 +140,7 @@ interface Harness {
   workspaceRoot: string;
   invocations: CapturedInvocation[];
   setOutcome: (outcomes: Array<() => RawInvocationOutput>) => void;
-  watchdog: ReturnType<typeof makeStubWatchdog>;
+  deadlineTimer: RecordingDeadlineTimer;
 }
 
 async function makeHarness(memento: FakeMemento, workspaceRoot: string): Promise<Harness> {
@@ -166,7 +151,7 @@ async function makeHarness(memento: FakeMemento, workspaceRoot: string): Promise
   const store = new WorkspaceStateStore(memento);
   await store.initialize();
   const queue = new QueueManager(store);
-  const watchdog = makeStubWatchdog();
+  const deadlineTimer = new RecordingDeadlineTimer();
 
   const statusBar = { update: vi.fn(), dispose: vi.fn() } as unknown as SchegentStatusBar;
   const notifier = {
@@ -179,7 +164,7 @@ async function makeHarness(memento: FakeMemento, workspaceRoot: string): Promise
   const deps: WorkflowControllerDeps = {
     catalog: buildSpeckitCatalog(),
     auditWriter: audit,
-    watchdog
+    deadlineTimer
   };
 
   const controller = new SchegentWorkflowController(
@@ -199,7 +184,7 @@ async function makeHarness(memento: FakeMemento, workspaceRoot: string): Promise
     deps
   );
 
-  return { controller, store, queue, audit, workspaceRoot, invocations, setOutcome, watchdog };
+  return { controller, store, queue, audit, workspaceRoot, invocations, setOutcome, deadlineTimer };
 }
 
 let tmpRoot: string;
@@ -232,7 +217,7 @@ describe('Feature 032 — end-to-end: transient_error → retry-now → clean ad
     const harness = await makeHarness(memento, tmpRoot);
 
     // Script the first invocation as transient_error so the controller
-    // arms the watchdog and persists pendingRetryCause; the remaining
+    // arms the retry deadline and persists pendingRetryCause; the remaining
     // invocations return clean so the run advances through subsequent
     // phases.
     harness.setOutcome([

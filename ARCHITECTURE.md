@@ -147,7 +147,7 @@ table is an ownership map, not permission for cross-layer shortcuts.
 | `src/state/` | Workspace memento records, forward migrations, ownership leases, run history, and recovery journals. |
 | `src/telemetry/` | In-memory local process resource sampling and platform shims. |
 | `src/ui/` | Status bar, notifications, sidebar IPC, Dashboard bridge, HTML, CSP, and immutable view projections. |
-| `src/watchdog/` | Credit/rate-limit polling and delayed recovery scheduling. |
+| `src/watchdog/` | Credit polling: `/status` classification, the per-Run 24-hour polling window, and the poll timer. |
 
 <!-- Source: src -->
 
@@ -760,8 +760,10 @@ Failures remain explicit state. Backend nonzero exits, detected rate limits,
 credit exhaustion, timeouts, cancellation, evidence degradation, stale
 ownership, and invalid input take distinct paths. Sanitized errors are stored
 on the Run; unbounded raw strings do not cross into structured audit or webview
-state. Rate-limit retry is capped and delayed; the watchdog reattaches a pending
-poll after activation.
+state. Rate-limit retry is capped and delayed: a delayed retry's deadline lives on
+the retry coordinator's own timer, and the credit watchdog polls credits only,
+for Runs paused for credits, and reattaches that poll after activation. Every
+unattended resume goes through one eligibility decision and one capacity method.
 
 Run mutation checkpoints bracket Git-capable phases. The mutation ledger
 attributes observed changes to one Run, and the checkpoint service records the
@@ -777,6 +779,8 @@ reclassified as optional evidence.
 
 <!-- Source: src/controller/retry-handler.ts -->
 <!-- Source: src/watchdog/credit-watchdog.ts -->
+<!-- Source: src/services/retry-coordinator.ts -->
+<!-- Source: src/services/unattended-eligibility.ts -->
 <!-- Source: src/services/run-checkpoint-service.ts -->
 <!-- Source: src/services/run-mutation-ledger.ts -->
 <!-- Source: src/services/terminal-transition-coordinator.ts -->
@@ -790,7 +794,7 @@ their constant rows.
 
 | Store | Constant | Current | Migrators |
 |---|---|---|---|
-| Workspace state | `STATE_SCHEMA_VERSION` | `14` | 1→2, 2→3, 3→4, 4→5, 5→6, 6→7, 7→8, 8→9, 9→10, 10→11, 11→12, 12→13, 13→14 |
+| Workspace state | `STATE_SCHEMA_VERSION` | `15` | 1→2, 2→3, 3→4, 4→5, 5→6, 6→7, 7→8, 8→9, 9→10, 10→11, 11→12, 12→13, 13→14, 14→15 (credit-pause default) |
 | Audit event envelope | `AUDIT_SCHEMA_VERSION` | `3` | Additive event types and payload fields retain the current envelope version; readers preserve unknown historical event types. |
 
 Workspace migration history includes the legacy Run lift, queue-registry lift,

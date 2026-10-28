@@ -122,6 +122,8 @@ export interface FakeController {
    * so every admission stays live and the count is the admission count.
    */
   liveRunCount: number;
+  /** FR-R4-F02 (TA4) — drain step 4 asks whether the queue already holds a session. */
+  holdsSession: () => boolean;
   /**
    * Feature 093 (T049a) — the drain calls `admitNew`, which resolves once the
    * Task is in flight and returns the promise of the Run's execution. Assertions
@@ -137,6 +139,7 @@ export function makeController(initial?: { running?: boolean; catalog?: Pipeline
   const c: FakeController = {
     running: initial?.running ?? false,
     liveRunCount: 0,
+    holdsSession: () => false,
     admitNew: vi.fn(),
     admitResume: vi.fn(),
     getCatalog: () => initial?.catalog ?? null

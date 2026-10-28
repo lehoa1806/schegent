@@ -5,38 +5,68 @@ import {
   type ScheduledWorkWiring,
   type ScheduledWorkWiringDeps
 } from '../../../src/activation/scheduled-work-wiring';
-import type { ResumeAdmission } from '../../../src/controller/run-admission';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import type { RawInvocationOutput } from '../../../src/runner/invocation-result';
 import { ZippedStreamBuffer } from '../../../src/runner/zipped-stream-buffer';
+import type { BackoffWakeup } from '../../../src/services/retry-coordinator';
+import type { UnattendedAdmitOutcome } from '../../../src/services/unattended-admission';
+import type { UnattendedWakeup } from '../../../src/services/unattended-eligibility';
 
 /**
- * FR-R3-192 (T1863, FR-003, FR-007) — paths 3 and 4: the credit watchdog's backoff-elapsed and
- * credits-restored arms, which both call the one `onResume` sweep, announce each Run the sweep
- * resumes.
+ * FR-R3-192 (T1863, FR-003, FR-007) and FR-R4-F02 (spec 240, US1; contract U2 G5) — paths 3 and 4:
+ * the credit watchdog's backoff-elapsed and credits-restored arms, which both call the one
+ * `onResume` sweep.
+ *
+ * REWRITTEN BY FEATURE 240. The sweep used to resume EVERY key of the Run map that had no pending
+ * delayed retry, so these cases asserted that it resumed whatever it found. It now hands each wakeup
+ * to the unattended admission service, which selects with the pure eligibility decision, so each
+ * case below asserts WHICH queues are admitted and for what wakeup: a claimed elapsed deadline is
+ * admitted for `backoff-elapsed` and nothing else is; a credits poll admits the queues whose Run is
+ * eligible for a credits wakeup and leaves every other Run alone. The announcement the sweep used to
+ * make moved with the admission to `SchegentWorkflowController.admitResume` (it speaks once an
+ * unattended resume is admitted), and is asserted in
+ * `tests/unit/controller/admit-resume-unattended-recheck.test.ts`.
  *
  * Driven through `wireScheduledWork(deps)` and the real `CreditWatchdog` it returns, under fake
- * timers. `setImmediate` is left real so the cases can let pending work settle. The fake controller
- * provides BOTH `resumeExisting` and `admitResume`, and `resumeExisting` is `admitResume` plus an
- * await of `completed`, as the real one is: at the base the sweep resumes by `resumeExisting` and
- * the positive cases fail on the warning count, not on a missing method.
+ * timers. `setImmediate` is left real so the cases can let pending work settle. The controller is a
+ * double that records the admissions the service makes through `admitUnattended`.
  */
 
 const TEST_ENV_POLICY = { mode: 'inherit', inheritProcessEnv: true } as const;
 const POLL_INTERVAL_MINUTES = 30;
-const TITLES = ['Schegent: Show Active Run', 'Schegent: Cancel In-Flight Workflow'] as const;
+const NOW = 1_700_000_000_000;
 
 interface FakeRun {
   readonly id: string;
-  readonly currentPhase: string;
+  readonly status: string;
+  readonly manualPauseCause: string | null;
+  readonly pendingRetryAt: number | null;
+  readonly pendingRetryCause: string | null;
+  readonly creditPause: { pausedAt: number; windowStartedAt: number | null; stoppedAt: number | null } | null;
 }
+
+const creditPaused = (): FakeRun => ({
+  id: 'run-credit',
+  status: 'paused',
+  manualPauseCause: null,
+  pendingRetryAt: null,
+  pendingRetryCause: null,
+  creditPause: { pausedAt: NOW - 5_000, windowStartedAt: NOW - 4_000, stoppedAt: null }
+});
+
+const backoffElapsedRun = (): FakeRun => ({
+  ...creditPaused(),
+  id: 'run-backoff',
+  creditPause: null,
+  pendingRetryAt: NOW - 1_000,
+  pendingRetryCause: 'rate_limit'
+});
 
 interface Harness {
   readonly wiring: ScheduledWorkWiring;
-  readonly warn: ReturnType<typeof vi.fn>;
-  readonly admitResume: ReturnType<typeof vi.fn>;
-  readonly resumeExisting: ReturnType<typeof vi.fn>;
-  readonly completions: Map<string, () => void>;
+  readonly admitUnattended: ReturnType<typeof vi.fn>;
+  /** The retry coordinator's elapsed-deadline hand-off: what the wiring bound with `setBackoffElapsedHandler`. */
+  readonly fireBackoffElapsed: () => Promise<void>;
 }
 
 const settle = (): Promise<void> => new Promise((done) => setImmediate(done));
@@ -52,25 +82,16 @@ function statusOk(): RawInvocationOutput {
 
 function harness(options: {
   runs: Record<string, FakeRun>;
-  pendingRetry?: ReadonlyArray<string>;
+  /** The queues whose delayed-retry deadline elapses when the retry coordinator's timer fires. */
+  claimed?: readonly string[];
   primary?: boolean;
-  resumed?: boolean;
+  outcome?: UnattendedAdmitOutcome;
 }): Harness {
-  const completions = new Map<string, () => void>();
-  const resumed = options.resumed ?? true;
-  const admitResume = vi.fn(async (queueId: string): Promise<ResumeAdmission> => {
-    if (!resumed) return { resumed: false, completed: Promise.resolve() };
-    const completed = new Promise<void>((done) => {
-      completions.set(queueId, done);
-    });
-    return { resumed: true, completed };
-  });
-  const resumeExisting = vi.fn(async (queueId: string): Promise<boolean> => {
-    const admission = await admitResume(queueId);
-    await admission.completed;
-    return admission.resumed;
-  });
-  const warn = vi.fn(async (_message: string) => undefined);
+  const outcome = options.outcome ?? 'admitted';
+  const admitUnattended = vi.fn(
+    async (_queueId: string, _wakeup: UnattendedWakeup): Promise<UnattendedAdmitOutcome> => outcome
+  );
+  let backoffHandler: ((wakeup: BackoffWakeup) => unknown) | null = null;
 
   let watchdogState = {
     paused: false,
@@ -89,14 +110,13 @@ function harness(options: {
     },
     getQueueStates: () => []
   };
-  const pending = new Set(options.pendingRetry ?? []);
   const controller = {
-    claimElapsedDelayedRetries: vi.fn(),
-    hasPendingDelayedRetry: (queueId: string) => pending.has(queueId),
     drainQueuedWork: vi.fn(async () => undefined),
-    resumeExisting,
-    admitResume,
-    setWatchdog: vi.fn(),
+    admitUnattended,
+    onDrainSweepEnd: vi.fn(),
+    setBackoffElapsedHandler: vi.fn((handler: (wakeup: BackoffWakeup) => unknown) => {
+      backoffHandler = handler;
+    }),
     setGuardedRunService: vi.fn(),
     setRateLimitHandler: vi.fn()
   };
@@ -110,7 +130,7 @@ function harness(options: {
     queue: { setScheduledStartCancelHook: vi.fn(), setLifecycleAuditHook: vi.fn() },
     controller,
     auditWriter: { append: vi.fn(async () => undefined) },
-    notifier: { info: vi.fn(), warn, error: vi.fn() },
+    notifier: { info: vi.fn(), warn: vi.fn(async () => undefined), error: vi.fn() },
     statusBar: { update: vi.fn(), updateWindow: vi.fn(), showTransient: vi.fn(), dispose: vi.fn() },
     lock: {
       hasPrimacy: vi.fn(async () => options.primary ?? true),
@@ -124,14 +144,21 @@ function harness(options: {
     processEnvironmentPolicy: TEST_ENV_POLICY
   } as unknown as ScheduledWorkWiringDeps;
 
-  return { wiring: wireScheduledWork(deps), warn, admitResume, resumeExisting, completions };
+  const wiring = wireScheduledWork(deps);
+  const fireBackoffElapsed = async (): Promise<void> => {
+    for (const queueId of options.claimed ?? []) {
+      await backoffHandler?.({ cause: 'backoff-elapsed', queueId, deadline: NOW - 1_000 });
+    }
+  };
+  return { wiring, admitUnattended, fireBackoffElapsed };
 }
 
-describe('FR-R3-192 — paths 3 and 4, the watchdog resume sweep', () => {
+describe('FR-R3-192 / FR-R4-F02 — paths 3 and 4, the watchdog resume sweep', () => {
   let active: Harness | null = null;
 
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+    vi.setSystemTime(NOW);
   });
 
   afterEach(() => {
@@ -141,81 +168,80 @@ describe('FR-R3-192 — paths 3 and 4, the watchdog resume sweep', () => {
     vi.useRealTimers();
   });
 
-  const backoffElapsed = async (h: Harness): Promise<void> => {
-    await h.wiring.watchdog.pauseAndPoll('transient_error', {
-      durationOverrideMs: 1_000,
-      skipStatusCheck: true
-    });
-    await vi.advanceTimersByTimeAsync(1_100);
-  };
+  const backoffElapsed = (h: Harness): Promise<void> => h.fireBackoffElapsed();
 
   const creditsRestored = async (h: Harness): Promise<void> => {
     await h.wiring.watchdog.pauseAndPoll('rate-limit');
     await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MINUTES * 60 * 1000 + 100);
   };
 
-  it('announces the Run when a backoff elapses, while the Run is still going', async () => {
-    const h = (active = harness({ runs: { default: { id: '1afda4d8-1111-4222-8333-444455556666', currentPhase: 'speckit-plan' } } }));
+  it('admits the claimed queue for a backoff-elapsed wakeup when a backoff elapses, and no other queue', async () => {
+    const h = (active = harness({
+      runs: { 'backoff-queue': backoffElapsedRun(), 'credit-queue': creditPaused() },
+      claimed: ['backoff-queue']
+    }));
     await backoffElapsed(h);
-    await vi.waitFor(() => expect(h.warn).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(h.admitUnattended).toHaveBeenCalledTimes(1));
 
-    const message = h.warn.mock.lastCall?.[0];
-    expect(message).toContain('queue "default"');
-    expect(message).toContain('run 1afda4d8 ');
-    expect(message).toContain('phase "speckit-plan"');
-    for (const title of TITLES) expect(message).toContain(title);
-    expect(h.completions.has('default')).toBe(true);
-    h.completions.get('default')?.();
+    expect(h.admitUnattended).toHaveBeenCalledWith(
+      'backoff-queue',
+      expect.objectContaining({ cause: 'backoff-elapsed', queueId: 'backoff-queue' })
+    );
   });
 
-  it('announces the Run when the credit poll finds credits restored', async () => {
-    const h = (active = harness({ runs: { default: { id: '2bfeb5e9-1111-4222-8333-444455556666', currentPhase: 'speckit-tasks' } } }));
+  it('admits each queue eligible for credits, and leaves every other Run alone, when the credit poll finds credits restored', async () => {
+    const h = (active = harness({
+      runs: {
+        'credit-queue': creditPaused(),
+        'failed-queue': { ...creditPaused(), id: 'run-failed', status: 'failed', creditPause: null },
+        'operator-queue': { ...creditPaused(), id: 'run-op', creditPause: null, manualPauseCause: 'operator-paused' },
+        'cap-queue': { ...creditPaused(), id: 'run-cap', creditPause: null }
+      }
+    }));
     await creditsRestored(h);
-    await vi.waitFor(() => expect(h.warn).toHaveBeenCalledTimes(1));
-
-    const message = h.warn.mock.lastCall?.[0];
-    expect(message).toContain('queue "default"');
-    expect(message).toContain('run 2bfeb5e9 ');
-    expect(message).toContain('phase "speckit-tasks"');
-    expect(h.completions.has('default')).toBe(true);
-    h.completions.get('default')?.();
-  });
-
-  it('announces nothing for a queue whose own delayed retry is still pending', async () => {
-    const h = (active = harness({
-      runs: { default: { id: '1afda4d8-1111-4222-8333-444455556666', currentPhase: 'speckit-plan' } },
-      pendingRetry: ['default']
-    }));
-    await backoffElapsed(h);
+    await vi.waitFor(() => expect(h.admitUnattended).toHaveBeenCalledTimes(1));
     await settle();
 
-    expect(h.admitResume).not.toHaveBeenCalled();
-    expect(h.resumeExisting).not.toHaveBeenCalled();
-    expect(h.warn).not.toHaveBeenCalled();
+    expect(h.admitUnattended).toHaveBeenCalledTimes(1);
+    expect(h.admitUnattended).toHaveBeenCalledWith(
+      'credit-queue',
+      expect.objectContaining({ cause: 'credits-restored', queueId: 'credit-queue' })
+    );
   });
 
-  it('announces nothing for a resume that admission refuses', async () => {
+  it('admits nothing for a queue whose own delayed retry is still pending, on a credits poll', async () => {
     const h = (active = harness({
-      runs: { default: { id: '1afda4d8-1111-4222-8333-444455556666', currentPhase: 'speckit-plan' } },
-      resumed: false
+      runs: {
+        'waiting-queue': { ...backoffElapsedRun(), pendingRetryAt: NOW + 3_600_000 }
+      }
     }));
-    await backoffElapsed(h);
-    await vi.waitFor(() => expect(h.admitResume).toHaveBeenCalledTimes(1));
+    await creditsRestored(h);
     await settle();
 
-    expect(h.warn).not.toHaveBeenCalled();
+    expect(h.admitUnattended).not.toHaveBeenCalled();
   });
 
-  it('resumes nothing and announces nothing when the window has lost primacy', async () => {
+  it('asks for the claimed queue once and does nothing further when admission refuses it', async () => {
     const h = (active = harness({
-      runs: { default: { id: '1afda4d8-1111-4222-8333-444455556666', currentPhase: 'speckit-plan' } },
+      runs: { 'backoff-queue': backoffElapsedRun() },
+      claimed: ['backoff-queue'],
+      outcome: 'capacity-refused'
+    }));
+    await backoffElapsed(h);
+    await vi.waitFor(() => expect(h.admitUnattended).toHaveBeenCalledTimes(1));
+    await settle();
+
+    expect(h.admitUnattended).toHaveBeenCalledTimes(1);
+  });
+
+  it('admits nothing when the window has lost primacy', async () => {
+    const h = (active = harness({
+      runs: { 'credit-queue': creditPaused() },
       primary: false
     }));
-    await backoffElapsed(h);
+    await creditsRestored(h);
     await settle();
 
-    expect(h.admitResume).not.toHaveBeenCalled();
-    expect(h.resumeExisting).not.toHaveBeenCalled();
-    expect(h.warn).not.toHaveBeenCalled();
+    expect(h.admitUnattended).not.toHaveBeenCalled();
   });
 });

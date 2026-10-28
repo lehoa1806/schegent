@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 119
+    vacuity-census-denominator: 121
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **119** |
+| Gates the detector calls **controlled** (the denominator) | **121** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -1491,3 +1491,19 @@ controlled on its first run. Attribution is by census membership: the controlled
 | **+1** | `run-write-census.test.ts` (118 → 119) | Joined. Walks `src` with the TypeScript compiler and holds every `setRun(` site to a classified row, so a new whole-Run write is a reviewed edit. Its control is the one this census looks for: a first test asserting the scan found the very sites the table names, which fails if the walk goes empty, so an empty scan cannot read as "every site classified". |
 
 The rate stays **0.0%**: the entrant was mutated with the rest and did not survive.
+
+**Denominator movement 119 → 121 (2026-10-28, feature 240 / `FR-R4-F02`).** Two gates joined,
+controlled on their first run. Attribution is by census membership: the predicate the detector
+applies (`isScanningGate` and `looksControlled`) was run over the three gate files the feature added,
+and two of them satisfy it; none left.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | `credit-pause-clear-census.test.ts` (119 → 120) | Joined. Walks `src` and names every file that writes `pendingRetryCause: null` or leaves `paused` without also writing `creditPause: null`, so a clearing site that forgets the field is a reviewed edit. Its controls are `MIN_SITES`, a floor on the pause writers the walk found, and an anchor file (`phase-control-service.ts`) the walk must name, which fail if the walk goes empty, so an empty scan cannot read as "every site clears". |
+| **+1** | `usage-reader-census.test.ts` (120 → 121) | Joined. Walks `src` and names every file that reads a usage key off a payload record other than the reader and the projection. Its controls are cases asserting the scan hits the audit projection and the reader module by name (`toContain` on each anchor), which fail if the walk goes empty, so a moved root cannot read as "nobody bypasses the reader". |
+
+`unattended-eligibility-census.test.ts`, the third gate the feature added, is deliberately **not** in
+the census, for the detector's own reason: it asserts counts and positions of named identifiers rather
+than an empty set, so there is no scan whose emptiness could hide a pass.
+
+The rate stays **0.0%**: both entrants were mutated with the rest and did not survive.
