@@ -90,6 +90,8 @@ retryCondition: pending_tasks > 0
 
 That Phase instructs the backend to emit a top-level `pending_tasks: <N>` metric in the audit block. A truthy result loops until the iteration cap; a falsy result advances.
 
+From version 3 of the example the Phase also emits `spec_gaps`, `blocked_tasks` and `user_run_tasks`, and only `pending_tasks` feeds the condition. That is deliberate. A task the agent cannot settle by the precedence its instruction gives it (the constitution, then `spec.md`, `plan.md`, `research.md`, `tasks.md`) is *blocked*: it is recorded in `<feature_dir>/decisions.md` as `Status: needs-maintainer`, left unchecked, and left out of `pending_tasks`. A task only a person can do, such as pushing, opening a pull request or watching CI, is a *hand-off* and is left out too. A condition that counted either would repeat the iteration to the cap on something no further iteration can change. A blocked task is listed under `Remaining issues:` instead, and the Phase does not report `CLEAR` while one is open; `finalize` then withholds its merge, as described under [Author a verification Phase](#author-a-verification-phase).
+
 <!-- Source: examples/speckit-new-feature.pipeline.yaml -->
 <!-- Source: src/controller/phase.ts -->
 
@@ -124,7 +126,10 @@ For that verifier, declare `sideEffects: none` so the authored contract says it 
 
 The shipped example's `finalize` instruction already names the concrete check classes—build, tests, lint, and typecheck—and requires `checks_passing` and `checks_failing` metrics, but it is intentionally a repairing, Git-writing Phase rather than the read-only verifier described here.
 
+From version 3 its repairs have a stated limit, because a headless run has nobody to ask. A failing dependency-audit check whose advisory is in a dependency the feature did not change may be fixed without approval, by a patch or minor bump of at most three packages in a `fix(deps)` commit of its own, which is reverted if it turns a green check red. A major bump, a forced or blanket update, an `overrides` or `resolutions` entry, a new or replaced dependency, and any change to an audit's threshold, ignore list or waiver are outside that authority and are reported under `Remaining issues:`. The merge to `develop` happens only when every check is green and `<feature_dir>/decisions.md` has no `Status: needs-maintainer` entry. Because `finalize` is the last Phase, remaining issues fail the Run with the `last_phase_issues_remain` cause, and under `halt-on-failure` they stop the Queue. This reduces the risk of a stalled run; it does not remove it, because the authority is prose the backend follows and the host does not enforce it.
+
 <!-- Source: examples/speckit-new-feature.pipeline.yaml -->
+<!-- Source: src/controller/phase.ts -->
 
 ## Versioning and publication
 

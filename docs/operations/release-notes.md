@@ -9,6 +9,45 @@ This file is the release workflow's stable pointer for changes that affect opera
 Recorded as they land, so the first release note is assembled from evidence rather than
 from memory.
 
+### The shipped new-feature pipeline decides, sets aside or reports instead of asking (version 3, 2026-10-28)
+
+An unattended run has nobody to answer a question, and runs of this pipeline have stopped
+on one. `speckit-implement` reported a task as needing a maintainer decision, went on
+counting it in `pending_tasks`, and re-ran to its iteration cap. `finalize` left failing
+dependency-audit checks alone because a lockfile bump was "outside this task" and "needs
+your approval". `examples/speckit-new-feature.pipeline.yaml` is now version 3, and both
+Phases say what they may settle alone, what they must set aside and what they must report.
+
+- `speckit-implement` ranks the sources it settles a conflict by and records each decision
+  in `<feature_dir>/decisions.md`. A task only a maintainer can answer is set aside as
+  *blocked* (`Status: needs-maintainer`); a task only a person can do is a *hand-off*.
+  Neither counts toward `pending_tasks`. The Phase gains the metrics `blocked_tasks` and
+  `user_run_tasks`, and its loop condition is still `pending_tasks > 0`.
+- `finalize` may fix a failing dependency-audit check without asking: a patch or minor bump
+  of at most three packages, whose advisory is in a dependency the feature did not change,
+  in a `fix(deps)` commit of its own that is reverted if it turns a green check red. A major
+  bump, a forced update, an overrides entry and any change to an audit's threshold or
+  ignore list stay outside that authority. It merges to `develop` only when every check is
+  green and no decision waits on a maintainer.
+
+**Who is affected**: anyone who runs the shipped pipeline, and whoever maintains a catalog
+that holds an earlier copy of it.
+
+**What you may need to do**: nothing for a fresh install. A catalog that already holds
+`speckit-implement` or `finalize` keeps its copy, because an import never overwrites an
+existing id (`FR-024`): save a draft of each Phase with the new text and publish it. A
+queued item composed before the publish keeps the Phase text it was composed with, so
+re-enqueue it.
+
+**What happens to Runs you already have**: nothing. A Run keeps the pipeline snapshot it
+was created with.
+
+**What you gain, and what you do not**: a blocked task or an out-of-authority advisory no
+longer loops the Phase to its cap or waits for an approval nobody can give. The Phase
+reports it, and the Run ends at its last Phase with `Remaining issues:` listing what a
+maintainer must decide. This reduces the risk of a stalled run; it does not remove it. The
+authority is prose the backend follows, and the host does not enforce it.
+
 ### A window that loses the primacy election keeps contesting (`FR-032`, 2026-09-12)
 
 Exactly one VS Code window per workspace drives Runs. That window used to be chosen once,
