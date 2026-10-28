@@ -83,3 +83,45 @@ inspection.
 
 <!-- Source: webview-ui/src/components/ProcessImport/process-import-state.ts -->
 <!-- Source: webview-ui/src/lib/save-models.ts -->
+
+## Bring an existing catalog to a revised example
+
+A catalog that already holds an example's ids does not pick up a later revision of that
+example on its own. This section walks through the new-feature example's version 3, which
+revises the Phases `speckit-tasks`, `speckit-implement` and `finalize` and the pipeline
+`speckit-new-feature`. Each numbered step is one thing you do, or one thing that follows.
+
+1. **An import skips what you already have.** Inspecting the revised example plans every id
+   the catalog already holds as **Skip**, at any status, and confirming writes nothing for
+   them. An import cannot deliver a revision, and deleting a row to import it again is not
+   the route: a deactivated row still claims its id.
+2. **Publish each changed definition by hand.** Open it in the catalog editor, replace its
+   fields with the revised document's, save a draft (**Save Phase**, for a Phase), then choose
+   **Publish**. For version 3 these are `speckit-tasks`, `speckit-implement` and `finalize`,
+   and the pipeline `speckit-new-feature` for its record. The pipeline names its Phases by
+   id, so the Phases carry the behavior. Saving a Phase that declares `retryCondition`, as
+   `speckit-implement` does, needs the `retryConditions` capability.
+3. **The version number does not move.** The editor shows **Version** read-only, and a save
+   keeps it. The published copy carries the revised text under its old number. The catalog's
+   own record id (`v<N>`), which advances on every save, is what tells the two apart.
+4. **Compose new items after the publish.** A composed item freezes the definitions that are
+   active at the moment it is composed.
+5. **Decide about items queued earlier.** An item composed before the publish keeps its plan
+   and the old text: compose it again and enqueue it again if you want the new text. An item
+   enqueued without a plan resolves when its Run is created, so it runs whatever is active
+   then.
+6. **Existing Runs do not change.** A Run keeps the pipeline snapshot it was created with,
+   including when it is resumed. A Run that failed at its retry cap under the old text runs
+   the old text again when resumed, so it can fail at the cap again.
+7. **Removing an old row deletes its evidence.** Removing a Task deletes its Run's session
+   directory and raw transcript. Copy what you need first.
+
+<!-- Source: src/services/process-yaml/import-planner.ts -->
+<!-- Source: src/ui/sidebar/commands/cmd-catalog-lifecycle.ts -->
+<!-- Source: webview-ui/src/components/PipelineBuilderEditors/PhaseCatalogEditor.svelte -->
+<!-- Source: webview-ui/src/components/Builder/DefinitionActions.svelte -->
+<!-- Source: src/catalog/version-record.ts -->
+<!-- Source: src/contracts/pipeline-definitions.ts -->
+<!-- Source: src/services/workflow-run-factory.ts -->
+<!-- Source: src/queue/feature-request.ts -->
+<!-- Source: src/controller/task-deletion.ts -->

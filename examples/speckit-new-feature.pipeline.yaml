@@ -71,9 +71,17 @@ included:
     - metadata:
         phaseId: speckit-tasks
         name: Spec-kit Tasks
-        version: 2
+        version: 3
       spec:
-        instruction: /speckit-tasks
+        instruction: |-
+          Run /speckit-tasks on the active feature.
+
+          Then mark hand-off tasks in <feature_dir>/tasks.md. Implement sets a marked task aside instead of attempting it, so a mark takes the task out of implement's loop:
+          - Add the label [USER-RUN], beside the task's other labels, to a task only when it needs a person: pushing, opening or merging a pull request, watching CI, deploying to a system outside this repository, an explicit approval, or work that cannot start until one of those has happened.
+          - Never mark work the authorized headless run can complete. Difficulty, size and a failing test are not reasons to mark a task.
+          - When one task line combines headless work with a person-only step, split it in two: the headless work stays an unmarked task, and the person-only step becomes its own marked task.
+          - Mark only the tasks /speckit-tasks wrote and the person-only half of a line you split. Never add a person-only task the generated list does not have.
+          - A task that only mentions the label, for example to describe it, writes it in inline code, as `USER-RUN`, and is not marked.
         model: claude-opus-5-5
         hostVerification: exit-code
         effort: high
@@ -134,11 +142,17 @@ included:
 
           Then close what it left open:
           1. Load <feature_dir>/tasks.md and list every task not marked complete.
-          2. Set aside what you must not attempt. A hand-off task is one whose line in tasks.md carries the token USER-RUN or makes it conditional on the user's approval, or whose only remaining step is one a person takes once the work is finished: pushing, opening or merging a pull request, watching CI, deploying. Do not attempt a hand-off task, do not mark it complete, and do not add, remove or edit any marker. A blocked task is defined under "Blocked tasks" below. Every other incomplete task is a pending task.
+          2. Set aside what you must not attempt: each hand-off task, defined under "Hand-off tasks" below, and each blocked task, defined under "Blocked tasks" below. Every other incomplete task is a pending task.
           3. Read <feature_dir>/spec.md and <feature_dir>/plan.md and cross-check the implementation against them. A spec gap is a requirement in spec.md, or a design decision in plan.md, that no code implements; name each by its requirement id or a short quote.
           4. Implement every pending task and every spec gap, and mark each finished task complete in tasks.md.
 
           Do not run a code review or a security review here, and do not spawn reviewer sub-agents: the next two Phases review this work.
+
+          Hand-off tasks. A hand-off task is an incomplete task only a person can finish. A task is one only in these three cases, and the case is its basis:
+          - marker: its own line in tasks.md carries the token USER-RUN outside inline code. A line that only quotes the token in inline code is not marked.
+          - approval: its own line names a person's approval as the condition for the task, such as "once the user approves" or "after maintainer approval". Review, test results and other conditions do not count.
+          - person-only last step: every other step of the task is done, and its only remaining step is pushing, opening or merging a pull request, watching CI, or deploying to a system outside this repository. A task with any implementation step still undone is pending, even when its line also names such a step.
+          Difficulty, size and a failing test you can fix never make a task a hand-off. Do not attempt a hand-off task, do not mark it complete, and do not add, remove or edit any marker or approval wording on any task line.
 
           Decision authority. When a task is unclear, contradictory, or needs a choice no artifact states, settle it yourself instead of escalating it:
           - Precedence: the constitution (.specify/memory/constitution.md), then spec.md, then plan.md, then research.md, data-model.md and contracts/, then tasks.md. Follow the higher source and correct the lower one, or the code, to agree with it. Where every source is silent, take the conventional, lowest-risk option.
@@ -152,10 +166,11 @@ included:
 
           Result determination:
           - If 0 tasks are pending, 0 spec gaps remain and 0 tasks are blocked → emit [SCHEGENT_STATUS: CLEAR], even when hand-off tasks remain
-          - Otherwise → emit "Remaining issues:" listing each pending task, each open spec gap, and each blocked task with its decision id and the question a maintainer must answer
-          - In both cases, list each hand-off task under "Hand-off tasks (for the user):"
+          - Otherwise → emit "Remaining issues:" listing each pending task, each open spec gap, and each blocked task with its decision id and the question a maintainer must answer. Never list a hand-off task there.
+          - In both cases, when at least one hand-off task is open, list each one under "Hand-off tasks (for the user):" as `- <task id> (<basis>): <task text>`, before the SCHEGENT AUDIT LOG block and outside it. With none open, omit that heading.
+          - Emit the completion token only where the output contract says, on its own line after the audit log block. Never echo it in prose, in a list or in a quote.
 
-          REQUIRED METRIC OUTPUT: Inside the SCHEGENT AUDIT LOG block, you MUST emit `pending_tasks: <N>`, `spec_gaps: <N>`, `blocked_tasks: <N>` and `user_run_tasks: <N>` as top-level integer metric lines (NOT nested under Notes: or any other heading). All four count what is still open AFTER this iteration's work, and `pending_tasks` excludes blocked and hand-off tasks. These lines MUST appear even when the count is 0. The controller uses `pending_tasks` to decide whether to re-loop; the other three are recorded and do not re-loop this Phase.
+          REQUIRED METRIC OUTPUT: Inside the SCHEGENT AUDIT LOG block, you MUST emit `pending_tasks: <N>`, `spec_gaps: <N>`, `blocked_tasks: <N>` and `user_run_tasks: <N>` as top-level integer metric lines (NOT nested under Notes: or any other heading). All four count what is still open AFTER this iteration's work, and `pending_tasks` excludes blocked and hand-off tasks. `user_run_tasks` equals the number of tasks listed under "Hand-off tasks (for the user):". These lines MUST appear even when the count is 0. The controller uses `pending_tasks` to decide whether to re-loop; the other three are recorded and do not re-loop this Phase.
         model: claude-sonnet-5-5
         hostVerification: exit-code
         effort: xhigh
@@ -248,10 +263,10 @@ included:
 
           5. Commit all changes with conventional commit format: feat(<feature_name>): <summary>
           6. Dependency fixes. You are authorized to fix, without asking for approval, a failing dependency-audit check (npm audit, cargo audit, pip-audit or the project's equivalent) whose advisory is in a dependency the feature did not add or change. Clearing a failing check is part of this Phase's task, so a rule that keeps lockfile changes inside the requested task does not stop you; a rule that forbids dependency changes outright does, and then you report the advisory instead. Stay inside these limits:
-             - Move the package to the lowest version the advisory names as fixed, or the nearest your tool resolves above it, by patch or minor versions only, with a targeted command that does not force (for example `npm audit fix` without --force, `cargo update -p <package>`, `uv lock --upgrade-package <package>`).
+             - Move the package to the lowest version the advisory names as fixed, or the nearest your tool resolves above it, by patch or minor versions only, with a targeted command that does not force (for example `npm update <package>`, `cargo update -p <package>`, `uv lock --upgrade-package <package>`).
              - Change at most three packages in all, and commit the change on its own, after the feature commit: fix(deps): clear <advisory ids> in <packages>
              - Then re-run the FULL check set. If a check that was green before the change now fails, undo the commit with git revert and report the advisory under "Remaining issues:".
-             - Outside your authority, so report it under "Remaining issues:" with the advisory id, the package, its installed and fixed versions, and the limit that stopped you: a major version bump; adding, removing or replacing a dependency; an overrides, resolutions or constraints entry; a forced or blanket update; any change to the audit command, its threshold, its ignore list or a waiver, or to CI configuration; an advisory with no fixed version.
+             - Outside your authority, so report it under "Remaining issues:" with the advisory id, the package, its installed and fixed versions, and the limit that stopped you: a major version bump; adding, removing or replacing a dependency; an overrides, resolutions or constraints entry; a forced or blanket update, such as `npm audit fix`, which applies every fixable advisory in the tree at once; any change to the audit command, its threshold, its ignore list or a waiver, or to CI configuration; an advisory with no fixed version.
           7. Merge to local develop branch: git switch develop && git merge --no-ff <feature_branch>, but only if every check is green and <feature_dir>/decisions.md has no entry with "Status: needs-maintainer". Otherwise stop after the commits and say why under "Remaining issues:".
 
           Result determination:
