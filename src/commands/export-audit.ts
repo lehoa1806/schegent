@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { parseAuditLogLineDetailed } from '../parser/audit-log-parser';
 import { ATTEMPT_ID_RE, CAP_EXHAUSTED_CAUSE, PRE_SPAWN_REFUSAL_CAUSE } from '../audit/audit-payload';
+import { isFailureCause } from '../contracts/failure-cause';
 import type { Notifier } from '../ui/notifications';
 
 const COUNT_KEYS = new Set([
@@ -43,7 +44,14 @@ const COUNT_KEYS = new Set([
   // `cause` does — this function parses whatever bytes are on disk, including
   // lines written by a build that predates the projection constraining them.
   'attemptId',
-  'resultEnvelope'
+  'resultEnvelope',
+  // Feature 242 (FR-R4-F14) — the closed code of why a Run failed, on `task-execution-ended`. Without it
+  // the metadata-only export cannot say WHY a run's terminal row reads `failed`, which is the question an
+  // incident review asks of exactly this file. It is a member of a nine-code vocabulary and carries no
+  // text, so it fits this allowlist's purpose; but it gets a value check below for the reason `cause`
+  // does: this function parses whatever bytes are on disk, including a line a build wrote before the
+  // projection constrained the field, and a free-form fatal-signature text must not leave through it.
+  'failureCause'
 ]);
 
 /**
@@ -123,6 +131,14 @@ function guardedPayloadValue(eventType: string, key: string, value: unknown): un
   if (key === 'attemptId') {
     const ok =
       eventType === 'phase-end' && typeof value === 'string' && ATTEMPT_ID_RE.test(value);
+    return ok ? value : null;
+  }
+  // Feature 242 (FR-R4-F14, contract E4) — scoped by event type, like the two arms above: the code belongs to
+  // `task-execution-ended` and to nothing else, so a row of any other type carrying the key is the anomaly
+  // the `null` reports. On that one event a member exports as itself; any other value is a line this build
+  // did not write, and exports as `null` rather than being filtered (a rejection is not an absence).
+  if (key === 'failureCause') {
+    const ok = eventType === 'task-execution-ended' && isFailureCause(value);
     return ok ? value : null;
   }
   return value;

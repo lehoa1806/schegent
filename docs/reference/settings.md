@@ -41,7 +41,7 @@ The backend choice is a privilege choice, not a cosmetic preference. A Phase's `
 
 | Setting | Type and accepted values | Default | Scope | Purpose |
 |---|---|---|---|---|
-| `schegent.loop.maxIterations` | number, `1`–`50` | `10` | resource | Maximum loop iterations before force-advance behavior. |
+| `schegent.loop.maxIterations` | number, `1`–`50` | `10` | resource | Maximum iterations for every phase that has a retry condition. If the condition still holds at the cap, the run fails, unless the phase or `schegent.retry.forceContinueOnCap` is set to continue. |
 | `schegent.watchdog.pollIntervalMinutes` | number, minimum `1` | `30` | resource | Credit-watchdog polling interval in minutes. |
 | `schegent.invocation.idleTimeoutSeconds` | number, minimum `30` | `5400` | resource | Idle window for one Phase invocation: terminated after this long with no output. Renamed from `schegent.invocation.timeoutSeconds`, which is still read as a fallback while unset. |
 | `schegent.invocation.maxDurationSeconds` | number, minimum `60` | `21600` | resource | Absolute wall-clock bound on one Phase invocation, armed at spawn and never reset — bounds a chatty child the idle window cannot. Default is 4x the idle default and ~1.7x the longest legitimately long phase observed (3.6 h). At **80%** of whatever this is set to, the monitor appends one `monitor-deadline-approaching` audit record — elapsed, the bound, the invocation — so the termination is not the first evidence the bound exists. The record is informational: it changes no status and stops nothing. |

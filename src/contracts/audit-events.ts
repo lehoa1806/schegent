@@ -5,6 +5,7 @@ import type {
   BackendContainmentMechanism
 } from '../services/backend-containment-policy';
 import type { TerminationReason } from '../state/workflow-run';
+import type { FailureCause } from './failure-cause';
 import type { RunnerLabel, TreeEscalation } from './backend-runner';
 // Feature FR-R3-006 — the reset transaction's phase and refusal literals are
 // declared once, in a module that imports nothing, and the audit payload reuses
@@ -37,6 +38,12 @@ import type { CatalogKind } from './catalog-store';
 // `AUDIT_SCHEMA_VERSION` bump (follows 028 / 030 / 031 / 032 precedent).
 // Historical records lack the field and are backwards-compatible per
 // the warn-and-preserve parser discipline.
+//
+// Feature 242 (FR-R4-F14) — additive `failureCause?` on `task-execution-ended`: the closed code (nine
+// members, `./failure-cause`) of why a Run failed. Present only when `terminalStatus` is `failed` and the
+// Run recorded one; absent on completion and on every earlier record ("cause not recorded"). The
+// projection admits it by identity, and `phase-end` with its two causes is untouched. Additive — no
+// `AUDIT_SCHEMA_VERSION` bump (028 / 030 / 031 / 032 precedent).
 export const AUDIT_SCHEMA_VERSION = 3 as const;
 
 export type {
@@ -1165,7 +1172,7 @@ export interface TaskExecutionStartedPayload {
 // `terminalStatus` mirrors `HistoryEntry.terminalStatus`. `durationMs` is
 // wall-clock time: `Date.now() - WorkflowRun.startedAt`, consistent with
 // `buildHistoryEntry()`. `lastErrorSummary` is already sanitized by
-// `SanitizedFailureMetadata`.
+// `SanitizedFailureMetadata`. Feature 242: `failureCause` is copied from the Run, for `failed` only.
 export interface TaskExecutionEndedPayload {
   readonly taskId: string;
   readonly runId: string;
@@ -1175,6 +1182,7 @@ export interface TaskExecutionEndedPayload {
   readonly phasesCompleted: number;
   readonly phasesSkipped: number;
   readonly lastErrorSummary?: string;
+  readonly failureCause?: FailureCause;
 }
 
 // Emitted by `WorkflowController.pauseActivePhase()` when a task stops

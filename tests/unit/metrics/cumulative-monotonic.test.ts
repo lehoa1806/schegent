@@ -13,11 +13,12 @@
 // outcomes), not nondeterminism.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   composeCumulativeTotals,
+  METRICS_ROLLUP_FILENAME,
   METRICS_ROLLUP_SCHEMA_VERSION,
   type MetricsRollupRecord
 } from '../../../src/metrics/metrics-rollup';
@@ -282,5 +283,97 @@ describe('cumulative totals survive a real writer/reader round trip (FR-R3-009, 
   it('reports an absent rollup as unavailable with zeroed totals rather than a fabricated zero window', async () => {
     const read = await readMetricsRollup(workspaceRoot, silentLogger());
     expect(read).toEqual({ available: false, records: [], unreadableRecords: 0 });
+  });
+});
+
+// FR-R4-F14 (feature 242), contract M5 — a rollup that mixes record versions folds to
+// totals measured on the build before the change. The expected numbers are literals
+// read from a run at that baseline, never recomputed from the records, so a reader
+// change that dropped, doubled or relabeled a version-1 line would fail here.
+describe('a rollup that mixes record versions keeps its totals (FR-R4-F14, SC-004)', () => {
+  let workspaceRoot: string;
+
+  beforeEach(async () => {
+    workspaceRoot = await mkdtemp(join(tmpdir(), 'schegent-rollup-mixed-versions-'));
+  });
+  afterEach(async () => {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  function line(v: number, runId: string, fields: Record<string, unknown>): string {
+    return `${JSON.stringify({
+      v,
+      runId,
+      startedAt: '2026-02-01T00:00:00.000Z',
+      endedAt: '2026-02-01T00:10:00.000Z',
+      ...fields
+    })}\n`;
+  }
+
+  it('reads two v1 and two v2 records, one a cap failure, to the same totals', async () => {
+    const lines = [
+      line(1, 'run-v1-completed', {
+        terminalStatus: 'completed',
+        durationMs: 1000,
+        phasesTotal: 3,
+        phasesCompleted: 3,
+        phasesSkipped: 0,
+        backendInvocations: 5,
+        costUsd: 0.5
+      }),
+      line(1, 'run-v1-failed', {
+        terminalStatus: 'failed',
+        durationMs: 2000,
+        phasesTotal: 4,
+        phasesCompleted: 2,
+        phasesSkipped: 1,
+        backendInvocations: 7,
+        costUsd: 1.25
+      }),
+      line(2, 'run-v2-completed', {
+        terminalStatus: 'completed',
+        durationMs: 3000,
+        phasesTotal: 2,
+        phasesCompleted: 2,
+        phasesSkipped: 0,
+        backendInvocations: 3,
+        costUsd: 0.25
+      }),
+      line(2, 'run-v2-cap-failed', {
+        terminalStatus: 'failed',
+        failureCause: 'cap_exhausted',
+        durationMs: 4000,
+        phasesTotal: 5,
+        phasesCompleted: 3,
+        phasesSkipped: 1,
+        backendInvocations: 11
+      })
+    ];
+    await mkdir(join(workspaceRoot, '.schegent'), { recursive: true });
+    await writeFile(join(workspaceRoot, '.schegent', METRICS_ROLLUP_FILENAME), lines.join(''), 'utf8');
+
+    const read = await readMetricsRollup(workspaceRoot, silentLogger());
+    expect(read.available).toBe(true);
+    expect(read.unreadableRecords).toBe(0);
+    expect(read.records.map((record) => record.runId)).toEqual([
+      'run-v1-completed',
+      'run-v1-failed',
+      'run-v2-completed',
+      'run-v2-cap-failed'
+    ]);
+
+    expect(composeCumulativeTotals(read.records, [], read.carryForward).totals).toEqual({
+      runs: 4,
+      completedRuns: 2,
+      failedRuns: 2,
+      canceledRuns: 0,
+      durationMs: 10000,
+      costUsd: 2,
+      costUsdIsPartial: true,
+      phasesTotal: 14,
+      phasesCompleted: 10,
+      phasesSkipped: 2,
+      backendInvocations: 26
+    });
   });
 });

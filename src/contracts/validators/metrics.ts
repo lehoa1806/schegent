@@ -5,6 +5,7 @@ import {
   type ReadMetricsResponse,
   type SidebarCommand
 } from '../sidebar-ipc';
+import { isFailureCause } from '../failure-cause';
 import { fail, hasUnexpectedKeys, ok, type IpcValidationResult } from './shared';
 
 // Covers the outer envelope the webview must trust before rendering. Deep
@@ -70,7 +71,11 @@ function isValidRunSummary(value: unknown): boolean {
   // Optional, and absent rather than zero when nothing reported. A `null` here
   // would be a third state the reader has no branch for.
   const costUsd = summary['costUsd'];
-  return costUsd === undefined || (typeof costUsd === 'number' && Number.isFinite(costUsd));
+  if (costUsd !== undefined && !(typeof costUsd === 'number' && Number.isFinite(costUsd))) return false;
+  // FR-R4-F14 (M6) — absent, or a member of the closed vocabulary. A present value that is not one is a
+  // record the webview cannot label, so it is refused as a non-finite `costUsd` is, never rendered raw.
+  const failureCause = summary['failureCause'];
+  return failureCause === undefined || isFailureCause(failureCause);
 }
 
 const CUMULATIVE_NUMBER_FIELDS = [

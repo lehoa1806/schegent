@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createCountsOnlyAuditExport } from '../../../src/commands/export-audit';
+import { FAILURE_CAUSES } from '../../../src/contracts/failure-cause';
 
 function row(schemaVersion: number, payload: Record<string, unknown>): string {
   return JSON.stringify({
@@ -252,5 +253,74 @@ describe('createCountsOnlyAuditExport', () => {
     ).payload;
     expect(onFamily.attemptId).toBe('3f2a5c18-9d4e-4b07-8a61-2c5f0e7d1b93');
     expect(onFamily.resultEnvelope).toBe('received');
+  });
+});
+
+// FR-R4-F14 (spec 242, contract E4.1) — the metadata-only export carries `failureCause`, with the module's
+// own rule for a value it does not believe: scoped by event type, a member exports as itself, and
+// anything else exports as `null` ("on disk and disbelieved"), never filtered and never rewritten.
+describe('createCountsOnlyAuditExport — failureCause (FR-R4-F14)', () => {
+  function eventRow(eventType: string, payload: Record<string, unknown>): string {
+    return JSON.stringify({
+      id: 'event-3',
+      timestamp: '2026-08-02T00:00:00.000Z',
+      runId: 'run-private',
+      correlationId: 'correlation-private',
+      phase: 'speckit-implement',
+      iteration: 1,
+      eventType,
+      outcome: 'failure',
+      schemaVersion: 3,
+      payload
+    });
+  }
+
+  const payloadsOf = (output: string): Array<Record<string, unknown>> =>
+    output
+      .trim()
+      .split('\n')
+      .map((line) => (JSON.parse(line) as { payload: Record<string, unknown> }).payload);
+
+  const ended = { terminalStatus: 'failed', durationMs: 5, phasesTotal: 3, phasesCompleted: 1, phasesSkipped: 0 };
+
+  it.each(FAILURE_CAUSES)('keeps the member %s on task-execution-ended as itself', (cause) => {
+    const [payload] = payloadsOf(
+      createCountsOnlyAuditExport(eventRow('task-execution-ended', { ...ended, failureCause: cause }))
+    );
+    expect(payload.failureCause).toBe(cause);
+  });
+
+  it('exports a value that is not a member as null, and never carries a secret-bearing signature', () => {
+    const output = createCountsOnlyAuditExport(
+      [
+        eventRow('task-execution-ended', { ...ended, failureCause: 'cap_exhausted ' }),
+        eventRow('task-execution-ended', { ...ended, failureCause: 'CAP_EXHAUSTED' }),
+        eventRow('task-execution-ended', { ...ended, failureCause: 'pre_spawn_refusal' }),
+        eventRow('task-execution-ended', { ...ended, failureCause: 42 }),
+        eventRow('task-execution-ended', { ...ended, failureCause: 'fatal: token=sk-ant-SENTINEL' })
+      ].join('\n')
+    );
+
+    expect(payloadsOf(output).map((payload) => payload.failureCause)).toEqual([null, null, null, null, null]);
+    expect(output).not.toContain('SENTINEL');
+    expect(output).not.toContain('sk-ant');
+  });
+
+  it('exports a failureCause on phase-end, or on any other event type, as null', () => {
+    const output = createCountsOnlyAuditExport(
+      [
+        eventRow('phase-end', { outcome: 'failed', failureCause: 'cap_exhausted' }),
+        eventRow('monitor-rate-limited', { failureCause: 'phase_failed' })
+      ].join('\n')
+    );
+
+    const payloads = payloadsOf(output);
+    expect(payloads).toHaveLength(2);
+    for (const payload of payloads) expect(payload).toHaveProperty('failureCause', null);
+  });
+
+  it('exports a line written before the feature, with no key, without one', () => {
+    const [payload] = payloadsOf(createCountsOnlyAuditExport(eventRow('task-execution-ended', ended)));
+    expect('failureCause' in payload).toBe(false);
   });
 });

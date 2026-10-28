@@ -3,6 +3,8 @@ import type { CMD_READ_METRICS, CommandBase } from '../sidebar-ipc';
 // rather than restated: two copies of 256 are two things to keep in step, and
 // `validators/shared` only type-imports back, so nothing circular is created.
 import { QUEUE_ID_MAX } from '../validators/shared';
+// Feature 242 (FR-R4-F14) — the failure-cause vocabulary, a type here and a value in the webview.
+import type { FailureCause } from '../failure-cause';
 
 // Canonical metrics wire entities derived from .schegent/audit.log.
 export interface PhaseRecord {
@@ -138,6 +140,13 @@ export interface MetricsRunSummary {
    * tell which it is looking at.
    */
   readonly costUsd?: number;
+  /**
+   * FR-R4-F14 (feature 242, D6, M6) — why a failed run failed, one code from the closed vocabulary.
+   * Present only on a failed run that recorded one; absent reads as "Cause not recorded", for a run
+   * that failed before causes were recorded as for any other. It is a code and nothing else: the
+   * detail shows its fixed label beside it, and no message or title travels with it.
+   */
+  readonly failureCause?: FailureCause;
 }
 
 /**

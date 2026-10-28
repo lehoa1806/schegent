@@ -39,9 +39,9 @@ schema-v3 rows.
 <!-- Source: src/commands/export-audit.ts -->
 
 The metadata-only export removes `runId`, `correlationId`, and all payload keys
-except `attemptId`, `cause`, `exitCode`, `fileChangeCounts`, `metrics`,
+except `attemptId`, `cause`, `exitCode`, `failureCause`, `fileChangeCounts`, `metrics`,
 `omittedFileEvidenceCount`, `omittedToolEvidenceCount`, `outcome`,
-`resultEnvelope`, `stalled`, `terminationReason`, and `toolCategoryCounts`. Four
+`resultEnvelope`, `stalled`, `terminationReason`, and `toolCategoryCounts`. Five
 of those are also
 value-checked on the way out, because the export reads whatever bytes are on disk
 rather than what the current writer produces. The check is scoped by event type:
@@ -51,7 +51,8 @@ that carry a `cause` — `phase-breakpoint-cleared`, `task-reordered`,
 `monitor-rate-limited`, the backend-ping failures, the delayed-retry pauses — keep
 their own vocabularies, admitted by shape as a short lowercase token. `stalled`
 must be a positive whole number, `attemptId` must be the UUID shape the writer
-mints, and `resultEnvelope` must be `received` or `absent`. A rejected value
+mints, `resultEnvelope` must be `received` or `absent`, and `failureCause` must be
+one of the nine closed codes and appears only on `task-execution-ended`. A rejected value
 exports as `null` rather than
 being dropped, so a field that was on disk never reads as one that was never
 recorded. It retains the audit event ID,
