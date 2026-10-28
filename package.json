@@ -250,7 +250,7 @@
           "minimum": 1,
           "maximum": 50,
           "scope": "resource",
-          "description": "Maximum iterations for the Clarify and Analyze loop phases before force-advancing."
+          "description": "Maximum iterations for every phase that has a retry condition. If the condition still holds at the cap, the run fails, unless the phase or schegent.retry.forceContinueOnCap is set to continue."
         },
         "schegent.watchdog.pollIntervalMinutes": {
           "type": "number",

@@ -101,7 +101,12 @@ export class TerminalRunRollupRecorder implements TerminalRollupRecorder {
       phasesCompleted: stats.phasesCompleted,
       phasesSkipped: stats.phasesSkipped,
       backendInvocations: projection.backendInvocations,
-      ...(projection.costUsd === undefined ? {} : { costUsd: projection.costUsd })
+      ...(projection.costUsd === undefined ? {} : { costUsd: projection.costUsd }),
+      // FR-R4-F14 (M4, D5) — read from the Run alone, so the journalled Run of a crash replay records the
+      // same code, and the writer's run-id idempotence keeps the first failure's.
+      ...(run.status === 'failed' && run.failureCause !== undefined
+        ? { failureCause: run.failureCause }
+        : {})
     });
   }
 }

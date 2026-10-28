@@ -1,6 +1,7 @@
 import type { AuditEventType, CatalogLifecyclePayload } from '../contracts/audit-events';
 import { CATALOG_KINDS, type CatalogKind } from '../contracts/catalog-store';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
+import { isFailureCause } from '../contracts/failure-cause';
 
 export const AUDIT_PAYLOAD_MAX_BYTES = 32 * 1024;
 export const AUDIT_PAYLOAD_MAX_STRING_LENGTH = 640;
@@ -846,6 +847,24 @@ function projectMetricsViewOpened(
 }
 
 /**
+ * FR-R4-F14 (feature 242, contract E3, FR-023) — `task-execution-ended`: every key is projected as the
+ * generic arm projects it, and `failureCause` is admitted by IDENTITY against the closed vocabulary.
+ *
+ * The key is taken out BEFORE the generic projection and put back only when `isFailureCause` accepts
+ * it. Projecting it first would let a hostile value do harm even though it is dropped afterwards: a
+ * fatal-signature text that looks like a path would make `projectValue` refuse the whole entry, and
+ * one that survived would be written as a string. A value that is not a member is dropped as a
+ * FIELD, never rewritten, so no text a signature or an agent produced can reach disk through it.
+ * The other keys come out exactly as before, and `lastErrorSummary` is still dropped by
+ * `OMITTED_KEYS`. `phase-end` is not touched (clarification Q1): it keeps its own two causes.
+ */
+function projectTaskExecutionEnded(payload: Record<string, unknown>): Record<string, unknown> {
+  const { failureCause, ...rest } = payload;
+  const projected = projectValue(rest, 0) as Record<string, unknown>;
+  return isFailureCause(failureCause) ? { ...projected, failureCause } : projected;
+}
+
+/**
  * Converts every event-family payload into the bounded v3 metadata model.
  * Sensitive execution detail is omitted by key; malformed or path-bearing
  * residual data is rejected instead of being persisted.
@@ -863,6 +882,8 @@ export function projectAuditPayload(
     projected = projectMonitorInvocationSummary(payload) as unknown as Record<string, unknown>;
   } else if (eventType === 'metrics-view-opened') {
     projected = projectMetricsViewOpened(payload) as unknown as Record<string, unknown>;
+  } else if (eventType === 'task-execution-ended') {
+    projected = projectTaskExecutionEnded(payload);
   } else if (
     eventType === 'definition-published' ||
     eventType === 'definition-deactivated' ||

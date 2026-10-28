@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 121
+    vacuity-census-denominator: 122
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **121** |
+| Gates the detector calls **controlled** (the denominator) | **122** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -1507,3 +1507,14 @@ the census, for the detector's own reason: it asserts counts and positions of na
 than an empty set, so there is no scan whose emptiness could hide a pass.
 
 The rate stays **0.0%**: both entrants were mutated with the rest and did not survive.
+
+**Denominator movement 121 → 122 (2026-10-28, feature 242 / `FR-R4-F14`).** One gate joined,
+controlled on its first run. Attribution is by census membership: the predicate the detector applies
+(`isScanningGate` and `looksControlled`) was run over the gate file the feature added, and it satisfies
+it; none left.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | `failure-cause-clear-census.test.ts` (121 → 122) | Joined. Walks `src` and names every file that writes `pendingRetryCause: null` without also naming `failureCause`, so a writer that moves a Run across `failed` and forgets the cause is a reviewed edit. Its controls are `MIN_SITES`, a floor on the writers the walk found, an anchor file (`phase-control-service.ts`) the walk must name, and a check that every classified entry still contains the search term, so the scan cannot empty into a silent pass |
+
+The rate stays **0.0%**: the entrant was mutated with the rest and did not survive.

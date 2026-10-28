@@ -77,6 +77,8 @@ For a workspace with exactly one paused or failed run, the Command Palette actio
 <!-- Source: src/commands/resume.ts -->
 <!-- Source: src/controller/sole-run-resolver.ts -->
 
+When a run fails, its notice names a cause and the action worth taking. What each cause means, and how Resume, Retry and Restart differ, is in [When a run fails: its cause and what to do next](../operations/retry-contract.md#when-a-run-fails-its-cause-and-what-to-do-next).
+
 ## 4. Repeat a historical run with current definitions
 
 1. Open **History**.
@@ -109,7 +111,7 @@ Use **Schegent: Export Metadata-Only Audit** when the recipient should not recei
 2. Accept or replace the default filename `schegent-audit-v3.jsonl` in the workspace root.
 3. Save the JSON Lines file.
 
-The export includes only parseable schema-v3 entries. It retains the entry identity, timestamp, event type, phase, iteration, outcome, and schema version, plus only these payload keys when present: `attemptId`, `cause`, `exitCode`, `fileChangeCounts`, `metrics`, `omittedFileEvidenceCount`, `omittedToolEvidenceCount`, `outcome`, `resultEnvelope`, `stalled`, `terminationReason`, and `toolCategoryCounts`. Four of those are additionally value-checked, since the export reads the bytes on disk rather than what the current writer produces: on `phase-end` only the literals `cap_exhausted` and `pre_spawn_refusal` survive as a `cause`, other event families keep their own `cause` vocabularies (admitted by shape, as a short lowercase token), `stalled` must be a positive whole number, `attemptId` must be the UUID shape the writer mints, `resultEnvelope` must be `received` or `absent`, and a rejected value exports as `null` rather than being dropped. It is a filtered export; the original audit log is unchanged.
+The export includes only parseable schema-v3 entries. It retains the entry identity, timestamp, event type, phase, iteration, outcome, and schema version, plus only these payload keys when present: `attemptId`, `cause`, `exitCode`, `failureCause`, `fileChangeCounts`, `metrics`, `omittedFileEvidenceCount`, `omittedToolEvidenceCount`, `outcome`, `resultEnvelope`, `stalled`, `terminationReason`, and `toolCategoryCounts`. Five of those are additionally value-checked, since the export reads the bytes on disk rather than what the current writer produces: on `phase-end` only the literals `cap_exhausted` and `pre_spawn_refusal` survive as a `cause`, other event families keep their own `cause` vocabularies (admitted by shape, as a short lowercase token), `stalled` must be a positive whole number, `attemptId` must be the UUID shape the writer mints, `resultEnvelope` must be `received` or `absent`, `failureCause` must be one of the nine closed codes and survives only on `task-execution-ended`, and a rejected value exports as `null` rather than being dropped. It is a filtered export; the original audit log is unchanged.
 <!-- Source: package.json -->
 <!-- Source: src/commands/export-audit.ts -->
 <!-- Source: src/parser/audit-log-parser.ts -->

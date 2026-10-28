@@ -122,7 +122,12 @@ export async function reportUnexpectedStartFailure(
       creditPause: null,
       manualPauseAt: null,
       manualPauseCause: null,
-      resumeTargetPhaseId: null
+      resumeTargetPhaseId: null,
+      // FR-R4-F14 (W3, D3, P3) — the closed cause, in the write that fails the Run, for every
+      // classification: a start that threw before or outside the drive is `start_failed`, `lock-held`
+      // included, because a Run that ended has a reason. The announcement and status detail below stay
+      // the classification's own (research R10).
+      failureCause: 'start_failed'
     };
     try {
       terminalRun = await deps.persist(activeRun, failed);
@@ -133,6 +138,8 @@ export async function reportUnexpectedStartFailure(
       );
     }
   } else if (activeRun && activeRun.status === 'failed') {
+    // FR-R4-F14 (P4) — an already-failed Run is not written again, so it keeps the cause it already
+    // carries, and the terminal event below carries that cause rather than `start_failed`.
     terminalRun = activeRun;
   }
 

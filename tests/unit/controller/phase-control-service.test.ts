@@ -515,3 +515,62 @@ describe('Phase control eligibility matrix (FR-R3-151, T1624)', () => {
     });
   });
 });
+
+// FR-R4-F14 (spec 242, contract W4.1, TA6) — a failed Run carrying a failure cause leaves `failed`
+// through each of the three patches below without it. The patch writes `failureCause: undefined`
+// explicitly: `updateRun` removes a key whose patch value is `undefined`, and
+// `validateRunInvariants` refuses the Run if the key stays beside a non-failed status.
+describe('a failed Run leaves failed without its failure cause (FR-R4-F14, W4.1)', () => {
+  type RecordedUpdate = { patch: (current: WorkflowRun) => Partial<WorkflowRun>; label?: string };
+
+  /** The patch the writer handed `updateRun` last, built against the Run it read. */
+  function lastPatch(
+    updateRun: ReturnType<typeof makeService>['updateRun'],
+    run: WorkflowRun
+  ): Partial<WorkflowRun> {
+    const calls = updateRun.mock.calls as unknown as Array<[string, RecordedUpdate]>;
+    const last = calls.at(-1);
+    if (last === undefined) throw new Error('expected a Run update, found none');
+    return last[1].patch(run);
+  }
+
+  function expectClearsCause(patch: Partial<WorkflowRun>): void {
+    expect(Object.keys(patch)).toContain('failureCause');
+    expect(patch.failureCause).toBeUndefined();
+  }
+
+  it('resumeActivePhase resumes a failed Run without the key', async () => {
+    const run = makeThreePhaseRun({
+      status: 'failed',
+      failureCause: 'phase_failed',
+      manualPauseAt: 1,
+      manualPauseCause: 'operator-paused'
+    });
+    const { service, updateRun } = makeService(run);
+
+    expect(await service.resumeActivePhase(QUEUE_ID)).toEqual({ ok: true });
+    const patch = lastPatch(updateRun, run);
+    expect(patch.status).toBe('running');
+    expectClearsCause(patch);
+  });
+
+  it('restartActivePhase restarts a failed Run without the key', async () => {
+    const run = makeThreePhaseRun({ status: 'failed', failureCause: 'phase_failed' });
+    const { service, updateRun } = makeService(run);
+
+    expect(await service.restartActivePhase(QUEUE_ID)).toEqual({ ok: true });
+    const patch = lastPatch(updateRun, run);
+    expect(patch.status).toBe('running');
+    expectClearsCause(patch);
+  });
+
+  it('the skip-to-recover revive revives a failed Run without the key', async () => {
+    const run = makeThreePhaseRun({ status: 'failed', failureCause: 'phase_failed', pendingRetryAt: null });
+    const { service, updateRun } = makeService(run);
+
+    expect(await service.skipPhase(QUEUE_ID, 'beta')).toEqual({ ok: true });
+    const patch = lastPatch(updateRun, run);
+    expect(patch.status).toBe('running');
+    expectClearsCause(patch);
+  });
+});

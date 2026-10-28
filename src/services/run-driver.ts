@@ -16,6 +16,7 @@ import {
 import { advancedRun } from './run-advance';
 import { terminalSettler } from './run-terminal-effects';
 import { emitTerminalOutcomeAudit } from './terminal-outcome-audit';
+import { failureNotice } from './failure-notice';
 import {
   cliSessionOf,
   creditPausedRun,
@@ -472,7 +473,8 @@ export class RunDriver {
               status: 'failed',
               lastError: sanitized,
               lastTransitionAt: Date.now(),
-              creditPause: null
+              creditPause: null,
+              failureCause: 'runner_probe_failed'
             });
 
             if (this.deps.appendRunnerProbeFailedAudit) {
@@ -482,12 +484,9 @@ export class RunDriver {
                 runId: run.id
               });
             }
-            this.deps.statusBar.update(run.id, {
-              kind: 'failed',
-              phase: run.currentPhase,
-              detail: failureMessage
-            });
-            this.deps.notifier.warn(`Schegent: ${failureMessage}`);
+            const probeNotice = failureNotice({ cause: 'runner_probe_failed', runnerKind });
+            this.deps.statusBar.update(run.id, { kind: 'failed', phase: run.currentPhase, detail: probeNotice.statusDetail });
+            this.deps.notifier.warn(probeNotice.message);
             try {
               const finished = await this.deps.queue.finish(run.featureId, 'failed', {
                 code: sanitized.code,
@@ -839,9 +838,14 @@ export class RunDriver {
             lastTransitionAt: Date.now(),
             phasesCompleted: [...run.phasesCompleted, phaseResult],
             lastError: sanitized,
-            creditPause: null
+            creditPause: null,
+            failureCause: postDecision.failureCause
           };
           run = await this.deps.persistTransition(run, failed);
+          const notice = failureNotice({
+            cause: postDecision.failureCause, phase: run.currentPhase, taskTitle: description,
+            iteration, iterationCap: this.deps.options.iterationCap, stalledCount: postDecision.stalledCount
+          });
           // FR-R3-128 (T1484) — the terminal effect sequence, in one place. The
           // ORDER is unchanged and is load-bearing; see `run-terminal-effects.ts`.
           await this.settle({
@@ -849,11 +853,8 @@ export class RunDriver {
             description,
             terminalStatus: 'failed',
             presentation: {
-              statusBar: { kind: 'failed', phase: run.currentPhase, detail: sanitized.message },
-              notify: {
-                level: 'warn',
-                message: `Schegent: ${run.currentPhase} failed — ${sanitized.message}. Run "Schegent: Resume" to retry.`
-              }
+              statusBar: { kind: 'failed', phase: run.currentPhase, detail: notice.statusDetail },
+              notify: { level: 'warn', message: notice.message }
             },
             queueError: {
               code: sanitized.code,
@@ -1188,20 +1189,20 @@ export class RunDriver {
       status: 'failed',
       lastError,
       lastTransitionAt: Date.now(),
-      creditPause: null
+      creditPause: null,
+      failureCause: 'audit_evidence_unavailable'
     });
 
     this.deps.logger.error(
       'run-driver: execution stopped because required structured audit evidence is unavailable'
     );
+    const notice = failureNotice({ cause: 'audit_evidence_unavailable' });
     this.deps.statusBar.update(failed.id, {
       kind: 'failed',
       phase: failed.currentPhase,
-      detail: message
+      detail: notice.statusDetail
     });
-    this.deps.notifier.warn(
-      'Schegent: execution stopped because required structured audit evidence is unavailable. Resolve the evidence sink and reload the workspace before resuming.'
-    );
+    this.deps.notifier.warn(notice.message);
     try {
       const finished = await this.deps.queue.finish(failed.featureId, 'failed', {
         code: lastError.code,

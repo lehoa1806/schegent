@@ -25,6 +25,7 @@ import {
 } from '../../../src/metrics/metrics-rollup';
 import {
   MetricsRollupWriter,
+  rollupRecordFor,
   type MetricsRollupAppend
 } from '../../../src/metrics/metrics-rollup-writer';
 import type { SanitizedLogger } from '../../../src/lib/logger';
@@ -300,5 +301,132 @@ describe('MetricsRollupWriter — idempotence per run id (FR-R3-009, T388)', () 
     expect(retried).toEqual({ outcome: 'appended' });
     expect(await readRecords()).toHaveLength(1);
     expect(health.successes).toEqual(['metricsRollup']);
+  });
+});
+
+// FR-R4-F14 (spec 242, contract M3, M3.1, M5, D6, D7) — the version-2 record the writer appends.
+//
+// The cause is read from the Run by the recorder and written here only for a `failed` append that
+// carries one. The first record per run id stays the rule, so a Run that fails, is resumed and fails
+// again keeps its FIRST failure's cause in the rollup (the audit log holds each). And a build must not
+// rewrite a rollup it cannot fully read: a retained record from a newer build leaves the trim idle.
+describe('MetricsRollupWriter — the failure cause (FR-R4-F14)', () => {
+  const rawLine = async (): Promise<Record<string, unknown>> =>
+    JSON.parse((await readFile(rollupPath(), 'utf8')).trim().split('\n')[0] ?? '{}') as Record<string, unknown>;
+
+  it('stamps record version 2 and writes the cause of a failed append', async () => {
+    const writer = new MetricsRollupWriter({ workspaceRoot, logger: testLogger() });
+    await writer.append(append({ terminalStatus: 'failed', failureCause: 'cap_exhausted' }));
+
+    const written = await rawLine();
+    expect(written.v).toBe(2);
+    expect(written.failureCause).toBe('cap_exhausted');
+    expect((await readRecords())[0]?.failureCause).toBe('cap_exhausted');
+  });
+
+  it('writes no failureCause key for a failed append that carries none', async () => {
+    const writer = new MetricsRollupWriter({ workspaceRoot, logger: testLogger() });
+    await writer.append(append({ terminalStatus: 'failed' }));
+
+    expect(await rawLine()).not.toHaveProperty('failureCause');
+  });
+
+  it.each(['completed', 'canceled'] as const)(
+    'writes no failureCause for a %s append, even when one is passed',
+    async (terminalStatus) => {
+      const writer = new MetricsRollupWriter({ workspaceRoot, logger: testLogger() });
+      await writer.append(append({ terminalStatus, failureCause: 'cap_exhausted' }));
+
+      expect(await rawLine()).not.toHaveProperty('failureCause');
+    }
+  );
+
+  it('keeps the first failure\'s cause when the same run id arrives again (D7)', async () => {
+    const writer = new MetricsRollupWriter({ workspaceRoot, logger: testLogger() });
+    expect(
+      await writer.append(append({ terminalStatus: 'failed', failureCause: 'cap_exhausted' }))
+    ).toEqual({ outcome: 'appended' });
+    expect(
+      await writer.append(append({ terminalStatus: 'failed', failureCause: 'phase_failed' }))
+    ).toEqual({ outcome: 'already-recorded' });
+
+    const records = await readRecords();
+    expect(records).toHaveLength(1);
+    expect(records[0]?.failureCause).toBe('cap_exhausted');
+  });
+
+  it('builds the test-helper record the way the writer does', () => {
+    expect(rollupRecordFor(append({ terminalStatus: 'failed', failureCause: 'phase_timeout' }))).toMatchObject({
+      v: 2,
+      failureCause: 'phase_timeout'
+    });
+    expect(rollupRecordFor(append({ terminalStatus: 'failed' }))).not.toHaveProperty('failureCause');
+    expect(rollupRecordFor(append({ terminalStatus: 'completed', failureCause: 'phase_timeout' }))).not.toHaveProperty(
+      'failureCause'
+    );
+  });
+
+  describe('the trim leaves a rollup it cannot fully read (M3.1)', () => {
+    // Three retained records, so the newer record stays inside the window for two appends in a row.
+    // A record the trim DISCARDS is only folded into totals, which carry no field; it
+    // is the RETAINED ones that are re-serialized through this build's field set.
+    class SmallWindowWriter extends MetricsRollupWriter {
+      protected override retainedRecordsAfterTrim(): number {
+        return 3;
+      }
+    }
+
+    // The padding goes FIRST, ahead of the records, for the reason the durability test records: the
+    // reader keeps the tail, so padding after the records would push them outside its bound.
+    async function seedOversized(records: readonly object[]): Promise<string> {
+      await mkdir(join(workspaceRoot, '.schegent'), { recursive: true });
+      const body = `${' '.repeat(9 * 1024 * 1024)}\n${records.map((entry) => JSON.stringify(entry)).join('\n')}\n`;
+      await writeFile(rollupPath(), body);
+      return body;
+    }
+
+    const line = (v: number, runId: string): object => ({
+      v,
+      runId,
+      terminalStatus: 'failed',
+      startedAt: '2026-08-01T00:00:00.000Z',
+      endedAt: '2026-08-01T00:05:00.000Z',
+      durationMs: 1,
+      phasesTotal: 1,
+      phasesCompleted: 0,
+      phasesSkipped: 0,
+      backendInvocations: 1,
+      failureCause: 'cap_exhausted'
+    });
+
+    it('rewrites nothing when a retained record is newer than this build, and warns once with counts only', async () => {
+      const seeded = await seedOversized([line(2, 'run-a'), line(2, 'run-b'), line(3, 'run-from-the-future')]);
+      const logger = testLogger();
+      const writer = new SmallWindowWriter({ workspaceRoot, logger });
+
+      await writer.append(append({ runId: 'run-trigger-1' }));
+      const afterFirst = await readFile(rollupPath(), 'utf8');
+      expect(afterFirst.startsWith(seeded), 'the trim must not have rewritten the file').toBe(true);
+      expect(afterFirst).not.toContain('carry-forward');
+      expect(afterFirst.slice(seeded.length).trim().split('\n')).toHaveLength(1);
+
+      await writer.append(append({ runId: 'run-trigger-2' }));
+      const afterSecond = await readFile(rollupPath(), 'utf8');
+      expect(afterSecond.startsWith(afterFirst)).toBe(true);
+      expect(afterSecond).not.toContain('carry-forward');
+
+      const trimWarnings = logger.warnings.filter((entry) => /newer|trim/i.test(entry.message));
+      expect(trimWarnings, 'one warning per writer instance').toHaveLength(1);
+      expect(JSON.stringify(trimWarnings[0])).not.toContain(workspaceRoot);
+    }, 30_000);
+
+    it('still trims a rollup whose records are all this build\'s or older', async () => {
+      await seedOversized([line(1, 'run-a'), line(2, 'run-b'), line(2, 'run-c')]);
+      const writer = new SmallWindowWriter({ workspaceRoot, logger: testLogger() });
+
+      await writer.append(append({ runId: 'run-trigger' }));
+
+      expect(await readFile(rollupPath(), 'utf8')).toContain('carry-forward');
+    }, 30_000);
   });
 });

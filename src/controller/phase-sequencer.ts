@@ -51,6 +51,7 @@ import { resolveRetryCapOutcome } from '../contracts/retry-cap-outcome';
 import type { PhaseRunOutput } from './phase-runner';
 import { toDelayedRetryCause } from './rate-limit-backoff';
 import { CAP_EXHAUSTED_CAUSE } from '../audit/audit-payload';
+import { failureCauseOf, type SequencerFailureCause } from './fail-decision-cause';
 
 /** Pre-dispatch decision: skip the current phase or invoke the runner. */
 export type PrePhaseDecision =
@@ -112,6 +113,17 @@ export type PostPhaseDecision =
       readonly decisionCause: string | undefined;
       readonly fatalCause: string | undefined;
       readonly capExhausted: boolean;
+      /**
+       * FR-R4-F14 (V3) — the one closed code for this failure, chosen here from closed facts only.
+       * The driver writes it on the Run in the same write that makes the Run `failed`.
+       */
+      readonly failureCause: SequencerFailureCause;
+      /**
+       * FR-R4-F14 (FR-014) — the count of consecutive unchanged retry-condition comparisons, passed
+       * through when the runner measured one, so the cap notice states the number the cap warning
+       * does. Absent when the phase has no retry condition or the count was not measured.
+       */
+      readonly stalledCount?: number;
       readonly warnings: readonly string[];
       readonly evictStagnationTracker: true;
     }
@@ -427,6 +439,13 @@ export class PhaseSequencer {
         decisionCause: decision.cause,
         fatalCause,
         capExhausted: decision.cause === CAP_EXHAUSTED_CAUSE,
+        failureCause: failureCauseOf({
+          decisionCause: decision.cause,
+          fatalMatched: fatalCause !== undefined,
+          outcome: output.outcome,
+          terminationReason: output.terminationReason
+        }),
+        ...(output.stalledCount !== undefined ? { stalledCount: output.stalledCount } : {}),
         warnings,
         evictStagnationTracker: true
       };

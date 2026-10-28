@@ -12,6 +12,7 @@ import type {
 // `WorkflowRunPipeline` from this file, so a value import either way would be a
 // real cycle. Both directions are erased at compile time.
 import type { ExecutionEnvelope, FrozenInputBinding } from '../contracts/run-request';
+import type { FailureCause } from '../contracts/failure-cause';
 import type { RunOutputRecord } from '../contracts/run-results';
 import type { DegradedPhaseEntry } from '../contracts/snapshot-projections';
 
@@ -195,7 +196,9 @@ export function canceledRunPatch(now: number): RunPatch {
     resumeTargetPhaseId: null,
     pendingRetryAt: null,
     pendingRetryCause: null,
-    creditPause: null
+    creditPause: null,
+    // FR-R4-F14 — a failed Run can be canceled, and a failure cause beside `canceled` is refused.
+    failureCause: undefined
   };
 }
 
@@ -614,6 +617,22 @@ export interface WorkflowRun {
    */
   degradedPhases?: readonly DegradedPhaseEntry[];
   lastError: SanitizedError | null;
+  /**
+   * FR-R4-F14 (spec 242, D5) — why this Run failed, one code from the closed vocabulary in
+   * `contracts/failure-cause.ts`. Present only while `status === 'failed'`, and set in the write
+   * that makes the Run `failed`, so the terminal audit event and the metrics rollup read it from
+   * the Run (a crash replay reads the journalled Run and records the same code).
+   *
+   * **Absent means "not recorded"**, for a Run that failed before this feature as for any other. It
+   * is optional and additive, as `degradedPhases` is: no migration, no `STATE_SCHEMA_VERSION` bump,
+   * and a record persisted before this feature reads back byte-identical.
+   *
+   * What keeps it one-sided-free: `validateRunInvariants` refuses it beside any other status, and
+   * `tests/lint/failure-cause-clear-census.test.ts` makes every writer that leaves `failed` name it.
+   * A writer that leaves `failed` writes `failureCause: undefined`, which `updateRun` reads as
+   * "remove the key".
+   */
+  failureCause?: FailureCause;
   /** Frozen at run creation; legacy records migrate to `always`. */
   rawTranscriptMode?: RawTranscriptMode;
   /** Frozen projection of phases that can mutate Git state. */
