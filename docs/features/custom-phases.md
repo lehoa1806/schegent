@@ -90,6 +90,14 @@ retryCondition: pending_tasks > 0
 
 That Phase instructs the backend to emit a top-level `pending_tasks: <N>` metric in the audit block. A truthy result loops until the iteration cap; a falsy result advances.
 
+From version 3 of the example the Phase also emits `spec_gaps`, `blocked_tasks` and `user_run_tasks`, and only `pending_tasks` feeds the condition. That is deliberate: a condition that counted a blocked task or a hand-off would repeat the iteration to the cap on something no further iteration can change. The Phase lists each open hand-off under `Hand-off tasks (for the user):` as `- <task id> (<basis>): <task text>`, outside `Remaining issues:`, and `user_run_tasks` equals the number it lists.
+
+A task the agent cannot settle by the precedence its instruction gives it (the constitution, then `spec.md`, `plan.md`, `research.md`, `tasks.md`) is *blocked*: it is recorded in `<feature_dir>/decisions.md` as `Status: needs-maintainer`, left unchecked, and left out of `pending_tasks`. A blocked task is listed under `Remaining issues:`, and the Phase does not report `CLEAR` while one is open.
+
+A *hand-off* is an incomplete task only a person can finish, in three cases and no other. Its own line in `tasks.md` carries the `USER-RUN` marker outside inline code, so a line that only quotes the marker in inline code is not marked. Or its own line names a person's approval as the condition, so review and test wording do not count. Or every other step is done and the only one left is pushing, opening or merging a pull request, watching CI, or deploying outside the repository. A task with implementation still undone is pending, however hard it is, and a failing test the agent can fix never makes a hand-off. Only the tasks Phase writes the `[USER-RUN]` label, and only on work that needs a person; the implement Phase never adds, removes or edits a marker or an approval wording, and never ticks a hand-off. A Phase with only hand-offs left reports `CLEAR`, so the Run advances after one iteration instead of spending its retries.
+
+A Phase whose condition is falsy advances, even when it reported `Remaining issues:`. A blocked task or an open spec gap therefore makes implement report `Remaining issues:` and not `CLEAR`, and the Run still moves on to the reviews and `finalize`. `finalize` withholds its merge while a `needs-maintainer` decision is open, as described under [Author a verification Phase](#author-a-verification-phase), and because it is the last Phase its remaining issues fail the Run with the `last_phase_issues_remain` cause. None of this is a human gate the host enforces: the classification is prose the backend follows, the host checks no marker, basis or count, and a miscount shows in the hand-offs the Phase lists.
+
 <!-- Source: examples/speckit-new-feature.pipeline.yaml -->
 <!-- Source: src/controller/phase.ts -->
 
@@ -124,7 +132,10 @@ For that verifier, declare `sideEffects: none` so the authored contract says it 
 
 The shipped example's `finalize` instruction already names the concrete check classes—build, tests, lint, and typecheck—and requires `checks_passing` and `checks_failing` metrics, but it is intentionally a repairing, Git-writing Phase rather than the read-only verifier described here.
 
+From version 3 its repairs have a stated limit, because a headless run has nobody to ask. A failing dependency-audit check whose advisory is in a dependency the feature did not change may be fixed without approval, by a patch or minor bump of at most three packages in a `fix(deps)` commit of its own, which is reverted if it turns a green check red. A major bump, a forced or blanket update, an `overrides` or `resolutions` entry, a new or replaced dependency, and any change to an audit's threshold, ignore list or waiver are outside that authority and are reported under `Remaining issues:`. The merge to `develop` happens only when every check is green and `<feature_dir>/decisions.md` has no `Status: needs-maintainer` entry. Because `finalize` is the last Phase, remaining issues fail the Run with the `last_phase_issues_remain` cause, and under `halt-on-failure` they stop the Queue. This reduces the risk of a stalled run; it does not remove it, because the authority is prose the backend follows and the host does not enforce it.
+
 <!-- Source: examples/speckit-new-feature.pipeline.yaml -->
+<!-- Source: src/controller/phase.ts -->
 
 ## Versioning and publication
 
