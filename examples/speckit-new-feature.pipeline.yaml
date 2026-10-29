@@ -3,7 +3,7 @@ kind: Pipeline
 metadata:
   id: speckit-new-feature
   name: Spec-kit New Feature
-  version: 4
+  version: 5
 spec:
   phaseIds:
     - speckit-specify
@@ -195,15 +195,21 @@ included:
     - metadata:
         phaseId: speckit-code-review
         name: Spec-kit Code Review
-        version: 2
+        version: 3
       spec:
         instruction: |-
           Review this feature's code changes for correctness defects, and fix them.
 
           Scope:
-          - If the workspace root contains both a repo/ subdirectory (with its own .git/) AND a specs/ directory, the code repository is repo/. Otherwise it is the workspace root. Log which.
-          - In the code repository, review `git diff $(git merge-base HEAD develop)` — every committed and uncommitted change since the branch left develop, the branch finalize merges into — plus each untracked file listed by `git ls-files --others --exclude-standard`. Both commands are read-only: never stage a file to make it visible.
-          - Spec Kit artifacts (specs/, .specify/) are out of scope.
+          Resolve the repositories to review before reviewing, on every iteration. Resolving only reads: never stage or unstage a file, switch, create or delete a branch, fetch, stash, update a submodule, write a ref or touch an index. Run each command below from the workspace root <root> as written, each placeholder one argument.
+          - Declaration. A section of <root>/AGENTS.md headed exactly "## Implementation repositories" declares the targets. Each bullet starting with inline code is an entry: a path relative to <root> in inline code (`.` for <root>), optionally followed by `(base: <ref>)` in inline code, and nothing else. Other lines are prose. A path or ref uses only letters, digits and the characters . _ / - and does not start with -. The base defaults to develop.
+          - With a declaration, its entries are the only targets: add, drop or swap none. Without one, infer: repo when <root> holds specs/ and repo is a repository top level, otherwise . when <root> is one, otherwise the scope is unresolved. CLAUDE.md, a nested AGENTS.md, plan files and agent memory never pick a target; where one names other repositories, say so under Notes:.
+          - The whole scope is unresolved, and nothing is reviewed, when the section has no entry, an entry breaks the form, there are two such sections, or two entries resolve to the same location.
+          - One target is unresolved, and the others are still reviewed, when it does not exist; when it is outside the workspace: its path is absolute, or `cd <root>/<path> && pwd -P` prints neither the root's own `pwd -P` nor a path below it (read nothing there); when it is not a repository top level: `git -C <path> rev-parse --show-prefix` fails or prints anything (a .git file counts like a .git directory); or when it has no base: `git -C <path> merge-base HEAD <base>` fails or prints nothing. Never substitute another branch, a remote-tracking ref or a fetch; the remedy is declaring the repository with `(base: <ref>)`.
+          - Files. A resolved target's scope is each file listed by `git -C <path> diff --name-only --ignore-submodules=none <merge-base> HEAD` or by `git --no-optional-locks -C <path> status --porcelain --untracked-files=all --ignore-submodules=none`, except under specs/ and .specify/. Read changes with `git --no-optional-locks -C <path> diff-index -p <merge-base>` and untracked files directly. Never run git diff against the working tree: it can rewrite the index.
+          - Gitlinks. A mode 160000 entry in `git -C <path> ls-files --stage` is a repository, not a file, and is changed when either list above names it. Check those of each target, and of <root> when it is not a target (against develop, or by status alone when develop does not resolve there). A changed gitlink that is not a target: with a declaration, list it as "changed, not declared, not reviewed" and note it under Notes:, uncounted; without one, the scope is unresolved and names it. List every other gitlink as not reviewed.
+          - Each unresolved condition is a counted finding: one bullet under "Remaining issues:", tagged [needs-decision], naming the path and the reason. Never review a substitute (the root, a guessed repository or one memory names), and never write or edit the declaration.
+          - Report "Review scope:" on its own line, first in your report and outside the audit log block: the source (declaration or layout inference), one bullet per target with its path, base, merge-base commit and the counts of changed tracked files and of untracked files reviewed, or "no feature changes", or why it is unresolved, then each listed gitlink.
 
           Reviewing:
           - Do the review yourself, in this session. Do not invoke /code-review, which only a user can launch, and do not delegate to a sub-agent, which would run on a model this Phase did not choose.
@@ -212,7 +218,7 @@ included:
           - Style, naming, speculative and refactoring remarks go under Notes: and are not counted. A demonstrated false positive also goes under Notes:, with a one-line justification, and is not counted.
 
           Fixing:
-          - Apply a minimal fix for every counted finding, inside the code repository. Do not refactor unrelated code.
+          - Apply a minimal fix for every counted finding, inside the resolved targets. Do not refactor unrelated code.
           - Re-check each fix once.
 
           Result determination:
@@ -235,15 +241,21 @@ included:
     - metadata:
         phaseId: speckit-security-review
         name: Spec-kit Security Review
-        version: 2
+        version: 3
       spec:
         instruction: |-
           Review this feature's code changes for security defects, and fix them.
 
           Scope:
-          - If the workspace root contains both a repo/ subdirectory (with its own .git/) AND a specs/ directory, the code repository is repo/. Otherwise it is the workspace root. Log which.
-          - In the code repository, review `git diff $(git merge-base HEAD develop)` — every committed and uncommitted change since the branch left develop, the branch finalize merges into — plus each untracked file listed by `git ls-files --others --exclude-standard`. Both commands are read-only: never stage a file to make it visible.
-          - Spec Kit artifacts (specs/, .specify/) are out of scope.
+          Resolve the repositories to review before reviewing, on every iteration. Resolving only reads: never stage or unstage a file, switch, create or delete a branch, fetch, stash, update a submodule, write a ref or touch an index. Run each command below from the workspace root <root> as written, each placeholder one argument.
+          - Declaration. A section of <root>/AGENTS.md headed exactly "## Implementation repositories" declares the targets. Each bullet starting with inline code is an entry: a path relative to <root> in inline code (`.` for <root>), optionally followed by `(base: <ref>)` in inline code, and nothing else. Other lines are prose. A path or ref uses only letters, digits and the characters . _ / - and does not start with -. The base defaults to develop.
+          - With a declaration, its entries are the only targets: add, drop or swap none. Without one, infer: repo when <root> holds specs/ and repo is a repository top level, otherwise . when <root> is one, otherwise the scope is unresolved. CLAUDE.md, a nested AGENTS.md, plan files and agent memory never pick a target; where one names other repositories, say so under Notes:.
+          - The whole scope is unresolved, and nothing is reviewed, when the section has no entry, an entry breaks the form, there are two such sections, or two entries resolve to the same location.
+          - One target is unresolved, and the others are still reviewed, when it does not exist; when it is outside the workspace: its path is absolute, or `cd <root>/<path> && pwd -P` prints neither the root's own `pwd -P` nor a path below it (read nothing there); when it is not a repository top level: `git -C <path> rev-parse --show-prefix` fails or prints anything (a .git file counts like a .git directory); or when it has no base: `git -C <path> merge-base HEAD <base>` fails or prints nothing. Never substitute another branch, a remote-tracking ref or a fetch; the remedy is declaring the repository with `(base: <ref>)`.
+          - Files. A resolved target's scope is each file listed by `git -C <path> diff --name-only --ignore-submodules=none <merge-base> HEAD` or by `git --no-optional-locks -C <path> status --porcelain --untracked-files=all --ignore-submodules=none`, except under specs/ and .specify/. Read changes with `git --no-optional-locks -C <path> diff-index -p <merge-base>` and untracked files directly. Never run git diff against the working tree: it can rewrite the index.
+          - Gitlinks. A mode 160000 entry in `git -C <path> ls-files --stage` is a repository, not a file, and is changed when either list above names it. Check those of each target, and of <root> when it is not a target (against develop, or by status alone when develop does not resolve there). A changed gitlink that is not a target: with a declaration, list it as "changed, not declared, not reviewed" and note it under Notes:, uncounted; without one, the scope is unresolved and names it. List every other gitlink as not reviewed.
+          - Each unresolved condition is a counted finding: one bullet under "Remaining issues:", tagged [needs-decision], naming the path and the reason. Never review a substitute (the root, a guessed repository or one memory names), and never write or edit the declaration.
+          - Report "Review scope:" on its own line, first in your report and outside the audit log block: the source (declaration or layout inference), one bullet per target with its path, base, merge-base commit and the counts of changed tracked files and of untracked files reviewed, or "no feature changes", or why it is unresolved, then each listed gitlink.
 
           Reviewing:
           - Do the review yourself, in this session. Do not delegate to a sub-agent, which would run on a model this Phase did not choose, and do not treat a /security-review skill's checklist as the review.
@@ -253,7 +265,7 @@ included:
           - A demonstrated false positive goes under Notes:, with a one-line justification of why the path is unreachable, and is not counted.
 
           Fixing:
-          - Apply a minimal, targeted fix for every counted finding, inside the code repository. Do not refactor unrelated code, and do not undo the code review's fixes.
+          - Apply a minimal, targeted fix for every counted finding, inside the resolved targets. Do not refactor unrelated code, and do not undo the code review's fixes.
           - Re-check each fix once.
 
           Result determination:

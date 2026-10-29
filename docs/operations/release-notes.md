@@ -9,6 +9,36 @@ This file is the release workflow's stable pointer for changes that affect opera
 Recorded as they land, so the first release note is assembled from evidence rather than
 from memory.
 
+### The two review Phases read the repositories a workspace declares (FR-R4-F18, 2026-10-29)
+
+`speckit-code-review` and `speckit-security-review` chose their repository by layout: `repo/` beside
+`specs/`, otherwise the workspace root. In a workspace whose code lives in linked repositories that
+picked the planning root, so a review could read an envelope diff with no source changes and report
+nothing wrong. They now read the repositories a workspace declares, report them first under
+`Review scope:`, and treat a scope they cannot resolve as a finding.
+
+- A workspace owner declares the repositories in a section headed `## Implementation repositories`
+  in the workspace root's `AGENTS.md`: one bullet per repository, in inline code, with an optional
+  `(base: <ref>)` that defaults to `develop`. A declaration is the only source of targets; `CLAUDE.md`,
+  plan files and agent memory never choose one. The three layouts, the entry form and what a linked
+  repository the declaration omits does are in
+  [Choose the repositories the two reviews read](process-yaml.md#choose-the-repositories-the-two-reviews-read).
+- A workspace without a declaration keeps today's target in both supported layouts: the workspace
+  root for a standalone repository, and `repo/` for the envelope, including a `repo/` that is a linked
+  worktree. A planning root with linked repositories needs the declaration.
+- An unresolved scope is a counted finding, tagged `[needs-decision]`: a declared path that does not
+  exist, is outside the workspace, is not a repository top level or has no base, or a declaration that
+  is broken. The review never reports clear while one stands, so the Phase retries to its iteration
+  cap, or to the unchanged-metrics stop when `schegent.loop.maxUnchangedComparisons` is set. The
+  remedy is the declaration.
+- Each changed Phase is a new version: `speckit-code-review` 3, `speckit-security-review` 3, and the
+  pipeline `speckit-new-feature` 5. An import skips ids a catalog already holds, so an existing
+  catalog gets the new text by publishing the two Phases and composing queued items again; the steps
+  are in
+  [Bring an existing catalog to a revised example](process-yaml.md#bring-an-existing-catalog-to-a-revised-example).
+- No setting, event, field, schema version or host behavior changed, and there is no migration. Runs
+  already created keep the text they were created with.
+
 ### A retry loop can fail early when its judged figures stop changing, off by default (FR-R4-F17, 2026-10-29)
 
 A loop whose retry condition stayed true and whose figures did not move ran to its iteration cap, one
