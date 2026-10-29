@@ -416,6 +416,24 @@ const EXEMPTIONS: ReadonlyMap<string, Exemption> = new Map<string, Exemption>([
         'scan on purpose rather than by omission.',
       reviewBy: PERMANENT
     }
+  ],
+
+  // ── Owned by FR-R4-F17 (feature 245): the unchanged-comparison bound. ────
+  [
+    'loop.maxUnchangedComparisons',
+    {
+      owner: 'FR-R4-F17 — native VS Code Settings UI and the per-Run limits view',
+      reason:
+        'An integer from 0 to 49, off by default, with its own `description` in the contribution ' +
+        'manifest: discoverable and editable from the native VS Code Settings UI. It is shown per ' +
+        'Run, with its origin and whether it applies to the current Phase, by the limits view ' +
+        '(`RunLimitsPanel.svelte`). It has no `KEY_SPECS` entry and no field on ' +
+        '`GeneralSettingsTab.svelte` on purpose (spec D2, research R5): a tab field would bring a ' +
+        'save-path key, two idle snapshots, a bounds gate and the documented key count, and belongs ' +
+        'with the policy decision that would turn the bound on. If that control is added, this row ' +
+        'must be deleted in the same diff, as the ledger\'s own `already rendered` failure requires.',
+      reviewBy: PERMANENT
+    }
   ]
 ]);
 

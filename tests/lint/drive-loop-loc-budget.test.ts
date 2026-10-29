@@ -122,13 +122,22 @@ const SIGNATURE = 'public async drive(';
  *        and three more, 660 → 657. `run-driver.ts` itself moved 1,294 → 1,298 by `wc -l`,
  *        which keeps 32 lines under its 1,330 ceiling against a `tightMargin` of 26.
  *
+ *   656  FR-R4-F17 (feature 245, 2026-10-29) — the driver now reads a second live retry
+ *        setting at the `decideAfterPhase` call. The two-line `forceContinueOnRetryCapDefault:`
+ *        argument became one line, a spread of `PhaseSequencer.liveRetryPolicyOf`, which reads
+ *        both settings, 657 → 656, a net decrement even though the call now carries a second
+ *        setting. `run-driver.ts` itself stayed at 1,302 by `wc -l` (the new option line took
+ *        the place of the removed argument line), which keeps 28 lines under its 1,330 ceiling
+ *        against a `tightMargin` of 26: the helper sits in the sequencer the driver already
+ *        holds because a private method of the driver would have taken the file to 1,318.
+ *
  * Next candidates, named so the next decrement does not start with a
  * re-measurement: the four pause arms — breakpoint, delayed-retry, rate-limit,
  * verify — are roughly 230 lines between them. The probe-failure arm is NOT a
  * candidate for merging into the shared sequence: its audit emission order differs,
  * and unifying it is an observable change.
  */
-const DRIVE_MAX_LINES = 657;
+const DRIVE_MAX_LINES = 656;
 
 /** Lines from the signature to the closing brace, inclusive. */
 export function methodLineCount(source: string, signature: string): number {

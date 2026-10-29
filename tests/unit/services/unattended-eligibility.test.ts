@@ -251,3 +251,32 @@ describe('the decision is pure (contract U1 G1)', () => {
     expect(JSON.stringify(run)).toBe(before);
   });
 });
+
+// FR-R4-F17 (feature 245, contract C6.4; FR-020; SC-006; US3-5) — a Run stopped on unchanged judged
+// metrics is failed, and no unattended wakeup resumes a failed Run. The decision reads no cause, so the
+// new code needs no rule: rule 2 already answers `not-paused` for the status alone, and this case proves
+// that the code's presence changes nothing.
+describe('a Run stopped on unchanged judged metrics is not resumed unattended (FR-R4-F17, C6.4)', () => {
+  const stopped = (overrides: Partial<WorkflowRun> = {}): WorkflowRun =>
+    creditPausedRun({
+      status: 'failed',
+      creditPause: null,
+      failureCause: 'judged_metrics_unchanged',
+      ...overrides
+    });
+
+  it('is not-paused for a credits-restored wakeup and for a backoff-elapsed wakeup', () => {
+    expect(decideUnattendedEligibility(stopped(), CREDITS, NOW)).toEqual({ eligible: false, reason: 'not-paused' });
+    expect(decideUnattendedEligibility(stopped(), BACKOFF, NOW)).toEqual({ eligible: false, reason: 'not-paused' });
+  });
+
+  it('is not-paused even when the Run also carries an elapsed backoff deadline', () => {
+    const run = stopped({ pendingRetryAt: NOW - 60_000, pendingRetryCause: 'rate_limit' });
+    expect(decideUnattendedEligibility(run, BACKOFF, NOW)).toEqual({ eligible: false, reason: 'not-paused' });
+  });
+
+  it('control: the same Run, paused and without the cause, is eligible, so the answer above is about the status', () => {
+    expect(decideUnattendedEligibility(creditPausedRun(), CREDITS, NOW)).toEqual({ eligible: true });
+    expect(decideUnattendedEligibility(backoffRun(NOW - 1), BACKOFF, NOW)).toEqual({ eligible: true });
+  });
+});

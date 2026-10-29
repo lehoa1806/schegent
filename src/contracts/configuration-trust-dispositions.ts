@@ -184,6 +184,14 @@ export const CONFIGURATION_SENSITIVITY = Object.freeze({
     sensitivity: 'run-shape',
     reason: 'bounds phase iteration inside a run'
   },
+  // FR-R4-F17 (feature 245) — the same argument as `loop.maxIterations`: it has nothing to act on until
+  // a Run may start, and the worst a repository can do with it is fail a looping phase sooner.
+  'schegent.loop.maxUnchangedComparisons': {
+    sensitivity: 'run-shape',
+    reason:
+      'ends a looping phase early inside a run the operator started after trusting the folder; ' +
+      'its worst misuse fails a run sooner'
+  },
   'schegent.models': {
     sensitivity: 'run-shape',
     reason: 'model identifiers passed to a backend an untrusted window never spawns'

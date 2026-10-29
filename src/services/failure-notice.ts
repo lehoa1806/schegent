@@ -1,7 +1,7 @@
 /**
  * FR-R4-F14 (feature 242, contract N, D8 to D11) — the warning an operator reads when a run fails.
  *
- * Eight fixed host templates, one per failure cause except `start_failed`, whose notice is the
+ * Nine fixed host templates, one per failure cause except `start_failed`, whose notice is the
  * start-failure classification's own announcement (research R10). Each text starts with the outcome
  * and then gives the advice (FR-011): the named action, if any, is worth taking, and the one that
  * would not help is not offered. Every action is named by the exact title an operator sees:
@@ -11,7 +11,7 @@
  *   - "Mark '<title>' as completed" is the queue row's button, for work finished by hand.
  *
  * No text names the "Retry feature" button, the queue-level resume or the short resume title that is
- * not the command's full title: none is the right action for a failed Run (D9, D11, N3.1). Two texts
+ * not the command's full title: none is the right action for a failed Run (D9, D11, N3.1). Three texts
  * name "Show last error", and only when a failure record was written (FR-R4-F15 D13; see
  * {@link SHOW_LAST_ERROR_SENTENCE}): the button shows the record, so the sentence is true only then.
  *
@@ -81,6 +81,16 @@ export type FailureNoticeInput =
       readonly recordWritten?: boolean | undefined;
     })
   | (PhaseNotice & {
+      readonly cause: 'judged_metrics_unchanged';
+      readonly taskTitle: string;
+      readonly iteration: number;
+      readonly iterationCap: number;
+      /** Consecutive unchanged comparisons; at least 1 whenever the stop applied (FR-R4-F17). */
+      readonly stalledCount?: number | undefined;
+      /** FR-R4-F15 (D13) — as on the cap notice. */
+      readonly recordWritten?: boolean | undefined;
+    })
+  | (PhaseNotice & {
       readonly cause:
         | 'incomplete_turn_unresolved'
         | 'fatal_signature'
@@ -132,6 +142,18 @@ function stalledClause(stalledCount: number | undefined): string {
   return ` Its metrics were unchanged across the last ${Math.trunc(stalledCount)} comparisons.`;
 }
 
+/**
+ * FR-R4-F17 (contract C4.1) — `the last {n} comparison(s)`, or `its recent comparisons` when the count
+ * is absent or is not a positive integer once truncated.
+ */
+function unchangedComparisonsPhrase(stalledCount: number | undefined): string {
+  if (stalledCount === undefined || !Number.isFinite(stalledCount) || Math.trunc(stalledCount) < 1) {
+    return 'its recent comparisons';
+  }
+  const count = Math.trunc(stalledCount);
+  return `the last ${count} comparison${count === 1 ? '' : 's'}`;
+}
+
 function messageFor(input: FailureNoticeInput): string {
   if (input.cause === 'audit_evidence_unavailable') {
     return (
@@ -170,6 +192,22 @@ function messageFor(input: FailureNoticeInput): string {
           `finished the work by hand, record it with "${markCompletedTitle(input.taskTitle, sanitize)}".`,
         input.recordWritten
       );
+    case 'judged_metrics_unchanged': {
+      // The stop is stated as a measurement, never as "no progress": unchanged figures do not prove that
+      // no work happened (FR-016). The resolve sentence comes before the Resume it advises, and the
+      // resume runs the phase again at the iteration it stopped on (FR-R4-F17 D9, D10).
+      const iteration = Math.trunc(input.iteration);
+      return withRecordPointer(
+        `Schegent: ${phase} stopped at iteration ${iteration} of ${Math.trunc(input.iterationCap)} ` +
+          `because the figures its retry condition reads were unchanged across ` +
+          `${unchangedComparisonsPhrase(input.stalledCount)}, so the run failed before reaching its ` +
+          `iteration cap. Work the condition does not measure may still have happened. Resolve what ` +
+          `blocks the condition first; then ${RESUME} runs ${phase} again at iteration ${iteration}, ` +
+          `with the iterations left up to the cap. If you finished the work by hand, record it with ` +
+          `"${markCompletedTitle(input.taskTitle, sanitize)}".`,
+        input.recordWritten
+      );
+    }
     case 'incomplete_turn_unresolved':
       return (
         `Schegent: ${phase} did not finish its turn, even after the automatic resumes, so the run ` +

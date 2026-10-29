@@ -9,6 +9,32 @@ This file is the release workflow's stable pointer for changes that affect opera
 Recorded as they land, so the first release note is assembled from evidence rather than
 from memory.
 
+### A retry loop can fail early when its judged figures stop changing, off by default (FR-R4-F17, 2026-10-29)
+
+A loop whose retry condition stayed true and whose figures did not move ran to its iteration cap, one
+invocation after another. `schegent.loop.maxUnchangedComparisons` lets an operator fail it sooner. It
+ships at `0`, which is off, so no existing run changes on upgrade.
+
+- Set to a value from `1` to `49`, it fails a retry loop after that many consecutive comparisons in which
+  the figures its retry condition reads did not change, below the iteration cap. `2` is a suggested
+  starting value, not a default. A value outside the range is read as `0`. It applies only where the
+  phase's cap outcome is to fail, and never at or past the cap.
+- The failed run carries a new cause, `judged_metrics_unchanged`, labelled "Judged metrics unchanged",
+  and a notice that says the figures were unchanged and that work the condition does not measure may
+  still have happened. It advises resolving what blocks the condition first, and then names "Schegent:
+  Resume Paused or Failed Workflow", which runs the phase again at the same iteration with the
+  iterations left up to the cap. The cause is on the failed run, its `task-execution-ended` event, the
+  metrics rollup, the failure record and History.
+- The per-run limits view gains an "Unchanged-metrics stop" row: the value, the layer that set it, and
+  whether it applies to the current phase. It reads "not applied" when the phase has no retry condition
+  or continues at its cap.
+- What it does not do: it adds no status, no audit event type and no `phase-end` cause; it never resumes
+  a run by itself; it does not reset the cap; and it does not claim that no work happened. A figure the
+  condition does not name, or a change to the working tree, does not reset the count.
+- The settings reference, the retry contract's new section "Stopping a loop whose judged metrics stop
+  changing" and the closed list of ten causes are in
+  [retry-contract.md](retry-contract.md#stopping-a-loop-whose-judged-metrics-stop-changing).
+
 ### Removing a row records whether the operator attested it, and a report counts how failed rows were resolved (FR-R4-F16, 2026-10-29)
 
 After an attested row was removed, its audit line said `priorStatus: completed` and nothing more, so

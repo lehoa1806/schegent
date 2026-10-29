@@ -108,6 +108,7 @@ interface RunDriverOptions {
    * additions. Absent reader means the pre-existing halt.
    */
   readonly getForceContinueOnRetryCap?: () => boolean;
+  readonly getMaxUnchangedComparisons?: () => number; // FR-R4-F17: read per decision, never cached
 }
 
 type PhaseControlEventType =
@@ -715,8 +716,7 @@ export class RunDriver {
           activePhaseDef,
           latestManualPauseAt: (await this.latestSnapshotOf(run))?.manualPauseAt ?? null,
           now: Date.now(),
-          forceContinueOnRetryCapDefault:
-            this.deps.options.getForceContinueOnRetryCap?.() ?? false
+          ...this.sequencer.liveRetryPolicyOf(this.deps.options)
         });
         this.handlePostPhaseDecisionSideEffects(run, postDecision);
 
