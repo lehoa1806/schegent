@@ -287,3 +287,53 @@ describe('the titles the notices name are pinned to their sources (FR-013)', () 
     );
   });
 });
+
+// FR-R4-F15 (feature 243, contract C6.5, C7.12, D13) — the two notices that used to say nothing about
+// what was open now point at "Show last error", but only when a failure record was actually written.
+describe('failureNotice — the retained-diagnostics sentence (FR-022, D13)', () => {
+  const SHOW_LAST_ERROR = '"Show last error" lists what was open.';
+  const POINTED = ['cap_exhausted', 'last_phase_issues_remain'] as const;
+  const inputFor = (cause: (typeof POINTED)[number], recordWritten?: boolean): FailureNoticeInput =>
+    ({ ...ROWS[cause].input, ...(recordWritten === undefined ? {} : { recordWritten }) }) as FailureNoticeInput;
+
+  for (const cause of POINTED) {
+    describe(cause, () => {
+      const base = ROWS[cause].expected;
+
+      it('appends the sentence once, after a single space, when the record was written', () => {
+        const message = failureNotice(inputFor(cause, true)).message;
+        expect(message).toBe(`${base} ${SHOW_LAST_ERROR}`);
+        expect(message.split(SHOW_LAST_ERROR)).toHaveLength(2);
+        expect(message).not.toMatch(/[\n\r]| {2}/);
+      });
+
+      it('is byte-identical to the feature 242 text when no record was written', () => {
+        expect(failureNotice(inputFor(cause, false)).message).toBe(base);
+      });
+
+      it('is byte-identical to the feature 242 text when the input says nothing about a record', () => {
+        expect(failureNotice(inputFor(cause)).message).toBe(base);
+      });
+
+      it('keeps the status bar detail as the cause label, whatever the record', () => {
+        for (const recordWritten of [true, false, undefined]) {
+          expect(failureNotice(inputFor(cause, recordWritten)).statusDetail).toBe(FAILURE_CAUSE_LABELS[cause]);
+        }
+      });
+
+      it('still states the outcome before the first action title, and ends on the new sentence', () => {
+        const message = failureNotice(inputFor(cause, true)).message;
+        expect(message.indexOf(ROWS[cause].outcome)).toBeLessThan(message.indexOf(RESUME_FAILED_WORKFLOW_TITLE));
+        expect(message.endsWith(SHOW_LAST_ERROR)).toBe(true);
+      });
+    });
+  }
+
+  it('gives no other cause the sentence, even if a caller passes the field anyway', () => {
+    for (const [cause, row] of Object.entries(ROWS)) {
+      if (cause === 'cap_exhausted' || cause === 'last_phase_issues_remain') continue;
+      const message = failureNotice({ ...row.input, recordWritten: true } as unknown as FailureNoticeInput).message;
+      expect(message, cause).toBe(row.expected);
+    }
+  });
+});

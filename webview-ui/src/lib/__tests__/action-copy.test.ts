@@ -511,3 +511,49 @@ describe('renderActionBody — placeholder resolution', () => {
     expect(body).toContain('`out/nested/report.md`');
   });
 });
+
+// FR-R4-F15 (feature 243, contract K3.2, K6.10; FR-018, D11) — what Remove says stays behind.
+//
+// Remove deletes the session tree and nothing else, and a failed Run's retained failure record and the
+// audit log are outside it. The confirmation says so for the three statuses whose Remove ends a Run
+// that is over, and only for those: a pending row has no record yet, and an in-flight or paused row's
+// Run is still live, so a sentence about retention there would promise a record that does not exist.
+// The other three bodies are pinned byte for byte, so this feature cannot reword them by accident.
+describe('queue.remove-item says what stays (K6.10, D11)', () => {
+  const KEPT = 'Its failure diagnostics, if any, and the audit log are kept until retention removes them.';
+  const BODIES = {
+    pending: 'Removes **My task** from the queue.',
+    'in-flight':
+      'Stops the active task **My task** and permanently deletes its session data (logs, diagnostics) from disk.',
+    paused: 'Removes the paused task **My task** and permanently deletes its session data from disk.',
+    completed:
+      'Permanently removes **My task** and its session data (logs, diagnostics) from disk. ' + KEPT,
+    failed: 'Permanently removes **My task** and its session data (logs, diagnostics) from disk. ' + KEPT,
+    canceled: 'Permanently removes **My task** and its session data (logs, diagnostics) from disk. ' + KEPT
+  } as const;
+
+  it.each(Object.entries(BODIES))('%s has exactly the text of contract K3.2', (status, expected) => {
+    const body = renderActionBody('queue.remove-item', {
+      taskTitle: 'My task',
+      status: status as keyof typeof BODIES
+    });
+    expect(body).toBe(expected);
+  });
+
+  it('puts the sentence in the completed, failed and canceled bodies and in no other', () => {
+    for (const [status, expected] of Object.entries(BODIES)) {
+      const body = renderActionBody('queue.remove-item', {
+        taskTitle: 'My task',
+        status: status as keyof typeof BODIES
+      });
+      expect(body.includes(KEPT), status).toBe(['completed', 'failed', 'canceled'].includes(status));
+      expect(expected.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('covers every QueueItemStatus, so a seventh status cannot pass unreviewed', () => {
+    expect(Object.keys(BODIES).sort()).toEqual(
+      ['canceled', 'completed', 'failed', 'in-flight', 'paused', 'pending']
+    );
+  });
+});

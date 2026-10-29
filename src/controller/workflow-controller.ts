@@ -20,6 +20,7 @@ import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
 import type { ClaudeCliMonitor } from '../monitor/claude-cli-monitor';
 import type { HistoryStore } from '../state/history-store';
 import { createHistoryRecorder, type HistoryRecorder } from '../services/history-recorder';
+import { createFailureRecorder, type FailureRecorder } from '../services/failure-record/failure-record-service';
 import { AutoDrainCoordinator } from '../services/auto-drain-coordinator';
 import type { ExecutionLeasePort, QueueStartFailurePort } from '../services/auto-drain-coordinator';
 import type { QueueFailurePolicy } from '../contracts/queue-failure-policy';
@@ -157,6 +158,7 @@ export class SchegentWorkflowController {
   // mock to exercise the success / failure branches deterministically.
   private readonly sessionCleanup: SessionCleanupRunner;
   private readonly historyRecorder: HistoryRecorder;
+  private readonly failureRecorder: FailureRecorder;
   /** Feature 092 (T132, FR-033a) — ends a terminal Run's execution lease. */
   private readonly releaseExecutionLeaseForRun: (run: WorkflowRun) => Promise<void>;
   private readonly executionLease: ExecutionLeasePort;
@@ -230,6 +232,7 @@ export class SchegentWorkflowController {
       store,
       workspaceRoot: options.cwd
     });
+    this.failureRecorder = createFailureRecorder({ logger, queue, workspaceRoot: options.cwd });
     // Feature 092 (T132, FR-033a) — one manager, addressed by both ends of the
     // tenure: the drain claims at step 6, the terminal transition releases.
     const executionLease = deps.executionLease ?? new ExecutionLeaseManager(store, lock.id);
@@ -300,6 +303,7 @@ export class SchegentWorkflowController {
       backendCapabilities: deps.backendCapabilities,
       monitor: this.monitor,
       historyRecorder: this.historyRecorder,
+      failureRecords: this.failureRecorder,
       retryCoordinator: this.retryCoordinator,
       isContinueGate,
       persistTransition: (prev, next) => this.persistTransition(prev, next),
@@ -594,6 +598,7 @@ export class SchegentWorkflowController {
         statusBar: this.statusBar,
         notifier: this.notifier,
         historyRecorder: this.historyRecorder,
+        failureRecords: this.failureRecorder,
         lifecycleAuditor: this.lifecycleAuditor,
         terminalTransitions: this.terminalTransitions,
         sessions: this.sessions,

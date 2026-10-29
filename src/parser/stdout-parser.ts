@@ -33,7 +33,7 @@ export type InvocationResult =
     }
   | {
       kind: 'remaining_issues';
-      issues: Array<{ tag?: string; summary: string }>;
+      issues: Array<{ tag?: string; summary: string; source?: 'host' }>;
       auditEntry: AuditEntryFields | null;
       warnings?: string[];
     }
@@ -222,11 +222,13 @@ export function extractOpenQuestions(stdout: string): string[] {
   return extractBulletsAfter(stdout, OPEN_HEADING_REGEX);
 }
 
-export function extractRemainingIssues(stdout: string): Array<{ tag?: string; summary: string }> {
+export function extractRemainingIssues(
+  stdout: string
+): Array<{ tag?: string; summary: string; source?: 'host' }> {
   const lines = stdout.split(/\r?\n/);
   const headingIndex = lines.findIndex((line) => ISSUES_HEADING_REGEX.test(line));
   if (headingIndex === -1) return [];
-  const items: Array<{ tag?: string; summary: string }> = [];
+  const items: Array<{ tag?: string; summary: string; source?: 'host' }> = [];
   for (let i = headingIndex + 1; i < lines.length; i++) {
     const line = lines[i];
     if (line.trim() === '') break;
@@ -303,7 +305,8 @@ function withheldForMissingEvidence(warnings: string[]): InvocationResult {
     issues: [
       {
         tag: 'constitution',
-        summary: 'this Phase declares evidencePolicy required and produced no audit block'
+        summary: 'this Phase declares evidencePolicy required and produced no audit block',
+        source: 'host'
       }
     ],
     auditEntry: null,
@@ -605,7 +608,7 @@ export function parseInvocation(inputs: ParseInputs): InvocationResult {
     }
     return {
       kind: 'remaining_issues',
-      issues: [{ tag: 'constitution', summary: 'no contract block detected' }],
+      issues: [{ tag: 'constitution', summary: 'no contract block detected', source: 'host' }],
       auditEntry: inputs.auditEntry,
       warnings
     };

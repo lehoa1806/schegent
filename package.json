@@ -375,7 +375,7 @@
           "minimum": 1,
           "maximum": 3650,
           "scope": "resource",
-          "markdownDescription": "Maximum age in days for **unredacted** raw transcripts and verbose diagnostic trees. Complete inactive-run artifacts older than this are removed on activation and after terminal runs. The append-only structured audit log is never pruned by this setting."
+          "markdownDescription": "Maximum age in days for **unredacted** raw transcripts and verbose diagnostic trees, and for the redacted, bounded failure records in `.schegent/failure-records/`. Complete inactive-run artifacts and failure records older than this are removed on activation, after terminal runs and when this setting changes. The append-only structured audit log is never pruned by this setting."
         },
         "schegent.logging.sessionRetentionMaxBytes": {
           "type": "integer",

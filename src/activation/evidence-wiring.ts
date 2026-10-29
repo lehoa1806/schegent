@@ -10,6 +10,7 @@ import { readGeneralSettings } from '../config/general-settings';
 import type { SanitizedLogger } from '../lib/logger';
 import type { QueueManager } from '../queue/queue-manager';
 import { SessionArtifactRetentionService } from '../services/session-retention/session-artifact-retention-service';
+import { sweepFailureRecords } from '../services/failure-record/failure-record-retention';
 import type { EvidenceHealthMonitor } from '../services/evidence-health/evidence-health-monitor';
 import type { VerdictBasisMigrationEvent } from '../state/host-verification-migrator';
 import type { WorkspaceStateStore } from '../state/workspace-state';
@@ -194,6 +195,11 @@ const sessionRetention = new SessionArtifactRetentionService({
       maxAgeMs: settings.sessionRetentionMaxAgeDays * 24 * 60 * 60 * 1000,
       maxBytes: settings.sessionRetentionMaxBytes
     };
+  },
+  // FR-R4-F15 (K2) — the failure records are aged and counted by the same sweep, inside its chain, so
+  // the triggers (activation, a terminal Run, a changed setting) are the ones that already exist.
+  failureRecords: {
+    sweep: (maxAgeMs, now) => sweepFailureRecords({ workspaceRoot, logger }, maxAgeMs, now)
   }
 });
 const protectedSessionRunIds = (): ReadonlySet<string> => {
