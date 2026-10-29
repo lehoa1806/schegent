@@ -21,6 +21,10 @@ import { useConfirm } from '../../lib/use-confirm';
 // contract the host pins in `queue-addressed-phase-controls.test.ts`.
 const TEST_QUEUE_ID = 'q-alpha';
 
+// FR-R4-F20 — a Skip names the Run the operator confirmed, so every render that clicks Skip carries
+// the Run the menu addresses. `RunDetailTier` passes it; the menu refuses to post Skip without it.
+const TEST_RUN_ID = 'run-alpha';
+
 // FR-R3-154 (T1646) — the stub returns a `correlationId` because the real
 // `postCommand` does, and Pause/Resume/Restart/Retry-now now read it: they
 // await the ACK instead of dropping it. A bare `vi.fn()` used to be harmless
@@ -91,6 +95,7 @@ describe('PhaseControlMenu', () => {
         // the differentiated-target scenario (see the `selectedPhase`
         // describe block below for that).
         selectedPhase: 'speckit-plan',
+        activeRunId: TEST_RUN_ID,
         isPrimary: true,
         manualPauseAt: null
       }
@@ -102,6 +107,7 @@ describe('PhaseControlMenu', () => {
     await rerender({ targetsSubjectRun: true, queueId: TEST_QUEUE_ID,
       currentPhase: 'speckit-plan',
       selectedPhase: 'speckit-plan',
+      activeRunId: TEST_RUN_ID,
       isPrimary: true,
       manualPauseAt: '2026-05-13T00:00:00.000Z'
     });
@@ -117,6 +123,7 @@ describe('PhaseControlMenu', () => {
     await fireEvent.click(getByTestId('phase-control-skip'));
     expect(postCommandSpy).toHaveBeenCalledWith(CMD_SKIP_PHASE, {
       queueId: TEST_QUEUE_ID,
+      runId: TEST_RUN_ID,
       phaseId: 'speckit-plan'
     });
 
@@ -214,10 +221,11 @@ describe('PhaseControlMenu', () => {
     // Code-review finding (iteration 5). The case above uses the SAME control
     // twice, which is the only shape the clear used to cover: `controlMessage`
     // was reset by the four handlers that can write it and by nobody else. Six
-    // controls dispatch without reporting — Skip, Disable, Enable, Delete and
+    // controls dispatched without reporting — Skip, Disable, Enable, Delete and
     // the two breakpoint actions — so a refusal from one of the four stayed on
     // screen, in a `role="alert"`, beside whichever of the six the operator
-    // used next and which had just committed.
+    // used next and which had just committed. (Skip reports from FR-R4-F20 on;
+    // the other five still do not, and Disable stands in for them here.)
     it('clears a previous control’s refusal when a non-reporting control dispatches', async () => {
       const { getByTestId, queryByTestId } = render(PhaseControlMenu, {
         props: {
@@ -245,6 +253,86 @@ describe('PhaseControlMenu', () => {
       // Disable cannot write this line; it must still not leave Pause's answer
       // attributed to it.
       expect(queryByTestId('phase-control-message')).toBeNull();
+    });
+
+    // FR-R4-F20 (T7.2, FR-009) — Skip reports like Pause, Resume and Restart. Its refusal used to
+    // die at the webview: the post returned `void`, so the operator who confirmed a Skip of a failed
+    // task saw nothing. The sentence is the one the disabled control's tooltip carries (FR-011).
+    describe('a Skip', () => {
+      const RUN_FAILED_SENTENCE =
+        'A failed task cannot be skipped: retry it, mark it completed, or remove it.';
+
+      function skipMenu() {
+        return render(PhaseControlMenu, {
+          props: {
+            targetsSubjectRun: true,
+            queueId: TEST_QUEUE_ID,
+            currentPhase: 'speckit-plan',
+            selectedPhase: 'speckit-plan',
+            activeRunId: TEST_RUN_ID,
+            isPrimary: true,
+            manualPauseAt: null
+          }
+        });
+      }
+
+      it('renders a host refusal of run-failed as the failed-task sentence, not the code', async () => {
+        const { getByTestId, queryByTestId } = skipMenu();
+        await fireEvent.click(getByTestId('phase-control-skip'));
+        await waitFor(() => expect(postCommandSpy).toHaveBeenCalledTimes(1));
+        expect(queryByTestId('phase-control-message')).toBeNull();
+
+        ack(0, 'rejected', 'run-failed', 'refused');
+        await waitFor(() => {
+          expect(getByTestId('phase-control-message').textContent).toBe(RUN_FAILED_SENTENCE);
+        });
+        expect(getByTestId('phase-control-message').textContent).not.toContain('run-failed');
+      });
+
+      it('says nothing when the host accepts it', async () => {
+        const { getByTestId, queryByTestId } = skipMenu();
+        await fireEvent.click(getByTestId('phase-control-skip'));
+        await waitFor(() => expect(postCommandSpy).toHaveBeenCalledTimes(1));
+
+        ack(0, 'accepted', undefined, 'accepted');
+        // The accepted answer resolves on a later microtask; a refusal would be visible by now.
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(queryByTestId('phase-control-message')).toBeNull();
+      });
+
+      it('clears the previous answer when it is used again', async () => {
+        const { getByTestId, queryByTestId } = skipMenu();
+        await fireEvent.click(getByTestId('phase-control-skip'));
+        await waitFor(() => expect(postCommandSpy).toHaveBeenCalledTimes(1));
+        ack(0, 'rejected', 'run-failed', 'refused');
+        await waitFor(() => expect(getByTestId('phase-control-message')).toBeTruthy());
+
+        await fireEvent.click(getByTestId('phase-control-skip'));
+        await waitFor(() => expect(postCommandSpy).toHaveBeenCalledTimes(2));
+        expect(queryByTestId('phase-control-message')).toBeNull();
+      });
+
+      // The guard that keeps a Skip from naming no Run. It is unreachable in the shipped wiring
+      // (`RunDetailTier` passes a Run id whenever the controls are enabled), and the host would refuse
+      // the unaddressed message at the boundary anyway; the menu does not send it.
+      it('posts nothing, and asks no confirmation, when the menu has no Run to name', async () => {
+        const { getByTestId } = render(PhaseControlMenu, {
+          props: {
+            targetsSubjectRun: true,
+            queueId: TEST_QUEUE_ID,
+            currentPhase: 'speckit-plan',
+            selectedPhase: 'speckit-plan',
+            isPrimary: true,
+            manualPauseAt: null
+          }
+        });
+
+        await fireEvent.click(getByTestId('phase-control-skip'));
+
+        expect(confirmMock).not.toHaveBeenCalled();
+        expect(postCommandSpy).not.toHaveBeenCalled();
+      });
     });
   });
 
@@ -571,6 +659,52 @@ describe('PhaseControlMenu — controls that do not address the displayed run', 
     expect(getByTestId('phase-control-skip').getAttribute('title')).toBe(OFF_TARGET);
   });
 
+  // FR-R4-F20 (T7.3, SC-004, FR-010, FR-011) — a failed task's view is off target by construction (the
+  // queue is halted, so no Run is executing), and "unavailable while this view is showing a task other
+  // than the run executing" is the wrong reason for a Skip that is refused because the task FAILED. The
+  // disabled Skip says the host's own sentence instead. Only Skip's title changes: the other controls
+  // are off target for the reason their title gives.
+  it('explains a failed task\'s disabled Skip in the words of the host refusal, and only Skip', async () => {
+    const { getByTestId } = offTarget({ subjectTaskFailed: true });
+
+    const title = getByTestId('phase-control-skip').getAttribute('title');
+    expect(title).toContain('retry');
+    expect(title).toContain('mark it completed');
+    expect(title).toContain('remove');
+    // Still disabled: the explanation does not change what the control may do (FR-010).
+    expect(getByTestId('phase-control-skip').getAttribute('aria-disabled')).toBe('true');
+    for (const testId of ['phase-control-pause', 'phase-control-restart', 'phase-control-disable']) {
+      expect(getByTestId(testId).getAttribute('title'), testId).toBe(OFF_TARGET);
+    }
+
+    // The same words as the alert line a refused Skip raises (T7.2): one string, read from one table.
+    cleanup();
+    const onTarget = render(PhaseControlMenu, {
+      props: {
+        targetsSubjectRun: true,
+        queueId: TEST_QUEUE_ID,
+        currentPhase: 'speckit-plan',
+        selectedPhase: 'speckit-plan',
+        activeRunId: TEST_RUN_ID,
+        isPrimary: true,
+        manualPauseAt: null
+      }
+    });
+    await fireEvent.click(onTarget.getByTestId('phase-control-skip'));
+    await waitFor(() => expect(postCommandSpy).toHaveBeenCalledTimes(1));
+    ack(0, 'rejected', 'run-failed', 'refused');
+    await waitFor(() => expect(onTarget.getByTestId('phase-control-message')).toBeTruthy());
+    expect(onTarget.getByTestId('phase-control-message').textContent).toBe(title);
+  });
+
+  // FR-R4-F20 (T7.4, US4-2) — off target and not failed: the off-target text stays.
+  it('keeps the off-target text on Skip when the displayed task has not failed', () => {
+    const { getByTestId } = offTarget({ subjectTaskFailed: false });
+
+    expect(getByTestId('phase-control-skip').getAttribute('title')).toBe(OFF_TARGET);
+    expect(getByTestId('phase-control-skip').getAttribute('aria-disabled')).toBe('true');
+  });
+
   it('leaves Delete enabled — it addresses the displayed task, not the queue', async () => {
     // The one control the guard must not touch. It posts the Task id and phase
     // the surface is displaying, so it was correctly addressed before this fix
@@ -738,6 +872,7 @@ describe('PhaseControlMenu — selectedPhase targeting (FR-R3-151)', () => {
         queueId: TEST_QUEUE_ID,
         currentPhase: 'speckit-plan',
         selectedPhase: 'speckit-implement',
+        activeRunId: TEST_RUN_ID,
         isPrimary: true,
         manualPauseAt: null
       }
@@ -751,6 +886,7 @@ describe('PhaseControlMenu — selectedPhase targeting (FR-R3-151)', () => {
       queueId: TEST_QUEUE_ID,
       currentPhase: 'speckit-plan',
       selectedPhase: 'speckit-implement',
+      activeRunId: TEST_RUN_ID,
       isPrimary: true,
       manualPauseAt: '2026-05-13T00:00:00.000Z'
     });
@@ -768,12 +904,14 @@ describe('PhaseControlMenu — selectedPhase targeting (FR-R3-151)', () => {
       queueId: TEST_QUEUE_ID,
       currentPhase: 'speckit-plan',
       selectedPhase: 'speckit-implement',
+      activeRunId: TEST_RUN_ID,
       isPrimary: true,
       manualPauseAt: null
     });
     await fireEvent.click(getByTestId('phase-control-skip'));
     expect(postCommandSpy).toHaveBeenCalledWith(CMD_SKIP_PHASE, {
       queueId: TEST_QUEUE_ID,
+      runId: TEST_RUN_ID,
       phaseId: 'speckit-plan'
     });
   });
@@ -781,7 +919,7 @@ describe('PhaseControlMenu — selectedPhase targeting (FR-R3-151)', () => {
   // `$props()` bindings are live: a naive `onSkip` that re-reads `currentPhase`
   // after its `await useConfirm(...)` would dispatch whatever Phase is active
   // by the time the operator clicks Confirm, not the one the dialog named.
-  it('dispatches Skip against the Phase and queue named in the confirmation dialog, even if both change before the operator confirms', async () => {
+  it('dispatches Skip against the Phase, queue and Run named in the confirmation dialog, even if all three change before the operator confirms', async () => {
     let resolveConfirm: (value: boolean) => void = () => {};
     confirmMock.mockImplementation(() => new Promise((resolve) => { resolveConfirm = resolve; }));
 
@@ -791,6 +929,7 @@ describe('PhaseControlMenu — selectedPhase targeting (FR-R3-151)', () => {
         queueId: TEST_QUEUE_ID,
         currentPhase: 'speckit-plan',
         selectedPhase: 'speckit-plan',
+        activeRunId: TEST_RUN_ID,
         isPrimary: true,
         manualPauseAt: null
       }
@@ -801,13 +940,14 @@ describe('PhaseControlMenu — selectedPhase targeting (FR-R3-151)', () => {
     void fireEvent.click(getByTestId('phase-control-skip'));
     await Promise.resolve();
 
-    // The Run advances, and the surface re-addresses a different queue,
-    // while the confirm dialog is still open.
+    // The Run advances, and the surface re-addresses a different queue and
+    // a different Run (FR-R4-F20), while the confirm dialog is still open.
     await rerender({
       targetsSubjectRun: true,
       queueId: 'q-beta',
       currentPhase: 'speckit-implement',
       selectedPhase: 'speckit-implement',
+      activeRunId: 'run-beta',
       isPrimary: true,
       manualPauseAt: null
     });
@@ -818,6 +958,7 @@ describe('PhaseControlMenu — selectedPhase targeting (FR-R3-151)', () => {
 
     expect(postCommandSpy).toHaveBeenCalledWith(CMD_SKIP_PHASE, {
       queueId: TEST_QUEUE_ID,
+      runId: TEST_RUN_ID,
       phaseId: 'speckit-plan'
     });
   });

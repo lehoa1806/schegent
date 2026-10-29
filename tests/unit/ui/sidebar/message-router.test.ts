@@ -647,7 +647,7 @@ describe('MessageRouter.dispatch', () => {
         {
           type: CMD_SKIP_PHASE,
           correlationId: 'sk1',
-          payload: { queueId: 'default', phaseId: 'speckit-plan' }
+          payload: { queueId: 'default', runId: 'run-1', phaseId: 'speckit-plan' }
         },
         acks
       );

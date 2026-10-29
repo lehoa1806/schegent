@@ -125,7 +125,7 @@ The authoritative schema version is `3`. The table is exhaustive: `COMMAND_TYPES
 | `CMD_PAUSE_PHASE` | `{ queueId: string }` | M | <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_RESUME_PHASE` | `{ queueId: string, prompt?: string }` | M | <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_RESTART_PHASE` | `{ queueId: string, phaseId: string }` | M | <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
-| `CMD_SKIP_PHASE` | `{ queueId: string, phaseId: string }` | M | <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
+| `CMD_SKIP_PHASE` | `{ queueId: string, runId: string, phaseId: string }` | M | <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --><!-- Source: src/contracts/validators/phase-control.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_DISABLE_PHASE` | `{ queueId: string, phaseId: string }` | M | <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_ENABLE_PHASE` | `{ queueId: string, phaseId: string }` | M | <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |
 | `CMD_REMOVE_TASK_PHASE` | `{ taskId: string, phaseId: string, confirmed: true }` | M | <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --><!-- Source: src/contracts/sidebar-command-metadata.ts --> |

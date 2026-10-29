@@ -110,7 +110,8 @@ import {
   validatePhaseBreakpointPayload,
   validatePhaseIdPayload,
   validateQueueIdPayload,
-  validateResumePhasePayload
+  validateResumePhasePayload,
+  validateSkipPhasePayload
 } from './validators/phase-control';
 import {
   validateDeactivateDefinition,
@@ -259,7 +260,7 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
     case CMD_RESTART_PHASE:
       return validatePhaseIdPayload(CMD_RESTART_PHASE, obj, correlationId);
     case CMD_SKIP_PHASE:
-      return validatePhaseIdPayload(CMD_SKIP_PHASE, obj, correlationId);
+      return validateSkipPhasePayload(obj, correlationId);
     case CMD_DISABLE_PHASE:
       return validatePhaseIdPayload(CMD_DISABLE_PHASE, obj, correlationId);
     case CMD_ENABLE_PHASE:

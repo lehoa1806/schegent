@@ -171,7 +171,7 @@ Task statuses are `pending`, `in-flight`, `paused`, `completed`, `canceled`, and
 <!-- Source: src/state/workflow-run.ts -->
 <!-- Source: src/contracts/state-schema.ts -->
 
-Run statuses are `running`, `paused`, `failed`, `completed`, and `canceled`. Completed, failed, and canceled are terminal for session and lease cleanup, but a failed Run remains operator-controllable through retry or skip controls; only completed and canceled are uncontrollable. Paused state is nonterminal and retains its Queue slot.
+Run statuses are `running`, `paused`, `failed`, `completed`, and `canceled`. Completed, failed, and canceled are terminal for session and lease cleanup, but a failed Run remains operator-controllable through the Retry, Restart and Resume controls (Skip is refused on a failed Run since FR-R4-F20); only completed and canceled are uncontrollable. Paused state is nonterminal and retains its Queue slot.
 
 <!-- Source: src/state/workflow-run.ts -->
 <!-- Source: src/controller/run-session.ts -->

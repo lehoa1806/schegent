@@ -55,9 +55,18 @@ function makeService(run: WorkflowRun) {
   );
   const appendBreakpoint = vi.fn(async () => {});
   const appendPhaseControl = vi.fn(async () => {});
+  // FR-R4-F20 — hoisted so a Skip test can serve a different Run on the re-read and count the
+  // effects a refused or half-applied Skip must not have.
+  const getRun = vi.fn(() => run);
+  const cancelActive = vi.fn();
+  const cancelPendingTimer = vi.fn();
+  const resumeExisting = vi.fn(async () => true);
+  const emitPhaseJumped = vi.fn(async () => {});
+  const noteActivePhaseOverrideAbort = vi.fn();
+  const armIsContinue = vi.fn();
   const service = new PhaseControlService({
     store: {
-      getRun: vi.fn(() => run),
+      getRun,
       updateRun,
       getQueue: vi.fn(() => null),
       setWatchdog: vi.fn(async () => {}),
@@ -69,20 +78,32 @@ function makeService(run: WorkflowRun) {
       setQueuePausedState: vi.fn(async () => {})
     },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
-    retryCoordinator: { cancelPendingTimer: vi.fn() },
+    retryCoordinator: { cancelPendingTimer },
     isDriving: vi.fn(() => false),
-    noteActivePhaseOverrideAbort: vi.fn(),
-    armIsContinue: vi.fn(),
-    cancelActive: vi.fn(),
-    resumeExisting: vi.fn(async () => true),
+    noteActivePhaseOverrideAbort,
+    armIsContinue,
+    cancelActive,
+    resumeExisting,
     auditor: {
       appendPhaseControl,
       emitTaskPaused: vi.fn(async () => {}),
-      emitPhaseJumped: vi.fn(async () => {}),
+      emitPhaseJumped,
       appendBreakpoint
     }
   } as unknown as ConstructorParameters<typeof PhaseControlService>[0]);
-  return { service, updateRun, appendBreakpoint, appendPhaseControl };
+  return {
+    service,
+    updateRun,
+    appendBreakpoint,
+    appendPhaseControl,
+    getRun,
+    cancelActive,
+    cancelPendingTimer,
+    resumeExisting,
+    emitPhaseJumped,
+    noteActivePhaseOverrideAbort,
+    armIsContinue
+  };
 }
 
 describe('phase membership without a pipeline snapshot (T022)', () => {
@@ -199,6 +220,22 @@ async function expectZeroWrites(
   expect(mocks.appendBreakpoint).not.toHaveBeenCalled();
 }
 
+/** Lets the `setImmediate` that a Skip's resume would have been scheduled on run. */
+const drainImmediates = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+/**
+ * FR-R4-F20 (FR-003) — a refused Skip leaves no effect beyond the writes `expectZeroWrites` checks:
+ * no phase-jumped row, no abort, no timer cancelled, and, once the `setImmediate` queue has drained,
+ * no resume.
+ */
+async function expectNoSkipEffects(mocks: ReturnType<typeof makeService>): Promise<void> {
+  await drainImmediates();
+  expect(mocks.emitPhaseJumped).not.toHaveBeenCalled();
+  expect(mocks.cancelActive).not.toHaveBeenCalled();
+  expect(mocks.cancelPendingTimer).not.toHaveBeenCalled();
+  expect(mocks.resumeExisting).not.toHaveBeenCalled();
+}
+
 describe('Phase control eligibility matrix (FR-R3-151, T1624)', () => {
   describe('Restart Phase', () => {
     it('refuses a terminal Run (completed) even though a Run record exists (FR-002, SC-002)', async () => {
@@ -248,7 +285,7 @@ describe('Phase control eligibility matrix (FR-R3-151, T1624)', () => {
       const run = makeThreePhaseRun();
       const mocks = makeService(run);
       await expectZeroWrites(mocks, async () => {
-        expect(await mocks.service.skipPhase(QUEUE_ID, 'gamma')).toEqual({
+        expect(await mocks.service.skipPhase(QUEUE_ID, run.id, 'gamma')).toEqual({
           ok: false,
           reason: 'phase-not-active'
         });
@@ -259,7 +296,7 @@ describe('Phase control eligibility matrix (FR-R3-151, T1624)', () => {
       const run = makeThreePhaseRun();
       const mocks = makeService(run);
       await expectZeroWrites(mocks, async () => {
-        expect(await mocks.service.skipPhase(QUEUE_ID, 'not-a-phase')).toEqual({
+        expect(await mocks.service.skipPhase(QUEUE_ID, run.id, 'not-a-phase')).toEqual({
           ok: false,
           reason: 'phase-id-not-in-pipeline-snapshot'
         });
@@ -273,7 +310,7 @@ describe('Phase control eligibility matrix (FR-R3-151, T1624)', () => {
       const run = makeThreePhaseRun({ status: 'canceled' });
       const mocks = makeService(run);
       await expectZeroWrites(mocks, async () => {
-        expect(await mocks.service.skipPhase(QUEUE_ID, 'beta')).toEqual({
+        expect(await mocks.service.skipPhase(QUEUE_ID, run.id, 'beta')).toEqual({
           ok: false,
           reason: 'run-terminal'
         });
@@ -284,24 +321,32 @@ describe('Phase control eligibility matrix (FR-R3-151, T1624)', () => {
       const run = makeThreePhaseRun({ status: 'completed' });
       const mocks = makeService(run);
       await expectZeroWrites(mocks, async () => {
-        expect(await mocks.service.skipPhase(QUEUE_ID, 'beta')).toEqual({
+        expect(await mocks.service.skipPhase(QUEUE_ID, run.id, 'beta')).toEqual({
           ok: false,
           reason: 'run-terminal'
         });
       });
     });
 
-    it('allows Skip on a failed Run with the target Phase still current — a legitimate skip-to-recover path', async () => {
+    // FR-R4-F20 (T2.1) — replaces the test that asserted a failed Run's Skip as admitted, "a
+    // legitimate skip-to-recover path". It revived the Run and lifted its queue's halt with no
+    // operator choice; the classifier now refuses it before anything is written.
+    it('refuses Skip on a failed Run with the target Phase still current, and writes nothing (T2.1)', async () => {
       const run = makeThreePhaseRun({ status: 'failed', pendingRetryAt: null });
-      const { service, updateRun } = makeService(run);
-      expect(await service.skipPhase(QUEUE_ID, 'beta')).toEqual({ ok: true });
-      expect(updateRun).toHaveBeenCalled();
+      const mocks = makeService(run);
+      await expectZeroWrites(mocks, async () => {
+        expect(await mocks.service.skipPhase(QUEUE_ID, run.id, 'beta')).toEqual({
+          ok: false,
+          reason: 'run-failed'
+        });
+      });
+      await expectNoSkipEffects(mocks);
     });
 
     it('allows Skip on the current active Phase', async () => {
       const run = makeThreePhaseRun({ status: 'running' });
       const { service, updateRun } = makeService(run);
-      expect(await service.skipPhase(QUEUE_ID, 'beta')).toEqual({ ok: true });
+      expect(await service.skipPhase(QUEUE_ID, run.id, 'beta')).toEqual({ ok: true });
       expect(updateRun).toHaveBeenCalled();
     });
   });
@@ -517,7 +562,8 @@ describe('Phase control eligibility matrix (FR-R3-151, T1624)', () => {
 });
 
 // FR-R4-F14 (spec 242, contract W4.1, TA6) — a failed Run carrying a failure cause leaves `failed`
-// through each of the three patches below without it. The patch writes `failureCause: undefined`
+// through each of the writers below without it. FR-R4-F20 retired the third, Skip's revive, which is
+// why its case is now a refusal that leaves the cause where it was. The patch writes `failureCause: undefined`
 // explicitly: `updateRun` removes a key whose patch value is `undefined`, and
 // `validateRunInvariants` refuses the Run if the key stays beside a non-failed status.
 describe('a failed Run leaves failed without its failure cause (FR-R4-F14, W4.1)', () => {
@@ -564,13 +610,150 @@ describe('a failed Run leaves failed without its failure cause (FR-R4-F14, W4.1)
     expectClearsCause(patch);
   });
 
-  it('the skip-to-recover revive revives a failed Run without the key', async () => {
+  // FR-R4-F20 (T2.2) — replaces the skip-to-recover revive case. Skip no longer writes the Run, so
+  // there is no patch to carry the key: the refusal leaves `failureCause` where it was.
+  it('Skip is refused on a failed Run, and the Run keeps its failure cause (T2.2)', async () => {
     const run = makeThreePhaseRun({ status: 'failed', failureCause: 'phase_failed', pendingRetryAt: null });
     const { service, updateRun } = makeService(run);
 
-    expect(await service.skipPhase(QUEUE_ID, 'beta')).toEqual({ ok: true });
-    const patch = lastPatch(updateRun, run);
-    expect(patch.status).toBe('running');
-    expectClearsCause(patch);
+    expect(await service.skipPhase(QUEUE_ID, run.id, 'beta')).toEqual({ ok: false, reason: 'run-failed' });
+    expect(updateRun).not.toHaveBeenCalled();
+    expect(run.failureCause).toBe('phase_failed');
   });
+});
+
+// FR-R4-F20 (feature 248, contract T2.5 and T2.6, D5) — a Skip names the Run the operator confirmed.
+// `skipPhase(queueId, runId, phaseId)` compares `runId` with the queue's Run the way
+// `setPhaseBreakpoint` does, so a Skip confirmed against a Run that has since been replaced is
+// refused rather than applied to its successor. The re-read after the write compares the id too: a
+// Run that replaced the confirmed one in that gap is neither aborted nor resumed (research R3).
+describe('Skip names its Run (FR-R4-F20, D5)', () => {
+  it('refuses a runId that is not the queue Run, and writes nothing (T2.5)', async () => {
+    const run = makeThreePhaseRun({ id: 'run-current' });
+    const mocks = makeService(run);
+    await expectZeroWrites(mocks, async () => {
+      expect(await mocks.service.skipPhase(QUEUE_ID, 'run-replaced', 'beta')).toEqual({
+        ok: false,
+        reason: 'no-run-in-flight'
+      });
+    });
+    await expectNoSkipEffects(mocks);
+    expect(mocks.armIsContinue).not.toHaveBeenCalled();
+  });
+
+  // A paused re-read Run is resumable only with a pause or a countdown on it, so the fixture
+  // carries a manual pause; otherwise the resume classifier would refuse before it did anything.
+  const rereadOf = (id: string, status: 'running' | 'paused'): WorkflowRun =>
+    makeThreePhaseRun(
+      status === 'paused'
+        ? { id, status, manualPauseAt: 1, manualPauseCause: 'operator-paused' }
+        : { id, status }
+    );
+
+  it.each(['running', 'paused'] as const)(
+    'accepts a Skip whose re-read is a different %s Run on the same Phase, and aborts or resumes nothing (T2.6)',
+    async (status) => {
+      const run = makeThreePhaseRun({ id: 'run-confirmed' });
+      const mocks = makeService(run);
+      mocks.getRun.mockReturnValueOnce(run).mockReturnValue(rereadOf('run-replacement', status));
+
+      expect(await mocks.service.skipPhase(QUEUE_ID, 'run-confirmed', 'beta')).toEqual({ ok: true });
+      await drainImmediates();
+
+      expect(mocks.updateRun).toHaveBeenCalledTimes(1);
+      expect(mocks.cancelActive).not.toHaveBeenCalled();
+      expect(mocks.noteActivePhaseOverrideAbort).not.toHaveBeenCalled();
+      expect(mocks.emitPhaseJumped).not.toHaveBeenCalled();
+      expect(mocks.armIsContinue).not.toHaveBeenCalled();
+      expect(mocks.resumeExisting).not.toHaveBeenCalled();
+    }
+  );
+
+  // The sibling that makes T2.6 non-vacuous: the same re-read with the confirmed Run's own id takes
+  // the branch T2.6 shows is skipped (FR-005, unchanged at 5c015930).
+  it('control: the same Run on the re-read aborts a running Phase', async () => {
+    const run = makeThreePhaseRun({ id: 'run-confirmed' });
+    const mocks = makeService(run);
+    mocks.getRun.mockReturnValueOnce(run).mockReturnValue(rereadOf('run-confirmed', 'running'));
+
+    expect(await mocks.service.skipPhase(QUEUE_ID, 'run-confirmed', 'beta')).toEqual({ ok: true });
+
+    expect(mocks.noteActivePhaseOverrideAbort).toHaveBeenCalledWith(QUEUE_ID, 'run-confirmed', 'beta');
+    expect(mocks.emitPhaseJumped).toHaveBeenCalledTimes(1);
+    expect(mocks.cancelActive).toHaveBeenCalledWith(QUEUE_ID);
+  });
+
+  it('control: the same Run on the re-read resumes a paused Phase', async () => {
+    const run = makeThreePhaseRun({ id: 'run-confirmed' });
+    const mocks = makeService(run);
+    mocks.getRun.mockReturnValueOnce(run).mockReturnValue(rereadOf('run-confirmed', 'paused'));
+
+    expect(await mocks.service.skipPhase(QUEUE_ID, 'run-confirmed', 'beta')).toEqual({ ok: true });
+
+    expect(mocks.armIsContinue).toHaveBeenCalledWith(QUEUE_ID);
+    expect(mocks.cancelActive).not.toHaveBeenCalled();
+  });
+});
+
+// FR-R4-F20 (feature 248, contract T2.3 and T2.4, D3 and D4) — a Run can fail in either gap a Skip has.
+//
+// Before the write: the pre-read saw it `running`, so the service's own decision admitted it, and by
+// the time the update chain ran it had failed. The chain re-decides with the same classifier (`admit`),
+// so the refusal comes from there and nothing is written (FR-002).
+//
+// After the write: the override was written while the Run was still operable, and the re-read finds it
+// `failed`. The override and its `phase-skipped` row stand; nothing is revived, resumed, scheduled or
+// cancelled, and the Skip is acknowledged accepted (D4). At 5c015930 the two failed branches here
+// cleared the retry pair or revived the Run to `running` and scheduled a resume.
+describe('Skip of a Run that fails while the Skip is in flight (FR-R4-F20, D3, D4)', () => {
+  it('refuses inside the update chain when the Run has failed since the pre-read (T2.3)', async () => {
+    const run = makeThreePhaseRun({ status: 'running' });
+    const failedNow = makeThreePhaseRun({ status: 'failed', pendingRetryAt: null });
+    const mocks = makeService(run);
+    // The real `updateRun` applies the patch to the Run as it is at write time; here that Run is the
+    // failed one, where the service's pre-read saw the running one.
+    mocks.updateRun.mockImplementationOnce(async (_queueId, update) => ({
+      ...failedNow,
+      ...update.patch(failedNow)
+    }));
+
+    expect(await mocks.service.skipPhase(QUEUE_ID, run.id, 'beta')).toEqual({
+      ok: false,
+      reason: 'run-failed'
+    });
+
+    expect(mocks.updateRun).toHaveBeenCalledTimes(1);
+    expect(mocks.appendPhaseControl).not.toHaveBeenCalled();
+    expect(mocks.appendBreakpoint).not.toHaveBeenCalled();
+    await expectNoSkipEffects(mocks);
+  });
+
+  // Both deleted branches are covered: a failed Run with a pending retry, and one without.
+  it.each([
+    ['no pending retry', null],
+    ['a pending retry', Date.now() + 60_000]
+  ])(
+    'acknowledges accepted and does nothing further when the re-read is failed with %s (T2.4)',
+    async (_label, pendingRetryAt) => {
+      const run = makeThreePhaseRun({ status: 'running' });
+      const failedAfterWrite = makeThreePhaseRun({
+        status: 'failed',
+        pendingRetryAt,
+        pendingRetryCause: pendingRetryAt === null ? null : 'transient_error',
+        failureCause: 'phase_failed'
+      });
+      const mocks = makeService(run);
+      mocks.getRun.mockReturnValueOnce(run).mockReturnValue(failedAfterWrite);
+
+      expect(await mocks.service.skipPhase(QUEUE_ID, run.id, 'beta')).toEqual({ ok: true });
+
+      // One write, the override; its audit row stands; no second write revives or clears anything.
+      expect(mocks.updateRun).toHaveBeenCalledTimes(1);
+      expect(mocks.appendPhaseControl).toHaveBeenCalledTimes(1);
+      expect(mocks.appendPhaseControl).toHaveBeenCalledWith('phase-skipped', expect.anything(), expect.anything());
+      await expectNoSkipEffects(mocks);
+      expect(mocks.noteActivePhaseOverrideAbort).not.toHaveBeenCalled();
+      expect(mocks.armIsContinue).not.toHaveBeenCalled();
+    }
+  );
 });

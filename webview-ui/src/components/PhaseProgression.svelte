@@ -16,6 +16,7 @@
     /** Feature 093 (FR-018 / T080) — the queue whose Run these phases belong to. */
     queueId: string;
     targetsSubjectRun: boolean; // Off-target guard — `PhaseControlMenu` documents it.
+    subjectTaskFailed?: boolean; // FR-R4-F20 — passed to the menu, whose Skip tooltip reads it.
     isPrimary?: boolean;
     manualPauseAt?: string | null;
     // Verbatim from the host's `ManualPauseCause`; declared beside the label it drives.
@@ -39,6 +40,7 @@
     activeRunId = null,
     queueId,
     targetsSubjectRun,
+    subjectTaskFailed = false,
     isPrimary = true,
     manualPauseAt = null,
     manualPauseCause = null,
@@ -136,6 +138,7 @@
       {activeRunId}
       {queueId}
       {targetsSubjectRun}
+      {subjectTaskFailed}
       {manualPauseAt}
       {isWaitingRetry}
       {phaseOverrides}

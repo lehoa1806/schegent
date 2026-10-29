@@ -9,6 +9,9 @@
 //    end a sibling queue's credit polling. At `5d700407` the record was reset (recorded in
 //    measurements.md, US6); only the queue's own deadline is cancelled now (FR-024 of feature 093:
 //    a control affects only the queue it names).
+//    FR-R4-F20 (feature 248) retired the failed-Run half of that scenario: Skip of a failed Run is
+//    refused `run-failed` and writes nothing, so no deadline is cancelled and no record is touched.
+//    The per-queue cancel survives where Skip still resumes, a Run paused in a retry countdown.
 import { describe, expect, it, vi } from 'vitest';
 import { PhaseControlService } from '../../../src/controller/phase-control-service';
 import { unfencedCommit } from '../../../src/state/ownership-claim';
@@ -16,6 +19,9 @@ import type { WorkflowRun } from '../../../src/state/workflow-run';
 
 const QUEUE_A = 'queue-a';
 const QUEUE_B = 'queue-b';
+const QUEUE_C = 'queue-c';
+
+const CREDIT_PAUSED = { pausedAt: 1, windowStartedAt: 2, stoppedAt: null };
 
 function makeRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
   return {
@@ -124,9 +130,12 @@ describe('Resume on a Run whose credit polling stopped (W6 G19, US6-6)', () => {
 });
 
 describe('Skip on one queue leaves the watchdog record and the other queues alone (W6b G22)', () => {
-  it('cancels the named queue\'s own deadline and does not write the watchdog record', async () => {
-    const failedWithDeadline = makeRun({
-      status: 'failed',
+  // FR-R4-F20 (T3.1, TA4) — replaces the case that skipped a FAILED Run with a pending deadline.
+  // The countdown Run it uses now is `paused`, the one place Skip still resumes, so the per-queue
+  // timer cancel and the watchdog guarantee are still proved by a Skip that acts.
+  it('cancels the named queue\'s own deadline for a Run in a retry countdown, and writes no other queue (T3.1)', async () => {
+    const countdown = makeRun({
+      status: 'paused',
       pendingRetryAt: Date.now() + 60_000,
       pendingRetryCause: 'transient_error',
       delayedRetryCount: 1
@@ -134,17 +143,60 @@ describe('Skip on one queue leaves the watchdog record and the other queues alon
     const siblingCreditPaused = makeRun({
       id: 'run-b',
       featureId: 'task-b',
-      creditPause: { pausedAt: 1, windowStartedAt: 2, stoppedAt: null }
+      creditPause: CREDIT_PAUSED
     });
-    const { service, setWatchdog, cancelPendingTimer } = makeService({
-      [QUEUE_A]: failedWithDeadline,
+    const { service, updateRun, setWatchdog, cancelPendingTimer } = makeService({
+      [QUEUE_A]: countdown,
       [QUEUE_B]: siblingCreditPaused
     });
+    const siblingBefore = JSON.stringify(siblingCreditPaused);
 
-    await service.skipPhase(QUEUE_A, 'alpha');
+    expect(await service.skipPhase(QUEUE_A, countdown.id, 'alpha')).toEqual({ ok: true });
 
+    expect(cancelPendingTimer).toHaveBeenCalledTimes(1);
     expect(cancelPendingTimer).toHaveBeenCalledWith(QUEUE_A);
-    expect(cancelPendingTimer).not.toHaveBeenCalledWith(QUEUE_B);
     expect(setWatchdog).not.toHaveBeenCalled();
+    // Non-vacuous: the Skip did write, and every write named queue A.
+    expect(updateRun).toHaveBeenCalled();
+    expect(updateRun.mock.calls.every(([queueId]) => queueId === QUEUE_A)).toBe(true);
+    expect(JSON.stringify(siblingCreditPaused)).toBe(siblingBefore);
+  });
+
+  // FR-R4-F20 (T3.2, SC-005) — a refused Skip moves nothing on any queue. Queue A is the failed Run
+  // with a pending deadline the old test skipped; queues B and C hold the other retry and credit state
+  // a stray timer cancel or watchdog reset would have disturbed.
+  it('refuses a failed Run with a pending retry and leaves every other queue, timer and the watchdog alone (T3.2)', async () => {
+    const failedWithDeadline = makeRun({
+      status: 'failed',
+      pendingRetryAt: Date.now() + 60_000,
+      pendingRetryCause: 'transient_error',
+      delayedRetryCount: 1
+    });
+    const siblingCountdown = makeRun({
+      id: 'run-b',
+      featureId: 'task-b',
+      pendingRetryAt: Date.now() + 90_000,
+      pendingRetryCause: 'transient_error',
+      delayedRetryCount: 1
+    });
+    const thirdCreditPaused = makeRun({ id: 'run-c', featureId: 'task-c', creditPause: CREDIT_PAUSED });
+    const { service, updateRun, setWatchdog, cancelPendingTimer, resumeExisting } = makeService({
+      [QUEUE_A]: failedWithDeadline,
+      [QUEUE_B]: siblingCountdown,
+      [QUEUE_C]: thirdCreditPaused
+    });
+    const othersBefore = JSON.stringify([siblingCountdown, thirdCreditPaused]);
+
+    expect(await service.skipPhase(QUEUE_A, failedWithDeadline.id, 'alpha')).toEqual({
+      ok: false,
+      reason: 'run-failed'
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(cancelPendingTimer).not.toHaveBeenCalled();
+    expect(setWatchdog).not.toHaveBeenCalled();
+    expect(updateRun).not.toHaveBeenCalled();
+    expect(resumeExisting).not.toHaveBeenCalled();
+    expect(JSON.stringify([siblingCountdown, thirdCreditPaused])).toBe(othersBefore);
   });
 });

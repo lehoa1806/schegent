@@ -25,10 +25,17 @@
 //
 // Derivation is by slice, not by whole-file scan, wherever a file answers for
 // more commands than these five. `decidePhaseControl` classifies eight
-// operations and only three are posted by controls in this vocabulary; pulling
-// in all eight would put skip, disable, enable and the breakpoint pair under a
-// rule about controls that do not dispatch them, and the test would churn on
+// operations and only four are posted by controls in this vocabulary; pulling
+// in all eight would put disable, enable and the breakpoint pair under a rule
+// about controls that do not dispatch them, and the test would churn on
 // changes it has no opinion about.
+//
+// FR-R4-F20 — Skip joined the dispatched controls. Its refusal used to be
+// discarded at the webview (`skipPhase` returned `void`), so it was outside
+// this vocabulary by name; it reads its ACK now, which makes its codes
+// operator-facing. Disable, Enable and the two breakpoint actions remain
+// outside, for the same reason Skip was: they still discard theirs, or answer
+// through a path of their own.
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -99,13 +106,15 @@ const guardedRunService = read('src', 'services', 'guarded-run-service.ts');
 const commandOutcome = read('src', 'contracts', 'command-outcome.ts');
 const routerConstants = read('src', 'ui', 'sidebar', 'commands', 'constants.ts');
 const handlerHelpers = read('src', 'ui', 'sidebar', 'commands', 'handler-helpers.ts');
+const cmdSkipPhase = read('src', 'ui', 'sidebar', 'commands', 'cmd-skip-phase.ts');
 const phaseControlCommands = read('src', 'commands', 'phase-control-commands.ts');
 const retryPhaseNow = read('src', 'commands', 'retry-phase-now.ts');
 const startQueue = read('src', 'commands', 'start-queue.ts');
 const lifecycleIpc = read('webview-ui', 'src', 'lib', 'lifecycle-control-ipc.ts');
 
 /**
- * Every reason the five lifecycle commands can put on an ACK, derived.
+ * Every reason the lifecycle commands (and Skip, since FR-R4-F20) can put on an
+ * ACK, derived.
  *
  * Grouped by the layer that answers it, in the order a request passes through
  * them, because that order is the argument for the set being complete: a
@@ -137,18 +146,25 @@ function derivedReasons(): readonly string[] {
   //    refusal verbatim, so the whole module is the slice.
   for (const reason of reasonsIn(soleRunResolver)) found.add(reason);
 
-  // 4. Eligibility — only the three arms these controls dispatch.
-  for (const operation of ['pause', 'resume', 'restart']) {
+  // 4. Eligibility — only the four arms these controls dispatch.
+  for (const operation of ['pause', 'resume', 'restart', 'skip']) {
     for (const reason of rejectsIn(switchArm(decision, operation))) found.add(reason);
   }
 
-  // 5. The service's own pre-decision guards, for the same three.
+  // 5. The service's own pre-decision guards, for the same four.
   for (const signature of [
     'public async pauseActivePhase(queueId: string): Promise<MutationResult> {',
     'public async resumeActivePhase(',
-    'public async restartActivePhase(queueId: string): Promise<MutationResult> {'
+    'public async restartActivePhase(queueId: string): Promise<MutationResult> {',
+    'public async skipPhase(queueId: string, runId: string, phaseId: string): Promise<MutationResult> {'
   ]) {
     for (const reason of reasonsIn(methodBody(service, signature))) found.add(reason);
+  }
+
+  // 5b. The Skip route's own refusals, which are `ack` literals rather than outcomes: a window
+  //     whose router has no `phaseOps` answers `phase-ops-unavailable` before the service runs.
+  for (const match of cmdSkipPhase.matchAll(/\back\(ctx, 'rejected', '([a-z][a-z0-9-]*)'\)/g)) {
+    found.add(match[1]!);
   }
 
   // 6. Retry now — the whole module answers for this one command only.
@@ -216,6 +232,8 @@ describe('FR-R3-154 (T1646) — lifecycle refusal vocabulary matches the hosts t
     expect(derived).toContain('workspace-not-trusted'); // trust gate
     expect(derived).toContain('ambiguous-run-target'); // queue resolver
     expect(derived).toContain('run-already-paused'); // eligibility classifier
+    expect(derived).toContain('run-failed'); // Skip's eligibility arm (FR-R4-F20)
+    expect(derived).toContain('phase-ops-unavailable'); // Skip's route guard (FR-R4-F20)
     expect(derived).toContain('no-run-in-flight'); // service guard
     expect(derived).toContain('not-pending-retry'); // retry override
     expect(derived).toContain('rejected-horizon'); // start intent

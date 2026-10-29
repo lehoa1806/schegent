@@ -88,7 +88,6 @@ export function validateResumePhasePayload(
  */
 export type PhaseIdCommandType =
   | typeof CMD_RESTART_PHASE
-  | typeof CMD_SKIP_PHASE
   | typeof CMD_DISABLE_PHASE
   | typeof CMD_ENABLE_PHASE;
 
@@ -114,6 +113,40 @@ export function validatePhaseIdPayload(
     return fail('invalid-phaseId', { type, correlationId });
   }
   return ok({ type, correlationId, payload: { queueId, phaseId } } as SidebarCommand);
+}
+
+/**
+ * FR-R4-F20 — Skip carries the Run the operator confirmed beside the queue and the Phase. A Skip
+ * with no valid `runId` is refused here, before any handler runs, because the service would
+ * otherwise act on whichever Run the queue holds when the message arrives. Restart, Disable and
+ * Enable keep `validatePhaseIdPayload`: none of them names a Run.
+ */
+export function validateSkipPhasePayload(
+  obj: Record<string, unknown>,
+  correlationId: string
+): IpcValidationResult {
+  const type = CMD_SKIP_PHASE;
+  const payload = obj['payload'];
+  if (payload === null || typeof payload !== 'object') {
+    return fail('missing-payload', { type, correlationId });
+  }
+  const p = payload as Record<string, unknown>;
+  if (hasUnexpectedKeys(p, ['queueId', 'runId', 'phaseId'])) {
+    return fail('unexpected-payload-fields', { type, correlationId });
+  }
+  const queueId = readQueueId(p);
+  if (queueId === null) {
+    return fail('invalid-queueId', { type, correlationId });
+  }
+  const runId = p['runId'];
+  if (typeof runId !== 'string' || runId.length === 0 || runId.length > QUEUE_ID_MAX) {
+    return fail('invalid-runId', { type, correlationId });
+  }
+  const phaseId = p['phaseId'];
+  if (typeof phaseId !== 'string' || phaseId.length === 0 || phaseId.length > QUEUE_ID_MAX) {
+    return fail('invalid-phaseId', { type, correlationId });
+  }
+  return ok({ type, correlationId, payload: { queueId, runId, phaseId } } as SidebarCommand);
 }
 
 /** Feature 028 — phase breakpoint commands, queue-addressed since feature 093. */

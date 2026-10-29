@@ -320,6 +320,58 @@ describe('RunDetailTier — Pipeline-backed rendering (FR-058)', () => {
     expect(getByTestId('phase-control-restart').getAttribute('aria-disabled')).toBe('false');
   });
 
+  // FR-R4-F20 (FR-010, FR-011, US4-1, US4-2) — the derivation `PhaseControlMenu.test.ts` cannot see.
+  // This tier reads "the displayed task failed" off the row it is showing and hands it down through
+  // `PhaseProgression`. A failed row is never the executing one, so its strip is off target by
+  // construction, and without the derivation its disabled Skip would explain a refusal for failing as
+  // "showing another task". The last case is the control: a prop that was always `true` would pass the
+  // first two and fail it.
+  describe('the disabled Skip says why', () => {
+    const FAILED_SKIP = 'A failed task cannot be skipped: retry it, mark it completed, or remove it.';
+    const OFF_TARGET =
+      'Unavailable while this view is showing a task other than the run executing on this queue.';
+    const skip = (view: ReturnType<typeof mount>) => view.getByTestId('phase-control-skip');
+
+    it('explains a failed task whose queue is not executing anything', () => {
+      const view = mount(buildSnapshot({ tasks: [task('r-1', { status: 'failed' })] }));
+
+      expect(skip(view).getAttribute('aria-disabled')).toBe('true');
+      expect(skip(view).getAttribute('title')).toBe(FAILED_SKIP);
+    });
+
+    it('explains an earlier failed task while another task executes (Clarify Q2)', () => {
+      const view = mount(
+        buildSnapshot({
+          tasks: [task('r-1', { status: 'failed' }), task('sibling', { status: 'in-flight' })],
+          inFlightTaskId: 'sibling'
+        })
+      );
+
+      expect(skip(view).getAttribute('aria-disabled')).toBe('true');
+      expect(skip(view).getAttribute('title')).toBe(FAILED_SKIP);
+    });
+
+    it('keeps the off-target text for a task that has not failed', () => {
+      const view = mount(
+        buildSnapshot({
+          tasks: [task('r-1'), task('sibling', { status: 'in-flight' })],
+          inFlightTaskId: 'sibling'
+        })
+      );
+
+      expect(skip(view).getAttribute('title')).toBe(OFF_TARGET);
+    });
+
+    it('control: the executing task keeps Skip live under its own label', () => {
+      const view = mount(
+        buildSnapshot({ tasks: [task('r-1', { status: 'in-flight' })], inFlightTaskId: 'r-1' })
+      );
+
+      expect(skip(view).getAttribute('aria-disabled')).toBe('false');
+      expect(skip(view).getAttribute('title')).toBe('Skip active phase');
+    });
+  });
+
   it('offers the Task’s lifecycle controls', () => {
     const { getByTestId } = mount(
       buildSnapshot({ tasks: [task('r-1', { status: 'in-flight' })] })

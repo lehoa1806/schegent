@@ -70,9 +70,12 @@ export type LifecycleControlResult =
  *   - `controller/sole-run-resolver.ts` (`resolveControlTarget`) — the
  *     queue-addressing refusals every phase control passes through first
  *   - `controller/phase-control-decision.ts` (`decidePhaseControl`) — the
- *     'pause' / 'resume' / 'restart' eligibility branches, and only those
- *     three: the other operations in that classifier are posted by controls
- *     this module does not dispatch
+ *     'pause' / 'resume' / 'restart' / 'skip' eligibility branches, and only
+ *     those four: the other operations in that classifier are posted by
+ *     controls this module does not dispatch
+ *   - `ui/sidebar/commands/cmd-skip-phase.ts` — the Skip route's own guard
+ *     (FR-R4-F20), and its answer to a throw, which is a code from the
+ *     transport group below rather than the thrown message
  *   - `controller/phase-control-service.ts` — its own pre-decision guards
  *   - `controller/manual-retry-override.ts` — the three retry-now refusals
  *   - `commands/retry-phase-now.ts` — the primary-window guard
@@ -93,7 +96,7 @@ const LIFECYCLE_REFUSAL_TEXT: Readonly<Record<string, string>> = Object.freeze({
   'ambiguous-run-target':
     'More than one Run is in flight, so this control could not tell which one you meant.',
   // Phase-control eligibility — `decidePhaseControl`'s 'pause' / 'resume' /
-  // 'restart' arms, and the three service methods' own `!run` guard.
+  // 'restart' / 'skip' arms, and the three service methods' own `!run` guard.
   //
   // `run-not-in-flight`, `unknown-phase-id`, `phase-already-removed` and
   // `unknown-task-id` are deliberately absent. `PhaseControlService` does emit
@@ -108,6 +111,11 @@ const LIFECYCLE_REFUSAL_TEXT: Readonly<Record<string, string>> = Object.freeze({
   'run-not-paused': 'This Run is not paused, so there is nothing to resume.',
   'run-terminal': 'This Run has already finished, so its phases can no longer be changed.',
   'phase-not-active': "That phase is not the Run's current one.",
+  // FR-R4-F20 — the two Skip adds. `run-failed` is also the disabled Skip control's tooltip on a
+  // failed task (`phase-control-titles.ts` reads this entry), so the explanation and the refusal
+  // are one sentence and cannot drift apart.
+  'run-failed': 'A failed task cannot be skipped: retry it, mark it completed, or remove it.',
+  'phase-id-not-in-pipeline-snapshot': "That phase is not part of this Run's pipeline.",
   // Retry now — `applyManualRetryOverride` and the command's own guard.
   'no-active-run': 'There is no active Run to retry.',
   'not-pending-retry': 'This phase is not waiting for a retry, so there is nothing to bring forward.',
@@ -141,6 +149,9 @@ const LIFECYCLE_REFUSAL_TEXT: Readonly<Record<string, string>> = Object.freeze({
   'restart-phase-failed': 'Restarting the phase failed. Check the log and try again.',
   'retry-phase-now-failed': 'Retrying the phase failed. Check the log and try again.',
   'start-queue-failed': 'Starting the queue failed. Check the log and try again.',
+  // Skip route — `commands/cmd-skip-phase.ts`, a window whose router has no `phaseOps` wired.
+  'phase-ops-unavailable':
+    'Phase controls are not ready in this window yet, so nothing was changed.',
   // Synthesised here.
   timeout: 'The host did not answer. Try again.'
 });
