@@ -1255,7 +1255,13 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // Feature 240 (FR-R4-F02, 2026-10-28) — 2385 → 2386: one line. Clean All's watchdog
       // reset also writes `lastPollOutcome: null`, which is the one field it would otherwise leave
       // behind (contract W6b G23); the reset stays window-wide, as Clean All means.
-      highWaterMark: 2386
+      //
+      // Feature 244 (FR-R4-F16, 2026-10-29) — 2386 → 2392: six lines, no new responsibility. They
+      // are the `completionProvenance?` field on `QueueMutationDetail` (the field and a four-line
+      // note) and `removeTask` returning the removed row's value beside `priorStatus`, from the same
+      // row (contract P2.1, P2.2). What the value means, and what reaches disk, is decided in
+      // `src/contracts/completion-provenance.ts` and `src/audit/audit-payload.ts`, not here.
+      highWaterMark: 2392
     }
   },
   // Speckit-auto alignment (2026-07-30) — bumped 700 → 800 to absorb two new
@@ -1507,7 +1513,12 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // note) and the feature entry in the file's own header, which contract E1 requires and every
       // earlier additive field carries. The vocabulary lives in `src/contracts/failure-cause.ts`,
       // not here, and the projection arm lives in `src/audit/audit-payload.ts`.
-      highWaterMark: 1559
+      //
+      // Feature 244 (FR-R4-F16, 2026-10-29) — 1559 → 1566, +7. The lines are the feature entry in
+      // the file's own header (contract P4.1), which every earlier additive field carries: the field
+      // on `task-removed`, its two values, absence meaning "not recorded", admission by identity in
+      // both copies, and no schema bump. No payload interface is added; there is none to extend.
+      highWaterMark: 1566
     }
   },
   // The second file of the same 2026-10-01 decision; see the waiver above.

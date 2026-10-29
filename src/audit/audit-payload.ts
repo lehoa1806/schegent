@@ -1,6 +1,7 @@
 import type { AuditEventType, CatalogLifecyclePayload } from '../contracts/audit-events';
 import { CATALOG_KINDS, type CatalogKind } from '../contracts/catalog-store';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
+import { isCompletionProvenance } from '../contracts/completion-provenance';
 import { isFailureCause } from '../contracts/failure-cause';
 
 export const AUDIT_PAYLOAD_MAX_BYTES = 32 * 1024;
@@ -864,6 +865,59 @@ function projectTaskExecutionEnded(payload: Record<string, unknown>): Record<str
   return isFailureCause(failureCause) ? { ...projected, failureCause } : projected;
 }
 
+/** A value the admission test below accepts: `null` for "not attested", or a vocabulary member. */
+function isAdmittedProvenance(value: unknown): boolean {
+  return value === null || isCompletionProvenance(value);
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * FR-R4-F16 (feature 244, contract P3, FR-003) — `task-removed`: every key is projected as the generic
+ * arm projects it, and `completionProvenance` is admitted by IDENTITY, in BOTH places the handler
+ * writes it: the payload's own key and `stateTransition.newState`, which copies the payload.
+ *
+ * Each copy is taken out BEFORE the generic projection and put back only when it is `null` or a
+ * vocabulary member, judged on its own value. For the same reason as `projectTaskExecutionEnded`: a
+ * stored value that looks like a path would otherwise make `projectValue` refuse the whole entry, and
+ * the removal's audit line would be lost instead of the field. A refused value is absent as a key,
+ * never rewritten to `null` or to anything else, and never costs the entry. The caller's objects are
+ * never mutated: the key is removed from copies.
+ */
+function projectTaskRemoved(payload: Record<string, unknown>): Record<string, unknown> {
+  const { completionProvenance, ...withoutTop } = payload;
+  const transition = withoutTop.stateTransition;
+  const newState = isPlainRecord(transition) ? transition.newState : undefined;
+  const nestedPresent = isPlainRecord(newState);
+  const { completionProvenance: nestedProvenance, ...newStateWithout } = nestedPresent
+    ? newState
+    : ({} as Record<string, unknown>);
+  const input =
+    nestedPresent && isPlainRecord(transition)
+      ? { ...withoutTop, stateTransition: { ...transition, newState: newStateWithout } }
+      : withoutTop;
+
+  const projected = projectValue(input, 0) as Record<string, unknown>;
+  const withTop = isAdmittedProvenance(completionProvenance)
+    ? { ...projected, completionProvenance }
+    : projected;
+  const projectedTransition = withTop.stateTransition;
+  if (!nestedPresent || !isAdmittedProvenance(nestedProvenance) || !isPlainRecord(projectedTransition)) {
+    return withTop;
+  }
+  const projectedNewState = projectedTransition.newState;
+  if (!isPlainRecord(projectedNewState)) return withTop;
+  return {
+    ...withTop,
+    stateTransition: {
+      ...projectedTransition,
+      newState: { ...projectedNewState, completionProvenance: nestedProvenance }
+    }
+  };
+}
+
 /**
  * Converts every event-family payload into the bounded v3 metadata model.
  * Sensitive execution detail is omitted by key; malformed or path-bearing
@@ -884,6 +938,8 @@ export function projectAuditPayload(
     projected = projectMetricsViewOpened(payload) as unknown as Record<string, unknown>;
   } else if (eventType === 'task-execution-ended') {
     projected = projectTaskExecutionEnded(payload);
+  } else if (eventType === 'task-removed') {
+    projected = projectTaskRemoved(payload);
   } else if (
     eventType === 'definition-published' ||
     eventType === 'definition-deactivated' ||

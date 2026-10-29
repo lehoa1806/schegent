@@ -124,7 +124,13 @@ export const READ_ONLY_COMMAND_IDS = Object.freeze({
   // evidence export additionally refuses any destination inside `.schegent/`,
   // which is the only path the workspace does control.
   'schegent.exportAuditLog': 'audit export to an operator-confirmed destination',
-  'schegent.exportRunEvidence': 'evidence export to an operator-confirmed destination'
+  'schegent.exportRunEvidence': 'evidence export to an operator-confirmed destination',
+
+  // FR-R4-F16 (feature 244) — reads the audit chain and the queue state and opens an unsaved Markdown
+  // document. It is given no audit writer, queue manager, controller or lock (`failedRowCensusPorts`),
+  // so it appends nothing and starts nothing, and what it opens carries only counts, closed tokens and
+  // ids that pass their patterns: no title, error text, actor or path from the workspace.
+  'schegent.reportFailedRowExits': 'failed-row census read'
 } as const);
 
 export type MutatingCommandId = keyof typeof MUTATING_COMMAND_IDS;

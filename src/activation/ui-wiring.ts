@@ -23,6 +23,10 @@ import {
   runResumeQueue
 } from '../commands/queue-ops';
 import { runRerunFromHistory } from '../commands/rerun-from-history';
+import {
+  runReportFailedRowExits,
+  type ReportFailedRowExitsDeps
+} from '../commands/report-failed-row-exits';
 import { runRestartCanceledTask } from '../commands/restart-canceled-task';
 import { runResume } from '../commands/resume';
 import { runRetryActiveRun } from '../commands/retry-active-run';
@@ -43,6 +47,7 @@ import {
 } from '../commands/start-queue';
 import { registerQueueFailurePolicyCommand } from './queue-failure-policy-wiring';
 import { registerQueueItemExitCommands } from './queue-item-exit-wiring';
+import { readQueueFailurePolicyDefault } from './uncached-settings-accessors';
 import type { PipelineCatalog } from '../config/pipeline-config';
 import type { SchegentWorkflowController } from '../controller/workflow-controller';
 import { errorMessage } from '../lib/errors';
@@ -186,6 +191,40 @@ export function createConnectedRunService(
       Object.freeze(
         Object.values(store.getConnectedRuns()).map((run) => projectConnectedRun(run, reader))
       )
+  };
+}
+
+/** What the failed-row report writes when the extension's version cannot be read as a version. */
+const UNKNOWN_VERSION = 'unknown';
+const EXTENSION_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]{1,64})?$/;
+
+/**
+ * FR-R4-F16 (feature 244, contract M2.3) — the ports of "Schegent: Report Failed-Row Exits".
+ *
+ * Read-only by construction: it is handed the clock, two reads of queue state, the version, a way to
+ * open an unsaved document, and the logger and notifier, and no audit writer, queue manager, controller
+ * or lock, so the command cannot append, start work or take a lease. The workspace root is
+ * `deps.workspaceRoot`, never the first workspace folder read directly (hard rule 31). The policy
+ * default is read on call, through the uncached accessor, because an operator who changes the setting
+ * means it.
+ */
+function failedRowCensusPorts(deps: Stage2UiWiringDeps): ReportFailedRowExitsDeps {
+  return {
+    workspaceRoot: deps.workspaceRoot,
+    now: Date.now,
+    readQueueStates: () => deps.store.getQueueStates(),
+    readPolicyDefault: () => readQueueFailurePolicyDefault(deps.workspaceRoot),
+    // The version is shown in the report, so it is accepted by pattern and nothing else.
+    extensionVersion: () => {
+      const version: unknown = vscode.extensions.getExtension('schegent.schegent')?.packageJSON?.version;
+      return typeof version === 'string' && EXTENSION_VERSION_PATTERN.test(version) ? version : UNKNOWN_VERSION;
+    },
+    openReport: async (content) => {
+      const document = await vscode.workspace.openTextDocument({ language: 'markdown', content });
+      await vscode.window.showTextDocument(document, { preview: false });
+    },
+    logger: deps.logger,
+    notifier: deps.notifier
   };
 }
 
@@ -407,6 +446,9 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
     ),
     registerGuardedCommand(guard, 'schegent.showAuditLog', () =>
       runShowAuditLog({ workspaceRoot: deps.workspaceRoot, notifier: deps.notifier })
+    ),
+    registerGuardedCommand(guard, 'schegent.reportFailedRowExits', () =>
+      runReportFailedRowExits(failedRowCensusPorts(deps))
     ),
     // FR-R3-146 (FR-012, SC-005) — the observe-and-withdraw surface for the
     // durable Git grants. Both thunks read the store when the command runs, not

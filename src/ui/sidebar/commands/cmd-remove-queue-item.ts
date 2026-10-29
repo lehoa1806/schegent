@@ -37,6 +37,9 @@ export const handler: CommandHandler<RemoveQueueItemCommand> = async (ctx, comma
       taskId: result.taskId ?? command.payload.id,
       queueId: result.queueId ?? null,
       priorStatus: result.priorStatus ?? null,
+      // FR-R4-F16 (T022, FR-001) — `null` when the result carries none, so every `task-removed` written
+      // after this feature has the key. The projection decides what reaches disk, in both copies.
+      completionProvenance: result.completionProvenance ?? null,
       runId: result.runId ?? null,
       cause: 'operator',
       sessionCleaned: result.sessionCleaned ?? false,
