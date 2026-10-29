@@ -280,6 +280,64 @@ itself fails.
 <!-- Source: tests/unit/audit/sanitize-listener.test.ts -->
 <!-- Source: tests/unit/audit/audit-log-writer.test.ts -->
 
+## Count how failed rows were resolved
+
+The audit log says that a run failed and, later, that a row was removed. It does not say which of
+the operator's exits a failed row took. "Schegent: Report Failed-Row Exits" in the Command Palette
+counts how each failed row was resolved, by failure cause, and states what it could not see. It is
+read-only: it works in an untrusted window, takes no lock, and two windows may run it at once.
+
+- **What it reads.** The queue state once, at a cutoff taken when you run the command, and every
+  audit segment present under `.schegent/`: the cut record, the archives and the live log. It reads
+  no failure record, session transcript, row title or error text, so none of them can reach the
+  report.
+- **The report** opens as an unsaved Markdown document with six sections:
+  - **Identity**: the cutoff, the extension version, the first removal that recorded provenance
+    (or "none seen"), and each queue's stored failure policy beside the workspace default;
+  - **Coverage**: what was read: segments read, unreadable segments, cut records met, unparseable
+    lines, backwards timestamps, collapsed duplicates, records after the cutoff, identifiers not
+    shown, and files beside the log that were never read;
+  - **Totals**: every cause by every outcome, zeros included, with a line that reconciles the
+    episode count with the failed terminal records read;
+  - **Unknowns**: the unknown outcomes, counted by reason;
+  - **Episodes**: newest first, at most 200 rows, with a line for the rest;
+  - **Limits**: what the report cannot see.
+- **Episodes.** An episode is one failed terminal record. A run that fails, is resumed and fails
+  again has two, and a removal ends only one of them. The same failed record written twice with no
+  start between is one episode and one collapsed duplicate.
+- **The ten dispositions**, one per episode:
+  - `resumed`: the same run started again;
+  - `restarted-fresh`: the task started again under another run;
+  - `attested-removed`: removed after the operator marked it completed;
+  - `removed-failed`: removed while still failed;
+  - `removed-other`: removed in another state, such as pending after a retry;
+  - `queue-deleted`: its queue was deleted;
+  - `queue-cleared`: its queue was cleared, by Clear Queue or Clear All;
+  - `attested-kept`: marked completed by the operator and still in the queue;
+  - `still-failed`: still failed at the cutoff; the report counts the later tasks its queue started
+    and says the audit log cannot say why;
+  - `retry-requested`: pending again at the cutoff, as after Retry.
+- **The six unknown reasons**, never folded into a disposition:
+  - `provenance-not-recorded`: removed as completed, and the removal line has no
+    `completionProvenance` (written before that field existed, or its value was refused);
+  - `completed-without-attestation`: removed as completed and recorded as not attested;
+  - `row-absent`: no later event and no row at the cutoff;
+  - `snapshot-mismatch`: the row at the cutoff does not match the failed run;
+  - `history-gap`: a cut record, an unreadable segment or an unparseable line may hide what
+    happened;
+  - `queue-unresolved`: the task id was met in more than one queue, or a move could not be followed.
+- **What it cannot see.** A queue can run past a failed row under the `continue` policy, and a change
+  of a queue's failure policy is not audited, so the report cannot tell why a queue ran on; it shows
+  the policies as they stood at the cutoff. Clear Failed and Clear Done remove rows without any audit
+  entry, so a row they removed reads `row-absent`; Clear Queue and Clear All are counted as
+  `queue-cleared`, and deleting a queue as `queue-deleted`, and neither records provenance. The
+  report reads metadata only: it cannot see why an operator chose an exit.
+- **It writes nothing.** The report opens unsaved. To keep a dated copy, save it under the
+  workspace `docs/`.
+<!-- Source: src/commands/report-failed-row-exits.ts -->
+<!-- Source: src/services/failed-row-census/failed-row-census.ts -->
+<!-- Source: src/services/failed-row-census/census-report.ts -->
+
 ## Query the active file
 
 Validate that every non-empty line is JSON:

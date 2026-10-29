@@ -12,6 +12,7 @@ import {
 import { AUDIT_SCHEMA_VERSION } from '../../../src/contracts/audit-events';
 import { FAILURE_CAUSES } from '../../../src/contracts/failure-cause';
 import type { PhaseOutcome } from '../../../src/controller/phase';
+import { createStateTransitionAuditEnvelope } from '../../../src/lib/audit-event-envelope';
 
 describe('audit payload schema v3', () => {
   it('projects CLI invocations to bounded execution metadata', () => {
@@ -770,5 +771,142 @@ describe('task-execution-ended failureCause projection (FR-R4-F14)', () => {
     const projected = projectAuditPayload('phase-end', { ...phaseEnd, failureCause: 'cap_exhausted' });
     expect('failureCause' in projected).toBe(false);
     expect(projected).toEqual(projectAuditPayload('phase-end', phaseEnd));
+  });
+});
+
+// FR-R4-F16 (spec 244, contract P3, P5.2, FR-003) — `task-removed` carries `completionProvenance`, and
+// the projection admits it by identity in BOTH copies the handler writes: the payload's own key and
+// `stateTransition.newState`. A value that is not a member is dropped as a field, never rewritten, and
+// never costs the entry. Each copy is judged on its own value. Every other event type takes the arm it
+// took before.
+describe('task-removed completionProvenance projection (FR-R4-F16)', () => {
+  const removed = {
+    taskId: 'task-1',
+    queueId: 'default',
+    priorStatus: 'completed',
+    runId: 'run-1',
+    cause: 'operator',
+    sessionCleaned: true,
+    sessionCleanupRefusal: null
+  };
+  const NOW = new Date('2026-10-29T10:00:00.000Z');
+  // Built from pieces so the secret scanner does not flag this file (standing rule 14).
+  const SECRET_SENTINEL = ['sk', 'ant', 'api03', 'SENTINELSENTINELSENTINEL'].join('-');
+
+  /** The payload as `appendQueueAudit` writes it: the fields, and the same fields again as `newState`. */
+  function written(extra: Record<string, unknown> = {}): Record<string, unknown> {
+    const fields = { ...removed, ...extra };
+    return {
+      ...fields,
+      stateTransition: createStateTransitionAuditEnvelope({
+        correlationId: 'corr-1',
+        reasonCode: 'task-removed',
+        newState: fields,
+        now: NOW
+      })
+    };
+  }
+
+  function newStateOf(projected: Record<string, unknown>): Record<string, unknown> {
+    return (projected.stateTransition as { newState: Record<string, unknown> }).newState;
+  }
+
+  function deepFreeze<T>(value: T): T {
+    if (value !== null && typeof value === 'object') {
+      for (const child of Object.values(value)) deepFreeze(child);
+      Object.freeze(value);
+    }
+    return value;
+  }
+
+  it.each([
+    ['operator-attested', 'operator-attested'],
+    ['null', null]
+  ])('keeps %s in the payload and in newState', (_name, value) => {
+    const projected = projectAuditPayload('task-removed', written({ completionProvenance: value }));
+    expect(projected.completionProvenance).toBe(value);
+    expect(newStateOf(projected).completionProvenance).toBe(value);
+    expect(projected).toEqual(written({ completionProvenance: value }));
+  });
+
+  it.each([
+    ['a member of no vocabulary', 'host-verified'],
+    ['the wrong case', 'Operator-Attested'],
+    ['a number', 1],
+    ['an object', {}],
+    ['a path-like string', '/Users/someone/.ssh/id_rsa'],
+    ['a secret-shaped string', SECRET_SENTINEL]
+  ])('drops %s from both copies and projects the rest as without the key', (_name, value) => {
+    const projected = projectAuditPayload('task-removed', written({ completionProvenance: value }));
+    expect('completionProvenance' in projected).toBe(false);
+    expect('completionProvenance' in newStateOf(projected)).toBe(false);
+    expect(projected).toEqual(projectAuditPayload('task-removed', written()));
+    expect(JSON.stringify(projected)).not.toContain(SECRET_SENTINEL);
+  });
+
+  it('projects a payload with no key byte-identically to the generic projection', () => {
+    const payload = written();
+    const projected = projectAuditPayload('task-removed', payload);
+    expect('completionProvenance' in projected).toBe(false);
+    // `queue-deleted` has no arm of its own, so it is the generic projection of the same payload.
+    expect(JSON.stringify(projected)).toBe(JSON.stringify(projectAuditPayload('queue-deleted', payload)));
+  });
+
+  it('judges each copy on its own value', () => {
+    const top = projectAuditPayload(
+      'task-removed',
+      { ...written({ completionProvenance: 'host-verified' }), completionProvenance: 'operator-attested' }
+    );
+    expect(top.completionProvenance).toBe('operator-attested');
+    expect('completionProvenance' in newStateOf(top)).toBe(false);
+
+    const nested = projectAuditPayload('task-removed', {
+      ...written({ completionProvenance: 'operator-attested' }),
+      completionProvenance: 'host-verified'
+    });
+    expect('completionProvenance' in nested).toBe(false);
+    expect(newStateOf(nested).completionProvenance).toBe('operator-attested');
+  });
+
+  it('keeps a top-level value when there is no stateTransition, and tolerates a null newState', () => {
+    expect(projectAuditPayload('task-removed', { ...removed, completionProvenance: null })).toEqual({
+      ...removed,
+      completionProvenance: null
+    });
+    const nullState = {
+      ...removed,
+      completionProvenance: 'operator-attested',
+      stateTransition: { reasonCode: 'task-removed', newState: null }
+    };
+    expect(projectAuditPayload('task-removed', nullState)).toEqual(nullState);
+  });
+
+  it('takes the key out before projecting, so a hostile string never refuses the entry', () => {
+    expect(() =>
+      projectAuditPayload('task-removed', written({ completionProvenance: 'C:\\Users\\someone\\secret.txt' }))
+    ).not.toThrow();
+  });
+
+  it('leaves every other event type on the arm it took before', () => {
+    // The generic arm validates nothing about the key; the guard belongs to `task-removed` alone.
+    expect(projectAuditPayload('queue-deleted', { queueId: 'q', completionProvenance: 'host-verified' })).toEqual({
+      queueId: 'q',
+      completionProvenance: 'host-verified'
+    });
+    const phaseEnd = { outcome: 'failed', exitCode: 1, terminationReason: 'error', metrics: {}, durationMs: 12 };
+    const projected = projectAuditPayload('phase-end', { ...phaseEnd, completionProvenance: 'operator-attested' });
+    expect('completionProvenance' in projected).toBe(false);
+    expect(projected).toEqual(projectAuditPayload('phase-end', phaseEnd));
+  });
+
+  it('never mutates the caller payload or its nested envelope', () => {
+    const payload = deepFreeze(written({ completionProvenance: 'host-verified' }));
+    const before = JSON.stringify(payload);
+    expect(() => projectAuditPayload('task-removed', payload)).not.toThrow();
+    expect(JSON.stringify(payload)).toBe(before);
+  });
+
+  it('does not bump AUDIT_SCHEMA_VERSION', () => {
+    expect(AUDIT_SCHEMA_VERSION).toBe(3);
   });
 });

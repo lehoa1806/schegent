@@ -47,7 +47,7 @@ Activation runs to completion. The extension activates, the sidebar renders, the
 from persisted state, and Stage 2 **constructs** its services. What it does not do is *act* — see the
 next section for where the line falls.
 
-**7 commands stay available** in an untrusted window, registered unwrapped because none of them
+**8 commands stay available** in an untrusted window, registered unwrapped because none of them
 mutates workspace state:
 
 | Command | What it does |
@@ -57,13 +57,14 @@ mutates workspace state:
 | `schegent.openDashboard` | Opens the dashboard webview |
 | `schegent.verifyAuditChain` | Recomputes the audit hash chain and reports |
 | `schegent.redetectClaudeTransport` | Re-reads which transport the resolved CLI offers |
+| `schegent.reportFailedRowExits` | Counts how failed rows were resolved and opens the report; writes nothing |
 | `schegent.exportAuditLog` | Writes the audit log to a path you choose |
 | `schegent.exportRunEvidence` | Writes a Run's evidence bundle to a path you choose |
 
 The last two write a file, and are classified read-only anyway: each opens a modal save dialog, so
 the write is a place *you* named in a dialog *you* answered. A modal cannot be answered by repository
 content, which is the threat Workspace Trust exists to bound. (The untrusted host leg drives the
-other five for exactly that reason — a headless leg cannot answer a modal.)
+other six for exactly that reason — a headless leg cannot answer a modal.)
 
 Reading settings, reading the audit log, reading persisted Run state and rendering all of it are
 unaffected.

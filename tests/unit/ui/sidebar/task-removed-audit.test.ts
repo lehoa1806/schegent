@@ -200,3 +200,74 @@ describe('Feature 034 T010 — task-removed payload carries sessionCleaned', () 
     expect(auditEntries.filter((e) => e.eventType === 'task-removed')).toHaveLength(0);
   });
 });
+
+// FR-R4-F16 (spec 244, contract P5.4, FR-001, FR-003) — the same event carries `completionProvenance`,
+// copied from the removal's result. A result with none (an older or injected `deleteTask`) still
+// writes the key, as `null`, so every `task-removed` written after this feature carries it. The key
+// sits after `priorStatus`, and the payload stays paths-free.
+describe('FR-R4-F16 — task-removed payload carries completionProvenance', () => {
+  async function removeWith(result: Partial<DeleteTaskResult>): Promise<CapturedAuditEntry> {
+    const { router, acks, auditEntries } = makeRouter({
+      phaseOpsDeleteTask: async (id) => ({
+        ok: true,
+        taskId: id,
+        queueId: 'default',
+        priorStatus: 'completed',
+        runId: 'R1',
+        sessionCleaned: true,
+        ...result
+      })
+    });
+    await dispatch(
+      router,
+      { type: CMD_REMOVE_QUEUE_ITEM, correlationId: 'rm-P', payload: { id: 'task-p', confirmed: true } },
+      acks
+    );
+    expect((acks[0] as CapturedAck).msg.status).toBe('accepted');
+    const removed = auditEntries.filter((e) => e.eventType === 'task-removed');
+    expect(removed).toHaveLength(1);
+    return removed[0] as CapturedAuditEntry;
+  }
+
+  it("copies 'operator-attested' from the result, after priorStatus", async () => {
+    const entry = await removeWith({ completionProvenance: 'operator-attested' });
+    expect(entry.payload.completionProvenance).toBe('operator-attested');
+    const keys = Object.keys(entry.payload);
+    expect(keys.indexOf('completionProvenance')).toBe(keys.indexOf('priorStatus') + 1);
+    assertPayloadIsPathsFree(entry.payload);
+  });
+
+  it('copies null from the result', async () => {
+    const entry = await removeWith({ completionProvenance: null });
+    expect(entry.payload).toHaveProperty('completionProvenance', null);
+  });
+
+  it('writes null when the result carries no field at all', async () => {
+    const entry = await removeWith({});
+    expect(entry.payload).toHaveProperty('completionProvenance', null);
+    assertPayloadIsPathsFree(entry.payload);
+  });
+
+  it('writes the same value into the envelope copy as into the payload', async () => {
+    const entry = await removeWith({ completionProvenance: 'operator-attested' });
+    const newState = (entry.payload.stateTransition as { newState: Record<string, unknown> }).newState;
+    expect(newState.completionProvenance).toBe('operator-attested');
+  });
+
+  it('adds no identity field beside it', async () => {
+    const entry = await removeWith({ completionProvenance: 'operator-attested' });
+    expect(Object.keys(entry.payload).sort()).toEqual(
+      [
+        'taskId',
+        'queueId',
+        'priorStatus',
+        'runId',
+        'cause',
+        'sessionCleaned',
+        'sessionCleanupRefusal',
+        'completionProvenance',
+        'stateTransition'
+      ].sort()
+    );
+  });
+});

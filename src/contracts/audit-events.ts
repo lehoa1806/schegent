@@ -44,6 +44,13 @@ import type { CatalogKind } from './catalog-store';
 // Run recorded one; absent on completion and on every earlier record ("cause not recorded"). The
 // projection admits it by identity, and `phase-end` with its two causes is untouched. Additive — no
 // `AUDIT_SCHEMA_VERSION` bump (028 / 030 / 031 / 032 precedent).
+//
+// Feature 244 (FR-R4-F16) — additive `completionProvenance?` on `task-removed`, in the payload and in
+// `stateTransition.newState`: `'operator-attested'` when the removed row carried it, `null` otherwise
+// (`./completion-provenance`). Absence means "not recorded": written before this feature, or a value the
+// projection refused. The projection admits the field by identity in both copies, each on its own value,
+// and a refused value costs the field, never the entry. Additive — no `AUDIT_SCHEMA_VERSION` bump
+// (028 / 030 / 031 / 032 / 242 precedent).
 export const AUDIT_SCHEMA_VERSION = 3 as const;
 
 export type {
