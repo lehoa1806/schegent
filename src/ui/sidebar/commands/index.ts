@@ -32,6 +32,7 @@ import {
   CMD_PUBLISH_PACKAGE,
   CMD_READ_DEFINITION_VERSION,
   CMD_READ_METRICS,
+  CMD_READ_FAILURE_RECORD,
   CMD_READ_PHASE_LOG,
   CMD_REMOVE_QUEUE_ITEM,
   CMD_REMOVE_TASK_PHASE,
@@ -92,6 +93,7 @@ import { handler as pingBackend } from './cmd-ping-backend';
 import { handler as preflightProcessYaml } from './cmd-preflight-process-yaml';
 import { handler as readDefinitionVersion } from './cmd-read-definition-version';
 import { handler as readMetrics } from './cmd-read-metrics';
+import { handler as readFailureRecord } from './cmd-read-failure-record';
 import { handler as readPhaseLog } from './cmd-read-phase-log';
 import { handler as removeQueueItem } from './cmd-remove-queue-item';
 import { handler as removeTaskPhase } from './cmd-remove-task-phase';
@@ -168,6 +170,7 @@ export const HANDLERS: ReadonlyMap<string, CommandHandler> = new Map<
   [CMD_PREFLIGHT_PROCESS_YAML, preflightProcessYaml as CommandHandler],
   [CMD_READ_DEFINITION_VERSION, readDefinitionVersion as CommandHandler],
   [CMD_READ_METRICS, readMetrics as CommandHandler],
+  [CMD_READ_FAILURE_RECORD, readFailureRecord as CommandHandler],
   [CMD_READ_PHASE_LOG, readPhaseLog as CommandHandler],
   [CMD_REMOVE_QUEUE_ITEM, removeQueueItem as CommandHandler],
   [CMD_REMOVE_TASK_PHASE, removeTaskPhase as CommandHandler],

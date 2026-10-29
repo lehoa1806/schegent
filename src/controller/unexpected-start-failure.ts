@@ -21,6 +21,7 @@ import type { QueueManager } from '../queue/queue-manager';
 import type { SchegentStatusBar } from '../ui/status-bar';
 import type { Notifier } from '../ui/notifications';
 import type { HistoryRecorder } from '../services/history-recorder';
+import type { FailureRecorder } from '../services/failure-record/failure-record-service';
 import type { RunSessionRegistry } from './run-session';
 import type { WorkflowLifecycleAuditor } from './workflow-lifecycle-auditor';
 import type { TerminalTransitionCoordinator } from '../services/terminal-transition-coordinator';
@@ -35,6 +36,11 @@ export interface UnexpectedStartFailureDeps {
   readonly statusBar: Pick<SchegentStatusBar, 'update'>;
   readonly notifier: Pick<Notifier, 'warn'>;
   readonly historyRecorder: Pick<HistoryRecorder, 'record'>;
+  /**
+   * FR-R4-F15 (C6.3, C6.4) — keeps a record of the Run this handler fails. Optional, so a harness that
+   * builds the handler without one behaves exactly as before.
+   */
+  readonly failureRecords?: FailureRecorder | undefined;
   readonly lifecycleAuditor: Pick<
     WorkflowLifecycleAuditor,
     'emitRunEndedBreakpoints' | 'emitTaskExecutionEnded'
@@ -131,6 +137,9 @@ export async function reportUnexpectedStartFailure(
     };
     try {
       terminalRun = await deps.persist(activeRun, failed);
+      // FR-R4-F15 (C6.3) — only for the Run this write failed: an already-failed Run was recorded by
+      // whoever failed it, and with no Run there is no id to name. No phase result exists here.
+      await deps.failureRecords?.record({ run: terminalRun, cause: 'start_failed', result: null });
       await deps.lifecycleAuditor.emitRunEndedBreakpoints(terminalRun);
     } catch (persistErr) {
       deps.logger.error(

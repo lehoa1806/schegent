@@ -134,3 +134,49 @@ describe('privacy profiles (FR-R3-127)', () => {
     }
   });
 });
+
+// FR-R4-F15 (feature 243, contract K5.2, K6.11; FR-016) — every profile states the failure record.
+//
+// A failed Run keeps a redacted, bounded record outside the session tree, and no profile turns writing
+// it off (D5), so the one sentence that says so belongs in every profile's residual list: an operator
+// choosing `ephemeral` reads that profile, and a list that left out a file this product still writes
+// would be the euphemism FR-002a forbids. The sentence is pinned verbatim.
+describe('privacy profiles state the failure record (FR-R4-F15, K6.11)', () => {
+  const FAILURE_RECORD_RESIDUAL =
+    'A failed Run keeps a redacted, bounded failure record in `.schegent/failure-records/` for this ' +
+    "profile's session age, and at most the newest 200 records are kept. Remove does not delete it; " +
+    "the Run's Delete Evidence does.";
+
+  it.each(['ephemeral', 'diagnostic', 'forensic'] as const)(
+    '%s lists the failure record sentence, once',
+    (name) => {
+      const residual = privacyProfile(name).residual;
+      expect(residual.filter((line) => line === FAILURE_RECORD_RESIDUAL)).toHaveLength(1);
+    }
+  );
+
+  it('says it in every profile that exists, so a fourth cannot omit it', () => {
+    for (const profile of privacyProfiles()) {
+      expect(profile.residual, profile.name).toContain(FAILURE_RECORD_RESIDUAL);
+    }
+  });
+
+  it('names failure records in the age setting\'s description and moves no default or range (K5.1, FR-016)', () => {
+    const properties = MANIFEST.contributes.configuration.properties as Record<
+      string,
+      { default?: unknown; minimum?: unknown; maximum?: unknown; markdownDescription?: string } | undefined
+    >;
+    const age = properties['schegent.logging.sessionRetentionMaxAgeDays'];
+    expect(age?.markdownDescription).toContain('failure records in `.schegent/failure-records/`');
+    expect(age?.markdownDescription).toContain('failure records older than this are removed');
+    expect(age?.markdownDescription).toContain('The append-only structured audit log is never pruned by this setting.');
+    // No default or range changes (FR-016); the byte setting does not bound records and is not edited.
+    expect([age?.default, age?.minimum, age?.maximum]).toEqual([30, 1, 3650]);
+    expect(properties['schegent.logging.sessionRetentionMaxBytes']?.markdownDescription ?? '').not.toContain('failure record');
+  });
+
+  it('keeps the first residual line of each profile what it was', () => {
+    expect(privacyProfile('ephemeral').residual[0]).toMatch(/^Raw capture is OFF/);
+    expect(privacyProfile('forensic').residual[0]).toMatch(/WARNING/);
+  });
+});

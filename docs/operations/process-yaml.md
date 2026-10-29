@@ -98,7 +98,9 @@ revises the Phases `speckit-tasks`, `speckit-implement` and `finalize` and the p
 2. **Publish each changed definition by hand.** Open it in the catalog editor, replace its
    fields with the revised document's, save a draft (**Save Phase**, for a Phase), then choose
    **Publish**. For version 3 these are `speckit-tasks`, `speckit-implement` and `finalize`,
-   and the pipeline `speckit-new-feature` for its record. The pipeline names its Phases by
+   and the pipeline `speckit-new-feature` for its record. For version 4: `speckit-analyze`,
+   `speckit-implement`, `speckit-code-review`, `speckit-security-review` and `finalize`, which
+   ask for issue tags. The pipeline names its Phases by
    id, so the Phases carry the behavior. Saving a Phase that declares `retryCondition`, as
    `speckit-implement` does, needs the `retryConditions` capability.
 3. **The version number does not move.** The editor shows **Version** read-only, and a save
@@ -113,8 +115,9 @@ revises the Phases `speckit-tasks`, `speckit-implement` and `finalize` and the p
 6. **Existing Runs do not change.** A Run keeps the pipeline snapshot it was created with,
    including when it is resumed. A Run that failed at its retry cap under the old text runs
    the old text again when resumed, so it can fail at the cap again.
-7. **Removing an old row deletes its evidence.** Removing a Task deletes its Run's session
-   directory and raw transcript. Copy what you need first.
+7. **Removing an old row deletes its session data.** Removing a Task deletes its Run's session
+   directory and raw transcript. A failed Run's failure record and the audit log stay. Copy what
+   you need first.
 
 <!-- Source: src/services/process-yaml/import-planner.ts -->
 <!-- Source: src/ui/sidebar/commands/cmd-catalog-lifecycle.ts -->
