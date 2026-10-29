@@ -300,62 +300,46 @@ export class PhaseControlService {
     return { ok: true };
   }
 
-  public async skipPhase(queueId: string, phaseId: string): Promise<MutationResult> {
-    this.deps.logger.info('Workflow operation triggered: skipPhase', { phaseId });
+  public async skipPhase(queueId: string, runId: string, phaseId: string): Promise<MutationResult> {
+    this.deps.logger.info('Workflow operation triggered: skipPhase', { runId, phaseId });
     const run = this.deps.store.getRun(queueId);
+    // FR-R4-F20 (D5) — `runId` is the Run the operator confirmed, as `setPhaseBreakpoint`'s is.
+    // A queue that now holds another Run collapses to `null`, so the classifier answers
+    // `no-run-in-flight` and the successor is never skipped on the strength of a stale confirm.
+    const matchedRun = run && run.id === runId ? run : null;
     // FR-R3-151 (FR-004) — the confirmed defect was accepting a phaseId that
     // is not the current Phase at all. Deliberately no run.status==='running'
-    // gate here: the recovery branches below already treat 'paused' and
-    // 'failed' Runs as legitimate skip-to-recover starting points, so the
-    // classifier's 'skip' branch only checks phase-currency, not run status.
-    const decision = decidePhaseControl({ operation: 'skip', run, targetPhaseId: phaseId });
+    // gate here: a 'paused' Run is a legitimate Skip starting point.
+    //
+    // FR-R4-F20 (2026-10-29): Skip no longer acts on a failed Run. The
+    // classifier refuses it `run-failed`, and this method asks it twice: here,
+    // before anything is written, and again inside the update chain
+    // (`setPhaseOverride`'s `admit`), on the Run as it is at write time.
+    // `failed` stays operable for Restart, Resume and Retry.
+    const decision = decidePhaseControl({ operation: 'skip', run: matchedRun, targetPhaseId: phaseId });
     if (!decision.eligible) return { ok: false, reason: decision.reason };
     // Unreachable at runtime — the classifier's 'skip' branch already
-    // rejects a null `run` above; kept as the type guard the write below
-    // needs, and so `run` can be threaded into `setPhaseOverride` instead of
+    // rejects a null `matchedRun` above; kept as the type guard the write below
+    // needs, and so `matchedRun` can be threaded into `setPhaseOverride` instead of
     // re-fetched there.
-    if (!run) return { ok: false, reason: 'no-run-in-flight' };
+    if (!matchedRun) return { ok: false, reason: 'no-run-in-flight' };
 
-    const result = await this.setPhaseOverride(queueId, run, phaseId, 'skipped', 'phase-skipped');
+    const result = await this.setPhaseOverride(queueId, matchedRun, phaseId, 'skipped', 'phase-skipped');
     if (!result.ok) return result;
 
+    // The re-read names the Run too: one that replaced the confirmed Run in the gap is neither
+    // aborted nor resumed on this Skip's account (FR-R4-F20, D5).
     const runAfterOverride = this.deps.store.getRun(queueId);
-    if (runAfterOverride?.currentPhase !== phaseId) return result;
+    if (runAfterOverride?.id !== runId || runAfterOverride.currentPhase !== phaseId) return result;
     if (runAfterOverride.status === 'running') {
       this.deps.noteActivePhaseOverrideAbort(queueId, runAfterOverride.id, phaseId);
       await this.deps.auditor.emitPhaseJumped(runAfterOverride, phaseId);
       this.deps.cancelActive(queueId);
     } else if (runAfterOverride.status === 'paused') {
       await this.resumeActivePhase(queueId);
-    } else if (runAfterOverride.status === 'failed' && runAfterOverride.pendingRetryAt !== null) {
-      const cleared = await this.patchRun(queueId, runAfterOverride.id, 'skip', ['failed'], () => ({
-        pendingRetryAt: null,
-        pendingRetryCause: null,
-        creditPause: null
-      }));
-      if (!cleared.ok) return result;
-      // FR-R4-F02 (W6b G22) — only this queue's own deadline is dropped. The watchdog record is
-      // credit-only now, and resetting it here would end a sibling queue's credit polling.
-      this.deps.retryCoordinator.cancelPendingTimer(queueId);
-      this.scheduleResume(queueId, 'skipPhase resume failed');
-    } else if (runAfterOverride.status === 'failed') {
-      const revived = await this.patchRun(queueId, runAfterOverride.id, 'skip', ['failed'], () => ({
-        status: 'running',
-        lastError: null,
-        delayedRetryCount: 0,
-        pendingRetryAt: null,
-        pendingRetryCause: null,
-        creditPause: null,
-        // FR-R4-F14 (contract W4) — the skip-to-recover revive leaves `failed`, and its cause goes.
-        failureCause: undefined,
-        manualPauseAt: null,
-        manualPauseCause: null,
-        resumeTargetPhaseId: null,
-        lastTransitionAt: Date.now()
-      }));
-      if (!revived.ok) return result;
-      this.scheduleResume(queueId, 'skipPhase resume (terminal) failed');
     }
+    // FR-R4-F20 (D4): a Run re-read as failed failed after its override was written. The override and
+    // its `phase-skipped` row stand; nothing is revived, resumed, scheduled or cancelled.
     return result;
   }
 

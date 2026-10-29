@@ -18,6 +18,7 @@
     type DeleteConfirmationStatus
   } from '../lib/deletion-confirmation';
   import { phaseControlEligibility } from '../lib/phase-control-eligibility';
+  import { controlTitle as titleFor, skipControlTitle } from '../lib/phase-control-titles';
   import { useConfirm } from '../lib/use-confirm';
   import { correlatedLifecycle, lifecycleMessage } from '../lib/lifecycle-control-ipc';
   import { postCommand } from '../lib/vscode-api';
@@ -64,6 +65,8 @@
      * the queue holds no Run at all, which a display-side flag would not.
      */
     targetsSubjectRun: boolean;
+    /** FR-R4-F20 — the displayed task failed. Only Skip's tooltip reads it; a missing value is off-target text. */
+    subjectTaskFailed?: boolean;
     manualPauseAt?: string | null;
     /**
      * Whether the Run this menu addresses is counting down a delayed retry —
@@ -111,6 +114,7 @@
     activeRunId = null,
     queueId,
     targetsSubjectRun,
+    subjectTaskFailed = false,
     manualPauseAt = null,
     isWaitingRetry = false,
     phaseOverrides = [],
@@ -148,17 +152,9 @@
     })
   );
 
-  /**
-   * Why a control is greyed out, when the reason is the address rather than the
-   * phase. A control that fails closed without saying so reads as a broken
-   * extension; this is the one state an operator cannot infer from the surface.
-   */
-  const OFF_TARGET_TITLE =
-    'Unavailable while this view is showing a task other than the run executing on this queue.';
-
-  function controlTitle(base: string): string {
-    return targetsSubjectRun ? base : OFF_TARGET_TITLE;
-  }
+  // The off-target text and the title helpers live in `lib/phase-control-titles.ts` (FR-R4-F20,
+  // which took this component to its line budget); this binds the helper to the prop.
+  const controlTitle = (base: string): string => titleFor(base, targetsSubjectRun);
 
   function onSetBreakpoint(): void {
     if (!gate.showSetBreakpoint || activeRunId === null || selectedPhase === null) return;
@@ -190,6 +186,7 @@
   // "This Run is already paused." in a `role="alert"` beside the control that
   // had just worked, attributing one control's refusal to another's success.
   // Every dispatch below therefore clears it, whether or not it can set it.
+  // FR-R4-F20: Skip is now one of the controls that can set it, and still clears it first.
   let controlMessage = $state<string | null>(null);
 
   async function onPause(): Promise<void> {
@@ -219,11 +216,13 @@
   }
 
   async function onSkip(event: MouseEvent): Promise<void> {
-    if (gate.skipDisabled || currentPhase === null) return;
+    if (gate.skipDisabled || currentPhase === null || activeRunId === null) return;
     // `$props()` bindings are live: capture before the confirm's `await`, so
     // Confirm dispatches what the dialog named, not whatever is current later.
+    // The Run goes with them (FR-R4-F20): the host refuses a Skip for a Run it no longer holds.
     const targetPhase = currentPhase;
     const targetQueueId = queueId;
+    const targetRunId = activeRunId;
     const confirmed = await useConfirm('run.skip-phase', {
       originatingElement: event.currentTarget as HTMLElement,
       context: { phaseName: targetPhase }
@@ -233,7 +232,7 @@
     // dispatch, and wiping the previous answer for it would hide a refusal the
     // operator had not finished reading.
     controlMessage = null;
-    skipPhase(targetPhase, targetQueueId);
+    controlMessage = lifecycleMessage(await skipPhase(targetRunId, targetPhase, targetQueueId));
   }
 
   /**
@@ -363,7 +362,7 @@
     data-testid="phase-control-skip"
     aria-label="Skip active phase"
     aria-disabled={aria(gate.skipDisabled)}
-    title={controlTitle('Skip active phase')}
+    title={skipControlTitle('Skip active phase', targetsSubjectRun, subjectTaskFailed)}
     onclick={onSkip}
   >Skip</button>
   {#if gate.selectedHasOverride}

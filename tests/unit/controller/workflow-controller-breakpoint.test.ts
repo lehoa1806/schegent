@@ -258,7 +258,7 @@ describe('SchegentWorkflowController.setPhaseOverride auto-clears matching break
     await seedRun({
       phaseBreakpoints: [{ phaseId: 'speckit-implement', setAt: 1, actor: 'operator' }]
     });
-    const result = await controller.skipPhase('speckit-implement');
+    const result = await controller.skipPhase('run-bp-1', 'speckit-implement');
     expect(result).toEqual({ ok: false, reason: 'phase-not-active' });
     const run = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(run.phaseBreakpoints).toHaveLength(1);
