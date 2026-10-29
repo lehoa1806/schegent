@@ -3,7 +3,7 @@ kind: Pipeline
 metadata:
   id: speckit-new-feature
   name: Spec-kit New Feature
-  version: 5
+  version: 6
 spec:
   phaseIds:
     - speckit-specify
@@ -16,6 +16,7 @@ spec:
     - speckit-code-review
     - speckit-security-review
     - finalize
+    - integrate
 included:
   phases:
     - metadata:
@@ -288,35 +289,46 @@ included:
     - metadata:
         phaseId: finalize
         name: Finalize
-        version: 4
+        version: 5
       spec:
         instruction: |-
-          Verify the implementation and drive it to green.
+          Verify the implementation, drive it to green, and commit only this feature's work.
 
           Nobody can answer a question during this Phase, so never ask for approval and never stop to wait for an answer: act inside the authority below, or report what stopped you under "Remaining issues:".
 
-          1. Format FIRST: Run the project formatter in write mode (e.g. cargo fmt, npm run format) exactly once before the check set.
-          2. Run the full check set — build, tests, lint, typecheck. Capture pass/fail for each.
-          3. If any check fails, classify each failure. A failure is caused by the feature unless you can show it is not, for example because it names only a dependency or a file that `git diff $(git merge-base HEAD develop)` does not touch.
+          Repositories:
+          Resolve them before any write, from the workspace root <root>, running each command as written: each placeholder is one argument, and a <... paths> placeholder one argument per path. Under a heading exactly "## Implementation repositories", <root>/AGENTS.md declares one per bullet starting with inline code: a path relative to <root> (`.` for <root>), optionally then `(base: <ref>)`, each in inline code, and nothing else. Paths and refs use only letters, digits and . _ / - and never start with -; the base defaults to develop. Without the section: repo if <root> holds specs/ and repo is a repository top level, else . if <root> is one. Nothing else picks a repository. Then add the envelope <root>, last, with base develop, when it is a repository top level not already listed.
+          The scope is unresolved, and nothing is written anywhere, on: no repository; a section with no entry, a broken entry or a twin; two entries at one location; a listed repository whose path is absolute, missing or outside <root> by `cd <root>/<path> && pwd -P`, whose `git -C <path> rev-parse --show-prefix` fails or prints anything, or whose `git -C <path> merge-base HEAD <base>` (its <merge-base>) fails or prints nothing; or, without the section, a gitlink of <root> (mode 160000 in `git -C <root> ls-files --stage`) in the status below that is no repository. Report each reason under "Remaining issues:" tagged [needs-decision]. Never substitute a branch, fetch, or edit the declaration.
+
+          Ownership:
+          List changed paths with `git --no-optional-locks -C <path> status --porcelain --untracked-files=all --ignore-submodules=none`, matching them to feature paths relative to <root>. Never git diff the working tree: it can rewrite the index. Each path is, first match winning:
+          - ambiguous: claimed by this feature and another; both status columns letters (partially staged); mixing a change tied to this feature with one that is not; a rename with one side not owned; or claimed by no feature.
+          - owned: in <feature_dir>; named by this feature's tasks.md or plan.md; tied by you to a named task (say which and why); or the changed gitlink of a repository with feature work.
+          - unrelated: claimed by another feature's directory, tasks.md or plan.md; or a changed gitlink of no repository.
+          Changing never makes a path owned; .specify/feature.json and other shared pointers are owned only while naming <feature_dir>. Leave unrelated and ambiguous paths exactly as found: never stage, format, commit or restore them. Each ambiguous path is a hand-off under "Remaining issues:", tagged [needs-decision], with its reason.
+
+          1. Format FIRST: Run the project formatter in write mode on owned paths only (e.g. `npx prettier --write -- <paths>`), exactly once before the check set; one that cannot take paths runs in check mode on them, or is skipped and said under Notes:.
+          2. Run the full check set in each repository — build, tests, lint, typecheck: the commands plan.md names for it, else the standard fallbacks. Capture pass/fail for each. With neither, an implementation repository is unverifiable and the envelope has no check set.
+          3. If any check fails, classify each failure. A failure is caused by the feature unless you can show it is not, for example because it names only a dependency or a file that `git --no-optional-locks -C <path> diff-index --name-only <merge-base>` does not list.
              - Caused by the feature: diagnose root cause, apply a real fix, re-run affected checks, repeat until all green (max 10 iterations). Do NOT mask failures (no skipped tests, no eslint-disable, no loosened types, no weaker audit threshold or ignore list).
              - A dependency advisory the feature did not cause: fix it under step 6.
              - Any other failure the feature did not cause: re-run it once, then report it under "Remaining issues:" with the evidence that the feature did not cause it. Do not edit unrelated code to silence it.
-          4. Standard fallbacks when plan.md lists no explicit commands:
+          4. Standard fallbacks:
              - Rust: cargo build, cargo test, cargo clippy -- -D warnings, cargo fmt --check
              - Node/TS: npm run build, npm test, npm run lint, npx tsc --noEmit
              - Python: test runner, ruff/flake8, mypy/pyright
 
-          5. Commit all changes with conventional commit format: feat(<feature_name>): <summary>
+          5. Commit only owned paths, with conventional commit format: feat(<feature_name>): <summary>. Implementation repositories first, the envelope last, each with `git -C <path> add -- <untracked owned paths>` then `git -C <path> commit -m <message> -- <owned paths>`, which leaves other staged entries staged. Commit nothing where nothing is owned, HEAD is detached or on the base branch, or after a failed commit; say why. Name each commit, or "nothing left to commit".
           6. Dependency fixes. You are authorized to fix, without asking for approval, a failing dependency-audit check (npm audit, cargo audit, pip-audit or the project's equivalent) whose advisory is in a dependency the feature did not add or change. Clearing a failing check is part of this Phase's task, so a rule that keeps lockfile changes inside the requested task does not stop you; a rule that forbids dependency changes outright does, and then you report the advisory instead. Stay inside these limits:
              - Move the package to the lowest version the advisory names as fixed, or the nearest your tool resolves above it, by patch or minor versions only, with a targeted command that does not force (for example `npm update <package>`, `cargo update -p <package>`, `uv lock --upgrade-package <package>`).
-             - Change at most three packages in all, and commit the change on its own, after the feature commit: fix(deps): clear <advisory ids> in <packages>
+             - Change at most three packages in all, and commit the change on its own, after the feature commit, naming only the files it changed: fix(deps): clear <advisory ids> in <packages>. If a file the fix would change already holds a change that is not owned, do not apply it; report the advisory.
              - Then re-run the FULL check set. If a check that was green before the change now fails, undo the commit with git revert and report the advisory under "Remaining issues:".
              - Outside your authority, so report it under "Remaining issues:" with the advisory id, the package, its installed and fixed versions, and the limit that stopped you: a major version bump; adding, removing or replacing a dependency; an overrides, resolutions or constraints entry; a forced or blanket update, such as `npm audit fix`, which applies every fixable advisory in the tree at once; any change to the audit command, its threshold, its ignore list or a waiver, or to CI configuration; an advisory with no fixed version.
-          7. Merge to local develop branch: git switch develop && git merge --no-ff <feature_branch>, but only if every check is green and <feature_dir>/decisions.md has no entry with "Status: needs-maintainer". Otherwise stop after the commits and say why under "Remaining issues:".
+          7. Never merge, switch or check out a branch, reset, stash or push: integration is the next Phase's.
 
           Result determination:
-          - If all checks are green and the merge is done → emit [SCHEGENT_STATUS: CLEAR]
-          - Otherwise (checks still failing after 10 iterations, a failure or advisory outside your authority, or the merge withheld) → emit "Remaining issues:" listing each
+          - If all checks are green, every owned path is committed and nothing is handed off → emit [SCHEGENT_STATUS: CLEAR]
+          - Otherwise (checks still failing after 10 iterations, a failure or advisory outside your authority, an unresolved scope, a hand-off, or a commit not made) → emit "Remaining issues:" listing each
 
           Start each bullet under "Remaining issues:" with one tag in square brackets, chosen from:
           - [regression] the change made by this work broke something that worked before.
@@ -334,6 +346,53 @@ included:
         # Phase whose sideEffects is other than `none`. Written out because this
         # example is what an operator copies: a Phase making a verifiable claim
         # should say what judges it, not inherit it silently.
+        hostVerification: exit-code
+        sideEffects: git
+        model: claude-sonnet-5-5
+        effort: medium
+    - metadata:
+        phaseId: integrate
+        name: Integrate
+        version: 1
+      spec:
+        instruction: |-
+          Integrate this feature's committed work into each repository's target branch, touching no checkout.
+
+          Nobody can answer a question during this Phase, so never ask for approval and never stop to wait for an answer: act inside the rules below, or report what stopped you under "Remaining issues:". Never run git commit or git merge, switch or check out a branch, reset, rebase, stash, fetch, push, discard, or force a ref; never create, use or remove a worktree; never fix a failing check here.
+
+          Repositories:
+          Resolve them before any write, from the workspace root <root>, running each command as written: each placeholder is one argument, and a <... paths> placeholder one argument per path. Under a heading exactly "## Implementation repositories", <root>/AGENTS.md declares one per bullet starting with inline code: a path relative to <root> (`.` for <root>), optionally then `(base: <ref>)`, each in inline code, and nothing else. Paths and refs use only letters, digits and . _ / - and never start with -; the base defaults to develop. Without the section: repo if <root> holds specs/ and repo is a repository top level, else . if <root> is one. Nothing else picks a repository. Then add the envelope <root>, last, with base develop, when it is a repository top level not already listed.
+          The scope is unresolved, and nothing is written anywhere, on: no repository; a section with no entry, a broken entry or a twin; two entries at one location; a listed repository whose path is absolute, missing or outside <root> by `cd <root>/<path> && pwd -P`, whose `git -C <path> rev-parse --show-prefix` fails or prints anything, or whose `git -C <path> merge-base HEAD <base>` (its <merge-base>) fails or prints nothing; or, without the section, a gitlink of <root> (mode 160000 in `git -C <root> ls-files --stage`) in the status below that is no repository. Report each reason under "Remaining issues:" tagged [needs-decision]. Never substitute a branch, fetch, or edit the declaration.
+
+          Ownership:
+          List changed paths with `git --no-optional-locks -C <path> status --porcelain --untracked-files=all --ignore-submodules=none`, matching them to feature paths relative to <root>. Never git diff the working tree: it can rewrite the index. Each path is, first match winning:
+          - ambiguous: claimed by this feature and another; both status columns letters (partially staged); mixing a change tied to this feature with one that is not; a rename with one side not owned; or claimed by no feature.
+          - owned: in <feature_dir>; named by this feature's tasks.md or plan.md; tied by you to a named task (say which and why); or the changed gitlink of a repository with feature work.
+          - unrelated: claimed by another feature's directory, tasks.md or plan.md; or a changed gitlink of no repository.
+          Changing never makes a path owned; .specify/feature.json and other shared pointers are owned only while naming <feature_dir>. Leave unrelated and ambiguous paths exactly as found: never stage, format, commit or restore them. Each ambiguous path is a hand-off under "Remaining issues:", tagged [needs-decision], with its reason.
+
+          1. Per repository, the source is the branch `git -C <path> symbolic-ref --short -q HEAD` prints (nothing means a detached HEAD), the <source commit> is `git -C <path> rev-parse HEAD`, and the target is its base. If `git -C <path> merge-base --is-ancestor <source commit> refs/heads/<target>` succeeds, the target already contains the source: the repository is already integrated, and has no feature changes when nothing in it is owned. Every other repository is one to integrate.
+          2. Integrate only if every check is green and <feature_dir>/decisions.md has no entry with "Status: needs-maintainer", nothing is handed off or owned but uncommitted, and each implementation HEAD the envelope's HEAD records, as a gitlink in `git -C <root> ls-tree HEAD -- <path>` or as a trailer its hooks wrote in `git -C <root> log -1 --format=%B`, equals that <source commit>. Otherwise withhold every integration and say why. Decide all but the checks first.
+          3. Preflight each repository to integrate before writing any ref. Refuse it, which withholds every integration, when its HEAD is detached or its source is its target; when `git -C <path> for-each-ref '--format=%(refname) %(objectname) %(worktreepath)' refs/heads/<target>` prints no line for exactly refs/heads/<target> (no such local branch; branches under <target>/ do not count) or a path after its commit (checked out there), that commit being the <target commit>; or when `git -C <path> merge-tree --write-tree --name-only --no-messages <target commit> <source commit>` exits 1 (a conflict: list its paths and both commits) or neither 0 nor 1 (this Git cannot merge without a working tree). On exit 0 its first line is the <tree>: make the <merge> with `git -C <path> commit-tree <tree> -p <target commit> -p <source commit> -m <message>`, the message being Merge branch '<source>' into <target>.
+          4. Then, if nothing is withheld or refused, run the check set in each repository to integrate: the commands plan.md names for it, else the standard fallbacks for its toolchain (Rust: cargo build, cargo test, cargo clippy -- -D warnings, cargo fmt --check; Node/TS: npm run build, npm test, npm run lint, npx tsc --noEmit; Python: test runner, ruff/flake8, mypy/pyright). An implementation repository with neither is unverifiable and withholds; an envelope with neither has no check set and does not block.
+          5. If every check is green, apply: implementation repositories first, the envelope last, each with `git -C <path> update-ref refs/heads/<target> <merge> <target commit>`, which fails if the target moved. Stop at the first failure; if a ref already moved, the state is partially integrated. For each ref already moved, record `git -C <path> update-ref refs/heads/<target> <target commit> <merge>`, which restores it, and never run it.
+
+          Report "Finalization record:" on its own line, outside the audit log block. First the state: integrated (every repository integrated or already integrated, nothing handed off or uncommitted), partially integrated, committed, not integrated (a target still lacks committed feature work), or nothing committed. Then one bullet per repository: its path, source and target; "no feature changes", or its <source commit> and how many commits the target lacks; owned paths committed (the count of `git -C <path> diff --name-only <merge-base> HEAD`); checks green, failing, unverifiable, "no check set" or not run; unrelated paths left (count and list); hand-offs; integration: integrated (old and new target commit), already integrated, refused or withheld with the reason, or not attempted; and the changed paths the checked tree held outside the commit (count and list).
+
+          Result determination:
+          - If the state is integrated → emit [SCHEGENT_STATUS: CLEAR]
+          - Otherwise → emit "Remaining issues:" with one bullet per reason a repository was not integrated
+
+          Start each bullet under "Remaining issues:" with one tag in square brackets, chosen from:
+          - [regression] the change made by this work broke something that worked before.
+          - [pre-existing] the problem was already there before this work, and this work did not cause it.
+          - [environment] a tool, service, network, credential or machine problem outside the code.
+          - [needs-approval] an action only a maintainer may approve, such as a dependency bump or a waiver.
+          - [needs-decision] a choice between options that someone must make before the work can continue.
+          If no tag fits, write the bullet without a tag. A tag describes the issue; it does not change what happens next.
+        runner: claude
+        # Stated explicitly, as in finalize: the claim this Phase makes, a target branch moved,
+        # is judged by the exit code and not inherited silently.
         hostVerification: exit-code
         sideEffects: git
         model: claude-sonnet-5-5
