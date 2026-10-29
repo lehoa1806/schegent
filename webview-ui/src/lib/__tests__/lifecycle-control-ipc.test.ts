@@ -198,6 +198,11 @@ describe('lifecycleRefusalText — one sentence per reason the host emits', () =
       'run-not-paused',
       'run-terminal',
       'phase-not-active',
+      // FR-R4-F20 (T7.5) — Skip's own refusals joined the table: the failed-Run refusal, the unknown
+      // Phase the classifier answers for Skip, and the route's answer when no `phaseOps` is wired.
+      'run-failed',
+      'phase-id-not-in-pipeline-snapshot',
+      'phase-ops-unavailable',
       'no-active-run',
       'not-pending-retry',
       'already-retrying',

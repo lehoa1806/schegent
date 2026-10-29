@@ -97,15 +97,10 @@ const RESUME_WRITERS: readonly ResumeWriter[] = [
       '`isDriving(queueId)` is false: a Run already being driven would otherwise get a ' +
       'second driver, and the guard is what keeps one Run to one drive loop.'
   },
-  {
-    method: 'skipPhase',
-    reason:
-      'The only control that must arm for four different run statuses, and it covers all ' +
-      'four: running aborts the active phase so the loop takes its next decision, paused ' +
-      'delegates to `resumeActivePhase`, and both failed branches clear the retry state ' +
-      'and arm `scheduleResume`. A branch added here without a trigger is the regression ' +
-      'this gate exists for.'
-  }
+  // `skipPhase` left this table under FR-R4-F20. Its two failed-Run branches were the only place it
+  // wrote `status: 'running'` itself, and both are retired. What remains arms through
+  // `cancelActive` (running) and `resumeActivePhase` (paused), and neither writes the status here, so
+  // it is no longer a resume writer: "classifies nothing that no longer resumes a Run" asks for this.
 ];
 
 const MIN_REASON_LENGTH = 40;

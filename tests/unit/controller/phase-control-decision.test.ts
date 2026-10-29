@@ -192,9 +192,84 @@ describe('decidePhaseControl — skip', () => {
     });
   });
 
-  it('allows skipping the current Phase on a failed (operable) Run — a legitimate skip-to-recover path', () => {
+  // FR-R4-F20 (feature 248, contract T1) — Skip of a failed Run is retired. `failed` stays operable
+  // for Restart, Resume and Retry, so `isOperableRunStatus` does not refuse it; the arm refuses it by
+  // name, after `run-terminal` and before Phase currency (Clarify Q4).
+  it('refuses the current Phase on a failed Run as run-failed (T1.1)', () => {
     const run = makeRun({ status: 'failed', pendingRetryAt: null });
-    expect(decidePhaseControl({ operation: 'skip', run, targetPhaseId: 'beta' })).toEqual({ eligible: true });
+    expect(decidePhaseControl({ operation: 'skip', run, targetPhaseId: 'beta' })).toEqual({
+      eligible: false,
+      reason: 'run-failed'
+    });
+  });
+
+  it('refuses a failed Run with a pending retry the same way (T1.2)', () => {
+    const run = makeRun({
+      status: 'failed',
+      pendingRetryAt: Date.now() + 60_000,
+      pendingRetryCause: 'transient_error'
+    });
+    expect(decidePhaseControl({ operation: 'skip', run, targetPhaseId: 'beta' })).toEqual({
+      eligible: false,
+      reason: 'run-failed'
+    });
+  });
+
+  it('answers run-failed, not phase-not-active, for a snapshot Phase that is not current (T1.3)', () => {
+    const run = makeRun({ status: 'failed', pendingRetryAt: null });
+    expect(decidePhaseControl({ operation: 'skip', run, targetPhaseId: 'gamma' })).toEqual({
+      eligible: false,
+      reason: 'run-failed'
+    });
+  });
+
+  // FR-R4-F20 (US2, FR-005) — pins: both verdicts held at 5c015930 and must hold after. T1.7 differs
+  // from T1.3 only by the Run's status, so the pair fixes the order of the two checks it separates.
+  it.each(['running', 'paused'] as const)(
+    'still answers phase-not-active for a snapshot Phase that is not current on a %s Run (T1.7)',
+    (status) => {
+      const run = makeRun({ status });
+      expect(decidePhaseControl({ operation: 'skip', run, targetPhaseId: 'gamma' })).toEqual({
+        eligible: false,
+        reason: 'phase-not-active'
+      });
+    }
+  );
+
+  it.each(['running', 'paused'] as const)(
+    'still admits the current Phase on a %s Run (T1.8)',
+    (status) => {
+      const run = makeRun({ status });
+      expect(decidePhaseControl({ operation: 'skip', run, targetPhaseId: 'beta' })).toEqual({
+        eligible: true
+      });
+    }
+  );
+
+  // FR-R4-F20 (US3, Clarify Q3) — pins: the refusals the new check must not capture. T1.4 differs from
+  // T1.3 only by whether the Phase is in the snapshot, so the pair fixes the order of those two checks.
+  it('answers phase-id-not-in-pipeline-snapshot for a Phase the failed Run does not carry (T1.4)', () => {
+    const run = makeRun({ status: 'failed', pendingRetryAt: null });
+    expect(decidePhaseControl({ operation: 'skip', run, targetPhaseId: 'not-a-phase' })).toEqual({
+      eligible: false,
+      reason: 'phase-id-not-in-pipeline-snapshot'
+    });
+  });
+
+  it('answers run-terminal for a completed Run, even for a Phase in its snapshot (T1.5)', () => {
+    const run = makeRun({ status: 'completed' });
+    expect(decidePhaseControl({ operation: 'skip', run, targetPhaseId: 'beta' })).toEqual({
+      eligible: false,
+      reason: 'run-terminal'
+    });
+  });
+
+  it('answers run-terminal for a canceled Run on its current Phase (T1.6)', () => {
+    const run = makeRun({ status: 'canceled' });
+    expect(decidePhaseControl({ operation: 'skip', run, targetPhaseId: 'beta' })).toEqual({
+      eligible: false,
+      reason: 'run-terminal'
+    });
   });
 });
 

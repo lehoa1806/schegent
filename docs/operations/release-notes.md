@@ -9,6 +9,25 @@ This file is the release workflow's stable pointer for changes that affect opera
 Recorded as they land, so the first release note is assembled from evidence rather than
 from memory.
 
+### Skip is refused on a failed run, and the refusal is shown (FR-R4-F20, 2026-10-29)
+
+If a run failed while Skip's confirmation was open, confirming revived the run: its failed task went
+back to running, which lifted its queue's halt, and no operator had chosen that. Skip of a failed run
+is now refused as `run-failed`. Nothing about the run, its task or the queue changes, and the queue
+stays halted on the failed task. The exits for a failed task are Retry, Mark completed and Remove.
+
+- A Skip names the run the operator confirmed. If the queue holds another run by the time the message
+  arrives, it is refused as `no-run-in-flight` instead of being applied to the new run, and a Skip
+  message without a run id is refused at the boundary.
+- On a failed task's view, the disabled Skip control says why, in the sentence its refusal uses: "A
+  failed task cannot be skipped: retry it, mark it completed, or remove it." A refused Skip now shows
+  its reason beside the control, as Pause, Resume and Restart do.
+- If the run fails after the Skip was applied, the Skip is still reported accepted: the skipped phase
+  stays skipped, and nothing is revived, resumed or scheduled. Retry resumes the run with that override
+  in force.
+- Skip of a running or paused phase is unchanged.
+- No setting, event, status, field or schema version changed, and there is no migration.
+
 ### Finalize commits only the feature's paths, and a new `integrate` Phase moves target branches without touching a checkout (FR-R4-F19, 2026-10-29)
 
 The shipped `finalize` committed everything in the checkout, so another feature's half-done work went
