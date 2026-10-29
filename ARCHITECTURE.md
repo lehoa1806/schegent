@@ -455,8 +455,9 @@ that reads the target's frozen Run, its current Phase/index, completed-phase
 ledger, pause/retry markers, and Phase overrides, and returns either
 eligibility or one reason from a closed vocabulary — `run-terminal`,
 `phase-not-active`, `phase-already-started`, `phase-not-future`,
-`no-disabled-override`, and the reasons the service already returned before
-this feature. The classifier is the only place this eligibility logic lives;
+`no-disabled-override`, `run-failed` (FR-R4-F20: Skip of a failed Run), and
+the reasons the service already returned before this feature. The
+classifier is the only place this eligibility logic lives;
 a census test (`tests/lint/phase-control-decision-census.test.ts`) fails if a
 future mutation method bypasses it. It reads `run.pipeline` and never writes
 or retargets it — transition-specific writes (the override array, iteration

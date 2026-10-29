@@ -850,8 +850,8 @@ export class SchegentWorkflowController {
     return this.control(queueId, (q) => this.phaseControlService.restartActivePhase(q));
   }
 
-  public async skipPhase(phaseId: string, queueId?: string): Promise<MutationResult> {
-    return this.control(queueId, (q) => this.phaseControlService.skipPhase(q, phaseId));
+  public async skipPhase(runId: string, phaseId: string, queueId?: string): Promise<MutationResult> {
+    return this.control(queueId, (q) => this.phaseControlService.skipPhase(q, runId, phaseId));
   }
 
   public async disablePhase(phaseId: string, queueId?: string): Promise<MutationResult> {

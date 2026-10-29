@@ -307,6 +307,7 @@
           activeRunId={isExecuting ? inFlightRun?.runId ?? null : null}
           {queueId}
           targetsSubjectRun={isExecuting}
+          subjectTaskFailed={task.status === 'failed'}
           {isPrimary}
           manualPauseAt={runtime?.manualPause?.at ?? null}
           manualPauseCause={runtime?.manualPause?.cause ?? null}

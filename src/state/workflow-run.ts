@@ -89,9 +89,12 @@ export function isTerminalRunStatus(status: WorkflowRunStatus | string): boolean
  * point. Terminality answers "has execution ended, release the lease and the
  * session"; a failed Run has, and does. Operability answers "can the operator
  * still do something with this Run", and for a failed Run the answer is
- * emphatically yes — `skipPhase` advances past the failed phase and wakes the
- * pipeline, and retry re-admits it. Those two controls exist very largely *for*
- * failed Runs. Only `completed` and `canceled` are finished in both senses.
+ * emphatically yes — Retry re-admits it, and Restart and Resume put it back into
+ * motion. Those controls exist very largely *for* failed Runs.
+ * FR-R4-F20 (2026-10-29): Skip no longer acts on a failed Run. It is refused
+ * `run-failed`, before anything is written and again inside the update chain, and
+ * `failed` stays operable for Restart, Resume and Retry. Only `completed` and
+ * `canceled` are finished in both senses.
  *
  * Enumerated for the same reason as the list above, and negatively for a
  * further one: spelling the operable set positively would put the pinned
@@ -115,7 +118,8 @@ export function isOperableRunStatus(status: WorkflowRunStatus | string): boolean
  * - `LIVE_RUN_STATUSES`: a driver is running or a retry is counting down. Liveness, a retry
  *   decision, a spawn identity, a cancel and a pause act on these and nothing else.
  * - `OPERABLE_RUN_STATUSES`: everything an operator control can still act on. A `failed`
- *   Run is operable (skip and retry exist largely for it) but not live.
+ *   Run is operable (Retry, Restart and Resume exist largely for it; FR-R4-F20 retired Skip
+ *   there) but not live.
  * - `ALL_RUN_STATUSES`: for a write that only REMOVES a field, where a finished Run must
  *   still be reachable.
  */

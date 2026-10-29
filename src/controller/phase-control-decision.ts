@@ -52,7 +52,9 @@ export type PhaseControlRejectionReason =
   | 'phase-not-active'
   | 'phase-already-started'
   | 'phase-not-future'
-  | 'no-disabled-override';
+  | 'no-disabled-override'
+  // FR-R4-F20 (2026-10-29) — Skip of a failed Run, retired.
+  | 'run-failed';
 
 /**
  * Task status is deliberately NOT an input here. Decided 2026-09-05 (Feature
@@ -176,9 +178,12 @@ export function decidePhaseControl(input: PhaseControlDecisionInput): PhaseContr
       if (!run) return reject('no-run-in-flight');
       // `isOperableRunStatus` is the codebase's own answer to "can the
       // operator still act on this Run" — 'failed' is deliberately operable
-      // (skip/retry exist largely for failed Runs); only 'completed' and
-      // 'canceled' are terminal in both senses (workflow-run.ts). Restart on
-      // either of those is the confirmed defect FR-002 closes.
+      // (Retry, Restart and Resume exist largely for failed Runs); only
+      // 'completed' and 'canceled' are terminal in both senses (workflow-run.ts).
+      // Restart on either of those is the confirmed defect FR-002 closes.
+      // FR-R4-F20 (2026-10-29): Skip no longer acts on a failed Run, so this
+      // stays operable for Restart, Resume and Retry, and the 'skip' arm below
+      // refuses it `run-failed`.
       if (!isOperableRunStatus(run.status)) return reject('run-terminal');
       if (targetPhaseId !== run.currentPhase) return reject('phase-not-active');
       return ELIGIBLE;
@@ -192,11 +197,17 @@ export function decidePhaseControl(input: PhaseControlDecisionInput): PhaseContr
       // fails the check below), so without this it stays Skip-eligible on
       // its own terminal outcome — the same "wrong-state" defect class FR-002
       // closed for Restart. `isOperableRunStatus` is deliberately not
-      // narrowed to `run.status === 'running'`: `PhaseControlService`'s
-      // post-override branches treat 'paused' and 'failed' Runs as
-      // legitimate skip-to-recover starting points, so only the genuinely
-      // terminal statuses ('completed', 'canceled') are rejected here.
+      // narrowed to `run.status === 'running'`: a 'paused' Run is a Skip
+      // starting point, so only the genuinely terminal statuses
+      // ('completed', 'canceled') are rejected here.
+      //
+      // FR-R4-F20 (2026-10-29): Skip no longer acts on a failed Run. 'failed'
+      // stays operable for Restart, Resume and Retry, so it passes the check
+      // below and is refused by name, ahead of Phase currency. The service
+      // asks this arm twice, before it writes and again inside the update
+      // chain, so a Run that fails between the two is refused too.
       if (!isOperableRunStatus(run.status)) return reject('run-terminal');
+      if (run.status === 'failed') return reject('run-failed');
       if (targetPhaseId !== run.currentPhase) return reject('phase-not-active');
       return ELIGIBLE;
     }

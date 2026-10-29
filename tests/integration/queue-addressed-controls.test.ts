@@ -326,7 +326,7 @@ describe('Feature 093 US4 — lifecycle controls address one queue s Run', () =>
       ok: false,
       reason: 'no-run-in-flight'
     });
-    expect(await h.controller.skipPhase(phaseId, QUEUE_C)).toEqual({
+    expect(await h.controller.skipPhase(a.runId, phaseId, QUEUE_C)).toEqual({
       ok: false,
       reason: 'no-run-in-flight'
     });

@@ -130,7 +130,11 @@ export interface QueueOps {
  * from quietly dropping it.
  */
 export interface PhaseOps {
-  skipPhase(phaseId: string, queueId: string): Promise<{ ok: boolean; reason?: string }>;
+  skipPhase(
+    runId: string,
+    phaseId: string,
+    queueId: string
+  ): Promise<{ ok: boolean; reason?: string }>;
   disablePhase(phaseId: string, queueId: string): Promise<{ ok: boolean; reason?: string }>;
   enablePhase(phaseId: string, queueId: string): Promise<{ ok: boolean; reason?: string }>;
   deleteTask?(

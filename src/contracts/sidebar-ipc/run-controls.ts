@@ -59,8 +59,16 @@ export interface RestartPhaseCommand extends CommandBase<typeof CMD_RESTART_PHAS
   readonly payload: { readonly queueId: string; readonly phaseId: string };
 }
 
+// FR-R4-F20 — a Skip names the Run the operator confirmed. `runId` is that Run's
+// id, captured when the confirmation opened; the host refuses a Skip whose `runId`
+// is not the queue's current Run with `no-run-in-flight`, so a confirmation that
+// outlives its Run cannot act on the Run that replaced it (D5).
 export interface SkipPhaseCommand extends CommandBase<typeof CMD_SKIP_PHASE> {
-  readonly payload: { readonly queueId: string; readonly phaseId: string };
+  readonly payload: {
+    readonly queueId: string;
+    readonly runId: string;
+    readonly phaseId: string;
+  };
 }
 
 export interface DisablePhaseCommand extends CommandBase<typeof CMD_DISABLE_PHASE> {

@@ -23,7 +23,8 @@ import type { LifecycleControlResult } from './lifecycle-control-ipc';
 // ACK reached `snapshotStore.applyAck`, cleared the pending flag, and was
 // thrown away. `run-already-paused`, `run-not-paused` and `run-terminal` are
 // refusals the host has always been able to answer, and no caller could see any
-// of them.
+// of them. Skip joined them under FR-R4-F20: its refusal, `run-failed` above
+// all, was discarded the same way.
 //
 // The three below stay in this module — their `postCommand`s are not gated by
 // a `useConfirm`, so the `destructive-actions.lint.test.ts` constraint that
@@ -47,8 +48,16 @@ export function restartPhase(phaseId: string, queueId: string): Promise<Lifecycl
   );
 }
 
-export function skipPhase(phaseId: string, queueId: string): void {
-  postCommand(CMD_SKIP_PHASE, { queueId, phaseId });
+// FR-R4-F20 — `runId` is the Run the operator confirmed, captured by the caller before its
+// confirmation's `await`. The host refuses a Skip that names a Run the queue no longer holds.
+export function skipPhase(
+  runId: string,
+  phaseId: string,
+  queueId: string
+): Promise<LifecycleControlResult> {
+  return correlatedLifecycle(
+    () => postCommand(CMD_SKIP_PHASE, { queueId, runId, phaseId }).correlationId
+  );
 }
 
 export function disablePhase(phaseId: string, queueId: string): void {
