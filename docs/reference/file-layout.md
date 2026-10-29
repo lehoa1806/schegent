@@ -22,6 +22,7 @@ Schegent has no database, ORM, or remote persistence service. Durable product st
     |   `-- workflows/<workflowId>/v<N>.json
     |-- cli-transport.log
     |-- cli-transport.log.1 ... .3
+    |-- failure-records/<stamp>_<suffix>_<runId>_<taskId>.json
     |-- history/<runId>.txt
     |-- metrics-rollup.jsonl
     |-- ownership/<resource-records>
@@ -53,6 +54,7 @@ The tree is demand-created. In particular, an absent `.schegent/catalog/manifest
 | `.schegent/sessions/.pending/raw-<runId>.log` | Temporary unredacted text | Workspace-side pending location used by errors-only transcript handling. Raw capture also uses a private `0700` OS-temp spool while a process is active. |
 | `.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/stream.jsonl` | Unredacted JSONL, mode `0600` on POSIX, in directories `0700` from `.schegent/` down | Per-iteration CLI stream capture. |
 | The same `iter-<N>` directory's `debug.json`, `verbose.log`, and `phase-message.env` | Unredacted diagnostic and sidecar files. `verbose.log` is `0600` on POSIX; the backend writes the other two under its own umask, and the `0700` directories above them keep them private | Backend debug stream, verbose output, and host-resolved Phase message sidecar. |
+| `.schegent/failure-records/<stamp>_<suffix>_<runId>_<taskId>.json` | UTF-8 JSON, at most 32 KiB, mode `0600` on POSIX in a `0700` directory | One redacted, path-free record per failed Run: the cause, the phase context, up to 20 bounded issue summaries and up to 16 metrics. Survives Remove; aged out by the session age setting and capped at the newest 200. |
 | `.schegent/history/<runId>.txt` | UTF-8 text, mode `0600` on POSIX | Full Task description used for byte-identical reruns; the Memento history row holds only a preview and relative reference. |
 | `.schegent/metrics-rollup.jsonl` | Append-only newline-delimited JSON, schema v2; v1 records are still read | One terminal summary per Run so cumulative totals survive audit rotation. A failed Run's record carries its `failureCause`. |
 | `.schegent/cli-transport.log` and `.1`–`.3` | Sanitized line records; 5 MiB per file; mode `0600` on POSIX | Bounded transport-level diagnostics, separate from the unredacted sinks. |
@@ -69,6 +71,8 @@ The tree is demand-created. In particular, an absent `.schegent/catalog/manifest
 <!-- Source: src/audit/verbose-diagnostic-writer.ts -->
 <!-- Source: src/controller/phase-sidecar-reader.ts -->
 <!-- Source: src/services/history/history-description-store.ts -->
+<!-- Source: src/services/failure-record/failure-record-store.ts -->
+<!-- Source: src/contracts/failure-record.ts -->
 <!-- Source: src/metrics/metrics-rollup.ts -->
 <!-- Source: src/metrics/metrics-rollup-writer.ts -->
 <!-- Source: src/monitor/cli-transport-sink.ts -->
@@ -123,7 +127,7 @@ Security-sensitive filesystem adapters generally perform a containment check app
 <!-- Source: src/lib/runtime-log/runtime-log-sink.ts -->
 <!-- Source: src/audit/audit-log-writer.ts -->
 
-Retention differs by artifact: audit archives, unredacted session artifacts, private recovery checkpoints, runtime logs, CLI transport generations, and history descriptions each have their own owner and bound. Deleting one class does not imply deletion of the others. Use the owning settings or operation rather than deleting a broad `.schegent/` tree while Schegent is active.
+Retention differs by artifact: audit archives, unredacted session artifacts, failure records, private recovery checkpoints, runtime logs, CLI transport generations, and history descriptions each have their own owner and bound. Deleting one class does not imply deletion of the others. Use the owning settings or operation rather than deleting a broad `.schegent/` tree while Schegent is active.
 
 <!-- Source: src/audit/audit-log-writer.ts -->
 <!-- Source: src/services/session-retention/session-artifact-retention-service.ts -->

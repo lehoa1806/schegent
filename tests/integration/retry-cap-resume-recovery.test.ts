@@ -343,6 +343,9 @@ describe('FR-R4-F02 (FR-005; pins) — an operator retry of a failed Run resets 
     const admitted = await h.admit(QUEUE_A, 'a task that fails');
     h.script(() => fatalOutput());
     await h.runToTerminal(QUEUE_A, admitted.runId);
+    // The Run is failed before its Task is: the driver keeps the failure record between the two
+    // (spec 243, C6.1), and a retry needs the Task failed. Wait for the drive to finish.
+    await admitted.completed;
     await h.store.updateRun(
       QUEUE_A,
       { runId: admitted.runId, allowedStatuses: ['failed'], label: 'resume', patch: () => ({ delayedRetryCount: 5 }) },

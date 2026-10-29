@@ -84,7 +84,7 @@ export const ANNOUNCEMENT_VALUE_MAX_LENGTH = 80;
 const RUN_ID_DISPLAY_LENGTH = 8;
 const TRUNCATION_MARK = '…';
 // Property escapes, not a \x00-\x1f class: no raw control character in the source, no no-control-regex.
-const CONTROL_AND_FORMAT_CODE_POINTS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+export const CONTROL_AND_FORMAT_CODE_POINTS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
 
 /**
  * Make one operator-authored value safe to show in the announcement: strip, redact, then cap.

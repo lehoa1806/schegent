@@ -3,6 +3,7 @@ import type { AuditEventType } from '../../../contracts/audit-events';
 import type { BackendPingService } from '../../../services/backend-ping-service';
 import type { HistoryEvidenceResolution } from '../../../services/history/history-evidence-service';
 import type { DescriptionResolution } from '../../../services/history/history-description-resolver';
+import type { FailureRecordAnswerer } from '../../../services/failure-record/failure-record-service';
 import type { CatalogLifecycleOps, CatalogStore } from '../../../catalog';
 import type { PipelineCatalog } from '../../../config/pipeline-config';
 import type { CatalogVersionRef } from '../../../contracts/catalog-version';
@@ -484,6 +485,12 @@ export interface RouterDeps {
   readonly historyDescriptionService?: {
     resolve(runId: string): Promise<DescriptionResolution | null>;
   };
+  /**
+   * FR-R4-F15 (contract Q4) — the row's newest failure record, read for "Show last error". Absent in
+   * a harness that builds no service; the handler then answers `internal-error`. The service is built
+   * over the requesting window's own queue state, so a pair it does not hold is an unknown row.
+   */
+  readonly readFailureRecord?: FailureRecordAnswerer['answer'];
   readonly backendPingService?: Pick<BackendPingService, 'ping'>;
   /**
    * Feature 073 — existing session-scoped correlation id reused (not newly

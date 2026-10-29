@@ -67,6 +67,13 @@ export interface SessionArtifactRetentionDeps {
   readonly audit?: Pick<AuditLogWriter, 'append'> | null;
   readonly now?: () => Date;
   readonly filesystem?: FsLike;
+  /**
+   * FR-R4-F15 (K2.1) — the failure-record pass. Called inside `sweep()`'s serialized chain, after the
+   * session pass, with the same age and the same clock. Its outcome is discarded: record counts are
+   * not part of `SessionArtifactRetentionResult`, `getUsage()` or the `session-retention-applied`
+   * payload, because the spec gives the audit log no new field.
+   */
+  readonly failureRecords?: { sweep(maxAgeMs: number, now: Date): Promise<unknown> };
 }
 
 const EMPTY_USAGE: SessionArtifactUsage = Object.freeze({
@@ -84,7 +91,9 @@ function errnoCode(error: unknown): string {
   return 'unknown';
 }
 
-function normalizedPolicy(policy: SessionArtifactRetentionPolicy): SessionArtifactRetentionPolicy {
+// Exported (FR-R4-F15, Q3.3): the failure-record read answers `expired` against the very age the sweep
+// applies, so both normalize the setting through this one function and cannot disagree about it.
+export function normalizedPolicy(policy: SessionArtifactRetentionPolicy): SessionArtifactRetentionPolicy {
   return {
     maxAgeMs: Number.isFinite(policy.maxAgeMs) ? Math.max(0, policy.maxAgeMs) : 0,
     maxBytes: Number.isSafeInteger(policy.maxBytes) ? Math.max(0, policy.maxBytes) : 0
@@ -151,12 +160,27 @@ export class SessionArtifactRetentionService {
 
   public sweep(protectedRunIds: ReadonlySet<string> = new Set()): Promise<SessionArtifactRetentionResult> {
     const protectedSnapshot = new Set(protectedRunIds);
-    const operation = this.sweepTail.then(
-      () => this.performSweep(protectedSnapshot),
-      () => this.performSweep(protectedSnapshot)
-    );
+    // FR-R4-F15 (K2.2) — the record pass belongs to the operation the tail chains, so a second sweep in
+    // this window starts only after both passes have ended. No lock is added.
+    const run = async (): Promise<SessionArtifactRetentionResult> => {
+      const result = await this.performSweep(protectedSnapshot);
+      await this.sweepFailureRecords();
+      return result;
+    };
+    const operation = this.sweepTail.then(run, run);
     this.sweepTail = operation.then(() => undefined, () => undefined);
     return operation;
+  }
+
+  /** K2.3 — a pass that fails is one warning by code; the session result is returned regardless. */
+  private async sweepFailureRecords(): Promise<void> {
+    const pass = this.deps.failureRecords;
+    if (pass === undefined) return;
+    try {
+      await pass.sweep(normalizedPolicy(this.deps.policy()).maxAgeMs, this.now());
+    } catch (error) {
+      this.deps.logger.warn('failure-record-retention: pass failed', { errorCode: errnoCode(error) });
+    }
   }
 
   private async performSweep(protectedRunIds: ReadonlySet<string>): Promise<SessionArtifactRetentionResult> {

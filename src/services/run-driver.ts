@@ -17,6 +17,7 @@ import { advancedRun } from './run-advance';
 import { terminalSettler } from './run-terminal-effects';
 import { emitTerminalOutcomeAudit } from './terminal-outcome-audit';
 import { failureNotice } from './failure-notice';
+import { failedPhaseNotice, type FailureRecorder } from './failure-record/failed-phase-notice';
 import {
   cliSessionOf,
   creditPausedRun,
@@ -187,6 +188,7 @@ export interface RunDriverDeps {
    */
   readonly releaseExecutionLease?: (run: WorkflowRun) => Promise<void>;
   readonly onRunTerminal?: (run: WorkflowRun) => Promise<void>;
+  readonly failureRecords?: FailureRecorder;
   readonly terminalTransitions?: Pick<TerminalTransitionCoordinator, 'complete'>;
   readonly checkpoints?: Pick<RunCheckpointService, 'checkpoint'>;
   /**
@@ -476,6 +478,7 @@ export class RunDriver {
               creditPause: null,
               failureCause: 'runner_probe_failed'
             });
+            await this.deps.failureRecords?.record({ run, cause: 'runner_probe_failed', result: null });
 
             if (this.deps.appendRunnerProbeFailedAudit) {
               await this.deps.appendRunnerProbeFailedAudit(run, {
@@ -842,9 +845,8 @@ export class RunDriver {
             failureCause: postDecision.failureCause
           };
           run = await this.deps.persistTransition(run, failed);
-          const notice = failureNotice({
-            cause: postDecision.failureCause, phase: run.currentPhase, taskTitle: description,
-            iteration, iterationCap: this.deps.options.iterationCap, stalledCount: postDecision.stalledCount
+          const notice = await failedPhaseNotice(this.deps.failureRecords, this.deps.options, {
+            run, decision: postDecision, result: output.result, taskTitle: description, iteration
           });
           // FR-R3-128 (T1484) — the terminal effect sequence, in one place. The
           // ORDER is unchanged and is load-bearing; see `run-terminal-effects.ts`.
@@ -1192,6 +1194,7 @@ export class RunDriver {
       creditPause: null,
       failureCause: 'audit_evidence_unavailable'
     });
+    await this.deps.failureRecords?.record({ run: failed, cause: 'audit_evidence_unavailable', result: null });
 
     this.deps.logger.error(
       'run-driver: execution stopped because required structured audit evidence is unavailable'

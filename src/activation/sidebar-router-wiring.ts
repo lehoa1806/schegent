@@ -16,7 +16,7 @@ import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
 import type { CatalogConfigReader } from '../config/pipeline-config-loader';
 import { coerceModels } from '../config/pipeline-config-loader';
-import { writeGeneralSettings, type GeneralSettingsConfig } from '../config/general-settings';
+import { readGeneralSettings, writeGeneralSettings, type GeneralSettingsConfig } from '../config/general-settings';
 import { setUncontainedGrant } from '../services/uncontained-grant-writer';
 import type { SchegentWorkflowController } from '../controller/workflow-controller';
 import type { SanitizedLogger } from '../lib/logger';
@@ -38,6 +38,8 @@ import { readMetrics } from '../metrics/metrics-service';
 import { HistoryEvidenceService } from '../services/history/history-evidence-service';
 import { AuditPointerResolver } from '../services/history/audit-pointer-resolver';
 import { HistoryDescriptionStore } from '../services/history/history-description-store';
+import { createFailureRecordAnswerer } from '../services/failure-record/failure-record-service';
+import { normalizedPolicy } from '../services/session-retention/session-artifact-retention-service';
 import { resolveHistoryDescription } from '../services/history/history-description-resolver';
 
 /**
@@ -127,6 +129,29 @@ export function createSidebarRouter(deps: SidebarRouterWiringDeps): MessageRoute
     runtimeLogAccessor,
     refreshCatalog
   } = deps;
+// FR-R4-F15 (contract Q4) — the "Show last error" read, over THIS window's queue state and history,
+// so a queue id and task id taken from another workspace's snapshot name no row here. The age is the
+// one the session sweep applies: same setting, same normalization, read when the request arrives.
+const failureRecordAnswerer = createFailureRecordAnswerer({
+  logger,
+  workspaceRoot,
+  state: store,
+  maxAgeMs: () =>
+    normalizedPolicy({
+      maxAgeMs:
+        readGeneralSettings(
+          vscode.workspace.getConfiguration(
+            'schegent',
+            vscode.Uri.file(workspaceRoot)
+          ) as unknown as GeneralSettingsConfig
+        ).sessionRetentionMaxAgeDays *
+        24 *
+        60 *
+        60 *
+        1000,
+      maxBytes: 0
+    }).maxAgeMs
+});
 return new MessageRouter({
   executeCommand: (id, ...args) => vscode.commands.executeCommand(id, ...args),
   // FR-R3-161 (T048, FR-007a) — 2026-09-04. `queueRemover: queue` stood here.
@@ -395,6 +420,7 @@ return new MessageRouter({
       });
     }
   },
+  readFailureRecord: (request) => failureRecordAnswerer.answer(request),
   // Feature 073 — existing session-scoped correlation id, reused (not
   // newly minted) for the metrics-view-opened audit payload
   // (contracts/metrics-view-opened-event.md).

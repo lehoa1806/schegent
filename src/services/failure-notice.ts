@@ -10,9 +10,10 @@
  *     on, so a phase that failed at its cap gets ONE more attempt, not a fresh set (D10);
  *   - "Mark '<title>' as completed" is the queue row's button, for work finished by hand.
  *
- * No text names the "Retry feature" button, the queue-level resume, the short resume title that is not
- * the command's full title, or a "Show last error" action: none is the right action for a failed Run,
- * or none exists yet (D9, D11, N3.1).
+ * No text names the "Retry feature" button, the queue-level resume or the short resume title that is
+ * not the command's full title: none is the right action for a failed Run (D9, D11, N3.1). Two texts
+ * name "Show last error", and only when a failure record was written (FR-R4-F15 D13; see
+ * {@link SHOW_LAST_ERROR_SENTENCE}): the button shows the record, so the sentence is true only then.
  *
  * WHAT GOES IN, AND WHAT NEVER DOES. The inputs are the cause, the phase id, the runner kind, the
  * task's description, two integers and a count, and nothing else. No agent output, parser warning,
@@ -70,8 +71,15 @@ export type FailureNoticeInput =
       readonly iterationCap: number;
       /** Consecutive unchanged comparisons. Stated only when greater than 1 (FR-014). */
       readonly stalledCount?: number | undefined;
+      /** FR-R4-F15 (D13) — a failure record was written, so "Show last error" has something to show. */
+      readonly recordWritten?: boolean | undefined;
     })
-  | (PhaseNotice & { readonly cause: 'last_phase_issues_remain'; readonly taskTitle: string })
+  | (PhaseNotice & {
+      readonly cause: 'last_phase_issues_remain';
+      readonly taskTitle: string;
+      /** FR-R4-F15 (D13) — as on the cap notice. */
+      readonly recordWritten?: boolean | undefined;
+    })
   | (PhaseNotice & {
       readonly cause:
         | 'incomplete_turn_unresolved'
@@ -107,6 +115,17 @@ export function markCompletedTitle(description: string, sanitize: Sanitize = def
 
 const RESUME = `"${RESUME_FAILED_WORKFLOW_TITLE}"`;
 
+/**
+ * FR-R4-F15 (D13, contract C6.5) — the one sentence the cap and last-phase notices gain when a failure
+ * record was written. It names the button by the exact label the queue row shows, and it is appended
+ * after a single space, so the message without it is byte-identical to feature 242's.
+ */
+export const SHOW_LAST_ERROR_SENTENCE = '"Show last error" lists what was open.';
+
+function withRecordPointer(message: string, recordWritten: boolean | undefined): string {
+  return recordWritten === true ? `${message} ${SHOW_LAST_ERROR_SENTENCE}` : message;
+}
+
 /** ` Its metrics were unchanged across the last {n} comparisons.`, only for a count above one. */
 function stalledClause(stalledCount: number | undefined): string {
   if (stalledCount === undefined || !Number.isFinite(stalledCount) || stalledCount <= 1) return '';
@@ -134,20 +153,22 @@ function messageFor(input: FailureNoticeInput): string {
     case 'cap_exhausted':
       // "iteration N of CAP", not "after N iterations": a resumed phase runs again at the iteration it
       // failed on, so a second cap failure reports the same number after one more invocation.
-      return (
+      return withRecordPointer(
         `Schegent: ${phase} reached its iteration cap (iteration ${input.iteration} of ` +
-        `${input.iterationCap}) with its retry condition still unmet, so the run failed.` +
-        `${stalledClause(input.stalledCount)} ${RESUME} gives ${phase} one more attempt, and it ` +
-        `fails the same way unless the blocker is resolved first. If you finished the work by hand, ` +
-        `record it with "${markCompletedTitle(input.taskTitle, sanitize)}".`
+          `${input.iterationCap}) with its retry condition still unmet, so the run failed.` +
+          `${stalledClause(input.stalledCount)} ${RESUME} gives ${phase} one more attempt, and it ` +
+          `fails the same way unless the blocker is resolved first. If you finished the work by hand, ` +
+          `record it with "${markCompletedTitle(input.taskTitle, sanitize)}".`,
+        input.recordWritten
       );
     case 'last_phase_issues_remain':
       // The first clause is the sentence FR-R3-199's pinned driver test asserts (FR-026); it states the
       // outcome, and the advice that FR-015 requires follows it.
-      return (
+      return withRecordPointer(
         `Schegent: ${phase} failed — the last phase reported remaining issues, so the run did not ` +
-        `complete. Fix the issues first, then use ${RESUME} to run ${phase} again. If you ` +
-        `finished the work by hand, record it with "${markCompletedTitle(input.taskTitle, sanitize)}".`
+          `complete. Fix the issues first, then use ${RESUME} to run ${phase} again. If you ` +
+          `finished the work by hand, record it with "${markCompletedTitle(input.taskTitle, sanitize)}".`,
+        input.recordWritten
       );
     case 'incomplete_turn_unresolved':
       return (
