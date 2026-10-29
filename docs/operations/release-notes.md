@@ -175,11 +175,42 @@ verification is single-platform, single-machine, permanently, since the three-OS
 
 ## Unreleased
 
-Nothing yet. When adding the first entry, name the affected command, setting, workflow, state
-transition or persisted artifact exactly as it appears in the product, and state upgrade or
-rollback limits explicitly. Do not infer a historical change list from the current code snapshot
-alone.
+### A failed Run keeps a bounded failure record (FR-R4-F15)
+
+- **A record that Remove does not delete.** When a Run fails, Schegent writes one redacted,
+  path-free file of at most 32 KiB to `.schegent/failure-records/`, naming the failure cause, the
+  phase context and up to 20 issue summaries the agent reported as still open. Remove deletes a
+  row's session directory and raw transcript and leaves the record; a Run's Delete Evidence removes
+  it, and the Run's evidence export includes it.
+- **"Show last error" shows it.** The row's region now lists the cause, the phase and iteration, the
+  issues with the agent's own labels, and the last metrics, and says so plainly when the record was
+  removed by retention, is unavailable or could not be read.
+- **The age setting now covers it.** `schegent.logging.sessionRetentionMaxAgeDays` ages failure
+  records out with the session artifacts, and at most the newest 200 records per workspace are kept.
+  `schegent.logging.sessionRetentionMaxBytes` does not apply to them.
+- **Five phases ask for issue tags.** In the new-feature example (version 4), `speckit-analyze`,
+  `speckit-implement`, `speckit-code-review`, `speckit-security-review` and `finalize` ask the agent
+  to start each bullet under `Remaining issues:` with `[regression]`, `[pre-existing]`,
+  `[environment]`, `[needs-approval]` or `[needs-decision]`, or no tag when none fits. The tags are
+  the agent's labels: Schegent records them and does not check them, and no decision depends on
+  one. An existing catalog reaches the new text by publishing each changed definition, as
+  [Bring an existing catalog to a revised example](process-yaml.md#bring-an-existing-catalog-to-a-revised-example)
+  describes; a Run already started keeps the text it began with.
+- **The two notices that named no action now point at the panel.** When a record was written, the
+  `cap_exhausted` and `last_phase_issues_remain` failure notices end with the sentence
+  `"Show last error" lists what was open.`; when none was written they read as before.
+
+No audit event, field or schema version changed, and nothing about halts, counters, the iteration cap
+or a Run's status changed. There is no migration. Rolling back leaves the records on disk: delete
+`.schegent/failure-records/` by hand if you want them gone.
+
+When adding an entry, name the affected command, setting, workflow, state transition or persisted
+artifact exactly as it appears in the product, and state upgrade or rollback limits explicitly. Do
+not infer a historical change list from the current code snapshot alone.
 
 For each entry, name the affected command, setting, workflow, state transition, or persisted artifact exactly as it appears in the product. State upgrade or rollback limits explicitly. Do not infer a historical change list from the current code snapshot alone.
 <!-- Source: ../release/actions-terminal-record.md -->
 <!-- Source: src/contracts/state-schema.ts -->
+<!-- Source: src/contracts/failure-record.ts -->
+<!-- Source: src/services/failure-notice.ts -->
+<!-- Source: examples/speckit-new-feature.pipeline.yaml -->

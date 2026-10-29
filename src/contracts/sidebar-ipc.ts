@@ -108,6 +108,9 @@ export const CMD_RESOLVE_AUDIT_POINTER = 'CMD_RESOLVE_AUDIT_POINTER' as const;
 // FR-R3-071 — resolve a completed Run's stored description for replay.
 // READ-ONLY, so out of `MUTATING_COMMANDS`; `cmd-resolve-history-description.ts` says why.
 export const CMD_RESOLVE_HISTORY_DESCRIPTION = 'CMD_RESOLVE_HISTORY_DESCRIPTION' as const;
+// FR-R4-F15 — read a row's newest failure record.
+// READ-ONLY, so out of MUTATING_COMMANDS; cmd-read-failure-record.ts says why.
+export const CMD_READ_FAILURE_RECORD = 'CMD_READ_FAILURE_RECORD' as const;
 // Feature 028 — future-phase breakpoints. Operator marks a pending phase
 // as a "pause when reached" point. The pipeline runs preceding phases
 // then halts before invoking the marked phase. Both are mutating —
@@ -240,6 +243,7 @@ export const COMMAND_TYPES = [
   CMD_OPEN_TRUST_SETTINGS,
   CMD_RESOLVE_AUDIT_POINTER,
   CMD_RESOLVE_HISTORY_DESCRIPTION,
+  CMD_READ_FAILURE_RECORD,
   CMD_SET_PHASE_BREAKPOINT,
   CMD_CLEAR_PHASE_BREAKPOINT,
   CMD_START_QUEUE,
@@ -293,11 +297,14 @@ import type { ReadMetricsCommand } from './sidebar-ipc/metrics';
 import { isReadMetricsRequest } from './sidebar-ipc/metrics';
 import type { ResolveAuditPointerCommand } from './sidebar-ipc/history-evidence';
 import type { ResolveHistoryDescriptionCommand } from './sidebar-ipc/history-description';
+import type { ReadFailureRecordCommand } from './sidebar-ipc/failure-record';
 export type {
   ResolveHistoryDescriptionRequest,
   ResolveHistoryDescriptionCommand,
   ResolveHistoryDescriptionResponse
 } from './sidebar-ipc/history-description';
+export type { ReadFailureRecordRequest, ReadFailureRecordCommand,
+  ReadFailureRecordResponse } from './sidebar-ipc/failure-record';
 export type { HistoryEvidenceEntry, ResolveAuditPointerRequest, ResolveAuditPointerCommand,
   ResolveAuditPointerResponse } from './sidebar-ipc/history-evidence';
 import type {
@@ -662,6 +669,7 @@ export type SidebarCommand =
   | OpenTrustSettingsCommand
   | ResolveAuditPointerCommand
   | ResolveHistoryDescriptionCommand
+  | ReadFailureRecordCommand
   | StartQueueCommand
   | ClearQueueCommand
   | SetConfirmSuppressionCommand
@@ -883,6 +891,9 @@ export function isCmdResolveHistoryDescription(
 ): value is ResolveHistoryDescriptionCommand {
   return isObjectWithType(value, CMD_RESOLVE_HISTORY_DESCRIPTION);
 }
+export function isCmdReadFailureRecord(value: unknown): value is ReadFailureRecordCommand {
+  return isObjectWithType(value, CMD_READ_FAILURE_RECORD);
+}
 // Feature 028 — phase breakpoint set/clear guards.
 export function isCmdSetPhaseBreakpoint(value: unknown): value is SetPhaseBreakpointCommand {
   return isObjectWithType(value, CMD_SET_PHASE_BREAKPOINT);
@@ -1092,6 +1103,7 @@ export const COMMAND_GUARDS: Readonly<
   [CMD_OPEN_TRUST_SETTINGS]: isCmdOpenTrustSettings,
   [CMD_RESOLVE_AUDIT_POINTER]: isCmdResolveAuditPointer,
   [CMD_RESOLVE_HISTORY_DESCRIPTION]: isCmdResolveHistoryDescription,
+  [CMD_READ_FAILURE_RECORD]: isCmdReadFailureRecord,
   [CMD_SET_PHASE_BREAKPOINT]: isCmdSetPhaseBreakpoint,
   [CMD_CLEAR_PHASE_BREAKPOINT]: isCmdClearPhaseBreakpoint,
   [CMD_START_QUEUE]: isCmdStartQueue,

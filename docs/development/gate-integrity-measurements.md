@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 122
+    vacuity-census-denominator: 123
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **122** |
+| Gates the detector calls **controlled** (the denominator) | **123** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -1516,5 +1516,16 @@ it; none left.
 | Δ | Gate | Cause |
 |---|---|---|
 | **+1** | `failure-cause-clear-census.test.ts` (121 → 122) | Joined. Walks `src` and names every file that writes `pendingRetryCause: null` without also naming `failureCause`, so a writer that moves a Run across `failed` and forgets the cause is a reviewed edit. Its controls are `MIN_SITES`, a floor on the writers the walk found, an anchor file (`phase-control-service.ts`) the walk must name, and a check that every classified entry still contains the search term, so the scan cannot empty into a silent pass |
+
+The rate stays **0.0%**: the entrant was mutated with the rest and did not survive.
+
+**Denominator movement 122 → 123 (2026-10-28, feature 243 / `FR-R4-F15`).** One gate joined,
+controlled on its first run. Attribution is by census membership: the predicate the detector applies
+(`isScanningGate` and `looksControlled`) was run over the gate file the feature added, and it satisfies
+it; none left.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | `failure-record-isolation.test.ts` (122 → 123) | Joined. Scans `src`, comments removed, for every relative import, re-export, `require` and dynamic `import()` of the failure record's service directory or its shape module, so a queue, phase or metrics module that starts reading a record is a reviewed edit. Its controls are a fixture in which `src/queue/x.ts` imports `failure-record-answer`, which must be reported by file and contract (written and run first), and a floor on the importers the real scan found, with the driver, the controller and the start-failure handler among them, so a moved root cannot read as "nobody imports it" |
 
 The rate stays **0.0%**: the entrant was mutated with the rest and did not survive.

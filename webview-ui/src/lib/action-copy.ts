@@ -358,7 +358,12 @@ function removeItemBody(status: QueueItemStatus, taskTitle: string): string {
       return `Removes the paused task **${taskTitle}** and permanently deletes its session data from disk.`;
     default:
       // completed | failed | canceled
-      return `Permanently removes **${taskTitle}** and its session data (logs, diagnostics) from disk.`;
+      // FR-R4-F15 (D11, K3.2) — Remove clears the session tree and nothing else. A failed Run's
+      // retained failure record and the audit log are outside it, so the sentence says what stays.
+      return (
+        `Permanently removes **${taskTitle}** and its session data (logs, diagnostics) from disk. ` +
+        'Its failure diagnostics, if any, and the audit log are kept until retention removes them.'
+      );
   }
 }
 

@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { deleteRunEvidence } from '../../../src/services/evidence-delete';
+import { SanitizedLogger } from '../../../src/lib/logger';
+import { createFailureRecorder } from '../../../src/services/failure-record/failure-record-service';
 
 const RUN = '5b8a1c22-7d3e-4f10-9c44-1a2b3c4d5e6f';
 const idle = { isRunActive: () => false };
@@ -107,5 +109,66 @@ describe('FR-R3-085 — evidence delete', () => {
     const remaining = await fsp.readdir(path.join(workspace, '.schegent', 'sessions'));
     expect(remaining).toContain(`raw-${RUN}.log`);
     expect(remaining).toContain('raw-other.log');
+  });
+});
+
+// FR-R4-F15 (feature 243, contract K4, K6.9; FR-017, D14) — Delete Evidence removes one Run's failure
+// records and no other Run's, and refuses while the Run is active. No code selects them: the command
+// removes every leaf under `.schegent/` whose path contains the Run id, and a record's name carries it.
+describe('FR-R4-F15 K6.9 — Delete Evidence removes one Run\'s failure records', () => {
+  const RUN_B = '9b2e5f10-1c2d-4e3f-8a4b-5c6d7e8f9a0b';
+  const TASK_A = '11111111-1111-4111-8111-111111111111';
+  const TASK_B = '22222222-2222-4222-8222-222222222222';
+  const recordsDir = (): string => path.join(workspace, '.schegent', 'failure-records');
+
+  async function writeRecord(runId: string, taskId: string, summary: string): Promise<void> {
+    const recorder = createFailureRecorder({
+      logger: new SanitizedLogger(),
+      queue: { queueIdForExistingTask: () => 'default' },
+      workspaceRoot: workspace
+    });
+    const wrote = await recorder.record({
+      run: { id: runId, featureId: taskId, currentPhase: 'implement' },
+      cause: 'last_phase_issues_remain',
+      result: { kind: 'remaining_issues', issues: [{ tag: 'regression', summary }], auditEntry: null }
+    });
+    expect(wrote).toBe(true);
+  }
+
+  beforeEach(async () => {
+    await writeRecord(RUN, TASK_A, 'run A first');
+    await writeRecord(RUN, TASK_A, 'run A second');
+    await writeRecord(RUN_B, TASK_B, 'run B only');
+  });
+
+  it('removes exactly Run A\'s two records, and reports them', async () => {
+    expect(await fsp.readdir(recordsDir())).toHaveLength(3);
+
+    const result = await deleteRunEvidence(workspace, RUN, idle);
+
+    expect(result.outcome).toBe('completed');
+    if (result.outcome !== 'completed') throw new Error('unreachable');
+    expect(result.removed.filter((entry) => entry.includes('failure-records/'))).toHaveLength(2);
+    expect(result.retained).toEqual([]);
+    const remaining = await fsp.readdir(recordsDir());
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]).toContain(`_${RUN_B}_`);
+  });
+
+  it('leaves Run B\'s record alone when Run B is deleted second', async () => {
+    await deleteRunEvidence(workspace, RUN, idle);
+    const second = await deleteRunEvidence(workspace, RUN_B, idle);
+    expect(second.outcome).toBe('completed');
+    expect(await fsp.readdir(recordsDir())).toEqual([]);
+  });
+
+  it('refuses while Run A is active, and removes nothing, records included', async () => {
+    const before = (await fsp.readdir(recordsDir())).sort();
+
+    const result = await deleteRunEvidence(workspace, RUN, busy);
+
+    expect(result).toMatchObject({ outcome: 'refused', reason: 'active-writer' });
+    expect((await fsp.readdir(recordsDir())).sort()).toEqual(before);
+    expect(await fsp.readdir(path.join(workspace, '.schegent', 'sessions'))).toContain(`raw-${RUN}.log`);
   });
 });

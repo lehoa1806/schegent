@@ -17,6 +17,10 @@
 // loop condition that must NOT absorb the new counts, and the report headings,
 // run through the real stdout parser so they cannot be read as issues.
 
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import { extractOpenQuestions, extractRemainingIssues } from '../../../src/parser/stdout-parser';
@@ -569,5 +573,109 @@ describe('the shipped new-feature pipeline: delegated authority', () => {
         'FR-012: no code implements it'
       ]);
     });
+  });
+});
+
+// FR-R4-F15 (feature 243, contract T3, T4.1, T4.4, T6.5; FR-010, D8; User Story 6 scenario 1) — the five
+// phases that ask for `Remaining issues:` also ask for one of five tags on each bullet.
+//
+// The tags are the agent's own labels, kept in a failure record for an operator to read; they change
+// nothing the host does (T2). What is pinned here is that the request is in the shipped text, once, where
+// the agent reads it, and that the versions moved so an operator who imported the old text can learn of
+// the new one. The bugfix example asks for no `Remaining issues:` and must not have moved.
+describe('the shipped new-feature pipeline: the tag request (FR-R4-F15, T3, T4)', () => {
+  const example = loadExample();
+
+  /** T3's block, character for character. */
+  const TAG_BLOCK = [
+    'Start each bullet under "Remaining issues:" with one tag in square brackets, chosen from:',
+    '- [regression] the change made by this work broke something that worked before.',
+    '- [pre-existing] the problem was already there before this work, and this work did not cause it.',
+    '- [environment] a tool, service, network, credential or machine problem outside the code.',
+    '- [needs-approval] an action only a maintainer may approve, such as a dependency bump or a waiver.',
+    '- [needs-decision] a choice between options that someone must make before the work can continue.',
+    'If no tag fits, write the bullet without a tag. A tag describes the issue; it does not change what happens next.'
+  ].join('\n');
+
+  /** The five phases, with the version each moved to (T4.1) and the pipeline's own. */
+  const TAGGED_PHASES: ReadonlyArray<readonly [phaseId: string, minimumVersion: number]> = [
+    ['speckit-analyze', 2],
+    ['speckit-implement', 4],
+    ['speckit-code-review', 2],
+    ['speckit-security-review', 2],
+    ['finalize', 4]
+  ];
+  const MINIMUM_PIPELINE_VERSION = 4;
+  const SENTENCE = 'emit "Remaining issues:"';
+
+  it('control: the block is the T3 text, and the example still ships the five phases', () => {
+    expect(TAG_BLOCK.split('\n')).toHaveLength(7);
+    for (const [phaseId] of TAGGED_PHASES) {
+      expect(instructionOf(phaseOf(example, phaseId)).length, phaseId).toBeGreaterThan(0);
+    }
+  });
+
+  it.each(TAGGED_PHASES)('%s contains the block exactly once, verbatim', (phaseId) => {
+    const instruction = instructionOf(phaseOf(example, phaseId));
+    expect(instruction.split(TAG_BLOCK), `${phaseId}: occurrences of the block`).toHaveLength(2);
+  });
+
+  it.each(TAGGED_PHASES)('%s puts the block directly after the sentence that asks for Remaining issues', (phaseId) => {
+    const instruction = instructionOf(phaseOf(example, phaseId));
+    const sentenceLines = instruction.split('\n').filter((line) => line.includes(SENTENCE));
+    expect(sentenceLines, `${phaseId}: exactly one sentence asks for the list`).toHaveLength(1);
+    const before = instruction.slice(0, instruction.indexOf(TAG_BLOCK));
+    // One blank line separates the sentence's line from the block, so the block reads as a paragraph of
+    // its own and its bullets are not taken for more bullets of the list above it.
+    expect(before.endsWith('\n\n'), `${phaseId}: a blank line before the block`).toBe(true);
+    const lastLine = before.replace(/\n\n$/, '').split('\n').at(-1) ?? '';
+    expect(lastLine, `${phaseId}: the line before the block`).toContain(SENTENCE);
+  });
+
+  it.each(TAGGED_PHASES)('%s keeps a blank line after the block, so what follows is not part of it', (phaseId) => {
+    const instruction = instructionOf(phaseOf(example, phaseId));
+    const after = instruction.slice(instruction.indexOf(TAG_BLOCK) + TAG_BLOCK.length);
+    expect(after.startsWith('\n\n'), phaseId).toBe(true);
+  });
+
+  it.each(TAGGED_PHASES)('%s is at version %i or later', (phaseId, minimumVersion) => {
+    expect(phaseOf(example, phaseId).metadata.version).toBeGreaterThanOrEqual(minimumVersion);
+  });
+
+  it('is at pipeline version 4 or later', () => {
+    expect(example.pipelineVersion).toBeGreaterThanOrEqual(MINIMUM_PIPELINE_VERSION);
+  });
+
+  it('adds the block to no other phase, which asks for no list', () => {
+    const tagged = new Set(TAGGED_PHASES.map(([phaseId]) => phaseId));
+    for (const [phaseId, phase] of example.phases) {
+      if (tagged.has(phaseId)) continue;
+      expect(instructionOf(phase).includes('Start each bullet under "Remaining issues:"'), phaseId).toBe(false);
+    }
+  });
+
+  it('names exactly the five agent tags the record accepts, and says an untagged bullet is allowed', () => {
+    const named = [...TAG_BLOCK.matchAll(/^- \[([a-z-]+)\]/gm)].map((match) => match[1]);
+    expect(named).toEqual(['regression', 'pre-existing', 'environment', 'needs-approval', 'needs-decision']);
+    expect(TAG_BLOCK).toContain('If no tag fits, write the bullet without a tag.');
+    expect(TAG_BLOCK).toContain('it does not change what happens next');
+  });
+
+  it('reads through the real stdout parser: a bullet tagged as the block asks is a tagged issue', () => {
+    const report = ['Remaining issues:', '- [needs-decision] pick a retry budget', '- [regression] one case fails', '- no tag fits'].join('\n');
+    expect(extractRemainingIssues(report)).toEqual([
+      { tag: 'needs-decision', summary: 'pick a retry budget' },
+      { tag: 'regression', summary: 'one case fails' },
+      { summary: 'no tag fits' }
+    ]);
+  });
+
+  it('leaves the bugfix example byte for byte as it was at 58e792ae (T4.4)', () => {
+    // sha256 of `examples/speckit-bugfix.pipeline.yaml` at repo 58e792ae, from `git show`. A hash and not
+    // a `git show` at test time: the suite must not depend on that commit being present in a clone.
+    const baseline = 'b7a34e1bc39e776aaad44b24c739fac8e522517a351d34ce6ca5cb517df0aa77';
+    const bytes = readFileSync(resolve(__dirname, '..', '..', '..', 'examples', 'speckit-bugfix.pipeline.yaml'));
+    expect(createHash('sha256').update(bytes).digest('hex')).toBe(baseline);
+    expect(bytes.toString('utf8')).not.toContain('Remaining issues');
   });
 });

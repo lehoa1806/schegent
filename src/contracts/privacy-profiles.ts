@@ -77,7 +77,12 @@ const COMMON_RESIDUALS: readonly string[] = Object.freeze([
   '.gitignore keeps evidence out of commits. It does not stop backup, sync, or endpoint-management ' +
     'tooling from copying it off the machine — which is the reason to pick `ephemeral` at all.',
   'A profile is not a permission boundary. An uncontained backend runs under your local authority ' +
-    'and can read the evidence store whatever profile is selected (FR-R3-125).'
+    'and can read the evidence store whatever profile is selected (FR-R3-125).',
+  // FR-R4-F15 (K5.2) — no profile turns the record off (D5); it is redacted, bounded and aged by the
+  // same setting the profile already sets, and Remove leaves it where it is.
+  'A failed Run keeps a redacted, bounded failure record in `.schegent/failure-records/` for this ' +
+    "profile's session age, and at most the newest 200 records are kept. Remove does not delete it; " +
+    "the Run's Delete Evidence does."
 ]);
 
 /**
