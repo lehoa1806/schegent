@@ -20,6 +20,7 @@ function limits(overrides: Partial<EffectiveLimitsProjection> = {}): EffectiveLi
     maxDurationSeconds: { value: 21600, origin: 'default' },
     retryCap: { value: 5, origin: 'default' },
     onRetryCap: { value: 'fail', origin: 'default' },
+    unchangedComparisons: { value: 0, origin: 'default', state: 'disabled' },
     spend: { kind: 'none' },
     ...overrides
   };
@@ -120,6 +121,101 @@ describe('the special cases render the contract\'s sentences (E3 G11; US8-3, US8
 
     const trusted = mount(limits({ spend: { kind: 'bounded', denomination: 'usd', limit: { value: 1, origin: 'user' }, trust: 'enforced' } }));
     expect(trusted.queryByTestId(`run-limits-not-trustworthy-${QUEUE_ID}`)).toBeNull();
+  });
+});
+
+// FR-R4-F17 (feature 245, contract L2 and L4.2; FR-022; SC-008) — the row for the unchanged-metrics bound.
+// Four states, each with its own fixed text; the two inert ones add a note that says why the bound does
+// not apply. Only the integer is interpolated, and a state outside the closed set has no text to show.
+describe('the unchanged-metrics stop row (L2, L4.2)', () => {
+  type Unchanged = EffectiveLimitsProjection['unchangedComparisons'];
+  const row = (value: number, state: Unchanged['state'], origin: LimitOrigin = 'workspace') =>
+    limits({ unchangedComparisons: { value, origin, state } });
+  const valueText = (view: ReturnType<typeof mount>) =>
+    view.getByTestId(`run-limits-unchanged-${QUEUE_ID}`).textContent;
+
+  it('is labelled "Unchanged-metrics stop"', () => {
+    const { getByText } = mount(row(2, 'active'));
+
+    expect(getByText('Unchanged-metrics stop')).toBeTruthy();
+  });
+
+  it('active: "after 2 unchanged comparisons", with its origin and no note', () => {
+    const view = mount(row(2, 'active', 'workspace'));
+
+    expect(valueText(view)).toContain('after 2 unchanged comparisons');
+    expect(view.getByTestId(`run-limits-unchanged-origin-${QUEUE_ID}`).textContent).toBe('workspace settings');
+    expect(view.queryByTestId(`run-limits-unchanged-note-${QUEUE_ID}`)).toBeNull();
+  });
+
+  it('active at 1: "after 1 unchanged comparison", singular (L2.4)', () => {
+    const view = mount(row(1, 'active'));
+
+    expect(valueText(view)).toContain('after 1 unchanged comparison');
+    expect(valueText(view)).not.toContain('comparisons');
+  });
+
+  it('disabled: "off", with the default origin and no note', () => {
+    const view = mount(row(0, 'disabled', 'default'));
+
+    expect(valueText(view)).toContain('off');
+    expect(view.getByTestId(`run-limits-unchanged-origin-${QUEUE_ID}`).textContent).toBe('default');
+    expect(view.queryByTestId(`run-limits-unchanged-note-${QUEUE_ID}`)).toBeNull();
+  });
+
+  it('inert because the Phase advances at its cap: "2, not applied", and says why', () => {
+    const view = mount(row(2, 'inert-cap-outcome'));
+
+    expect(valueText(view)).toContain('2, not applied');
+    expect(view.getByTestId(`run-limits-unchanged-note-${QUEUE_ID}`).textContent).toBe(
+      'This Phase advances at the retry cap, so the early stop does not apply.'
+    );
+  });
+
+  it('inert because the Phase has no retry condition: "2, not applied", and says why', () => {
+    const view = mount(row(2, 'inert-no-retry-condition'));
+
+    expect(valueText(view)).toContain('2, not applied');
+    expect(view.getByTestId(`run-limits-unchanged-note-${QUEUE_ID}`).textContent).toBe(
+      'This Phase has no retry condition, so there is nothing to compare.'
+    );
+  });
+
+  it.each<readonly [LimitOrigin, string]>([
+    ['default', 'default'],
+    ['user', 'user settings'],
+    ['workspace', 'workspace settings'],
+    ['workspace-folder', 'folder settings']
+  ])('shows the layer %s as "%s" (L2.2)', (origin, text) => {
+    const view = mount(row(3, 'active', origin));
+
+    expect(view.getByTestId(`run-limits-unchanged-origin-${QUEUE_ID}`).textContent).toBe(text);
+  });
+
+  it('control: the other rows are still there and still carry their own text', () => {
+    const view = mount(row(2, 'active'));
+
+    expect(view.getByTestId(`run-limits-iteration-${QUEUE_ID}`).textContent).toContain('10');
+    expect(view.getByTestId(`run-limits-retry-outcome-${QUEUE_ID}`).textContent).toContain('fails the run');
+  });
+
+  it('a state or a string outside the closed set has no text to render (L2.3, hard rule 2)', () => {
+    const hostile = '<script>alert(1)</script>';
+    const forged = limits({
+      unchangedComparisons: {
+        value: 2,
+        origin: 'workspace',
+        state: hostile as unknown as Unchanged['state'],
+        note: hostile
+      } as unknown as Unchanged
+    });
+
+    const { container, getByTestId } = mount(forged);
+
+    // The row is there, so the absence below is about its text and not about a missing row.
+    expect(getByTestId(`run-limits-unchanged-${QUEUE_ID}`)).toBeTruthy();
+    expect(container.textContent).not.toContain(hostile);
+    expect(container.querySelector('script')).toBeNull();
   });
 });
 

@@ -32,6 +32,7 @@ import type { DefinitionState, ExpectedDraftVersion } from './catalog-lifecycle'
 import type { QueueFailurePolicy } from './queue-failure-policy';
 import type { SpendDenomination } from './backend-spend-denomination';
 import type { RetryCapOutcome } from './process-definitions';
+import type { UnchangedComparisonBoundState } from './unchanged-comparison-bound';
 
 /**
  * Feature 083 — Workflow catalog projection. Contract:
@@ -354,6 +355,9 @@ export interface EffectiveLimit<T> {
  * the inputs execution uses and never persisted. Numbers and closed enums only. `onRetryCap` is the
  * contract's `RetryCapOutcome`, three values and not two, because `resolveRetryCapOutcome` can
  * return all three and the surface must not report a degraded advance as a plain one.
+ *
+ * FR-R4-F17 — `unchangedComparisons` is the early-stop bound: the normalized value (0 is off), the layer
+ * that set it, and whether the stop would apply to this Phase, from the one rule execution applies.
  */
 export interface EffectiveLimitsProjection {
   readonly iterationCap: EffectiveLimit<number>;
@@ -361,6 +365,7 @@ export interface EffectiveLimitsProjection {
   readonly maxDurationSeconds: EffectiveLimit<number>;
   readonly retryCap: EffectiveLimit<number>;
   readonly onRetryCap: EffectiveLimit<RetryCapOutcome>;
+  readonly unchangedComparisons: EffectiveLimit<number> & { readonly state: UnchangedComparisonBoundState };
   readonly spend:
     | { readonly kind: 'none' }
     | {

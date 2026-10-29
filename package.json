@@ -256,6 +256,14 @@
           "scope": "resource",
           "description": "Maximum iterations for every phase that has a retry condition. If the condition still holds at the cap, the run fails, unless the phase or schegent.retry.forceContinueOnCap is set to continue."
         },
+        "schegent.loop.maxUnchangedComparisons": {
+          "type": "integer",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 49,
+          "scope": "resource",
+          "description": "Fail a retry loop early, below the iteration cap, after this many consecutive comparisons in which the figures its retry condition reads did not change. 0 (the default) turns this off; 2 is a suggested starting value. Applies only where the phase fails at the cap. Unchanged figures do not prove that no work happened."
+        },
         "schegent.watchdog.pollIntervalMinutes": {
           "type": "number",
           "default": 30,

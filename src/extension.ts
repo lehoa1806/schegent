@@ -39,6 +39,7 @@ import { wirePrimacyGain } from './activation/primacy-gain-wiring';
 import { closeStage2Resources } from './activation/stage2-teardown';
 import {
   readForceContinueOnRetryCap,
+  readMaxUnchangedComparisons,
   readQueueFailurePolicyDefault,
   readRetryCap,
   readRawTranscriptMode
@@ -445,10 +446,10 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       processEnvAllowlist: processEnvironmentPolicy.processEnvAllowlist,
       defaultRunnerKind: backendKind,
       isAuditEvidenceAvailable: () => evidenceHealth.getSnapshot().audit.status !== 'unavailable',
-      // FR-R3-119 — the four never-cached settings reads live together in
-      // `src/activation/uncached-settings-accessors.ts`, which is where the
-      // reason they are closures rather than values is written down.
+      // FR-R3-119 — the never-cached settings reads live together in
+      // `src/activation/uncached-settings-accessors.ts`, which says why they are closures.
       getForceContinueOnRetryCap: () => readForceContinueOnRetryCap(workspaceRoot),
+      getMaxUnchangedComparisons: () => readMaxUnchangedComparisons(workspaceRoot),
       // Feature 074 — resolve CLI binary path per-runner-kind. Reads the
       // setting per-invocation (never cached at activation) so the operator
       // can change `schegent.agy.path` without restarting VS Code.
@@ -466,7 +467,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       executionLease: executionLeases,
       startFailures: queueStartFailures,
       // FR-R3-119 — see the note on `getForceContinueOnRetryCap` above; these
-      // three are the rest of the same set.
+      // three join the two readers there in the same set.
       getQueueFailurePolicyDefault: () => readQueueFailurePolicyDefault(workspaceRoot),
       ...runSafety,
       getRetryCap: () => readRetryCap(workspaceRoot),

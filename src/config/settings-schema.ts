@@ -45,6 +45,7 @@ import {
   PROCESS_ENVIRONMENT_MODES,
   PROCESS_ENV_NAME_PATTERN_SOURCE
 } from '../contracts/process-environment-policy';
+import { MAX_UNCHANGED_COMPARISONS } from '../contracts/unchanged-comparison-bound';
 
 /** Setting value-shape category, mirroring JSON Schema vocabulary. */
 export type SettingsSchemaType =
@@ -184,6 +185,15 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     max: 50,
     scope: 'resource',
     docLabel: 'Loop phase max iterations'
+  },
+  'schegent.loop.maxUnchangedComparisons': {
+    key: 'schegent.loop.maxUnchangedComparisons',
+    type: 'integer',
+    default: 0,
+    min: 0,
+    max: MAX_UNCHANGED_COMPARISONS,
+    scope: 'resource',
+    docLabel: 'Unchanged retry comparisons before an early stop'
   },
   'schegent.watchdog.pollIntervalMinutes': {
     key: 'schegent.watchdog.pollIntervalMinutes',

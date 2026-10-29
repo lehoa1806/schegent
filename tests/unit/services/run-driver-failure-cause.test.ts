@@ -69,6 +69,8 @@ interface Harness {
 interface HarnessOptions {
   /** The driver's audit-evidence gate. Absent means available. */
   readonly isAuditEvidenceAvailable?: () => boolean;
+  /** FR-R4-F17 — the live reader of the unchanged-comparison bound. Absent means the bound is off. */
+  readonly getMaxUnchangedComparisons?: () => number;
 }
 
 async function makeHarness(iterationCap: number, harnessOptions: HarnessOptions = {}): Promise<Harness> {
@@ -765,5 +767,169 @@ describe('RunDriver — a run that fails before its first phase keeps its own ca
       'failed',
       expect.objectContaining({ code: 'audit-evidence-unavailable' })
     );
+  });
+});
+
+// FR-R4-F17 (feature 245, contracts C1 and S6.5; FR-003, FR-009) — the unchanged-metrics stop at the
+// driver's real `fail` branch. The scripted runner reports the stalled count the evaluator would: none
+// at the first iteration, one at the second, and so on. The stop reaches the same branch, the same one
+// write and the same notice path as a cap failure, with its own cause and its fixed last error.
+describe('RunDriver — an unchanged-metrics stop records judged_metrics_unchanged (US1)', () => {
+  const ITERATION_CAP = 10;
+  const STOP_MESSAGE = 'judged metrics unchanged before the iteration cap';
+
+  /** A runner whose Nth dispatch reports a count of N - 1, and no count at the first. */
+  function reportCountClimbing(h: Harness): void {
+    let dispatches = 0;
+    h.phaseRunner.run.mockImplementation(async () => {
+      dispatches += 1;
+      return unsatisfied(dispatches > 1 ? { stalledCount: dispatches - 1 } : {});
+    });
+  }
+
+  describe('with the bound at 2', () => {
+    let h: Harness;
+    beforeEach(async () => {
+      h = await makeHarness(ITERATION_CAP, { getMaxUnchangedComparisons: () => 2 });
+      reportCountClimbing(h);
+    });
+
+    it('fails the Run at iteration 3 in one write, with the cause and the fixed last error (C1.2)', async () => {
+      await h.driver.drive(await h.seedRun(), DESCRIPTION);
+
+      const failedWrites = h.persisted.filter((entry) => entry.next.status === 'failed');
+      expect(failedWrites).toHaveLength(1);
+      expect(failedWrites[0]?.next).toMatchObject({
+        status: 'failed',
+        currentIteration: 3,
+        failureCause: 'judged_metrics_unchanged',
+        lastError: { code: 'invocation-failed', message: STOP_MESSAGE, phase: PHASE }
+      });
+      expect(h.store.getRun(DEFAULT_QUEUE_ID)?.failureCause).toBe('judged_metrics_unchanged');
+    });
+
+    it('invokes the runner three times and no more (C1.5)', async () => {
+      await h.driver.drive(await h.seedRun(), DESCRIPTION);
+
+      expect(h.phaseRunner.run).toHaveBeenCalledTimes(3);
+    });
+
+    it('writes no cap phase-end row, because the stop is not the cap (C1.1, hard rule 68)', async () => {
+      await h.driver.drive(await h.seedRun(), DESCRIPTION);
+
+      expect(h.phaseRunner.appendCapExhaustedPhaseEnd).not.toHaveBeenCalled();
+    });
+
+    it('puts the cause on the one terminal event, as the audit projection leaves it', async () => {
+      await h.driver.drive(await h.seedRun(), DESCRIPTION);
+
+      const ended = h.endedPayloads();
+      expect(ended).toHaveLength(1);
+      expect(ended[0]).toMatchObject({
+        terminalStatus: 'failed',
+        failureCause: 'judged_metrics_unchanged'
+      });
+      expect(projectAuditPayload('task-execution-ended', ended[0] ?? {}).failureCause).toBe(
+        'judged_metrics_unchanged'
+      );
+    });
+
+    it('sets the status bar detail to the label and notifies the builder\'s text (C1.4)', async () => {
+      await h.driver.drive(await h.seedRun(), DESCRIPTION);
+
+      const expected = failureNotice({
+        cause: 'judged_metrics_unchanged',
+        phase: PHASE,
+        taskTitle: DESCRIPTION,
+        iteration: 3,
+        iterationCap: ITERATION_CAP,
+        stalledCount: 2
+      });
+      expect(h.notifier.warn).toHaveBeenCalledTimes(1);
+      expect(h.notifier.warn).toHaveBeenCalledWith(expected.message);
+      expect(expected.message).toContain('stopped at iteration 3 of 10');
+      expect(expected.message).toContain('unchanged across the last 2 comparisons');
+      expect(h.statusBar.update).toHaveBeenLastCalledWith(expect.any(String), {
+        kind: 'failed',
+        phase: PHASE,
+        detail: 'Judged metrics unchanged'
+      });
+    });
+
+    it('settles the queue row failed with the fixed message, through the one halt site (C1.4)', async () => {
+      await h.driver.drive(await h.seedRun(), DESCRIPTION);
+
+      expect(h.queueFinish).toHaveBeenCalledTimes(1);
+      expect(h.queueFinish).toHaveBeenCalledWith(
+        'task-cause-1',
+        'failed',
+        expect.objectContaining({ code: 'invocation-failed', message: STOP_MESSAGE })
+      );
+    });
+
+    it('carries nothing the agent wrote, and no metric name or value (SC-007)', async () => {
+      await h.driver.drive(await h.seedRun(), DESCRIPTION);
+
+      // The stop happened, so the surfaces below are the stop's and not a cap failure's.
+      expect(h.store.getRun(DEFAULT_QUEUE_ID)?.failureCause).toBe('judged_metrics_unchanged');
+      const surfaces = [
+        JSON.stringify(h.notifier.warn.mock.calls),
+        JSON.stringify(h.statusBar.update.mock.calls),
+        JSON.stringify(h.endedPayloads()),
+        JSON.stringify(h.store.getRun(DEFAULT_QUEUE_ID)?.lastError)
+      ];
+      for (const surface of surfaces) {
+        expect(surface).not.toContain('SENTINEL');
+        expect(surface).not.toContain('open_questions');
+      }
+    });
+  });
+
+  describe('the setting is read at each decision (S6.5)', () => {
+    async function iterationOfStop(reader: () => number): Promise<{
+      readonly iteration: number | undefined;
+      readonly cause: string | undefined;
+    }> {
+      const h = await makeHarness(ITERATION_CAP, { getMaxUnchangedComparisons: reader });
+      reportCountClimbing(h);
+      await h.driver.drive(await h.seedRun(), DESCRIPTION);
+      const run = h.store.getRun(DEFAULT_QUEUE_ID);
+      return { iteration: run?.currentIteration, cause: run?.failureCause };
+    }
+
+    it('stops at iteration 4 on a count of 3 when the reader first answers 0 and then 2', async () => {
+      let reads = 0;
+      const changing = await iterationOfStop(() => (reads++ < 3 ? 0 : 2));
+      expect(changing).toEqual({ iteration: 4, cause: 'judged_metrics_unchanged' });
+    });
+
+    // Spec edge cases "Raised or disabled mid-loop": the loop continues, and the change does not reset
+    // the count, which the evaluator owns and the setting never touches.
+    it('raised mid-loop (2, then 4): the loop continues and the count carries on, so the stop is at iteration 5', async () => {
+      let reads = 0;
+      expect(await iterationOfStop(() => (reads++ < 2 ? 2 : 4))).toEqual({
+        iteration: 5,
+        cause: 'judged_metrics_unchanged'
+      });
+    });
+
+    it('disabled mid-loop (2, then 0): the loop runs on to the cap', async () => {
+      let reads = 0;
+      expect(await iterationOfStop(() => (reads++ < 2 ? 2 : 0))).toEqual({
+        iteration: ITERATION_CAP,
+        cause: 'cap_exhausted'
+      });
+    });
+
+    it('differs from a constant 2, which stops at 3, and a constant 0, which runs to the cap', async () => {
+      expect(await iterationOfStop(() => 2)).toEqual({
+        iteration: 3,
+        cause: 'judged_metrics_unchanged'
+      });
+      expect(await iterationOfStop(() => 0)).toEqual({
+        iteration: ITERATION_CAP,
+        cause: 'cap_exhausted'
+      });
+    });
   });
 });

@@ -18,6 +18,7 @@ import * as vscode from 'vscode';
 
 import type { QueueFailurePolicy } from '../contracts/queue-failure-policy';
 import type { EffectiveLimit } from '../contracts/snapshot-projections';
+import { normalizeMaxUnchangedComparisons } from '../contracts/unchanged-comparison-bound';
 import type { RawTranscriptMode } from '../state/workflow-run';
 import { originOf } from './workspace-settings';
 
@@ -45,6 +46,25 @@ export function readForceContinueOnRetryCapLimit(workspaceRoot: string): Effecti
     value: config.get<boolean>('retry.forceContinueOnCap', false) === true,
     origin: originOf(config.inspect<boolean>('retry.forceContinueOnCap'))
   };
+}
+
+/**
+ * FR-R4-F17 (contract S5) — the unchanged-comparison bound, read on every call and never cached, so
+ * lowering or raising it mid-loop reaches the next retry decision. An invalid value reads as 0, which
+ * leaves the bound off (FR-002). Execution calls the function below, which is this one's `value`, and
+ * the per-Run limits view calls this, so both read the setting the same way.
+ */
+export function readMaxUnchangedComparisonsLimit(workspaceRoot: string): EffectiveLimit<number> {
+  const config = section(workspaceRoot);
+  return {
+    value: normalizeMaxUnchangedComparisons(config.get<number>('loop.maxUnchangedComparisons', 0)),
+    origin: originOf(config.inspect<number>('loop.maxUnchangedComparisons'))
+  };
+}
+
+/** The bound alone, for the controller's per-decision reader (S5.2). */
+export function readMaxUnchangedComparisons(workspaceRoot: string): number {
+  return readMaxUnchangedComparisonsLimit(workspaceRoot).value;
 }
 
 /**

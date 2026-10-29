@@ -90,6 +90,25 @@ const ROWS: Record<Exclude<FailureCause, 'start_failed'>, Row> = {
     outcome: 'so the run failed.',
     advisesResume: true
   },
+  judged_metrics_unchanged: {
+    input: {
+      cause: 'judged_metrics_unchanged',
+      phase: PHASE,
+      taskTitle: TITLE,
+      iteration: 3,
+      iterationCap: 10,
+      stalledCount: 2,
+      sanitize
+    },
+    expected:
+      `Schegent: ${PHASE} stopped at iteration 3 of 10 because the figures its retry condition reads ` +
+      `were unchanged across the last 2 comparisons, so the run failed before reaching its iteration ` +
+      `cap. Work the condition does not measure may still have happened. Resolve what blocks the ` +
+      `condition first; then ${RESUME} runs ${PHASE} again at iteration 3, with the iterations left ` +
+      `up to the cap. If you finished the work by hand, record it with ${MARK_COMPLETED}.`,
+    outcome: 'so the run failed before reaching its iteration cap.',
+    advisesResume: true
+  },
   runner_probe_failed: {
     input: { cause: 'runner_probe_failed', runnerKind: 'claude', sanitize },
     expected:
@@ -191,6 +210,95 @@ describe('failureNotice — the cap notice (FR-014, D10)', () => {
   });
 });
 
+// FR-R4-F17 (feature 245, contract C4, FR-015, FR-016) — the notice for a loop stopped on unchanged
+// judged metrics. It states the stop as a measurement, never as "no progress", and it advises
+// resolving the blocker before the Resume it names.
+describe('failureNotice — the unchanged-metrics notice (FR-015, FR-016, C4)', () => {
+  const stop = (stalledCount?: number): string =>
+    failureNotice({
+      cause: 'judged_metrics_unchanged',
+      phase: PHASE,
+      taskTitle: TITLE,
+      iteration: 2,
+      iterationCap: 10,
+      ...(stalledCount === undefined ? {} : { stalledCount }),
+      sanitize
+    }).message;
+
+  it('says "the last 1 comparison" for a count of 1 (C4.1)', () => {
+    expect(stop(1)).toContain('were unchanged across the last 1 comparison, so the run failed');
+    expect(stop(1)).not.toContain('1 comparisons');
+  });
+
+  it('says "its recent comparisons" when the count is absent, 0, negative or NaN (C4.1)', () => {
+    for (const message of [stop(), stop(0), stop(-3), stop(Number.NaN), stop(Number.POSITIVE_INFINITY)]) {
+      expect(message).toContain('were unchanged across its recent comparisons, so the run failed');
+      expect(message).not.toMatch(/the last \S+ comparison/);
+    }
+  });
+
+  it('prints the three integers through Math.trunc (C4.5)', () => {
+    const message = failureNotice({
+      cause: 'judged_metrics_unchanged',
+      phase: PHASE,
+      taskTitle: TITLE,
+      iteration: 3.9,
+      iterationCap: 10.2,
+      stalledCount: 2.7,
+      sanitize
+    }).message;
+    expect(message).toContain('stopped at iteration 3 of 10 because');
+    expect(message).toContain('across the last 2 comparisons');
+    expect(message).toContain('again at iteration 3, with');
+    expect(message).not.toMatch(/\d\.\d/);
+  });
+
+  it('states the operator-facing clauses in the order of D7 (C4.3)', () => {
+    const message = stop(2);
+    const clauses = [
+      `${PHASE} stopped at iteration 2 of 10`,
+      'unchanged across the last 2 comparisons',
+      'the run failed before reaching its iteration cap',
+      'Work the condition does not measure may still have happened.',
+      'Resolve what blocks the condition first',
+      RESUME,
+      'again at iteration 2, with the iterations left up to the cap.',
+      MARK_COMPLETED
+    ];
+    const positions = clauses.map((clause) => message.indexOf(clause));
+    for (const [index, position] of positions.entries()) {
+      expect(position, clauses[index]).toBeGreaterThanOrEqual(0);
+    }
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
+  });
+
+  it('never claims that no progress or no work was made, and puts the resolve sentence first (C4.4)', () => {
+    for (const message of [stop(1), stop(2), stop(49), stop()]) {
+      for (const phrase of ['no progress', 'no work', 'stuck', 'nothing happened']) {
+        expect(message.toLowerCase().includes(phrase), phrase).toBe(false);
+      }
+      expect(message.indexOf('Resolve what blocks the condition first')).toBeGreaterThanOrEqual(0);
+      expect(message.indexOf('Resolve what blocks the condition first')).toBeLessThan(
+        message.indexOf(RESUME_FAILED_WORKFLOW_TITLE)
+      );
+    }
+  });
+
+  it("sets the status bar's detail to the fixed label (C4.6)", () => {
+    const notice = failureNotice({
+      cause: 'judged_metrics_unchanged',
+      phase: PHASE,
+      taskTitle: TITLE,
+      iteration: 2,
+      iterationCap: 10,
+      stalledCount: 2,
+      sanitize
+    });
+    expect(notice.statusDetail).toBe(FAILURE_CAUSE_LABELS.judged_metrics_unchanged);
+    expect(notice.statusDetail).toBe('Judged metrics unchanged');
+  });
+});
+
 describe('failureNotice — interpolated strings are stripped, redacted and cut (FR-013, hard rules 1 and 2)', () => {
   const SECRET = 'sk-ant-' + 'A'.repeat(30);
   const hostile = `\u0007bell ${SECRET} ` + 'x'.repeat(300);
@@ -230,6 +338,23 @@ describe('failureNotice — interpolated strings are stripped, redacted and cut 
     expect(kind).not.toContain(SECRET);
   });
 
+  it('applies the same cleaning to the unchanged-metrics notice (C4.7, SC-007)', () => {
+    const message = failureNotice({
+      cause: 'judged_metrics_unchanged',
+      phase: `\u0007${SECRET}`,
+      taskTitle: hostile,
+      iteration: 2,
+      iterationCap: 10,
+      stalledCount: 2,
+      sanitize
+    }).message;
+    expect(message).not.toContain('\u0007');
+    expect(message).not.toContain(SECRET);
+    expect(message).not.toContain('AAAA');
+    expect(message).toContain('[REDACTED]');
+    expect(message).toContain(`Mark '${Array.from(`bell [REDACTED] ${'x'.repeat(300)}`).slice(0, 24).join('')}...' as completed`);
+  });
+
   it('redacts with the host\'s own redaction set when no sanitizer is passed', () => {
     const planted = failureNotice({ cause: 'phase_failed', phase: `x ${SECRET}` }).message;
     expect(planted).not.toContain(SECRET);
@@ -255,6 +380,20 @@ describe('failureNotice — interpolated strings are stripped, redacted and cut 
       fatalCause: 'fatal-signature:planted-signature-sentinel'
     });
     expect(withSignature.message).not.toContain('planted-signature-sentinel');
+
+    const withMetrics = failureNotice({
+      cause: 'judged_metrics_unchanged',
+      phase: PHASE,
+      taskTitle: TITLE,
+      iteration: 2,
+      iterationCap: 10,
+      stalledCount: 2,
+      sanitize,
+      // @ts-expect-error nor for the judged metrics, whose names and values stay out of the notice
+      metrics: { planted_metric_sentinel: 41 }
+    });
+    expect(withMetrics.message).not.toContain('planted_metric_sentinel');
+    expect(withMetrics.message).not.toContain('41');
   });
 });
 
@@ -292,7 +431,7 @@ describe('the titles the notices name are pinned to their sources (FR-013)', () 
 // what was open now point at "Show last error", but only when a failure record was actually written.
 describe('failureNotice — the retained-diagnostics sentence (FR-022, D13)', () => {
   const SHOW_LAST_ERROR = '"Show last error" lists what was open.';
-  const POINTED = ['cap_exhausted', 'last_phase_issues_remain'] as const;
+  const POINTED = ['cap_exhausted', 'last_phase_issues_remain', 'judged_metrics_unchanged'] as const;
   const inputFor = (cause: (typeof POINTED)[number], recordWritten?: boolean): FailureNoticeInput =>
     ({ ...ROWS[cause].input, ...(recordWritten === undefined ? {} : { recordWritten }) }) as FailureNoticeInput;
 
@@ -331,7 +470,13 @@ describe('failureNotice — the retained-diagnostics sentence (FR-022, D13)', ()
 
   it('gives no other cause the sentence, even if a caller passes the field anyway', () => {
     for (const [cause, row] of Object.entries(ROWS)) {
-      if (cause === 'cap_exhausted' || cause === 'last_phase_issues_remain') continue;
+      if (
+        cause === 'cap_exhausted' ||
+        cause === 'last_phase_issues_remain' ||
+        cause === 'judged_metrics_unchanged'
+      ) {
+        continue;
+      }
       const message = failureNotice({ ...row.input, recordWritten: true } as unknown as FailureNoticeInput).message;
       expect(message, cause).toBe(row.expected);
     }

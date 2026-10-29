@@ -173,8 +173,12 @@ describe('restrictedConfigurations parity (FR-R3-136 T1526c)', () => {
     // starts no runs at all.
     // Feature 195 (T008) — 27 -> 28. `schegent.queue.haltOnTaskFailure` arrived,
     // classified `run-shape` for the same reason `retry.forceContinueOnCap` is.
-    expect(workspaceSettableKeys()).toHaveLength(28);
-    expect(Object.keys(CONFIGURATION_SENSITIVITY)).toHaveLength(28);
+    // FR-R4-F17 (feature 245, 2026-10-29) — 28 -> 29. `schegent.loop.maxUnchangedComparisons`
+    // arrived, classified `run-shape`: it ends a looping phase early inside a run the operator
+    // started after trusting the folder, and its worst misuse fails a run sooner. The restricted
+    // list stays at 14 and the executable-authority list at 9.
+    expect(workspaceSettableKeys()).toHaveLength(29);
+    expect(Object.keys(CONFIGURATION_SENSITIVITY)).toHaveLength(29);
     expect(derivedRestrictedConfigurations()).toHaveLength(14);
     expect(EXECUTABLE_AUTHORITY_PROPERTIES).toHaveLength(9);
 
@@ -186,7 +190,7 @@ describe('restrictedConfigurations parity (FR-R3-136 T1526c)', () => {
       capability: 2,
       'operator-signal': 4,
       evidence: 8,
-      'run-shape': 14
+      'run-shape': 15
     });
     // The classes that produce the list, stated once so a reclassification of the
     // POLICY (rather than of a property) is also a visible edit.

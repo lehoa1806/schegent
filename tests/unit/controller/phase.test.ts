@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { describe, it, expect } from 'vitest';
 import {
   transition,
@@ -948,5 +949,307 @@ describe('Phase enum and transitions', () => {
     // `Expression` the parser never emits, which pins the fabrication rather
     // than the behaviour. A DSL change that makes evaluation errors reachable
     // (arithmetic, division, a non-boolean top level) owes this file a case.
+  });
+
+  // FR-R4-F17 (feature 245) — contract D1 to D3. The bound reaches `transition()` as one optional
+  // number, and the stop is one branch inside the truthy block, after the cap block. Every row here is
+  // below the cap: at the cap the cap outcome decides, and D2's non-stop rows are proved separately.
+  describe('the unchanged-metrics stop (FR-R4-F17, D1 to D3)', () => {
+    const PHASE_DEF = { id: 'speckit-implement', retryCondition: 'pending_tasks > 0' };
+    const BELOW_CAP = {
+      phase: 'speckit-implement',
+      outcome: 'clean' as const,
+      iteration: 3,
+      iterationCap: 10,
+      phaseDef: PHASE_DEF,
+      metrics: { pending_tasks: 3 }
+    };
+    const STOP_WARNING_2 =
+      'retryCondition still truthy on speckit-implement at iteration 3 of cap 10; judged metrics ' +
+      'unchanged across the last 2 comparisons, so the run stops before the cap';
+
+    it('halts failed with the new cause at count 2, bound 2 and outcome fail (D2 row)', () => {
+      const result = transition({
+        ...BELOW_CAP,
+        capOutcome: 'fail',
+        stalledCount: 2,
+        maxUnchangedComparisons: 2
+      });
+      expect(result).toMatchObject({
+        kind: 'halt',
+        status: 'failed',
+        cause: 'judged_metrics_unchanged'
+      });
+      expect(result.warnings.at(-1)).toBe(STOP_WARNING_2);
+    });
+
+    it('halts failed with the new cause at count 2 when no cap outcome is given (D2 row)', () => {
+      const result = transition({ ...BELOW_CAP, stalledCount: 2, maxUnchangedComparisons: 2 });
+      expect(result).toMatchObject({
+        kind: 'halt',
+        status: 'failed',
+        cause: 'judged_metrics_unchanged'
+      });
+      expect(result.warnings.at(-1)).toBe(STOP_WARNING_2);
+    });
+
+    it('halts at count 4 when the bound was lowered to 2 mid-loop, and says 4 (D2 row)', () => {
+      const result = transition({ ...BELOW_CAP, stalledCount: 4, maxUnchangedComparisons: 2 });
+      expect(result).toMatchObject({
+        kind: 'halt',
+        status: 'failed',
+        cause: 'judged_metrics_unchanged'
+      });
+      expect(result.warnings.at(-1)).toBe(
+        'retryCondition still truthy on speckit-implement at iteration 3 of cap 10; judged metrics ' +
+          'unchanged across the last 4 comparisons, so the run stops before the cap'
+      );
+    });
+
+    it('halts on a bound of 1 at the first count, and the warning says "comparison" (D3.1)', () => {
+      const result = transition({
+        ...BELOW_CAP,
+        iteration: 2,
+        stalledCount: 1,
+        maxUnchangedComparisons: 1
+      });
+      expect(result).toMatchObject({
+        kind: 'halt',
+        status: 'failed',
+        cause: 'judged_metrics_unchanged'
+      });
+      expect(result.warnings.at(-1)).toBe(
+        'retryCondition still truthy on speckit-implement at iteration 2 of cap 10; judged metrics ' +
+          'unchanged across the last 1 comparison, so the run stops before the cap'
+      );
+    });
+
+    it('loops at count 1 under a bound of 2, with no stop warning (D2 row)', () => {
+      const result = transition({ ...BELOW_CAP, stalledCount: 1, maxUnchangedComparisons: 2 });
+      expect(result.kind).toBe('loop');
+      expect(result.warnings.some((w) => w.includes('judged metrics unchanged'))).toBe(false);
+    });
+
+    it('pins the stop warning verbatim for bound 2, cap 10, iteration 3 (D3.4)', () => {
+      const result = transition({ ...BELOW_CAP, stalledCount: 2, maxUnchangedComparisons: 2 });
+      expect(result.warnings).toContain(
+        'retryCondition still truthy on speckit-implement at iteration 3 of cap 10; judged metrics ' +
+          'unchanged across the last 2 comparisons, so the run stops before the cap'
+      );
+    });
+
+    it('interpolates only the phase id and three integers: no metric name, value or condition (D3.2)', () => {
+      const result = transition({
+        phase: 'speckit-implement',
+        outcome: 'clean',
+        iteration: 3,
+        iterationCap: 10,
+        phaseDef: { id: 'speckit-implement', retryCondition: 'planted_metric_name > 0' },
+        metrics: { planted_metric_name: 424242, agent_warning_name: 737373 },
+        stalledCount: 2,
+        maxUnchangedComparisons: 2
+      });
+      expect(result.kind).toBe('halt');
+      const warning = result.warnings.at(-1) ?? '';
+      expect(warning).toBe(STOP_WARNING_2);
+      for (const planted of ['planted_metric_name', 'agent_warning_name', '424242', '737373', '> 0']) {
+        expect(warning.includes(planted), planted).toBe(false);
+      }
+    });
+
+    it('stops an optional Phase as it fails one at the cap: the Run fails, below the cap and at it (edge case)', () => {
+      const optional = { ...BELOW_CAP, phaseDef: { ...PHASE_DEF, isRequired: false } };
+
+      expect(transition({ ...optional, stalledCount: 2, maxUnchangedComparisons: 2 })).toMatchObject({
+        kind: 'halt',
+        status: 'failed',
+        cause: 'judged_metrics_unchanged'
+      });
+      expect(
+        transition({ ...optional, iteration: 10, capOutcome: 'fail', stalledCount: 2, maxUnchangedComparisons: 2 })
+      ).toMatchObject({ kind: 'halt', status: 'failed', cause: 'cap_exhausted' });
+    });
+
+    it('adds the warning exactly once to a stopping result, and to nothing else (D3.3)', () => {
+      const stopping = transition({ ...BELOW_CAP, stalledCount: 2, maxUnchangedComparisons: 2 });
+      expect(stopping.warnings.filter((w) => w.includes('judged metrics unchanged'))).toHaveLength(1);
+
+      const looping = transition({ ...BELOW_CAP, stalledCount: 1, maxUnchangedComparisons: 2 });
+      const advancing = transition({
+        ...BELOW_CAP,
+        metrics: { pending_tasks: 0 },
+        stalledCount: 2,
+        maxUnchangedComparisons: 2
+      });
+      const paused = transition({
+        ...BELOW_CAP,
+        outcome: 'rate_limited',
+        stalledCount: 2,
+        maxUnchangedComparisons: 2
+      });
+      for (const other of [looping, advancing, paused]) {
+        expect(other.warnings.some((w) => w.includes('judged metrics unchanged'))).toBe(false);
+      }
+    });
+  });
+
+  // FR-R4-F17 (feature 245, contract D2.1, FR-008, FR-010; SC-003, SC-004) — the bound moves nothing it
+  // does not apply to. Each row below is run twice, with the bound at 2 and with the bound absent, and
+  // the whole result (kind, status, cause, warnings, nextIteration) must be deep-equal. A proof, not a
+  // pin: it is written after the stop branch exists, and it is shown to be non-vacuous by the control
+  // at the end, which applies the same comparison to the stop rows and must find a difference.
+  describe('the bound moves nothing it does not apply to (FR-R4-F17, D2.1, SC-004)', () => {
+    const DEF = { id: 'speckit-implement', retryCondition: 'pending_tasks > 0' };
+    const BELOW_CAP = {
+      phase: 'speckit-implement',
+      outcome: 'clean' as const,
+      iteration: 3,
+      iterationCap: 10,
+      phaseDef: DEF,
+      metrics: { pending_tasks: 3 }
+    };
+    const AT_CAP = { ...BELOW_CAP, iteration: 10 };
+    const OPTIONAL_DEF = { ...DEF, isRequired: false };
+
+    interface Row {
+      readonly input: TransitionInput;
+      /** What the row IS, checked against the bound-absent result so a mistyped row cannot pass as a no-op. */
+      readonly expected: { readonly kind: string; readonly status?: string; readonly cause?: string };
+    }
+
+    const ROWS: ReadonlyArray<readonly [string, Row]> = [
+      ['skipped', { input: { ...BELOW_CAP, outcome: 'skipped', stalledCount: 5 }, expected: { kind: 'advance' } }],
+      [
+        'paused at a breakpoint',
+        {
+          input: { ...BELOW_CAP, outcome: 'paused-at-breakpoint', stalledCount: 5 },
+          expected: { kind: 'halt', status: 'paused', cause: 'breakpoint' }
+        }
+      ],
+      [
+        'an unfinished turn',
+        {
+          input: { ...BELOW_CAP, outcome: 'incomplete_turn', stalledCount: 5 },
+          expected: { kind: 'halt', status: 'failed', cause: 'incomplete_turn_unresolved' }
+        }
+      ],
+      [
+        'a failed required phase',
+        { input: { ...BELOW_CAP, outcome: 'failed', stalledCount: 5 }, expected: { kind: 'halt', status: 'failed' } }
+      ],
+      [
+        'a timed-out required phase',
+        { input: { ...BELOW_CAP, outcome: 'timeout', stalledCount: 5 }, expected: { kind: 'halt', status: 'failed' } }
+      ],
+      [
+        'a failed optional phase',
+        {
+          input: { ...BELOW_CAP, outcome: 'failed', phaseDef: OPTIONAL_DEF, stalledCount: 5 },
+          expected: { kind: 'advance' }
+        }
+      ],
+      [
+        'a timed-out optional phase',
+        {
+          input: { ...BELOW_CAP, outcome: 'timeout', phaseDef: OPTIONAL_DEF, stalledCount: 5 },
+          expected: { kind: 'advance' }
+        }
+      ],
+      [
+        'a rate limit',
+        {
+          input: { ...BELOW_CAP, outcome: 'rate_limited', stalledCount: 5 },
+          expected: { kind: 'halt', status: 'paused', cause: 'rate_limit' }
+        }
+      ],
+      [
+        'a transient error',
+        {
+          input: { ...BELOW_CAP, outcome: 'transient_error', stalledCount: 5 },
+          expected: { kind: 'halt', status: 'paused', cause: 'transient_error' }
+        }
+      ],
+      [
+        'a falsy condition at count 5',
+        { input: { ...BELOW_CAP, metrics: { pending_tasks: 0 }, stalledCount: 5 }, expected: { kind: 'advance' } }
+      ],
+      [
+        'a condition that does not parse, at count 5',
+        {
+          input: { ...BELOW_CAP, phaseDef: { id: 'speckit-implement', retryCondition: 'pending_tasks >' }, stalledCount: 5 },
+          expected: { kind: 'advance' }
+        }
+      ],
+      [
+        'the cap, outcome fail, at count 5',
+        {
+          input: { ...AT_CAP, capOutcome: 'fail', stalledCount: 5 },
+          expected: { kind: 'halt', status: 'failed', cause: 'cap_exhausted' }
+        }
+      ],
+      [
+        'the cap, outcome continue, at count 5',
+        { input: { ...AT_CAP, capOutcome: 'continue', stalledCount: 5 }, expected: { kind: 'advance' } }
+      ],
+      [
+        'the cap, outcome continue-degraded, at count 5',
+        { input: { ...AT_CAP, capOutcome: 'continue-degraded', stalledCount: 5 }, expected: { kind: 'advance' } }
+      ],
+      ['below the cap, count absent', { input: { ...BELOW_CAP }, expected: { kind: 'loop' } }],
+      [
+        'below the cap, outcome continue, count 5',
+        { input: { ...BELOW_CAP, capOutcome: 'continue', stalledCount: 5 }, expected: { kind: 'loop' } }
+      ],
+      [
+        'below the cap, outcome continue-degraded, count 5',
+        { input: { ...BELOW_CAP, capOutcome: 'continue-degraded', stalledCount: 5 }, expected: { kind: 'loop' } }
+      ],
+      [
+        'the legacy loop: no condition, issues remain',
+        {
+          input: { phase: 'speckit-clarify', outcome: 'issues_remain', iteration: 2, iterationCap: 10, stalledCount: 5 },
+          expected: { kind: 'loop' }
+        }
+      ],
+      [
+        'the last phase ending with issues open',
+        {
+          input: { phase: 'finalize', outcome: 'issues_remain', iteration: 1, iterationCap: 10, stalledCount: 5 },
+          expected: { kind: 'halt', status: 'failed', cause: 'last_phase_issues_remain' }
+        }
+      ]
+    ];
+
+    /** The stop rows of the block above, which the control applies the same comparison to. */
+    const STOP_INPUTS: ReadonlyArray<TransitionInput> = [
+      { ...BELOW_CAP, capOutcome: 'fail', stalledCount: 2 },
+      { ...BELOW_CAP, stalledCount: 2 },
+      { ...BELOW_CAP, stalledCount: 4 }
+    ];
+
+    const sameAsBoundAbsent = (input: TransitionInput, bound: number): boolean =>
+      isDeepStrictEqual(transition({ ...input, maxUnchangedComparisons: bound }), transition(input));
+
+    it.each(ROWS)('%s: deep-equal to the same input with the bound absent', (_label, row) => {
+      expect(transition(row.input)).toMatchObject(row.expected);
+      expect(sameAsBoundAbsent(row.input, 2)).toBe(true);
+    });
+
+    it.each([0, 50, 2.5, -1, Number.NaN, Number.POSITIVE_INFINITY])(
+      'a bound of %s at count 5 below the cap: deep-equal to the bound absent, and a loop',
+      (bound) => {
+        const input = { ...BELOW_CAP, stalledCount: 5 };
+        expect(transition(input).kind).toBe('loop');
+        expect(sameAsBoundAbsent(input, bound)).toBe(true);
+      }
+    );
+
+    it('control: the same comparison finds a difference for every stop row, so it is not vacuous', () => {
+      for (const input of STOP_INPUTS) {
+        expect(transition({ ...input, maxUnchangedComparisons: 2 }).kind).toBe('halt');
+        expect(transition(input).kind).toBe('loop');
+        expect(sameAsBoundAbsent(input, 2)).toBe(false);
+      }
+    });
   });
 });

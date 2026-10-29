@@ -1289,3 +1289,122 @@ describe('PhaseSequencer.decideAfterPhase — the fail decision names its cause 
     expect('failureCause' in decision).toBe(false);
   });
 });
+
+// FR-R4-F17 (feature 245, contract D4) — the sequencer threads the bound into `transition()` and gives
+// the stop a fixed last-error message. The stop is a failed halt, so it takes the `fail` arm ahead of
+// the verify-phase pause and the mid-run manual pause, exactly as `cap_exhausted` does (research R14).
+describe('PhaseSequencer.decideAfterPhase — the unchanged-metrics stop (245, D4)', () => {
+  const sequencer = new PhaseSequencer();
+  const NOW = 1_700_000_005_000;
+  const LOOP_DEF = { id: 'speckit-implement', retryCondition: 'remaining > 0' } as PhaseDef;
+  const VERIFY_DEF = { id: 'bugfix-verify-pre', retryCondition: 'remaining > 0' } as PhaseDef;
+
+  function decide(
+    options: {
+      readonly bound?: number;
+      readonly stalledCount?: number;
+      readonly def?: PhaseDef;
+      readonly run?: Partial<WorkflowRun>;
+      readonly latestManualPauseAt?: number | null;
+      readonly forceContinueOnRetryCapDefault?: boolean;
+      readonly outcome?: 'clean' | 'issues_remain';
+    } = {}
+  ): PostPhaseDecision {
+    const run = makeRun(options.run ?? {});
+    const metricsEntry = { metrics: { remaining: 1 } } as never;
+    return sequencer.decideAfterPhase({
+      run,
+      output: makeOutput({
+        result:
+          options.outcome === 'issues_remain'
+            ? { kind: 'remaining_issues', issues: [{ summary: 'open' }], auditEntry: metricsEntry }
+            : { kind: 'clean', auditEntry: metricsEntry },
+        outcome: options.outcome ?? 'clean',
+        ...(options.stalledCount === undefined ? {} : { stalledCount: options.stalledCount })
+      }),
+      iteration: 3,
+      iterationCap: 10,
+      activePhaseDef: options.def ?? LOOP_DEF,
+      latestManualPauseAt:
+        options.latestManualPauseAt === undefined ? run.manualPauseAt : options.latestManualPauseAt,
+      now: NOW,
+      ...(options.bound === undefined ? {} : { maxUnchangedComparisons: options.bound }),
+      ...(options.forceContinueOnRetryCapDefault === undefined
+        ? {}
+        : { forceContinueOnRetryCapDefault: options.forceContinueOnRetryCapDefault })
+    });
+  }
+
+  it('D4.2 to D4.4: a count at the bound below the cap fails with the stop cause and its fixed message', () => {
+    const decision = decide({ bound: 2, stalledCount: 2 });
+    expect(decision.kind).toBe('fail');
+    if (decision.kind !== 'fail') return;
+    expect(decision.failureCause).toBe('judged_metrics_unchanged');
+    expect(decision.decisionCause).toBe('judged_metrics_unchanged');
+    expect(decision.baseMessage).toBe('judged metrics unchanged before the iteration cap');
+    expect(decision.stalledCount).toBe(2);
+    expect(decision.capExhausted).toBe(false);
+    expect(decision.fatalCause).toBeUndefined();
+    expect(decision.evictStagnationTracker).toBe(true);
+  });
+
+  it('D3: the stop warning reaches the decision once, after the runner warnings', () => {
+    const decision = decide({ bound: 2, stalledCount: 2 });
+    if (decision.kind !== 'fail') throw new Error(`expected fail, got ${decision.kind}`);
+    expect(decision.warnings.filter((w) => w.includes('judged metrics unchanged'))).toHaveLength(1);
+    expect(decision.warnings.at(-1)).toContain('so the run stops before the cap');
+  });
+
+  it('loops when the bound is absent or 0, with the same output', () => {
+    expect(decide({ stalledCount: 2 }).kind).toBe('advance-or-loop');
+    expect(decide({ bound: 0, stalledCount: 2 }).kind).toBe('advance-or-loop');
+  });
+
+  it('loops when the count is below the bound or absent', () => {
+    expect(decide({ bound: 2, stalledCount: 1 }).kind).toBe('advance-or-loop');
+    expect(decide({ bound: 2 }).kind).toBe('advance-or-loop');
+  });
+
+  it('passes the resolved cap outcome: a workspace default of continue never stops (D1, FR-008)', () => {
+    expect(
+      decide({ bound: 2, stalledCount: 5, forceContinueOnRetryCapDefault: true }).kind
+    ).toBe('advance-or-loop');
+  });
+
+  it('D4.5: a verify phase takes the fail arm, not the verify pause', () => {
+    const decision = decide({
+      bound: 2,
+      stalledCount: 2,
+      def: VERIFY_DEF,
+      outcome: 'issues_remain',
+      run: { currentPhase: 'bugfix-verify-pre' }
+    });
+    expect(decision.kind).toBe('fail');
+    if (decision.kind === 'fail') expect(decision.failureCause).toBe('judged_metrics_unchanged');
+  });
+
+  it('D4.5: a pending mid-run manual pause takes the fail arm, not pause-manual', () => {
+    const decision = decide({
+      bound: 2,
+      stalledCount: 2,
+      run: { manualPauseAt: NOW },
+      latestManualPauseAt: NOW
+    });
+    expect(decision.kind).toBe('fail');
+    if (decision.kind === 'fail') expect(decision.failureCause).toBe('judged_metrics_unchanged');
+  });
+
+  it('D4.5 control: the same verify phase and the same pause, without the bound, take their own arms', () => {
+    expect(
+      decide({
+        stalledCount: 2,
+        def: VERIFY_DEF,
+        outcome: 'issues_remain',
+        run: { currentPhase: 'bugfix-verify-pre' }
+      }).kind
+    ).toBe('pause-verify');
+    expect(
+      decide({ stalledCount: 2, run: { manualPauseAt: NOW }, latestManualPauseAt: NOW }).kind
+    ).toBe('pause-manual');
+  });
+});

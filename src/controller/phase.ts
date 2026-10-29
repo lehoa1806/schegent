@@ -5,6 +5,7 @@ import {
 } from '../contracts/process-definitions';
 import type { DegradedPhaseEntry } from '../contracts/snapshot-projections';
 import { CAP_EXHAUSTED_CAUSE } from '../audit/audit-payload';
+import { stopsOnUnchangedMetrics } from '../contracts/unchanged-comparison-bound';
 
 /**
  * Prefix on the system-log line emitted when a phase is forced past its
@@ -42,6 +43,12 @@ export const LAST_PHASE_ISSUES_REMAIN_CAUSE = 'last_phase_issues_remain';
  * message.
  */
 export const INCOMPLETE_TURN_UNRESOLVED_CAUSE = 'incomplete_turn_unresolved';
+
+/**
+ * FR-R4-F17 — the halt cause when a looping phase's judged metrics were unchanged for the configured
+ * number of comparisons, below the cap. Exported because the sequencer gives it its message.
+ */
+export const JUDGED_METRICS_UNCHANGED_CAUSE = 'judged_metrics_unchanged';
 
 // Feature 098 (T038, FR-019, FR-021) — this module's second copy of the
 // built-in Phase ids is gone, along with the `BuiltInPhaseId` type derived from
@@ -138,6 +145,13 @@ export type TransitionInput = {
    * `1`, which is a real count that simply does not clear the `> 1` threshold.
    */
   stalledCount?: number;
+  /**
+   * FR-R4-F17 (contract D1) — the unchanged-comparison bound, read live by the caller at this
+   * decision and passed as it was read. Normalization is `stopsOnUnchangedMetrics`'s: an absent, zero,
+   * out-of-range or non-integer value leaves the bound off, so a caller that passes nothing gets
+   * exactly the behavior this function had before the field existed.
+   */
+  maxUnchangedComparisons?: number;
 };
 
 export type TransitionResult =
@@ -224,6 +238,24 @@ function successorIteration(next: Phase, pipeline?: PipelineLike): number {
   return isLoopPhase(next, def) ? 1 : 0;
 }
 
+/**
+ * FR-R4-F17 (contract D3, FR-024) — the one fixed line the stop adds to the iteration's warnings. The
+ * inputs are the Phase id and three integers; no metric name, metric value, condition text or agent
+ * warning is interpolated, so nothing the agent wrote can reach the runtime log through it.
+ */
+function judgedMetricsUnchangedWarning(
+  phase: Phase,
+  count: number,
+  iteration: number,
+  cap: number
+): string {
+  return (
+    `retryCondition still truthy on ${phase} at iteration ${iteration} of cap ${cap}; judged ` +
+    `metrics unchanged across the last ${count} comparison${count === 1 ? '' : 's'}, so the run ` +
+    `stops before the cap`
+  );
+}
+
 export function transition(input: TransitionInput): TransitionResult {
   const {
     phase,
@@ -234,7 +266,8 @@ export function transition(input: TransitionInput): TransitionResult {
     phaseDef,
     metrics,
     capOutcome,
-    stalledCount
+    stalledCount,
+    maxUnchangedComparisons
   } = input;
   const warnings: string[] = [];
 
@@ -387,6 +420,14 @@ export function transition(input: TransitionInput): TransitionResult {
           `retryCondition still truthy at cap (${iterationCap}) on ${phase}${stagnationClause}`
         );
         return { kind: 'halt', status: 'failed', warnings, cause: CAP_EXHAUSTED_CAUSE };
+      }
+      // FR-R4-F17 (contract D1) — below the cap, a truthy condition whose judged figures have been
+      // unchanged for the configured number of comparisons fails the Run early. Positioned after the
+      // cap block, so at the cap the cap outcome still decides; the predicate applies only where that
+      // outcome is to fail, so a Phase that continues at its cap is never stopped here.
+      if (stopsOnUnchangedMetrics({ bound: maxUnchangedComparisons, capOutcome, stalledCount })) {
+        warnings.push(judgedMetricsUnchangedWarning(phase, stalledCount ?? 0, iteration, iterationCap));
+        return { kind: 'halt', status: 'failed', warnings, cause: JUDGED_METRICS_UNCHANGED_CAUSE };
       }
       return { kind: 'loop', nextPhase: phase, nextIteration: iteration + 1, warnings };
     }

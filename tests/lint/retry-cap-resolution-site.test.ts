@@ -69,8 +69,10 @@ const ROLES: Readonly<Record<string, string>> = {
   'src/config/general-settings-keys.ts': 'prose',
   'src/contracts/configuration-trust-dispositions.ts': 'prose',
 
-  'src/controller/phase-sequencer.ts': 'default-source',
-  'src/services/run-driver.ts': 'default-source'
+  // `src/services/run-driver.ts` had a row here until FR-R4-F17 (feature 245, 2026-10-29): the driver now
+  // reads both live retry settings through `PhaseSequencer.liveRetryPolicyOf`, so it no longer names
+  // `forceContinueOnRetryCapDefault` and the vacuity control below asks for the row to go.
+  'src/controller/phase-sequencer.ts': 'default-source'
 };
 
 const SEARCH_ROOTS = ['src', 'webview-ui/src'];
