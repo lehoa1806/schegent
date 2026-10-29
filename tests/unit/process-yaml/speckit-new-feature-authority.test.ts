@@ -143,6 +143,7 @@ describe('the shipped new-feature pipeline: delegated authority', () => {
   const example = loadExample();
   const implement = instructionOf(phaseOf(example, 'speckit-implement'));
   const finalize = instructionOf(phaseOf(example, 'finalize'));
+  const integrate = instructionOf(phaseOf(example, 'integrate'));
   const tasks = instructionOf(phaseOf(example, 'speckit-tasks'));
 
   it('control: the example still ships the three Phases and a readable pipeline version', () => {
@@ -304,7 +305,7 @@ describe('the shipped new-feature pipeline: delegated authority', () => {
   });
 
   describe('finalize', () => {
-    it('is still the last Phase: it does not loop', () => {
+    it('does not loop', () => {
       expect(phaseOf(example, 'finalize').spec.retryCondition).toBeUndefined();
     });
 
@@ -378,29 +379,14 @@ describe('the shipped new-feature pipeline: delegated authority', () => {
       ]);
     });
 
-    it('commits the feature before the dependency fix, and merges only after both', () => {
+    it('commits the feature before the dependency fix', () => {
       // The order is what makes `git revert` of the fix clean: the fix is its own
-      // commit on top of the feature's, never mixed into it.
+      // commit on top of the feature's, never mixed into it. The merge order now
+      // lives in `integrate` (speckit-finalization-authority.test.ts).
       const feature = finalize.indexOf('feat(<feature_name>)');
       const fix = finalize.indexOf('fix(deps)');
-      const merge = finalize.indexOf('git merge --no-ff');
       expect(feature, 'feature commit step').toBeGreaterThanOrEqual(0);
       expect(fix, 'dependency fix commit').toBeGreaterThan(feature);
-      expect(merge, 'merge step').toBeGreaterThan(fix);
-    });
-
-    it('does not merge while a check fails or a decision waits on a maintainer', () => {
-      expect(finalize).toMatch(
-        /only if every check is green and <feature_dir>\/decisions\.md has no entry with "Status: needs-maintainer"/
-      );
-    });
-
-    it('reports CLEAR only once the merge is done', () => {
-      // Finalize is the last Phase, so what it reports is the run's outcome. A
-      // withheld merge reported as CLEAR would close the run with a decision open.
-      expect(finalize).toMatch(
-        /all checks are green and the merge is done → emit \[SCHEGENT_STATUS: CLEAR\]/
-      );
     });
 
     it('reports each dependency it changed, and keeps its metrics', () => {
@@ -409,6 +395,25 @@ describe('the shipped new-feature pipeline: delegated authority', () => {
         ['passing', /`checks_passing: <N>`/],
         ['failing', /`checks_failing: <N>`/]
       ]);
+    });
+  });
+
+  describe('integrate', () => {
+    it('does not loop, and is the last Phase', () => {
+      expect(phaseOf(example, 'integrate').spec.retryCondition).toBeUndefined();
+      expect(example.phaseIds.at(-1)).toBe('integrate');
+    });
+
+    it('does not merge while a check fails or a decision waits on a maintainer', () => {
+      expect(integrate).toMatch(
+        /only if every check is green and <feature_dir>\/decisions\.md has no entry with "Status: needs-maintainer"/
+      );
+    });
+
+    it('reports CLEAR only once the state is integrated', () => {
+      // Integrate is the last Phase, so what it reports is the run's outcome. A
+      // withheld integration reported as CLEAR would close the run with a decision open.
+      expect(integrate).toMatch(/If the state is integrated → emit \[SCHEGENT_STATUS: CLEAR\]/);
     });
   });
 
@@ -508,6 +513,7 @@ describe('the shipped new-feature pipeline: delegated authority', () => {
     it('control: the new headings are among the ones checked', () => {
       expect(otherHeadings).toContain('Hand-off tasks (for the user):');
       expect(otherHeadings).toContain('Dependency fixes applied:');
+      expect(otherHeadings).toContain('Finalization record:');
     });
 
     it.each(otherHeadings)('%s is not read as a heading the host acts on', (heading) => {
@@ -558,18 +564,19 @@ describe('the shipped new-feature pipeline: the tag request (FR-R4-F15, T3, T4)'
     'If no tag fits, write the bullet without a tag. A tag describes the issue; it does not change what happens next.'
   ].join('\n');
 
-  /** The five phases, with the version each moved to (T4.1) and the pipeline's own. */
+  /** The six phases, with the version each moved to (T4.1) and the pipeline's own. */
   const TAGGED_PHASES: ReadonlyArray<readonly [phaseId: string, minimumVersion: number]> = [
     ['speckit-analyze', 2],
     ['speckit-implement', 4],
     ['speckit-code-review', 2],
     ['speckit-security-review', 2],
-    ['finalize', 4]
+    ['finalize', 5],
+    ['integrate', 1]
   ];
-  const MINIMUM_PIPELINE_VERSION = 4;
+  const MINIMUM_PIPELINE_VERSION = 6;
   const SENTENCE = 'emit "Remaining issues:"';
 
-  it('control: the block is the T3 text, and the example still ships the five phases', () => {
+  it('control: the block is the T3 text, and the example still ships the six phases', () => {
     expect(TAG_BLOCK.split('\n')).toHaveLength(7);
     for (const [phaseId] of TAGGED_PHASES) {
       expect(instructionOf(phaseOf(example, phaseId)).length, phaseId).toBeGreaterThan(0);
@@ -596,14 +603,17 @@ describe('the shipped new-feature pipeline: the tag request (FR-R4-F15, T3, T4)'
   it.each(TAGGED_PHASES)('%s keeps a blank line after the block, so what follows is not part of it', (phaseId) => {
     const instruction = instructionOf(phaseOf(example, phaseId));
     const after = instruction.slice(instruction.indexOf(TAG_BLOCK) + TAG_BLOCK.length);
-    expect(after.startsWith('\n\n'), phaseId).toBe(true);
+    // `integrate` (FR-R4-F19) is the one Phase whose instruction ends with the block, so nothing
+    // follows to be taken for part of it. Every other Phase keeps text after one blank line.
+    if (phaseId === 'integrate') expect(after, `${phaseId}: the block ends the instruction`).toBe('');
+    else expect(after.startsWith('\n\n'), phaseId).toBe(true);
   });
 
   it.each(TAGGED_PHASES)('%s is at version %i or later', (phaseId, minimumVersion) => {
     expect(phaseOf(example, phaseId).metadata.version).toBeGreaterThanOrEqual(minimumVersion);
   });
 
-  it('is at pipeline version 4 or later', () => {
+  it('is at pipeline version 6 or later', () => {
     expect(example.pipelineVersion).toBeGreaterThanOrEqual(MINIMUM_PIPELINE_VERSION);
   });
 

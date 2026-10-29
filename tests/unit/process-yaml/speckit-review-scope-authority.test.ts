@@ -366,8 +366,11 @@ describe('the shipped review scope block (FR-R4-F18)', () => {
       expect(scopeBlock(instructionFor('speckit-code-review'))).toBe(
         scopeBlock(instructionFor('speckit-security-review'))
       );
+      // `finalize` and `integrate` (FR-R4-F19) resolve their repositories by the same declaration,
+      // so they carry its heading too; every other Phase still must not.
+      const declaring: readonly string[] = [...REVIEW_PHASES, 'finalize', 'integrate'];
       for (const [phaseId, phase] of example.phases) {
-        if ((REVIEW_PHASES as readonly string[]).includes(phaseId)) continue;
+        if (declaring.includes(phaseId)) continue;
         expect(instructionOf(phase), phaseId).not.toContain('## Implementation repositories');
       }
     });

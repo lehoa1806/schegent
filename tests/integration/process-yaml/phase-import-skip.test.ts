@@ -295,7 +295,7 @@ describe('Feature 084 — an import never takes an id that is already claimed', 
 
 describe('Feature 098 (T033) — importing the same document twice writes once', () => {
   // SC-004, on the document the VSIX ships. The first import is represented by its
-  // outcome — the eleven rows sitting in the catalog — and the assertion is about the
+  // outcome — the twelve rows sitting in the catalog — and the assertion is about the
   // second run: every row skips, every row reports a claimant that resolves, and
   // nothing is written.
   //
@@ -320,7 +320,8 @@ describe('Feature 098 (T033) — importing the same document twice writes once',
     'speckit-implement',
     'speckit-code-review',
     'speckit-security-review',
-    'finalize'
+    'finalize',
+    'integrate'
   ]);
 
   /**
@@ -359,7 +360,7 @@ describe('Feature 098 (T033) — importing the same document twice writes once',
     return base;
   }
 
-  it('plans eleven skip rows, every one citing a stored row that resolves', async () => {
+  it('plans twelve skip rows, every one citing a stored row that resolves', async () => {
     const h = buildPackageHarness();
     await preflightHandler(h.ctx, COMMAND);
 
@@ -367,7 +368,7 @@ describe('Feature 098 (T033) — importing the same document twice writes once',
     expect(result.outcome).toBe('planned');
     if (result.outcome !== 'planned') return;
 
-    expect(result.plan.counts).toEqual({ import: 0, skip: 11, invalid: 0, blocked: 0 });
+    expect(result.plan.counts).toEqual({ import: 0, skip: 12, invalid: 0, blocked: 0 });
     for (const row of result.plan.rows) {
       expect(row.outcome).toBe('skip');
       if (row.outcome !== 'skip' || row.resourceKind === 'modelCatalog') continue;
