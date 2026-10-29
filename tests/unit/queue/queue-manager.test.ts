@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { QueueManager } from '../../../src/queue/queue-manager';
 import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import { createQueue } from '../../../src/queue/queue-registry';
-import { WorkspaceStateStore } from '../../../src/state/workspace-state';
+import { KEYS, WorkspaceStateStore } from '../../../src/state/workspace-state';
 import {
   appendAttempt,
   createConnectedRun
@@ -372,6 +372,71 @@ describe('QueueManager.removeTask (BUG-002 T118)', () => {
   // constrained to exactly one entry (`id === 'default'`) and the
   // multi-queue management surface is gone, so the audit path always
   // resolves `queueId: 'default'` and there is no second queue to test.
+});
+
+// FR-R4-F16 (spec 244, contract P5.3, FR-001, FR-002) — `removeTask` returns the removed row's
+// `completionProvenance` from the same object as `priorStatus`, so the two cannot disagree. The value
+// is passed on as stored: `null` for a row that holds none, and an out-of-vocabulary value unchanged,
+// because the audit projection is the one place that decides what reaches disk.
+describe('QueueManager.removeTask — completionProvenance (FR-R4-F16)', () => {
+  /** Rewrites one stored row's provenance in the memento, as an older or newer build might have. */
+  async function seedProvenance(id: string, value: unknown): Promise<void> {
+    const map = memento.get<Record<string, { requests: Array<Record<string, unknown>> } | undefined>>(KEYS.queue) ?? {};
+    const queueState = map[DEFAULT_QUEUE_ID];
+    if (queueState === undefined) throw new Error('the default queue must be persisted');
+    const requests = queueState.requests.map((row) =>
+      row.id === id ? { ...row, completionProvenance: value } : row
+    );
+    await memento.update(KEYS.queue, { ...map, [DEFAULT_QUEUE_ID]: { ...queueState, requests } });
+  }
+
+  it("returns 'operator-attested' for a failed row the operator attested completed", async () => {
+    const a = await queue.enqueue('A');
+    await queue.markInFlight(a.id, 'run-1');
+    await queue.finish(a.id, 'failed');
+    await queue.attestCompleted(a.id);
+    const result = await queue.removeTask(a.id);
+    expect(result).toMatchObject({
+      ok: true,
+      priorStatus: 'completed',
+      runId: 'run-1',
+      completionProvenance: 'operator-attested'
+    });
+  });
+
+  it.each([
+    ['a host-completed row', 'completed'],
+    ['a failed row', 'failed'],
+    ['a canceled row', 'canceled']
+  ] as const)('returns null for %s', async (_name, finishStatus) => {
+    const a = await queue.enqueue('A');
+    await queue.markInFlight(a.id, 'run-1');
+    await queue.finish(a.id, finishStatus);
+    const result = await queue.removeTask(a.id);
+    expect(result).toMatchObject({ ok: true, priorStatus: finishStatus });
+    expect(result.completionProvenance).toBeNull();
+  });
+
+  it('returns null for a pending row', async () => {
+    const a = await queue.enqueue('A');
+    const result = await queue.removeTask(a.id);
+    expect(result).toMatchObject({ ok: true, priorStatus: 'pending' });
+    expect(result.completionProvenance).toBeNull();
+  });
+
+  it('returns a stored value outside the vocabulary unchanged, without normalizing it', async () => {
+    const a = await queue.enqueue('A');
+    await queue.markInFlight(a.id, 'run-1');
+    await queue.finish(a.id, 'completed');
+    await seedProvenance(a.id, 'host-verified');
+    const result = await queue.removeTask(a.id);
+    expect(result).toMatchObject({ ok: true, priorStatus: 'completed', completionProvenance: 'host-verified' });
+  });
+
+  it('carries no completionProvenance on a refusal', async () => {
+    const result = await queue.removeTask('missing');
+    expect(result).toEqual({ ok: false, reason: 'unknown-task-id' });
+  });
 });
 
 describe('QueueManager.moveTask (Feature 092 T028, FR-017)', () => {

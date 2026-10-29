@@ -1,5 +1,6 @@
 import type { SanitizedLogger } from '../lib/logger';
 import type { ContainmentRefusal } from '../lib/path-containment';
+import type { CompletionProvenance } from '../queue/feature-request';
 import type { QueueManager } from '../queue/queue-manager';
 import type { SessionCleanupOutcome } from '../services/session-cleanup/session-cleanup-service';
 import { isRunRaceRefusal, type WorkspaceStateStore } from '../state/workspace-state';
@@ -28,6 +29,8 @@ export interface TaskDeletionOutcome {
   taskId?: string;
   priorStatus?: string;
   runId?: string | null;
+  /** FR-R4-F16 (contract P2.2) — carried from `removeTask` by the spread below; the type only. */
+  completionProvenance?: CompletionProvenance | null;
   /**
    * Feature 034 — additive field. Always populated on `ok: true`
    * (`true` iff the cleanup succeeded for both targets; `false` when

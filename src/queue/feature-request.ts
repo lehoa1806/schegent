@@ -187,7 +187,7 @@ export interface FeatureRequest {
    * verified the outcome** — see `CompletionProvenance` for why that is a
    * provable reading and not a default.
    *
-   * **Nothing in the host reads it, by requirement.** FR-026 asks that an
+   * **No queue decision reads it, by requirement.** FR-026 asks that an
    * attested outcome be distinguishable "so a later reader can tell", and
    * SC-017 measures exactly that: an assertion over the stored record, in
    * `tests/integration/completion-provenance.test.ts`. This is deliberately not
@@ -197,6 +197,14 @@ export interface FeatureRequest {
    * one is required to change no decision at all — FR-025 admits the attested
    * exit precisely because it needs no machinery, and a host reader branching on
    * provenance would be the machinery it promised not to add.
+   *
+   * Two readers exist, and neither decides anything. Removing the row copies
+   * the value into the `task-removed` audit entry (FR-R4-F16: the removal path,
+   * `QueueManager.removeTask`), so the fact outlives the row. The failed-row
+   * census reads it from the queue snapshot to count how a failed row was
+   * resolved. `tests/lint/failed-row-census-isolation.test.ts` holds the list of
+   * files that may name this field and fails on any other, so a queue decision
+   * cannot start branching on it without that list, and a reviewer, saying so.
    *
    * Not cleared on retry, unlike the two fields above, because it cannot
    * survive one: `retry` admits only `failed | canceled | paused`, and a row

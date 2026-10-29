@@ -13,6 +13,7 @@ import type { UncontainedGrantOutcome } from '../../../services/uncontained-gran
 import type { ConnectedWorkflowRun } from '../../../state/connected-workflow-run';
 import type { ConnectedRunWriteResult } from '../../../state/workspace-state';
 import type { ChildRunStateReader } from '../connected-run-projector';
+import type { CompletionProvenance } from '../../../queue/feature-request';
 import type { QueueDeletionImpact } from '../../../queue/queue-manager';
 import type {
   GuardedScheduleRequest,
@@ -94,6 +95,7 @@ export interface QueueOps {
     taskId?: string;
     priorStatus?: string;
     runId?: string | null;
+    completionProvenance?: CompletionProvenance | null;
     sessionCleaned?: boolean;
     sessionCleanupRefusal?: 'not-contained' | 'resolve-failed';
   }>;
@@ -140,6 +142,7 @@ export interface PhaseOps {
     taskId?: string;
     priorStatus?: string;
     runId?: string | null;
+    completionProvenance?: CompletionProvenance | null;
     sessionCleaned?: boolean;
     sessionCleanupRefusal?: 'not-contained' | 'resolve-failed';
   }>;
