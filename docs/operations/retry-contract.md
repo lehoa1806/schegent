@@ -88,9 +88,38 @@ An operator interrupts a countdown at any point:
 <!-- Source: src/controller/phase-control-service.ts -->
 <!-- Source: src/commands/cancel.ts -->
 
+### Stopping a loop whose judged metrics stop changing
+
+`schegent.loop.maxUnchangedComparisons` (FR-R4-F17) lets an operator fail a retry loop before its
+iteration cap, when the figures its retry condition reads stop changing. The host already counts those
+comparisons for the cap warning; this setting acts on the count.
+
+1. **What it measures.** Only the figures the retry condition names, compared by presence and value. A
+   figure missing on both sides counts as unchanged, and a comparison in which none of the named figures
+   is present produces no count at all.
+2. **The false-stop trade-off.** A figure the condition does not name, or a change to the working tree,
+   does not reset the count. Unchanged figures do not prove that no work happened, which is why the
+   notice says so and why the setting is off by default.
+3. **It ships off.** The default is `0`. A value from `1` to `49` turns it on, and `2` is a suggested
+   starting value, not a default. Any other value is read as `0`.
+4. **Precedence.** Terminal and pause outcomes are decided first. A falsy or erroring condition advances.
+   At the cap, the cap outcome decides. The bound applies only below the cap and only where the cap
+   outcome is to fail, so a phase that continues at the cap is never failed by it.
+5. **Resume.** The count lives in memory only and restarts after any pause, halt, resume or window
+   restart. A resumed run re-runs the stopped iteration as a new baseline and needs the bound plus one
+   more comparable iterations to stop again. The cap is not reset, so the iterations already spent still
+   count against it, and a failed run is never resumed by an unattended wakeup.
+6. **Where to see it.** The per-run limits view shows the bound in effect, the layer that set it, and
+   whether it applies to the current phase. It reads "not applied" when the phase has no retry
+   condition, or when the phase's cap outcome is to continue.
+
+<!-- Source: src/contracts/unchanged-comparison-bound.ts -->
+<!-- Source: src/controller/phase.ts -->
+<!-- Source: src/controller/phase-retry-evaluator.ts -->
+
 ## When a run fails: its cause and what to do next
 
-FR-R4-F14 gives every failed run one cause from a closed list of nine and a notice that says what
+FR-R4-F14 gives every failed run one cause from a closed list of ten and a notice that says what
 stopped and which action, if any, is worth taking. It was written from source at `9cc9e16b`, the
 `develop` head the feature branch was cut from, plus the feature's own change set. It names the cause;
 it changes no halt, counter, cap or resume behavior.
@@ -106,6 +135,7 @@ it changes no halt, counter, cap or resume behavior.
 | `runner_probe_failed` | Backend CLI unavailable | The backend's CLI was missing or did not start, before the first phase. | Install or repair the CLI, then Resume: the resume checks the CLI again. |
 | `audit_evidence_unavailable` | Audit evidence unavailable | Required structured audit evidence was unavailable, so the run failed closed. | Resolve the evidence sink and reload the workspace before resuming. This failure writes no terminal event; the rollup records it. |
 | `start_failed` | Host refusal or error | A throw out of the start or the drive: a held workspace lock, a backend containment or capability refusal, a failed consent write or an unexpected error. | None of its own: the notice is the start failure's announcement, and it names no action. |
+| `judged_metrics_unchanged` | Judged metrics unchanged | The figures the phase's retry condition reads were unchanged across the number of consecutive comparisons set by `schegent.loop.maxUnchangedComparisons`, below the iteration cap, and the cap outcome is to fail. | Work the condition does not measure may still have happened. Resolve what blocks the condition first; a Resume then runs the phase again at the same iteration, with the iterations left up to the cap. Work finished by hand is recorded with "Mark '…' as completed". |
 
 <!-- Source: src/contracts/failure-cause.ts -->
 <!-- Source: src/services/failure-notice.ts -->

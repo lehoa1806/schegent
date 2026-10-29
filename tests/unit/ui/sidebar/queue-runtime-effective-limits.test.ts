@@ -58,6 +58,7 @@ const RUNNER_SETTINGS: EffectiveLimitsInput['settings'] = {
 
 const LIVE: EffectiveLimitsInput['live'] = {
   forceContinueOnCap: { value: true, origin: 'workspace' },
+  maxUnchangedComparisons: { value: 2, origin: 'workspace' },
   limitUsd: { value: 3, origin: 'user' },
   limitTokens: { value: null, origin: 'default' }
 };
@@ -154,6 +155,8 @@ describe('effectiveLimits on the in-flight Run (E3 G8, G9)', () => {
     const strings = [...json.matchAll(/"([^"]*)"/g)].map((match) => match[1] as string);
     const vocabulary = new Set([
       'iterationCap', 'idleTimeoutSeconds', 'maxDurationSeconds', 'retryCap', 'onRetryCap', 'spend',
+      // FR-R4-F17 — the unchanged-metrics bound's member, its state key and the four closed states.
+      'unchangedComparisons', 'state', 'active', 'disabled', 'inert-cap-outcome', 'inert-no-retry-condition',
       'value', 'origin', 'kind', 'denomination', 'limit', 'trust',
       'default', 'user', 'workspace', 'workspace-folder', 'phase',
       'fail', 'continue', 'continue-degraded', 'none', 'bounded', 'usd', 'tokens', 'enforced', 'not-trustworthy'

@@ -20,6 +20,7 @@ import {
   type FailureRecordV1,
   type RecordEntry
 } from '../../../src/contracts/failure-record';
+import { FAILURE_CAUSES } from '../../../src/contracts/failure-cause';
 import { isValidFailureRecord, parseRecordName } from '../../../src/contracts/validators/failure-record';
 
 const FAILED_AT = '2026-10-28T14:30:05.123Z';
@@ -164,6 +165,16 @@ describe('contract R - the validator accepts a record at each bound (R4.5)', () 
     expect(isValidFailureRecord(record)).toBe(true);
     const bytes = Buffer.byteLength(JSON.stringify(record, null, 2) + '\n');
     expect(bytes).toBeLessThanOrEqual(FAILURE_RECORD_MAX_BYTES);
+  });
+
+  // FR-R4-F17 (feature 245, contract C2.1) — the validator admits a cause by identity, so a member added
+  // to the vocabulary needs no edit here. This file did not iterate the vocabulary, so the case is
+  // explicit: every member is admitted, and the tenth is named.
+  it('R4.5 accepts every member of the closed cause vocabulary, judged_metrics_unchanged included', () => {
+    expect(FAILURE_CAUSES).toContain('judged_metrics_unchanged');
+    for (const cause of FAILURE_CAUSES) {
+      expect(isValidFailureRecord(validRecord({ cause })), cause).toBe(true);
+    }
   });
 
   it('R4.5 accepts each issue state with its entry count', () => {

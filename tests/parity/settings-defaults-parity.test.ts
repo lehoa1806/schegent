@@ -390,6 +390,13 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
     // `package.json` plus `SETTINGS_SCHEMA` constrain the value; the same arrangement the trust
     // scopes above use, and for the same reason.
     const spendBoundKeys = new Set<string>(['spend.maxUsdPerRun', 'spend.maxTokensPerRun']);
+    // FR-R4-F17 (feature 245) — the unchanged-comparison bound. An integer read on every retry decision
+    // by `src/activation/uncached-settings-accessors.ts` through `getConfiguration()`, which reads any
+    // invalid value as 0 (off). Deliberately NOT in `KEY_SPECS` (research R5): it is set in the
+    // Settings editor and shown per Run in the limits view, not through the general-settings IPC
+    // surface. The JSON schema in `package.json`, `SETTINGS_SCHEMA` and the trust table constrain the
+    // value, the arrangement the spend bounds above use.
+    const retryLoopBoundKeys = new Set<string>(['loop.maxUnchangedComparisons']);
 
     const orphans: string[] = [];
     for (const key of allKeys) {
@@ -402,6 +409,7 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
         trustScopeKeys.has(key) ||
         uiKeys.has(key) ||
         deprecatedAliasKeys.has(key) ||
+        retryLoopBoundKeys.has(key) ||
         spendBoundKeys.has(key);
       if (!covered) orphans.push(key);
     }

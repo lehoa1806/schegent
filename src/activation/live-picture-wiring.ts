@@ -43,7 +43,11 @@ import { initCapabilityTrustResolver } from '../state/capability-trust-resolver'
 import { ALLOW_UNCONTAINED_SETTING } from '../services/backend-containment-policy';
 import { resolveEffectiveLimits } from '../services/effective-limits';
 import type { SpendBoundWatcher } from '../services/spend-bound-watcher';
-import { readForceContinueOnRetryCapLimit, readSpendLimits } from './uncached-settings-accessors';
+import {
+  readForceContinueOnRetryCapLimit,
+  readMaxUnchangedComparisonsLimit,
+  readSpendLimits
+} from './uncached-settings-accessors';
 import type { WorkspaceSettings } from './workspace-settings';
 
 /**
@@ -210,7 +214,11 @@ const projector = new StateProjector({
   getEffectiveLimits: (run) =>
     resolveEffectiveLimits({
       settings: effectiveLimitSources.limits,
-      live: { forceContinueOnCap: readForceContinueOnRetryCapLimit(workspaceRoot), ...readSpendLimits() },
+      live: {
+        forceContinueOnCap: readForceContinueOnRetryCapLimit(workspaceRoot),
+        maxUnchangedComparisons: readMaxUnchangedComparisonsLimit(workspaceRoot),
+        ...readSpendLimits()
+      },
       run,
       spendTrust: (denomination) => effectiveLimitSources.spendTrust(run.id, denomination)
     }),

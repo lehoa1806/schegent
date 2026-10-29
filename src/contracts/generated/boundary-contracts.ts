@@ -224,6 +224,7 @@ export const SETTINGS_KEYS = [
   "schegent.logging.sessionRetentionMaxBytes",
   "schegent.logging.verbose",
   "schegent.loop.maxIterations",
+  "schegent.loop.maxUnchangedComparisons",
   "schegent.models",
   "schegent.multiRoot.suppressWarning",
   "schegent.queue.haltOnTaskFailure",

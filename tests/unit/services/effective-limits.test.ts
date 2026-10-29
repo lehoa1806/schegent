@@ -16,6 +16,7 @@ import {
 import { effectivePhaseTimeoutMs } from '../../../src/controller/effective-phase-timeout';
 import { effectiveSpendBound } from '../../../src/services/spend-bound';
 import { resolveRetryCapOutcome } from '../../../src/contracts/retry-cap-outcome';
+import { stopsOnUnchangedMetrics } from '../../../src/contracts/unchanged-comparison-bound';
 import type { PhaseDef, PipelineDef } from '../../../src/config/pipeline-config';
 import type { BackendRunnerKind } from '../../../src/contracts/backend-kinds';
 
@@ -45,6 +46,7 @@ function input(overrides: Partial<EffectiveLimitsInput> = {}): EffectiveLimitsIn
     },
     live: {
       forceContinueOnCap: limit(false, 'default'),
+      maxUnchangedComparisons: limit(0, 'default'),
       limitUsd: limit<number | null>(null, 'default'),
       limitTokens: limit<number | null>(null, 'default')
     },
@@ -147,9 +149,110 @@ describe('the retry cap and its outcome (US8-3)', () => {
   });
 });
 
+// FR-R4-F17 (feature 245, contract L1 and L4.1; FR-022; US4-1 to US4-3; SC-008) — the bound in effect for
+// one Run, with the layer that set it and the state execution's own rule gives it. The resolver calls
+// `unchangedComparisonBoundState`, which applies the test `stopsOnUnchangedMetrics` applies, so the
+// view cannot say "active" for a Phase the stop would not apply to.
+describe('the unchanged-metrics bound (FR-R4-F17, L4.1, SC-008)', () => {
+  const CONDITION = 'pending_tasks > 0';
+  const looping = (extra: Partial<PhaseDef> = {}) => runWith({ retryCondition: CONDITION, ...extra });
+  const unchanged = (
+    value: number,
+    origin: LimitOrigin,
+    run: EffectiveLimitsInput['run'] = looping(),
+    forceContinueOnCap: EffectiveLimit<boolean> = limit(false, 'default')
+  ) =>
+    resolveEffectiveLimits(
+      input({
+        run,
+        live: { ...input().live, maxUnchangedComparisons: limit(value, origin), forceContinueOnCap }
+      })
+    ).unchangedComparisons;
+
+  it('US4-1: a bound of 2 from the workspace on a Phase that fails at its cap is active', () => {
+    expect(unchanged(2, 'workspace')).toEqual({ value: 2, origin: 'workspace', state: 'active' });
+  });
+
+  it('US4-3: the default of 0 is disabled, with origin default', () => {
+    expect(resolveEffectiveLimits(input()).unchangedComparisons).toEqual({
+      value: 0,
+      origin: 'default',
+      state: 'disabled'
+    });
+  });
+
+  it.each<LimitOrigin>(['default', 'user', 'workspace', 'workspace-folder'])(
+    'shows the layer %s that set the value',
+    (origin) => {
+      expect(unchanged(3, origin)).toEqual({ value: 3, origin, state: 'active' });
+    }
+  );
+
+  it('a value out of range in a layer is shown as 0, disabled, with that layer as the origin', () => {
+    for (const bad of [60, 50, -1, 2.5, Number.NaN]) {
+      expect(unchanged(bad, 'workspace'), String(bad)).toEqual({
+        value: 0,
+        origin: 'workspace',
+        state: 'disabled'
+      });
+    }
+  });
+
+  it('US4-2: a Phase that continues at its cap is inert-cap-outcome, whatever the setting says', () => {
+    expect(unchanged(2, 'workspace', looping({ onRetryCap: 'continue' })).state).toBe('inert-cap-outcome');
+    expect(unchanged(2, 'workspace', looping({ onRetryCap: 'continue-degraded' })).state).toBe(
+      'inert-cap-outcome'
+    );
+    expect(unchanged(2, 'workspace', looping({ onRetryCap: 'continue' }))).toMatchObject({
+      value: 2,
+      origin: 'workspace'
+    });
+  });
+
+  it('a workspace default of continue makes a Phase that states nothing inert, and its own fail wins over it', () => {
+    const workspaceContinues = limit(true, 'workspace');
+    expect(unchanged(2, 'user', looping(), workspaceContinues).state).toBe('inert-cap-outcome');
+    expect(unchanged(2, 'user', looping({ onRetryCap: 'fail' }), workspaceContinues).state).toBe('active');
+  });
+
+  it('a Phase with no retry condition is inert-no-retry-condition: absent, empty or blank', () => {
+    expect(unchanged(2, 'workspace', runWith()).state).toBe('inert-no-retry-condition');
+    expect(unchanged(2, 'workspace', runWith({ retryCondition: '' })).state).toBe('inert-no-retry-condition');
+    expect(unchanged(2, 'workspace', runWith({ retryCondition: '   ' })).state).toBe(
+      'inert-no-retry-condition'
+    );
+  });
+
+  it('disabled wins over both inert reasons, and no retry condition wins over the cap outcome', () => {
+    expect(unchanged(0, 'default', runWith({ onRetryCap: 'continue' })).state).toBe('disabled');
+    expect(unchanged(2, 'workspace', runWith({ onRetryCap: 'continue' })).state).toBe(
+      'inert-no-retry-condition'
+    );
+  });
+
+  it('says active exactly when the stop could apply: execution\'s own predicate over the same inputs', () => {
+    const outcomes = [undefined, 'fail', 'continue', 'continue-degraded'] as const;
+    for (const stated of outcomes) {
+      for (const workspaceDefault of [false, true]) {
+        for (const value of [0, 1, 2, 49]) {
+          const run = looping(stated === undefined ? {} : { onRetryCap: stated });
+          const shown = unchanged(value, 'workspace', run, limit(workspaceDefault, 'workspace'));
+          const executed = stopsOnUnchangedMetrics({
+            bound: value,
+            capOutcome: resolveRetryCapOutcome(run.pipeline?.phases[0], workspaceDefault),
+            stalledCount: value
+          });
+          expect(shown.state === 'active', `${String(stated)} ${workspaceDefault} ${value}`).toBe(executed);
+        }
+      }
+    }
+  });
+});
+
 describe('the spend bound follows the ended Phase\'s backend (US8-2)', () => {
   const bounds = {
     forceContinueOnCap: limit(false, 'default'),
+    maxUnchangedComparisons: limit(0, 'default'),
     limitUsd: limit<number | null>(5, 'workspace'),
     limitTokens: limit<number | null>(2_000_000, 'user')
   };

@@ -358,6 +358,28 @@ describe('PhaseRetryEvaluator — stagnation count (194, T009)', () => {
     // Identical to the fully-frozen run above: 9 unchanged comparisons.
     expect(stalledByIteration).toEqual([undefined, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
   });
+
+  // FR-R4-F17 (feature 245, spec edge case "Partial presence") — the unchanged-comparison bound acts on
+  // this count, so the rule it acts on is pinned for the case the spec names: `a > 0 || b > 0` with `b`
+  // never reported and `a` constant. `b` is missing on both sides, which is unchanged, so the count
+  // climbs; `b` appearing once is present on one side only, which is a change, so the count restarts.
+  it('a judged figure missing on both sides counts as unchanged, and appearing once is a change (FR-006)', async () => {
+    const { writer, appends } = makeAuditWriter();
+    const evaluator = new PhaseRetryEvaluator(writer, logger);
+    const phaseDef = phaseDefWithCondition('a > 0 || b > 0');
+    const metricsByIteration: ReadonlyArray<Record<string, number>> = [
+      { a: 1 },
+      { a: 1 },
+      { a: 1 },
+      { a: 1, b: 1 },
+      { a: 1, b: 1 }
+    ];
+    for (const [index, metrics] of metricsByIteration.entries()) {
+      await evaluator.maybeEmit(baseInputs({ phaseDef, iteration: index + 1, metrics }));
+    }
+
+    expect(appends.map((a) => a.payload.stalled)).toEqual([undefined, 1, 2, undefined, 1]);
+  });
 });
 
 describe('PhaseRetryEvaluator — stagnation negative cases (194, T010, contract C2.1)', () => {
@@ -637,6 +659,46 @@ describe('PhaseRetryEvaluator — concurrent Runs report independent counts (194
     const phaseBEmits = appends.filter((_, idx) => idx % 2 === 1);
     expect(phaseAEmits.map((a) => a.payload.stalled)).toEqual([undefined, 1, 2]);
     expect(phaseBEmits.map((a) => a.payload.stalled)).toEqual([undefined, 1, 2]);
+  });
+
+  // FR-R4-F17 (feature 245, contract D6.1, FR-021) — the unchanged-comparison bound acts on this count,
+  // so the isolation above now decides whether a Run is failed: a Run whose figures keep changing must
+  // never be stopped by another Run's equal ones. One evaluator, one Phase id, two Run ids.
+  it('equal figures climb in one Run while changing figures never do in the other, and evicting one keeps the other (FR-021)', async () => {
+    const { writer, appends } = makeAuditWriter();
+    const evaluator = new PhaseRetryEvaluator(writer, logger);
+    const phaseDef = phaseDefWithCondition('issues > 0');
+
+    // run-a: equal figures. run-b: a figure that changes at every iteration.
+    for (let i = 1; i <= 4; i++) {
+      await evaluator.maybeEmit(
+        baseInputs({ runId: 'run-a', phaseDef, iteration: i, metrics: { issues: 7 } })
+      );
+      await evaluator.maybeEmit(
+        baseInputs({ runId: 'run-b', phaseDef, iteration: i, metrics: { issues: 10 - i } })
+      );
+    }
+    const runAEmits = appends.filter((_, idx) => idx % 2 === 0);
+    const runBEmits = appends.filter((_, idx) => idx % 2 === 1);
+    expect(runAEmits.map((a) => a.payload.stalled)).toEqual([undefined, 1, 2, 3]);
+    expect(runBEmits.map((a) => a.payload.stalled)).toEqual([undefined, undefined, undefined, undefined]);
+    expect(evaluator.retainedStagnationKeyCount).toBe(2);
+
+    evaluator.evictStagnationTracker('run-a', 'speckit-specify');
+    expect(evaluator.retainedStagnationKeyCount).toBe(1);
+
+    // run-b's entry survived the eviction: its next figures repeat the last iteration's (issues 6), so
+    // a retained entry reports a count of 1, which a lost entry could only report as a new baseline.
+    appends.length = 0;
+    await evaluator.maybeEmit(
+      baseInputs({ runId: 'run-b', phaseDef, iteration: 5, metrics: { issues: 6 } })
+    );
+    expect(appends.map((a) => a.payload.stalled)).toEqual([1]);
+    // run-a, evicted, restarts at a baseline with the same figures it had before.
+    await evaluator.maybeEmit(
+      baseInputs({ runId: 'run-a', phaseDef, iteration: 5, metrics: { issues: 7 } })
+    );
+    expect(appends.at(-1)?.payload.stalled).toBeUndefined();
   });
 });
 

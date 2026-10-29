@@ -34,11 +34,31 @@
     'At the retry cap this Phase advances with its condition unverified; the retry cap still applies.';
   const CONTINUE_DEGRADED_TEXT =
     'At the retry cap this Phase advances and the Run is marked degraded; the retry cap still applies.';
+  // FR-R4-F17 (contract L2) — the unchanged-metrics bound's two reasons for not applying. Fixed text, so
+  // the only interpolated value in that row is the integer.
+  const INERT_CAP_OUTCOME_TEXT = 'This Phase advances at the retry cap, so the early stop does not apply.';
+  const INERT_NO_CONDITION_TEXT = 'This Phase has no retry condition, so there is nothing to compare.';
   const NO_SPEND_TEXT = "No spend bound applies to this Phase's backend.";
   const NOT_TRUSTWORTHY_TEXT =
     'Spend bound shown but not trustworthy: spend for this run cannot be fully measured.';
 
   const OUTCOME_TEXT = { fail: 'fails the run', continue: 'advances', 'continue-degraded': 'advances, marked degraded' } as const;
+
+  const unchanged = $derived(effectiveLimits.unchangedComparisons);
+  /** One closed state, one fixed phrase; a state outside the set shows nothing. */
+  const unchangedText = (limit: EffectiveLimitsProjection['unchangedComparisons']): string => {
+    switch (limit.state) {
+      case 'active':
+        return `after ${limit.value} unchanged comparison${limit.value === 1 ? '' : 's'}`;
+      case 'disabled':
+        return 'off';
+      case 'inert-cap-outcome':
+      case 'inert-no-retry-condition':
+        return `${limit.value}, not applied`;
+      default:
+        return '';
+    }
+  };
 
   const seconds = (value: number): string => `${value.toLocaleString('en-US')} s`;
   const spendFigure = (denomination: 'usd' | 'tokens', value: number): string =>
@@ -80,6 +100,17 @@
         <p class="note" data-testid="run-limits-continue-note-{queueId}">{CONTINUE_TEXT}</p>
       {:else if effectiveLimits.onRetryCap.value === 'continue-degraded'}
         <p class="note" data-testid="run-limits-continue-note-{queueId}">{CONTINUE_DEGRADED_TEXT}</p>
+      {/if}
+    </dd>
+
+    <dt>Unchanged-metrics stop</dt>
+    <dd data-testid="run-limits-unchanged-{queueId}">
+      {unchangedText(unchanged)}
+      <span class="origin" data-testid="run-limits-unchanged-origin-{queueId}">{ORIGIN_TEXT[unchanged.origin]}</span>
+      {#if unchanged.state === 'inert-cap-outcome'}
+        <p class="note" data-testid="run-limits-unchanged-note-{queueId}">{INERT_CAP_OUTCOME_TEXT}</p>
+      {:else if unchanged.state === 'inert-no-retry-condition'}
+        <p class="note" data-testid="run-limits-unchanged-note-{queueId}">{INERT_NO_CONDITION_TEXT}</p>
       {/if}
     </dd>
 

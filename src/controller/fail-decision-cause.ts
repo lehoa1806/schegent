@@ -8,30 +8,31 @@
  * can become a cause.
  *
  * PRECEDENCE, first match wins (D2):
- *   1. the transition's own halt cause, when it is one of the three the vocabulary names;
+ *   1. the transition's own halt cause, when it is one of the four the vocabulary names;
  *   2. a matched fatal signature;
  *   3. a timeout, or the absolute invocation deadline (P1: the runner reports the deadline as a
  *      `failed` outcome with `terminationReason: 'deadline'`, and an operator reads it as a timeout);
  *   4. otherwise `phase_failed`.
  *
  * A transition cause beats a fatal match because the transition has already decided the Run's fate
- * for a reason the operator can act on (the cap, the last phase's open issues); the fatal match is
- * still in the row's last error. A fatal match beats a timeout because the signature names the
- * failure and the timeout is only how it ended. A halt cause from another vocabulary (a `phase-end`
- * cause such as `pre_spawn_refusal`, or a pause cause such as `rate_limit`) is not a member, so it
- * falls through to `phase_failed`.
+ * for a reason the operator can act on (the cap, the last phase's open issues, the unchanged judged
+ * metrics); the fatal match is still in the row's last error. A fatal match beats a timeout because
+ * the signature names the failure and the timeout is only how it ended. A halt cause from another
+ * vocabulary (a `phase-end` cause such as `pre_spawn_refusal`, or a pause cause such as
+ * `rate_limit`) is not a member, so it falls through to `phase_failed`.
  */
 import { CAP_EXHAUSTED_CAUSE } from '../audit/audit-payload';
 import type { FailureCause } from '../contracts/failure-cause';
 import type { TerminationReason } from '../state/workflow-run';
 import {
   INCOMPLETE_TURN_UNRESOLVED_CAUSE,
+  JUDGED_METRICS_UNCHANGED_CAUSE,
   LAST_PHASE_ISSUES_REMAIN_CAUSE,
   type PhaseOutcome
 } from './phase';
 
 /**
- * The six members this module can return: the ones decided at the sequencer's `fail` arm. The other
+ * The seven members this module can return: the ones decided at the sequencer's `fail` arm. The other
  * three are written where they are decided (the probe branch, the evidence branch and the
  * start-failure handler), so a notice for a sequencer failure never has to consider them.
  */
@@ -40,6 +41,7 @@ export type SequencerFailureCause = Extract<
   | 'cap_exhausted'
   | 'last_phase_issues_remain'
   | 'incomplete_turn_unresolved'
+  | 'judged_metrics_unchanged'
   | 'fatal_signature'
   | 'phase_failed'
   | 'phase_timeout'
@@ -59,6 +61,7 @@ export function failureCauseOf(facts: FailDecisionFacts): SequencerFailureCause 
   if (facts.decisionCause === CAP_EXHAUSTED_CAUSE) return CAP_EXHAUSTED_CAUSE;
   if (facts.decisionCause === LAST_PHASE_ISSUES_REMAIN_CAUSE) return LAST_PHASE_ISSUES_REMAIN_CAUSE;
   if (facts.decisionCause === INCOMPLETE_TURN_UNRESOLVED_CAUSE) return INCOMPLETE_TURN_UNRESOLVED_CAUSE;
+  if (facts.decisionCause === JUDGED_METRICS_UNCHANGED_CAUSE) return JUDGED_METRICS_UNCHANGED_CAUSE;
   if (facts.fatalMatched) return 'fatal_signature';
   if (facts.outcome === 'timeout' || facts.terminationReason === 'deadline') return 'phase_timeout';
   return 'phase_failed';
