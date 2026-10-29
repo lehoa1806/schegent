@@ -186,7 +186,8 @@ const PACKAGES: readonly string[] = EXAMPLES.filter((name) =>
 // operator consent gate on `git commit`, which is why it is pinned.
 const GIT_WRITING_EXAMPLE_PHASE_IDS: ReadonlySet<string> = new Set([
   'speckit-specify',
-  'finalize'
+  'finalize',
+  'integrate'
 ]);
 
 describe.skipIf(PACKAGES.length === 0)(
