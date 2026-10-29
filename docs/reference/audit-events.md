@@ -114,6 +114,24 @@ recorded". A run that fails, is resumed and fails again writes one event per
 failure, each with its own code. `phase-end` is unchanged, and its two causes
 stay the two above. `AUDIT_SCHEMA_VERSION` stays 3.
 
+Feature 244 (FR-R4-F16) added one field to a third event.
+**`task-removed.completionProvenance`** is `'operator-attested'` when the removed
+row had been marked completed by the operator, and `null` otherwise: a row the
+host finished, and a failed, pending or canceled row, all read `null`. It is
+copied from the same row as `priorStatus`, so the two cannot disagree. It is
+written twice, in the payload and in the envelope's `stateTransition.newState`,
+which copies the payload, and the projection admits it by identity in each,
+judging each copy on its own value. A value outside the vocabulary is dropped as
+a field and never rewritten, and it never costs the entry: a path-like string in
+the field leaves the removal's line written without it. The field is **absent**
+on every record written before the feature, and that reads as "provenance not
+recorded", never as attested; a reader that meets any other value treats it as
+absent. Without the field a removed completed row cannot be told apart from a
+normal completion, because `priorStatus: completed` is all the line says.
+`AUDIT_SCHEMA_VERSION` stays 3, and no generated schema changes.
+<!-- Source: src/audit/audit-payload.ts -->
+<!-- Source: src/ui/sidebar/commands/cmd-remove-queue-item.ts -->
+
 Feature 212 added two more `phase-end` fields, both narrowed the same way:
 
 - **`phase-end.attemptId`** — which attempt this terminal record closes. It is

@@ -9,6 +9,25 @@ This file is the release workflow's stable pointer for changes that affect opera
 Recorded as they land, so the first release note is assembled from evidence rather than
 from memory.
 
+### Removing a row records whether the operator attested it, and a report counts how failed rows were resolved (FR-R4-F16, 2026-10-29)
+
+After an attested row was removed, its audit line said `priorStatus: completed` and nothing more, so
+it read as a normal completion. And nothing counted which exit a failed row took. Both are now
+recorded, and neither changes what any queue, run or row does.
+
+- Removing a row now writes `completionProvenance` on its `task-removed` audit line: `operator-attested`
+  when the operator had marked the row completed, `null` otherwise. A line written before this change
+  has no such field, and reads as "provenance not recorded", never as attested.
+- "Schegent: Report Failed-Row Exits" counts how each failed row was resolved, by failure cause: resumed,
+  started fresh, removed, attested, still failed and the other exits, with an unknown count and its
+  reasons beside them. It opens an unsaved Markdown document, writes nothing, works in an untrusted
+  window, and states what it cannot see: why a queue ran on under the `continue` policy, rows removed by
+  Clear Failed or Clear Done, and why an operator chose an exit.
+- It is the evidence for a decision, not the decision: no status, button or event was added, and the
+  decision record stays pending.
+- How to read the report is in
+  [Count how failed rows were resolved](inspect-audit-logs.md#count-how-failed-rows-were-resolved).
+
 ### A failed run records its cause and says what to do next (FR-R4-F14, 2026-10-28)
 
 A run that failed at its iteration cap told the operator to run "Schegent: Resume" to retry,

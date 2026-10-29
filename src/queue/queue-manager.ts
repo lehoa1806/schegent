@@ -182,6 +182,11 @@ export interface QueueMutationDetail extends MutationResult {
   taskId?: string;
   priorStatus?: FeatureRequestStatus;
   runId?: string | null;
+  /**
+   * FR-R4-F16 (contract P2) — `removeTask` only: the removed row's own value, `null` when it held
+   * none, passed on as stored so the audit projection alone decides what reaches disk.
+   */
+  completionProvenance?: CompletionProvenance | null;
   taskCount?: number;
   /**
    * Feature 092 (T083, FR-016a) — how many connected-run aggregates a queue
@@ -1383,7 +1388,8 @@ export class QueueManager {
         taskId: removed.id,
         queueId: removed.queueId ?? DEFAULT_QUEUE_ID,
         priorStatus: removed.status,
-        runId: removed.runId
+        runId: removed.runId,
+        completionProvenance: removed.completionProvenance ?? null
       };
     } catch (err) {
       return { ok: false, reason: this.taskErrorReason(err) };
