@@ -9,6 +9,44 @@ This file is the release workflow's stable pointer for changes that affect opera
 Recorded as they land, so the first release note is assembled from evidence rather than
 from memory.
 
+### Finalize commits only the feature's paths, and a new `integrate` Phase moves target branches without touching a checkout (FR-R4-F19, 2026-10-29)
+
+The shipped `finalize` committed everything in the checkout, so another feature's half-done work went
+into this feature's commit, and it merged by switching to `develop` in a checkout that other sessions
+share. Finalization is now two Phases. `finalize` verifies, repairs and commits only this feature's
+paths, in each repository a workspace declares. A new last Phase, `integrate`, merges the committed
+work into each repository's target branch without switching, checking out or otherwise touching any
+checkout, and reports how far it got.
+
+- A changed path is owned, unrelated or ambiguous. An ambiguous path (claimed by two features, partially
+  staged, a file that mixes changes, a rename with one side not owned, or claimed by none) is a
+  `[needs-decision]` hand-off: never committed, and it withholds integration in every repository. That
+  a path changed never makes it owned.
+- `integrate` computes each merge with `git merge-tree --write-tree` (Git 2.38 or later), writes it
+  with `git commit-tree`, and moves the target ref only by `git update-ref` with the old value, so a
+  target that moved is not overwritten. It refuses, before any ref moves, a detached `HEAD`, a target
+  that is not a local branch, a target checked out in another worktree, a conflict, and a Git that
+  cannot merge without a working tree. It never fetches, pushes, resets, stashes or switches a branch.
+- The guard is kept: every check green in every repository it integrates, and no
+  `Status: needs-maintainer` decision. `integrate` runs each check set itself, so the checks run twice
+  per feature. It also compares the `HEAD`s the workspace root records with the actual ones.
+- It reports `Finalization record:` with one of four states (`integrated`, `partially integrated`,
+  `committed, not integrated`, `nothing committed`) and one bullet per repository. After a partial
+  integration the record holds the command that restores each ref that moved, and never runs it. Only
+  `integrated` ends in `CLEAR`.
+- Resuming a halted Run now runs `integrate` again, not `finalize`'s repair loop. Commit a fix you made
+  by hand before resuming.
+- Each changed or new definition has a version: `finalize` 5, `integrate` 1, and the pipeline
+  `speckit-new-feature` 6. Version 6 is the first revision that adds a Phase: an import plans
+  `integrate` as an **Import** row, and you publish `integrate`, `finalize` and then the pipeline. The
+  steps are in
+  [Bring an existing catalog to a revised example](process-yaml.md#bring-an-existing-catalog-to-a-revised-example);
+  the behavior is in
+  [Finalize and integrate across repositories](process-yaml.md#finalize-and-integrate-across-repositories).
+- No setting, event, field, schema version or host behavior changed, and there is no migration. Runs
+  already created keep the text they were created with, and an item composed before the publish still
+  merges the old way.
+
 ### The two review Phases read the repositories a workspace declares (FR-R4-F18, 2026-10-29)
 
 `speckit-code-review` and `speckit-security-review` chose their repository by layout: `repo/` beside

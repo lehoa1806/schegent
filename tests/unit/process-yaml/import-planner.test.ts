@@ -1948,15 +1948,15 @@ describe('the shipped example imports into a workspace that has never imported (
     };
   }
 
-  it('plans eleven rows — one Pipeline and ten Phases — and skips none', () => {
+  it('plans twelve rows — one Pipeline and eleven Phases — and skips none', () => {
     const rows = plannedRows(EXAMPLE, shippedContext());
 
-    expect(rows).toHaveLength(11);
+    expect(rows).toHaveLength(12);
     expect(rows.filter((row) => row.outcome === 'skip')).toEqual([]);
-    expect(rows.map((row) => row.outcome)).toEqual(Array.from({ length: 11 }, () => 'import'));
+    expect(rows.map((row) => row.outcome)).toEqual(Array.from({ length: 12 }, () => 'import'));
   });
 
-  it('names the Pipeline first and then its ten Phases in declaration order', () => {
+  it('names the Pipeline first and then its eleven Phases in declaration order', () => {
     const rows = plannedRows(EXAMPLE, shippedContext());
 
     expect(rows.map((row) => [row.resourceKind, row.resourceId])).toEqual([
@@ -1970,12 +1970,13 @@ describe('the shipped example imports into a workspace that has never imported (
       ['phase', 'speckit-implement'],
       ['phase', 'speckit-code-review'],
       ['phase', 'speckit-security-review'],
-      ['phase', 'finalize']
+      ['phase', 'finalize'],
+      ['phase', 'integrate']
     ]);
   });
 
-  it('carries a definition on every row, so confirming the plan has eleven things to write', () => {
-    // A plan whose rows resolve `import` but carry nothing would report eleven writes
+  it('carries a definition on every row, so confirming the plan has twelve things to write', () => {
+    // A plan whose rows resolve `import` but carry nothing would report twelve writes
     // and perform none. Each row is asserted to hold the definition the write needs,
     // and the root Pipeline's phase list is asserted to be the one the document
     // declared — the plan is what a confirmed write becomes effective from.
