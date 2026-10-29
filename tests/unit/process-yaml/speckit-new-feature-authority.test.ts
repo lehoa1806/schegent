@@ -24,18 +24,11 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { extractOpenQuestions, extractRemainingIssues } from '../../../src/parser/stdout-parser';
+import { expectMutantKilled, expectPins, type Pin } from '../../fixtures/instruction-pins';
 import { instructionOf, loadExample, phaseOf } from '../../fixtures/speckit-new-feature-example';
 
 /** The version the text changes shipped at; a later edit may go higher. */
 const FIRST_DELEGATING_VERSION = 3;
-
-type Pin = readonly [label: string, pattern: RegExp];
-
-function expectPins(text: string, pins: readonly Pin[]): void {
-  for (const [label, pattern] of pins) {
-    expect(text, label).toMatch(pattern);
-  }
-}
 
 // The hand-off clauses of implement's instruction. Each pin is declared once, as
 // a named constant: the real-text test and the mutation control below read the
@@ -145,38 +138,6 @@ const TASKS_QUOTED_MENTION: Pin = [
   'a mention of the label is written in inline code',
   /inline code, as `USER-RUN`/
 ];
-
-/**
- * A mutation control: one clause removed from the real text, in memory only
- * (nothing is written to disk). A control that proves nothing must fail here,
- * never pass as a false kill, so it asserts three things in order:
- *
- * 1. applied: every removal occurs in the real text, and the mutated text differs;
- * 2. live: every pin that should catch it matches the real text;
- * 3. killed: at least one of those pins does not match the mutated text.
- */
-interface Mutant {
-  readonly id: string;
-  readonly removals: readonly string[];
-  readonly killedBy: readonly Pin[];
-}
-
-function mutate(text: string, removals: readonly string[]): string {
-  return removals.reduce((mutated, removal) => mutated.split(removal).join(''), text);
-}
-
-function expectMutantKilled(real: string, mutant: Mutant): void {
-  const mutated = mutate(real, mutant.removals);
-  for (const removal of mutant.removals) {
-    expect(real, `${mutant.id}: the removal occurs in the real text`).toContain(removal);
-  }
-  expect(mutated, `${mutant.id}: the removal changed the text`).not.toBe(real);
-
-  expectPins(real, mutant.killedBy);
-
-  const missed = mutant.killedBy.filter(([, pattern]) => !pattern.test(mutated));
-  expect(missed.length, `${mutant.id}: a pin fails on the mutated text`).toBeGreaterThan(0);
-}
 
 describe('the shipped new-feature pipeline: delegated authority', () => {
   const example = loadExample();

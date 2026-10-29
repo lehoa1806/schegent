@@ -84,6 +84,92 @@ inspection.
 <!-- Source: webview-ui/src/components/ProcessImport/process-import-state.ts -->
 <!-- Source: webview-ui/src/lib/save-models.ts -->
 
+## Choose the repositories the two reviews read
+
+Before each iteration, `speckit-code-review` and `speckit-security-review` work out which
+repositories to review, review the changes in each, and print them first in their report under
+`Review scope:`. A feature whose code lives in several linked repositories needs a declaration
+that names them; a workspace without one keeps today's two layouts.
+
+### Declare the repositories
+
+Add a section headed exactly `## Implementation repositories` to the workspace root's
+`AGENTS.md`. Each bullet that starts with inline code is one repository:
+
+- the path relative to the workspace root, in inline code, with `.` for the root itself;
+- optionally, a second inline-code span, `(base: <ref>)`, naming the branch to compare against.
+  The base defaults to `develop`.
+
+A path or ref uses only letters, digits and the characters `.` `_` `/` `-`, and does not start
+with `-`. Every other line in the section is prose and is ignored. This example is for a planning
+root with linked repositories, which the reviews do not review themselves:
+
+```markdown
+## Implementation repositories
+
+The feature code lives in these linked repositories.
+
+- `client-source`
+- `datahub`
+- `shopify-app` `(base: main)`
+- `klaviyo`
+```
+
+A bullet that starts with inline code but breaks the form, such as one with a space in its path,
+makes the whole scope unresolved. It is never skipped as prose, so a typo cannot quietly drop a
+repository from the review. The same holds for a section with no entry, two such sections, and two
+entries that resolve to the same directory.
+
+### What is read, and what is not
+
+A declaration is the only source of targets: the reviews add none, drop none and swap none.
+`CLAUDE.md`, a nested `AGENTS.md`, plan files and agent memory never choose a target. Where one of
+them names other repositories than the declared ones, the review says so under `Notes:` and changes
+nothing.
+
+Without a declaration the reviews infer the target, as before:
+
+- a standalone repository: the workspace root;
+- the envelope: `repo/`, when the root holds `specs/` and `repo/` is a repository, including a
+  `repo/` that is a linked worktree;
+- a planning root with linked repositories: neither applies, so the scope is unresolved until you
+  write the declaration.
+
+A directory counts as a repository top level when `git rev-parse --show-prefix` prints nothing
+there, so a `.git` file counts like a `.git` directory.
+
+A linked repository, a Git entry of mode `160000`, is a repository and not a file. One the
+declaration does not name is listed as "changed, not declared, not reviewed" when it changed, which
+does not block the review, and as not reviewed when it did not. Without a declaration, a changed
+one inside the inferred repository stops the review instead, because the inferred target alone
+would hide it.
+
+### When the scope cannot be resolved
+
+Each of these is an unresolved condition: a declared path that does not exist, is outside the
+workspace, is not a repository top level, or has no base because its base branch does not resolve
+there; and a broken declaration, as described above. Each is reported as one counted finding,
+tagged `[needs-decision]`, naming the path and the reason. The review never reviews a substitute
+for it, and it never edits the declaration.
+
+- **The review never reports clear while one stands.** Findings count toward
+  `code_review_findings` and `security_review_findings`, so the loop condition stays true.
+- **It costs iterations.** The Phase retries up to its iteration cap, or stops early when
+  `schegent.loop.maxUnchangedComparisons` is set (see
+  [retry-contract.md](retry-contract.md#stopping-a-loop-whose-judged-metrics-stop-changing)), and a
+  Phase whose cap outcome is to fail, the default for these two, then fails the Run.
+- **The remedy is the declaration.** For a repository that has no `develop`, declare it with
+  `(base: <ref>)`. The reviews do not fall back to another branch, a remote-tracking ref or a
+  fetch.
+
+### What discovery never does
+
+Working out the scope only reads. It stages nothing, switches no branch, creates or deletes no
+branch, fetches nothing, stashes nothing, writes no ref, touches no index and updates no
+submodule. The reviews still fix code, but only inside the resolved targets.
+
+<!-- Source: examples/speckit-new-feature.pipeline.yaml -->
+
 ## Bring an existing catalog to a revised example
 
 A catalog that already holds an example's ids does not pick up a later revision of that
@@ -100,7 +186,10 @@ revises the Phases `speckit-tasks`, `speckit-implement` and `finalize` and the p
    **Publish**. For version 3 these are `speckit-tasks`, `speckit-implement` and `finalize`,
    and the pipeline `speckit-new-feature` for its record. For version 4: `speckit-analyze`,
    `speckit-implement`, `speckit-code-review`, `speckit-security-review` and `finalize`, which
-   ask for issue tags. The pipeline names its Phases by
+   ask for issue tags. For version 5: `speckit-code-review` and `speckit-security-review`, which
+   resolve the repositories to review (see
+   [Choose the repositories the two reviews read](#choose-the-repositories-the-two-reviews-read)),
+   and the pipeline `speckit-new-feature` for its record. The pipeline names its Phases by
    id, so the Phases carry the behavior. Saving a Phase that declares `retryCondition`, as
    `speckit-implement` does, needs the `retryConditions` capability.
 3. **The version number does not move.** The editor shows **Version** read-only, and a save
