@@ -12,6 +12,7 @@ import {
 } from '../../../src/controller/fail-decision-cause';
 import {
   INCOMPLETE_TURN_UNRESOLVED_CAUSE,
+  JUDGED_METRICS_UNCHANGED_CAUSE,
   LAST_PHASE_ISSUES_REMAIN_CAUSE
 } from '../../../src/controller/phase';
 import { isFailureCause } from '../../../src/contracts/failure-cause';
@@ -57,6 +58,33 @@ describe('failureCauseOf — the sequencer chooses one closed code (D2)', () => 
     ).toBe('incomplete_turn_unresolved');
   });
 
+  it('a loop stopped on unchanged judged metrics is judged_metrics_unchanged (FR-R4-F17, D5.4)', () => {
+    expect(JUDGED_METRICS_UNCHANGED_CAUSE).toBe('judged_metrics_unchanged');
+    expect(
+      failureCauseOf(facts({ decisionCause: JUDGED_METRICS_UNCHANGED_CAUSE, outcome: 'issues_remain' }))
+    ).toBe('judged_metrics_unchanged');
+  });
+
+  it('judged_metrics_unchanged wins every combination of fatal match, outcome and termination reason (FR-012)', () => {
+    for (const fatalMatched of [false, true]) {
+      for (const outcome of ['clean', 'issues_remain', 'failed', 'timeout'] as const) {
+        for (const terminationReason of ['error', 'timeout', 'deadline', 'cancel'] as const) {
+          expect(
+            failureCauseOf(
+              facts({
+                decisionCause: JUDGED_METRICS_UNCHANGED_CAUSE,
+                fatalMatched,
+                outcome,
+                terminationReason
+              })
+            ),
+            `${fatalMatched} ${outcome} ${terminationReason}`
+          ).toBe('judged_metrics_unchanged');
+        }
+      }
+    }
+  });
+
   it('a fatal match on a timed-out phase is fatal_signature (the spec edge case)', () => {
     expect(
       failureCauseOf(facts({ fatalMatched: true, outcome: 'timeout', terminationReason: 'timeout' }))
@@ -99,6 +127,7 @@ describe('failureCauseOf — the sequencer chooses one closed code (D2)', () => 
       CAP_EXHAUSTED_CAUSE,
       LAST_PHASE_ISSUES_REMAIN_CAUSE,
       INCOMPLETE_TURN_UNRESOLVED_CAUSE,
+      JUDGED_METRICS_UNCHANGED_CAUSE,
       PRE_SPAWN_REFUSAL_CAUSE,
       'rate_limit',
       'anything the transition might say next'

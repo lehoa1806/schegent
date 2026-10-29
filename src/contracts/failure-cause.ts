@@ -1,7 +1,7 @@
 /**
  * FR-R4-F14 (feature 242) — the closed vocabulary of why a Run failed.
  *
- * A failed Run carries ONE of these nine codes, chosen where the failure is decided and copied from
+ * A failed Run carries ONE of these ten codes, chosen where the failure is decided and copied from
  * the Run to every record that reads it: the terminal audit event, the metrics rollup, the History
  * run detail. A member is the whole record. No message, warning, fatal-signature text or task title
  * travels with it, so what an operator reads beside it is fixed host text (`FAILURE_CAUSE_LABELS`),
@@ -17,10 +17,10 @@
  * no state, no dependency and no import from outside this directory, so the host and the webview
  * cannot disagree about what a code means.
  *
- * The first three members equal the transition causes the sequencer already names
- * (`CAP_EXHAUSTED_CAUSE`, `LAST_PHASE_ISSUES_REMAIN_CAUSE`, `INCOMPLETE_TURN_UNRESOLVED_CAUSE`); the
- * D2 mapping returns those constants typed as `FailureCause`, so a drift in either spelling fails to
- * compile. `pre_spawn_refusal` is a `phase-end` cause, not a failure cause, and is not a member.
+ * The first three members and the tenth equal the transition causes the sequencer already names
+ * (`CAP_EXHAUSTED_CAUSE`, `LAST_PHASE_ISSUES_REMAIN_CAUSE`, `INCOMPLETE_TURN_UNRESOLVED_CAUSE`,
+ * `JUDGED_METRICS_UNCHANGED_CAUSE`); the D2 mapping returns those constants typed as `FailureCause`, so
+ * a drift in either spelling fails to compile. `pre_spawn_refusal` is a `phase-end` cause, not a failure cause, and is not a member.
  */
 export const FAILURE_CAUSES = [
   'cap_exhausted',
@@ -31,13 +31,14 @@ export const FAILURE_CAUSES = [
   'phase_timeout',
   'runner_probe_failed',
   'audit_evidence_unavailable',
-  'start_failed'
+  'start_failed',
+  'judged_metrics_unchanged'
 ] as const;
 
 export type FailureCause = (typeof FAILURE_CAUSES)[number];
 
 /**
- * Membership by identity: true only for a string equal to one of the nine members.
+ * Membership by identity: true only for a string equal to one of the ten members.
  *
  * A near miss (`'cap_exhausted '`, `'CAP_EXHAUSTED'`, `'phase_failed:x'`), a non-string and a cause
  * from another vocabulary are all refused, so a reader that meets a value it does not know treats
@@ -60,7 +61,8 @@ export const FAILURE_CAUSE_LABELS: Readonly<Record<FailureCause, string>> = {
   phase_timeout: 'Phase ran out of time',
   runner_probe_failed: 'Backend CLI unavailable',
   audit_evidence_unavailable: 'Audit evidence unavailable',
-  start_failed: 'Host refusal or error'
+  start_failed: 'Host refusal or error',
+  judged_metrics_unchanged: 'Judged metrics unchanged'
 };
 
 /** What a failed run with no recorded code reads as: every Run that failed before this feature. */

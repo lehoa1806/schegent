@@ -26,7 +26,8 @@ const EXPECTED_MEMBERS = [
   'phase_timeout',
   'runner_probe_failed',
   'audit_evidence_unavailable',
-  'start_failed'
+  'start_failed',
+  'judged_metrics_unchanged'
 ] as const;
 
 const EXPECTED_LABELS: Record<(typeof EXPECTED_MEMBERS)[number], string> = {
@@ -38,13 +39,29 @@ const EXPECTED_LABELS: Record<(typeof EXPECTED_MEMBERS)[number], string> = {
   phase_timeout: 'Phase ran out of time',
   runner_probe_failed: 'Backend CLI unavailable',
   audit_evidence_unavailable: 'Audit evidence unavailable',
-  start_failed: 'Host refusal or error'
+  start_failed: 'Host refusal or error',
+  judged_metrics_unchanged: 'Judged metrics unchanged'
 };
 
 describe('the failure-cause vocabulary (FR-002, D1)', () => {
-  it('has exactly the nine members, each once, in the documented order', () => {
+  it('has exactly the ten members, each once, in the documented order', () => {
     expect([...FAILURE_CAUSES]).toEqual([...EXPECTED_MEMBERS]);
     expect(new Set(FAILURE_CAUSES).size).toBe(FAILURE_CAUSES.length);
+  });
+
+  it('keeps the first nine members in their order and spelling; the tenth is appended (FR-R4-F17, D5.1)', () => {
+    expect([...FAILURE_CAUSES].slice(0, 9)).toEqual([
+      'cap_exhausted',
+      'last_phase_issues_remain',
+      'incomplete_turn_unresolved',
+      'fatal_signature',
+      'phase_failed',
+      'phase_timeout',
+      'runner_probe_failed',
+      'audit_evidence_unavailable',
+      'start_failed'
+    ]);
+    expect(FAILURE_CAUSES[9]).toBe('judged_metrics_unchanged');
   });
 
   it('includes the three transition causes the sequencer already names, by value', () => {

@@ -76,8 +76,8 @@ export interface WorkflowControllerOptions {
   cliPathResolver?: (runnerKind: string) => string;
   defaultRunnerKind?: BackendRunnerKind;
   isAuditEvidenceAvailable?: () => boolean;
-  /** Dynamic reader for `schegent.retry.forceContinueOnCap`; never cached. */
-  getForceContinueOnRetryCap?: () => boolean;
+  getForceContinueOnRetryCap?: () => boolean; // `retry.forceContinueOnCap`: dynamic, never cached
+  getMaxUnchangedComparisons?: () => number; // FR-R4-F17 `loop.maxUnchangedComparisons`: same terms
 }
 
 /** Re-exported so the seam keeps the import path its consumers already use. */

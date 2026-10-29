@@ -19,6 +19,10 @@ import { effectivePhaseTimeoutMs, authoredPhaseTimeoutMs } from '../controller/e
 import { effectiveRunnerKindForPhase } from '../config/pipeline-snapshot';
 import { spendDenominationOf, type SpendDenomination } from '../contracts/backend-spend-denomination';
 import { resolveRetryCapOutcome, statesRetryCapOutcome } from '../contracts/retry-cap-outcome';
+import {
+  normalizeMaxUnchangedComparisons,
+  unchangedComparisonBoundState
+} from '../contracts/unchanged-comparison-bound';
 import { DELAYED_RETRY_CAP } from '../contracts/retry-bounds';
 import type {
   EffectiveLimit,
@@ -42,6 +46,8 @@ export interface EffectiveLimitsInput {
   /** Read per evaluation, as execution reads them. */
   readonly live: {
     readonly forceContinueOnCap: EffectiveLimit<boolean>;
+    /** FR-R4-F17 — the raw bound; the resolver normalizes it, as execution does. */
+    readonly maxUnchangedComparisons: EffectiveLimit<number>;
     readonly limitUsd: EffectiveLimit<number | null>;
     readonly limitTokens: EffectiveLimit<number | null>;
   };
@@ -70,6 +76,8 @@ export function resolveEffectiveLimits(input: EffectiveLimitsInput): EffectiveLi
   const limit = denomination === 'usd' ? bound.limitUsd : bound.limitTokens;
   const layer = denomination === 'usd' ? live.limitUsd : live.limitTokens;
   const phaseLimit = denomination === 'usd' ? phase?.spendBoundUsd : phase?.spendBoundTokens;
+  // One resolution, used for the outcome shown and for the early stop's state (FR-R4-F17 L1.2).
+  const capOutcome = resolveRetryCapOutcome(phase, live.forceContinueOnCap.value);
 
   return {
     iterationCap: settings.iterationCap,
@@ -81,8 +89,17 @@ export function resolveEffectiveLimits(input: EffectiveLimitsInput): EffectiveLi
     // A code constant, not a setting (G2).
     retryCap: { value: DELAYED_RETRY_CAP, origin: 'default' },
     onRetryCap: {
-      value: resolveRetryCapOutcome(phase, live.forceContinueOnCap.value),
+      value: capOutcome,
       origin: originOrPhase(statesRetryCapOutcome(phase), live.forceContinueOnCap.origin)
+    },
+    unchangedComparisons: {
+      value: normalizeMaxUnchangedComparisons(live.maxUnchangedComparisons.value),
+      origin: live.maxUnchangedComparisons.origin,
+      state: unchangedComparisonBoundState({
+        bound: live.maxUnchangedComparisons.value,
+        capOutcome,
+        retryCondition: phase?.retryCondition
+      })
     },
     spend:
       limit === null

@@ -103,9 +103,10 @@ than passed through (feature 194):
 
 Feature 242 (FR-R4-F14) added one field to a different event.
 **`task-execution-ended.failureCause`** is the closed code of why a run failed:
-one of nine members (`cap_exhausted`, `last_phase_issues_remain`,
+one of ten members (`cap_exhausted`, `last_phase_issues_remain`,
 `incomplete_turn_unresolved`, `fatal_signature`, `phase_failed`, `phase_timeout`,
-`runner_probe_failed`, `audit_evidence_unavailable`, `start_failed`), copied from
+`runner_probe_failed`, `audit_evidence_unavailable`, `start_failed`,
+`judged_metrics_unchanged`), copied from
 the failed run by the one terminal emitter. The projection admits it by identity
 against that list and drops any other value as a field, so no message, warning or
 fatal-signature text can ride it onto disk. It is **absent** on a completed run,

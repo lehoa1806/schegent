@@ -44,6 +44,7 @@ import type { PhaseDef } from '../config/pipeline-config';
 import {
   transition,
   INCOMPLETE_TURN_UNRESOLVED_CAUSE,
+  JUDGED_METRICS_UNCHANGED_CAUSE,
   LAST_PHASE_ISSUES_REMAIN_CAUSE,
   type TransitionResult
 } from './phase';
@@ -198,6 +199,13 @@ export interface PostPhaseInputs {
    * change takes effect on the next phase instead of the next window.
    */
   readonly forceContinueOnRetryCapDefault?: boolean;
+  /**
+   * FR-R4-F17 (contract D4.1) — the unchanged-comparison bound, read by the caller at this decision
+   * for the same reason as the default above, and passed to `transition()` unchanged. Only this
+   * decision reads it: the optional-failure and pre-phase decisions return before any retry condition
+   * is consulted.
+   */
+  readonly maxUnchangedComparisons?: number;
 }
 
 export interface OptionalTerminalFailureInputs {
@@ -229,6 +237,12 @@ const LAST_PHASE_ISSUES_REMAIN_MESSAGE = 'the last phase reported remaining issu
  */
 const INCOMPLETE_TURN_UNRESOLVED_MESSAGE =
   'the phase ended its turn unfinished, and immediate resumes did not finish it';
+
+/**
+ * FR-R4-F17 (D4.2) — the failure message for `JUDGED_METRICS_UNCHANGED_CAUSE`. Fixed host text: without
+ * an arm of its own, the failed row's last error would fall through to the runner's warning text.
+ */
+export const JUDGED_METRICS_UNCHANGED_MESSAGE = 'judged metrics unchanged before the iteration cap';
 
 export class PhaseSequencer {
   public isVerificationPhase(phaseId: string): boolean {
@@ -303,6 +317,22 @@ export class PhaseSequencer {
   }
 
   /**
+   * FR-R4-F17 (S6.3) — the retry settings `decideAfterPhase` takes, read now from the caller's live
+   * readers and held nowhere: a setting changed mid-loop reaches the next decision (FR-003, S6.5). An
+   * absent reader means the pre-existing behavior: continue-on-cap off, and the unchanged-comparison
+   * bound off. It sits here, not in the driver, to keep `run-driver.ts` under its tight ceiling.
+   */
+  public liveRetryPolicyOf(readers: {
+    readonly getForceContinueOnRetryCap?: () => boolean;
+    readonly getMaxUnchangedComparisons?: () => number;
+  }): Required<Pick<PostPhaseInputs, 'forceContinueOnRetryCapDefault' | 'maxUnchangedComparisons'>> {
+    return {
+      forceContinueOnRetryCapDefault: readers.getForceContinueOnRetryCap?.() ?? false,
+      maxUnchangedComparisons: readers.getMaxUnchangedComparisons?.() ?? 0
+    };
+  }
+
+  /**
    * Post-dispatch decision: classify the runner's output into a typed
    * next-action. The controller acts on the decision (persistence, audit,
    * queue, lock retain). The sequencer never mutates run state.
@@ -316,7 +346,8 @@ export class PhaseSequencer {
       activePhaseDef,
       latestManualPauseAt,
       now,
-      forceContinueOnRetryCapDefault
+      forceContinueOnRetryCapDefault,
+      maxUnchangedComparisons
     } = inputs;
 
     if (output.outcome === 'paused-at-breakpoint') {
@@ -369,7 +400,9 @@ export class PhaseSequencer {
       // computed for this iteration's `phase.retry_evaluated` record, so the
       // cap warning renders the identical number rather than a second
       // computation of it.
-      ...(output.stalledCount !== undefined ? { stalledCount: output.stalledCount } : {})
+      ...(output.stalledCount !== undefined ? { stalledCount: output.stalledCount } : {}),
+      // FR-R4-F17 (D4.1) — absent when the caller read none, which `transition()` reads as off.
+      ...(maxUnchangedComparisons !== undefined ? { maxUnchangedComparisons } : {})
     });
     const warnings = [...output.warnings, ...decision.warnings];
 
@@ -431,7 +464,9 @@ export class PhaseSequencer {
             ? LAST_PHASE_ISSUES_REMAIN_MESSAGE
             : decision.cause === INCOMPLETE_TURN_UNRESOLVED_CAUSE
               ? INCOMPLETE_TURN_UNRESOLVED_MESSAGE
-              : fatalCause ?? (output.warnings.join('; ').slice(0, 240) || 'phase failed');
+              : decision.cause === JUDGED_METRICS_UNCHANGED_CAUSE
+                ? JUDGED_METRICS_UNCHANGED_MESSAGE
+                : fatalCause ?? (output.warnings.join('; ').slice(0, 240) || 'phase failed');
       return {
         kind: 'fail',
         phaseResult,
