@@ -1,0 +1,191 @@
+{
+  "declares": {
+    "description": "One advisory object and one string in a via: the string creates no finding, and its package is recorded as a dependent",
+    "findings": [
+      {
+        "package": "lib-b",
+        "ids": {
+          "canonical": "GHSA-aaaa-bbbb-cccc",
+          "aliases": [
+            "npm:5001"
+          ]
+        },
+        "severity": "high",
+        "range": "<1.2.0",
+        "title": "Fixture advisory X",
+        "url": "https://github.com/advisories/GHSA-aaaa-bbbb-cccc",
+        "locations": [
+          {
+            "location": "node_modules/lib-b",
+            "version": "1.0.0",
+            "direct": true,
+            "production": true
+          }
+        ],
+        "direct": true,
+        "production": true,
+        "dependents": [
+          "lib-a"
+        ],
+        "notes": []
+      },
+      {
+        "package": "lib-d",
+        "ids": {
+          "canonical": "GHSA-dddd-eeee-ffff",
+          "aliases": [
+            "npm:5002"
+          ]
+        },
+        "severity": "moderate",
+        "range": "<1.5.0",
+        "title": "Fixture advisory Y",
+        "url": "https://github.com/advisories/GHSA-dddd-eeee-ffff",
+        "locations": [
+          {
+            "location": "node_modules/lib-d",
+            "version": "1.0.0",
+            "direct": true,
+            "production": true
+          }
+        ],
+        "direct": true,
+        "production": true,
+        "dependents": [],
+        "notes": []
+      }
+    ]
+  },
+  "rootManifest": {
+    "name": "fixture-tree",
+    "version": "1.0.0",
+    "dependencies": {
+      "lib-a": "^1.0.0",
+      "lib-b": "^1.0.0",
+      "lib-d": "^1.0.0"
+    }
+  },
+  "lockfile": {
+    "name": "fixture-tree",
+    "version": "1.0.0",
+    "lockfileVersion": 3,
+    "requires": true,
+    "packages": {
+      "": {
+        "name": "fixture-tree",
+        "version": "1.0.0",
+        "dependencies": {
+          "lib-a": "^1.0.0",
+          "lib-b": "^1.0.0",
+          "lib-d": "^1.0.0"
+        }
+      },
+      "node_modules/lib-a": {
+        "version": "1.0.0",
+        "resolved": "https://registry.example.test/pkg/-/pkg-1.0.0.tgz"
+      },
+      "node_modules/lib-b": {
+        "version": "1.0.0",
+        "resolved": "https://registry.example.test/pkg/-/pkg-1.0.0.tgz"
+      },
+      "node_modules/lib-d": {
+        "version": "1.0.0",
+        "resolved": "https://registry.example.test/pkg/-/pkg-1.0.0.tgz"
+      }
+    }
+  },
+  "report": {
+    "auditReportVersion": 2,
+    "vulnerabilities": {
+      "lib-a": {
+        "name": "lib-a",
+        "severity": "high",
+        "isDirect": true,
+        "via": [
+          "lib-b"
+        ],
+        "effects": [],
+        "range": "*",
+        "nodes": [
+          "node_modules/lib-a"
+        ],
+        "fixAvailable": false
+      },
+      "lib-b": {
+        "name": "lib-b",
+        "severity": "high",
+        "isDirect": true,
+        "via": [
+          {
+            "source": 5001,
+            "name": "lib-b",
+            "dependency": "lib-b",
+            "title": "Fixture advisory X",
+            "url": "https://github.com/advisories/GHSA-aaaa-bbbb-cccc",
+            "severity": "high",
+            "cwe": [],
+            "cvss": {
+              "score": 0,
+              "vectorString": null
+            },
+            "range": "<1.2.0"
+          }
+        ],
+        "effects": [
+          "lib-a"
+        ],
+        "range": "*",
+        "nodes": [
+          "node_modules/lib-b"
+        ],
+        "fixAvailable": false
+      },
+      "lib-d": {
+        "name": "lib-d",
+        "severity": "moderate",
+        "isDirect": true,
+        "via": [
+          {
+            "source": 5002,
+            "name": "lib-d",
+            "dependency": "lib-d",
+            "title": "Fixture advisory Y",
+            "url": "https://github.com/advisories/GHSA-dddd-eeee-ffff",
+            "severity": "moderate",
+            "cwe": [],
+            "cvss": {
+              "score": 0,
+              "vectorString": null
+            },
+            "range": "<1.5.0"
+          },
+          "lib-b"
+        ],
+        "effects": [],
+        "range": "*",
+        "nodes": [
+          "node_modules/lib-d"
+        ],
+        "fixAvailable": false
+      }
+    },
+    "metadata": {
+      "vulnerabilities": {
+        "info": 0,
+        "low": 0,
+        "moderate": 0,
+        "high": 3,
+        "critical": 0,
+        "total": 3
+      },
+      "dependencies": {
+        "prod": 0,
+        "dev": 0,
+        "optional": 0,
+        "peer": 0,
+        "peerOptional": 0,
+        "total": 0
+      }
+    }
+  }
+}

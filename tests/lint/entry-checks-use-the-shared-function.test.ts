@@ -21,7 +21,7 @@
 // planted cases at the foot run the matcher on source this file writes, so the matcher is
 // proved on both sides and not only against the tree as it happens to be today.
 //
-// A second check keeps the first from being satisfied by deleting the guard: each of the nine
+// A second check keeps the first from being satisfied by deleting the guard: each of the ten
 // guarded scripts must import the function by its own name, and a call with its own module URL
 // must decide a top-level `if`, as its condition or through a `const` the condition names. A
 // negated condition counts only with an `else`, which is where the canary does its work. A
@@ -70,6 +70,7 @@ const SHARED_FUNCTION = 'invokedAsScript';
 
 /** The scripts that do their work only when started, and are otherwise imported. */
 const GUARDED_SCRIPTS = [
+  'scripts/advisory-diff.mjs',
   'scripts/backend-canary-run.mjs',
   'scripts/census-lint-gates.mjs',
   'scripts/check-doc-links.mjs',
@@ -326,7 +327,7 @@ describe('no script under scripts/ reads process.argv[1] except through invokedA
     expect(SCANNED.length).toBeGreaterThan(0);
   });
 
-  it('reads each of the nine guarded scripts', () => {
+  it('reads each of the ten guarded scripts', () => {
     const paths = SCANNED.map(file => file.path);
     expect(GUARDED_SCRIPTS.filter(path => !paths.includes(path))).toEqual([]);
   });

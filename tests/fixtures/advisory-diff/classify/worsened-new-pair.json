@@ -1,0 +1,91 @@
+{
+  "declares": {
+    "description": "FR-014: a matching advisory id with a pair not on the base finding is worsened, never pre-existing",
+    "groups": [
+      {
+        "package": "lib-a",
+        "class": "worsened",
+        "reasons": [
+          "new-pair"
+        ],
+        "pairs": {
+          "new-pair": [
+            {
+              "location": "node_modules/host/node_modules/lib-a",
+              "version": "1.0.1"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "base": {
+    "findings": [
+      {
+        "package": "lib-a",
+        "ids": {
+          "canonical": "GHSA-ab12-cd34-ef56",
+          "aliases": []
+        },
+        "severity": "high",
+        "range": "<9.0.0",
+        "title": "Fixture classification advisory",
+        "url": "https://github.com/advisories/GHSA-ab12-cd34-ef56",
+        "locations": [
+          {
+            "location": "node_modules/lib-a",
+            "version": "1.0.0",
+            "direct": true,
+            "production": true
+          }
+        ],
+        "direct": true,
+        "production": true,
+        "dependents": [],
+        "notes": []
+      }
+    ]
+  },
+  "candidate": {
+    "findings": [
+      {
+        "package": "lib-a",
+        "ids": {
+          "canonical": "GHSA-ab12-cd34-ef56",
+          "aliases": []
+        },
+        "severity": "high",
+        "range": "<9.0.0",
+        "title": "Fixture classification advisory",
+        "url": "https://github.com/advisories/GHSA-ab12-cd34-ef56",
+        "locations": [
+          {
+            "location": "node_modules/lib-a",
+            "version": "1.0.0",
+            "direct": true,
+            "production": true
+          },
+          {
+            "location": "node_modules/host/node_modules/lib-a",
+            "version": "1.0.1",
+            "direct": false,
+            "production": true
+          }
+        ],
+        "direct": true,
+        "production": true,
+        "dependents": [],
+        "notes": []
+      }
+    ]
+  },
+  "lockfiles": {
+    "base": {
+      "node_modules/lib-a": "1.0.0"
+    },
+    "candidate": {
+      "node_modules/lib-a": "1.0.0",
+      "node_modules/host/node_modules/lib-a": "1.0.1"
+    }
+  }
+}

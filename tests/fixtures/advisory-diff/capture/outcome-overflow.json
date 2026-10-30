@@ -1,0 +1,19 @@
+{
+  "declares": {
+    "description": "A report over the bound is rejected over-bound, naming report-bytes",
+    "outcome": {
+      "status": "rejected",
+      "reason": "over-bound",
+      "bound": "report-bytes"
+    }
+  },
+  "registry": "https://registry.example.test/",
+  "npmVersion": "11.17.0",
+  "audit": {
+    "stdout": "",
+    "exitCode": null,
+    "timedOut": false,
+    "spawnError": false,
+    "overflow": true
+  }
+}

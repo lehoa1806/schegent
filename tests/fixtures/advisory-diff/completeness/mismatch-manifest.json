@@ -1,0 +1,265 @@
+{
+  "declares": {
+    "description": "The candidate capture records another manifest blob than the commit holds",
+    "complete": false,
+    "totals": null,
+    "reasons": [
+      {
+        "tree": "root",
+        "code": "mismatch",
+        "side": "candidate",
+        "detail": "manifest"
+      }
+    ],
+    "trees": {
+      "root": {
+        "complete": false,
+        "totals": null
+      },
+      "webview-ui": {
+        "complete": true,
+        "totals": {
+          "introduced": 0,
+          "worsened": 0,
+          "uncertain": 0,
+          "pre-existing": 0,
+          "resolved": 0,
+          "not-determined": 0
+        }
+      }
+    }
+  },
+  "inputs": {
+    "candidate": {
+      "commit": "2222222222222222222222222222222222222222"
+    },
+    "base": {
+      "commit": "1111111111111111111111111111111111111111",
+      "rule": "merge-base",
+      "target": "develop"
+    },
+    "evaluatedAt": "2026-10-30T09:30:00.000Z",
+    "captures": {
+      "root": {
+        "base": {
+          "captureVersion": 1,
+          "tree": "root",
+          "ecosystem": "npm",
+          "commit": "1111111111111111111111111111111111111111",
+          "objectFormat": "sha1",
+          "manifest": {
+            "path": "package.json",
+            "blob": "a3330b20a0fb6224dc005f50dd504b8798fd0563"
+          },
+          "lockfile": {
+            "path": "package-lock.json",
+            "blob": "d816d944305b209d44c1539d300c91cfe3469cd2"
+          },
+          "tool": "npm",
+          "toolVersion": "11.17.0",
+          "command": "npm audit --json --offline=false --include=dev --include=optional --include=peer",
+          "registryHost": "registry.example.test",
+          "observedAt": "2026-10-30T09:00:00.000Z",
+          "reportFormat": "npm-audit-report-2",
+          "outcome": {
+            "status": "succeeded"
+          },
+          "limitations": [
+            "Advisory data is the registry's at observedAt; it is not a statement of present exploitability.",
+            "npm may have written to its own cache in the user's home; nothing in the repository was written."
+          ],
+          "findings": [
+            {
+              "package": "lib-a",
+              "ids": {
+                "canonical": "GHSA-ab12-cd34-ef56",
+                "aliases": []
+              },
+              "severity": "moderate",
+              "range": "<9.0.0",
+              "title": "Fixture completeness advisory",
+              "url": "https://github.com/advisories/GHSA-ab12-cd34-ef56",
+              "locations": [
+                {
+                  "location": "node_modules/lib-a",
+                  "version": "1.0.0",
+                  "direct": true,
+                  "production": true
+                }
+              ],
+              "direct": true,
+              "production": true,
+              "dependents": [],
+              "notes": []
+            }
+          ]
+        },
+        "candidate": {
+          "captureVersion": 1,
+          "tree": "root",
+          "ecosystem": "npm",
+          "commit": "2222222222222222222222222222222222222222",
+          "objectFormat": "sha1",
+          "manifest": {
+            "path": "package.json",
+            "blob": "673b3dd861215c4cc8060f8adce877babad3a646"
+          },
+          "lockfile": {
+            "path": "package-lock.json",
+            "blob": "2490bfa46f14d40d71e0944f7d8cae7dbeb0bae1"
+          },
+          "tool": "npm",
+          "toolVersion": "11.17.0",
+          "command": "npm audit --json --offline=false --include=dev --include=optional --include=peer",
+          "registryHost": "registry.example.test",
+          "observedAt": "2026-10-30T09:05:00.000Z",
+          "reportFormat": "npm-audit-report-2",
+          "outcome": {
+            "status": "succeeded"
+          },
+          "limitations": [
+            "Advisory data is the registry's at observedAt; it is not a statement of present exploitability.",
+            "npm may have written to its own cache in the user's home; nothing in the repository was written."
+          ],
+          "findings": [
+            {
+              "package": "lib-a",
+              "ids": {
+                "canonical": "GHSA-ab12-cd34-ef56",
+                "aliases": []
+              },
+              "severity": "moderate",
+              "range": "<9.0.0",
+              "title": "Fixture completeness advisory",
+              "url": "https://github.com/advisories/GHSA-ab12-cd34-ef56",
+              "locations": [
+                {
+                  "location": "node_modules/lib-a",
+                  "version": "1.0.0",
+                  "direct": true,
+                  "production": true
+                }
+              ],
+              "direct": true,
+              "production": true,
+              "dependents": [],
+              "notes": []
+            },
+            {
+              "package": "lib-n",
+              "ids": {
+                "canonical": "GHSA-ab12-cd34-ef77",
+                "aliases": []
+              },
+              "severity": "high",
+              "range": "<9.0.0",
+              "title": "Fixture completeness advisory",
+              "url": "https://github.com/advisories/GHSA-ab12-cd34-ef77",
+              "locations": [
+                {
+                  "location": "node_modules/lib-n",
+                  "version": "1.0.0",
+                  "direct": true,
+                  "production": true
+                }
+              ],
+              "direct": true,
+              "production": true,
+              "dependents": [],
+              "notes": []
+            }
+          ]
+        }
+      },
+      "webview-ui": {
+        "base": {
+          "captureVersion": 1,
+          "tree": "webview-ui",
+          "ecosystem": "npm",
+          "commit": "1111111111111111111111111111111111111111",
+          "objectFormat": "sha1",
+          "manifest": {
+            "path": "webview-ui/package.json",
+            "blob": "9343f56b7455f8a9236d6931c14bcfb9a97004d1"
+          },
+          "lockfile": {
+            "path": "webview-ui/package-lock.json",
+            "blob": "e5f2298e1030d661a930a21930a8ba57a6a9c9fe"
+          },
+          "tool": "npm",
+          "toolVersion": "11.17.0",
+          "command": "npm audit --json --offline=false --include=dev --include=optional --include=peer",
+          "registryHost": "registry.example.test",
+          "observedAt": "2026-10-30T09:00:00.000Z",
+          "reportFormat": "npm-audit-report-2",
+          "outcome": {
+            "status": "succeeded"
+          },
+          "limitations": [
+            "Advisory data is the registry's at observedAt; it is not a statement of present exploitability.",
+            "npm may have written to its own cache in the user's home; nothing in the repository was written."
+          ],
+          "findings": []
+        },
+        "candidate": {
+          "captureVersion": 1,
+          "tree": "webview-ui",
+          "ecosystem": "npm",
+          "commit": "2222222222222222222222222222222222222222",
+          "objectFormat": "sha1",
+          "manifest": {
+            "path": "webview-ui/package.json",
+            "blob": "891b9499721b8490d0b2d7d9a83cc9711e448e9d"
+          },
+          "lockfile": {
+            "path": "webview-ui/package-lock.json",
+            "blob": "a5e321b410c23b65dff2f17d3dcbea48fac1f306"
+          },
+          "tool": "npm",
+          "toolVersion": "11.17.0",
+          "command": "npm audit --json --offline=false --include=dev --include=optional --include=peer",
+          "registryHost": "registry.example.test",
+          "observedAt": "2026-10-30T09:05:00.000Z",
+          "reportFormat": "npm-audit-report-2",
+          "outcome": {
+            "status": "succeeded"
+          },
+          "limitations": [
+            "Advisory data is the registry's at observedAt; it is not a statement of present exploitability.",
+            "npm may have written to its own cache in the user's home; nothing in the repository was written."
+          ],
+          "findings": []
+        }
+      }
+    },
+    "lockfiles": {
+      "root": {
+        "base": {
+          "node_modules/lib-a": "1.0.0"
+        },
+        "candidate": {
+          "node_modules/lib-a": "1.0.0",
+          "node_modules/lib-n": "1.0.0"
+        }
+      },
+      "webview-ui": {
+        "base": {},
+        "candidate": {}
+      }
+    },
+    "blobs": {
+      "1111111111111111111111111111111111111111:package.json": "a3330b20a0fb6224dc005f50dd504b8798fd0563",
+      "1111111111111111111111111111111111111111:package-lock.json": "d816d944305b209d44c1539d300c91cfe3469cd2",
+      "1111111111111111111111111111111111111111:webview-ui/package.json": "9343f56b7455f8a9236d6931c14bcfb9a97004d1",
+      "1111111111111111111111111111111111111111:webview-ui/package-lock.json": "e5f2298e1030d661a930a21930a8ba57a6a9c9fe",
+      "2222222222222222222222222222222222222222:package.json": "96cc79a324923f9b33bd2ff337afd61de3af0bc6",
+      "2222222222222222222222222222222222222222:package-lock.json": "2490bfa46f14d40d71e0944f7d8cae7dbeb0bae1",
+      "2222222222222222222222222222222222222222:webview-ui/package.json": "891b9499721b8490d0b2d7d9a83cc9711e448e9d",
+      "2222222222222222222222222222222222222222:webview-ui/package-lock.json": "a5e321b410c23b65dff2f17d3dcbea48fac1f306",
+      "3333333333333333333333333333333333333333:package.json": "a3330b20a0fb6224dc005f50dd504b8798fd0563",
+      "3333333333333333333333333333333333333333:package-lock.json": "d816d944305b209d44c1539d300c91cfe3469cd2",
+      "3333333333333333333333333333333333333333:webview-ui/package.json": "9343f56b7455f8a9236d6931c14bcfb9a97004d1",
+      "3333333333333333333333333333333333333333:webview-ui/package-lock.json": "e5f2298e1030d661a930a21930a8ba57a6a9c9fe"
+    }
+  }
+}

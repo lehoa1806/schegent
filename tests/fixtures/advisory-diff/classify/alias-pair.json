@@ -1,0 +1,82 @@
+{
+  "declares": {
+    "description": "US1-6: GHSA on one side and npm:<source> only on the other is the same finding, pre-existing",
+    "groups": [
+      {
+        "package": "lib-a",
+        "class": "pre-existing",
+        "reasons": [],
+        "ids": {
+          "canonical": "GHSA-ab12-cd34-ef56",
+          "aliases": [
+            "npm:5555"
+          ]
+        }
+      }
+    ]
+  },
+  "base": {
+    "findings": [
+      {
+        "package": "lib-a",
+        "ids": {
+          "canonical": "npm:5555",
+          "aliases": []
+        },
+        "severity": "high",
+        "range": "<9.0.0",
+        "title": "Fixture classification advisory",
+        "url": "https://example.test/advisories/5555",
+        "locations": [
+          {
+            "location": "node_modules/lib-a",
+            "version": "1.0.0",
+            "direct": true,
+            "production": true
+          }
+        ],
+        "direct": true,
+        "production": true,
+        "dependents": [],
+        "notes": []
+      }
+    ]
+  },
+  "candidate": {
+    "findings": [
+      {
+        "package": "lib-a",
+        "ids": {
+          "canonical": "GHSA-ab12-cd34-ef56",
+          "aliases": [
+            "npm:5555"
+          ]
+        },
+        "severity": "high",
+        "range": "<9.0.0",
+        "title": "Fixture classification advisory",
+        "url": "https://github.com/advisories/GHSA-ab12-cd34-ef56",
+        "locations": [
+          {
+            "location": "node_modules/lib-a",
+            "version": "1.0.0",
+            "direct": true,
+            "production": true
+          }
+        ],
+        "direct": true,
+        "production": true,
+        "dependents": [],
+        "notes": []
+      }
+    ]
+  },
+  "lockfiles": {
+    "base": {
+      "node_modules/lib-a": "1.0.0"
+    },
+    "candidate": {
+      "node_modules/lib-a": "1.0.0"
+    }
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "declares": {
+    "description": "Exit 1 with a valid report is a succeeded capture: npm exits 1 when it finds advisories",
+    "outcome": {
+      "status": "succeeded"
+    },
+    "findingCount": 1,
+    "registryHost": "registry.example.test"
+  },
+  "registry": "https://registry.example.test/",
+  "npmVersion": "11.17.0",
+  "audit": {
+    "stdoutJson": {
+      "auditReportVersion": 2,
+      "vulnerabilities": {
+        "lib-b": {
+          "name": "lib-b",
+          "severity": "high",
+          "isDirect": true,
+          "via": [
+            {
+              "source": 5001,
+              "name": "lib-b",
+              "dependency": "lib-b",
+              "title": "Fixture advisory X",
+              "url": "https://github.com/advisories/GHSA-aaaa-bbbb-cccc",
+              "severity": "high",
+              "cwe": [],
+              "cvss": {
+                "score": 0,
+                "vectorString": null
+              },
+              "range": "<1.2.0"
+            }
+          ],
+          "effects": [],
+          "range": "*",
+          "nodes": [
+            "node_modules/lib-b"
+          ],
+          "fixAvailable": false
+        }
+      },
+      "metadata": {
+        "vulnerabilities": {
+          "info": 0,
+          "low": 0,
+          "moderate": 0,
+          "high": 1,
+          "critical": 0,
+          "total": 1
+        },
+        "dependencies": {
+          "prod": 0,
+          "dev": 0,
+          "optional": 0,
+          "peer": 0,
+          "peerOptional": 0,
+          "total": 0
+        }
+      }
+    },
+    "exitCode": 1,
+    "timedOut": false,
+    "spawnError": false,
+    "overflow": false
+  }
+}
