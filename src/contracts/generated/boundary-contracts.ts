@@ -194,7 +194,8 @@ export const AUDIT_EVENT_TYPES = [
   "definition-deactivated",
   "definition-restored",
   "evidence-deleted",
-  "evidence-exported"
+  "evidence-exported",
+  "audit-integrity-condition"
 ] as const;
 
 export const SETTINGS_KEYS = [

@@ -18,6 +18,7 @@
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import type { SanitizedLogger } from '../lib/logger';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
+import type { WorkspaceLockManager } from '../state/lock';
 import { RESET_QUIESCE_POLL_INTERVAL_MS, RESET_QUIESCE_WINDOW_MS } from '../state/reset-transaction';
 import { appendResetAuditEvent, type ResetStageSupport } from './reset';
 
@@ -102,6 +103,8 @@ export function createResetStageSupport(deps: {
   readonly controller: ResetControllerPort;
   readonly auditWriter: Pick<AuditLogWriter, 'append'>;
   readonly logger: Pick<SanitizedLogger, 'warn'>;
+  /** FR-R4-F03 — the authoritative primacy read, for the owner-only check on `schegent.reset`. */
+  readonly lock: Pick<WorkspaceLockManager, 'hasPrimacy'>;
 }): ResetStageSupport {
   return {
     quiesce: async () => {
@@ -110,7 +113,8 @@ export function createResetStageSupport(deps: {
       const quiesced = await waitForRunnersToStop(deps.controller);
       return quiesced ? { ok: true, canceledRunCount } : { ok: false, reason: 'runner-still-active' };
     },
-    recordReset: (payload) => appendResetAuditEvent(deps.auditWriter, deps.logger, payload)
+    recordReset: (payload) => appendResetAuditEvent(deps.auditWriter, deps.logger, payload),
+    isOwner: () => deps.lock.hasPrimacy()
   };
 }
 

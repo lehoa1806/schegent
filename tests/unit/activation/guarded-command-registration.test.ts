@@ -49,6 +49,9 @@ function harness(trusted: () => boolean) {
     logs,
     deps: {
       isWorkspaceTrusted: trusted,
+      // FR-R4-F03 (TA7) — owner-only ids must be registered with an owner predicate. This file
+      // pins trust, not ownership, so the window it models is always the owner.
+      isOwner: () => Promise.resolve(true),
       notifier: {
         warn: (message: string) => {
           warnings.push(message);
@@ -119,9 +122,13 @@ describe('registerGuardedCommand', () => {
     }
   });
 
-  it('re-reads trust on every invocation, in both directions', () => {
+  it('re-reads trust on every invocation, in both directions', async () => {
     // The programmatic-invocation case. A boolean captured at registration would
     // pass the first two assertions and fail the third and fourth.
+    //
+    // `schegent.cancel` is owner-only (FR-R4-F03), so an invocation that passes trust answers with a
+    // promise (the owner check reads the fenced record) and these reads are awaited. An untrusted
+    // one still refuses before that check and answers at once.
     let trusted = false;
     const calls: number[] = [];
     const h = harness(() => trusted);
@@ -131,11 +138,11 @@ describe('registerGuardedCommand', () => {
     });
     const invoke = registered.get('schegent.cancel')!;
 
-    expect(invoke()).toBeUndefined();
+    expect(await invoke()).toBeUndefined();
     expect(calls).toEqual([]);
 
     trusted = true;
-    expect(invoke()).toBe('ran');
+    expect(await invoke()).toBe('ran');
     expect(calls).toEqual([0]);
 
     // There is no revoke event in VS Code (spec C1), so this direction is not a
@@ -143,7 +150,7 @@ describe('registerGuardedCommand', () => {
     // is the requirement, and a cache that refreshed once would pass the row
     // above while failing this one.
     trusted = false;
-    expect(invoke()).toBeUndefined();
+    expect(await invoke()).toBeUndefined();
     expect(calls).toEqual([0]);
   });
 
@@ -159,14 +166,15 @@ describe('registerGuardedCommand', () => {
     expect(registered.has('schegent.notAThing'), 'nothing may be registered').toBe(false);
   });
 
-  it('passes every argument through unchanged', () => {
+  it('passes every argument through unchanged', async () => {
     const seen: unknown[][] = [];
     const h = harness(() => true);
     registerGuardedCommand(h.deps, 'schegent.resumePhase', (...args: unknown[]) => {
       seen.push(args);
       return undefined;
     });
-    registered.get('schegent.resumePhase')!('prompt', 'queue-1');
+    // Owner-only (FR-R4-F03), so the handler runs once the owner check has answered.
+    await registered.get('schegent.resumePhase')!('prompt', 'queue-1');
     expect(seen).toEqual([['prompt', 'queue-1']]);
   });
 });

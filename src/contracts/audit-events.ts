@@ -51,6 +51,12 @@ import type { CatalogKind } from './catalog-store';
 // projection refused. The projection admits the field by identity in both copies, each on its own value,
 // and a refused value costs the field, never the entry. Additive — no `AUDIT_SCHEMA_VERSION` bump
 // (028 / 030 / 031 / 032 / 242 precedent).
+//
+// Feature 250 (FR-R4-F03) — additive event type `audit-integrity-condition`, written only by the audit
+// writer itself (never by a caller): a diagnosed damaged tail and the first row after a deliberate
+// history reset. The payload is versioned and sits in `./audit-integrity-condition`; the projection
+// admits it by identity. A reader that does not know it preserves the row (warn-and-preserve).
+// Additive — no `AUDIT_SCHEMA_VERSION` bump (028 / 030 / 031 / 032 / 242 precedent).
 export const AUDIT_SCHEMA_VERSION = 3 as const;
 
 export type {
@@ -982,7 +988,9 @@ export const ALL_AUDIT_EVENT_TYPES = [
   ...POINT_OF_EFFECT_EVENT_TYPES,
   ...CATALOG_LIFECYCLE_EVENT_TYPES,
   // FR-R3-127 — an operator removed or exported a Run's evidence.
-  ...EVIDENCE_LIFECYCLE_EVENT_TYPES
+  ...EVIDENCE_LIFECYCLE_EVENT_TYPES,
+  // FR-R4-F03 — the audit writer's own record of a damaged tail or a history reset.
+  'audit-integrity-condition'
 ] as const;
 
 export type PhaseEventType = (typeof PHASE_EVENT_TYPES)[number];
@@ -1484,6 +1492,8 @@ export const SYSTEM_SCOPED_EVENT_TYPES: ReadonlySet<AuditEventType> = Object.fre
     'audit-hydration-warning',
     'audit-schema-warning',
     'session-retention-applied',
+    // FR-R4-F03 — run-independent: the writer's own record about the history, with no run.
+    'audit-integrity-condition',
     // State migration / repair
     'state-migrated',
     'workflow-run-repaired',

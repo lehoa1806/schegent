@@ -49,7 +49,9 @@ The tree is demand-created. In particular, an absent `.schegent/catalog/manifest
 | `.schegent/.gitignore` | Text containing `*`; created with exclusive-write semantics and never overwrites an existing file | Keeps all local runtime artifacts out of Git even in a workspace whose repository ignore file knows nothing about Schegent. |
 | `.schegent/catalog/manifest.json` | Catalog store format v1; the only mutable catalog file | Records version lists and draft/active pointers. |
 | `.schegent/catalog/{phases,pipelines,workflows}/<id>/v<N>.json` | Immutable JSON version record | Stores one exact definition version. IDs and version names are validated before becoming path segments. |
-| `.schegent/audit.log` | Newline-delimited structured audit entries, schema v3; mode `0600` on POSIX, archives included | Primary metadata evidence. Rotation produces timestamped siblings; the writer defaults to 5 MiB and a 30-day rotation age. Host code appends. The log is tamper-**evident** but not tamper-proof: each entry carries the previous entry's digest (`src/audit/audit-chain.ts`), so an edit that does not recompute every later digest is detected by `npm run audit:verify`; an actor with write access to the same disk can recompute them. |
+| `.schegent/audit.log` | Newline-delimited structured audit entries, schema v3; mode `0600` on POSIX, archives included | Primary metadata evidence. Rotation produces timestamped siblings; the writer defaults to 5 MiB and a 30-day rotation age. Host code appends. The log is tamper-**evident** but not tamper-proof: each entry carries the previous entry's digest (`src/audit/audit-chain.ts`), so an edit that does not recompute every later digest is detected by `npm run audit:verify`; an actor with write access to the same disk can recompute them. A head checkpoint kept outside the workspace (below) lets verification report a history that is shorter than it was, or missing. |
+| `.schegent/audit.log.cuts` | Newline-delimited JSON cut records, version 2 (version 1 records are still read); mode `0600` on POSIX | One record per retention prune, naming the removed range's boundary digests. Version 2 adds how many chained and legacy rows left and the digest of the last legacy row removed, so a prune of the legacy-to-chain transition still verifies. Not itself chained; verification reads it first. |
+| `<extension global storage>/audit-checkpoints/<key>.json` | One small JSON file per workspace location, mode `0600` in a `0700` directory, **outside the workspace**; `<key>` is a SHA-256 of the real workspace path, so no path appears in it | The audit head checkpoint: the digest and position of the newest landed row, with an origin and times. Never pruned; retired only by `Schegent: Reset Audit History Checkpoint`. A moved folder leaves its old file behind. |
 | `.schegent/sessions/raw-<runId>.log` | Unredacted text, mode `0600` on POSIX | Retained raw transcript for `always`, or the promoted result for a non-clean `errors-only` Run. |
 | `.schegent/sessions/.pending/raw-<runId>.log` | Temporary unredacted text | Workspace-side pending location used by errors-only transcript handling. Raw capture also uses a private `0700` OS-temp spool while a process is active. |
 | `.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/stream.jsonl` | Unredacted JSONL, mode `0600` on POSIX, in directories `0700` from `.schegent/` down | Per-iteration CLI stream capture. |
@@ -65,6 +67,8 @@ The tree is demand-created. In particular, an absent `.schegent/catalog/manifest
 <!-- Source: src/contracts/catalog-store.ts -->
 <!-- Source: src/contracts/audit-events.ts -->
 <!-- Source: src/audit/audit-log-writer.ts -->
+<!-- Source: src/audit/audit-checkpoint-store.ts -->
+<!-- Source: src/audit/audit-chain.ts -->
 <!-- Source: src/audit/raw-transcript-writer.ts -->
 <!-- Source: src/services/phase-log/phase-log-path.ts -->
 <!-- Source: src/audit/verbose-diagnostic-path.ts -->

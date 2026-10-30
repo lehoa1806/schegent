@@ -41,9 +41,20 @@ try {
   process.exit(2);
 }
 
+// FR-R4-F03 (R18) — this script reads no checkpoint: the head checkpoint is kept in the extension's per-user
+// storage, which a script run from a shell has no way to find. So it never reports a loss verdict, and it
+// says so on EVERY run, so that a clean exit is never mistaken for one.
+const LOSS_CHECK_LINE =
+  "audit:verify: loss check: not performed (the checkpoint is kept in the extension's per-user storage, " +
+  'which this script does not read)';
+
 if (read === null) {
-  // No log is not a broken log. A fresh workspace, or one that has never run a phase.
-  console.log('audit:verify: no audit log present, nothing to verify');
+  // No audit file is not a broken log. But this script cannot tell a new workspace from history that went
+  // missing: only the extension, which holds the checkpoint, can.
+  console.log(
+    'audit:verify: no audit file is present; this script cannot tell a new workspace from missing history'
+  );
+  console.log(LOSS_CHECK_LINE);
   process.exit(0);
 }
 
@@ -62,7 +73,8 @@ if (read.files.unrecognized.length > 0) {
 }
 console.log(
   'audit:verify: NOT checked — whether the CONTENT of any entry is true; whether entries were ' +
-    'removed AND a matching cut record forged; anything about a log this machine has never seen'
+    'removed AND a matching cut record forged; anything about a log this machine has never seen; ' +
+    'whether recent entries were removed (loss detection needs the extension)'
 );
 
 if (verdict.ok) {
@@ -70,6 +82,16 @@ if (verdict.ok) {
     `audit:verify: ok  ${verdict.entries} entr${verdict.entries === 1 ? 'y' : 'ies'} chained, ` +
       `${verdict.cuts} legitimate cut(s)`
   );
+  // FR-R4-F03 (FR-001, FR-003, FR-009) — how the chain began, what retention removed, and each damage the
+  // log itself diagnoses. A diagnosed damage is reported and exits 0: it is recorded, not repaired.
+  if (verdict.transition !== null) console.log(`audit:verify: transition: ${verdict.transition}`);
+  if (verdict.prunedLegacy > 0) console.log(`audit:verify: pruned legacy rows: ${verdict.prunedLegacy}`);
+  for (const damage of verdict.damages) {
+    console.log(
+      `audit:verify: diagnosed damage: ${damage.file} line ${damage.line}, ${damage.byteLength} bytes, ` +
+        `sha256 ${damage.digestPrefix}`
+    );
+  }
   if (verdict.unchainedPrefix > 0) {
     // Reported, never hidden: a log that is mostly unchained verifies trivially, and an operator
     // reading "ok" deserves to know how much of their history the chain actually covers.
@@ -79,9 +101,12 @@ if (verdict.ok) {
         'leading prefix — an unchained entry after a chained one is reported as a removal.'
     );
   }
+  // Last, so the output of a clean run ENDS with it (quickstart section 4).
+  console.log(LOSS_CHECK_LINE);
   process.exit(0);
 }
 
+console.log(LOSS_CHECK_LINE);
 console.error(`audit:verify: ${verdict.reason} at entry ${verdict.atEntry}`);
 console.error(`  ${verdict.detail}`);
 console.error(

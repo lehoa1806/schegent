@@ -667,7 +667,22 @@ without the break becoming detectable — `npm run audit:verify` names the first
 one. Evident, not impossible: the chain head sits on the same disk, so an actor
 who can edit the log can recompute every later digest; what they cannot do is
 edit one entry and leave the rest consistent.
+
+FR-R4-F03 added three things to the writer's step. **One step, in order** (the only code that writes
+rows): ask the workspace lock who may write, so a window that does not own the workspace records nothing
+and notices the refusal; read the chain's last line as bytes when the end of the log is uncertain, and
+keep a damaged final line as found, with a versioned `audit-integrity-condition` row naming it; then link
+the row to the last row that landed, write it, and only then move the link forward. A rejected write is
+never a predecessor, and the audit sink recovers when an append lands. **A head checkpoint** (the digest
+and position of the newest landed row) is advanced after each landing, ordered between one step and the
+next and never ahead of the log, in the extension's per-user storage outside the workspace, so
+verification can report a history that is shorter than it was or missing. It makes removal of rows at or
+before the checkpoint detectable. It does not stop the same OS user from editing both stores, and it says
+nothing about rows written after it. **Construction is read-only**: the writer's retention sweep is an
+explicit step, run once after trust in the owner window.
 <!-- Source: src/audit/audit-chain.ts -->
+<!-- Source: src/audit/audit-checkpoint.ts -->
+<!-- Source: src/audit/audit-log-writer.ts -->
 
 Raw transcripts are separately configurable and written below
 `.schegent/sessions`. They preserve backend streams for diagnosis and can hold
