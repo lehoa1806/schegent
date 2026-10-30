@@ -58,6 +58,8 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   'audit-hydration-warning': 'system',
   'audit-schema-warning': 'system',
   'session-retention-applied': 'system',
+  // Feature 250 — the writer's own record about the history, with no run (system)
+  'audit-integrity-condition': 'system',
   // Retry-condition decision (task)
   'phase.retry_evaluated': 'task',
   // Delayed retry (system)
@@ -317,6 +319,7 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'audit-hydration-warning':
         case 'audit-schema-warning':
         case 'session-retention-applied':
+        case 'audit-integrity-condition':
         case 'phase.retry_evaluated':
         case 'retry-scheduled':
         case 'retry-manual':

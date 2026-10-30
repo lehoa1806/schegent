@@ -38,10 +38,19 @@
 // therefore imports only the pure decision and the frozen disposition map — never
 // a store, a lock, or anything from Stage 2 — so the guard is available at the
 // first registration rather than at the first workspace-bound one.
+//
+// OWNERSHIP IS A SECOND QUESTION, ASKED AFTER TRUST (FR-R4-F03, FR-011). Trust says whether this
+// folder may be written at all. Ownership says whether THIS window may, because the audit log has
+// one writer. A command in `OWNER_ONLY_COMMAND_IDS` starts or records work, so it asks `isOwner()`
+// after the trust check passes and, in a window that is not the owner, shows the existing palette
+// wording and runs nothing. The predicate is supplied by the caller (`lock.hasPrimacy()` in Stage 2;
+// the live Stage 2's answer, or "owner" when there is none, for the Stage 1 reset), so this module
+// still imports nothing from Stage 2 and the guard stays available at the first registration.
 
 import * as vscode from 'vscode';
 
 import {
+  OWNER_ONLY_COMMAND_IDS,
   requireDisposition,
   type ExtensionCommandId
 } from '../contracts/entry-point-dispositions';
@@ -57,7 +66,21 @@ export interface GuardedCommandDeps {
   readonly notifier: { warn(message: string): unknown };
   /** Where the refusal is recorded once, at info. */
   readonly logger: { info(message: string, context?: Record<string, unknown>): void };
+  /**
+   * FR-R4-F03 (FR-011; O3, TA8) — whether this window is the owner, asked after trust for an id of
+   * `OWNER_ONLY_COMMAND_IDS`. A thunk, like the trust read, and asynchronous because ownership is
+   * read from the fenced record. A throw counts as "not the owner". Registering an owner-only id
+   * without it throws, as an unclassified id does.
+   */
+  readonly isOwner?: () => Promise<boolean>;
 }
+
+/**
+ * The palette wording a non-owner window answers with: the text `queue-ops.ts` already shows for
+ * the same refusal, so an operator meets one sentence for one condition.
+ */
+export const NOT_OWNER_PALETTE_REFUSAL =
+  'Schegent: another window holds the workspace lock; ignoring request.';
 
 /**
  * Register a command with its trust disposition enforced at the point of effect.
@@ -79,20 +102,44 @@ export function registerGuardedCommand<A extends readonly unknown[], R>(
     return vscode.commands.registerCommand(id, handler);
   }
 
-  return vscode.commands.registerCommand(id, (...args: A): R | undefined => {
+  const isOwner = deps.isOwner;
+  const ownerOnly = Object.prototype.hasOwnProperty.call(OWNER_ONLY_COMMAND_IDS, id);
+  if (ownerOnly && isOwner === undefined) {
+    // At REGISTRATION, so a missing predicate breaks activation where a test can see it rather than
+    // leaving a command that starts work in a window that must not (FR-R4-F03, TA8).
+    throw new Error(
+      `${id} is owner-only (OWNER_ONLY_COMMAND_IDS) and must be registered with an isOwner predicate`
+    );
+  }
+
+  return vscode.commands.registerCommand(id, (...args: A): R | undefined | Promise<R | undefined> => {
     const decision = decideEntry({
       disposition: entry.disposition,
       workspaceTrusted: deps.isWorkspaceTrusted()
     });
-    if (decision.allowed) return handler(...args);
+    if (!decision.allowed) {
+      const message = renderEntryRefusal(id, entry.reason);
+      void deps.notifier.warn(message);
+      deps.logger.info('command refused: workspace not trusted', {
+        commandId: id,
+        reason: entry.reason,
+        refusal: decision.reason
+      });
+      return undefined;
+    }
+    if (!ownerOnly || isOwner === undefined) return handler(...args);
 
-    const message = renderEntryRefusal(id, entry.reason);
-    void deps.notifier.warn(message);
-    deps.logger.info('command refused: workspace not trusted', {
-      commandId: id,
-      reason: entry.reason,
-      refusal: decision.reason
+    // Trust has passed. Now ownership, which is read from the fenced record, so the answer is a
+    // promise. A throw from the predicate is "not the owner": a window that cannot prove it owns
+    // the workspace must not start or record work in it.
+    return isOwner().then(
+      (owner) => owner,
+      () => false
+    ).then((owner): R | undefined => {
+      if (owner) return handler(...args);
+      void deps.notifier.warn(NOT_OWNER_PALETTE_REFUSAL);
+      deps.logger.info('command refused: not the owner window', { commandId: id });
+      return undefined;
     });
-    return undefined;
   });
 }

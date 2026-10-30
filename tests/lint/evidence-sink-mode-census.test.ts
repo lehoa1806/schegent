@@ -242,6 +242,17 @@ const DISPOSITIONS: readonly Disposition[] = [
       'as TRUST_ANCHOR). It declares its mode.'
   },
   {
+    file: 'src/audit/audit-checkpoint-root.ts',
+    entry: 'mkdir',
+    sites: 1,
+    reason:
+      "FR-R4-F03 (R13) — creates the audit head checkpoint store's root in VS Code's global " +
+      'storage, outside every workspace, in the shape of the run-checkpoint root above: nothing ' +
+      'higher to walk from, and the root the walk in `audit-checkpoint-store.ts` starts from for ' +
+      'the `audit-checkpoints` directory and its file (`safe-open-migration.test.ts` records it ' +
+      'as TRUST_ANCHOR). It declares its mode.'
+  },
+  {
     file: 'src/services/evidence-export.ts',
     entry: 'mkdir',
     sites: 1,

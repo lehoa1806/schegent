@@ -268,7 +268,13 @@ const TRUST_ANCHOR: readonly string[] = [
   // higher trusted root to anchor at; `ensureAnchorWithinRoot` resolved exactly
   // this shape for the raw-transcript spool root, and it does not apply here.
   // Every WORKSPACE-adjacent path in this module was migrated by FR-R3-053.
-  'services/run-checkpoint-service.ts'
+  'services/run-checkpoint-service.ts',
+  // FR-R4-F03 (R13) — the same root, for the audit head checkpoint store: the extension's
+  // per-user storage, which the walk cannot create. This module holds the anchor `mkdir` and
+  // nothing else; the checkpoint directory and file beneath it go through the walk in
+  // `audit/audit-checkpoint-store.ts`. The anchor and the publish rename are two modules because
+  // this gate admits a module to this list or to the atomic-publish list, never both.
+  'audit/audit-checkpoint-root.ts'
 ];
 
 const READS_THROUGH_MIGRATED_PORT: readonly string[] = [
@@ -305,6 +311,11 @@ const READS_THROUGH_MIGRATED_PORT: readonly string[] = [
  */
 const ATOMIC_PUBLISH_RENAME_RESIDUAL: readonly string[] = [
   'audit/audit-log-writer.ts',
+  // FR-R4-F03 (R13) — the audit head checkpoint store. The temp file it renames FROM is written
+  // through the checked walk, and a containment proof precedes the publish; the rename itself
+  // cannot be handle-relative, for the reason this list exists. Its anchor `mkdir` is the other
+  // module, `audit/audit-checkpoint-root.ts`, on `TRUST_ANCHOR`.
+  'audit/audit-checkpoint-store.ts',
   'host-services/catalog-fs-adapter.ts',
   // FR-R3-082 (T1098) — added by the trim, which publishes a compacted rollup
   // through a rename. The temp file it renames FROM is written through the
@@ -362,6 +373,13 @@ const PERMANENT_LIMIT: readonly PermanentLimit[] = [
       'Atomic publish: the rename half of write-temp-then-publish resolves both pathnames.',
     site: 'tests/lint/safe-open-migration.test.ts',
     missingPrimitive: 'renameat(2). This is the ATOMIC_PUBLISH_RENAME_RESIDUAL list above, classified.'
+  },
+  {
+    residual:
+      'Atomic publish of the audit head checkpoint (FR-R4-F03): the rename resolves both pathnames, ' +
+      'in a directory the walk proved. The anchor mkdir is the other module of R13\'s split.',
+    site: 'src/audit/audit-checkpoint-store.ts',
+    missingPrimitive: 'renameat(2). The same ATOMIC_PUBLISH_RENAME_RESIDUAL residual, for the checkpoint store.'
   },
   {
     residual:

@@ -11,7 +11,8 @@ as a record of every byte emitted by a CLI.
 
 On POSIX the log, its archives and `audit.log.cuts` are `0600` inside a `0700`
 `.schegent/`. A file left wider by an earlier release is narrowed in place: the
-live log on the next append, archives by the retention sweep at host start. Its
+live log on the next append, archives by the retention sweep the owner window
+runs once after Workspace Trust is established (and by each rotation). Its
 lines and hash chain are unchanged, so `npm run audit:verify` reads it as
 before. [Who can read them](../concepts/sessions-and-logs.md#who-can-read-them)
 covers every evidence sink.
@@ -410,12 +411,64 @@ event; it is not, by itself, permission to edit or delete the row.
 <!-- Source: src/parser/audit-log-parser.ts -->
 <!-- Source: src/contracts/audit-events.ts -->
 
+## Verify the chain and check for loss
+
+Run **Schegent: Verify Audit Chain** (`schegent.verifyAuditChain`) in any window,
+trusted or not. It walks the hash chain across the archives and the cut file,
+then reads the history against the head checkpoint that Schegent keeps in the
+extension's per-user storage, outside `.schegent/`. The result is one message:
+
+- **The chain**: how many chained entries and recorded prunes, whether it began
+  at `genesis` or by linking to the last legacy row, how many leading legacy
+  entries it does not cover, and each **diagnosed damage** by file, line, length
+  and a 12-character digest prefix. A diagnosed damage is a final line that was
+  not valid JSON and was kept exactly as found, with a row after it naming it;
+  it is recorded, not repaired, and it does not fail the audit sink. Without that
+  row the same line is reported as `malformed`, as before.
+- **The loss check**, exactly one of seven states:
+
+| State | What it says |
+|---|---|
+| new workspace | No audit history and no checkpoint: nothing has been recorded yet. |
+| consistent | History reaches the checkpointed entry. Only entries after it could be missing undetected. |
+| adopted | As consistent, and loss detection began on a stated date: earlier history was not checked for loss. |
+| shorter | History is shorter than the checkpoint, with the expected and found counts, or no longer contains the checkpointed entry. Fails the audit sink (`history-shorter`). |
+| missing | The checkpoint expects history and no audit file is present. Fails the audit sink (`history-missing`). |
+| no checkpoint for this location | History is present but no checkpoint exists for this folder's location: it predates loss detection, or the folder was moved. The next recorded event in the owner window starts one. |
+| not performed | The checkpoint is unreadable, unreachable or from a newer release, or the chain is not intact. This never says the history is complete. |
+
+The command writes no file. A checkpoint can only be started by the owner
+window's first append, never by verification.
+
+The loss check reads `.schegent/audit.log.cuts` as written. A checkpointed
+entry at or below the pruned total counts as pruned, so `consistent` does not
+rule out removal by someone who also added a cut record to that file
+(threat-model T3, the cut-record limit).
+
+If a `shorter` or `missing` finding was deliberate, for example you moved the
+audit files away, run **Schegent: Reset Audit History Checkpoint**
+(`schegent.resetAuditCheckpoint`) in the owner window. It refuses while any
+`audit.log*` file is present under `.schegent/`, so move the history out first:
+the command never deletes or moves evidence. After a confirmed reset the next
+recorded event starts a new history that begins with a reset record.
+
+`npm run audit:verify` runs the same walk from a shell and prints the same
+transition, pruned-legacy and diagnosed-damage lines. It cannot read the
+checkpoint, so it always ends with `loss check: not performed`, and when no audit
+file is present it says it cannot tell a new workspace from missing history.
+<!-- Source: src/commands/verify-audit-chain.ts -->
+<!-- Source: src/commands/reset-audit-checkpoint.ts -->
+<!-- Source: src/audit/audit-checkpoint.ts -->
+<!-- Source: scripts/verify-audit-chain.ts -->
+
 ## Diagnose missing durable evidence
 
 Appends are serialized. Each filesystem append has a five-second timeout; a
 failed append rejects to its caller, reports structured evidence as
 unavailable through the evidence-health path, and does not poison later
-appends. Rotation and retention failures are warning-only so the writer can
+appends: the next row links to the last row that landed, and the audit sink is
+healthy again once an append lands (a broken link or a loss finding is not
+cleared by that). Rotation and retention failures are warning-only so the writer can
 continue using the active file where safe.
 <!-- Source: src/audit/audit-log-writer.ts -->
 
@@ -435,8 +488,10 @@ The writer's failure warning includes event ID, event type, run ID, and an
 available errno, but deliberately excludes payload and path bytes.
 <!-- Source: src/audit/audit-log-writer.ts -->
 
-Audit files are plain local JSONL with rotation and retention; the writer does
-not add a signature, hash chain, or immutable-storage guarantee. Treat them as
-useful host-observed evidence, not proof that a local operator or process could
-not alter the files after writing.
+Audit files are plain local JSONL with rotation and retention. Each row carries
+the digest of the previous row, so an edit or an unrecorded removal is evident,
+and a checkpoint outside the workspace lets verification report removed history.
+There is no signature or immutable storage, and the same OS user can edit both
+stores. Treat the files as useful host-observed evidence, not proof that a local
+operator or process could not alter them after writing.
 <!-- Source: src/audit/audit-log-writer.ts -->

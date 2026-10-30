@@ -9,6 +9,50 @@ This file is the release workflow's stable pointer for changes that affect opera
 Recorded as they land, so the first release note is assembled from evidence rather than
 from memory.
 
+### Audit continuity and loss detection (FR-R4-F03, 2026-10-31)
+
+The audit log's hash chain could be broken by nothing but ordinary operation, and could not notice the
+end of the log being removed. This closes both, and says plainly what it still cannot see.
+
+- **Both legacy transitions verify.** A history whose first chained row links to `genesis` after legacy
+  rows, and one whose first row links to the last legacy row, both verify, and a retention prune of the
+  transition is accounted for (a version 2 cut record). Verification reports which form it found and how
+  many legacy rows retention removed.
+- **A rejected append no longer forks the chain, and audit health recovers.** Each row links to the last
+  row that landed, computed inside the serialized write step, so a refused, torn or queued write is never a
+  predecessor. The audit sink is healthy again once an append lands; a broken link or a loss finding is
+  not cleared by that. Permission refusal now reads as `permission-denied`, not `io-error`, and every
+  rejected entry produces exactly one notice.
+- **Damaged tails are diagnosed.** The owner reads the log's last line as bytes before it links. A final
+  line that is not valid JSON is kept exactly as found, terminated, and followed by an
+  `audit-integrity-condition` row naming it by file, line, length and digest. Verification reports it as
+  diagnosed damage, recorded and not repaired, and it does not fail the audit sink.
+- **Only the owner window writes, and nine palette commands are refused elsewhere.** The writer asks the
+  workspace lock inside every step, so a window that does not own the workspace records nothing and notices
+  each refusal. Nine commands that start or record work (`startQueue`, `restartCanceledTask`, `cancel`,
+  `reset`, `pausePhase`, `resumePhase`, `restartPhase`, `deleteRunEvidence`, and the new reset below)
+  refuse there, after the trust check, with the existing palette warning.
+- **Untrusted activation changes nothing.** Constructing the audit writer is read-only. Archive
+  maintenance (prune, narrow, cut record) runs once, after trust, in the owner window.
+- **A head checkpoint, seven loss states and a reset command.** A small file in the extension's per-user
+  storage, outside the workspace, records the digest and position of the newest landed row. `Schegent:
+  Verify Audit Chain` reads the history against it and reports a history that is shorter than it was or
+  missing, with the counts; both fail the audit sink. `Schegent: Reset Audit History Checkpoint` retires
+  it after a deliberate removal, refuses while any audit file is present, and never deletes or moves
+  evidence. `npm run audit:verify` cannot read the checkpoint and says so on every run. This reduces
+  undetected loss. It does not stop the same OS user from editing both stores, and it says nothing about
+  rows written after the checkpoint.
+
+Compatibility:
+
+- `AUDIT_SCHEMA_VERSION` is unchanged at 3.
+- One new event type, `audit-integrity-condition`, with two versioned conditions. An older release preserves
+  the row.
+- A version 2 cut record is read by an older verifier as a no-op cut, so a form A history still verifies there.
+- An older release reads a diagnosed damaged line as `malformed`, which is conservative.
+- The checkpoint is new, with no migration of existing data: a workspace with history and no checkpoint
+  starts one at the owner's first append, and loss before that is not checked.
+
 ### Advisory comparison against an explicit baseline, report-only (FR-R4-F21, 2026-10-30)
 
 A candidate with dependency advisories is not necessarily one that made things worse, and
