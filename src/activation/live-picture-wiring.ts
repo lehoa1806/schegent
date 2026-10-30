@@ -36,6 +36,7 @@ import type { EvidenceWiring } from './evidence-wiring';
 import type { CreditWatchdog } from '../watchdog/credit-watchdog';
 import type { WebviewLogSink } from '../lib/webview-log-sink';
 import { readGeneralSettings, type GeneralSettingsConfig } from '../config/general-settings';
+import type { TransportUsage } from '../contracts/sidebar-ipc';
 import { buildBuilderLifecycleByKind } from '../ui/sidebar/builder-lifecycle';
 import { isConfirmationsEnabled } from '../state/confirmations-config';
 import { resolveRunOrigin } from '../services/run-origin-resolver';
@@ -121,6 +122,12 @@ export interface LivePictureWiringDeps {
   /** See the docblock: two setters, not the bundle that owns them. */
   readonly bindCapabilityProjector: BackendExecutionWiring['bindCapabilityProjector'];
   readonly bindTelemetryProjector: BackendExecutionWiring['bindTelemetryProjector'];
+  /**
+   * FR-R4-F04 (FR-003) — the router's cached transport measure, read per projection. Never a disk
+   * walk: `null` before the first measure, and the snapshot then omits the field and the Settings tab
+   * shows nothing.
+   */
+  readonly transportUsage: () => TransportUsage | null;
 }
 
 export interface LivePictureWiring {
@@ -163,7 +170,8 @@ export function wireLivePicture(deps: LivePictureWiringDeps): LivePictureWiring 
     collectAllWorkflowPipelineRefs,
     effectiveLimitSources,
     bindCapabilityProjector,
-    bindTelemetryProjector
+    bindTelemetryProjector,
+    transportUsage
   } = deps;
 
 const connectedRuns = createConnectedRunService(store, historyStore);
@@ -177,10 +185,14 @@ const projector = new StateProjector({
   getCatalog: () => catalogSession.catalog,
   defaultRunnerKind: backendKind,
   // Re-read scalar settings on each projection.
-  getGeneralSettings: () =>
-    readGeneralSettings(
+  getGeneralSettings: () => {
+    const settings = readGeneralSettings(
       vscode.workspace.getConfiguration('schegent', vscode.Uri.file(workspaceRoot)) as unknown as GeneralSettingsConfig
-    ),
+    );
+    // FR-R4-F04 (FR-003) — the usage line's data, beside the settings it is shown under; omitted until measured.
+    const usage = transportUsage();
+    return usage === null ? settings : { ...settings, transportUsage: usage };
+  },
   getSessionArtifacts: () => sessionRetention.getUsage(),
   getEvidenceHealth: () => evidenceHealth.getSnapshot(),
   // Feature 187 — asked per queue, per projection. In memory, so this is a map

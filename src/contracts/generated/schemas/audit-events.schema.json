@@ -144,7 +144,8 @@
           "definition-restored",
           "evidence-deleted",
           "evidence-exported",
-          "audit-integrity-condition"
+          "audit-integrity-condition",
+          "operator-pseudonym-reset"
         ]
       },
       "uniqueItems": true

@@ -73,7 +73,8 @@ to that model. Schegent does not install or authenticate that CLI for you.
 Read the [threat model](../security/threat-model.md) before a first run. The default `claude` runner is
 spawned with `--dangerously-skip-permissions`: its approval prompts are off and the agent acts
 without asking, within whatever the OS user can reach. That is the reason the disposable workspace
-above is a requirement and not a suggestion.
+above is a requirement and not a suggestion. Also read what leaves the machine whatever Schegent's
+capture settings say: [egress and the raw transcript's lifetime](../concepts/local-first-not-offline.md#egress-and-the-raw-transcripts-lifetime).
 <!-- Source: examples/speckit-bugfix.pipeline.yaml -->
 <!-- Source: src/runner/claude-cli.ts -->
 

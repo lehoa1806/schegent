@@ -57,6 +57,8 @@ export interface PhaseExecutionWiringDeps {
   readonly protectedSessionRunIds: EvidenceWiring['protectedSessionRunIds'];
   readonly readUncontainedAllowed: BackendExecutionWiring['readUncontainedAllowed'];
   readonly verboseAccessor: BackendExecutionWiring['verboseAccessor'];
+  /** FR-R4-F04 (X5) — handed on to the run-safety wiring, whose Run-end hook applies the transport end table. */
+  readonly transportRouter: BackendExecutionWiring['transportRouter'];
 }
 
 /**
@@ -124,7 +126,8 @@ export async function wirePhaseExecution(
     sessionRetention,
     protectedSessionRunIds,
     readUncontainedAllowed,
-    verboseAccessor
+    verboseAccessor,
+    transportRouter
   } = deps;
 
 const fatalSignaturesAccessor = {
@@ -176,6 +179,7 @@ const runSafety = await createRunSafetyWiring({
   historyStore,
   logger,
   rawTranscript,
+  transportRouter,
   sessionRetention,
   protectedSessionRunIds,
   evidenceHealth,

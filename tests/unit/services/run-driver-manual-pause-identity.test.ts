@@ -24,6 +24,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { RunDriver } from '../../../src/services/run-driver';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
+import { fakeRunLogger } from './fake-run-logger';
 
 const NOW = 1_700_000_000_000;
 const TASK_ID = 'task-1';
@@ -102,7 +103,7 @@ describe('RunDriver resolves the manual-pause snapshot by the Run own identity (
       },
       statusBar: { update: vi.fn() },
       notifier: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
-      logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
+      logger: fakeRunLogger(),
       lock: {},
       options: { cliPath: 'claude', cwd: '/tmp', iterationCap: 5 },
       monitor: { emit: vi.fn() },

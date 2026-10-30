@@ -88,7 +88,25 @@ export const MUTATING_COMMAND_IDS = Object.freeze({
 
   // FR-R4-F03 (FR-017) — writes the audit head checkpoint outside the workspace, retiring it. Mutating
   // and owner-only, and it refuses while any audit file is present: it never deletes or moves evidence.
-  'schegent.resetAuditCheckpoint': 'retires the audit head checkpoint'
+  'schegent.resetAuditCheckpoint': 'retires the audit head checkpoint',
+
+  // FR-R4-F04 (FR-020, E10, R24) — the two exports. They were read-only under FR-R3-136's C7, on the
+  // argument that the destination comes from a modal no workspace content can answer, and that stays
+  // true. What changed is that each export now RECORDS itself in the audit log, and a window that does
+  // not own the workspace cannot write that row (the audit writer throws `audit-not-owner` there), so an
+  // export from an untrusted or secondary window could never be recorded. Reversing that choice is the
+  // price of FR-020 ("every export is one audit row"): the exports are mutating, owner-only commands.
+  'schegent.exportAuditLog': 'audit export, recorded in the audit log',
+  'schegent.exportRunEvidence': 'evidence export, recorded in the audit log',
+
+  // FR-R4-F04 (FR-028) — replaces the operator pseudonym, and records that it did. Mutating and
+  // owner-only: an untrusted window refuses it, and a window that does not own the workspace has no owner
+  // to write the row.
+  'schegent.resetOperatorPseudonym': 'operator pseudonym reset, recorded in the audit log',
+
+  // FR-R4-F04 (FR-034, R34) — builds a diagnostics bundle for one Run and records that it did, like the
+  // two exports above: mutating and owner-only, for the same reason (the row needs an owner to write it).
+  'schegent.createDiagnosticsBundle': 'diagnostics bundle, recorded in the audit log'
 } as const);
 
 /**
@@ -119,14 +137,9 @@ export const READ_ONLY_COMMAND_IDS = Object.freeze({
   // which is why the reason names the body rather than the intent.
   'schegent.redetectClaudeTransport': 'notification only',
 
-  // Both write a file, and both stay read-only under C7: the destination comes
-  // from a modal the operator confirms — `vscode.window.showSaveDialog` for the
-  // audit export, an injected `promptForDestination()` for the evidence export —
-  // and no workspace content can confirm a modal or choose that path. The
-  // evidence export additionally refuses any destination inside `.schegent/`,
-  // which is the only path the workspace does control.
-  'schegent.exportAuditLog': 'audit export to an operator-confirmed destination',
-  'schegent.exportRunEvidence': 'evidence export to an operator-confirmed destination',
+  // FR-R4-F04 — `schegent.exportAuditLog` and `schegent.exportRunEvidence` were here, read-only under
+  // FR-R3-136's C7 (the destination comes from a modal no workspace content can answer). They record an
+  // audit row now and so moved to `MUTATING_COMMAND_IDS` above, owner-only.
 
   // FR-R4-F16 (feature 244) — reads the audit chain and the queue state and opens an unsaved Markdown
   // document. It is given no audit writer, queue manager, controller or lock (`failedRowCensusPorts`),
@@ -166,7 +179,11 @@ export const OWNER_ONLY_COMMAND_IDS = Object.freeze({
   'schegent.resumePhase': 'records the phase control',
   'schegent.restartPhase': 'records the phase control',
   'schegent.deleteRunEvidence': 'records the deletion',
-  'schegent.resetAuditCheckpoint': 'retires the audit head checkpoint'
+  'schegent.resetAuditCheckpoint': 'retires the audit head checkpoint',
+  'schegent.exportRunEvidence': 'records the export',
+  'schegent.exportAuditLog': 'records the export',
+  'schegent.resetOperatorPseudonym': 'records the reset',
+  'schegent.createDiagnosticsBundle': 'records the export'
 } as const satisfies Partial<Record<ExtensionCommandId, string>>);
 
 export type OwnerOnlyCommandId = keyof typeof OWNER_ONLY_COMMAND_IDS;

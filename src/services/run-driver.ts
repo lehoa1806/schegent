@@ -217,10 +217,11 @@ export class RunDriver {
   private readonly overriddenActivePhaseAborts = new Set<string>();
   private readonly sequencer = new PhaseSequencer();
   /** FR-R3-175 (SC-010) — per-drive; cleared in `endOfDriveReset()`. */
-  private readonly sessionDisposition: SessionDispositionReporter;
+  private sessionDisposition: SessionDispositionReporter;
+  private logger: SanitizedLogger; // FR-R4-F04 (C1, FR-033): the window logger between drives, `{ runId }` during one
 
   constructor(private readonly deps: RunDriverDeps) {
-    this.sessionDisposition = new SessionDispositionReporter(deps.logger);
+    this.logger = deps.logger; this.sessionDisposition = new SessionDispositionReporter(this.logger);
   }
 
   public get running(): boolean {
@@ -321,7 +322,7 @@ export class RunDriver {
     // and it never costs the Run its record.
     const verdict = await this.deps.store.readRunIfLive(found.queueId);
     if (verdict.outcome === 'superseded' && verdict.run.id === run.id) {
-      this.deps.logger.warn(
+      this.logger.warn(
         `run snapshot declined: record for run ${run.id} was written at fence ` +
           `${verdict.writtenAtFence}, superseded by ${verdict.liveFence}`
       );
@@ -379,7 +380,7 @@ export class RunDriver {
           reason: verdict.reason
         })
         .catch(() => undefined);
-      this.deps.logger.warn(
+      this.logger.warn(
         `output target refused at dispatch: port ${verdict.portId} (${verdict.reason})`
       );
       // A Run-level failure with a named cause, raised BEFORE the runner is
@@ -412,17 +413,17 @@ export class RunDriver {
    */
   private logQueueRefusal(op: 'pause' | 'finish', context: string, result: MutationResult): void {
     if (result.ok === false) {
-      this.deps.logger.warn(`run-driver: queue.${op} (${context}) refused: ${result.reason ?? 'unknown'}`);
+      this.logger.warn(`run-driver: queue.${op} (${context}) refused: ${result.reason ?? 'unknown'}`);
     }
   }
 
   public async drive(initial: WorkflowRun, description: string): Promise<void> {
     if (this.isRunning) {
-      this.deps.logger.warn('controller already running; ignoring duplicate driveRun');
+      this.logger.withContext({ runId: initial.id }).warn('controller already running; ignoring duplicate driveRun');
       return;
     }
-    this.isRunning = true;
-    this.cancellationController = new AbortController();
+    this.isRunning = true; this.cancellationController = new AbortController();
+    this.logger = this.deps.logger.withContext({ runId: initial.id }); this.sessionDisposition = new SessionDispositionReporter(this.logger);
     let run = initial;
     let previousPhaseMessage: Readonly<Record<string, string>> | null = null;
     let pendingIsContinue = this.deps.isContinueGate.consume();
@@ -463,7 +464,7 @@ export class RunDriver {
           } catch {
             const failureMessage =
               `Runner probe failed for ${runnerKind}: CLI executable is unavailable or invalid.`;
-            this.deps.logger.error(`run-driver: ${failureMessage}`);
+            this.logger.error(`run-driver: ${failureMessage}`);
             const sanitized: SanitizedError = {
               code: 'runner-probe-failed',
               message: failureMessage,
@@ -500,7 +501,7 @@ export class RunDriver {
               });
               this.logQueueRefusal('finish', 'probe failed', finished);
             } catch (queueError) {
-              this.deps.logger.warn(`run-driver: queue.finish (probe failed) failed: ${errorMessage(queueError)}`);
+              this.logger.warn(`run-driver: queue.finish (probe failed) failed: ${errorMessage(queueError)}`);
             }
             // Feature 072 — emit task-execution-ended. FR-R3-107: one emitter, and the
             // statistics are DERIVED here rather than hand-written as zeros.
@@ -921,7 +922,7 @@ export class RunDriver {
           // pause, so the loop exits the same way every other pause branch does.
           const latestRun = await this.latestSnapshotOf(run);
           if (latestRun === null) {
-            this.deps.logger.warn(
+            this.logger.warn(
               `manual pause skipped: run ${run.id} is no longer active on its queue`
             );
             break;
@@ -1047,7 +1048,7 @@ export class RunDriver {
           try {
             await this.deps.terminalTransitions?.complete(run, description);
           } catch (error) {
-            this.deps.logger.warn(
+            this.logger.warn(
               `run-driver: terminal transition failed: ${errorMessage(error)}`
             );
           }
@@ -1055,7 +1056,7 @@ export class RunDriver {
         try {
           await this.deps.onRunTerminal?.(run);
         } catch (error) {
-          this.deps.logger.warn(
+          this.logger.warn(
             `run-driver: terminal retention hook failed: ${errorMessage(error)}`
           );
         }
@@ -1085,9 +1086,7 @@ export class RunDriver {
     run: WorkflowRun,
     postDecision: PostPhaseDecision
   ): void {
-    for (const w of postDecision.warnings) {
-      this.deps.logger.warn(w);
-    }
+    for (const w of postDecision.warnings) this.logger.warn(w);
     if (postDecision.evictStagnationTracker) {
       // Same phaseId key `maybeEmit()` uses (`phaseDef?.id ?? phase`), and it
       // cannot differ: `decideBeforePhase()` resolves the def by that id.
@@ -1103,7 +1102,7 @@ export class RunDriver {
     this.isRunning = false;
     this.cancellationController = null;
     this.carriedIssues = [];
-    this.sessionDisposition.reset();
+    this.sessionDisposition.reset(); this.logger = this.deps.logger;
     this.deps.runner.evictStagnationTracker(run.id);
   }
 
@@ -1196,7 +1195,7 @@ export class RunDriver {
     });
     await this.deps.failureRecords?.record({ run: failed, cause: 'audit_evidence_unavailable', result: null });
 
-    this.deps.logger.error(
+    this.logger.error(
       'run-driver: execution stopped because required structured audit evidence is unavailable'
     );
     const notice = failureNotice({ cause: 'audit_evidence_unavailable' });
@@ -1215,14 +1214,14 @@ export class RunDriver {
       });
       this.logQueueRefusal('finish', 'audit unavailable', finished);
     } catch (queueError) {
-      this.deps.logger.warn(
+      this.logger.warn(
         `run-driver: queue.finish (audit unavailable) failed: ${errorMessage(queueError)}`
       );
     }
     try {
       await this.deps.historyRecorder.record(failed, description, 'failed');
     } catch (historyError) {
-      this.deps.logger.warn(
+      this.logger.warn(
         `run-driver: history record (audit unavailable) failed: ${errorMessage(historyError)}`
       );
     }
@@ -1289,7 +1288,7 @@ export class RunDriver {
   ): Promise<void> {
     const audit = this.deps.emitTaskLifecycleAudit;
     const sink = audit ? { emitTaskLifecycle: audit } : null;
-    await emitTerminalOutcomeAudit(sink, this.deps.logger, run, terminalStatus, extra);
+    await emitTerminalOutcomeAudit(sink, this.logger, run, terminalStatus, extra);
   }
 }
 

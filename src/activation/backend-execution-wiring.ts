@@ -4,6 +4,8 @@
 // the spawn happens when a Run starts, and no Run starts in an untrusted window.
 // The one `disposables.push` here is `cancelAll` at teardown.
 
+import * as os from 'node:os';
+
 import * as vscode from 'vscode';
 
 import type { AuditLogWriter } from '../audit/audit-log-writer';
@@ -32,11 +34,17 @@ import type { EvidenceHealthMonitor } from '../services/evidence-health/evidence
 import { RATE_LIMIT_MATCHERS } from '../parser/credit-error-detector';
 import { withDropReporting, type BoundedTransport } from '../monitor/drop-reporting-transport';
 import { createCliTransportSink } from '../monitor/cli-transport-sink';
+import { createTransportRouter, type TransportRouter } from '../monitor/transport/transport-router';
 import { getCanonicalWorkspaceRoot } from '../state/workspace-folder-picker';
 import { windowsShellOut } from '../telemetry/platform/platform-windows';
 import { psShellOut } from '../telemetry/platform/platform-ps';
 import { createSpawnIdentityRecorder } from '../state/spawn-identity-recorder';
 import { createBackendDiagnosticsWiring, type BackendDiagnosticsWiring } from './backend-wiring';
+import {
+  readRawTranscriptMode,
+  readSessionRetentionMaxAgeDays,
+  readTransportCaptureMode
+} from './uncached-settings-accessors';
 
 /**
  * FR-R3-119 — the backend execution collaborators, wired.
@@ -108,6 +116,12 @@ export interface BackendExecutionWiring {
    * replaces the graph, and a teardown must reach the CURRENT sink.
    */
   readonly transport: BoundedTransport;
+  /**
+   * FR-R4-F04 (X5) — the router the sink hands every line to. Returned so the Run-end hook can call
+   * `finalizeRun` on it and the maintenance pass can run it; the sink's disposal releases its
+   * descriptors, so it needs no teardown entry of its own.
+   */
+  readonly transportRouter: TransportRouter;
   readonly sampler: TelemetrySamplerImpl;
   /**
    * Feature 093 BUG-001 (T103) — the sidecar dispatch the registry was built
@@ -173,8 +187,21 @@ export function wireBackendExecution(
 // outlives one folder, and the destination and its containment root are derived
 // together so the two cannot disagree.
 // FR-R3-106 — wrapped so backpressure refusals reach evidence health.
+//
+// FR-R4-F04 — the sink no longer writes files. It formats and redacts, then hands each line to the
+// router, which resolves the transport mode from settings read on that line and writes a Run file, a
+// stage file or nothing. The settings are read through the uncached accessors (hard rule 24).
+const transportRouter = createTransportRouter({
+  workspaceRoot: () => getCanonicalWorkspaceRoot()?.uri.fsPath ?? null,
+  readSetting: () => readTransportCaptureMode(workspaceRoot),
+  readRawTranscriptMode: () => readRawTranscriptMode(workspaceRoot),
+  readMaxAgeDays: () => readSessionRetentionMaxAgeDays(workspaceRoot),
+  tempRoot: os.tmpdir(),
+  runStatus: (runId) => Object.values(store.getRunMap()).find((run) => run.id === runId)?.status,
+  logger
+});
 const transport: BoundedTransport = withDropReporting(
-  createCliTransportSink(() => getCanonicalWorkspaceRoot()?.uri.fsPath ?? null, logger),
+  createCliTransportSink(transportRouter, logger),
   evidenceHealth
 );
 // FR-R3-137 (FR-009, C5) — the partial-construction net, registered HERE, at the
@@ -413,6 +440,7 @@ const verboseAccessor = {
   return {
     monitor,
     transport,
+    transportRouter,
     sampler,
     monitorHook,
     runnerRegistry,

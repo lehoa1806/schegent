@@ -57,6 +57,13 @@ import type { CatalogKind } from './catalog-store';
 // history reset. The payload is versioned and sits in `./audit-integrity-condition`; the projection
 // admits it by identity. A reader that does not know it preserves the row (warn-and-preserve).
 // Additive — no `AUDIT_SCHEMA_VERSION` bump (028 / 030 / 031 / 032 / 242 precedent).
+//
+// Feature 251 (FR-R4-F04) — additive event type `operator-pseudonym-reset`, written by the reset command
+// only. Its payload is empty (`{}`): neither the old nor the new pseudonym is in the row, and no path,
+// actor or content can be. Its `runId` is `''`, so it is `system` scope. `evidence-exported`, already
+// registered by feature 249, is now written for the first time, with a closed payload of its own
+// (`../audit/evidence-lifecycle-payload`). A reader that does not know either preserves the row
+// (warn-and-preserve). Additive — no `AUDIT_SCHEMA_VERSION` bump (same precedent).
 export const AUDIT_SCHEMA_VERSION = 3 as const;
 
 export type {
@@ -943,6 +950,9 @@ export const CATALOG_LIFECYCLE_EVENT_TYPES = [
  */
 export const EVIDENCE_LIFECYCLE_EVENT_TYPES = ['evidence-deleted', 'evidence-exported'] as const;
 
+/** FR-R4-F04 (FR-028) — the operator reset their attribution pseudonym; the row carries neither value. */
+export const OPERATOR_ATTRIBUTION_EVENT_TYPES = ['operator-pseudonym-reset'] as const;
+
 export const ALL_AUDIT_EVENT_TYPES = [
   ...PHASE_EVENT_TYPES,
   ...RUNNER_EVENT_TYPES,
@@ -990,7 +1000,9 @@ export const ALL_AUDIT_EVENT_TYPES = [
   // FR-R3-127 — an operator removed or exported a Run's evidence.
   ...EVIDENCE_LIFECYCLE_EVENT_TYPES,
   // FR-R4-F03 — the audit writer's own record of a damaged tail or a history reset.
-  'audit-integrity-condition'
+  'audit-integrity-condition',
+  // FR-R4-F04 — the operator reset their attribution pseudonym.
+  ...OPERATOR_ATTRIBUTION_EVENT_TYPES
 ] as const;
 
 export type PhaseEventType = (typeof PHASE_EVENT_TYPES)[number];
@@ -1494,6 +1506,8 @@ export const SYSTEM_SCOPED_EVENT_TYPES: ReadonlySet<AuditEventType> = Object.fre
     'session-retention-applied',
     // FR-R4-F03 — run-independent: the writer's own record about the history, with no run.
     'audit-integrity-condition',
+    // FR-R4-F04 — run-independent: an operator act on this workspace's attribution, with no run.
+    'operator-pseudonym-reset',
     // State migration / repair
     'state-migrated',
     'workflow-run-repaired',

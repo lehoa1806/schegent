@@ -74,6 +74,17 @@ const TRANSPORT_SCOPE = ['src/monitor', 'src/controller'] as const;
 const SINK_FILE = 'src/monitor/cli-transport-sink.ts';
 
 /**
+ * FR-R4-F04 (X9) — the files that now hold what the sink's file I/O became. Rule C names them too: the
+ * router and the store write the CLI's own output, so they are the other tier in exactly the way the sink
+ * is, and one of them reaching for the audit writer would give back the volume while looking like the fix.
+ */
+const TRANSPORT_WRITER_FILES = [
+  SINK_FILE,
+  'src/monitor/transport/transport-router.ts',
+  'src/monitor/transport/run-transport-store.ts'
+] as const;
+
+/**
  * Files that must contribute at least one per-line loop. Without them a rename
  * of `lines.complete`, or a change to how loops are written, would empty rule
  * B's scan and pass it forever — the failure a forbidding lint can least afford.
@@ -287,17 +298,17 @@ describe('FR-R3-007 — CLI transport stays out of the structured audit log', ()
     ).toEqual([]);
   });
 
-  it('C. the transport sink does not reach for the audit writer', () => {
-    const code = stripComments(readFileSync(resolve(REPO_ROOT, SINK_FILE), 'utf8'));
+  it.each(TRANSPORT_WRITER_FILES)('C. %s does not reach for the audit writer', (file) => {
+    const code = stripComments(readFileSync(resolve(REPO_ROOT, file), 'utf8'));
     expect(
       AUDIT_IMPORT.test(code),
-      `${SINK_FILE} imports from the audit tier. It is the other tier: bounded, best-effort, ` +
+      `${file} imports from the audit tier. It is the other tier: bounded, best-effort, ` +
         'and deliberately unable to fail a phase. Coupling the two gives back the volume ' +
         'while looking like the fix.'
     ).toBe(false);
     expect(
       /\bappendAudit\s*\(/.test(code),
-      `${SINK_FILE} appends an audit entry. The sink records transported content; the audit ` +
+      `${file} appends an audit entry. The transport writers record transported content; the audit ` +
         'writer records what Schegent did.'
     ).toBe(false);
   });

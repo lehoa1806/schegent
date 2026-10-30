@@ -94,6 +94,10 @@ export type GeneralSettingsControlId =
   | 'rawTranscriptMode'
   | 'rawTranscriptMode-save'
   | 'rawTranscriptMode-reset'
+  // FR-R4-F04 (FR-001) — the transport capture mode.
+  | 'transportCaptureMode'
+  | 'transportCaptureMode-save'
+  | 'transportCaptureMode-reset'
   // FR-R3-143 (T033) — the six the manifest declared and no surface could
   // reach. `cliEnvironmentAllowlist` carries two extra ids because it is the
   // one list-valued field: its editor has an Add button and a Remove button
@@ -224,6 +228,21 @@ export const GENERAL_SETTINGS_DESCRIPTIONS = {
   },
   'rawTranscriptMode-reset': {
     body: 'Restore the projected raw-transcript policy. This control stays disabled when there are no unsaved changes to discard.'
+  },
+  transportCaptureMode: {
+    title: 'CLI transport capture',
+    body:
+      'Whether Schegent keeps CLI transport, the stream lines exchanged with the CLI, with secret ' +
+      'patterns redacted and otherwise as sent. Kept per Run, bounded by size and by the session ' +
+      'retention age. `inherit` follows the raw transcript mode; `off` keeps nothing; `errors-only` ' +
+      'keeps a Run\'s transport only if it fails or is canceled; `on` keeps all of it. Claude Code ' +
+      'itself sends the conversation to the model vendor whatever this setting.'
+  },
+  'transportCaptureMode-save': {
+    body: 'Save this transport capture mode. It applies to the next line a Run emits, including a Run already in progress.'
+  },
+  'transportCaptureMode-reset': {
+    body: 'Restore the projected transport capture mode. This control stays disabled when there are no unsaved changes to discard.'
   },
   'loggingVerbose-save': {
     body:

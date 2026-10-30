@@ -996,7 +996,15 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // failure cause exists only on a failed Run, written as one line in `validateRunInvariants`
       // because the check is this store's to run on both write paths. Its reasoning is on
       // `WorkflowRun.failureCause` and in `tests/unit/state/failure-cause-invariant.test.ts`.
-      highWaterMark: 3355
+      //
+      // Feature 251 (FR-R4-F04, 2026-10-31) — 3355 → 3379, +24, by this gate's count. The lines are the
+      // `operatorPseudonym` entry in `KEYS` with its reason (six), the same key's reason on
+      // `RESET_EXEMPT_KEYS` (seven, with the comma the previous last entry now needs changing a line and
+      // adding none), and the pseudonym's read and write beside the run quarantine's (eleven, with their
+      // docblocks). The key is this store's: it is a memento value, and every memento key is declared and
+      // accounted for here (`reset-covers-every-key.test.ts` holds the partition). The attribution
+      // logic itself lives in `src/lib/operator-attribution.ts`.
+      highWaterMark: 3379
     }
   },
   // Feature 077 — public facade and every state-projection collaborator have
@@ -1331,7 +1339,11 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // the typed field, its `scopes` row, its `AllowedKey` member and its
   // `KEY_SPECS` entry — plus whatever its entry needs to explain itself. 450
   // against 418 is roughly two more settings; a third needs a decision.
-  { path: 'src/config/general-settings-keys.ts', maxLines: 450 },
+  //
+  // FR-R4-F04 (feature 251, 2026-10-31) — 450 -> 475. The transport capture setting is the third and
+  // fourth settings' worth of rows the note above allowed for: the typed field, its scope, its
+  // `AllowedKey` member and its `KEY_SPECS` entry, plus the reason it exists. 437 by this gate's count.
+  { path: 'src/config/general-settings-keys.ts', maxLines: 475 },
   // FR-R3-144 (T002) — the validator, a pure function of a spec and a value.
   //
   // Budgeted despite being the smallest entry in this list, because "it is only
@@ -1472,9 +1484,33 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // checked walk instead of a modeless `writeFile`, and rotated generations are
   // narrowed where they lie. The ceiling is taken from that count, not from the
   // one the review saw.
-  { path: 'src/monitor/cli-transport-sink.ts', maxLines: 1_320 },
-  // 1,186, unchanged by this feature.
-  { path: 'src/ui/sidebar/snapshot.ts', maxLines: 1_225 },
+  //
+  // FR-R4-F04 (feature 251, 2026-10-31) — 1,320 -> 650, lowered. The sink writes no file any more: the
+  // rotation, the generations, the containment cache, the held descriptors and the injected write ports
+  // (everything that was about a destination) moved to `src/monitor/transport/` (the router and the
+  // store), and what stays is the formatting, the redactor registry, the pending bound and the
+  // disposal. 594 by this gate's count; 50 lines keeps it clear of `tightMargin(650)` = 25 and below
+  // where it was.
+  { path: 'src/monitor/cli-transport-sink.ts', maxLines: 650 },
+  // FR-R4-F04 (feature 251, 2026-10-31) — the audit writer crosses the 1,000-line entry condition (998 ->
+  // 1,009 by this gate's count). The age logic lives in three new modules (`audit-generation-age.ts`,
+  // `audit-generation-sidecar.ts`, `audit-generation-classify.ts`), so the writer gained only an import, a
+  // field, the clock's construction and its three calls (`observe`, `landed`, `rotated`), and `maybeRotate`
+  // lost the mtime read. 1,050 leaves 41 lines, clear of `tightMargin(1050)` = 25.
+  { path: 'src/audit/audit-log-writer.ts', maxLines: 1_050 },
+  // FR-R4-F04 (feature 251, 2026-10-31) — `audit-payload.ts` reaches the 1,000-line entry condition (998 ->
+  // 1,001 by this gate's count). The closed `evidence-exported` projection is its own module
+  // (`evidence-lifecycle-payload.ts`) and the validation error moved to `audit-payload-error.ts` so the
+  // two can be imported without a cycle; this file gained the two imports and one arm and lost the class.
+  // 1,050 leaves 49 lines, clear of `tightMargin(1050)` = 25.
+  { path: 'src/audit/audit-payload.ts', maxLines: 1_050 },
+  // 1,186, unchanged by feature 217's workstream.
+  //
+  // FR-R4-F04 (feature 251, 2026-10-31) — 1,225 -> 1,250. The transport capture setting adds its idle
+  // default and scope (4 lines) and the snapshot's `GeneralSettingsProjection` type with its reason (14
+  // lines): 1,208 by this gate's count, and the ceiling is raised by the lines added, to the same order
+  // of headroom `tightMargin` expects.
+  { path: 'src/ui/sidebar/snapshot.ts', maxLines: 1_250 },
   // 1,100, unchanged by this feature.
   { path: 'src/monitor/claude-cli-monitor.ts', maxLines: 1_140 },
   // 1,018, and captured only because the first workstream took it from 899
@@ -1527,7 +1563,16 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // and belongs on the System tab. The payload type lives in
       // `src/contracts/audit-integrity-condition.ts`, not here, and the projection arm lives in
       // `src/audit/audit-payload.ts`.
-      highWaterMark: 1576
+      //
+      // Feature 251 (FR-R4-F04, 2026-10-31) — 1576 → 1590, +14, by this gate's count. The lines are the
+      // feature entry in the file's own header (seven, with its blank comment line), the new group
+      // `OPERATOR_ATTRIBUTION_EVENT_TYPES` with its doc comment (two) and its spread into
+      // `ALL_AUDIT_EVENT_TYPES` with its note (three, the comma the previous last member now needs
+      // changing a line and adding none), and the same type in `SYSTEM_SCOPED_EVENT_TYPES` with its
+      // one-line note (two), because the row has no run and belongs on the System tab. The payload is
+      // empty, so there is no type to add, and `evidence-exported`'s projection lives in
+      // `src/audit/evidence-lifecycle-payload.ts`.
+      highWaterMark: 1590
     }
   },
   // The second file of the same 2026-10-01 decision; see the waiver above.

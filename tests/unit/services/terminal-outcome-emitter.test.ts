@@ -137,7 +137,8 @@ describe('FR-R3-107 — the terminal outcome has one emitter', () => {
 
   it('both terminal routes reach the one emitter', () => {
     // The driver's route, through its own private wrapper that `terminalSettler` binds to.
-    expect(SOURCE).toContain('emitTerminalOutcomeAudit(sink, this.deps.logger, run, terminalStatus, extra)');
+    // FR-R4-F04 (C1): the driver passes its per-drive logger, so the warning on a failed audit append carries the Run id.
+    expect(SOURCE).toContain('emitTerminalOutcomeAudit(sink, this.logger, run, terminalStatus, extra)');
     // The controller's route, through the auditor it hands every other audit event to.
     // Asserted at BOTH ends: a route that stopped calling it, or an auditor method
     // that started building its own payload, each re-open exactly what this closed.

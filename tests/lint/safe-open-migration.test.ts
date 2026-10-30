@@ -321,6 +321,12 @@ const ATOMIC_PUBLISH_RENAME_RESIDUAL: readonly string[] = [
   // through a rename. The temp file it renames FROM is written through the
   // checked walk; the publish itself cannot be, for the reason this list exists.
   'metrics/metrics-rollup-writer.ts',
+  // FR-R4-F04 (feature 251) — the transport store's compaction. The sibling temp file it renames FROM is
+  // written through the checked walk (`wx`, `0600`), a containment proof of both names precedes the
+  // rename, and the destination directory is one the walk proved; the rename itself cannot be
+  // handle-relative, for the reason this list exists. Every other open the store makes (the Run file,
+  // the stage file, the legacy reads) goes through the walk.
+  'monitor/transport/run-transport-store.ts',
   'state/ownership-fs.ts'
 ];
 
@@ -425,8 +431,11 @@ const PERMANENT_LIMIT: readonly PermanentLimit[] = [
  * `docs/architecture/native-binding-decision.md`.
  */
 const TEST_ONLY_FS_PORT: readonly string[] = [
-  'lib/runtime-log/runtime-log-sink.ts',
-  'monitor/cli-transport-sink.ts'
+  'lib/runtime-log/runtime-log-sink.ts'
+  // FR-R4-F04 (feature 251) — `monitor/cli-transport-sink.ts` is struck: it holds no filesystem call and
+  // no injected port any more. Its writes are the router's store's (`monitor/transport/run-transport-store.ts`,
+  // on `ATOMIC_PUBLISH_RENAME_RESIDUAL` below), and the failure-injection seam moved with them, to a store
+  // a test passes to the router, which is a subclass and not a function port.
 ];
 
 /**

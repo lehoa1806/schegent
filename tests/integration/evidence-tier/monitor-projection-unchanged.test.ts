@@ -33,6 +33,8 @@ import { SanitizedLogger } from '../../../src/lib/logger';
 import { WebviewLogSink, type DebugLogEntry } from '../../../src/lib/webview-log-sink';
 import { ClaudeCliMonitor } from '../../../src/monitor/claude-cli-monitor';
 import { CliTransportSink, type CliTransportRecorder } from '../../../src/monitor/cli-transport-sink';
+import { RunTransportStore, TransportStoreError } from '../../../src/monitor/transport/run-transport-store';
+import { createTransportRouter } from '../../../src/monitor/transport/transport-router';
 import { expectNoDescriptorWarnings } from '../../setup/descriptor-warnings';
 import type { QueueState } from '../../../src/queue/feature-request';
 import { AuditTailState } from '../../../src/ui/sidebar/audit-tail-state';
@@ -191,19 +193,29 @@ afterAll(() => {
   expectNoDescriptorWarnings();
 });
 
-function failingSink(logger: SanitizedLogger, target: string, root: string): CliTransportSink {
-  return track(new CliTransportSink({
-    settings: { read: () => ({ root, path: target, maxBytes: 1024 * 1024, maxGenerations: 3 }) },
-    sanitize: (line) => logger.sanitize(line),
+/**
+ * FR-R4-F04 — a sink whose file layer fails with `EACCES`. The sink writes no file; the router's store
+ * does, so the failure is injected there, the way the disk it stands for cannot be made to fail on demand.
+ */
+class DeniedStore extends RunTransportStore {
+  override async append(): Promise<void> {
+    throw new TransportStoreError('EACCES');
+  }
+}
+
+function failingSink(logger: SanitizedLogger, root: string): CliTransportSink {
+  const store = new DeniedStore({ tempRoot: join(root, 'os-temp'), warn: (message) => logger.warn(message) });
+  const router = createTransportRouter({
+    workspaceRoot: () => root,
+    readSetting: () => 'on',
+    readRawTranscriptMode: () => 'errors-only',
+    readMaxAgeDays: () => 30,
+    tempRoot: join(root, 'os-temp'),
+    runStatus: () => undefined,
     logger,
-    appendFile: async () => {
-      throw Object.assign(new Error('denied'), { code: 'EACCES' });
-    },
-    writeFile: async () => {},
-    mkdir: async () => undefined,
-    stat: async () => ({ size: 0 }),
-    realpath: async (candidate: string) => candidate
-  }));
+    store
+  });
+  return track(new CliTransportSink({ router, sanitize: (line) => logger.sanitize(line), logger }));
 }
 
 describe('FR-R3-007 — the monitor projection is unchanged', () => {
@@ -438,7 +450,7 @@ describe('FR-R3-007 — the debug log tail is unchanged', () => {
     const target = join(root, '.schegent', 'cli-transport.log');
     let sink: CliTransportSink | null = null;
     const h = harness((logger) => {
-      sink = failingSink(logger, target, root);
+      sink = failingSink(logger, root);
       return sink;
     });
 

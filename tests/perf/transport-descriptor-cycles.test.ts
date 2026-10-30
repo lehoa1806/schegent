@@ -1,5 +1,13 @@
 // FR-R3-137 (T1532a, T1532b, FR-015) — the transport sink's descriptor count across
-// repeated build/teardown and repoint/rotation cycles.
+// repeated build/teardown and Run-start/Run-end cycles.
+//
+// FR-R4-F04 — the descriptors moved. The sink writes no file; the router it hands lines to holds one
+// append descriptor per file it is writing (a Run file under `on`), and the sink's
+// `openDescriptorCount` reports the router's. What the original cycles measured as "repoint" and
+// "rotation" (one shared destination, moved and rolled over) does not exist any more: the equivalents
+// are a Run starting (a handle opens), a Run ending (`finalizeRun` releases it) and a compaction (the
+// handle is dropped before the rename). The claim is unchanged: the count returns to baseline every
+// cycle and stays flat across a sustained fixture.
 //
 // WHY PERF AND NOT HOST (plan D12). This is a bound over REPETITION: the claim is
 // that the count returns to baseline every cycle and stays flat across a sustained
@@ -20,23 +28,17 @@
 // own — vitest's own pipes and modules move it. §2 of
 // `docs/operations/transport-descriptor-measurement.md` carries the figures.
 //
-// EVERY REAL OPEN. No `appendFile` port is injected anywhere in this file, which
-// matters more than it looks: `writeAbsorbing` short-circuits past
-// `appendHandleFor` when a port is present, so a sink built with an injected
-// append never opens a descriptor at all. Three of the four suites that construct
-// sinks emitted zero descriptor warnings for precisely that reason, and a stress
-// test with an injected port would measure nothing.
+// EVERY REAL OPEN. No port is injected anywhere in this file, which matters more than it looks: a
+// sink built over a double never opens a descriptor at all, and a stress test over a double would
+// measure nothing.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import {
-  CLI_TRANSPORT_DIRECTORY,
-  CLI_TRANSPORT_FILE_NAME,
-  CliTransportSink,
-  type CliTransportSettings
-} from '../../src/monitor/cli-transport-sink';
+import { CliTransportSink, createCliTransportSink } from '../../src/monitor/cli-transport-sink';
+import { createTransportRouter, type TransportRouter } from '../../src/monitor/transport/transport-router';
+import { SanitizedLogger } from '../../src/lib/logger';
 
 /**
  * Cycles per exercise. 200 is chosen to be well past any plausible cache or
@@ -45,23 +47,6 @@ import {
  * knows what the flatness claim was measured over.
  */
 const CYCLES = 200;
-
-/** Destinations the repoint exercise rotates between. */
-const DESTINATIONS = 8;
-
-/**
- * A byte bound below the size of one record, so rotation fires on every cycle
- * regardless of what is already on disk.
- *
- * Measured the other way first and it is worth recording: at 256 bytes the
- * rotation only fired every fourth cycle, because the bound is
- * `bytesOnDisk + record > maxBytes` and a freshly repointed destination starts at
- * zero. A stress test whose exercise fires intermittently reports the fixture, not
- * the code. 1 byte takes the degenerate-but-correct branch the sink documents at
- * its rotation check — "a single record larger than the whole budget still
- * rotates" — which is deterministic.
- */
-const ROTATION_MAX_BYTES = 1;
 
 let workspaceRoot: string;
 
@@ -82,39 +67,21 @@ async function processDescriptorCount(): Promise<number | null> {
   return null;
 }
 
-/** A settings accessor whose destination and byte bound the test can move. */
-function mutableSettings(initial: CliTransportSettings): {
-  accessor: { read: () => CliTransportSettings | null };
-  repoint: (to: string) => void;
-  setMaxBytes: (bytes: number) => void;
-} {
-  let current = initial;
-  return {
-    accessor: { read: (): CliTransportSettings | null => current },
-    repoint: (to: string): void => {
-      current = { ...current, path: to };
-    },
-    setMaxBytes: (bytes: number): void => {
-      current = { ...current, maxBytes: bytes };
-    }
-  };
-}
-
-function defaultSettings(root: string, maxBytes = 5 * 1024 * 1024): CliTransportSettings {
-  return {
-    root,
-    path: path.join(root, CLI_TRANSPORT_DIRECTORY, CLI_TRANSPORT_FILE_NAME),
-    maxBytes,
-    maxGenerations: 3
-  };
-}
-
-function sinkFor(accessor: { read: () => CliTransportSettings | null }): CliTransportSink {
-  return new CliTransportSink({
-    settings: accessor,
-    sanitize: (line: string) => line,
-    logger: { warn: (): void => undefined }
+/** The real sink over the real router, writing a Run file per Run under `on`. */
+function sinkFor(): { sink: CliTransportSink; router: TransportRouter } {
+  const logger = { warn: (): void => undefined };
+  const router = createTransportRouter({
+    workspaceRoot: () => workspaceRoot,
+    readSetting: () => 'on',
+    readRawTranscriptMode: () => 'errors-only',
+    readMaxAgeDays: () => 30,
+    tempRoot: `${workspaceRoot}-os-temp`,
+    runStatus: () => undefined,
+    logger
   });
+  const realLogger = new SanitizedLogger([]);
+  const sink = createCliTransportSink(router, { sanitize: (line) => realLogger.sanitize(line), warn: logger.warn });
+  return { sink, router };
 }
 
 /**
@@ -141,8 +108,7 @@ describe('FR-R3-137 — descriptor cycles (T1532a, FR-015)', () => {
     const residues: number[] = [];
 
     for (let cycle = 0; cycle < CYCLES; cycle += 1) {
-      const settings = mutableSettings(defaultSettings(workspaceRoot));
-      const sink = sinkFor(settings.accessor);
+      const { sink } = sinkFor();
 
       // BEFORE: a sink that has recorded nothing holds nothing. The handle is
       // opened by the first write, not by construction.
@@ -170,60 +136,47 @@ describe('FR-R3-137 — descriptor cycles (T1532a, FR-015)', () => {
     );
   });
 
-  it('holds one handle across repoint and rotation cycles, and none after disposal', async () => {
-    const settings = mutableSettings(defaultSettings(workspaceRoot));
-    const sink = sinkFor(settings.accessor);
-    const afterRepoint: number[] = [];
-    const afterRotation: number[] = [];
-    const afterReopen: number[] = [];
+  it('holds one handle per active Run, none after its end, and none after disposal', async () => {
+    const { sink, router } = sinkFor();
+    const afterStart: number[] = [];
+    const afterEnd: number[] = [];
+    const afterNext: number[] = [];
 
     for (let cycle = 0; cycle < CYCLES; cycle += 1) {
-      // Repoint: a fresh destination every cycle, cycling through a small set so
-      // the exercise also revisits paths a stale handle could still be held for.
-      // One destination is current at a time, so one handle is held at a time —
-      // two would be the leak `appendHandleFor` was given its stale-key sweep for.
-      settings.repoint(
-        path.join(workspaceRoot, CLI_TRANSPORT_DIRECTORY, `dest-${cycle % DESTINATIONS}.log`)
-      );
+      // A Run starts: its first record opens its Run file's handle, and one Run is active at a time
+      // here, so one handle is held — two would be the leak the release at a Run's end exists to stop.
       await recordOne(sink, cycle);
-      afterRepoint.push(sink.openDescriptorCount);
+      afterStart.push(sink.openDescriptorCount);
 
-      // Rotation: a byte bound this record exceeds renames the destination. The
-      // handle goes BEFORE the rename — held across it, the descriptor follows the
-      // inode into the rotated generation and appends there forever — and the
-      // rotated record is then written by path rather than through a handle. So
-      // the count after a rotating record is zero by construction, and this file
-      // asserts that rather than the 1 a reader might expect.
-      settings.setMaxBytes(ROTATION_MAX_BYTES);
-      await recordOne(sink, cycle);
-      afterRotation.push(sink.openDescriptorCount);
+      // The Run ends: `finalizeRun` releases its descriptors, so the count after a Run's end is zero
+      // by construction, and this file asserts that rather than the 1 a reader might expect.
+      await router.finalizeRun(`run-${cycle}`, 'completed', new Set());
+      afterEnd.push(sink.openDescriptorCount);
 
-      // And the reopen: the next ordinary record takes exactly one handle again.
-      // This is the reading that would climb if a rotation ever leaked the handle
-      // it dropped, because the sweep only closes keys other than the current one.
-      settings.setMaxBytes(5 * 1024 * 1024);
-      await recordOne(sink, cycle);
-      afterReopen.push(sink.openDescriptorCount);
+      // And the next Run takes exactly one handle again. This is the reading that would climb if an
+      // end ever leaked the handle it released.
+      await recordOne(sink, cycle + CYCLES);
+      afterNext.push(sink.openDescriptorCount);
+      await router.finalizeRun(`run-${cycle + CYCLES}`, 'completed', new Set());
     }
 
     // Flat, not merely bounded: `<= 1` would also pass on a sink that had stopped
     // writing altogether, which is the failure mode a descriptor test is closest to.
     const distinct = (counts: number[]): string => [...new Set(counts)].join(',');
-    expect(afterRepoint.every((n) => n === 1), `repoint: ${distinct(afterRepoint)}`).toBe(true);
-    expect(afterRotation.every((n) => n === 0), `rotation: ${distinct(afterRotation)}`).toBe(true);
-    expect(afterReopen.every((n) => n === 1), `reopen: ${distinct(afterReopen)}`).toBe(true);
+    expect(afterStart.every((n) => n === 1), `start: ${distinct(afterStart)}`).toBe(true);
+    expect(afterEnd.every((n) => n === 0), `end: ${distinct(afterEnd)}`).toBe(true);
+    expect(afterNext.every((n) => n === 1), `next: ${distinct(afterNext)}`).toBe(true);
 
     await sink.flushAndDispose();
     expect(sink.openDescriptorCount).toBe(0);
     console.log(
-      `[FR-R3-137] repoint/rotation: ${CYCLES} cycles over ${DESTINATIONS} destinations, ` +
-        `repoint=${distinct(afterRepoint)}, rotation=${distinct(afterRotation)}, reopen=${distinct(afterReopen)}, disposed=0`
+      `[FR-R3-137] run start/end: ${CYCLES} cycles, ` +
+        `start=${distinct(afterStart)}, end=${distinct(afterEnd)}, next=${distinct(afterNext)}, disposed=0`
     );
   });
 
   it('stays flat across a sustained fixture rather than growing with it', async () => {
-    const settings = mutableSettings(defaultSettings(workspaceRoot));
-    const sink = sinkFor(settings.accessor);
+    const { sink } = sinkFor();
     let peak = 0;
 
     for (let n = 0; n < CYCLES * 10; n += 1) {
@@ -236,10 +189,9 @@ describe('FR-R3-137 — descriptor cycles (T1532a, FR-015)', () => {
     await sink.flushPendingWrites();
     peak = Math.max(peak, sink.openDescriptorCount);
 
-    // 2,000 records across 16 run ids and one destination. The count tracks
-    // DESTINATIONS, and there is one; a count that tracked runs or records is the
-    // growth this asserts against.
-    expect(peak).toBe(1);
+    // 2,000 records across 16 run ids, all active. The count tracks ACTIVE RUNS, one handle each, and
+    // there are sixteen; a count that tracked records is the growth this asserts against.
+    expect(peak).toBe(16);
 
     await sink.flushAndDispose();
     expect(sink.openDescriptorCount).toBe(0);
@@ -263,8 +215,7 @@ describe('FR-R3-137 — process-level corroboration (T1532b, C3)', () => {
       expect(before, 'the platform filter should have skipped this').not.toBeNull();
 
       for (let cycle = 0; cycle < CYCLES; cycle += 1) {
-        const settings = mutableSettings(defaultSettings(workspaceRoot));
-        const sink = sinkFor(settings.accessor);
+        const { sink } = sinkFor();
         await recordOne(sink, cycle);
         await sink.flushAndDispose();
       }

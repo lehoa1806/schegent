@@ -315,7 +315,12 @@ export const KEYS = {
   // omission, and it is exempt because it is the one record that must survive
   // the clear it describes. Clearing it would erase the evidence that a reset
   // was underway at exactly the moment that evidence matters.
-  resetMarker: 'schegent.reset.marker'
+  resetMarker: 'schegent.reset.marker',
+  // FR-R4-F04 (FR-027, data-model §9) — the operator pseudonym that replaces the OS username in
+  // attribution. In `KEYS` for the completeness test and on `RESET_EXEMPT_KEYS` below for the reason
+  // given there: a Reset clears Schegent's state, not the operator's identity, and rows already written
+  // keep the pseudonym they carry. A new one comes only from the reset command, which records it.
+  operatorPseudonym: 'schegent.operatorPseudonym'
 } as const;
 
 /**
@@ -344,7 +349,13 @@ export const RESET_EXEMPT_KEYS: Readonly<Record<string, string>> = {
   [KEYS.resetMarker]:
     'The marker records that a reset is underway. A reset that cleared its own ' +
     'marker could not be detected as interrupted, which is the whole reason the ' +
-    'marker exists.'
+    'marker exists.',
+  [KEYS.operatorPseudonym]:
+    'The operator pseudonym names who acted in audit rows that are already written and cannot be ' +
+    'rewritten. A workspace reset clears Schegent\'s state, not the operator\'s identity, and a ' +
+    'pseudonym cleared by it would be created again under a new value, splitting one operator\'s rows ' +
+    'across two names for no decision of theirs. The reset-pseudonym command is the one way to change it, ' +
+    'and it records that it did.'
 } as const;
 
 /**
@@ -1635,6 +1646,19 @@ export class WorkspaceStateStore {
     readonly payload: RunRecordQuarantinedPayload;
   }> {
     return this.runQuarantine.drain();
+  }
+
+  /**
+   * FR-R4-F04 (FR-027; data-model §9) — the operator pseudonym record, as stored and unvalidated: the
+   * attribution decides whether it is usable. A read never writes, so the untrusted window may call it.
+   */
+  public readOperatorPseudonym(): unknown {
+    return this.memento.get<unknown>(KEYS.operatorPseudonym);
+  }
+
+  /** FR-R4-F04 — stores the pseudonym record. `STATE_SCHEMA_VERSION` is unchanged: the value carries its own version. */
+  public async writeOperatorPseudonym(value: { readonly version: 1; readonly pseudonym: string }): Promise<void> {
+    await this.memento.update(KEYS.operatorPseudonym, value);
   }
 
   private async migrateQueueRegistryIfNeeded(): Promise<void> {

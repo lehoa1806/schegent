@@ -333,6 +333,16 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     scope: 'resource',
     docLabel: 'Raw transcript retention policy for new runs'
   },
+  // FR-R4-F04 (FR-001) — whether and when the CLI's own output is kept. `inherit` follows the raw
+  // transcript mode, so a workspace that never touched this keeps the retention it had.
+  'schegent.logging.transportCaptureMode': {
+    key: 'schegent.logging.transportCaptureMode',
+    type: 'enum',
+    default: 'inherit',
+    enum: ['inherit', 'off', 'errors-only', 'on'],
+    scope: 'resource',
+    docLabel: 'CLI transport capture mode'
+  },
   'schegent.logging.sessionRetentionMaxAgeDays': {
     key: 'schegent.logging.sessionRetentionMaxAgeDays',
     type: 'integer',

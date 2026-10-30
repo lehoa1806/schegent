@@ -134,6 +134,10 @@ export const CONFIGURATION_SENSITIVITY = Object.freeze({
     sensitivity: 'evidence',
     reason: 'always retains unredacted prompts, source and model output for every run'
   },
+  'schegent.logging.transportCaptureMode': {
+    sensitivity: 'evidence',
+    reason: 'decides whether and when the CLI\'s own output, which names files and carries content, is kept'
+  },
   'schegent.logging.sessionRetentionMaxAgeDays': {
     sensitivity: 'evidence',
     reason: 'bounds how long .schegent/sessions evidence is kept'

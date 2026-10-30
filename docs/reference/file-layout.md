@@ -15,13 +15,14 @@ Schegent has no database, ORM, or remote persistence service. Durable product st
     |-- .gitignore
     |-- audit.log
     |-- audit.log.<timestamp>
+    |-- audit-generation.json
     |-- catalog/
     |   |-- manifest.json
     |   |-- phases/<phaseId>/v<N>.json
     |   |-- pipelines/<pipelineId>/v<N>.json
     |   `-- workflows/<workflowId>/v<N>.json
-    |-- cli-transport.log
-    |-- cli-transport.log.1 ... .3
+    |-- cli-transport.log            (legacy; no longer written)
+    |-- cli-transport.log.1 ... .3   (legacy; no longer written)
     |-- failure-records/<stamp>_<suffix>_<runId>_<taskId>.json
     |-- history/<runId>.txt
     |-- metrics-rollup.jsonl
@@ -29,11 +30,13 @@ Schegent has no database, ORM, or remote persistence service. Durable product st
     |-- sessions/
     |   |-- raw-<runId>.log
     |   |-- .pending/raw-<runId>.log
-    |   `-- <runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/
-    |       |-- debug.json
-    |       |-- stream.jsonl
-    |       |-- verbose.log
-    |       `-- phase-message.env
+    |   `-- <runId>/
+    |       |-- transport.log
+    |       `-- diagnostics/<pipelineId>/<phaseId>/iter-<N>/
+    |           |-- debug.json
+    |           |-- stream.jsonl
+    |           |-- verbose.log
+    |           `-- phase-message.env
     `-- syslog
 ```
 
@@ -59,7 +62,10 @@ The tree is demand-created. In particular, an absent `.schegent/catalog/manifest
 | `.schegent/failure-records/<stamp>_<suffix>_<runId>_<taskId>.json` | UTF-8 JSON, at most 32 KiB, mode `0600` on POSIX in a `0700` directory | One redacted, path-free record per failed Run: the cause, the phase context, up to 20 bounded issue summaries and up to 16 metrics. Survives Remove; aged out by the session age setting and capped at the newest 200. |
 | `.schegent/history/<runId>.txt` | UTF-8 text, mode `0600` on POSIX | Full Task description used for byte-identical reruns; the Memento history row holds only a preview and relative reference. |
 | `.schegent/metrics-rollup.jsonl` | Append-only newline-delimited JSON, schema v2; v1 records are still read | One terminal summary per Run so cumulative totals survive audit rotation. A failed Run's record carries its `failureCause`. |
-| `.schegent/cli-transport.log` and `.1`–`.3` | Sanitized line records; 5 MiB per file; mode `0600` on POSIX | Bounded transport-level diagnostics, separate from the unredacted sinks. |
+| `.schegent/sessions/<runId>/transport.log` | Sanitized line records, one tab-separated record per CLI stream line; at most 5 MiB per Run; mode `0600` on POSIX in a `0700` directory | The Run's CLI transport, written when the transport capture mode keeps it (the transport capture mode setting in the Settings tab: `inherit`, `off`, `errors-only` or `on`). Redacted for secret patterns, otherwise CLI content as sent. Bounded by the workspace total and the session retention age; see the retention disclosure for each bound. |
+| The transport stage, `<OS temp>/schegent-transport-<workspace key>/<runId>.log` | Same records, outside the workspace; `0600` in a `0700` directory | Where an `errors-only` Run's transport waits while the Run is active: promoted to its Run file if the Run failed or was canceled, removed if it completed. Not counted in the workspace total. |
+| `.schegent/cli-transport.log` and `.1`–`.3` | Sanitized line records from an earlier release; mode `0600` on POSIX | Legacy: no longer written. Each file expires whole by its newest record at the session retention age and counts toward the workspace transport total. Delete Run Evidence leaves it, and says when it ages out. |
+| `.schegent/audit-generation.json` | Small JSON record; mode `0600` on POSIX | When the live audit generation was first observed, kept so a generation whose rows carry no usable time can still be aged. Keyed by the generation, so a rotation starts a fresh record. |
 | `.schegent/ownership/` | Private JSON records, directory `0700` and files `0600` on POSIX | Authoritative fencing records for window primacy and per-Queue execution leases. |
 | `.schegent/syslog` | Sanitized runtime log; mode `0600` on POSIX, generations included | Default runtime-log path. A configured path may instead resolve under an allowed canonical workspace, extension `globalStorage`, or OS temp root. The operator's home directory is deliberately excluded. |
 
@@ -80,6 +86,8 @@ The tree is demand-created. In particular, an absent `.schegent/catalog/manifest
 <!-- Source: src/metrics/metrics-rollup.ts -->
 <!-- Source: src/metrics/metrics-rollup-writer.ts -->
 <!-- Source: src/monitor/cli-transport-sink.ts -->
+<!-- Source: src/monitor/transport/transport-policy.ts -->
+<!-- Source: src/audit/audit-generation-sidecar.ts -->
 <!-- Source: src/state/ownership-fs.ts -->
 <!-- Source: src/state/ownership-registry.ts -->
 <!-- Source: src/lib/runtime-log/runtime-log-path.ts -->

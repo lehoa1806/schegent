@@ -44,6 +44,7 @@ export interface GeneralSettingsPayload {
   readonly 'logging.runtimeLogLevel'?: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
   readonly 'logging.runtimeLogFilePath'?: string;
   readonly 'logging.rawTranscriptMode'?: 'always' | 'errors-only' | 'off';
+  readonly 'logging.transportCaptureMode'?: 'inherit' | 'off' | 'errors-only' | 'on';
   // FR-R3-127 — both keys were already saveable: `GeneralSettingsTab.svelte`
   // posts them through this helper with a COMPUTED key, which TypeScript does not
   // check, and the host's `KEY_SPECS` has always accepted them. They were missing
@@ -110,6 +111,7 @@ export const GENERAL_SETTINGS_PAYLOAD_KEYS = [
   'logging.runtimeLogLevel',
   'logging.runtimeLogFilePath',
   'logging.rawTranscriptMode',
+  'logging.transportCaptureMode',
   'logging.runtimeLogMaxBytes',
   'logging.runtimeLogMaxGenerations',
   'logging.sessionRetentionMaxAgeDays',

@@ -84,10 +84,14 @@ const FIELDS_ADDED_BY_144 = [
 /** Feature 195 (T008) — one more, absent from the goldens for the same reason. */
 const FIELDS_ADDED_BY_195 = ['queueHaltOnTaskFailure'] as const;
 
+/** Feature 251 (FR-R4-F04, FR-001) — the transport capture mode, absent from the goldens like the rest. */
+const FIELDS_ADDED_BY_251 = ['transportCaptureMode'] as const;
+
 const NEW_FIELDS = [
   ...FIELDS_ADDED_BY_143,
   ...FIELDS_ADDED_BY_144,
-  ...FIELDS_ADDED_BY_195
+  ...FIELDS_ADDED_BY_195,
+  ...FIELDS_ADDED_BY_251
 ] as const;
 
 interface Golden {

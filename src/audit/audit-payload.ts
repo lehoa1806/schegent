@@ -1,4 +1,6 @@
 import type { AuditEventType, CatalogLifecyclePayload } from '../contracts/audit-events';
+import { AuditPayloadValidationError } from './audit-payload-error';
+import { projectEvidenceExported } from './evidence-lifecycle-payload';
 import { CATALOG_KINDS, type CatalogKind } from '../contracts/catalog-store';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import { isCompletionProvenance } from '../contracts/completion-provenance';
@@ -260,12 +262,9 @@ export interface MetricsViewOpenedPayloadV3 {
   readonly sessionId: string;
 }
 
-export class AuditPayloadValidationError extends Error {
-  constructor(public readonly reasonCode: string) {
-    super(`audit payload rejected: ${reasonCode}`);
-    this.name = 'AuditPayloadValidationError';
-  }
-}
+// FR-R4-F04 — the class lives in `audit-payload-error.ts` so a sibling projector can throw it without
+// importing this file; re-exported here, it is the same class and every existing import is unchanged.
+export { AuditPayloadValidationError };
 
 const KEY_RE = /^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/;
 
@@ -987,6 +986,9 @@ export function projectAuditPayload(
     eventType === 'definition-restored'
   ) {
     projected = projectCatalogLifecycle(payload) as unknown as Record<string, unknown>;
+  } else if (eventType === 'evidence-exported') {
+    // FR-R4-F04 (E2) — closed: no key a caller adds can reach the log, and no path can be represented.
+    projected = { ...projectEvidenceExported(payload) };
   } else {
     projected = projectValue(payload, 0) as Record<string, unknown>;
   }

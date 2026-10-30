@@ -31,6 +31,7 @@ import {
   projectAuditPayload
 } from './audit-payload';
 import { ensureSchegentGitignore } from './schegent-gitignore';
+import { AuditGenerationClock } from './audit-generation-sidecar';
 import {
   AuditNotOwnerError,
   OWNER_FOR_TESTS,
@@ -76,8 +77,10 @@ export const AUDIT_ROTATION_DEFAULT_SIZE_BYTES = 5 * 1024 * 1024;
 export const AUDIT_ROTATION_DEFAULT_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const DEFAULT_SIZE = AUDIT_ROTATION_DEFAULT_SIZE_BYTES;
 const DEFAULT_AGE_MS = AUDIT_ROTATION_DEFAULT_AGE_MS;
-const DEFAULT_MAX_ARCHIVES = 10;
-const DEFAULT_MAX_ARCHIVE_AGE_MS = 90 * 24 * 60 * 60 * 1000;
+export const AUDIT_ARCHIVE_DEFAULT_MAX_COUNT = 10;
+export const AUDIT_ARCHIVE_DEFAULT_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
+const DEFAULT_MAX_ARCHIVES = AUDIT_ARCHIVE_DEFAULT_MAX_COUNT;
+const DEFAULT_MAX_ARCHIVE_AGE_MS = AUDIT_ARCHIVE_DEFAULT_MAX_AGE_MS;
 
 /**
  * Floor for `rotationMaxAgeMs` retention. A maliciously low retention
@@ -218,6 +221,7 @@ export class AuditLogWriter {
   /** FR-R4-F03 (W5) — latched by the first maintenance the authority grants. */
   private maintenanceRan = false;
   private readonly port: AuditCheckpointPort | undefined;
+  private readonly generationClock: AuditGenerationClock;
   /**
    * FR-R4-F03 (W8; R15) — the head checkpoint this writer tracks: its mode, the chain position of the last
    * landed row, and the origin and first-seen time its records carry. `null` when it tracks none (`off`).
@@ -252,6 +256,11 @@ export class AuditLogWriter {
       )
     };
     this.logger = logger;
+    // FR-R4-F04 (A2) — the live generation's start, observed once per generation and kept here.
+    this.generationClock = new AuditGenerationClock({
+      workspaceRoot: config.workspaceRoot,
+      report: (code) => this.logger.warn('audit generation age: the sidecar could not be used', { reasonCode: code })
+    });
     this.authority = config.authority ?? OWNER_FOR_TESTS;
     this.port = config.checkpoint;
     // FR-R4-F03 (FR-013; W1) — CONSTRUCTION IS READ-ONLY. It used to queue a retention sweep (narrow,
@@ -529,6 +538,7 @@ export class AuditLogWriter {
       throw err;
     }
     this.landedDigest = digestOf(line.trimEnd());
+    this.generationClock.landed(entry.timestamp);
     this.writtenUnderFence = fence;
     if (this.cp !== null) this.cp.position += 1;
     this.evidenceHealth?.reportSuccess('audit');
@@ -784,8 +794,11 @@ export class AuditLogWriter {
       return;
     }
     const sizeExceeded = stat.size >= this.config.rotationSizeBytes;
-    const ageMs = Date.now() - stat.mtimeMs;
-    const ageExceeded = ageMs >= this.config.rotationMaxAgeMs;
+    // FR-R4-F04 (A1) — the age of the generation, from its oldest usable row, never from the file's mtime
+    // (every append refreshes it, so a busy log never aged out). Asked only under the size threshold: the age
+    // read loads the live log, and a log planted far past the threshold must not be loaded to rotate it.
+    const ageExceeded =
+      !sizeExceeded && Date.now() - (await this.generationClock.observe()) >= this.config.rotationMaxAgeMs;
     if (!sizeExceeded && !ageExceeded) return;
     // Milliseconds plus a UUID suffix prevent a burst of rotations in one
     // second from renaming over an earlier archive. The legacy seconds-only
@@ -814,6 +827,7 @@ export class AuditLogWriter {
       this.logger.warn(`audit log rotation failed: ${(err as Error).message}`);
       return;
     }
+    this.generationClock.rotated();
     await this.pruneArchives();
   }
 

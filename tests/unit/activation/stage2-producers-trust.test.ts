@@ -126,6 +126,13 @@ function recorder(options: {
     },
     refreshCatalog: async () => {
       note('refreshCatalog', undefined);
+    },
+    // FR-R4-F04 (TA7) — the pseudonym's creation, a memento write, in the trust-scoped preamble.
+    operatorAttribution: {
+      ensureStored: async () => {
+        note('operatorAttribution.ensureStored', undefined);
+        return 'pseudonym-0123456789abcdef';
+      }
     }
   } as unknown as Parameters<typeof createStage2Producers>[0];
 
@@ -162,7 +169,9 @@ const EVERY_ACT = Object.freeze([
   'controller.resumeExistingFromActivation',
   'store.getRunMap',
   'controller.scheduleAutoDrain',
-  'auditWriter.runArchiveMaintenance'
+  'auditWriter.runArchiveMaintenance',
+  // FR-R4-F04 (TA7) — creates the operator pseudonym; PREAMBLE, so a lost election still has one.
+  'operatorAttribution.ensureStored'
 ]);
 
 /**
