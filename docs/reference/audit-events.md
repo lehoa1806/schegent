@@ -54,6 +54,7 @@ literals into these families:
 | Execution and diagnostics | `task-execution-started`, `task-execution-ended`, `backend-ping`, `metrics-view-opened` | Task-level timing and explicit diagnostics/UI adoption. |
 | Catalog and exchange | `process-exchange-export`, `process-exchange-import-committed`, `definition-published`, `definition-restored` | Phase/package exchange and versioned catalog lifecycle operations. |
 | Concurrency | `runs-overlapped` | A workspace-level overlap episode when in-flight execution crosses from one run to two. |
+| Audit integrity | `audit-integrity-condition` | The audit writer's own record that the log's last line was damaged, or that a history began after a deliberate reset of the head checkpoint. Written only by the writer. |
 
 <!-- Source: src/contracts/audit-events.ts -->
 
@@ -200,6 +201,17 @@ head sits on the same disk and an actor who can edit the log can recompute every
 later digest. What they cannot do is edit one entry and leave the rest
 consistent. There is no signature, and no anchor outside the workspace.
 <!-- Source: src/audit/audit-chain.ts -->
+
+`audit-integrity-condition` is written only by the audit writer, never by a caller. Its payload
+carries a `condition` and a `conditionVersion`, which is `1` today. `damaged-tail` names a final line that
+was not valid JSON, by file basename, line number, byte offset, byte length and the SHA-256 of its raw
+bytes; the line itself is kept as written, and verification reads this row as the diagnosis that excuses
+it. `history-reset` is the first row of a history that begins after a deliberate reset, with the retired
+checkpoint's position and the time of retirement. Neither carries a path or row content. A reader built
+before this event existed preserves the row, and reports a diagnosed damaged line as `malformed`. A
+future `conditionVersion` or an unknown `condition` is preserved and never read as a diagnosis.
+<!-- Source: src/contracts/audit-integrity-condition.ts -->
+<!-- Source: src/audit/audit-payload.ts -->
 
 <!-- Source: src/audit/audit-log-writer.ts -->
 

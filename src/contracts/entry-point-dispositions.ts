@@ -84,7 +84,11 @@ export const MUTATING_COMMAND_IDS = Object.freeze({
   // have influenced what is on screen. The operator loses nothing that trusting
   // the folder does not immediately return, and `schegent.reset` is classified the
   // same way for the same reason.
-  'schegent.gitApprovals': 'git approval withdrawal'
+  'schegent.gitApprovals': 'git approval withdrawal',
+
+  // FR-R4-F03 (FR-017) — writes the audit head checkpoint outside the workspace, retiring it. Mutating
+  // and owner-only, and it refuses while any audit file is present: it never deletes or moves evidence.
+  'schegent.resetAuditCheckpoint': 'retires the audit head checkpoint'
 } as const);
 
 /**
@@ -97,17 +101,15 @@ export const READ_ONLY_COMMAND_IDS = Object.freeze({
   'schegent.showActiveRun': 'active run read',
   'schegent.openDashboard': 'dashboard view',
 
-  // Looks like a pure read and is not, quite. `ui-wiring.ts` passes
-  // `onBreak: (detail) => deps.auditWriter.noteChainBreak(detail)`, so a DETECTED
-  // BREAK appends to the audit log — a workspace-controlled path, and mutating by
-  // the criterion above.
+  // A read, and it stays one. Its two arms, `onBreak` and `onLoss`, report to the operator and set
+  // the audit sink's health (`noteChainBreak`, `noteHistoryLoss`); neither writes a file, and neither
+  // is a producer act. (An earlier version of this note said a detected break appended to the audit
+  // log. It never did: the writer's only append path is a step that asks who owns the workspace.)
   //
-  // Classified read-only anyway, because the right fix is to suppress the arm and
-  // not the command. The audit writer is a producer, so while untrusted it is
-  // absent and `onBreak` reports to the operator without appending. Verification
-  // therefore still runs and still tells the truth in an untrusted window, which
-  // is strictly better than refusing an operator the one read they most want while
-  // looking at a repository they have not trusted.
+  // The audit writer is constructed in every window and writes only as the owner, behind the
+  // authority port (`audit-write-authority.ts`), so verification still runs, and still tells the
+  // truth, in an untrusted or non-owner window: strictly better than refusing the one read an
+  // operator most wants while looking at a repository they have not trusted.
   'schegent.verifyAuditChain': 'audit chain read',
 
   // Looks like it probes the filesystem for an executable, and no longer does.
@@ -143,6 +145,31 @@ export type ReadOnlyCommandId = keyof typeof READ_ONLY_COMMAND_IDS;
  * or a dynamically built id.
  */
 export type ExtensionCommandId = MutatingCommandId | ReadOnlyCommandId;
+
+/**
+ * FR-R4-F03 (FR-011; data-model §9, R11, contract O3) — the mutating commands that START or RECORD
+ * work, and so write audit evidence: in a window that does not own the workspace they refuse, before
+ * anything runs. `registerGuardedCommand` checks trust first (unchanged) and then asks the owner
+ * predicate, and throws at registration when an id of this set arrives without one, as it does for
+ * an unclassified id.
+ *
+ * Every key is also a key of `MUTATING_COMMAND_IDS` (a lint case holds that), and the type below
+ * makes an id that is not an extension command a compile error. The reasons are the operator's
+ * words for why the action belongs to the owner.
+ */
+export const OWNER_ONLY_COMMAND_IDS = Object.freeze({
+  'schegent.startQueue': 'starts a Run that records audit evidence',
+  'schegent.restartCanceledTask': 'starts a Run that records audit evidence',
+  'schegent.cancel': 'records the cancellation',
+  'schegent.reset': 'records the workspace reset',
+  'schegent.pausePhase': 'records the phase control',
+  'schegent.resumePhase': 'records the phase control',
+  'schegent.restartPhase': 'records the phase control',
+  'schegent.deleteRunEvidence': 'records the deletion',
+  'schegent.resetAuditCheckpoint': 'retires the audit head checkpoint'
+} as const satisfies Partial<Record<ExtensionCommandId, string>>);
+
+export type OwnerOnlyCommandId = keyof typeof OWNER_ONLY_COMMAND_IDS;
 
 export type EntryDisposition = 'mutating' | 'read-only';
 

@@ -1518,7 +1518,16 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // the file's own header (contract P4.1), which every earlier additive field carries: the field
       // on `task-removed`, its two values, absence meaning "not recorded", admission by identity in
       // both copies, and no schema bump. No payload interface is added; there is none to extend.
-      highWaterMark: 1566
+      //
+      // Feature 250 (FR-R4-F03, 2026-10-30) — 1566 → 1576, +10. The lines are the feature entry in
+      // the file's own header (six, with its blank comment line), which every earlier additive
+      // change carries; the new event type in `ALL_AUDIT_EVENT_TYPES` with its one-line note (two;
+      // the comma the previous last member now needs changes a line and adds none); and the same
+      // type in `SYSTEM_SCOPED_EVENT_TYPES` with its one-line note (two), because the row has no run
+      // and belongs on the System tab. The payload type lives in
+      // `src/contracts/audit-integrity-condition.ts`, not here, and the projection arm lives in
+      // `src/audit/audit-payload.ts`.
+      highWaterMark: 1576
     }
   },
   // The second file of the same 2026-10-01 decision; see the waiver above.

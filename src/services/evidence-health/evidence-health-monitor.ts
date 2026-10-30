@@ -88,6 +88,11 @@ export interface EvidenceHealthReporter {
   /** Returns true when this sink/cause transition should emit a warning. */
   reportFailure(sink: EvidenceSinkName, cause: string): boolean;
   reportSuccess(sink: EvidenceSinkName): void;
+  /**
+   * FR-R4-F03 (FR-017) — the operator's reset ends the two history findings. Optional, so a reporter
+   * that has no audit integrity causes need not know it.
+   */
+  clearAuditIntegrity?(codes: readonly AuditIntegrityCause[]): void;
 }
 
 export interface EvidenceHealthDisposable {
@@ -128,6 +133,35 @@ const POLICIES: Readonly<Record<EvidenceSinkName, EvidenceContinuationPolicy>> =
   metricsRollup: 'continue-degraded',
   historyPointer: 'continue-degraded'
 });
+
+/**
+ * FR-R4-F03 (FR-006, FR-009, FR-016, FR-022; data-model §6, R8) — the audit sink's causes, in the two
+ * classes the monitor treats differently.
+ *
+ * A WRITE cause says one write went wrong (the disk refused, was full, timed out). Nothing is wrong
+ * with the history, so the next landed append clears it, which is what makes "non-healthy until an
+ * append lands" true and not "non-healthy until the window reloads".
+ *
+ * An INTEGRITY cause is a finding about the history itself: a broken link, history shorter than its
+ * checkpoint, history missing. A landed append says nothing about any of them, so it must never clear
+ * one, and a later write failure must not replace one. Only the operator's reset clears the two
+ * history causes (`clearAuditIntegrity`), and an activation `reset()` clears every cause, as before.
+ */
+export const AUDIT_WRITE_CAUSES = [
+  'permission-denied',
+  'disk-full',
+  'read-only-filesystem',
+  'timeout',
+  'path-refused',
+  'partial-write',
+  'io-error'
+] as const;
+export const AUDIT_INTEGRITY_CAUSES = ['chain-broken', 'history-shorter', 'history-missing'] as const;
+export type AuditWriteCause = (typeof AUDIT_WRITE_CAUSES)[number];
+export type AuditIntegrityCause = (typeof AUDIT_INTEGRITY_CAUSES)[number];
+
+const isAuditIntegrityCause = (cause: string | null): boolean =>
+  (AUDIT_INTEGRITY_CAUSES as readonly string[]).includes(cause ?? '');
 
 function healthySink(sink: EvidenceSinkName): EvidenceSinkHealth {
   return Object.freeze({
@@ -187,7 +221,12 @@ export class EvidenceHealthMonitor implements EvidenceHealthReporter {
     const previous = this.sinks[sink];
     const normalizedCause = normalizeEvidenceFailureCause(cause);
     if (normalizedCause === 'path-refused') this.pathRefusals.add(pathRefusedWarning(sink));
-    const shouldWarn = previous.status === 'healthy' || previous.cause !== normalizedCause;
+    // FR-R4-F03 — a write failure never replaces an integrity finding: the cause stays, and the
+    // failure is still counted. An integrity cause replaces anything.
+    const keepsIntegrityCause =
+      sink === 'audit' && isAuditIntegrityCause(previous.cause) && !isAuditIntegrityCause(normalizedCause);
+    const recordedCause = keepsIntegrityCause ? previous.cause : normalizedCause;
+    const shouldWarn = previous.status === 'healthy' || previous.cause !== recordedCause;
     this.sinks = {
       ...this.sinks,
       [sink]: Object.freeze({
@@ -195,7 +234,7 @@ export class EvidenceHealthMonitor implements EvidenceHealthReporter {
         continuationPolicy: POLICIES[sink],
         failureCount: previous.failureCount + 1,
         lastFailureAt: this.now().toISOString(),
-        cause: normalizedCause
+        cause: recordedCause
       })
     };
     this.notify();
@@ -204,7 +243,20 @@ export class EvidenceHealthMonitor implements EvidenceHealthReporter {
 
   public reportSuccess(sink: EvidenceSinkName): void {
     if (this.sinks[sink].status === 'healthy') return;
+    // FR-R4-F03 — a landed append ends only the state a write failure caused.
+    if (sink === 'audit' && isAuditIntegrityCause(this.sinks.audit.cause)) return;
     this.sinks = { ...this.sinks, [sink]: healthySink(sink) };
+    this.notify();
+  }
+
+  /**
+   * FR-R4-F03 (FR-017; R17) — the operator's reset ends a history finding. Clears the audit sink only
+   * when its cause is one of `codes`, so a broken link, and a write failure, are never cleared by it.
+   */
+  public clearAuditIntegrity(codes: readonly AuditIntegrityCause[]): void {
+    const { cause } = this.sinks.audit;
+    if (cause === null || !(codes as readonly string[]).includes(cause)) return;
+    this.sinks = { ...this.sinks, audit: healthySink('audit') };
     this.notify();
   }
 
@@ -283,6 +335,12 @@ export function normalizeEvidenceFailureCause(cause: unknown): string {
     case 'ETIMEDOUT':
     case 'timeout':
       return 'timeout';
+    case 'chain-broken':
+    case 'history-shorter':
+    case 'history-missing':
+      // FR-R4-F03 — the three integrity findings, each its own code. `chain-broken` used to fold
+      // into `io-error`, so even a broken link had no reason code of its own to report.
+      return raw;
     case 'path-refused':
       // FR-R3-080 (T1075) — a REFUSAL, not a failure, and the distinction is the
       // whole point of the round that added it: `io-error` says the write was

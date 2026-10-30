@@ -80,7 +80,9 @@ function recorder(options: {
     auditWriter: {
       append: async () => {
         note('auditWriter.append', undefined);
-      }
+      },
+      // FR-R4-F03 — the retention sweep the writer's constructor used to queue.
+      runArchiveMaintenance: async () => note('auditWriter.runArchiveMaintenance', 'ran' as const)
     },
     lock: {
       tryAcquire: async () => note('lock.tryAcquire', { acquired, ownerId: 'window-a' })
@@ -159,8 +161,16 @@ const EVERY_ACT = Object.freeze([
   'watchdog.reattachOnActivation',
   'controller.resumeExistingFromActivation',
   'store.getRunMap',
-  'controller.scheduleAutoDrain'
+  'controller.scheduleAutoDrain',
+  'auditWriter.runArchiveMaintenance'
 ]);
+
+/**
+ * FR-R4-F03 (R12) — acts that run after a WON election at activation or at a trust grant, and never
+ * at a later primacy gain. Archive maintenance is the one: the owner's rotation prune keeps
+ * retention moving after that, so a gain is not a maintenance trigger.
+ */
+const ELECTION_ONLY = Object.freeze(['auditWriter.runArchiveMaintenance']);
 
 /** The five FR-R3-070 installers, gated on the election rather than on trust. */
 const PRIMACY_GATED = Object.freeze([
@@ -335,7 +345,9 @@ describe('stage 2 producers: nothing happens in an untrusted window', () => {
   // elects never arms the interval a gain could arrive on.
 
   /** Everything `run()` does regardless of the election. None of it repeats. */
-  const PREAMBLE = Object.freeze(EVERY_ACT.filter((act) => !PRIMACY_GATED.includes(act)));
+  const PREAMBLE = Object.freeze(
+    EVERY_ACT.filter((act) => !PRIMACY_GATED.includes(act) && !ELECTION_ONLY.includes(act))
+  );
 
   const flush = async (): Promise<void> => {
     for (let round = 0; round < 8; round += 1) await Promise.resolve();
@@ -362,6 +374,9 @@ describe('stage 2 producers: nothing happens in an untrusted window', () => {
         r.calls.filter((call) => call === act),
         `${act} is this window's own work and was already done; a gain must not repeat it`
       ).toHaveLength(1);
+    }
+    for (const act of ELECTION_ONLY) {
+      expect(r.calls, `${act} runs after a won election, not on a later gain`).not.toContain(act);
     }
   });
 

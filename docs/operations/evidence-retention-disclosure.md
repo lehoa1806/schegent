@@ -27,6 +27,7 @@ drifted again.
 | CLI transport generations | `.schegent/sessions/` | redacted | bounded at 5 MiB | `CLI_TRANSPORT_MAX_BYTES in src/monitor/cli-transport-sink.ts` |
 | Export of a run's evidence | `the directory you choose when you run the export` | redacted | each artifact is carried up to 16 MiB; anything larger is omitted and the manifest says which and why | `MAX_ARTIFACT_BYTES in src/services/evidence-export.ts` |
 | Private recovery checkpoints | `the extension's globalStorage — deliberately outside the workspace` | **not redacted** | 14 days and 256 MiB total, with the 10 most recent Run directories protected from the size limit | `CHECKPOINT_MAX_AGE_MS / CHECKPOINT_MAX_TOTAL_BYTES / CHECKPOINT_RECENT_RUN_FLOOR in src/services/run-checkpoint-retention.ts` |
+| Audit head checkpoint | `the extension's globalStorage, audit-checkpoints/<key>.json — deliberately outside the workspace` | redacted | one small file per workspace location, holding a digest, a position and times only; never pruned, and retired only by the reset command; a moved folder leaves its old file behind | `checkpointKey in src/audit/audit-checkpoint.ts; the store in src/audit/audit-checkpoint-store.ts` |
 
 ## The one artifact that is deliberately unredacted
 
@@ -55,9 +56,11 @@ retention is `errors-only`, and nothing in `FR-R3-085` alters it.
 
 ## What this page does not claim
 
-- **On-disk evidence is not tamper-proof.** These are files under your own account's authority. A
-  hash chain on disk would not change that, so none is claimed. The export carries a chain because
-  its recipient is a different party — that is where a chain means something.
+- **On-disk evidence is not tamper-proof.** These are files under your own account's authority. The
+  audit log carries a hash chain, and the extension keeps a small checkpoint outside the workspace; they
+  reduce undetected loss and make an edit evident, and they prove nothing against the same OS user, who
+  can edit both. The export carries a chain too, because its recipient is a different party — that is
+  where a chain means something most.
 - **Nothing here is encrypted at rest.** `FR-R3-085` stage 1 declined optional encryption for a
   stated reason: this product has no key store, and inventing one is a larger change than that item.
   `FR-R3-127` turned that into a record with a reversal trigger —

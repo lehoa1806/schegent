@@ -32,6 +32,7 @@ import { filesUnder } from './source-scan';
 import {
   MUTATING_COMMAND_IDS,
   MUTATING_COMMAND_ID_LIST,
+  OWNER_ONLY_COMMAND_IDS,
   READ_ONLY_COMMAND_IDS,
   READ_ONLY_COMMAND_ID_LIST,
   UnclassifiedCommandError,
@@ -197,6 +198,22 @@ describe('FR-R3-136 — every command entry point carries a trust disposition, a
       Object.prototype.hasOwnProperty.call(READ_ONLY_COMMAND_IDS, id)
     );
     expect(both, 'an id with two dispositions has none').toEqual([]);
+  });
+
+  it('every owner-only id is also a mutating id, and carries a reason (FR-R4-F03)', () => {
+    // An owner-only command starts or records work, which is mutating by definition. An id that
+    // is owner-only and not mutating would be a read refused for no reason, and `registerGuardedCommand`
+    // would never reach the owner check for it, because a read-only id is registered unwrapped.
+    const ownerOnly = Object.keys(OWNER_ONLY_COMMAND_IDS);
+    expect(ownerOnly.length, 'the set must not be empty, or this proves nothing').toBeGreaterThan(0);
+    const notMutating = ownerOnly.filter(
+      (id) => !Object.prototype.hasOwnProperty.call(MUTATING_COMMAND_IDS, id)
+    );
+    expect(notMutating, 'an owner-only id must be classified mutating').toEqual([]);
+    const withoutReason = Object.entries(OWNER_ONLY_COMMAND_IDS).filter(
+      ([, reason]) => reason.trim().length < 4
+    );
+    expect(withoutReason.map(([id]) => id)).toEqual([]);
   });
 
   it('every reason is a non-empty description, not a restated id', () => {

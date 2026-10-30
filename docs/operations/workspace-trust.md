@@ -71,7 +71,7 @@ unaffected.
 
 ## What refuses untrusted
 
-**27 commands refuse.** Every mutating command id in
+**28 commands refuse.** Every mutating command id in
 `src/contracts/entry-point-dispositions.ts` is wrapped by `registerGuardedCommand`, which — when the
 window is untrusted — shows a warning, records `command refused: workspace not trusted` with the
 `commandId`, and returns without calling the handler.
@@ -142,15 +142,21 @@ declared in the manifest from there; the settings themselves are documented in
 Trust is granted through VS Code, not through Schegent. When you grant it, VS Code fires
 `onDidGrantWorkspaceTrust`, Schegent's subscriber runs the producer half **once**, in the same
 window, and no reload is needed. In the order it runs: the ownership election; the mount probe;
-terminal-transition replay; the evidence backlog; a catalog re-resolve; the checkpoint-retention
-sweep; the backend capability probe, which spawns the resolved CLI once per backend kind with
+terminal-transition replay; the evidence backlog; a catalog re-resolve; the audit archive
+maintenance, if this window won the election; the checkpoint-retention sweep; the backend capability
+probe, which spawns the resolved CLI once per backend kind with
 `--help` and nothing else; then the recovery half — scheduled-start re-arm, watchdog reattach,
 delayed-retry re-arm, and resuming a persisted Run.
 
 **The recovery half runs only in the window that won the election.** A second window on the same
 workspace grants trust, elects, loses, and stands down: it records why in the log and leaves every
 persisted deadline addressable by the primary window rather than racing it. The earlier acts are not
-primacy-gated, because they are this window's own writes regardless of who is primary.
+primacy-gated, because they are this window's own work regardless of who is primary. The exception
+is the audit archive maintenance: it prunes expired audit archives, narrows their modes and records
+the prune, so it runs **once, after trust, in the owner window only**, and constructing the audit
+writer changes nothing in an untrusted window (it used to sweep at construction). A window that
+does not own the workspace records no audit rows at all and notices each one it refused; a
+migration performed only in such a window is not recorded.
 
 The capability probe is the observable consequence a granted window has and an untrusted window does
 not, and it is what the granted host leg watches for.

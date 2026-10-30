@@ -6,6 +6,11 @@
 import * as vscode from 'vscode';
 
 import { AuditLogWriter } from '../audit/audit-log-writer';
+import { lockWriteAuthority } from '../audit/audit-write-authority';
+import { realpath } from 'fs/promises';
+import { checkpointKey, type AuditCheckpointPort } from '../audit/audit-checkpoint';
+import { ensureCheckpointRoot } from '../audit/audit-checkpoint-root';
+import { createAuditCheckpointStore } from '../audit/audit-checkpoint-store';
 import { readGeneralSettings } from '../config/general-settings';
 import type { SanitizedLogger } from '../lib/logger';
 import type { QueueManager } from '../queue/queue-manager';
@@ -13,6 +18,7 @@ import { SessionArtifactRetentionService } from '../services/session-retention/s
 import { sweepFailureRecords } from '../services/failure-record/failure-record-retention';
 import type { EvidenceHealthMonitor } from '../services/evidence-health/evidence-health-monitor';
 import type { VerdictBasisMigrationEvent } from '../state/host-verification-migrator';
+import type { WorkspaceLockManager } from '../state/lock';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import type { Notifier } from '../ui/notifications';
 import { createWorkflowPipelineRefReader } from '../ui/sidebar/workflow-pipeline-ref-source';
@@ -48,6 +54,17 @@ import { getCanonicalWorkspaceRoot } from '../state/workspace-folder-picker';
  */
 export interface EvidenceWiringDeps {
   readonly workspaceRoot: string;
+  /**
+   * FR-R4-F03 (FR-010; W9) — the workspace lock, which the audit writer asks before every step that
+   * writes. The lock exists here and the election runs later in `stage2-producers.ts`, so until it
+   * is won the adapter answers "not the owner" and the writer writes nothing.
+   */
+  readonly lock: Pick<WorkspaceLockManager, 'hasPrimacy' | 'fenceOfRecord'>;
+  /**
+   * FR-R4-F03 (FR-015; W9) — the extension's per-user storage root (`context.globalStorageUri.fsPath`),
+   * where the audit head checkpoint is kept OUTSIDE the workspace so removing `.schegent/` cannot remove it.
+   */
+  readonly globalStorageRoot: string;
   readonly logger: SanitizedLogger;
   readonly store: WorkspaceStateStore;
   readonly queue: QueueManager;
@@ -144,6 +161,8 @@ export interface EvidenceWiring {
 export async function wireEvidence(deps: EvidenceWiringDeps): Promise<EvidenceWiring> {
   const {
     workspaceRoot,
+    lock,
+    globalStorageRoot,
     logger,
     store,
     queue,
@@ -170,11 +189,28 @@ const collectAllWorkflowPipelineRefs = createWorkflowPipelineRefReader({
   listRequests: () => queue.list(),
   listWorkflowRecords: () => catalogSession.workflowCatalog.records
 });
+// FR-R4-F03 (W9) — the head checkpoint store: the root is created first, and a failure there leaves the
+// writer with no port (no loss tracking for this window) and says so once. It never blocks activation.
+let checkpoint: AuditCheckpointPort | undefined;
+try {
+  await ensureCheckpointRoot(globalStorageRoot);
+  checkpoint = createAuditCheckpointStore({
+    root: globalStorageRoot,
+    key: checkpointKey(await realpath(workspaceRoot))
+  });
+} catch {
+  logger.warn(
+    'audit-checkpoint-unavailable: the head checkpoint store could not be prepared; loss detection is ' +
+      'not tracking history for this window'
+  );
+}
 const auditWriter = new AuditLogWriter(
   {
     workspaceRoot,
     rotationSizeBytes: rotationSizeMB * 1024 * 1024,
-    rotationMaxAgeMs: rotationMaxAgeDays * 24 * 60 * 60 * 1000
+    rotationMaxAgeMs: rotationMaxAgeDays * 24 * 60 * 60 * 1000,
+    authority: lockWriteAuthority(lock),
+    ...(checkpoint === undefined ? {} : { checkpoint })
   },
   logger,
   evidenceHealth

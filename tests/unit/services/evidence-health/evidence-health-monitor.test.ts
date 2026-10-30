@@ -10,7 +10,12 @@ import {
 } from '../../../../src/audit/raw-transcript-writer';
 import { SanitizedLogger } from '../../../../src/lib/logger';
 import { RuntimeLogSink } from '../../../../src/lib/runtime-log/runtime-log-sink';
-import { EvidenceHealthMonitor } from '../../../../src/services/evidence-health/evidence-health-monitor';
+import {
+  AUDIT_INTEGRITY_CAUSES,
+  AUDIT_WRITE_CAUSES,
+  EvidenceHealthMonitor,
+  normalizeEvidenceFailureCause
+} from '../../../../src/services/evidence-health/evidence-health-monitor';
 
 describe('EvidenceHealthMonitor', () => {
   it('models sink policies independently and coalesces repeated causes', () => {
@@ -218,5 +223,120 @@ describe('evidence sink fault integration', () => {
       cause: 'cleanup-failed'
     });
     expect(JSON.stringify(monitor.getSnapshot())).not.toContain('/private/workspace');
+  });
+});
+
+/**
+ * FR-R4-F03 (FR-006, FR-009, FR-016, FR-022; contract T14, data-model §6, R8) — the audit sink's causes
+ * fall in two classes, and a landed append ends only one of them.
+ *
+ * A WRITE cause (the disk refused, was full, timed out) clears on the next landed row: nothing is
+ * wrong with the history, only with one write. An INTEGRITY cause (a broken link, history shorter than
+ * the checkpoint, history missing) is a finding about the history itself, so a landed row, which says
+ * nothing about it, must never clear it. Before this, nothing ever reported audit success at all, so
+ * one rejected append blocked every Run until the window reloaded.
+ */
+describe('EvidenceHealthMonitor, audit causes in two classes', () => {
+  const at = (): Date => new Date('2026-10-30T00:00:00.000Z');
+  const audit = (monitor: EvidenceHealthMonitor) => monitor.getSnapshot().audit;
+
+  it('names the two classes exactly', () => {
+    expect(AUDIT_WRITE_CAUSES).toEqual([
+      'permission-denied',
+      'disk-full',
+      'read-only-filesystem',
+      'timeout',
+      'path-refused',
+      'partial-write',
+      'io-error'
+    ]);
+    expect(AUDIT_INTEGRITY_CAUSES).toEqual(['chain-broken', 'history-shorter', 'history-missing']);
+  });
+
+  it.each(['chain-broken', 'history-shorter', 'history-missing'])('passes the integrity code %s through normalization unchanged', (code) => {
+    expect(normalizeEvidenceFailureCause(code)).toBe(code);
+  });
+
+  it('a write cause on a healthy sink makes it unavailable with that cause', () => {
+    const monitor = new EvidenceHealthMonitor(at);
+    monitor.reportFailure('audit', 'EACCES');
+    expect(audit(monitor)).toMatchObject({ status: 'unavailable', cause: 'permission-denied', failureCount: 1 });
+  });
+
+  it('a write cause over another write cause replaces it', () => {
+    const monitor = new EvidenceHealthMonitor(at);
+    monitor.reportFailure('audit', 'EACCES');
+    monitor.reportFailure('audit', 'ENOSPC');
+    expect(audit(monitor)).toMatchObject({ status: 'unavailable', cause: 'disk-full', failureCount: 2 });
+  });
+
+  it('a write cause over an integrity cause keeps the integrity cause and counts the failure', () => {
+    const monitor = new EvidenceHealthMonitor(at);
+    monitor.reportFailure('audit', 'history-shorter');
+    monitor.reportFailure('audit', 'ENOSPC');
+    expect(audit(monitor)).toMatchObject({ status: 'unavailable', cause: 'history-shorter', failureCount: 2 });
+  });
+
+  it.each(['chain-broken', 'history-shorter', 'history-missing'])(
+    'an integrity cause %s makes any state unavailable with that cause',
+    (code) => {
+      const fromHealthy = new EvidenceHealthMonitor(at);
+      fromHealthy.reportFailure('audit', code);
+      expect(audit(fromHealthy)).toMatchObject({ status: 'unavailable', cause: code });
+
+      const fromWrite = new EvidenceHealthMonitor(at);
+      fromWrite.reportFailure('audit', 'EACCES');
+      fromWrite.reportFailure('audit', code);
+      expect(audit(fromWrite)).toMatchObject({ status: 'unavailable', cause: code });
+
+      const fromIntegrity = new EvidenceHealthMonitor(at);
+      fromIntegrity.reportFailure('audit', 'chain-broken');
+      fromIntegrity.reportFailure('audit', code);
+      expect(audit(fromIntegrity)).toMatchObject({ status: 'unavailable', cause: code });
+    }
+  );
+
+  it('a landed append clears a write cause', () => {
+    const monitor = new EvidenceHealthMonitor(at);
+    monitor.reportFailure('audit', 'ENOSPC');
+    monitor.reportSuccess('audit');
+    expect(audit(monitor)).toMatchObject({ status: 'healthy', cause: null, failureCount: 0 });
+  });
+
+  it.each(['chain-broken', 'history-shorter', 'history-missing'])(
+    'a landed append leaves the integrity cause %s unchanged',
+    (code) => {
+      const monitor = new EvidenceHealthMonitor(at);
+      monitor.reportFailure('audit', code);
+      monitor.reportSuccess('audit');
+      expect(audit(monitor)).toMatchObject({ status: 'unavailable', cause: code, failureCount: 1 });
+    }
+  );
+
+  it('the reset clears the two history causes and nothing else', () => {
+    for (const code of ['history-shorter', 'history-missing']) {
+      const monitor = new EvidenceHealthMonitor(at);
+      monitor.reportFailure('audit', code);
+      monitor.clearAuditIntegrity(['history-shorter', 'history-missing']);
+      expect(audit(monitor)).toMatchObject({ status: 'healthy', cause: null });
+    }
+    const broken = new EvidenceHealthMonitor(at);
+    broken.reportFailure('audit', 'chain-broken');
+    broken.clearAuditIntegrity(['history-shorter', 'history-missing']);
+    expect(audit(broken), 'a broken link is not cleared by the reset').toMatchObject({
+      status: 'unavailable',
+      cause: 'chain-broken'
+    });
+    const write = new EvidenceHealthMonitor(at);
+    write.reportFailure('audit', 'ENOSPC');
+    write.clearAuditIntegrity(['history-shorter', 'history-missing']);
+    expect(audit(write), 'a write cause is not an integrity finding').toMatchObject({ cause: 'disk-full' });
+  });
+
+  it('an activation reset still clears every audit cause', () => {
+    const monitor = new EvidenceHealthMonitor(at);
+    monitor.reportFailure('audit', 'history-missing');
+    monitor.reset();
+    expect(audit(monitor)).toMatchObject({ status: 'healthy', cause: null });
   });
 });

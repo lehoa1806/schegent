@@ -3,6 +3,11 @@ import { CATALOG_KINDS, type CatalogKind } from '../contracts/catalog-store';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import { isCompletionProvenance } from '../contracts/completion-provenance';
 import { isFailureCause } from '../contracts/failure-cause';
+import {
+  DAMAGE_DIGEST_ALG,
+  HISTORY_RESET_CONDITION,
+  INTEGRITY_CONDITION_VERSION
+} from '../contracts/audit-integrity-condition';
 
 export const AUDIT_PAYLOAD_MAX_BYTES = 32 * 1024;
 export const AUDIT_PAYLOAD_MAX_STRING_LENGTH = 640;
@@ -918,6 +923,40 @@ function projectTaskRemoved(payload: Record<string, unknown>): Record<string, un
   };
 }
 
+const DAMAGE_DIGEST_RE = /^[0-9a-f]{64}$/;
+
+function integrityCount(value: unknown, minimum: number): number {
+  if (typeof value === 'number' && Number.isInteger(value) && value >= minimum) return value;
+  throw new AuditPayloadValidationError('invalid-integrity-condition-field');
+}
+
+/**
+ * FR-R4-F03 (data-model §2) — `audit-integrity-condition`: a known condition is built field by
+ * field, so `file` (a key the generic arm drops) survives and every other key is dropped. A `file`
+ * that is a path, or a field of the wrong type, refuses the entry. An unknown condition or version
+ * goes through the generic arm: preserved (hard rule 5), never read as a diagnosis.
+ */
+function projectIntegrityCondition(payload: Record<string, unknown>): Record<string, unknown> {
+  const { condition, conditionVersion, file, digest, digestAlg } = payload;
+  const known = conditionVersion === INTEGRITY_CONDITION_VERSION;
+  if (known && condition === HISTORY_RESET_CONDITION) {
+    const retired = [integrityCount(payload.retiredPosition, 0), integrityCount(payload.retiredAtMs, 0)];
+    return { condition, conditionVersion, retiredPosition: retired[0], retiredAtMs: retired[1] };
+  }
+  if (!known || condition !== 'damaged-tail') return projectValue(payload, 0) as Record<string, unknown>;
+  if (typeof file !== 'string' || file.length === 0 || /[\\/]/.test(file)
+    || file.length > AUDIT_PAYLOAD_MAX_STRING_LENGTH || digestAlg !== DAMAGE_DIGEST_ALG
+    || typeof digest !== 'string' || !DAMAGE_DIGEST_RE.test(digest)) {
+    throw new AuditPayloadValidationError('invalid-integrity-condition-field');
+  }
+  const [line, byteOffset, byteLength] = [
+    integrityCount(payload.line, 1),
+    integrityCount(payload.byteOffset, 0),
+    integrityCount(payload.byteLength, 0)
+  ];
+  return { condition, conditionVersion, file, line, byteOffset, byteLength, digestAlg, digest };
+}
+
 /**
  * Converts every event-family payload into the bounded v3 metadata model.
  * Sensitive execution detail is omitted by key; malformed or path-bearing
@@ -940,6 +979,8 @@ export function projectAuditPayload(
     projected = projectTaskExecutionEnded(payload);
   } else if (eventType === 'task-removed') {
     projected = projectTaskRemoved(payload);
+  } else if (eventType === 'audit-integrity-condition') {
+    projected = projectIntegrityCondition(payload);
   } else if (
     eventType === 'definition-published' ||
     eventType === 'definition-deactivated' ||
