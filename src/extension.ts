@@ -179,6 +179,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // so a guard needing a store or a lock could not be applied to it. This
   // `Notifier` is not a second notification path: it is a stateless wrapper over
   // three `vscode.window.show*Message` calls, available before `wireStage2`.
+  // FR-R4-F03 — the reset records an audit event, so it is owner-only; its predicate asks the live
+  // Stage 2, and with no Stage 2 there is no lock, writer or log, so it answers owner.
   const stage1Notifier = new Notifier(vscode.window);
 
   context.subscriptions.push(
@@ -186,7 +188,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       {
         isWorkspaceTrusted,
         notifier: stage1Notifier,
-        logger
+        logger,
+        isOwner: () => resetHost.support()?.isOwner() ?? Promise.resolve(true)
       },
       'schegent.reset',
       () => runReset({ store, logger, host: resetHost })
@@ -353,7 +356,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     protectedSessionRunIds,
     replayEvidenceBacklog
   } = await wireEvidence({
-    workspaceRoot,
+    workspaceRoot, lock, globalStorageRoot: context.globalStorageUri.fsPath,
     logger,
     store,
     queue,
@@ -654,7 +657,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   // Feature FR-R3-006 (T342, T344, T345, T348) — the reset transaction's
   // stage-2 half. `dispose()` above is the rest of it.
   const resetSupport: ResetStageSupport = createResetStageSupport({
-    controller,
+    controller, lock,
     auditWriter,
     logger
   });

@@ -92,6 +92,12 @@ export interface ResetStageSupport {
   quiesce(): Promise<ResetQuiesceOutcome>;
   /** Append the bounded reset event. Best-effort: never fails the transaction. */
   recordReset(payload: WorkspaceStateResetPayload): Promise<void>;
+  /**
+   * FR-R4-F03 (FR-011; TA8) — whether this window holds workspace primacy now. The reset records an
+   * audit event, so it is an owner-only command; the Stage 1 registration asks the live Stage 2
+   * through this, and answers "owner" when there is no Stage 2 (no writer, lock or log exists then).
+   */
+  isOwner(): Promise<boolean>;
 }
 
 /**

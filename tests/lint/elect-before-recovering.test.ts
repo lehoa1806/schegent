@@ -95,7 +95,12 @@ const RECOVERY_LANDMARKS = [
   // a queue the primary owns, which is the two-spawn defect this whole gate
   // exists to prevent. Listed here on arrival, which `GATE_COUNT` now makes
   // mandatory rather than optional.
-  'controller.scheduleAutoDrain()'
+  'controller.scheduleAutoDrain()',
+  // FR-R4-F03 — the sixth, an act on `.schegent/` that belongs to the window that won the
+  // election: the audit writer's retention sweep (prune, narrow, cut record), which its
+  // constructor used to queue before any trust check or election. Run once at trusted startup or
+  // at a trust grant, and not at a later primacy gain.
+  'auditWriter.runArchiveMaintenance()'
 ] as const;
 
 /** How far back a landmark's gate condition may sit, in stripped-source chars. */

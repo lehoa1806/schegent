@@ -12,7 +12,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { AuditLogWriter } from '../../../src/audit/audit-log-writer';
-import { verifyAuditChainAt, cutRecordFor } from '../../../src/audit/audit-chain';
+import { verifyAuditChainAt, cutRecordFor, digestOf } from '../../../src/audit/audit-chain';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import { removeTempRoot } from '../../temp-root-cleanup';
 
@@ -128,12 +128,23 @@ describe('the chain the product writes is the chain the verifier reads', () => {
     expect(verdict.ok, 'a gap with no cut record must not verify').toBe(false);
   });
 
-  it('owes no cut record for a removal of pre-chain entries only', () => {
-    // Those entries never advanced the chain, so recording their removal would move the
-    // expected digest off genesis and make the first genuinely chained entry look broken —
-    // a false alarm manufactured by the mechanism meant to prevent one.
+  it('records a legacy-only cut for a removal of pre-chain entries only (FR-R4-F03, V2)', () => {
+    // The cut moves no link: `removedFrom` and `removedTo` stay genesis, so an older verifier
+    // reads it as a no-op and form A still verifies there. What it records instead is the legacy
+    // tail, the digest of the last legacy row removed, because a form-B history's first chained
+    // row links to it and no retained byte would otherwise produce it.
     const legacy = ['{"id":"a","eventType":"warning"}', '{"id":"b","eventType":"warning"}'];
-    expect(cutRecordFor(legacy, 1)).toBeNull();
+    expect(cutRecordFor(legacy, 1)).toEqual({
+      kind: 'audit-cut',
+      cutAtMs: 1,
+      removedFrom: 'genesis',
+      removedTo: 'genesis',
+      removedCount: 2,
+      version: 2,
+      removedChained: 0,
+      removedLegacy: 2,
+      legacyTail: digestOf(legacy[1] as string)
+    });
     expect(cutRecordFor([], 1)).toBeNull();
     expect(cutRecordFor(['   ', ''], 1)).toBeNull();
   });

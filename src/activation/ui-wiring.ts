@@ -40,12 +40,12 @@ import { runRetryPhaseNow } from '../commands/retry-phase-now';
 import { runSchedule, type ScheduleCommandArgs } from '../commands/schedule';
 import { runShowActiveRun } from '../commands/show-active-run';
 import { runShowAuditLog } from '../commands/show-audit';
-import { runVerifyAuditChain } from '../commands/verify-audit-chain';
 import {
   runStartQueueCommand,
   type StartQueueCommandArg
 } from '../commands/start-queue';
 import { registerQueueFailurePolicyCommand } from './queue-failure-policy-wiring';
+import { registerAuditChainCommands } from './audit-commands-wiring';
 import { registerQueueItemExitCommands } from './queue-item-exit-wiring';
 import { readQueueFailurePolicyDefault } from './uncached-settings-accessors';
 import type { PipelineCatalog } from '../config/pipeline-config';
@@ -340,7 +340,8 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
   const guard: GuardedCommandDeps = {
     isWorkspaceTrusted: () => vscode.workspace.isTrusted,
     notifier: deps.notifier,
-    logger: deps.logger
+    logger: deps.logger,
+    isOwner: () => deps.lock.hasPrimacy()
   };
 
   const commands: vscode.Disposable[] = [
@@ -482,15 +483,14 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
         info: (message) => deps.notifier.info(message)
       })
     ),
-    // FR-R3-112 — the chain verification, from the surface rather than only from a shell.
-    registerGuardedCommand(guard, 'schegent.verifyAuditChain', () =>
-      runVerifyAuditChain({
-        workspaceRoot: deps.workspaceRoot,
-        notifier: deps.notifier,
-        logger: deps.logger,
-        onBreak: (detail) => deps.auditWriter.noteChainBreak(detail)
-      })
-    ),
+    // FR-R3-112 — the chain verification, from the surface rather than only from a shell. FR-R4-F03 (TA3):
+    // registered with the reset command in `audit-commands-wiring.ts`, because this function is at its bound.
+    ...registerAuditChainCommands(guard, {
+      workspaceRoot: deps.workspaceRoot,
+      notifier: deps.notifier,
+      logger: deps.logger,
+      auditWriter: deps.auditWriter
+    }),
     registerGuardedCommand(guard, 'schegent.exportAuditLog', () =>
       runExportAuditLog({ workspaceRoot: deps.workspaceRoot, notifier: deps.notifier })
     ),

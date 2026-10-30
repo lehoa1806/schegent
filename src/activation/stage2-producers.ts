@@ -25,7 +25,9 @@ import type { WorkspaceStateStore } from '../state/workspace-state';
  * runner registry to render "here is what this workspace contains", and refusing
  * to build them would break the `limited` claim the manifest already ships —
  * state, history, audit and log views keep working in an untrusted window. What
- * must not happen is not construction. `new AuditLogWriter(...)` writes nothing;
+ * must not happen is not construction. `new AuditLogWriter(...)` writes nothing
+ * (FR-R4-F03: it used to queue a retention sweep, and no longer does; archive
+ * maintenance is one of the acts below, run after the election);
  * `new RunnerRegistry(...)` spawns nothing. The hazard is the *acts*: electing,
  * appending, sweeping, arming, resuming. So those are what moved here, and the
  * graph is still built eagerly above.
@@ -204,10 +206,13 @@ export function createStage2Producers(deps: Stage2ProducerDeps): Stage2Producers
     // anything decides whether to resume it.
     await runSafety.replayTerminalTransitions(lock.id);
 
-    // The evidence backlog goes second: it appends the migration events
-    // `store.initialize()` reported and sweeps `.schegent/sessions`, and both are
-    // this window's writes regardless of who won the election — a non-primary
-    // window still has to record the migration it performed.
+    // The evidence backlog goes second: it forwards the migration events
+    // `store.initialize()` reported and sweeps `.schegent/sessions`, and both
+    // are this window's acts regardless of who won the election — a non-primary
+    // window still performs the migration. FR-R4-F03 (contract D, class B): the
+    // audit writer refuses a row from a window that does not own the workspace,
+    // and notices it once per event, so in that window the notice is the record
+    // of the migration and the row is not written. Only the owner's log holds it.
     await replayEvidenceBacklog();
 
     // Third, because the catalog the recovery installers resolve against must be
@@ -216,6 +221,24 @@ export function createStage2Producers(deps: Stage2ProducerDeps): Stage2Producers
       await refreshCatalog();
     } catch (err) {
       logger.warn(`catalog refresh after trust failed: ${(err as Error).message}`);
+    }
+
+    // FR-R4-F03 (FR-014; R12) — the audit writer's retention sweep, which its
+    // constructor used to queue before any trust check or election. It prunes
+    // archives, narrows their modes and writes cut records under `.schegent/`, so
+    // it belongs to the window that won the election, after trust: gated on the
+    // same result as the installers below, once, here, and not at a later primacy
+    // gain (the owner's rotation prune keeps retention moving after that). The
+    // writer asks its own authority again inside the step, so a gate that lies
+    // still writes nothing. A failure is logged with a code, never the error.
+    if (lockResult.acquired) {
+      try {
+        await auditWriter.runArchiveMaintenance();
+      } catch {
+        logger.warn('archive maintenance failed', { reasonCode: 'archive-maintenance-failed' });
+      }
+    } else {
+      logger.info('archive maintenance skipped: window is not primary');
     }
 
     // Fire-and-forget, as it was at its old call site. Not gated on primacy

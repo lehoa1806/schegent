@@ -109,7 +109,8 @@ function hostDouble(quiesce: ResetStageSupport['quiesce']): HostDouble {
     quiesce,
     recordReset: async (payload) => {
       recorded.push(payload);
-    }
+    },
+    isOwner: () => Promise.resolve(true)
   };
   return {
     host: { support: () => support, stopProducers, reload },

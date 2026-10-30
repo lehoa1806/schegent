@@ -370,6 +370,9 @@ describe('AuditLogWriter — owner-only evidence (feature 217)', () => {
     await fs.chmod(operatorFile, 0o644);
 
     const writer = new AuditLogWriter({ workspaceRoot: tmpRoot }, new SanitizedLogger());
+    // FR-R4-F03 (FR-013) — construction is read-only, so the retention sweep that narrows what it
+    // keeps is the explicit maintenance step, not the constructor.
+    await writer.runArchiveMaintenance();
     await writer.append(entry(3));
 
     expect(await modeOf(archivePath)).toBe(0o600);

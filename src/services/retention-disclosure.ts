@@ -97,6 +97,17 @@ export function retentionDisclosure(): readonly RetentionEntry[] {
         CHECKPOINT_MAX_TOTAL_BYTES
       )} MiB total, with the ${CHECKPOINT_RECENT_RUN_FLOOR} most recent Run directories protected from the size limit`,
       source: 'CHECKPOINT_MAX_AGE_MS / CHECKPOINT_MAX_TOTAL_BYTES / CHECKPOINT_RECENT_RUN_FLOOR in src/services/run-checkpoint-retention.ts'
+    },
+    {
+      // FR-R4-F03 (R19) — the audit head checkpoint, kept outside the workspace on purpose: removing
+      // `.schegent/` must not remove the record that history existed. It holds a digest, a position and
+      // times, and no content, so nothing in it needs redacting.
+      artifact: 'Audit head checkpoint',
+      location: "the extension's globalStorage, audit-checkpoints/<key>.json — deliberately outside the workspace",
+      redacted: true,
+      bound:
+        'one small file per workspace location, holding a digest, a position and times only; never pruned, and retired only by the reset command; a moved folder leaves its old file behind',
+      source: 'checkpointKey in src/audit/audit-checkpoint.ts; the store in src/audit/audit-checkpoint-store.ts'
     }
   ]);
 }
