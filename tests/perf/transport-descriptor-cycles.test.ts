@@ -158,6 +158,11 @@ describe('FR-R3-137 — descriptor cycles (T1532a, FR-015)', () => {
       await recordOne(sink, cycle + CYCLES);
       afterNext.push(sink.openDescriptorCount);
       await router.finalizeRun(`run-${cycle + CYCLES}`, 'completed', new Set());
+
+      // The retention sweep's part, done by hand. Under `on` every Run's file is kept and each Run's end
+      // lists them all from the disk (a listing trusts no cache), so 400 kept files would measure that
+      // listing growing with them (80 cycles took 3.7 s, 40 took 0.9 s) rather than the handle count.
+      await fs.rm(path.join(workspaceRoot, '.schegent', 'sessions'), { recursive: true, force: true });
     }
 
     // Flat, not merely bounded: `<= 1` would also pass on a sink that had stopped
