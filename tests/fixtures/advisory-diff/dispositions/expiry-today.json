@@ -1,0 +1,33 @@
+{
+  "declares": {
+    "description": "An expiry date ends at 00:00:00Z that day, so an entry expiring today has expired by the evaluation time",
+    "state": "read",
+    "verdict": "expired",
+    "entries": [
+      {
+        "advisory": "GHSA-ab12-cd34-ef56",
+        "result": "expired",
+        "status": "accepted",
+        "owner": "owner-a",
+        "decidedOn": "2026-10-01",
+        "expiresOn": "2026-10-30"
+      }
+    ]
+  },
+  "list": {
+    "dispositionListVersion": 1,
+    "dispositions": [
+      {
+        "advisory": "GHSA-ab12-cd34-ef56",
+        "ecosystem": "npm",
+        "package": "lib-a",
+        "tree": "root",
+        "range": "<2.0.0",
+        "status": "accepted",
+        "owner": "owner-a",
+        "decidedOn": "2026-10-01",
+        "expiresOn": "2026-10-30"
+      }
+    ]
+  }
+}

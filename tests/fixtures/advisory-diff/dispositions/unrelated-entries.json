@@ -1,0 +1,35 @@
+{
+  "declares": {
+    "description": "A readable list with no entry relating to the finding gives not-recorded, never unknown (FR-020)",
+    "state": "read",
+    "verdict": "not-recorded",
+    "entries": []
+  },
+  "list": {
+    "dispositionListVersion": 1,
+    "dispositions": [
+      {
+        "advisory": "GHSA-zz99-yy88-xx77",
+        "ecosystem": "npm",
+        "package": "lib-a",
+        "tree": "root",
+        "range": "<2.0.0",
+        "status": "accepted",
+        "owner": "owner-a",
+        "decidedOn": "2026-10-01",
+        "expiresOn": "2027-01-01"
+      },
+      {
+        "advisory": "GHSA-ab12-cd34-ef56",
+        "ecosystem": "npm",
+        "package": "lib-other",
+        "tree": "root",
+        "range": "<2.0.0",
+        "status": "accepted",
+        "owner": "owner-a",
+        "decidedOn": "2026-10-01",
+        "expiresOn": "2027-01-01"
+      }
+    ]
+  }
+}

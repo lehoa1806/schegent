@@ -9,6 +9,26 @@ This file is the release workflow's stable pointer for changes that affect opera
 Recorded as they land, so the first release note is assembled from evidence rather than
 from memory.
 
+### Advisory comparison against an explicit baseline, report-only (FR-R4-F21, 2026-10-30)
+
+A candidate with dependency advisories is not necessarily one that made things worse, and
+`npm run security:audit` cannot say which. `npm run security:advisory-diff` now compares a candidate
+commit's advisories with those of an explicit base commit, for both npm trees, and reports which are
+introduced, worsened, uncertain, pre-existing or resolved. It is a three-step, operator-run command:
+`base` prints the base, `capture` audits one tree at one commit and is the only step that contacts the
+registry, and `compare` reads the captures offline and prints the report.
+
+- Report-only. It is not part of `npm run gate` or any verify tier, the release or the package, no Phase
+  or pipeline runs it, it exits 0 whatever it finds, and it is neither a waiver nor permission to
+  integrate. `npm run security:audit` is unchanged and still fails when it finds an advisory.
+- An incomplete comparison never reads as clean: a missing, stale, mismatched or failed capture, a base
+  that cannot be chosen, or captures that are not comparable is reported with its reason, and the counts
+  are stated as not determined rather than zero.
+- A disposition list, when one is named, is shown beside each finding and never changes a class or a count.
+- `semver` 7.7.4, already resolved in the lockfile, is now declared as a development dependency. Nothing
+  new is installed.
+- No setting, event, status, field or schema version changed, and there is no migration.
+
 ### Skip is refused on a failed run, and the refusal is shown (FR-R4-F20, 2026-10-29)
 
 If a run failed while Skip's confirmation was open, confirming revived the run: its failed task went

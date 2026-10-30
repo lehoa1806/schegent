@@ -1,0 +1,74 @@
+{
+  "declares": {
+    "description": "The same pairs, severity and usage on both sides is pre-existing, with no reasons (row 6)",
+    "groups": [
+      {
+        "package": "lib-a",
+        "class": "pre-existing",
+        "reasons": []
+      }
+    ]
+  },
+  "base": {
+    "findings": [
+      {
+        "package": "lib-a",
+        "ids": {
+          "canonical": "GHSA-ab12-cd34-ef56",
+          "aliases": []
+        },
+        "severity": "high",
+        "range": "<9.0.0",
+        "title": "Fixture classification advisory",
+        "url": "https://github.com/advisories/GHSA-ab12-cd34-ef56",
+        "locations": [
+          {
+            "location": "node_modules/lib-a",
+            "version": "1.0.0",
+            "direct": true,
+            "production": true
+          }
+        ],
+        "direct": true,
+        "production": true,
+        "dependents": [],
+        "notes": []
+      }
+    ]
+  },
+  "candidate": {
+    "findings": [
+      {
+        "package": "lib-a",
+        "ids": {
+          "canonical": "GHSA-ab12-cd34-ef56",
+          "aliases": []
+        },
+        "severity": "high",
+        "range": "<9.0.0",
+        "title": "Fixture classification advisory",
+        "url": "https://github.com/advisories/GHSA-ab12-cd34-ef56",
+        "locations": [
+          {
+            "location": "node_modules/lib-a",
+            "version": "1.0.0",
+            "direct": true,
+            "production": true
+          }
+        ],
+        "direct": true,
+        "production": true,
+        "dependents": [],
+        "notes": []
+      }
+    ]
+  },
+  "lockfiles": {
+    "base": {
+      "node_modules/lib-a": "1.0.0"
+    },
+    "candidate": {
+      "node_modules/lib-a": "1.0.0"
+    }
+  }
+}

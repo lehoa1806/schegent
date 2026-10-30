@@ -1,0 +1,140 @@
+{
+  "declares": {
+    "description": "One advisory at three lockfile locations is one finding with three locations",
+    "findings": [
+      {
+        "package": "lib-m",
+        "ids": {
+          "canonical": "GHSA-mmmm-nnnn-oooo",
+          "aliases": [
+            "npm:7001"
+          ]
+        },
+        "severity": "high",
+        "range": "<1.2.0",
+        "title": "Fixture advisory at three nodes",
+        "url": "https://github.com/advisories/GHSA-mmmm-nnnn-oooo",
+        "locations": [
+          {
+            "location": "node_modules/lib-m",
+            "version": "1.0.0",
+            "direct": true,
+            "production": true
+          },
+          {
+            "location": "node_modules/lib-p/node_modules/lib-m",
+            "version": "1.0.1",
+            "direct": false,
+            "production": true
+          },
+          {
+            "location": "node_modules/lib-q/node_modules/lib-m",
+            "version": "1.1.0",
+            "direct": false,
+            "production": true
+          }
+        ],
+        "direct": true,
+        "production": true,
+        "dependents": [],
+        "notes": []
+      }
+    ]
+  },
+  "rootManifest": {
+    "dependencies": {
+      "lib-m": "^1.0.0",
+      "lib-p": "^1.0.0",
+      "lib-q": "^1.0.0"
+    }
+  },
+  "lockfile": {
+    "name": "fixture-tree",
+    "version": "1.0.0",
+    "lockfileVersion": 3,
+    "requires": true,
+    "packages": {
+      "": {
+        "name": "fixture-tree",
+        "version": "1.0.0",
+        "dependencies": {
+          "lib-m": "^1.0.0",
+          "lib-p": "^1.0.0",
+          "lib-q": "^1.0.0"
+        }
+      },
+      "node_modules/lib-m": {
+        "version": "1.0.0",
+        "resolved": "https://registry.example.test/pkg/-/pkg-1.0.0.tgz"
+      },
+      "node_modules/lib-p": {
+        "version": "1.0.0",
+        "resolved": "https://registry.example.test/pkg/-/pkg-1.0.0.tgz"
+      },
+      "node_modules/lib-q": {
+        "version": "1.0.0",
+        "resolved": "https://registry.example.test/pkg/-/pkg-1.0.0.tgz"
+      },
+      "node_modules/lib-p/node_modules/lib-m": {
+        "version": "1.0.1",
+        "resolved": "https://registry.example.test/pkg/-/pkg-1.0.1.tgz"
+      },
+      "node_modules/lib-q/node_modules/lib-m": {
+        "version": "1.1.0",
+        "resolved": "https://registry.example.test/pkg/-/pkg-1.1.0.tgz"
+      }
+    }
+  },
+  "report": {
+    "auditReportVersion": 2,
+    "vulnerabilities": {
+      "lib-m": {
+        "name": "lib-m",
+        "severity": "high",
+        "isDirect": true,
+        "via": [
+          {
+            "source": 7001,
+            "name": "lib-m",
+            "dependency": "lib-m",
+            "title": "Fixture advisory at three nodes",
+            "url": "https://github.com/advisories/GHSA-mmmm-nnnn-oooo",
+            "severity": "high",
+            "cwe": [],
+            "cvss": {
+              "score": 0,
+              "vectorString": null
+            },
+            "range": "<1.2.0"
+          }
+        ],
+        "effects": [],
+        "range": "*",
+        "nodes": [
+          "node_modules/lib-m",
+          "node_modules/lib-p/node_modules/lib-m",
+          "node_modules/lib-q/node_modules/lib-m"
+        ],
+        "fixAvailable": false
+      }
+    },
+    "metadata": {
+      "vulnerabilities": {
+        "info": 0,
+        "low": 0,
+        "moderate": 0,
+        "high": 1,
+        "critical": 0,
+        "total": 1
+      },
+      "dependencies": {
+        "prod": 0,
+        "dev": 0,
+        "optional": 0,
+        "peer": 0,
+        "peerOptional": 0,
+        "total": 0
+      }
+    }
+  }
+}

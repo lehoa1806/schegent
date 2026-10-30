@@ -1,0 +1,127 @@
+{
+  "declares": {
+    "description": "A candidate equal to the base has no introduced group: every finding is pre-existing",
+    "groups": [
+      {
+        "package": "lib-a",
+        "class": "pre-existing",
+        "reasons": []
+      },
+      {
+        "package": "lib-b",
+        "class": "pre-existing",
+        "reasons": []
+      }
+    ]
+  },
+  "base": {
+    "findings": [
+      {
+        "package": "lib-a",
+        "ids": {
+          "canonical": "GHSA-ab12-cd34-ef56",
+          "aliases": []
+        },
+        "severity": "high",
+        "range": "<9.0.0",
+        "title": "Fixture classification advisory",
+        "url": "https://github.com/advisories/GHSA-ab12-cd34-ef56",
+        "locations": [
+          {
+            "location": "node_modules/lib-a",
+            "version": "1.0.0",
+            "direct": true,
+            "production": true
+          }
+        ],
+        "direct": true,
+        "production": true,
+        "dependents": [],
+        "notes": []
+      },
+      {
+        "package": "lib-b",
+        "ids": {
+          "canonical": "GHSA-ab12-cd34-ef99",
+          "aliases": []
+        },
+        "severity": "low",
+        "range": "<9.0.0",
+        "title": "Fixture classification advisory",
+        "url": "https://github.com/advisories/GHSA-ab12-cd34-ef99",
+        "locations": [
+          {
+            "location": "node_modules/lib-b",
+            "version": "2.0.0",
+            "direct": true,
+            "production": false
+          }
+        ],
+        "direct": true,
+        "production": false,
+        "dependents": [],
+        "notes": []
+      }
+    ]
+  },
+  "candidate": {
+    "findings": [
+      {
+        "package": "lib-a",
+        "ids": {
+          "canonical": "GHSA-ab12-cd34-ef56",
+          "aliases": []
+        },
+        "severity": "high",
+        "range": "<9.0.0",
+        "title": "Fixture classification advisory",
+        "url": "https://github.com/advisories/GHSA-ab12-cd34-ef56",
+        "locations": [
+          {
+            "location": "node_modules/lib-a",
+            "version": "1.0.0",
+            "direct": true,
+            "production": true
+          }
+        ],
+        "direct": true,
+        "production": true,
+        "dependents": [],
+        "notes": []
+      },
+      {
+        "package": "lib-b",
+        "ids": {
+          "canonical": "GHSA-ab12-cd34-ef99",
+          "aliases": []
+        },
+        "severity": "low",
+        "range": "<9.0.0",
+        "title": "Fixture classification advisory",
+        "url": "https://github.com/advisories/GHSA-ab12-cd34-ef99",
+        "locations": [
+          {
+            "location": "node_modules/lib-b",
+            "version": "2.0.0",
+            "direct": true,
+            "production": false
+          }
+        ],
+        "direct": true,
+        "production": false,
+        "dependents": [],
+        "notes": []
+      }
+    ]
+  },
+  "lockfiles": {
+    "base": {
+      "node_modules/lib-a": "1.0.0",
+      "node_modules/lib-b": "2.0.0"
+    },
+    "candidate": {
+      "node_modules/lib-a": "1.0.0",
+      "node_modules/lib-b": "2.0.0"
+    }
+  }
+}

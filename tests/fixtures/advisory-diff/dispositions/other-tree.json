@@ -1,0 +1,36 @@
+{
+  "declares": {
+    "description": "US4-3: an entry for the other tree does not cover, naming other-tree",
+    "state": "read",
+    "verdict": "does-not-cover",
+    "entries": [
+      {
+        "advisory": "GHSA-ab12-cd34-ef56",
+        "result": "does-not-cover",
+        "mismatch": {
+          "reason": "other-tree"
+        },
+        "status": "accepted",
+        "owner": "owner-a",
+        "decidedOn": "2026-10-01",
+        "expiresOn": "2027-01-01"
+      }
+    ]
+  },
+  "list": {
+    "dispositionListVersion": 1,
+    "dispositions": [
+      {
+        "advisory": "GHSA-ab12-cd34-ef56",
+        "ecosystem": "npm",
+        "package": "lib-a",
+        "tree": "webview-ui",
+        "range": "<2.0.0",
+        "status": "accepted",
+        "owner": "owner-a",
+        "decidedOn": "2026-10-01",
+        "expiresOn": "2027-01-01"
+      }
+    ]
+  }
+}

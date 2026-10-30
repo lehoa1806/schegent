@@ -1,0 +1,39 @@
+{
+  "declares": {
+    "description": "A registry that is not a URL is failed, registry-unknown",
+    "outcome": {
+      "status": "failed",
+      "reason": "registry-unknown"
+    }
+  },
+  "registry": "not a url",
+  "npmVersion": "11.17.0",
+  "audit": {
+    "stdoutJson": {
+      "auditReportVersion": 2,
+      "vulnerabilities": {},
+      "metadata": {
+        "vulnerabilities": {
+          "info": 0,
+          "low": 0,
+          "moderate": 0,
+          "high": 0,
+          "critical": 0,
+          "total": 0
+        },
+        "dependencies": {
+          "prod": 0,
+          "dev": 0,
+          "optional": 0,
+          "peer": 0,
+          "peerOptional": 0,
+          "total": 0
+        }
+      }
+    },
+    "exitCode": 0,
+    "timedOut": false,
+    "spawnError": false,
+    "overflow": false
+  }
+}

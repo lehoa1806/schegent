@@ -1,0 +1,26 @@
+{
+  "declares": {
+    "description": "auditReportVersion 1 is not supported",
+    "rejected": {
+      "reason": "unsupported-format"
+    }
+  },
+  "rootManifest": {},
+  "lockfile": {
+    "name": "fixture-tree",
+    "version": "1.0.0",
+    "lockfileVersion": 3,
+    "requires": true,
+    "packages": {
+      "": {
+        "name": "fixture-tree",
+        "version": "1.0.0"
+      }
+    }
+  },
+  "report": {
+    "auditReportVersion": 1,
+    "vulnerabilities": {},
+    "advisories": {}
+  }
+}

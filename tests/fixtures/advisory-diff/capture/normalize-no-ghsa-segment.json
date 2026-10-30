@@ -1,0 +1,104 @@
+{
+  "declares": {
+    "description": "A url with no GHSA segment: canonical npm:<source>",
+    "findings": [
+      {
+        "package": "lib-g",
+        "ids": {
+          "canonical": "npm:6002",
+          "aliases": []
+        },
+        "severity": "low",
+        "range": "<2.0.0",
+        "title": "Fixture identity advisory",
+        "url": "https://example.test/advisories/6002",
+        "locations": [
+          {
+            "location": "node_modules/lib-g",
+            "version": "1.0.0",
+            "direct": true,
+            "production": true
+          }
+        ],
+        "direct": true,
+        "production": true,
+        "dependents": [],
+        "notes": []
+      }
+    ]
+  },
+  "rootManifest": {
+    "dependencies": {
+      "lib-g": "^1.0.0"
+    }
+  },
+  "lockfile": {
+    "name": "fixture-tree",
+    "version": "1.0.0",
+    "lockfileVersion": 3,
+    "requires": true,
+    "packages": {
+      "": {
+        "name": "fixture-tree",
+        "version": "1.0.0",
+        "dependencies": {
+          "lib-g": "^1.0.0"
+        }
+      },
+      "node_modules/lib-g": {
+        "version": "1.0.0",
+        "resolved": "https://registry.example.test/pkg/-/pkg-1.0.0.tgz"
+      }
+    }
+  },
+  "report": {
+    "auditReportVersion": 2,
+    "vulnerabilities": {
+      "lib-g": {
+        "name": "lib-g",
+        "severity": "low",
+        "isDirect": true,
+        "via": [
+          {
+            "source": 6002,
+            "name": "lib-g",
+            "dependency": "lib-g",
+            "title": "Fixture identity advisory",
+            "url": "https://example.test/advisories/6002",
+            "severity": "low",
+            "cwe": [],
+            "cvss": {
+              "score": 0,
+              "vectorString": null
+            },
+            "range": "<2.0.0"
+          }
+        ],
+        "effects": [],
+        "range": "*",
+        "nodes": [
+          "node_modules/lib-g"
+        ],
+        "fixAvailable": false
+      }
+    },
+    "metadata": {
+      "vulnerabilities": {
+        "info": 0,
+        "low": 0,
+        "moderate": 0,
+        "high": 1,
+        "critical": 0,
+        "total": 1
+      },
+      "dependencies": {
+        "prod": 0,
+        "dev": 0,
+        "optional": 0,
+        "peer": 0,
+        "peerOptional": 0,
+        "total": 0
+      }
+    }
+  }
+}

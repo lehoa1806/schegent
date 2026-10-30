@@ -1,0 +1,156 @@
+{
+  "declares": {
+    "description": "Two advisories with different ranges over two installed versions: each finding holds only its own nodes",
+    "findings": [
+      {
+        "package": "lib-t",
+        "ids": {
+          "canonical": "GHSA-1111-2222-3333",
+          "aliases": [
+            "npm:7101"
+          ]
+        },
+        "severity": "moderate",
+        "range": "<1.5.0",
+        "title": "Fixture advisory below 1.5",
+        "url": "https://github.com/advisories/GHSA-1111-2222-3333",
+        "locations": [
+          {
+            "location": "node_modules/lib-u/node_modules/lib-t",
+            "version": "1.0.0",
+            "direct": false,
+            "production": true
+          }
+        ],
+        "direct": false,
+        "production": true,
+        "dependents": [],
+        "notes": []
+      },
+      {
+        "package": "lib-t",
+        "ids": {
+          "canonical": "GHSA-4444-5555-6666",
+          "aliases": [
+            "npm:7102"
+          ]
+        },
+        "severity": "critical",
+        "range": ">=2.0.0 <2.5.0",
+        "title": "Fixture advisory in 2.x",
+        "url": "https://github.com/advisories/GHSA-4444-5555-6666",
+        "locations": [
+          {
+            "location": "node_modules/lib-t",
+            "version": "2.0.0",
+            "direct": true,
+            "production": true
+          }
+        ],
+        "direct": true,
+        "production": true,
+        "dependents": [],
+        "notes": []
+      }
+    ]
+  },
+  "rootManifest": {
+    "dependencies": {
+      "lib-t": "^2.0.0",
+      "lib-u": "^1.0.0"
+    }
+  },
+  "lockfile": {
+    "name": "fixture-tree",
+    "version": "1.0.0",
+    "lockfileVersion": 3,
+    "requires": true,
+    "packages": {
+      "": {
+        "name": "fixture-tree",
+        "version": "1.0.0",
+        "dependencies": {
+          "lib-t": "^2.0.0",
+          "lib-u": "^1.0.0"
+        }
+      },
+      "node_modules/lib-t": {
+        "version": "2.0.0",
+        "resolved": "https://registry.example.test/pkg/-/pkg-2.0.0.tgz"
+      },
+      "node_modules/lib-u": {
+        "version": "1.0.0",
+        "resolved": "https://registry.example.test/pkg/-/pkg-1.0.0.tgz"
+      },
+      "node_modules/lib-u/node_modules/lib-t": {
+        "version": "1.0.0",
+        "resolved": "https://registry.example.test/pkg/-/pkg-1.0.0.tgz"
+      }
+    }
+  },
+  "report": {
+    "auditReportVersion": 2,
+    "vulnerabilities": {
+      "lib-t": {
+        "name": "lib-t",
+        "severity": "critical",
+        "isDirect": true,
+        "via": [
+          {
+            "source": 7101,
+            "name": "lib-t",
+            "dependency": "lib-t",
+            "title": "Fixture advisory below 1.5",
+            "url": "https://github.com/advisories/GHSA-1111-2222-3333",
+            "severity": "moderate",
+            "cwe": [],
+            "cvss": {
+              "score": 0,
+              "vectorString": null
+            },
+            "range": "<1.5.0"
+          },
+          {
+            "source": 7102,
+            "name": "lib-t",
+            "dependency": "lib-t",
+            "title": "Fixture advisory in 2.x",
+            "url": "https://github.com/advisories/GHSA-4444-5555-6666",
+            "severity": "critical",
+            "cwe": [],
+            "cvss": {
+              "score": 0,
+              "vectorString": null
+            },
+            "range": ">=2.0.0 <2.5.0"
+          }
+        ],
+        "effects": [],
+        "range": "*",
+        "nodes": [
+          "node_modules/lib-t",
+          "node_modules/lib-u/node_modules/lib-t"
+        ],
+        "fixAvailable": false
+      }
+    },
+    "metadata": {
+      "vulnerabilities": {
+        "info": 0,
+        "low": 0,
+        "moderate": 0,
+        "high": 1,
+        "critical": 0,
+        "total": 1
+      },
+      "dependencies": {
+        "prod": 0,
+        "dev": 0,
+        "optional": 0,
+        "peer": 0,
+        "peerOptional": 0,
+        "total": 0
+      }
+    }
+  }
+}

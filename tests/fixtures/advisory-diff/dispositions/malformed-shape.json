@@ -1,0 +1,11 @@
+{
+  "declares": {
+    "description": "A list whose dispositions are not an array is unusable, malformed",
+    "state": "unusable",
+    "defect": "malformed"
+  },
+  "list": {
+    "dispositionListVersion": 1,
+    "dispositions": "none"
+  }
+}

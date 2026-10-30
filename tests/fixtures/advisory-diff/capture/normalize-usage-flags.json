@@ -1,0 +1,353 @@
+{
+  "declares": {
+    "description": "Direct and production per lockfile flags: dev and devOptional are not production, optional is, and only a top-level location the root declares is direct",
+    "findings": [
+      {
+        "package": "lib-dev",
+        "ids": {
+          "canonical": "GHSA-aa11-bb22-cc33",
+          "aliases": [
+            "npm:8001"
+          ]
+        },
+        "severity": "high",
+        "range": "<2.0.0",
+        "title": "Fixture usage advisory for lib-dev",
+        "url": "https://github.com/advisories/GHSA-aa11-bb22-cc33",
+        "locations": [
+          {
+            "location": "node_modules/lib-dev",
+            "version": "1.0.0",
+            "direct": true,
+            "production": false
+          }
+        ],
+        "direct": true,
+        "production": false,
+        "dependents": [],
+        "notes": []
+      },
+      {
+        "package": "lib-devopt",
+        "ids": {
+          "canonical": "GHSA-aa11-bb22-cc44",
+          "aliases": [
+            "npm:8002"
+          ]
+        },
+        "severity": "high",
+        "range": "<2.0.0",
+        "title": "Fixture usage advisory for lib-devopt",
+        "url": "https://github.com/advisories/GHSA-aa11-bb22-cc44",
+        "locations": [
+          {
+            "location": "node_modules/lib-devopt",
+            "version": "1.0.0",
+            "direct": false,
+            "production": false
+          }
+        ],
+        "direct": false,
+        "production": false,
+        "dependents": [],
+        "notes": []
+      },
+      {
+        "package": "lib-nested",
+        "ids": {
+          "canonical": "GHSA-aa11-bb22-cc55",
+          "aliases": [
+            "npm:8003"
+          ]
+        },
+        "severity": "high",
+        "range": "<2.0.0",
+        "title": "Fixture usage advisory for lib-nested",
+        "url": "https://github.com/advisories/GHSA-aa11-bb22-cc55",
+        "locations": [
+          {
+            "location": "node_modules/lib-host/node_modules/lib-nested",
+            "version": "1.0.0",
+            "direct": false,
+            "production": true
+          }
+        ],
+        "direct": false,
+        "production": true,
+        "dependents": [],
+        "notes": []
+      },
+      {
+        "package": "lib-opt",
+        "ids": {
+          "canonical": "GHSA-aa11-bb22-cc66",
+          "aliases": [
+            "npm:8004"
+          ]
+        },
+        "severity": "high",
+        "range": "<2.0.0",
+        "title": "Fixture usage advisory for lib-opt",
+        "url": "https://github.com/advisories/GHSA-aa11-bb22-cc66",
+        "locations": [
+          {
+            "location": "node_modules/lib-opt",
+            "version": "1.0.0",
+            "direct": true,
+            "production": true
+          }
+        ],
+        "direct": true,
+        "production": true,
+        "dependents": [],
+        "notes": []
+      },
+      {
+        "package": "lib-prod",
+        "ids": {
+          "canonical": "GHSA-aa11-bb22-cc77",
+          "aliases": [
+            "npm:8005"
+          ]
+        },
+        "severity": "high",
+        "range": "<2.0.0",
+        "title": "Fixture usage advisory for lib-prod",
+        "url": "https://github.com/advisories/GHSA-aa11-bb22-cc77",
+        "locations": [
+          {
+            "location": "node_modules/lib-prod",
+            "version": "1.0.0",
+            "direct": true,
+            "production": true
+          }
+        ],
+        "direct": true,
+        "production": true,
+        "dependents": [],
+        "notes": []
+      }
+    ]
+  },
+  "rootManifest": {
+    "dependencies": {
+      "lib-prod": "^1.0.0",
+      "lib-nested": "^1.0.0",
+      "lib-host": "^1.0.0"
+    },
+    "devDependencies": {
+      "lib-dev": "^1.0.0"
+    },
+    "optionalDependencies": {
+      "lib-opt": "^1.0.0"
+    }
+  },
+  "lockfile": {
+    "name": "fixture-tree",
+    "version": "1.0.0",
+    "lockfileVersion": 3,
+    "requires": true,
+    "packages": {
+      "": {
+        "name": "fixture-tree",
+        "version": "1.0.0",
+        "dependencies": {
+          "lib-prod": "^1.0.0",
+          "lib-nested": "^1.0.0",
+          "lib-host": "^1.0.0"
+        },
+        "devDependencies": {
+          "lib-dev": "^1.0.0"
+        },
+        "optionalDependencies": {
+          "lib-opt": "^1.0.0"
+        }
+      },
+      "node_modules/lib-prod": {
+        "version": "1.0.0",
+        "resolved": "https://registry.example.test/pkg/-/pkg-1.0.0.tgz"
+      },
+      "node_modules/lib-dev": {
+        "version": "1.0.0",
+        "resolved": "https://registry.example.test/pkg/-/pkg-1.0.0.tgz",
+        "dev": true
+      },
+      "node_modules/lib-devopt": {
+        "version": "1.0.0",
+        "resolved": "https://registry.example.test/pkg/-/pkg-1.0.0.tgz",
+        "devOptional": true
+      },
+      "node_modules/lib-opt": {
+        "version": "1.0.0",
+        "resolved": "https://registry.example.test/pkg/-/pkg-1.0.0.tgz",
+        "optional": true
+      },
+      "node_modules/lib-host": {
+        "version": "1.0.0",
+        "resolved": "https://registry.example.test/pkg/-/pkg-1.0.0.tgz"
+      },
+      "node_modules/lib-host/node_modules/lib-nested": {
+        "version": "1.0.0",
+        "resolved": "https://registry.example.test/pkg/-/pkg-1.0.0.tgz"
+      }
+    }
+  },
+  "report": {
+    "auditReportVersion": 2,
+    "vulnerabilities": {
+      "lib-dev": {
+        "name": "lib-dev",
+        "severity": "high",
+        "isDirect": true,
+        "via": [
+          {
+            "source": 8001,
+            "name": "lib-dev",
+            "dependency": "lib-dev",
+            "title": "Fixture usage advisory for lib-dev",
+            "url": "https://github.com/advisories/GHSA-aa11-bb22-cc33",
+            "severity": "high",
+            "cwe": [],
+            "cvss": {
+              "score": 0,
+              "vectorString": null
+            },
+            "range": "<2.0.0"
+          }
+        ],
+        "effects": [],
+        "range": "*",
+        "nodes": [
+          "node_modules/lib-dev"
+        ],
+        "fixAvailable": false
+      },
+      "lib-devopt": {
+        "name": "lib-devopt",
+        "severity": "high",
+        "isDirect": true,
+        "via": [
+          {
+            "source": 8002,
+            "name": "lib-devopt",
+            "dependency": "lib-devopt",
+            "title": "Fixture usage advisory for lib-devopt",
+            "url": "https://github.com/advisories/GHSA-aa11-bb22-cc44",
+            "severity": "high",
+            "cwe": [],
+            "cvss": {
+              "score": 0,
+              "vectorString": null
+            },
+            "range": "<2.0.0"
+          }
+        ],
+        "effects": [],
+        "range": "*",
+        "nodes": [
+          "node_modules/lib-devopt"
+        ],
+        "fixAvailable": false
+      },
+      "lib-nested": {
+        "name": "lib-nested",
+        "severity": "high",
+        "isDirect": true,
+        "via": [
+          {
+            "source": 8003,
+            "name": "lib-nested",
+            "dependency": "lib-nested",
+            "title": "Fixture usage advisory for lib-nested",
+            "url": "https://github.com/advisories/GHSA-aa11-bb22-cc55",
+            "severity": "high",
+            "cwe": [],
+            "cvss": {
+              "score": 0,
+              "vectorString": null
+            },
+            "range": "<2.0.0"
+          }
+        ],
+        "effects": [],
+        "range": "*",
+        "nodes": [
+          "node_modules/lib-host/node_modules/lib-nested"
+        ],
+        "fixAvailable": false
+      },
+      "lib-opt": {
+        "name": "lib-opt",
+        "severity": "high",
+        "isDirect": true,
+        "via": [
+          {
+            "source": 8004,
+            "name": "lib-opt",
+            "dependency": "lib-opt",
+            "title": "Fixture usage advisory for lib-opt",
+            "url": "https://github.com/advisories/GHSA-aa11-bb22-cc66",
+            "severity": "high",
+            "cwe": [],
+            "cvss": {
+              "score": 0,
+              "vectorString": null
+            },
+            "range": "<2.0.0"
+          }
+        ],
+        "effects": [],
+        "range": "*",
+        "nodes": [
+          "node_modules/lib-opt"
+        ],
+        "fixAvailable": false
+      },
+      "lib-prod": {
+        "name": "lib-prod",
+        "severity": "high",
+        "isDirect": true,
+        "via": [
+          {
+            "source": 8005,
+            "name": "lib-prod",
+            "dependency": "lib-prod",
+            "title": "Fixture usage advisory for lib-prod",
+            "url": "https://github.com/advisories/GHSA-aa11-bb22-cc77",
+            "severity": "high",
+            "cwe": [],
+            "cvss": {
+              "score": 0,
+              "vectorString": null
+            },
+            "range": "<2.0.0"
+          }
+        ],
+        "effects": [],
+        "range": "*",
+        "nodes": [
+          "node_modules/lib-prod"
+        ],
+        "fixAvailable": false
+      }
+    },
+    "metadata": {
+      "vulnerabilities": {
+        "info": 0,
+        "low": 0,
+        "moderate": 0,
+        "high": 5,
+        "critical": 0,
+        "total": 5
+      },
+      "dependencies": {
+        "prod": 0,
+        "dev": 0,
+        "optional": 0,
+        "peer": 0,
+        "peerOptional": 0,
+        "total": 0
+      }
+    }
+  }
+}
