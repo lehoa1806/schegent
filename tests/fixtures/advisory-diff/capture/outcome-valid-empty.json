@@ -1,0 +1,40 @@
+{
+  "declares": {
+    "description": "Exit 0 with a valid empty report is succeeded with zero findings",
+    "outcome": {
+      "status": "succeeded"
+    },
+    "findingCount": 0,
+    "registryHost": "registry.example.test"
+  },
+  "registry": "https://registry.example.test/",
+  "npmVersion": "11.17.0",
+  "audit": {
+    "stdoutJson": {
+      "auditReportVersion": 2,
+      "vulnerabilities": {},
+      "metadata": {
+        "vulnerabilities": {
+          "info": 0,
+          "low": 0,
+          "moderate": 0,
+          "high": 0,
+          "critical": 0,
+          "total": 0
+        },
+        "dependencies": {
+          "prod": 0,
+          "dev": 0,
+          "optional": 0,
+          "peer": 0,
+          "peerOptional": 0,
+          "total": 0
+        }
+      }
+    },
+    "exitCode": 0,
+    "timedOut": false,
+    "spawnError": false,
+    "overflow": false
+  }
+}

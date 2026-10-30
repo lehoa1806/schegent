@@ -1,0 +1,164 @@
+{
+  "declares": {
+    "description": "One advisory affecting two packages is two findings",
+    "findings": [
+      {
+        "package": "lib-j",
+        "ids": {
+          "canonical": "GHSA-kk11-ll22-mm33",
+          "aliases": [
+            "npm:9101"
+          ]
+        },
+        "severity": "high",
+        "range": "<2.0.0",
+        "title": "Fixture advisory in two packages",
+        "url": "https://github.com/advisories/GHSA-kk11-ll22-mm33",
+        "locations": [
+          {
+            "location": "node_modules/lib-j",
+            "version": "1.0.0",
+            "direct": true,
+            "production": true
+          }
+        ],
+        "direct": true,
+        "production": true,
+        "dependents": [],
+        "notes": []
+      },
+      {
+        "package": "lib-k",
+        "ids": {
+          "canonical": "GHSA-kk11-ll22-mm33",
+          "aliases": [
+            "npm:9101"
+          ]
+        },
+        "severity": "high",
+        "range": "<2.0.0",
+        "title": "Fixture advisory in two packages",
+        "url": "https://github.com/advisories/GHSA-kk11-ll22-mm33",
+        "locations": [
+          {
+            "location": "node_modules/lib-k",
+            "version": "1.0.0",
+            "direct": true,
+            "production": true
+          }
+        ],
+        "direct": true,
+        "production": true,
+        "dependents": [],
+        "notes": []
+      }
+    ]
+  },
+  "rootManifest": {
+    "dependencies": {
+      "lib-j": "^1.0.0",
+      "lib-k": "^1.0.0"
+    }
+  },
+  "lockfile": {
+    "name": "fixture-tree",
+    "version": "1.0.0",
+    "lockfileVersion": 3,
+    "requires": true,
+    "packages": {
+      "": {
+        "name": "fixture-tree",
+        "version": "1.0.0",
+        "dependencies": {
+          "lib-j": "^1.0.0",
+          "lib-k": "^1.0.0"
+        }
+      },
+      "node_modules/lib-j": {
+        "version": "1.0.0",
+        "resolved": "https://registry.example.test/pkg/-/pkg-1.0.0.tgz"
+      },
+      "node_modules/lib-k": {
+        "version": "1.0.0",
+        "resolved": "https://registry.example.test/pkg/-/pkg-1.0.0.tgz"
+      }
+    }
+  },
+  "report": {
+    "auditReportVersion": 2,
+    "vulnerabilities": {
+      "lib-k": {
+        "name": "lib-k",
+        "severity": "high",
+        "isDirect": true,
+        "via": [
+          {
+            "source": 9101,
+            "name": "lib-k",
+            "dependency": "lib-k",
+            "title": "Fixture advisory in two packages",
+            "url": "https://github.com/advisories/GHSA-kk11-ll22-mm33",
+            "severity": "high",
+            "cwe": [],
+            "cvss": {
+              "score": 0,
+              "vectorString": null
+            },
+            "range": "<2.0.0"
+          }
+        ],
+        "effects": [],
+        "range": "*",
+        "nodes": [
+          "node_modules/lib-k"
+        ],
+        "fixAvailable": false
+      },
+      "lib-j": {
+        "name": "lib-j",
+        "severity": "high",
+        "isDirect": true,
+        "via": [
+          {
+            "source": 9101,
+            "name": "lib-j",
+            "dependency": "lib-j",
+            "title": "Fixture advisory in two packages",
+            "url": "https://github.com/advisories/GHSA-kk11-ll22-mm33",
+            "severity": "high",
+            "cwe": [],
+            "cvss": {
+              "score": 0,
+              "vectorString": null
+            },
+            "range": "<2.0.0"
+          }
+        ],
+        "effects": [],
+        "range": "*",
+        "nodes": [
+          "node_modules/lib-j"
+        ],
+        "fixAvailable": false
+      }
+    },
+    "metadata": {
+      "vulnerabilities": {
+        "info": 0,
+        "low": 0,
+        "moderate": 0,
+        "high": 2,
+        "critical": 0,
+        "total": 2
+      },
+      "dependencies": {
+        "prod": 0,
+        "dev": 0,
+        "optional": 0,
+        "peer": 0,
+        "peerOptional": 0,
+        "total": 0
+      }
+    }
+  }
+}

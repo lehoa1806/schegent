@@ -1,0 +1,153 @@
+{
+  "declares": {
+    "description": "An effects chain of three packages: the dependents are the closure, sorted",
+    "findings": [
+      {
+        "package": "lib-x",
+        "ids": {
+          "canonical": "GHSA-ee11-ff22-gg33",
+          "aliases": [
+            "npm:8101"
+          ]
+        },
+        "severity": "high",
+        "range": "<1.1.0",
+        "title": "Fixture advisory at the head of a chain",
+        "url": "https://github.com/advisories/GHSA-ee11-ff22-gg33",
+        "locations": [
+          {
+            "location": "node_modules/lib-x",
+            "version": "1.0.0",
+            "direct": true,
+            "production": true
+          }
+        ],
+        "direct": true,
+        "production": true,
+        "dependents": [
+          "lib-y",
+          "lib-z"
+        ],
+        "notes": []
+      }
+    ]
+  },
+  "rootManifest": {
+    "dependencies": {
+      "lib-x": "^1.0.0",
+      "lib-y": "^1.0.0",
+      "lib-z": "^1.0.0"
+    }
+  },
+  "lockfile": {
+    "name": "fixture-tree",
+    "version": "1.0.0",
+    "lockfileVersion": 3,
+    "requires": true,
+    "packages": {
+      "": {
+        "name": "fixture-tree",
+        "version": "1.0.0",
+        "dependencies": {
+          "lib-x": "^1.0.0",
+          "lib-y": "^1.0.0",
+          "lib-z": "^1.0.0"
+        }
+      },
+      "node_modules/lib-x": {
+        "version": "1.0.0",
+        "resolved": "https://registry.example.test/pkg/-/pkg-1.0.0.tgz"
+      },
+      "node_modules/lib-y": {
+        "version": "1.0.0",
+        "resolved": "https://registry.example.test/pkg/-/pkg-1.0.0.tgz"
+      },
+      "node_modules/lib-z": {
+        "version": "1.0.0",
+        "resolved": "https://registry.example.test/pkg/-/pkg-1.0.0.tgz"
+      }
+    }
+  },
+  "report": {
+    "auditReportVersion": 2,
+    "vulnerabilities": {
+      "lib-x": {
+        "name": "lib-x",
+        "severity": "high",
+        "isDirect": true,
+        "via": [
+          {
+            "source": 8101,
+            "name": "lib-x",
+            "dependency": "lib-x",
+            "title": "Fixture advisory at the head of a chain",
+            "url": "https://github.com/advisories/GHSA-ee11-ff22-gg33",
+            "severity": "high",
+            "cwe": [],
+            "cvss": {
+              "score": 0,
+              "vectorString": null
+            },
+            "range": "<1.1.0"
+          }
+        ],
+        "effects": [
+          "lib-y"
+        ],
+        "range": "*",
+        "nodes": [
+          "node_modules/lib-x"
+        ],
+        "fixAvailable": false
+      },
+      "lib-y": {
+        "name": "lib-y",
+        "severity": "high",
+        "isDirect": true,
+        "via": [
+          "lib-x"
+        ],
+        "effects": [
+          "lib-z"
+        ],
+        "range": "*",
+        "nodes": [
+          "node_modules/lib-y"
+        ],
+        "fixAvailable": false
+      },
+      "lib-z": {
+        "name": "lib-z",
+        "severity": "high",
+        "isDirect": true,
+        "via": [
+          "lib-y"
+        ],
+        "effects": [],
+        "range": "*",
+        "nodes": [
+          "node_modules/lib-z"
+        ],
+        "fixAvailable": false
+      }
+    },
+    "metadata": {
+      "vulnerabilities": {
+        "info": 0,
+        "low": 0,
+        "moderate": 0,
+        "high": 3,
+        "critical": 0,
+        "total": 3
+      },
+      "dependencies": {
+        "prod": 0,
+        "dev": 0,
+        "optional": 0,
+        "peer": 0,
+        "peerOptional": 0,
+        "total": 0
+      }
+    }
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "declares": {
+    "description": "npm error JSON with statusCode 503 is failed, audit-error, and none of uri, headers or body is recorded",
+    "outcome": {
+      "status": "failed",
+      "reason": "audit-error",
+      "statusCode": 503
+    },
+    "mustNotAppear": [
+      "uri-marker-3f9a",
+      "header-marker-3f9a",
+      "body-marker-3f9a",
+      "summary-marker-3f9a"
+    ]
+  },
+  "registry": "https://registry.example.test/",
+  "npmVersion": "11.17.0",
+  "audit": {
+    "stdoutJson": {
+      "message": "Registry unavailable",
+      "method": "POST",
+      "uri": "https://registry.example.test/uri-marker-3f9a",
+      "headers": {
+        "x-fixture-header": "header-marker-3f9a"
+      },
+      "statusCode": 503,
+      "body": "body-marker-3f9a",
+      "error": {
+        "code": "E503",
+        "summary": "summary-marker-3f9a",
+        "detail": "detail text"
+      }
+    },
+    "exitCode": 1,
+    "timedOut": false,
+    "spawnError": false,
+    "overflow": false
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "fixture-tree",
+  "version": "1.0.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "fixture-tree",
+      "version": "1.0.0",
+      "dependencies": {
+        "lib-b": "^1.0.0"
+      }
+    },
+    "node_modules/lib-b": {
+      "version": "1.0.0",
+      "resolved": "https://registry.example.test/pkg/-/pkg-1.0.0.tgz"
+    }
+  }
+}

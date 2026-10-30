@@ -1,0 +1,39 @@
+{
+  "declares": {
+    "description": "A range that excludes only one of the installed versions does not cover: it must cover every one",
+    "state": "read",
+    "verdict": "does-not-cover",
+    "entries": [
+      {
+        "advisory": "GHSA-ab12-cd34-ef56",
+        "result": "does-not-cover",
+        "mismatch": {
+          "reason": "range-excludes",
+          "versions": [
+            "1.0.1"
+          ]
+        },
+        "status": "accepted",
+        "owner": "owner-a",
+        "decidedOn": "2026-10-01",
+        "expiresOn": "2027-01-01"
+      }
+    ]
+  },
+  "list": {
+    "dispositionListVersion": 1,
+    "dispositions": [
+      {
+        "advisory": "GHSA-ab12-cd34-ef56",
+        "ecosystem": "npm",
+        "package": "lib-a",
+        "tree": "root",
+        "range": "<1.0.1",
+        "status": "accepted",
+        "owner": "owner-a",
+        "decidedOn": "2026-10-01",
+        "expiresOn": "2027-01-01"
+      }
+    ]
+  }
+}

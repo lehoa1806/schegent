@@ -31,8 +31,9 @@ const read = (relPath: string): string => readFileSync(resolve(REPO_ROOT, relPat
  * Note the two kinds. `axe-core` was a genuine ADDITION — a package the tree did not
  * have. The two secretlint entries are **promotions**: both were already resolved in
  * `package-lock.json` as transitive dependencies of `@vscode/vsce`, so the dependency
- * tree does not grow by declaring them. That distinction is asserted below, not merely
- * asserted here.
+ * tree does not grow by declaring them. `semver` is a third promotion (FR-R4-F21), a
+ * development transitive already resolved at 7.7.4. That distinction is asserted below,
+ * not merely asserted here.
  */
 const PERMITTED_ADDITIONS: ReadonlyMap<string, string> = new Map([
   [
@@ -54,11 +55,22 @@ const PERMITTED_ADDITIONS: ReadonlyMap<string, string> = new Map([
     'FR-R3-109: PROMOTION, same reasoning — already lockfile-resolved at 10.2.2. This is ' +
       'the ruleset .secretlintrc.json names; a config referencing a hoisted transitive is ' +
       'not a contract, since npm is free to stop hoisting it.'
+  ],
+  [
+    'semver',
+    'FR-R4-F21: PROMOTION, not an addition — the advisory comparison evaluates advisory and ' +
+      'disposition ranges with npm\'s own library and options. semver 7.7.4 was already ' +
+      'resolved in package-lock.json as a development transitive, so declaring it installs ' +
+      'nothing, and the comparison no longer depends on another package keeping it hoisted.'
   ]
 ]);
 
 /** The promotions above, which must add no package to the tree. */
-const PROMOTIONS = ['secretlint', '@secretlint/secretlint-rule-preset-recommend'] as const;
+const PROMOTIONS = [
+  'secretlint',
+  '@secretlint/secretlint-rule-preset-recommend',
+  'semver'
+] as const;
 
 /** Ranges as declared when feature 155 landed. A change here must be deliberate. */
 const PINNED: ReadonlyMap<string, string> = new Map([

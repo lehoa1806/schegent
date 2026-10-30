@@ -1,0 +1,42 @@
+{
+  "declares": {
+    "description": "A version 1 lockfile has no packages map and is not supported",
+    "rejected": {
+      "reason": "unsupported-format"
+    }
+  },
+  "rootManifest": {},
+  "lockfile": {
+    "name": "fixture-tree",
+    "version": "1.0.0",
+    "lockfileVersion": 1,
+    "requires": true,
+    "dependencies": {
+      "lib-a": {
+        "version": "1.0.0"
+      }
+    }
+  },
+  "report": {
+    "auditReportVersion": 2,
+    "vulnerabilities": {},
+    "metadata": {
+      "vulnerabilities": {
+        "info": 0,
+        "low": 0,
+        "moderate": 0,
+        "high": 0,
+        "critical": 0,
+        "total": 0
+      },
+      "dependencies": {
+        "prod": 0,
+        "dev": 0,
+        "optional": 0,
+        "peer": 0,
+        "peerOptional": 0,
+        "total": 0
+      }
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "declares": {
+    "description": "A list that is not JSON is unusable, malformed",
+    "state": "unusable",
+    "defect": "malformed"
+  },
+  "text": "this is not json"
+}

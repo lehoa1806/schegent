@@ -1,0 +1,18 @@
+{
+  "declares": {
+    "description": "An audit that exceeded its timeout is failed, audit-timeout",
+    "outcome": {
+      "status": "failed",
+      "reason": "audit-timeout"
+    }
+  },
+  "registry": "https://registry.example.test/",
+  "npmVersion": "11.17.0",
+  "audit": {
+    "stdout": "",
+    "exitCode": null,
+    "timedOut": true,
+    "spawnError": false,
+    "overflow": false
+  }
+}

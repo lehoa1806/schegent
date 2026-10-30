@@ -1,0 +1,89 @@
+#!/usr/bin/env node
+'use strict';
+// Stub `npm` for tests/integration/advisory-diff-cli.test.ts (FR-R4-F21, SC-006). It answers the
+// three questions the advisory comparison asks npm and never touches the network.
+//
+//   npm --version              prints 11.17.0
+//   npm config get registry    prints https://registry.example.test/
+//   npm audit ...              prints a canned report chosen by the lockfile in its working
+//                              directory, and exits 1 when that report has findings, as npm does
+//
+// Every call's argv is appended, one JSON line per call, to the file named by
+// ADVISORY_STUB_NPM_LOG. ADVISORY_STUB_NPM_MODE changes the stub's behaviour: `silent` makes an
+// audit print nothing, and `fail` makes every call exit 1 at once, after recording it.
+//
+// The advisory ids are well-formed GHSA strings that name no real advisory, and the package names
+// are invented.
+const fs = require('node:fs');
+const path = require('node:path');
+
+const argv = process.argv.slice(2);
+const logFile = process.env.ADVISORY_STUB_NPM_LOG;
+if (logFile) fs.appendFileSync(logFile, `${JSON.stringify({ argv })}\n`);
+
+const mode = process.env.ADVISORY_STUB_NPM_MODE;
+if (mode === 'fail') process.exit(1);
+
+const VULNERABLE = {
+  'lib-old@1.0.0': { source: 9901, ghsa: 'GHSA-oo11-ld22-aa33', severity: 'moderate', title: 'Fixture advisory in lib-old' },
+  'lib-new@1.0.0': { source: 9902, ghsa: 'GHSA-nn11-ew22-bb33', severity: 'high', title: 'Fixture advisory in lib-new' },
+  'lib-extra@1.0.0': { source: 9903, ghsa: 'GHSA-ex11-tr22-aa33', severity: 'critical', title: 'Fixture advisory in lib-extra' }
+};
+
+function nameOf(location) {
+  const marker = 'node_modules/';
+  return location.slice(location.lastIndexOf(marker) + marker.length);
+}
+
+/** The vulnerabilities in the lockfile in this directory, as npm's version-2 report holds them. */
+function vulnerabilities() {
+  let lockfile;
+  try {
+    lockfile = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package-lock.json'), 'utf8'));
+  } catch {
+    return {};
+  }
+  const found = {};
+  for (const [location, entry] of Object.entries(lockfile.packages ?? {})) {
+    if (location === '') continue;
+    const name = nameOf(location);
+    const known = VULNERABLE[`${name}@${entry.version}`];
+    if (known === undefined) continue;
+    const advisory = {
+      source: known.source,
+      name,
+      dependency: name,
+      title: known.title,
+      url: `https://github.com/advisories/${known.ghsa}`,
+      severity: known.severity,
+      cwe: [],
+      cvss: { score: 0, vectorString: null },
+      range: '<2.0.0'
+    };
+    found[name] ??= { name, severity: known.severity, isDirect: true, via: [advisory], effects: [], range: '<2.0.0', nodes: [], fixAvailable: false };
+    found[name].nodes.push(location);
+  }
+  return found;
+}
+
+if (argv[0] === '--version') {
+  console.log('11.17.0');
+} else if (argv[0] === 'config' && argv[1] === 'get' && argv[2] === 'registry') {
+  console.log('https://registry.example.test/');
+} else if (argv[0] === 'audit') {
+  const found = vulnerabilities();
+  const names = Object.keys(found).sort();
+  if (mode !== 'silent') {
+    if (argv.includes('--json')) {
+      console.log(JSON.stringify({ auditReportVersion: 2, vulnerabilities: found, metadata: { vulnerabilities: { total: names.length } } }, null, 2));
+    } else if (names.length === 0) {
+      console.log('found 0 vulnerabilities');
+    } else {
+      for (const name of names) console.log(`${name}  <2.0.0  ${found[name].via[0].title}`);
+      console.log(`${String(names.length)} vulnerabilities`);
+    }
+  }
+  process.exitCode = names.length > 0 ? 1 : 0;
+} else {
+  process.exitCode = 1;
+}

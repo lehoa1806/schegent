@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft-07/schema#",
   "description": "Performance budgets enforced by perf and integration smoke tests. The inline assertion in each test is the source of truth; this file is the human-readable index. Update both together when a budget changes.",
   "feature": "049-perf-budgets",
-  "updated": "2026-08-27",
+  "updated": "2026-10-30",
   "budgets": [
     {
       "test": "tests/perf/rate-limit-extractor.test.ts",
@@ -73,6 +73,20 @@
       "budgetMs": 2000,
       "constant": "PERMITTED_SCALE_TOTAL_BUDGET_MS",
       "rationale": "FR-R3-114 row 1 \u2014 every other render case measured 25 items while the product permits 2,000 (MAX_QUEUES x 100). Measured 2026-08-27 on darwin/arm64: 649.8 ms total for 100 passes, median 6.39 ms. Budget is ~3x the measurement: headroom for a loaded machine, tight enough to catch an order-of-magnitude regression. Companion median budget PERMITTED_SCALE_MEDIAN_BUDGET_MS = 20 ms."
+    },
+    {
+      "test": "tests/perf/advisory-compare-bounded-work.test.ts",
+      "name": "compareTrees groups 15,000 unrelated findings of one package",
+      "budgetMs": 1000,
+      "constant": "GROUPING_BUDGET_MS",
+      "rationale": "FR-R4-F21 (feature 249): a capture is an unsigned file, so its finding count is untrusted and bounded only by the 16 MiB capture size. Measured 2026-10-30 on darwin/arm64 (macOS 27.0.1, Node 24.19.0) under a load average of 54: the linear grouping took 56 to 167 ms over 7 samples, median 105 ms; the quadratic grouping it replaced took 7.1 s. The budget is at least 5x the slowest linear sample and at most a seventh of the quadratic time."
+    },
+    {
+      "test": "tests/perf/advisory-compare-bounded-work.test.ts",
+      "name": "compareTrees classifies a base finding with 15,000 locations and versions",
+      "budgetMs": 1000,
+      "constant": "LOCATIONS_BUDGET_MS",
+      "rationale": "FR-R4-F21 (feature 249): the location count of one finding is untrusted and bounded only by the 16 MiB capture size. Measured 2026-10-30 on darwin/arm64 (macOS 27.0.1, Node 24.19.0) under a load average of 54: the linear classification took 17 to 54 ms over 7 samples, median 25 ms; the quadratic one it replaced took 25.5 s. The budget is at least 18x the slowest linear sample and at most a twenty-fifth of the quadratic time."
     }
   ],
   "notes": [

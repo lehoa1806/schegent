@@ -1,0 +1,68 @@
+{
+  "declares": {
+    "description": "US3-4: a finding on the candidate only with some, but not all, of its pairs in the base lockfile is introduced, naming the overlapping pairs and why",
+    "groups": [
+      {
+        "package": "lib-a",
+        "class": "introduced",
+        "reasons": [
+          "new-on-candidate",
+          "partly-in-base-lockfile"
+        ],
+        "pairs": {
+          "partly-in-base-lockfile": [
+            {
+              "location": "node_modules/lib-a",
+              "version": "1.0.0"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "base": {
+    "findings": []
+  },
+  "candidate": {
+    "findings": [
+      {
+        "package": "lib-a",
+        "ids": {
+          "canonical": "GHSA-ab12-cd34-ef56",
+          "aliases": []
+        },
+        "severity": "high",
+        "range": "<9.0.0",
+        "title": "Fixture classification advisory",
+        "url": "https://github.com/advisories/GHSA-ab12-cd34-ef56",
+        "locations": [
+          {
+            "location": "node_modules/lib-a",
+            "version": "1.0.0",
+            "direct": true,
+            "production": true
+          },
+          {
+            "location": "node_modules/host/node_modules/lib-a",
+            "version": "1.0.1",
+            "direct": false,
+            "production": true
+          }
+        ],
+        "direct": true,
+        "production": true,
+        "dependents": [],
+        "notes": []
+      }
+    ]
+  },
+  "lockfiles": {
+    "base": {
+      "node_modules/lib-a": "1.0.0"
+    },
+    "candidate": {
+      "node_modules/lib-a": "1.0.0",
+      "node_modules/host/node_modules/lib-a": "1.0.1"
+    }
+  }
+}

@@ -1,0 +1,122 @@
+{
+  "declares": {
+    "description": "Two advisory objects in one package whose identifier sets intersect are one finding, noted merged-duplicate",
+    "findings": [
+      {
+        "package": "lib-i",
+        "ids": {
+          "canonical": "GHSA-hh11-ii22-jj33",
+          "aliases": [
+            "npm:9001"
+          ]
+        },
+        "severity": "high",
+        "range": "<2.0.0",
+        "title": "Fixture advisory with a GHSA id",
+        "url": "https://github.com/advisories/GHSA-hh11-ii22-jj33",
+        "locations": [
+          {
+            "location": "node_modules/lib-i",
+            "version": "1.0.0",
+            "direct": true,
+            "production": true
+          }
+        ],
+        "direct": true,
+        "production": true,
+        "dependents": [],
+        "notes": [
+          "merged-duplicate"
+        ]
+      }
+    ]
+  },
+  "rootManifest": {
+    "dependencies": {
+      "lib-i": "^1.0.0"
+    }
+  },
+  "lockfile": {
+    "name": "fixture-tree",
+    "version": "1.0.0",
+    "lockfileVersion": 3,
+    "requires": true,
+    "packages": {
+      "": {
+        "name": "fixture-tree",
+        "version": "1.0.0",
+        "dependencies": {
+          "lib-i": "^1.0.0"
+        }
+      },
+      "node_modules/lib-i": {
+        "version": "1.0.0",
+        "resolved": "https://registry.example.test/pkg/-/pkg-1.0.0.tgz"
+      }
+    }
+  },
+  "report": {
+    "auditReportVersion": 2,
+    "vulnerabilities": {
+      "lib-i": {
+        "name": "lib-i",
+        "severity": "high",
+        "isDirect": true,
+        "via": [
+          {
+            "source": 9001,
+            "name": "lib-i",
+            "dependency": "lib-i",
+            "title": "Fixture advisory with no GHSA id",
+            "url": "https://example.test/advisories/9001",
+            "severity": "moderate",
+            "cwe": [],
+            "cvss": {
+              "score": 0,
+              "vectorString": null
+            },
+            "range": "<1.5.0"
+          },
+          {
+            "source": 9001,
+            "name": "lib-i",
+            "dependency": "lib-i",
+            "title": "Fixture advisory with a GHSA id",
+            "url": "https://github.com/advisories/GHSA-hh11-ii22-jj33",
+            "severity": "high",
+            "cwe": [],
+            "cvss": {
+              "score": 0,
+              "vectorString": null
+            },
+            "range": "<2.0.0"
+          }
+        ],
+        "effects": [],
+        "range": "*",
+        "nodes": [
+          "node_modules/lib-i"
+        ],
+        "fixAvailable": false
+      }
+    },
+    "metadata": {
+      "vulnerabilities": {
+        "info": 0,
+        "low": 0,
+        "moderate": 0,
+        "high": 1,
+        "critical": 0,
+        "total": 1
+      },
+      "dependencies": {
+        "prod": 0,
+        "dev": 0,
+        "optional": 0,
+        "peer": 0,
+        "peerOptional": 0,
+        "total": 0
+      }
+    }
+  }
+}

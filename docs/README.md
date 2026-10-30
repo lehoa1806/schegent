@@ -181,6 +181,7 @@ drifts unnoticed, because the readers who would catch an error never get there.
 - [Inspect audit logs](operations/inspect-audit-logs.md)
 - [Inspect raw transcripts](operations/inspect-raw-transcripts.md)
 - [Interactive verification register](operations/interactive-verification-register.md) — **opened 2026-09-06**: the interactive dev-host evidence specs `067` and `068` still owe, who owes it, what would close it, and the date it is re-read on
+- [Dependency advisory comparison](operations/dependency-advisory-comparison.md) — **declared 2026-10-30**: `npm run security:advisory-diff`, which tells whether a candidate commit introduced or worsened a dependency advisory against an explicit base commit; report-only, not part of `npm run gate`, and it leaves `npm run security:audit` as it was
 - [Licenses](operations/licenses.md)
 - [Concurrent-run resource measurement](operations/concurrent-run-resource-measurement.md)
 - [Concurrent-run isolation measurement](operations/concurrent-run-isolation-measurement.md) — attribution outcomes at concurrency 1/2/4/8, and the recommended cap of 2

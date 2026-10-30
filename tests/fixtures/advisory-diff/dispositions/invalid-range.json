@@ -1,0 +1,23 @@
+{
+  "declares": {
+    "description": "An entry whose range node-semver rejects makes the list unusable: a coverage claim that cannot be checked is not one",
+    "state": "unusable",
+    "defect": "malformed"
+  },
+  "list": {
+    "dispositionListVersion": 1,
+    "dispositions": [
+      {
+        "advisory": "GHSA-ab12-cd34-ef56",
+        "ecosystem": "npm",
+        "package": "lib-a",
+        "tree": "root",
+        "range": "not a range",
+        "status": "accepted",
+        "owner": "owner-a",
+        "decidedOn": "2026-10-01",
+        "expiresOn": "2027-01-01"
+      }
+    ]
+  }
+}
