@@ -8,6 +8,7 @@ import * as vscode from 'vscode';
 import { AuditLogWriter } from '../audit/audit-log-writer';
 import { lockWriteAuthority } from '../audit/audit-write-authority';
 import { realpath } from 'fs/promises';
+import { randomBytes } from 'node:crypto';
 import { checkpointKey, type AuditCheckpointPort } from '../audit/audit-checkpoint';
 import { ensureCheckpointRoot } from '../audit/audit-checkpoint-root';
 import { createAuditCheckpointStore } from '../audit/audit-checkpoint-store';
@@ -25,6 +26,11 @@ import { createWorkflowPipelineRefReader } from '../ui/sidebar/workflow-pipeline
 import type { CatalogSession } from './catalog-loading';
 import type { GeneralSettingsConfig } from '../config/general-settings';
 import { forwardMigrationAuditEvents } from '../state/migration-audit-forwarder';
+import {
+  createOperatorAttribution,
+  installOperatorAttribution,
+  type OperatorAttribution
+} from '../lib/operator-attribution';
 
 /** The six event bundles `store.initialize()` reports, typed by their consumer. */
 type MigrationEvents = Parameters<typeof forwardMigrationAuditEvents>[0];
@@ -156,6 +162,13 @@ export interface EvidenceWiring {
    * modules each reading trust is how a gate ends up half-applied.
    */
   readonly replayEvidenceBacklog: () => Promise<void>;
+  /**
+   * FR-R4-F04 (P1, TA7) — the operator attribution, already installed read-only: `getOperatorActor()`
+   * answers the stored pseudonym, or `unknown-operator` when none is stored. Creating one is
+   * `ensureStored()`, a memento write that the trust-gated producer preamble runs (`stage2-producers.ts`),
+   * and the reset command replaces it.
+   */
+  readonly operatorAttribution: OperatorAttribution;
 }
 
 export async function wireEvidence(deps: EvidenceWiringDeps): Promise<EvidenceWiring> {
@@ -305,11 +318,16 @@ const replayEvidenceBacklog = async (): Promise<void> => {
     notifier
   });
 };
+  // FR-R4-F04 (P1) — read-only here: reading a memento writes nothing, so an untrusted window attributes
+  // to the stored pseudonym (or `unknown-operator`) and creates none.
+  const operatorAttribution = createOperatorAttribution(store, randomBytes);
+  installOperatorAttribution(operatorAttribution);
   return {
     auditWriter,
     sessionRetention,
     collectAllWorkflowPipelineRefs,
     protectedSessionRunIds,
-    replayEvidenceBacklog
+    replayEvidenceBacklog,
+    operatorAttribution
   };
 }

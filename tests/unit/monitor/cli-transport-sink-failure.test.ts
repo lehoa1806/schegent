@@ -13,7 +13,7 @@
 //      handler, so a throw here lands inside `onStdoutChunk` — which is on the
 //      phase's own call stack.
 //   2. Nothing rejects unobserved. `record()` is fire-and-forget by design, so a
-//      rejected chain has no `await` to surface at; under Node's default
+//      rejected write has no `await` to surface at; under Node's default
 //      `--unhandled-rejections=throw` that ends the extension host, which is a
 //      louder failure than the one being reported.
 //   3. The warning is bounded. A phase emits tens of thousands of lines. An
@@ -21,10 +21,12 @@
 //      its own failure, and the runtime log is where an operator would go to
 //      find out why transport capture stopped.
 //
-// The failure injection is per-call rather than per-suite: each errno reaches a
-// different branch (`ENOENT` is recovered, `EACCES` is not, a `stat` failure
-// drops the record without marking the path seeded), and a single always-throws
-// double would collapse them into one assertion.
+// Feature 251 (FR-R4-F04) moved the file I/O the failures happen in from the sink to the router's store,
+// and with it the ports this file used to inject. A real filesystem cannot be made to fail with `ENOSPC`
+// on demand, so the failure is injected where the file layer is: a store whose methods throw a chosen
+// errno, passed to the real router, behind the real sink. The sink's own failures (a throwing sanitizer
+// or logger) are unchanged. Each errno reaches a different report (a drop is per cause), and a single
+// always-throws double would collapse them into one assertion.
 
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as os from 'node:os';
@@ -33,22 +35,17 @@ import * as realFs from 'node:fs/promises';
 
 import {
   CliTransportSink,
-  CLI_TRANSPORT_DIRECTORY,
-  CLI_TRANSPORT_FILE_NAME,
-  type CliTransportRecord,
-  type CliTransportSettings
+  createCliTransportSink,
+  type CliTransportRecord
 } from '../../../src/monitor/cli-transport-sink';
+import { RunTransportStore, TransportStoreError } from '../../../src/monitor/transport/run-transport-store';
+import { createTransportRouter, type TransportRouter } from '../../../src/monitor/transport/transport-router';
 import { expectNoDescriptorWarnings } from '../../setup/descriptor-warnings';
+import { removeTempRoot } from '../../temp-root-cleanup';
 
 /**
- * FR-R3-137 (T1531c, FR-012) — every sink this file builds is disposed, and the
- * run is asserted to have produced no descriptor warning.
- *
- * This file emitted zero warnings before the item, because its sinks inject
- * `appendFile` and so never reach `appendHandleFor`. That is an accident of the
- * doubles, not a property of the code: FR-012 is a property of every construction
- * site, and a file that leaks nothing only because of its injected ports is one
- * refactor away from leaking.
+ * FR-R3-137 (T1531c, FR-012) — every sink this file builds is disposed, and the run is asserted to have
+ * produced no descriptor warning.
  */
 const live: CliTransportSink[] = [];
 function track<T extends CliTransportSink>(sink: T): T {
@@ -56,22 +53,11 @@ function track<T extends CliTransportSink>(sink: T): T {
   return sink;
 }
 afterEach(async () => {
-  // Descriptors before any temp tree the case removes: a handle outliving its
-  // file is how the warning gets attributed to the wrong test.
   await Promise.all(live.splice(0).map((sink) => sink.flushAndDispose()));
 });
 afterAll(() => {
   expectNoDescriptorWarnings();
 });
-
-const ROOT = path.join(os.tmpdir(), 'schegent-transport-failure-root');
-const TARGET = path.join(ROOT, CLI_TRANSPORT_DIRECTORY, CLI_TRANSPORT_FILE_NAME);
-
-function errno(code: string): NodeJS.ErrnoException {
-  const error = new Error(code) as NodeJS.ErrnoException;
-  error.code = code;
-  return error;
-}
 
 const LINE: CliTransportRecord = {
   runId: 'run-1',
@@ -80,89 +66,84 @@ const LINE: CliTransportRecord = {
   line: 'a line of CLI output'
 };
 
-interface Harness {
-  readonly sink: CliTransportSink;
-  readonly warnings: string[];
-  readonly appended: string[];
-  readonly created: string[];
-  readonly mkdirs: string[];
-  readonly renames: Array<[string, string]>;
+/** A store whose appends and reads fail with the errno a test sets, and succeed once it is cleared. */
+class FailingStore extends RunTransportStore {
+  failure: string | null = null;
+  appended = 0;
+  seedFailure: string | null = null;
+  listFailure: string | null = null;
+
+  override async listRunFiles(...args: Parameters<RunTransportStore['listRunFiles']>) {
+    if (this.listFailure !== null) throw new TransportStoreError(this.listFailure);
+    return super.listRunFiles(...args);
+  }
+
+  override async stateOf(...args: Parameters<RunTransportStore['stateOf']>) {
+    if (this.seedFailure !== null) throw new TransportStoreError(this.seedFailure);
+    return super.stateOf(...args);
+  }
+
+  override async append(...args: Parameters<RunTransportStore['append']>): Promise<void> {
+    if (this.failure !== null) throw new TransportStoreError(this.failure);
+    this.appended += 1;
+    return super.append(...args);
+  }
 }
 
-/**
- * Containment is stubbed to identity here rather than run against a real tree.
- * The real containment behaviour is `cli-transport-sink.test.ts`'s subject; what
- * this suite needs is for every record to reach the write branch so the injected
- * errno is the only thing under test.
- */
-function harness(
-  overrides: Partial<CliTransportSettings> = {},
-  injections: {
-    appendFile?: (target: string, data: string) => Promise<void>;
-    writeFile?: (target: string, data: string) => Promise<void>;
-    mkdir?: (target: string) => Promise<void>;
-    rename?: (from: string, to: string) => Promise<void>;
-    unlink?: (target: string) => Promise<void>;
-    stat?: (target: string) => Promise<{ size: number }>;
-    sanitize?: (line: string) => string;
-    warn?: (message: string) => void;
-  } = {}
-): Harness {
-  const warnings: string[] = [];
-  const appended: string[] = [];
-  const created: string[] = [];
-  const mkdirs: string[] = [];
-  const renames: Array<[string, string]> = [];
-  const sink = track(new CliTransportSink({
-    settings: {
-      read: (): CliTransportSettings => ({
-        root: ROOT,
-        path: TARGET,
-        maxBytes: 1024,
-        maxGenerations: 2,
-        ...overrides
-      })
-    },
-    sanitize: injections.sanitize ?? ((line) => line),
-    logger: {
-      warn: (message: string) => {
-        warnings.push(message);
-        injections.warn?.(message);
-      }
-    },
-    now: () => new Date('2026-05-10T12:00:00.000Z'),
-    realpath: async (target: string) => target,
-    appendFile:
-      injections.appendFile ??
-      (async (_target, data) => {
-        appended.push(data);
-      }),
-    writeFile:
-      injections.writeFile ??
-      (async (_target, data) => {
-        created.push(data);
-      }),
-    mkdir: async (target: string) => {
-      mkdirs.push(target);
-      if (injections.mkdir) await injections.mkdir(target);
-      return undefined;
-    },
-    rename: async (from: string, to: string) => {
-      renames.push([from, to]);
-      if (injections.rename) await injections.rename(from, to);
-    },
-    unlink: injections.unlink ?? (async () => {}),
-    stat: injections.stat ?? (async () => ({ size: 0 })),
-    readdir: async () => []
-  }));
-  return { sink, warnings, appended, created, mkdirs, renames };
+interface Harness {
+  readonly sink: CliTransportSink;
+  readonly router: TransportRouter;
+  readonly store: FailingStore;
+  readonly warnings: string[];
+  readonly root: string;
 }
+
+async function harness(
+  options: {
+    readonly sanitize?: (line: string) => string;
+    readonly warn?: (message: string) => void;
+    readonly workspaceRoot?: string | null;
+  } = {}
+): Promise<Harness> {
+  const root = await realFs.mkdtemp(path.join(os.tmpdir(), 'schegent-transport-failure-'));
+  const warnings: string[] = [];
+  const warn = (message: string): void => {
+    warnings.push(message);
+    options.warn?.(message);
+  };
+  const store = new FailingStore({ tempRoot: path.join(root, 'os-temp'), warn });
+  const workspaceRoot = options.workspaceRoot === undefined ? path.join(root, 'workspace') : options.workspaceRoot;
+  if (workspaceRoot !== null) await realFs.mkdir(workspaceRoot, { recursive: true });
+  const router = createTransportRouter({
+    workspaceRoot: () => workspaceRoot,
+    readSetting: () => 'on',
+    readRawTranscriptMode: () => 'errors-only',
+    readMaxAgeDays: () => 30,
+    tempRoot: path.join(root, 'os-temp'),
+    runStatus: () => undefined,
+    logger: { warn },
+    store
+  });
+  const sink = track(
+    createCliTransportSink(router, { sanitize: options.sanitize ?? ((line) => line), warn })
+  );
+  cleanup.push(root);
+  return { sink, router, store, warnings, root };
+}
+
+const cleanup: string[] = [];
+afterEach(async () => {
+  for (const dir of cleanup.splice(0)) await removeTempRoot(dir);
+});
 
 /** Any unhandled rejection during a test is a failure of property 2. */
 let unhandled: unknown[] = [];
+const onUnhandled = (reason: unknown): void => {
+  unhandled.push(reason);
+};
 beforeEach(() => {
   unhandled = [];
-  process.on('unhandledRejection', (reason) => unhandled.push(reason));
+  process.on('unhandledRejection', onUnhandled);
 });
 
 async function settle(h: Harness): Promise<void> {
@@ -170,279 +151,153 @@ async function settle(h: Harness): Promise<void> {
   // One extra macrotask turn: an unhandled rejection is reported after the
   // microtask queue drains, so flushing alone would miss it.
   await new Promise((resolve) => setTimeout(resolve, 0));
-  process.removeAllListeners('unhandledRejection');
+  process.off('unhandledRejection', onUnhandled);
   expect(unhandled, 'a fire-and-forget write must not reject unobserved').toEqual([]);
 }
 
-describe('CliTransportSink — a failed write does not fail the phase', () => {
-  it('swallows EACCES, warns once, and keeps the path open for a retry', async () => {
-    let calls = 0;
-    const h = harness(
-      {},
-      {
-        appendFile: async () => {
-          calls += 1;
-          throw errno('EACCES');
-        }
-      }
-    );
-
-    for (let index = 0; index < 50; index += 1) {
-      expect(() => h.sink.record(LINE), 'record() is called from a phase’s stack').not.toThrow();
-    }
+describe('transport — a failed write does not fail the phase', () => {
+  it('swallows EACCES, warns once, and keeps the Run open for a retry', async () => {
+    const h = await harness();
+    h.store.failure = 'EACCES';
+    for (let index = 0; index < 5; index += 1) h.sink.record(LINE);
     await settle(h);
 
-    expect(h.warnings, 'fifty failures, one WARN').toHaveLength(1);
-    expect(h.warnings[0]).toContain('the phase is unaffected');
-    expect(
-      calls,
-      'EACCES can clear, so the path is not closed the way a containment refusal is'
-    ).toBe(50);
+    expect(h.store.appended).toBe(0);
+    expect(h.warnings.filter((w) => w.includes('EACCES')), 'one WARN for five failures').toHaveLength(1);
+
+    // The failure clears; the next record lands. A failed write does not close the Run for good.
+    h.store.failure = null;
+    h.sink.record(LINE);
+    await h.sink.flushPendingWrites();
+    expect(h.store.appended).toBe(1);
   });
 
   it('never puts the destination path in the warning text', async () => {
-    const h = harness({}, { appendFile: async () => { throw errno('ENOSPC'); } });
+    const h = await harness();
+    h.store.failure = 'EACCES';
     h.sink.record(LINE);
     await settle(h);
 
     expect(h.warnings).toHaveLength(1);
-    expect(h.warnings[0]).toContain('ENOSPC');
-    expect(h.warnings[0], 'the runtime log is not where a workspace path belongs').not.toContain(
-      ROOT
-    );
+    expect(h.warnings[0]).not.toContain(h.root);
+    expect(h.warnings[0]).not.toContain('transport.log');
   });
 
   it('warns separately for each distinct cause', async () => {
-    let call = 0;
-    const codes = ['ENOSPC', 'EIO', 'ENOSPC', 'EIO', 'EROFS'];
-    const h = harness(
-      {},
-      {
-        appendFile: async () => {
-          throw errno(codes[call++] ?? 'EIO');
-        }
-      }
-    );
-
-    for (let index = 0; index < codes.length; index += 1) h.sink.record(LINE);
+    const h = await harness();
+    for (const code of ['EACCES', 'ENOSPC', 'EIO']) {
+      h.store.failure = code;
+      h.sink.record(LINE);
+      h.sink.record(LINE);
+      await h.sink.flushPendingWrites();
+    }
     await settle(h);
 
-    expect(
-      h.warnings,
-      'three causes, three warnings — a repeat of a known cause is silent'
-    ).toHaveLength(3);
+    expect(h.warnings.filter((w) => w.includes('EACCES'))).toHaveLength(1);
+    expect(h.warnings.filter((w) => w.includes('ENOSPC'))).toHaveLength(1);
+    expect(h.warnings.filter((w) => w.includes('EIO'))).toHaveLength(1);
   });
 
-  it('recovers a missing parent directory once, without warning', async () => {
-    let attempts = 0;
-    const h = harness(
-      {},
-      {
-        appendFile: async () => {
-          attempts += 1;
-          if (attempts === 1) throw errno('ENOENT');
-        }
-      }
-    );
-
-    h.sink.record(LINE);
-    await settle(h);
-
-    expect(h.mkdirs).toEqual([path.dirname(TARGET)]);
-    expect(attempts, 'one retry after the mkdir').toBe(2);
-    expect(h.warnings, 'a first-phase workspace has no .schegent yet; that is not a failure').toEqual(
-      []
-    );
-  });
-
-  it('warns once when the parent cannot be created either', async () => {
-    const h = harness(
-      {},
-      {
-        appendFile: async () => {
-          throw errno('ENOENT');
-        },
-        mkdir: async () => {
-          throw errno('EACCES');
-        }
-      }
-    );
-
-    for (let index = 0; index < 3; index += 1) h.sink.record(LINE);
-    await settle(h);
-
-    expect(h.warnings).toHaveLength(1);
-    expect(h.warnings[0]).toContain('ENOENT-parent');
-  });
-
-  it('drops a record it cannot size, then recovers when stat does', async () => {
-    let statCalls = 0;
-    const h = harness(
-      {},
-      {
-        stat: async () => {
-          statCalls += 1;
-          if (statCalls === 1) throw errno('EIO');
-          return { size: 0 };
-        }
-      }
-    );
-
+  it('drops a record it cannot size, then recovers when the read does', async () => {
+    const h = await harness();
+    h.store.seedFailure = 'EIO';
     h.sink.record(LINE);
     await h.sink.flushPendingWrites();
-    expect(h.appended, 'writing with no size in hand cannot honour the bound').toEqual([]);
-    expect(h.warnings).toHaveLength(1);
-    expect(h.warnings[0]).toContain('stat-failed');
+    expect(h.store.appended, 'a write with no size in hand cannot honour the bounds').toBe(0);
 
+    h.store.seedFailure = null;
     h.sink.record(LINE);
     await settle(h);
-    expect(
-      h.appended,
-      'the path is not marked seeded on failure, so a transient error recovers'
-    ).toHaveLength(1);
-  });
-
-  it('treats a missing file as zero bytes rather than a failure', async () => {
-    const h = harness({}, { stat: async () => { throw errno('ENOENT'); } });
-    h.sink.record(LINE);
-    await settle(h);
-
-    expect(h.appended).toHaveLength(1);
-    expect(h.warnings).toEqual([]);
-  });
-
-  it('abandons a rotation it cannot perform, and does not lose the phase with it', async () => {
-    const h = harness(
-      { maxBytes: 1 },
-      {
-        rename: async () => {
-          throw errno('EACCES');
-        }
-      }
-    );
-
-    expect(() => h.sink.record(LINE)).not.toThrow();
-    await settle(h);
-
-    expect(h.warnings).toHaveLength(1);
-    expect(h.warnings[0]).toContain('rotation-failed');
-    expect(h.created, 'the post-rotation create is skipped, not attempted blind').toEqual([]);
-  });
-
-  it('completes a rotation whose oldest-generation unlink fails', async () => {
-    const h = harness(
-      { maxBytes: 1 },
-      {
-        unlink: async () => {
-          throw errno('EACCES');
-        }
-      }
-    );
-
-    h.sink.record(LINE);
-    await settle(h);
-
-    expect(h.created, 'the rotation itself succeeded; the sweep is a courtesy').toHaveLength(1);
-    expect(h.warnings).toEqual([]);
+    expect(h.store.appended).toBe(1);
   });
 
   it('does not throw out of record() when the sanitizer throws', async () => {
-    // Sanitization runs synchronously inside `record()`, so this is the one
-    // failure that lands directly on the monitor's stream handler.
-    const h = harness(
-      {},
-      {
-        sanitize: () => {
-          throw new Error('regex blew up');
-        }
+    const h = await harness({
+      sanitize: () => {
+        throw new Error('regex blew up');
       }
-    );
+    });
 
     expect(() => h.sink.record(LINE)).not.toThrow();
     await settle(h);
-
-    expect(h.appended, 'an unformattable record is dropped').toEqual([]);
-    expect(h.warnings).toHaveLength(1);
+    expect(h.warnings.filter((w) => w.includes('format-failed'))).toHaveLength(1);
+    expect(h.store.appended).toBe(0);
   });
 
   it('does not let a throwing logger escalate a dropped line', async () => {
-    // The warn path is the last thing standing between a failed write and the
-    // phase. If it throws, the sink must still absorb it.
-    const h = harness(
-      {},
-      {
-        appendFile: async () => {
-          throw errno('EIO');
-        },
-        warn: () => {
-          throw new Error('sink is closed');
-        }
+    const h = await harness({
+      warn: () => {
+        throw new Error('logger is broken');
       }
-    );
+    });
+    h.store.failure = 'EACCES';
 
     expect(() => h.sink.record(LINE)).not.toThrow();
     await settle(h);
   });
 
   it('reports nothing and writes nothing when there is no destination', async () => {
-    const sink = track(new CliTransportSink({
-      settings: { read: () => null },
-      sanitize: (line) => line,
-      logger: {
-        warn: () => {
-          throw new Error('no destination is not a failure');
-        }
-      },
-      appendFile: async () => {
-        throw new Error('must not be reached');
-      },
-      realpath: async (target: string) => target
-    }));
+    const h = await harness({ workspaceRoot: null });
+    for (let index = 0; index < 3; index += 1) h.sink.record(LINE);
+    await settle(h);
 
-    expect(() => sink.record(LINE)).not.toThrow();
-    await sink.flushPendingWrites();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    process.removeAllListeners('unhandledRejection');
-    expect(unhandled).toEqual([]);
+    expect(h.store.appended).toBe(0);
+    expect(h.warnings, 'no destination is not a guessed destination').toEqual([]);
   });
 
   it('leaves no pending work behind, so a flush always settles', async () => {
-    const h = harness({}, { appendFile: async () => { throw errno('EIO'); } });
+    const h = await harness();
+    h.store.failure = 'ENOSPC';
     for (let index = 0; index < 10; index += 1) h.sink.record(LINE);
-    await settle(h);
-    // A second flush with nothing pending must return rather than spin.
+
     await expect(h.sink.flushPendingWrites()).resolves.toBeUndefined();
+    expect(h.sink.inFlight.writes).toBe(0);
+    process.off('unhandledRejection', onUnhandled);
+  });
+
+  it('keeps a retention failure from failing the Run end, and reports it once', async () => {
+    const h = await harness();
+    h.sink.record(LINE);
+    await h.sink.flushPendingWrites();
+    // The Run's end promotes and enforces bounds through the store; a store that fails there is reported
+    // by the router and the end still resolves (X5).
+    h.store.listFailure = 'EIO';
+    await expect(h.router.finalizeRun('run-1', 'failed', new Set())).resolves.toBeUndefined();
+    await expect(h.router.finalizeRun('run-1', 'failed', new Set())).resolves.toBeUndefined();
+
+    expect(h.warnings.filter((w) => w.includes('could not apply transport retention')), 'once').toHaveLength(1);
+    process.off('unhandledRejection', onUnhandled);
   });
 });
 
-describe('CliTransportSink — real filesystem, real permissions', () => {
-  it('warns once and continues when the destination is read-only', async () => {
+describe('transport — real filesystem, real permissions', () => {
+  it('warns once and continues when the workspace is read-only', async () => {
     if (process.platform === 'win32' || process.getuid?.() === 0) return;
     const root = await realFs.mkdtemp(path.join(os.tmpdir(), 'schegent-transport-ro-'));
     try {
-      const directory = path.join(root, CLI_TRANSPORT_DIRECTORY);
-      await realFs.mkdir(directory, { recursive: true });
-      const target = path.join(directory, CLI_TRANSPORT_FILE_NAME);
-      await realFs.writeFile(target, '', 'utf8');
-      await realFs.chmod(target, 0o444);
+      await realFs.chmod(root, 0o500);
 
       const warnings: string[] = [];
-      const sink = track(new CliTransportSink({
-        settings: {
-          read: () => ({ root, path: target, maxBytes: 1024, maxGenerations: 2 })
-        },
-        sanitize: (line) => line,
+      const router = createTransportRouter({
+        workspaceRoot: () => root,
+        readSetting: () => 'on',
+        readRawTranscriptMode: () => 'errors-only',
+        readMaxAgeDays: () => 30,
+        tempRoot: path.join(root, 'os-temp'),
+        runStatus: () => undefined,
         logger: { warn: (message: string) => warnings.push(message) }
-      }));
+      });
+      const sink = track(
+        createCliTransportSink(router, { sanitize: (line) => line, warn: (message) => warnings.push(message) })
+      );
 
       for (let index = 0; index < 5; index += 1) sink.record(LINE);
       await sink.flushPendingWrites();
 
-      expect(await realFs.readFile(target, 'utf8')).toBe('');
-      expect(warnings, 'an unwritable destination is one WARN, not five').toHaveLength(1);
+      expect(warnings.filter((w) => w.includes('EACCES')), 'an unwritable workspace is one WARN, not five').toHaveLength(1);
+      await expect(realFs.stat(path.join(root, '.schegent'))).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
-      await realFs.chmod(path.join(root, CLI_TRANSPORT_DIRECTORY, CLI_TRANSPORT_FILE_NAME), 0o644)
-        .catch(() => {});
+      await realFs.chmod(root, 0o700).catch(() => undefined);
       await realFs.rm(root, { recursive: true, force: true });
     }
   });

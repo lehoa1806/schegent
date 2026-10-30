@@ -30,6 +30,13 @@ providers.”
 <!-- Source: webview-ui/src/components/QueueInputForm.svelte -->
 <!-- Source: tests/lint/product-boundary-decisions.test.ts -->
 
+## Egress and the raw transcript's lifetime
+
+Claude Code sends repository content and prompts to the model vendor whatever Schegent's local capture settings are: the transport mode, the raw transcript mode and the privacy profile decide what Schegent keeps on your machine, never what the CLI sends. Schegent making no network call of its own does not keep that content on the machine, because it leaves through the CLI's own requests. On the local side, a failed, canceled or paused Run keeps its raw transcript under `errors-only` until the session retention age passes or you delete the Run's evidence, and a resumed Run that then completes cleanly has it removed.
+
+<!-- Source: src/contracts/privacy-profiles.ts -->
+<!-- Source: src/audit/raw-transcript-writer.ts -->
+
 ## What remains local
 
 When the relevant files are readable, an operator can open Schegent, inspect

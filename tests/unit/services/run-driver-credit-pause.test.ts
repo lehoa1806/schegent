@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RunDriver } from '../../../src/services/run-driver';
 import { PhaseSequencer } from '../../../src/controller/phase-sequencer';
 import type { PhaseResult, WorkflowRun } from '../../../src/state/workflow-run';
+import { fakeRunLogger } from './fake-run-logger';
 
 const NOW = 1_700_000_000_000;
 const TASK_ID = 'task-1';
@@ -106,7 +107,7 @@ describe('RunDriver stamps the credit pause (contract W5 G15)', () => {
       },
       statusBar: { update: vi.fn() },
       notifier: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
-      logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
+      logger: fakeRunLogger(),
       lock: {},
       options: { cliPath: 'claude', cwd: '/tmp', iterationCap: 5 },
       monitor: { emit: vi.fn() },
@@ -196,7 +197,7 @@ describe('RunDriver clears the credit pause on a terminal write', () => {
       },
       statusBar: { update: vi.fn() },
       notifier: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
-      logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
+      logger: fakeRunLogger(),
       lock: {},
       // Audit evidence unavailable: the driver fails the Run closed, a terminal write built from
       // the Run it was handed.

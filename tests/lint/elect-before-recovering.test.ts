@@ -270,6 +270,28 @@ describe('FR-R3-070 — activation elects before it recovers', () => {
     expect(selects, 'a Run is selected before it is handed to the coordinator').toBeLessThan(hands);
   });
 
+  it('re-checks primacy at fire time in the evidence maintenance scheduler, before every pass', () => {
+    // FR-R4-F04 (FR-031, S2) — the hourly pass deletes expired evidence, so like the resume sweep it fires
+    // long after activation and must ask whether this window still owns the workspace each tick, not trust
+    // the activation-era election. Trust is read before primacy, and the in-flight guard after it.
+    const SCHEDULER = 'src/services/evidence-maintenance/evidence-maintenance-scheduler.ts';
+    const source = read(SCHEDULER);
+    const trust = source.indexOf('deps.isTrusted()');
+    const primacy = source.indexOf('await deps.hasPrimacy()');
+    const pass = source.indexOf('await deps.runPass()');
+    expect(trust, `${SCHEDULER} must read trust each tick`).toBeGreaterThanOrEqual(0);
+    expect(primacy, `${SCHEDULER} must read hasPrimacy() each tick`).toBeGreaterThanOrEqual(0);
+    expect(pass, `${SCHEDULER} must still run the pass`).toBeGreaterThanOrEqual(0);
+    expect(trust, 'trust is read before primacy').toBeLessThan(primacy);
+    expect(primacy, 'primacy is read before the pass runs').toBeLessThan(pass);
+
+    // The wiring supplies the real reads, so a scheduler fed a constant would not satisfy the rule.
+    const WIRING = 'src/activation/evidence-maintenance-wiring.ts';
+    const wiring = read(WIRING);
+    expect(wiring.includes('deps.lock.hasPrimacy()'), `${WIRING} must pass the lock's hasPrimacy()`).toBe(true);
+    expect(wiring.includes('deps.isWorkspaceTrusted()'), `${WIRING} must pass the trust read`).toBe(true);
+  });
+
   it('claims the per-queue execution lease on the resume path, before markInFlight', () => {
     const body = methodBody(
       CONTROLLER_SOURCE,

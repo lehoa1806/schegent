@@ -108,8 +108,8 @@ Use **Schegent: Show Audit Log** in the Command Palette to open `.schegent/audit
 Use **Schegent: Export Metadata-Only Audit** when the recipient should not receive full payload text:
 
 1. Run the command from the Command Palette.
-2. Accept or replace the default filename `schegent-audit-v3.jsonl` in the workspace root.
-3. Save the JSON Lines file.
+2. The save dialog opens in your home directory with the default filename `schegent-audit-v3.jsonl`; accept or replace it.
+3. Save the JSON Lines file. It is written with mode `0600`, and only to a local file outside `.schegent/`: a remote destination or one that resolves into the evidence store is refused, and the refusal is recorded.
 
 The export includes only parseable schema-v3 entries. It retains the entry identity, timestamp, event type, phase, iteration, outcome, and schema version, plus only these payload keys when present: `attemptId`, `cause`, `exitCode`, `failureCause`, `fileChangeCounts`, `metrics`, `omittedFileEvidenceCount`, `omittedToolEvidenceCount`, `outcome`, `resultEnvelope`, `stalled`, `terminationReason`, and `toolCategoryCounts`. Five of those are additionally value-checked, since the export reads the bytes on disk rather than what the current writer produces: on `phase-end` only the literals `cap_exhausted` and `pre_spawn_refusal` survive as a `cause`, other event families keep their own `cause` vocabularies (admitted by shape, as a short lowercase token), `stalled` must be a positive whole number, `attemptId` must be the UUID shape the writer mints, `resultEnvelope` must be `received` or `absent`, `failureCause` must be one of the nine closed codes and survives only on `task-execution-ended`, and a rejected value exports as `null` rather than being dropped. It is a filtered export; the original audit log is unchanged.
 <!-- Source: package.json -->

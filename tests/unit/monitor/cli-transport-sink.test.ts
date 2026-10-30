@@ -1,29 +1,20 @@
-// Feature FR-R3-007 (T363) — the transport sink's two load-bearing properties:
-// it is bounded, and it is sanitized.
+// Feature FR-R3-007 (T363) — the transport sink's load-bearing properties: it is sanitized, it is
+// bounded in what it will hold in memory, and it releases what it holds when asked.
 //
-// Run against a real temporary directory rather than a filesystem double. The
-// sink proves containment through `resolveContainedForWrite` /
-// `resolveContainedLink`, both of which call `realpath`, so a double would have
-// to model symlink resolution to answer them — and a double that answers
-// "contained" unconditionally would make every containment assertion below
-// vacuous while looking green. A real tree resolves naturally, and the rotation
-// assertions become directory listings, which is the form an operator would
-// check them in.
+// Feature 251 (FR-R4-F04) moved every byte of file I/O out of the sink and into the router and store in
+// `src/monitor/transport/` (per-Run files, the stage, compaction, the legacy generations). So this file
+// tests what the sink still owns, against a recording router, and not the files: where a file ends up and
+// what bounds it are `tests/unit/monitor/transport/*` (T2 to T4) and the T5 block at the foot of this file.
+// What changed in this file, case by case, is listed in
+// `specs/251-controllable-evidence-lifecycle/measurements.md` §0 (T014).
 //
-// `maxBytes` is set low deliberately. The production ceiling is 5 MiB, and
-// writing 20 MiB to assert a rollover would trade the whole point of the bound
-// for a slow test; the bound's *logic* is size-independent, so the fixture picks
-// sizes where a rollover is one or two records away.
-//
-// Sanitization is checked with the real `SanitizedLogger`, not a stub. The rule
-// this feature must not break is that `SECRET_PATTERNS` stays the single source
-// of truth — a stub sanitizer would pass whatever this file decided to assert,
-// including nothing, so the redaction assertion is only worth making against the
-// set the host actually uses.
+// Sanitization is checked with the real `SanitizedLogger`, not a stub. The rule this feature must not
+// break is that `SECRET_PATTERNS` stays the single source of truth — a stub sanitizer would pass whatever
+// this file decided to assert, including nothing, so the redaction assertion is only worth making against
+// the set the host actually uses.
 
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
 import * as fs from 'node:fs/promises';
-import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { expectNoDescriptorWarnings } from '../../setup/descriptor-warnings';
@@ -36,54 +27,49 @@ import {
   CLI_TRANSPORT_FILE_NAME,
   CLI_TRANSPORT_MAX_BYTES,
   CLI_TRANSPORT_MAX_GENERATIONS,
-  createCliTransportSettingsAccessor,
-  type CliTransportSettings,
-  type CliTransportSettingsAccessor
+  type CliTransportRecord,
+  type CliTransportRouting
 } from '../../../src/monitor/cli-transport-sink';
 import { KeyBlockLineRedactor, SanitizedLogger } from '../../../src/lib/logger';
+import { createTransportHarness, type TransportHarness } from './transport/transport-harness';
 
-let workspaceRoot = '';
 let warnings: string[] = [];
 
 const logger = { warn: (message: string) => warnings.push(message) };
 const realLogger = new SanitizedLogger([]);
 
-function livePath(root = workspaceRoot): string {
-  return path.join(root, CLI_TRANSPORT_DIRECTORY, CLI_TRANSPORT_FILE_NAME);
-}
-
 /**
- * A settings accessor with a call counter, so "read per emit, never cached" is
- * an assertion rather than a claim about the source.
+ * A router that records what it is handed. `gate`, when set, holds every `route` promise open, which is
+ * the blocked-disk case; `disposals` counts the releases the sink asks for.
  */
-function countingAccessor(
-  overrides: Partial<CliTransportSettings> = {}
-): CliTransportSettingsAccessor & { reads: number } {
-  const accessor = {
-    reads: 0,
-    read: (): CliTransportSettings => {
-      accessor.reads += 1;
-      return {
-        root: workspaceRoot,
-        path: livePath(),
-        maxBytes: CLI_TRANSPORT_MAX_BYTES,
-        maxGenerations: CLI_TRANSPORT_MAX_GENERATIONS,
-        ...overrides
-      };
-    }
-  };
-  return accessor;
+class RecordingRouter implements CliTransportRouting {
+  readonly routed: Array<{ readonly entry: CliTransportRecord; readonly line: string }> = [];
+  disposals = 0;
+  openDescriptorCount = 0;
+  gate: Promise<void> | null = null;
+
+  route(entry: CliTransportRecord, line: string): Promise<void> {
+    this.routed.push({ entry, line });
+    return this.gate ?? Promise.resolve();
+  }
+
+  async dispose(): Promise<void> {
+    this.disposals += 1;
+  }
+
+  /** Every line handed over, as one text, in order. */
+  text(): string {
+    return this.routed.map((record) => record.line).join('');
+  }
 }
 
 /**
  * FR-R3-137 (T1531c, FR-012) — every sink this file constructs is disposed.
  *
- * Registered at construction rather than disposed per test, because this file
- * has 26 construction sites across three constructors and the property is "every
- * one", not "the ones somebody remembered". Before this, the run emitted 14
- * `Closing file descriptor N on garbage collection` lines and one `DEP0137`: GC
- * was the sink's finalizer, in the suite that was supposed to be proving the
- * sink's behaviour.
+ * Registered at construction rather than disposed per test, because the property is "every one", not
+ * "the ones somebody remembered". Before this, the run emitted 14 `Closing file descriptor N on garbage
+ * collection` lines and one `DEP0137`: GC was the sink's finalizer, in the suite that was supposed to be
+ * proving the sink's behaviour.
  */
 const live: CliTransportSink[] = [];
 
@@ -92,71 +78,68 @@ function track<T extends CliTransportSink>(sink: T): T {
   return sink;
 }
 
+let router = new RecordingRouter();
+
 function makeSink(
-  settings: CliTransportSettingsAccessor,
-  sanitize: (line: string) => string = (line) => line
+  sanitize: (line: string) => string = (line) => line,
+  overrides: { readonly drainGraceMs?: number } = {}
 ): CliTransportSink {
-  return track(new CliTransportSink({
-    settings,
-    sanitize,
-    logger,
-    now: () => new Date('2026-05-10T12:00:00.000Z')
-  }));
+  return track(
+    new CliTransportSink({
+      router,
+      sanitize,
+      logger,
+      now: () => new Date('2026-05-10T12:00:00.000Z'),
+      ...overrides
+    })
+  );
 }
 
-async function listTransportFiles(): Promise<readonly string[]> {
-  const directory = path.join(workspaceRoot, CLI_TRANSPORT_DIRECTORY);
-  try {
-    return (await fs.readdir(directory)).filter((n) => n.startsWith(CLI_TRANSPORT_FILE_NAME)).sort();
-  } catch {
-    return [];
-  }
+/** The production factory over the recording router, for the cases about its wiring. */
+function makeProductionSink(): CliTransportSink {
+  return track(
+    createCliTransportSink(router, {
+      sanitize: (line) => realLogger.sanitize(line),
+      warn: (message: string) => warnings.push(message)
+    })
+  );
 }
 
-async function readLive(): Promise<string> {
-  return fs.readFile(livePath(), 'utf8');
-}
-
-beforeEach(async () => {
-  workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-cli-transport-'));
+beforeEach(() => {
   warnings = [];
+  router = new RecordingRouter();
 });
 
 afterEach(async () => {
-  // Descriptors before the tree: a handle held open across the `rm` is the
-  // shape that leaves an unlinked inode alive on POSIX and fails the delete
-  // outright on Windows.
   for (const sink of live.splice(0)) {
     await sink.flushAndDispose();
   }
-  await fs.rm(workspaceRoot, { recursive: true, force: true });
 });
 
 afterAll(() => {
   expectNoDescriptorWarnings();
 });
 
-describe('CliTransportSink — the record it writes', () => {
-  it('creates the .schegent directory on the first record', async () => {
-    const sink = makeSink(countingAccessor());
+describe('CliTransportSink — the record it hands over', () => {
+  it('hands the formatted record to the router, newline-terminated', async () => {
+    const sink = makeSink();
     sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line: 'hello' });
     await sink.flushPendingWrites();
 
-    expect(await readLive()).toBe(
-      '2026-05-10T12:00:00.000Z\trun-1\tspeckit-plan\tstdout\thello\n'
-    );
-    expect(warnings, 'a missing parent is recovered, not reported').toEqual([]);
+    expect(router.text()).toBe('2026-05-10T12:00:00.000Z\trun-1\tspeckit-plan\tstdout\thello\n');
+    expect(router.routed[0]?.entry.runId, 'the router is told which Run, to choose its file').toBe('run-1');
+    expect(warnings, 'a hand-over is not a failure').toEqual([]);
   });
 
   it('puts the content last, so cut -f5- recovers the CLI’s own bytes', async () => {
-    const sink = makeSink(countingAccessor());
+    const sink = makeSink();
     // A stream-json line: tabs inside it must survive, because the content field
     // is terminal and cannot shift a column.
     const jsonLine = '{"type":"tool_result","text":"a\tb\tc"}';
     sink.record({ runId: 'run-1', phase: 'speckit-implement', stream: 'stdout', line: jsonLine });
     await sink.flushPendingWrites();
 
-    const record = (await readLive()).trimEnd();
+    const record = router.text().trimEnd();
     const fields = record.split('\t');
     expect(fields.slice(0, 4)).toEqual([
       '2026-05-10T12:00:00.000Z',
@@ -168,45 +151,45 @@ describe('CliTransportSink — the record it writes', () => {
   });
 
   it('flattens tabs in the attribution fields but never in the line', async () => {
-    const sink = makeSink(countingAccessor());
+    const sink = makeSink();
     sink.record({ runId: 'a\tb', phase: 'c\nd', stream: 'stderr', line: 'kept\there' });
     await sink.flushPendingWrites();
 
-    const fields = (await readLive()).trimEnd().split('\t');
+    const fields = router.text().trimEnd().split('\t');
     expect(fields[1]).toBe('a b');
     expect(fields[2]).toBe('c d');
     expect(fields.slice(4).join('\t')).toBe('kept\there');
   });
 
   it('writes one physical line per record, in call order', async () => {
-    const sink = makeSink(countingAccessor());
+    const sink = makeSink();
     for (const line of ['one', 'two', 'three']) {
       sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line });
     }
     await sink.flushPendingWrites();
 
-    const lines = (await readLive()).split('\n').filter((l) => l.length > 0);
+    const lines = router.text().split('\n').filter((l) => l.length > 0);
     expect(lines).toHaveLength(3);
     expect(lines.map((l) => l.split('\t')[4])).toEqual(['one', 'two', 'three']);
   });
 
   it('does not truncate a long line — the bound is the file, not the record', async () => {
-    // The audit payload's 640-char string cap cost one run 7046 of 7452 lines.
-    // Trading that for a file-level bound is the whole design, so a line well
-    // past any per-string cap has to arrive whole.
-    const sink = makeSink(countingAccessor());
+    // The audit payload's 640-char string cap cost one run 7046 of 7452 lines. Trading that for a
+    // file-level bound is the whole design, so a line well past any per-string cap arrives whole at the
+    // router. The one case a record is replaced (longer than the file bound itself) is the router's, FR-006.
+    const sink = makeSink();
     const long = 'x'.repeat(20_000);
     sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line: long });
     await sink.flushPendingWrites();
 
-    expect((await readLive()).trimEnd().split('\t')[4]).toBe(long);
-    expect(await readLive()).not.toContain('truncated');
+    expect(router.text().trimEnd().split('\t')[4]).toBe(long);
+    expect(router.text()).not.toContain('truncated');
   });
 });
 
 describe('CliTransportSink — sanitization', () => {
   it('redacts through the host’s own SECRET_PATTERNS set', async () => {
-    const sink = makeSink(countingAccessor(), (line) => realLogger.sanitize(line));
+    const sink = makeSink((line) => realLogger.sanitize(line));
     const secret = `sk-ant-${'A'.repeat(40)}`;
     sink.record({
       runId: 'run-1',
@@ -216,14 +199,14 @@ describe('CliTransportSink — sanitization', () => {
     });
     await sink.flushPendingWrites();
 
-    const written = await readLive();
+    const written = router.text();
     expect(written).not.toContain(secret);
     expect(written).toContain('[REDACTED]');
   });
 
   it('sanitizes every line, not just the first', async () => {
     const seen: string[] = [];
-    const sink = makeSink(countingAccessor(), (line) => {
+    const sink = makeSink((line) => {
       seen.push(line);
       return line.replace(/hunter2/g, '[REDACTED]');
     });
@@ -237,7 +220,7 @@ describe('CliTransportSink — sanitization', () => {
       'ok',
       'again hunter2'
     ]);
-    expect(await readLive()).not.toContain('hunter2');
+    expect(router.text()).not.toContain('hunter2');
   });
 
   // FR-R3-048 (H-07, T018) — the shape this sink was failing. Everything above
@@ -263,7 +246,7 @@ describe('CliTransportSink — sanitization', () => {
   it('suppresses a key that arrives one line at a time', async () => {
     const redactor = new KeyBlockLineRedactor((input) => realLogger.sanitize(input));
     const sink = track(new CliTransportSink({
-      settings: countingAccessor(),
+      router,
       sanitize: (line) => realLogger.sanitize(line),
       sanitizeStreamLine: (line) => redactor.sanitizeLine(line),
       logger,
@@ -274,7 +257,7 @@ describe('CliTransportSink — sanitization', () => {
     }
     await sink.flushPendingWrites();
 
-    const written = await readLive();
+    const written = router.text();
     expect(written.includes('BODY_MUST_NOT_SURVIVE')).toBe(false);
     expect(written.includes('b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ')).toBe(false);
     expect(written.includes('-----END')).toBe(false);
@@ -285,10 +268,7 @@ describe('CliTransportSink — sanitization', () => {
   });
 
   it('wires the stateful sanitizer in the production factory', async () => {
-    const sink = track(createCliTransportSink(() => workspaceRoot, {
-      sanitize: (line) => realLogger.sanitize(line),
-      warn: (message: string) => warnings.push(message)
-    }));
+    const sink = makeProductionSink();
     for (const line of SPLIT_KEY) {
       sink.record({ runId: 'run-1', phase: 'speckit-implement', stream: 'stdout', line });
     }
@@ -301,7 +281,7 @@ describe('CliTransportSink — sanitization', () => {
     });
     await sink.flushPendingWrites();
 
-    const written = await readLive();
+    const written = router.text();
     expect(written.includes('BODY_MUST_NOT_SURVIVE')).toBe(false);
     expect(written.includes('-----END')).toBe(false);
     expect(written.includes('other run output')).toBe(true);
@@ -312,12 +292,9 @@ describe('CliTransportSink — sanitization', () => {
   // a long-lived host and either an unbounded map or a released key tail. SC-004
   // asks for measurement rather than inspection, and both constants and the map
   // are private to the factory, so these two cases drive the production factory
-  // and read the outcome off the log.
+  // and read the outcome off what it hands over.
   it('evicts a closed entry rather than a live open block (FR-015)', async () => {
-    const sink = track(createCliTransportSink(() => workspaceRoot, {
-      sanitize: (line) => realLogger.sanitize(line),
-      warn: (message: string) => warnings.push(message)
-    }));
+    const sink = makeProductionSink();
     // The long-lived Run: oldest by insertion order, and mid-block. Dropping this
     // one is the single case where discarding state releases a tail, which is why
     // eviction has to prefer a closed entry over the oldest-inserted one.
@@ -344,7 +321,7 @@ describe('CliTransportSink — sanitization', () => {
     });
     await sink.flushPendingWrites();
 
-    const written = await readLive();
+    const written = router.text();
     // Boolean, never the protected string: the keeper's block is still open, so
     // its body line was suppressed even though 272 entries were created after it.
     expect(written.includes('BODY_MUST_NOT_SURVIVE')).toBe(false);
@@ -355,10 +332,7 @@ describe('CliTransportSink — sanitization', () => {
   });
 
   it('still bounds the map when every tracked entry is open (SC-004)', async () => {
-    const sink = track(createCliTransportSink(() => workspaceRoot, {
-      sanitize: (line) => realLogger.sanitize(line),
-      warn: (message: string) => warnings.push(message)
-    }));
+    const sink = makeProductionSink();
     // The pathological shape: every tracked (run, stream) pair mid-block, so there
     // is no closed entry to prefer. The cap still holds and the oldest is dropped
     // — a recorded trade, because an unbounded map is the worse failure and a cap
@@ -383,489 +357,18 @@ describe('CliTransportSink — sanitization', () => {
     });
     await sink.flushPendingWrites();
 
-    const written = await readLive();
-    expect(written.includes('EVICTED_STATE_MARKER')).toBe(true);
+    expect(router.text().includes('EVICTED_STATE_MARKER')).toBe(true);
   });
 });
 
-/** A record is 5 attribution/format bytes plus the line; keep the arithmetic visible. */
-function recordBytes(line: string): number {
-  return Buffer.byteLength(
-    `2026-05-10T12:00:00.000Z\trun-1\tspeckit-plan\tstdout\t${line}\n`,
-    'utf8'
-  );
-}
-
-describe('CliTransportSink — bounded by rotation', () => {
-  it('rotates the live file to .1 once the next record would exceed the bound', async () => {
-    const line = 'a'.repeat(50);
-    const size = recordBytes(line);
-    // Two records fit exactly; the third must roll over.
-    const sink = makeSink(countingAccessor({ maxBytes: size * 2, maxGenerations: 3 }));
-    for (let index = 0; index < 3; index += 1) {
-      sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line });
-    }
-    await sink.flushPendingWrites();
-
-    expect(await listTransportFiles()).toEqual([
-      CLI_TRANSPORT_FILE_NAME,
-      `${CLI_TRANSPORT_FILE_NAME}.1`
-    ]);
-    expect(
-      (await readLive()).split('\n').filter((l) => l.length > 0),
-      'the record that triggered rotation starts the new file'
-    ).toHaveLength(1);
-    expect(
-      (await fs.readFile(`${livePath()}.1`, 'utf8')).split('\n').filter((l) => l.length > 0)
-    ).toHaveLength(2);
-  });
-
-  it('fills up to maxBytes inclusively before rolling', async () => {
-    const line = 'b'.repeat(30);
-    const size = recordBytes(line);
-    const sink = makeSink(countingAccessor({ maxBytes: size, maxGenerations: 2 }));
-    sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line });
-    await sink.flushPendingWrites();
-
-    expect(
-      await listTransportFiles(),
-      'a file exactly at the bound has not exceeded it'
-    ).toEqual([CLI_TRANSPORT_FILE_NAME]);
-  });
-
-  it('never retains more than maxGenerations behind the live file', async () => {
-    const line = 'c'.repeat(40);
-    const sink = makeSink(
-      countingAccessor({ maxBytes: recordBytes(line), maxGenerations: 2 })
-    );
-    // Ten rollovers against a two-generation cap: if the shift leaked, the
-    // directory would grow with the number of records rather than stay bounded.
-    for (let index = 0; index < 10; index += 1) {
-      sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line });
-    }
-    await sink.flushPendingWrites();
-
-    expect(await listTransportFiles()).toEqual([
-      CLI_TRANSPORT_FILE_NAME,
-      `${CLI_TRANSPORT_FILE_NAME}.1`,
-      `${CLI_TRANSPORT_FILE_NAME}.2`
-    ]);
-  });
-
-  it('shifts oldest-first, so the newest generation is .1', async () => {
-    const line = 'd'.repeat(40);
-    const sink = makeSink(
-      countingAccessor({ maxBytes: recordBytes(line), maxGenerations: 2 })
-    );
-    for (const marker of ['first', 'second', 'third']) {
-      sink.record({
-        runId: 'run-1',
-        phase: 'speckit-plan',
-        stream: 'stdout',
-        line: `${marker}${'d'.repeat(40 - marker.length)}`
-      });
-      await sink.flushPendingWrites();
-    }
-
-    expect(await fs.readFile(`${livePath()}.1`, 'utf8')).toContain('second');
-    expect(await fs.readFile(`${livePath()}.2`, 'utf8')).toContain('first');
-    expect(await readLive()).toContain('third');
-  });
-
-  it('truncates in place when no generations are retained', async () => {
-    const line = 'e'.repeat(40);
-    const sink = makeSink(
-      countingAccessor({ maxBytes: recordBytes(line), maxGenerations: 0 })
-    );
-    sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line: `keep${line}` });
-    sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line: `next${line}` });
-    await sink.flushPendingWrites();
-
-    expect(await listTransportFiles()).toEqual([CLI_TRANSPORT_FILE_NAME]);
-    const written = await readLive();
-    expect(written).toContain('next');
-    expect(written, 'nothing to roll into, so the old content goes').not.toContain('keep');
-  });
-
-  it('sweeps generations orphaned above a lowered cap', async () => {
-    // The cap is code-resident, so this is what a release that lowers it leaves
-    // behind: slots the shift loop never visits.
-    const directory = path.join(workspaceRoot, CLI_TRANSPORT_DIRECTORY);
-    await fs.mkdir(directory, { recursive: true });
-    await fs.writeFile(`${livePath()}.7`, 'orphan\n', 'utf8');
-    await fs.writeFile(`${livePath()}.keep-me`, 'operator file\n', 'utf8');
-
-    const line = 'f'.repeat(40);
-    const sink = makeSink(
-      countingAccessor({ maxBytes: recordBytes(line), maxGenerations: 2 })
-    );
-    for (let index = 0; index < 3; index += 1) {
-      sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line });
-    }
-    await sink.flushPendingWrites();
-
-    const files = await listTransportFiles();
-    expect(files, 'a numeric suffix above the cap is swept').not.toContain(
-      `${CLI_TRANSPORT_FILE_NAME}.7`
-    );
-    expect(files, 'a non-numeric suffix belongs to the operator').toContain(
-      `${CLI_TRANSPORT_FILE_NAME}.keep-me`
-    );
-  });
-
-  it('seeds its byte tally from a file an earlier session left behind', async () => {
-    const line = 'g'.repeat(40);
-    const size = recordBytes(line);
-    const directory = path.join(workspaceRoot, CLI_TRANSPORT_DIRECTORY);
-    await fs.mkdir(directory, { recursive: true });
-    await fs.writeFile(livePath(), 'x'.repeat(size), 'utf8');
-
-    const sink = makeSink(countingAccessor({ maxBytes: size, maxGenerations: 1 }));
-    sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line });
-    await sink.flushPendingWrites();
-
-    expect(
-      await listTransportFiles(),
-      'a new session that assumed zero bytes would grow the file without bound'
-    ).toEqual([CLI_TRANSPORT_FILE_NAME, `${CLI_TRANSPORT_FILE_NAME}.1`]);
-  });
-});
-
-/**
- * Feature 217 (FR-004, FR-005, FR-007) — the capture is owner-only, and so is
- * every file a rotation leaves behind.
- *
- * The measured gap was two opens that declared no mode: the append open, and the
- * successor a rotation creates through `writeFile`. Under the common 022 umask both
- * landed 0644, readable by every local account, carrying raw CLI output. Every
- * assertion reads the mode back from disk.
- */
-describe('CliTransportSink — owner-only evidence (feature 217)', () => {
-  const OWNER_ONLY_FILE = 0o600;
-  const OWNER_ONLY_DIR = 0o700;
-  const WIDENED_FILE = 0o644;
-  const WIDENED_DIR = 0o755;
-
-  /** POSIX-only: `mode` is not an enforceable concept on Windows. */
-  const posixOnly = process.platform === 'win32' ? it.skip : it;
-
-  const modeOf = async (p: string): Promise<number> => (await fs.lstat(p)).mode & 0o777;
-  const directory = (): string => path.join(workspaceRoot, CLI_TRANSPORT_DIRECTORY);
-
-  /** A file an earlier release left behind, at the mode the umask gave it. */
-  async function leaveWidened(file: string, contents: string): Promise<void> {
-    await fs.writeFile(file, contents, 'utf8');
-    await fs.chmod(file, WIDENED_FILE);
-  }
-
-  const record = (sink: CliTransportSink, line: string): void =>
-    sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line });
-
-  posixOnly('creates the directory and the live file owner-only', async () => {
-    const sink = makeSink(countingAccessor());
-    record(sink, 'first');
-    await sink.flushPendingWrites();
-
-    expect(await modeOf(directory())).toBe(OWNER_ONLY_DIR);
-    expect(await modeOf(livePath())).toBe(OWNER_ONLY_FILE);
-  });
-
-  posixOnly('creates the successor a rotation leaves behind owner-only (FR-005)', async () => {
-    const line = 'h'.repeat(40);
-    const sink = makeSink(countingAccessor({ maxBytes: recordBytes(line), maxGenerations: 2 }));
-    for (let index = 0; index < 3; index += 1) record(sink, line);
-    await sink.flushPendingWrites();
-
-    expect(await listTransportFiles()).toEqual([
-      CLI_TRANSPORT_FILE_NAME,
-      `${CLI_TRANSPORT_FILE_NAME}.1`,
-      `${CLI_TRANSPORT_FILE_NAME}.2`
-    ]);
-    expect(await modeOf(livePath()), 'the file the rotation created').toBe(OWNER_ONLY_FILE);
-    expect(await modeOf(`${livePath()}.1`)).toBe(OWNER_ONLY_FILE);
-    expect(await modeOf(`${livePath()}.2`)).toBe(OWNER_ONLY_FILE);
-  });
-
-  posixOnly('leaves the live file owner-only when it truncates in place', async () => {
-    // With no generations retained, a full file is truncated rather than moved.
-    // Truncating keeps the mode it finds, so a widened file stays widened unless
-    // the truncating open narrows it.
-    const line = 'i'.repeat(40);
-    await fs.mkdir(directory(), { mode: OWNER_ONLY_DIR });
-    await leaveWidened(livePath(), 'x'.repeat(recordBytes(line)));
-
-    const sink = makeSink(countingAccessor({ maxBytes: recordBytes(line), maxGenerations: 0 }));
-    record(sink, line);
-    await sink.flushPendingWrites();
-
-    expect(await readLive()).not.toContain('x');
-    expect(await modeOf(livePath())).toBe(OWNER_ONLY_FILE);
-  });
-
-  posixOnly('narrows a live file an earlier release left widened, in place (FR-002)', async () => {
-    await fs.mkdir(directory());
-    await fs.chmod(directory(), WIDENED_DIR);
-    await leaveWidened(livePath(), 'earlier\n');
-    const before = await fs.lstat(livePath());
-
-    const sink = makeSink(countingAccessor());
-    record(sink, 'later');
-    await sink.flushPendingWrites();
-
-    const after = await fs.lstat(livePath());
-    expect(after.mode & 0o777).toBe(OWNER_ONLY_FILE);
-    expect(after.ino, 'narrowed, not recreated').toBe(before.ino);
-    expect(await readLive()).toMatch(/^earlier\n.*later\n$/s);
-    expect(await modeOf(directory())).toBe(OWNER_ONLY_DIR);
-  });
-
-  posixOnly('narrows the generations an earlier release left widened, and nothing else (FR-004)', async () => {
-    await fs.mkdir(directory(), { mode: OWNER_ONLY_DIR });
-    await leaveWidened(`${livePath()}.1`, 'older\n');
-    await leaveWidened(`${livePath()}.2`, 'oldest\n');
-    await leaveWidened(`${livePath()}.keep-me`, 'operator file\n');
-
-    // One record that fits: no rotation runs, so the generations are only
-    // reached if the sink narrows what it finds when it starts writing.
-    const sink = makeSink(countingAccessor());
-    record(sink, 'now');
-    await sink.flushPendingWrites();
-
-    expect(await modeOf(`${livePath()}.1`)).toBe(OWNER_ONLY_FILE);
-    expect(await modeOf(`${livePath()}.2`)).toBe(OWNER_ONLY_FILE);
-    expect(
-      await modeOf(`${livePath()}.keep-me`),
-      'a non-numeric suffix belongs to the operator'
-    ).toBe(WIDENED_FILE);
-    expect(await fs.readFile(`${livePath()}.2`, 'utf8'), 'narrowed, not rewritten').toBe(
-      'oldest\n'
-    );
-  });
-
-  posixOnly('lists the generations again at the next open when a listing failed (FR-004)', async () => {
-    const line = 'j'.repeat(40);
-    await fs.mkdir(directory(), { mode: OWNER_ONLY_DIR });
-    await leaveWidened(`${livePath()}.1`, 'older\n');
-    let listingFails = true;
-    const sink = track(
-      new CliTransportSink({
-        settings: countingAccessor({ maxBytes: recordBytes(line), maxGenerations: 2 }),
-        sanitize: (text) => text,
-        logger,
-        now: () => new Date('2026-05-10T12:00:00.000Z'),
-        readdir: async (target) => {
-          if (listingFails) throw Object.assign(new Error('busy'), { code: 'EMFILE' });
-          return fs.readdir(target);
-        }
-      })
-    );
-
-    record(sink, line);
-    await sink.flushPendingWrites();
-    expect(await modeOf(`${livePath()}.1`), 'not listed, so not reached').toBe(WIDENED_FILE);
-
-    // The append handle is held, so the next open is the successor a rotation
-    // leaves, and the rotation shifts the widened generation to `.2` first.
-    listingFails = false;
-    record(sink, line);
-    await sink.flushPendingWrites();
-    expect(await fs.readFile(`${livePath()}.2`, 'utf8')).toBe('older\n');
-    expect(await modeOf(`${livePath()}.2`)).toBe(OWNER_ONLY_FILE);
-  });
-
-  posixOnly('says what it narrowed, once, without naming the path', async () => {
-    await fs.mkdir(directory());
-    await fs.chmod(directory(), WIDENED_DIR);
-    await leaveWidened(livePath(), '');
-    await leaveWidened(`${livePath()}.1`, '');
-    await leaveWidened(`${livePath()}.2`, '');
-
-    const sink = makeSink(countingAccessor());
-    for (let index = 0; index < 3; index += 1) {
-      record(sink, `line-${index}`);
-      await sink.flushPendingWrites();
-    }
-
-    const narrowing = warnings.filter((w) => w.includes('owner-only'));
-    expect(narrowing, 'one line per kind of change, not one per file or per record').toEqual([
-      expect.stringMatching(/directory.*\b755\b/),
-      expect.stringMatching(/file.*\b644\b/)
-    ]);
-    for (const warning of narrowing) {
-      expect(warning, 'path-free').not.toContain(workspaceRoot);
-      expect(warning).not.toContain(CLI_TRANSPORT_FILE_NAME);
-    }
-  });
-
-  posixOnly('never narrows through a symbolic link a generation slot holds (FR-003)', async () => {
-    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-cli-transport-outside-'));
-    try {
-      const target = path.join(outside, 'not-evidence.txt');
-      await leaveWidened(target, 'someone else\n');
-      await fs.mkdir(directory(), { mode: OWNER_ONLY_DIR });
-      await fs.symlink(target, `${livePath()}.1`);
-
-      const sink = makeSink(countingAccessor());
-      record(sink, 'still captured');
-      await sink.flushPendingWrites();
-
-      expect(await modeOf(target), 'the link target is untouched').toBe(WIDENED_FILE);
-      expect(await readLive(), 'capture carries on').toContain('still captured');
-    } finally {
-      await fs.rm(outside, { recursive: true, force: true });
-    }
-  });
-});
-
-describe('CliTransportSink — settings and destination', () => {
-  it('reads its settings once per record and holds nothing', async () => {
-    const accessor = countingAccessor();
-    const sink = makeSink(accessor);
-    for (let index = 0; index < 4; index += 1) {
-      sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line: `l${index}` });
-    }
-    await sink.flushPendingWrites();
-
-    expect(accessor.reads, 'a cached settings object is the defect this shape prevents').toBe(4);
-  });
-
-  it('follows the workspace root when it changes mid-session', async () => {
-    const second = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-cli-transport-second-'));
-    try {
-      const sink = makeSink(createCliTransportSettingsAccessor(() => workspaceRoot));
-      sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line: 'in-first' });
-      await sink.flushPendingWrites();
-
-      const first = workspaceRoot;
-      workspaceRoot = second;
-      sink.record({ runId: 'run-2', phase: 'speckit-plan', stream: 'stdout', line: 'in-second' });
-      await sink.flushPendingWrites();
-
-      expect(await fs.readFile(livePath(first), 'utf8')).toContain('in-first');
-      expect(await fs.readFile(livePath(second), 'utf8')).toContain('in-second');
-      expect(await fs.readFile(livePath(first), 'utf8')).not.toContain('in-second');
-    } finally {
-      workspaceRoot = second;
-      await fs.rm(second, { recursive: true, force: true });
-      workspaceRoot = '';
-    }
-  });
-
-  it('drops the line when there is no workspace folder', async () => {
-    const sink = makeSink({ read: () => null });
-    sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line: 'nowhere' });
-    await sink.flushPendingWrites();
-
-    expect(await listTransportFiles(), 'no destination is not a guessed destination').toEqual([]);
-    expect(warnings).toEqual([]);
-  });
-
-  it('exposes a bounded ceiling that does not depend on the audit log', () => {
-    // The finding was a shared budget, so the numbers are asserted here: a
-    // change to either would otherwise be invisible outside a rotation test.
+describe('CliTransportSink — the bounds it still exports', () => {
+  it('exposes a per-file ceiling that does not depend on the audit log', () => {
+    // The finding was a shared budget, so the numbers are asserted here: a change to either would
+    // otherwise be invisible outside a compaction test. The per-file bound is unchanged by feature 251;
+    // what it bounds is now each Run file and each stage file, and the generations count names the
+    // legacy generations an earlier release left.
     expect(CLI_TRANSPORT_MAX_BYTES).toBe(5 * 1024 * 1024);
     expect(CLI_TRANSPORT_MAX_GENERATIONS).toBe(3);
-    expect(
-      CLI_TRANSPORT_MAX_BYTES * (CLI_TRANSPORT_MAX_GENERATIONS + 1),
-      'four files of 5 MiB — a fixed 20 MiB per workspace'
-    ).toBe(20 * 1024 * 1024);
-  });
-});
-
-describe('CliTransportSink — containment', () => {
-  it('refuses a destination outside the root, writes nothing, and warns once', async () => {
-    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-cli-transport-out-'));
-    try {
-      const escapePath = path.join(outside, 'stolen.log');
-      const sink = makeSink({
-        read: () => ({
-          root: workspaceRoot,
-          path: escapePath,
-          maxBytes: CLI_TRANSPORT_MAX_BYTES,
-          maxGenerations: CLI_TRANSPORT_MAX_GENERATIONS
-        })
-      });
-      for (let index = 0; index < 5; index += 1) {
-        sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line: 'escape' });
-      }
-      await sink.flushPendingWrites();
-
-      await expect(fs.readFile(escapePath, 'utf8')).rejects.toThrow();
-      expect(warnings, 'one WARN for five refused lines').toHaveLength(1);
-      expect(warnings[0]).toContain('refused to write outside the workspace root');
-      expect(
-        warnings[0],
-        'a path outside the root is exactly the string that must not reach a log'
-      ).not.toContain(outside);
-    } finally {
-      await fs.rm(outside, { recursive: true, force: true });
-    }
-  });
-
-  it('refuses a live file symlinked out of the workspace', async () => {
-    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-cli-transport-link-'));
-    try {
-      const decoy = path.join(outside, 'decoy.log');
-      await fs.writeFile(decoy, '', 'utf8');
-      await fs.mkdir(path.join(workspaceRoot, CLI_TRANSPORT_DIRECTORY), { recursive: true });
-      await fs.symlink(decoy, livePath());
-
-      const sink = makeSink(countingAccessor());
-      sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line: 'through-link' });
-      await sink.flushPendingWrites();
-
-      expect(
-        await fs.readFile(decoy, 'utf8'),
-        'a replaced destination is refused, not written through'
-      ).toBe('');
-      expect(warnings).toHaveLength(1);
-    } finally {
-      await fs.rm(outside, { recursive: true, force: true });
-    }
-  });
-
-  it('stops asking after a refusal — the answer does not change per line', async () => {
-    // Measured against a one-record baseline rather than a fixed number: the
-    // oracle walks to the nearest existing ancestor, so how many `realpath`
-    // calls one resolution costs depends on the temp tree's depth. The property
-    // is that twenty records cost the same as one, not what that cost is.
-    const escapePath = path.join(workspaceRoot, '..', 'escaped.log');
-    const makeCountingSink = (): { sink: CliTransportSink; calls: () => number } => {
-      let realpathCalls = 0;
-      const sink = track(new CliTransportSink({
-        settings: {
-          read: () => ({
-            root: workspaceRoot,
-            path: escapePath,
-            maxBytes: CLI_TRANSPORT_MAX_BYTES,
-            maxGenerations: CLI_TRANSPORT_MAX_GENERATIONS
-          })
-        },
-        sanitize: (line) => line,
-        logger,
-        realpath: async (target: string) => {
-          realpathCalls += 1;
-          return fs.realpath(target);
-        }
-      }));
-      return { sink, calls: () => realpathCalls };
-    };
-
-    const baseline = makeCountingSink();
-    baseline.sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line: 'x' });
-    await baseline.sink.flushPendingWrites();
-    expect(baseline.calls(), 'one record must resolve at least once').toBeGreaterThan(0);
-
-    const many = makeCountingSink();
-    for (let index = 0; index < 20; index += 1) {
-      many.sink.record({ runId: 'run-1', phase: 'speckit-plan', stream: 'stdout', line: 'x' });
-    }
-    await many.sink.flushPendingWrites();
-
-    expect(
-      many.calls(),
-      'a per-line realpath on a refused path is a syscall per line of CLI output'
-    ).toBe(baseline.calls());
   });
 });
 
@@ -878,7 +381,7 @@ describe('CliTransportSink — redaction state is per run, phase and stream (FR-
     // boundary reset abandons state that is necessarily unterminated.
     const lines: string[] = [];
     const sink = track(createCliTransportSink(
-      () => null,
+      router,
       {
         sanitize: (s: string) => s,
         warn: () => undefined
@@ -909,22 +412,10 @@ describe('CliTransportSink — the pending-byte high-water mark (FR-R3-052)', ()
    */
   it('drops lines rather than queueing unboundedly against a blocked writer', async () => {
     let release = (): void => {};
-    const blocked = new Promise<void>((resolve) => {
+    router.gate = new Promise<void>((resolve) => {
       release = resolve;
     });
-    const accessor = countingAccessor();
-    const sink = track(new CliTransportSink({
-      settings: accessor,
-      sanitize: (line) => line,
-      logger,
-      now: () => new Date('2026-05-10T12:00:00.000Z'),
-      // A writer that never completes until released: the disk-blocked case.
-      appendFile: async () => {
-        await blocked;
-      },
-      mkdir: async () => undefined,
-      stat: async () => ({ size: 0 })
-    }));
+    const sink = makeSink();
 
     // 4 MiB of lines, well past the 16 MiB bound when repeated.
     const line = 'x'.repeat(64 * 1024);
@@ -945,16 +436,7 @@ describe('CliTransportSink — the pending-byte high-water mark (FR-R3-052)', ()
 
   it('drops nothing when the writer keeps up', async () => {
     // The bound must not cost a healthy sink anything.
-    const accessor = countingAccessor();
-    const sink = track(new CliTransportSink({
-      settings: accessor,
-      sanitize: (line) => line,
-      logger,
-      now: () => new Date('2026-05-10T12:00:00.000Z'),
-      appendFile: async () => undefined,
-      mkdir: async () => undefined,
-      stat: async () => ({ size: 0 })
-    }));
+    const sink = makeSink();
     for (let i = 0; i < 200; i += 1) {
       sink.record({ runId: 'r', phase: 'implement', stream: 'stdout', line: `line ${i}` } as never);
       await sink.flushPendingWrites();
@@ -970,35 +452,42 @@ describe('CliTransportSink — the pending-byte high-water mark (FR-R3-052)', ()
 // there is no disposal" — so the only thing that ever closed one was the
 // garbage collector, and Node said so on stderr 14 times per run of this file.
 //
-// These cases run against the REAL append path deliberately. An injected
-// `appendFile` port short-circuits `appendHandleFor`, so a suite that injects
-// one never opens a descriptor and cannot witness a descriptor being closed;
-// that is exactly why the three sibling transport files emitted zero warnings
-// while this one emitted fifteen lines of them.
+// Feature 251 moved the descriptors to the router, so the cases that need a REAL descriptor run over
+// the real router (`createTransportHarness`), and the ones that need a stalled or recording router
+// run over `RecordingRouter`. The contract is unchanged: disposal drains within a grace, releases what
+// the router holds, and never rejects.
 describe('CliTransportSink — the disposal it never had (FR-R3-137)', () => {
+  let harness: TransportHarness | null = null;
+
+  afterEach(async () => {
+    await harness?.dispose();
+    harness = null;
+  });
+
   it('resolves on a sink that never recorded, holding nothing (FR-001)', async () => {
-    const sink = makeSink(countingAccessor());
+    const sink = makeSink();
 
     await expect(sink.flushAndDispose()).resolves.toBeUndefined();
     expect(sink.openDescriptorCount).toBe(0);
+    expect(router.disposals, 'the router is released once').toBe(1);
   });
 
   it('closes the descriptor the append path opened (FR-001, FR-006)', async () => {
-    const sink = makeSink(countingAccessor());
-    sink.record({ runId: 'run-1', phase: 'implement', stream: 'stdout', line: 'hello' });
-    await sink.flushPendingWrites();
+    harness = await createTransportHarness({ setting: 'on' });
+    harness.record('run-1', 'hello');
+    await harness.flush();
     // The precondition is the point: without a real open handle the assertion
     // below passes vacuously, which is the FR-R3-114 failure mode.
-    expect(sink.openDescriptorCount, 'the fixture must actually hold a descriptor').toBe(1);
+    expect(harness.sink.openDescriptorCount, 'the fixture must actually hold a descriptor').toBe(1);
 
-    await sink.flushAndDispose();
+    await harness.sink.flushAndDispose();
 
-    expect(sink.openDescriptorCount).toBe(0);
-    expect(sink.inFlight).toEqual({ chains: 0, writes: 0, bytes: 0 });
+    expect(harness.sink.openDescriptorCount).toBe(0);
+    expect(harness.sink.inFlight).toEqual({ chains: 0, writes: 0, bytes: 0 });
   });
 
   it('is idempotent, and the second call is the same settlement (FR-002)', async () => {
-    const sink = makeSink(countingAccessor());
+    const sink = makeSink();
     sink.record({ runId: 'run-1', phase: 'implement', stream: 'stdout', line: 'hello' });
     await sink.flushPendingWrites();
 
@@ -1010,12 +499,12 @@ describe('CliTransportSink — the disposal it never had (FR-R3-137)', () => {
     await first;
     await expect(sink.flushAndDispose()).resolves.toBeUndefined();
 
-    expect(sink.openDescriptorCount).toBe(0);
+    expect(router.disposals, 'one release however many callers').toBe(1);
     expect(warnings, 'disposal is not a failure and warns nothing').toEqual([]);
   });
 
   it('collapses concurrent callers into one drain (FR-002)', async () => {
-    const sink = makeSink(countingAccessor());
+    const sink = makeSink();
     sink.record({ runId: 'run-1', phase: 'implement', stream: 'stdout', line: 'hello' });
 
     const [a, b, c] = [sink.flushAndDispose(), sink.flushAndDispose(), sink.flushAndDispose()];
@@ -1023,42 +512,33 @@ describe('CliTransportSink — the disposal it never had (FR-R3-137)', () => {
     expect(c).toBe(a);
     await Promise.all([a, b, c]);
 
-    expect(sink.openDescriptorCount).toBe(0);
+    expect(router.disposals).toBe(1);
   });
 
-  it('never rejects the caller when a write fails mid-drain (FR-005)', async () => {
-    // The absorbed-failure half. An injected port is the only way to make a
-    // write fail on demand — the close half is `closeAppendHandle`'s own
-    // `.catch(() => undefined)`, exercised by every case above it.
-    const sink = track(new CliTransportSink({
-      settings: countingAccessor(),
-      sanitize: (line) => line,
-      logger,
-      now: () => new Date('2026-05-10T12:00:00.000Z'),
-      appendFile: async () => {
-        throw Object.assign(new Error('device is on fire'), { code: 'EIO' });
-      },
-      mkdir: async () => undefined,
-      stat: async () => ({ size: 0 })
-    }));
+  it('never rejects the caller when the router fails mid-drain (FR-005)', async () => {
+    // The absorbed-failure half: a router whose own release rejects, and one whose route rejects.
+    const failing: CliTransportRouting = {
+      route: () => Promise.reject(new Error('device is on fire')),
+      dispose: () => Promise.reject(new Error('close failed')),
+      openDescriptorCount: 0
+    };
+    const sink = track(new CliTransportSink({ router: failing, sanitize: (line) => line, logger }));
     sink.record({ runId: 'run-1', phase: 'implement', stream: 'stdout', line: 'hello' });
 
     await expect(sink.flushAndDispose()).resolves.toBeUndefined();
 
-    expect(sink.openDescriptorCount).toBe(0);
     expect(sink.inFlight.writes).toBe(0);
-    expect(warnings.filter((w) => w.includes('EIO')).length).toBe(1);
   });
 
   it('counts and warns a record that arrives after disposal began (FR-003)', async () => {
-    const sink = makeSink(countingAccessor());
+    const sink = makeSink();
     sink.record({ runId: 'run-1', phase: 'implement', stream: 'stdout', line: 'first' });
     await sink.flushPendingWrites();
     const before = sink.droppedForBackpressure;
 
     // Not awaited: the `closed` flag must be set synchronously, before the
     // first await inside the disposal, or a line racing shutdown is accepted
-    // into a chain nothing will drain.
+    // into work nothing will drain.
     const closing = sink.flushAndDispose();
     sink.record({ runId: 'run-1', phase: 'implement', stream: 'stdout', line: 'too late' });
     sink.record({ runId: 'run-1', phase: 'implement', stream: 'stdout', line: 'also late' });
@@ -1067,11 +547,10 @@ describe('CliTransportSink — the disposal it never had (FR-R3-137)', () => {
     const dropped = sink.droppedForBackpressure;
     expect(dropped.lines).toBe(before.lines + 2);
     expect(dropped.bytes).toBeGreaterThan(before.bytes);
-    expect(
-      warnings.filter((w) => w.includes('sink-closed')).length,
-      'once per path, not once per line'
-    ).toBe(1);
-    expect(sink.openDescriptorCount).toBe(0);
+    expect(warnings.filter((w) => w.includes('sink-closed')).length, 'once, not once per line').toBe(1);
+    expect(router.routed.map((record) => record.line).join(''), 'nothing late reached the router').not.toContain(
+      'too late'
+    );
   });
 
   it('reaches the redactor before it refuses a post-disposal line (FR-003, FR-R3-048)', async () => {
@@ -1080,7 +559,7 @@ describe('CliTransportSink — the disposal it never had (FR-R3-137)', () => {
     // -block state machine never sees — and a BEGIN it misses leaves the
     // redactor open over every body line that follows.
     const seen: string[] = [];
-    const sink = makeSink(countingAccessor(), (line) => {
+    const sink = makeSink((line) => {
       seen.push(line);
       return line;
     });
@@ -1093,40 +572,11 @@ describe('CliTransportSink — the disposal it never had (FR-R3-137)', () => {
   });
 
   it('closes anyway when the grace expires, counting the abandoned bytes once (FR-004, FR-005)', async () => {
-    // One real descriptor open on path A, one write that will never settle on
-    // path B. The hang is driven through `stat`, which `seedBytes` calls once
-    // per path — the only seam that can stall a write without also preventing
-    // the descriptor this case needs held.
-    let target = livePath();
-    const hung = new Set<string>();
-    const sink = track(new CliTransportSink({
-      settings: {
-        read: (): CliTransportSettings => ({
-          root: workspaceRoot,
-          path: target,
-          maxBytes: CLI_TRANSPORT_MAX_BYTES,
-          maxGenerations: CLI_TRANSPORT_MAX_GENERATIONS
-        })
-      },
-      sanitize: (line) => line,
-      logger,
-      now: () => new Date('2026-05-10T12:00:00.000Z'),
-      drainGraceMs: 25,
-      stat: async (candidate: string) => {
-        if (hung.has(candidate)) return new Promise<{ size: number }>(() => undefined);
-        return { size: 0 };
-      }
-    }));
+    // A write that never settles: the router's route promise is held open forever.
+    router.gate = new Promise<void>(() => undefined);
+    const sink = makeSink((line) => line, { drainGraceMs: 25 });
 
-    sink.record({ runId: 'run-1', phase: 'implement', stream: 'stdout', line: 'landed' });
-    await sink.flushPendingWrites();
-    expect(sink.openDescriptorCount).toBe(1);
-
-    const second = path.join(workspaceRoot, CLI_TRANSPORT_DIRECTORY, 'other.log');
-    hung.add(second);
-    target = second;
-    const stranded = 'never written';
-    sink.record({ runId: 'run-1', phase: 'implement', stream: 'stdout', line: stranded });
+    sink.record({ runId: 'run-1', phase: 'implement', stream: 'stdout', line: 'never written' });
     expect(sink.inFlight.writes, 'the fixture must leave a write in flight').toBe(1);
     const abandoned = sink.inFlight.bytes;
     expect(abandoned).toBeGreaterThan(0);
@@ -1134,9 +584,9 @@ describe('CliTransportSink — the disposal it never had (FR-R3-137)', () => {
     const before = sink.droppedForBackpressure;
     await sink.flushAndDispose();
 
-    // The descriptor is gone even though the drain never finished: an unbounded
+    // The router is released even though the drain never finished: an unbounded
     // wait for a stalled disk is a host that will not shut down.
-    expect(sink.openDescriptorCount).toBe(0);
+    expect(router.disposals).toBe(1);
     const dropped = sink.droppedForBackpressure;
     expect(dropped.lines).toBe(before.lines + 1);
     expect(dropped.bytes).toBe(before.bytes + abandoned);
@@ -1144,30 +594,8 @@ describe('CliTransportSink — the disposal it never had (FR-R3-137)', () => {
   });
 
   it('does not double-count the abandoned bytes on a second call (FR-002, FR-004)', async () => {
-    let target = livePath();
-    const hung = new Set<string>();
-    const sink = track(new CliTransportSink({
-      settings: {
-        read: (): CliTransportSettings => ({
-          root: workspaceRoot,
-          path: target,
-          maxBytes: CLI_TRANSPORT_MAX_BYTES,
-          maxGenerations: CLI_TRANSPORT_MAX_GENERATIONS
-        })
-      },
-      sanitize: (line) => line,
-      logger,
-      now: () => new Date('2026-05-10T12:00:00.000Z'),
-      drainGraceMs: 25,
-      stat: async (candidate: string) => {
-        if (hung.has(candidate)) return new Promise<{ size: number }>(() => undefined);
-        return { size: 0 };
-      }
-    }));
-
-    const second = path.join(workspaceRoot, CLI_TRANSPORT_DIRECTORY, 'other.log');
-    hung.add(second);
-    target = second;
+    router.gate = new Promise<void>(() => undefined);
+    const sink = makeSink((line) => line, { drainGraceMs: 25 });
     sink.record({ runId: 'run-1', phase: 'implement', stream: 'stdout', line: 'stranded' });
 
     await sink.flushAndDispose();
@@ -1177,52 +605,145 @@ describe('CliTransportSink — the disposal it never had (FR-R3-137)', () => {
 
     expect(sink.droppedForBackpressure).toEqual(afterFirst);
     expect(warnings.filter((w) => w.includes('drain-incomplete')).length).toBe(1);
+    expect(router.disposals).toBe(1);
   });
 
-  it('opens nothing for a write that resumes after the close sweep (FR-005)', async () => {
-    // The expiry path's tail, and the one case the two above cannot reach: they
-    // stall `stat` forever, so the stranded write never resumes. The grace
-    // bounds the WAIT, not the write. A write stalled past it does resume
-    // eventually, and if it can still acquire an append handle at that point it
-    // opens one AFTER the last close sweep — with `flushAndDispose()` memoized,
-    // nothing is left to close it. That is precisely the GC finalizer this item
-    // removed, reintroduced on the timeout path.
-    let release = (): void => undefined;
-    const resumed = new Promise<void>((resolve) => {
-      release = () => resolve();
-    });
-    let stalling = true;
-    const sink = track(new CliTransportSink({
-      settings: countingAccessor(),
-      sanitize: (line) => line,
-      logger,
-      now: () => new Date('2026-05-10T12:00:00.000Z'),
-      drainGraceMs: 25,
-      // Released by the test, not by a timer: the resumption has to land after
-      // the drain has returned, and a race decided by a sleep is not a proof.
-      stat: async () => {
-        if (stalling) {
-          stalling = false;
-          await resumed;
-        }
-        return { size: 0 };
-      }
-    }));
+  it('opens nothing for a record that reaches the router after the release (FR-005)', async () => {
+    // The expiry path's tail. The grace bounds the WAIT, not the write: a write stalled past it does
+    // resume eventually, and if it could still acquire an append descriptor at that point it would
+    // open one AFTER the release, with `flushAndDispose()` memoized and nothing left to close it. That
+    // is the GC finalizer this item removed, reintroduced on the timeout path. The router refuses.
+    harness = await createTransportHarness({ setting: 'on' });
+    await harness.sink.flushAndDispose();
+    expect(harness.sink.openDescriptorCount, 'the release ran, and it held nothing').toBe(0);
 
-    sink.record({ runId: 'run-1', phase: 'implement', stream: 'stdout', line: 'slow disk' });
-    expect(sink.inFlight.writes, 'the fixture must leave a write in flight').toBe(1);
+    // A record queued behind the stall reaches the router after the release.
+    await harness.router.route(
+      { runId: 'run-late', phase: 'implement', stream: 'stdout', line: 'slow disk' },
+      '2026-05-10T12:00:00.000Z\trun-late\timplement\tstdout\tslow disk\n'
+    );
 
-    await sink.flushAndDispose();
-    expect(sink.openDescriptorCount, 'the sweep ran, and it held nothing').toBe(0);
+    expect(harness.router.openDescriptorCount, 'no owner is left to close a descriptor opened here').toBe(0);
+    await expect(fs.stat(harness.runFile('run-late'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+});
 
-    // The disk comes back after the host has finished shutting down.
-    release();
-    await sink.flushPendingWrites();
+// Feature 251 (FR-R4-F04, contract T5; FR-008, US1-6) — what the sink's owner-only rule becomes now that
+// records go to per-Run files and the shared `.schegent/cli-transport.log` is never written again.
+//
+// An earlier release left the shared file and its generations at the mode the umask gave them (`0644`).
+// Nothing writes them any more, so nothing would ever narrow them if the router did not: it narrows them
+// where they lie, once per host, on the first record and on a maintenance pass, keeping every byte. A new
+// Run file is created `0600` in `0700` directories.
+describe('CliTransportSink — legacy generations and the Run file (feature 251, T5)', () => {
+  const posixOnly = process.platform === 'win32' ? it.skip : it;
+  const modeOf = async (p: string): Promise<number> => (await fs.lstat(p)).mode & 0o777;
+  let harness: TransportHarness;
 
-    expect(
-      sink.openDescriptorCount,
-      'no owner is left to close a descriptor opened here'
-    ).toBe(0);
-    expect(warnings.filter((w) => w.includes('drain-incomplete')).length).toBe(1);
+  async function leaveWidenedLegacy(root: string): Promise<readonly string[]> {
+    const directory = path.join(root, CLI_TRANSPORT_DIRECTORY);
+    await fs.mkdir(directory, { recursive: true, mode: 0o755 });
+    const files = [
+      path.join(directory, CLI_TRANSPORT_FILE_NAME),
+      path.join(directory, `${CLI_TRANSPORT_FILE_NAME}.1`)
+    ];
+    for (const file of files) {
+      await fs.writeFile(file, `earlier ${path.basename(file)}\n`, 'utf8');
+      await fs.chmod(file, 0o644);
+    }
+    return files;
+  }
+
+  afterEach(async () => {
+    await harness.dispose();
+  });
+
+  posixOnly('narrows an existing 0644 shared file and its generation by the first record, bytes intact', async () => {
+    harness = await createTransportHarness({ setting: 'on' });
+    const files = await leaveWidenedLegacy(harness.workspaceRoot);
+    const before = await Promise.all(files.map((file) => fs.readFile(file)));
+
+    harness.record('run-1', 'first record');
+    await harness.flush();
+
+    for (const [index, file] of files.entries()) {
+      expect(await modeOf(file), path.basename(file)).toBe(0o600);
+      expect((await fs.readFile(file)).equals(before[index]!), `${path.basename(file)} bytes`).toBe(true);
+    }
+    // The shared file is narrowed, never written: its bytes are exactly what the earlier release left.
+    expect(await fs.readFile(files[0]!, 'utf8')).toBe(`earlier ${CLI_TRANSPORT_FILE_NAME}\n`);
+  });
+
+  posixOnly('narrows them by a maintenance pass when no record has arrived', async () => {
+    harness = await createTransportHarness({ setting: 'off' });
+    const files = await leaveWidenedLegacy(harness.workspaceRoot);
+    const before = await Promise.all(files.map((file) => fs.readFile(file)));
+
+    await harness.router.runPass(new Set());
+
+    for (const [index, file] of files.entries()) {
+      expect(await modeOf(file), path.basename(file)).toBe(0o600);
+      expect((await fs.readFile(file)).equals(before[index]!), `${path.basename(file)} bytes`).toBe(true);
+    }
+  });
+
+  posixOnly('creates a new Run file 0600 in 0700 directories', async () => {
+    harness = await createTransportHarness({ setting: 'on' });
+    harness.record('run-1', 'a record');
+    await harness.flush();
+
+    expect(await modeOf(harness.runFile('run-1'))).toBe(0o600);
+    expect(await modeOf(path.dirname(harness.runFile('run-1')))).toBe(0o700);
+    expect(await modeOf(path.join(harness.workspaceRoot, CLI_TRANSPORT_DIRECTORY))).toBe(0o700);
+  });
+
+  posixOnly('never narrows through a symbolic link a generation slot holds', async () => {
+    harness = await createTransportHarness({ setting: 'on' });
+    const outside = await fs.mkdtemp(path.join(harness.tempRoot, 'outside-'));
+    const target = path.join(outside, 'not-evidence.txt');
+    await fs.writeFile(target, 'someone else\n', 'utf8');
+    await fs.chmod(target, 0o644);
+    await fs.mkdir(path.join(harness.workspaceRoot, CLI_TRANSPORT_DIRECTORY), { recursive: true });
+    await fs.symlink(target, path.join(harness.workspaceRoot, CLI_TRANSPORT_DIRECTORY, `${CLI_TRANSPORT_FILE_NAME}.1`));
+
+    harness.record('run-1', 'still captured');
+    await harness.flush();
+
+    expect(await modeOf(target), 'the link target is untouched').toBe(0o644);
+    expect(await fs.readFile(harness.runFile('run-1'), 'utf8'), 'capture carries on').toContain('still captured');
+  });
+
+  posixOnly('says what it narrowed, once, without naming the path', async () => {
+    harness = await createTransportHarness({ setting: 'on' });
+    const files = await leaveWidenedLegacy(harness.workspaceRoot);
+    await fs.chmod(path.join(harness.workspaceRoot, CLI_TRANSPORT_DIRECTORY), 0o755);
+    for (let index = 0; index < 3; index += 1) {
+      harness.record('run-1', `line-${index}`);
+      await harness.flush();
+    }
+
+    const narrowing = harness.warnings.filter((w) => w.includes('owner-only'));
+    expect(narrowing, 'one line per kind of change, not one per file or per record').toEqual([
+      expect.stringMatching(/file.*\b644\b/),
+      expect.stringMatching(/directory.*\b755\b/)
+    ]);
+    for (const warning of narrowing) {
+      expect(warning, 'path-free').not.toContain(harness.workspaceRoot);
+      expect(warning).not.toContain(path.basename(files[0]!));
+    }
+  });
+
+  posixOnly('refuses a Run directory symlinked out of the workspace, writes nothing there, and warns once', async () => {
+    harness = await createTransportHarness({ setting: 'on' });
+    const outside = await fs.mkdtemp(path.join(harness.tempRoot, 'outside-'));
+    await fs.mkdir(path.join(harness.workspaceRoot, CLI_TRANSPORT_DIRECTORY, 'sessions'), { recursive: true });
+    await fs.symlink(outside, path.join(harness.workspaceRoot, CLI_TRANSPORT_DIRECTORY, 'sessions', 'run-1'));
+
+    for (let index = 0; index < 5; index += 1) harness.record('run-1', 'escape');
+    await harness.flush();
+
+    expect(await fs.readdir(outside), 'nothing was written through the link').toEqual([]);
+    expect(harness.warnings.filter((w) => w.includes('could not record CLI output')), 'one WARN for five lines').toHaveLength(1);
+    expect(harness.warnings[0], 'a path outside the root is the string that must not reach a log').not.toContain(outside);
   });
 });

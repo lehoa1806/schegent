@@ -78,15 +78,24 @@ describe('FR-R3-085 — evidence delete', () => {
   it('reports what it could NOT remove rather than reporting silent success', async () => {
     // A partial delete that reports success is how an operator comes to believe
     // evidence is gone when it is not — the worst outcome available to a privacy
-    // control. Simulated by making the leaf a directory, which `rm` without
-    // `recursive` refuses.
-    await fsp.mkdir(path.join(workspace, '.schegent', 'sessions', `dir-${RUN}.log`), { recursive: true });
-    const result = await deleteRunEvidence(workspace, RUN, idle);
-    expect(result.outcome).toBe('completed');
-    if (result.outcome !== 'completed') throw new Error('unreachable');
-    expect(result.removed.length).toBeGreaterThan(0);
-    expect(result.retained.length).toBeGreaterThan(0);
-    for (const entry of result.retained) expect(entry.reason.length).toBeGreaterThan(2);
+    // control. FR-R4-F04 (TA8): this was simulated by making the leaf an (empty) directory, which `rm`
+    // without `recursive` refused with ERR_EISDIR; emptied directories are removed now, so the
+    // simulation is a directory the owner cannot write into, which no removal can empty.
+    if (process.platform === 'win32' || process.getuid?.() === 0) return;
+    const locked = path.join(workspace, '.schegent', 'sessions', `dir-${RUN}`);
+    await fsp.mkdir(locked, { recursive: true });
+    await fsp.writeFile(path.join(locked, 'inside.log'), 'x\n');
+    await fsp.chmod(locked, 0o500);
+    try {
+      const result = await deleteRunEvidence(workspace, RUN, idle);
+      expect(result.outcome).toBe('completed');
+      if (result.outcome !== 'completed') throw new Error('unreachable');
+      expect(result.removed.length).toBeGreaterThan(0);
+      expect(result.retained.length).toBeGreaterThan(0);
+      for (const entry of result.retained) expect(entry.reason.length).toBeGreaterThan(2);
+    } finally {
+      await fsp.chmod(locked, 0o700);
+    }
   });
 
   it('refuses when the run has no evidence at all', async () => {
@@ -170,5 +179,204 @@ describe('FR-R4-F15 K6.9 — Delete Evidence removes one Run\'s failure records'
     expect(result).toMatchObject({ outcome: 'refused', reason: 'active-writer' });
     expect((await fsp.readdir(recordsDir())).sort()).toEqual(before);
     expect(await fsp.readdir(path.join(workspace, '.schegent', 'sessions'))).toContain(`raw-${RUN}.log`);
+  });
+});
+
+
+// FR-R4-F04 (feature 251, contract T7; SC-004, SC-005, FR-010 to FR-013) — deletion removes the
+// directories it names, the Run's private checkpoint, keeps Run history, and lists every kept store.
+//
+// What it pins: nested diagnostics and their emptied directories go (the filing's finding was that the
+// non-recursive `rm` left every one of them with ERR_EISDIR), the Run's checkpoint under private storage
+// goes with them, a sibling Run's files and every audit byte are identical before and after, an active
+// Run or a spool entry removes nothing (the checkpoint included), a link or an unwritable directory is
+// retained with its reason, `.schegent/history/<runId>.txt` stays and is said to, and the kept stores are
+// listed, the legacy transport with the date it ages out exactly when one exists.
+describe('FR-R4-F04 T7 — deletion removes directories and the checkpoint, and names what it keeps', () => {
+  const OTHER = '9b2e5f10-1c2d-4e3f-8a4b-5c6d7e8f9a0b';
+  const posixOnly = process.platform === 'win32' || process.getuid?.() === 0 ? it.skip : it;
+  const sessions = (): string => path.join(workspace, '.schegent', 'sessions');
+  let storage: string;
+
+  const checkpointDir = (runId: string): string => path.join(storage, 'checkpoints', runId.replace(/[^a-zA-Z0-9_-]/g, '_'));
+  const exists = async (target: string): Promise<boolean> =>
+    fsp.lstat(target).then(
+      () => true,
+      () => false
+    );
+
+  async function seedNested(runId: string): Promise<void> {
+    const iteration = path.join(sessions(), runId, 'diagnostics', 'pipe', 'phase', 'iter-1');
+    await fsp.mkdir(iteration, { recursive: true });
+    await fsp.writeFile(path.join(iteration, 'stream.jsonl'), '{"a":1}\n');
+    await fsp.writeFile(path.join(iteration, 'debug.json'), '{}\n');
+    await fsp.writeFile(path.join(sessions(), runId, 'transport.log'), 'a transport record\n');
+  }
+
+  async function seedCheckpoint(runId: string): Promise<void> {
+    await fsp.mkdir(checkpointDir(runId), { recursive: true });
+    await fsp.writeFile(path.join(checkpointDir(runId), '1-implement.patch'), 'diff --git a b\n');
+    await fsp.writeFile(path.join(checkpointDir(runId), '1-implement.json'), '{}\n');
+  }
+
+  const deps = (extra: Partial<Parameters<typeof deleteRunEvidence>[2]> = {}): Parameters<typeof deleteRunEvidence>[2] => ({
+    isRunActive: () => false,
+    checkpointRoot: storage,
+    legacyAgesOutBy: () => null,
+    ...extra
+  });
+
+  beforeEach(async () => {
+    storage = mkdtempSync(path.join(tmpdir(), 'evidence-delete-storage-'));
+  });
+
+  afterEach(async () => {
+    await fsp.rm(storage, { recursive: true, force: true });
+  });
+
+  it('removes nested diagnostics, emptied directories and the private checkpoint, with no retained directory', async () => {
+    await seedNested(RUN);
+    await seedCheckpoint(RUN);
+
+    const result = await deleteRunEvidence(workspace, RUN, deps());
+
+    expect(result.outcome).toBe('completed');
+    if (result.outcome !== 'completed') throw new Error('unreachable');
+    expect(result.retained.filter((entry) => entry.reason !== 'run-history')).toEqual([]);
+    expect(result.checkpoint).toBe('removed');
+    expect(await exists(path.join(sessions(), RUN)), 'the session directory is gone, not ERR_EISDIR').toBe(false);
+    expect(await exists(checkpointDir(RUN)), 'the private checkpoint is gone').toBe(false);
+    expect(result.removed).toContain(path.posix.join('.schegent', 'sessions', RUN));
+    // The control: the raw transcript beside them was removed too, so this is the whole Run.
+    expect(await exists(path.join(sessions(), `raw-${RUN}.log`))).toBe(false);
+  });
+
+  it("leaves a sibling Run's files and every audit.log byte identical", async () => {
+    await seedNested(RUN);
+    await seedNested(OTHER);
+    await seedCheckpoint(OTHER);
+    await fsp.writeFile(path.join(workspace, '.schegent', 'audit.log'), 'chain-bytes\n');
+    await fsp.writeFile(path.join(workspace, '.schegent', 'audit.log.20260101T000000.000Z'), 'older chain\n');
+    const before = new Map<string, string>();
+    for (const rel of [
+      ['sessions', OTHER, 'transport.log'],
+      ['sessions', OTHER, 'diagnostics', 'pipe', 'phase', 'iter-1', 'stream.jsonl'],
+      ['audit.log'],
+      ['audit.log.20260101T000000.000Z']
+    ]) {
+      const file = path.join(workspace, '.schegent', ...rel);
+      before.set(file, await fsp.readFile(file, 'utf8'));
+    }
+
+    await deleteRunEvidence(workspace, RUN, deps());
+
+    for (const [file, content] of before) expect(await fsp.readFile(file, 'utf8'), file).toBe(content);
+    expect(await exists(checkpointDir(OTHER)), "the other Run's checkpoint is untouched").toBe(true);
+  });
+
+  it.each([
+    ['an active Run', () => deps({ isRunActive: () => true })],
+    ['a mid-write spool entry', () => deps()]
+  ])('removes nothing, the checkpoint included, for %s', async (label, makeDeps) => {
+    await seedNested(RUN);
+    await seedCheckpoint(RUN);
+    if (label === 'a mid-write spool entry') {
+      await fsp.mkdir(path.join(sessions(), '.pending'), { recursive: true });
+      await fsp.writeFile(path.join(sessions(), '.pending', `raw-${RUN}.log`), 'mid\n');
+    }
+
+    const result = await deleteRunEvidence(workspace, RUN, makeDeps());
+
+    expect(result.outcome).toBe('refused');
+    expect(await exists(checkpointDir(RUN)), 'a refusal removes no checkpoint').toBe(true);
+    expect(await exists(path.join(sessions(), RUN, 'transport.log'))).toBe(true);
+  });
+
+  it('refuses on a lock marker, and the checkpoint stays', async () => {
+    await seedCheckpoint(RUN);
+    await fsp.writeFile(path.join(sessions(), `${RUN}.lock`), 'held\n');
+
+    expect((await deleteRunEvidence(workspace, RUN, deps())).outcome).toBe('refused');
+    expect(await exists(checkpointDir(RUN))).toBe(true);
+  });
+
+  posixOnly('retains a symlinked checkpoint as `symlink`, and never follows it', async () => {
+    const outside = mkdtempSync(path.join(tmpdir(), 'evidence-delete-outside-'));
+    try {
+      await fsp.writeFile(path.join(outside, 'keep.txt'), 'not evidence\n');
+      await fsp.mkdir(path.join(storage, 'checkpoints'), { recursive: true });
+      await fsp.symlink(outside, checkpointDir(RUN));
+
+      const result = await deleteRunEvidence(workspace, RUN, deps());
+
+      expect(result.outcome).toBe('completed');
+      if (result.outcome !== 'completed') throw new Error('unreachable');
+      expect(result.checkpoint).toBe('retained');
+      expect(result.retained.some((entry) => entry.reason === 'symlink')).toBe(true);
+      expect(await fsp.readFile(path.join(outside, 'keep.txt'), 'utf8'), 'the link target is untouched').toBe('not evidence\n');
+    } finally {
+      await fsp.rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  posixOnly('retains an unwritable directory with its errno code and the directory above it as not-empty', async () => {
+    const locked = path.join(sessions(), RUN);
+    await fsp.mkdir(locked, { recursive: true });
+    await fsp.writeFile(path.join(locked, 'inside.log'), 'x\n');
+    await fsp.chmod(locked, 0o500);
+    try {
+      const result = await deleteRunEvidence(workspace, RUN, deps());
+
+      expect(result.outcome).toBe('completed');
+      if (result.outcome !== 'completed') throw new Error('unreachable');
+      const reasons = Object.fromEntries(result.retained.map((entry) => [entry.path, entry.reason]));
+      expect(reasons[path.posix.join('.schegent', 'sessions', RUN, 'inside.log')]).toMatch(/^errno:E(ACCES|PERM)$/);
+      expect(reasons[path.posix.join('.schegent', 'sessions', RUN)]).toBe('not-empty');
+    } finally {
+      await fsp.chmod(locked, 0o700);
+    }
+  });
+
+  it('keeps Run history: the description is not a target, and is reported as run-history', async () => {
+    await seedNested(RUN);
+    const history = path.join(workspace, '.schegent', 'history');
+    await fsp.mkdir(history, { recursive: true });
+    await fsp.writeFile(path.join(history, `${RUN}.txt`), 'the full description\n');
+
+    const result = await deleteRunEvidence(workspace, RUN, deps());
+
+    expect(result.outcome).toBe('completed');
+    if (result.outcome !== 'completed') throw new Error('unreachable');
+    expect(result.retained).toContainEqual({ path: path.posix.join('.schegent', 'history', `${RUN}.txt`), reason: 'run-history' });
+    expect(await fsp.readFile(path.join(history, `${RUN}.txt`), 'utf8')).toBe('the full description\n');
+  });
+
+  it('lists the kept stores, and the legacy transport with its date exactly when one exists', async () => {
+    await seedNested(RUN);
+    const without = await deleteRunEvidence(workspace, RUN, deps({ legacyAgesOutBy: () => null }));
+    expect(without.outcome).toBe('completed');
+    if (without.outcome !== 'completed') throw new Error('unreachable');
+    expect(without.keptStores.map((kept) => kept.store)).toEqual(['audit-log', 'runtime-log', 'metrics-rollup', 'run-history']);
+
+    await seedNested(RUN);
+    const aged = '2026-12-01T00:00:00.000Z';
+    const withLegacy = await deleteRunEvidence(workspace, RUN, deps({ legacyAgesOutBy: () => aged }));
+    expect(withLegacy.outcome).toBe('completed');
+    if (withLegacy.outcome !== 'completed') throw new Error('unreachable');
+    expect(withLegacy.keptStores).toContainEqual({ store: 'legacy-transport', agesOutBy: aged });
+    expect(withLegacy.keptStores).toHaveLength(5);
+  });
+
+  it('reports the checkpoint as absent when the Run never took one', async () => {
+    await seedNested(RUN);
+    const result = await deleteRunEvidence(workspace, RUN, deps());
+    expect(result.outcome === 'completed' && result.checkpoint).toBe('absent');
+  });
+
+  it('works for a caller that passes no private storage, and reports no checkpoint step', async () => {
+    const result = await deleteRunEvidence(workspace, RUN, idle);
+    expect(result.outcome).toBe('completed');
+    if (result.outcome !== 'completed') throw new Error('unreachable');
+    expect(result.checkpoint).toBe('absent');
   });
 });

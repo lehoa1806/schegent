@@ -730,6 +730,8 @@ export interface GeneralSettings {
   readonly sessionRetentionMaxAgeDays: number;
   readonly sessionRetentionMaxBytes: number;
   readonly rawTranscriptMode: 'always' | 'errors-only' | 'off';
+  // FR-R4-F04 (FR-001) — `inherit` is the default and follows `rawTranscriptMode`.
+  readonly transportCaptureMode: 'inherit' | 'off' | 'errors-only' | 'on';
   /**
    * FR-R3-051 (M-06) — the webview had no notion of this setting at all: absent
    * from this type, from the idle snapshot and from `scopes`, while the manifest,
@@ -781,6 +783,7 @@ export interface GeneralSettings {
     readonly sessionRetentionMaxAgeDays: SettingScope;
     readonly sessionRetentionMaxBytes: SettingScope;
     readonly rawTranscriptMode: SettingScope;
+    readonly transportCaptureMode: SettingScope;
     readonly retryForceContinueOnCap: SettingScope;
     readonly cliInheritEnvironment: SettingScope;
     readonly cliEnvironmentMode: SettingScope;
@@ -842,6 +845,7 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   runtimeLogMaxGenerations: 3,
   sessionRetentionMaxAgeDays: 30,
   rawTranscriptMode: 'errors-only',
+  transportCaptureMode: 'inherit',
   retryForceContinueOnCap: false,
   sessionRetentionMaxBytes: 512 * 1024 * 1024,
   // FR-R3-143 (T021) — manifest defaults, matching the host idle snapshot.
@@ -881,6 +885,7 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
     sessionRetentionMaxAgeDays: 'default',
     sessionRetentionMaxBytes: 'default',
     rawTranscriptMode: 'default',
+    transportCaptureMode: 'default',
     retryForceContinueOnCap: 'default',
     cliInheritEnvironment: 'default',
     cliEnvironmentMode: 'default',
@@ -1027,6 +1032,16 @@ export interface QueueRuntime {
   readonly scheduledStartSource: ScheduledStartSource | null;
 }
 
+/**
+ * FR-R4-F04 (FR-003) — the general settings the host sends: the typed read plus the transport usage line's data,
+ * absent until the host has measured. Declared beside the interface and not inside it, as the host does
+ * (`GeneralSettingsProjection` in `src/ui/sidebar/snapshot.ts`), so `snapshot-mirror-structural-parity.test.ts`
+ * reads `transportUsage` as a field of the settings and not as a top-level snapshot field.
+ */
+export type GeneralSettingsProjection = GeneralSettings & {
+  readonly transportUsage?: import('../../../src/contracts/sidebar-ipc/transport-usage.js').TransportUsage;
+};
+
 export interface WorkflowSnapshot {
   readonly schemaVersion: 4;
   readonly isPrimary: boolean;
@@ -1084,7 +1099,7 @@ export interface WorkflowSnapshot {
    * `KEY_SPECS`. Optional for legacy-tolerance: an older host bundle may not
    * include it; the webview must default to `IDLE_GENERAL_SETTINGS` in that case.
    */
-  readonly generalSettings?: GeneralSettings;
+  readonly generalSettings?: GeneralSettingsProjection;
   /**
    * FR-R3-145 (T1572) — the two queue settings, projected from the workspace
    * memento the drain enforces against rather than from the configuration

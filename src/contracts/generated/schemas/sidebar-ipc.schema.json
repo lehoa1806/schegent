@@ -219,7 +219,7 @@
         {
           "name": "generalSettings",
           "optional": false,
-          "type": "GeneralSettings"
+          "type": "GeneralSettingsProjection"
         },
         {
           "name": "queueSettings",

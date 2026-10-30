@@ -71,6 +71,13 @@ Retention is bounded — checkpoints are pruned by age and count like other evid
 checkpoint is not a durable record and must not be treated as one. The audit log is the durable
 record.
 
+**Deleting a Run's evidence removes its checkpoint.** `Schegent: Delete Run Evidence` removes the Run's
+directory under `<globalStorage>/checkpoints/` together with the workspace evidence. That holds for Runs that
+have finished and whose evidence is in this workspace: the command refuses a Run that is still executing, and
+refuses a Run with no evidence in this workspace without touching its checkpoint. It reports the checkpoint
+as removed, absent, or retained with a reason (a link in the directory is never followed, and one that cannot
+be removed is left and named).
+
 ### Restoring a checkpoint by hand
 
 A checkpoint is two files in `<globalStorage>/checkpoints/<runId>/`: `<prefix>.patch` and

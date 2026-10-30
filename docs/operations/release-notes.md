@@ -9,6 +9,43 @@ This file is the release workflow's stable pointer for changes that affect opera
 Recorded as they land, so the first release note is assembled from evidence rather than
 from memory.
 
+### Controllable evidence capture and lifecycle (FR-R4-F04, 2026-10-31)
+
+What Schegent keeps of a Run, for how long, and how an operator takes it out or removes it were not under
+the operator's control, and the exports left no trace. This changes the capture default, makes deletion
+complete, audits exports, replaces the account name in audit rows, and adds a bundle for asking for help.
+
+- **CLI transport is per Run, bounded, and chosen.** The shared `.schegent/cli-transport.log` is no longer
+  written. Each Run's stream lines go to `.schegent/sessions/<runId>/transport.log`, kept according to the new
+  `schegent.logging.transportCaptureMode` (`inherit`, `off`, `errors-only`, `on`; the default `inherit`
+  follows the raw transcript mode, so `errors-only` keeps only a failed or canceled Run's lines). A file is at
+  most 5 MiB and the workspace total 20 MiB; an `errors-only` Run waits in a stage in the OS temp area
+  until it ends. Files an earlier release left expire whole at the session retention age. The privacy
+  profiles set the mode and say so.
+- **Delete Run Evidence now removes directories and the checkpoint.** It removes the Run's session directory
+  (it used to leave the emptied directories), its failure records and its private recovery checkpoint, for a
+  finished Run whose evidence is in this workspace. It keeps the shared audit log, the runtime log, the
+  metrics rollup, Run history and any legacy transport file, and says so and when the legacy file ages out.
+- **Exports are owner-only and audited.** Export Run Evidence and Export Metadata-Only Audit now record one
+  `evidence-exported` row (a count, never a path), refuse a destination that is not a local file or that
+  resolves into `.schegent/`, start their dialogs in your home directory and write `0600`. They are now
+  mutating, owner-only commands, so an untrusted window or one that does not own the workspace refuses them;
+  FR-R3-136 had left them read-only.
+- **Audit rows carry a pseudonym, not your account name.** New rows carry a random `pseudonym-` label kept in
+  the extension's private workspace storage; `Schegent: Reset Operator Pseudonym` replaces it and records
+  that it did, without either value. Older rows and stored overrides may still hold an OS username and are
+  not rewritten. An audit file's age is now measured from its oldest usable row, so an existing log whose oldest
+  row is older than `schegent.audit.rotation.maxAgeDays` rotates at the first append after you upgrade (its rows
+  are kept, in an archive).
+- **A diagnostics bundle for asking for help.** `Schegent: Create Diagnostics Bundle` builds one JSON file for
+  one Run you pick, up to 10 MiB, showing every included and omitted item first. Raw conversation (the
+  transcript, the transport and the verbose diagnostics) is left out unless you include it after a warning.
+- **An hourly retention pass, Run context in the runtime log, and a complete inventory.** An idle owner window
+  now removes expired inactive evidence once an hour; runtime-log lines for a Run carry its `runId` and
+  `phase` (not yet the backend runners' own lines); and the retention disclosure lists every store with its
+  bounds, how it is swept and what Delete and Export do with it. It also now says that the CLI sends the
+  conversation to the model vendor whatever these settings say.
+
 ### Audit continuity and loss detection (FR-R4-F03, 2026-10-31)
 
 The audit log's hash chain could be broken by nothing but ordinary operation, and could not notice the

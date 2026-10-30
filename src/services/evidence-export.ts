@@ -24,7 +24,9 @@ import { createHash } from 'node:crypto';
 import { promises as fsp } from 'node:fs';
 import * as path from 'node:path';
 import { SanitizedLogger } from '../lib/logger';
-import { resolveContainedForWrite, resolveContainedTarget } from '../lib/path-containment';
+import { resolveContainedForWrite, resolveContainedTarget, resolveWritableAnchor } from '../lib/path-containment';
+import { ensureDirWithinRoot, openWithinRoot } from '../lib/safe-open';
+import { classifyAuditGeneration, type AuditGenerationClass } from '../audit/audit-generation-classify';
 
 /** One file inside the export. */
 export interface ManifestEntry {
@@ -48,7 +50,24 @@ export interface ExportManifest {
   /** What was left out, and why. Never silent. */
   readonly deliberateOmissions: readonly { readonly path: string; readonly reason: string }[];
   readonly chain: readonly ChainLink[];
+  /**
+   * FR-R4-F04 (FR-025, E8) — what the audit history in this export is. The audit log is shared across
+   * Runs and is exported whole when the Run has evidence of its own; until now nothing a recipient could
+   * read said so (the only shared-log text was an omission reason that can never reach a manifest). `null`
+   * when no audit file is included. Additive: `verifyExport` never reads it.
+   */
+  readonly sharedAuditHistory: {
+    readonly statement: string;
+    readonly files: readonly { readonly path: string; readonly content: AuditGenerationClass }[];
+  } | null;
 }
+
+/** The sentence that says the audit history is not this Run's alone. Verbatim from data-model §6. */
+export const SHARED_AUDIT_STATEMENT =
+  "The audit history is shared: it holds every Run's metadata, not only this Run's.";
+
+/** The audit files, among the evidence an export includes. Matches `collect`'s own rule for them. */
+const AUDIT_FILE = /(^|\/)audit\.log(\.|$)/;
 
 export type ExportResult =
   | { readonly outcome: 'exported'; readonly directory: string; readonly manifest: ExportManifest }
@@ -190,11 +209,14 @@ export async function exportRunEvidence(
   const chain: ChainLink[] = [];
   let previousDigest: string | null = null;
 
-  try {
-    await fsp.mkdir(destination, { recursive: true, mode: 0o700 });
-  } catch (error) {
-    return { outcome: 'refused', reason: 'write-failed', detail: describe(error) };
+  // FR-R4-F04 (E5) — the destination directory is made through the checked walk, owner-only, beneath its
+  // deepest resolved ancestor, and every output below is opened through the same walk with its mode
+  // declared (`0600`). An existing directory or file is narrowed by the helper; no `chmod` is added.
+  const directory = await prepareDestination(destination);
+  if (directory === null) {
+    return { outcome: 'refused', reason: 'write-failed', detail: 'the destination could not be prepared' };
   }
+  const auditFiles: { path: string; content: AuditGenerationClass }[] = [];
 
   for (const relative of included) {
     const absolute = path.join(workspaceRoot, relative);
@@ -231,11 +253,15 @@ export async function exportRunEvidence(
     // redacted on the way out. More redaction than the product's own set is
     // permitted; less is not.
     const redacted = logger.sanitize(raw);
-    const target = path.join(destination, relative.replaceAll('/', '__'));
+    const name = relative.replaceAll('/', '__');
+    const target = path.join(directory, name);
+    // Classified from the bytes as they are on disk, before redaction: a retired stream row is legacy
+    // content whether or not the redactor changed its text (FR-018, E8).
+    if (AUDIT_FILE.test(relative)) auditFiles.push({ path: name, content: classifyAuditGeneration(raw) });
     // The destination is the operator's chosen export directory, so IT is the
     // root here — an export writes outside the workspace by design. What must
     // not happen is a write escaping the destination through a pre-planted link.
-    const writable = await resolveContainedForWrite(target, [destination]);
+    const writable = await resolveContainedForWrite(target, [directory]);
     if (writable.outcome !== 'contained') {
       return {
         outcome: 'refused',
@@ -243,11 +269,8 @@ export async function exportRunEvidence(
         detail: `${relative}: ${writable.outcome === 'refused' ? writable.reason : writable.outcome}`
       };
     }
-    try {
-      await fsp.writeFile(writable.resolved, redacted, { mode: 0o600 });
-    } catch (error) {
-      return { outcome: 'refused', reason: 'write-failed', detail: describe(error) };
-    }
+    const wrote = await writeOwnerOnly(directory, name, redacted);
+    if (!wrote.ok) return { outcome: 'refused', reason: wrote.reason, detail: wrote.detail };
     const digest = sha256(redacted);
     contents.push({ path: path.basename(target), bytes: Buffer.byteLength(redacted), digest });
     chain.push({ entryIndex: chain.length, digest: sha256(`${previousDigest ?? ''}${digest}`), previousDigest });
@@ -259,23 +282,55 @@ export async function exportRunEvidence(
     createdAt: now().toISOString(),
     contents,
     deliberateOmissions: omitted,
-    chain
+    chain,
+    sharedAuditHistory:
+      auditFiles.length === 0 ? null : { statement: SHARED_AUDIT_STATEMENT, files: auditFiles }
   };
-  try {
-    const manifestPath = await resolveContainedForWrite(
-      path.join(destination, 'manifest.json'),
-      [destination]
-    );
-    if (manifestPath.outcome !== 'contained') {
-      return { outcome: 'refused', reason: 'outside-workspace', detail: 'manifest path not contained' };
-    }
-    await fsp.writeFile(manifestPath.resolved, `${JSON.stringify(manifest, null, 2)}\n`, {
-      mode: 0o600
-    });
-  } catch (error) {
-    return { outcome: 'refused', reason: 'write-failed', detail: describe(error) };
+  const manifestPath = await resolveContainedForWrite(path.join(directory, 'manifest.json'), [directory]);
+  if (manifestPath.outcome !== 'contained') {
+    return { outcome: 'refused', reason: 'outside-workspace', detail: 'manifest path not contained' };
   }
-  return { outcome: 'exported', directory: destination, manifest };
+  const wroteManifest = await writeOwnerOnly(directory, 'manifest.json', `${JSON.stringify(manifest, null, 2)}\n`);
+  if (!wroteManifest.ok) return { outcome: 'refused', reason: wroteManifest.reason, detail: wroteManifest.detail };
+  return { outcome: 'exported', directory, manifest };
+}
+
+/**
+ * Make the destination directory and return its canonical path: the deepest existing ancestor resolved, and
+ * the missing components created `0700` through the checked walk beneath it. `null` if it cannot be made.
+ */
+async function prepareDestination(destination: string): Promise<string | null> {
+  const located = await resolveWritableAnchor(path.resolve(destination));
+  if (located === null) return null;
+  if (located.tail.length > 0) {
+    const made = await ensureDirWithinRoot(located.anchor, located.tail, 0o700);
+    if (made.outcome === 'refused') return null;
+  }
+  return path.join(located.anchor, ...located.tail);
+}
+
+type OwnerOnlyWrite =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: ExportRefusal; readonly detail: string };
+
+/** Write one output `0600` through the checked walk, truncating a file that is already there. */
+async function writeOwnerOnly(directory: string, name: string, text: string): Promise<OwnerOnlyWrite> {
+  const opened = await openWithinRoot(directory, [name], { flags: 'w', fileMode: 0o600 });
+  if (opened.outcome === 'refused') {
+    return {
+      ok: false,
+      reason: opened.reason === 'io-failed' ? 'write-failed' : 'outside-workspace',
+      detail: `${name}: ${opened.reason}`
+    };
+  }
+  try {
+    await opened.handle.write(text, null, 'utf8');
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, reason: 'write-failed', detail: describe(error) };
+  } finally {
+    await opened.handle.close().catch(() => undefined);
+  }
 }
 
 /**

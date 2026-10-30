@@ -60,6 +60,8 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   'session-retention-applied': 'system',
   // Feature 250 — the writer's own record about the history, with no run (system)
   'audit-integrity-condition': 'system',
+  // Feature 251 — the operator's reset of their attribution pseudonym, with no run (system)
+  'operator-pseudonym-reset': 'system',
   // Retry-condition decision (task)
   'phase.retry_evaluated': 'task',
   // Delayed retry (system)
@@ -320,6 +322,7 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'audit-schema-warning':
         case 'session-retention-applied':
         case 'audit-integrity-condition':
+        case 'operator-pseudonym-reset':
         case 'phase.retry_evaluated':
         case 'retry-scheduled':
         case 'retry-manual':

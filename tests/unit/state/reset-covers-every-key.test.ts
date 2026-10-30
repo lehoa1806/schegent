@@ -84,11 +84,16 @@ describe('FR-R3-006 — reset accounts for every state key', () => {
     }
   });
 
-  it('exempts exactly the three keys the design names, and no others', () => {
+  it('exempts exactly the keys the design names, and no others', () => {
     // Pinned rather than derived. Widening the exempt set is the one change that
     // silently shrinks what a reset does, so it should be a visible diff here.
+    //
+    // FR-R4-F04 (FR-027, 2026-10-31) — three became four. `operatorPseudonym` is exempt by decision: a
+    // reset clears Schegent's state, not the operator's identity, and rows already written keep the
+    // pseudonym they carry, so a pseudonym that a reset cleared would be created again under a new value
+    // and split one operator's rows across two names (reason on `RESET_EXEMPT_KEYS`).
     expect(Object.keys(RESET_EXEMPT_KEYS).sort()).toEqual(
-      [KEYS.schemaVersion, KEYS.schemaVersionNumeric, KEYS.resetMarker].sort()
+      [KEYS.schemaVersion, KEYS.schemaVersionNumeric, KEYS.resetMarker, KEYS.operatorPseudonym].sort()
     );
   });
 

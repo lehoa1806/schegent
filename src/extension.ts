@@ -36,6 +36,7 @@ import { wirePhaseExecution } from './activation/phase-execution-wiring';
 import { createStage2Producers, type Stage2Producers } from './activation/stage2-producers';
 import { wireTrustGrant } from './activation/trust-grant-wiring';
 import { wirePrimacyGain } from './activation/primacy-gain-wiring';
+import { wireEvidenceMaintenance } from './activation/evidence-maintenance-wiring';
 import { closeStage2Resources } from './activation/stage2-teardown';
 import {
   readForceContinueOnRetryCap,
@@ -354,7 +355,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     sessionRetention,
     collectAllWorkflowPipelineRefs,
     protectedSessionRunIds,
-    replayEvidenceBacklog
+    replayEvidenceBacklog, operatorAttribution
   } = await wireEvidence({
     workspaceRoot, lock, globalStorageRoot: context.globalStorageUri.fsPath,
     logger,
@@ -428,7 +429,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     sessionRetention,
     protectedSessionRunIds,
     readUncontainedAllowed,
-    verboseAccessor
+    verboseAccessor, transportRouter: backend.transportRouter
   });
 
   const controller = new SchegentWorkflowController(
@@ -556,7 +557,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     collectAllWorkflowPipelineRefs,
     effectiveLimitSources: { limits, spendTrust: runSafety.spendWatcher.trustFor },
     bindCapabilityProjector: backend.bindCapabilityProjector,
-    bindTelemetryProjector: backend.bindTelemetryProjector
+    bindTelemetryProjector: backend.bindTelemetryProjector, transportUsage: () => backend.transportRouter.usage()
   });
 
   // Feature 073 — constructed once per activation so its lifetime matches
@@ -596,22 +597,22 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   });
 
   const uiWiring = registerStage2Ui({
-    extensionRoot: context.extensionUri.fsPath,
+    extensionRoot: context.extensionUri.fsPath, globalStorageRoot: context.globalStorageUri.fsPath,
     workspaceRoot,
     projector,
     dispatch: (cmd, ack) => sidebarRouter.dispatch(cmd, ack),
     guardedRunService,
     store,
-    auditWriter,
+    auditWriter, operatorAttribution,
     notifier,
     logger,
     getCatalog: () => catalogSession.catalog,
     controller,
     queue,
     lock, executionLease: executionLeases, // FR-R3-150 — direct per-queue lease release (D5).
-    historyStore,
+    historyStore, runtimeLogAccessor, // FR-R4-F04 (T171): the diagnostics bundle reads the runtime log
     getWorkspaceFolders: () => vscode.workspace.workspaceFolders,
-    queueStartFailures
+    queueStartFailures, transportRouter: backend.transportRouter
   });
   phaseLogTail.bindDashboardBridge(uiWiring.dashboardBridge);
   output.log(`activated; cli=${cliPath}, cap=${iterationCap}, pollIntervalMin=${pollIntervalMinutes}`);
@@ -628,7 +629,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     store,
     auditWriter,
     lock,
-    controller,
+    controller, operatorAttribution,
     watchdog,
     scheduledStartCoordinator,
     replayEvidenceBacklog,
@@ -636,7 +637,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     backendCapabilities,
     startMountProbe, refreshCatalog // FR-032 — paired to fund the push below; why in that module.
   });
-  disposables.push(wirePrimacyGain({ logger, lock, producers }));
+  disposables.push(wirePrimacyGain({ logger, lock, producers }), wireEvidenceMaintenance({ logger, isWorkspaceTrusted, lock, protectedSessionRunIds, transportRouter: backend.transportRouter, sessionRetention })); // FR-R4-F04 (FR-031)
   await producers.run();
 
   const dispose = async (): Promise<void> => {

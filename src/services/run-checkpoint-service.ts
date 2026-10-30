@@ -6,6 +6,7 @@ import type { SanitizedLogger } from '../lib/logger';
 import { NarrowingReporter } from '../lib/evidence-narrowing';
 import { resolveDiffBase } from '../lib/git-diff-base';
 import { resolveContainedLink } from '../lib/path-containment';
+import { RUN_CHECKPOINT_DIRECTORY, safeRunSegment } from './run-checkpoint-paths';
 import type { WorkflowRun } from '../state/workflow-run';
 import { ensureDirWithinRoot, openWithinRoot } from '../lib/safe-open';
 import {
@@ -241,9 +242,9 @@ export class RunCheckpointService {
   ) {}
 
   public async checkpoint(run: WorkflowRun, phaseId: string): Promise<void> {
-    const safeRun = run.id.replace(/[^a-zA-Z0-9_-]/g, '_');
-    const safePhase = phaseId.replace(/[^a-zA-Z0-9_-]/g, '_');
-    const runRoot = path.join(this.root, 'checkpoints', safeRun);
+    const safeRun = safeRunSegment(run.id);
+    const safePhase = safeRunSegment(phaseId);
+    const runRoot = path.join(this.root, RUN_CHECKPOINT_DIRECTORY, safeRun);
     const inFlight = this.countInFlightRuns();
 
     let capture: CheckpointCapture;
@@ -513,7 +514,7 @@ export class RunCheckpointService {
    */
   private async ensureRunRoot(safeRun: string): Promise<void> {
     await fs.mkdir(this.root, { recursive: true, mode: 0o700 });
-    const ready = await ensureDirWithinRoot(this.root, ['checkpoints', safeRun], 0o700);
+    const ready = await ensureDirWithinRoot(this.root, [RUN_CHECKPOINT_DIRECTORY, safeRun], 0o700);
     if (ready.outcome === 'refused') {
       throw new Error(`checkpoint run root refused: ${ready.reason} (${ready.errno})`);
     }
@@ -541,7 +542,7 @@ export class RunCheckpointService {
     body: string,
     mode: 'overwrite' | 'exclusive'
   ): Promise<ArtifactWrite> {
-    const opened = await openWithinRoot(this.root, ['checkpoints', safeRun, leaf], {
+    const opened = await openWithinRoot(this.root, [RUN_CHECKPOINT_DIRECTORY, safeRun, leaf], {
       flags: mode === 'exclusive' ? 'wx' : 'w',
       createDirs: true,
       dirMode: 0o700,

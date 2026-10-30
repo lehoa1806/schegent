@@ -47,7 +47,7 @@ Activation runs to completion. The extension activates, the sidebar renders, the
 from persisted state, and Stage 2 **constructs** its services. What it does not do is *act* — see the
 next section for where the line falls.
 
-**8 commands stay available** in an untrusted window, registered unwrapped because none of them
+**6 commands stay available** in an untrusted window, registered unwrapped because none of them
 mutates workspace state:
 
 | Command | What it does |
@@ -58,23 +58,27 @@ mutates workspace state:
 | `schegent.verifyAuditChain` | Recomputes the audit hash chain and reports |
 | `schegent.redetectClaudeTransport` | Re-reads which transport the resolved CLI offers |
 | `schegent.reportFailedRowExits` | Counts how failed rows were resolved and opens the report; writes nothing |
-| `schegent.exportAuditLog` | Writes the audit log to a path you choose |
-| `schegent.exportRunEvidence` | Writes a Run's evidence bundle to a path you choose |
 
-The last two write a file, and are classified read-only anyway: each opens a modal save dialog, so
-the write is a place *you* named in a dialog *you* answered. A modal cannot be answered by repository
-content, which is the threat Workspace Trust exists to bound. (The untrusted host leg drives the
-other six for exactly that reason — a headless leg cannot answer a modal.)
+The two exports, the audit export and the Run evidence export, used to be on this list, because each
+writes to a place *you* named in a dialog *you* answered, and a dialog cannot be answered by repository
+content. They are not any more. Each export now records itself as one row in the audit log (FR-R4-F04),
+and an untrusted window, or a window that does not own the workspace, has no owner to write that row, so
+an export from one could never be recorded. They refuse there, before any dialog opens (see the next
+section), and the untrusted host leg drives them like the other commands that refuse.
 
 Reading settings, reading the audit log, reading persisted Run state and rendering all of it are
 unaffected.
 
 ## What refuses untrusted
 
-**28 commands refuse.** Every mutating command id in
+**32 commands refuse.** Every mutating command id in
 `src/contracts/entry-point-dispositions.ts` is wrapped by `registerGuardedCommand`, which — when the
 window is untrusted — shows a warning, records `command refused: workspace not trusted` with the
 `commandId`, and returns without calling the handler.
+
+That includes the two exports, `schegent.exportAuditLog` and `schegent.exportRunEvidence`, and the diagnostics
+bundle, `schegent.createDiagnosticsBundle`: each records an audit row there is no owner to write in an
+untrusted window (R24).
 
 Two properties of that shape matter more than the list:
 
@@ -114,7 +118,7 @@ you the evidence of its own refusals. What the gate withholds is the acts, not e
 
 ## What settings do untrusted
 
-The manifest declares **14 restrictedConfigurations**. While a window is untrusted, VS Code
+The manifest declares **15 restrictedConfigurations**. While a window is untrusted, VS Code
 suppresses the **workspace** value of each of those keys and hands Schegent the default instead, so a
 checked-in `.vscode/settings.json` cannot redirect a log path or grant a trust capability in a
 repository you have not trusted. User-scope and application-scope values of the same keys are

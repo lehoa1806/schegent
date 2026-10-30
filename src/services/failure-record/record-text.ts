@@ -59,7 +59,7 @@ function rootSpellings(root: string, platform: NodeJS.Platform): readonly string
   return [...new Set([root, root.replace(/\\/g, '/'), root.replace(/\//g, '\\')])];
 }
 
-function removeWorkspaceRoot(text: string, context: SummaryContext): string {
+export function removeWorkspaceRoot(text: string, context: SummaryContext): string {
   const root = context.workspaceRoot.replace(/[\\/]+$/, '');
   // A root of `/` or nothing would strip the leading slash of every path and name none of them.
   if (root === '') return text;
@@ -70,7 +70,7 @@ function removeWorkspaceRoot(text: string, context: SummaryContext): string {
   return text.replace(prefix, '$1').replace(bare, '$1.');
 }
 
-function replaceAbsolutePaths(text: string): string {
+export function replaceAbsolutePaths(text: string): string {
   const replacement = `$1${PATH_PLACEHOLDER}`;
   return text
     .replace(FILE_URI, replacement)

@@ -93,8 +93,8 @@ describe('PhaseRunner.run — clean-with-non-zero-exit handling (T043 / FR-014)'
     const cliRunner = makeFakeRunner(async () =>
       makeRawOutput({ exitCode: 1 })
     );
-    const logger = new SanitizedLogger();
-    const warnSpy = vi.spyOn(logger, 'warn');
+    const lines: string[] = [];
+    const logger = new SanitizedLogger([{ appendLine: (line) => void lines.push(line) }]);
     const runner = new PhaseRunner(
       cliRunner,
       new PromptBuilder(),
@@ -103,18 +103,20 @@ describe('PhaseRunner.run — clean-with-non-zero-exit handling (T043 / FR-014)'
     );
     const output = await runner.run(baseInputs);
     expect(output.outcome).toBe('clean');
-    expect(warnSpy).toHaveBeenCalledWith(
-      'phase-runner: clean result with non-zero exit code',
-      expect.objectContaining({ exitCode: 1 })
-    );
+    const line = lines.find((entry) => entry.includes(' WARN phase-runner: clean result with non-zero exit code '));
+    expect(line, 'the warning reaches the sink').toBeDefined();
+    expect(line).toContain('"exitCode":1');
+    // FR-R4-F04 (C1) — the line names its Run and phase.
+    expect(line).toContain('"runId":"run-1"');
+    expect(line).toContain('"phase":"speckit-specify"');
   });
 
   it('logs warning with exit code details for observability', async () => {
     const cliRunner = makeFakeRunner(async () =>
       makeRawOutput({ exitCode: 137 })
     );
-    const logger = new SanitizedLogger();
-    const warnSpy = vi.spyOn(logger, 'warn');
+    const lines: string[] = [];
+    const logger = new SanitizedLogger([{ appendLine: (line) => void lines.push(line) }]);
     const runner = new PhaseRunner(
       cliRunner,
       new PromptBuilder(),
@@ -123,10 +125,9 @@ describe('PhaseRunner.run — clean-with-non-zero-exit handling (T043 / FR-014)'
     );
     const output = await runner.run(baseInputs);
     expect(output.outcome).toBe('clean');
-    expect(warnSpy).toHaveBeenCalledWith(
-      'phase-runner: clean result with non-zero exit code',
-      expect.objectContaining({ exitCode: 137 })
-    );
+    const line = lines.find((entry) => entry.includes(' WARN phase-runner: clean result with non-zero exit code '));
+    expect(line, 'the warning reaches the sink').toBeDefined();
+    expect(line).toContain('"exitCode":137');
   });
 });
 

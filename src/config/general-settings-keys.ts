@@ -35,6 +35,7 @@ import {
   type BackendRunnerKind
 } from '../contracts/backend-kinds';
 import { QUEUE_FAILURE_POLICIES, type QueueFailurePolicy } from '../contracts/queue-failure-policy'; // Feature 195
+import type { TransportCaptureSetting } from '../contracts/transport-capture-mode'; // FR-R4-F04
 
 /** Mirrors `vscode.ConfigurationTarget.Global`. */
 export const CONFIGURATION_TARGET_GLOBAL = 1;
@@ -75,6 +76,8 @@ export interface GeneralSettings {
   readonly sessionRetentionMaxAgeDays: number;
   readonly sessionRetentionMaxBytes: number;
   readonly rawTranscriptMode: import('../state/workflow-run').RawTranscriptMode;
+  // FR-R4-F04 (FR-001) — `inherit` is the default and resolves through `rawTranscriptMode`.
+  readonly transportCaptureMode: TransportCaptureSetting;
   // FR-R3-143 (T017) — six settings the manifest has always contributed and
   // this surface never projected, so the tab could not draw them.
   readonly cliInheritEnvironment: boolean;
@@ -117,6 +120,7 @@ export interface GeneralSettings {
     readonly sessionRetentionMaxAgeDays: SettingScope;
     readonly sessionRetentionMaxBytes: SettingScope;
     readonly rawTranscriptMode: SettingScope;
+    readonly transportCaptureMode: SettingScope;
     readonly cliInheritEnvironment: SettingScope;
     readonly cliEnvironmentMode: SettingScope;
     readonly cliEnvironmentAllowlist: SettingScope;
@@ -153,6 +157,7 @@ export type AllowedKey =
   | 'logging.sessionRetentionMaxAgeDays'
   | 'logging.sessionRetentionMaxBytes'
   | 'logging.rawTranscriptMode'
+  | 'logging.transportCaptureMode'
   | 'cli.inheritEnvironment'
   | 'cli.environmentMode'
   | 'cli.environmentAllowlist'
@@ -338,6 +343,13 @@ export const KEY_SPECS: Readonly<Record<AllowedKey, KeySpec>> = Object.freeze({
     // retained MORE raw transcript data than the setting the user was shown.
     defaultValue: 'errors-only',
     allowedValues: ['always', 'errors-only', 'off']
+  },
+  // FR-R4-F04 (FR-001) — the manifest's default, `inherit`; `settings-defaults-parity` compares them.
+  'logging.transportCaptureMode': { scope: 'resource',
+    type: 'string-enum',
+    typedField: 'transportCaptureMode',
+    defaultValue: 'inherit',
+    allowedValues: ['inherit', 'off', 'errors-only', 'on']
   },
   // FR-R3-143 (T018) — six keys the manifest contributes that this allowlist
   // did not carry, so the settings tab had no write path for them. Every

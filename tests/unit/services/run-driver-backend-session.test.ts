@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RunDriver } from '../../../src/services/run-driver';
 import { buildMutationPlan } from '../../../src/services/mutation-plan';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
+import { fakeRunLogger } from './fake-run-logger';
 
 function cleanOutput(cliSessionId?: string) {
   return {
@@ -74,7 +75,7 @@ describe('RunDriver backend-scoped sessions', () => {
       queue: { finish: vi.fn(), findById: vi.fn(() => null) },
       statusBar: { update: vi.fn() },
       notifier: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
-      logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
+      logger: fakeRunLogger(),
       lock: {},
       options: {
         cliPath: 'claude-bin',

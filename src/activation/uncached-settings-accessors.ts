@@ -126,3 +126,26 @@ export function readRawTranscriptMode(workspaceRoot: string): RawTranscriptMode 
   const value = section(workspaceRoot).get<string>('logging.rawTranscriptMode', 'errors-only');
   return value === 'always' || value === 'off' ? value : 'errors-only';
 }
+
+/**
+ * FR-R4-F04 (FR-001, contract X1) — the transport capture setting, as the user set it, read on every
+ * record and never cached, so a switch to `off` or `errors-only` mid-Run reaches the very next line
+ * without a window reload (hard rule 24's shape, for a sibling setting).
+ *
+ * The value is returned RAW. Resolving it is `resolveTransportCaptureMode`'s job and nobody else's: an
+ * unknown value reads as `inherit` there, which is the one table `inherit` follows the raw transcript
+ * mode through, and a second normalization here would be a second copy of that decision.
+ */
+export function readTransportCaptureMode(workspaceRoot: string): unknown {
+  return section(workspaceRoot).get<unknown>('logging.transportCaptureMode', 'inherit');
+}
+
+/**
+ * FR-R4-F04 (FR-005) — the session retention age in days, read on every transport check and never
+ * cached: record age is bounded by it, and an operator who shortens it means the next append, not the
+ * next reload. A value that is not a positive number reads as the manifest default.
+ */
+export function readSessionRetentionMaxAgeDays(workspaceRoot: string): number {
+  const value = section(workspaceRoot).get<number>('logging.sessionRetentionMaxAgeDays', 30);
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 30;
+}

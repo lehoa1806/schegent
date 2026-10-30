@@ -4,6 +4,7 @@
 
   let {
     fields,
+    transportUsage,
     draft = $bindable(),
     statusByKey,
     pipelines,
@@ -31,6 +32,7 @@
         changed={fieldChanged(spec.key)}
         scopeLabel={fieldScopeLabel(spec.key)}
         {pipelines}
+        transportUsage={spec.key === 'transportCaptureMode' ? transportUsage : undefined}
         onSave={() => saveOne(spec)}
         onReset={() => resetField(spec.key)}
       />

@@ -31,6 +31,8 @@
     rawTranscriptMode: 'always' | 'errors-only' | 'off';
     sessionRetentionMaxAgeDays: number;
     sessionRetentionMaxBytes: number;
+    // FR-R4-F04 (X10) — the stored value; detection compares what it resolves to.
+    transportCaptureMode: 'inherit' | 'off' | 'errors-only' | 'on';
   }
 
   const props: Props = $props();
@@ -41,7 +43,8 @@
       loggingVerbose: props.loggingVerbose,
       rawTranscriptMode: props.rawTranscriptMode,
       sessionRetentionMaxAgeDays: props.sessionRetentionMaxAgeDays,
-      sessionRetentionMaxBytes: props.sessionRetentionMaxBytes
+      sessionRetentionMaxBytes: props.sessionRetentionMaxBytes,
+      transportCaptureMode: props.transportCaptureMode
     })
   );
 
@@ -56,7 +59,8 @@
     loggingVerbose: 'Verbose Logging',
     rawTranscriptMode: 'Raw Transcript Mode',
     sessionRetentionMaxAgeDays: 'Session Retention (days)',
-    sessionRetentionMaxBytes: 'Session Retention (bytes)'
+    sessionRetentionMaxBytes: 'Session Retention (bytes)',
+    transportCaptureMode: 'CLI Transport Capture'
   };
 
   let applying = $state<PrivacyProfileName | null>(null);
@@ -73,7 +77,8 @@
         'logging.verbose': profile.settings.loggingVerbose,
         'logging.rawTranscriptMode': profile.settings.rawTranscriptMode,
         'logging.sessionRetentionMaxAgeDays': profile.settings.sessionRetentionMaxAgeDays,
-        'logging.sessionRetentionMaxBytes': profile.settings.sessionRetentionMaxBytes
+        'logging.sessionRetentionMaxBytes': profile.settings.sessionRetentionMaxBytes,
+        'logging.transportCaptureMode': profile.settings.transportCaptureMode
       });
       refusal = result.status === 'accepted' ? null : result.reason;
     } finally {

@@ -67,8 +67,8 @@ For a workspace-backed run, the main sinks are:
 | Raw transcript | `.schegent/sessions/raw-<runId>.log` | Verbatim, unredacted prompt/stdout/stderr/exit status | Per-run retention policy plus session-artifact age/byte sweep. |
 | Verbose diagnostics | `.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/` | Opt-in, unredacted debug and stream files | Session-artifact age/byte sweep. |
 | Runtime log | `.schegent/syslog` by default | Sanitized formatted host log | Configurable byte threshold and generation count. |
-| CLI transport | `.schegent/cli-transport.log` | Sanitized but may contain workspace paths | Fixed 5 MiB live generation plus three rotated generations. |
-| Metrics rollup | `.schegent/metrics-rollup.jsonl` | Typed terminal-run counters; no free text | Append-only and intentionally not pruned. |
+| CLI transport | `.schegent/sessions/<runId>/transport.log`; an earlier release's `.schegent/cli-transport.log` and `.1`–`.3` are legacy and no longer written | Secret patterns redacted, otherwise CLI content as sent (it may contain workspace paths) | Per Run, when the transport capture mode keeps it: at most 5 MiB per Run and 20 MiB across the workspace, aged at the session retention age. Legacy files expire whole at that age. |
+| Metrics rollup | `.schegent/metrics-rollup.jsonl` | Typed terminal-run counters; no free text | Trimmed to the newest 5,000 records when it passes 8 MiB; totals carried forward. |
 | Recovery checkpoints | `<globalStorage>/checkpoints/<runId>/` | Private Git patches and metadata; may contain source or secrets | 14-day age, 256 MiB total, and a ten-recent-run size floor. |
 
 <!-- Source: src/audit/audit-log-writer.ts -->
@@ -102,7 +102,7 @@ already stricter than these modes keeps its own.
 | --- | --- | --- |
 | Structured audit | `.schegent/`, `audit.log`, `audit.log.cuts`, and the timestamped archives | `audit.log` on the next append and `audit.log.cuts` on the next prune record. Archives are narrowed where they lie by the retention sweep, which runs when the host starts and after each rotation. |
 | Runtime log | The live file, its numbered generations, and every directory between the allowed root and the file | On the next record. Generations are narrowed the first time the sink opens a destination. |
-| CLI transport | `.schegent/`, `cli-transport.log`, and `.1`–`.3` | On the next record. Generations are narrowed the first time the sink opens the log. |
+| CLI transport | `.schegent/`, each Run's directory and its `transport.log`, and any legacy `cli-transport.log` and `.1`–`.3` | On the next record for a Run file. Legacy generations are narrowed by the maintenance pass. |
 | Verbose diagnostics | Every directory from `.schegent/` down to `iter-<N>/`, plus `stream.jsonl` and `verbose.log` | When each invocation prepares its directory and on each write. |
 
 The backend process writes `debug.json` and `phase-message.env` into the

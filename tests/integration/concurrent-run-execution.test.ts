@@ -69,10 +69,7 @@ import {
   type BackendExecutionWiringDeps
 } from '../../src/activation/backend-execution-wiring';
 import type { MonitorSidecarHook } from '../../src/contracts/backend-runner';
-import {
-  CLI_TRANSPORT_DIRECTORY,
-  CLI_TRANSPORT_FILE_NAME
-} from '../../src/monitor/cli-transport-sink';
+import { CLI_TRANSPORT_DIRECTORY } from '../../src/monitor/cli-transport-sink';
 import { EvidenceHealthMonitor } from '../../src/services/evidence-health/evidence-health-monitor';
 import { disposeWorkspaceFolderPicker } from '../../src/state/workspace-folder-picker';
 import { workspace as vscodeWorkspace } from '../__stubs__/vscode';
@@ -889,6 +886,20 @@ describe('Feature 093 BUG-001 (T103, SC-019) — a compaction before the phase d
   let hook: MonitorSidecarHook;
   let root: string;
 
+  // FR-R4-F04 — the sink no longer writes `.schegent/cli-transport.log`; the router writes a Run file
+  // under `on` and stages under the default `inherit` over an `errors-only` raw mode. This fixture reads
+  // what an operator could read back from a Run that is still running, so it sets the mode to `on`
+  // through the stub's configuration (the stub answers every other key with its default).
+  const originalGetConfiguration = vscodeWorkspace.getConfiguration;
+  const transportOn: typeof vscodeWorkspace.getConfiguration = (section, resource) => {
+    const base = originalGetConfiguration(section, resource);
+    return {
+      ...base,
+      get: <T>(key: string, def: T): T =>
+        key === 'logging.transportCaptureMode' ? ('on' as unknown as T) : base.get(key, def)
+    };
+  };
+
   beforeEach(async () => {
     // `realpath` because the sink proves containment against a resolved path and
     // macOS hands `mkdtemp` a `/var` symlink; the picker caches the first answer
@@ -896,6 +907,7 @@ describe('Feature 093 BUG-001 (T103, SC-019) — a compaction before the phase d
     root = await fs.realpath(tmpRoot);
     disposeWorkspaceFolderPicker();
     vscodeWorkspace.workspaceFolders = [{ uri: { fsPath: root, scheme: 'file' } }];
+    vscodeWorkspace.getConfiguration = transportOn;
     const deps: BackendExecutionWiringDeps = {
       workspaceRoot: root,
       cliPath: '/usr/local/bin/claude',
@@ -918,6 +930,7 @@ describe('Feature 093 BUG-001 (T103, SC-019) — a compaction before the phase d
     disposables.length = 0;
     hostSubscriptions.length = 0;
     vscodeWorkspace.workspaceFolders = undefined;
+    vscodeWorkspace.getConfiguration = originalGetConfiguration;
     disposeWorkspaceFolderPicker();
   });
 
@@ -964,10 +977,12 @@ describe('Feature 093 BUG-001 (T103, SC-019) — a compaction before the phase d
   async function readTransportLines(): Promise<
     Array<{ runId: string; phase: string; stream: string; line: string }>
   > {
-    const raw = await fs.readFile(
-      path.join(root, CLI_TRANSPORT_DIRECTORY, CLI_TRANSPORT_FILE_NAME),
-      'utf8'
-    );
+    // Every Run's file under `.schegent/sessions/<runId>/transport.log`, in directory order.
+    const sessions = path.join(root, CLI_TRANSPORT_DIRECTORY, 'sessions');
+    let raw = '';
+    for (const name of (await fs.readdir(sessions)).sort()) {
+      raw += await fs.readFile(path.join(sessions, name, 'transport.log'), 'utf8').catch(() => '');
+    }
     return raw
       .split('\n')
       .filter((entry) => entry.trim().length > 0)

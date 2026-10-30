@@ -46,7 +46,14 @@ const ALLOWED_IMPORTERS: ReadonlyArray<RegExp> = [
   /^src\/activation\/[^/]*-wiring\.ts$/,
   /^src\/services\/session-retention\/session-artifact-retention-service\.ts$/,
   /^src\/ui\/sidebar\/commands\/cmd-read-failure-record\.ts$/,
-  /^src\/ui\/sidebar\/commands\/router-types\.ts$/
+  /^src\/ui\/sidebar\/commands\/router-types\.ts$/,
+  // FR-R4-F04 (feature 251) — two importers that READ the record and decide nothing. The retention inventory
+  // imports the record's bounds (`FAILURE_RECORD_RETAINED_MAX` and the size) so the disclosure states them from
+  // the constants that enforce them; the diagnostics bundle imports the record's directory and name parser, and
+  // the text pipeline's path scrub, to include one Run's records in a file the operator asked for. Neither is a
+  // decision site (L4.2 still names none of the five areas), and neither feeds a record back into any state.
+  /^src\/services\/retention-disclosure\.ts$/,
+  /^src\/services\/diagnostics-bundle\/bundle-collect\.ts$/
 ];
 
 /** L4.2 — the places a decision is made. A violation here is named as such. */
