@@ -32,6 +32,23 @@ All four settings are re-read on each log emission. A level, path, or rotation c
 
 <!-- Source: src/lib/runtime-log/runtime-log-settings.ts -->
 
+## Which Run a line belongs to
+
+A line written while a Run executes carries its Run and phase as a JSON object after the message: `[<time>] INFO <message> {"runId":"<runId>","phase":"<phase>"}`. The object is merged under each call's own fields, and on a clash the call's value wins. The Run's driver tags its own lines with `runId` alone, and the phase runner tags each phase invocation's lines (and the session compaction it starts) with both. A line from activation, wiring, the lock, the catalog or settings code is a host line and carries neither, and nothing infers a Run from timing. The severity filter reads the level token before the message, so a tagged line is filtered like any other.
+
+This is not complete: the lines the backend runners and the stream monitor write about an invocation (for example `[ClaudeCliRunner] Writing to CLI stdin`) are still written by objects that hold the window logger and carry no Run. A diagnostics bundle filters on `runId`, so it does not contain those lines.
+
+<!-- Source: src/lib/logger.ts -->
+<!-- Source: src/controller/phase-runner.ts -->
+<!-- Source: src/services/run-driver.ts -->
+<!-- Source: src/services/diagnostics-bundle/bundle-collect.ts -->
+
+## Age: none, by decision
+
+The runtime log keeps size and generation bounds and **no age bound**. Its path can be configured outside the workspace, where an age sweep would delete files in a place you chose, so the maintenance pass and the retention settings never remove it by age. It holds sanitized host diagnostics (the content class in [the retention disclosure](evidence-retention-disclosure.md)), and `Schegent: Delete Run Evidence` leaves it in place.
+
+<!-- Source: src/services/retention-disclosure.ts -->
+
 ## Rotation and failures
 
 Before an append would cross the byte limit, numbered generations shift and the live file becomes `.1`. With zero generations, the live file is truncated in place at rollover. The sink serializes writes per path and checks destructive rename/unlink targets separately through the containment oracle.

@@ -38,6 +38,7 @@ export type ScalarKey =
   | 'sessionRetentionMaxAgeDays'
   | 'sessionRetentionMaxBytes'
   | 'rawTranscriptMode'
+  | 'transportCaptureMode'
   // FR-R3-143 (T012, T013) — four keys the host has accepted all along
   // and the tab never drew.
   | 'retryMaxAttempts'
@@ -160,6 +161,9 @@ export type Draft = {
   sessionRetentionMaxAgeDays: number;
   sessionRetentionMaxBytes: number;
   rawTranscriptMode: 'always' | 'errors-only' | 'off';
+  // FR-R4-F04 — a `string`, as `cliEnvironmentMode` is: it is written through the generic enum, whose
+  // `<select>` yields a bare string, and the host refuses a value outside the four on save.
+  transportCaptureMode: string;
   retryMaxAttempts: number;
   retryForceContinueOnCap: boolean;
   runtimeLogMaxBytes: number;
@@ -232,6 +236,8 @@ export interface BackendSection {
 
 export interface SettingsGroupProps {
   fields: readonly FieldSpec[];
+  /** FR-R4-F04 (FR-003) — shown under the transport mode row by the group that holds it; absent until measured. */
+  transportUsage?: import('../../../../../src/contracts/sidebar-ipc/transport-usage').TransportUsage;
   draft: Draft;
   statusByKey: StatusByKey;
   pipelines: readonly PipelineDefinition[];

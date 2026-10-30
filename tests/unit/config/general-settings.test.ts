@@ -137,7 +137,9 @@ describe('Feature 011 — general-settings allowlist', () => {
         'spend.maxTokensPerRun',
         // Feature 195 (T008) — the workspace default a queue follows when it
         // states no opinion of its own.
-        'queue.haltOnTaskFailure'
+        'queue.haltOnTaskFailure',
+        // FR-R4-F04 (feature 251, FR-001) — which CLI transport lines a Run keeps.
+        'logging.transportCaptureMode'
       ])
     );
   });

@@ -9,6 +9,8 @@
   // rule requires. See `onEnumChange` for why a predicate rather than a cast.
   import { isBackendRunnerKind } from '../../../../../src/contracts/backend-kinds';
   import type { Draft, FieldSpec, FieldStatus, ScalarKey } from './field-types';
+  import { isTransportUsage, type TransportUsage } from '../../../../../src/contracts/sidebar-ipc/transport-usage';
+  import { transportUsageLine } from './settings-draft';
   import StringListField from './StringListField.svelte';
 
   // FR-R3-143 (T003) — `ScalarKey`, `FieldKind` and `FieldSpec` now come from
@@ -36,7 +38,7 @@
   // both kinds are generic, and the `-add` / `-remove-<i>` description keys the
   // list editor needs are indexed off this type, so a second list setting is a
   // member here and three description entries, not another component.
-  type EnumKey = 'cliEnvironmentMode' | 'backendRunner';
+  type EnumKey = 'cliEnvironmentMode' | 'backendRunner' | 'transportCaptureMode';
   type StringListKey = 'cliEnvironmentAllowlist';
   // FR-R3-144 (T036) — the keys whose "no value" is `null` rather than a number.
   // `settings-draft.ts` holds the same set as `CLEARABLE_KEYS`, for the change
@@ -53,6 +55,8 @@
     changed: boolean;
     scopeLabel: string;
     pipelines: readonly PipelineDefinition[];
+    /** FR-R4-F04 (FR-003) — only the transport mode row is given one; absent means nothing is shown. */
+    transportUsage?: TransportUsage;
     onSave: () => void;
     onReset: () => void;
   }
@@ -64,6 +68,7 @@
     changed,
     scopeLabel,
     pipelines,
+    transportUsage,
     onSave,
     onReset,
     actionsAppend
@@ -300,6 +305,11 @@
            a disclosure the operator has to hover to find is one they change the
            setting without. No `controlId`, so it creates no dangling surface. -->
       <p class="field-note" data-testid="general-settings-note-{spec.key}">{spec.note}</p>
+    {/if}
+    {#if spec.key === 'transportCaptureMode' && transportUsage !== undefined && isTransportUsage(transportUsage)}
+      <!-- FR-R4-F04 (FR-003, O4) — what is kept and when it ages out, from the host's cached measure. Static
+           text for the reason the note above is; nothing is shown until the host has measured. -->
+      <p class="field-note" data-testid="general-settings-transport-usage">{transportUsageLine(transportUsage)}</p>
     {/if}
   </div>
   <div class="field-actions">

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { RunDriver } from '../../../src/services/run-driver';
 import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
+import { fakeRunLogger } from './fake-run-logger';
 
 describe('RunDriver Probing (Feature 074)', () => {
   let deps: any;
@@ -27,7 +28,7 @@ describe('RunDriver Probing (Feature 074)', () => {
       queue: { notifyStatusChange: vi.fn(), finish: vi.fn(), findById: vi.fn(() => null) },
       statusBar: { update: vi.fn() },
       notifier: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
-      logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
+      logger: fakeRunLogger(),
       lock: {},
       options: { cliPath: 'good-bin', cwd: '/tmp', iterationCap: 5, cliPathResolver: (r: string) => r === 'claude' ? 'good-bin' : 'bad-bin' },
       backendCapabilities: { probeAvailability: vi.fn().mockResolvedValue(true) },

@@ -18,7 +18,7 @@ import {
 } from './phase-attempt-recorder';
 import type { AuditEntry, AuditEntryFields } from '../audit/audit-entry';
 import type { RawTranscriptWriter } from '../audit/raw-transcript-writer';
-import type { SanitizedLogger } from '../lib/logger';
+import { phaseLogger, type SanitizedLogger } from '../lib/logger';
 import { parseAuditLogBlock } from '../parser/audit-log-parser';
 import { parseInvocation, type InvocationResult } from '../parser/stdout-parser';
 import { extractInvocationUsageMetrics } from '../parser/invocation-usage';
@@ -413,13 +413,13 @@ export class PhaseRunner {
     const pipelineAttribution: { pipelineId?: string } =
       inputs.pipelineId === undefined ? {} : { pipelineId: inputs.pipelineId };
     const debugPhaseId = inputs.phaseDef?.id ?? inputs.phase;
-    this.logger.debug('phase-runner.lock-acquired', {
+    phaseLogger(this.logger, inputs).debug('phase-runner.lock-acquired', {
       ...pipelineAttribution,
       phaseId: debugPhaseId,
       runId: inputs.runId,
       waitMs: 0
     });
-    this.logger.debug('phase-runner.iteration-tick', {
+    phaseLogger(this.logger, inputs).debug('phase-runner.iteration-tick', {
       ...pipelineAttribution,
       phaseId: debugPhaseId,
       runId: inputs.runId,
@@ -473,7 +473,7 @@ export class PhaseRunner {
           // `{0,0,0}` that reads as "demonstrably changed nothing" (FR-009).
         }
       });
-      this.logger.debug('phase-runner.lock-released', {
+      phaseLogger(this.logger, inputs).debug('phase-runner.lock-released', {
         ...pipelineAttribution,
         phaseId: debugPhaseId,
         holdMs: Date.now() - phaseRunStartMs
@@ -509,7 +509,7 @@ export class PhaseRunner {
         },
         outcome: 'info'
       });
-      this.logger.info(
+      phaseLogger(this.logger, inputs).info(
         `phase-breakpoint-fired ${breakpointPhaseId} iter=${inputs.iteration}`
       );
       return {
@@ -581,7 +581,7 @@ export class PhaseRunner {
     // FR-R3-104 (FR-054) — which CLI this phase drives. A VERSION, never a path; the leaf owns
     // the probe, its TTL cache and its failure handling.
     this.observedCliVersion = await observedVersionOf(this.runnerRegistry, inputs.cliPath);
-    Object.assign(startPayload, cliVersionFields(this.observedCliVersion, effectiveRunnerKind, this.logger));
+    Object.assign(startPayload, cliVersionFields(this.observedCliVersion, effectiveRunnerKind, phaseLogger(this.logger, inputs)));
     // Feature 212 (FR-002) — the attempt identifier is this row's own
     // `AuditEntry.id`, which the writer already mints and this line already
     // received and discarded. Nothing new is generated: a second identifier is a
@@ -593,7 +593,7 @@ export class PhaseRunner {
       startPayload
     );
 
-    this.logger.info(`phase-start ${inputs.phase} iter=${inputs.iteration}`);
+    phaseLogger(this.logger, inputs).info(`phase-start ${inputs.phase} iter=${inputs.iteration}`);
     // Feature 010 FR-024: read schegent.logging.verbose at run() entry
     // (never cached on the runner) so a mid-run toggle applies on the
     // next invocation. The accessor is the workspace-setting read site.
@@ -639,7 +639,7 @@ export class PhaseRunner {
         // `detail` is the CLI's own account of the refusal, already bounded and
         // redacted by `boundedExcerpt`; without it this line named a phase and no
         // cause. The message, never `err` — a stack does not belong in this sink.
-        this.logger.warn(failure.warning, {
+        phaseLogger(this.logger, inputs).warn(failure.warning, {
           phase: inputs.phase,
           iteration: inputs.iteration,
           detail: err instanceof Error ? err.message : 'unknown error'
@@ -987,7 +987,7 @@ export class PhaseRunner {
           ...this.invocationMetricPayload(raw, effectiveRunnerKind),
           ...this.auditEvidenceFields(audit.entry)
         });
-        this.logger.warn('phase-runner: host verification failed on a sensitive phase', {
+        phaseLogger(this.logger, inputs).warn('phase-runner: host verification failed on a sensitive phase', {
           phase: inputs.phase,
           iteration: inputs.iteration,
           exitCode: raw.exitCode
@@ -1013,7 +1013,7 @@ export class PhaseRunner {
       // FR-009 — the flag rides this log because the two cases reaching it are
       // otherwise indistinguishable where an operator sees them: a backend that
       // ran the work and exited non-zero, and one terminated for lingering.
-      this.logger.warn('phase-runner: clean result with non-zero exit code', {
+      phaseLogger(this.logger, inputs).warn('phase-runner: clean result with non-zero exit code', {
         phase: inputs.phase,
         iteration: inputs.iteration,
         exitCode: raw.exitCode,
@@ -1127,7 +1127,7 @@ export class PhaseRunner {
       processEnvAllowlist: inputs.processEnvAllowlist,
       cancellationSignal: inputs.cancellationSignal,
       resumeSessionId: inputs.resumeSessionId!,
-      logger: this.logger,
+      logger: phaseLogger(this.logger, inputs),
       onCommand: () => this.appendAudit(inputs, 'cli-invocation', 'info', projectAuditPayload('cli-invocation', {
         runner: 'claude',
         operation: 'session-compaction',
@@ -1171,7 +1171,7 @@ export class PhaseRunner {
         iterationN: inputs.iteration
       });
     } catch (err) {
-      this.logger.warn('verbose-diagnostic-path-rejected', {
+      phaseLogger(this.logger, inputs).warn('verbose-diagnostic-path-rejected', {
         pipelineId,
         phaseId,
         runId: inputs.runId,
@@ -1399,7 +1399,7 @@ export class PhaseRunner {
     try {
       return await this.auditWriter.append(entry);
     } catch {
-      this.logger.warn(
+      phaseLogger(this.logger, entry).warn(
         `phase-runner: required audit evidence unavailable (${entry.eventType})`
       );
       throw new RequiredEvidenceUnavailableError(entry.eventType);

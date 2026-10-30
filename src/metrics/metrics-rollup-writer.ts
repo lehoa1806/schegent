@@ -1,9 +1,9 @@
 // Feature FR-R3-009 (T387, T388) — the append-only metrics rollup writer.
 //
 // One record per terminal run, appended at the terminal transition while the
-// audit evidence is still present. The file is never rewritten, never trimmed,
-// and never recomputed: it is the only thing that keeps a cumulative total from
-// shrinking when the audit corpus is pruned.
+// audit evidence is still present. The file is trimmed to the newest 5,000 records
+// when it passes 8 MiB; totals carried forward, and never recomputed: it is the only
+// thing that keeps a cumulative total from shrinking when the audit corpus is pruned.
 //
 // Writes are best-effort with respect to run progress. A failure warns once per
 // cause and is reported to `EvidenceHealthReporter` under the `metricsRollup`
@@ -48,7 +48,7 @@ const APPEND_TIMEOUT_MS = 5000;
  * readable in one bounded pass, so the trim and the reader's bound agree by
  * construction rather than by two numbers happening to be compatible.
  */
-const TRIM_THRESHOLD_BYTES = 8 * 1024 * 1024;
+export const TRIM_THRESHOLD_BYTES = 8 * 1024 * 1024;
 
 /**
  * How many records survive a trim.
@@ -57,7 +57,7 @@ const TRIM_THRESHOLD_BYTES = 8 * 1024 * 1024;
  * bytes), and a count is what a reader can reason about — "the last 5,000 runs
  * are itemised, everything before them is in the header".
  */
-const RETAINED_RECORDS_AFTER_TRIM = 5_000;
+export const RETAINED_RECORDS_AFTER_TRIM = 5_000;
 
 /** FR-R3-082 (T1098) — the rollup's path, as the segments the walk walks. */
 const ROLLUP_LEAF = METRICS_ROLLUP_FILENAME;

@@ -268,9 +268,22 @@ export interface LogSink {
 
 export class SanitizedLogger {
   private readonly sinks: LogSink[];
+  /** FR-R4-F04 (C1) — merged under every call's own context; `undefined` on a window logger. */
+  private readonly baseContext: Readonly<Record<string, unknown>> | undefined;
 
-  constructor(sinks: LogSink[] = []) {
+  constructor(sinks: LogSink[] = [], baseContext?: Readonly<Record<string, unknown>>) {
     this.sinks = sinks;
+    this.baseContext = baseContext;
+  }
+
+  /**
+   * FR-R4-F04 (C1, FR-033) — a logger that writes `base` on every line, for the code that runs for one
+   * Run. It SHARES this logger's sinks (the same array, so a sink added later reaches it) and its
+   * redaction, and merges `base` under each call's own context: on a clash the call wins. The parent is
+   * unchanged, so a host line (activation, wiring, lock) carries no Run. Nothing infers a Run from timing.
+   */
+  public withContext(base: Readonly<Record<string, unknown>>): SanitizedLogger {
+    return new SanitizedLogger(this.sinks, { ...this.baseContext, ...base });
   }
 
   public addSink(sink: LogSink): void {
@@ -311,10 +324,11 @@ export class SanitizedLogger {
   }
 
   private formatWithContext(message: string, context?: Record<string, unknown>): string {
-    if (context === undefined || context === null) return message;
+    const merged = this.baseContext === undefined ? context : { ...this.baseContext, ...context };
+    if (merged === undefined || merged === null) return message;
     let serialized: string;
     try {
-      serialized = JSON.stringify(context);
+      serialized = JSON.stringify(merged);
     } catch {
       serialized = '{"context-serialize-error":true}';
     }
@@ -498,6 +512,14 @@ export class SanitizedLogger {
       }
     }
   }
+}
+
+/**
+ * FR-R4-F04 (C1, FR-033) — the logger for one phase invocation of one Run: every line it writes carries
+ * `runId` and `phase`. Short enough to sit on a line of `phase-runner.ts` without changing its length.
+ */
+export function phaseLogger(logger: SanitizedLogger, ctx: { runId: string; phase: string }): SanitizedLogger {
+  return logger.withContext({ runId: ctx.runId, phase: ctx.phase });
 }
 
 /**

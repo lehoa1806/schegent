@@ -252,33 +252,12 @@ const DISPOSITIONS: readonly Disposition[] = [
       'the `audit-checkpoints` directory and its file (`safe-open-migration.test.ts` records it ' +
       'as TRUST_ANCHOR). It declares its mode.'
   },
-  {
-    file: 'src/services/evidence-export.ts',
-    entry: 'mkdir',
-    sites: 1,
-    reason:
-      'Creates the export directory the operator named, which is outside the workspace ' +
-      "by design, so the helper — whose contract is 'within the workspace root' — cannot " +
-      'express it. It declares its mode.'
-  },
-  {
-    file: 'src/services/evidence-export.ts',
-    entry: 'writeFile',
-    sites: 2,
-    reason:
-      'Writes each exported file and the manifest into that operator-named destination, ' +
-      'each after `resolveContainedForWrite` has checked its path against it. Both declare ' +
-      'their mode.'
-  },
-  {
-    file: 'src/commands/export-audit.ts',
-    entry: 'workspace.fs.writeFile',
-    sites: 1,
-    reason:
-      'Saves the counts-only audit export where the operator chose in a save dialog. The ' +
-      'export carries counts, not evidence content; the destination is the operator\'s; ' +
-      "and VS Code's file API has no mode parameter."
-  },
+  // FR-R4-F04 (feature 251) — `src/services/evidence-export.ts` and `src/commands/export-audit.ts` hold no
+  // disposition any more. An export's directory is made through `ensureDirWithinRoot` (`0700`) beneath its
+  // deepest resolved ancestor, and every output, the Run export's files and manifest and the audit export's
+  // file, is opened through `openWithinRoot` with `fileMode: 0o600`, so each is a helper site the census
+  // reads and none needs a reason. The audit export's former `workspace.fs.writeFile` is gone with the
+  // `vscode` import: VS Code's file API has no mode parameter.
   {
     file: 'src/activation/sidebar-router-wiring.ts',
     entry: 'workspace.fs.writeFile',
@@ -319,17 +298,12 @@ const DISPOSITIONS: readonly Disposition[] = [
   },
   { file: 'src/lib/runtime-log/runtime-log-sink.ts', entry: 'appendFile', sites: 1, reason: ROOTLESS_RUNTIME_LOG },
   { file: 'src/lib/runtime-log/runtime-log-sink.ts', entry: 'mkdir', sites: 1, reason: ROOTLESS_RUNTIME_LOG },
-  { file: 'src/lib/runtime-log/runtime-log-sink.ts', entry: 'writeFile', sites: 1, reason: ROOTLESS_RUNTIME_LOG },
-  {
-    file: 'src/monitor/cli-transport-sink.ts',
-    entry: 'mkdir',
-    sites: 1,
-    reason:
-      'Port default for the parent recovery, which runs only after an injected write port ' +
-      'fails ENOENT. The production factory injects no write port — pinned by ' +
-      "`safe-open-migration.test.ts`, 'keeps the injected fs ports out of production " +
-      "wiring' — so every production open goes through the helper."
-  }
+  { file: 'src/lib/runtime-log/runtime-log-sink.ts', entry: 'writeFile', sites: 1, reason: ROOTLESS_RUNTIME_LOG }
+  // FR-R4-F04 (feature 251) — the transport sink's `mkdir` disposition is struck: the sink writes no file
+  // and holds no write port any more. Its former opens are the router's store's, in
+  // `src/monitor/transport/run-transport-store.ts`, and every one of them goes through the checked walk
+  // with both modes declared (the Run file, the stage file, the stage directory anchor and the compaction
+  // temp file), so none needs a reason here.
 ];
 
 // ---------------------------------------------------------------------------
@@ -1446,7 +1420,7 @@ describe('the census fires on a site that does not conform (T1804a)', () => {
 
   it('fails a new site in a reasoned-about file, naming every line its reason now spans', () => {
     expect(
-      judgedWith('src/services/evidence-export.ts', [
+      judgedWith('src/audit/audit-checkpoint-root.ts', [
         "import * as fsp from 'node:fs/promises';",
         '',
         'export async function another(target: string) {',
@@ -1455,7 +1429,7 @@ describe('the census fires on a site that does not conform (T1804a)', () => {
       ])
     ).toEqual([
       expect.stringMatching(
-        /^src\/services\/evidence-export\.ts — mkdir has 2 site\(s\), at line\(s\) \d+, 4, and its disposition reasons about 1;/
+        /^src\/audit\/audit-checkpoint-root\.ts — mkdir has 2 site\(s\), at line\(s\) \d+, 4, and its disposition reasons about 1;/
       )
     ]);
   });

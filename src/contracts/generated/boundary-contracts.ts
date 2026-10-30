@@ -195,7 +195,8 @@ export const AUDIT_EVENT_TYPES = [
   "definition-restored",
   "evidence-deleted",
   "evidence-exported",
-  "audit-integrity-condition"
+  "audit-integrity-condition",
+  "operator-pseudonym-reset"
 ] as const;
 
 export const SETTINGS_KEYS = [
@@ -223,6 +224,7 @@ export const SETTINGS_KEYS = [
   "schegent.logging.runtimeLogMaxGenerations",
   "schegent.logging.sessionRetentionMaxAgeDays",
   "schegent.logging.sessionRetentionMaxBytes",
+  "schegent.logging.transportCaptureMode",
   "schegent.logging.verbose",
   "schegent.loop.maxIterations",
   "schegent.loop.maxUnchangedComparisons",

@@ -26,6 +26,7 @@
   import ExecutionRetryGroup from './general/ExecutionRetryGroup.svelte';
   import AuditLoggingGroup from './general/AuditLoggingGroup.svelte';
   import UiTrustGroup from './general/UiTrustGroup.svelte';
+  import { TRANSPORT_CAPTURE_SETTINGS } from '../../../../src/contracts/transport-capture-mode';
 
   interface Props {
     snapshot: WorkflowSnapshot;
@@ -82,6 +83,13 @@
       ipcKey: 'logging.rawTranscriptMode',
       label: 'Raw Transcript Retention',
       kind: 'raw-transcript-select'
+    },
+    {
+      key: 'transportCaptureMode',
+      ipcKey: 'logging.transportCaptureMode',
+      label: 'CLI Transport Capture',
+      kind: 'enum',
+      options: TRANSPORT_CAPTURE_SETTINGS
     },
     {
       key: 'sessionRetentionMaxAgeDays',
@@ -325,6 +333,7 @@
 
   <AuditLoggingGroup
     fields={AUDIT_LOGGING_FIELDS}
+    transportUsage={snapshot.generalSettings?.transportUsage}
     bind:draft
     {statusByKey}
     {pipelines}

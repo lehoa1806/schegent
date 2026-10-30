@@ -21,13 +21,31 @@
 // `SETTINGS_SCHEMA`, which `tests/parity/settings-defaults-parity.test.ts` already
 // holds against `package.json`. Move a default and the profile moves with it.
 import { SETTINGS_SCHEMA } from '../config/settings-schema';
+import {
+  TRANSPORT_FILE_MAX_BYTES,
+  TRANSPORT_WORKSPACE_MAX_BYTES,
+  transportBoundMiB
+} from './transport-bounds';
+import {
+  resolveTransportCaptureMode,
+  type TransportCaptureSetting
+} from './transport-capture-mode';
 
-/** The four settings that decide how much unredacted evidence is retained. */
+/**
+ * The five settings that decide how much unredacted evidence is retained.
+ *
+ * FR-R4-F04 (FR-002) — `transportCaptureMode` is the fifth: CLI transport is the one place the CLI's own
+ * output outlived a Run whatever the operator chose, so a profile that left it out would not be the
+ * choice it claims to be. The stored value is `inherit`, `off`, `errors-only` or `on`; detection compares
+ * what it RESOLVES to (below), so `inherit` under an `errors-only` raw mode is the same posture as an
+ * explicit `errors-only`.
+ */
 export interface PrivacyProfileSettings {
   readonly loggingVerbose: boolean;
   readonly rawTranscriptMode: 'always' | 'errors-only' | 'off';
   readonly sessionRetentionMaxAgeDays: number;
   readonly sessionRetentionMaxBytes: number;
+  readonly transportCaptureMode: TransportCaptureSetting;
 }
 
 export type PrivacyProfileName = 'ephemeral' | 'diagnostic' | 'forensic';
@@ -71,18 +89,33 @@ const COMMON_RESIDUALS: readonly string[] = Object.freeze([
   'Recovery checkpoints keep unredacted binary Git diffs under private extension storage for 14 days ' +
     'and 256 MiB. That bound is a constant, not a setting, and no profile changes it — FR-R3-012 ' +
     'decided that deliberately, because a wrong value is silent data loss in a directory an operator ' +
-    'never opens. To reduce it, delete a Run\'s evidence.',
+    'never opens. To remove a Run\'s checkpoint, delete that Run\'s evidence: this applies to Runs that ' +
+    'have finished and whose evidence is in this workspace.',
   'The structured audit log is retained and is redacted. A profile does not turn evidence off; it ' +
     'decides how much UNREDACTED evidence is kept.',
   '.gitignore keeps evidence out of commits. It does not stop backup, sync, or endpoint-management ' +
     'tooling from copying it off the machine — which is the reason to pick `ephemeral` at all.',
   'A profile is not a permission boundary. An uncontained backend runs under your local authority ' +
     'and can read the evidence store whatever profile is selected (FR-R3-125).',
+  // FR-R4-F04 (X11) — what transport still holds, from the writers' own constants. The bounds are stated
+  // once here for every profile; the mode each profile sets is on its settings, and `ephemeral` says its
+  // own on its first line. Claude Code's egress is a separate fact and has its own residual (FR-038).
+  `CLI transport, the stream lines exchanged with the CLI, is kept per Run in ` +
+    `\`.schegent/sessions/<runId>/transport.log\` when this profile's transport mode keeps it: at most ` +
+    `${transportBoundMiB(TRANSPORT_FILE_MAX_BYTES)} MiB per Run and ${transportBoundMiB(TRANSPORT_WORKSPACE_MAX_BYTES)} MiB ` +
+    `in total, plus staging while an \`errors-only\` Run is active, for this profile's session age; secret ` +
+    `patterns redacted; otherwise CLI content as sent.`,
   // FR-R4-F15 (K5.2) — no profile turns the record off (D5); it is redacted, bounded and aged by the
   // same setting the profile already sets, and Remove leaves it where it is.
   'A failed Run keeps a redacted, bounded failure record in `.schegent/failure-records/` for this ' +
     "profile's session age, and at most the newest 200 records are kept. Remove does not delete it; " +
-    "the Run's Delete Evidence does."
+    "the Run's Delete Evidence does.",
+  // FR-R4-F04 (FR-038, G4) — Claude Code's egress is a fact of its own. No local capture setting changes
+  // what the CLI sends to the model vendor, and Schegent's lack of network calls does not keep that
+  // content on the machine; a profile that listed only what Schegent keeps would read as "nothing leaves".
+  "Claude Code sends repository content and prompts to the model vendor, whatever Schegent's local " +
+    'capture settings are. Schegent makes no network call of its own, but that does not keep that content ' +
+    "on the machine: it leaves through the CLI's own requests, and no profile changes that."
 ]);
 
 /**
@@ -104,11 +137,15 @@ export function privacyProfiles(): readonly PrivacyProfile[] {
         // unredacted transcript for every failed Run would be a euphemism.
         rawTranscriptMode: 'off' as const,
         sessionRetentionMaxAgeDays: schemaNumber(AGE_KEY, 'min'),
-        sessionRetentionMaxBytes: schemaNumber(BYTES_KEY, 'min')
+        sessionRetentionMaxBytes: schemaNumber(BYTES_KEY, 'min'),
+        // FR-R4-F04 (FR-002) — off, not down: a profile called ephemeral that kept the CLI's own output
+        // for failed Runs would repeat the euphemism the raw mode above refuses.
+        transportCaptureMode: 'off' as const
       }),
       residual: Object.freeze([
-        'Raw capture is OFF, so a failed Run leaves no transcript to diagnose from. That is the trade ' +
-          'this profile makes, and it is the whole reason `diagnostic` is the default.',
+        'Raw capture is OFF, so a failed Run leaves no transcript to diagnose from, and its transport mode ' +
+          'is `off`, so the CLI\'s own output is not kept either. That is the trade this profile makes, ' +
+          'and it is the whole reason `diagnostic` is the default.',
         ...COMMON_RESIDUALS
       ])
     }),
@@ -125,7 +162,10 @@ export function privacyProfiles(): readonly PrivacyProfile[] {
         // debugging value is, and that tension is what the profiles exist for.
         rawTranscriptMode: 'errors-only' as const,
         sessionRetentionMaxAgeDays: schemaNumber(AGE_KEY, 'default'),
-        sessionRetentionMaxBytes: schemaNumber(BYTES_KEY, 'default')
+        sessionRetentionMaxBytes: schemaNumber(BYTES_KEY, 'default'),
+        // FR-R4-F04 (FR-002) — the shipped default, which resolves to `errors-only` through the raw mode
+        // above; written as the stored value (`inherit`) so keeping the defaults stays a decision.
+        transportCaptureMode: 'inherit' as const
       }),
       residual: Object.freeze([
         'A failed, canceled or paused Run retains an UNREDACTED transcript — operator prompts, source, ' +
@@ -142,7 +182,8 @@ export function privacyProfiles(): readonly PrivacyProfile[] {
         loggingVerbose: true,
         rawTranscriptMode: 'always' as const,
         sessionRetentionMaxAgeDays: 365,
-        sessionRetentionMaxBytes: 4 * 1024 * 1024 * 1024
+        sessionRetentionMaxBytes: 4 * 1024 * 1024 * 1024,
+        transportCaptureMode: 'on' as const
       }),
       residual: Object.freeze([
         'WARNING: every Run — including every successful one — retains an unredacted transcript, and ' +
@@ -174,8 +215,22 @@ const FIELDS: readonly (keyof PrivacyProfileSettings)[] = Object.freeze([
   'loggingVerbose',
   'rawTranscriptMode',
   'sessionRetentionMaxAgeDays',
-  'sessionRetentionMaxBytes'
+  'sessionRetentionMaxBytes',
+  'transportCaptureMode'
 ]);
+
+/**
+ * The value detection compares for one field. Every field is compared as stored except transport, which
+ * is compared as it RESOLVES (FR-R4-F04, X10): the stored `inherit` means "whatever the raw mode says",
+ * so two settings objects with different stored values and one effective posture are one profile. An
+ * object with no transport field at all (a settings snapshot from before the field existed) reads as
+ * `inherit`, which keeps every workspace on the profile it was on.
+ */
+function comparable(settings: PrivacyProfileSettings, field: keyof PrivacyProfileSettings): unknown {
+  return field === 'transportCaptureMode'
+    ? resolveTransportCaptureMode(settings.transportCaptureMode, settings.rawTranscriptMode)
+    : settings[field];
+}
 
 /**
  * Which profile the current settings are, or `custom` with what to look at.
@@ -190,7 +245,7 @@ const FIELDS: readonly (keyof PrivacyProfileSettings)[] = Object.freeze([
 export function detectPrivacyProfile(settings: PrivacyProfileSettings): DetectedPrivacyProfile {
   const scored = privacyProfiles().map((profile) => ({
     profile,
-    differs: FIELDS.filter((field) => settings[field] !== profile.settings[field])
+    differs: FIELDS.filter((field) => comparable(settings, field) !== comparable(profile.settings, field))
   }));
   const exact = scored.find((entry) => entry.differs.length === 0);
   if (exact !== undefined) return { kind: 'profile', name: exact.profile.name };

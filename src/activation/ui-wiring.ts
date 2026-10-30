@@ -11,7 +11,6 @@ import { runCancel } from '../commands/cancel';
 import { runClearAll } from '../commands/clear-all';
 import { runClearQueue } from '../commands/clear-queue';
 import { runEnqueue, type EnqueueCommandArgs } from '../commands/enqueue';
-import { runExportAuditLog } from '../commands/export-audit';
 import { runGitApprovals, type GitApprovalItem } from '../commands/git-approvals';
 import { runOpenDashboard } from '../commands/open-dashboard';
 import {
@@ -46,6 +45,10 @@ import {
 } from '../commands/start-queue';
 import { registerQueueFailurePolicyCommand } from './queue-failure-policy-wiring';
 import { registerAuditChainCommands } from './audit-commands-wiring';
+import { registerEvidenceCommands } from './evidence-commands-wiring';
+import type { TransportRouter } from '../monitor/transport/transport-router';
+import type { OperatorAttribution } from '../lib/operator-attribution';
+import type { RuntimeLogAccessor } from '../lib/runtime-log/runtime-log-settings';
 import { registerQueueItemExitCommands } from './queue-item-exit-wiring';
 import { readQueueFailurePolicyDefault } from './uncached-settings-accessors';
 import type { PipelineCatalog } from '../config/pipeline-config';
@@ -73,12 +76,6 @@ import {
 } from '../ui/sidebar/connected-run-projector';
 import type { ConnectedRunPort } from '../ui/sidebar/commands/router-types';
 import type { StateProjector } from '../ui/sidebar/state-projector';
-import { isTerminalRunStatus } from '../state/workflow-run';
-import {
-  runDeleteRunEvidenceCommand,
-  runExportRunEvidenceCommand,
-  type EvidenceCommandDeps
-} from '../commands/evidence-commands';
 
 interface Stage2UiWiringDeps {
   readonly extensionRoot: string;
@@ -108,6 +105,14 @@ interface Stage2UiWiringDeps {
    * asynchronous `accepted`.
    */
   readonly queueStartFailures: Pick<QueueStartFailureRegistry, 'get'>;
+  /** FR-R4-F04 (D4) — private storage, where the deletion removes a Run's recovery checkpoint. */
+  readonly globalStorageRoot: string;
+  /** FR-R4-F04 (D5) — asked when the shared legacy transport ages out. */
+  readonly transportRouter: Pick<TransportRouter, 'legacyAgesOutBy' | 'measure'>;
+  /** FR-R4-F04 (P4) — the operator attribution the reset command replaces. */
+  readonly operatorAttribution: Pick<OperatorAttribution, 'reset'>;
+  /** FR-R4-F04 (B3) — where the runtime log is, for the diagnostics bundle's lines for one Run. */
+  readonly runtimeLogAccessor: Pick<RuntimeLogAccessor, 'read'>;
 }
 
 export interface Stage2UiWiring {
@@ -255,15 +260,6 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
     logger: deps.logger
   };
   /**
-   * FR-R3-127 — the three inputs a palette invocation has to supply, assembled in
-   * one place so both evidence commands read the same answers.
-   *
-   * `isRunActive` is the SAME probe `run-safety-wiring.ts` wires for checkpoint
-   * attribution — the non-terminal count over the store's Run map. Two definitions
-   * of "still executing" is how one of them comes to permit a delete the other
-   * would refuse.
-   */
-  /**
    * FR-R3-154 (T1645) — the three Phase controls take the same three
    * dependencies, named once so the registrations below stay one line each.
    */
@@ -271,64 +267,6 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
     controller: d.controller,
     notifier: d.notifier,
     logger: d.logger
-  });
-
-  const evidenceCommandDeps = (d: typeof deps): EvidenceCommandDeps => ({
-    workspaceRoot: d.workspaceRoot,
-    isRunActive: (runId) =>
-      Object.values(d.store.getRunMap()).some(
-        (run) => run.id === runId && !isTerminalRunStatus(run.status)
-      ),
-    promptForRunId: async () =>
-      vscode.window.showInputBox({
-        title: 'Run id',
-        prompt: 'The UUID shown in the run detail and in history',
-        ignoreFocusOut: true
-      }),
-    promptForDestination: async () => {
-      const picked = await vscode.window.showOpenDialog({
-        canSelectFiles: false,
-        canSelectFolders: true,
-        canSelectMany: false,
-        openLabel: 'Export here'
-      });
-      return picked?.[0]?.fsPath;
-    },
-    // The modal pattern already used by `run-safety-wiring.ts` for the mutation
-    // approval, rather than a second one. A destructive command reachable from the
-    // palette by fuzzy match is not an operator decision unless they are asked.
-    confirmDelete: async (runId) => {
-      const approve = 'Delete evidence';
-      const answer = await vscode.window.showWarningMessage(
-        `Delete all local evidence held for run ${runId}?`,
-        {
-          modal: true,
-          detail:
-            'Removes this run\'s raw transcript, verbose diagnostics and session artifacts from ' +
-            'the workspace. It refuses rather than racing a live writer, and reports anything it ' +
-            'could not remove. This cannot be undone.'
-        },
-        approve
-      );
-      return answer === approve;
-    },
-    notifier: d.notifier,
-    logger: d.logger,
-    auditDeletion: async (runId, outcome) => {
-      await d.auditWriter.append({
-        runId,
-        phase: 'operator',
-        iteration: 0,
-        eventType: 'evidence-deleted',
-        // `info` for a refusal too: the refusal is the mechanism working, not a
-        // failure of it, and `AuditOutcome` has no third word for that.
-        outcome: 'info',
-        payload:
-          outcome.outcome === 'completed'
-            ? { artifacts: outcome.removed.length, retained: outcome.retained.length }
-            : { artifacts: 0, refusedReason: outcome.reason }
-      });
-    }
   });
 
   // FR-R3-136 (FR-005, FR-006) — the trust guard every registration below goes
@@ -491,9 +429,19 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
       logger: deps.logger,
       auditWriter: deps.auditWriter
     }),
-    registerGuardedCommand(guard, 'schegent.exportAuditLog', () =>
-      runExportAuditLog({ workspaceRoot: deps.workspaceRoot, notifier: deps.notifier })
-    ),
+    // FR-R4-F04 (TA4) — export audit log, export Run evidence and delete Run evidence, registered
+    // together in `evidence-commands-wiring.ts` because this function is at its bound.
+    ...registerEvidenceCommands(guard, {
+      workspaceRoot: deps.workspaceRoot,
+      store: deps.store, historyStore: deps.historyStore,
+      auditWriter: deps.auditWriter,
+      notifier: deps.notifier,
+      logger: deps.logger,
+      globalStorageRoot: deps.globalStorageRoot,
+      transportRouter: deps.transportRouter,
+      operatorAttribution: deps.operatorAttribution,
+      runtimeLogAccessor: deps.runtimeLogAccessor
+    }),
     // Feature 195 (T064) — retry and attested completion, the two queue-item
     // exits that must offer the queue a drain; extracted together for the
     // reason `queue-item-exit-wiring.ts` records.
@@ -610,18 +558,7 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
       deps.notifier.info(
         'Schegent: Claude CLI now natively streams prompts over stdin. No transport redetection is necessary.'
       );
-    }),
-    // FR-R3-127 (FR-006) — the two commands
-    // `docs/operations/evidence-retention-disclosure.md` has promised since
-    // FR-R3-085. The services existed, tested, with no caller; nothing declared
-    // them, so a reader following that page found an empty palette.
-    // `tests/lint/documented-commands-exist.test.ts` is what stops that recurring.
-    registerGuardedCommand(guard, 'schegent.exportRunEvidence', (runId?: unknown) =>
-      runExportRunEvidenceCommand(evidenceCommandDeps(deps), runId)
-    ),
-    registerGuardedCommand(guard, 'schegent.deleteRunEvidence', (runId?: unknown) =>
-      runDeleteRunEvidenceCommand(evidenceCommandDeps(deps), runId)
-    )
+    })
   ];
   return {
     dashboardBridge,

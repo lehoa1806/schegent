@@ -33,9 +33,15 @@ command.
 <!-- Source: src/ui/sidebar/commands/cmd-open-audit-log.ts -->
 
 For a shareable reduced view, run **Schegent: Export Metadata-Only Audit**
-(`schegent.exportAuditLog`). It reads only the active log, prompts for a save
-location defaulting to `schegent-audit-v3.jsonl`, and writes only parsable
-schema-v3 rows.
+(`schegent.exportAuditLog`). It reads only the active log, opens a save dialog
+starting in your home directory and suggesting `schegent-audit-v3.jsonl`, and writes
+only parsable schema-v3 rows, to a local file with mode `0600`. It refuses a
+destination that is not a local file (a remote filesystem's mode cannot be checked)
+or that resolves into `.schegent/`, whatever the spelling: a link, a `..` or a
+different case does not get around it. Each export, and each refusal, records one
+`evidence-exported` audit row with counts and no path; dismissing the dialog records
+nothing. The command is owner-only: an untrusted window, or a window that does not
+own the workspace, refuses it, because the row it records needs an owner to write it.
 <!-- Source: package.json -->
 <!-- Source: src/commands/export-audit.ts -->
 
@@ -86,9 +92,20 @@ are not deleted by the audit writer.
 <!-- Source: src/audit/audit-log-writer.ts -->
 
 Before each append, the writer rotates when the current file is at least the
-configured size threshold or at least the configured maximum age. The exposed
-settings are `schegent.audit.rotation.sizeMB` (default 5, minimum 1) and
+configured size threshold or at least the configured maximum age. The age is
+measured from the **oldest usable row** in the file, not from the file's modification
+time, so a row dated far in the future cannot postpone a rotation, and an existing log whose oldest row is
+already past the limit rotates at its first append after an upgrade (its rows move to an archive unchanged). A file whose rows
+carry no usable time is aged from the moment it was first observed, which is recorded
+in `.schegent/audit-generation.json` (a small owner-only record keyed by the
+generation, so a rotation starts a fresh one). The exposed settings are
+`schegent.audit.rotation.sizeMB` (default 5, minimum 1) and
 `schegent.audit.rotation.maxAgeDays` (default 30, minimum 1).
+
+Generations written before the transport and attribution changes of this release can
+hold stream content and may name an operating-system user. They are not rewritten.
+An export lists them in its manifest as legacy generations, and they leave only whole,
+in a normal retention cut that the chain verifier follows.
 <!-- Source: src/audit/audit-log-writer.ts -->
 <!-- Source: package.json -->
 <!-- Source: src/extension.ts -->

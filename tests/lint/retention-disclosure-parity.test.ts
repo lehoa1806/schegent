@@ -19,16 +19,23 @@ import {
 } from '../../src/services/retention-disclosure';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
+/** The inventory's row count when feature 251 landed it (data-model §11 lists 21 stores; the raw transcript is two rows). */
+const INVENTORY_ROW_FLOOR = 22;
 const DOC = 'docs/operations/evidence-retention-disclosure.md';
 const document = readFileSync(resolve(REPO_ROOT, DOC), 'utf8');
 
 describe('FR-R3-085 — the retention disclosure derives from the retention constants', () => {
   it('the disclosure describes every artifact class, so an empty table cannot pass', () => {
     const entries = retentionDisclosure();
-    expect(entries.length).toBeGreaterThanOrEqual(5);
+    // FR-R4-F04 (FR-009) — the floor was 5 for the first table and is the inventory's row count now: a
+    // table that lost a store would otherwise still pass. `retention-inventory.test.ts` pins the stores by name.
+    expect(entries.length).toBeGreaterThanOrEqual(INVENTORY_ROW_FLOOR);
     for (const entry of entries) {
-      expect(entry.bound.length, `${entry.artifact} needs a bound`).toBeGreaterThan(10);
-      expect(entry.source, `${entry.artifact} must name the constant it came from`).toMatch(/\.ts|settings/);
+      expect(entry.bounds.length, `${entry.store} needs a bound`).toBeGreaterThan(10);
+      expect(entry.source, `${entry.store} must name the constant it came from`).toMatch(/\.ts|settings|schegent\./);
+      // The columns FR-R4-F04 added are rendered, so a row cannot carry a field the document omits.
+      expect(entry.sweptBy.length, `${entry.store} needs a sweep`).toBeGreaterThan(0);
+      expect(entry.liveProtection.length, `${entry.store} needs a live-protection statement`).toBeGreaterThan(0);
     }
   });
 
@@ -46,7 +53,7 @@ describe('FR-R3-085 — the retention disclosure derives from the retention cons
     // The single most important line for an operator, and the one a "tidy-up"
     // edit is most likely to soften. The raw transcript is deliberately
     // unredacted; a disclosure that omits that is worse than no disclosure.
-    const raw = retentionDisclosure().find((entry) => entry.artifact.includes('Raw session'));
+    const raw = retentionDisclosure().find((entry) => entry.store.includes('Raw session transcript (retained)'));
     expect(raw?.redacted).toBe(false);
     expect(document).toContain('deliberately unredacted');
     expect(document).toContain('**not redacted**');

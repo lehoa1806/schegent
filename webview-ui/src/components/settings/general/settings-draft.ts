@@ -17,7 +17,18 @@
 // `field-types.ts` records the same constraint for the same reason.
 
 import type { GeneralSettings } from '../../../lib/snapshot-types';
+import type { TransportUsage } from '../../../../../src/contracts/sidebar-ipc/transport-usage';
 import type { Draft, ScalarKey } from './field-types';
+
+/**
+ * FR-R4-F04 (contract O4) — the line under the transport mode row. Counts and a date only: no path, no
+ * Run id. `agesOutBy` is null when nothing is retained, and the sentence then names no date.
+ */
+export function transportUsageLine(usage: TransportUsage): string {
+  const kept = `Transport kept: ${formatBytes(usage.retainedBytes)} across ${usage.runCount} Run(s)`;
+  const ages = usage.agesOutBy === null ? '' : `; the newest ages out by ${usage.agesOutBy.slice(0, 10)}`;
+  return `${kept}${ages}. Switching to Off keeps it until then, or until its Run's evidence is deleted.`;
+}
 
 /** Human-readable byte size for the session-artifact usage line. */
 export function formatBytes(bytes: number): string {
@@ -52,6 +63,7 @@ export function snapshotToDraft(s: GeneralSettings): Draft {
     sessionRetentionMaxAgeDays: s.sessionRetentionMaxAgeDays,
     sessionRetentionMaxBytes: s.sessionRetentionMaxBytes,
     rawTranscriptMode: s.rawTranscriptMode,
+    transportCaptureMode: s.transportCaptureMode,
     retryMaxAttempts: s.retryMaxAttempts,
     retryForceContinueOnCap: s.retryForceContinueOnCap,
     runtimeLogMaxBytes: s.runtimeLogMaxBytes,

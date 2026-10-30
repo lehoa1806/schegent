@@ -1,6 +1,12 @@
-import { describe, expect, it } from 'vitest';
-import { createCountsOnlyAuditExport } from '../../../src/commands/export-audit';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { createCountsOnlyAuditExport, runExportAuditLog } from '../../../src/commands/export-audit';
+import { EXPORT_TEXT } from '../../../src/commands/evidence-commands';
 import { FAILURE_CAUSES } from '../../../src/contracts/failure-cause';
+import type { Notifier } from '../../../src/ui/notifications';
+import { removeTempRoot } from '../../temp-root-cleanup';
 
 function row(schemaVersion: number, payload: Record<string, unknown>): string {
   return JSON.stringify({
@@ -322,5 +328,162 @@ describe('createCountsOnlyAuditExport — failureCause (FR-R4-F14)', () => {
   it('exports a line written before the feature, with no key, without one', () => {
     const [payload] = payloadsOf(createCountsOnlyAuditExport(eventRow('task-execution-ended', ended)));
     expect('failureCause' in payload).toBe(false);
+  });
+});
+
+
+// Feature 251 (FR-R4-F04, contract T15; FR-020 to FR-025; E1 to E9) — what `runExportAuditLog` writes, where
+// it asks to write it, and what it records.
+//
+// What it pins: the save dialog starts in the home directory with `schegent-audit-v3.jsonl`; a destination
+// that is not a local file (a `vscode-remote:` URI) is refused with one row; a new target and an existing
+// `0644` one both end `0600`; the allowlisted output is byte-for-byte what `createCountsOnlyAuditExport`
+// makes; one `exported` row carries the counts of rows written and skipped; one `refused` row is written for
+// a target inside `.schegent`; nothing is written when the dialog is dismissed; and an append that throws
+// leaves the file where it is and says so (O5).
+describe('runExportAuditLog (FR-R4-F04, T15)', () => {
+  const FIXTURE = [
+    row(3, { outcome: 'clean', metrics: { tests: 12 } }),
+    row(2, { command: 'legacy command' }),
+    'not json at all',
+    row(3, { outcome: 'failure', cause: 'cap_exhausted' })
+  ].join('\n');
+
+  let workspace: string;
+  let home: string;
+  let outside: string;
+  let notices: string[];
+  let appended: Array<Record<string, unknown>>;
+  let suggested: string[];
+
+  beforeEach(async () => {
+    workspace = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-export-audit-ws-')));
+    home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-export-audit-home-')));
+    outside = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-export-audit-out-')));
+    await fs.mkdir(path.join(workspace, '.schegent'), { recursive: true });
+    await fs.writeFile(path.join(workspace, '.schegent', 'audit.log'), `${FIXTURE}\n`, 'utf8');
+    notices = [];
+    appended = [];
+    suggested = [];
+  });
+
+  afterEach(async () => {
+    await Promise.all([workspace, home, outside].map((dir) => removeTempRoot(dir)));
+  });
+
+  const notifier = (): Notifier =>
+    ({
+      info: (message: string) => notices.push(message),
+      warn: (message: string) => {
+        notices.push(message);
+        return Promise.resolve(undefined);
+      },
+      error: (message: string) => notices.push(message)
+    }) as unknown as Notifier;
+
+  const run = (
+    target: { scheme: string; fsPath: string } | undefined,
+    options: { appendFails?: boolean } = {}
+  ): Promise<void> =>
+    runExportAuditLog({
+      workspaceRoot: workspace,
+      notifier: notifier(),
+      auditWriter: {
+        append: async (entry: Record<string, unknown>) => {
+          if (options.appendFails === true) throw new Error('disk full');
+          appended.push(entry);
+          return entry as never;
+        }
+      } as never,
+      promptForTarget: async (suggestedPath: string) => {
+        suggested.push(suggestedPath);
+        return target;
+      },
+      homeDirectory: () => home
+    });
+
+  it('suggests the home directory with the audit file name, and writes where the operator chose', async () => {
+    const target = path.join(outside, 'audit.jsonl');
+    await run({ scheme: 'file', fsPath: target });
+
+    expect(suggested).toEqual([path.join(home, 'schegent-audit-v3.jsonl')]);
+    expect(await fs.readFile(target, 'utf8')).toBe(createCountsOnlyAuditExport(`${FIXTURE}\n`));
+  });
+
+  it('writes a new target 0600, and narrows an existing 0644 one to 0600', async () => {
+    if (process.platform === 'win32') return;
+    const fresh = path.join(outside, 'fresh.jsonl');
+    await run({ scheme: 'file', fsPath: fresh });
+    expect((await fs.stat(fresh)).mode & 0o777).toBe(0o600);
+
+    const existing = path.join(outside, 'existing.jsonl');
+    await fs.writeFile(existing, 'old content that is longer than the export\n'.repeat(50), 'utf8');
+    await fs.chmod(existing, 0o644);
+    await run({ scheme: 'file', fsPath: existing });
+    expect((await fs.stat(existing)).mode & 0o777).toBe(0o600);
+    expect(await fs.readFile(existing, 'utf8'), 'the old bytes are replaced, not appended to').toBe(
+      createCountsOnlyAuditExport(`${FIXTURE}\n`)
+    );
+  });
+
+  it('records one exported row with the rows it wrote and the rows it skipped', async () => {
+    await run({ scheme: 'file', fsPath: path.join(outside, 'audit.jsonl') });
+
+    expect(appended).toHaveLength(1);
+    expect(appended[0]).toMatchObject({
+      runId: '',
+      phase: 'operator',
+      iteration: 0,
+      eventType: 'evidence-exported',
+      outcome: 'info',
+      payload: { kind: 'audit-metadata', outcome: 'exported', included: 2, omitted: 2 }
+    });
+    expect(Object.keys(appended[0]!.payload as object).sort()).toEqual(['included', 'kind', 'omitted', 'outcome']);
+  });
+
+  it('refuses a vscode-remote destination with one refused row, and writes nothing', async () => {
+    const target = path.join(outside, 'remote.jsonl');
+    await run({ scheme: 'vscode-remote', fsPath: target });
+
+    expect(appended).toHaveLength(1);
+    expect(appended[0]).toMatchObject({
+      payload: { kind: 'audit-metadata', outcome: 'refused', included: 0, refusal: 'destination-not-local-file' }
+    });
+    await expect(fs.stat(target)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(notices.join(' ')).toContain(EXPORT_TEXT.refusal['destination-not-local-file']);
+  });
+
+  it('refuses a target inside .schegent with one refused row', async () => {
+    const inside = path.join(workspace, '.schegent', 'copy.jsonl');
+    await run({ scheme: 'file', fsPath: inside });
+
+    expect(appended).toHaveLength(1);
+    expect(appended[0]).toMatchObject({ payload: { outcome: 'refused', refusal: 'destination-in-evidence-store' } });
+    await expect(fs.stat(inside)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('refuses an alias that resolves into .schegent, which the text of the path does not name', async () => {
+    if (process.platform === 'win32') return;
+    const link = path.join(outside, 'alias');
+    await fs.symlink(path.join(workspace, '.schegent'), link);
+    await run({ scheme: 'file', fsPath: path.join(link, 'copy.jsonl') });
+
+    expect(appended[0]).toMatchObject({ payload: { outcome: 'refused', refusal: 'destination-in-evidence-store' } });
+    expect(await fs.readdir(path.join(workspace, '.schegent')), 'nothing was written into the store').toEqual(['audit.log']);
+  });
+
+  it('records nothing and writes nothing when the dialog is dismissed', async () => {
+    await run(undefined);
+    expect(appended).toEqual([]);
+    expect(await fs.readdir(outside)).toEqual([]);
+  });
+
+  it('keeps the file and says so when the append throws (O5)', async () => {
+    const target = path.join(outside, 'audit.jsonl');
+    await run({ scheme: 'file', fsPath: target }, { appendFails: true });
+
+    expect(await fs.readFile(target, 'utf8')).toBe(createCountsOnlyAuditExport(`${FIXTURE}\n`));
+    expect(notices.join(' ')).toContain(EXPORT_TEXT.notRecorded);
+    expect(notices.join(' '), 'the error message does not reach the operator').not.toContain('disk full');
   });
 });

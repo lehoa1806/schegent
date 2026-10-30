@@ -307,6 +307,8 @@ describe('FR-032 (BUG-001, SC-011) — the window that lost the election recover
       watchdog: { reattachOnActivation },
       scheduledStartCoordinator: { reArm },
       replayEvidenceBacklog: preamble.replayEvidenceBacklog,
+      // FR-R4-F04 (TA7) — the preamble now creates the operator pseudonym; this test is about the election.
+      operatorAttribution: { ensureStored: async () => 'pseudonym-0123456789abcdef' },
       runSafety: {
         replayTerminalTransitions: preamble.replayTerminalTransitions,
         sweepCheckpointRetention: vi.fn(async () => undefined)

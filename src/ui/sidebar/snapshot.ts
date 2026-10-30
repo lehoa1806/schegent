@@ -414,6 +414,7 @@ export interface HistoryEntry {
 import type { PhaseDef, PipelineDef } from '../../config/pipeline-config';
 import { DEFAULT_BACKEND, type BackendRunnerKind } from '../../contracts/backend-kinds';
 import type { GeneralSettings } from '../../config/general-settings';
+import type { TransportUsage } from '../../contracts/sidebar-ipc/transport-usage';
 // FR-R3-145 (T1572) — value imports, so the idle projection restates neither
 // number. Both live in the contract layer precisely so this module and
 // `src/state/workspace-state.ts` can read them without depending on each other.
@@ -494,6 +495,15 @@ export type {
 // Re-exported unchanged: every existing host import of these names still resolves here.
 
 export type { GeneralSettings } from '../../config/general-settings';
+
+/**
+ * FR-R4-F04 (FR-003) — `generalSettings` as the snapshot carries it: the configuration projection plus
+ * the transport usage the Settings tab shows under the transport mode row. The usage is not a setting
+ * and is not in `KEY_SPECS`, so it is not a field of `GeneralSettings` (whose keys index the write
+ * allowlist and the scope map); it rides beside it. Absent until the router has measured, and for a host
+ * that predates it, so every reader treats absence as "show nothing".
+ */
+export type GeneralSettingsProjection = GeneralSettings & { readonly transportUsage?: TransportUsage };
 // Feature 099 (T491, FR-041) — `PhasePrecedenceLayer` and `PhasePrecedenceProjection`
 // are gone with `config/phase-precedence.ts`. Precedence answered "which layer wins
 // for this Phase id"; with one layer the question has no second answer, and a
@@ -790,7 +800,7 @@ export interface WorkflowSnapshot {
    * Settings surface. Always present (defaults populated when the
    * workspace/user override is absent).
    */
-  readonly generalSettings: GeneralSettings;
+  readonly generalSettings: GeneralSettingsProjection;
   /**
    * FR-R3-145 (T1572) — the two queue settings, read from the memento the drain
    * enforces against rather than from the configuration `generalSettings`
@@ -1135,6 +1145,8 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
   sessionRetentionMaxAgeDays: 30,
   sessionRetentionMaxBytes: 512 * 1024 * 1024,
   rawTranscriptMode: 'errors-only',
+  // FR-R4-F04 (FR-001) — the manifest's default.
+  transportCaptureMode: 'inherit',
   retryMaxAttempts: 5,
   retryForceContinueOnCap: false,
   // FR-R3-143 (T020) — the six the manifest contributes and this object never
@@ -1175,6 +1187,7 @@ export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
     sessionRetentionMaxAgeDays: 'default',
     sessionRetentionMaxBytes: 'default',
     rawTranscriptMode: 'default',
+    transportCaptureMode: 'default',
     retryMaxAttempts: 'default',
     retryForceContinueOnCap: 'default',
     cliInheritEnvironment: 'default',

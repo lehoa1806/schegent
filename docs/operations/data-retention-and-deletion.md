@@ -14,7 +14,7 @@ Schegent uses independent retention rules for independent artifact classes. Dele
 | Rotated audit archives | 10 archives and 90 days, with a 7-day minimum age policy | none beyond the configured archive rules |
 | Raw transcripts and verbose diagnostic trees | 30 days and 512 MiB across complete inactive Runs | artifacts for active/protected Run IDs |
 | Recovery checkpoints | 14 days and 256 MiB | ten most recent Run directories are protected from the size bound, but not the age bound |
-| CLI transport log | 5 MiB per generation plus three generations | current live file until rotation |
+| Run transport (and the legacy shared transport) | 5 MiB per Run, 20 MiB across the workspace, the session age; legacy files expire whole at that age | an active Run's file is not aged or removed to meet the total |
 | History descriptions | coupled to retained history entries | removed best-effort when the owning history row is evicted |
 | Failure records | 30 days (the session age setting) and the newest 200 per workspace | none |
 
@@ -25,6 +25,16 @@ Schegent uses independent retention rules for independent artifact classes. Dele
 <!-- Source: src/monitor/cli-transport-sink.ts -->
 <!-- Source: src/services/history/history-description-store.ts -->
 <!-- Source: src/services/failure-record/failure-record-retention.ts -->
+
+The full inventory of every store, with its location, bounds, what sweeps it and what Delete and Export do with it, is generated from the constants that enforce it in [what Schegent keeps on this machine](evidence-retention-disclosure.md); this page does not repeat those bounds beyond the matrix above.
+
+## What Delete Run Evidence removes and keeps
+
+`Schegent: Delete Run Evidence` removes, for one Run only: its session directory (its transport file included), its raw transcripts, its verbose diagnostics, its failure records and its private recovery checkpoint. It keeps the shared audit log, the runtime log, the metrics rollup, Run history (so the Run stays listed) and the Run's history description, and any shared legacy transport file until it ages out; the notice lists what was kept and, for the legacy file, when it ages out. It refuses while the Run is active, and for a Run with no evidence in this workspace. It reports what it could not remove rather than failing.
+
+## When retention runs
+
+Retention runs when the host starts, after a Run ends, when a retention setting changes, and now on a timer: once an hour, an idle window that owns the workspace and is trusted removes what has expired and is inactive (the session groups and the transport files), skipping every Run still executing. A pass that removes nothing writes no audit row. A window that does not own the workspace, or is untrusted, runs no pass. The timing is separate from each age bound: an age says when evidence becomes eligible, and these triggers say when it is looked at.
 
 The session age setting covers raw transcripts, verbose diagnostic trees and failure records; the session byte setting covers the first two only. Neither deletes structured audit entries, recovery checkpoints in extension `globalStorage`, runtime logs, CLI transport generations, or history descriptions.
 
