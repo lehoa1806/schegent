@@ -39,6 +39,7 @@ import { makeChildRunFactsReader } from '../services/workflow-execution/child-ru
 import type { ConnectedWorkflowRun } from '../state/connected-workflow-run';
 import type { ConnectedRunWriteResult } from '../state/workspace-state';
 import type { WorkflowRun } from '../state/workflow-run';
+import type { TransportRouter } from '../monitor/transport/transport-router';
 
 export async function createRunSafetyWiring(input: {
   context: vscode.ExtensionContext;
@@ -48,6 +49,8 @@ export async function createRunSafetyWiring(input: {
   historyStore: HistoryStore;
   logger: SanitizedLogger;
   rawTranscript: RawTranscriptWriter;
+  /** FR-R4-F04 (X5) — applies the transport end table at a Run's end. */
+  transportRouter: Pick<TransportRouter, 'finalizeRun'>;
   sessionRetention: SessionArtifactRetentionService;
   protectedSessionRunIds: () => ReadonlySet<string>;
   evidenceHealth: EvidenceHealthReporter;
@@ -294,6 +297,14 @@ export async function createRunSafetyWiring(input: {
       logger: input.logger
     }),
     onRunTerminal: async (run: import('../state/workflow-run').WorkflowRun) => {
+      // FR-R4-F04 (X5) — transport first, in its own `try`, so a failure here never stops the raw
+      // transcript's finalize or the retention sweep below. `finalizeRun` reports its own failures and
+      // does not throw; this guards the call, not the contract.
+      try {
+        await input.transportRouter.finalizeRun(run.id, run.status, input.protectedSessionRunIds());
+      } catch {
+        // Reported once by the router; the Run's end goes on.
+      }
       await input.rawTranscript.finalizeRun(
         run.id,
         run.status,

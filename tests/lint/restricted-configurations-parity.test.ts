@@ -177,9 +177,12 @@ describe('restrictedConfigurations parity (FR-R3-136 T1526c)', () => {
     // arrived, classified `run-shape`: it ends a looping phase early inside a run the operator
     // started after trusting the folder, and its worst misuse fails a run sooner. The restricted
     // list stays at 14 and the executable-authority list at 9.
-    expect(workspaceSettableKeys()).toHaveLength(29);
-    expect(Object.keys(CONFIGURATION_SENSITIVITY)).toHaveLength(29);
-    expect(derivedRestrictedConfigurations()).toHaveLength(14);
+    // FR-R4-F04 (feature 251, 2026-10-31) — 29 -> 30, and the restricted list 14 -> 15.
+    // `schegent.logging.transportCaptureMode` arrived, classified `evidence`: it decides whether and
+    // when the CLI's own output is kept, so a workspace value must not vote on it in an untrusted window.
+    expect(workspaceSettableKeys()).toHaveLength(30);
+    expect(Object.keys(CONFIGURATION_SENSITIVITY)).toHaveLength(30);
+    expect(derivedRestrictedConfigurations()).toHaveLength(15);
     expect(EXECUTABLE_AUTHORITY_PROPERTIES).toHaveLength(9);
 
     const histogram = new Map<SensitivityClass, number>();
@@ -189,7 +192,7 @@ describe('restrictedConfigurations parity (FR-R3-136 T1526c)', () => {
     expect(Object.fromEntries(histogram)).toEqual({
       capability: 2,
       'operator-signal': 4,
-      evidence: 8,
+      evidence: 9,
       'run-shape': 15
     });
     // The classes that produce the list, stated once so a reclassification of the

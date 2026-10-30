@@ -414,6 +414,23 @@
           "itemPattern": null
         },
         {
+          "key": "schegent.logging.transportCaptureMode",
+          "type": "enum",
+          "default": "inherit",
+          "scope": "resource",
+          "enum": [
+            "inherit",
+            "off",
+            "errors-only",
+            "on"
+          ],
+          "minimum": null,
+          "maximum": null,
+          "pattern": null,
+          "itemType": null,
+          "itemPattern": null
+        },
+        {
           "key": "schegent.logging.verbose",
           "type": "boolean",
           "default": false,

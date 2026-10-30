@@ -44,18 +44,18 @@
 //     transport tier keeps it.
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AuditLogWriter } from '../../../src/audit/audit-log-writer';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import { ClaudeCliMonitor } from '../../../src/monitor/claude-cli-monitor';
 import {
-  CLI_TRANSPORT_FILE_NAME,
   CliTransportSink,
   type CliTransportRecord,
   type CliTransportRecorder
 } from '../../../src/monitor/cli-transport-sink';
+import { createTransportRouter } from '../../../src/monitor/transport/transport-router';
 import { expectNoDescriptorWarnings } from '../../setup/descriptor-warnings';
 import { clearMetricsCache, readMetrics } from '../../../src/metrics/metrics-service';
 import type { TaskRecord } from '../../../src/contracts/sidebar-ipc';
@@ -203,14 +203,16 @@ async function driveFixture(mode: Mode): Promise<ArmResult> {
   const sink =
     mode === 'transport-sink'
       ? track(new CliTransportSink({
-          settings: {
-            read: () => ({
-              root,
-              path: join(root, '.schegent', CLI_TRANSPORT_FILE_NAME),
-              maxBytes: 512 * 1024 * 1024,
-              maxGenerations: 3
-            })
-          },
+          // FR-R4-F04 — the sink hands lines to a router that writes one file per Run under `on`.
+          router: createTransportRouter({
+            workspaceRoot: () => root,
+            readSetting: () => 'on',
+            readRawTranscriptMode: () => 'errors-only',
+            readMaxAgeDays: () => 3650,
+            tempRoot: join(root, '.os-temp'),
+            runStatus: () => undefined,
+            logger
+          }),
           sanitize: (line) => logger.sanitize(line),
           logger
         }))
@@ -351,7 +353,12 @@ async function driveFixture(mode: Mode): Promise<ArmResult> {
 
   let transportLogLines: readonly string[] = [];
   if (sink) {
-    const transport = await readFile(join(root, '.schegent', CLI_TRANSPORT_FILE_NAME), 'utf8');
+    // One file per Run under `.schegent/sessions/<runId>/transport.log`, read in Run order.
+    const sessions = join(root, '.schegent', 'sessions');
+    let transport = '';
+    for (const name of (await readdir(sessions)).sort()) {
+      transport += await readFile(join(sessions, name, 'transport.log'), 'utf8');
+    }
     transportLogLines = transport.split('\n').filter((line) => line.length > 0);
   }
 

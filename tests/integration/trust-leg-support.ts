@@ -5,11 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 
-import {
-  MUTATING_COMMAND_ID_LIST,
-  READ_ONLY_COMMAND_ID_LIST,
-  type ReadOnlyCommandId
-} from '../../src/contracts/entry-point-dispositions';
+import { MUTATING_COMMAND_ID_LIST, READ_ONLY_COMMAND_ID_LIST } from '../../src/contracts/entry-point-dispositions';
 
 /**
  * FR-R3-136 (T1527) — what the two trust launches share.
@@ -34,19 +30,11 @@ const ACTIVATION_BUDGET_MS = 20_000;
 const EVIDENCE_BUDGET_MS = 20_000;
 const POLL_INTERVAL_MS = 100;
 
-/**
- * The two read-only ids this leg does not invoke, and why.
- *
- * Both open a modal destination picker — `vscode.window.showSaveDialog` for the
- * audit export, an injected `promptForDestination()` for the evidence export. A
- * modal in a headless launch has nobody to dismiss it, so invoking either would
- * hang the leg rather than fail it. That they are modal is the same fact that
- * makes them read-only under C7: no workspace content can confirm a dialog.
- */
-const MODAL_READ_ONLY: readonly ReadOnlyCommandId[] = Object.freeze([
-  'schegent.exportAuditLog',
-  'schegent.exportRunEvidence'
-]);
+// FR-R4-F04 (TA8, E10) — this was `MODAL_READ_ONLY`: the two exports, skipped because each opens a modal
+// destination picker, which a headless launch has nobody to dismiss, and which was safe to skip because
+// both were read-only ids. They are mutating, owner-only ids now (each records an audit row), so this leg
+// drives both like any other mutating command, and the untrusted guard refuses each BEFORE any dialog
+// opens: no picker, no hang. Only this untrusted leg drives every command; the granted control does not.
 
 /** The refusal `registerGuardedCommand` writes at info on every declined call. */
 const REFUSAL_MESSAGE = 'command refused: workspace not trusted';
@@ -333,7 +321,7 @@ export interface DrivenCommands {
 }
 
 /**
- * Invoke every command the extension registers, except the two modal ones.
+ * Invoke every command the extension registers.
  *
  * Through `vscode.commands.executeCommand`, which is the point: VS Code's own
  * guidance is that a registered command can be invoked by another extension or a
@@ -347,17 +335,16 @@ export interface DrivenCommands {
  * disposition map gone out of step with `ui-wiring.ts` produces.
  */
 export async function driveEveryCommand(): Promise<DrivenCommands> {
-  for (const id of MODAL_READ_ONLY) {
+  const readOnly = [...READ_ONLY_COMMAND_ID_LIST];
+  assert.ok(readOnly.length > 0, 'no read-only command left to exercise');
+  // The two exports are mutating now; asserting they are in that set keeps this leg from driving a
+  // command that is no longer refused by the guard (and would open a dialog nobody can dismiss).
+  for (const id of ['schegent.exportAuditLog', 'schegent.exportRunEvidence']) {
     assert.ok(
-      (READ_ONLY_COMMAND_ID_LIST as readonly string[]).includes(id),
-      `${id} is skipped as modal but is no longer a registered read-only id. A skip list that ` +
-        `names nothing is a command silently going unexercised.`
+      (MUTATING_COMMAND_ID_LIST as readonly string[]).includes(id),
+      `${id} is expected to be a mutating id, refused before its dialog in an untrusted window`
     );
   }
-  const readOnly = READ_ONLY_COMMAND_ID_LIST.filter(
-    (id) => !(MODAL_READ_ONLY as readonly string[]).includes(id)
-  );
-  assert.ok(readOnly.length > 0, 'no non-modal read-only command left to exercise');
 
   const mutating = [...MUTATING_COMMAND_ID_LIST];
   for (const id of [...mutating, ...readOnly]) {

@@ -591,6 +591,8 @@ import type {
   SkipPhaseCommand
 } from './sidebar-ipc/run-controls';
 export type * from './sidebar-ipc/run-controls';
+// FR-R4-F04 (FR-003) — the transport usage the Settings tab shows; its one home is the sub-module.
+export * from './sidebar-ipc/transport-usage';
 
 export interface OpenVerboseSettingCommand
   extends CommandBase<typeof CMD_OPEN_VERBOSE_SETTING> {}

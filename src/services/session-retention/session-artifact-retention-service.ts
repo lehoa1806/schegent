@@ -148,6 +148,9 @@ export class SessionArtifactRetentionService {
    */
   private refusals = new Set<ContainmentRefusal>();
 
+  /** FR-R4-F04 (S6) — this sweep's `recordNoop`; set per sweep, safe for the same reason as `refusals`. */
+  private recordNoop = true;
+
   constructor(private readonly deps: SessionArtifactRetentionDeps) {
     this.sessionsRoot = path.join(deps.workspaceRoot, '.schegent', 'sessions');
     this.fs = deps.filesystem ?? fs;
@@ -158,11 +161,21 @@ export class SessionArtifactRetentionService {
     return this.usage;
   }
 
-  public sweep(protectedRunIds: ReadonlySet<string> = new Set()): Promise<SessionArtifactRetentionResult> {
+  /**
+   * FR-R4-F04 (S6) — `recordNoop: false` skips the `session-retention-applied` row for a sweep that
+   * removed nothing, so the hourly maintenance pass does not fill the audit log. Every other caller
+   * passes no option and keeps the row.
+   */
+  public sweep(
+    protectedRunIds: ReadonlySet<string> = new Set(),
+    options: { readonly recordNoop?: boolean } = {}
+  ): Promise<SessionArtifactRetentionResult> {
     const protectedSnapshot = new Set(protectedRunIds);
+    const recordNoop = options.recordNoop ?? true;
     // FR-R4-F15 (K2.2) — the record pass belongs to the operation the tail chains, so a second sweep in
     // this window starts only after both passes have ended. No lock is added.
     const run = async (): Promise<SessionArtifactRetentionResult> => {
+      this.recordNoop = recordNoop;
       const result = await this.performSweep(protectedSnapshot);
       await this.sweepFailureRecords();
       return result;
@@ -458,6 +471,7 @@ export class SessionArtifactRetentionService {
     policy: SessionArtifactRetentionPolicy
   ): Promise<void> {
     if (!this.deps.audit) return;
+    if (!this.recordNoop && result.removedArtifactCount === 0) return;
     try {
       await this.deps.audit.append({
         runId: 'system',

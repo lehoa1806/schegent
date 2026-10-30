@@ -230,3 +230,88 @@ describe('FR-R4-F15 K6.9 — the export includes one Run\'s failure records', ()
     expect(result).toMatchObject({ outcome: 'refused', reason: 'no-evidence' });
   });
 });
+
+
+// Feature 251 (FR-R4-F04, contract T16; FR-023, FR-025, US3-5, US4-7; E5, E8) — outputs are owner-only, and
+// the manifest states what the audit history in an export is.
+//
+// What it pins: a destination file that already exists at `0644` ends `0600` (the helper narrows it, no
+// `chmod`); `sharedAuditHistory` is present with the data-model's statement verbatim and one `files` entry
+// per audit file the export includes; an audit fixture holding a retired stream row is labelled
+// `legacy-content` and a v3 history `metadata-only`; it is `null` when no audit file is included; and
+// `verifyExport` still passes, because the new field is additive and the manifest check never read it.
+//
+// Why: the filing's finding (R26) is that no written manifest told a recipient the audit history is shared
+// across Runs, and that an export's files took whatever mode the umask gave.
+describe('FR-R4-F04 T16 — owner-only outputs and the shared-audit statement', () => {
+  const STATEMENT = "The audit history is shared: it holds every Run's metadata, not only this Run's.";
+  const posixOnly = process.platform === 'win32' ? it.skip : it;
+
+  async function writeAudit(...lines: string[]): Promise<void> {
+    await fsp.writeFile(path.join(workspace, '.schegent', 'audit.log'), `${lines.join('\n')}\n`);
+  }
+
+  posixOnly('narrows an existing 0644 destination file to 0600', async () => {
+    const flat = path.join(destination, `.schegent__sessions__raw-${RUN}.log`);
+    await fsp.writeFile(flat, 'older bytes\n');
+    await fsp.chmod(flat, 0o644);
+
+    const result = await exportRunEvidence(workspace, RUN, destination);
+
+    expect(result.outcome).toBe('exported');
+    expect((await fsp.stat(flat)).mode & 0o777).toBe(0o600);
+    expect((await fsp.stat(path.join(destination, 'manifest.json'))).mode & 0o777).toBe(0o600);
+  });
+
+  posixOnly('creates a destination directory that does not exist owner-only', async () => {
+    const nested = path.join(destination, 'made', 'here');
+    const result = await exportRunEvidence(workspace, RUN, nested);
+    expect(result.outcome).toBe('exported');
+    expect((await fsp.stat(nested)).mode & 0o777).toBe(0o700);
+  });
+
+  it('states that the audit history is shared, once, with a file entry for each audit file included', async () => {
+    await fsp.writeFile(path.join(workspace, '.schegent', 'audit.log.20260101T000000Z'), '{"eventType":"phase-start","schemaVersion":3,"payload":{}}\n');
+    const result = await exportRunEvidence(workspace, RUN, destination);
+    if (result.outcome !== 'exported') throw new Error('expected an export');
+
+    const shared = result.manifest.sharedAuditHistory;
+    expect(shared, 'present when an audit file is included').not.toBeNull();
+    expect(shared!.statement).toBe(STATEMENT);
+    const auditContents = result.manifest.contents.filter((entry) => /audit\.log/.test(entry.path));
+    expect(auditContents.length, 'the control: audit files were included').toBeGreaterThanOrEqual(2);
+    expect(shared!.files.map((file) => file.path).sort()).toEqual(auditContents.map((entry) => entry.path).sort());
+  });
+
+  it('labels an audit file holding retired stream rows legacy-content, and a v3 history metadata-only', async () => {
+    await writeAudit(
+      '{"eventType":"phase-start","schemaVersion":3,"payload":{}}',
+      '{"eventType":"monitor-stdout-line","schemaVersion":2,"payload":{"line":"x"}}'
+    );
+    await fsp.writeFile(path.join(workspace, '.schegent', 'audit.log.20260101T000000Z'), '{"eventType":"phase-start","schemaVersion":3,"payload":{}}\n');
+    const result = await exportRunEvidence(workspace, RUN, destination);
+    if (result.outcome !== 'exported') throw new Error('expected an export');
+
+    const byName = Object.fromEntries(result.manifest.sharedAuditHistory!.files.map((file) => [file.path, file.content]));
+    expect(byName['.schegent__audit.log']).toBe('legacy-content');
+    expect(byName['.schegent__audit.log.20260101T000000Z']).toBe('metadata-only');
+  });
+
+  it('is null when no audit file is included', async () => {
+    await fsp.rm(path.join(workspace, '.schegent', 'audit.log'));
+    const result = await exportRunEvidence(workspace, RUN, destination);
+    if (result.outcome !== 'exported') throw new Error('expected an export');
+    expect(result.manifest.sharedAuditHistory).toBeNull();
+  });
+
+  it('is null when the Run has no evidence of its own, because nothing is exported', async () => {
+    const other = '9b2e5f10-1c2d-4e3f-8a4b-5c6d7e8f9a0b';
+    const result = await exportRunEvidence(workspace, other, destination);
+    expect(result.outcome).toBe('refused');
+  });
+
+  it('still verifies: the new field is additive', async () => {
+    await exportRunEvidence(workspace, RUN, destination);
+    expect(await verifyExport(destination)).toMatchObject({ ok: true, unlisted: [], missing: [], altered: [], chainBroken: false });
+  });
+});

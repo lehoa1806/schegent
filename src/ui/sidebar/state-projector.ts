@@ -24,7 +24,7 @@ import { StateProjectorRuntime } from './state-projector-runtime';
 import type {
   AuditTailEntry,
   DebugLogEntry,
-  GeneralSettings,
+  GeneralSettingsProjection,
   SessionArtifactsProjection,
   
   WorkflowSnapshot
@@ -90,7 +90,7 @@ export interface StateProjectorDeps {
     models: Record<BackendRunnerKind, readonly string[]>;
   };
   readonly defaultRunnerKind?: BackendRunnerKind;
-  readonly getGeneralSettings?: () => GeneralSettings;
+  readonly getGeneralSettings?: () => GeneralSettingsProjection;
   readonly getSessionArtifacts?: () => SessionArtifactsProjection;
   readonly getEvidenceHealth?: () => EvidenceHealthSnapshot;
   readonly getPhaseCatalog?: () => ResolvedPhaseCatalog | undefined;

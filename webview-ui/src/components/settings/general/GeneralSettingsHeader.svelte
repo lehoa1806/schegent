@@ -65,6 +65,7 @@
     rawTranscriptMode={settings.rawTranscriptMode}
     sessionRetentionMaxAgeDays={settings.sessionRetentionMaxAgeDays}
     sessionRetentionMaxBytes={settings.sessionRetentionMaxBytes}
+    transportCaptureMode={settings.transportCaptureMode}
   />
   <div class="toolbar">
     <button

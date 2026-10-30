@@ -3,6 +3,7 @@ import * as path from 'node:path';
 
 import type { SanitizedLogger } from '../lib/logger';
 import { resolveContainedTarget, type ContainmentRefusal } from '../lib/path-containment';
+import { RUN_CHECKPOINT_DIRECTORY } from './run-checkpoint-paths';
 
 /**
  * FR-R3-012 — the outer bound on the checkpoint store.
@@ -171,7 +172,7 @@ export class RunCheckpointRetentionService {
   private sweepStartedAt: number | null = null;
 
   constructor(private readonly deps: RunCheckpointRetentionDeps) {
-    this.checkpointsRoot = path.join(deps.globalStorageRoot, 'checkpoints');
+    this.checkpointsRoot = path.join(deps.globalStorageRoot, RUN_CHECKPOINT_DIRECTORY);
     this.fs = deps.filesystem ?? fs;
     this.now = deps.now ?? (() => Date.now());
     this.policy = deps.policy ?? DEFAULT_CHECKPOINT_RETENTION_POLICY;

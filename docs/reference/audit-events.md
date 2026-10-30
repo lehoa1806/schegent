@@ -55,8 +55,30 @@ literals into these families:
 | Catalog and exchange | `process-exchange-export`, `process-exchange-import-committed`, `definition-published`, `definition-restored` | Phase/package exchange and versioned catalog lifecycle operations. |
 | Concurrency | `runs-overlapped` | A workspace-level overlap episode when in-flight execution crosses from one run to two. |
 | Audit integrity | `audit-integrity-condition` | The audit writer's own record that the log's last line was damaged, or that a history began after a deliberate reset of the head checkpoint. Written only by the writer. |
+| Operator evidence acts | `evidence-exported`, `evidence-deleted`, `operator-pseudonym-reset` | An operator taking evidence out of the workspace (a Run export, the metadata-only audit export, a diagnostics bundle), removing one Run's evidence, or replacing their pseudonym. |
 
 <!-- Source: src/contracts/audit-events.ts -->
+
+### Operator evidence acts
+
+Each of these is written by an owner window when the operator acts, and each payload is closed: a key the
+type does not name is rejected, so the row cannot carry a path, a file name, an actor or content.
+
+- **`evidence-exported`** has `kind` (`run-evidence`, `audit-metadata` or `diagnostics-bundle`), `outcome`
+  (`exported` or `refused`), `included` and `omitted` as counts (manifest entries and deliberate omissions,
+  rows written and skipped, or bundle items written and left out), and `refusal`, a code from a closed list,
+  on a refusal only. A dialog the operator dismisses before anything was decided records nothing.
+- **`evidence-deleted`** has `artifacts` and `retained` as counts, or `artifacts: 0` and a `refusedReason` code
+  when the deletion was refused.
+- **`operator-pseudonym-reset`** has an empty payload and system scope. It carries neither the old nor the new
+  pseudonym, so the two cannot be linked, and it is appended before the new pseudonym is stored.
+
+The `actor` field stays a string. A new row carries the operator's pseudonym, `pseudonym-` and 16 hex digits,
+random, stored in the extension's private workspace storage and never derived from the operating-system user
+name; when none can be stored it reads `unknown-operator`. Rows written before this change, and an override
+stored before it, may hold an OS username, and no audit byte or stored override is rewritten. A pseudonym is
+still **linkable metadata**: it ties together every row one editor user wrote in one workspace until it is
+reset, and a reset changes only later rows.
 
 Events are classified for the UI as `task` or `system`. The explicit
 `SYSTEM_SCOPED_EVENT_TYPES` set contains workspace, queue, scheduling,

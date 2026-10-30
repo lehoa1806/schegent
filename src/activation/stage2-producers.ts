@@ -11,6 +11,7 @@ import { resumeUnattended } from '../services/unattended-resume';
 import type { CreditWatchdog } from '../watchdog/credit-watchdog';
 import type { ScheduledStartCoordinator } from '../services/scheduled-start-coordinator';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
+import type { OperatorAttribution } from '../lib/operator-attribution';
 import type { WorkspaceLockManager } from '../state/lock';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 
@@ -123,6 +124,13 @@ export interface Stage2ProducerDeps {
    * nothing.
    */
   readonly refreshCatalog: () => Promise<void>;
+  /**
+   * FR-R4-F04 (P1, TA7) — creates the operator's pseudonym when none is stored. A memento write, and
+   * nothing under `.schegent/`, so it sits in the preamble beside the other trust-scoped acts: an
+   * untrusted window only reads the attribution (`wireEvidence` installed it), and a trust grant creates
+   * it through the same `run()`.
+   */
+  readonly operatorAttribution: Pick<OperatorAttribution, 'ensureStored'>;
 }
 
 export interface Stage2Producers {
@@ -159,7 +167,8 @@ export function createStage2Producers(deps: Stage2ProducerDeps): Stage2Producers
     runSafety,
     backendCapabilities,
     startMountProbe,
-    refreshCatalog
+    refreshCatalog,
+    operatorAttribution
   } = deps;
 
   let ran = false;
@@ -193,6 +202,17 @@ export function createStage2Producers(deps: Stage2ProducerDeps): Stage2Producers
     // `openWorkspaceSession` so that an untrusted window never reaches it.
     const lockResult = await lock.tryAcquire();
     ran = true;
+
+    // FR-R4-F04 (P1) — the operator's pseudonym is created here: after the trust check, so an untrusted
+    // window never writes it, and straight after the election, which stays the first statement (FR-R3-136
+    // C2). It runs in every trusted window, winner or not, before any act that can attribute an operator.
+    // A failure is logged once and does not stop activation: attribution then answers `unknown-operator`,
+    // which every reader accepts.
+    try {
+      await operatorAttribution.ensureStored();
+    } catch {
+      logger.warn('operator pseudonym could not be created; attribution stays unknown-operator');
+    }
 
     // The mount probe goes here and not earlier: its own header argues that it is
     // not the first writer because the ownership path creates `.schegent/` before
