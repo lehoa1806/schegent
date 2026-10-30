@@ -1,0 +1,33 @@
+{
+  "declares": {
+    "description": "An owner holding an ESC character is carried verbatim in the data and escaped only when printed",
+    "state": "read",
+    "verdict": "covers",
+    "entries": [
+      {
+        "advisory": "GHSA-ab12-cd34-ef56",
+        "result": "covers",
+        "status": "accepted",
+        "owner": "owner\u001b[31m-a",
+        "decidedOn": "2026-10-01",
+        "expiresOn": "2027-01-01"
+      }
+    ]
+  },
+  "list": {
+    "dispositionListVersion": 1,
+    "dispositions": [
+      {
+        "advisory": "GHSA-ab12-cd34-ef56",
+        "ecosystem": "npm",
+        "package": "lib-a",
+        "tree": "root",
+        "range": "<2.0.0",
+        "status": "accepted",
+        "owner": "owner\u001b[31m-a",
+        "decidedOn": "2026-10-01",
+        "expiresOn": "2027-01-01"
+      }
+    ]
+  }
+}

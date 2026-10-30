@@ -1,0 +1,23 @@
+{
+  "declares": {
+    "description": "A dispositionListVersion other than 1 is unusable, unsupported-format",
+    "state": "unusable",
+    "defect": "unsupported-format"
+  },
+  "list": {
+    "dispositionListVersion": 2,
+    "dispositions": [
+      {
+        "advisory": "GHSA-ab12-cd34-ef56",
+        "ecosystem": "npm",
+        "package": "lib-a",
+        "tree": "root",
+        "range": "<2.0.0",
+        "status": "accepted",
+        "owner": "owner-a",
+        "decidedOn": "2026-10-01",
+        "expiresOn": "2027-01-01"
+      }
+    ]
+  }
+}

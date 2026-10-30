@@ -1,0 +1,23 @@
+{
+  "declares": {
+    "description": "A status outside actionable, accepted and inapplicable makes the list unusable",
+    "state": "unusable",
+    "defect": "malformed"
+  },
+  "list": {
+    "dispositionListVersion": 1,
+    "dispositions": [
+      {
+        "advisory": "GHSA-ab12-cd34-ef56",
+        "ecosystem": "npm",
+        "package": "lib-a",
+        "tree": "root",
+        "range": "<2.0.0",
+        "status": "waived",
+        "owner": "owner-a",
+        "decidedOn": "2026-10-01",
+        "expiresOn": "2027-01-01"
+      }
+    ]
+  }
+}

@@ -1,0 +1,108 @@
+{
+  "declares": {
+    "description": "An unparseable installed version keeps the node and notes range-not-evaluated",
+    "findings": [
+      {
+        "package": "lib-v",
+        "ids": {
+          "canonical": "GHSA-vvvv-wwww-xxxx",
+          "aliases": [
+            "npm:7202"
+          ]
+        },
+        "severity": "high",
+        "range": "<2.0.0",
+        "title": "Fixture advisory on an odd version",
+        "url": "https://github.com/advisories/GHSA-vvvv-wwww-xxxx",
+        "locations": [
+          {
+            "location": "node_modules/lib-v",
+            "version": "not-a-version",
+            "direct": true,
+            "production": true
+          }
+        ],
+        "direct": true,
+        "production": true,
+        "dependents": [],
+        "notes": [
+          "range-not-evaluated"
+        ]
+      }
+    ]
+  },
+  "rootManifest": {
+    "dependencies": {
+      "lib-v": "^1.0.0"
+    }
+  },
+  "lockfile": {
+    "name": "fixture-tree",
+    "version": "1.0.0",
+    "lockfileVersion": 3,
+    "requires": true,
+    "packages": {
+      "": {
+        "name": "fixture-tree",
+        "version": "1.0.0",
+        "dependencies": {
+          "lib-v": "^1.0.0"
+        }
+      },
+      "node_modules/lib-v": {
+        "version": "not-a-version",
+        "resolved": "https://registry.example.test/pkg/-/pkg-not-a-version.tgz"
+      }
+    }
+  },
+  "report": {
+    "auditReportVersion": 2,
+    "vulnerabilities": {
+      "lib-v": {
+        "name": "lib-v",
+        "severity": "high",
+        "isDirect": true,
+        "via": [
+          {
+            "source": 7202,
+            "name": "lib-v",
+            "dependency": "lib-v",
+            "title": "Fixture advisory on an odd version",
+            "url": "https://github.com/advisories/GHSA-vvvv-wwww-xxxx",
+            "severity": "high",
+            "cwe": [],
+            "cvss": {
+              "score": 0,
+              "vectorString": null
+            },
+            "range": "<2.0.0"
+          }
+        ],
+        "effects": [],
+        "range": "*",
+        "nodes": [
+          "node_modules/lib-v"
+        ],
+        "fixAvailable": false
+      }
+    },
+    "metadata": {
+      "vulnerabilities": {
+        "info": 0,
+        "low": 0,
+        "moderate": 0,
+        "high": 1,
+        "critical": 0,
+        "total": 1
+      },
+      "dependencies": {
+        "prod": 0,
+        "dev": 0,
+        "optional": 0,
+        "peer": 0,
+        "peerOptional": 0,
+        "total": 0
+      }
+    }
+  }
+}
