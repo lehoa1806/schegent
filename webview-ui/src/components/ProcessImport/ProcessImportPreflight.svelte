@@ -66,7 +66,7 @@
   // both tables share live in `process-import-shared.css` rather than being
   // copied into each, following `MetricsDashboard/metrics-shared.css`.
   import './process-import-shared.css';
-  import type { DocumentRefusal, ImportPlan } from '../../lib/messages';
+  import type { DocumentRefusal, ImportPlan, PreflightProcessYamlResult } from '../../lib/messages';
   import { preflightProcessYaml } from '../../lib/process-yaml-ipc';
   import ProcessImportPlanTable from './ProcessImportPlanTable.svelte';
   import ProcessImportResultsTable from './ProcessImportResultsTable.svelte';
@@ -87,7 +87,9 @@
   import {
     commitStatement,
     confirmBlockedReason,
+    importCommitReport,
     isModelCatalogPlan,
+    modelCatalogCommitReport,
     modelCatalogCommitStatement,
     refusalHeadline,
     runImportCommit,
@@ -133,6 +135,8 @@
     | { readonly kind: 'planned'; readonly plan: ImportPlan };
 
   let surface = $state<PreflightSurface>({ kind: 'idle' });
+  const lifetime = new AbortController();
+  $effect(() => () => lifetime.abort());
   let committing = $state(false);
   let results = $state<readonly ImportResultRow[] | null>(null);
   /**
@@ -160,7 +164,9 @@
    * signal `onConfirm` reads to choose which commit function to call.
    */
   const modelCatalogOutcome = $derived(
-    plan !== null && isModelCatalogPlan(plan) && (outcome === 'imported' || outcome === 'failed')
+    plan !== null &&
+      isModelCatalogPlan(plan) &&
+      (outcome === 'imported' || outcome === 'failed' || outcome === 'unknown')
       ? outcome
       : null
   );
@@ -177,7 +183,19 @@
     layerResults = [];
     outcome = null;
     surface = { kind: 'validating' };
-    const result = await preflightProcessYaml();
+    // FR-R4-F05 (I6, I8, FR-024) — a late answer replaces the not-yet-known text, through the same
+    // path, while that text is still what the panel shows; unmounting aborts the wait.
+    showPreflight(
+      await preflightProcessYaml({
+        signal: lifetime.signal,
+        onLateOutcome: (late) => {
+          if (surface.kind === 'failed') showPreflight(late);
+        }
+      })
+    );
+  }
+
+  function showPreflight(result: PreflightProcessYamlResult): void {
     if (result.outcome === 'planned') {
       surface = { kind: 'planned', plan: result.plan };
       return;
@@ -223,8 +241,19 @@
     if (isModelCatalogPlan(outbound)) {
       committing = true;
       try {
+        // FR-R4-F05 (I6, FR-024) — a late answer to a write whose wait ran out replaces the
+        // not-yet-known report, while it is still the one shown.
         const report = await runModelCatalogImportCommit(outbound, {
-          saveModels: saveModelsImport
+          saveModels: (request) =>
+            saveModelsImport(request, undefined, {
+              signal: lifetime.signal,
+              onLateOutcome: (late) => {
+                if (outcome !== 'unknown') return;
+                const next = modelCatalogCommitReport(outbound, late);
+                outcome = next.outcome;
+                results = next.rows;
+              }
+            })
         });
         outcome = report.outcome;
         layerResults = [];
@@ -240,7 +269,20 @@
       // `runImportCommit` stops at the first rejection and reports what did land —
       // there is nothing to undo here and nothing offered (FR-042b/c, FR-051).
       const report = await runImportCommit(outbound, {
-        publishPackage: publishDefinitionPackage
+        // FR-R4-F05 (I6, FR-024) — the write that timed out is the last one the sequence sent, so a
+        // late answer takes its place and the report is projected again, while it is still shown.
+        publishPackage: (request) =>
+          publishDefinitionPackage(request, undefined, {
+            signal: lifetime.signal,
+            onLateOutcome: (late) => {
+              const last = layerResults.at(-1);
+              if (outcome !== 'unknown' || last === undefined) return;
+              const next = importCommitReport(outbound, [...layerResults.slice(0, -1), { ...last, ack: late }]);
+              outcome = next.outcome;
+              layerResults = next.results;
+              results = next.rows;
+            }
+          })
       });
       outcome = report.outcome;
       layerResults = report.results;

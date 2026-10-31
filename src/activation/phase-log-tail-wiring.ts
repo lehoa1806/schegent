@@ -114,14 +114,16 @@ export function createPhaseLogTailWiring(input: {
       //
       // Found by T1525a's classification pass, not by the task list, and it is
       // the one producer act neither Phase A nor Phase B could have caught.
-      // `CMD_START_PHASE_LOG_TAIL` is deliberately absent from
-      // `MUTATING_COMMAND_TYPES`, so the router's trust gate never sees it — a
-      // log view is exactly what the manifest's `limited` claim promises keeps
-      // working in an untrusted window. But `PhaseLogTailRegistry.start()`
-      // appends `phase-log-tail-started` here, and that append writes
-      // `.schegent/audit.log`. So the message stays admitted and the write does
-      // not happen: the operator still reads the log, and the untrusted folder
-      // is still not written to.
+      // `CMD_START_PHASE_LOG_TAIL` was deliberately absent from
+      // `MUTATING_COMMAND_TYPES`, so the router's trust gate never saw it. But
+      // `PhaseLogTailRegistry.start()` appends `phase-log-tail-started` here, and
+      // that append writes `.schegent/audit.log`. So the message stayed admitted
+      // and the write did not happen.
+      //
+      // FR-R4-F05 (FR-003) — the router gates the three phase-log commands now,
+      // because each appends an audit row, so an untrusted window is refused at
+      // the router before it reaches this registry. This check stays: it is the
+      // second line.
       //
       // Reachable without this window having started anything, which is the part
       // worth spelling out: `start()` demands that the requested phase be in

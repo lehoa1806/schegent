@@ -87,14 +87,22 @@
   }
 
   // ---------- IPC handlers ----------
+  // FR-R4-F05 (I6, I8, FR-024) — one text path for an on-time and a late answer, so a late one
+  // replaces the not-yet-known text; unmounting aborts the waits.
+  const lifetime = new AbortController();
+  $effect(() => () => lifetime.abort());
+  function showResult(result: { readonly status: 'accepted' | 'rejected'; readonly reason?: string }): void {
+    onRefusal(result.status === 'rejected' ? refusalText(result.reason ?? 'rejected') : null);
+  }
+  const wait = { signal: lifetime.signal, onLateOutcome: showResult };
+
   async function moveTaskTo(taskId: string, event: Event): Promise<void> {
     const select = event.currentTarget as HTMLSelectElement;
     const targetQueueId = select.value;
     select.value = '';
     if (targetQueueId.length === 0) return;
     onRefusal(null);
-    const result = await moveTask(taskId, targetQueueId);
-    if (result.status === 'rejected') onRefusal(refusalText(result.reason));
+    showResult(await moveTask(taskId, targetQueueId, wait));
   }
 
   function selectRow(row: Row): void {
@@ -135,22 +143,19 @@
     const sourceId = event.dataTransfer?.getData('text/plain') ?? '';
     if (sourceId.length === 0 || sourceId === targetTaskId) return;
     onRefusal(null);
-    const result = await postReorderTask(sourceId, targetPosition);
-    if (result.status === 'rejected') onRefusal(refusalText(result.reason));
+    showResult(await postReorderTask(sourceId, targetPosition, wait));
   }
 
   function onDragEnd(): void { dragArmedTaskId = null; }
 
   async function onMoveUp(taskId: string): Promise<void> {
     onRefusal(null);
-    const result = await postMoveItemUp(taskId);
-    if (result.status === 'rejected') onRefusal(refusalText(result.reason));
+    showResult(await postMoveItemUp(taskId, wait));
   }
 
   async function onMoveDown(taskId: string): Promise<void> {
     onRefusal(null);
-    const result = await postMoveItemDown(taskId);
-    if (result.status === 'rejected') onRefusal(refusalText(result.reason));
+    showResult(await postMoveItemDown(taskId, wait));
   }
 </script>
 

@@ -13,33 +13,56 @@
 
 import {
   CMD_READ_METRICS,
+  type CommandType,
   type MetricsRunSummary,
   type ReadMetricsRequest,
   type ReadMetricsResponse
 } from './messages';
+import { OUTCOME_NOT_YET_KNOWN_TEXT, boundaryRefusalText } from './boundary-refusal-text';
 import { postCommand } from './vscode-api';
-import { snapshotStore } from './snapshot-store.svelte';
+import { sendIntent, type IntentWaitOptions } from './intent-ledger';
 import { isValidReadMetricsResponse } from '../../../src/contracts/runtime-validators';
 
 const ACK_TIMEOUT_MS = 5000;
 
 export type ReadMetricsResult =
   | ({ readonly outcome: 'success' } & ReadMetricsResponse)
-  | { readonly outcome: 'failure'; readonly reason: 'internal-error' };
+  // FR-R4-F05 (O1, O7) — `refusalText` is set when the failure was a refusal (the router's
+  // gate, or a dispatch that threw); `reason` keeps the wire's closed union.
+  | {
+      readonly outcome: 'failure';
+      readonly reason: 'internal-error';
+      readonly refusalText?: string;
+    };
 
 // Read the aggregated metrics-dashboard payload. Resolves with the typed
 // wire response on accepted ack, or a synthetic failure when the host
 // rejects, the ack carries no result, or the 5-second timeout fires.
-export function readMetrics(req: ReadMetricsRequest = {}): Promise<ReadMetricsResult> {
-  return correlatedRequest<ReadMetricsResult>(
-    () => postCommand(CMD_READ_METRICS, req).correlationId,
+export function readMetrics(
+  req: ReadMetricsRequest = {},
+  wait?: IntentWaitOptions<ReadMetricsResult>
+): Promise<ReadMetricsResult> {
+  return correlatedRequest<ReadMetricsResult, ReadMetricsRequest>(
+    CMD_READ_METRICS,
+    req,
+    (correlationId, payload) => {
+      postCommand(CMD_READ_METRICS, payload, { correlationId });
+    },
     (ack) => {
       if (ack.status === 'accepted' && isValidReadMetricsResponse(ack.result)) {
         return { outcome: 'success', ...ack.result };
       }
-      return { outcome: 'failure', reason: 'internal-error' };
+      return {
+        outcome: 'failure',
+        reason: 'internal-error',
+        ...(ack.status === 'rejected' && ack.reason !== undefined
+          ? { refusalText: boundaryRefusalText(ack.reason) }
+          : {})
+      };
     },
-    { outcome: 'failure', reason: 'internal-error' }
+    // FR-R4-F05 (I5, O3) — a timeout is not an internal error: the host may still answer.
+    { outcome: 'failure', reason: 'internal-error', refusalText: OUTCOME_NOT_YET_KNOWN_TEXT },
+    wait
   );
 }
 
@@ -55,65 +78,56 @@ export type RunSummaryResult =
 // Read one run's rollup figures. Scoped at the request, not filtered from a
 // corpus-wide read: FR-023 rules out the second store a whole-history read
 // would need to stay affordable.
-export async function readRunSummary(runId: string): Promise<RunSummaryResult> {
-  const result = await readMetrics({ runIds: [runId] });
-  // An absent `runSummaries` is not an empty one. The field is only present
-  // when the host honoured the scope, so its absence means the answer never
-  // came back — indistinguishable, from here, from a refusal.
-  if (result.outcome !== 'success' || result.runSummaries === undefined) {
-    return { outcome: 'unavailable' };
-  }
-  const summary = result.runSummaries.find((entry) => entry.runId === runId);
-  return { outcome: 'read', summary: summary ?? null };
+export async function readRunSummary(
+  runId: string,
+  wait: IntentWaitOptions<RunSummaryResult> = {}
+): Promise<RunSummaryResult> {
+  const toSummary = (result: ReadMetricsResult): RunSummaryResult => {
+    // An absent `runSummaries` is not an empty one. The field is only present
+    // when the host honoured the scope, so its absence means the answer never
+    // came back — indistinguishable, from here, from a refusal.
+    if (result.outcome !== 'success' || result.runSummaries === undefined) {
+      return { outcome: 'unavailable' };
+    }
+    const summary = result.runSummaries.find((entry) => entry.runId === runId);
+    return { outcome: 'read', summary: summary ?? null };
+  };
+  // FR-R4-F05 (I6, FR-024) — a late answer reaches the caller through the same projection.
+  const { onLateOutcome } = wait;
+  return toSummary(
+    await readMetrics(
+      { runIds: [runId] },
+      {
+        ...(wait.signal === undefined ? {} : { signal: wait.signal }),
+        ...(onLateOutcome === undefined ? {} : { onLateOutcome: (late) => onLateOutcome(toSummary(late)) })
+      }
+    )
+  );
 }
 
-// Shared ack-correlation primitive: post a command, register a one-shot
-// ack listener, and resolve via the supplied projection. On 5-second
-// timeout, resolves with the supplied timeout fallback. The
-// post-and-correlate sequence runs synchronously inside the Promise
-// executor so concurrent calls never cross-resolve. Mirrors
-// `phase-log-ipc.ts`'s private helper of the same name (duplicated per
-// file per this codebase's existing IPC-helper convention).
-function correlatedRequest<T>(
-  post: () => string,
+// Shared ack-correlation primitive. FR-R4-F05 (I4): it sends through the intent ledger, so an
+// identical retry of an unresolved read reuses its identity and payload. On the 5-second
+// timeout it resolves with the supplied fallback (the outcome is not yet known).
+function correlatedRequest<T, P>(
+  type: CommandType,
+  payload: P,
+  post: (correlationId: string, payload: P) => void,
   project: (ack: {
     readonly status: 'accepted' | 'rejected';
     readonly reason?: string;
     readonly result?: unknown;
   }) => T,
-  onTimeout: T
+  onTimeout: T,
+  wait: IntentWaitOptions<T> = {}
 ): Promise<T> {
-  return new Promise<T>((resolve) => {
-    let settled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let unsubscribe: (() => void) | null = null;
-
-    const finalise = (result: T): void => {
-      if (settled) return;
-      settled = true;
-      if (timer !== null) {
-        clearTimeout(timer);
-        timer = null;
-      }
-      if (unsubscribe !== null) {
-        try {
-          unsubscribe();
-        } catch {
-          // one-shot listener errors must not leak
-        }
-        unsubscribe = null;
-      }
-      resolve(result);
-    };
-
-    const correlationId = post();
-    snapshotStore.markPending(correlationId);
-    unsubscribe = snapshotStore.onceAck(correlationId, (ack) => {
-      finalise(project(ack));
-    });
-
-    timer = setTimeout(() => {
-      finalise(onTimeout);
-    }, ACK_TIMEOUT_MS);
-  });
+  return sendIntent({
+    type,
+    payload,
+    post,
+    timeoutMs: ACK_TIMEOUT_MS,
+    ...(wait.signal === undefined ? {} : { signal: wait.signal }),
+    ...(wait.onLateOutcome === undefined
+      ? {}
+      : { onLateOutcome: (ack) => wait.onLateOutcome?.(project(ack)) })
+  }).then((result) => (result.kind === 'ack' ? project(result.ack) : onTimeout));
 }

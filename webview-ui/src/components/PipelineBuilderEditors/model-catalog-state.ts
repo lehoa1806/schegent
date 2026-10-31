@@ -1,3 +1,4 @@
+import { boundaryRefusalText } from '../../lib/boundary-refusal-text';
 import type { WorkflowSnapshot } from '../../lib/snapshot-types';
 
 /** Every backend the editor shows a section for, whatever either list holds. */
@@ -123,5 +124,7 @@ export function formatModelCatalogSaveRejection(reason: string): string {
   if (reason === 'stale-catalog') {
     return `${reason} — the catalog changed since this document was inspected; inspect it again`;
   }
-  return reason;
+  // FR-R4-F05 (O1) — a reason this function has no sentence for goes through the shared
+  // boundary text (a timeout and a dispatch failure included), never raw.
+  return boundaryRefusalText(reason);
 }

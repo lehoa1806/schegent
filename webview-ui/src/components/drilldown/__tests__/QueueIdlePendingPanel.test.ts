@@ -18,6 +18,11 @@
 
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { disposeIntentLedger } from '../../../lib/intent-ledger';
+
+// FR-R4-F05 (I4) — a command sent through the intent ledger carries the ledger's identity as
+// the third argument of `postCommand`; the payload assertions below stay exact.
+const LEDGER_IDENTITY = expect.objectContaining({ correlationId: expect.any(String) });
 
 import QueueIdlePendingPanel from '../QueueIdlePendingPanel.svelte';
 import { snapshotStore } from '../../../lib/snapshot-store.svelte';
@@ -28,8 +33,11 @@ import { IDLE_GENERAL_SETTINGS } from '../../../lib/snapshot-types';
 import type { QueueLifecycle, QueueRuntime, WorkflowSnapshot } from '../../../lib/snapshot-types';
 
 let nextCorrelationId = 0;
-const postCommandSpy = vi.fn((..._args: readonly unknown[]) => ({
-  correlationId: `corr-${++nextCorrelationId}`
+const postCommandSpy = vi.fn((...args: readonly unknown[]) => ({
+  // FR-R4-F05 (I4) — honours the identity the intent ledger supplies, as the real `postCommand` does.
+  correlationId:
+    (args[2] as { correlationId?: string } | undefined)?.correlationId ??
+    `corr-${++nextCorrelationId}`
 }));
 vi.mock('../../../lib/vscode-api', () => ({
   postCommand: (...args: unknown[]) => postCommandSpy(...args),
@@ -154,6 +162,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // The ledger is module state: an unsettled intent from one case would be reused by the next.
+  disposeIntentLedger();
   cleanup();
 });
 
@@ -225,7 +235,7 @@ describe('QueueIdlePendingPanel — idle-pending affordance (T012a, relocated fr
     expect(postCommandSpy).toHaveBeenCalledWith(CMD_START_QUEUE, {
       queueId: DEFAULT_QUEUE_ID,
       startIntent: { startMode: 'now', source: 'operator-restart' }
-    });
+    }, LEDGER_IDENTITY);
   });
 
   it('closes the chooser without posting when the operator dismisses it', async () => {
@@ -275,6 +285,34 @@ describe('QueueIdlePendingPanel — idle-pending affordance (T012a, relocated fr
     expect(queryByTestId('idle-pending-chooser-host')).toBeNull();
   });
 
+  // FR-R4-F05 (O4, FR-024) — the interim "not yet known" text promises that the view will update;
+  // a late answer replaces it through the same text path as an on-time one, and a late
+  // acceptance clears it.
+  it('replaces the not-yet-known text of a chosen start with the late answer', async () => {
+    vi.useFakeTimers();
+    try {
+      const { getByTestId } = render(QueueIdlePendingPanel, {
+        props: {
+          queueId: DEFAULT_QUEUE_ID,
+          snapshot: snapshot({ lifecycle: 'idle-pending', scheduledStartAt: null })
+        }
+      });
+      await fireEvent.click(getByTestId('idle-pending-start-queue-button'));
+      await fireEvent.click(getByTestId('start-mode-chooser-now'));
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(getByTestId('idle-pending-start-message').textContent).toContain('has not answered yet');
+
+      ack(0, 'rejected', 'rejected-horizon', 'refused');
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(getByTestId('idle-pending-start-message').textContent).toBe(
+        'That start time is outside the range this queue accepts.'
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('says nothing when the host accepts the chosen start', async () => {
     const { getByTestId, queryByTestId } = render(QueueIdlePendingPanel, {
       props: {
@@ -318,7 +356,7 @@ describe('QueueIdlePendingPanel — v6 → v7 migration notice (FR-020, relocate
     expect(queryByTestId('migration-notice')).toBeNull();
   });
 
-  it('dismissing posts exactly one non-mutating CMD_DISMISS_MIGRATION_NOTICE, and the notice clears once the host applies it', async () => {
+  it('dismissing posts exactly one CMD_DISMISS_MIGRATION_NOTICE, and the notice clears once the host applies it', async () => {
     const { getByTestId, queryByTestId, rerender } = render(QueueIdlePendingPanel, {
       props: { queueId: DEFAULT_QUEUE_ID, snapshot: snapshot({ migrationNotice: 'pending' }) }
     });
@@ -327,8 +365,9 @@ describe('QueueIdlePendingPanel — v6 → v7 migration notice (FR-020, relocate
 
     expect(postCommandSpy).toHaveBeenCalledTimes(1);
     expect(postCommandSpy).toHaveBeenCalledWith(CMD_DISMISS_MIGRATION_NOTICE);
-    // Dismiss is non-destructive UX state, not a mutation of queue work.
-    expect(MUTATING_COMMAND_TYPES).not.toContain(CMD_DISMISS_MIGRATION_NOTICE);
+    // Dismiss touches no queue work, but it writes the queue memento, and FR-R4-F05
+    // (FR-003) gates any persisted write: the host refuses it untrusted and secondary.
+    expect(MUTATING_COMMAND_TYPES).toContain(CMD_DISMISS_MIGRATION_NOTICE);
 
     // The host applies the dismiss and pushes the next snapshot back down;
     // simulated here as a prop update, matching this component's direct
@@ -417,7 +456,7 @@ describe('QueueIdlePendingPanel — the queue it is shown for (hard rule 56)', (
     expect(postCommandSpy).toHaveBeenCalledWith(CMD_START_QUEUE, {
       queueId: OTHER_QUEUE_ID,
       startIntent: { startMode: 'now', source: 'operator-restart' }
-    });
+    }, LEDGER_IDENTITY);
   });
 
   it('does not repeat the default queue\'s migration notice on another queue\'s panel', () => {
@@ -547,6 +586,6 @@ describe('QueueIdlePendingPanel — per-queue scheduled start (FR-R3-152)', () =
     expect(postCommandSpy).toHaveBeenCalledWith(CMD_START_QUEUE, {
       queueId: OTHER_QUEUE_ID,
       startIntent: { startMode: 'cancel-schedule', source: 'operator-restart' }
-    });
+    }, LEDGER_IDENTITY);
   });
 });

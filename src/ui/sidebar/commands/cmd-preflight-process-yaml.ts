@@ -1,10 +1,12 @@
 // Feature 084 T030/T031 — import preflight: read one document, say what
 // importing it would do, change nothing.
 //
-// Read-only by construction (FR-031, FR-032). It writes no configuration, moves
-// no layer revision, takes no lock, and retains nothing past the read, so it is
-// deliberately NOT a member of `MUTATING_COMMANDS`. The write happens later,
-// through `CMD_PUBLISH_PACKAGE`, which IS gated.
+// It changes no configuration, moves no layer revision, takes no lock, and
+// retains nothing past the read (FR-031, FR-032). It is gated all the same
+// (FR-R4-F05, FR-003) because a refusal appends an audit row
+// (`services/process-yaml/preflight-service.ts`), and it is not serialized: it
+// waits on an open dialog, which must not hold queue mutations. The write it
+// precedes goes through `CMD_PUBLISH_PACKAGE`, which is gated too.
 //
 // This directory imports no `vscode`: the open dialog and the read are an
 // injected dependency (`openProcessYamlDocument`) wired in `src/extension.ts`,

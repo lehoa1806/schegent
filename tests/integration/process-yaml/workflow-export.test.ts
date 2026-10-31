@@ -681,11 +681,12 @@ describe('Feature 086 — the third export arm crosses the transport boundary (T
 
 describe('Feature 086 — export changes nothing and names no location (FR-057)', () => {
   it('registers no destructive-action confirmation', async () => {
-    // Export is read-only: it writes a file the operator named in the host's own
-    // dialog and changes no extension state, so the command is deliberately not
-    // a member of `MUTATING_COMMANDS` and overwrite consent belongs to the
-    // dialog rather than to a `useConfirm` action key.
-    expect(MUTATING_COMMANDS.has(CMD_EXPORT_PROCESS_YAML)).toBe(false);
+    // Export writes a file the operator named in the host's own dialog and changes
+    // no extension state. FR-R4-F05 (FR-003) gates it all the same, because it also
+    // appends an export audit row, so the command is a member of
+    // `MUTATING_COMMANDS`; overwrite consent still belongs to the dialog rather
+    // than to a `useConfirm` action key.
+    expect(MUTATING_COMMANDS.has(CMD_EXPORT_PROCESS_YAML)).toBe(true);
   });
 
   it('writes no configuration and runs no command', async () => {

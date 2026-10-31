@@ -408,8 +408,10 @@ function selectModelCatalog(deps: ExchangeDeps): ExportSelection {
  * says why there is none.
  *
  * Pure with respect to catalog state: it reads the effective catalogs and writes
- * nothing, which is why the command that wraps it is deliberately not a member of
- * `MUTATING_COMMANDS` and why a headless caller needs no trust gate to reach it.
+ * nothing, which is why a headless caller needs no trust gate to reach this
+ * function. The command that wraps it, `CMD_EXPORT_PROCESS_YAML`, is gated
+ * (FR-R4-F05, FR-003): the file write and the audit row happen around this call,
+ * not in it.
  */
 export function selectProcessExportDocument(
   deps: ExchangeDeps,

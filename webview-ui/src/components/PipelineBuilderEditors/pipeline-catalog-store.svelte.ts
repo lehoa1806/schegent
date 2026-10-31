@@ -21,6 +21,7 @@ import {
   deactivateDefinition,
   draftTokenOfRecord,
   saveDefinitionDraft,
+  type CatalogWriteWait,
   type LifecycleResult
 } from '../../lib/catalog-lifecycle';
 import { identityAt, reselectIndex, type DefinitionIdentity } from '../../lib/builder-selection';
@@ -40,6 +41,8 @@ export interface PipelineCatalogStoreOptions {
   readonly getSnapshot: () => WorkflowSnapshot;
   readonly onSaveError: (message: string) => void;
   readonly onSaveAccepted: () => void;
+  /** FR-R4-F05 (I8) — the owning component's lifetime; aborting it drops a late answer. */
+  readonly signal?: AbortSignal;
 }
 
 /** BUG-002 (101) — a Pipeline row's identity, for re-selection after an adopt. */
@@ -178,10 +181,10 @@ export class PipelineCatalogStore {
     const record = catalog.records.find((candidate) => candidate.key === pipeline.sourceKey);
     this.mutation = { kind: 'remove', pipelineId: pipeline.id };
     this.mutationSourceKey = pipeline.sourceKey;
-    this.#submit(() =>
+    this.#submit((wait) =>
       deactivateDefinition(
         { kind: 'pipeline', id: pipeline.id, expectedDraftVersion: draftTokenOfRecord(record) },
-        { definitionName: pipeline.name, originatingElement: originatingElement ?? null }
+        { definitionName: pipeline.name, originatingElement: originatingElement ?? null, wait }
       )
     );
   }
@@ -290,13 +293,12 @@ export class PipelineCatalogStore {
     const id = pipelineRowId(body);
     if (id.length === 0) return;
     const record = catalog.records.find((candidate) => candidate.key === row.sourceKey);
-    this.#submit(() =>
-      saveDefinitionDraft({
-        kind: 'pipeline',
-        id,
-        expectedDraftVersion: draftTokenOfRecord(record),
-        body
-      })
+    this.#submit((wait) =>
+      saveDefinitionDraft(
+        { kind: 'pipeline', id, expectedDraftVersion: draftTokenOfRecord(record), body },
+        undefined,
+        wait
+      )
     );
   }
 
@@ -334,11 +336,20 @@ export class PipelineCatalogStore {
    * writers share only the pending gate, the refusal handling, and when to stop
    * waiting. That is what this method is.
    */
-  #submit(send: () => Promise<LifecycleResult>): void {
+  #submit(send: (wait: CatalogWriteWait) => Promise<LifecycleResult>): void {
     if (this.savePending) return;
     this.savePending = true;
     this.#saveAccepted = false;
-    void send().then((result) => {
+    // FR-R4-F05 (I6, FR-024) — a write whose wait ran out shows its late answer once: an
+    // acceptance clears the not-yet-known text, a refusal replaces it.
+    const onLateOutcome = (late: LifecycleResult): void => {
+      if (late.status === 'accepted') this.#options.onSaveAccepted();
+      else if (late.reason !== 'declined') {
+        this.#options.onSaveError(formatPipelineSaveRejection(late.reason, late.result));
+      }
+    };
+    const signal = this.#options.signal;
+    void send({ ...(signal === undefined ? {} : { signal }), onLateOutcome }).then((result) => {
       if (result.status === 'rejected') {
         this.savePending = false;
         // Feature 100 (T509b) — the operator closed the removal prompt. Nothing

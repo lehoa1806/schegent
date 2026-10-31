@@ -193,11 +193,18 @@ class SnapshotStore {
    * Feature 011 — register a one-shot listener for the ack of a
    * specific correlationId. The listener is invoked exactly once and
    * then removed.
+   *
+   * FR-R4-F05 (I3) — the returned unsubscribe removes only THIS listener. The map holds one
+   * listener per id, so an unsubscribe called after the id was registered again (a retry that
+   * reuses its identity) used to delete the newer listener and leave the retry's outcome
+   * with nobody to tell.
    */
   onceAck(correlationId: string, listener: AckListener): () => void {
     this._ackListeners.set(correlationId, listener);
     return () => {
-      this._ackListeners.delete(correlationId);
+      if (this._ackListeners.get(correlationId) === listener) {
+        this._ackListeners.delete(correlationId);
+      }
     };
   }
 

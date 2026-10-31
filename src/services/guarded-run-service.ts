@@ -22,6 +22,8 @@ import type { SchegentWorkflowController } from '../controller/workflow-controll
 import type { WorkspaceLockManager } from '../state/lock';
 import { STALENESS_THRESHOLD_MS } from '../state/lock';
 import type { SanitizedLogger } from '../lib/logger';
+import { describeFailure } from '../lib/errors';
+import { classifyEnqueueFailure } from './enqueue-failure';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type {
   FeatureRequestRerun,
@@ -102,7 +104,11 @@ export interface GuardedScheduleResult {
     // `rejected-validation`. The request was well-formed; the workspace was not
     // trusted, and a caller that cannot tell those apart cannot tell the
     // operator what to do about it.
-    | 'rejected-untrusted';
+    | 'rejected-untrusted'
+    // FR-R4-F05 (FR-016) — the queue state could not be read or saved. The request
+    // may be fine, and nothing was committed, so it is not `rejected-validation`.
+    // `reason` is always `queue-state-unavailable`.
+    | 'failed-storage';
   reason?: string;
   queueItemId?: string;
   // Feature 065 — `'now'` when the host coerced or routed to `running`;
@@ -224,20 +230,40 @@ export class GuardedRunService {
       );
     }
 
+    // FR-R4-F05 (F7) — the `try` covers the commit and nothing after it. A throw here is
+    // a queue rule refusing the request (a validation outcome with its own code) or a
+    // storage fault; either way the answer is a fixed code, and the exception goes to
+    // the log only, through `describeFailure`.
+    let feature: Awaited<ReturnType<QueueManager['enqueue']>>;
     try {
-      const feature = await this.deps.queue.enqueue(validated.value, {
+      feature = await this.deps.queue.enqueue(validated.value, {
         ...(req.pipelineId ? { pipelineId: req.pipelineId } : {}),
         ...(req.queueId ? { queueId: req.queueId } : {}),
         ...(req.position !== null && req.position !== undefined ? { position: req.position } : {}),
         ...(req.rerun ? { rerun: req.rerun } : {}),
         ...(req.runPlan ? { runPlan: req.runPlan } : {})
       });
+    } catch (err) {
+      const failure = classifyEnqueueFailure(err);
+      this.deps.logger.warn('guarded-run-service: enqueue failed', {
+        outcome: failure.outcome,
+        error: describeFailure(err, (value) => this.deps.logger.sanitize(value))
+      });
+      await this.emitRejection('schedule', failure.outcome, failure.reason, req.via);
+      return { outcome: failure.outcome, reason: failure.reason };
+    }
+    // After the commit. The task is in the queue whatever happens next, so a failure
+    // here is logged and the result is still `enqueued`: reporting a rejection for a
+    // task that is in the queue would invite the operator to enqueue it twice.
+    try {
       const lifecycleAfter = await this.applyStartIntentPolicy(req, policy);
       return { outcome: 'enqueued', queueItemId: feature.id, lifecycleAfter };
     } catch (err) {
-      const reason = this.deps.logger.sanitize((err as Error).message ?? 'enqueue-failed');
-      await this.emitRejection('schedule', 'rejected-validation', reason, req.via);
-      return { outcome: 'rejected-validation', reason };
+      this.deps.logger.warn('guarded-run-service: start-intent step failed after the commit', {
+        queueItemId: feature.id,
+        error: describeFailure(err, (value) => this.deps.logger.sanitize(value))
+      });
+      return { outcome: 'enqueued', queueItemId: feature.id };
     }
   }
 

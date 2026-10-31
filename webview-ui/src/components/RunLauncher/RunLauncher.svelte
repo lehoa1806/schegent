@@ -25,7 +25,8 @@
   import RunInputFields from './RunInputFields.svelte';
   import SupplementalInputs from './SupplementalInputs.svelte';
   import RunOutputTargets from './RunOutputTargets.svelte';
-  import { launchPipeline } from '../../lib/run-launcher-ipc';
+  import { OUTCOME_NOT_YET_KNOWN_TEXT, boundaryRefusalText } from '../../lib/boundary-refusal-text';
+  import { launchPipeline, type NotYetKnown } from '../../lib/run-launcher-ipc';
   import {
     composeRunRequest,
     errorsByField as mapErrorsByField,
@@ -37,11 +38,9 @@
   import type { PipelineDefinition } from '../../lib/snapshot-types';
   import type { RunRequestFieldError } from '../../../../src/contracts/run-request';
 
-  /** The outer bound on a submission (FR-046, SC-012). */
-  const SUBMIT_TIMEOUT_MS = 30_000;
-
-  const TIMEOUT_MESSAGE =
-    'The host did not answer within 30 seconds. Nothing was queued; your composition is unchanged.';
+  // FR-R4-F05 (I7, O3) — the 30 s outer timer and its message are gone. The wait is the ledger's
+  // 5 s, a timeout says the outcome is NOT YET KNOWN (never "Nothing was queued": the host may
+  // still queue it), and the late outcome replaces that message once (O4).
 
   interface Props {
     readonly pipeline: PipelineDefinition;
@@ -120,7 +119,12 @@
     return parts.length > 0 ? parts.join(' · ') : 'Workspace defaults';
   });
 
-  function applyResult(result: LaunchPipelineResult): void {
+  function applyResult(result: LaunchPipelineResult | NotYetKnown): void {
+    if (result.outcome === 'not-yet-known') {
+      fieldErrors = [];
+      statusMessage = OUTCOME_NOT_YET_KNOWN_TEXT;
+      return;
+    }
     if (result.outcome === 'enqueued') {
       fieldErrors = [];
       statusMessage = `Queued as ${result.requestId}.`;
@@ -136,10 +140,16 @@
       statusMessage = `This Pipeline could not be resolved: ${result.reason}.`;
       return;
     }
+    // FR-R4-F05 (O1) — neither the code `queue-refused` nor the guard's detail is shown raw.
     statusMessage = result.detail
-      ? `The queue refused this run: ${result.reason} (${result.detail}).`
-      : `The queue refused this run: ${result.reason}.`;
+      ? `The queue refused this run. ${boundaryRefusalText(result.detail)}`
+      : 'The queue refused this run.';
   }
+
+  // FR-R4-F05 (I8) — the in-flight submission's signal, aborted when this component goes: the
+  // wait's timer and late callback are removed, and the ledger keeps the identity for a retry.
+  let submission: AbortController | null = null;
+  $effect(() => () => submission?.abort());
 
   async function submitRequest(): Promise<void> {
     if (pending) return;
@@ -149,22 +159,18 @@
     statusMessage = null;
     submittedSupplementalKeys = supplementalKeys;
 
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      pending = false;
-      statusMessage = TIMEOUT_MESSAGE;
-    }, SUBMIT_TIMEOUT_MS);
-
+    const controller = new AbortController();
+    submission = controller;
     try {
-      const result = await launchPipeline(request, queueId);
-      // The outer bound already restored the form and said so; a late answer must
-      // not overwrite that with a verdict the operator can no longer act on.
-      if (timedOut) return;
+      const result = await launchPipeline(request, queueId, {
+        signal: controller.signal,
+        // O4 — the outcome of a send whose wait ran out, shown once through the same text path.
+        onLateOutcome: (late) => applyResult(late)
+      });
+      if (controller.signal.aborted) return;
       applyResult(result);
     } finally {
-      clearTimeout(timer);
-      if (!timedOut) pending = false;
+      if (!controller.signal.aborted) pending = false;
     }
   }
 

@@ -9,6 +9,7 @@
   // rule requires. See `onEnumChange` for why a predicate rather than a cast.
   import { isBackendRunnerKind } from '../../../../../src/contracts/backend-kinds';
   import type { Draft, FieldSpec, FieldStatus, ScalarKey } from './field-types';
+  import { OUTCOME_NOT_YET_KNOWN_TEXT } from '../../../lib/boundary-refusal-text';
   import { isTransportUsage, type TransportUsage } from '../../../../../src/contracts/sidebar-ipc/transport-usage';
   import { transportUsageLine } from './settings-draft';
   import StringListField from './StringListField.svelte';
@@ -347,6 +348,8 @@
         <span class="status-text">Saving…</span>
       {:else if status.status === 'accepted'}
         <span class="status-text">Saved</span>
+      {:else if status.status === 'unknown'}
+        <span class="status-text">{OUTCOME_NOT_YET_KNOWN_TEXT}</span>
       {:else}
         <span class="status-text">Rejected{status.reason ? `: ${status.reason}` : ''}</span>
       {/if}
@@ -401,7 +404,8 @@
     grid-area: status;
     font-size: 0.85em;
   }
-  .field-status.status-pending { color: var(--schegent-muted-fg); }
+  .field-status.status-pending,
+  .field-status.status-unknown { color: var(--schegent-muted-fg); }
   .field-status.status-accepted { color: var(--vscode-charts-green); }
   .field-status.status-rejected { color: var(--schegent-error-text); }
   .text-input, .select-input {

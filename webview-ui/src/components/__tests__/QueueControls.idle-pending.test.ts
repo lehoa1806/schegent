@@ -13,6 +13,11 @@
 // composition invariant (operator sees exactly one Start affordance).
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { disposeIntentLedger } from '../../lib/intent-ledger';
+
+// FR-R4-F05 (I4) — a command sent through the intent ledger carries the ledger's identity as
+// the third argument of `postCommand`; the payload assertions below stay exact.
+const LEDGER_IDENTITY = expect.objectContaining({ correlationId: expect.any(String) });
 import { render, cleanup, fireEvent, waitFor } from '@testing-library/svelte';
 import QueueControls from '../QueueControls.svelte';
 import { snapshotStore } from '../../lib/snapshot-store.svelte';
@@ -26,8 +31,11 @@ import type { QueueItem, QueueLifecycle } from '../../lib/snapshot-types';
 // rejection that exits `vitest run` 1 while every assertion below still
 // passes, since they all assert the post that already happened.
 let nextCorrelationId = 0;
-const postCommandSpy = vi.fn((..._args: readonly unknown[]) => ({
-  correlationId: `corr-${++nextCorrelationId}`
+const postCommandSpy = vi.fn((...args: readonly unknown[]) => ({
+  // FR-R4-F05 (I4) — honours the identity the intent ledger supplies, as the real `postCommand` does.
+  correlationId:
+    (args[2] as { correlationId?: string } | undefined)?.correlationId ??
+    `corr-${++nextCorrelationId}`
 }));
 vi.mock('../../lib/vscode-api', () => ({
   postCommand: (...args: unknown[]) => postCommandSpy(...args)
@@ -56,7 +64,11 @@ beforeEach(() => {
   postCommandSpy.mockReset();
 });
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  // The ledger is module state: an unsettled intent from one case would be reused by the next.
+  disposeIntentLedger();
+});
 
 const QUEUE_ID = 'q-beta';
 
@@ -227,7 +239,7 @@ describe('QueueControls — idle-pending suppression (BUG-007 / FR-018)', () => 
 
     await fireEvent.click(getByTestId('dashboard-queue-action'));
 
-    expect(postCommandSpy).toHaveBeenCalledWith(CMD_START_QUEUE, { queueId: QUEUE_ID });
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_START_QUEUE, { queueId: QUEUE_ID }, LEDGER_IDENTITY);
   });
 
   // FR-R3-154 (T1646) — the dashboard's Start/Pause/Resume button reports what
@@ -259,6 +271,36 @@ describe('QueueControls — idle-pending suppression (BUG-007 / FR-018)', () => 
         'The queue was already set that way, so nothing changed.'
       );
     });
+  });
+
+  // FR-R4-F05 (O4, FR-024) — the interim "not yet known" text promises that the view will update;
+  // a late answer replaces it through the same text path as an on-time one, and a late
+  // acceptance clears it.
+  it('replaces the not-yet-known start text with the late answer, and clears it for a late acceptance', async () => {
+    vi.useFakeTimers();
+    try {
+      const { getByTestId, queryByTestId } = render(QueueControls, {
+        props: defaultProps({ pendingCount: 2, hasInFlight: false, paused: false, queueLifecycle: 'active-empty' })
+      });
+      await fireEvent.click(getByTestId('dashboard-queue-action'));
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(getByTestId('dashboard-queue-start-message').textContent).toContain('has not answered yet');
+
+      ack(0, 'rejected', 'start-intent-no-change', 'no-op');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(getByTestId('dashboard-queue-start-message').textContent).toBe(
+        'The queue was already set that way, so nothing changed.'
+      );
+
+      await fireEvent.click(getByTestId('dashboard-queue-action'));
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(getByTestId('dashboard-queue-start-message').textContent).toContain('has not answered yet');
+      ack(1, 'accepted', undefined, 'accepted');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(queryByTestId('dashboard-queue-start-message')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('says nothing when the host accepts the start', async () => {

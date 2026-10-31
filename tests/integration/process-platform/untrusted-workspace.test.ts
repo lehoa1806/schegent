@@ -15,6 +15,7 @@ import { MUTATING_COMMAND_TYPES } from '../../../src/contracts/sidebar-command-m
 import { validateInboundMessage } from '../../../src/ui/sidebar/ipc-validator';
 import {
   CMD_EXPORT_PROCESS_YAML,
+  CMD_OPEN_DASHBOARD,
   CMD_PREFLIGHT_PROCESS_YAML,
   CMD_REMOVE_QUEUE_ITEM,
   CMD_RETRY_QUEUE_ITEM,
@@ -79,26 +80,54 @@ describe('an untrusted workspace refuses every mutating command (T027, FR-028)',
   });
 });
 
-describe('read-only commands are not gated by trust (T027, FR-031, SC-004)', () => {
-  it('runs the export command in an untrusted workspace', async () => {
+// FR-R4-F05 (US2, FR-003) — this block used to hold export and preflight as its two
+// examples of a command that runs untrusted: "reaching the save adapter is the
+// evidence". Export writes a file and appends an export row for every outcome, and
+// preflight appends a row when it refuses, so FR-003 gates both. They now sit with the
+// other gated commands: refused before the dialog or the adapter is reached. The
+// not-gated claim is carried by a command that stays read-only.
+describe('export and preflight are gated by trust (FR-R4-F05, FR-003)', () => {
+  it('refuses the export command in an untrusted workspace before the save dialog', async () => {
     const probe = makeGateProbe(UNTRUSTED);
     const ack = await probe.dispatch(CMD_EXPORT_PROCESS_YAML, {
       resourceKind: 'phase',
       resourceId: EXPORTABLE_PHASE_ID
     });
 
-    // Reaching the save adapter is the evidence. Asserting only "the reason is
-    // not the gate token" would also pass if the handler refused for a reason
-    // of its own and never ran.
-    expect(probe.writes).toContain('saveProcessYamlDocument');
-    expect(ack?.reason).not.toBe(UNTRUSTED_REJECT);
+    // The payload is valid and the phase resolves, so an ungated router would
+    // reach the save adapter: an empty recorder here is the refusal, not a miss.
+    expect(ack?.reason).toBe(UNTRUSTED_REJECT);
+    expect(probe.writes).toEqual([]);
   });
 
-  it('runs the import preflight in an untrusted workspace', async () => {
+  it('refuses the import preflight in an untrusted workspace before the open dialog', async () => {
     const probe = makeGateProbe(UNTRUSTED);
     const ack = await probe.dispatch(CMD_PREFLIGHT_PROCESS_YAML);
 
-    expect(probe.writes).toContain('openProcessYamlDocument');
+    expect(ack?.reason).toBe(UNTRUSTED_REJECT);
+    expect(probe.writes).toEqual([]);
+  });
+
+  it('still reaches the save adapter in a trusted primary window (positive control)', async () => {
+    const probe = makeGateProbe(OPEN);
+    await probe.dispatch(CMD_EXPORT_PROCESS_YAML, {
+      resourceKind: 'phase',
+      resourceId: EXPORTABLE_PHASE_ID
+    });
+
+    expect(probe.writes).toContain('saveProcessYamlDocument');
+  });
+});
+
+describe('read-only commands are not gated by trust (T027, FR-031, SC-004)', () => {
+  it('runs the open-dashboard command in an untrusted workspace', async () => {
+    const probe = makeGateProbe(UNTRUSTED);
+    const ack = await probe.dispatch(CMD_OPEN_DASHBOARD);
+
+    // Reaching the command bridge is the evidence. Asserting only "the reason is
+    // not the gate token" would also pass if the handler refused for a reason of
+    // its own and never ran.
+    expect(probe.writes).toContain('executeCommand:schegent.openDashboard');
     expect(ack?.reason).not.toBe(UNTRUSTED_REJECT);
   });
 });

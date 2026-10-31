@@ -59,8 +59,13 @@ const posted: Envelope[] = [];
 const ackListeners = new Map<string, AckListener>();
 
 vi.mock('../../../lib/vscode-api', () => ({
-  postCommand(type: string, payload: Record<string, unknown>): { correlationId: string } {
-    const correlationId = `corr-${posted.length + 1}`;
+  // FR-R4-F05 (I4) — honours the identity the intent ledger supplies, as the real `postCommand` does.
+  postCommand(
+    type: string,
+    payload: Record<string, unknown>,
+    opts?: { correlationId?: string }
+  ): { correlationId: string } {
+    const correlationId = opts?.correlationId ?? `corr-${posted.length + 1}`;
     posted.push({ type, payload, correlationId });
     return { correlationId };
   }
@@ -87,6 +92,7 @@ vi.mock('../../../lib/use-confirm', () => ({
   }
 }));
 
+const { disposeIntentLedger } = await import('../../../lib/intent-ledger');
 const DefinitionActions = (await import('../DefinitionActions.svelte')).default;
 // Feature 186 (D-1) — the row mounted this until the split; the panel is where
 // the actions and the cells they affect now both live.
@@ -179,6 +185,8 @@ function fireAck(
 }
 
 beforeEach(() => {
+  // The ledger is module state: an unsettled intent from one case would be reused by the next.
+  disposeIntentLedger();
   posted.length = 0;
   confirmCalls.length = 0;
   ackListeners.clear();
@@ -547,5 +555,31 @@ describe('Feature 101 T040 — a refused publish reports all defects (FR-023)', 
     expect(panel, 'every refusal reaches the operator, defects or not').not.toBeNull();
     expect(panel?.querySelectorAll('[data-testid^="definition-action-defect-"]')).toHaveLength(0);
     expect(panel?.textContent ?? '').not.toContain('undefined');
+  });
+});
+
+// FR-R4-F05 (T17, T121; contract I, I5, I6; contract O, O3, O4) — a timeout says the outcome is not
+// yet known and never claims nothing was written, and the host's late answer replaces it once.
+describe('FR-R4-F05 T121 — a timed-out lifecycle action is not yet known', () => {
+  it('shows the not-yet-known text, never "Nothing was written.", and replaces it with the late outcome', async () => {
+    vi.useFakeTimers();
+    try {
+      const { getByTestId, queryByTestId } = renderActions({ state: 'draft' });
+
+      await click(getByTestId(`definition-action-publish-${DEFINITION_ID}`));
+      await vi.advanceTimersByTimeAsync(5_000);
+      await flush();
+
+      const headline = getByTestId(`definition-action-refusal-${DEFINITION_ID}`).textContent;
+      expect(headline).toContain('The host has not answered yet, so the outcome is not yet known.');
+      expect(headline).not.toContain('Nothing was written');
+
+      fireAck(posted[0]!.correlationId, { status: 'accepted' });
+      await flush();
+
+      expect(queryByTestId(`definition-action-refusal-${DEFINITION_ID}`)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

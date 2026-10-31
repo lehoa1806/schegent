@@ -33,6 +33,7 @@
     deactivateDefinition,
     draftTokenOfRecord,
     saveDefinitionDraft,
+    type CatalogWriteWait,
     type LifecycleResult
   } from '../../lib/catalog-lifecycle';
   import {
@@ -269,10 +270,20 @@
    * handling — is here. `catalog-lifecycle.ts` remains the only module that may
    * name a lifecycle command (`tests/lint/catalog-lifecycle-dispatch.test.ts`).
    */
-  async function submit(send: () => Promise<LifecycleResult>): Promise<void> {
+  // FR-R4-F05 (I6, I8, FR-024) — a write whose wait ran out shows its late answer once: an
+  // acceptance clears the not-yet-known text, a refusal replaces it. Unmounting aborts the waits.
+  const lifetime = new AbortController();
+  $effect(() => () => lifetime.abort());
+  function showLateWrite(late: LifecycleResult): void {
+    saveError = late.status === 'rejected' && late.reason !== 'declined'
+      ? formatWorkflowSaveRejection(late.reason, late.result as Parameters<typeof formatWorkflowSaveRejection>[1])
+      : null;
+  }
+
+  async function submit(send: (wait: CatalogWriteWait) => Promise<LifecycleResult>): Promise<void> {
     submittedRevision = revision;
     saveError = null;
-    const outcome = await send();
+    const outcome = await send({ signal: lifetime.signal, onLateOutcome: showLateWrite });
 
     if (outcome.status === 'rejected') {
       // No new revision is coming, so the pending gate has to be released here
@@ -301,13 +312,17 @@
     const record = catalog?.state === 'ready'
       ? catalog.records.find((candidate) => candidate.key === row.sourceKey)
       : undefined;
-    await submit(() =>
-      saveDefinitionDraft({
-        kind: 'workflow',
-        id: row.workflowId,
-        expectedDraftVersion: draftTokenOfRecord(record),
-        body: toSaveWorkflowRow(row)
-      })
+    await submit((wait) =>
+      saveDefinitionDraft(
+        {
+          kind: 'workflow',
+          id: row.workflowId,
+          expectedDraftVersion: draftTokenOfRecord(record),
+          body: toSaveWorkflowRow(row)
+        },
+        undefined,
+        wait
+      )
     );
   }
 
@@ -329,7 +344,7 @@
       expectedDraftVersion: draftTokenOfRecord(record),
       originatingElement: event.currentTarget as HTMLElement
     });
-    await submit(() => deactivateDefinition(removal.request, removal.options));
+    await submit((wait) => deactivateDefinition(removal.request, { ...removal.options, wait }));
   }
 </script>
 

@@ -350,8 +350,22 @@ describe('formatWorkflowSaveRejection', () => {
     expect(message).toContain('Cut the cycle');
   });
 
-  it('passes an unrecognized reason through unchanged', () => {
-    expect(formatWorkflowSaveRejection('trust-denied', undefined)).toBe('trust-denied');
+  // FR-R4-F05 (O1, FR-014; TA9) — this case pinned `trust-denied` passing through bare. A
+  // code-shaped reason is still named, inside the shared boundary sentence, and free text and
+  // the dispatch-failure code are not shown raw.
+  it('names an unrecognized code-shaped reason inside the boundary sentence', () => {
+    expect(formatWorkflowSaveRejection('trust-denied', undefined)).toBe(
+      'The host refused this action (`trust-denied`).'
+    );
+  });
+
+  it('never shows the bare dispatch-failure code or free text', () => {
+    expect(formatWorkflowSaveRejection('command-dispatch-failed', undefined)).not.toContain(
+      'command-dispatch-failed'
+    );
+    expect(formatWorkflowSaveRejection('write failed at /synthetic/user-252', undefined)).toBe(
+      'The host refused this action.'
+    );
   });
 });
 

@@ -42,7 +42,8 @@ import {
 import type { CatalogKind } from '../../../src/contracts/catalog-store';
 import type { BuilderLifecycle } from './snapshot-types';
 import { postCommand } from './vscode-api';
-import { snapshotStore } from './snapshot-store.svelte';
+import { sendIntent, type IntentWaitOptions } from './intent-ledger';
+import type { AckResult } from './snapshot-store.svelte';
 import { useConfirm } from './use-confirm';
 
 const ACK_TIMEOUT_MS = 5000;
@@ -56,6 +57,9 @@ const ACK_TIMEOUT_MS = 5000;
 export type LifecycleResult =
   | { readonly status: 'accepted'; readonly result?: unknown }
   | { readonly status: 'rejected'; readonly reason: string; readonly result?: unknown };
+
+/** FR-R4-F05 (I6, I8) — what a catalog editor passes so a late answer reaches it once. */
+export type CatalogWriteWait = IntentWaitOptions<LifecycleResult>;
 
 /** The operator closed the confirmation. Nothing was sent. */
 export const DECLINED: LifecycleResult = Object.freeze({
@@ -109,62 +113,40 @@ export function draftTokenOfRecord(
 /**
  * Post one lifecycle command and resolve with its ack.
  *
- * Behaviour carried over verbatim from `save-phases.ts`, which shipped it: a
- * UUIDv4 correlation id, `snapshotStore.markPending`, a one-shot ack listener, and
- * a five-second timeout that resolves `{ status: 'rejected', reason: 'timeout' }`
- * so a silent host surfaces a recovery affordance instead of a spinner. Concurrent
- * operations never cross-resolve — correlation is by id.
+ * Carried over from `save-phases.ts`: a five-second timeout that resolves `{ status: 'rejected',
+ * reason: 'timeout' }` so a silent host surfaces a recovery affordance instead of a spinner.
+ * FR-R4-F05 (I4) — it sends through the intent ledger, so an identical retry of an unresolved
+ * operation reuses its identity and payload and the host applies it once. Concurrent different
+ * operations never cross-resolve: they are different intents.
  */
 function dispatch<C extends SidebarCommand>(
   type: C['type'],
   payload: C extends { payload: infer P } ? P : undefined,
-  postMessage?: PostMessage
+  postMessage?: PostMessage,
+  wait: IntentWaitOptions<LifecycleResult> = {}
 ): Promise<LifecycleResult> {
-  return new Promise<LifecycleResult>((resolve) => {
-    let settled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let unsubscribe: (() => void) | null = null;
-
-    const finalise = (result: LifecycleResult): void => {
-      if (settled) return;
-      settled = true;
-      if (timer !== null) {
-        clearTimeout(timer);
-        timer = null;
-      }
-      if (unsubscribe !== null) {
-        try {
-          unsubscribe();
-        } catch {
-          // The listener is one-shot; cleanup errors must not leak to UI code.
-        }
-        unsubscribe = null;
-      }
-      resolve(result);
-    };
-
-    let correlationId: string;
-    if (postMessage) {
-      correlationId = uuidv4();
-      postMessage({ type, correlationId, payload });
-    } else {
-      correlationId = postCommand(type, payload).correlationId;
-    }
-
-    snapshotStore.markPending(correlationId);
-    unsubscribe = snapshotStore.onceAck(correlationId, (ack) => {
-      const carried = ack.result !== undefined ? { result: ack.result } : {};
-      if (ack.status === 'accepted') {
-        finalise({ status: 'accepted', ...carried });
-      } else {
-        finalise({ status: 'rejected', reason: ack.reason ?? 'rejected', ...carried });
-      }
-    });
-
-    timer = setTimeout(() => {
-      finalise({ status: 'rejected', reason: 'timeout' });
-    }, ACK_TIMEOUT_MS);
-  });
+  const toResult = (ack: AckResult): LifecycleResult => {
+    const carried = ack.result !== undefined ? { result: ack.result } : {};
+    return ack.status === 'accepted'
+      ? { status: 'accepted', ...carried }
+      : { status: 'rejected', reason: ack.reason ?? 'rejected', ...carried };
+  };
+  const { onLateOutcome } = wait;
+  return sendIntent({
+    type,
+    payload,
+    post: (correlationId, stored) => {
+      if (postMessage) postMessage({ type, correlationId, payload: stored });
+      else postCommand(type, stored, { correlationId });
+    },
+    timeoutMs: ACK_TIMEOUT_MS,
+    ...(wait.signal === undefined ? {} : { signal: wait.signal }),
+    ...(onLateOutcome === undefined
+      ? {}
+      : { onLateOutcome: (ack: AckResult) => onLateOutcome(toResult(ack)) })
+  }).then((result): LifecycleResult =>
+    result.kind === 'ack' ? toResult(result.ack) : { status: 'rejected', reason: 'timeout' }
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -174,9 +156,10 @@ function dispatch<C extends SidebarCommand>(
 /** US1 — write a draft. Moves no active pointer, so nothing becomes triggerable. */
 export function saveDefinitionDraft(
   request: SaveDraftRequest,
-  postMessage?: PostMessage
+  postMessage?: PostMessage,
+  wait?: IntentWaitOptions<LifecycleResult>
 ): Promise<LifecycleResult> {
-  return dispatch(CMD_SAVE_DEFINITION_DRAFT, request, postMessage);
+  return dispatch(CMD_SAVE_DEFINITION_DRAFT, request, postMessage, wait);
 }
 
 /**
@@ -187,9 +170,10 @@ export function saveDefinitionDraft(
  */
 export function publishDefinition(
   request: PublishRequest,
-  postMessage?: PostMessage
+  postMessage?: PostMessage,
+  wait?: IntentWaitOptions<LifecycleResult>
 ): Promise<LifecycleResult> {
-  return dispatch(CMD_PUBLISH_DEFINITION, request, postMessage);
+  return dispatch(CMD_PUBLISH_DEFINITION, request, postMessage, wait);
 }
 
 /**
@@ -202,9 +186,10 @@ export function publishDefinition(
  */
 export function restoreDefinitionVersion(
   request: RestoreRequest,
-  postMessage?: PostMessage
+  postMessage?: PostMessage,
+  wait?: IntentWaitOptions<LifecycleResult>
 ): Promise<LifecycleResult> {
-  return dispatch(CMD_RESTORE_DEFINITION_VERSION, request, postMessage);
+  return dispatch(CMD_RESTORE_DEFINITION_VERSION, request, postMessage, wait);
 }
 
 /**
@@ -216,9 +201,10 @@ export function restoreDefinitionVersion(
  */
 export function publishDefinitionPackage(
   request: PackagePublishRequest,
-  postMessage?: PostMessage
+  postMessage?: PostMessage,
+  wait?: IntentWaitOptions<LifecycleResult>
 ): Promise<LifecycleResult> {
-  return dispatch(CMD_PUBLISH_PACKAGE, request, postMessage);
+  return dispatch(CMD_PUBLISH_PACKAGE, request, postMessage, wait);
 }
 
 // ---------------------------------------------------------------------------
@@ -231,6 +217,11 @@ export interface LifecycleConfirmOptions {
   readonly definitionName: string;
   /** Focus returns here when the dialog closes. */
   readonly originatingElement?: HTMLElement | null;
+  /**
+   * FR-R4-F05 (I6, I8) — an abort signal and a late-outcome callback for the wait that follows
+   * the confirmation.
+   */
+  readonly wait?: IntentWaitOptions<LifecycleResult>;
 }
 
 /**
@@ -256,7 +247,7 @@ export async function deactivateDefinition(
     }
   });
   if (!confirmed) return DECLINED;
-  return dispatch(CMD_DEACTIVATE_DEFINITION, request, postMessage);
+  return dispatch(CMD_DEACTIVATE_DEFINITION, request, postMessage, options.wait);
 }
 
 export interface DiscardDraftConfirmOptions extends LifecycleConfirmOptions {
@@ -289,21 +280,5 @@ export async function discardDefinitionDraft(
     }
   });
   if (!confirmed) return DECLINED;
-  return dispatch(CMD_DISCARD_DEFINITION_DRAFT, request, postMessage);
-}
-
-function uuidv4(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-  const bytes = new Uint8Array(16);
-  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
-    crypto.getRandomValues(bytes);
-  } else {
-    for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
-  }
-  bytes[6] = (bytes[6] & 0x0f) | 0x40;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+  return dispatch(CMD_DISCARD_DEFINITION_DRAFT, request, postMessage, options.wait);
 }

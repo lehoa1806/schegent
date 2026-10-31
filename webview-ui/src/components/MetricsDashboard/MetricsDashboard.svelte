@@ -6,7 +6,7 @@
     PhaseTypeAggregate,
     TaskRecord
   } from '../../lib/messages';
-  import { readMetrics } from '../../lib/metrics-ipc';
+  import { readMetrics, type ReadMetricsResult } from '../../lib/metrics-ipc';
   import { formatAbsoluteTime } from '../../lib/format';
   import './metrics-shared.css';
   import MetricsCumulativeTotals from './MetricsCumulativeTotals.svelte';
@@ -20,6 +20,9 @@
   const PAGE_SIZE = 200;
 
   let loading = $state(false);
+  // FR-R4-F05 (O1, O7) — the sentence for a refused read, or null. Only a refusal sets it:
+  // a read that fails for any other reason keeps showing what it showed before.
+  let refusal = $state<string | null>(null);
   let loaded = $state(false);
   let tasks = $state<readonly TaskRecord[]>([]);
   let phaseTypeAggregates = $state<readonly PhaseTypeAggregate[]>([]);
@@ -38,12 +41,28 @@
   let expandedRunIds = $state<ReadonlySet<string>>(new Set());
   let activePointIndex = $state<number | null>(null);
 
+  // FR-R4-F05 (I6, I8, FR-024) — a late answer replaces the not-yet-known text through the same
+  // path as an on-time one; unmounting aborts the wait.
+  const lifetime = new AbortController();
+  $effect(() => () => lifetime.abort());
+
   async function fetchMetrics(): Promise<void> {
     loading = true;
-    const result = await readMetrics({ includeArchives });
+    const result = await readMetrics(
+      { includeArchives },
+      { signal: lifetime.signal, onLateOutcome: showMetrics }
+    );
     loading = false;
     loaded = true;
-    if (result.outcome !== 'success') return;
+    showMetrics(result);
+  }
+
+  function showMetrics(result: ReadMetricsResult): void {
+    if (result.outcome !== 'success') {
+      refusal = result.refusalText ?? null;
+      return;
+    }
+    refusal = null;
     tasks = result.tasks;
     phaseTypeAggregates = result.phaseTypeAggregates;
     costTimeline = result.costTimeline;
@@ -137,6 +156,9 @@
 </script>
 
 <main class="metrics" aria-label="Metrics" data-testid="metrics-section">
+  {#if refusal !== null}
+    <p class="metrics-refusal" role="status" data-testid="metrics-refusal">{refusal}</p>
+  {/if}
   <header class="metrics-header">
     <div>
       <h1>Metrics Dashboard</h1>

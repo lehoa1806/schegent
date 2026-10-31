@@ -1,6 +1,15 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import {
+  MUTATING_COMMAND_TYPES,
+  READ_ONLY_COMMAND_TYPES
+} from '../../src/contracts/sidebar-command-metadata';
+import {
+  MUTATING_COMMAND_ID_LIST,
+  READ_ONLY_COMMAND_ID_LIST
+} from '../../src/contracts/entry-point-dispositions';
+import { COMMAND_TYPES } from '../../src/contracts/sidebar-ipc';
 
 /**
  * FR-R3-067 — a count a document asserts about this tree must be a count
@@ -289,6 +298,39 @@ function noInlineFamilyLines(): number {
   }, 0);
 }
 
+/**
+ * FR-R4-F05 (T20; contract G, G3; research R22) — the webview command counts the reference states.
+ *
+ * Four sentences in `docs/reference/api-and-cli.md` carry a number a reader of the webview boundary
+ * uses: how many commands exist, how many the router gates, how many it leaves read-only, and how many
+ * VS Code commands are registered without being contributed. Each used to be a transcription: "46"
+ * where the declaration said 53 gated, "61" where there were 62 commands, "nine" where eleven IDs
+ * were registered-only. Each now has a producer that settles it, so the number cannot be wrong again
+ * without a red test. They are read from the declaration and the dispositions themselves, not copied.
+ */
+function webviewCommandCount(): number {
+  return COMMAND_TYPES.length;
+}
+
+function gatedWebviewCommandCount(): number {
+  return MUTATING_COMMAND_TYPES.length;
+}
+
+function readOnlyWebviewCommandCount(): number {
+  return READ_ONLY_COMMAND_TYPES.length;
+}
+
+/** The dispositions' ids that the manifest does not contribute to the palette. */
+function registeredOnlyCommandCount(): number {
+  const manifest = JSON.parse(readDocument('repo/package.json')) as {
+    contributes?: { commands?: ReadonlyArray<{ command: string }> };
+  };
+  const contributed = new Set((manifest.contributes?.commands ?? []).map((c) => c.command));
+  return [...MUTATING_COMMAND_ID_LIST, ...READ_ONLY_COMMAND_ID_LIST].filter(
+    (id) => !contributed.has(id)
+  ).length;
+}
+
 /** The corpus fixture. */
 function corpusCases(): number {
   const body = readDocument('repo/tests/evals/fixtures/backend-outcomes.json');
@@ -399,6 +441,58 @@ const REGISTRY: readonly CountEntry[] = [
       '930". The other five live figures in that sweep were resolved by citation rather than by an ' +
       'entry here, because a red on them would say only that a file was edited; see ' +
       'docs/operations/asserted-counts-sweep.md for that decision and its four fields.'
+  },
+  /*
+   * FR-R4-F05 (T20; contract G, G3) — the four webview command counts in the reference. Each sentence
+   * states the number a reader needs and names, in its own words, what produces it; the entries below
+   * are what fails when the declaration or the dispositions move. WHEN ONE GOES RED, correct the
+   * SENTENCE in the reference, then `stated` here: the other order is the habit this gate exists to break.
+   */
+  {
+    document: 'repo/docs/reference/api-and-cli.md',
+    claim: 'all 53 metadata-classified webview mutations',
+    stated: 53,
+    producer: 'the entries of COMMAND_AUTHORITY declared gated (MUTATING_COMMAND_TYPES)',
+    derive: gatedWebviewCommandCount,
+    why:
+      'REGISTERED because the guard legend is where a reader learns how many webview commands the router ' +
+      'refuses in an untrusted workspace and a secondary window, and it said 46 while the declaration had ' +
+      'grown to 53 (FR-028). The declaration is the producer; a command gated or ungated later moves the ' +
+      'number, and this entry is what fails.'
+  },
+  {
+    document: 'repo/docs/reference/api-and-cli.md',
+    claim: 'contains exactly these 62 inbound literals',
+    stated: 62,
+    producer: 'COMMAND_TYPES in repo/src/contracts/sidebar-ipc.ts',
+    derive: webviewCommandCount,
+    why:
+      'REGISTERED because the table under it claims to be exhaustive, and the count is what a reader checks ' +
+      'it against. It said 61 while the table listed five commands that no longer exist and omitted five ' +
+      'that do; the row-by-row parity is webview-command-reference-parity.test.ts, and this is the number.'
+  },
+  {
+    document: 'repo/docs/reference/api-and-cli.md',
+    claim: '9 are read-only (`R`)',
+    stated: 9,
+    producer: 'the entries of COMMAND_AUTHORITY declared read-only (READ_ONLY_COMMAND_TYPES)',
+    derive: readOnlyWebviewCommandCount,
+    why:
+      'REGISTERED because FR-009 promises that read-only access stays available in an untrusted workspace ' +
+      'and a secondary window, and the reader of the reference needs to know how many commands that covers. ' +
+      'It is a different number from the gated count, and the pair sums to the command count.'
+  },
+  {
+    document: 'repo/docs/reference/api-and-cli.md',
+    claim: 'These 11 IDs can be invoked',
+    stated: 11,
+    producer:
+      'the disposition ids in repo/src/contracts/entry-point-dispositions.ts, minus contributes.commands in repo/package.json',
+    derive: registeredOnlyCommandCount,
+    why:
+      'REGISTERED because the list is the answer to "which commands can a task or another extension reach ' +
+      'that the palette never shows", and it said nine while eleven were registered-only (FR-030). ' +
+      'webview-command-reference-parity.test.ts checks the ids; this checks the sentence that counts them.'
   },
   {
     document: 'repo/docs/tutorials/developer-setup.md',

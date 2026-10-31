@@ -244,7 +244,7 @@ describe('PipelineBuilder — restored 3-tab design', () => {
         // sentinel rather than a version id (FR-024).
         expectedDraftVersion: 'no-draft'
       },
-      { definitionName: 'Remove me', originatingElement: deleteBtn }
+      expect.objectContaining({ definitionName: 'Remove me', originatingElement: deleteBtn })
     );
     // Asking here as well would prompt twice for one removal.
     expect(useConfirm).not.toHaveBeenCalled();
@@ -399,7 +399,7 @@ describe('PipelineBuilder — restored 3-tab design', () => {
       kind: 'phase',
       id: 'concurrent-phase',
       body: expect.objectContaining({ name: 'Dirty draft' })
-    }));
+    }), undefined, expect.objectContaining({ onLateOutcome: expect.any(Function) }));
     const retry = container.querySelector('[data-testid="phases-save-all"]') as HTMLButtonElement;
     await vi.waitFor(() => expect(retry.disabled).toBe(false));
     await fireEvent.click(retry);
@@ -416,7 +416,7 @@ describe('PipelineBuilder — restored 3-tab design', () => {
       kind: 'phase',
       id: 'concurrent-phase',
       body: expect.objectContaining({ name: 'Dirty draft' })
-    }));
+    }), undefined, expect.objectContaining({ onLateOutcome: expect.any(Function) }));
     const retried = vi.mocked(saveDraftHelper).mock.calls[1][0] as { body: unknown };
     expect(retried.body).not.toMatchObject({ id: 'inserted-phase' });
     expect(retried.body).not.toMatchObject({ id: 'sibling-phase' });
@@ -501,7 +501,7 @@ describe('PipelineBuilder — restored 3-tab design', () => {
       kind: 'phase',
       id: 'shared',
       body: expect.objectContaining({ id: 'shared', name: 'Second row edited' })
-    }));
+    }), undefined, expect.objectContaining({ onLateOutcome: expect.any(Function) }));
   });
 
   it('discards an unsaved new Phase draft', async () => {
@@ -640,7 +640,7 @@ describe('PipelineBuilder — restored 3-tab design', () => {
       kind: 'phase',
       id: 'repaired-id',
       body: expect.objectContaining({ id: 'repaired-id' })
-    }));
+    }), undefined, expect.objectContaining({ onLateOutcome: expect.any(Function) }));
   });
 
   it('Phases tab: RetryCondition editor renders for ALL phases (not just loopable)', async () => {
@@ -1183,7 +1183,7 @@ describe('PipelineBuilder — BUG-012 phase list reordering', () => {
       kind: 'phase',
       id: 'phase-a',
       body: expect.objectContaining({ id: 'phase-a' })
-    }));
+    }), undefined, expect.objectContaining({ onLateOutcome: expect.any(Function) }));
   });
 
   it('reorders any two adjacent rows, there being no boundary left to cross', async () => {
@@ -1388,7 +1388,7 @@ describe('PipelineBuilder — confirmed Pipeline removal (US7, T054)', () => {
         // sentinel rather than a version id (FR-024).
         expectedDraftVersion: 'no-draft'
       },
-      { definitionName: 'Custom Pipeline', originatingElement: deleteBtn }
+      expect.objectContaining({ definitionName: 'Custom Pipeline', originatingElement: deleteBtn })
     );
   });
 
