@@ -6,7 +6,7 @@ import type { StateProjectorDeps, ProjectorListener, ProjectorTimer } from './st
 import { buildIdleSnapshot, type AuditTailEntry, type WorkflowSnapshot } from './snapshot';
 import { AuditTailState } from './audit-tail-state';
 import { ProjectorBookkeepingRegistry } from './projector-bookkeeping-registry';
-import { composeWorkflowSnapshot } from './snapshot-composer';
+import { ProjectionFailureEpisodes } from './projection-failure-episodes';
 
 /**
  * The staleness bound on a projected frame, in ms.
@@ -65,6 +65,7 @@ export class StateProjectorRuntime {
   private readonly now: () => Date;
   private readonly logger: Pick<SanitizedLogger, 'warn' | 'debug' | 'sanitize'> | null;
   private readonly listeners = new Set<ProjectorListener>();
+  private readonly failureEpisodes = new ProjectionFailureEpisodes();
   private readonly auditTailState = new AuditTailState();
   private readonly bookkeepers: ProjectorBookkeepingRegistry;
   private storeSub: Disposable | null = null;
@@ -185,7 +186,7 @@ export class StateProjectorRuntime {
     // still using. `ProjectorBookkeeping` used to cancel from inside its own
     // update for want of anywhere else to ask.
     if (!this.bookkeepers.anyRunning) this.cancelTick();
-    return composeWorkflowSnapshot({
+    return this.failureEpisodes.compose({
       deps: this.deps,
       store: this.store,
       runs,

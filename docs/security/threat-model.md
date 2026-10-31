@@ -339,10 +339,11 @@ The webview is not authoritative. Runtime validation precedes routing; every com
 <!-- Source: src/contracts/sidebar-command-metadata.ts -->
 <!-- Source: src/ui/sidebar/message-router.ts -->
 
-The CSP is the other half of that boundary, and it has two halves of its own. The runtime header is asserted where it is built. That the *built bundle* never references a remote origin is asserted separately, because the runtime denial is silent — a dependency that stages a CDN link produces a blank pane and a console entry, not a failing test. [The CSP supply-chain record](csp-supply-chain-record.md) holds the decision, what the build-time gate can and cannot see, and the three conditions that would reverse it.
+The CSP is the other half of that boundary, and it has two halves of its own. The runtime header is asserted where it is built. That the *built bundle* never references a remote origin is asserted separately, because the runtime denial is silent — a dependency that stages a CDN link produces a blank pane and a console entry, not a failing test. [The CSP supply-chain record](csp-supply-chain-record.md) holds the decision, what the build-time gate can and cannot see, and the three conditions that would reverse it. A browser smoke in the visual suite also mounts both webviews under the shipped policy and fails on any violation it raises.
 
 <!-- Source: src/ui/sidebar/csp.ts -->
 <!-- Source: tests/unit/ui/sidebar/no-remote-refs.test.ts -->
+<!-- Source: tests/visual/actual-policy.visual.spec.ts -->
 
 ### T3 — Audit-log tampering or non-append writes
 
