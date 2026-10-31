@@ -209,7 +209,10 @@ export async function loadManifest(fs: CatalogFsPort): Promise<ManifestReadOutco
  * diagnosing a fault, and the store's determinism requirement is on the *content
  * hash* (FR-013) and the *revision* (FR-044a), both computed separately over a
  * canonical form. Two writers producing byte-identical text is not a property
- * this format needs; the expected-revision gate is what serialises writers.
+ * this format needs. The expected-revision gate does not serialise writers: it
+ * refuses a write whose expected revision is stale. Writers within one host are
+ * serialised by the store's own chain (`write-chain.ts`, feature 254), and across
+ * processes the last rename wins.
  */
 export function serialiseManifest(manifest: CatalogManifest): string {
   return `${JSON.stringify(manifest, null, 2)}\n`;

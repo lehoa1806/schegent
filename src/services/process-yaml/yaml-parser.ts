@@ -42,16 +42,28 @@ function refuse(code: DocumentRefusalCode, message: string): ParseDocumentResult
 }
 
 /**
+ * The refusal for a document over `PHASE_YAML_MAX_BYTES`, built in one place.
+ *
+ * Three paths reach it: the parser's check on the raw bytes, its check on the decoded text, and the
+ * preflight's refusal of a file the host judged too large before reading it (FR-R4-F07, FR-003,
+ * FR-004). One builder means the operator reads one message however the cap was reached, and the
+ * text cannot drift between the parser and the host's early refusal.
+ */
+export function tooLargeRefusal(): DocumentRefusal {
+  return {
+    code: 'too-large',
+    message: `Document is larger than the ${PHASE_YAML_MAX_BYTES}-byte limit and was not parsed`
+  };
+}
+
+/**
  * Parse a document from its raw bytes. This is the entry point every host
  * caller uses; `parseDocumentText` exists for the pure round-trip path where
  * the text was produced by this module's own serializer.
  */
 export function parseDocumentBytes(bytes: Uint8Array): ParseDocumentResult {
   if (bytes.byteLength > PHASE_YAML_MAX_BYTES) {
-    return refuse(
-      'too-large',
-      `Document is larger than the ${PHASE_YAML_MAX_BYTES}-byte limit and was not parsed`
-    );
+    return { ok: false, refusal: tooLargeRefusal() };
   }
   if (bytes.byteLength >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
     return refuse('unreadable', 'Document begins with a byte-order mark');
@@ -71,10 +83,7 @@ export function parseDocumentText(text: string): ParseDocumentResult {
     return refuse('unreadable', 'Document begins with a byte-order mark');
   }
   if (new TextEncoder().encode(text).byteLength > PHASE_YAML_MAX_BYTES) {
-    return refuse(
-      'too-large',
-      `Document is larger than the ${PHASE_YAML_MAX_BYTES}-byte limit and was not parsed`
-    );
+    return { ok: false, refusal: tooLargeRefusal() };
   }
   const scanned = scanDocument(text);
   if (!scanned.ok) {

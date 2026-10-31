@@ -309,6 +309,21 @@ const READS_THROUGH_MIGRATED_PORT: readonly string[] = [
  * those — `raw-transcript-writer.ts`'s promotion — and it was replaced with a
  * descriptor copy rather than added to this list.
  */
+/**
+ * Modules on `ATOMIC_PUBLISH_RENAME_RESIDUAL` that ALSO open a directory, read-only, to sync it
+ * (feature 254, FR-R4-F07, FR-039; research R22).
+ *
+ * A file's `sync` makes its contents durable; the directory entry that names it is a separate write, and
+ * flushing it needs a descriptor on the directory itself. `openWithinRoot` refuses a directory leaf
+ * (`not-a-regular-file`) by design, so the primitive cannot express this and the open is a raw one. It is
+ * narrow on every axis the list above is narrow on: the flag is `'r'`, so it creates, truncates and removes
+ * nothing; the directory is the parent of a file the adapter has JUST written through the checked walk, so
+ * its path was proven contained for that write; and its only effect is a `sync` and a `close`. A module on
+ * this list is still held to `open` and `rename` and nothing else, so it cannot shelter a `mkdir` or a
+ * `writeFile`.
+ */
+const DIRECTORY_SYNC_OPEN: readonly string[] = ['host-services/catalog-fs-adapter.ts'];
+
 const ATOMIC_PUBLISH_RENAME_RESIDUAL: readonly string[] = [
   'audit/audit-log-writer.ts',
   // FR-R4-F03 (R13) — the audit head checkpoint store. The temp file it renames FROM is written
@@ -487,7 +502,14 @@ const NOT_A_WORKSPACE_SINK: readonly string[] = [
   // artifact the operator is about to hand to someone else.
   'services/evidence-export.ts',
   // Reads the extension's own bundled webview asset, not a workspace path.
-  'ui/sidebar/html.ts'
+  'ui/sidebar/html.ts',
+  // FR-R4-F07 (feature 254, FR-003) — the document the operator chose in an open dialog, read before its
+  // size is known. The path is the operator's, named in a modal dialog, and may be anywhere on disk, so
+  // `openWithinRoot` (whose whole contract is "within the workspace root") cannot express it. It was an
+  // inline `vscode.workspace.fs.readFile` in `activation/sidebar-router-wiring.ts`, which is listed above
+  // for the same reason, and moved out so its size is judged before its contents. The open is read-only
+  // (`'r'`), it creates and removes nothing, and what it returns is bytes the parser refuses or reads.
+  'activation/process-yaml-document-read.ts'
 ];
 
 function sourceFiles(dir: string): readonly string[] {
@@ -745,7 +767,10 @@ describe('safe-open migration (FR-R3-053)', () => {
         })
         .join('\n');
       const kinds = [...body.matchAll(new RegExp(RAW_PATH_CALL, 'g'))].map((m) => m[1]);
-      expect({ relPath, kinds: [...new Set(kinds)] }).toEqual({ relPath, kinds: ['rename'] });
+      // A module on `DIRECTORY_SYNC_OPEN` is held to exactly `open` and `rename`: the `open` must be
+      // there (an entry whose open has gone is stale) and nothing else may be.
+      const expected = DIRECTORY_SYNC_OPEN.includes(relPath) ? ['open', 'rename'] : ['rename'];
+      expect({ relPath, kinds: [...new Set(kinds)].sort() }).toEqual({ relPath, kinds: expected });
     }
   });
 });

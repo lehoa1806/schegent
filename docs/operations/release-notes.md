@@ -9,6 +9,64 @@ This file is the release workflow's stable pointer for changes that affect opera
 Recorded as they land, so the first release note is assembled from evidence rather than
 from memory.
 
+### Truthful process authoring and safe exchange (FR-R4-F07, 2026-10-31)
+
+Several things the authoring and exchange surfaces said were not what they did. A Workflow condition could be
+authored that could never match, the Runs launcher showed settings the Run would not use, a package import
+could be refused after half of it had been written, and the catalog writer was described as safer than it was.
+This makes each of them say what is true, and closes the gaps behind them.
+
+- **A condition that can never match is refused.** An ordering comparison (`greaterThan`, `lessThan`, and the
+  rest) or a comparison against a number or a boolean is now `condition-comparison-unsupported`, because the
+  evaluator only compares text. A stored Workflow that uses one shows as invalid and cannot be launched; a Run
+  that was already started finishes from its frozen plan. The Builder's operator list offers the four operators
+  that can match text (`equals`, `notEquals`, `in`, `exists`), and its condition values are saved as text. Every other Workflow is unaffected.
+- **The Runs launcher shows what the Run will use.** For each Phase it shows the backend, the model and effort
+  (or "backend default"), and the idle limit, resolved by the host the way execution resolves them, and the Run
+  time limit. A Pipeline's authored `executionDefaults` are shown on a separate line labelled advisory and not
+  applied: nothing has ever applied them, and the launcher no longer presents them as the settings.
+- **Package import validates the whole document before it writes.** One request now carries all the layers, and
+  a document with a defect anywhere is refused before any layer is written. If a failure comes part-way, the
+  layers already written are drafts and not published, and the result says which.
+- **A chosen document is size-checked before it is read.** A file over 1 MiB is refused as too large without its
+  contents being read, and a failed read is logged with an error code and no path. Long runs of trailing spaces
+  in a document no longer slow the reader down quadratically.
+- **A Phase `model` is checked at preview.** A `model` that could not be passed to a backend as its own
+  command-line argument (over 128 characters, or not starting with a letter or digit, or outside
+  `A-Z a-z 0-9 . _ : / -`) is refused in the plan with the same reason the commit would give, instead of
+  previewing clean and failing at the commit.
+- **A capability list longer than the four capabilities is refused** as `too-many-members`, before any member is
+  looked up. Every such list already held an unknown member or a repeat.
+- **Exports quote what the reader would misread.** A sequence item that would read as the start of a key, such
+  as the model identifier `ollama:llama3`, is written quoted, and so is a value that opens with a double quote.
+  The unquoted form is still refused on import. A document exported by an earlier release that held such an item
+  could not be imported and still cannot; re-export it.
+- **The catalog writer says what it assumes, and flushes to disk.** Writes through one extension host now run
+  one at a time, so two saves of different definitions no longer lose one of them. The writer assumes one
+  extension host writes a catalog directory: the primary window. A second process writing the same catalog is
+  unsupported, and the last manifest write would win: a definition's pointer update can be lost while its
+  version record stays on disk as collectable. Catalog writes are flushed to disk on macOS and Linux (each save
+  costs about 15 ms more, measured on APFS; the Linux path has not been run on a Linux host). Windows gets the file flush and no
+  directory flush. Network mounts and remote workspaces are not claimed: the flush is attempted and nothing
+  here observed it honoured. Power loss has not been observed.
+- **Two failures now say why.** A catalog that is not writable logs its error code once, and an export that
+  fails to write logs a code and no path.
+
+Compatibility:
+
+- Conditions: a Workflow with an ordering operator or a non-text literal in a condition is invalid after this
+  release. Edit the condition to compare text, or leave the Run to finish from its frozen plan.
+- The Builder: a stored numeric or boolean condition value still loads, and is then reported as above.
+- Capabilities: a list over four members was already invalid; only the reason it is reported under is new.
+- Quoting: the format version is unchanged (`apiVersion` is `schegent/v1`). The quoted forms were already
+  accepted by the reader.
+- Package import: no change to the document or the request shape the host accepts.
+- The catalog writer: no storage-layout change and no migration. One host store per directory is enforced inside
+  the extension host; a second store for the same directory is refused with a warning.
+- The barrier: no format change; an older release reads the same files. A save is slower by the figure above.
+- Schema versions: `SIDEBAR_IPC_SCHEMA_VERSION` is unchanged at 3, `AUDIT_SCHEMA_VERSION` is unchanged, and the
+  process-YAML `apiVersion` is unchanged.
+
 ### Controllable evidence capture and lifecycle (FR-R4-F04, 2026-10-31)
 
 What Schegent keeps of a Run, for how long, and how an operator takes it out or removes it were not under

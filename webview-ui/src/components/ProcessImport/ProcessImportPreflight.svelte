@@ -87,8 +87,8 @@
   import {
     commitStatement,
     confirmBlockedReason,
-    importCommitReport,
     isModelCatalogPlan,
+    lateImportCommitReport,
     modelCatalogCommitReport,
     modelCatalogCommitStatement,
     refusalHeadline,
@@ -143,7 +143,7 @@
    * The layer acks the commit collected, held so the outcome sentence can name
    * which layers landed (FR-051). Set with `results`, and never derived from
    * them: a row's outcome cannot distinguish "this layer was refused" from "the
-   * sequence stopped before this layer".
+   * package stopped before this layer".
    */
   let layerResults = $state<readonly ImportLayerResult[]>([]);
   /** Set with `results`, and only with them. Never inferred from the rows. */
@@ -265,19 +265,18 @@
     }
     committing = true;
     try {
-      // The three writes, in dependency order, each gated on its own revision.
-      // `runImportCommit` stops at the first rejection and reports what did land —
-      // there is nothing to undo here and nothing offered (FR-042b/c, FR-051).
+      // Every layer in ONE package request, each gated on its own revision (FR-013). The host
+      // validates the whole document before it writes anything and reports a partial outcome per
+      // layer; there is nothing to undo here and nothing offered (FR-042b/c, FR-016).
       const report = await runImportCommit(outbound, {
-        // FR-R4-F05 (I6, FR-024) — the write that timed out is the last one the sequence sent, so a
-        // late answer takes its place and the report is projected again, while it is still shown.
+        // FR-R4-F05 (I6, FR-024) — when the one request's wait runs out, every layer reads unknown. A
+        // late answer re-projects the whole report from it, for every layer, while it is still shown.
         publishPackage: (request) =>
           publishDefinitionPackage(request, undefined, {
             signal: lifetime.signal,
             onLateOutcome: (late) => {
-              const last = layerResults.at(-1);
-              if (outcome !== 'unknown' || last === undefined) return;
-              const next = importCommitReport(outbound, [...layerResults.slice(0, -1), { ...last, ack: late }]);
+              if (outcome !== 'unknown') return;
+              const next = lateImportCommitReport(outbound, late);
               outcome = next.outcome;
               layerResults = next.results;
               results = next.rows;

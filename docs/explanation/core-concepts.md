@@ -72,7 +72,7 @@ The distinction matters: a Phase describes one reusable operation, not one invoc
 
 ## Pipeline: an ordered program
 
-A `PipelineDefinition` names a nonempty ordered list of Phase IDs. The same Phase may occur more than once, so bindings address a `phaseIndex` rather than assuming each ID is unique. A Pipeline also declares typed input and output ports, bindings between those ports and Phase positions, optional execution defaults, and advisory `recommendedNext` Pipeline IDs.
+A `PipelineDefinition` names a nonempty ordered list of Phase IDs. The same Phase may occur more than once, so bindings address a `phaseIndex` rather than assuming each ID is unique. A Pipeline also declares typed input and output ports, bindings between those ports and Phase positions, optional execution defaults, and advisory `recommendedNext` Pipeline IDs. Execution defaults are advisory too: they are carried and exported with the Pipeline but are not applied to a Run, and the launcher shows the settings host policy resolves.
 
 <!-- Source: src/contracts/pipeline-definitions.ts -->
 <!-- Source: src/config/pipeline-definition-validator.ts -->
@@ -116,7 +116,7 @@ Those two pointers produce three visible lifecycle states:
 - **active**: an active version exists and no draft exists;
 - **active with draft**: both exist and identify different versions.
 
-Only active bodies enter the effective catalogs used to start work. Saving a draft does not change running behavior; publishing moves the draft into the active position. Deactivation removes the active pointer, restore creates a new draft from an older body, and discard removes the pending draft. Lifecycle writes use an expected-draft token so a stale editor cannot silently replace a concurrent change.
+Only active bodies enter the effective catalogs used to start work. Saving a draft does not change running behavior; publishing moves the draft into the active position. Deactivation removes the active pointer, restore creates a new draft from an older body, and discard removes the pending draft. Lifecycle writes use an expected-draft token so a stale editor cannot silently replace a concurrent change of the same definition, and one extension host runs the store's writes in turn. That holds within one host: another process writing the same catalog directory is unsupported, and the last manifest rename would win.
 
 <!-- Source: src/contracts/catalog-lifecycle.ts -->
 <!-- Source: src/catalog/catalog-manifest.ts -->

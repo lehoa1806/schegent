@@ -62,6 +62,7 @@ import type {
 } from '../../../src/contracts/sidebar-ipc';
 import { MessageRouter } from '../../../src/ui/sidebar/message-router';
 import type { RouterDeps } from '../../../src/ui/sidebar/message-router';
+import { parseDocumentBytes } from '../../../src/services/process-yaml/yaml-parser';
 import { handler as preflightHandler } from '../../../src/ui/sidebar/commands/cmd-preflight-process-yaml';
 import { publishDefinitionPackage } from '../../../src/ui/sidebar/commands/cmd-catalog-lifecycle';
 import { FakeCatalogStore, NO_WRITES, writesOf } from '../../fixtures/fake-catalog-store';
@@ -631,5 +632,90 @@ describe('Feature 084 — a secondary window refuses the write (T061, QS-33, FR-
     // would pass even if the command were unreachable for an unrelated cause,
     // and would not establish that the window is what the gate reads.
     expect(posted[0]!.status).toBe('accepted');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature 254 (S-T4, contract S5, FR-003; US1 AS2) — an oversized file is refused before it is read
+// ---------------------------------------------------------------------------
+
+describe('Feature 254 — the chosen file was too large to read (S-T4, FR-003, US1 AS2)', () => {
+  /** The preflight, over a seam that reports the file is over the cap and hands back no bytes. */
+  async function preflightOfOversizedFile(store: FakeCatalogStore) {
+    const acks: CommandAckMessage[] = [];
+    const audits: AuditEntry[] = [];
+    const ctx = {
+      deps: {
+        readPhaseConfig: () => ({
+          rows: store.rowsOf('phase'),
+          revision: store.revisionOf('phase')
+        }),
+        openProcessYamlDocument: async () => ({ outcome: 'too-large' as const }),
+        audit: {
+          append: async (entry: AuditEntry) => {
+            audits.push(entry);
+            return undefined;
+          }
+        },
+        logger: {
+          info: vi.fn(),
+          warn: vi.fn(),
+          error: vi.fn(),
+          debug: vi.fn(),
+          sanitize: (s: string) => s
+        }
+      },
+      postAck: async (msg: CommandAckMessage) => {
+        acks.push(msg);
+        return true;
+      },
+      correlationId: 'gates-oversized-1'
+    } as any;
+    const command: PreflightProcessYamlCommand = {
+      type: CMD_PREFLIGHT_PROCESS_YAML,
+      correlationId: 'gates-oversized-1',
+      payload: {}
+    };
+    await preflightHandler(ctx, command);
+    return { acks, audits };
+  }
+
+  it('refuses with the parser\'s too-large code and message, and the parser agrees for real bytes', async () => {
+    const store = newStore();
+    const { acks } = await preflightOfOversizedFile(store);
+    expect(acks).toHaveLength(1);
+    const result = acks[0]!.result as PreflightProcessYamlResult;
+    expect(result.outcome).toBe('refused');
+    if (result.outcome !== 'refused') throw new Error('unreachable');
+    expect(result.refusal.code).toBe('too-large');
+    expect(result.refusal.message).toBe(
+      'Document is larger than the 1048576-byte limit and was not parsed'
+    );
+
+    // The same refusal a parsed oversized document gets: one builder, two paths.
+    const parsed = parseDocumentBytes(new Uint8Array(1048577));
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error('unreachable');
+    expect(result.refusal).toEqual(parsed.refusal);
+  });
+
+  it('appends exactly one preflight refusal audit row with outcomes ["too-large"]', async () => {
+    const store = newStore();
+    const { audits } = await preflightOfOversizedFile(store);
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.eventType).toBe('process-exchange-import-refused');
+    expect(audits[0]!.payload).toMatchObject({
+      operation: 'import-preflight',
+      outcomes: ['too-large'],
+      counts: { refused: 1 }
+    });
+  });
+
+  it('writes nothing to the catalog', async () => {
+    const store = newStore();
+    const before = writeTotal(store);
+    await preflightOfOversizedFile(store);
+    expect(writeTotal(store) - before).toBe(0);
+    expect(writesOf(store)).toEqual(NO_WRITES);
   });
 });

@@ -76,7 +76,7 @@ The `sideEffects` values are `none`, `workspace`, `git`, and `unrestricted`; the
 
 ### Pipeline
 
-A `PipelineDefinition` is a reusable ordered program of Phase references. `phaseIds` must be nonempty and may repeat a Phase, so every `PhaseBinding` addresses `phaseIndex` rather than assuming a Phase ID occurs once. The definition owns declared input/output ports, bindings, advisory execution defaults, and `recommendedNext` Pipeline IDs.
+A `PipelineDefinition` is a reusable ordered program of Phase references. `phaseIds` must be nonempty and may repeat a Phase, so every `PhaseBinding` addresses `phaseIndex` rather than assuming a Phase ID occurs once. The definition owns declared input/output ports, bindings, execution defaults, and `recommendedNext` Pipeline IDs. Execution defaults are advisory: they are carried and exported with the definition but are not applied to a Run, and the launcher shows the settings host policy resolves instead.
 
 <!-- Source: src/contracts/pipeline-definitions.ts -->
 <!-- Source: src/config/pipeline-definition-validator.ts -->
@@ -107,7 +107,7 @@ The compatibility matrix is fixed: `markdown` feeds `text` or `source`; `file` f
 
 <!-- Source: src/config/workflow-graph-validator.ts -->
 
-Conditions are structured data, never free-text expressions. The closed operator set is `equals`, `notEquals`, `in`, `exists`, `greaterThan`, `greaterThanOrEqual`, `lessThan`, and `lessThanOrEqual`. Operands may read the source node or an ancestor, and node-status comparisons accept only `completed`, `failed`, or `canceled`. Workflow-level input/output ports are derived from unbound node ports and are not stored as another representation.
+Conditions are structured data, never free-text expressions. The closed operator set is `equals`, `notEquals`, `in`, `exists`, `greaterThan`, `greaterThanOrEqual`, `lessThan`, and `lessThanOrEqual`. Operands may read the source node or an ancestor, and node-status comparisons accept only `completed`, `failed`, or `canceled`. In v1 every operand is text (a node status, or the location reference an output is recorded as), so the ordering operators and number or boolean literals can never match: a Workflow that uses one is refused with `condition-comparison-unsupported`, at publication, in the catalog and in an import plan. The Builder offers the four operators that compare text, and keeps a typed literal as text. Workflow-level input/output ports are derived from unbound node ports and are not stored as another representation.
 
 <!-- Source: src/contracts/workflow-definitions.ts -->
 <!-- Source: src/config/workflow-graph-validator.ts -->
@@ -132,7 +132,7 @@ Neither pointer means the manifest entry must not exist; there is no fourth life
 <!-- Source: src/config/pipeline-catalog.ts -->
 <!-- Source: src/config/workflow-catalog.ts -->
 
-Save-draft, publish, restore, deactivate, and discard-draft operations use the expected draft token as a compare-and-set boundary. Direct active dependencies block deactivation: an active Pipeline blocks its Phase, and an active Workflow blocks its Pipeline. Draft references and a configured default are advisories. Schegent ships no definition records; an absent manifest resolves as a healthy empty catalog.
+Save-draft, publish, restore, deactivate, and discard-draft operations use the expected draft token as a compare-and-set boundary for one definition. Within one extension host the store runs its writes in turn, so two writes through it both land, each against the manifest the other left, or one is refused stale. A second process writing the same catalog directory is unsupported: the manifest is replaced by a rename with no compare, so the last rename wins, a definition's pointer update can be lost, and its version record stays on disk as collectable. The primary window is the only writer. Direct active dependencies block deactivation: an active Pipeline blocks its Phase, and an active Workflow blocks its Pipeline. Draft references and a configured default are advisories. Schegent ships no definition records; an absent manifest resolves as a healthy empty catalog.
 
 <!-- Source: src/contracts/catalog-lifecycle.ts -->
 <!-- Source: src/catalog/catalog-manifest.ts -->

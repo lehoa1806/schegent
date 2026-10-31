@@ -232,6 +232,30 @@ const WORKFLOW_ROWS = [
     nodes: [{ nodeId: 'only', pipelineId: 'no-such-pipeline' }],
     connections: [],
     startNodeIds: ['only']
+  },
+  // Feature 254 (FR-031) -- every Pipeline resolves, but the one connection's condition asks a node
+  // status an ordering question. v1 operands are text, so it can never match; the graph validator
+  // refuses it and the catalog withholds the Workflow, which `ab-workflow` above must not share.
+  {
+    id: 'unreachable-workflow',
+    name: 'Unreachable condition',
+    version: 1,
+    nodes: [
+      { nodeId: 'first', pipelineId: 'ab-flow' },
+      { nodeId: 'second', pipelineId: 'ab-flow' }
+    ],
+    connections: [
+      {
+        from: { nodeId: 'first', portId: 'report' },
+        to: { nodeId: 'second', portId: 'brief' },
+        condition: {
+          left: { source: 'node-status', nodeId: 'first' },
+          operator: 'greaterThan',
+          right: 'completed'
+        }
+      }
+    ],
+    startNodeIds: ['first']
   }
 ];
 
@@ -904,5 +928,34 @@ describe('the result union — four arms and no fifth', () => {
       'rejected-validation',
       'rejected-queue'
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature 254 (FR-R4-F07, C-T4, contract C6; FR-031, US5 AS4) -- an unreachable condition is a launch
+// refusal, and only for the Workflow that carries it
+// ---------------------------------------------------------------------------
+
+describe('a stored Workflow with an unreachable condition (C-T4, FR-031)', () => {
+  it('is refused at launch as workflow-invalid, and nothing is scheduled', async () => {
+    const harness = buildRouter();
+
+    await dispatch(harness, payload({ workflowId: 'unreachable-workflow', startNodeId: 'first' }));
+
+    expect(only(harness).result).toEqual({
+      outcome: 'rejected-definition',
+      reason: 'workflow-invalid'
+    });
+    expect(harness.scheduled).toEqual([]);
+    expect(harness.writes).toEqual([]);
+  });
+
+  it('launches the valid Workflow in the same catalog', async () => {
+    const harness = buildRouter();
+
+    await dispatch(harness, payload());
+
+    expect(only(harness).result).toMatchObject({ outcome: 'started' });
+    expect(harness.scheduled).toHaveLength(1);
   });
 });

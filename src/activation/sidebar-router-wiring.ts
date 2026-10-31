@@ -11,6 +11,7 @@ import { createCatalogSettingsWriter } from './catalog-settings-wiring';
 import { createConnectedRunService } from './ui-wiring';
 import { createPhaseLogTailWiring } from './phase-log-tail-wiring';
 import { createBackendDiagnosticsWiring } from './backend-wiring';
+import { closedErrorCode, readChosenProcessDocument } from './process-yaml-document-read';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
@@ -357,20 +358,18 @@ return new MessageRouter({
       await vscode.workspace.fs.writeFile(target, Buffer.from(text, 'utf8'));
       return { outcome: 'saved' as const };
     } catch (err) {
-      logger.warn(
-        `extension: phase export write failed: ${logger.sanitize(
-          err instanceof Error ? err.message : 'unknown error'
-        )}`
-      );
+      // Feature 254 (FR-007, V4): a closed code and nothing else. `logger.sanitize` redacts secrets and
+      // not paths, and a file-system error's message routinely names the location it tried to write.
+      logger.warn(`extension: phase export write failed: code=${closedErrorCode(err)}`);
       return { outcome: 'failed' as const, message: 'Could not write the document.' };
     }
   },
-  // Feature 084 — Phase import preflight adapter (FR-020, FR-020a, R3).
-  // The host owns the dialog and the read; the webview supplies no location
-  // and is told none. Reads the chosen file exactly once and returns the raw
-  // bytes: decoding is the parser's job, because invalid UTF-8 and a leading
-  // byte-order mark are refusals this format states rather than repairs.
-  // Nothing is locked, watched, copied, or retained past this call (FR-031).
+  // Feature 084 — Phase import preflight adapter (FR-020, FR-020a, R3). The host owns the dialog and the
+  // read; the webview supplies no location and is told none. The read is `readChosenProcessDocument`
+  // (feature 254, FR-003, FR-007): the size is judged before the contents, the bytes come back undecoded
+  // (invalid UTF-8 and a byte-order mark are refusals this format states, not repairs) and a failure logs a
+  // closed code. Nothing is locked, watched, copied or retained past the call (FR-031). The `fs` entries are
+  // named calls because the evidence-sink mode census follows `vscode.workspace.fs.<entry>`, not an object.
   openProcessYamlDocument: async () => {
     try {
       const picked = await vscode.window.showOpenDialog({
@@ -381,14 +380,12 @@ return new MessageRouter({
       });
       const target = picked?.[0];
       if (!target) return { outcome: 'canceled' as const };
-      const bytes = await vscode.workspace.fs.readFile(target);
-      return { outcome: 'read' as const, bytes };
+      return await readChosenProcessDocument(target, {
+        fs: { stat: (uri) => vscode.workspace.fs.stat(uri), readBytes: (uri) => vscode.workspace.fs.readFile(uri) },
+        logger
+      });
     } catch (err) {
-      logger.warn(
-        `extension: phase import read failed: ${logger.sanitize(
-          err instanceof Error ? err.message : 'unknown error'
-        )}`
-      );
+      logger.warn(`extension: phase import dialog failed: code=${closedErrorCode(err)}`);
       return { outcome: 'failed' as const, message: 'Could not read the document.' };
     }
   },

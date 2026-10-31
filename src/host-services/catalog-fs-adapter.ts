@@ -111,6 +111,10 @@ export function createCatalogFsAdapter(
   const storeRoot = anchor === null ? null : anchor.storeRoot;
   const roots = workspaceRoot === null ? [] : [workspaceRoot];
   const narrowing = new NarrowingReporter('catalog store:', (message) => logger?.warn(message));
+  /** Feature 254 (FR-039): the directory-sync warning is said once per adapter. */
+  let directorySyncReported = false;
+  /** Feature 254 (FR-043): the writability-probe warning is said once per adapter. */
+  let writabilityReported = false;
 
   const pathFor = (at: StoreSegments): string | null =>
     storeRoot === null ? null : path.join(storeRoot, ...at);
@@ -317,6 +321,39 @@ export function createCatalogFsAdapter(
     return notice.outcome !== 'refused-symlink';
   };
 
+  /**
+   * Make a rename or an exclusive create durable in its directory (feature 254, FR-039, R22).
+   *
+   * A file's own `sync` makes its CONTENTS durable; the directory entry that names it is a separate write.
+   * Without this, a power cut after a manifest rename can leave the old name, or a name whose contents
+   * never arrived, and the store reads the manifest as malformed. Opened read-only: it creates no path.
+   *
+   * Darwin and Linux only. Node cannot open a directory on Windows, so no directory is synced there; that
+   * is a stated platform limit (durability-decision.md, section 4), not a fault. The platform is read at
+   * call time, which is what lets a test hold both forms.
+   *
+   * A failure here (`EINVAL`, `ENOTSUP`, `EISDIR`, `EPERM`: filesystems that cannot sync a directory) does
+   * NOT change the outcome. The rename has landed and the write is reported as written. It is said once
+   * per adapter, with the errno and no path, because a mount that refuses it refuses every write.
+   */
+  const syncDirectory = async (directory: string): Promise<void> => {
+    if (process.platform !== 'darwin' && process.platform !== 'linux') return;
+    try {
+      const handle = await fs.open(directory, 'r');
+      try {
+        await handle.sync();
+      } finally {
+        await handle.close().catch(() => undefined);
+      }
+    } catch (error) {
+      if (directorySyncReported) return;
+      directorySyncReported = true;
+      logger?.warn(
+        `catalog store: directory sync failed (${errnoOf(error)}); the write landed, but its directory entry is not barriered`
+      );
+    }
+  };
+
   return {
     async readFile(at: StoreSegments): Promise<FsReadOutcome> {
       const target = pathFor(at);
@@ -369,7 +406,12 @@ export function createCatalogFsAdapter(
         }
         try {
           await opened.handle.writeFile(contents, { encoding: 'utf8' });
+          // The barrier (feature 254, FR-039): the contents are on disk before the rename can name them.
+          await opened.handle.sync();
         } finally {
+          // After a good `sync` the data is durable, so a `close` that fails changes nothing about what
+          // landed; before it, the write or sync failure is the error being reported. Either way the
+          // close error has nothing to add.
           await opened.handle.close().catch(() => undefined);
         }
         try {
@@ -380,6 +422,7 @@ export function createCatalogFsAdapter(
           await fs.rm(provenTemp, { force: true }).catch(() => undefined);
           return { outcome: 'failed', errno: errnoOf(error) };
         }
+        await syncDirectory(path.dirname(provenTarget));
         return { outcome: 'written' };
       } catch (error) {
         return { outcome: 'failed', errno: errnoOf(error) };
@@ -408,9 +451,14 @@ export function createCatalogFsAdapter(
         }
         try {
           await opened.handle.writeFile(contents, { encoding: 'utf8' });
+          // The barrier (feature 254, FR-039): the record's contents are on disk before it is reported
+          // written, and before the manifest that will name it is replaced.
+          await opened.handle.sync();
         } finally {
+          // As above: after a good `sync` the data is durable and a failing `close` changes nothing.
           await opened.handle.close().catch(() => undefined);
         }
+        await syncDirectory(path.dirname(proven));
         return { outcome: 'written' };
       } catch (error) {
         if (errnoOf(error) === 'EEXIST') return { outcome: 'exists' };
@@ -473,7 +521,14 @@ export function createCatalogFsAdapter(
         // hits after cloning a repository with a read-only `.schegent/` (FR-033b).
         await fs.access(made.anchor, fs.constants.W_OK);
         return 'writable';
-      } catch {
+      } catch (error) {
+        // Feature 254 (FR-043, V4): the outcome is unchanged, and the reason is no longer lost. Said once
+        // per adapter, errno only, no path: a permissions problem, a full disk and a missing mount all
+        // used to read as the same "not writable".
+        if (!writabilityReported) {
+          writabilityReported = true;
+          logger?.warn(`catalog store: writability check failed (${errnoOf(error)}); saves are refused`);
+        }
         return 'not-writable';
       }
     }

@@ -574,28 +574,34 @@ describe('condition authoring (T048)', () => {
     ]);
   });
 
-  it('reads typed text as a scalar literal, and shows it back unchanged', () => {
-    // A comparison against a number or a boolean is meaningless if the value is
-    // kept as text, so `5` and `true` are read as what they spell. The cost is
-    // that the *string* "5" is not authorable through this control.
-    expect(parseWorkflowConditionLiteral('true')).toBe(true);
-    expect(parseWorkflowConditionLiteral('false')).toBe(false);
-    expect(parseWorkflowConditionLiteral('5')).toBe(5);
-    expect(parseWorkflowConditionLiteral('-2.5')).toBe(-2.5);
-    expect(parseWorkflowConditionLiteral('  7  ')).toBe(7);
-    // Anything else is the operator's text, kept verbatim — including the shapes
-    // a looser rule would silently reinterpret.
-    expect(parseWorkflowConditionLiteral('high')).toBe('high');
+  // Feature 254 (FR-R4-F07, C-T6, contract C8; TA5; FR-027) -- v1 operands are text, so a typed literal is
+  // kept as the text typed. This read 'reads typed text as a scalar literal' and turned `5` into the
+  // number 5 and `true` into the boolean: a number or boolean under `equals` can never match a text
+  // operand, and the host now refuses it, so the Builder must not author one by accident. The cost of
+  // the old rule was that the string "8" was not authorable at all.
+  it('keeps typed text as text, whatever it spells', () => {
+    expect(parseWorkflowConditionLiteral('8')).toBe('8');
+    expect(parseWorkflowConditionLiteral('true')).toBe('true');
+    expect(parseWorkflowConditionLiteral('false')).toBe('false');
+    expect(parseWorkflowConditionLiteral('-2.5')).toBe('-2.5');
+    expect(parseWorkflowConditionLiteral(' 8 ')).toBe(' 8 ');
+    expect(parseWorkflowConditionLiteral('x')).toBe('x');
     expect(parseWorkflowConditionLiteral('')).toBe('');
     expect(parseWorkflowConditionLiteral('0x10')).toBe('0x10');
     expect(parseWorkflowConditionLiteral('007')).toBe('007');
-    expect(parseWorkflowConditionLiteral('5 apples')).toBe('5 apples');
     expect(parseWorkflowConditionLiteral('TRUE')).toBe('TRUE');
+    expect(parseWorkflowConditionLiteral('5 apples')).toBe('5 apples');
 
-    for (const text of ['true', 'false', '5', '-2.5', 'high', '']) {
+    for (const text of ['true', 'false', '5', '-2.5', 'high', '', ' 8 ']) {
+      expect(typeof parseWorkflowConditionLiteral(text)).toBe('string');
       expect(formatWorkflowConditionLiteral(parseWorkflowConditionLiteral(text))).toBe(text);
     }
     expect(formatWorkflowConditionLiteral(undefined)).toBe('');
+  });
+
+  it('still shows a stored numeric or boolean literal as its text, so it loads and can be repaired', () => {
+    expect(formatWorkflowConditionLiteral(5)).toBe('5');
+    expect(formatWorkflowConditionLiteral(true)).toBe('true');
   });
 
   it('only ever authors a status the contract calls terminal', () => {

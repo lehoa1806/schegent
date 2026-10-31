@@ -93,7 +93,11 @@ type WriteMatcher = (key: string, contents: string) => boolean;
  * and every write after the one that fired, so the disk state a test then reads is
  * the state a genuine mid-document I/O failure would have left.
  */
-function openStoreFailingWrite(matches: WriteMatcher, errno: string): CatalogStore {
+function openStoreFailingWrite(
+  matches: WriteMatcher,
+  errno: string,
+  removals?: string[]
+): CatalogStore {
   const inner = createCatalogFsAdapter({ workspaceRoot, storeRoot: storeRootOf(workspaceRoot) });
   let fired = false;
   const fails = (key: string, contents: string): boolean => {
@@ -104,7 +108,12 @@ function openStoreFailingWrite(matches: WriteMatcher, errno: string): CatalogSto
   const fs: CatalogFsPort = {
     readFile: (at) => inner.readFile(at),
     listDirectory: (at) => inner.listDirectory(at),
-    removeFile: (at) => inner.removeFile(at),
+    // Feature 254 (FR-016, P-T3): every removal is recorded when a test asks, so "nothing that landed
+    // is removed" is read off the port and not inferred from the files that happen to remain.
+    removeFile: (at) => {
+      removals?.push(at.join('/'));
+      return inner.removeFile(at);
+    },
     checkWritability: () => inner.checkWritability(),
     writeFileAtomic: async (at, contents) =>
       fails(at.join('/'), contents) ? { outcome: 'failed', errno } : inner.writeFileAtomic(at, contents),
@@ -182,6 +191,18 @@ describe('a failure in pass 1 leaves drafts and nothing live (FR-037)', () => {
       // draft write trimmed nothing to make room.
       pruned: []
     });
+  });
+
+  // Feature 254 (FR-016, P-T3, hard rule 49) — a partial is partial: the failure path removes nothing
+  // that landed. Read off the file-system port's removal calls, and checked against the files the
+  // failed attempt left, so a compensating delete followed by a re-create could not pass either half.
+  it('removes no landed file: no removal reaches the port, and every record is still there', async () => {
+    const removals: string[] = [];
+    await publishDocument(openStoreFailingWrite(breakPipelineRecord, 'EIO', removals));
+
+    expect(removals).toEqual([]);
+    const tree = await treeOf(storeRootOf(workspaceRoot));
+    expect(tree.files).toEqual(['manifest.json', 'phases/build/v1.json', 'phases/plan/v1.json']);
   });
 
   it('leaves the Phase records written and nothing triggerable', async () => {

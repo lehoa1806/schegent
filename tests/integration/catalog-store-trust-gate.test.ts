@@ -43,13 +43,19 @@ function setTrusted(trusted: boolean): void {
 
 describe('Feature 099 — an untrusted workspace activates no catalog (SC-008)', () => {
   let workspaceRoot: string;
+  // Feature 254 (TA7, TA9): `createHostCatalogStore` claims its store root for the host and pushes the
+  // Disposable that releases it here, the way `openWorkspaceSession` hands it the session's list. Disposed
+  // after each case so one case's claim never reaches the next.
+  let disposables: vscode.Disposable[];
 
   beforeEach(async () => {
     workspaceRoot = await createWorkspace('trust-gate');
     setWorkspaceFolder(workspaceRoot);
+    disposables = [];
   });
 
   afterEach(async () => {
+    for (const entry of disposables.splice(0)) entry.dispose();
     setTrusted(true);
     setWorkspaceFolder(null);
     disposeWorkspaceFolderPicker();
@@ -114,7 +120,7 @@ describe('Feature 099 — an untrusted workspace activates no catalog (SC-008)',
   it('builds a working store once the workspace is trusted', async () => {
     setTrusted(true);
 
-    const store = createHostCatalogStore();
+    const store = createHostCatalogStore(undefined, undefined, undefined, disposables);
     expect(store).not.toBeNull();
     if (store === null) return;
 
@@ -145,7 +151,7 @@ describe('Feature 099 — an untrusted workspace activates no catalog (SC-008)',
     setTrusted(true);
     setWorkspaceFolder(null);
 
-    const store = createHostCatalogStore();
+    const store = createHostCatalogStore(undefined, undefined, undefined, disposables);
     expect(store).not.toBeNull();
     if (store === null) return;
 

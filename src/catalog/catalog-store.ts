@@ -13,7 +13,7 @@
 //   1. writability — refused by name, never retried silently (FR-033a, FR-033b)
 //   2. the manifest — absent is empty, unreadable is refused and never overwritten
 //   3. id legality — refused, never sanitised (FR-033)
-//   4. the expected-draft gate — the whole concurrency story (FR-012, FR-012b)
+//   4. the expected-draft gate — one definition's concurrency (FR-012, FR-012b)
 //   5. the operation's own precondition, against the manifest just loaded
 //   6. canonicalise and hash the body (FR-013) — record-writing arms only
 //   7. the unchanged short-circuit, against the head, and only where the record that
@@ -32,6 +32,22 @@
 // Two of the five operations write a version record; three move pointers inside a
 // single manifest write and write no record at all, which is what makes them atomic
 // without a cross-file transaction and why `partial` is unreachable from them.
+//
+// What serialises writers, and what does not (feature 254, FR-037, FR-038). Three separate facts, kept
+// apart because the first version of this comment ran them together:
+//
+//   - **Within one store, writes run in turn.** The three write methods run on one chain
+//     (`write-chain.ts`), from the manifest load to the last step, so a write always loads the manifest
+//     the previous write left. Before this, two writes of DIFFERENT definitions each passed their own gate,
+//     loaded the same manifest, and the second rename erased the first's entry while both reported `saved`.
+//   - **The gate decides one definition.** The expected-draft check refuses a stale edit of the SAME
+//     definition, and `'wx'` on the version record makes exactly one of two same-definition saves win even
+//     when both pass the gate. It says nothing about two different definitions.
+//   - **Across processes, `manifest.json` is last-writer-wins.** Rename has no compare, so two stores on one
+//     directory (two processes) are not ordered by anything here: a pointer update can be lost, its record
+//     survives as collectable debris, and no history is lost. The host builds one store per directory
+//     (`createHostCatalogStore` claims it), and the primary window is the only writer
+//     (`docs/architecture/durability-decision.md`, section 4, states the precondition).
 //
 // Nothing here catches an exception, and nothing here deletes a file on a failure
 // path. Both are structural: the port returns outcomes rather than throwing, so
@@ -79,6 +95,7 @@ import { revisionForKind, revisionsOf } from './catalog-revision';
 import { contentHashOf } from './content-hash';
 import type { CatalogStorePorts, Digest } from './ports';
 import { nextVersionId, readVersionRecord, serialiseRecord } from './version-record';
+import { createWriteChain } from './write-chain';
 
 export interface CatalogStore {
   /** One pass, into memory. Every resolver then reads the snapshot synchronously (FR-027a). */
@@ -276,6 +293,8 @@ function deactivatedEntry(entry: CatalogManifestEntry, now: number): CatalogMani
 
 export function createCatalogStore(ports: CatalogStorePorts): CatalogStore {
   const { fs, clock, digest, provenance } = ports;
+  // One chain per store (FR-037): the writes below run on it, one after another.
+  const writes = createWriteChain();
 
   async function read(): Promise<CatalogReadResult> {
     const manifest = await loadManifest(fs);
@@ -620,11 +639,13 @@ export function createCatalogStore(ports: CatalogStorePorts): CatalogStore {
 
     const entry = findEntry(manifest, write.kind, write.id);
 
-    // The staleness gate, and the only concurrency control in the store: no lock
-    // file, no lock directory (FR-030a). Per definition and over the **draft pointer
-    // only** (FR-012b) — a publication or a deactivation, here or elsewhere, never
-    // invalidates an unrelated in-flight edit. Two windows creating a first draft
-    // both send `NO_DRAFT`, and exactly one of them wins (FR-012a).
+    // The staleness gate for ONE definition: no lock file, no lock directory (FR-030a). Per definition
+    // and over the **draft pointer only** (FR-012b) — a publication or a deactivation, here or elsewhere,
+    // never invalidates an unrelated in-flight edit. Two windows creating a first draft of the SAME
+    // definition both send `NO_DRAFT`, and exactly one of them wins (FR-012a): the gate refuses the second
+    // when it sees the first's pointer, and `'wx'` on the version record decides it when both pass the
+    // gate. It does not order writes of different definitions. Within this store the chain does, and
+    // across processes nothing does (see the header).
     if (write.expectedDraftVersion !== draftTokenOf(entry?.draftVersionId ?? null)) {
       return { outcome: 'stale', pointers: pointersOf(entry) };
     }
@@ -935,9 +956,10 @@ export function createCatalogStore(ports: CatalogStorePorts): CatalogStore {
 
   return {
     read,
-    applyLifecycleWrite,
-    saveDraftLayer,
-    publishLayer,
+    // Feature 254 (FR-037; W1): every write runs on the store's chain; reads are not queued.
+    applyLifecycleWrite: (write) => writes.run(() => applyLifecycleWrite(write)),
+    saveDraftLayer: (request) => writes.run(() => saveDraftLayer(request)),
+    publishLayer: (request) => writes.run(() => publishLayer(request)),
     readVersion,
     listVersions,
     listDefinitions
