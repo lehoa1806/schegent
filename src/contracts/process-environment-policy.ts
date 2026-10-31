@@ -81,6 +81,16 @@ export function sanitizeProcessEnvAllowlist(value: unknown): readonly string[] {
  *
  * The first branch is the one worth reading twice: `inheritEnvironment: false`
  * wins over any mode, and drops the allowlist rather than applying it.
+ *
+ * FR-R4-F06 (FR-001, FR-002) -- ONLY the exact string `'inherit'` inherits.
+ * This used to be the fall-through: every value that was not `'minimal'` or
+ * `'allowlist'`, a typo included, resolved to `inherit`, so a mistyped safety
+ * setting forwarded every credential in the host environment. The settings tab
+ * already showed `allowlist` for such a value (it substitutes the shipped default
+ * on read), so the tab and the spawn disagreed. A missing value, `null`, a
+ * non-string, an unknown string, `'Inherit'` and `' inherit'` now resolve to the
+ * allowlist default, the same value an explicit `'allowlist'` gives. The compare
+ * is strict and case-sensitive on purpose: a typo must never widen.
  */
 export function resolveProcessEnvironmentPolicy(input: {
   readonly inheritEnvironment: boolean;
@@ -90,12 +100,37 @@ export function resolveProcessEnvironmentPolicy(input: {
   if (!input.inheritEnvironment || input.mode === 'minimal') {
     return Object.freeze({ mode: 'minimal', inheritProcessEnv: false });
   }
-  if (input.mode === 'allowlist') {
-    return Object.freeze({
-      mode: 'allowlist',
-      inheritProcessEnv: false,
-      processEnvAllowlist: sanitizeProcessEnvAllowlist(input.allowlist)
-    });
+  if (input.mode === 'inherit') {
+    return Object.freeze({ mode: 'inherit', inheritProcessEnv: true });
   }
-  return Object.freeze({ mode: 'inherit', inheritProcessEnv: true });
+  return Object.freeze({
+    mode: 'allowlist',
+    inheritProcessEnv: false,
+    processEnvAllowlist: sanitizeProcessEnvAllowlist(input.allowlist)
+  });
+}
+
+/**
+ * FR-R4-F06 (FR-004, FR-005) -- the policy a consumer assumes when none was handed
+ * to it: the shipped default, `allowlist` with an empty list. It is the value
+ * `resolveProcessEnvironmentPolicy` returns for a missing setting, so an absent
+ * policy fails in the safe direction.
+ */
+export const SHIPPED_DEFAULT_POLICY: ProcessEnvironmentPolicy = Object.freeze({
+  mode: 'allowlist',
+  inheritProcessEnv: false,
+  processEnvAllowlist: Object.freeze([]) as readonly string[]
+});
+
+/**
+ * FR-R4-F06 (FR-005) -- a string that changes exactly when the policy's effect on a
+ * child's environment changes: the mode and the sorted allowlist NAMES.
+ *
+ * Names only, and it reads no environment. A fingerprint built from the built
+ * environment, or a hash of it, would put the values the allowlist exists to
+ * withhold into a cache key. The version probe keys its cache by path plus this
+ * string, so a policy change is a different key and not a stale hit.
+ */
+export function policyFingerprint(policy: ProcessEnvironmentPolicy): string {
+  return `${policy.mode}:${[...(policy.processEnvAllowlist ?? [])].sort().join(',')}`;
 }

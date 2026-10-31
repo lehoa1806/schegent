@@ -105,6 +105,15 @@ What it bounds and what it does not, in the same paragraph on purpose:
   flag, so a phase withholding `network`, `workspace-write` or `outside-workspace-write` on that
   backend is **refused before it starts** rather than run unbounded. Refusing is the honest outcome; it
   is not a working one.
+- **What each cell leaves open is named, not implied** (`FR-R4-F06`). A Claude restriction is a
+  tool-access restriction, not OS isolation, and the audit row and the launcher carry the residual codes:
+  - `unlisted-tools` — tools the denylist does not name, including tools from configured extensions or MCP servers;
+  - `shell-network`, `shell-workspace-write`, `shell-outside-workspace-write` — a shell that stays granted can
+    still do what the denied tool would have, where the backend's own permission settings let it run;
+  - `sandboxed-commands-run` — on Codex, withholding `process-spawn` still lets model-run commands execute,
+    inside Codex's read-only sandbox;
+  - `sandbox-scope-unqualified` — on Agy, the scope of its `--sandbox` has not been qualified.
+  A restriction whose flag no capture has confirmed the installed CLI lists is refused, not relied on.
 - **The default is unchanged.** A phase that declares no capability set spawns with exactly the argv it
   spawned with before this existed. `SEC-08` is not closed by this: narrowing is opt-in, per phase, and
   a fresh install still refuses its first uncontained run.
@@ -658,6 +667,25 @@ tree, telling the operator the Run is executing elsewhere. It does not kill and 
 reattach: both are destructive in a way declining is not, and `FR-R3-103` §3.2 calls that
 choice a decision to record rather than to default.
 
+**The check was bypassable, and now sits at the one seam every resume reaches** (`FR-R4-F06`,
+`FR-016`). Only the activation sweep asked. A Run it declined kept its in-flight status and its
+identity, so a manual resume, the auto-drain's resume and an unattended wakeup then admitted it
+with no check at all. An admission guard now runs at the start of every resume, re-evaluated on
+each attempt and never cached: it refuses a missing or ended Run, refuses once shutdown has begun,
+and asks liveness whenever the Run carries a recorded identity and this window is not already
+driving that queue. A refusal appends `run-resume-declined-orphan-alive` with the verdict, tells
+the operator, and is never turned into a fresh start beside the survivor.
+
+**A leader that died while its helper lived read as `dead`.** Liveness asked only whether the
+leader's pid was still held, so a leader that exited with a same-group helper still alive
+permitted a resume into a tree something was still writing. The verdict now follows the group:
+a leader that is gone while its process group still answers is `orphaned-group`, which permits
+no resume. A recycled leader pid (it exists with a different start time) still reads `dead`
+and the group is not probed, because a group id is not reused while the group has members, so
+whatever answers for it now is a stranger's. `EPERM` from the group probe reads `unanswerable`.
+Liveness sends signal 0 only; the persisted identity is unchanged and an identity written before
+this feature reads identically.
+
 **A superseded window's live child kept writing.** Losing the fence stopped the *state store*
 from committing and did nothing about the child — no path from fence loss reached an
 `AbortController` or a process tree. So a superseded window's subprocess went on mutating the
@@ -696,6 +724,13 @@ frees stays pending for the next session instead of being admitted and failed.
 - **A recycled pid is refused, not tolerated.** Liveness is decided by the identity triple, so
   a pid the OS has handed to an unrelated process reads as `dead` rather than as a live orphan.
   A bare `kill(pid, 0)` would have produced a false refusal that never clears.
+- **`orphaned-group` is declined, not resolved.** Schegent will not end a process group it cannot
+  prove it owns after a restart, and it will not resume beside one. The operator ends the
+  processes, then resumes or reloads. The decline waits; a queued retry for that Run is not
+  turned into a fresh start.
+- **A helper that outlives a normally completed backend is not found.** On normal completion
+  nothing signals the group, and the recorded identity is cleared when the child is reaped, so
+  neither shutdown nor the next activation can find it.
 - **Retried phases still have no side-effect idempotency**, and there is still no in-product
   checkpoint restore. Both are recorded in the reliability register and neither is touched here.
 - **An admission already starting when teardown begins goes on.** Teardown closes the auto-drain
@@ -703,7 +738,19 @@ frees stays pending for the next session instead of being admitted and failed.
   runner's first invocation, is not stopped by the close. The closed runner refuses that
   invocation, so that Run fails with the refusal named instead of starting a CLI.
 
+The resume policy is one list in code, `RESUME_ON`, and these two marked lists are copies that a
+test checks against it and against the `LivenessVerdict` members:
+
+<!-- resume-on:start -->
+Permits a resume: `dead`, `unrecorded`, `unanswerable`
+<!-- resume-on:end -->
+
+<!-- liveness-verdicts:start -->
+All verdicts: `alive`, `dead`, `unrecorded`, `unanswerable`, `orphaned-group`
+<!-- liveness-verdicts:end -->
+
 <!-- Source: src/contracts/spawn-identity.ts -->
+<!-- Source: src/services/resume-admission-guard.ts -->
 <!-- Source: src/runner/backend-runner-registry.ts -->
 <!-- Source: src/runner/spawn-refused-after-close.ts -->
 <!-- Source: src/services/auto-drain-coordinator.ts -->
@@ -722,8 +769,28 @@ anything is spawned. Approving writes the refused backend id — and no other �
 `schegent.backend.uncontainedBackends` in User settings. Its scope is the **machine**:
 `application`-scoped by design, so a workspace cannot grant itself the right to run an unbounded
 agent. Withdrawn by removing the id from the setting. The manifest default stays `[]`, so a fresh
-install still refuses its first run, and the setting is read at **every** runner construction rather
-than captured at activation — a grant written mid-session takes effect with no window reload.
+install still refuses its first run, and the setting is read at **every** runner lookup rather than
+captured at activation — a grant written mid-session takes effect with no window reload, and so does a
+revocation (below).
+
+**An unrecognised backend selects the default, and meets the same gate.** A blank or non-string
+`schegent.backend.runner` selects `claude`; an unknown nonblank string selects it too and logs a warning
+(`resolveBackendKind`). The fallback runs before the containment gate, never around it: the selected
+`claude` is judged like any other uncontained backend, so a typo in the setting cannot start a backend the
+operator never granted. There is no demonstrated bypass.
+
+**The grant is stated where the operator launches** (`FR-R4-F06`, contract D). A granted uncontained
+backend shows a host-built sentence on its posture and on the two dashboard launch surfaces, for the
+backends a launchable would actually run on: no OS-enforced bound, the operator's local user authority,
+application-scoped, every trusted workspace in this installation. The webview renders it as text and
+derives nothing from it. A Phase can pin its own runner, so a Pipeline that looks like it runs on a
+contained backend can still reach an uncontained one, and the notice follows that.
+
+**A revocation bites at the next start** (`FR-R4-F06`, D8). The runner registry caches a runner for the
+window, and it used to judge the grant only when it built one. A cached uncontained runner is now judged
+again on each lookup, by the same function and the same live reader construction uses, and a refusal throws
+the same error. A contained backend is never re-judged. A child already started is not stopped by a
+revocation, and a Phase already running finishes.
 
 **The Git mutation-plan grant.** Asked before the first Run on a plan. `Approve This Run` covers that
 Run and records nothing; `Always Approve This Plan Here` writes an entry under
@@ -742,9 +809,17 @@ next run asks again, which is the fail-closed direction for a grant that was nev
 - **A remembered grant is not a re-consulted operator.** The Git plan fingerprint covers the
   pipeline id and each phase's id, runner, declared side effects and `promptVersion`. A phase prompt
   revised *without* changing `promptVersion` is the same fingerprint and does not ask again.
-- **The uncontained grant is not evicted mid-session.** Enforcement is at runner construction and the
-  registry caches by kind, so removing the id does not tear down a runner already built in this
-  window, nor stop a phase already running. Reload the window to make a withdrawal bite now.
+- **A withdrawn uncontained grant does not stop work already started.** The next start of that backend
+  is refused (the registry judges a cached runner again at each lookup), but removing the id does not
+  tear down a runner already built in this window, nor stop a phase already running. Reload the window,
+  or cancel the Run, to end work that has begun.
+- **The remaining authority is the operator's.** An uncontained backend acts with the operator's own user
+  authority. The grant is application-scoped: one grant covers every later trusted workspace in this
+  installation, which is deliberate, so that a workspace cannot grant itself the right. And the
+  environment allowlist is not an operating-system boundary: it decides what a child *receives*, and on the
+  qualification host a same-user child could read its parent's environment from the OS
+  ([the sentinel row](../architecture/backend-containment-qualification.md)). None of these is a claim this
+  page makes the product has closed.
 - **Neither grant bounds the model.** The uncontained grant decides whether a run *starts*;
   `--dangerously-skip-permissions` is still passed. The Git grant covers the phases the host runs,
   and a backend with a shell can invoke `git` regardless of what any phase declared — T8's position,
@@ -766,6 +841,8 @@ next run asks again, which is the fail-closed direction for a grant that was nev
 <!-- Source: src/activation/git-approval.ts -->
 <!-- Source: src/state/git-plan-grants.ts -->
 <!-- Source: src/runner/backend-runner-factory.ts -->
+<!-- Source: src/runner/backend-runner-registry.ts -->
+<!-- Source: src/services/backend-containment-policy.ts -->
 
 ### T28 — A command acknowledgement carries an error message to the webview
 

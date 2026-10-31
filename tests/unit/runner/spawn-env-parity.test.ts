@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { randomBytes } from 'node:crypto';
 import {
   buildSpawnEnv,
   policyRequestFields,
+  resolveProcessEnvironmentPolicy,
   type ProcessEnvironmentPolicy
 } from '../../../src/runner/spawn-env';
 import type { InvocationRequest } from '../../../src/runner/invocation-result';
@@ -94,6 +96,23 @@ const CALL_SITES: ReadonlyArray<{ name: string; request: (p: ProcessEnvironmentP
   {
     name: ENV_POLICY_CALL_SITES[2],
     request: (p) => ({
+      ...policyRequestFields(p)
+    })
+  },
+  // FR-R4-F06 (FR-004, FR-006; T4) -- the two probes. The version probe builds its child's
+  // environment as `buildSpawnEnv(policyRequestFields(policy))` with no overlay
+  // (`cli-version-probe.ts`). The capability probe adds two phase-marker overlay names and the
+  // same policy fields (`backend-wiring.ts`, its `buildEnv`).
+  {
+    name: ENV_POLICY_CALL_SITES[3],
+    request: (p) => ({
+      ...policyRequestFields(p)
+    })
+  },
+  {
+    name: ENV_POLICY_CALL_SITES[4],
+    request: (p) => ({
+      env: { SCHEGENT_PHASE: 'runner-probe', SCHEGENT_ITERATION: '0' },
       ...policyRequestFields(p)
     })
   }
@@ -196,6 +215,12 @@ describe('the change is strictly narrowing (security)', () => {
    * covered by the bootstrap-name cases above and, for inherit-nothing mode, is a
    * pre-existing defect on all three paths that is filed as its own item.
    */
+  // The sites that forwarded no policy field at all before this work: the watchdog's poll
+  // (FR-R3-049) and the CLI version probe (FR-R4-F06).
+  const NO_POLICY_BEFORE: ReadonlySet<string> = new Set([
+    'credit watchdog poll',
+    'cli version probe'
+  ]);
   const MODES: ReadonlyArray<readonly [string, ProcessEnvironmentPolicy]> = [
     ['allowlist excluding the sentinels', { mode: 'allowlist', inheritProcessEnv: false, processEnvAllowlist: ['ANTHROPIC_API_KEY'] }],
     ['allowlist including one sentinel', { mode: 'allowlist', inheritProcessEnv: false, processEnvAllowlist: ['NPM_TOKEN'] }],
@@ -209,7 +234,7 @@ describe('the change is strictly narrowing (security)', () => {
         // "Before" for the watchdog was forwarding nothing at all; for the other
         // two it was the same hand-rolled spread the helper now produces.
         const beforeKeys = new Set(
-          Object.keys(buildSpawnEnv(site.name === 'credit watchdog poll' ? {} : site.request(policy)))
+          Object.keys(buildSpawnEnv(NO_POLICY_BEFORE.has(site.name) ? {} : site.request(policy)))
         );
         const afterKeys = Object.keys(buildSpawnEnv(site.request(policy)));
         const widened = afterKeys.filter((key) => !beforeKeys.has(key));
@@ -217,4 +242,63 @@ describe('the change is strictly narrowing (security)', () => {
       }
     });
   }
+});
+
+describe('a malformed mode forwards no secret to a Run spawn or either probe (SC-001, T4)', () => {
+  /** Every value E1 lists, each of which used to resolve to `inherit`. */
+  const MALFORMED_MODES: readonly unknown[] = [
+    undefined,
+    null,
+    42,
+    {},
+    [],
+    true,
+    'unexpected',
+    'inherits',
+    'Inherit',
+    'INHERIT',
+    ' inherit',
+    ''
+  ];
+  const RUN_SPAWN = ENV_POLICY_CALL_SITES[0];
+  const PROBES = [ENV_POLICY_CALL_SITES[3], ENV_POLICY_CALL_SITES[4]] as const;
+
+  function siteNamed(name: string) {
+    const site = CALL_SITES.find((candidate) => candidate.name === name);
+    if (site === undefined) throw new Error(`no modelled call site named ${name}`);
+    return site;
+  }
+
+  /** A credential-shaped name built at runtime, so no fixture holds a fixed secret. */
+  function withSyntheticSecret(): string {
+    const name = `SCHEGENT_TEST_SECRET_${randomBytes(6).toString('hex').toUpperCase()}`;
+    process.env[name] = randomBytes(12).toString('hex');
+    return name;
+  }
+
+  for (const mode of MALFORMED_MODES) {
+    it(`forwards 0 synthetic secrets under the malformed mode ${String(JSON.stringify(mode))}`, () => {
+      const secretName = withSyntheticSecret();
+      const policy = resolveProcessEnvironmentPolicy({
+        inheritEnvironment: true,
+        mode,
+        allowlist: []
+      });
+      for (const siteName of [RUN_SPAWN, ...PROBES]) {
+        expect(secretName in buildSpawnEnv(siteNamed(siteName).request(policy))).toBe(false);
+      }
+    });
+  }
+
+  it('control: explicit inherit forwards the secret to all three', () => {
+    const secretName = withSyntheticSecret();
+    const policy = resolveProcessEnvironmentPolicy({
+      inheritEnvironment: true,
+      mode: 'inherit',
+      allowlist: []
+    });
+    for (const siteName of [RUN_SPAWN, ...PROBES]) {
+      expect(secretName in buildSpawnEnv(siteNamed(siteName).request(policy))).toBe(true);
+    }
+  });
 });

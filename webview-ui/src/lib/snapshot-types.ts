@@ -228,6 +228,7 @@ export type {
   ActiveFeatureSummary,
   ActivePipelineSummary,
   AuditCategory,
+  CapabilityNotice,
   CliMonitorState,
   CreditPollingProjection,
   DegradedPhaseEntry,

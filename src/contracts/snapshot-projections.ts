@@ -24,6 +24,7 @@
 // from outside the moved set are `PhaseName` and `PipelineInputPortType`, both
 // already in `src/contracts/`.
 import type { PhaseName } from './phase-identity';
+import type { BackendRunnerKind } from './backend-kinds';
 import type { PipelineInputPortType } from './pipeline-definitions';
 import type { AuditScope } from './audit-events';
 import type { CatalogVersionId } from './catalog-store';
@@ -94,6 +95,46 @@ export interface Launchable {
   readonly inputs: readonly LaunchablePort[];
   /** Workflows only; documented non-empty when present. Drives FR-043. */
   readonly startNodeIds?: readonly string[];
+  /**
+   * FR-R4-F06 (FR-007; contract D, D3) -- the backends a launch of this entry would
+   * actually spawn: non-empty, unique, in `SUPPORTED_BACKENDS` order.
+   *
+   * Host-computed with the freeze's own `effectiveRunnerKindForPhase`, over a
+   * Pipeline's active-version Phases or the union over a Workflow's node Pipelines. A
+   * Phase's pinned `runner` wins over the window default, and a `sideEffects: git` Phase
+   * always runs on Claude, so the effective backend is per Phase and a Codex window can
+   * start a Run that spawns Claude. The webview has no `sideEffects` and must not derive
+   * one: the launch notice reads this list to decide which postures apply.
+   *
+   * Optional only so a fixture that predates it still compiles; the host always sets it.
+   */
+  readonly backends?: readonly BackendRunnerKind[];
+  /**
+   * FR-R4-F06 (FR-014; contract K, K6) -- one entry per Phase of this entry whose declared
+   * capability set, planned on that Phase's effective backend, yields residuals or a
+   * refusal. Empty or absent when none does.
+   *
+   * Host-computed; the launch surface renders each `text` as it arrives and composes no
+   * sentence of its own. Optional only so a fixture that predates it still compiles.
+   */
+  readonly capabilityNotices?: readonly CapabilityNotice[];
+}
+
+/**
+ * FR-R4-F06 (FR-014; contract K, K6) -- what a launch will do about a Phase's declared
+ * capability set, worded by the host.
+ */
+export interface CapabilityNotice {
+  /** The Phase's display name, as the catalog projection already sanitized and capped it. */
+  readonly phaseName: string;
+  readonly backend: BackendRunnerKind;
+  /**
+   * `residual`: the set is enforced as far as the backend can, and the sentence names what
+   * is not. `refused`: the backend cannot enforce the set, so the start would be refused.
+   */
+  readonly outcome: 'residual' | 'refused';
+  /** Host sentence from `describeCapabilityOutcome`; never composed in the webview. */
+  readonly text: string;
 }
 
 /**

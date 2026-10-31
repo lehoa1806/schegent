@@ -12,8 +12,9 @@
 //      (437/437, asserted shrink-only), so the shutdown plumbing FR-R3-137 needed
 //      could not be added there — it had to buy its own room.
 //   2. The order below is a decision, and a decision inside a 437-line function
-//      is a decision nobody will find. It is three steps whose sequence is the
-//      difference between a flushed transport log and a truncated one.
+//      is a decision nobody will find. It is four steps whose sequence is the
+//      difference between a flushed transport log and a truncated one, and
+//      (FR-R4-F06) between releasing ownership after a backend is gone and before.
 //
 // WHAT DELIBERATELY STAYED IN `extension.ts`: `executionLeases.releaseAll()` and
 // `lock.release()`. AGENTS.md rule 4 puts window primacy's release at `dispose()`
@@ -43,10 +44,30 @@ export interface Stage2ResourceTeardown {
    * one was the garbage collector.
    */
   readonly transport: Pick<BoundedTransport, 'flushAndDispose'>;
+  /**
+   * FR-R4-F06 (FR-021; S5) — close the backend runners and wait, under one bound, for their
+   * process trees to be gone, then record the shutdown evidence. Required, not optional: a
+   * teardown that could be forgotten is the `cancelAll` disposable it replaces, which fired the
+   * ladders and let the caller release ownership without waiting for them.
+   *
+   * Never rejects by contract. A caller that cannot promise that wraps it, because a throw here
+   * would abandon the lease release and the primacy release that follow.
+   */
+  readonly teardown: () => Promise<void>;
 }
 
 /**
  * Dispose Stage 2's resources, in order, and never throw.
+ *
+ * The order, and why each step is where it is (FR-R4-F06 added the second):
+ *
+ *   1. the synchronous disposals — the producers stop first, so nothing new starts;
+ *   2. `await teardown()` — admission closes and the backend trees are brought down, so the
+ *      caller releases ownership only once their outcome is known and recorded. It runs BEFORE
+ *      the transport flush so the dying CLI's last output is still accepted: the sink refuses
+ *      lines that arrive after the flush begins (`cli-transport-sink.ts`);
+ *   3. the disposables the collaborators registered;
+ *   4. `await transport.flushAndDispose()`.
  *
  * Called from a `dispose()` chain whose remaining steps release the execution
  * leases and then window primacy. A throw here would abandon both, so every
@@ -61,6 +82,11 @@ export async function closeStage2Resources(deps: Stage2ResourceTeardown): Promis
     } catch {
       // ignore disposal errors
     }
+  }
+  try {
+    await deps.teardown();
+  } catch {
+    // Contractually never rejects; the guard is for the caller that promised and was wrong.
   }
   for (const d of deps.disposables) {
     try {

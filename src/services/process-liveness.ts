@@ -29,6 +29,12 @@ export interface LivenessProbe {
   readonly exists: (pid: number) => boolean;
   /** Epoch ms at which `pid` started, or `null` when it cannot be determined. */
   readonly startedAtMs: (pid: number) => Promise<number | null>;
+  /**
+   * FR-R4-F06 (P5, P6) — `process.kill(-pgid, 0)`. True when a member of the group can be
+   * signalled. False on `ESRCH`. Throws on `EPERM` or any other error. Signal 0 only: nothing
+   * in liveness code delivers a real signal (FR-017).
+   */
+  readonly groupExists: (pgid: number) => boolean;
   readonly platform: string;
 }
 
@@ -56,7 +62,7 @@ export async function checkLiveness(
     // process is the false positive this whole design exists to avoid.
     return 'unanswerable';
   }
-  if (!exists) return 'dead';
+  if (!exists) return leaderAbsentVerdict(identity, probe);
 
   const observed = await probe.startedAtMs(identity.pid);
   if (observed === null) {
@@ -65,6 +71,25 @@ export async function checkLiveness(
     return 'unanswerable';
   }
   return startTimesMatch(identity.startedAtMs, observed) ? 'alive' : 'dead';
+}
+
+/**
+ * The leader's pid is free. That alone does not say the Run's tree is gone: a helper in the
+ * leader's process group may outlive it (FR-R4-F06, data-model section 4, rows 7 to 9).
+ *
+ * Asked ONLY here. A recycled leader pid (it exists with a different start time) proves the
+ * group `pgid` ended, because a group id is not reused while the group has members, and the
+ * group that answers for it now would be a stranger's.
+ */
+function leaderAbsentVerdict(identity: SpawnIdentity, probe: LivenessProbe): LivenessVerdict {
+  try {
+    return probe.groupExists(identity.pgid) ? 'orphaned-group' : 'dead';
+  } catch {
+    // EPERM: a member exists that the host may not signal. It cannot be called `dead`
+    // (something answers) nor `orphaned-group` (it may not be this Run's), so it is the
+    // honest `unanswerable`, which `RESUME_ON` permits, as it does for a pid probe that throws.
+    return 'unanswerable';
+  }
 }
 
 /**
@@ -84,6 +109,16 @@ export function createLivenessProbe(): LivenessProbe {
       } catch (error) {
         // Only ESRCH means gone. Every other error, EPERM first, means the OS will not say,
         // which `checkLiveness` records as `unanswerable`.
+        if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
+        throw error;
+      }
+    },
+    groupExists: (pgid: number): boolean => {
+      try {
+        process.kill(-pgid, 0);
+        return true;
+      } catch (error) {
+        // Only ESRCH means no member is left; everything else, EPERM first, is "will not say".
         if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
         throw error;
       }

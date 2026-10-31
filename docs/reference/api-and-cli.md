@@ -330,10 +330,12 @@ Availability probes invoke the configured executable with `--help`; Agy model di
 <!-- Source: src/config/cli-path-accessor.ts -->
 <!-- Source: src/activation/backend-wiring.ts -->
 
+Five host spawns of a configured backend CLI receive the effective environment policy and build their child environment through `buildSpawnEnv`: Phase invocations, the availability probe above, the CLI version probe (`<cli> --version`, `shell: false`, a 5-second bound, its answer cached per executable path and per policy), and the two internal calls below. A `schegent.cli.environmentMode` value that is not one of the three modes resolves to `allowlist`.
+
 Two internal calls also pass through the selected adapter:
 
 - Cross-Phase Claude session compaction sends `Compact the conversation context. Reply with a single word: OK`, uses a 300-second idle timeout with a 1200-second wall-clock bound, forces `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=1`, resumes the prior session, and pins model `claude-haiku-5-5`. The idle bound must stay above the monitor's 90-second stall threshold (`MONITOR_STALL_THRESHOLD_MS`; the 90-second stall threshold is a constant, not a setting): below it, a silent compaction child is terminated before the watchdog can declare it stalled, and the window is unreportable.
-- The credit watchdog sends `/status` with a fixed 60-second timeout through the globally selected runner. Its request supplies no environment policy fields, so `buildSpawnEnv` inherits the full extension-host environment. This differs from normal Phase/probe calls using `allowlist` or `minimal`. It has no per-call abort signal, although extension teardown still cancels all children in the runner registry.
+- The credit watchdog sends `/status` with a fixed 60-second timeout through the globally selected runner. Its request carries the same environment policy fields as every other call, through `policyRequestFields`. It has no per-call abort signal, although extension teardown still cancels all children in the runner registry.
 
 <!-- Source: src/controller/session-compactor.ts -->
 <!-- Source: src/watchdog/credit-watchdog.ts -->

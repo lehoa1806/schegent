@@ -11,7 +11,8 @@ import type {
   BackendRunner,
   MonitorSidecarEvent,
   MonitorSidecarHook,
-  TreeAttribution
+  TreeAttribution,
+  TreeTeardownOutcome
 } from '../contracts/backend-runner';
 import { VerboseDiagnosticWriter } from '../audit/verbose-diagnostic-writer';
 import { SanitizedLogger } from '../lib/logger';
@@ -34,9 +35,10 @@ import {
   isBackgroundBookkeepingEvent
 } from './background-task-tracker';
 import { SessionCostLedger } from './session-cost-ledger';
-import { processTreeSpawnOptions, escalateAndReportTree } from './process-tree';
+import { processTreeSpawnOptions, escalateAndReportTree, trackGroupAtExit } from './process-tree';
 import { nextInvocationId } from './invocation-identity';
 import { SpawnRefusedAfterCloseError } from './spawn-refused-after-close';
+import { TeardownLedger } from './teardown-ledger';
 
 // Feature 030 BUG-002 — after the invocation's terminal stream-json result line
 // (`{"type":"result"}`) appears in stdout, the runner waits at most this long
@@ -256,7 +258,7 @@ function capabilityArgs(
   }
   const plan = planCapabilityEnforcement(kind, request.capabilities);
   if (plan.outcome === 'refused') {
-    throw new CapabilityNotEnforceableError(plan.kind, plan.unenforceable);
+    throw new CapabilityNotEnforceableError(plan.kind, plan.unenforceable, plan.unqualified);
   }
   return plan.args;
 }
@@ -330,6 +332,9 @@ export class ClaudeCliRunner implements BackendRunner {
    * A WeakSet so a reaped child is collectable.
    */
   private readonly reportedTrees = new WeakSet<ChildProcess>();
+
+  /** FR-R4-F06 (S2) -- the ladders started and not yet reported, so shutdown can wait for them. */
+  private readonly teardowns = new TeardownLedger();
 
   /**
    * FR-R3-198 (FR-011, K1) — the cumulative cost each CLI session last reported
@@ -453,6 +458,7 @@ export class ClaudeCliRunner implements BackendRunner {
         cwd: request.cwd,
         env: buildSpawnEnv(request)
       });
+      trackGroupAtExit(child); // FR-R4-F06 (P2) -- the ownership anchor for a leader reaped before its ladder
       this._logger.info(
         `[ClaudeCliRunner] Spawned CLI: ${loggedCommand(request.cliPath, args)}, PID=${child.pid}`
       );
@@ -646,6 +652,53 @@ export class ClaudeCliRunner implements BackendRunner {
       };
 
       const diagnosticWrites: Promise<void>[] = [];
+      // FR-R4-F06 (F2) -- one stdout line, judged the same way whether the framer cut it at a newline or
+      // the stream ended on it. Declared before the listeners so both call the one body.
+      const handleStdoutLine = (line: string): void => {
+        // FR-R3-198 — the tracker reads the line first, so a hold whose
+        // last task closes on it ends before the line is judged.
+        backgroundTasks.observe(line);
+        if (holdStartedAt !== null && !backgroundTasks.hasOpenWork) endHold('closed');
+        if (isSessionInitLine(line)) sawCurrentTurnBoundary = true;
+        if (isTerminalResultLine(line)) {
+          const replayingHistory =
+            shouldResume &&
+            !sawCurrentTurnBoundary &&
+            suppressedResults < MAX_SUPPRESSED_RESULTS &&
+            Date.now() - invocationStartedAt < RESUME_HISTORY_REPLAY_MS;
+          if (replayingHistory) {
+            suppressedResults += 1;
+            // FR-029 diagnosability. A suppression used to be legible only
+            // as its consequence — a 90-minute idle expiry — so it is
+            // logged where it happens. Fixed fields only: no prompt,
+            // transcript, session id, or workspace path, and routed
+            // through SanitizedLogger so SECRET_PATTERNS stays the single
+            // redaction source.
+            this._logger.info(
+              '[ClaudeCliRunner] suppressed terminal result ' +
+                'rule=pre-init-fallback-bound ' +
+                `resumed=${shouldResume} ` +
+                `elapsedMs=${Date.now() - invocationStartedAt} ` +
+                `windowMs=${RESUME_HISTORY_REPLAY_MS} ` +
+                `suppressedResults=${suppressedResults}/${MAX_SUPPRESSED_RESULTS} ` +
+                `phase=${request.phase} iteration=${request.iteration}`
+            );
+          } else {
+            sawCompletionMarker = true;
+            sawTerminalResult = true;
+            // FR-R3-198 (H6, H9) — every accepted result decides again,
+            // except one the CLI writes after the settle's SIGTERM, which
+            // is its shutdown, not a turn (research R2: `num_turns=0`).
+            if (!completedAwaitingExit) {
+              backgroundWorkOpenAtResult = backgroundTasks.hasOpenWork;
+              if (backgroundWorkOpenAtResult) beginHold();
+            }
+            lastResultCostUsd = resultCostUsd(line) ?? lastResultCostUsd;
+          }
+        } else if (isStreamJsonEventLine(line)) {
+          sawCompletionMarker = false;
+        }
+      };
       child.stdout?.on('data', (chunk: string) => {
         stdoutBuffer.append(chunk);
         stdoutScanner?.append(chunk);
@@ -671,56 +724,17 @@ export class ClaudeCliRunner implements BackendRunner {
               `phase=${request.phase} iteration=${request.iteration}`
           );
         }
-        for (const line of framed.lines) {
-            // FR-R3-198 — the tracker reads the line first, so a hold whose
-            // last task closes on it ends before the line is judged.
-            backgroundTasks.observe(line);
-            if (holdStartedAt !== null && !backgroundTasks.hasOpenWork) endHold('closed');
-            if (isSessionInitLine(line)) sawCurrentTurnBoundary = true;
-            if (isTerminalResultLine(line)) {
-              const replayingHistory =
-                shouldResume &&
-                !sawCurrentTurnBoundary &&
-                suppressedResults < MAX_SUPPRESSED_RESULTS &&
-                Date.now() - invocationStartedAt < RESUME_HISTORY_REPLAY_MS;
-              if (replayingHistory) {
-                suppressedResults += 1;
-                // FR-029 diagnosability. A suppression used to be legible only
-                // as its consequence — a 90-minute idle expiry — so it is
-                // logged where it happens. Fixed fields only: no prompt,
-                // transcript, session id, or workspace path, and routed
-                // through SanitizedLogger so SECRET_PATTERNS stays the single
-                // redaction source.
-                this._logger.info(
-                  '[ClaudeCliRunner] suppressed terminal result ' +
-                    'rule=pre-init-fallback-bound ' +
-                    `resumed=${shouldResume} ` +
-                    `elapsedMs=${Date.now() - invocationStartedAt} ` +
-                    `windowMs=${RESUME_HISTORY_REPLAY_MS} ` +
-                    `suppressedResults=${suppressedResults}/${MAX_SUPPRESSED_RESULTS} ` +
-                    `phase=${request.phase} iteration=${request.iteration}`
-                );
-              } else {
-                sawCompletionMarker = true;
-                sawTerminalResult = true;
-                // FR-R3-198 (H6, H9) — every accepted result decides again,
-                // except one the CLI writes after the settle's SIGTERM, which
-                // is its shutdown, not a turn (research R2: `num_turns=0`).
-                if (!completedAwaitingExit) {
-                  backgroundWorkOpenAtResult = backgroundTasks.hasOpenWork;
-                  if (backgroundWorkOpenAtResult) beginHold();
-                }
-                lastResultCostUsd = resultCostUsd(line) ?? lastResultCostUsd;
-              }
-            } else if (isStreamJsonEventLine(line)) {
-              sawCompletionMarker = false;
-            }
-        }
+        for (const line of framed.lines) handleStdoutLine(line);
         if (!outputBackpressure.isBlocked) resetIdleTimer();
         this.emitHook({ kind: 'stdout-chunk', runId: request.runId ?? null, invocationId, chunk });
         if (diagnosticWriter && verboseTarget) {
           diagnosticWrites.push(diagnosticWriter.teeStream(verboseTarget, chunk));
         }
+      });
+      // The CLI's last line may have no newline. Without this the framer's remainder was never judged,
+      // so a final `result` line left `sawTerminalResult` false.
+      child.stdout?.on('end', () => {
+        for (const line of stdoutFramer.flush().lines) handleStdoutLine(line);
       });
       child.stderr?.on('data', (chunk: string) => {
         stderrBuffer.append(chunk);
@@ -954,7 +968,7 @@ export class ClaudeCliRunner implements BackendRunner {
     // The ladder owns the decision, including whether there is anything left to
     // signal at all. See `childIsReaped` in `process-tree.ts` for that rule and why
     // it is the whole of it.
-    escalateAndReportTree({
+    const ladder = escalateAndReportTree({
       child,
       attribution,
       runner: 'claude-cli',
@@ -966,6 +980,13 @@ export class ClaudeCliRunner implements BackendRunner {
       alreadyReported: () => this.reportedTrees.has(child),
       markReported: () => void this.reportedTrees.add(child)
     });
+    // FR-R4-F06 (S2) -- kept, not voided: shutdown awaits it through `settleTeardowns()`.
+    this.teardowns.track(child, { attribution, runner: 'claude-cli', pid: child.pid ?? null }, ladder);
+  }
+
+  /** FR-R4-F06 (S1) -- the outcomes of every ladder started and not yet reported. Never rejects. */
+  public settleTeardowns(deadline?: Promise<void>): Promise<readonly TreeTeardownOutcome[]> {
+    return this.teardowns.settle(deadline);
   }
 
 }

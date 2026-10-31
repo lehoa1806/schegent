@@ -19,6 +19,7 @@ import {
 import { validatePhaseDefinition } from '../../../src/config/process-definition-validator';
 import { snapshotPhaseDef } from '../../../src/config/pipeline-snapshot';
 import { recordCapabilityDecision } from '../../../src/controller/capability-decision-recorder';
+import { isCapabilityRefusal } from '../../../src/services/capability-refusal';
 import {
   enforceableCapabilities,
   planCapabilityEnforcement,
@@ -302,11 +303,14 @@ describe('FR-R3-086 — an applied bound is observable, not just an enforced one
     // so a future field that did carry a path would fail here.
     const { recorded } = await runWith(['network', 'workspace-write'], 'claude');
     const payload = recorded[0].payload;
+    // FR-R4-F06 (K5) added `enforcement` and `residuals`: closed-union members, like `kind`.
     expect(Object.keys(payload).sort()).toEqual([
       'ambientConfig',
+      'enforcement',
       'granted',
       'kind',
-      'phaseIndex'
+      'phaseIndex',
+      'residuals'
     ]);
     for (const member of payload.granted as readonly string[]) {
       expect(ALL_PHASE_CAPABILITIES).toContain(member);
@@ -369,5 +373,93 @@ describe('FR-R3-086 — an applied bound is observable, not just an enforced one
     });
     expect(none).toBeNull();
     expect(read, 'a backend with no config location must not be read at all').toBe(false);
+  });
+});
+
+// FR-R4-F06 (FR-012; T11; contract K, K3 and K5) -- the audit row says HOW a set was enforced, and why a
+// set was refused. `capability-applied` gains `enforcement` and `residuals`; `capability-refused` gains
+// `unqualified`. The order and the outcome values are unchanged.
+describe('FR-R4-F06 — the audit rows carry the enforcement class, the residuals and the unqualified list', () => {
+  interface Seen {
+    readonly step: string;
+    readonly eventType?: string;
+    readonly outcome?: string;
+    readonly payload?: Record<string, unknown>;
+  }
+
+  async function decide(
+    capabilities: readonly string[],
+    kind: 'claude' | 'agy' | 'codex'
+  ): Promise<Seen[]> {
+    const seen: Seen[] = [];
+    try {
+      await recordCapabilityDecision({ iteration: 4, phaseDef: { capabilities } } as never, kind, ((
+        _inputs: unknown,
+        eventType: string,
+        outcome: string,
+        payload: Record<string, unknown>
+      ) => {
+        seen.push({ step: 'append', eventType, outcome, payload });
+        return Promise.resolve(undefined);
+      }) as never);
+      seen.push({ step: 'returned' });
+    } catch {
+      seen.push({ step: 'threw' });
+    }
+    return seen;
+  }
+
+  it('records the class and the residuals of an applied set, with outcome success', async () => {
+    const seen = await decide(['workspace-write'], 'claude');
+    expect(seen.map((entry) => entry.step)).toEqual(['append', 'returned']);
+    expect(seen[0]?.eventType).toBe('capability-applied');
+    expect(seen[0]?.outcome).toBe('success');
+    expect(seen[0]?.payload?.enforcement).toBe('tool-restriction');
+    expect(seen[0]?.payload?.residuals).toEqual(['unlisted-tools']);
+  });
+
+  it('names a residual that holds only while process-spawn is granted', async () => {
+    const seen = await decide(['process-spawn', 'network'], 'claude');
+    expect(seen[0]?.payload?.residuals).toEqual([
+      'shell-outside-workspace-write',
+      'shell-workspace-write',
+      'unlisted-tools'
+    ]);
+  });
+
+  it('records the CLI sandbox class for Codex, and an empty residual list when there is none', async () => {
+    const seen = await decide(['outside-workspace-write', 'process-spawn', 'network'], 'codex');
+    expect(seen[0]?.payload?.enforcement).toBe('cli-sandbox');
+    expect(seen[0]?.payload?.residuals).toEqual([]);
+  });
+
+  it('records the refusal with the unqualified list, before it throws, with outcome failure', async () => {
+    const seen = await decide(['process-spawn'], 'agy');
+    expect(seen.map((entry) => entry.step), 'the append precedes the throw').toEqual(['append', 'threw']);
+    expect(seen[0]?.eventType).toBe('capability-refused');
+    expect(seen[0]?.outcome).toBe('failure');
+    expect(seen[0]?.payload?.unenforceable).toEqual(['workspace-write', 'outside-workspace-write', 'network']);
+    expect(seen[0]?.payload?.unqualified).toEqual([]);
+    expect(Object.keys(seen[0]?.payload ?? {}).sort()).toEqual([
+      'kind',
+      'phaseIndex',
+      'unenforceable',
+      'unqualified'
+    ]);
+  });
+
+  it('carries the unqualified list on the refusal error as well, under the same code', async () => {
+    try {
+      await recordCapabilityDecision(
+        { iteration: 1, phaseDef: { capabilities: ['process-spawn'] } } as never,
+        'agy',
+        (() => Promise.resolve(undefined)) as never
+      );
+      expect.unreachable('agy withholding three capabilities must be refused');
+    } catch (error) {
+      expect(isCapabilityRefusal(error)).toBe(true);
+      expect((error as { unqualified?: unknown }).unqualified).toEqual([]);
+      expect((error as Error).name).toBe('CapabilityNotEnforceableError');
+    }
   });
 });

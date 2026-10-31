@@ -161,3 +161,68 @@ describe('the degraded path adds no state-schema change (FR-036, SC-010)', () =>
     expect(union).not.toContain('tree');
   });
 });
+
+/**
+ * FR-R4-F06 (S7) -- `settled()` lets shutdown wait for the evidence of a surviving group.
+ *
+ * The runners' hook calls `void recorder.record(...)`, so nothing could await the
+ * `process-tree-unconfirmed` row of a POSIX survivor, and the audit writer refuses appends once
+ * ownership is released. `settled()` resolves when every append started before the call has
+ * settled, and never rejects, so a wait that belongs to shutdown cannot itself fail it.
+ */
+describe('process-tree degradation recorder settled() (FR-R4-F06, S7)', () => {
+  it('resolves at once when nothing is in flight', async () => {
+    const h = harness();
+    await expect(h.recorder.settled()).resolves.toBeUndefined();
+  });
+
+  it('does not resolve while an append is still in flight, and does once it lands', async () => {
+    let finishAppend: () => void = () => undefined;
+    const landed: string[] = [];
+    const recorder = new ProcessTreeDegradationRecorder(
+      (entry) =>
+        new Promise<AuditEntry>((resolve) => {
+          finishAppend = () => {
+            landed.push(entry.eventType);
+            resolve({ ...entry, id: 'x', timestamp: 't' } as AuditEntry);
+          };
+        })
+    );
+
+    void recorder.record(EVENT);
+    let settled = false;
+    const waiting = recorder.settled().then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(settled, 'the append has not landed').toBe(false);
+
+    finishAppend();
+    await waiting;
+    expect(settled).toBe(true);
+    expect(landed).toEqual(['process-tree-unconfirmed']);
+  });
+
+  it('resolves, never rejects, when the append failed', async () => {
+    const recorder = new ProcessTreeDegradationRecorder(async () => {
+      throw new Error('the writer was disposed');
+    });
+    void recorder.record(EVENT);
+    await expect(recorder.settled()).resolves.toBeUndefined();
+  });
+
+  it('forgets an append once it has settled, so a later call has nothing to wait for', async () => {
+    const h = harness();
+    await h.recorder.record(EVENT);
+    await expect(h.recorder.settled()).resolves.toBeUndefined();
+    expect(h.appended).toHaveLength(1);
+  });
+
+  it('does not wait for an unattributable event, which writes nothing', async () => {
+    const h = harness();
+    await h.recorder.record({ ...EVENT, runId: null });
+    await expect(h.recorder.settled()).resolves.toBeUndefined();
+    expect(h.appended).toEqual([]);
+  });
+});

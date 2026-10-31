@@ -20,9 +20,15 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
+  SHIPPED_DEFAULT_POLICY,
+  policyFingerprint,
+  type ProcessEnvironmentPolicy
+} from '../contracts/process-environment-policy';
+import {
   QUALIFIED_AT,
   QUALIFIED_BACKEND_VERSIONS
 } from '../contracts/qualified-backend-versions';
+import { buildSpawnEnv, policyRequestFields } from './spawn-env';
 
 const run = promisify(execFile);
 
@@ -44,6 +50,21 @@ export interface CliVersionProbeDeps {
   /** Injected so tests never spawn. Resolves the first line of `<cliPath> --version`. */
   readonly probe?: (cliPath: string) => Promise<string>;
   readonly monotonicNow?: () => number;
+  /**
+   * FR-R4-F06 (FR-004) -- the environment policy a `--version` child is started
+   * under, read at each lookup so the answer is never older than the lookup.
+   * Absent means the shipped allowlist default, the safe direction.
+   */
+  readonly environmentPolicy?: () => ProcessEnvironmentPolicy;
+}
+
+/**
+ * FR-R4-F06 (FR-005) -- the key a version is cached and de-duplicated under: the path
+ * and the policy fingerprint, joined by a NUL that neither can contain. NAMES only;
+ * the key never holds an environment value, so it can be logged or compared freely.
+ */
+export function cliVersionCacheKey(cliPath: string, policy: ProcessEnvironmentPolicy): string {
+  return `${cliPath}\u0000${policyFingerprint(policy)}`;
 }
 
 /**
@@ -67,29 +88,41 @@ export function normalizeCliVersion(line: string): string | null {
 
 export function createCliVersionProbe(deps: CliVersionProbeDeps = {}): CliVersionProbe {
   const now = deps.monotonicNow ?? (() => Date.now());
-  const probe =
-    deps.probe ??
-    (async (cliPath: string): Promise<string> => {
-      // `shell: false` is the default for `execFile` and is the point: `cliPath` is operator
-      // configuration, and a shell between here and the binary would make it a command line.
-      const { stdout } = await run(cliPath, ['--version'], {
-        timeout: CLI_VERSION_TIMEOUT_MS,
-        windowsHide: true
-      });
-      return stdout;
-    });
+  const currentPolicy = deps.environmentPolicy ?? (() => SHIPPED_DEFAULT_POLICY);
+  // The policy is captured once per lookup and handed to the probe, so the key a result is
+  // cached under and the environment the child was started with come from the same reading.
+  const injectedProbe = deps.probe;
+  const probe: (cliPath: string, policy: ProcessEnvironmentPolicy) => Promise<string> =
+    injectedProbe !== undefined
+      ? (cliPath) => injectedProbe(cliPath)
+      : async (cliPath, policy) => {
+          // `shell: false` is the default for `execFile` and is the point: `cliPath` is operator
+          // configuration, and a shell between here and the binary would make it a command line.
+          //
+          // FR-R4-F06 (FR-004) -- `env` is built by the construction every runner uses. It was
+          // absent, so the child received the host's complete environment under every mode, the
+          // shipped allowlist default included.
+          const { stdout } = await run(cliPath, ['--version'], {
+            timeout: CLI_VERSION_TIMEOUT_MS,
+            windowsHide: true,
+            env: buildSpawnEnv(policyRequestFields(policy))
+          });
+          return stdout;
+        };
 
   const cache = new Map<string, { version: string | null; observedAtMs: number }>();
   const inFlight = new Map<string, Promise<string | null>>();
 
   const observe = async (cliPath: string): Promise<string | null> => {
-    const cached = cache.get(cliPath);
+    const policy = currentPolicy();
+    const key = cliVersionCacheKey(cliPath, policy);
+    const cached = cache.get(key);
     if (cached !== undefined && now() - cached.observedAtMs < CLI_VERSION_TTL_MS) {
       return cached.version;
     }
-    // One probe per path at a time. Twenty phases starting together must not spawn twenty
-    // processes for one answer.
-    const existing = inFlight.get(cliPath);
+    // One probe per path and policy at a time. Twenty phases starting together must not spawn
+    // twenty processes for one answer.
+    const existing = inFlight.get(key);
     if (existing !== undefined) return existing;
 
     // `Promise.resolve().then(...)` rather than `probe(cliPath).then(...)`: a probe that throws
@@ -97,18 +130,19 @@ export function createCliVersionProbe(deps: CliVersionProbeDeps = {}): CliVersio
     // into whatever awaited `observe` — a phase, in production. Found by the test that throws
     // synchronously on purpose; the async-rejection path had been covered and this one had not.
     const pending = Promise.resolve()
-      .then(() => probe(cliPath))
+      .then(() => probe(cliPath, policy))
       .then((stdout) => normalizeCliVersion(stdout))
       .catch(() => null)
       .then((version) => {
         // A failed probe is cached too, for the same window. Otherwise a CLI that is missing or
         // slow would be probed again at every phase, turning one unanswerable question into a
-        // per-phase cost.
-        cache.set(cliPath, { version, observedAtMs: now() });
-        inFlight.delete(cliPath);
+        // per-phase cost. It is cached for its own key only: a failure under one policy says
+        // nothing about another.
+        cache.set(key, { version, observedAtMs: now() });
+        inFlight.delete(key);
         return version;
       });
-    inFlight.set(cliPath, pending);
+    inFlight.set(key, pending);
     return pending;
   };
 

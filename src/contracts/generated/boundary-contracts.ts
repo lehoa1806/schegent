@@ -183,6 +183,7 @@ export const AUDIT_EVENT_TYPES = [
   "run-record-quarantined",
   "run-canceled-task-row-removed",
   "process-tree-unconfirmed",
+  "host-teardown-unconfirmed",
   "metrics-view-opened",
   "process-exchange-export",
   "process-exchange-import-refused",

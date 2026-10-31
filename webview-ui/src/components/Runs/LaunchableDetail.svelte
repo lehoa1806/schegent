@@ -24,7 +24,9 @@
   // Operator-authored strings — names, port labels, descriptions — interpolate
   // with `{}`, which escapes. Nothing here uses `{@html}`.
 
+  import { snapshotStore } from '../../lib/snapshot-store.svelte';
   import type { Launchable } from '../../lib/snapshot-types';
+  import LaunchAuthorityNotice from './LaunchAuthorityNotice.svelte';
 
   interface Props {
     /** The entry the projection currently offers under the selection (FR-017). */
@@ -36,6 +38,10 @@
   }
 
   const { entry, canLaunch, onTrigger }: Props = $props();
+
+  // FR-R4-F06 (FR-007; D4) -- the postures are read off the snapshot on every render, like
+  // the ports above, so a grant revoked while a selection is open stops being disclosed.
+  const postures = $derived(snapshotStore.snapshot?.backendPostures ?? []);
 </script>
 
 <section
@@ -85,6 +91,14 @@
       This one asks for nothing up front.
     </p>
   {/if}
+
+  <!-- FR-R4-F06 (FR-007; D4) -- what this start will run with, above the control that starts it.
+       The backends are the host's per-entry answer, never the window default. -->
+  <LaunchAuthorityNotice
+    backends={entry.backends ?? []}
+    {postures}
+    capabilityNotices={entry.capabilityNotices ?? []}
+  />
 
   <button
     type="button"

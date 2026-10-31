@@ -255,3 +255,67 @@ describe('FR-R3-144 T044 — the photographed frame is the frame a cold workspac
     );
   });
 });
+
+// FR-R4-F06 (FR-007, FR-009; T5; contract D, D1 and D2) -- a granted uncontained
+// backend's posture carries a host sentence saying what the grant means, and nothing
+// else does. The sentence is the disclosure the launch surfaces render; the webview
+// builds none of it (hard rule 2), so what is pinned here is the one place it is
+// built. Enumerated over `SUPPORTED_BACKENDS` for the reason the file's header gives.
+describe('FR-R4-F06 T5 -- a granted uncontained backend carries a host notice (D1, D2)', () => {
+  it.each([...UNCONTAINED])('carries a notice on %s exactly while it is granted', (kind) => {
+    expect(Object.hasOwn(postureOf([kind], kind) ?? {}, 'notice')).toBe(true);
+    expect(typeof postureOf([kind], kind)?.notice).toBe('string');
+  });
+
+  it.each([...UNCONTAINED])('omits the notice key on %s while it is not granted', (kind) => {
+    const row = postureOf([], kind);
+    expect(row?.grant).toBe('not-granted');
+    // Absent, not `undefined`-valued: the ordinary case must not look like it carries a fact.
+    expect('notice' in (row ?? {})).toBe(false);
+  });
+
+  it.each([...OS_ENFORCED])('never carries a notice on %s, listed or not', (kind) => {
+    expect('notice' in (postureOf([], kind) ?? {})).toBe(false);
+    expect('notice' in (postureOf([kind], kind) ?? {})).toBe(false);
+  });
+
+  it('carries a notice on exactly the rows that are uncontained and granted', () => {
+    for (const setting of [[], [...UNCONTAINED], [...OS_ENFORCED], ['claud'], [...SUPPORTED_BACKENDS]]) {
+      for (const row of composeBackendPostures(setting).backendPostures) {
+        const shouldCarry = row.containment === 'none' && row.grant === 'granted';
+        expect(Object.hasOwn(row, 'notice')).toBe(shouldCarry);
+      }
+    }
+  });
+
+  it('never carries a notice and a refusal on one row', () => {
+    for (const setting of [[], [...UNCONTAINED], [...OS_ENFORCED], [...SUPPORTED_BACKENDS]]) {
+      for (const row of composeBackendPostures(setting).backendPostures) {
+        expect(Object.hasOwn(row, 'notice') && Object.hasOwn(row, 'refusal')).toBe(false);
+      }
+    }
+  });
+
+  it.each([...UNCONTAINED])('states the authority %s runs with, in the pinned words', (kind) => {
+    const notice = postureOf([kind], kind)?.notice ?? '';
+    expect(notice).toContain('no OS-enforced bound');
+    expect(notice).toContain('with your local user authority');
+    expect(notice).toContain('application-scoped');
+    expect(notice).toContain('in every trusted workspace in this installation');
+    expect(notice).toContain('this backend only');
+    expect(notice).toContain('Settings');
+    // The backend is named by its display name, never by a path or operator text.
+    expect(notice.toLowerCase()).toContain(kind);
+  });
+
+  it('is built from the validated kind alone', () => {
+    // Two different settings that grant the same backend give the same sentence, so no
+    // operator-authored text can have reached it.
+    const first = postureOf(['claude'], 'claude')?.notice;
+    const second = composeBackendPostures(['claude', 'claud', 42]).backendPostures.find(
+      (row) => row.kind === 'claude'
+    )?.notice;
+    expect(first).toBeDefined();
+    expect(second).toBe(first);
+  });
+});

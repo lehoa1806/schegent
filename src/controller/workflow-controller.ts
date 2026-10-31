@@ -61,9 +61,10 @@ import type { RunCheckpointService } from '../services/run-checkpoint-service';
 import type { RunMutationLedger } from '../services/run-mutation-ledger';
 import { WorkflowRunFactory } from '../services/workflow-run-factory';
 import { announceUnattendedResume } from '../services/unattended-resume';
+import { admitResumeRun, resumeGuardDeps, type ResumeGuardOptions } from '../services/resume-admission-guard';
 import type { UnattendedWakeup } from '../services/unattended-eligibility';
 
-export interface WorkflowControllerOptions {
+export interface WorkflowControllerOptions extends ResumeGuardOptions {
   cliPath: string;
   cwd: string;
   iterationCap: number;
@@ -682,9 +683,8 @@ export class SchegentWorkflowController {
     { customPrompt, unattended }: ResumeOptions
   ): Promise<ResumeAdmission> {
     this.logger.info(`Workflow operation triggered: resumeExisting`);
-    const run = this.store.getRun(queueId);
-    if (!run) return NOT_RESUMED;
-    if (run.status === 'completed' || run.status === 'canceled') return NOT_RESUMED;
+    const run = await admitResumeRun(resumeGuardDeps({ store: this.store, coordinator: this.autoDrainCoordinator, auditor: this.lifecycleAuditor, notifier: this.notifier, options: this.options, isDriving: (id) => this.isDriving(id) }), queueId); // FR-R4-F06 (P7)
+    if ('resumed' in run) return run;
 
     // FR-R4-F01 (FR-008) — both resume writes are PATCHES of the Run as it is inside the chain.
     const prompted = customPrompt

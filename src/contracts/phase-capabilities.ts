@@ -10,8 +10,8 @@
 // may run at all".
 //
 // THE ROUTE TAKEN, recorded in docs/architecture/agent-capability-posture.md:
-// OS/CLI-enforced containment driven by a host-declared capability set. The host
-// DECLARES; the backend ENFORCES. All three installed CLIs carry a real
+// backend-enforced restriction (CLI tool restrictions and vendor sandboxes), driven
+// by a host-declared capability set. The host DECLARES; the backend ENFORCES. All three installed CLIs carry a real
 // enforcement surface — `claude` has `--permission-mode`, `--allowedTools` and
 // `--disallowedTools`; `agy` has `--sandbox` and `--mode`; `codex` already runs
 // with `--sandbox workspace-write` — so this is not a compromise route, it is the
@@ -85,3 +85,34 @@ export function declaredCapabilitySet(
 export function grants(set: DeclaredCapabilitySet, capability: PhaseCapability): boolean {
   return set.capabilities.includes(capability);
 }
+
+/**
+ * FR-R4-F06 (FR-012, FR-013; contract K; data-model section 3) -- how a cell's withheld capabilities are
+ * enforced, in the words an operator needs to weigh the claim.
+ *
+ * - `none-withheld`: nothing was withheld, so nothing is enforced and the backend's argv is unchanged.
+ * - `tool-restriction`: the CLI's own tool layer applies a denylist to itself. It is not OS isolation.
+ * - `cli-sandbox`: the vendor's own sandbox (`codex --sandbox`, `agy --sandbox`), which the vendor claims
+ *   sits below the tool layer. The qualification record qualifies the flag's presence, not that claim.
+ *
+ * A cell that mixes classes reports the weaker one, `tool-restriction`.
+ */
+export type CapabilityEnforcement = 'none-withheld' | 'tool-restriction' | 'cli-sandbox';
+
+/**
+ * FR-R4-F06 (FR-012; contract K; data-model section 3) -- what a restriction still leaves open. Closed, so
+ * the audit payload and the launcher sentence can both be exhaustive over it.
+ */
+export type CapabilityResidual =
+  /** `network` withheld while `process-spawn` is granted (claude): a shell can still reach the network. */
+  | 'shell-network'
+  /** `workspace-write` withheld while `process-spawn` is granted (claude): a shell can still write. */
+  | 'shell-workspace-write'
+  /** `outside-workspace-write` withheld while `process-spawn` is granted (claude). */
+  | 'shell-outside-workspace-write'
+  /** Any claude withholding: tools the denylist does not name, including extension and MCP tools. */
+  | 'unlisted-tools'
+  /** `process-spawn` withheld on codex: model-run commands still execute, inside its sandbox. */
+  | 'sandboxed-commands-run'
+  /** `process-spawn` withheld on agy: the scope of its sandbox has not been qualified. */
+  | 'sandbox-scope-unqualified';

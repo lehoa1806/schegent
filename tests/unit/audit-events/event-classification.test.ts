@@ -178,6 +178,10 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   // asking why a LATER phase of that Run saw foreign writes. Window-scoped would
   // put it in the system feed, where it would be true and unattributable.
   'process-tree-unconfirmed': 'task',
+  // FR-R4-F06 (FR-023) -- task-scoped for the same reason: it is a fact about the Run whose tree
+  // shutdown could not answer for, and the operator reading it is asking whether that Run's
+  // backend is still alive after the window closed.
+  'host-teardown-unconfirmed': 'task',
   // Feature 073 — Metrics Dashboard adoption tracking; not tied to a
   // specific workflow run (system)
   'metrics-view-opened': 'system',
@@ -398,6 +402,7 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'capability-refused':
         case 'capability-applied':
         case 'process-tree-unconfirmed':
+        case 'host-teardown-unconfirmed':
         case 'metrics-view-opened':
         case 'process-exchange-export':
         case 'process-exchange-import-refused':
