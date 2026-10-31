@@ -972,3 +972,137 @@ describe('RunDetailTier — a finished Run does not name the terminal sentinel',
     expect(queryByTestId('phase-log-empty-no-phase')).toBeNull();
   });
 });
+
+// FR-R4-F08 (K-T1, K-T2; FR-020, FR-021, SC-004) — the Run Detail tabs from the keyboard.
+//
+// The three tabs were buttons with `role="tab"` and no keyboard contract: every tab was in the
+// Tab order, no arrow key moved between them, and no tab named the panel it controls. These
+// cases drive real key events and read `document.activeElement` and ARIA attributes. No mouse
+// event is fired once the tier is mounted, because the claim is that the keyboard alone works.
+describe('FR-R4-F08 K-T1 — arrow, Home and End keys move between the Run Detail tabs', () => {
+  const TAB_ORDER = ['log', 'outputs', 'context'] as const;
+  type TabName = (typeof TAB_ORDER)[number];
+
+  function mountOnTab() {
+    const rendered = mount(buildSnapshot({ tasks: [task('r-1')] }));
+    return { ...rendered, tab: (tabName: TabName) => rendered.getByTestId(`run-tab-${tabName}`) };
+  }
+
+  /** Dispatch a key on a tab and let the queued focus microtask run. */
+  async function press(element: HTMLElement, key: string): Promise<void> {
+    await fireEvent.keyDown(element, { key });
+    await Promise.resolve();
+    await Promise.resolve();
+  }
+
+  function selected(tab: (name: TabName) => HTMLElement): TabName | undefined {
+    return TAB_ORDER.find((name) => tab(name).getAttribute('aria-selected') === 'true');
+  }
+
+  it('Right on the last tab wraps to the first, and moves selection, focus and panel together', async () => {
+    const { tab, getByTestId, queryByTestId } = mountOnTab();
+    // The starting point is arranged with a click: this case is about the key that follows it.
+    await fireEvent.click(tab('context'));
+    expect(selected(tab), 'the control: context is selected before the key').toBe('context');
+    expect(queryByTestId('run-detail-live-feed')).not.toBeNull();
+
+    await press(tab('context'), 'ArrowRight');
+
+    expect(selected(tab)).toBe('log');
+    expect(document.activeElement).toBe(tab('log'));
+    expect(queryByTestId('run-detail-live-feed'), 'the Context panel is gone').toBeNull();
+    expect(getByTestId('phase-log-feed'), 'the Phase log panel is shown').toBeTruthy();
+  });
+
+  it('Left on the first tab wraps to the last', async () => {
+    const { tab, queryByTestId } = mountOnTab();
+    expect(selected(tab), 'the control: the first tab is selected on open').toBe('log');
+
+    await press(tab('log'), 'ArrowLeft');
+
+    expect(selected(tab)).toBe('context');
+    expect(document.activeElement).toBe(tab('context'));
+    expect(queryByTestId('run-detail-live-feed')).not.toBeNull();
+  });
+
+  it('Right and Left step through the middle tab', async () => {
+    const { tab } = mountOnTab();
+    await press(tab('log'), 'ArrowRight');
+    expect(selected(tab)).toBe('outputs');
+    expect(document.activeElement).toBe(tab('outputs'));
+    await press(tab('outputs'), 'ArrowRight');
+    expect(selected(tab)).toBe('context');
+    await press(tab('context'), 'ArrowLeft');
+    expect(selected(tab)).toBe('outputs');
+  });
+
+  it('Home goes to the first tab and End to the last', async () => {
+    const { tab } = mountOnTab();
+    await press(tab('log'), 'End');
+    expect(selected(tab)).toBe('context');
+    expect(document.activeElement).toBe(tab('context'));
+    await press(tab('context'), 'Home');
+    expect(selected(tab)).toBe('log');
+    expect(document.activeElement).toBe(tab('log'));
+  });
+
+  it('prevents the default of a handled key and leaves other keys alone', async () => {
+    const { tab } = mountOnTab();
+    const handled = new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true });
+    tab('log').dispatchEvent(handled);
+    expect(handled.defaultPrevented, 'ArrowRight is handled').toBe(true);
+    await Promise.resolve();
+    const ignored = new KeyboardEvent('keydown', { key: 'a', bubbles: true, cancelable: true });
+    tab('outputs').dispatchEvent(ignored);
+    expect(ignored.defaultPrevented, 'an unrelated key is not prevented').toBe(false);
+    expect(selected(tab), 'an unrelated key moves nothing').toBe('outputs');
+  });
+});
+
+describe('FR-R4-F08 K-T2 — Run Detail tab roving focus and association', () => {
+  const NAMES = ['log', 'outputs', 'context'] as const;
+
+  it('exactly one tab is in the Tab order, and it is the selected one', async () => {
+    const { getByTestId } = mount(buildSnapshot({ tasks: [task('r-1')] }));
+    const tabindexes = () => NAMES.map((name) => getByTestId(`run-tab-${name}`).getAttribute('tabindex'));
+    expect(tabindexes()).toEqual(['0', '-1', '-1']);
+    await fireEvent.click(getByTestId('run-tab-outputs'));
+    expect(tabindexes()).toEqual(['-1', '0', '-1']);
+  });
+
+  it('every tab names a panel that exists, and the panel names the selected tab', async () => {
+    const { getByTestId } = mount(buildSnapshot({ tasks: [task('r-1')] }));
+    for (const name of NAMES) {
+      const tab = getByTestId(`run-tab-${name}`);
+      const controls = tab.getAttribute('aria-controls');
+      expect(controls, `${name}: aria-controls`).toBeTruthy();
+      expect(document.getElementById(controls ?? ''), `${name}: the panel it controls`).not.toBeNull();
+      expect(tab.id, `${name}: the tab has an id the panel can name`).toBe(`run-tab-${name}`);
+    }
+    const panel = document.getElementById('run-detail-panel');
+    expect(panel?.getAttribute('role')).toBe('tabpanel');
+    expect(panel?.getAttribute('aria-labelledby')).toBe('run-tab-log');
+    await fireEvent.click(getByTestId('run-tab-context'));
+    expect(panel?.getAttribute('aria-labelledby'), 'the panel follows the selection').toBe('run-tab-context');
+    expect(document.getElementById('run-tab-context')).not.toBeNull();
+  });
+
+  it('with the streaming badge shown, arrows move only among the three tabs', async () => {
+    const { getByTestId } = mount(
+      buildSnapshot({ tasks: [task('r-1', { status: 'in-flight' })], inFlightTaskId: 'r-1' })
+    );
+    expect(getByTestId('run-streaming-badge'), 'the control: the badge is shown').toBeTruthy();
+    const order: string[] = [];
+    let current = getByTestId('run-tab-log');
+    for (let step = 0; step < 4; step += 1) {
+      await fireEvent.keyDown(current, { key: 'ArrowRight' });
+      await Promise.resolve();
+      await Promise.resolve();
+      const active = document.activeElement;
+      expect(active?.getAttribute('role'), 'focus stays on a tab, never on the badge').toBe('tab');
+      order.push(active?.getAttribute('data-testid') ?? '');
+      current = active as HTMLElement;
+    }
+    expect(order).toEqual(['run-tab-outputs', 'run-tab-context', 'run-tab-log', 'run-tab-outputs']);
+  });
+});

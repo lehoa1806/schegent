@@ -35,6 +35,7 @@ import {
   type StopPhaseLogTailRequest
 } from './phase-log-ipc';
 import { getWebviewState, setWebviewState } from './vscode-api';
+import { PHASE_LOG_WINDOW_MAX_ENTRIES, appendToWindow } from './phase-log-window';
 import type { IntentWaitOptions } from './intent-ledger';
 
 export type PhaseLogSelectionDraft = {
@@ -308,7 +309,8 @@ export function createPhaseLogStore(
     // the two returns above append nothing and leave the classification alone.
     setState({
       ...cur,
-      entries: Object.freeze([...cur.entries, payload.entry]),
+      // FR-R4-F08 (L3) — windowed: the newest 499 entries plus one marker counting the rest.
+      entries: appendToWindow(cur.entries, payload.entry, PHASE_LOG_WINDOW_MAX_ENTRIES),
       verboseDiagnosticsState: { kind: 'entries-present' }
     });
   }

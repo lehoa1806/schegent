@@ -7,6 +7,7 @@
 // that.
 
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
+import { tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import QueuesTier from '../QueuesTier.svelte';
@@ -371,5 +372,53 @@ describe('QueuesTier — a halted queue (feature 195, T027, T030, FR-007, FR-008
     const { container } = render(QueuesTier, { props: { queues: QUEUES, isPrimary: true } });
 
     expect(container.querySelectorAll('[data-testid^="queue-halted-"]')).toHaveLength(0);
+  });
+});
+
+// FR-R4-F08 (K-T6; FR-023, SC-004) — the tier is the focus fallback for its own dialog.
+//
+// Queue Settings returns focus to the button that opened it. That button lives in the header,
+// which is withheld when the window stops being primary, so a close could land focus on nothing.
+// The tier's root takes `tabindex="-1"` so it can be focused by script without joining the Tab
+// order, and is handed to the dialog as its fallback.
+describe('FR-R4-F08 K-T6 — the Queues tier root is the dialog\'s fallback focus target', () => {
+  it('the root is focusable by script and not in the Tab order', () => {
+    const { getByTestId } = render(QueuesTier, { props: { queues: QUEUES, isPrimary: true } });
+    expect(getByTestId('queues-tier').getAttribute('tabindex')).toBe('-1');
+  });
+
+  it('closing with the opener detached lands focus on the tier root', async () => {
+    const { getByTestId } = render(QueuesTier, { props: { queues: QUEUES, isPrimary: true } });
+    const opener = getByTestId('queue-settings-open');
+    await fireEvent.click(opener);
+    await tick();
+    expect(getByTestId('queue-config-modal'), 'the control: the dialog is open').toBeTruthy();
+
+    opener.remove();
+    expect(opener.isConnected, 'the control: the opener is gone').toBe(false);
+    await fireEvent.click(getByTestId('queue-config-cancel'));
+    await tick();
+
+    expect(document.activeElement).toBe(getByTestId('queues-tier'));
+  });
+
+  it('with the opener still connected, focus returns to the opener, not the root', async () => {
+    const { getByTestId } = render(QueuesTier, { props: { queues: QUEUES, isPrimary: true } });
+    const opener = getByTestId('queue-settings-open');
+    await fireEvent.click(opener);
+    await tick();
+    await fireEvent.click(getByTestId('queue-config-cancel'));
+    await tick();
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it('the opener is a native button in the Tab order, so the keyboard opens it natively (SC-004)', () => {
+    const { getByTestId } = render(QueuesTier, { props: { queues: QUEUES, isPrimary: true } });
+    const opener = getByTestId('queue-settings-open') as HTMLButtonElement;
+    expect(opener.tagName).toBe('BUTTON');
+    expect(opener.getAttribute('type')).toBe('button');
+    expect(opener.disabled).toBe(false);
+    const tabindex = opener.getAttribute('tabindex');
+    expect(tabindex === null || Number(tabindex) >= 0, 'no negative tabindex').toBe(true);
   });
 });

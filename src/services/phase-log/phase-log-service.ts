@@ -12,6 +12,7 @@
 
 import { readPhaseLog } from './phase-log-reader';
 import type { ReadPhaseLogRequest, ReadPhaseLogResponse } from '../../contracts/sidebar-ipc';
+import { PHASE_LOG_MAX_ENTRIES } from '../../contracts/phase-log-bounds';
 import type { PhaseProgress } from './types';
 // Feature 203 (D7, F13, F22) — an ERASED type import, so no value crosses the
 // service → ui direction and `dependency-direction.test.ts`, which governs value
@@ -53,7 +54,8 @@ export interface PhaseLogServiceDeps {
 }
 
 const DEFAULT_PER_FIELD_BYTES = 65536;
-const DEFAULT_MAX_ENTRIES = 500;
+// FR-R4-F08 (L1) — the one row cap, shared with the webview's live tail window.
+const DEFAULT_MAX_ENTRIES = PHASE_LOG_MAX_ENTRIES;
 
 export interface PhaseLogService {
   read(req: ReadPhaseLogRequest): Promise<ReadPhaseLogResponse>;

@@ -26,6 +26,10 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
 
   private view: vscode.WebviewView | null = null;
   private projectorSub: Disposable | null = null;
+  // FR-R4-F08 (V2, V4) — the visibility listener, released beside `projectorSub`, and the last
+  // visibility seen so only a not-visible-to-visible transition posts.
+  private visibilitySub: Disposable | null = null;
+  private lastVisible = false;
   private projector: ProjectorHandle;
   private dispatcher: InboundDispatch | null;
   private readonly extensionRoot: string;
@@ -102,9 +106,23 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
       void this.postSnapshot(snapshot);
     });
 
+    // FR-R4-F08 (V2) — a hidden sidebar is sent nothing, so a reveal posts the projector's current
+    // snapshot once, whether or not anything changed while it was hidden. Only a transition counts:
+    // a repeated `visible` event posts nothing, and the snapshot is read at the event, so a projector
+    // swapped while hidden is the one answered.
+    this.lastVisible = view.visible;
+    this.visibilitySub?.dispose();
+    this.visibilitySub = view.onDidChangeVisibility(() => {
+      const revealed = view.visible && !this.lastVisible;
+      this.lastVisible = view.visible;
+      if (revealed) void this.postSnapshot(this.projector.getCurrentSnapshot());
+    });
+
     view.onDidDispose(() => {
       this.projectorSub?.dispose();
       this.projectorSub = null;
+      this.visibilitySub?.dispose();
+      this.visibilitySub = null;
       this.view = null;
     });
   }
@@ -112,12 +130,16 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
   public dispose(): void {
     this.projectorSub?.dispose();
     this.projectorSub = null;
+    this.visibilitySub?.dispose();
+    this.visibilitySub = null;
     this.view = null;
   }
 
   private async postSnapshot(snapshot: unknown): Promise<void> {
     const view = this.view;
-    if (!view) return;
+    // FR-R4-F08 (V1) — a hidden sidebar's snapshots are not posted. Only this snapshot post is
+    // gated: acknowledgements and every other message are posted as they always were (FR-014).
+    if (!view || !view.visible) return;
     try {
       await view.webview.postMessage({ type: STATE_SNAPSHOT, payload: snapshot });
     } catch (err) {

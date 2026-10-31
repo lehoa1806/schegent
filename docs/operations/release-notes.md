@@ -9,6 +9,37 @@ This file is the release workflow's stable pointer for changes that affect opera
 Recorded as they land, so the first release note is assembled from evidence rather than
 from memory.
 
+### Bounded and keyboard-accessible webview (FR-R4-F08, 2026-10-31)
+
+A sidebar left open through a long Run now stays responsive, shows the current state when it is revealed,
+works from the keyboard, and renders correctly under the content-security policy the extension ships.
+
+- **A failing projection is logged once.** When a catalog or the trust capabilities cannot be resolved, the
+  sanitized runtime log now records the failure once, when it starts, and not again until it recovers. Before,
+  the log line itself triggered another refresh that failed and logged again, about ten times a second for as
+  long as the failure lasted. State is still refreshed on every real change.
+- **The live phase log keeps the newest 500 rows.** A running phase's live tail now shows at most 500 rows:
+  the newest 499 entries and one line saying how many earlier entries are not shown. While following, the
+  newest entry stays in view. While paused, the view stays where it is, and the "new entries" count keeps
+  counting after the limit is reached.
+- **A hidden sidebar is not sent state, and is updated when it is revealed.** The sidebar no longer receives
+  state while it is hidden, and shows the current state as soon as it is revealed. Acknowledgements of your
+  commands are unaffected.
+- **The Run detail tabs work from the keyboard.** The three tabs are one Tab stop. The arrow keys move between
+  them and wrap, Home and End go to the first and the last, and each tab names the panel it controls.
+- **Queue Settings keeps focus inside.** Tab and Shift+Tab cycle within the dialog. When it closes, focus
+  returns to the control that opened it, or to the Queues view when that control is no longer shown.
+- **The webview was checked under its real content-security policy.** The sidebar and the dashboard raised no
+  violation, and the Builder's thirteen static inline styles, which the policy reported, now come from
+  stylesheet classes with the same appearance. The policy also now sets `base-uri` and `form-action` to
+  `'none'`, after every form the webview mounts was shown to work under them. Nothing in the policy was
+  loosened.
+- **Costs are measured, and no broader change is made.** What a snapshot costs the host and the webview,
+  how the stored records grow, and the retention options are recorded in
+  [the measurement](webview-snapshot-cost-measurement.md). A per-slice snapshot change is justified by size
+  and is left as follow-up work; raw reactive state and list virtualization are not adopted. Nothing is
+  deleted.
+
 ### Truthful process authoring and safe exchange (FR-R4-F07, 2026-10-31)
 
 Several things the authoring and exchange surfaces said were not what they did. A Workflow condition could be

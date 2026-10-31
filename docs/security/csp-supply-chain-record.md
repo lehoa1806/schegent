@@ -62,6 +62,7 @@ message that says which, rather than a green one that read nothing.
 
 <!-- Source: tests/unit/ui/sidebar/no-remote-refs.test.ts -->
 <!-- Source: tests/lint/webview-build-precedes-host-suite.test.ts -->
+<!-- Source: tests/visual/actual-policy.visual.spec.ts -->
 
 ## What would reverse this
 
@@ -94,7 +95,9 @@ naming the edges matters more than the coverage does:
   unwritten for four months.
 - **Whether the runtime CSP still denies what it denied.** This gate asserts nothing about the CSP
   header, by requirement. If the directive table were weakened tomorrow, nothing in this file would
-  notice.
+  notice. The visual suite's actual-policy smoke now mounts both webviews under the shipped policy in a
+  browser and fails on any violation; its outcome, including the decision on `base-uri` and
+  `form-action`, is in [the webview snapshot cost measurement](../operations/webview-snapshot-cost-measurement.md).
 - **A maintained reject-at-build Vite plugin appearing.** Reversal condition 3 is a fact about the
   npm ecosystem. No gate in a repository can observe it; the review date below is the only mechanism
   that makes anyone look.

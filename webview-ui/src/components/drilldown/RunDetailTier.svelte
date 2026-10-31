@@ -141,7 +141,28 @@
   );
 
   // ── Tab state ──────────────────────────────────────────────────────
-  let activeTab = $state<'log' | 'outputs' | 'context'>('log');
+  // FR-R4-F08 (K1 to K3) — the tabs follow the roving contract the Builder, System and
+  // Settings tab bars use: one tab is in the Tab order, the arrow keys, Home and End move
+  // between the three, and every tab names the one panel it controls. The handler indexes
+  // this list, so the streaming badge after the tabs is never a stop.
+  const RUN_TABS = ['log', 'outputs', 'context'] as const;
+  type RunTab = (typeof RUN_TABS)[number];
+  let activeTab = $state<RunTab>('log');
+
+  function onTabKeydown(event: KeyboardEvent): void {
+    const current = RUN_TABS.indexOf(activeTab);
+    let next: number;
+    if (event.key === 'ArrowRight') next = (current + 1) % RUN_TABS.length;
+    else if (event.key === 'ArrowLeft') next = (current - 1 + RUN_TABS.length) % RUN_TABS.length;
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = RUN_TABS.length - 1;
+    else return;
+    const name = RUN_TABS.at(next);
+    if (name === undefined) return;
+    event.preventDefault();
+    activeTab = name;
+    queueMicrotask(() => document.getElementById(`run-tab-${name}`)?.focus());
+  }
 
   // Feature 097 (T006) — a local PhaseLogStore pinned to this Run. Unlike the
   // removed Dashboard embed, this tier is about one Run, so the store lives
@@ -322,31 +343,40 @@
 
       <!-- Right panel: Tabbed content -->
       <div class="run-right-panel">
-        <div class="tab-bar" role="tablist">
+        <div class="tab-bar" role="tablist" onkeydown={onTabKeydown}>
           <button
             type="button"
             role="tab"
+            id="run-tab-log"
             class="tab-btn"
             class:active={activeTab === 'log'}
             aria-selected={activeTab === 'log'}
+            aria-controls="run-detail-panel"
+            tabindex={activeTab === 'log' ? 0 : -1}
             data-testid="run-tab-log"
             onclick={() => activeTab = 'log'}
           >&Sigma; Phase log</button>
           <button
             type="button"
             role="tab"
+            id="run-tab-outputs"
             class="tab-btn"
             class:active={activeTab === 'outputs'}
             aria-selected={activeTab === 'outputs'}
+            aria-controls="run-detail-panel"
+            tabindex={activeTab === 'outputs' ? 0 : -1}
             data-testid="run-tab-outputs"
             onclick={() => activeTab = 'outputs'}
           >&#128196; Run outputs</button>
           <button
             type="button"
             role="tab"
+            id="run-tab-context"
             class="tab-btn"
             class:active={activeTab === 'context'}
             aria-selected={activeTab === 'context'}
+            aria-controls="run-detail-panel"
+            tabindex={activeTab === 'context' ? 0 : -1}
             data-testid="run-tab-context"
             onclick={() => activeTab = 'context'}
           >&#128196; Context</button>
@@ -359,7 +389,12 @@
           {/if}
         </div>
 
-        <div class="tab-panel" role="tabpanel">
+        <div
+          class="tab-panel"
+          role="tabpanel"
+          id="run-detail-panel"
+          aria-labelledby="run-tab-{activeTab}"
+        >
           {#if activeTab === 'log'}
             <!-- autoFollow={false}: this store is pinned to one Run (the $effect
                  above); PhaseLogFeed's own Live-Mode auto-follow must not
